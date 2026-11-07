@@ -2083,16 +2083,24 @@ def _publish_seat_preflight(
     if not pointer_brief:
         return ()
     brokered_route = mode == "review" and review_authorization is not None
-    jailed_by_leg: dict[str, bool] = {}
+    jailed_by_leg: dict[str, list[bool]] = {}
+    for seat in board.seats:
+        leg = (getattr(seat, "harness", None) or "").lower()
+        key = str(getattr(seat, "seat_key", "") or leg)
+        brokered = (brokered_route
+                    and not _has_injected_review_execution_seam(leg=leg))
+        if leg == "claude" and seat.model is not None and _under_claude_code(base_env):
+            continue
+        jailed_by_leg.setdefault(leg, []).append(_seat_jailed_at_launch(
+            leg, review_authorization, brokered=brokered, seat_key=key, env=base_env,
+            timeout_s=(timeouts_by_leg or {}).get(leg),
+        ))
 
     def _usable_by(leg: str | None, brokered: bool) -> bool:
         # agent-harness#1132: a seat whose launch takes the jailed route has its tools in
         # the staged tree, so it CAN read the brief's files.
-        if leg is not None and leg not in jailed_by_leg:
-            jailed_by_leg[leg] = _seat_jailed_at_launch(
-                leg, review_authorization, brokered=brokered,
-                timeout_s=(timeouts_by_leg or {}).get(leg))
-        return sandbox_usable_by(leg, brokered, jailed=bool(leg and jailed_by_leg[leg]))
+        jailed = bool(leg and jailed_by_leg.get(leg) and all(jailed_by_leg[leg]))
+        return sandbox_usable_by(leg, brokered, jailed=jailed)
 
     notices = _seat_preflight.pointer_brief_preflight(
         board.seats,
@@ -2149,7 +2157,8 @@ def _seat_launch_modes(
     qualified_now: dict[str, bool] = {}
     # Per board: each leg's route, decided once (a first-use qualification that timed out
     # is not cached, so it must not be waited for again by every seat of that leg).
-    routes: dict[str, tuple] = {}
+    routes: dict[tuple[str, str], tuple] = {}
+    native_rung = _NativeFillAdapter(board, base_env)
 
     def _claude_credential(leg: str) -> tuple:
         # Read-only, against the SAME margin the launch will use (`_claude_seat_login_margin_s`,
@@ -2208,16 +2217,18 @@ def _seat_launch_modes(
                                      "not a brokered review launch: no seat sandbox applies",
                                      "", None, position))
             continue
-        if leg not in routes:
-            routes[leg] = _seat_route_for_spawn(
+        route_key = (leg, key)
+        if route_key not in routes:
+            routes[route_key] = _seat_route_for_spawn(
                 leg,
                 review_authorization,
                 eligible=True,
                 seat_key=key,
                 env=base_env,
+                native=native_rung,
                 cache_decision=True,
             )
-        route, _notices, refusal = routes[leg]
+        route, _notices, refusal = routes[route_key]
         resolved = getattr(route, "decision", None)
         if resolved is not None and resolved.mode in (sp.MODE_NATIVE, sp.MODE_REMOTE):
             code = resolved.code or (
@@ -2304,8 +2315,11 @@ def _seat_launch_modes(
     # second refusal code.
     # A seat refused before any credential read (an unready or unadmitted `sdk`) reads none
     # here either.
+    precredential = {"panel_claude_route_invalid", "panel_claude_transport_not_admitted"}
     ignored = _ignored_override("claude") if any(
-        m.leg == "claude" and m.position not in sdk_refused for m in modes) else ()
+        m.leg == "claude" and m.position not in sdk_refused and m.code not in precredential
+        for m in modes
+    ) else ()
     if ignored:
         modes = [replace(m, also=(*m.also, *ignored))
                  if (m.leg == "claude" and m.mode in (sp.MODE_JAILED, sp.MODE_DEGRADED)
@@ -4630,7 +4644,12 @@ def _require_qualified_jail(jail: "_seat_jail.SeatJail",
     The route gate admitted a digest earlier; if the host layout (or anything else) changed
     in between, the built jail's digest differs and has no pass -- refused, never launched."""
     _require_canonical_jail(jail)
-    refusal = _pass_refusal(_seat_jail.actual_profile_digest(jail), pass_recorded)
+    actual = _seat_jail.actual_profile_digest(jail)
+    key = getattr(jail, "qualification_key", None)
+    if key is not None and getattr(key, "profile_digest", None) != actual:
+        raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("identity"),
+                                            "jail is not the route's qualified profile")
+    refusal = _pass_refusal(key if key is not None else actual, pass_recorded)
     if refusal is not None:
         code, reason = refusal
         raise _seat_jail.SeatSandboxRefused(
@@ -12647,9 +12666,6 @@ def _standalone_claude_executable(executable: Path) -> Path:
         raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build")) from exc
 
 
-_PRODUCTION_RESOLVE_CLAUDE_EXECUTABLE = _resolve_claude_executable
-
-
 def _build_jail_with_owned_inputs(leg, directory, executable, *, artifact, instructions,
                                   token=None, **kwargs):
     """Caller owns partial input allocation; a successful jail takes all descriptors."""
@@ -12698,15 +12714,6 @@ def _resolved_jail_subject(leg: str, env: Mapping[str, str]):
     profile = _seat_profiles.profile_for(leg)
     if profile is None:
         raise FileNotFoundError("seat_profile_unregistered")
-    # Preserve the established unit seam: tests which inject a Claude executable are
-    # exercising the jail builder, not TEAMHOST's installed-release resolver. Production
-    # always takes the resolver below.
-    if leg == "claude" and _resolve_claude_executable is not _PRODUCTION_RESOLVE_CLAUDE_EXECUTABLE:
-        return SimpleNamespace(
-            source="standalone",
-            subject_path=_resolve_claude_executable(),
-            requirement=None,
-        ), None
     subject = resolve_seat_subject(leg, env)
     dependency = current_dependency_for_provider(leg)
     if dependency is not None:
@@ -12725,6 +12732,15 @@ def _resolved_jail_subject(leg: str, env: Mapping[str, str]):
     if dependency is not None:
         setattr(dependency, "_jailcore_owned", True)
     return subject, dependency
+
+
+def _bind_route_qualification(seat: "_JailedSeat", route: object) -> "_JailedSeat":
+    """Carry the route decision's qualification key onto the jails it admitted."""
+    key = getattr(getattr(route, "decision", None), "qualification_key", None)
+    if key is not None:
+        seat.jail = replace(seat.jail, qualification_key=key)
+        seat.probe_jail = replace(seat.probe_jail, qualification_key=key)
+    return seat
 
 
 def _prepare_jailed_claude(
@@ -12757,10 +12773,16 @@ def _prepare_jailed_claude(
     if transport == "sdk" and sdk_prepared is None:
         # IF-0-CLAUDE-3: worker readiness and provenance, before the leg's credential.
         sdk_prepared = _claude_sdk_preflight()
-    subject, dependency = _resolved_jail_subject("claude", os.environ)
+    subject_refusal = None
+    try:
+        subject, dependency = _resolved_jail_subject("claude", os.environ)
+    except (FileNotFoundError, ExecutableDependencyError):
+        # No admissible subject: refused typed at the jail build, after the credential
+        # step, exactly where an unresolvable executable has always been refused.
+        subject, dependency, subject_refusal = None, None, "jail_build"
     _validate_jail_dependency("claude", dependency)
     executable = (Path(dependency.subject_source) if dependency is not None
-                  else subject.subject_path)
+                  else None if subject is None else subject.subject_path)
     tree = review_dir / _seat_jail.HOST_TREE_DIRNAME
     try:
         seat_dir.mkdir(mode=0o700)
@@ -12789,7 +12811,8 @@ def _prepare_jailed_claude(
         # the credential's notices as siblings of its one refusal code.
         try:
             if executable is None:
-                raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("identity"))
+                raise _seat_jail.SeatSandboxRefused(
+                    _seat_jail.refused(subject_refusal or "identity"))
             token = credential.token
             jail = _build_jail_with_owned_inputs(
                 "claude", seat_dir, executable, tree=tree,
@@ -13205,20 +13228,19 @@ def _prepare_jailed_gemini(
     artifact, instructions = prompt_parts
     if credential not in {"none", "live", "expired"}:
         raise ValueError("contract_bug")
-    subject, dependency = _resolved_jail_subject(
-        "gemini", _broker_subscription_env(env),
-    )
+    try:
+        subject, dependency = _resolved_jail_subject(
+            "gemini", _broker_subscription_env(env),
+        )
+    except (FileNotFoundError, ExecutableDependencyError) as exc:
+        raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build")) from exc
     _validate_jail_dependency("gemini", dependency)
     subscription_env = _broker_subscription_env(env)
-    if dependency is None:
-        subject = integrated_seat_subject("gemini", subscription_env)
-        if subject.subject_path is None:
-            raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build"))
-        subject_path = subject.subject_path
-    else:
-        subject_path = Path(dependency.subject_source)
+    subject_path = (Path(dependency.subject_source) if dependency is not None
+                    else subject.subject_path)
+    if subject_path is None:
+        raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build"))
     if dependency is not None and credential != "none":
-        from .executable_dependency import ExecutableDependencyError
         home = Path(subscription_env.get("HOME", str(Path.home())))
         if not _gemini_credential_fresh(home):
             raise ExecutableDependencyError("dependency_route_unwired", "Gemini host credential refresh")
@@ -13229,8 +13251,6 @@ def _prepare_jailed_gemini(
     try:
         tree = _approved_stage_or_refuse(review_dir, review_authorization)
         home = Path(subscription_env.get("HOME", str(Path.home())))
-        subject_path = (Path(dependency.subject_source) if dependency is not None
-                        else subject.subject_path)
         admission = gemini_heartbeat.admit(subscription_env, subject_path=subject_path)
         try:
             if dependency is not None:
@@ -15727,9 +15747,21 @@ class _BrokeredSpawnResult(tuple):
         return result
 
 
-_JAILCORE_LEGACY_DECIDER = _seat_jail.decide_seat_route
 _JAILCORE_ROUTE_CACHE: dict[tuple[int, str, str], _seat_jail.SeatRoute] = {}
 _JAILCORE_ROUTE_CACHE_LOCK = threading.Lock()
+
+
+class _NativeFillAdapter:
+    """The resolver's W3 adapter over the already-established native-fill routing."""
+
+    def __init__(self, board: Board, env: Mapping[str, str] | None) -> None:
+        self._seats = frozenset(
+            (str(seat.seat_key), (seat.harness or "").lower())
+            for seat in _native_fillable_seats(board, env)
+        )
+
+    def offer(self, seat_key: str, leg: str) -> bool:
+        return (seat_key, leg) in self._seats
 
 
 def _legacy_seat_route_for_spawn(
@@ -15835,10 +15867,9 @@ def _seat_route_for_spawn(
     """Adapt the JAILCORE decision to the retained launch tuple surface.
 
     Explicit legacy seams stay available to the pre-JAILCORE regression suite.  Production
-    calls use one cached resolver decision for the published mode and the launch.
+    calls always use one cached resolver decision for the published mode and the launch.
     """
-    if (decide is not None or pass_recorded is not None or qualify_on_first_use is not None
-            or _seat_jail.decide_seat_route is not _JAILCORE_LEGACY_DECIDER):
+    if decide is not None or pass_recorded is not None or qualify_on_first_use is not None:
         return _legacy_seat_route_for_spawn(
             leg,
             review_authorization,
@@ -15851,7 +15882,8 @@ def _seat_route_for_spawn(
         return None, [], None
     key = (id(review_authorization), leg, seat_key or leg)
     with _JAILCORE_ROUTE_CACHE_LOCK:
-        cached = _JAILCORE_ROUTE_CACHE.pop(key, None) if not cache_decision else None
+        cached = (_JAILCORE_ROUTE_CACHE.get(key) if cache_decision
+                  else _JAILCORE_ROUTE_CACHE.pop(key, None))
     if cached is not None:
         decision = cached.decision
         route = cached
@@ -15898,7 +15930,11 @@ def _seat_route_for_spawn(
     if decision.mode == _seat_preflight.MODE_UNCONFINED:
         return None, [*notices, *(() if decision.code is None else (decision.code,))], None
     if decision.mode in {_seat_preflight.MODE_NATIVE, _seat_preflight.MODE_REMOTE}:
-        return route, [*notices, *(() if decision.code is None else (decision.code,))], None
+        # This process has no placement consumer for a selected later rung.  Keep the
+        # resolver's decision on the published mode line, but refuse the local launch with
+        # the established neutral confinement code.  A route decision is never permission
+        # to run that seat through the ordinary local provider branch.
+        return route, notices, _seat_jail.refused("identity")
     if decision.mode == _seat_preflight.MODE_DEGRADED:
         return route, notices, decision.code
     return route, notices, decision.code
@@ -15930,13 +15966,18 @@ def _ignored_override(leg: str) -> tuple[str, ...]:
 
 
 def _seat_jailed_at_launch(leg: str, review_authorization: "ReviewIsolationAuthorization | None",
-                           *, brokered: bool, timeout_s: int | None = None) -> bool:
+                           *, brokered: bool, seat_key: str | None = None,
+                           env: Mapping[str, str] | None = None,
+                           timeout_s: int | None = None) -> bool:
     """Will this seat's production brokered launch take the jailed route? The same J7
     decision and EC-EXECFIND-2 gate ``_default_spawn`` applies; a jail that would be refused
     is not jailed (that seat does not launch at all)."""
     if not brokered:
         return False
-    route, _notices, refusal = _seat_route_for_spawn(leg, review_authorization, eligible=True)
+    route, _notices, refusal = _seat_route_for_spawn(
+        leg, review_authorization, eligible=True, seat_key=seat_key, env=env,
+        cache_decision=True,
+    )
     if route is None or not route.jailed or refusal is not None:
         return False
     # Plan amendment A3/A3b: a short login with no wait allowed does not run. (With a wait,
@@ -16145,6 +16186,10 @@ def _default_spawn(
         env=env,
     )
     if seat_refusal is not None:
+        if leg == "claude" and seat_refusal in {
+            "panel_claude_route_invalid", "panel_claude_transport_not_admitted",
+        }:
+            _republish_jailed_claude_mode(seat_refusal)
         if base is not None:
             shutil.rmtree(base, ignore_errors=True)
         return _BrokeredSpawnResult("DEGRADED", "", _HarnessCode(seat_refusal),
@@ -16586,6 +16631,7 @@ def _default_spawn(
                                 timeout_s=timeout_s, transport=claude_transport,
                                 sdk_prepared=sdk_prepared,
                             )
+                            seat = _bind_route_qualification(seat, seat_route)
                         except _seat_jail.SeatSandboxRefused as exc:
                             leg_detail = _LegFailure(template=exc.code)
                             seat_notices.append(exc.code)
@@ -16650,6 +16696,7 @@ def _default_spawn(
                                 (staged_bundle, staged_instructions), gemini_egress, env=env,
                                 review_monitor=review_monitor, quiescence_latch=broker_latch,
                             )
+                            seat = _bind_route_qualification(seat, seat_route)
                         except _seat_jail.SeatSandboxRefused as exc:
                             leg_detail = _LegFailure(template=exc.code)
                             seat_notices.append(exc.code)

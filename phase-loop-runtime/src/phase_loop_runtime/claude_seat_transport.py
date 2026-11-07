@@ -1007,7 +1007,7 @@ SDK_PROOF_REGIONS: Mapping[str, tuple[str, ...]] = MappingProxyType({
     _PI: (
         # The jailed CLI's command, launch, liveness and teardown.
         "_broker_claude_tui_command", "_claude_panel_settings", "_prepare_jailed_claude",
-        "_resolved_jail_subject", "_PRODUCTION_RESOLVE_CLAUDE_EXECUTABLE",
+        "_resolved_jail_subject",
         "_run_leg_with_liveness", "launch_provider", "_cleanup_jailed_seat",
         "_JailedSeat", "_BROKER_CLAUDE_DIRECT_REQUEST", "_JAILED_CLAUDE_TOOL_CONTROLS",
         # The host worker's launcher and duplex leg, and what they call.

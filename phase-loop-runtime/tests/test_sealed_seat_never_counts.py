@@ -11,7 +11,7 @@ the train's recorded reviewers, the president's input) leaves it out.
 from __future__ import annotations
 
 import contextlib
-import functools
+import dataclasses
 import io
 import json
 import time
@@ -53,10 +53,15 @@ def test_a_seat_with_no_jail_route_and_no_staged_tree_is_a_refusal():
     # tree their launch would carry only the inlined bundle.
     assert seat_jail.decide_seat_route("codex", staged_tree_approved=False) is None
     for leg in ("codex", "grok"):
-        assert pi._seat_route_for_spawn(leg, _auth(False), eligible=True) == (
-            None, [], "seat_sandbox_not_staged")
+        route, notices, refusal = pi._seat_route_for_spawn(
+            leg, _auth(False), eligible=True,
+        )
+        assert not route.jailed and route.code == "seat_sandbox_not_staged"
+        assert notices == [] and refusal == "seat_sandbox_not_staged"
         # With a staged tree they keep their (unconfined, tooled) route.
-        assert pi._seat_route_for_spawn(leg, _auth(True), eligible=True) == (None, [], None)
+        assert pi._seat_route_for_spawn(leg, _auth(True), eligible=True) == (
+            None, ["seat_filesystem_unconfined"], None,
+        )
 
 
 def test_the_real_route_decision_for_a_seat_with_no_staged_tree_is_a_refusal():
@@ -104,15 +109,20 @@ def _brokered(monkeypatch, tmp_path, leg: str, staged: bool):
     )
 
 
-def test_a_gemini_seat_on_its_recorded_stop_is_degraded_and_not_run(monkeypatch, tmp_path):
-    # The production route decision with the recorded stop pinned, whatever the runtime's
-    # current `GEMINI_RECORDED_STOP` is.
-    monkeypatch.setattr(pi._seat_jail, "decide_seat_route", functools.partial(
-        seat_jail.decide_seat_route, gemini_recorded_stop=STOP))
+@pytest.mark.parametrize("code", sorted(seat_jail.SEALED_FALLBACK_CODES))
+def test_every_review_fallback_is_degraded_without_a_sealed_launch(
+    monkeypatch, tmp_path, code,
+):
+    # Path-enter the production resolver at L2 for every former sealed fallback.  The
+    # broker is the argv boundary: zero invocations proves no sealed command was built.
+    from phase_loop_runtime import seat_profiles
+
+    profile = dataclasses.replace(seat_profiles.profile_for("gemini"), recorded_stop=code)
+    monkeypatch.setitem(seat_profiles._REGISTRY, "gemini", profile)
     spawned = _brokered(monkeypatch, tmp_path, "gemini", staged=True)
     assert _FakeBroker.invoked == 0, "a sealed seat was launched"
-    assert tuple(spawned) == ("DEGRADED", "", STOP)
-    assert spawned.seat_notices == (STOP,)
+    assert tuple(spawned) == ("DEGRADED", "", code)
+    assert spawned.seat_notices == (code,)
 
 
 @pytest.mark.parametrize("leg", ["claude", "codex", "grok"])
@@ -136,11 +146,20 @@ def _board():
 def test_seat_modes_name_a_sealed_route_degraded_with_its_fix(monkeypatch):
     from phase_loop_runtime import seat_jail_autoqualify as aq
 
-    def _route(leg, **_k):
-        return {"claude": seat_jail.SeatRoute(True),
-                "gemini": seat_jail.SeatRoute(False, STOP)}.get(leg)
+    from phase_loop_runtime import seat_route
+    from phase_loop_runtime.seat_route_contract import RouteDecision
 
-    monkeypatch.setattr(pi._seat_jail, "decide_seat_route", _route)
+    real = seat_route.resolve
+
+    def _route(request, **kwargs):
+        if request.leg == "gemini":
+            return RouteDecision(
+                leg="gemini", vendor="gemini", mode="degraded", code=STOP, steps=(),
+                exception=None, variant=None, qualification_key=None, also=(), lease=None,
+            )
+        return real(request, **kwargs)
+
+    monkeypatch.setattr(seat_route, "resolve", _route)
     monkeypatch.setattr(pi._seat_jail_autoqualify, "ensure_qualified",
                         lambda leg: aq.Outcome(aq.QUALIFIED))
     monkeypatch.setattr(pi._seat_credentials, "override_decision",
@@ -312,18 +331,22 @@ def test_the_qualification_worker_keeps_the_gemini_route_and_nothing_else(monkey
     from phase_loop_runtime import gemini_heartbeat as gh
 
     monkeypatch.setattr(gh, "_CANDIDATE", object())
-    assert pi._seat_route_for_spawn("gemini", _auth(True), eligible=True, decide=_stopped) == (
-        seat_jail.SeatRoute(False, STOP), [STOP], None)
+    route, notices, refusal = pi._seat_route_for_spawn(
+        "gemini", _auth(True), eligible=True,
+    )
+    assert route.code == "gemini_seat_qualification_candidate"
+    assert notices == [] and refusal == seat_jail.refused("identity")
     # Only the Gemini leg: any other seat in that process is still refused.
     _route, _notices, refusal = pi._seat_route_for_spawn(
         "claude", _auth(True), eligible=True, decide=_stopped)
     assert refusal == "seat_sandbox_unavailable_host"
-    monkeypatch.setattr(pi._seat_jail, "decide_seat_route", _stopped)
     modes = pi._seat_launch_modes(
         types.SimpleNamespace(seats=[types.SimpleNamespace(harness="gemini", seat_key="g",
                                                            model="m")]),
         mode="review", review_authorization=_auth(True), base_env={})
-    assert [(m.mode, m.code) for m in modes] == [("sealed", STOP)]
+    assert [(m.mode, m.code) for m in modes] == [
+        ("native", "gemini_seat_qualification_candidate"),
+    ]
 
 
 def test_outside_the_qualification_worker_the_gemini_route_is_refused(monkeypatch):
@@ -370,9 +393,10 @@ def test_an_advisory_run_keeps_its_unstaged_seats_inline(tmp_path, monkeypatch):
     auth = _advisory_authorization(tmp_path, monkeypatch)
     assert auth.staged_tree_sha256 is None
     route, notices, refusal = pi._seat_route_for_spawn("claude", auth, eligible=True)
-    assert (route, notices, refusal) == (
-        seat_jail.SeatRoute(False, "seat_sandbox_not_staged"), ["seat_sandbox_not_staged"], None)
-    assert pi._seat_route_for_spawn("codex", auth, eligible=True) == (None, [], None)
+    assert (route, notices, refusal) == (None, ["seat_sandbox_not_staged"], None)
+    assert pi._seat_route_for_spawn("codex", auth, eligible=True) == (
+        None, ["seat_sandbox_not_staged"], None,
+    )
     modes = pi._seat_launch_modes(_board(), mode="review", review_authorization=auth, base_env={})
     assert [(m.mode, m.code) for m in modes] == [("sealed", "seat_sandbox_not_staged")] * 4
 

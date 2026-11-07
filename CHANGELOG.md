@@ -11,6 +11,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `standard`. `done-local` verification, reduction and export ignore team contexts. A later
   `done-team` validator owns the retained team fields and `--peer-record` observations, and
   no reducer path emits that status (SEATS FIRSTSEAT lane E, agent-harness#1820).
+- JAILCORE now registers the digest-invariant Claude and Gemini jail profiles, routes every
+  brokered review through the closed local/remote/native/degraded resolver, binds keyed host
+  qualification through launch, and sources the attended window kit from per-vendor profile
+  data (SEATS JAILCORE SL-3/SL-3.5, agent-harness#1820).
 - Jailed-seat qualification keys are built from the live profile, allowlist,
   falsifier-layout, projection, variant and host inputs, and dependency projections are
   admitted per profile declaration (SEATS JAILCORE SL-2, agent-harness#1820).

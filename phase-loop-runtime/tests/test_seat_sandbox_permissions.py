@@ -990,7 +990,13 @@ def test_each_jailed_leg_launches_with_the_token_current_at_its_launch(monkeypat
     monkeypatch.setattr(panel_invoker._seat_jail, "build_seat_jail", _build)
     monkeypatch.setattr(panel_invoker._seat_jail, "tree_manifest_sha256_at", lambda fd: "a" * 64)
     monkeypatch.setattr(panel_invoker._seat_jail, "CLAUDE_PRESEED", {})
-    monkeypatch.setattr(panel_invoker, "_resolve_claude_executable", lambda: Path("/usr/bin/true"))
+    from phase_loop_runtime import seat_subject
+    monkeypatch.setattr(
+        seat_subject, "resolve_seat_subject",
+        lambda leg, _env: seat_subject.SeatSubject(
+            leg, "standalone", Path("/usr/bin/true"), None, None,
+        ),
+    )
     auth = types.SimpleNamespace(staged_tree_sha256="a" * 64)
 
     def _launch(name: str):
@@ -1042,7 +1048,13 @@ def test_a_seat_launched_with_an_override_bound_elsewhere_uses_the_login(monkeyp
     monkeypatch.setattr(panel_invoker._seat_jail, "build_seat_jail", _build)
     monkeypatch.setattr(panel_invoker._seat_jail, "tree_manifest_sha256_at", lambda fd: "a" * 64)
     monkeypatch.setattr(panel_invoker._seat_jail, "CLAUDE_PRESEED", {})
-    monkeypatch.setattr(panel_invoker, "_resolve_claude_executable", lambda: Path("/usr/bin/true"))
+    from phase_loop_runtime import seat_subject
+    monkeypatch.setattr(
+        seat_subject, "resolve_seat_subject",
+        lambda leg, _env: seat_subject.SeatSubject(
+            leg, "standalone", Path("/usr/bin/true"), None, None,
+        ),
+    )
     review = tmp_path / "leg" / "review"
     (review / seat_jail.HOST_TREE_DIRNAME).mkdir(parents=True)
     seat = panel_invoker._prepare_jailed_claude(

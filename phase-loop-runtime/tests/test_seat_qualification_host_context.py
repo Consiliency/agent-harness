@@ -17,7 +17,10 @@ import copy
 import datetime as dt
 import dataclasses
 import hashlib
+import inspect
 import json
+from pathlib import Path
+from types import MappingProxyType
 import pytest
 
 
@@ -607,6 +610,65 @@ def test_jailcore_synthetic_profile_reaches_window_kit_as_data(monkeypatch):
     assert [item.row_id for item in layout.rows] == ["tree:FIXTURE.md"]
 
 
+def test_jailcore_window_record_vocabulary_is_per_vendor_data(monkeypatch):
+    from phase_loop_runtime import seat_profiles
+    from phase_loop_runtime import seat_window as window
+    from phase_loop_runtime.seat_route_contract import WindowRows
+
+    rows = WindowRows(
+        canonical_record_field="unused_frozen_field",
+        route_record_field="unused_frozen_route",
+        route_literal="unused_frozen_literal",
+        plant_locations=(("tree", "/seat/tree", "reviewed-tree"),),
+        tree_rows=(("FIXTURE.md", "provider_overrides"),),
+    )
+    profile = dataclasses.replace(
+        seat_profiles.profile_for("gemini"), leg="fixture", vendor="fixture",
+        allowlist_id="fixture", window=rows,
+    )
+    data = dataclasses.replace(
+        seat_profiles.GEMINI_WINDOW_DATA,
+        leg="fixture",
+        vendor="fixture",
+        record_fields=MappingProxyType({
+            "canonical": "canonical_fixture", "route": "fixture_route",
+        }),
+        board_fields=MappingProxyType({
+            "canonical": "canonical_fixture", "leg": "fixture",
+        }),
+        route_literal="contained",
+        model_leg="fixture",
+        dependency_provider="fixture",
+        qualification_candidate_code=None,
+        default=False,
+    )
+    monkeypatch.setitem(seat_profiles._REGISTRY, "fixture", profile)
+    monkeypatch.setitem(seat_profiles._WINDOW_DATA, "fixture", data)
+    assert window._window_data_for("fixture") is data
+    assert window._record_fields(data) == (
+        window._COMMON_RECORD_FIELDS | {"canonical_fixture", "fixture_route"}
+    )
+    assert window._containment_outcomes_valid({
+        field: next(iter(values)) for field, values in data.containment_outcomes.items()
+    }, data)
+
+
+def test_jailcore_window_kit_has_no_vendor_named_launch_or_record_branch():
+    from phase_loop_runtime import seat_window as window
+
+    module_source = Path(window.__file__).read_text(encoding="utf-8")
+    assert "canonical_gemini" not in module_source
+    assert "gemini_route" not in module_source
+    for function in (
+        window.run_native_window,
+        window._valid_record,
+        window._reconcile_sources,
+        window._egress_observation,
+        window._dependency_binding,
+    ):
+        assert "gemini" not in inspect.getsource(function).lower()
+
+
 def test_jailcore_registered_vendor_loses_unconfined_and_allowlisted_open_egress(
     monkeypatch,
 ):
@@ -629,3 +691,25 @@ def test_jailcore_registered_vendor_loses_unconfined_and_allowlisted_open_egress
             if row["kind"] == "vendor"}
     assert rows["codex"]["exception"] is None
     assert rows["claude"]["exception"] is None
+
+
+def test_jailcore_window_kit_refuses_rows_outside_its_record_shape(monkeypatch, tmp_path):
+    from phase_loop_runtime import seat_profiles
+    from phase_loop_runtime import seat_window as window
+    from phase_loop_runtime.seat_route_contract import WindowRows
+
+    rows = WindowRows(
+        canonical_record_field="canonical_fixture",
+        route_record_field="fixture_route",
+        route_literal="jailed",
+        plant_locations=(("tree", "/seat/tree", "reviewed-tree"),),
+        tree_rows=(("FIXTURE.md", "provider_overrides"),),
+    )
+    profile = dataclasses.replace(
+        seat_profiles.profile_for("gemini"), leg="fixture", vendor="fixture",
+        allowlist_id="fixture", window=rows,
+    )
+    monkeypatch.setitem(seat_profiles._REGISTRY, "fixture", profile)
+    assert window.run_native_window(
+        repo=tmp_path, monitoring_policy="bounded", host_class="team", vendor="fixture",
+    ) == {"status": "candidate", "code": "window_supplier_unavailable"}

@@ -8,6 +8,7 @@ do not grow a new ``leg == ...`` branch when another vendor registers a profile.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import json
 from types import MappingProxyType
 from typing import Mapping
@@ -27,6 +28,32 @@ from .seat_route_contract import (
 
 
 _REGISTRY: dict[str, JailProfile] = {}
+
+
+@dataclass(frozen=True)
+class WindowVendorData:
+    """Vendor-owned record and launch vocabulary for the generic window kit.
+
+    This is deliberately separate from the frozen :class:`WindowRows` shape.  Later
+    provider lanes add one data row beside their profile; ``seat_window`` does not gain a
+    provider branch.
+    """
+
+    leg: str
+    vendor: str
+    record_fields: Mapping[str, str]
+    board_fields: Mapping[str, str]
+    route_literal: str
+    containment_outcomes: Mapping[str, frozenset[str]]
+    control_launcher: str
+    board_launcher: str
+    model_leg: str
+    dependency_provider: str
+    qualification_candidate_code: str | None = None
+    default: bool = False
+
+
+_WINDOW_DATA: dict[str, WindowVendorData] = {}
 
 
 def register(profile: JailProfile) -> JailProfile:
@@ -55,6 +82,39 @@ def profile_for(leg: str) -> JailProfile | None:
 
 def registered_legs() -> tuple[str, ...]:
     return tuple(sorted(_REGISTRY))
+
+
+def register_window_data(data: WindowVendorData) -> WindowVendorData:
+    """Register one immutable vendor row, refusing ambiguous overrides."""
+    if not isinstance(data, WindowVendorData):
+        raise TypeError("window data must be WindowVendorData")
+    if not data.leg or not data.vendor or set(data.record_fields) != {"canonical", "route"}:
+        raise ValueError("window data identity or record fields unavailable")
+    if set(data.board_fields) != {"canonical", "leg"}:
+        raise ValueError("window data board fields unavailable")
+    if set(data.containment_outcomes) != {
+        "credential_scope", "refresh_detection", "project_settings", "hooks",
+        "mcp_servers", "provider_overrides",
+    }:
+        raise ValueError("window data outcome fields unavailable")
+    previous = _WINDOW_DATA.get(data.vendor)
+    if previous is not None and previous != data:
+        raise ValueError(f"window data already registered for {data.vendor}")
+    _WINDOW_DATA[data.vendor] = data
+    return data
+
+
+def window_data_for(vendor: str) -> WindowVendorData | None:
+    return _WINDOW_DATA.get(vendor)
+
+
+def registered_window_data() -> tuple[WindowVendorData, ...]:
+    return tuple(_WINDOW_DATA[vendor] for vendor in sorted(_WINDOW_DATA))
+
+
+def default_window_data() -> WindowVendorData | None:
+    matches = [data for data in _WINDOW_DATA.values() if data.default]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _claude_binds(_paths: OwnerPaths) -> tuple[str, ...]:
@@ -224,6 +284,39 @@ GEMINI_WINDOW = WindowRows(
 )
 
 
+GEMINI_WINDOW_DATA = register_window_data(WindowVendorData(
+    leg="gemini",
+    vendor="gemini",
+    record_fields=MappingProxyType({
+        "canonical": "canonical_gemini",
+        "route": "gemini_route",
+    }),
+    board_fields=MappingProxyType({
+        "canonical": "canonical_gemini",
+        "leg": "gemini",
+    }),
+    route_literal="jailed",
+    containment_outcomes=MappingProxyType({
+        "credential_scope": frozenset({
+            "pass", "gemini_seat_token_scope_excess", "unavailable",
+        }),
+        "refresh_detection": frozenset({
+            "pass", "gemini_seat_token_refreshed_in_jail", "unavailable",
+        }),
+        "project_settings": frozenset({"not_loaded", "loaded", "unavailable"}),
+        "hooks": frozenset({"not_loaded", "loaded", "unavailable"}),
+        "mcp_servers": frozenset({"not_loaded", "loaded", "unavailable"}),
+        "provider_overrides": frozenset({"not_loaded", "loaded", "unavailable"}),
+    }),
+    control_launcher="window_control_launch",
+    board_launcher="window_board_launch",
+    model_leg="gemini",
+    dependency_provider="gemini",
+    qualification_candidate_code="gemini_seat_qualification_candidate",
+    default=True,
+))
+
+
 CLAUDE = register(JailProfile(
     leg="claude",
     vendor="claude",
@@ -239,7 +332,7 @@ CLAUDE = register(JailProfile(
     credential=CredentialDelivery(channel="token_fd", scope_evidence=None),
     credential_present=_claude_credential_present,
     credential_missing_code="claude_seat_token_missing",
-    preconditions=(Precondition("tooled_profile", _gemini_profile_qualified),),
+    preconditions=(),
     recorded_stop=None,
     config_surface=ConfigSurface(
         closed=True,
@@ -280,7 +373,7 @@ GEMINI = register(JailProfile(
     ),
     credential_present=_gemini_credential_present,
     credential_missing_code="gemini_seat_credential_missing",
-    preconditions=(),
+    preconditions=(Precondition("tooled_profile", _gemini_profile_qualified),),
     recorded_stop=None,
     config_surface=ConfigSurface(
         closed=True,
@@ -333,4 +426,8 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["profile_for", "register", "registered_legs"]
+__all__ = [
+    "WindowVendorData", "profile_for", "register", "registered_legs",
+    "default_window_data", "register_window_data", "registered_window_data",
+    "window_data_for",
+]

@@ -269,17 +269,47 @@ def _gemini_seat_off_the_host_jail(monkeypatch):
     seat as on a host without the seat jail -- a route that is not jailed, so the seat is
     DEGRADED and not run (agent-harness#1244) -- unless a test states the host capability
     itself (``capable=``); the jailed route's tests inject its facts."""
-    from phase_loop_runtime import seat_jail
+    from unittest import mock
 
-    real = seat_jail.decide_seat_route
+    from phase_loop_runtime import seat_jail, seat_profiles, seat_route
 
-    def _decide(leg, **kwargs):
-        if leg == "gemini" and "capable" not in kwargs:
-            kwargs["capable"] = lambda: "seat_sandbox_unavailable_host"
-        return real(leg, **kwargs)
+    real = seat_route.resolve
 
-    _decide.real = real
-    monkeypatch.setattr(seat_jail, "decide_seat_route", _decide)
+    def _resolve(route_request, **kwargs):
+        profile = seat_profiles.profile_for(route_request.leg)
+        if route_request.leg != "gemini" or profile is not seat_profiles.GEMINI:
+            return real(route_request, **kwargs)
+        # Pin the host fact at L3 while leaving the whole production L0-L3 resolver path
+        # live.  Integration tests that install another profile or host fact bypass this
+        # default and can reach the remaining rungs, including real capacity acquisition.
+        with mock.patch.object(
+            seat_jail,
+            "seat_sandbox_capable",
+            return_value="seat_sandbox_unavailable_host",
+        ):
+            return real(route_request, **kwargs)
+
+    monkeypatch.setattr(seat_route, "resolve", _resolve)
+
+
+@pytest.fixture(autouse=True)
+def _claude_sdk_route_is_provider_free(request, monkeypatch):
+    """The SDK suite exercises transport behavior, not the host provider resolver."""
+    if request.path.name != "test_seats_claude_sdk.py":
+        return
+    from phase_loop_runtime import seat_subject
+
+    monkeypatch.setattr(
+        seat_subject,
+        "resolve_seat_subject",
+        lambda leg, _env: seat_subject.SeatSubject(
+            leg=leg,
+            source="standalone",
+            subject_path=Path(f"/provider-free/{leg}"),
+            release_id=None,
+            requirement=None,
+        ),
+    )
 
 
 @pytest.fixture(autouse=True)

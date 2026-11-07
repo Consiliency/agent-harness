@@ -48,10 +48,10 @@ _HEX = re.compile(r"[0-9a-f]{64}\Z")
 _LABEL = re.compile(r"[ac][0-9a-f]{31}\Z")
 _ATTEMPT = re.compile(r"[0-9a-f]{32}\Z")
 _EXPIRES = "2026-12-04T00:00:00+00:00"
-_RECORD_FIELDS = {
+_COMMON_RECORD_FIELDS = {
     "schema", "window", "context_id", "account_label", "host_class", "host_digest",
-    "operator_id", "board_outcome", "admission", "canonical_gemini", "staged_read",
-    "gemini_route", "account_isolation", "co_seats", "containment", "containment_outcomes",
+    "operator_id", "board_outcome", "admission", "staged_read", "account_isolation",
+    "co_seats", "containment", "containment_outcomes",
     "containment_binding", "egress", "rows", "observed_at", "qualification_keys",
     "record_digest", "source_attempt", "row_observations", *DIGEST_FIELDS,
 }
@@ -126,6 +126,32 @@ def window_rows_for(vendor: str):
     return matches[0] if matches else None
 
 
+def _window_data_for(vendor: str):
+    """Return the unique profile's separately registered window vocabulary."""
+    from .seat_profiles import profile_for, registered_legs, window_data_for
+
+    profiles = [profile for leg in registered_legs()
+                if (profile := profile_for(leg)) is not None
+                and profile.vendor == vendor and profile.window is not None]
+    data = window_data_for(vendor)
+    if (len(profiles) != 1 or data is None or data.vendor != vendor
+            or data.leg != profiles[0].leg):
+        return None
+    return data
+
+
+def _record_fields(data) -> set[str]:
+    return {*_COMMON_RECORD_FIELDS, *data.record_fields.values()}
+
+
+def _window_data_for_record(record):
+    from .seat_profiles import registered_window_data
+
+    matches = [data for data in registered_window_data()
+               if set(data.record_fields.values()) <= set(record)]
+    return matches[0] if len(matches) == 1 else None
+
+
 def candidates(rows, host_class):
     """Select a context's rows: `host_classes` names where a row qualifies (OD-12), and a
     team context re-runs those same rows only for later `done-team` validation."""
@@ -190,15 +216,11 @@ def _check_measurement(value, fields_):
                 {key: value[key] for key in ("checks", "observation_digest")}))
 
 
-def _containment_outcomes_valid(value):
+def _containment_outcomes_valid(value, data):
     return (type(value) is dict
-        and set(value) == set(CONTAINMENT_FIELDS)
-        and value["credential_scope"] in {
-            "pass", "gemini_seat_token_scope_excess", "unavailable"}
-        and value["refresh_detection"] in {
-            "pass", "gemini_seat_token_refreshed_in_jail", "unavailable"}
-        and all(value[field] in {"not_loaded", "loaded", "unavailable"}
-                for field in CONTAINMENT_FIELDS[2:]))
+        and set(value) == set(data.containment_outcomes)
+        and all(value[field] in outcomes
+                for field, outcomes in data.containment_outcomes.items()))
 
 
 def _json_value(value):
@@ -267,15 +289,15 @@ def _stream_decisions(stream) -> list[str]:
             if getattr(event, "decision", None) in {"allow", "deny"}]
 
 
-def _egress_observation(context_id, measured, board) -> dict:
+def _egress_observation(context_id, measured, board, leg_observation) -> dict:
     direct = next((row for row in getattr(getattr(measured, "bracket", None), "rows", ())
                    if getattr(row, "row", None) == "b_direct_without_proxy"), None)
     return {"schema": "seat_window_egress.v1", "context_id": context_id,
             "measured_decisions": _stream_decisions(getattr(measured, "stream", None)),
-            "board_decisions": _stream_decisions(getattr(board.gemini, "stream", None)),
+            "board_decisions": _stream_decisions(getattr(leg_observation, "stream", None)),
             "direct_without_proxy": getattr(direct, "outcome", None),
             "board_sha256": board.board_sha256,
-            "board_input_sha256": board.gemini.input_sha256,
+            "board_input_sha256": leg_observation.input_sha256,
             "delivered_turn_sha256": board.delivered_turn_sha256,
             "exec_record_sha256": board.exec_record_sha256,
             "tool_receipt_sha256": board.tool_receipt_sha256}
@@ -319,6 +341,9 @@ def _private_observation_valid(observation):
 
 def _reconcile_sources(record, *, root=None):
     try:
+        data = _window_data_for_record(record)
+        if data is None:
+            return False
         attempt = record["source_attempt"]
         if type(attempt) is not str or _ATTEMPT.fullmatch(attempt) is None:
             return False
@@ -332,7 +357,8 @@ def _reconcile_sources(record, *, root=None):
         read = _source_record("window-read-" + record["tool_receipt_digest"] + ".json",
                               record["tool_receipt_digest"], root=root)
         if (execution.get("schema") != "leg_exec.v1" or execution.get("attempt_id") != attempt
-            or execution.get("vendor") != "gemini" or type(execution.get("exit_code")) is not int
+            or execution.get("vendor") != data.vendor
+            or type(execution.get("exit_code")) is not int
             or execution["exit_code"] != 0 or execution.get("outcome") != "leg_execution_completed"
             or execution.get("model_turn") is not True or execution.get("verdict") is not True):
             return False
@@ -341,7 +367,7 @@ def _reconcile_sources(record, *, root=None):
             or not _is_digest(read.get("tree_digest"))):
             return False
         if (not _private_observation_valid(observation)
-            or not _containment_outcomes_valid(record["containment_outcomes"])
+            or not _containment_outcomes_valid(record["containment_outcomes"], data)
             or set(record["containment_outcomes"]) != set(record["containment"]["checks"])
             or record["containment"]["checks"] != {
                 key: value in {"not_loaded", "pass"}
@@ -368,7 +394,10 @@ def _reconcile_sources(record, *, root=None):
 
 
 def _valid_record(record, now, source_root=None):
-    if type(record) is not dict or set(record) != _RECORD_FIELDS:
+    if type(record) is not dict:
+        return False
+    data = _window_data_for_record(record)
+    if data is None or set(record) != _record_fields(data):
         return False
     if record["schema"] != SCHEMA or record["window"] != "W1":
         return False
@@ -385,8 +414,9 @@ def _valid_record(record, now, source_root=None):
     if (record["host_class"] not in {"team", "standard"}
         or type(record["operator_id"]) is not int or record["operator_id"] < 0
         or record["admission"] != "admitted" or record["board_outcome"] != "terminated"
-        or record["gemini_route"] != "jailed"
-        or any(record[key] is not True for key in ("canonical_gemini", "staged_read"))
+        or record[data.record_fields["route"]] != data.route_literal
+        or any(record[key] is not True for key in (
+            data.record_fields["canonical"], "staged_read"))
         # A one-account host has no peer record; a team context needs a passing peer probe.
         or record["account_isolation"] is not (True if record["host_class"] == "team" else None)):
         return False
@@ -404,10 +434,10 @@ def _valid_record(record, now, source_root=None):
             or not (row["outcome"] == "observed" and _is_digest(row["exec_record_digest"])
                     or row["outcome"] == "unavailable" and row["exec_record_digest"] is None)
             for row in observations)
-        or next(row for row in observations if row["id"] == "vendor:gemini")[
+        or next(row for row in observations if row["id"] == f"vendor:{data.vendor}")[
             "exec_record_digest"] != record["exec_record_digest"]):
         return False
-    if not _containment_outcomes_valid(record["containment_outcomes"]):
+    if not _containment_outcomes_valid(record["containment_outcomes"], data):
         return False
     try:
         observed = dt.datetime.fromisoformat(record["observed_at"])
@@ -538,9 +568,9 @@ def _host_digest():
     return hashlib.sha256(("seat-window-host\0" + identity).encode()).hexdigest()
 
 
-def _dependency_binding():
+def _dependency_binding(provider: str):
     from .executable_dependency_startup import current_dependency_for_provider
-    dependency = current_dependency_for_provider("gemini")
+    dependency = current_dependency_for_provider(provider)
     if dependency is None:
         return None, None
     return dependency.subject_sha256, dependency.projection_digest
@@ -556,28 +586,34 @@ def _required_interfaces(jailq, panel):
 
 
 def _profile_plant_layout(jailq, *, plugin_form, window_rows):
-    """Pass profile rows to the real kit while retaining frozen supplier test doubles."""
-    try:
-        return jailq.plant_layout(plugin_form=plugin_form, window=window_rows)
-    except TypeError as exc:
-        if "unexpected keyword argument 'window'" not in str(exc):
-            raise
-        return jailq.plant_layout(plugin_form=plugin_form)
+    """Pass profile rows to the window supplier's explicit interface."""
+    return jailq.plant_layout(plugin_form=plugin_form, window=window_rows)
 
 
-def run_native_window(*, repo, monitoring_policy, host_class, model=None, vendor="gemini"):
+def run_native_window(*, repo, monitoring_policy, host_class, model=None, vendor=None):
     """Run frozen I-15 and assemble the sole input to the containment reducer."""
     from . import panel_invoker as panel, president_adapter
     from . import seat_jail_qualification as jailq
+    if vendor is None:
+        from .seat_profiles import default_window_data
+        default = default_window_data()
+        if default is None:
+            return {"status": "candidate", "code": "window_supplier_unavailable"}
+        vendor = default.vendor
     window_rows = window_rows_for(vendor)
-    if window_rows is None or not _required_interfaces(jailq, panel):
+    data = _window_data_for(vendor)
+    if window_rows is None or data is None or not _required_interfaces(jailq, panel):
         return {"status": "candidate", "code": "window_supplier_unavailable"}
     if host_class not in {"team", "standard"} or monitoring_policy != "bounded":
         raise ValueError("window policy unavailable")
     context_id = "c" + secrets.token_hex(16)[1:]
     account_label = "a" + secrets.token_hex(16)[1:]
-    dependency_subject, dependency_projection = _dependency_binding()
-    selected_model = model or panel.DEFAULT_LEG_MODELS["gemini"]
+    dependency_subject, dependency_projection = _dependency_binding(data.dependency_provider)
+    selected_model = model or panel.DEFAULT_LEG_MODELS[data.model_leg]
+    control_launch = getattr(panel, data.control_launcher, None)
+    board_launch = getattr(panel, data.board_launcher, None)
+    if not callable(control_launch) or not callable(board_launch):
+        return {"status": "candidate", "code": "window_supplier_unavailable"}
 
     with tempfile.TemporaryDirectory(prefix="phase-loop-window-",
                                      dir=sandbox_policy.staging_root()) as temporary:
@@ -590,7 +626,7 @@ def run_native_window(*, repo, monitoring_policy, host_class, model=None, vendor
         def launch(kind, qualification_input):
             spec = panel.WindowLaunchSpec(kind=kind, qualification_input=qualification_input,
                 model=selected_model, timeout_s=WINDOW_LAUNCH_TIMEOUT_S)
-            return panel.window_control_launch(spec)
+            return control_launch(spec)
 
         help_result = launch("help", q0)
         plugin_result = None
@@ -611,15 +647,19 @@ def run_native_window(*, repo, monitoring_policy, host_class, model=None, vendor
         expired = launch("expired_copy", qualification_input)
         board_spec = panel.WindowBoardSpec(qualification_input=qualification_input,
                                            monitoring_policy=monitoring_policy)
-        board = panel.window_board_launch(board_spec)
+        board = board_launch(board_spec)
         if board.composition != "admitted":
             return {"status": "candidate", "code": "review_composition_refused"}
+        leg_observation = getattr(board, data.board_fields["leg"], None)
+        canonical = getattr(board, data.board_fields["canonical"], None)
+        if leg_observation is None or canonical is None:
+            return {"status": "candidate", "code": "window_reduction_unavailable"}
         context = jailq.ContextBinding(context_id=context_id, account_label=account_label,
             dependency_subject_sha256=dependency_subject,
             dependency_projection_sha256=dependency_projection)
         inputs = jailq.ContainmentInputs(context=context, layout=layout, help=help_result,
             plugin_validation=plugin_result, controls=tuple(controls), measured=measured,
-            expired_copy=expired, board=board.gemini)
+            expired_copy=expired, board=leg_observation)
         reduction = jailq.reduce_containment(inputs)
 
     private = _json_value(reduction.private)
@@ -629,13 +669,13 @@ def run_native_window(*, repo, monitoring_policy, host_class, model=None, vendor
     owner = _json_value(reduction.owner_summary)
     if (type(private) is not dict or set(private) != set(PRIVATE_FIELDS)
         or digest(private) != reduction.observation_sha256
-        or not _containment_outcomes_valid(outcomes)
+        or not _containment_outcomes_valid(outcomes, data)
         or type(checks) is not dict or checks != {
             key: value in {"not_loaded", "pass"} for key, value in outcomes.items()}
         or type(binding) is not dict or set(binding) != set(BINDING_FIELDS)
         or binding["context_id"] != context_id or binding["account_label"] != account_label
         or binding["contract_sha256"] != CONTAINMENT_CONTRACT_SHA256
-        or board.gemini.input_sha256 != binding["board_input_sha256"]
+        or leg_observation.input_sha256 != binding["board_input_sha256"]
         or type(owner) is not dict or set(owner) != set(OWNER_SUMMARY_FIELDS)
         or owner["schema"] != "seat_window_owner_summary.v1"
         or owner["context_id"] != context_id
@@ -644,7 +684,7 @@ def run_native_window(*, repo, monitoring_policy, host_class, model=None, vendor
         return {"status": "candidate", "code": "window_reduction_unavailable"}
     president_adapter.write_private_record(
         "window-observation-" + reduction.observation_sha256 + ".json", private)
-    egress_source = _egress_observation(context_id, measured, board)
+    egress_source = _egress_observation(context_id, measured, board, leg_observation)
     egress_identity = digest(egress_source)
     president_adapter.write_private_record("window-egress-" + egress_identity + ".json",
                                            egress_source)
@@ -655,8 +695,9 @@ def run_native_window(*, repo, monitoring_policy, host_class, model=None, vendor
         "account_label": account_label, "host_class": host_class, "host_digest": _host_digest(),
         "operator_id": os.getuid(), "board_outcome": board.board_outcome,
         "admission": "admitted" if reduction.admitted else "withheld_private",
-        "canonical_gemini": board.canonical_gemini, "staged_read": board.staged_read,
-        "gemini_route": "jailed", "account_isolation": None, "co_seats": list(board.co_seats),
+        data.record_fields["canonical"]: canonical, "staged_read": board.staged_read,
+        data.record_fields["route"]: data.route_literal,
+        "account_isolation": None, "co_seats": list(board.co_seats),
         "containment": measurement(checks, observation_digest=reduction.observation_sha256),
         "containment_outcomes": outcomes, "containment_binding": binding,
         "egress": measurement(_egress_checks(egress_source), observation_digest=egress_identity),
@@ -665,7 +706,7 @@ def run_native_window(*, repo, monitoring_policy, host_class, model=None, vendor
         "allowlist_digest": binding["production_allowlist_sha256"],
         "board_digest": board.board_sha256, "exec_record_digest": board.exec_record_sha256,
         "tool_receipt_digest": board.tool_receipt_sha256,
-        "board_input_digest": board.gemini.input_sha256,
+        "board_input_digest": leg_observation.input_sha256,
         "delivered_turn_digest": board.delivered_turn_sha256,
         "source_attempt": source_attempt,
         "row_observations": candidate_observations(selected, board.leg_exec_records)}
@@ -674,7 +715,7 @@ def run_native_window(*, repo, monitoring_policy, host_class, model=None, vendor
 
 
 def qualify(*, window, monitoring_policy, repo=".", host_class="standard", attended=False,
-            peer_record=None, model=None, vendor="gemini"):
+            peer_record=None, model=None, vendor=None):
     from . import president_adapter
     if window != "W1" or monitoring_policy != "bounded":
         raise ValueError("window policy unavailable")
@@ -687,6 +728,10 @@ def qualify(*, window, monitoring_policy, repo=".", host_class="standard", atten
         return {"status": "candidate", "code": "window_attendance_required"}
     from .seat_profiles import profile_for, registered_legs
 
+    if vendor is None:
+        from .seat_profiles import default_window_data
+        default = default_window_data()
+        vendor = None if default is None else default.vendor
     profiles = [profile for leg in registered_legs()
                 if (profile := profile_for(leg)) is not None and profile.vendor == vendor]
     profile = profiles[0] if len(profiles) == 1 else None

@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import gc
 import hashlib
+import importlib
+import inspect
 import json
 from types import MappingProxyType, SimpleNamespace
+import weakref
 
 import pytest
 
@@ -122,6 +126,23 @@ def test_local_route_holds_one_lease_and_keys_the_real_allowlist(ready_gemini):
     )
 
 
+def test_dependency_admission_failure_is_a_typed_identity_refusal(
+    monkeypatch, ready_gemini,
+):
+    from phase_loop_runtime.executable_dependency import ExecutableDependencyError
+
+    monkeypatch.setattr(
+        seat_route, "_projection_for_launch",
+        lambda *_a, **_k: (_ for _ in ()).throw(ExecutableDependencyError("authority_missing")),
+    )
+    decision = seat_route.resolve(
+        request(), policy=policy(), remote=Remote(), native=Native(), capacity=Capacity(),
+    )
+    assert (decision.mode, decision.code) == (
+        "degraded", "seat_sandbox_refused:identity",
+    )
+
+
 @pytest.mark.parametrize("code", [
     "seat_sandbox_unavailable_host",
     "seat_sandbox_unavailable_tiocsti",
@@ -229,6 +250,45 @@ def test_routed_vendor_row_skips_local_and_uses_derived_vendor(monkeypatch):
     assert remote.calls[-1].vendor == "codex"
 
 
+def test_matrix_reduction_routes_one_host_class_and_keeps_another_local(monkeypatch):
+    profile = dataclasses.replace(
+        seat_profiles.profile_for("gemini"),
+        leg="fixture",
+        vendor="fixture",
+        recorded_stop="gemini_seat_profile_unqualified",
+    )
+    monkeypatch.setitem(seat_profiles._REGISTRY, "fixture", profile)
+    monkeypatch.setattr(
+        seat_window,
+        "readiness_rows",
+        lambda: [{
+            "kind": "vendor",
+            "vendor": "fixture",
+            "status": "remote-pending",
+            "host_classes": ["team"],
+            "exception": None,
+            "expiry": None,
+        }],
+    )
+    matrix = seat_route._matrix_policy()
+    assert matrix.routed_remote == frozenset({("fixture", "team")})
+
+    team = seat_route.resolve(
+        request("fixture", host_class="team"), policy=matrix,
+        remote=Remote(), native=Native(), capacity=Capacity(),
+    )
+    standard = seat_route.resolve(
+        request("fixture", host_class="standard"), policy=matrix,
+        remote=Remote(), native=Native(), capacity=Capacity(),
+    )
+    assert (team.mode, team.steps[0].step, team.steps[0].outcome) == (
+        "degraded", "L", "skipped",
+    )
+    assert (standard.mode, standard.code, standard.steps[0].step) == (
+        "degraded", "gemini_seat_profile_unqualified", "L2",
+    )
+
+
 def test_policy_overlay_is_capacity_only_without_schema(tmp_path, monkeypatch):
     root = tmp_path / "state"
     route_dir = root / "phase-loop"
@@ -248,10 +308,65 @@ def test_policy_overlay_is_capacity_only_without_schema(tmp_path, monkeypatch):
     assert id(loaded) not in seat_route._IGNORED_POLICIES
 
 
+def test_ignored_policy_registry_is_weak(tmp_path):
+    route_dir = tmp_path / "private"
+    route_dir.mkdir(mode=0o700)
+    target = route_dir / "seat-route-policy.json"
+    target.write_text('{"schema":"not-allowed"}', encoding="utf-8")
+    target.chmod(0o600)
+    loaded = seat_route.load_route_policy(target)
+    identity = id(loaded)
+    reference = weakref.ref(loaded)
+    assert identity in seat_route._IGNORED_POLICIES
+    del loaded
+    gc.collect()
+    assert reference() is None and identity not in seat_route._IGNORED_POLICIES
+
+
+def test_policy_and_receipt_check_the_private_state_ancestor_chain(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    phase = state / "phase-loop"
+    receipts = phase / "seat-remote-probes"
+    receipts.mkdir(parents=True, mode=0o700)
+    state.chmod(0o777)
+    phase.chmod(0o700)
+    receipts.chmod(0o700)
+    overlay = phase / "seat-route-policy.json"
+    overlay.write_text('{"capacity_offload":[]}', encoding="utf-8")
+    overlay.chmod(0o600)
+    monkeypatch.setattr(seat_jail, "state_home", lambda: state)
+    loaded = seat_route.load_route_policy()
+    assert id(loaded) in seat_route._IGNORED_POLICIES
+    assert not seat_route._grant_current(
+        _grant(), "gemini", now=dt.datetime.now(dt.timezone.utc),
+    )
+
+
+def test_dangling_policy_link_is_ignored_not_treated_as_absent(tmp_path):
+    route_dir = tmp_path / "private"
+    route_dir.mkdir(mode=0o700)
+    target = route_dir / "seat-route-policy.json"
+    target.symlink_to(route_dir / "missing")
+    loaded = seat_route.load_route_policy(target)
+    assert id(loaded) in seat_route._IGNORED_POLICIES
+
+
 def test_mode_line_codes_close_the_od10_table():
     from phase_loop_runtime.seat_route_contract import OD10_CLASSES
 
     assert seat_route.mode_line_codes() == frozenset(OD10_CLASSES)
+
+
+def test_import_refuses_an_od10_table_outside_the_mode_line_closure(monkeypatch):
+    from phase_loop_runtime import seat_route_contract
+
+    original = seat_route_contract.OD10_CLASSES
+    widened = MappingProxyType({**dict(original), "fixture_unreachable_code": "ordinary"})
+    monkeypatch.setattr(seat_route_contract, "OD10_CLASSES", widened)
+    with pytest.raises(RuntimeError, match="OD-10 closure mismatch"):
+        importlib.reload(seat_route)
+    monkeypatch.setattr(seat_route_contract, "OD10_CLASSES", original)
+    importlib.reload(seat_route)
 
 
 @pytest.mark.parametrize("leg", ["codex", "grok"])
@@ -442,6 +557,26 @@ def test_non_review_run_kinds_keep_their_existing_route(
     assert not remote.calls and not native.calls and capacity.calls == 0
 
 
+def test_advisory_unknown_leg_precedes_route_identity():
+    decision = seat_route.resolve(
+        request("opencode", run_kind="advisory_document", staged_tree_approved=False),
+        policy=policy(), remote=Remote(), native=Native(), capacity=Capacity(),
+    )
+    assert (decision.mode, decision.code) == ("unconfined", "seat_sandbox_not_staged")
+
+
+def test_qualification_candidate_is_scoped_to_its_registered_vendor_data(monkeypatch):
+    profile = dataclasses.replace(
+        seat_profiles.profile_for("claude"), recorded_stop="seat_sandbox_not_staged",
+    )
+    monkeypatch.setitem(seat_profiles._REGISTRY, "claude", profile)
+    decision = seat_route.resolve(
+        request("claude", run_kind="qualification_candidate"), policy=policy(),
+        remote=Remote(), native=Native(), capacity=Capacity(),
+    )
+    assert (decision.mode, decision.code) == ("degraded", "seat_sandbox_not_staged")
+
+
 @pytest.mark.parametrize(
     "code",
     [
@@ -467,9 +602,6 @@ def test_egress_split_reaches_adapter_and_mode_line(monkeypatch, code):
     monkeypatch.setattr(seat_route, "resolve", resolve)
     monkeypatch.setattr(seat_route, "load_route_policy", lambda: policy())
     monkeypatch.setattr(panel_invoker, "_has_injected_review_execution_seam", lambda **k: False)
-    monkeypatch.setattr(
-        panel_invoker, "_JAILCORE_LEGACY_DECIDER", panel_invoker._seat_jail.decide_seat_route,
-    )
     panel_invoker._JAILCORE_ROUTE_CACHE.clear()
     auth = SimpleNamespace(staged_tree_sha256="a" * 64)
     board = SimpleNamespace(seats=[
@@ -505,3 +637,460 @@ def test_live_jail_proxy_refuses_another_vendor_and_unlisted_host(monkeypatch):
         assert _connect_status(proxy, "fixture-a.invalid").startswith(b"HTTP/1.1 200")
         assert _connect_status(proxy, "fixture-b.invalid").startswith(b"HTTP/1.1 403")
         assert _connect_status(proxy, "not-listed.invalid").startswith(b"HTTP/1.1 403")
+
+
+def _store_key(**changes):
+    from phase_loop_runtime.seat_route_contract import QualificationKey
+
+    values = dict(
+        profile_digest="a" * 64,
+        allowlist_digest="b" * 64,
+        falsifier_layout=seat_jail.falsifier_layout_identity(),
+        projection_digest=None,
+        variant=None,
+        host_identity=seat_jail.host_identity(),
+    )
+    values.update(changes)
+    return QualificationKey(**values)
+
+
+def _record_keyed_pass(key):
+    from phase_loop_runtime import seat_jail_qualification
+
+    evidence = {
+        "result": "pass",
+        "profile_digest": key.profile_digest,
+        "host_identity": key.host_identity,
+        "falsifier_layout": key.falsifier_layout,
+    }
+    return seat_jail_qualification._record_pass(evidence, key)
+
+
+@pytest.mark.parametrize("part,value", [
+    ("profile_digest", "c" * 64),
+    ("allowlist_digest", "d" * 64),
+    ("allowlist_digest", None),
+    ("falsifier_layout", "execfind-falsifier-layout.v1:" + "e" * 64),
+    ("projection_digest", "f" * 64),
+    ("variant", "print"),
+    ("host_identity", "other-host"),
+])
+def test_v2_pass_is_refused_under_every_changed_key_part(part, value):
+    key = _store_key()
+    path = _record_keyed_pass(key)
+    from phase_loop_runtime.seat_route_contract import key_digest
+
+    assert path.name == f"{key_digest(key)}.json"
+    assert seat_jail.pass_record_verdict(key) == (True, "pass")
+    assert seat_jail.pass_record_verdict(dataclasses.replace(key, **{part: value}))[0] is False
+
+
+def test_v1_record_under_the_key_name_is_not_honoured():
+    from phase_loop_runtime.seat_route_contract import key_digest
+
+    key = _store_key()
+    path = _record_keyed_pass(key)
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["schema"] = "seat_jail_pass.v1"
+    path.write_text(json.dumps(record), encoding="utf-8")
+    path.chmod(0o600)
+    assert path.name == f"{key_digest(key)}.json"
+    assert seat_jail.pass_record_verdict(key) == (False, "binding_mismatch")
+
+
+def test_keyed_pass_does_not_satisfy_the_profile_digest_read():
+    key = _store_key()
+    _record_keyed_pass(key)
+    assert seat_jail.pass_record_verdict(key.profile_digest) == (False, "no_record")
+
+
+def test_record_pass_refuses_evidence_that_disagrees_with_the_key():
+    from phase_loop_runtime import seat_jail_qualification
+
+    key = _store_key()
+    evidence = {
+        "result": "pass",
+        "profile_digest": "c" * 64,
+        "host_identity": key.host_identity,
+        "falsifier_layout": key.falsifier_layout,
+    }
+    with pytest.raises(seat_jail_qualification.QualificationError):
+        seat_jail_qualification._record_pass(evidence, key)
+    assert seat_jail.pass_record_verdict(key)[0] is False
+
+
+def test_launch_gate_honours_the_route_key_it_was_built_under(monkeypatch):
+    key = _store_key()
+    _record_keyed_pass(key)
+    monkeypatch.setattr(panel_invoker, "_require_canonical_jail", lambda _jail: None)
+    monkeypatch.setattr(
+        panel_invoker._seat_jail, "actual_profile_digest", lambda _jail: key.profile_digest,
+    )
+    # The route admitted K: the launch re-establishes exactly K's v2 pass.
+    panel_invoker._require_qualified_jail(SimpleNamespace(leg="gemini", qualification_key=key))
+    # A built jail whose digest is not K's profile is refused before any store read.
+    with pytest.raises(seat_jail.SeatSandboxRefused) as caught:
+        panel_invoker._require_qualified_jail(SimpleNamespace(
+            leg="gemini", qualification_key=_store_key(profile_digest="c" * 64),
+        ))
+    assert caught.value.code == seat_jail.refused("identity")
+    # A key the store has no pass for is refused typed.
+    with pytest.raises(seat_jail.SeatSandboxRefused) as caught:
+        panel_invoker._require_qualified_jail(SimpleNamespace(
+            leg="gemini", qualification_key=_store_key(allowlist_digest="d" * 64),
+        ))
+    assert caught.value.code == seat_jail.refused("jail_unqualified")
+
+
+def test_spawn_binds_the_route_key_onto_both_jails(tmp_path):
+    key = _store_key()
+
+    def jail():
+        return seat_jail.SeatJail(
+            leg="gemini", process_owner=(), path_map={}, env={}, pass_fds=(),
+            seccomp_fd=-1, profile_id="fixture", profile_digest=key.profile_digest,
+            filter_digest="",
+        )
+
+    seat = panel_invoker._JailedSeat(
+        jail=jail(), probe_jail=jail(), holder_pid=1, token=b"", review_dir=tmp_path,
+        seat_dir=tmp_path,
+    )
+    decision = SimpleNamespace(qualification_key=key)
+    bound = panel_invoker._bind_route_qualification(
+        seat, seat_jail.SeatRoute(True, None, decision=decision),
+    )
+    assert bound.jail.qualification_key is key
+    assert bound.probe_jail.qualification_key is key
+    unbound = panel_invoker._bind_route_qualification(
+        panel_invoker._JailedSeat(
+            jail=jail(), probe_jail=jail(), holder_pid=1, token=b"",
+            review_dir=tmp_path, seat_dir=tmp_path,
+        ),
+        seat_jail.SeatRoute(True, None),
+    )
+    assert unbound.jail.qualification_key is None
+
+
+def _production_adapter(monkeypatch):
+    # Production has no function-identity fallback; clearing the decision cache is the only
+    # test setup required to enter the resolver path.
+    panel_invoker._JAILCORE_ROUTE_CACHE.clear()
+
+
+@pytest.mark.parametrize("code", sorted(seat_route.mode_line_codes()))
+def test_every_typed_degraded_code_reaches_the_launch_tuple(monkeypatch, code):
+    # A profile's recorded terminal is the exhaustive L2 injection point.  Keep the real
+    # resolver live so this matrix detects a broken production call site, then consume the
+    # same cached decision at the launch tuple boundary.
+    stopped = dataclasses.replace(seat_profiles.GEMINI, recorded_stop=code)
+    monkeypatch.setitem(seat_profiles._REGISTRY, "gemini", stopped)
+    calls = []
+    real_resolve = seat_route.resolve
+
+    def resolve(route_request, **kwargs):
+        calls.append(route_request)
+        return real_resolve(route_request, **kwargs)
+
+    monkeypatch.setattr(seat_route, "resolve", resolve)
+    monkeypatch.setattr(seat_route, "load_route_policy", lambda: policy())
+    _production_adapter(monkeypatch)
+    auth = SimpleNamespace(staged_tree_sha256="a" * 64)
+    board = SimpleNamespace(seats=[
+        SimpleNamespace(harness="gemini", seat_key="gemini:a", model="m"),
+    ])
+    (rendered,) = panel_invoker._seat_launch_modes(
+        board, mode="review", review_authorization=auth, base_env={},
+    )
+    route, notices, refusal = panel_invoker._seat_route_for_spawn(
+        "gemini", auth, eligible=True,
+        seat_key="gemini:a", env={"PATH": "/nonexistent"},
+    )
+    assert (rendered.mode, rendered.code) == ("degraded", code)
+    assert not route.jailed and route.decision.mode == "degraded"
+    assert route.decision.code == code and notices == [] and refusal == code
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("leg", ["codex", "grok"])
+def test_unconfined_exception_reaches_spawn_through_the_real_resolver(monkeypatch, leg):
+    exception = NamedException(
+        leg, "unconfined", dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=1), "fixture",
+    )
+    monkeypatch.setattr(
+        seat_route, "load_route_policy", lambda: policy(exceptions={leg: exception}),
+    )
+    _production_adapter(monkeypatch)
+    route, notices, refusal = panel_invoker._seat_route_for_spawn(
+        leg, SimpleNamespace(staged_tree_sha256="a" * 64), eligible=True,
+        seat_key=f"{leg}:a", env={"PATH": "/nonexistent"},
+    )
+    assert (route, notices, refusal) == (None, ["seat_filesystem_unconfined"], None)
+
+
+@pytest.mark.parametrize("leg", ["codex", "grok"])
+def test_unconfined_exception_expiry_is_path_entered_with_an_injected_clock(
+    monkeypatch, tmp_path, leg,
+):
+    now = dt.datetime(2026, 11, 7, tzinfo=dt.timezone.utc)
+    exception = NamedException(
+        leg, "unconfined", now + dt.timedelta(minutes=1), "fixture",
+    )
+    monkeypatch.setattr(
+        seat_route, "load_route_policy", lambda: policy(exceptions={leg: exception}),
+    )
+    monkeypatch.setattr(seat_route, "_now", lambda: now)
+    auth = SimpleNamespace(staged_tree_sha256="a" * 64)
+    route, notices, refusal = panel_invoker._seat_route_for_spawn(
+        leg, auth, eligible=True, seat_key=f"{leg}:a", env={},
+    )
+    assert (route, notices, refusal) == (None, ["seat_filesystem_unconfined"], None)
+    monkeypatch.setattr(seat_route, "_now", lambda: now + dt.timedelta(minutes=2))
+    route, notices, refusal = panel_invoker._seat_route_for_spawn(
+        leg, auth, eligible=True, seat_key=f"{leg}:a", env={},
+    )
+    assert not route.jailed and notices == [] and refusal == "seat_route_exception_expired"
+    monkeypatch.setattr(
+        panel_invoker, "revalidate_review_isolation_authorization", lambda *a, **k: None,
+    )
+    monkeypatch.setattr(panel_invoker._sandbox_policy, "staging_root", lambda: tmp_path)
+    monkeypatch.setattr(panel_invoker, "_canonical_review_repo_authority", lambda _p: tmp_path)
+
+    class NeverBroker:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("an expired exception launched a provider")
+
+    monkeypatch.setattr(panel_invoker, "ParentUnixBroker", NeverBroker)
+    spawned = panel_invoker._default_spawn(
+        leg,
+        "artifact",
+        mode="review",
+        model="fixture",
+        review_authorization=auth,
+        canonical_repo_authority=tmp_path,
+        seat_key=f"{leg}:a",
+    )
+    assert tuple(spawned) == ("DEGRADED", "", "seat_route_exception_expired")
+
+
+def test_open_egress_exception_expiry_is_path_entered_with_an_injected_clock(monkeypatch):
+    profile = dataclasses.replace(
+        seat_profiles.profile_for("claude"), credential_present=lambda: True,
+        preconditions=(), variant=lambda _env: ("print", None),
+    )
+    monkeypatch.setitem(seat_profiles._REGISTRY, "claude", profile)
+    monkeypatch.setattr(seat_jail, "seat_sandbox_capable", lambda: None)
+    monkeypatch.setattr(seat_route, "_projection_for_launch", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        seat_jail_autoqualify, "ensure_qualified",
+        lambda *a, **k: seat_jail_autoqualify.Outcome(seat_jail_autoqualify.QUALIFIED),
+    )
+    capacity = Capacity(True)
+    monkeypatch.setattr(panel_invoker._seat_uid, "SeatIdCapacity", lambda: capacity)
+    now = dt.datetime(2026, 11, 7, tzinfo=dt.timezone.utc)
+    exception = NamedException(
+        "claude", "open egress", now + dt.timedelta(minutes=1), "fixture",
+    )
+    monkeypatch.setattr(
+        seat_route, "load_route_policy", lambda: policy(exceptions={"claude": exception}),
+    )
+    monkeypatch.setattr(seat_route, "_now", lambda: now)
+    auth = SimpleNamespace(staged_tree_sha256="a" * 64)
+    route, notices, refusal = panel_invoker._seat_route_for_spawn(
+        "claude", auth, eligible=True, seat_key="claude:a", env={},
+    )
+    assert route.jailed and notices == [] and refusal is None
+    panel_invoker._release_seat_route(route)
+    monkeypatch.setattr(seat_route, "_now", lambda: now + dt.timedelta(minutes=2))
+    route, notices, refusal = panel_invoker._seat_route_for_spawn(
+        "claude", auth, eligible=True, seat_key="claude:a", env={},
+    )
+    assert not route.jailed and notices == [] and refusal == "seat_route_exception_expired"
+
+
+@pytest.mark.parametrize("mode,code", [
+    ("native", "seat_native_fill_unavailable"),
+    ("remote", "seat_capacity_offloaded"),
+])
+def test_nonlocal_decision_is_published_but_never_runs_locally(
+    monkeypatch, tmp_path, mode, code,
+):
+    decision = RouteDecision(
+        leg="gemini", vendor="gemini", mode=mode, code=code, steps=(),
+        exception=None, variant=None, qualification_key=None, also=(), lease=None,
+    )
+    monkeypatch.setattr(seat_route, "resolve", lambda *a, **k: decision)
+    monkeypatch.setattr(seat_route, "load_route_policy", lambda: policy())
+    panel_invoker._JAILCORE_ROUTE_CACHE.clear()
+    auth = SimpleNamespace(staged_tree_sha256="a" * 64)
+    board = SimpleNamespace(seats=[
+        SimpleNamespace(harness="gemini", seat_key="gemini:a", model="m"),
+    ])
+    (rendered,) = panel_invoker._seat_launch_modes(
+        board, mode="review", review_authorization=auth, base_env={},
+    )
+    route, notices, refusal = panel_invoker._seat_route_for_spawn(
+        "gemini", auth, eligible=True, seat_key="gemini:a", env={},
+    )
+    assert (rendered.mode, rendered.code) == (mode, code)
+    assert route.decision is decision and notices == []
+    assert refusal == seat_jail.refused("identity")
+
+    monkeypatch.setattr(
+        panel_invoker, "revalidate_review_isolation_authorization", lambda *a, **k: None,
+    )
+    monkeypatch.setattr(panel_invoker._sandbox_policy, "staging_root", lambda: tmp_path)
+    monkeypatch.setattr(panel_invoker, "_canonical_review_repo_authority", lambda _p: tmp_path)
+
+    class NeverBroker:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("a nonlocal decision entered the local provider branch")
+
+    monkeypatch.setattr(panel_invoker, "ParentUnixBroker", NeverBroker)
+    spawned = panel_invoker._default_spawn(
+        "gemini",
+        "artifact",
+        mode="review",
+        model="fixture",
+        review_authorization=auth,
+        canonical_repo_authority=tmp_path,
+        seat_key="gemini:a",
+    )
+    assert tuple(spawned) == ("DEGRADED", "", seat_jail.refused("identity"))
+    public = " ".join(seat_jail.NOTICES[seat_jail.refused("identity")]).lower()
+    assert all(route_word not in public for route_word in ("remote", "native", "local"))
+
+
+def test_same_leg_mode_cache_is_keyed_per_seat(monkeypatch):
+    codes = {"gemini:a": "seat_egress_start_failed",
+             "gemini:b": "seat_egress_integrity_failed"}
+
+    def resolve(route_request, **_kwargs):
+        code = codes[route_request.seat_key]
+        return RouteDecision(
+            leg="gemini", vendor="gemini", mode="degraded", code=code,
+            steps=(RouteStep("local", "L7", "failed", code,
+                             seat_route.OD10_CLASSES[code]),),
+            exception=None, variant=None, qualification_key=None, also=(), lease=None,
+        )
+
+    monkeypatch.setattr(seat_route, "resolve", resolve)
+    monkeypatch.setattr(seat_route, "load_route_policy", lambda: policy())
+    panel_invoker._JAILCORE_ROUTE_CACHE.clear()
+    auth = SimpleNamespace(staged_tree_sha256="a" * 64)
+    board = SimpleNamespace(seats=[
+        SimpleNamespace(harness="gemini", seat_key=key, model="m") for key in codes
+    ])
+    modes = panel_invoker._seat_launch_modes(
+        board, mode="review", review_authorization=auth, base_env={},
+    )
+    assert {item.seat_key: item.code for item in modes} == codes
+
+
+def test_native_fill_adapter_uses_the_existing_board_routing(monkeypatch):
+    monkeypatch.setattr(panel_invoker, "_under_claude_code", lambda _env=None: True)
+    board = SimpleNamespace(seats=[SimpleNamespace(
+        harness="claude", seat_key="claude:a", model="m", backing=None,
+    )])
+    adapter = panel_invoker._NativeFillAdapter(board, {})
+    assert adapter.offer("claude:a", "claude")
+    assert not adapter.offer("claude:b", "claude")
+
+
+def test_under_claude_code_keeps_its_current_route_before_the_walk(monkeypatch):
+    monkeypatch.setattr(panel_invoker, "_under_claude_code", lambda _env=None: True)
+    monkeypatch.setattr(
+        seat_route, "resolve",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("resolver entered")),
+    )
+    board = SimpleNamespace(seats=[SimpleNamespace(
+        harness="claude", seat_key="claude:a", model="m", backing=None,
+    )])
+    (mode,) = panel_invoker._seat_launch_modes(
+        board, mode="review",
+        review_authorization=SimpleNamespace(staged_tree_sha256="a" * 64),
+        base_env={},
+    )
+    assert (mode.mode, mode.code) == ("native", "under_claude_code")
+
+
+def test_mode_and_launch_share_one_production_capacity_lease(monkeypatch, ready_gemini):
+    capacity = Capacity(True)
+    monkeypatch.setattr(panel_invoker._seat_uid, "SeatIdCapacity", lambda: capacity)
+    monkeypatch.setattr(seat_route, "load_route_policy", lambda: policy())
+    panel_invoker._JAILCORE_ROUTE_CACHE.clear()
+    auth = SimpleNamespace(staged_tree_sha256="a" * 64)
+    board = SimpleNamespace(seats=[
+        SimpleNamespace(harness="gemini", seat_key="gemini:a", model="m"),
+    ])
+    (rendered,) = panel_invoker._seat_launch_modes(
+        board, mode="review", review_authorization=auth, base_env={},
+    )
+    assert rendered.mode == "jailed" and capacity.calls == 1
+    assert capacity.value.released is False
+    route, notices, refusal = panel_invoker._seat_route_for_spawn(
+        "gemini", auth, eligible=True, seat_key="gemini:a", env={},
+    )
+    assert route.decision.lease is capacity.value
+    assert notices == [] and refusal is None and capacity.calls == 1
+    panel_invoker._release_seat_route(route)
+    assert capacity.value.released is True
+
+
+def test_production_capacity_never_probes_before_the_held_acquire(
+    monkeypatch, ready_gemini,
+):
+    events = []
+    attempts = 0
+
+    class Manager:
+        def __init__(self, attempt):
+            self.attempt = attempt
+
+        def __enter__(self):
+            events.append(("enter", self.attempt))
+            if self.attempt > 1:
+                raise seat_uid.SeatIdsExhausted("probe consumed the only opportunity")
+            return 7
+
+        def __exit__(self, *_exc):
+            events.append(("exit", self.attempt))
+
+    def lease_seat_id(_count, *, directory=None):
+        nonlocal attempts
+        attempts += 1
+        return Manager(attempts)
+
+    monkeypatch.setattr(seat_uid, "lease_seat_id", lease_seat_id)
+    capacity = seat_uid.SeatIdCapacity(count=1)
+    monkeypatch.setattr(panel_invoker._seat_uid, "SeatIdCapacity", lambda: capacity)
+    monkeypatch.setattr(seat_route, "load_route_policy", lambda: policy())
+    panel_invoker._JAILCORE_ROUTE_CACHE.clear()
+    auth = SimpleNamespace(staged_tree_sha256="a" * 64)
+    board = SimpleNamespace(seats=[
+        SimpleNamespace(harness="gemini", seat_key="gemini:a", model="m"),
+    ])
+
+    (rendered,) = panel_invoker._seat_launch_modes(
+        board, mode="review", review_authorization=auth, base_env={},
+    )
+    assert rendered.mode == "jailed"
+    assert events == [("enter", 1)]
+    route, notices, refusal = panel_invoker._seat_route_for_spawn(
+        "gemini", auth, eligible=True, seat_key="gemini:a", env={},
+    )
+    assert route.decision.lease.seat_id == 7
+    assert notices == [] and refusal is None and events == [("enter", 1)]
+    panel_invoker._release_seat_route(route)
+    assert events == [("enter", 1), ("exit", 1)]
+
+
+def test_matrix_policy_does_not_duplicate_window_exception_filtering(monkeypatch):
+    from phase_loop_runtime import seat_window
+
+    row = next(row for row in seat_window.readiness_rows()
+               if row["id"] == "vendor:codex").copy()
+    row.update(exception="unconfined", expiry="2026-12-04T00:00:00+00:00")
+    monkeypatch.setattr(seat_window, "readiness_rows", lambda: [row])
+    assert seat_route._matrix_policy().exceptions["codex"].kind == "unconfined"
+    assert "profile_for" not in inspect.getsource(seat_route._matrix_policy)

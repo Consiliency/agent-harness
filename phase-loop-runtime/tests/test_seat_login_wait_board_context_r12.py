@@ -24,7 +24,7 @@ import pytest
 
 from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime import seat_credentials as sc
-from phase_loop_runtime import seat_jail, seat_jail_autoqualify as aq
+from phase_loop_runtime import seat_jail_autoqualify as aq
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_SEATS
 from phase_loop_runtime.advisor_board.matrix import default_matrix
 from phase_loop_runtime.advisor_board.schema import Board
@@ -33,6 +33,8 @@ from .harden_tdd_guard import invoke_sanctioned_board_control
 
 @pytest.mark.parametrize("case", ["bounded_cancel", "pointer_timeout"])
 def test_login_wait_preserves_board_context(monkeypatch, tmp_path, case):
+    from test_seat_login_wait_a3_1166 import _route_claude_jailed
+
     monkeypatch.setenv(sc.WAIT_ENV, "0" if case == "pointer_timeout" else "2")
     monkeypatch.setenv(sc.POLL_ENV, "2")
     monkeypatch.delenv(sc.MARGIN_ENV, raising=False)
@@ -43,9 +45,8 @@ def test_login_wait_preserves_board_context(monkeypatch, tmp_path, case):
                         lambda: sc.LoginToken(b"fake-access-token", 1600.0))
     monkeypatch.setattr(pi, "_under_claude_code", lambda *a: False)
     monkeypatch.setattr(pi, "_claude_code_support_status", lambda *a, **k: (True, "supported"))
-    monkeypatch.setattr(seat_jail, "decide_seat_route",
-                        lambda *a, **k: seat_jail.SeatRoute(True))
-    monkeypatch.setattr(aq, "ensure_qualified", lambda *a: aq.Outcome(aq.QUALIFIED))
+    _route_claude_jailed(monkeypatch)
+    monkeypatch.setattr(aq, "ensure_qualified", lambda *a, **k: aq.Outcome(aq.QUALIFIED))
     claude = next(s for s in DEFAULT_SEATS if s.harness == "claude")
     board = Board(name="claude-only", purpose="premerge-review", seats=(claude,))
     if case == "pointer_timeout":
@@ -139,6 +140,8 @@ def test_the_board_cancel_context_does_not_leak_outside_the_board(monkeypatch):
 
 
 def test_the_board_pointer_preflight_uses_the_legs_timeout(monkeypatch, tmp_path):
+    from test_seat_login_wait_a3_1166 import _route_claude_jailed
+
     # Through invoke_board: with waiting disabled, a 300 s Claude leg whose login has 600 s
     # left is launchable and jailed, so the pointer preflight must not mark it ungrounded.
     monkeypatch.setenv(sc.WAIT_ENV, "0")
@@ -150,9 +153,8 @@ def test_the_board_pointer_preflight_uses_the_legs_timeout(monkeypatch, tmp_path
                         lambda: sc.LoginToken(b"fake-access-token", 1600.0))
     monkeypatch.setattr(pi, "_under_claude_code", lambda *a: False)
     monkeypatch.setattr(pi, "_claude_code_support_status", lambda *a, **k: (True, "supported"))
-    monkeypatch.setattr(seat_jail, "decide_seat_route",
-                        lambda *a, **k: seat_jail.SeatRoute(True))
-    monkeypatch.setattr(aq, "ensure_qualified", lambda *a: aq.Outcome(aq.QUALIFIED))
+    _route_claude_jailed(monkeypatch)
+    monkeypatch.setattr(aq, "ensure_qualified", lambda *a, **k: aq.Outcome(aq.QUALIFIED))
     claude = next(s for s in DEFAULT_SEATS if s.harness == "claude")
     board = Board(name="claude-only", purpose="premerge-review", seats=(claude,))
     captured = {}

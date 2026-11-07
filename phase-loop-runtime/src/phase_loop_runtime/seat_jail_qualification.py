@@ -473,6 +473,12 @@ def _record_pass(evidence: dict[str, object], qualification_key=None) -> Path:
         raise QualificationError("qualification key unavailable")
     identity = key_digest(qualification_key) if qualification_key is not None else digest
     if qualification_key is not None:
+        measured = {name: evidence.get(name)
+                    for name in ("profile_digest", "host_identity", "falsifier_layout")}
+        if measured != {"profile_digest": qualification_key.profile_digest,
+                        "host_identity": qualification_key.host_identity,
+                        "falsifier_layout": qualification_key.falsifier_layout}:
+            raise QualificationError("qualification evidence does not match the route key")
         evidence.update(record_binding(qualification_key))
         evidence["key_digest"] = identity
     raw = json.dumps(evidence, indent=2, sort_keys=True).encode("utf-8")

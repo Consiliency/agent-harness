@@ -892,10 +892,12 @@ class SeatRoute:
     def __post_init__(self) -> None:
         if self.jailed and self.code is not None:
             raise ValueError("a jailed route carries no fallback code")
-        from .seat_route_contract import CODES
+        from .seat_route_contract import OD10_CLASSES
 
+        # Every mode-line code is classified (seat_route import closure), so any typed
+        # resolver code may describe a route that is not jailed.
         if (not self.jailed
-                and self.code not in SEALED_FALLBACK_CODES | JAIL_NOT_RUN_CODES | set(CODES)):
+                and self.code not in SEALED_FALLBACK_CODES | JAIL_NOT_RUN_CODES | set(OD10_CLASSES)):
             raise ValueError(f"a sealed route needs a fallback code, got {self.code!r}")
 
 
@@ -1308,6 +1310,10 @@ class SeatJail:
     dependency_mount_points: tuple[str, ...] = ()
     dependency_projection_digest: str = ""
     dependency: object | None = field(default=None, repr=False)
+    #: The route's JAILCORE qualification key (contract section 5). The launch gate
+    #: re-establishes the v2 pass for exactly this key; ``None`` keeps the profile-digest
+    #: read for callers that do not carry a route decision.
+    qualification_key: object | None = field(default=None, repr=False, compare=False)
 
     def redacted_owner(self) -> list[str]:
         """The owner argv with every descriptor number replaced by a placeholder, for

@@ -10,6 +10,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping
 from types import SimpleNamespace
+from weakref import WeakValueDictionary
 
 from . import claude_seat_transport, seat_jail
 from .seat_route_contract import (
@@ -36,7 +37,7 @@ MODE_REMOTE = "remote"
 _POLICY_NAME = "seat-route-policy.json"
 _POLICY_CAP = 256 * 1024
 _RECEIPT_CAP = 256 * 1024
-_IGNORED_POLICIES: dict[int, RoutePolicy] = {}
+_IGNORED_POLICIES: WeakValueDictionary[int, RoutePolicy] = WeakValueDictionary()
 
 
 def mode_line_codes() -> frozenset[str]:
@@ -86,9 +87,12 @@ def _utc(value: object) -> dt.datetime | None:
     return parsed.astimezone(dt.timezone.utc)
 
 
+def _now() -> dt.datetime:
+    return dt.datetime.now(dt.timezone.utc)
+
+
 def _matrix_policy() -> RoutePolicy:
     from . import seat_window
-    from .seat_profiles import profile_for, registered_legs
 
     vendor_rows: dict[str, list[Mapping[str, object]]] = {}
     for row in seat_window.readiness_rows():
@@ -100,19 +104,9 @@ def _matrix_policy() -> RoutePolicy:
         if len(rows) != 1:
             continue
         row = rows[0]
-        profile = next((profile_for(leg) for leg in registered_legs() if profile_for(leg) is not None
-                        and profile_for(leg).vendor == vendor), None)
         kind = row.get("exception")
         expiry = _utc(row.get("expiry"))
-        # Registered profiles never retain the filesystem-unconfined exception, and a
-        # profile with an allowlist never retains open egress.
-        exception_allowed = not (
-            profile is not None and (
-                kind == "unconfined"
-                or kind == "open egress" and profile.allowlist_id is not None
-            )
-        )
-        if kind in {"unconfined", "open egress"} and expiry is not None and exception_allowed:
+        if kind in {"unconfined", "open egress"} and expiry is not None:
             exceptions[vendor] = NamedException(
                 vendor=vendor,
                 kind=kind,
@@ -135,6 +129,24 @@ def _policy_path() -> Path:
     return seat_jail.state_home() / "phase-loop" / _POLICY_NAME
 
 
+def _private_chain_problem(directory: Path) -> str | None:
+    """Apply the pass-store ownership checks to the whole private state chain."""
+    state = seat_jail.state_home()
+    phase = state / "phase-loop"
+    try:
+        relative = directory.relative_to(phase)
+    except ValueError:
+        chain = (directory,)
+    else:
+        chain = (state, phase, *(phase.joinpath(*relative.parts[:index])
+                                  for index in range(1, len(relative.parts) + 1)))
+    for item in chain:
+        problem = seat_jail.pass_store_dir_problem(item)
+        if problem is not None:
+            return problem
+    return None
+
+
 def load_route_policy(path: Path | None = None) -> RoutePolicy:
     """Load packaged matrix policy plus the capacity-only private host overlay.
 
@@ -143,12 +155,12 @@ def load_route_policy(path: Path | None = None) -> RoutePolicy:
     """
     base = _matrix_policy()
     target = path or _policy_path()
-    if not target.exists():
+    if not os.path.lexists(target):
         return base
     ignored = False
     try:
         directory = target.parent
-        if seat_jail.pass_store_dir_problem(directory) is not None:
+        if _private_chain_problem(directory) is not None:
             raise ValueError("unsafe route-policy directory")
         raw = seat_jail._read_private_file(directory, target.name, _POLICY_CAP)
         if raw is None:
@@ -165,8 +177,8 @@ def load_route_policy(path: Path | None = None) -> RoutePolicy:
         capacity_offload=grants,
     )
     if ignored:
-        # Keep the object alive as well as its id: CPython may otherwise reuse an id and
-        # attach the sibling notice to a later valid policy.
+        # The weak value proves identity while callers hold the policy and disappears once
+        # they do not, so ignored overlays cannot grow a process-lifetime registry.
         _IGNORED_POLICIES[id(result)] = result
     return result
 
@@ -304,7 +316,7 @@ def _grant_current(grant: CapacityGrant, vendor: str, *, now: dt.datetime) -> bo
     if grant.target_class == "third_party" and not grant.activation_refs.get(vendor):
         return False
     root = _receipt_root()
-    if seat_jail.pass_store_dir_problem(root) is not None:
+    if _private_chain_problem(root) is not None:
         return False
     name = grant.probe_receipt
     if Path(name).name != name:
@@ -381,22 +393,26 @@ def resolve(
 ) -> RouteDecision:
     """Walk L0-L9 once, then only the explicitly admitted later rungs."""
     from . import sandbox_egress, seat_egress_proxy, seat_jail_autoqualify
-    from .seat_profiles import profile_for
+    from .seat_profiles import profile_for, window_data_for
     from .seat_qualification_key import key_for_launch
 
     also = (("seat_route_policy_ignored",)
             if _IGNORED_POLICIES.get(id(policy)) is policy else ())
+    profile = profile_for(request.leg)
+    if request.run_kind == "advisory_document":
+        vendor = profile.vendor if profile is not None else request.leg
+        return _decision(request, vendor, "unconfined", "seat_sandbox_not_staged", [], also=also)
     vendor, identity_code = _vendor_identity(request.leg)
     if identity_code is not None:
         return _local_failure(request, vendor or request.leg, identity_code, "L1", also=also)
     assert vendor is not None
-    profile = profile_for(request.leg)
-
-    if request.run_kind == "advisory_document":
-        return _decision(request, vendor, "unconfined", "seat_sandbox_not_staged", [], also=also)
-    if request.run_kind == "qualification_candidate":
-        return _decision(request, vendor, "native", "gemini_seat_qualification_candidate", [],
-                         also=also)
+    window_data = window_data_for(vendor)
+    if (request.run_kind == "qualification_candidate" and window_data is not None
+            and window_data.leg == request.leg
+            and window_data.qualification_candidate_code is not None):
+        return _decision(
+            request, vendor, "native", window_data.qualification_candidate_code, [], also=also,
+        )
 
     if (vendor, request.host_class) in policy.routed_remote:
         return _walk_later_rungs(
@@ -409,7 +425,7 @@ def resolve(
     if not request.staged_tree_approved:
         return _local_failure(request, vendor, "seat_sandbox_not_staged", "L0", also=also)
     exception = policy.exceptions.get(vendor)
-    now = dt.datetime.now(dt.timezone.utc)
+    now = _now()
     if profile is None:
         if exception is not None and exception.kind == "unconfined":
             if now < exception.expiry:
@@ -496,7 +512,14 @@ def resolve(
             request, vendor, "seat_provider_unavailable", "L6",
             variant=variant, also=also,
         )
-    except Exception:
+    except Exception as exc:
+        from .executable_dependency import ExecutableDependencyError
+
+        if isinstance(exc, ExecutableDependencyError):
+            return _local_failure(
+                request, vendor, "seat_sandbox_refused:identity", "L6",
+                variant=variant, also=also,
+            )
         return _local_failure(
             request, vendor, "seat_route_identity_invalid", "L6",
             variant=variant, also=also,
