@@ -37,6 +37,8 @@ from importlib import resources
 from pathlib import Path
 from typing import Iterator, Literal, Mapping
 
+from .seat_route_contract import AllowlistRef
+
 __all__ = [
     "EgressLayerUnavailable",
     "FENCE_ACK_TIMEOUT_S",
@@ -48,11 +50,13 @@ __all__ = [
     "SeatEgressProxy",
     "SRT_VERSION",
     "allowlist",
+    "allowlist_ref",
     "egress_evidence",
     "install",
     "fence",
     "proxy_stream",
     "start_proxy",
+    "unavailable_code",
     "unavailable_reason",
 ]
 
@@ -67,6 +71,11 @@ NODE_MIN_VERSION = (22, 12, 0)
 #: The seat's loopback port; the bridge listens here inside the seat's namespace.
 SEAT_PROXY_PORT = 3128
 UNAVAILABLE_CODE = "gemini_seat_egress_unavailable"
+NOT_INSTALLED_CODE = "seat_egress_not_installed"
+INTEGRITY_CODE = "seat_egress_integrity_failed"
+TLS_UNTERMINATED_CODE = "seat_egress_tls_unterminated"
+START_FAILED_CODE = "seat_egress_start_failed"
+ALLOWLIST_MISSING_CODE = "seat_egress_allowlist_missing"
 INSTALL_FIX = "phase-loop seat-egress install"
 _DATA = "seat_egress"
 _READY_TIMEOUT_S = 60.0
@@ -85,19 +94,113 @@ _EVENT_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OP
                             "CONNECT", "<other>"})
 _CANARY_HOST = re.compile(r"[0-9a-f]{32}\.invalid")
 _FENCE_ID = re.compile(r"[0-9a-f]{32}")
+_ALLOWLIST_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 
 
 class EgressLayerUnavailable(RuntimeError):
-    """The seat's egress layer cannot run on this host; ``str()`` is the one reason."""
+    """The seat's egress layer cannot run on this host, with one typed cause."""
+
+    def __init__(self, code: str, reason: str) -> None:
+        self.code = code
+        super().__init__(reason)
 
 
 def _data_path(name: str) -> Path:
     return Path(str(resources.files("phase_loop_runtime").joinpath(_DATA, name)))
 
 
-def allowlist() -> dict[str, object]:
-    """The pinned request allowlist of the Gemini seat."""
-    return json.loads(_data_path("gemini-allowlist.json").read_text(encoding="utf-8"))
+def _allowlist_document(allowlist_id: str) -> dict[str, object]:
+    if not isinstance(allowlist_id, str) or _ALLOWLIST_ID.fullmatch(allowlist_id) is None:
+        raise EgressLayerUnavailable(ALLOWLIST_MISSING_CODE, "the seat egress allowlist id is invalid")
+    path = _data_path(f"{allowlist_id}-allowlist.json")
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise EgressLayerUnavailable(
+            ALLOWLIST_MISSING_CODE, f"the seat egress allowlist is not installed: {allowlist_id}",
+        ) from exc
+    except OSError as exc:
+        raise EgressLayerUnavailable(
+            INTEGRITY_CODE, f"the seat egress allowlist cannot be read: {allowlist_id}",
+        ) from exc
+    try:
+        document = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise EgressLayerUnavailable(
+            INTEGRITY_CODE, f"the seat egress allowlist is malformed: {allowlist_id}",
+        ) from exc
+    if not isinstance(document, dict):
+        raise EgressLayerUnavailable(
+            INTEGRITY_CODE, f"the seat egress allowlist is malformed: {allowlist_id}",
+        )
+    return document
+
+
+def _validate_allowlist_document(allowlist_id: str, document: Mapping[str, object]) -> None:
+    if document.get("schema") != "phase_loop_seat_egress_allowlist.v1":
+        raise EgressLayerUnavailable(INTEGRITY_CODE, "the seat egress allowlist schema is invalid")
+    if document.get("leg") != allowlist_id:
+        raise EgressLayerUnavailable(INTEGRITY_CODE, "the seat egress allowlist leg is invalid")
+    rules = document.get("allow")
+    refused = document.get("measured_and_refused")
+    if not isinstance(rules, list) or not isinstance(refused, list):
+        raise EgressLayerUnavailable(INTEGRITY_CODE, "the seat egress allowlist rows are invalid")
+    for rule in rules:
+        if not isinstance(rule, dict) or set(rule) not in (
+            {"host", "port", "method", "path"},
+            {"host", "port", "method", "path_prefix"},
+        ):
+            raise EgressLayerUnavailable(INTEGRITY_CODE, "the seat egress allowlist rule is invalid")
+        if (not isinstance(rule["host"], str) or not rule["host"]
+                or type(rule["port"]) is not int or not 1 <= rule["port"] <= 65535
+                or not isinstance(rule["method"], str) or not rule["method"]):
+            raise EgressLayerUnavailable(INTEGRITY_CODE, "the seat egress allowlist rule is invalid")
+        path_key = "path" if "path" in rule else "path_prefix"
+        if not isinstance(rule[path_key], str) or not rule[path_key].startswith("/"):
+            raise EgressLayerUnavailable(INTEGRITY_CODE, "the seat egress allowlist rule is invalid")
+    if any(not isinstance(host, str) or not host for host in refused):
+        raise EgressLayerUnavailable(INTEGRITY_CODE, "the seat egress refusal rows are invalid")
+
+
+def _probe_rows(
+    rules: list[object], refused: list[object],
+) -> tuple[Mapping[str, object], ...]:
+    rows: list[Mapping[str, object]] = [
+        {"decision": "allow", **dict(rule)} for rule in rules if isinstance(rule, dict)
+    ]
+    rows.extend({
+        "decision": "refuse", "host": host, "port": 443, "method": "CONNECT",
+    } for host in refused if isinstance(host, str))
+    rows.append({
+        "decision": "refuse", "host": "seat-egress-unlisted.invalid", "port": 443,
+        "method": "CONNECT",
+    })
+    return tuple(rows)
+
+
+def allowlist_ref(allowlist_id: str) -> AllowlistRef:
+    """Load one packaged allowlist and bind every request and refusal row."""
+    document = _allowlist_document(allowlist_id)
+    _validate_allowlist_document(allowlist_id, document)
+    rules = document["allow"]
+    refused = document["measured_and_refused"]
+    assert isinstance(rules, list) and isinstance(refused, list)
+    bound = {
+        key: document[key] for key in ("schema", "leg", "allow", "measured_and_refused")
+    }
+    return AllowlistRef(
+        id=allowlist_id,
+        content_digest=_digest(bound),
+        request_set=tuple(dict(rule) for rule in rules if isinstance(rule, dict)),
+        probe_rows=_probe_rows(rules, refused),
+    )
+
+
+def allowlist(allowlist_id: str = "gemini") -> dict[str, object]:
+    """One pinned request allowlist; the default preserves the Gemini API."""
+    document = _allowlist_document(allowlist_id)
+    _validate_allowlist_document(allowlist_id, document)
+    return document
 
 
 def _data_home() -> Path:
@@ -154,7 +257,7 @@ def reject_unexpected_symlinks(root: Path) -> None:
             if relative == ".bin" or relative.startswith(".bin/"):
                 continue
             if (Path(directory) / name).is_symlink():
-                raise EgressLayerUnavailable(
+                raise EgressLayerUnavailable(INTEGRITY_CODE,
                     f"the installed srt tree has an unexpected symlink: {relative}")
 
 
@@ -164,15 +267,15 @@ def _node() -> str:
     try:
         node = trusted_host_executable("node")
     except ValueError as exc:
-        raise EgressLayerUnavailable("node is not installed") from exc
+        raise EgressLayerUnavailable(NOT_INSTALLED_CODE, "node is not installed") from exc
     try:
         found = subprocess.run([node, "--version"], capture_output=True, text=True, timeout=30,
                                env=_proxy_env(node, None), check=False).stdout
     except (OSError, subprocess.SubprocessError) as exc:
-        raise EgressLayerUnavailable("node does not run") from exc
+        raise EgressLayerUnavailable(NOT_INSTALLED_CODE, "node does not run") from exc
     match = re.match(r"v(\d+)\.(\d+)\.(\d+)", found.strip())
     if match is None or tuple(int(part) for part in match.groups()) < NODE_MIN_VERSION:
-        raise EgressLayerUnavailable(
+        raise EgressLayerUnavailable(NOT_INSTALLED_CODE,
             "node {}.{}.{} or newer is required".format(*NODE_MIN_VERSION))
     return node
 
@@ -191,33 +294,37 @@ def verify_install(root: Path | None = None) -> Path:
     byte. Raises :class:`EgressLayerUnavailable`."""
     root = root or install_root()
     modules = root / "node_modules"
+    installed_path = modules / SRT_PACKAGE / "package.json"
+    recorded_path = modules / ".package-lock.json"
+    if not os.path.lexists(installed_path) or not os.path.lexists(recorded_path):
+        raise EgressLayerUnavailable(NOT_INSTALLED_CODE, "srt is not installed")
     try:
-        installed = json.loads((modules / SRT_PACKAGE / "package.json").read_text(encoding="utf-8"))
-        recorded = json.loads((modules / ".package-lock.json").read_text(encoding="utf-8"))
+        installed = json.loads(installed_path.read_text(encoding="utf-8"))
+        recorded = json.loads(recorded_path.read_text(encoding="utf-8"))
         shipped = json.loads(_data_path("package-lock.json").read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        raise EgressLayerUnavailable("srt is not installed") from exc
+        raise EgressLayerUnavailable(INTEGRITY_CODE, "the installed srt record is invalid") from exc
     if installed.get("version") != SRT_VERSION:
-        raise EgressLayerUnavailable("the installed srt is not the pinned version")
+        raise EgressLayerUnavailable(INTEGRITY_CODE, "the installed srt is not the pinned version")
     packages = recorded.get("packages") if isinstance(recorded, dict) else None
     if not isinstance(packages, dict):
-        raise EgressLayerUnavailable("the installed srt has no package record")
+        raise EgressLayerUnavailable(INTEGRITY_CODE, "the installed srt has no package record")
     for name, entry in shipped["packages"].items():
         if not name:
             continue
         if (packages.get(name, {}).get("integrity") != entry["integrity"]
                 or packages.get(name, {}).get("version") != entry["version"]):
-            raise EgressLayerUnavailable("the installed packages are not the pinned ones")
+            raise EgressLayerUnavailable(INTEGRITY_CODE, "the installed packages are not the pinned ones")
     if packages.get(f"node_modules/{SRT_PACKAGE}", {}).get("integrity") != SRT_INTEGRITY:
-        raise EgressLayerUnavailable("the installed srt is not the pinned package")
+        raise EgressLayerUnavailable(INTEGRITY_CODE, "the installed srt is not the pinned package")
     try:
         # Reject links first: the digest skips them, so the resolution boundary (what Node
         # actually loads) must be link-free outside .bin for the digest to cover what runs.
         reject_unexpected_symlinks(modules)
         if tree_sha256(modules) != SRT_TREE_SHA256:
-            raise EgressLayerUnavailable("the installed srt files changed after install")
+            raise EgressLayerUnavailable(INTEGRITY_CODE, "the installed srt files changed after install")
     except OSError as exc:
-        raise EgressLayerUnavailable("the installed srt cannot be read") from exc
+        raise EgressLayerUnavailable(INTEGRITY_CODE, "the installed srt cannot be read") from exc
     return modules / SRT_PACKAGE / "dist" / "index.js"
 
 
@@ -231,7 +338,7 @@ def install(root: Path | None = None) -> Path:
     try:
         npm = trusted_host_executable("npm")
     except ValueError as exc:
-        raise EgressLayerUnavailable("npm is not installed") from exc
+        raise EgressLayerUnavailable(NOT_INSTALLED_CODE, "npm is not installed") from exc
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     for name in ("package.json", "package-lock.json"):
         shutil.copyfile(_data_path(name), root / name)
@@ -241,7 +348,8 @@ def install(root: Path | None = None) -> Path:
             cwd=root, env=_proxy_env(node, Path(home)), capture_output=True, text=True,
             timeout=600, check=False)
     if done.returncode != 0:
-        raise EgressLayerUnavailable(f"npm ci failed: {done.stderr.strip()[-200:]}")
+        raise EgressLayerUnavailable(
+            START_FAILED_CODE, f"npm ci failed: {done.stderr.strip()[-200:]}")
     return verify_install(root)
 
 
@@ -282,21 +390,36 @@ def ensure_ca(srt_index: Path, node: str) -> tuple[Path, Path]:
     cert, key = ca_paths()
     problem = _private_dir_problem(directory)
     if problem == "missing":
-        directory.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        directory.mkdir(mode=0o700)
+        try:
+            directory.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            directory.mkdir(mode=0o700)
+        except OSError as exc:
+            raise EgressLayerUnavailable(
+                START_FAILED_CODE, "the seat egress CA directory could not be created",
+            ) from exc
         problem = None
     if problem is not None:
-        raise EgressLayerUnavailable(f"the seat egress CA directory is {problem}: {directory}")
+        raise EgressLayerUnavailable(
+            INTEGRITY_CODE, f"the seat egress CA directory is {problem}: {directory}")
     if not os.path.lexists(cert) and not os.path.lexists(key):
-        done = subprocess.run([node, str(_data_path("ca.mjs")), str(srt_index), str(directory)],
-                              env=_proxy_env(node, directory), capture_output=True, text=True,
-                              timeout=120, check=False)
+        try:
+            done = subprocess.run(
+                [node, str(_data_path("ca.mjs")), str(srt_index), str(directory)],
+                env=_proxy_env(node, directory), capture_output=True, text=True,
+                timeout=120, check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise EgressLayerUnavailable(
+                START_FAILED_CODE, "the seat egress CA could not be generated",
+            ) from exc
         if done.returncode != 0:
-            raise EgressLayerUnavailable("the seat egress CA could not be generated")
+            raise EgressLayerUnavailable(
+                START_FAILED_CODE, "the seat egress CA could not be generated")
     for path, is_key in ((cert, False), (key, True)):
         problem = _private_file_problem(path, key=is_key)
         if problem is not None:
-            raise EgressLayerUnavailable(f"the seat egress CA {path.name} is {problem}")
+            raise EgressLayerUnavailable(
+                INTEGRITY_CODE, f"the seat egress CA {path.name} is {problem}")
     return cert, key
 
 
@@ -308,6 +431,16 @@ def unavailable_reason() -> str | None:
         ensure_ca(verify_install(), node)
     except EgressLayerUnavailable as exc:
         return str(exc)
+    return None
+
+
+def unavailable_code() -> str | None:
+    """``None`` when the layer is ready, otherwise its stable route code."""
+    try:
+        node = _node()
+        ensure_ca(verify_install(), node)
+    except EgressLayerUnavailable as exc:
+        return exc.code
     return None
 
 
@@ -323,6 +456,8 @@ class SeatEgressProxy:
     ca_sha256: str
     inner_sni_check: bool
     process: "subprocess.Popen[str]" = field(repr=False)
+    allowlist_id: str = "gemini"
+    allowlist_digest: str = ""
     #: FROZEN-NEW (I-1): sha256 of the canonical JSON of the ``allow`` list passed to the
     #: proxy; that of ``[]`` under ``refuse_all``.
     allowlist_sha256: str = ""
@@ -538,7 +673,7 @@ def ca_fingerprint(cert: Path) -> str:
 
 
 @contextlib.contextmanager
-def start_proxy(*, inner_sni_check: bool = True,
+def start_proxy(*, allowlist_id: str = "gemini",
                 refuse_all: bool = False) -> Iterator[SeatEgressProxy]:
     """Run the seat's proxy for the life of the context. Raises
     :class:`EgressLayerUnavailable` before anything runs when the layer is unavailable.
@@ -550,30 +685,49 @@ def start_proxy(*, inner_sni_check: bool = True,
     node = _node()
     srt_index = verify_install()
     cert, key = ensure_ca(srt_index, node)
-    rules = [] if refuse_all is True else allowlist()["allow"]
-    with tempfile.TemporaryDirectory(prefix="pl-seat-egress-") as work:
+    selected = allowlist_ref(allowlist_id)
+    rules = [] if refuse_all is True else list(selected.request_set)
+    try:
+        workspace = tempfile.TemporaryDirectory(prefix="pl-seat-egress-")
+    except OSError as exc:
+        raise EgressLayerUnavailable(
+            START_FAILED_CODE, "the seat egress proxy workspace could not be created") from exc
+    with workspace as work:
         config = Path(work) / "proxy.json"
-        config.write_text(json.dumps({
-            "allow": rules, "ca_cert": str(cert), "ca_key": str(key),
-            "inner_sni_check": inner_sni_check,
-        }), encoding="utf-8")
-        process = subprocess.Popen(
-            [node, str(_data_path("proxy.mjs")), str(srt_index), str(config)],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            env=_proxy_env(node, Path(work)), cwd=work, text=True, start_new_session=True)
+        try:
+            config.write_text(json.dumps({
+                "allow": rules, "ca_cert": str(cert), "ca_key": str(key),
+                "inner_sni_check": True,
+            }), encoding="utf-8")
+            process = subprocess.Popen(
+                [node, str(_data_path("proxy.mjs")), str(srt_index), str(config)],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                env=_proxy_env(node, Path(work)), cwd=work, text=True, start_new_session=True)
+        except (OSError, ValueError) as exc:
+            raise EgressLayerUnavailable(
+                START_FAILED_CODE, "the seat egress proxy could not be started") from exc
         proxy: SeatEgressProxy | None = None
         try:
             ready = _read_ready(process)
-            if not ready.get("tls_inspection") or bool(ready.get("inner_sni_check")) != inner_sni_check:
-                raise EgressLayerUnavailable("the proxy did not start with TLS inspection")
-            if not ready.get("fail_closed_front"):
-                raise EgressLayerUnavailable("the proxy did not start its fail-closed front")
+            if not all(ready.get(name) is True for name in (
+                "tls_inspection", "inner_sni_check", "fail_closed_front",
+            )):
+                raise EgressLayerUnavailable(
+                    TLS_UNTERMINATED_CODE,
+                    "the proxy did not attest its fail-closed TLS front",
+                )
             token = str(ready["token"])
+            try:
+                ca_sha256 = ca_fingerprint(cert)
+            except (OSError, ValueError) as exc:
+                raise EgressLayerUnavailable(
+                    INTEGRITY_CODE, "the seat egress CA certificate is invalid") from exc
             proxy = SeatEgressProxy(
                 socket=str(ready["socket"]),
                 proxy_url=f"http://srt:{token}@127.0.0.1:{SEAT_PROXY_PORT}",
-                ca_cert=cert, ca_sha256=ca_fingerprint(cert),
-                inner_sni_check=inner_sni_check, process=process,
+                ca_cert=cert, ca_sha256=ca_sha256,
+                inner_sni_check=True, process=process,
+                allowlist_id=selected.id, allowlist_digest=selected.content_digest,
                 allowlist_sha256=_digest(rules), _rules=tuple(rules))
             proxy._reader = threading.Thread(target=_read_stream, args=(proxy,), daemon=True,
                                              name="seat-egress-stream")
@@ -603,20 +757,23 @@ def _read_ready(process: "subprocess.Popen[str]") -> Mapping[str, object]:
     import select
 
     assert process.stdout is not None
-    readable, _, _ = select.select([process.stdout], [], [], _READY_TIMEOUT_S)
-    line = process.stdout.readline() if readable else ""
     try:
+        readable, _, _ = select.select([process.stdout], [], [], _READY_TIMEOUT_S)
+        line = process.stdout.readline() if readable else ""
         ready = json.loads(line)
-    except ValueError:
+    except (OSError, ValueError):
         ready = None
-    if not isinstance(ready, dict) or not ready.get("socket") or not ready.get("token"):
-        raise EgressLayerUnavailable("the seat egress proxy did not start")
+    if (not isinstance(ready, dict) or not isinstance(ready.get("socket"), str)
+            or not ready["socket"] or not isinstance(ready.get("token"), str)
+            or not ready["token"]):
+        raise EgressLayerUnavailable(
+            START_FAILED_CODE, "the seat egress proxy did not start")
     return ready
 
 
 def egress_evidence(proxy: SeatEgressProxy) -> dict[str, object]:
     """What the seat's egress layer enforced, for the leg's evidence."""
-    rules = allowlist()["allow"]
+    rules = proxy._rules
     return {
         "mechanism": "namespace without uplink; one loopback port bridged to a fail-closed "
                      "front over srt's TLS-terminating proxy on the host",
@@ -627,6 +784,8 @@ def egress_evidence(proxy: SeatEgressProxy) -> dict[str, object]:
         "proxy": {"package": SRT_PACKAGE, "version": SRT_VERSION, "integrity": SRT_INTEGRITY,
                   "tree_sha256": SRT_TREE_SHA256},
         "ca_sha256": proxy.ca_sha256,
+        "allowlist_id": proxy.allowlist_id,
+        "allowlist_digest": proxy.allowlist_digest,
         "allow": [f"{r['method']} https://{r['host']}{r.get('path', r.get('path_prefix', '') + '*')}"
                   for r in rules],
         "direct_egress": "no route",
