@@ -6,6 +6,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- JAILCORE publishes the frozen jailed-seat profile and route-resolver contracts, and seat
+  egress selects one packaged allowlist per proxy, binds its canonical content digest and
+  probe rows, and reports a typed code for each unavailable cause (SEATS JAILCORE SL-0/SL-1,
+  agent-harness#1820).
 - The jailed Claude seat's `sdk` bridge parses each CLI stdout line once, still unadmitted
   (SEATS CLAUDE SL-3, agent-harness#1820). Every line now goes through `print`'s stream
   admission under the `sdk` route's own parse policy (`claude_seat_sdk.parse_policy()`):
