@@ -101,7 +101,7 @@ def readiness_rows() -> list[dict]:
 
 def candidates(rows, host_class):
     """Select a context's rows: `host_classes` names where a row qualifies (OD-12), and a
-    team context re-runs those same rows only as offline `done-team` validation."""
+    team context re-runs those same rows only for later `done-team` validation."""
     if host_class not in {"team", "standard"}:
         raise ValueError("window host class unavailable")
     return [row for row in rows if row["status"] == "candidate"
@@ -396,27 +396,21 @@ def _valid_record(record, now, source_root=None):
             and _reconcile_sources(record, root=source_root))
 
 
+def _standard_records(records) -> list[dict]:
+    """Return the contexts `done-local` reads: the designated standard host alone (OD-12).
+
+    Every other context is ignored here, whatever its shape; later `done-team` validation
+    owns the retained team fields and peer observations.
+    """
+    return [record for record in records
+            if type(record) is dict and record.get("host_class") == "standard"]
+
+
 def verify_records(records, *, now=None, source_root=None) -> dict:
     now = now or _now()
     try:
-        valid = bool(records) and all(_valid_record(record, now, source_root)
-                                      for record in records)
-        contexts = {record["context_id"] for record in records}
-        standard = [record for record in records if record["host_class"] == "standard"]
-        team = [record for record in records if record["host_class"] == "team"]
-        pairs = {(record["host_digest"], record["operator_id"]) for record in records}
-        labels = {(record["host_digest"], record["account_label"]) for record in records}
-        team_hosts = {record["host_digest"] for record in team}
-        # One standard context under one operator passes (OD-12). Team contexts stay optional
-        # offline `done-team` validation, so any that are present must be a complete pair.
-        team_pair = not team or (
-            len(team_hosts) == 1 and len({record["operator_id"] for record in team}) >= 2
-            and not any(record["host_digest"] in team_hosts for record in standard))
-        coverage = (len(standard) == 1 and team_pair
-            and len(contexts) == len(records) == len(pairs) == len(labels)
-            == len({record["source_attempt"] for record in records})
-            == len({record["exec_record_digest"] for record in records}))
-        passed = bool(valid and coverage)
+        standard = _standard_records(records)
+        passed = len(standard) == 1 and _valid_record(standard[0], now, source_root)
     except (KeyError, TypeError, ValueError):
         passed = False
     return {"schema": "seat_window_verification.v1", "window": "W1", "passed": passed,
@@ -428,9 +422,8 @@ def reduce_readiness(records, *, now=None, source_root=None) -> list[dict]:
     rows = readiness_rows()
     if not verify_records(records, now=now, source_root=source_root)["passed"]:
         return rows
-    # `done-local` reads the designated standard host alone (OD-12). A team context never sets
-    # a row status, and no path here emits `done-team`.
-    records = [record for record in records if record["host_class"] == "standard"]
+    # A team context never sets a row status, and no path here emits `done-team`.
+    records = _standard_records(records)
     evidence = digest(sorted(record["record_digest"] for record in records))
     for row in rows:
         observed = []
@@ -451,6 +444,7 @@ def reduce_readiness(records, *, now=None, source_root=None) -> list[dict]:
 def export_records(records, destination: Path, *, reviewed=False, source_root=None):
     if reviewed is not True or not verify_records(records, source_root=source_root)["passed"]:
         raise ValueError("window export unavailable")
+    records = _standard_records(records)
     public = {"schema": "seat_window_export.v1", "window": "W1", "pre_post_reviewed": True,
         "contexts": [{key: record[key] for key in (
             "context_id", "account_label", "host_class", "record_digest")} for record in records],

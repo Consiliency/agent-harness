@@ -33,7 +33,7 @@ def _window_sources(request, tmp_path, monkeypatch):
 
 # W1 is one run on the designated standard host under its one operator account (OD-12).
 _W1_CONTEXTS = (("standard", 1),)
-# Team contexts are only ever offline validation for the later `done-team` status.
+# Team contexts are retained for later `done-team` validation; `done-local` ignores them.
 _DONE_TEAM_CONTEXTS = (("team", 1), ("team", 2), ("standard", 1))
 
 
@@ -367,7 +367,6 @@ def test_seats_firstseat_w1_receipt_one_standard_context_passes():
 @pytest.mark.parametrize("contexts", [
     (("team", 1),),
     (("team", 1), ("team", 2)),
-    (("team", 1), ("standard", 1)),
     (("standard", 1), ("standard", 2)),
 ])
 def test_seats_firstseat_w1_receipt_coverage_refuses(contexts):
@@ -389,23 +388,73 @@ def test_seats_firstseat_w1_receipt_two_standard_hosts_refused():
 @pytest.mark.parametrize("host,value", [
     ("standard", True), ("standard", False), ("team", None), ("team", False),
 ])
-def test_seats_firstseat_w1_receipt_isolation_follows_host_class(host, value):
+def test_seats_firstseat_w1_receipt_valid_record_isolation_by_host_class(host, value):
     from phase_loop_runtime import seat_window as w
-    records = _window_records(_W1_CONTEXTS if host == "standard" else _DONE_TEAM_CONTEXTS)
-    assert w.verify_records(records)["passed"]
-    records[0]["account_isolation"] = value
-    _reseal(records[0])
-    assert not w.verify_records(records)["passed"]
+    record = _window_records(((host, 1),))[0]
+    assert w._valid_record(record, w._now())
+    record["account_isolation"] = value
+    _reseal(record)
+    assert not w._valid_record(record, w._now())
 
 
-@pytest.mark.parametrize("index,field,donor", [(1, "operator_id", 0), (2, "host_digest", 0)])
-def test_seats_firstseat_w1_receipt_two_account_validation_stays_offline(index, field, donor):
+_TEAM_DEFECTS = {
+    "isolation_failed": lambda team: team[0].update(account_isolation=False),
+    "isolation_unobserved": lambda team: team[0].update(account_isolation=None),
+    "incomplete_pair": lambda team: team.pop(1),
+    "same_operator": lambda team: team[1].update(operator_id=team[0]["operator_id"]),
+    "shared_context": lambda team: team[1].update(context_id=team[0]["context_id"]),
+    "shared_source": lambda team: team[1].update(source_attempt=team[0]["source_attempt"]),
+    "field_missing": lambda team: team[0].pop("containment"),
+    "not_a_record": lambda team: team.append("unavailable"),
+}
+
+
+@pytest.mark.parametrize("defect", sorted(_TEAM_DEFECTS))
+def test_seats_firstseat_w1_receipt_team_defects_do_not_block_done_local(tmp_path, defect):
+    from phase_loop_runtime import seat_window as w
+    *team, designated = _window_records(_DONE_TEAM_CONTEXTS)
+    alone = w.reduce_readiness([designated])
+    exported = w.export_records([designated], tmp_path / "alone.json", reviewed=True)
+    _TEAM_DEFECTS[defect](team)
+    records = [*team, designated]
+    assert w.verify_records(records) == w.verify_records([designated])
+    assert w.verify_records(records)["status"] == "done-local"
+    assert w.reduce_readiness(records) == alone
+    assert w.export_records(records, tmp_path / "mixed.json", reviewed=True) == exported
+    assert (tmp_path / "mixed.json").read_bytes() == (tmp_path / "alone.json").read_bytes()
+    assert [context["host_class"] for context in exported["contexts"]] == ["standard"]
+
+
+def test_seats_firstseat_w1_receipt_team_contexts_do_not_shift_the_standard_host():
+    from phase_loop_runtime import seat_window as w
+    *team, designated = _window_records(_DONE_TEAM_CONTEXTS)
+    team[0]["host_digest"] = designated["host_digest"]
+    _reseal(team[0])
+    assert w.verify_records([*team, designated])["status"] == "done-local"
+
+
+@pytest.mark.parametrize("spoof", ["team_only", "relabelled_team", "bad_standard", "stale_standard"])
+def test_seats_firstseat_w1_receipt_team_contexts_cannot_spoof_done_local(tmp_path, spoof):
     from phase_loop_runtime import seat_window as w
     records = _window_records(_DONE_TEAM_CONTEXTS)
     assert w.verify_records(records)["status"] == "done-local"
-    records[index][field] = records[donor][field]
-    _reseal(records[index])
-    assert not w.verify_records(records)["passed"]
+    if spoof == "team_only":
+        records.pop()
+    elif spoof == "relabelled_team":
+        records.pop()
+        records[0]["host_class"] = "standard"
+        _reseal(records[0])
+    elif spoof == "bad_standard":
+        records[-1]["account_isolation"] = True
+        _reseal(records[-1])
+    else:
+        records[-1]["runtime_digest"] = "0" * 64
+    result = w.verify_records(records)
+    assert (result["passed"], result["status"]) == (False, "candidate")
+    assert all(row["status"] != "done-local" for row in w.reduce_readiness(records))
+    with pytest.raises(ValueError):
+        w.export_records(records, tmp_path / "out.json", reviewed=True)
+    assert not (tmp_path / "out.json").exists()
 
 
 @pytest.mark.parametrize("contexts", [_W1_CONTEXTS, _DONE_TEAM_CONTEXTS])

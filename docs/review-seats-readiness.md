@@ -10,9 +10,11 @@ rung. Every row includes `id`, `vendor`, `route`, `claude_transport`,
 `done-local` only when that row is observed in the `standard` context of a
 passing W1 set: one run on the designated seat host, a standard host, under its
 one operator account (OD-12). Unobserved vendor, remote and president rows retain
-their prior status. `done-team` is a later status for a row also qualified on a
-shared team host under two operator accounts; no reducer path emits it, and no
-EC, gate or window requires it.
+their prior status. `done-local` verification, reduction and export ignore team
+contexts. `done-team` is a later status for a row also qualified on a shared team
+host under two operator accounts; a later `done-team` validator owns the retained
+team fields and peer observations, no reducer path emits that status, and no EC,
+gate or window requires it.
 
 `seat-window qualify` now implements the frozen per-context launch, board and
 containment-reduction sequence. Live use remains closed: it returns
@@ -57,8 +59,8 @@ route is synthesized by the reducer.
 Use the [window kit](../plans/evidence/seat-qualification/README.md) for every
 candidate on a host. Records are private per operator. Mode 0600 does not isolate
 an unconfined co-seat running as the same operator. W1 runs under one operator
-account, so its record has no peer observation; the two-account check stays only
-as offline validation for `done-team`. Public account labels are opaque.
+account, so its record has no peer observation; two-account coverage belongs to
+later `done-team` validation. Public account labels are opaque.
 Reviews retain the T3 fallback under OD-10; offline checks do not close W1.
 Expired exceptions cannot support a passing window. Renewal requires a new
 owner record and matrix update; rerunning a command does not extend an expiry.

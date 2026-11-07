@@ -72,12 +72,12 @@ With no `--record`, these commands select the local window records. Export also
 requires `--reviewed --output plans/evidence/seat-qualification/W1.json`.
 No incomplete record is exported, and a non-passing result exits nonzero.
 
-The offline reducer requires one `standard` context under one operator, and that
-context passes alone. Team contexts are optional offline validation for `done-team`:
-any that are present need two distinct operator IDs on one team host, separate from
-the standard host, each with a passing isolation observation. They never set a row
-status, and no reducer path emits `done-team`.
-It checks unique opaque context/account labels,
+The offline reducer requires exactly one valid `standard` context under one
+operator, and that context decides `done-local` alone. Verification, reduction and
+export ignore team contexts: they cannot block, satisfy or appear in a `done-local`
+result. A later `done-team` validator owns the retained team fields and peer
+observations, and no reducer path emits `done-team`.
+It checks the opaque context/account labels,
 qualification keys and context identities against retained source bindings,
 receipt digests, complete candidate selection, canonical review and
 staged-read observations, co-seat disclosures and each measurement separately.
