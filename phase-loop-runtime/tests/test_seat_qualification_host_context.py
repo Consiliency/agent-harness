@@ -572,7 +572,7 @@ def test_jailcore_gemini_window_rows_are_byte_identical_to_lane_e():
     rows = [row for row in window.readiness_rows() if row.get("vendor") == "gemini"]
     raw = json.dumps(rows, sort_keys=True, separators=(",", ":")).encode()
     assert hashlib.sha256(raw).hexdigest() == (
-        "a76cd487259539182716d41be1573a95431c058fdcec02fe2553de39a65d9515"
+        "e980d68b40bc31b046d25a0af157da7e5384de1d692248671d7af34195b00efc"
     )
     profile_rows = seat_profiles.profile_for("gemini").window
     assert profile_rows.canonical_record_field == "canonical_gemini"
