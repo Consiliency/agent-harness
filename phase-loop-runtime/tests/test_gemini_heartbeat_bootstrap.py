@@ -308,6 +308,42 @@ def test_supplied_capability_does_not_also_require_the_ambient_image(fixture_cli
     assert not fixture_cli.attempts.exists()
 
 
+def test_monitored_board_does_not_approve_an_arbitrary_native_decision(
+    fixture_cli, monkeypatch, tmp_path,
+):
+    from phase_loop_runtime import seat_route
+    from phase_loop_runtime.seat_route_contract import RouteDecision
+
+    monkeypatch.setattr(panel, "_measuring_qualification_candidate", lambda: False)
+    monkeypatch.setattr(fixture_cli.module, "_CANDIDATE", None)
+    decision = RouteDecision(
+        leg="gemini",
+        vendor="gemini",
+        mode="native",
+        code="seat_native_fill_unavailable",
+        steps=(),
+        exception=None,
+        variant=None,
+        qualification_key=None,
+        also=(),
+        lease=None,
+    )
+    monkeypatch.setattr(seat_route, "resolve", lambda *_a, **_k: decision)
+    panel._JAILCORE_ROUTE_CACHE.clear()
+
+    result = panel.invoke_board(
+        gemini_board(),
+        "synthetic native decision",
+        monitoring_policy="heartbeat_only",
+        stream_dir=tmp_path / "records",
+        gateway_available=False,
+    )
+
+    leg, = result.legs
+    assert not fixture_cli.attempts.exists()
+    assert leg.detail == "seat_sandbox_refused:identity"
+
+
 def test_repo_dir_sets_the_review_authority_not_the_cwd(fixture_cli, tmp_path, monkeypatch):
     """agent-harness#1053 decision 2: ``repo_dir`` is the repository under review, so it is
     also the HARDEN review authority -- the tree that is fingerprinted and staged -- rather

@@ -1019,28 +1019,6 @@ def test_nonlocal_decision_is_published_but_never_runs_locally(
     assert all(route_word not in public for route_word in ("remote", "native", "local"))
 
 
-def test_approved_gemini_heartbeat_executor_keeps_its_native_route(monkeypatch):
-    from phase_loop_runtime import gemini_heartbeat
-
-    monkeypatch.setattr(gemini_heartbeat, "_CANDIDATE", None)
-    code = "seat_sandbox_unavailable_host"
-    decision = RouteDecision(
-        leg="gemini", vendor="gemini", mode="native", code=code, steps=(),
-        exception=None, variant=None, qualification_key=None, also=(), lease=None,
-    )
-    monkeypatch.setattr(seat_route, "resolve", lambda *a, **k: decision)
-    monkeypatch.setattr(seat_route, "load_route_policy", lambda: policy())
-    panel_invoker._JAILCORE_ROUTE_CACHE.clear()
-    route, notices, refusal = panel_invoker._seat_route_for_spawn(
-        "gemini",
-        SimpleNamespace(staged_tree_sha256="a" * 64),
-        eligible=True,
-        approved_local_native_executor=True,
-    )
-    assert route.decision is decision
-    assert notices == [code] and refusal is None
-
-
 def test_same_leg_mode_cache_is_keyed_per_seat(monkeypatch):
     codes = {"gemini:a": "seat_egress_start_failed",
              "gemini:b": "seat_egress_integrity_failed"}

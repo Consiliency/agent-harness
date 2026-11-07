@@ -15863,7 +15863,6 @@ def _seat_route_for_spawn(
     env: Mapping[str, str] | None = None,
     native=None,
     cache_decision: bool = False,
-    approved_local_native_executor: bool = False,
 ) -> "tuple[_seat_jail.SeatRoute | None, list[str], str | None]":
     """Adapt the JAILCORE decision to the retained launch tuple surface.
 
@@ -15933,14 +15932,10 @@ def _seat_route_for_spawn(
     if decision.mode in {_seat_preflight.MODE_NATIVE, _seat_preflight.MODE_REMOTE}:
         window_data = _seat_profiles.window_data_for(decision.vendor)
         if (decision.mode == _seat_preflight.MODE_NATIVE
-                and ((approved_local_native_executor
-                      and window_data is not None and window_data.leg == leg
-                      and decision.leg == leg)
-                     or (_measuring_qualification_candidate()
-                         and window_data is not None and window_data.leg == leg
-                         and decision.code == window_data.qualification_candidate_code))):
-            # A caller with the selected local executor, including the qualification
-            # worker's measured leg, keeps the resolver's native route.
+                and _measuring_qualification_candidate()
+                and window_data is not None and window_data.leg == leg
+                and decision.code == window_data.qualification_candidate_code):
+            # The qualification worker's measured leg keeps its current route.
             return route, [*notices, decision.code], None
         # This process has no placement consumer for a selected later rung.  Keep the
         # resolver's decision on the published mode line, but refuse the local launch with
@@ -16196,7 +16191,6 @@ def _default_spawn(
         ),
         seat_key=seat_key,
         env=env,
-        approved_local_native_executor=(leg == "gemini" and review_monitor is not None),
     )
     if seat_refusal is not None:
         if leg == "claude" and seat_refusal in {
