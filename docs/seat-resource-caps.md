@@ -58,9 +58,15 @@ Install this root-owned drop-in as
 Delegate=cpu cpuset io memory pids
 ```
 
-Run `systemctl daemon-reload`. The user manager may need to restart before `io` appears in
-`user.slice/user-<uid>.slice/user@<uid>.service/cgroup.controllers`. The runtime also requires
-root-owned executable `/usr/bin/systemd-run` and the user's runtime bus socket.
+Run `systemctl daemon-reload`. A user manager that started before this delegation was installed
+must be reexecuted with `systemctl --user daemon-reexec` (or fully restarted): systemd snapshots
+its supported-controller mask when that manager starts, and `daemon-reload` does not refresh the
+mask. Before a host probe, verify that
+`io` appears in `user.slice/user-<uid>.slice/user@<uid>.service/cgroup.controllers`. The launch
+boundary realizes an empty capped parent and verifies controller propagation through every slice
+level before it starts the child; an unavailable controller fails early with
+`seat_resource_caps_unavailable`. The runtime also requires root-owned executable
+`/usr/bin/systemd-run` and the user's runtime bus socket.
 
 ## Designated-host probe
 

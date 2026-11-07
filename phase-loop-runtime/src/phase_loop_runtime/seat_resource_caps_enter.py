@@ -13,6 +13,10 @@ import os
 from pathlib import Path
 
 
+class ControllerUnavailable(ValueError):
+    pass
+
+
 def _own_cgroup(root: Path, proc_cgroup: Path) -> Path:
     for line in proc_cgroup.read_text(encoding="utf-8").splitlines():
         fields = line.split(":", 2)
@@ -26,7 +30,10 @@ def _own_cgroup(root: Path, proc_cgroup: Path) -> Path:
 
 
 def _read(path: Path) -> str:
-    return path.read_text(encoding="ascii").strip()
+    try:
+        return path.read_text(encoding="ascii").strip()
+    except OSError as exc:
+        raise ControllerUnavailable(f"{path.name} readback unavailable") from exc
 
 
 def _weight(value: str) -> str:
@@ -110,8 +117,9 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
         message = f"seat cap attestation failed: {exc}"
         encoded = message.encode("utf-8", "replace")[:4096]
+        kind = b"controller_unavailable" if isinstance(exc, ControllerUnavailable) else b"attestation_failed"
         try:
-            os.write(args.diagnostic_fd, encoded)
+            os.write(args.diagnostic_fd, kind + b"\n" + encoded)
         except OSError:
             pass
         try:

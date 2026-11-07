@@ -192,6 +192,35 @@ def test_readiness_requires_hierarchy_manager_controllers_runner_bus_and_devices
     assert caps.readiness_code() == caps.CODE
 
 
+def test_realized_parent_requires_io_at_every_level_and_every_cap_file(
+    monkeypatch, tmp_path, isolated,
+):
+    _readiness_tree(monkeypatch, tmp_path, isolated)
+    unit = "phase-loop-seat-0123456789abcdef01234567.slice"
+    expected = caps._expected(caps.DEFAULT_CAPS, ("8:0",), ())
+    parent = _realized_parent_files(unit, expected)
+    chain = caps._seat_slice_chain(unit)
+    assert parent == chain[-1]
+    assert caps._realized_parent_ready(unit, ())
+
+    for path in chain:
+        original = (path / "cgroup.controllers").read_text()
+        (path / "cgroup.controllers").write_text(original.replace("io", ""))
+        assert not caps._realized_parent_ready(unit, ())
+        (path / "cgroup.controllers").write_text(original)
+    for path in chain[:-1]:
+        original = (path / "cgroup.subtree_control").read_text()
+        (path / "cgroup.subtree_control").write_text(original.replace("io", ""))
+        assert not caps._realized_parent_ready(unit, ())
+        (path / "cgroup.subtree_control").write_text(original)
+    for name in ("memory.max", "cpu.weight", "cpu.max", "io.weight", "io.max", "pids.max"):
+        target = parent / name
+        original = target.read_text()
+        target.unlink()
+        assert not caps._realized_parent_ready(unit, ())
+        target.write_text(original)
+
+
 def _sys_node(root: Path, device: str, relative: str) -> Path:
     destination = root / "devices" / relative
     destination.mkdir(parents=True, exist_ok=True)
@@ -332,6 +361,48 @@ def _expected_from_properties(properties: tuple[str, ...]) -> dict[str, object]:
     return expected
 
 
+def _realized_parent_files(unit: str, expected: dict[str, object]) -> Path:
+    chain = caps._seat_slice_chain(unit)
+    rendered = " ".join(sorted(caps.REQUIRED_CONTROLLERS))
+    for path in chain:
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "cgroup.controllers").write_text(rendered)
+    for path in chain[:-1]:
+        (path / "cgroup.subtree_control").write_text(rendered)
+    _parent_files(chain[-1], expected)
+    return chain[-1]
+
+
+def test_parent_requests_io_before_systemd_realizes_the_slice(
+    monkeypatch, tmp_path, isolated,
+):
+    _readiness_tree(monkeypatch, tmp_path, isolated)
+    calls = []
+
+    def systemctl(*args, **_kwargs):
+        calls.append(args)
+        if args[:2] == ("set-property", "--runtime"):
+            _realized_parent_files(args[2], _expected_from_properties(args[3:]))
+
+    monkeypatch.setattr(caps, "_systemctl", systemctl)
+    parent, child = caps._acquire_parent(
+        "io-propagation", caps.DEFAULT_CAPS, ("8:0",), (), child=False,
+    )
+    try:
+        assert child is None
+        assert calls[0][:3] == ("set-property", "--runtime", parent.unit)
+        properties = calls[0][3:]
+        assert f"IOWeight={caps.DEFAULT_CAPS.io_weight}" in properties
+        assert {
+            "IOReadBandwidthMax", "IOWriteBandwidthMax",
+            "IOReadIOPSMax", "IOWriteIOPSMax",
+        } == {item.split("=", 1)[0] for item in properties if item.startswith("IO") and
+              not item.startswith("IOWeight=")}
+        assert calls[1] == ("start", parent.unit)
+    finally:
+        caps._release_parent("io-propagation", parent, ())
+
+
 def test_real_helper_refuses_each_missing_or_differing_readback(tmp_path):
     root = tmp_path / "cgroup"
     parent = root / "parent.slice"
@@ -351,7 +422,7 @@ def test_real_helper_refuses_each_missing_or_differing_readback(tmp_path):
             enter.verify(expected, root=root, proc_cgroup=proc, proc_swaps=swaps)
         (parent / name).write_text(original)
         (parent / name).unlink()
-        with pytest.raises(OSError):
+        with pytest.raises(enter.ControllerUnavailable):
             enter.verify(expected, root=root, proc_cgroup=proc, proc_swaps=swaps)
         (parent / name).write_text(original)
 
@@ -367,7 +438,13 @@ def _fake_systemd_run(path: Path, root: Path, proc_cgroup: Path, log: Path | Non
         unit = next(x.split('=', 1)[1] for x in sys.argv if x.startswith('--unit='))
         parent = next(x.split('=', 1)[1] for x in sys.argv if x.startswith('--slice='))
         {log_line}
-        pathlib.Path({str(proc_cgroup)!r}).write_text('0::/' + parent + '/' + unit + '\\n')
+        parts = parent.removesuffix('.slice').split('-')
+        parent_path = pathlib.Path('user.slice', 'user-{os.getuid()}.slice',
+                                   'user@{os.getuid()}.service')
+        for index in range(1, len(parts) + 1):
+            parent_path /= '-'.join(parts[:index]) + '.slice'
+        pathlib.Path({str(proc_cgroup)!r}).write_text(
+            '0::/' + str(parent_path / unit) + '\\n')
         marker = sys.argv.index('--')
         os.execv(sys.argv[marker + 1], sys.argv[marker + 1:])
     """))
@@ -395,9 +472,11 @@ def _install_fake_cap_host(monkeypatch, tmp_path, isolated, *, runner_body=None,
         if args[0] == "stop":
             stopped.append(args[1])
             return
+        if args[0] == "start":
+            return
         assert args[:2] == ("set-property", "--runtime")
         unit = args[2]
-        _parent_files(root / unit, _expected_from_properties(args[3:]))
+        _realized_parent_files(unit, _expected_from_properties(args[3:]))
         configured.append(unit)
 
     monkeypatch.setattr(caps, "_systemctl", systemctl)
@@ -417,14 +496,14 @@ def test_capped_popen_real_helper_pid_fd_env_and_one_parent(monkeypatch, tmp_pat
     configured = []
 
     def systemctl(*args, **_kwargs):
-        assert args[:2] == ("set-property", "--runtime") or args[0] == "stop"
-        if args[0] == "stop":
+        assert args[:2] == ("set-property", "--runtime") or args[0] in {"start", "stop"}
+        if args[0] in {"start", "stop"}:
             return
         unit = args[2]
         io_properties = [value for value in args[3:] if value.startswith(("IORead", "IOWrite"))]
         assert all(f"={caps._DEV_BLOCK / '8:0'} " in value for value in io_properties)
         expected = caps._expected(caps.DEFAULT_CAPS, ("8:0",), ())
-        _parent_files(root / unit, expected)
+        _realized_parent_files(unit, expected)
         configured.append(unit)
 
     monkeypatch.setattr(caps, "_systemctl", systemctl)
@@ -501,9 +580,11 @@ def test_capped_popen_surfaces_the_helpers_readback_failure(
     def systemctl(*args, **_kwargs):
         if args[0] == "stop":
             return
+        if args[0] == "start":
+            return
         expected = _expected_from_properties(args[3:])
-        _parent_files(root / args[2], expected)
-        (root / args[2] / "io.max").write_text("")
+        parent = _realized_parent_files(args[2], expected)
+        (parent / "io.max").write_text("")
 
     monkeypatch.setattr(caps, "_systemctl", systemctl)
     with pytest.raises(seat_jail.SeatSandboxRefused) as refused:
@@ -515,6 +596,56 @@ def test_capped_popen_surfaces_the_helpers_readback_failure(
     assert str(refused.value).endswith(
         "child stderr: seat cap attestation failed: io.max readback mismatch"
     )
+
+
+def test_missing_realized_controller_refuses_before_the_child_launch(
+    monkeypatch, tmp_path, isolated,
+):
+    _root, _proc, _configured, stopped = _install_fake_cap_host(
+        monkeypatch, tmp_path, isolated,
+    )
+    launches = []
+
+    def systemctl(*args, **_kwargs):
+        if args[0] == "stop":
+            stopped.append(args[1])
+            return
+        if args[0] == "start":
+            return
+        parent = _realized_parent_files(args[2], _expected_from_properties(args[3:]))
+        (parent / "io.weight").unlink()
+
+    monkeypatch.setattr(caps, "_systemctl", systemctl)
+    monkeypatch.setattr(
+        caps.subprocess, "Popen", lambda *_args, **_kwargs: launches.append(True),
+    )
+    with pytest.raises(seat_jail.SeatSandboxRefused) as refused:
+        caps.capped_popen([sys.executable, "-c", "pass"], seat_key="unready-parent")
+    assert refused.value.code == caps.CODE
+    assert str(refused.value) == "the host does not provide delegated seat controllers"
+    assert launches == [] and stopped
+
+
+def test_helper_missing_controller_maps_to_the_readiness_refusal(
+    monkeypatch, tmp_path, isolated,
+):
+    _install_fake_cap_host(monkeypatch, tmp_path, isolated)
+    ready = caps._realized_parent_ready
+
+    def remove_after_check(unit, carved):
+        result = ready(unit, carved)
+        if result:
+            (caps._seat_slice_chain(unit)[-1] / "io.weight").unlink()
+        return result
+
+    monkeypatch.setattr(caps, "_realized_parent_ready", remove_after_check)
+    with pytest.raises(seat_jail.SeatSandboxRefused) as refused:
+        caps.capped_popen(
+            [sys.executable, "-c", "raise AssertionError('target must not run')"],
+            seat_key="controller-race", stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+    assert refused.value.code == caps.CODE
+    assert str(refused.value) == "the host does not provide delegated seat controllers"
 
 
 def test_concurrent_children_share_one_parent_and_use_distinct_scopes(
