@@ -10,6 +10,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `.gemini/config` (the narrowest bind that admits them), proves writes outside that bind
   stay read-only, and carries the resolved agy subject through qualification `run` and
   `status` (SEATS TEAMHOST SL-7, agent-harness#1820).
+- TEAMHOST managed-release seats now admit each registered profile's declared projection
+  before launch, and standalone doctor reports the same managed-authority refusal as the
+  launch route (SEATS TEAMHOST SL-8, agent-harness#1820).
 - JAILCORE documents the closed local/remote/native/degraded review-seat resolver, its four
   descend codes and expiring exceptions, with the remote mode and capacity offload shipped
   inactive (SEATS JAILCORE SL-4, agent-harness#1820).

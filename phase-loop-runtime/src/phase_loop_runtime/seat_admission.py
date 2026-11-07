@@ -105,6 +105,38 @@ def _base_verdict(leg: str, env: Mapping[str, str], execute: bool) -> Verdict | 
     except Exception:  # noqa: BLE001 - doctor inventory degrades rather than raising
         return Verdict(leg, "unknown", reason="inventory_failed")
 
+    profile = _profile_for(leg)
+    if subject.source == "managed_release":
+        if profile is None:
+            return Verdict(leg, "unknown", reason="inventory_failed")
+        from os import close as close_fd
+        from types import SimpleNamespace
+
+        from .seat_qualification_key import admit_profile_projection
+
+        try:
+            descriptor, expected = seat_subject.open_managed_authority(subject)
+            dependency = None
+            try:
+                dependency = admit_profile_projection(
+                    profile,
+                    SimpleNamespace(
+                        requirement=subject.requirement,
+                        borrowed_authority_fd=descriptor,
+                        expected_authority_sha256=expected,
+                    ),
+                )
+            finally:
+                try:
+                    if dependency is not None:
+                        dependency.close()
+                finally:
+                    close_fd(descriptor)
+        except ExecutableDependencyError as exc:
+            return _refuses(leg, exc.code)
+        except Exception:  # noqa: BLE001 - doctor inventory degrades rather than raising
+            return Verdict(leg, "unknown", reason="inventory_failed")
+
     for gate in _GATES.get(leg, ()):
         try:
             result = gate(leg, env, execute)
@@ -113,7 +145,6 @@ def _base_verdict(leg: str, env: Mapping[str, str], execute: bool) -> Verdict | 
         if result is not None:
             return result
 
-    profile = _profile_for(leg)
     if profile is not None or leg in _LEGACY_LEGS:
         try:
             code = seat_jail.seat_sandbox_capable()

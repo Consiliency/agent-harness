@@ -26,6 +26,7 @@ from phase_loop_runtime import seat_host_admin
 from phase_loop_runtime import seat_jail
 from phase_loop_runtime import seat_jail_autoqualify
 from phase_loop_runtime import seat_jail_prerequisites as prerequisites
+from phase_loop_runtime import seat_profiles
 from phase_loop_runtime import seat_subject
 from phase_loop_runtime import seat_uid
 from phase_loop_runtime.executable_dependency import ExecutableDependencyError
@@ -212,7 +213,8 @@ def _configure_agreement_state(row, tmp_path, monkeypatch):
 
     monkeypatch.setattr(seat_subject, "resolve_seat_subject", resolve)
     monkeypatch.setattr(panel_invoker, "_PROVIDER_SEARCH_PATH", str(tmp_path))
-    monkeypatch.setattr(seat_admission, "_profile_for", lambda _leg: None)
+    profile = seat_profiles.profile_for(row.leg) if row.state == "release_agy" else None
+    monkeypatch.setattr(seat_admission, "_profile_for", lambda _leg: profile)
     transport_refusal = {
         "transport_invalid": claude_seat_transport.ROUTE_INVALID,
         "transport_not_admitted": claude_seat_transport.NOT_ADMITTED,
