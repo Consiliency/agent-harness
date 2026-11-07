@@ -6,8 +6,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-- The built-in release-qualified agy catalog now retains only 1.3.5. Older genuine stable
-  releases continue through the default per-host self-qualification path.
+- The built-in release-qualified agy catalog now retains only 1.3.5. A host on an older
+  release self-qualifies it only while it is among the newest four stable upstream releases
+  (`agy_provenance.RECENCY_WINDOW`). Today that excludes every retired release, so such a
+  host refuses with `gemini_heartbeat_provenance_unverified` until agy is updated.
 - A Gemini seat whose agy login has expired renews it under the seat attempt's own resource-cap
   key again. Since SEATS JAILCORE SL-5 the renewal took a second key, so every heartbeat or
   jailed Gemini seat with an expired login was refused before agy started and reported

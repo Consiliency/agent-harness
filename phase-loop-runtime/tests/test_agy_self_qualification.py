@@ -184,7 +184,7 @@ def test_first_use_qualifies_once_and_later_lookups_reuse_the_record(world):
     assert sorted(_entries(world)) == ["member_cache", "provenance", "qualified"]
 
 
-def test_a_retired_1_2_11_image_self_qualifies_on_first_use(world, monkeypatch):
+def test_a_retired_1_2_11_image_in_window_self_qualifies_on_first_use(world, monkeypatch):
     monkeypatch.setattr(gh, "QUALIFIED_IMAGES", {
         "b5385638174a5e720e904f3a2678752534fb8414d10c2c302fa16daf56cbcfc9":
             "a12355e8fc064b330eeb25ba52de596406582752442e293083bcda6388a63b78",
@@ -195,6 +195,20 @@ def test_a_retired_1_2_11_image_self_qualifies_on_first_use(world, monkeypatch):
     assert _ensure(world, transport=retired)[0] == "locally_qualified"
     q._HELP_MEMO.clear()
     assert _admit(world) == "locally_qualified"
+
+
+def test_a_retired_1_2_11_image_outside_the_window_refuses_provenance(world, monkeypatch):
+    monkeypatch.setattr(gh, "QUALIFIED_IMAGES", {
+        "b5385638174a5e720e904f3a2678752534fb8414d10c2c302fa16daf56cbcfc9":
+            "a12355e8fc064b330eeb25ba52de596406582752442e293083bcda6388a63b78",
+    })
+    retired = FakeTransport()
+    retired.add("1.2.11", world.image)
+    for version in ("1.3.5", "1.4.0", "1.5.2", "1.5.3"):
+        retired.add(version, f"#!/bin/sh\necho synthetic agy {version}\n".encode())
+    with pytest.raises(ValueError, match=prov.UNVERIFIED):
+        _ensure(world, transport=retired)
+    assert (world.counter.help, world.counter.qualify) == (0, 0)
 
 
 def test_admission_carries_exactly_one_known_class():
