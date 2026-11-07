@@ -55,7 +55,8 @@ This plan points at its sections (§0–§8) and does not repeat them.
   If different bytes land, the plan is repinned before execution.
 - **The rest.** The guest wrapper is `landlock-exec` (agent-harness#1795 revision 14), the
   helper the review-runner Containerfile already pins at agent-toolkit revision d945fdd0. Link
-  framing follows agent-toolkit `docs/remote-placement.md` at the v13-pinned revision 9304a5b9.
+  framing follows agent-toolkit `docs/remote-placement.md` as pinned by the toolkit pins manifest
+  (role `remote_placement_reference`, through the LANEEXEC artifact's `x-contract-pins.toolkit_pins`).
 
 **Design in one paragraph.**
 
@@ -127,7 +128,7 @@ other roadmap.
   - one bounded non-patch result, as a non-writer route (EC-LANEEXEC-1).
 
   Frozen by `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`, sha256
-  `77e9c4e3ca4d03525d21aea6e7e673cc6b39a50eeb6bf247501dfaa9642421bf`
+  `26d397056413051f3a62ee19f608f8a368aabe5f5c5f1d1b66d553886ce0e24e`
   (`x-argv-templates.per_vendor_seat_templates`, `x-snapshot.full_mode`, `x-return.result`, and the
   in-process `pre_exec` and `withhold` hooks). SL-4 and SL-5 still wait on the landed LANEEXEC
   implementation (Upstream implementation, below).

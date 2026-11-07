@@ -18,7 +18,7 @@ after a reservation. agent-toolkit#54 already reserves through PLACECLI, but it
 cannot run a remote Pi end to end until these launch inputs exist.
 
 **Frozen artifact.** `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`,
-sha256 `77e9c4e3ca4d03525d21aea6e7e673cc6b39a50eeb6bf247501dfaa9642421bf`,
+sha256 `26d397056413051f3a62ee19f608f8a368aabe5f5c5f1d1b66d553886ce0e24e`,
 holds IF-0-LANEEXEC-1. It covers:
 
 - the process entry `agent-harness-launch --client … launch|status|cancel|version`
@@ -37,6 +37,13 @@ holds IF-0-LANEEXEC-1. It covers:
 This plan points at sections of the artifact and does not repeat them. The
 artifact is read-only during execution. A needed change is an artifact
 amendment, not a lane decision.
+
+**Amendment (2026-11-07): toolkit pins manifest.** Coordinated with
+Consiliency/agent-toolkit#71, the artifact now pins agent-toolkit through one
+manifest, `x-contract-pins.toolkit_pins`, instead of a digest per file. The 17
+role names are unchanged, and each one maps to its manifest entry. A missing
+role fails closed. Test obligation C2 covers the checks, which SL-3.1 tests
+with the other C2 refusals.
 
 **Resolved toolkit gaps** (artifact `x-placecli-clarifications`):
 
@@ -193,8 +200,13 @@ The artifact's `x-contract-pins` carries every full digest and source revision.
 - Admitted launch envelope v2 and run status at the roadmap-pinned
   consiliency-contract revision (`x-contract-pins.admitted_launch_envelope_v2`,
   `x-contract-pins.run_status`).
-- agent-toolkit files at the roadmap-pinned revision, all design inputs that
-  are read and never copied:
+- agent-toolkit files through the pins manifest
+  `harnesses/pi/contracts/pins.json` (`toolkit_pins.v1`, sha256
+  `92dfdb186065d55d47a4aba3dd24836ca3005317222af2fb86624ae9db84965b`), whose
+  source revision is `x-contract-pins.toolkit_pins.toolkit_commit`. At that
+  revision, `writer-snapshot.mjs` and `cred-proxy.mjs` have the same bytes as at
+  the roadmap-cited revision. All of these are design inputs that are read and
+  never copied:
   - snapshot and placement: `writer-snapshot.mjs`, `policy.json`,
     `cred-proxy.mjs` and `docs/remote-placement.md`;
   - Pi template inputs: `remote-inner.mjs`, `link.mjs`, `exec-clean.mjs`,
@@ -203,7 +215,10 @@ The artifact's `x-contract-pins` carries every full digest and source revision.
   - the engines `openshell-image.mjs`, `openshell-landlock.mjs`,
     `openshell-cli.mjs`, `openshell.mjs` and `loopback.mjs`;
   - the `image/Dockerfile` and `image/build-runner-image.mjs` runner-image
-    recipe.
+    recipe;
+  - the other ten files of the 16-file `remote-inner.mjs` runtime closure,
+    including `git-adapter.mjs` and `guest-bin/git`, under
+    `remote_inner_closure:<path>` roles.
 
 No future implementation SHA, commit count or landing topology is pinned.
 
