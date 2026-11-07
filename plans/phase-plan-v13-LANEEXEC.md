@@ -18,7 +18,7 @@ after a reservation. agent-toolkit#54 already reserves through PLACECLI, but it
 cannot run a remote Pi end to end until these launch inputs exist.
 
 **Frozen artifact.** `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`,
-sha256 `41db02e67cb37c5c7fc5d70e152e882495bc7f1548a0d7898384eb7ef0f3f36b`,
+sha256 `819644eb66ff3970f4e404e2d4b35627189119dc3d40f229eff5d858844d0106`,
 holds IF-0-LANEEXEC-1. It covers:
 
 - the process entry `agent-harness-launch --client … launch|status|cancel|version`
@@ -97,6 +97,26 @@ the caps contract §6, and `seat_caps_sha256` sits inside `config_sha256`. A
 missing delegation or controller maps to `sandbox_placement_capability_unmet`,
 and nothing runs (`x-local-cgroup`).
 
+**tmpfs scratch: decision.** This freeze adds a narrow carve-out, written as caps
+contract §1a and amended in this PR. It is not a blanket major-0 exception. A
+tmpfs automatic path is accepted only when all four conditions hold:
+
+1. The filesystem type is `tmpfs` in both mountinfo and `fstatfs`
+   (`TMPFS_MAGIC`); major 0 alone never qualifies.
+2. `memory.max` read back.
+3. Swap cannot carry the pages: `memory.swap.max` reads back `0`, or the host
+   has no active swap area.
+4. Carved-out content is removed before the capped parent is collected.
+
+tmpfs pages are memory charged to `memory.max`, so they are bounded; swap is
+the one path from tmpfs to disk, and condition 3 closes it. `ramfs`,
+`devtmpfs`, overlay, NFS, FUSE and anonymous-device btrfs still refuse,
+because they do real I/O that `io.max` cannot bound here. An `io_paths` entry
+is never carved out. Caps contract §7 (j) and the host probe hold the tests;
+JAILCORE SL-5 implements them in `seat_resource_caps.py`. LaneExec's automatic
+paths are the attempt's execution tree, home, out and scratch
+(`x-local-cgroup.automatic_paths`).
+
 **Owner rulings in force.**
 
 - `ai` is the only sandboxed-agent host. dev0 is not a host: no shipped
@@ -122,8 +142,9 @@ The artifact's `x-contract-pins` carries every full digest and source revision.
 - Placement process protocol v1 with PLACECLI-v1-errata-1:
   `plans/artifacts/v13-PLACECLI-contract-v1.schema.json`, sha256
   `ddf3649953bc6ee28fc90466cd825a85e7c282188d84eb97aef107a77234fd57`.
-- `seat_resource_caps.v1`: `plans/seats-jailcore-caps-contract.md`, sha256
-  `a2fe08ef0e3a6b7d888e948a10e22f7c70c11258db355a551063cf69c2c2a1f2`.
+- `seat_resource_caps.v1`: `plans/seats-jailcore-caps-contract.md` with the §1a
+  amendment this PR applies to the main digest. The new digest is sha256
+  `01abb145297bbfc98fd977769f67322c666c798628906af8c6da42063c70c190`.
 - SEATS REMOTE: `plans/seats-remote-contract.md`, sha256
   `1cea960ddd28ef5e1c4bf79083fa9f9938b2c99c2e29dbd937864944ca76d7e8`.
 - Admitted launch envelope v2 and run status at the roadmap-pinned
@@ -163,7 +184,8 @@ diagnostics or evidence.
   - launches `openshell` `pi-runner` reservations through `agent-harness-launch`;
   - keeps its capped bwrap launcher for local `pi-runner` while
     `local_pi_runner_launcher` is `toolkit_interim`. That route applies the full
-    `seat_resource_caps.v1` record with readback, bounds the run by a non-null
+    `seat_resource_caps.v1` record with readback, follows the caps contract §1a
+    rule for tmpfs scratch, bounds the run by a non-null
     `expires_at` and releases on exit;
   - switches only under EC-ACTIVATE-4.
 - [ ] IF-XR-2 (SEATS REMOTE XR-3, closed by this freeze) — Workload `leg` gets:
@@ -179,7 +201,8 @@ Work-start gates (non-human, `blocker_class=upstream_phase_unmet`):
 
 - PLACECLI implemented, including errata-1;
 - EXT-WORKER (v12 IF-0-WORKER-1 and IF-0-JOURNAL-1);
-- IF-0-JAILCORE-4 (`seat_resource_caps.py`) landed.
+- IF-0-JAILCORE-4 (`seat_resource_caps.py`) landed, including the caps contract §1a
+  carve-out and its §7 (j) tests.
 
 EXT-LAUNCHSITE and EXT-OPENSH are activation prerequisites; their offline
 controls run here.
@@ -275,7 +298,7 @@ SL-6 — Documentation, receipt and spec reconciliation
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-3.1 | test | — | SL-3 test files | Obligations C2, C4–C7 through `build_launch_service` with a fake coordinator, fake cgroupfs/sysfs and fake `systemd-run` (`real_seat_caps` marker). (1) Every refusal through `pre_exec` with zero snapshot, upload, envelope or invocation counters. (2) The egress grant equals the reservation digest's hex. (3) Exec claim survives concurrency and restart. (4) Missing controllers each refuse capability_unmet. (5) A readback mismatch gives finished/failed_to_start with no target marker. (6) An attempt longer than `ttl_s` stays live by renewal while the stored Reservation is byte-identical. (7) lifetime_exceeded ends the attempt timed_out. (8) Bridge loss ends it cancelled. (9) Cancel affects only the verified owner. (10) Release cancels a live attempt, then cleanup_pending. (11) Reap settles a dead supervisor in its own inventory only. (12) route_disabled is refused under the shipped defaults. (13) toolkit_interim refuses local `pi-runner`. | `V3` |
+| SL-3.1 | test | — | SL-3 test files | Obligations C2, C4–C7 through `build_launch_service` with a fake coordinator, fake cgroupfs/sysfs and fake `systemd-run` (`real_seat_caps` marker). (1) Every refusal through `pre_exec` with zero snapshot, upload, envelope or invocation counters. (2) The egress grant equals the reservation digest's hex. (3) Exec claim survives concurrency and restart. (4) Missing controllers each refuse capability_unmet, and the caps contract §1a cases hold on LaneExec's automatic paths: tmpfs is accepted only with `memory.max` and `memory.swap.max` read back, every other major-0 type refuses, and tmpfs content is removed before the parent is collected. (5) A readback mismatch gives finished/failed_to_start with no target marker. (6) An attempt longer than `ttl_s` stays live by renewal while the stored Reservation is byte-identical. (7) lifetime_exceeded ends the attempt timed_out. (8) Bridge loss ends it cancelled. (9) Cancel affects only the verified owner. (10) Release cancels a live attempt, then cleanup_pending. (11) Reap settles a dead supervisor in its own inventory only. (12) route_disabled is refused under the shipped defaults. (13) toolkit_interim refuses local `pi-runner`. | `V3` |
 | SL-3.2 | impl | SL-3.1 | `launch_service.py`, `launch_routes.py`, `sandbox_placement.py`, `placement_lease.py`, `openshell_backend.py` | — | — |
 | SL-3.3 | verify | SL-3.2 | SL-3 files | SL-3 tests | `V3`. Mutation controls, each failing through a production path: drop the capped parent, renew by rewriting the Reservation, skip the exec-claim journal, launch after `pre_exec` refuses, reach a coordinator under the shipped defaults. |
 

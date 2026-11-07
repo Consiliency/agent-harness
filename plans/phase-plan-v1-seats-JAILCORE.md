@@ -280,7 +280,7 @@ The fix belongs to CLAUDENET (digest) or CLAUDE (transport argv), not here.
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-5.1 | test | — | `phase-loop-runtime/tests/test_seat_resource_caps.py`, `phase-loop-runtime/tests/conftest.py` | Caps contract §7 cases (a)–(i) on a fake cgroupfs, plus the opt-in host probe, which skips when delegation is absent. | `V7` |
+| SL-5.1 | test | — | `phase-loop-runtime/tests/test_seat_resource_caps.py`, `phase-loop-runtime/tests/conftest.py` | Caps contract §7 cases (a)–(j), including the §1a tmpfs carve-out, on a fake cgroupfs, plus the opt-in host probe, which skips when delegation is absent. | `V7` |
 | SL-5.2 | impl | SL-5.1 | `phase-loop-runtime/src/phase_loop_runtime/seat_resource_caps.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_resource_caps_enter.py` | — | — |
 | SL-5.3 | impl | SL-5.2 | the named edits below; `phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py`, `phase-loop-runtime/tests/test_seat_launch_helpers_trusted.py` | — | — |
 | SL-5.4 | impl | SL-5.3 | `docs/seat-resource-caps.md`, `docs/TEAM-ONBOARDING.md` | — | — |

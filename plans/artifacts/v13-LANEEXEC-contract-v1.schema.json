@@ -69,8 +69,9 @@
     },
     "seat_resource_caps": {
       "path": "plans/seats-jailcore-caps-contract.md",
-      "sha256": "a2fe08ef0e3a6b7d888e948a10e22f7c70c11258db355a551063cf69c2c2a1f2",
-      "schema": "seat_resource_caps.v1"
+      "sha256": "01abb145297bbfc98fd977769f67322c666c798628906af8c6da42063c70c190",
+      "schema": "seat_resource_caps.v1",
+      "amendment": "§1a tmpfs carve-out, applied to the main digest a2fe08ef0e3a6b7d888e948a10e22f7c70c11258db355a551063cf69c2c2a1f2"
     },
     "seats_remote_contract": {
       "path": "plans/seats-remote-contract.md",
@@ -109,6 +110,7 @@
     "local_pi_runner_launcher": "Resolved by x-activation.local_pi_runner_launcher: the toolkit's capped bwrap route stays the default until ACTIVATE, LANEEXEC-owned local launch is built and proven offline here, and the switch is one operator configuration value.",
     "launch_inputs": "Resolved by $defs.LaunchRequest and x-launch-inputs.",
     "caps_schema": "Resolved by x-contract-pins.seat_resource_caps and x-local-cgroup.",
+    "tmpfs_scratch": "Narrow carve-out, not a blanket major-0 exception: caps contract §1a, added by this freeze. A tmpfs automatic path is accepted when four conditions hold: the filesystem type is identified from both mountinfo and fstatfs; memory.max is read back; swap cannot carry the pages, because memory.swap.max reads back 0 or no swap area is active; and carved-out content is removed before the capped parent is collected. Major 0 alone, ramfs, devtmpfs, overlay, NFS, FUSE and btrfs still refuse, and an io_paths entry is never carved out.",
     "schema_invalid_exit_class": "PLACECLI v1 x-cli already classes malformed input as a protocol failure (exit 70, stdout absent); errata-1 does not change that. This contract states the same rule explicitly for its own CLI."
   },
   "x-client-routes": {
@@ -226,6 +228,7 @@
   },
   "x-local-cgroup": {
     "scope": "Every placed LOCAL workload: pi-runner under laneexec, implementation, and any local leg or qualification. Seat launches outside placement stay with the SEATS launcher (XREQ-SEATS-LOCAL-CGROUP-1).",
+    "automatic_paths": "For a LaneExec local launch, the caps contract's automatic paths are the attempt's execution tree, home, out and scratch directories. Each resolves through seat_resource_caps.io_devices, including the caps contract §1a tmpfs carve-out. The operator io_paths entries keep their own rule.",
     "record": "The effective seat_resource_caps.v1 record from the pinned caps contract §2 sources, through seat_resource_caps.load_caps. LaneExec applies the whole record. The v13-required subset is memory.max, cpu.weight and both io.weight and io.max, which satisfies 'either'. seat_caps_sha256 = caps_sha256(effective caps) is part of the canonical host configuration hashed as config_sha256.",
     "parent": "One transient capped parent cgroup per (client, reservation_id), created before the first chain process. Its key is laneexec:<client>:<reservation_id>, passed to seat_resource_caps.capped_popen. Every process of the attempt is a descendant of it, a second independent capped parent for the same live reservation refuses, and the parent is collected after the attempt is reaped.",
     "proof": "Child-side readback through the trusted seat_resource_caps_enter helper of the pinned caps contract §4 is the only evidence. Any absent or differing value ends the launch before the target runs.",
@@ -291,7 +294,7 @@
     "C2 binding: reservation echo mismatch, unknown reservation, image off the allowlist, provider or policy disagreement, template id or sha mismatch, writer-route mismatch and route_disabled each refuse with zero snapshot reads, uploads, envelopes and invocations.",
     "C3 snapshot: git-mode inventory classes, a self-contained .git with only B-reachable objects and no hooks, remotes or alternates, masks omitted and skip-worktree, the secret matcher on without request control, full mode only where permitted, a non-work-tree root in full mode, too_large at each cap, source_changed from a mid-copy mutation, and each path rule.",
     "C4 envelope: egress grant equals the reservation digest's hex, transport grammar refusal, not_armed refused, instructions never in argv, recheck_before_start difference refused, one exec claim across concurrent and restarted launches.",
-    "C5 local caps: capped parent per reservation with child readback, each missing controller or record field refusing capability_unmet with no target marker, no uncapped path.",
+    "C5 local caps: a capped parent per reservation with child readback; each missing controller or record field refusing capability_unmet with no target marker; no uncapped path. The §1a cases run on LaneExec's automatic paths: a tmpfs scratch accepted only with memory.max and memory.swap.max read back; ramfs, overlay, NFS, FUSE, btrfs and a magic/mountinfo disagreement refusing; and the execution tree on tmpfs removed before the parent is collected.",
     "C6 lifetime: internal renewal across an attempt longer than ttl_s without changing the stored Reservation, lifetime_exceeded ending the attempt timed_out, budget refusal.",
     "C7 bridge, status, cancel, release, reap: bridge loss ending the attempt, cancel only through verified owner identity, release cancelling a live attempt then cleanup_pending, caller-scoped reap of LaneExec state, other inventory invisible.",
     "C8 return: patch cap, masked-path and audit withholding, result.json bound and strictness, withhold predicate, descriptor modes, no raw output in records.",

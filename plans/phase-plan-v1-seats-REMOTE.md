@@ -127,7 +127,7 @@ other roadmap.
   - one bounded non-patch result, as a non-writer route (EC-LANEEXEC-1).
 
   Frozen by `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`, sha256
-  `41db02e67cb37c5c7fc5d70e152e882495bc7f1548a0d7898384eb7ef0f3f36b`
+  `819644eb66ff3970f4e404e2d4b35627189119dc3d40f229eff5d858844d0106`
   (`x-argv-templates.per_vendor_seat_templates`, `x-snapshot.full_mode`, `x-return.result`, and the
   in-process `pre_exec` and `withhold` hooks). SL-4 and SL-5 still wait on the landed LANEEXEC
   implementation (Upstream implementation, below).
