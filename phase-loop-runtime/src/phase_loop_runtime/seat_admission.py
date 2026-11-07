@@ -83,7 +83,7 @@ def _pass_record(leg: str) -> Verdict | None:
         return None
     if reason.startswith("store_unsafe:"):
         return _refuses(leg, seat_jail.refused("pass_store_unsafe"))
-    return _refuses(leg, seat_jail.refused("jail_unqualified"))
+    return Verdict(leg, "unknown", reason="launch_measurement")
 
 
 def _base_verdict(leg: str, env: Mapping[str, str], execute: bool) -> Verdict | None:
@@ -97,6 +97,16 @@ def _base_verdict(leg: str, env: Mapping[str, str], execute: bool) -> Verdict | 
         return _refuses(leg, exc.code)
     except Exception:  # noqa: BLE001 - doctor inventory degrades rather than raising
         return Verdict(leg, "unknown", reason="inventory_failed")
+
+    if leg == "claude":
+        from . import claude_seat_transport
+
+        try:
+            _transport, refusal = claude_seat_transport.resolve_jailed_claude_transport(env)
+        except Exception:  # noqa: BLE001 - doctor inventory degrades rather than raising
+            return Verdict(leg, "unknown", reason="inventory_failed")
+        if refusal is not None:
+            return _refuses(leg, refusal)
 
     for gate in _GATES.get(leg, ()):
         try:
@@ -118,19 +128,34 @@ def _base_verdict(leg: str, env: Mapping[str, str], execute: bool) -> Verdict | 
         if profile is not None:
             if profile.recorded_stop is not None:
                 return _refuses(leg, profile.recorded_stop)
-            if not profile.credential_present():
+            try:
+                credential_present = profile.credential_present()
+            except Exception:  # noqa: BLE001 - doctor inventory degrades rather than raising
+                return Verdict(leg, "unknown", reason="inventory_failed")
+            if not credential_present:
                 return _refuses(leg, profile.credential_missing_code)
             for precondition in profile.preconditions:
-                code = precondition.check()
+                try:
+                    code = precondition.check()
+                except Exception:  # noqa: BLE001 - doctor inventory degrades rather than raising
+                    return Verdict(leg, "unknown", reason="inventory_failed")
                 if code is not None:
                     return _refuses(leg, code)
             has_egress = profile.allowlist_id is not None
         elif leg == "claude":
-            if not seat_jail._claude_credential_present():
+            try:
+                credential_present = seat_jail._claude_credential_present()
+            except Exception:  # noqa: BLE001 - doctor inventory degrades rather than raising
+                return Verdict(leg, "unknown", reason="inventory_failed")
+            if not credential_present:
                 return _refuses(leg, "claude_seat_token_missing")
             has_egress = False
         else:
-            if not seat_jail.gemini_operator_credential_present():
+            try:
+                credential_present = seat_jail.gemini_operator_credential_present()
+            except Exception:  # noqa: BLE001 - doctor inventory degrades rather than raising
+                return Verdict(leg, "unknown", reason="inventory_failed")
+            if not credential_present:
                 return _refuses(leg, "gemini_seat_credential_missing")
             has_egress = True
 

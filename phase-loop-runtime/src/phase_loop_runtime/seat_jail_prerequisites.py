@@ -19,6 +19,8 @@ CHECKLIST_BY_NAME: dict[str, str] = {
     "egress_isolation": "LA1-PACKAGES",
     "legacy_tiocsti": "LA1-TIOCSTI",
     "subordinate_ids": "LA1-SUBID",
+    "uid_map_helpers": "LA1-PACKAGES",
+    "non_root_operator": "LA1-SUBID",
     "machine_id": "LA1-MACHINE-ID",
 }
 
@@ -85,6 +87,11 @@ def _predicates() -> dict[str, Callable[[], bool | str]]:
             and seat_uid.subordinate_range(seat_uid.SUBGID_FILE) is not None
             and seat_host_namespace.subordinate_ranges_disjoint()
         ),
+        "uid_map_helpers": lambda: (
+            seat_uid._privileged_helper(seat_uid.NEWUIDMAP)
+            and seat_uid._privileged_helper(seat_uid.NEWGIDMAP)
+        ),
+        "non_root_operator": lambda: os.geteuid() != 0,
         "machine_id": lambda: seat_jail.host_identity() is not None,
     }
 

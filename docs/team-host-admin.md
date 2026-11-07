@@ -14,7 +14,7 @@ Serves EC-TEAMHOST-2. Read-only check: inspect `getent passwd`, `getent group`, 
 `/etc/subgid` and confirm each operator's ranges overlap neither another account's ranges nor a
 real uid/gid. Root action: allocate disjoint uid and gid ranges for every operator account.
 
-## LA1-TIOCSTI — legacy terminal injection
+## LA1-TIOCSTI — legacy TIOCSTI setting
 
 Serves EC-TEAMHOST-3. Read-only check: `sysctl dev.tty.legacy_tiocsti`. Root action: set the value
 to `0` and persist it.
@@ -49,4 +49,5 @@ Root action: install a managed release that carries every declared seat dependen
 Serves EC-TEAMHOST-1. Read-only check: inspect the root-owned seat-authority pin for an entry for
 each active release and leg, containing `authority_sha256`, `authority_id` and
 `base_profile_sha256`. Root action: write the pin from the independently reviewed declaration;
-release bytes never establish their own authority.
+release bytes never establish their own authority. The pin path is
+`/etc/consiliency/tooling/seat-authority.json`.
