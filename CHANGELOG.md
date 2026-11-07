@@ -6,6 +6,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- The jailed Codex seat gains its runtime file set (one read-only bind per vendored runtime
+  file, never `codex-resources/`) and its narrowed credential copy, with ordered
+  subscription, margin and scope checks that decode the access token on the host. The
+  executor availability check now reads `Not logged in` from `codex login status` as
+  logged out. Nothing registers the Codex profile yet (SEATS CODEX SL-1,
+  agent-harness#1820).
+
 ## [0.7.29] - Unreleased candidate
 
 ### Release preparation (agent-harness#1779)
