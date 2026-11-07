@@ -110,7 +110,14 @@ def resolve_seat_subject(leg: str, env: Mapping[str, str]) -> SeatSubject:
     search_path = env.get("PATH", os.defpath)
     if not isinstance(search_path, str):
         raise TypeError("PATH must be text")
-    found = shutil.which(executable, path=search_path)
+    absolute_entries = tuple(
+        item for item in search_path.split(os.pathsep) if item and Path(item).is_absolute()
+    )
+    found = (
+        shutil.which(executable, path=os.pathsep.join(absolute_entries))
+        if absolute_entries
+        else None
+    )
     if found is None:
         raise FileNotFoundError("seat_provider_unavailable")
 
@@ -123,39 +130,41 @@ def resolve_seat_subject(leg: str, env: Mapping[str, str]) -> SeatSubject:
     for _hop in range(4):
         lines, trusted = _wrapper_lines(candidate)
         last = lines[-1] if lines else ""
+        shaped = trusted and all(_SHELL_WRAPPER_EXPORT.fullmatch(line) for line in lines[1:-1])
         if last.startswith(_FRONTDOOR_PREFIX):
             # Imported here by contract so panel_invoker may import seat_subject later.
             from . import panel_invoker
 
             target = panel_invoker._frontdoor_target(last, leg)
-            if target is None or not trusted:
-                if _inside_managed_root(candidate) or _frontdoor_names_managed_path(last):
-                    raise ExecutableDependencyError("subject_mismatch", "guarded frontdoor")
-                break
-            if _inside_managed_root(target):
-                return _managed_subject(leg, target)
-            break
-        if _inside_managed_root(candidate):
+            if target is None or not shaped:
+                raise ExecutableDependencyError("subject_mismatch", "guarded frontdoor")
+            return _managed_subject(leg, target)
+        if _names_managed_root(candidate):
             raise ExecutableDependencyError("subject_mismatch", "guarded frontdoor")
         match = _SHELL_WRAPPER_EXEC.fullmatch(last)
-        if not trusted or match is None or not all(
-            _SHELL_WRAPPER_EXPORT.fullmatch(line) for line in lines[1:-1]
-        ):
+        if match is None:
             break
         named_target = Path(match.group(1))
+        if not shaped:
+            if _names_managed_root(named_target):
+                raise ExecutableDependencyError("subject_mismatch", "wrapper target")
+            break
         try:
             candidate = named_target.resolve(strict=True)
         except OSError as exc:
-            if _inside_managed_root(named_target):
+            if _names_managed_root(named_target):
                 raise ExecutableDependencyError("subject_mismatch", "wrapper target") from exc
             break
+    else:
+        # Four followed hops and still a wrapper: where it ends is unproven.
+        raise ExecutableDependencyError("subject_mismatch", "wrapper depth")
 
-    # Preserve the existing standalone trust checks.  Passing an absolute source makes
-    # its lookup independent of panel_invoker's legacy import-time PATH snapshot.
+    # Preserve the existing standalone trust checks.  The looked-up path keeps the provider
+    # name that resolution classifies; a resolved versioned target has lost it.
     from . import panel_invoker
 
     try:
-        harness, standalone = panel_invoker._seat_provider_source(str(source), env)
+        harness, standalone = panel_invoker._seat_provider_source(str(found), env)
         path = Path(standalone).resolve(strict=True)
     except FileNotFoundError:
         raise
@@ -163,7 +172,7 @@ def resolve_seat_subject(leg: str, env: Mapping[str, str]) -> SeatSubject:
         raise
     except Exception as exc:
         raise ExecutableDependencyError("subject_mismatch", "standalone provider") from exc
-    if harness != leg or _inside_managed_root(path):
+    if harness != leg or _names_managed_root(path):
         raise ExecutableDependencyError("subject_mismatch", "provider")
     return SeatSubject(leg, "standalone", path, None, None)
 
@@ -247,9 +256,13 @@ def _managed_subject(leg: str, target: Path) -> SeatSubject:
         raise ExecutableDependencyError("subject_mismatch", "release")
     release_id = relative.parts[0]
     pin = _pin_entry(release_id, leg)
+    try:
+        identity = _selected_identity(selected)
+    except OSError as exc:
+        raise ExecutableDependencyError("subject_mismatch", "selected executable") from exc
     requirement = DependencyRequirement(
         provider=leg,
-        selected_executable=_selected_identity(selected),
+        selected_executable=identity,
         authority_id=pin["authority_id"],
         expected_authority_sha256=pin["authority_sha256"],
         adapter_id=_MANAGED_ADAPTER_ID,
@@ -261,26 +274,17 @@ def _managed_subject(leg: str, target: Path) -> SeatSubject:
     return SeatSubject(leg, "managed_release", selected, release_id, requirement)
 
 
-def _inside_managed_root(path: Path) -> bool:
+def _names_managed_root(path: Path) -> bool:
+    """Whether ``path`` lies below the managed root, by name or once resolved."""
+
+    roots = [MANAGED_RELEASES_ROOT.absolute()]
+    candidates = [Path(os.path.abspath(path))]
     try:
-        root = MANAGED_RELEASES_ROOT.resolve(strict=True)
-        return Path(path).resolve(strict=True).is_relative_to(root)
+        roots.append(MANAGED_RELEASES_ROOT.resolve(strict=True))
+        candidates.append(Path(path).resolve(strict=True))
     except OSError:
-        return False
-
-
-def _frontdoor_names_managed_path(line: str) -> bool:
-    """Whether a frontdoor-shaped line names any path below the managed root."""
-
-    try:
-        root = MANAGED_RELEASES_ROOT.resolve(strict=True)
-    except OSError:
-        root = MANAGED_RELEASES_ROOT.absolute()
-    return any(
-        Path(token).absolute().is_relative_to(root)
-        for token in line.split()
-        if token.startswith("/")
-    )
+        pass
+    return any(item.is_relative_to(root) for item in candidates for root in roots)
 
 
 def _wrapper_lines(path: Path) -> tuple[list[str], bool]:
@@ -335,8 +339,12 @@ def _pin_entry(release_id: str, leg: str) -> dict[str, str]:
             raise ValueError("pin schema")
     except (TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise ExecutableDependencyError("authority_invalid", "pin") from exc
-    release = value["releases"].get(release_id)
-    if type(release) is not dict or leg not in release:
+    if release_id not in value["releases"]:
+        raise ExecutableDependencyError("authority_missing")
+    release = value["releases"][release_id]
+    if type(release) is not dict:
+        raise ExecutableDependencyError("authority_invalid", "pin entry")
+    if leg not in release:
         raise ExecutableDependencyError("authority_missing")
     entry = release[leg]
     if type(entry) is not dict or set(entry) != {

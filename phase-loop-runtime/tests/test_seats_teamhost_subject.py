@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 
 import pytest
@@ -154,6 +155,23 @@ def test_plain_path_install_is_standalone_and_path_is_read_at_call_time(
     assert (two.source, two.subject_path) == ("standalone", second)
 
 
+def test_relative_and_empty_path_entries_are_ignored(managed_fs, tmp_path, monkeypatch):
+    _root, _releases, _pin_path = managed_fs
+    work = tmp_path / "work"
+    work.mkdir()
+    _exe(work / "claude", b"cwd-provider")
+    absolute = _exe(tmp_path / "trusted/claude", b"absolute-provider")
+    monkeypatch.chdir(work)
+
+    subject = seat_subject.resolve_seat_subject(
+        "claude", {"PATH": os.pathsep.join(("", ".", "relative", str(absolute.parent)))}
+    )
+
+    assert (subject.source, subject.subject_path) == ("standalone", absolute)
+    with pytest.raises(FileNotFoundError, match="seat_provider_unavailable"):
+        seat_subject.resolve_seat_subject("claude", {"PATH": os.pathsep.join(("", ".", "relative"))})
+
+
 def test_managed_release_missing_pin_or_entry_never_falls_back(managed_fs, tmp_path):
     _root, releases, pin = managed_fs
     release, native = _release(releases)
@@ -254,6 +272,114 @@ def test_open_managed_authority_checks_the_independent_digest(managed_fs, tmp_pa
     assert refused.value.code == "authority_invalid"
 
 
+def test_versioned_install_reached_through_a_link_stays_standalone(managed_fs, tmp_path):
+    real = _exe(tmp_path / "versions/2.1.33")
+    link = tmp_path / "bin/claude"
+    link.parent.mkdir()
+    link.symlink_to(real)
+
+    subject = _resolve(link.parent)
+
+    assert (subject.source, subject.subject_path) == ("standalone", real)
+
+
+@pytest.mark.parametrize("shape", ["extra-line", "foreign-shape", "bad-export"])
+def test_frontdoor_that_fails_a_shape_check_refuses(managed_fs, tmp_path, shape):
+    _root, releases, pin = managed_fs
+    release, native = _release(releases)
+    door = _frontdoor(tmp_path / "bin", release, native)
+    _pin(pin, release.name)
+    lines = door.read_text().splitlines()
+    if shape == "extra-line":
+        lines.insert(1, "/usr/bin/true --arbitrary")
+    elif shape == "bad-export":
+        lines[1] = "export FLAG='two words'"
+    else:
+        lines[-1] = 'exec /usr/bin/python3 -I /elsewhere/tool.py launch "$@"'
+    door.write_text("\n".join(lines) + "\n")
+
+    with pytest.raises(ExecutableDependencyError) as refused:
+        _resolve(door.parent)
+    assert refused.value.code == "subject_mismatch"
+
+
+@pytest.mark.parametrize("wrapper", ["group-writable", "other-line", "dangling", "five-hops"])
+def test_wrapper_into_the_release_tree_never_resolves_standalone(managed_fs, tmp_path, wrapper):
+    _root, releases, pin = managed_fs
+    release, native = _release(releases)
+    _pin(pin, release.name)
+    mode = 0o775 if wrapper == "group-writable" else 0o755
+    body = f'#!/bin/sh\nexec {native} "$@"\n'
+    if wrapper == "other-line":
+        body = f'#!/bin/sh\numask 022\nexec {native} "$@"\n'
+    elif wrapper == "dangling":
+        body = f'#!/bin/sh\nexec {release}/native/absent "$@"\n'
+    door = _exe(tmp_path / "bin/claude", body.encode(), mode)
+    if wrapper == "five-hops":
+        target = native
+        for hop in range(5, 0, -1):
+            target = _exe(tmp_path / f"hop{hop}/claude", f'#!/bin/sh\nexec {target} "$@"\n'.encode())
+        door = target
+
+    with pytest.raises(ExecutableDependencyError) as refused:
+        _resolve(door.parent)
+    assert refused.value.code == "subject_mismatch"
+
+
+def test_release_value_that_is_not_an_object_refuses_authority_invalid(managed_fs, tmp_path):
+    _root, releases, pin = managed_fs
+    release, native = _release(releases)
+    door = _frontdoor(tmp_path / "bin", release, native)
+    pin.write_bytes(rfc8785.dumps({"schema": "seat_authority_pin.v2", "releases": {release.name: "x"}}))
+    pin.chmod(0o644)
+
+    with pytest.raises(ExecutableDependencyError) as refused:
+        _resolve(door.parent)
+    assert refused.value.code == "authority_invalid"
+
+
+def test_authority_that_carries_its_own_digest_is_not_admitted_without_the_pin(managed_fs, tmp_path):
+    _root, releases, pin = managed_fs
+    release, native = _release(releases)
+    door = _frontdoor(tmp_path / "bin", release, native)
+    authority = release / "share/phase-loop/seat-dependencies/claude/authority.json"
+    payload = b'{"self":"' + hashlib.sha256(b"self").hexdigest().encode() + b'"}'
+    _exe(authority, payload, 0o644)
+    _pin(pin, release.name)
+    subject = _resolve(door.parent)
+
+    with pytest.raises(ExecutableDependencyError) as refused:
+        seat_subject.open_managed_authority(subject)
+    assert refused.value.code == "authority_invalid"
+
+
+def test_gemini_frontdoor_selects_the_native_agy_target(managed_fs, tmp_path):
+    _root, releases, pin = managed_fs
+    release, _native = _release(releases)
+    agy = _exe(release / "native/agy")
+    door = _exe(
+        tmp_path / "bin/agy",
+        (
+            "#!/bin/sh\n"
+            f"exec /usr/bin/python3 -I {release}/source/lib/user_agent_tools.py launch"
+            f" --provider gemini --shared {agy} --node-bin {release}/node/bin -- \"$@\"\n"
+        ).encode(),
+    )
+    pin.write_bytes(rfc8785.dumps({
+        "schema": "seat_authority_pin.v2",
+        "releases": {release.name: {"gemini": {
+            "authority_sha256": AUTHORITY_SHA256,
+            "authority_id": AUTHORITY_ID,
+            "base_profile_sha256": BASE_PROFILE,
+        }}},
+    }))
+    pin.chmod(0o644)
+
+    subject = seat_subject.resolve_seat_subject("gemini", {"PATH": str(door.parent)})
+
+    assert (subject.source, subject.subject_path) == ("managed_release", agy)
+
+
 @pytest.mark.parametrize(
     "kind,path_parts,installer",
     [
@@ -265,6 +391,8 @@ def test_open_managed_authority_checks_the_independent_digest(managed_fs, tmp_pa
 def test_deployment_kind_uses_paths_and_installer_without_spawning(
     tmp_path, monkeypatch, kind, path_parts, installer
 ):
+    monkeypatch.setattr(subprocess, "Popen", lambda *_a, **_k: pytest.fail("spawned"))
+    monkeypatch.setattr(os, "posix_spawn", lambda *_a, **_k: pytest.fail("spawned"))
     package = tmp_path.joinpath(*path_parts)
     package.parent.mkdir(parents=True, exist_ok=True)
     package.write_text("x")
@@ -305,7 +433,13 @@ def test_search_only_ancestor_reaches_the_real_auth_probe(tmp_path, monkeypatch)
     gate = tmp_path / "gate"
     work = gate / "operator/work"
     work.mkdir(parents=True)
-    cli = _exe(work / "stub-cli", b"#!/bin/sh\nexit 0\n")
+    cli = _exe(work / "stub-cli", b"#!/bin/sh\necho search-only-probe-ran\n")
+    seen = []
+
+    def runner(probe):
+        done = executor_availability._run_probe(probe)
+        seen.append(done.stdout)
+        return done
     monkeypatch.chdir(work)
     monkeypatch.setenv("TMPDIR", str(work))
     monkeypatch.setenv("PATH", f"{cli.parent}:/usr/bin:/bin")
@@ -315,8 +449,16 @@ def test_search_only_ancestor_reaches_the_real_auth_probe(tmp_path, monkeypatch)
     try:
         probes = (f"{cli} --version",)
         assert executor_availability.auth_ok_for(
-            "future", probes, now=0.0) is True, executor_availability.auth_refusal_for(
+            "future", probes, now=0.0, runner=runner) is True, executor_availability.auth_refusal_for(
                 "future", probes)
+        assert "search-only-probe-ran" in "".join(seen)
+
+        executor_availability.clear_auth_cache()
+        with monkeypatch.context() as mutant:
+            mutant.setattr(panel_invoker.os, "O_PATH", os.O_RDONLY)
+            assert executor_availability.auth_ok_for(
+                "future", probes, now=1.0, runner=runner
+            ) is False
     finally:
         gate.chmod(0o755)
         executor_availability.clear_auth_cache()
