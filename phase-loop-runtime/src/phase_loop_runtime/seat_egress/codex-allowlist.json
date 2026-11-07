@@ -1,0 +1,11 @@
+{
+  "schema": "phase_loop_seat_egress_allowlist.v1",
+  "leg": "codex",
+  "measured": "PENDING (SEATS CODEX SL-2.3): rows read from codex-cli 0.167.0 on Linux without a provider request; the measured tooled turn through the proxy, with upgrades refused, replaces this line",
+  "allow": [
+    {"host": "chatgpt.com", "port": 443, "method": "POST", "path": "/backend-api/codex/responses"}
+  ],
+  "measured_and_refused": [
+    "auth.openai.com"
+  ]
+}
