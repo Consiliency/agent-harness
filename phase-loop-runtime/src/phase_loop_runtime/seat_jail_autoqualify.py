@@ -202,15 +202,15 @@ def fix_for(reason: str) -> str:
     fix = REASON_FIXES[reason]
     if reason != "prerequisite_missing":
         return fix
-    from . import sandbox_egress, seat_jail_prerequisites, seat_uid
+    from . import seat_jail_prerequisites
 
-    if not seat_jail_prerequisites.missing():
-        return fix
     try:
-        host_ready = seat_uid.seat_uid_available() and sandbox_egress.egress_isolation_available()
+        missing = [
+            row for row in seat_jail_prerequisites.check() if row["status"] == "missing"
+        ]
     except Exception:  # noqa: BLE001 - advice must never raise
-        host_ready = False
-    return seat_jail_prerequisites.PYTEST_FIX if host_ready else f"{seat_jail_prerequisites.PYTEST_FIX}. Also: {fix}"
+        return fix
+    return missing[0].get("fix", fix) if missing else fix
 
 
 def classify_failure(exc: BaseException) -> str:

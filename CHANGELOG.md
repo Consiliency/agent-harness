@@ -14,6 +14,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Jailed-seat qualification keys are built from the live profile, allowlist,
   falsifier-layout, projection, variant and host inputs, and dependency projections are
   admitted per profile declaration (SEATS JAILCORE SL-2, agent-harness#1820).
+- TEAMHOST doctor output now reports the closed seat prerequisite and admission rows, keeps
+  launch-only checks unknown, and includes a print-only host-administrator checklist (SEATS
+  TEAMHOST SL-5, agent-harness#1820).
+
 - TEAMHOST launch integration resolves registered provider names against the call-time
   environment, so standalone Claude no longer places `/usr/local/bin:/usr/bin:/bin` ahead
   of the supplied `PATH`; Gemini preflight carries the resolved native subject and keeps a

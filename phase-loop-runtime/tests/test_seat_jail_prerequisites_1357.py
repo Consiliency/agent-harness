@@ -36,6 +36,7 @@ from phase_loop_runtime import (
     seat_jail_autoqualify as aq,
     seat_jail_prerequisites as prerequisites,
     seat_jail_qualification as qualification,
+    seat_subject,
     seat_uid,
 )
 from phase_loop_runtime.seat_jail_qualification import QualificationError
@@ -94,14 +95,23 @@ def _pytest_status(monkeypatch, status):
     monkeypatch.setattr(prerequisites, "pytest_status", lambda: status)
 
 
+def _fix_rows(monkeypatch, *, pytest="present", host="present"):
+    rows = [
+        {"name": "pytest", "status": pytest, "fix": prerequisites.PYTEST_FIX},
+        {
+            "name": "bwrap",
+            "status": host,
+            "fix": prerequisites.fix_sentence("bwrap", deployment="source"),
+        },
+    ]
+    monkeypatch.setattr(prerequisites, "check", lambda: rows)
+
+
 def test_the_fix_for_a_missing_pytest_is_a_literal_command_not_report_a_defect(monkeypatch):
-    _pytest_status(monkeypatch, "missing")
-    monkeypatch.setattr(seat_uid, "seat_uid_available", lambda: True)
-    monkeypatch.setattr(sandbox_egress, "egress_isolation_available", lambda: True)
+    _fix_rows(monkeypatch, pytest="missing")
     fix = aq.fix_for("prerequisite_missing")
     assert fix == prerequisites.PYTEST_FIX
-    for command in ("uv tool upgrade phase-loop-runtime", "pip install --upgrade phase-loop-runtime",
-                    "phase-loop seat-sandbox qualify"):
+    for command in ("uv tool upgrade phase-loop-runtime", "phase-loop seat-sandbox qualify"):
         assert f"`{command}`" in fix
     assert "report a defect" not in fix
     # pytest alone is not enough for an older system interpreter; only a release that declares
@@ -109,16 +119,21 @@ def test_the_fix_for_a_missing_pytest_is_a_literal_command_not_report_a_defect(m
     assert "--with" not in fix
 
 
-def test_the_fix_also_names_the_host_prerequisites_when_they_are_missing_too(monkeypatch):
-    _pytest_status(monkeypatch, "missing")
-    monkeypatch.setattr(seat_uid, "seat_uid_available", lambda: False)
+def test_missing_pytest_is_the_only_sentence_even_when_the_host_is_not_ready(monkeypatch):
+    _fix_rows(monkeypatch, pytest="missing", host="missing")
     fix = aq.fix_for("prerequisite_missing")
-    assert fix.startswith(prerequisites.PYTEST_FIX) and aq.REASON_FIXES["prerequisite_missing"] in fix
+    assert fix == prerequisites.PYTEST_FIX and "Also:" not in fix
 
 
-@pytest.mark.parametrize("status", ["present", "unknown"])
-def test_the_generic_fix_stays_when_pytest_is_not_known_to_be_missing(monkeypatch, status):
-    _pytest_status(monkeypatch, status)
+def test_the_host_sentence_appears_after_pytest_is_fixed(monkeypatch):
+    _fix_rows(monkeypatch, pytest="present", host="missing")
+    assert aq.fix_for("prerequisite_missing") == prerequisites.fix_sentence(
+        "bwrap", deployment="source"
+    )
+
+
+def test_the_generic_fix_stays_when_no_prerequisite_is_missing(monkeypatch):
+    _fix_rows(monkeypatch)
     assert aq.fix_for("prerequisite_missing") == aq.REASON_FIXES["prerequisite_missing"]
 
 
@@ -126,9 +141,8 @@ def test_other_reasons_keep_their_fixes_and_fix_for_never_raises(monkeypatch):
     for reason, text in aq.REASON_FIXES.items():
         if reason != "prerequisite_missing":
             assert aq.fix_for(reason) == text
-    _pytest_status(monkeypatch, "missing")
-    monkeypatch.setattr(seat_uid, "seat_uid_available", lambda: (_ for _ in ()).throw(OSError("x")))
-    assert aq.fix_for("prerequisite_missing").startswith(prerequisites.PYTEST_FIX)
+    monkeypatch.setattr(prerequisites, "check", lambda: (_ for _ in ()).throw(OSError("x")))
+    assert aq.fix_for("prerequisite_missing") == aq.REASON_FIXES["prerequisite_missing"]
 
 
 def test_the_qualify_command_prints_the_literal_fix_for_a_missing_pytest(monkeypatch, capsys):
@@ -137,14 +151,16 @@ def test_the_qualify_command_prints_the_literal_fix_for_a_missing_pytest(monkeyp
     from phase_loop_runtime import cli
 
     _pytest_status(monkeypatch, "missing")
+    _fix_rows(monkeypatch, pytest="missing")
     _host_ready(monkeypatch)
     monkeypatch.setattr(aq, "qualification_lock", contextlib.nullcontext)
     monkeypatch.setattr(qualification, "main",
                         lambda argv: (_ for _ in ()).throw(QualificationError(qualification.PYTEST_MISSING)))
     assert cli.main(["seat-sandbox", "qualify"]) == 1
     err = capsys.readouterr().err
+    expected = prerequisites.PYTEST_FIX
     assert "cannot run: " + qualification.PYTEST_MISSING in err
-    assert "fix: " + prerequisites.PYTEST_FIX in err and "`uv tool upgrade phase-loop-runtime`" in err
+    assert "fix: " + expected in err and "`phase-loop seat-sandbox qualify`" in err
 
 
 def test_the_qualify_command_adds_no_fix_line_for_other_failures(monkeypatch, capsys):
@@ -222,6 +238,21 @@ def _doctor_schema() -> dict:
 
 def _report(monkeypatch, status):
     _pytest_status(monkeypatch, status)
+    probes = {name: (lambda: True) for name in prerequisites.CHECKLIST_BY_NAME}
+    probes["pytest"] = prerequisites.pytest_status
+    monkeypatch.setattr(prerequisites, "_predicates", lambda: probes)
+    monkeypatch.setattr(doctor, "_seat_cli_qualification", lambda: [])
+    monkeypatch.setattr(
+        doctor,
+        "build_worktree_divergence",
+        lambda _root: {
+            "base_ref": "origin/main",
+            "worktree_count": 0,
+            "max_commits_ahead": 0,
+            "threshold": 20,
+            "verdict": "ok",
+        },
+    )
     return doctor.build_doctor_report(PACKAGE_ROOT, fetch=lambda url: None)
 
 
@@ -229,11 +260,13 @@ def _report(monkeypatch, status):
 def test_doctor_reports_the_prerequisite_and_validates_against_the_schema(monkeypatch, status):
     report = _report(monkeypatch, status)
     jsonschema.validate(report, _doctor_schema())
-    (entry,) = report["seat_jail_prerequisites"]
+    entry = next(row for row in report["seat_jail_prerequisites"] if row["name"] == "pytest")
     assert entry["name"] == "pytest" and entry["status"] == status
     assert ("fix" in entry) == (status == "missing")
     if status == "missing":
-        assert entry["fix"] == prerequisites.PYTEST_FIX
+        assert entry["fix"] == prerequisites.fix_sentence(
+            "pytest", deployment=seat_subject.deployment_kind()
+        )
 
 
 def test_doctors_missing_pytest_fix_carries_no_absolute_path(monkeypatch):
@@ -246,7 +279,9 @@ def test_doctor_prints_the_fix_for_a_missing_pytest(monkeypatch, capsys):
     doctor._print_doctor(_report(monkeypatch, "missing"))
     out = capsys.readouterr().out
     assert "Seat jail prerequisites" in out and "pytest" in out and "missing" in out
-    assert "fix: " + prerequisites.PYTEST_FIX in out
+    assert "fix: " + prerequisites.fix_sentence(
+        "pytest", deployment=seat_subject.deployment_kind()
+    ) in out
 
 
 def test_a_v0725_doctor_payload_without_the_new_key_still_validates():
@@ -305,7 +340,11 @@ def test_an_inventory_that_cannot_run_is_unknown_not_missing(monkeypatch):
         raise subprocess.CalledProcessError(1, "x")
 
     monkeypatch.setattr(review_stage, "falsifier_distribution_available", broken)
-    assert prerequisites.pytest_status() == "unknown" and prerequisites.missing() == []
+    probes = {name: (lambda: True) for name in prerequisites.CHECKLIST_BY_NAME}
+    probes["pytest"] = prerequisites.pytest_status
+    monkeypatch.setattr(prerequisites, "_predicates", lambda: probes)
+    assert prerequisites.pytest_status() == "unknown"
+    assert "pytest" not in prerequisites.missing()
 
 
 def test_the_snapshot_and_the_layout_identity_match_current_staging():
