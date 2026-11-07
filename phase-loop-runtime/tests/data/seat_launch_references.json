@@ -17,7 +17,6 @@
   {"count": 1, "function": "_own_cgroup", "module": "seat_resource_caps_enter", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "_read", "module": "seat_resource_caps_enter", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "main", "module": "seat_resource_caps_enter", "primitive": "os.execvpe", "role": "python-worker"},
-  {"count": 1, "function": "verify", "module": "seat_resource_caps_enter", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "_trusted_host_file", "module": "panel_invoker", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "_elf_needed", "module": "claude_seat_sdk", "primitive": "io.read_bytes", "role": "host-io"},
   {"count": 1, "function": "_pyvenv", "module": "claude_seat_sdk", "primitive": "io.lstat", "role": "host-io"},

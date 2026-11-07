@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import textwrap
@@ -192,7 +193,7 @@ def test_readiness_requires_hierarchy_manager_controllers_runner_bus_and_devices
     assert caps.readiness_code() == caps.CODE
 
 
-def test_realized_parent_requires_io_at_every_level_and_every_cap_file(
+def test_realized_parent_requires_every_controller_level_and_cap_file(
     monkeypatch, tmp_path, isolated,
 ):
     _readiness_tree(monkeypatch, tmp_path, isolated)
@@ -213,7 +214,10 @@ def test_realized_parent_requires_io_at_every_level_and_every_cap_file(
         (path / "cgroup.subtree_control").write_text(original.replace("io", ""))
         assert not caps._realized_parent_ready(unit, ())
         (path / "cgroup.subtree_control").write_text(original)
-    for name in ("memory.max", "cpu.weight", "cpu.max", "io.weight", "io.max", "pids.max"):
+    for name in (
+        "memory.max", "memory.swap.max", "cpu.weight", "cpu.max",
+        "io.weight", "io.max", "pids.max",
+    ):
         target = parent / name
         original = target.read_text()
         target.unlink()
@@ -410,20 +414,21 @@ def test_real_helper_refuses_each_missing_or_differing_readback(tmp_path):
     child.mkdir(parents=True)
     proc = tmp_path / "proc-cgroup"
     proc.write_text("0::/parent.slice/child.scope\n")
-    swaps = tmp_path / "swaps"
-    swaps.write_text("Filename Type Size Used Priority\n")
     expected = caps._expected(caps.DEFAULT_CAPS, ("8:0",), ())
     _parent_files(parent, expected)
-    enter.verify(expected, root=root, proc_cgroup=proc, proc_swaps=swaps)
-    for name in ("memory.max", "cpu.weight", "cpu.max", "io.weight", "io.max", "pids.max"):
+    enter.verify(expected, root=root, proc_cgroup=proc)
+    for name in (
+        "memory.max", "memory.swap.max", "cpu.weight", "cpu.max",
+        "io.weight", "io.max", "pids.max",
+    ):
         original = (parent / name).read_text()
         (parent / name).write_text("different")
         with pytest.raises((ValueError, KeyError)):
-            enter.verify(expected, root=root, proc_cgroup=proc, proc_swaps=swaps)
+            enter.verify(expected, root=root, proc_cgroup=proc)
         (parent / name).write_text(original)
         (parent / name).unlink()
         with pytest.raises(enter.ControllerUnavailable):
-            enter.verify(expected, root=root, proc_cgroup=proc, proc_swaps=swaps)
+            enter.verify(expected, root=root, proc_cgroup=proc)
         (parent / name).write_text(original)
 
 
@@ -454,8 +459,6 @@ def _fake_systemd_run(path: Path, root: Path, proc_cgroup: Path, log: Path | Non
 def _install_fake_cap_host(monkeypatch, tmp_path, isolated, *, runner_body=None, log=None):
     root, _manager, _runtime = _readiness_tree(monkeypatch, tmp_path, isolated)
     proc_cgroup = tmp_path / "proc-cgroup"
-    swaps = tmp_path / "swaps"
-    swaps.write_text("Filename Type Size Used Priority\n")
     runner = tmp_path / "systemd-run"
     if runner_body is None:
         _fake_systemd_run(runner, root, proc_cgroup, log=log)
@@ -464,7 +467,6 @@ def _install_fake_cap_host(monkeypatch, tmp_path, isolated, *, runner_body=None,
         runner.chmod(0o755)
     monkeypatch.setattr(caps, "_SYSTEMD_RUN", runner)
     monkeypatch.setattr(caps, "_PROC_CGROUP", proc_cgroup)
-    monkeypatch.setattr(caps, "_PROC_SWAPS", swaps)
     configured: list[str] = []
     stopped: list[str] = []
 
@@ -487,12 +489,10 @@ def _install_fake_cap_host(monkeypatch, tmp_path, isolated, *, runner_body=None,
 def test_capped_popen_real_helper_pid_fd_env_and_one_parent(monkeypatch, tmp_path, isolated):
     root, _manager, _runtime = _readiness_tree(monkeypatch, tmp_path, isolated)
     proc_cgroup = tmp_path / "proc-cgroup"
-    swaps = tmp_path / "swaps"; swaps.write_text("Filename Type Size Used Priority\n")
     runner = tmp_path / "systemd-run"
     _fake_systemd_run(runner, root, proc_cgroup)
     monkeypatch.setattr(caps, "_SYSTEMD_RUN", runner)
     monkeypatch.setattr(caps, "_PROC_CGROUP", proc_cgroup)
-    monkeypatch.setattr(caps, "_PROC_SWAPS", swaps)
     configured = []
 
     def systemctl(*args, **_kwargs):
@@ -598,8 +598,9 @@ def test_capped_popen_surfaces_the_helpers_readback_failure(
     )
 
 
-def test_missing_realized_controller_refuses_before_the_child_launch(
-    monkeypatch, tmp_path, isolated,
+@pytest.mark.parametrize("missing", ["io.weight", "memory.swap.max"])
+def test_missing_realized_cap_refuses_before_the_child_launch(
+    monkeypatch, tmp_path, isolated, missing,
 ):
     _root, _proc, _configured, stopped = _install_fake_cap_host(
         monkeypatch, tmp_path, isolated,
@@ -613,21 +614,24 @@ def test_missing_realized_controller_refuses_before_the_child_launch(
         if args[0] == "start":
             return
         parent = _realized_parent_files(args[2], _expected_from_properties(args[3:]))
-        (parent / "io.weight").unlink()
+        (parent / missing).unlink()
 
     monkeypatch.setattr(caps, "_systemctl", systemctl)
     monkeypatch.setattr(
         caps.subprocess, "Popen", lambda *_args, **_kwargs: launches.append(True),
     )
     with pytest.raises(seat_jail.SeatSandboxRefused) as refused:
-        caps.capped_popen([sys.executable, "-c", "pass"], seat_key="unready-parent")
+        caps.capped_popen(
+            [sys.executable, "-c", "pass"], seat_key=f"unready-parent-{missing}",
+        )
     assert refused.value.code == caps.CODE
     assert str(refused.value) == "the host does not provide delegated seat controllers"
     assert launches == [] and stopped
 
 
-def test_helper_missing_controller_maps_to_the_readiness_refusal(
-    monkeypatch, tmp_path, isolated,
+@pytest.mark.parametrize("missing", ["io.weight", "memory.swap.max"])
+def test_helper_missing_cap_maps_to_the_readiness_refusal(
+    monkeypatch, tmp_path, isolated, missing,
 ):
     _install_fake_cap_host(monkeypatch, tmp_path, isolated)
     ready = caps._realized_parent_ready
@@ -635,14 +639,14 @@ def test_helper_missing_controller_maps_to_the_readiness_refusal(
     def remove_after_check(unit, carved):
         result = ready(unit, carved)
         if result:
-            (caps._seat_slice_chain(unit)[-1] / "io.weight").unlink()
+            (caps._seat_slice_chain(unit)[-1] / missing).unlink()
         return result
 
     monkeypatch.setattr(caps, "_realized_parent_ready", remove_after_check)
     with pytest.raises(seat_jail.SeatSandboxRefused) as refused:
         caps.capped_popen(
             [sys.executable, "-c", "raise AssertionError('target must not run')"],
-            seat_key="controller-race", stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            seat_key=f"cap-race-{missing}", stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
     assert refused.value.code == caps.CODE
     assert str(refused.value) == "the host does not provide delegated seat controllers"
@@ -736,29 +740,21 @@ def test_io_paths_are_never_carved_out(monkeypatch, tmp_path, isolated):
         caps._device_plan(replace(caps.DEFAULT_CAPS, io_paths=(str(extra),)))
 
 
-def test_tmpfs_swap_readback_and_parent_property(monkeypatch, tmp_path, isolated):
-    _phase, staging, scratch = isolated
-    carved = (staging, scratch)
-    assert "MemorySwapMax=0" in caps._parent_properties(caps.DEFAULT_CAPS, (), carved)
+def test_every_parent_disables_swap_and_attests_zero(tmp_path, isolated):
+    assert "MemorySwapMax=0" in caps._parent_properties(caps.DEFAULT_CAPS, (), ())
 
     root = tmp_path / "cg"; parent = root / "p"; child = parent / "c"; child.mkdir(parents=True)
     proc = tmp_path / "pc"; proc.write_text("0::/p/c\n")
-    swaps = tmp_path / "sw"; swaps.write_text("Filename Type Size Used Priority\n")
-    expected = caps._expected(caps.DEFAULT_CAPS, (), carved)
+    expected = caps._expected(caps.DEFAULT_CAPS, (), ())
+    assert expected["memory.swap.max"] == "0"
     _parent_files(parent, expected)
-    enter.verify(expected, root=root, proc_cgroup=proc, proc_swaps=swaps)
+    enter.verify(expected, root=root, proc_cgroup=proc)
     (parent / "memory.swap.max").write_text("1")
-    with pytest.raises(ValueError):
-        enter.verify(expected, root=root, proc_cgroup=proc, proc_swaps=swaps)
+    with pytest.raises(ValueError, match="memory.swap.max readback mismatch"):
+        enter.verify(expected, root=root, proc_cgroup=proc)
     (parent / "memory.swap.max").unlink()
-    swaps.write_text("Filename Type Size Used Priority\n/dev/zram0 partition 1 0 -2\n")
-    with pytest.raises(ValueError):
-        enter.verify(expected, root=root, proc_cgroup=proc, proc_swaps=swaps)
-    swaps.write_text("Filename Type Size Used Priority\n")
-    enter.verify(expected, root=root, proc_cgroup=proc, proc_swaps=swaps)
-    (parent / "memory.max").write_text("different")
-    with pytest.raises(ValueError):
-        enter.verify(expected, root=root, proc_cgroup=proc, proc_swaps=swaps)
+    with pytest.raises(enter.ControllerUnavailable, match="memory.swap.max readback unavailable"):
+        enter.verify(expected, root=root, proc_cgroup=proc)
 
 
 def test_tmpfs_refusal_is_typed_and_never_starts_the_target(monkeypatch, tmp_path, isolated):
@@ -1030,18 +1026,27 @@ def test_host_probe(monkeypatch):
     assert devices or carved
     monkeypatch.setattr(caps, "load_caps", lambda: probe_caps)
 
-    def run(argv, seat_key, *, timeout=45, cleanup=()):
+    def run(argv, seat_key, *, timeout=45, cleanup=(), observe_oom=False):
         started = time.monotonic()
+        oom_kills = 0
         with caps._seat_scope(seat_key):
             process = caps.capped_popen(
                 argv, seat_key=seat_key, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
             stdout, stderr = process.communicate(timeout=timeout)
+            if observe_oom:
+                parent = caps._PARENTS[seat_key]
+                events = dict(
+                    line.split() for line in
+                    (caps._seat_slice_chain(parent.unit)[-1] / "memory.events")
+                    .read_text(encoding="ascii").splitlines()
+                )
+                oom_kills = int(events["oom_kill"])
             for path in cleanup:
                 path.unlink(missing_ok=True)
         elapsed = time.monotonic() - started
         _wait_for_parent_collection()
-        return process.returncode, stdout, stderr, elapsed
+        return process.returncode, stdout, stderr, elapsed, oom_kills
 
     staging = caps._automatic_paths()[0]
     stem = f"seat-caps-probe-{os.getpid()}-{time.time_ns()}"
@@ -1052,7 +1057,7 @@ def test_host_probe(monkeypatch):
     if dd is None:
         pytest.fail("the designated seat host has no dd for the direct-I/O cap probe")
     try:
-        rc, _stdout, stderr, elapsed = run(
+        rc, _stdout, stderr, elapsed, _oom_kills = run(
             [dd, "if=/dev/zero", f"of={direct}", "bs=4M", "count=1", "oflag=direct",
              "conv=fsync", "status=none"],
             "host-probe-direct",
@@ -1064,7 +1069,7 @@ def test_host_probe(monkeypatch):
             "import os,sys; f=open(sys.argv[1],'wb'); f.write(b'x'*(4<<20)); "
             "f.flush(); os.fsync(f.fileno()); f.close()"
         )
-        rc, _stdout, stderr, elapsed = run(
+        rc, _stdout, stderr, elapsed, _oom_kills = run(
             [sys.executable, "-c", buffered_script, str(buffered)],
             "host-probe-buffered",
         )
@@ -1075,11 +1080,13 @@ def test_host_probe(monkeypatch):
             "import pathlib,sys,time; x=bytearray(96<<20); "
             "pathlib.Path(sys.argv[1]).touch(); time.sleep(.1)"
         )
-        rc, _stdout, _stderr, _elapsed = run(
+        rc, _stdout, stderr, _elapsed, oom_kills = run(
             [sys.executable, "-c", memory_script, str(completed)],
-            "host-probe-memory",
+            "host-probe-memory", observe_oom=True,
         )
-        assert rc != 0 and not completed.exists()
+        assert rc in {-signal.SIGKILL, 128 + signal.SIGKILL}, stderr
+        assert oom_kills >= 1
+        assert not completed.exists()
 
         pids_script = textwrap.dedent("""\
             import os, signal
@@ -1102,7 +1109,7 @@ def test_host_probe(monkeypatch):
                     try: os.waitpid(pid, 0)
                     except ChildProcessError: pass
         """)
-        rc, stdout, stderr, _elapsed = run(
+        rc, stdout, stderr, _elapsed, _oom_kills = run(
             [sys.executable, "-c", pids_script], "host-probe-pids",
         )
         assert rc == 0, stderr
@@ -1124,7 +1131,7 @@ def test_host_probe(monkeypatch):
                     target.flush()
                 pathlib.Path(sys.argv[2]).touch()
             """)
-            rc, stdout, _stderr, _elapsed = run(
+            rc, stdout, _stderr, _elapsed, _oom_kills = run(
                 [sys.executable, "-c", tmpfs_script, str(tmpfs_output), str(completed)],
                 "host-probe-tmpfs", cleanup=(tmpfs_output,),
             )

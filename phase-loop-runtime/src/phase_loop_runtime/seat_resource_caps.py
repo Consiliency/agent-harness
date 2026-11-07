@@ -31,7 +31,6 @@ _ENV_PAYLOAD_CAP = 60 * 1024  # below the default pipe capacity, so the write ne
 _CGROUP_ROOT = Path("/sys/fs/cgroup")
 _SYS_DEV_BLOCK = Path("/sys/dev/block")
 _MOUNTINFO = Path("/proc/self/mountinfo")
-_PROC_SWAPS = Path("/proc/swaps")
 _PROC_MEMINFO = Path("/proc/meminfo")
 _PROC_CGROUP = Path("/proc/self/cgroup")
 _SYSTEMD_RUN = Path("/usr/bin/systemd-run")
@@ -389,14 +388,13 @@ def _expected(caps: SeatResourceCaps, devices: Sequence[str], carved: Sequence[P
     }
     value: dict[str, object] = {
         "memory.max": str(caps.memory_max_bytes),
+        "memory.swap.max": "0",
         "cpu.weight": str(caps.cpu_weight),
         "cpu.max": f"{caps.cpu_max_percent * 1000} {_CPU_PERIOD}",
         "io.weight": str(caps.io_weight),
         "io.max": io_rows,
         "pids.max": str(caps.pids_max),
     }
-    if carved:
-        value["memory.swap.max"] = "0"
     return value
 
 
@@ -430,9 +428,10 @@ def _realized_parent_ready(unit: str, carved: Sequence[Path]) -> bool:
             enabled = set((path / "cgroup.subtree_control").read_text(encoding="ascii").split())
             if not REQUIRED_CONTROLLERS <= enabled:
                 return False
-        names = {"memory.max", "cpu.weight", "cpu.max", "io.weight", "io.max", "pids.max"}
-        if carved:
-            names.add("memory.swap.max")
+        names = {
+            "memory.max", "memory.swap.max", "cpu.weight", "cpu.max",
+            "io.weight", "io.max", "pids.max",
+        }
         return all((chain[-1] / name).is_file() for name in names)
     except (CapsUnavailable, OSError, ValueError):
         return False
@@ -464,12 +463,11 @@ def _systemctl(*args: str, timeout: float = 15.0) -> None:
 
 def _parent_properties(caps: SeatResourceCaps, devices: Sequence[str], carved: Sequence[Path]) -> list[str]:
     properties = [
-        f"MemoryMax={caps.memory_max_bytes}", f"CPUWeight={caps.cpu_weight}",
+        f"MemoryMax={caps.memory_max_bytes}", "MemorySwapMax=0",
+        f"CPUWeight={caps.cpu_weight}",
         f"CPUQuota={caps.cpu_max_percent}%", f"IOWeight={caps.io_weight}",
         f"TasksMax={caps.pids_max}",
     ]
-    if carved:
-        properties.append("MemorySwapMax=0")
     for device in devices:
         # systemd's resource-control properties take a device-node path.  The
         # kernel readback remains bound to the canonical MAJ:MIN.
@@ -612,7 +610,7 @@ def capped_popen(command, *, seat_key: str, **popen_kwargs) -> "subprocess.Popen
             "/usr/bin/python3", "-I", "-S", str(helper), "--attest-fd", str(write_fd),
             "--env-fd", str(env_read), "--diagnostic-fd", str(diagnostic_write),
             "--expected", expected, "--cgroup-root", str(_CGROUP_ROOT),
-            "--proc-cgroup", str(_PROC_CGROUP), "--proc-swaps", str(_PROC_SWAPS),
+            "--proc-cgroup", str(_PROC_CGROUP),
             "--", *[os.fsdecode(item) for item in command],
         ]
         pass_fds = set(popen_kwargs.get("pass_fds", ()))

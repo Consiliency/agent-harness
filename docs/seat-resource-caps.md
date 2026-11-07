@@ -38,7 +38,9 @@ boolean, floating-point or out-of-bound values refuse. `io_paths` contains addit
 absolute paths whose whole backing block devices receive the same `io.max` values. A
 partition resolves to its whole disk. A device-mapper node must resolve through exactly one
 slave at every layer. `memory_max_bytes` should be page-aligned; a kernel-rounded readback
-does not match the requested record and therefore refuses.
+does not match the requested record and therefore refuses. Every capped parent also sets
+`MemorySwapMax=0`, and the child must read back `memory.swap.max` as exactly `0`; a host that
+cannot expose or enforce that file refuses with `seat_resource_caps_unavailable`.
 
 The staging root and child scratch are automatic I/O paths. A major-0 filesystem normally
 refuses because no block device can carry `io.max`. The runtime recognizes a descriptor-opened

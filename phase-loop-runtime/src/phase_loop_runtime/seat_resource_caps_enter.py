@@ -51,8 +51,7 @@ def _io_max(value: str) -> dict[str, dict[str, str]]:
     return rows
 
 
-def verify(expected: dict[str, object], *, root: Path, proc_cgroup: Path,
-           proc_swaps: Path) -> None:
+def verify(expected: dict[str, object], *, root: Path, proc_cgroup: Path) -> None:
     child = _own_cgroup(root, proc_cgroup)
     parent = child.parent
     scalar = {
@@ -70,15 +69,8 @@ def verify(expected: dict[str, object], *, root: Path, proc_cgroup: Path,
     wanted_io = expected.get("io.max")
     if not isinstance(wanted_io, dict) or actual_io != wanted_io:
         raise ValueError("io.max readback mismatch")
-    if expected.get("memory.swap.max") == "0":
-        swap_max = parent / "memory.swap.max"
-        if swap_max.exists():
-            if _read(swap_max) != "0":
-                raise ValueError("memory.swap.max readback mismatch")
-        else:
-            lines = proc_swaps.read_text(encoding="utf-8").splitlines()
-            if any(line.strip() for line in lines[1:]):
-                raise ValueError("active swap defeats the tmpfs carve-out")
+    if _read(parent / "memory.swap.max") != "0":
+        raise ValueError("memory.swap.max readback mismatch")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -89,7 +81,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expected", required=True)
     parser.add_argument("--cgroup-root", default="/sys/fs/cgroup")
     parser.add_argument("--proc-cgroup", default="/proc/self/cgroup")
-    parser.add_argument("--proc-swaps", default="/proc/swaps")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
@@ -108,8 +99,7 @@ def main(argv: list[str] | None = None) -> int:
         expected = json.loads(args.expected)
         if not isinstance(expected, dict):
             raise ValueError("expected caps are invalid")
-        verify(expected, root=Path(args.cgroup_root), proc_cgroup=Path(args.proc_cgroup),
-               proc_swaps=Path(args.proc_swaps))
+        verify(expected, root=Path(args.cgroup_root), proc_cgroup=Path(args.proc_cgroup))
         os.write(args.attest_fd, b"1")
         os.close(args.attest_fd)
         os.close(args.diagnostic_fd)
