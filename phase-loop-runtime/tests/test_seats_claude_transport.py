@@ -667,6 +667,10 @@ def test_the_sdk_preflight_runs_first_and_needs_no_dependency_session(monkeypatc
     events: list[str] = []
     _sdk_with_preflight(monkeypatch, lambda: events.append("preflight") or "the install")
     monkeypatch.setattr(eds, "current_dependency_for_provider", lambda provider: None)
+    # This is an offline transport-order test.  Select the established injected-subject
+    # seam so it never depends on a provider installation or the hosted runner's PATH.
+    monkeypatch.setattr(pi, "_resolve_claude_executable",
+                        lambda: Path("/provider-free/claude"))
     tree = tmp_path / seat_jail.HOST_TREE_DIRNAME
     tree.mkdir()
     descriptor = seat_jail.open_dir_nofollow(tree)

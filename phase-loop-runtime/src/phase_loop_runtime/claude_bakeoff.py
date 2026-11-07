@@ -348,7 +348,7 @@ ARCHES = ("x86_64", "aarch64")
 
 #: The runtime sources the TUI jail profile digest is computed from (the package's
 #: ``__init__`` is loaded too, but declares nothing the digest reads).
-JAIL_PROFILE_SOURCES = ("seat_jail.py",)
+JAIL_PROFILE_SOURCES = ("seat_jail.py", "seat_profiles.py", "seat_route_contract.py")
 _RUNTIME_DIR = "phase-loop-runtime/src/phase_loop_runtime"
 
 
