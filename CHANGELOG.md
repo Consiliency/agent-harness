@@ -29,6 +29,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `python tests/test_seats_claude_sdk.py capture` refuses on a host without the live
   worker's prerequisites, and an unsandboxed leg must still reproduce every recorded frame
   on every host.
+
+- TEAMHOST seat-subject resolution now reads absolute provider search paths at call time,
+  distinguishes managed releases from standalone installs through guarded wrappers, and binds
+  managed authority to the independent root-owned pin (SEATS TEAMHOST SL-1,
+  agent-harness#1820).
+
 - The jailed Claude seat's `sdk` host worker gets its launcher and duplex leg, still
   unadmitted (SEATS CLAUDE SL-1, agent-harness#1820). `panel_invoker._run_claude_sdk_leg`
   leases the worker its own seat id and starts it inside the leg's seat-uid holder:
