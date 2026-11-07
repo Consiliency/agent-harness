@@ -109,7 +109,8 @@ def _data_path(name: str) -> Path:
     return Path(str(resources.files("phase_loop_runtime").joinpath(_DATA, name)))
 
 
-def _allowlist_document(allowlist_id: str) -> dict[str, object]:
+def allowlist(allowlist_id: str = "gemini") -> dict[str, object]:
+    """Load and validate one pinned request allowlist."""
     if not isinstance(allowlist_id, str) or _ALLOWLIST_ID.fullmatch(allowlist_id) is None:
         raise EgressLayerUnavailable(ALLOWLIST_MISSING_CODE, "the seat egress allowlist id is invalid")
     path = _data_path(f"{allowlist_id}-allowlist.json")
@@ -133,6 +134,7 @@ def _allowlist_document(allowlist_id: str) -> dict[str, object]:
         raise EgressLayerUnavailable(
             INTEGRITY_CODE, f"the seat egress allowlist is malformed: {allowlist_id}",
         )
+    _validate_allowlist_document(allowlist_id, document)
     return document
 
 
@@ -180,8 +182,7 @@ def _probe_rows(
 
 def allowlist_ref(allowlist_id: str) -> AllowlistRef:
     """Load one packaged allowlist and bind every request and refusal row."""
-    document = _allowlist_document(allowlist_id)
-    _validate_allowlist_document(allowlist_id, document)
+    document = allowlist(allowlist_id)
     rules = document["allow"]
     refused = document["measured_and_refused"]
     assert isinstance(rules, list) and isinstance(refused, list)
@@ -194,13 +195,6 @@ def allowlist_ref(allowlist_id: str) -> AllowlistRef:
         request_set=tuple(dict(rule) for rule in rules if isinstance(rule, dict)),
         probe_rows=_probe_rows(rules, refused),
     )
-
-
-def allowlist(allowlist_id: str = "gemini") -> dict[str, object]:
-    """One pinned request allowlist; the default preserves the Gemini API."""
-    document = _allowlist_document(allowlist_id)
-    _validate_allowlist_document(allowlist_id, document)
-    return document
 
 
 def _data_home() -> Path:
