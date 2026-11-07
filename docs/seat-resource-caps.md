@@ -37,14 +37,15 @@ Every value is finite. Unknown or duplicate keys, trailing data, `max`, zero, ne
 boolean, floating-point or out-of-bound values refuse. `io_paths` contains additional
 absolute paths whose whole backing block devices receive the same `io.max` values. A
 partition resolves to its whole disk. A device-mapper node must resolve through exactly one
-slave at every layer.
+slave at every layer. `memory_max_bytes` should be page-aligned; a kernel-rounded readback
+does not match the requested record and therefore refuses.
 
 The staging root and child scratch are automatic I/O paths. A major-0 filesystem normally
-refuses because no block device can carry `io.max`. The only exception is a descriptor-opened
-`tmpfs` confirmed by both mountinfo and `fstatfs`. That carve-out also requires the capped
-parent's matching `memory.max`, `memory.swap.max=0` (or no active swap when that controller
-file is absent), and teardown of launch-created content before parent collection. An
-operator `io_paths` entry is never carved out.
+refuses because no block device can carry `io.max`. The runtime recognizes a descriptor-opened
+`tmpfs` only when mountinfo and `fstatfs` agree, but currently refuses that carve-out because
+the staging lifecycle does not yet remove launch-created content before parent collection.
+An operator `io_paths` entry is never eligible for a carve-out. Until the cleanup wiring lands,
+every automatic tmpfs path fails closed with `seat_resource_caps_unavailable`.
 
 ## Host prerequisite
 

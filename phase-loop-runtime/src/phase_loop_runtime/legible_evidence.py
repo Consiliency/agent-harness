@@ -856,16 +856,17 @@ def _invoke_reviewtruth_fable_adapter(subject: Mapping[str, Any], *, repo: Path 
         # while the subscription route itself succeeds.
         marker_env = dict(env)
         marker_env["CLAUDECODE"] = "1"
-        marker_result = panel_invoker._default_spawn(
-            "claude",
-            _REVIEWTRUTH_PROBE_ARTIFACT,
-            repo_dir=repo,
-            mode="review",
-            model=subject["model"],
-            env=marker_env,
-            review_authorization=authorization,
-            canonical_repo_authority=repo,
-        )
+        with panel_invoker._uncapped_nonseat_probe():
+            marker_result = panel_invoker._default_spawn(
+                "claude",
+                _REVIEWTRUTH_PROBE_ARTIFACT,
+                repo_dir=repo,
+                mode="review",
+                model=subject["model"],
+                env=marker_env,
+                review_authorization=authorization,
+                canonical_repo_authority=repo,
+            )
         marker_status, marker_text = marker_result[0], marker_result[1]
         if marker_status == "UNAVAILABLE" and str(marker_text).strip() == panel_invoker._CLAUDE_LEG_DEFERRED_UNDER_CLAUDE_CODE:
             # REVIEWTRUTH early slice (D5): the routing in force defers the claude seat to a
@@ -878,16 +879,17 @@ def _invoke_reviewtruth_fable_adapter(subject: Mapping[str, Any], *, repo: Path 
                            "bind a native fill — run the probe from Claude Code with a fill"),
             }
         started = time.monotonic()
-        leg_result = panel_invoker._default_spawn(
-            "claude",
-            _REVIEWTRUTH_PROBE_ARTIFACT,
-            repo_dir=repo,
-            mode="review",
-            model=subject["model"],
-            env=env,
-            review_authorization=authorization,
-            canonical_repo_authority=repo,
-        )
+        with panel_invoker._uncapped_nonseat_probe():
+            leg_result = panel_invoker._default_spawn(
+                "claude",
+                _REVIEWTRUTH_PROBE_ARTIFACT,
+                repo_dir=repo,
+                mode="review",
+                model=subject["model"],
+                env=env,
+                review_authorization=authorization,
+                canonical_repo_authority=repo,
+            )
         elapsed_ms = int((time.monotonic() - started) * 1000)
     finally:
         try:

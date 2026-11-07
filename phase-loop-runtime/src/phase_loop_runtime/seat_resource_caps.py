@@ -8,6 +8,7 @@ from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import select
@@ -26,6 +27,7 @@ _OPERATOR_RECORD = "seat-resource-caps.json"
 _RECORD_CAP = 64 * 1024
 _CPU_PERIOD = 100000
 _ATTEST_TIMEOUT_S = 15.0
+_ENV_PAYLOAD_CAP = 60 * 1024  # below the default pipe capacity, so the write never blocks
 _CGROUP_ROOT = Path("/sys/fs/cgroup")
 _SYS_DEV_BLOCK = Path("/sys/dev/block")
 _MOUNTINFO = Path("/proc/self/mountinfo")
@@ -83,6 +85,9 @@ class _SeatScope:
 _CURRENT_SEAT_SCOPE: ContextVar[_SeatScope | None] = ContextVar(
     "seat_resource_caps_current_seat_scope", default=None
 )
+_UNCAPPED_NONSEAT_PROBE: ContextVar[bool] = ContextVar(
+    "seat_resource_caps_uncapped_nonseat_probe", default=False
+)
 
 
 @contextmanager
@@ -104,6 +109,26 @@ def _seat_scope(seat_key: str):
         _CURRENT_SEAT_SCOPE.reset(token)
         if scope.parent is not None:
             _release_parent(scope.seat_key, scope.parent, scope.carved)
+
+
+def live_seat_key() -> str:
+    """The seat key of the attempt running in this context, or empty outside one."""
+    scope = _CURRENT_SEAT_SCOPE.get()
+    return "" if scope is None else scope.seat_key
+
+
+@contextmanager
+def _uncapped_nonseat_probe():
+    """Select the §4 Exempt path for a fixed measurement that is not a seat attempt."""
+    token = _UNCAPPED_NONSEAT_PROBE.set(True)
+    try:
+        yield
+    finally:
+        _UNCAPPED_NONSEAT_PROBE.reset(token)
+
+
+def nonseat_probe_active() -> bool:
+    return _UNCAPPED_NONSEAT_PROBE.get()
 
 
 def _refuse(reason: str, exc: BaseException | None = None):
@@ -260,7 +285,7 @@ def _tmpfs_carveout(path: Path, device: tuple[int, int]) -> bool:
 
 
 def _dev_number(path: Path) -> tuple[int, int]:
-    info = os.stat(path, follow_symlinks=False)
+    info = os.stat(path)
     return os.major(info.st_dev), os.minor(info.st_dev)
 
 
@@ -308,8 +333,7 @@ def _device_plan(caps: SeatResourceCaps) -> tuple[tuple[str, ...], tuple[Path, .
             device = _dev_number(path)
             if device[0] == 0:
                 if is_automatic and _tmpfs_carveout(path, device):
-                    carved.append(path)
-                    continue
+                    _refuse("tmpfs carve-out cleanup is not wired")
                 _refuse("anonymous filesystem cannot carry io.max")
             whole = _whole_device(device)
         except CapsUnavailable:
@@ -437,25 +461,22 @@ def _acquire_parent(seat_key: str, caps: SeatResourceCaps, devices: Sequence[str
         return parent, f"phase-loop-seat-{_unit_key(seat_key)}-{parent.children}.scope"
 
 
-def _cleanup_carved_paths(_paths: Sequence[Path]) -> None:
-    """Ordering seam: caller-owned automatic roots are cleaned by their owning lifecycle."""
-
-
-def _release_parent(seat_key: str, parent: _Parent, carved: Sequence[Path]) -> None:
+def _release_parent(seat_key: str, parent: _Parent, _carved: Sequence[Path]) -> None:
     unit: str | None = None
     with _PARENT_LOCK:
         current = _PARENTS.get(seat_key)
         if current is parent:
             current.refs -= 1
             if current.refs == 0:
-                _cleanup_carved_paths(carved)
                 unit = current.unit
                 del _PARENTS[seat_key]
     if unit is not None:
         try:
             _systemctl("stop", unit)
         except CapsUnavailable:
-            pass
+            logging.getLogger(__name__).warning(
+                "seat resource-cap parent collection failed for %s", unit,
+            )
 
 
 def _refused(reason: str, exc: BaseException | None = None):
@@ -469,8 +490,6 @@ def _refused(reason: str, exc: BaseException | None = None):
 def capped_popen(command, *, seat_key: str, **popen_kwargs) -> "subprocess.Popen[bytes]":
     """Start one local seat child below its seat-key parent and prove every cap."""
     scope = _CURRENT_SEAT_SCOPE.get()
-    if not seat_key:
-        seat_key = "" if scope is None else scope.seat_key
     if not isinstance(seat_key, str) or not seat_key:
         _refused("a live seat key is required")
     if scope is not None and scope.seat_key != seat_key:
@@ -495,6 +514,23 @@ def capped_popen(command, *, seat_key: str, **popen_kwargs) -> "subprocess.Popen
             seat_key, caps, devices, carved, child=True,
         )
         assert child_unit is not None
+        # systemd-run must reach the user manager, so it runs with the bus address; the
+        # helper hands the target the exact caller-selected environment, read from a pipe
+        # (never argv), so the target environment equals an uncapped launch's.
+        selected = popen_kwargs.get("env")
+        target_env = {os.fsdecode(key): os.fsdecode(value) for key, value in
+                      (os.environ if selected is None else selected).items()}
+        payload = json.dumps(target_env, sort_keys=True, separators=(",", ":")).encode()
+        if len(payload) > _ENV_PAYLOAD_CAP:
+            _refuse("the target environment is too large to hand over")
+        runtime = _runtime_dir()
+        popen_kwargs["env"] = {**target_env, "XDG_RUNTIME_DIR": str(runtime),
+                               "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime / 'bus'}"}
+        env_read, env_write = os.pipe()
+        try:
+            os.write(env_write, payload)
+        finally:
+            os.close(env_write)
         read_fd, write_fd = os.pipe()
         expected = json.dumps(_expected(caps, devices, carved), sort_keys=True, separators=(",", ":"))
         helper = Path(__file__).with_name("seat_resource_caps_enter.py")
@@ -502,12 +538,13 @@ def capped_popen(command, *, seat_key: str, **popen_kwargs) -> "subprocess.Popen
             str(_SYSTEMD_RUN), "--user", "--scope", "--quiet", "--collect",
             f"--unit={child_unit}", f"--slice={parent.unit}", "--same-dir", "--",
             "/usr/bin/python3", "-I", "-S", str(helper), "--attest-fd", str(write_fd),
+            "--env-fd", str(env_read),
             "--expected", expected, "--cgroup-root", str(_CGROUP_ROOT),
             "--proc-cgroup", str(_PROC_CGROUP), "--proc-swaps", str(_PROC_SWAPS),
             "--", *[os.fsdecode(item) for item in command],
         ]
         pass_fds = set(popen_kwargs.get("pass_fds", ()))
-        pass_fds.add(write_fd)
+        pass_fds.update((write_fd, env_read))
         popen_kwargs["pass_fds"] = tuple(sorted(pass_fds))
         popen_kwargs.setdefault("close_fds", True)
         try:
@@ -518,6 +555,7 @@ def capped_popen(command, *, seat_key: str, **popen_kwargs) -> "subprocess.Popen
                 raise
         finally:
             os.close(write_fd)
+            os.close(env_read)
         try:
             readable, _, _ = select.select([read_fd], [], [], _ATTEST_TIMEOUT_S)
             attested = bool(readable and os.read(read_fd, 1) == b"1")

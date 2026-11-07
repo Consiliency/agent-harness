@@ -6109,8 +6109,7 @@ def launch_owned(argv, *, role, profile: SeatProfile, supervisor=None,
             return launch_provider(
                 command,
                 dependency=profile.dependency,
-                seat_caps=(seat_caps or "")
-                if role is SeatLaunchRole.PROVIDER_REVIEW else None,
+                seat_caps=seat_caps,
                 **kwargs,
             )
     finally:
@@ -6472,6 +6471,13 @@ def sandbox_usable_by(leg: str | None, brokered: bool, *, jailed: bool = False) 
 _EGRESS_LAUNCH_PREFIX: ContextVar[tuple[str, ...]] = ContextVar(
     "_EGRESS_LAUNCH_PREFIX", default=(),
 )
+
+
+@contextmanager
+def _uncapped_nonseat_probe():
+    from .seat_resource_caps import _uncapped_nonseat_probe as _caps_nonseat_probe
+    with _caps_nonseat_probe():
+        yield
 
 # agent-harness#1132 (r12): the cancellation event of the board a seat runs under, set by
 # ``invoke_board`` around each seat in the worker thread, under EVERY monitoring policy. A
@@ -9567,6 +9573,8 @@ def _run_leg_with_liveness(
 
     def _popen() -> subprocess.Popen[bytes]:
         nonlocal proc
+        from .seat_resource_caps import live_seat_key as _live_seat_key, nonseat_probe_active
+        seat_caps = None if nonseat_probe_active() else _live_seat_key()
         # Launch INSIDE the filtered network namespace when one is held. The board found
         # the filtering was computed, reported, and never applied to a provider; a prefix
         # here composes with argv, cwd, env, stdin and process-group handling unchanged,
@@ -9581,7 +9589,7 @@ def _run_leg_with_liveness(
                 stdin=(subprocess.PIPE if input_text is not None or duplex is not None
                        else subprocess.DEVNULL),
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
-                trace_output=trace_output,
+                trace_output=trace_output, seat_caps=seat_caps,
             )
             return proc
         # The request's own refusals (an unavailable profile) come before the host's.
@@ -9603,7 +9611,7 @@ def _run_leg_with_liveness(
             profile_stack.callback(_EGRESS_LAUNCH_PREFIX.reset, token)
         proc = launch_owned(
             owned_command, role=SeatLaunchRole.PROVIDER_REVIEW, profile=profile,
-            retain_caps=retain_caps,
+            retain_caps=retain_caps, seat_caps=seat_caps,
             # The heartbeat jail mounts its own private /tmp (agent-harness#1181); a host
             # scratch dir would not exist inside it. Every other leg is relocated unless
             # the caller names its decision (the frozen capture route).
@@ -10286,9 +10294,10 @@ def _run_claude_sdk_leg(
             raise _claude_sdk_refused("claude_sdk_worker_unavailable") from exc
         if worker_id in (seat.jail.seat_ids or ()):
             raise _claude_sdk_refused("claude_sdk_worker_unavailable")
+        from .seat_resource_caps import live_seat_key as _live_seat_key
         worker = _launch_claude_sdk_worker(
             spec, worker_id=worker_id, prepared=prepared,
-            seat_key="",
+            seat_key=_live_seat_key(),
         )
         stack.callback(worker.terminate)
         closure = next(destination for destination, source in spec.read_only.items()
@@ -10799,6 +10808,8 @@ def _run_claude_tui_session(
             pass
         try:
             def _popen() -> subprocess.Popen[bytes]:
+                from .seat_resource_caps import live_seat_key as _live_seat_key, nonseat_probe_active
+                seat_caps = None if nonseat_probe_active() else _live_seat_key()
                 # The SECOND launch seam. The first wiring covered only the CLI-leg
                 # `_popen`, so a TUI seat launched OUTSIDE the namespace entirely -- the
                 # gap the board named as "I cannot establish that every alternative
@@ -10811,12 +10822,13 @@ def _run_claude_tui_session(
                         command, process_owner=seat_jail, probe_owner=probe_jail,
                         cwd=str(cwd), env=dict(env), stdin=slave_fd, stdout=slave_fd,
                         stderr=slave_fd, text=False, close_fds=True, start_new_session=True,
+                        seat_caps=seat_caps,
                     )
                 if review_monitor is not None and review_monitor.cancel.is_set():
                     raise _ReviewOperationCancelled("review_operation_cancelled")
                 return launch_owned(
                     owned_command, role=SeatLaunchRole.PROVIDER_REVIEW, profile=profile,
-                    cwd=str(cwd),
+                    seat_caps=seat_caps, cwd=str(cwd),
                     env=dict(env),
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
