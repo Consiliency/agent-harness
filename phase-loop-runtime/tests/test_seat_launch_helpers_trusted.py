@@ -204,7 +204,7 @@ def test_the_handoff_segment_is_the_trusted_launch(monkeypatch, tmp_path):
 # --------------------------------------------------------------------------------------
 
 def test_the_jailed_probe_and_launch_get_the_same_decided_env(monkeypatch, tmp_path):
-    from phase_loop_runtime import sandbox_policy
+    from phase_loop_runtime import sandbox_policy, seat_resource_caps
     from test_seat_sandbox_permissions import _fake_jail
 
     jail = _fake_jail(tmp_path / "jail")
@@ -217,8 +217,12 @@ def test_the_jailed_probe_and_launch_get_the_same_decided_env(monkeypatch, tmp_p
                         lambda prefix, owner, fds=(), env=None: seen.append(env))
     monkeypatch.setattr(pi.subprocess, "Popen", lambda argv, **kw: seen.append(kw["env"]))
     try:
-        pi.launch_provider([jail.provider_argv0], process_owner=jail, probe_owner=probe,
-                           env={"HOME": "/operator"}, stdin=subprocess.DEVNULL)
+        with seat_resource_caps._seat_scope("test:jailed-decided-env"):
+            pi.launch_provider(
+                [jail.provider_argv0], process_owner=jail, probe_owner=probe,
+                env={"HOME": "/operator"}, stdin=subprocess.DEVNULL,
+                seat_caps=seat_resource_caps.live_seat_key(),
+            )
     finally:
         seat_jail.close_jail_fds(jail)
         seat_jail.close_jail_fds(probe)

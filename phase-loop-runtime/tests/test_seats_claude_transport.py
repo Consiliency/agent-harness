@@ -610,6 +610,7 @@ def test_an_auth_probe_past_its_cap_is_still_scanned(monkeypatch, tmp_path, plan
 
 
 def test_the_leg_runner_stops_the_group_when_the_stderr_guard_says_so(tmp_path):
+    from phase_loop_runtime.seat_resource_caps import _seat_scope
     seen: list[bytes] = []
 
     def guard(chunk: bytes) -> bool:
@@ -617,11 +618,12 @@ def test_the_leg_runner_stops_the_group_when_the_stderr_guard_says_so(tmp_path):
         return True
 
     started = time.monotonic()
-    run = pi._run_leg_with_liveness(
-        [sys.executable, "-c", "import sys, time; sys.stderr.write('e' * 64); sys.stderr.flush();"
-                               " time.sleep(60)"],
-        cwd=str(tmp_path), env=dict(os.environ), deadline_s=90.0, stall_threshold_s=90.0,
-        stderr_guard=guard)
+    with _seat_scope("test:claude-stderr-guard"):
+        run = pi._run_leg_with_liveness(
+            [sys.executable, "-c", "import sys, time; sys.stderr.write('e' * 64); sys.stderr.flush();"
+                                   " time.sleep(60)"],
+            cwd=str(tmp_path), env=dict(os.environ), deadline_s=90.0, stall_threshold_s=90.0,
+            stderr_guard=guard)
     assert time.monotonic() - started < 30
     assert seen and run.returncode != 0
 
@@ -1519,6 +1521,7 @@ def test_live_worker_runs_as_its_own_identity_and_is_reaped(sealed_install, monk
 
 
 def test_live_sdk_leg_admits_through_the_sandboxed_worker(monkeypatch, tmp_path, sealed_install):
+    from phase_loop_runtime.seat_resource_caps import _seat_scope
     require_live_worker()
 
     real_launch = pi.launch_provider
@@ -1537,11 +1540,12 @@ def test_live_sdk_leg_admits_through_the_sandboxed_worker(monkeypatch, tmp_path,
         bridge = sdk.SDKBridge(token=sdk_tests.SEAT_TOKEN, session_id=sdk_tests.SESSION_ID,
                                prompt=pi._BROKER_CLAUDE_DIRECT_REQUEST + sdk_tests.PROMPT)
         seat = types.SimpleNamespace(jail=types.SimpleNamespace(seat_ids=None), probe_jail=None)
-        run = pi._run_claude_sdk_leg(
-            sdk_tests.owned_argv(sdk.sdk_cli_delta()), spec=sdk.worker_launch_spec(install),
-            bridge=bridge, prepared=_prepared(sealed_install),
-            options=sdk_tests.leg_options(sdk.sdk_cli_delta()),
-            cwd=tmp_path, env=sdk.cli_env(sdk_tests.fake_jail()), deadline_s=120.0, seat=seat)
+        with _seat_scope("test:claude-sdk-live-leg"):
+            run = pi._run_claude_sdk_leg(
+                sdk_tests.owned_argv(sdk.sdk_cli_delta()), spec=sdk.worker_launch_spec(install),
+                bridge=bridge, prepared=_prepared(sealed_install),
+                options=sdk_tests.leg_options(sdk.sdk_cli_delta()),
+                cwd=tmp_path, env=sdk.cli_env(sdk_tests.fake_jail()), deadline_s=120.0, seat=seat)
     assert bridge.outcome(run.returncode) == ("admitted", _FAKE_RESULT)
 
 
