@@ -220,22 +220,23 @@ def verdict(leg: str, env: Mapping[str, str], *, execute: bool = False) -> Verdi
 ```
 
 **Built-in gates**, in launch order. Each calls the same function the launch path calls:
-0. Subject: `seat_subject.resolve_seat_subject`, for every registered leg. From gate G-A on,
-   lane A3 also registers the managed-authority gate (`open_managed_authority` plus the digest
-   check).
 1. Host capability: `seat_jail.seat_sandbox_capable()`, which is JAILCORE step L3 once that
    lands. Applies to every leg with a registered profile (IF-0-JAILCORE-1), and to `claude`
    and `gemini` before that registry lands.
-1a. Credential: the profile's `credential_present()`, refusing `credential_missing_code`
+2. Credential: the profile's `credential_present()`, refusing `credential_missing_code`
    (step L5); before the registry lands, the existing Claude and Gemini presence checks.
-1b. Egress: `seat_egress_proxy.unavailable_code()` for a profile with an allowlist (step L7).
-   With `execute=False`, a check that would spawn returns `unknown` (`launch_measurement`).
-2. Jail pass record for the leg's live key. The doctor reports `unknown`
+3. Egress: `seat_egress_proxy.unavailable_code()` for a profile with an allowlist, or the
+   route's named `open egress` exception for a profile without one (step L7). With
+   `execute=False`, a check that would spawn returns `unknown` (`launch_measurement`).
+4. Subject and authority: `seat_subject.resolve_seat_subject`, for every registered leg.
+   From gate G-A on, lane A3 also applies the managed-authority gate
+   (`open_managed_authority` plus the digest check).
+5. Jail pass record for the leg's live key. The doctor reports `unknown`
    (`launch_measurement`) for a missing or stale pass, and `refuses` only for
    `pass_store_unsafe`. A valid pass lets the gate continue.
-3. `gemini`: §5's `admission_verdict`, on the `subject_path` that `resolve_seat_subject`
+6. `gemini`: §5's `admission_verdict`, on the `subject_path` that `resolve_seat_subject`
    returns.
-4. `grok`: the pre-existing `panel_invoker.require_grok_admission`, whose code is
+7. `grok`: the pre-existing `panel_invoker.require_grok_admission`, whose code is
    `grok_tool_surface_unverified`.
 
 **Gate rules.**
@@ -249,7 +250,9 @@ def verdict(leg: str, env: Mapping[str, str], *, execute: bool = False) -> Verdi
   spawned.
 - **Agreement (EC-TEAMHOST-5).** For every fixture state:
   - doctor `admits` implies that the real seat preparation admits;
-  - doctor `refuses` carries the seat's own refusal code;
+  - doctor `refuses` carries the seat's own refusal code, except for the declared diagnostic
+    refinements `authority_missing` and `authority_invalid`, each of which maps to the seat's
+    `seat_sandbox_refused:identity`;
   - completeness: the test lists every pre-launch refusal code the leg's real preparation can
     return (route steps L1–L8 once JAILCORE lands, plus the leg's own preparation, excluding
     staged-tree and capacity codes), and fails when a code has no fixture row.
@@ -440,8 +443,10 @@ supplies that specification together with the switch-on. The coordinator routes 
 specification to Consiliency/dotfiles. Dotfiles builds the managed releases, and every release
 that serves review seats ships §1's per-leg `authority.json` and `declaration.json`. The host
 administrator writes §1's pin file (LA1-AUTHORITY-PIN). From gate G-A on, until both exist on a host:
-- that host's seats resolve `managed_release` and refuse with `authority_missing`;
-- the doctor reports the checklist item.
+- that host's seats resolve `managed_release` and refuse with
+  `seat_sandbox_refused:identity`;
+- the doctor reports `authority_missing` or `authority_invalid`, which maps to that seat
+  refusal and selects the checklist item.
 
 Neither TEAMHOST nor a vendor phase lands a dotfiles change.
 

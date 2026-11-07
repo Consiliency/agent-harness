@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 from importlib.resources import files
 import os
@@ -26,6 +26,7 @@ from phase_loop_runtime import seat_host_admin
 from phase_loop_runtime import seat_jail
 from phase_loop_runtime import seat_jail_autoqualify
 from phase_loop_runtime import seat_jail_prerequisites as prerequisites
+from phase_loop_runtime import seat_profiles
 from phase_loop_runtime import seat_subject
 from phase_loop_runtime import seat_uid
 from phase_loop_runtime.executable_dependency import ExecutableDependencyError
@@ -168,6 +169,15 @@ PRELAUNCH_REFUSAL_CODES = frozenset(
     }
 )
 
+DECLARED_SEAT_CODE_MAP = {
+    "authority_missing": "seat_sandbox_refused:identity",
+    "authority_invalid": "seat_sandbox_refused:identity",
+}
+
+
+def _seat_code(code):
+    return DECLARED_SEAT_CODE_MAP.get(code, code)
+
 
 def _configure_agreement_state(row, tmp_path, monkeypatch):
     dependency_fixture = None
@@ -212,7 +222,8 @@ def _configure_agreement_state(row, tmp_path, monkeypatch):
 
     monkeypatch.setattr(seat_subject, "resolve_seat_subject", resolve)
     monkeypatch.setattr(panel_invoker, "_PROVIDER_SEARCH_PATH", str(tmp_path))
-    monkeypatch.setattr(seat_admission, "_profile_for", lambda _leg: None)
+    profile = seat_profiles.profile_for(row.leg) if row.state == "release_agy" else None
+    monkeypatch.setattr(seat_admission, "_profile_for", lambda _leg: profile)
     transport_refusal = {
         "transport_invalid": claude_seat_transport.ROUTE_INVALID,
         "transport_not_admitted": claude_seat_transport.NOT_ADMITTED,
@@ -397,7 +408,7 @@ def _agreement_holds(doctor_verdict, launch_verdict):
     if doctor_verdict.status == "refuses":
         return (
             launch_verdict.status == "refuses"
-            and launch_verdict.code == doctor_verdict.code
+            and _seat_code(launch_verdict.code) == _seat_code(doctor_verdict.code)
         )
     return True
 
@@ -417,8 +428,11 @@ def test_doctor_and_seat_preparation_agree(row, tmp_path, monkeypatch):
 
 
 def test_agreement_rows_cover_every_prelaunch_code():
-    covered = {row.code for row in AGREEMENT_ROWS if row.status == "refuses"}
-    assert covered == PRELAUNCH_REFUSAL_CODES
+    doctor_codes = {row.code for row in AGREEMENT_ROWS if row.status == "refuses"}
+    covered = {_seat_code(code) for code in doctor_codes}
+    expected = {_seat_code(code) for code in PRELAUNCH_REFUSAL_CODES}
+    assert set(DECLARED_SEAT_CODE_MAP) <= doctor_codes
+    assert covered == expected
 
 
 @pytest.mark.parametrize("state", ["mac_failed_record", "provenance_less_record"])
@@ -448,6 +462,19 @@ def test_record_existence_mutant_breaks_agreement(state, tmp_path, monkeypatch):
 
 def test_admission_subject_refusal_is_the_integrated_launch_refusal(monkeypatch):
     refusal = ExecutableDependencyError("authority_missing")
+    profile = seat_profiles.profile_for("claude")
+    assert profile is not None
+    monkeypatch.setattr(
+        seat_admission,
+        "_profile_for",
+        lambda _leg: replace(
+            profile,
+            credential_present=lambda: True,
+            preconditions=(),
+            recorded_stop=None,
+        ),
+    )
+    monkeypatch.setattr(seat_jail, "seat_sandbox_capable", lambda: None)
     monkeypatch.setattr(
         seat_subject,
         "resolve_seat_subject",
