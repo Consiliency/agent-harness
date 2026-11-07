@@ -325,6 +325,8 @@ def _expected_from_properties(properties: tuple[str, ...]) -> dict[str, object]:
     for property_name, row_name in io_names.items():
         if property_name in values:
             device, limit = values[property_name].split(" ", 1)
+            if device.startswith(str(caps._DEV_BLOCK) + "/"):
+                device = Path(device).name
             rows.setdefault(device, {})[row_name] = limit
     expected["io.max"] = rows
     return expected
@@ -419,6 +421,8 @@ def test_capped_popen_real_helper_pid_fd_env_and_one_parent(monkeypatch, tmp_pat
         if args[0] == "stop":
             return
         unit = args[2]
+        io_properties = [value for value in args[3:] if value.startswith(("IORead", "IOWrite"))]
+        assert all(f"={caps._DEV_BLOCK / '8:0'} " in value for value in io_properties)
         expected = caps._expected(caps.DEFAULT_CAPS, ("8:0",), ())
         _parent_files(root / unit, expected)
         configured.append(unit)
@@ -485,6 +489,32 @@ def test_capped_popen_reaps_runner_that_never_attests(
         time.sleep(0.01)
     assert not Path(f"/proc/{pid}").exists()
     assert stopped
+
+
+def test_capped_popen_surfaces_the_helpers_readback_failure(
+    monkeypatch, tmp_path, isolated,
+):
+    root, _proc, _configured, _stopped = _install_fake_cap_host(
+        monkeypatch, tmp_path, isolated,
+    )
+
+    def systemctl(*args, **_kwargs):
+        if args[0] == "stop":
+            return
+        expected = _expected_from_properties(args[3:])
+        _parent_files(root / args[2], expected)
+        (root / args[2] / "io.max").write_text("")
+
+    monkeypatch.setattr(caps, "_systemctl", systemctl)
+    with pytest.raises(seat_jail.SeatSandboxRefused) as refused:
+        caps.capped_popen(
+            [sys.executable, "-c", "raise AssertionError('target must not run')"],
+            seat_key="helper-diagnostic", stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+    assert refused.value.code == caps.CODE
+    assert str(refused.value).endswith(
+        "child stderr: seat cap attestation failed: io.max readback mismatch"
+    )
 
 
 def test_concurrent_children_share_one_parent_and_use_distinct_scopes(
