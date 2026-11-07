@@ -168,7 +168,7 @@ Raw logs stay private. `containment.json` holds record ids and digests only.
 ### SL-2 — Grok profile, tree and launch (roadmap lane A)
 
 - **Scope**: Build the IF-0-GROK-2 profile, with its window rows, and the jailed launch site. Prove the tree, argv, gate, config and output behaviour, then register the profile and update the Grok doc row together when enabling the route.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `docs/review-seats-readiness.md`, `phase-loop-runtime/tests/test_grok_seat_jail.py`, `phase-loop-runtime/tests/test_grok_sandbox_seat_approval.py`, `phase-loop-runtime/tests/test_panel_invoker.py`, `phase-loop-runtime/tests/test_seat_profiles.py`, `phase-loop-runtime/tests/test_seat_jail_qualification_entry.py`, `phase-loop-runtime/tests/test_seat_qualification_host_context.py`, `phase-loop-runtime/tests/test_seat_notices.py`, `phase-loop-runtime/tests/data/seat_launch_references.json`, `plans/evidence/seat-grok/write-confinement.json`, `plans/evidence/seat-grok/tool-surface.json`, `plans/evidence/seat-grok/provider-free.json`
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `docs/review-seats-readiness.md`, `phase-loop-runtime/tests/test_grok_seat_jail.py`, `phase-loop-runtime/tests/test_grok_sandbox_seat_approval.py`, `phase-loop-runtime/tests/test_panel_invoker.py`, `phase-loop-runtime/tests/test_seat_profiles.py`, `phase-loop-runtime/tests/test_seat_jail_qualification_entry.py`, `phase-loop-runtime/tests/test_seat_qualification_host_context.py`, `phase-loop-runtime/tests/test_seat_notices.py`, `phase-loop-runtime/tests/test_seats_teamhost_doctor.py`, `phase-loop-runtime/tests/data/seat_launch_references.json`, `plans/evidence/seat-grok/write-confinement.json`, `plans/evidence/seat-grok/tool-surface.json`, `plans/evidence/seat-grok/provider-free.json`
 - **Interfaces provided**: IF-0-GROK-2
 - **Interfaces consumed**: IF-0-GROK-1 (SL-1). From IF-0-JAILCORE-1 to IF-0-JAILCORE-3: `JailProfile` (pre-existing), `register` (pre-existing), `seat_route.resolve` (pre-existing), `build_seat_jail` (pre-existing), `start_proxy` (pre-existing), `key_for_launch` (pre-existing). From FIRSTSEAT: `grok_tool_gate` (pre-existing), `grok_runtime_forms` (pre-existing), `probe_grok_tools` (pre-existing), `readiness_rows` (pre-existing)
 - **Parallel-safe**: no
@@ -177,12 +177,13 @@ Edit scope: in `seat_profiles.py`, the Grok entry only, including its `window` d
 readiness doc, the Grok row only. In `panel_invoker.py`, the Grok leg and
 `grok_runtime_forms`. `seat_window.py` is not edited; the kit reads the profile's `window`.
 The three kit and notice test files change only in their Grok expectations.
+`test_seats_teamhost_doctor.py` gains one additive agreement row (agent-harness#1882).
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
 | SL-2.1 | test | — | `phase-loop-runtime/tests/test_grok_seat_jail.py`, `plans/evidence/seat-grok/tool-surface.json` | Record the "SL-2.1 measurement", then write the "SL-2.1 cases". | `V2`, `VL` |
 | SL-2.2 | impl | SL-2.1 | `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py` | — | — |
-| SL-2.3 | impl | SL-2.2 | `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`, `docs/review-seats-readiness.md`, `phase-loop-runtime/tests/data/seat_launch_references.json`, `phase-loop-runtime/tests/test_seat_notices.py`, `phase-loop-runtime/tests/test_seat_jail_qualification_entry.py`, `phase-loop-runtime/tests/test_seat_qualification_host_context.py` | — | — |
+| SL-2.3 | impl | SL-2.2 | `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`, `docs/review-seats-readiness.md`, `phase-loop-runtime/tests/data/seat_launch_references.json`, `phase-loop-runtime/tests/test_seat_notices.py`, `phase-loop-runtime/tests/test_seat_jail_qualification_entry.py`, `phase-loop-runtime/tests/test_seat_qualification_host_context.py`, `phase-loop-runtime/tests/test_seats_teamhost_doctor.py` | — | — |
 | SL-2.4 | verify | SL-2.3 | SL-2 files, `plans/evidence/seat-grok/write-confinement.json`, `plans/evidence/seat-grok/provider-free.json` | all SL-2 tests | `V2`, `V3`, `V4`, `VL`, `VD`, `VK` |
 
 **SL-2.1 measurement**, on the pinned CLI version:
@@ -231,6 +232,8 @@ Grok launch site, with recording runners unless marked `live_jail` (VL) or `live
 - (j) **Window.** The Grok `window` rows reach `seat_window`'s vendor gate and path rows with
   no kit-code edit. The kit's Grok row reads route `jailed` and allowlist `grok`, and the
   readiness doc's Grok row agrees. Gemini's kit records stay byte-identical.
+- (k) **Agreement row** (SL-2.3). A Grok case with an unverified tool surface: the doctor
+  `refuses` with `grok_tool_surface_unverified`, never `admits`.
 
 **SL-2.3 enables the route.** It consumes IF-0-GROK-1 and runs only after `VK` passes on
 the pinned version. It registers the profile with its `window` data, updates the Grok doc
@@ -332,7 +335,7 @@ system python3.14.4 and paths under `phase-loop-runtime/tests/`. The new test fi
 on this plan-only checkout, so these are pending selectors, not receipts.
 
 - `V1`: `P test_grok_seat_containment.py test_seat_credentials.py test_seat_route_contract.py test_seat_notices.py test_seat_jail.py`
-- `V2`: `P test_grok_seat_jail.py test_grok_sandbox_seat_approval.py test_seat_profiles.py`
+- `V2`: `P test_grok_seat_jail.py test_grok_sandbox_seat_approval.py test_seat_profiles.py`, then `P test_seats_teamhost_doctor.py -k seats_teamhost_agreement`
 - `V3`: `P test_panel_invoker.py -k grok test_seat_jail_qualification_entry.py test_seat_qualification_host_context.py`
 - `V4`: `P test_agent_cli_scratch_inventory_1147.py test_seat_launch_helpers_trusted.py test_seat_reference_inventory.py`
 - `V5`: `timeout 120 phase-loop validate-roadmap --repo . --roadmap specs/phase-plans-seats-v1.md`

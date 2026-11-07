@@ -411,7 +411,7 @@ SL-6 — Docs and shared inventory reducer
 ### SL-6 — Docs and shared inventory reducer
 
 - **Scope**: Single writer of every shared surface. Its tasks ride in each producer's landing PR, and a final sweep runs after GL-6 or the "none admitted" record.
-- **Owned files**: `docs/advisor-board-capabilities-card.md`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md`, `CHANGELOG.md`, `.doc-decisions.json`, `phase-loop-runtime/README.md`, `docs/TEAM-ONBOARDING.md`, `docs/executable-dependency-projection.md`, `phase-loop-runtime/tests/data/seat_launch_references.json`, `phase-loop-skills/advisor-board/**`, `phase-loop-runtime/src/phase_loop_runtime/skills_bundle/**`, `phase-loop-runtime/tests/data/launchspec_golden/**`, `plans/manifest.json`
+- **Owned files**: `docs/advisor-board-capabilities-card.md`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md`, `CHANGELOG.md`, `.doc-decisions.json`, `phase-loop-runtime/README.md`, `docs/TEAM-ONBOARDING.md`, `docs/executable-dependency-projection.md`, `phase-loop-runtime/tests/data/seat_launch_references.json`, `phase-loop-skills/advisor-board/**`, `phase-loop-runtime/src/phase_loop_runtime/skills_bundle/**`, `phase-loop-runtime/tests/data/launchspec_golden/**`, `plans/manifest.json`, `plans/evidence/seat-inventory/dispositions.json`
 - **Interfaces provided**: none
 - **Interfaces consumed**: `IF-0-CLAUDE-1`, `IF-0-CLAUDE-2`, `IF-0-CLAUDE-3`, `IF-0-CLAUDE-4`, `claude_seat_print.run_jailed`, `claude_seat_sdk.run_jailed`
 - **Parallel-safe**: no
@@ -428,6 +428,8 @@ SL-6 — Docs and shared inventory reducer
     FIRSTSEAT's matrix. With "none admitted", the card shows `tui` as the default and the row
     as typed-degraded, as OQ-7 settles. Manifest lifecycle transitions go through the
     manifest API.
+  - impl: Final sweep: move agent-harness#1740 and agent-harness#1744 to `closures` in
+    `dispositions.json` with their `owner_receipt_url`.
   - verify: `V8`, `V9`.
 
 ## Execution Notes

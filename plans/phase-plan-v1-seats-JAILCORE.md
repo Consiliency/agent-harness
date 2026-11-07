@@ -325,7 +325,14 @@ the host prerequisite and the probe. `docs/TEAM-ONBOARDING.md` gains one pointer
   - `seat_profiles.py`: `register` only;
   - `panel_invoker.py`: the `seat_caps` keyword on `launch_owned` and `launch_provider`, the
     jailed and owned `Popen` calls in `launch_provider`, the Capped sites in caps contract §4,
-    and the code in `_HARNESS_DETAIL_CODES` only if SL-3's derivation does not already cover it.
+    and the code in `_HARNESS_DETAIL_CODES` only if SL-3's derivation does not already cover it;
+  - the Claude SDK proof binding, coordinated with CLAUDE, which owns both `launch-v1.json`
+    copies and `plans/evidence/seat-qualification/claude-sdk-boundary/receipt-v1.json`. When SL-5
+    changes the capped SDK worker launcher (`_launch_claude_sdk_worker`), the same PR runs
+    `test_seats_claude_sdk.py`, including byte identity and owned capture, and refreshes the SDK
+    receipt's `proof_inputs_sha256` binding through CLAUDE's capture procedure. SL-5 edits no
+    fixture byte and no `SDK_PROOF_REGIONS` name; a needed change there STOPs and is reported
+    to CLAUDE.
 
   If PANELSPLIT has moved the seat-launch code, SL-5 edits the named successors, as SL-3 does.
   Its inventory, CHANGELOG and capability-doc rows ride its landing PR through SL-docs.2 (SL-4's
