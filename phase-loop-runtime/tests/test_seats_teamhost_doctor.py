@@ -161,7 +161,7 @@ PRELAUNCH_REFUSAL_CODES = frozenset(
 
 
 def _configure_agreement_state(row, tmp_path, monkeypatch):
-    executable = tmp_path / f"{row.leg}-provider"
+    executable = tmp_path / ("claude" if row.leg == "claude" else "agy")
     executable.write_bytes(b"fixture provider")
     executable.chmod(0o700)
     source = "managed_release" if row.state == "release_agy" else "standalone"
@@ -183,6 +183,7 @@ def _configure_agreement_state(row, tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(seat_subject, "resolve_seat_subject", resolve)
+    monkeypatch.setattr(panel_invoker, "_PROVIDER_SEARCH_PATH", str(tmp_path))
     monkeypatch.setattr(seat_admission, "_profile_for", lambda _leg: None)
     transport_refusal = {
         "transport_invalid": claude_seat_transport.ROUTE_INVALID,
