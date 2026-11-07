@@ -507,7 +507,7 @@ class _FakeProxyProcess:
 def test_start_proxy_checks_every_startup_integrity_gate_before_spawn(monkeypatch, failed):
     def stop(name):
         if failed == name:
-            raise seat_egress_proxy.EgressLayerUnavailable(name)
+            raise seat_egress_proxy.EgressLayerUnavailable(name, name)
 
     monkeypatch.setattr(seat_egress_proxy, "_node", lambda: stop("node") or "/usr/bin/node")
     monkeypatch.setattr(
