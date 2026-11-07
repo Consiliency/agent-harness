@@ -55,6 +55,10 @@ class BrokerExecutionResult:
     #: already ``outcome_ambiguous_blocked``.  In memory only; its ``durable``
     #: says whether the side file holds it.  Never makes the result accepted.
     observed_after_ambiguity: PostAmbiguityObservation | None = None
+    #: Administrative exact-PR effective result.  Raw evidence remains
+    #: ambiguous and ``accepted`` remains false so publish-resume cannot mutate
+    #: the frozen checkpoint or active pointer.
+    exact_pr_settlement: dict | None = None
 
 
 #: agent-harness#1591: ``BrokerExecutionResult.reason`` for an observation.
@@ -296,7 +300,13 @@ def append_adapter_start_owner(
             authorize()
         current = read_adapter_start_owner(root, repository_identity=owner.repository_identity)
         if current is not None and not current.sealed:
-            return current
+            from .exact_pr_reconciliation import current_owner_is_settlement_retired
+
+            current_bytes = _owner_path(root).read_bytes()
+            if not current_owner_is_settlement_retired(
+                root, current_bytes, current.effect_key
+            ):
+                return current
         _owner_atomic_write(_owner_path(root), owner)
         return owner
 
@@ -333,6 +343,15 @@ def validate_adapter_start_owner(
             current = read_adapter_start_owner(
                 root, repository_identity=owner.repository_identity
             )
+            if current is not None and not current.sealed:
+                from .exact_pr_reconciliation import current_owner_is_settlement_retired
+
+                if current_owner_is_settlement_retired(
+                    Path(root), _owner_path(root).read_bytes(), current.effect_key
+                ):
+                    raise PermissionError(
+                        "adapter-start ownership is retired by an exact-PR settlement"
+                    )
             if current != owner or current.sealed:
                 raise PermissionError("adapter-start ownership changed before provider entry")
             return current
@@ -564,7 +583,17 @@ def require_unadmitted_prebuilt_witnesses(root: Path, transaction):
             receipt = live.load_partition_receipt(current)
             if receipt is None or receipt.canonical_repository_identity != transaction.canonical_repository_identity:
                 raise UnadmittedPrebuiltConflict("publication partition has no matching authenticated receipt")
-            live._require_receipt_is_snapshot(receipt, live._PredecessorSnapshot(current, files, digests), generation)
+            live._require_receipt_is_snapshot(
+                receipt,
+                live._PredecessorSnapshot(
+                    root=current,
+                    files=files,
+                    digests=digests,
+                    exact_pr_settlement_files={},
+                    post_ambiguity_observation_bytes=files["post-ambiguity-observations.jsonl"],
+                ),
+                generation,
+            )
             key, owner = _unadmitted_journal_witnesses(current, transaction, files)
             inherited = live.sealed_partition_effects(receipt)
             keys = set(receipt.legacy_completed_effect_keys) | set(inherited)
@@ -784,6 +813,29 @@ class BrokerService:
             if observed and request.verb is BrokerVerb.PUBLISH_COMMITTED_BRANCH
             else None
         )
+        if (
+            current.state is TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED
+            and request.verb is BrokerVerb.PUBLISH_COMMITTED_BRANCH
+        ):
+            from .exact_pr_reconciliation import (
+                ExactPRSettlementAbsent,
+                ExactPRTypedRefusal,
+            )
+
+            effective = self.evidence_store.effective_publication(key)
+            if isinstance(effective, ExactPRTypedRefusal):
+                raise PermissionError(effective.reason)
+            if not isinstance(effective, ExactPRSettlementAbsent):
+                return BrokerExecutionResult(
+                    False,
+                    BrokerTerminalEvidence(
+                        key, current.state.value, effective["pr_url"]
+                    ),
+                    None,
+                    reason="exact_pr_reconciled",
+                    provider_call_made=False,
+                    exact_pr_settlement=effective,
+                )
         observation = (
             self._stored_post_ambiguity_observation(key)
             if current.state is TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED
@@ -938,17 +990,10 @@ class BrokerService:
     def _epoch_blocked_refusal(self) -> PartitionEpochBlocked:
         """``epoch permanently blocked``, naming the keys that block it (agent-harness#1573)."""
         try:
-            stored = self.evidence_store.replay()
-        except (OSError, PermissionError, ValueError):
+            blocking = self.evidence_store.blocking_keys
+        except (OSError, ValueError):
             # The refusal stands; it only loses the names of the blocking keys.
-            stored = {}
-        blocking = tuple(
-            sorted(
-                key
-                for key, record in stored.items()
-                if record.state is TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED
-            )
-        )
+            blocking = ()
         return PartitionEpochBlocked("epoch permanently blocked", blocking_keys=blocking)
 
     def _block_unsealed_owner(self, owner: AdapterStartOwnership) -> bool:
@@ -977,6 +1022,14 @@ class BrokerService:
                     repository_identity=owner.repository_identity,
                 )
                 if current_owner is None or current_owner.sealed:
+                    return False
+                from .exact_pr_reconciliation import current_owner_is_settlement_retired
+
+                if current_owner_is_settlement_retired(
+                    self.evidence_store.root,
+                    _owner_path(self.evidence_store.root).read_bytes(),
+                    current_owner.effect_key,
+                ):
                     return False
                 current = self.evidence_store.replay().get(current_owner.effect_key)
                 if current is not None and current.state in (
@@ -1177,7 +1230,15 @@ class BrokerService:
                     repository_identity=request.repo,
                 )
                 if current_owner is not None and not current_owner.sealed:
-                    return current_owner, None, None
+                    from .exact_pr_reconciliation import current_owner_is_settlement_retired
+
+                    current_owner_bytes = _owner_path(self.evidence_store.root).read_bytes()
+                    if not current_owner_is_settlement_retired(
+                        self.evidence_store.root,
+                        current_owner_bytes,
+                        current_owner.effect_key,
+                    ):
+                        return current_owner, None, None
                 state = self._validated_envelope(request)[1].state
                 if recovery_key is None and state != "COMMITTED_HEAD_RESOLVED":
                     raise PermissionError(
@@ -1207,6 +1268,9 @@ class BrokerService:
                     authorize=self.evidence_store._authorize,
                     lock_held=True,
                 )
+                recorded_owner_bytes = (
+                    owner_path.read_bytes() if recorded_owner == owner else None
+                )
                 held: list[int] = liveness_holder if liveness_holder is not None else []
                 try:
                     if recorded_owner == owner:
@@ -1224,7 +1288,13 @@ class BrokerService:
                     # Never retire an owner this attempt did not write.
                     if not isinstance(error, PublishCrashInjected) and recorded_owner == owner:
                         try:
-                            _restore_owner_bytes(self.evidence_store.root, prior_owner_bytes)
+                            if (
+                                recorded_owner_bytes is not None
+                                and owner_path.read_bytes() == recorded_owner_bytes
+                            ):
+                                _restore_owner_bytes(
+                                    self.evidence_store.root, prior_owner_bytes
+                                )
                         except OSError:
                             # The owner stays unsealed: today's fail-closed shape.
                             pass
@@ -1274,6 +1344,15 @@ class BrokerService:
                         effect_key=key,
                         transaction_id=recorded_owner.transaction_id,
                     )
+                if current_owner == recorded_owner and not current_owner.sealed:
+                    from .exact_pr_reconciliation import current_owner_is_settlement_retired
+
+                    if current_owner_is_settlement_retired(
+                        self.evidence_store.root,
+                        _owner_path(self.evidence_store.root).read_bytes(),
+                        key,
+                    ):
+                        return stored
                 if (
                     current_owner == recorded_owner
                     and not current_owner.sealed
@@ -1725,6 +1804,29 @@ class BrokerService:
             authorize(self, request)
         key = self._dedup_key(request)
         current = self.evidence_store.replay().get(key)
+        if request.verb is BrokerVerb.PUBLISH_COMMITTED_BRANCH:
+            from .exact_pr_reconciliation import (
+                ExactPRSettlementAbsent,
+                ExactPRTypedRefusal,
+            )
+
+            effective = self.evidence_store.effective_publication(key)
+            if isinstance(effective, ExactPRTypedRefusal):
+                raise PermissionError(effective.reason)
+            if not isinstance(effective, ExactPRSettlementAbsent):
+                raw_state = (
+                    current.state.value
+                    if current is not None
+                    else TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED.value
+                )
+                return BrokerExecutionResult(
+                    False,
+                    BrokerTerminalEvidence(key, raw_state, effective["pr_url"]),
+                    None,
+                    reason="exact_pr_reconciled",
+                    provider_call_made=False,
+                    exact_pr_settlement=effective,
+                )
         if current and current.state is not TerminalOutcomeState.PROVIDER_CALL_IN_FLIGHT:
             return self._replay(request, key, current)
         legacy = self._legacy_terminal_replay(request, key)

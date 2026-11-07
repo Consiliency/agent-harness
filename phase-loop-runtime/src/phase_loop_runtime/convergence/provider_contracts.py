@@ -97,6 +97,11 @@ AUTOMATED_PROVIDER_VERBS = frozenset(
 # preserves the original terminal and exact commit, admits a strict ownership
 # extension, and uses the ordinary generation/provider fences for the successor.
 # Ordinary replay, provider rejection and ambiguous-outcome recovery are unchanged.
+# ExactPRSettlement.v1 is a separate authenticated-store overlay for a narrowly
+# bound administrative observation of one already-existing pull request.  It is
+# not a provider retry, a transition out of ``outcome_ambiguous_blocked``, or a
+# claim that the broker created the pull request.  Raw terminal permanence and
+# the mutation-retry prohibition above remain unchanged.
 _SUPPORTED_GITHUB_PUBLISH = ProviderCompletionContract(
     verb="publish_committed_branch",
     provider="github",

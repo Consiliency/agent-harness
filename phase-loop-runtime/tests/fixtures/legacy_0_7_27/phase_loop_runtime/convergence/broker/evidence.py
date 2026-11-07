@@ -1,0 +1,668 @@
+"""Append-only terminal evidence for broker operations."""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+
+from phase_loop_runtime.convergence.broker.admission import constructor_key_mismatch
+from phase_loop_runtime.convergence.provider_contracts import TerminalOutcomeState, validate_terminal_transition
+
+
+@dataclass(frozen=True)
+class EvidenceRecord:
+    idempotency_key: str
+    state: TerminalOutcomeState
+    evidence_reference: str = ""
+
+
+def _fabpub_active() -> bool:
+    from .live import fabpub_capability_active
+
+    return fabpub_capability_active()
+
+
+#: "The caller declared no lease at all", distinct from an explicit
+#: ``generation_lease=None``.  A DECLARED absence is denied under an ACTIVE
+#: generation; an undeclared one is validated against latch state only.
+_UNDECLARED = object()
+
+
+def _require_generation(root: Path, generation_lease) -> None:
+    from .live import require_current_generation
+
+    if generation_lease is _UNDECLARED:
+        require_current_generation(root, None, strict=False)
+    else:
+        require_current_generation(root, generation_lease, strict=True)
+
+
+def _require_generation_tolerating_drain(root: Path, generation_lease) -> None:
+    """agent-harness#1633: a post-ambiguity observation is not refused for a DRAINING latch alone.
+
+    A revoked lease, a lease that does not bind the current generation, and a
+    superseded generation root still refuse.
+    """
+    from .live import require_current_generation
+
+    if generation_lease is _UNDECLARED:
+        require_current_generation(root, None, strict=False, allow_draining=True)
+    else:
+        require_current_generation(root, generation_lease, strict=True, allow_draining=True)
+
+
+class EvidenceStoreIncompatible(PermissionError):
+    """This runtime cannot read one ``evidence.jsonl`` record (agent-harness#789).
+
+    Mirrors `AdmissionStoreIncompatible` for the sibling store, down to the BASE CLASS:
+    that docstring records `PermissionError` as load-bearing "so every fail-closed path
+    stays closed". A twin raising `RuntimeError` would not be caught by a handler written
+    to that convention — inconsequential today, but the two stores are read by the same
+    paths and divergence here is a trap for whoever writes that handler next.
+    (ah#834 r1, fable N2.)
+
+    Names the reader's own version and path, because the actionable fact in
+    agent-harness#789 was WHICH runtime was reading, not which line failed.
+    """
+
+    def __init__(
+        self,
+        store_path: Path,
+        *,
+        line: int,
+        idempotency_key: str | None,
+        constructor: type,
+        unknown_keys: tuple[str, ...],
+        missing_keys: tuple[str, ...],
+        cause: Exception,
+    ) -> None:
+        import phase_loop_runtime
+
+        self.store_path = Path(store_path)
+        self.line = line
+        self.idempotency_key = idempotency_key
+        self.constructor = constructor
+        self.unknown_keys = tuple(unknown_keys)
+        self.missing_keys = tuple(missing_keys)
+        where = (
+            f"record {idempotency_key!r} at line {line}"
+            if idempotency_key is not None
+            else f"record at line {line}"
+        )
+        problems = []
+        if self.unknown_keys:
+            problems.append(f"unknown keys {list(self.unknown_keys)}")
+        if self.missing_keys:
+            problems.append(f"missing keys {list(self.missing_keys)}")
+        if not problems:
+            problems.append(f"constructor rejected the record: {cause}")
+        super().__init__(
+            f"evidence store {self.store_path} is not readable by this runtime "
+            f"(phase_loop_runtime {phase_loop_runtime.__version__} at "
+            f"{Path(phase_loop_runtime.__file__)}): {where} does not fit "
+            f"{constructor.__qualname__}: {'; '.join(problems)}"
+        )
+
+
+class BrokerEvidenceStore:
+    def __init__(self, root: Path, generation_lease=_UNDECLARED) -> None:
+        self.root = root
+        # SL1-SOL-02: the FABPUB WriterGenerationLease.v1 this store writes
+        # under, revalidated by exact nonce inside the store lock before every
+        # append.  SL1-SOL-07: while FABPUB is active the canonical tree is NOT
+        # created at construction; `_authorize` proves receipt + generation first.
+        self.generation_lease = generation_lease
+        if not _fabpub_active():
+            root.mkdir(parents=True, exist_ok=True)
+        self.path = root / "evidence.jsonl"
+        # ah#288/#199: the SAME lock file LinearizableAdmissionStore uses (both stores are
+        # constructed on one `root`). A revocation (outcome_ambiguous_blocked) written here
+        # must not be able to land between an admission's epoch_blocked check and its
+        # append. The admission store re-checks epoch_blocked INSIDE this lock (see
+        # build_* wiring), so sharing one boundary makes "is the epoch blocked?" and
+        # "block the epoch" mutually exclusive. Deadlock-safe: no evidence write happens
+        # while the admission lock is held (execute admits, THEN records).
+        self.lock_path = root / "admissions.lock"
+    def replay(self, raw_bytes: bytes | None = None) -> dict[str, EvidenceRecord]:
+        # SCHEMA DRIFT IS A TYPED REFUSAL, NOT A TypeError.
+        #
+        # This is the defect that opened agent-harness#789. Its first step was an
+        # installed runtime reading a store written by a newer one and dying with
+        # `TypeError: AdmissionRecord.__init__() got an unexpected keyword argument
+        # 'binding'` — an optional field the old reader did not know. The ADMISSION store
+        # was hardened for that (see `AdmissionStoreIncompatible` and
+        # `constructor_key_mismatch` in admission.py); its sibling EVIDENCE store, whose
+        # replay is the identical `EvidenceRecord(**raw)` construct, was not. So the exact
+        # incident that produced a permanently blocked partition remained reachable one
+        # module over, and would fire the moment anyone adds an optional field here —
+        # which is precisely what a diagnostic-retention change for that same incident
+        # wants to do.
+        #
+        # Refusing with the reader's own version and path, and naming the offending keys,
+        # turns "the runtime crashed somewhere in the broker" into an actionable
+        # compatibility report BEFORE any ownership or provider mutation. It does not make
+        # an incompatible store readable, and deliberately does not skip or coerce the
+        # record: fabricating a partial read of a sealed evidence store is worse than
+        # refusing it. (agent-harness#789.)
+        result: dict[str, EvidenceRecord] = {}
+        if raw_bytes is not None or self.path.exists():
+            # READ BYTES AND DECODE PER ROW. `read_text(encoding="utf-8")` decoded the
+            # WHOLE FILE before the per-row guard, so one undecodable byte sequence
+            # anywhere raised `UnicodeDecodeError` and escaped the typed refusal —
+            # taking the runtime, path and line diagnostics with it. Measured, a valid
+            # first row followed by:
+            #
+            #   a truncated UTF-8 sequence     -> UnicodeDecodeError, untyped
+            #   a lone continuation byte       -> UnicodeDecodeError, untyped
+            #   latin-1 bytes in a valid row   -> UnicodeDecodeError, untyped
+            #
+            # `UnicodeDecodeError` is a `ValueError`, so moving the decode inside the
+            # existing guard types it without widening the caught set at all — the r2
+            # scope note is unaffected.
+            #
+            # `splitlines()` on BYTES, not `split(b"\n")`: the latter yields a spurious
+            # empty final element for the trailing newline every append writes, and the
+            # r7 shape check refuses a blank row — so that spelling would fail-close
+            # every store in existence. Byte-splitlines keeps the CR/CRLF/LF behaviour
+            # the str version had. (ah#834 r8, codex.)
+            #
+            # AND IT NARROWS A DIVERGENCE THE r8 SEAT FLAGGED. `str.splitlines()` also
+            # splits on U+2028, U+2029 and U+0085, which a newline-counting reader does
+            # not, so the reported line number could disagree with `sed -n Np`. Measured:
+            # `bytes.splitlines()` splits on none of the three (only CR, CRLF, LF), so the
+            # remaining divergence is bare `\r` alone, which both spellings split. The
+            # writer cannot emit any of them regardless — `json.dumps` with default
+            # `ensure_ascii` plus an explicit `"\n"` — and `_parse_strict_jsonl` documents
+            # the same class. (ah#834 r8 fable note 2, resolved by the r8 fix.)
+            body = self.path.read_bytes() if raw_bytes is None else raw_bytes
+            for index, raw_line in enumerate(body.splitlines(), start=1):
+                # THE DECODE AND THE SHAPE CHECK BELONG INSIDE THE GUARD TOO.
+                #
+                # They sat above the try, so three more shapes escaped the typed refusal
+                # entirely and crashed exactly the way ah#789 crashed — in the store whose
+                # replay decides `epoch_blocked`:
+                #
+                #   a row that is valid JSON but NOT an object (`null`, `[]`, `"x"`)
+                #     -> AttributeError: 'NoneType' object has no attribute 'get'
+                #   a row that is not valid JSON at all (a truncated final append)
+                #     -> JSONDecodeError
+                #   a blank line
+                #     -> JSONDecodeError
+                #
+                # Measured on all five: every one bypassed `EvidenceStoreIncompatible`
+                # and lost the runtime, path and line diagnostics the refusal exists to
+                # carry. A truncated tail is the likeliest of them in production — the
+                # store is append-only and a crash mid-append leaves exactly that — and
+                # refusing it is correct: fabricating a partial read of a sealed evidence
+                # store is the documented worse option. (ah#834 r7, codex.)
+                raw: object = None
+                # The STATE COERCION BELONGS INSIDE THE GUARD. It used to sit above the
+                # try, so only one of three drift shapes was typed: a newer writer adding
+                # an unknown TerminalOutcomeState VALUE still raised a bare ValueError,
+                # and a row missing `state` entirely raised KeyError. Those are the same
+                # forward-compatibility class as an added field — a new state value is at
+                # least as likely an evolution as a new key — and they were escaping the
+                # very guard written for it. (ah#834 r1, fable N1.)
+                #
+                # `RecursionError` IS CAUGHT AND IT IS NOT A `ValueError`. `json.loads` on a
+                # deeply nested row raises it — measured: a valid first row followed by
+                # `"[" * 2000 + "0" + "]" * 2000` escaped the refusal entirely under the
+                # normal recursion limit, while a 500-deep row was already a typed refusal
+                # (it is simply a non-object row). That is an A8 shape, so it must carry
+                # the store/runtime/line diagnostics like every other one.
+                #
+                # Exactly scoped, by the same argument as the rest of this handler: within
+                # this `try` the only recursive call is the JSON decoder. `EvidenceRecord`
+                # is a plain frozen dataclass and `TerminalOutcomeState` a plain
+                # `(str, Enum)`, so neither can recurse. (ah#834 r9, codex.)
+                #
+                # THE SCOPE OF THIS CATCH, STATED AS A RULE RATHER THAN A LIST.
+                #
+                # An earlier revision ENUMERATED which exceptions were reachable, and the
+                # list went stale three times in three rounds as rounds 7, 8 and 9 each
+                # added a reachable source (`json.loads`' JSONDecodeError, the per-row
+                # `UnicodeDecodeError`, and `RecursionError`). A seat caught the first
+                # drift; enumerating a set that every round extends is the same defect
+                # class this PR has been fixing all along, so the enumeration is gone.
+                #
+                # THE RULE: everything inside this `try` is either a decode of untrusted
+                # bytes or a construction from them, so every exception it can raise means
+                # "this runtime cannot read this row" — which is exactly what the refusal
+                # says. Three of the raises are OURS and deliberate (the non-object shape
+                # check, the key shape check, and the decode), and they are part of that
+                # same statement.
+                #
+                # THE PRECONDITION, which is what actually needs watching: it holds only
+                # while `EvidenceRecord` stays a plain frozen dataclass with no
+                # `__post_init__` and `TerminalOutcomeState` a plain `(str, Enum)` with no
+                # `_missing_`. Give either one user code and a genuine validation bug would
+                # be reported as schema drift — a misdiagnosis, on the store whose replay
+                # decides `epoch_blocked`. Split the guard at that point rather than
+                # leaving it to be discovered from a confusing message;
+                # Consiliency/agent-harness#835 tracks doing it now. The sibling at
+                # admission.py is narrower (`TypeError` only) and does not carry this
+                # hazard. (ah#834 r2, fable; enumeration dropped r9 after its third drift.)
+                key = None
+                try:
+                    line = raw_line.decode("utf-8")
+                    raw = json.loads(line)
+                    if not isinstance(raw, dict):
+                        # A DELIBERATE in-guard raise, not a widening: it converts a
+                        # shape the constructor could never accept into this function's
+                        # own typed refusal. The scope note above still holds — the only
+                        # exceptions this handler interprets as drift are the ones raised
+                        # on these lines.
+                        raise TypeError(
+                            f"row decoded to {type(raw).__name__}, not a JSON object"
+                        )
+                    key = raw.get("idempotency_key")
+                    if not isinstance(key, str):
+                        # `result[raw["idempotency_key"]]` ran BELOW the guard, so an
+                        # unhashable key raised a bare `TypeError: unhashable type: 'list'`
+                        # straight out of `replay()` — literally the ah#789 signature,
+                        # arising AFTER the record constructed fine. A non-string but
+                        # hashable key (`7`, `null`) was worse than a crash: it read
+                        # silently and keyed a record nothing will ever look up, while
+                        # `epoch_blocked` is computed over exactly this mapping.
+                        #
+                        # An EMPTY string is deliberately still accepted: it is hashable
+                        # and readable, and rejecting it would fail-close a partition that
+                        # reads today, which this round's own control test calls worse
+                        # than the crash it replaced. (ah#834 r7, fable.)
+                        raise TypeError(
+                            f"idempotency_key is {type(key).__name__}, not a string"
+                        )
+                    raw["state"] = TerminalOutcomeState(raw["state"])
+                    record = EvidenceRecord(**raw)
+                except (TypeError, ValueError, KeyError, RecursionError) as error:
+                    # Never hand a non-mapping to the mismatch helper: it would be a
+                    # second crash inside the error handler, which is the ah#789 shape
+                    # relocated one more time.
+                    unknown, missing = (
+                        constructor_key_mismatch(EvidenceRecord, raw)
+                        if isinstance(raw, dict) else ((), ())
+                    )
+                    raise EvidenceStoreIncompatible(
+                        self.path,
+                        line=index,
+                        idempotency_key=key,
+                        constructor=EvidenceRecord,
+                        unknown_keys=unknown,
+                        missing_keys=missing,
+                        cause=error,
+                    ) from error
+                result[key] = record
+        return result
+    def _authorize(self, *, allow_draining: bool = False) -> None:
+        """Authenticate BEFORE any directory creation, then create the tree."""
+        from .live import is_canonical_store_root, load_partition_receipt
+
+        if allow_draining:
+            _require_generation_tolerating_drain(self.root, self.generation_lease)
+        else:
+            _require_generation(self.root, self.generation_lease)
+        canonical_store = is_canonical_store_root(self.root)
+        if (
+            _fabpub_active()
+            and (self.generation_lease is not _UNDECLARED or canonical_store)
+            and load_partition_receipt(self.root) is None
+        ):
+            raise PermissionError(
+                f"legacy_cutover_conflict: no authenticated partition receipt governs "
+                f"{self.root}; refusing to create or append canonical evidence"
+            )
+        self.root.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def epoch_blocked(self) -> bool:
+        if any(r.state is TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED for r in self.replay().values()):
+            return True
+        # FABPUB: permanent ambiguity survives the legacy cutover.  A retired
+        # legacy store whose archived history held an outcome_ambiguous_blocked
+        # record — or an orphaned provider_call_in_flight, whose effect is
+        # unknown — permanently blocks EXACTLY its authenticated repository
+        # partition, carried forward by that partition's receipt.  Absent a
+        # receipt this is a no-op, so pre-FABPUB stores behave exactly as before.
+        return self._legacy_partition_blocked()
+
+    def _legacy_partition_blocked(self) -> bool:
+        try:
+            from .live import partition_is_ambiguity_blocked
+        except Exception:  # pragma: no cover - defensive import guard
+            return False
+        return partition_is_ambiguity_blocked(self.root)
+
+    def authenticated_legacy_records(self) -> dict[str, dict]:
+        """Exact legacy effect key -> full provenance, or ``{}`` when unattested."""
+        from .live import load_partition_receipt, sealed_partition_effects
+
+        receipt = load_partition_receipt(self.root)
+        if receipt is None:
+            return {}
+        return sealed_partition_effects(receipt)
+
+    def _mint_legacy_promotion(self, key: str):
+        """Module-internal: the ONLY route to a promotion capability."""
+        from .live import _mint_cutover_promotion_capability
+
+        return _mint_cutover_promotion_capability(self.root, key)
+
+    def promote_legacy_terminal(self, key: str) -> EvidenceRecord:
+        """Promote ONE authenticated legacy terminal into the canonical store.
+
+        SL1-SOL-10: the capability is minted HERE, under the write lock, from
+        the authenticated receipt and the CURRENT archive bytes — a caller
+        cannot pass one in, and a stale capability cannot be replayed.  Intent,
+        terminal, and provenance are appended under one lock hold, provenance
+        first, so a crash can never leave a promoted terminal unattributed.
+        """
+        import fcntl
+
+        self._authorize()
+        with self.lock_path.open("a+", encoding="utf-8") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                # In-lock re-check: a partition rotation may have retired this
+                # generation between _authorize() and the flock (ah#789 D2).
+                _require_generation(self.root, self.generation_lease)
+                capability = self._mint_legacy_promotion(key)
+                provenance = capability.provenance
+                reference = provenance["evidence_reference"]
+                current = self.replay().get(key)
+                if current is not None and current.state is (
+                    TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED
+                ):
+                    if current.evidence_reference != reference:
+                        raise PermissionError(
+                            f"canonical terminal for {key!r} references "
+                            f"{current.evidence_reference!r} but the authenticated legacy "
+                            f"terminal references {reference!r}"
+                        )
+                    self._require_provenance_locked(key, provenance)
+                    return current
+                self._append_provenance_locked(key, provenance)
+                if current is None:
+                    self._append_locked(
+                        EvidenceRecord(key, TerminalOutcomeState.PROVIDER_CALL_IN_FLIGHT)
+                    )
+                return self._append_locked(
+                    EvidenceRecord(
+                        key, TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED, reference
+                    )
+                )
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+
+    def _require_provenance_locked(self, key: str, provenance: dict) -> None:
+        """A promoted terminal MUST carry matching provenance; absence is denial."""
+        path = self.root / "legacy-promotions.jsonl"
+        recorded = None
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                raw = json.loads(line)
+                if raw.get("idempotency_key") == key:
+                    recorded = raw.get("promotion_provenance")
+        if recorded is None:
+            raise PermissionError(
+                f"canonical terminal for {key!r} has no recorded promotion provenance; "
+                "an unattributed terminal may not be treated as an authenticated replay"
+            )
+        if recorded != provenance:
+            raise PermissionError(
+                f"a prior promotion of {key!r} recorded different provenance; an existing "
+                "terminal may not be re-attributed"
+            )
+
+    def _append_provenance_locked(self, key: str, provenance: dict) -> None:
+        """Record which cutover/partition/source authorised a promotion."""
+        path = self.root / "legacy-promotions.jsonl"
+        body = json.dumps(
+            {"idempotency_key": key, "promotion_provenance": provenance},
+            sort_keys=True,
+            separators=(",", ":"),
+        ) + "\n"
+        if path.exists() and body in path.read_text(encoding="utf-8"):
+            return
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write(body)
+            stream.flush()
+            os.fsync(stream.fileno())
+    def record_intent(self, key: str) -> EvidenceRecord:
+        current = self.replay().get(key)
+        if current: return current
+        return self._append(EvidenceRecord(key, TerminalOutcomeState.PROVIDER_CALL_IN_FLIGHT))
+    def record_terminal(self, record: EvidenceRecord, *, pre_linearization_proven: bool = False) -> EvidenceRecord:
+        current = self.replay().get(record.idempotency_key)
+        if current is None: raise ValueError("intent must precede evidence")
+        if current == record: return current
+        if not validate_terminal_transition(current.state, record.state, pre_linearization_proven=pre_linearization_proven): raise ValueError("invalid terminal transition")
+        return self._append(record)
+    def rejected_before_start(self, key: str, evidence_reference: str) -> EvidenceRecord:
+        return self._append(EvidenceRecord(key, TerminalOutcomeState.REJECTED_BEFORE_START, evidence_reference))
+    def _append(self, record: EvidenceRecord) -> EvidenceRecord:
+        import fcntl
+        self._authorize()
+        with self.lock_path.open("a+", encoding="utf-8") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                # Evidence appends are fenced by the same in-lock generation
+                # re-check as admissions: a writer whose generation was revoked
+                # mid-flight must not record intent or a terminal.
+                _require_generation(self.root, self.generation_lease)
+                return self._append_locked(record)
+            finally: fcntl.flock(lock, fcntl.LOCK_UN)
+
+    def _append_locked(self, record: EvidenceRecord) -> EvidenceRecord:
+        # Storage-layer permanence: no write may transition OUT of a terminal
+        # outcome_ambiguous_blocked record.  This is self-enforcing regardless of
+        # caller path (record_terminal, rejected_before_start, record_intent), so a
+        # buggy caller cannot escape the block by writing a fresh terminal record.
+        current = self.replay().get(record.idempotency_key)
+        if current is not None and current.state is TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED and record != current:
+            raise ValueError("outcome_ambiguous_blocked is permanent; no transition out")
+        with self.path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(asdict(record), sort_keys=True) + "\n"); stream.flush(); os.fsync(stream.fileno())
+        return record
+
+
+# ---------------------------------------------------------------------------
+# agent-harness#1591: a provider outcome observed after the key became ambiguous
+# ---------------------------------------------------------------------------
+#
+# The evidence log cannot take a terminal row after ``outcome_ambiguous_blocked``
+# (``_append_locked`` refuses it, and a rotation refuses a key that was ever both
+# blocked and terminal-observed), and an older reader's ``replay()`` keeps the
+# last row per key, so such a row would quietly unblock the epoch.  The outcome
+# is therefore kept in a separate append-only file beside the log.  No reader of
+# any earlier version opens it, and it is not one of the files a rotation digests:
+# it can only add refusals, and its writers hold the same ``admissions.lock``.
+
+POST_AMBIGUITY_OBSERVATIONS_FILENAME = "post-ambiguity-observations.jsonl"
+POST_AMBIGUITY_OBSERVATION_SCHEMA = "PostAmbiguityObservation.v1"
+_OBSERVED_STATES = (
+    TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED.value,
+    TerminalOutcomeState.NO_EFFECT_TERMINAL_PROVEN.value,
+)
+
+
+@dataclass(frozen=True)
+class PostAmbiguityObservation:
+    """One definite provider outcome on a key whose row was already ambiguous.
+
+    Bound to the exact ambiguity (``ambiguity_digest``: sha256 of the blocked
+    row's raw line, the digest a rotation attestation binds) and to the attempt
+    that made the call (its owner's ``owner_nonce`` and ``transaction_id``).
+    ``durable`` is in-memory only: whether this row is on disk.
+    """
+
+    idempotency_key: str
+    observed_state: str
+    evidence_reference: str
+    head_sha: str
+    branch: str
+    transaction_id: str
+    owner_nonce: str
+    ambiguity_digest: str
+    schema: str = POST_AMBIGUITY_OBSERVATION_SCHEMA
+    durable: bool = field(default=False, compare=False)
+
+    @property
+    def is_effect(self) -> bool:
+        return self.observed_state == TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED.value
+
+    def row(self) -> dict:
+        body = asdict(self)
+        body.pop("durable")
+        return body
+
+
+class _Unreadable:
+    """The side file exists but cannot be read; every caller fails closed."""
+
+    def __repr__(self) -> str:
+        return "UNREADABLE"
+
+
+UNREADABLE = _Unreadable()
+
+
+def post_ambiguity_observations_path(root: Path) -> Path:
+    return Path(root) / POST_AMBIGUITY_OBSERVATIONS_FILENAME
+
+
+def _parse_post_ambiguity_observations(body: bytes):
+    if body and not body.endswith(b"\n"):
+        return UNREADABLE  # a torn final append
+    rows: dict[str, list[PostAmbiguityObservation]] = {}
+    for raw_line in body.split(b"\n")[:-1] if body else ():
+        try:
+            raw = json.loads(raw_line.decode("utf-8"))
+            if (
+                not isinstance(raw, dict)
+                or raw.get("schema") != POST_AMBIGUITY_OBSERVATION_SCHEMA
+                or raw.get("observed_state") not in _OBSERVED_STATES
+                or "durable" in raw
+            ):
+                return UNREADABLE
+            observation = PostAmbiguityObservation(**raw, durable=True)
+        except (TypeError, ValueError, RecursionError):
+            return UNREADABLE
+        if not all(
+            isinstance(getattr(observation, name), str)
+            for name in observation.row()
+        ):
+            return UNREADABLE
+        rows.setdefault(observation.idempotency_key, []).append(observation)
+    return rows
+
+
+def read_post_ambiguity_observations(root: Path):
+    """``{key: [observation, ...]}``, ``{}`` when absent, or ``UNREADABLE``.
+
+    Never raises: a torn tail, a malformed row, an unknown schema or an
+    unreadable file is ``UNREADABLE``, and every caller treats that as a
+    refusal of ``attested_not_landed`` (fail closed).
+    """
+    try:
+        body = post_ambiguity_observations_path(root).read_bytes()
+    except FileNotFoundError:
+        return {}
+    except OSError:
+        return UNREADABLE
+    return _parse_post_ambiguity_observations(body)
+
+
+def post_ambiguity_effect(root: Path, key: str):
+    """The recorded effect observation for ``key``, ``UNREADABLE``, or ``None``."""
+    observations = read_post_ambiguity_observations(root)
+    if observations is UNREADABLE:
+        return UNREADABLE
+    for observation in observations.get(key, ()):
+        if observation.is_effect:
+            return observation
+    return None
+
+
+def ambiguity_digest(root: Path, key: str) -> str | None:
+    """sha256 of the raw line of ``key``'s latest ``outcome_ambiguous_blocked`` row.
+
+    The same digest a rotation attestation binds (``_read_predecessor_ledger``
+    and the attestation builder hash the line text without its newline).
+    """
+    path = Path(root) / "evidence.jsonl"
+    if not path.exists():
+        return None
+    latest = None
+    for raw_line in path.read_bytes().split(b"\n"):
+        if not raw_line.strip():
+            continue
+        try:
+            raw = json.loads(raw_line.decode("utf-8"))
+        except ValueError:
+            continue
+        if (
+            isinstance(raw, dict)
+            and raw.get("idempotency_key") == key
+            and raw.get("state") == TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED.value
+        ):
+            latest = raw_line
+    return hashlib.sha256(latest).hexdigest() if latest is not None else None
+
+
+def append_post_ambiguity_observation(
+    root: Path,
+    observation: PostAmbiguityObservation,
+    *,
+    authorize=None,
+    lock_held: bool = False,
+) -> bool:
+    """Append one observation; return whether it is durable.
+
+    ``lock_held=True`` declares that the caller holds the exclusive
+    ``admissions.lock``.  An identical row already present is not written
+    again.  Nothing is appended after an unreadable file (a torn tail would
+    swallow the new row); the observation is then not durable.
+    """
+    import fcntl
+
+    root = Path(root)
+    path = post_ambiguity_observations_path(root)
+    body = (json.dumps(observation.row(), sort_keys=True) + "\n").encode("utf-8")
+
+    def append() -> bool:
+        if authorize is not None:
+            authorize()
+        created = not path.exists()
+        if not created:
+            existing = path.read_bytes()
+            parsed = _parse_post_ambiguity_observations(existing)
+            if parsed is UNREADABLE:
+                return False
+            if body in existing.splitlines(keepends=True):
+                return True
+        with path.open("ab") as stream:
+            stream.write(body)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if created:
+            descriptor = os.open(str(root), os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        return True
+
+    if lock_held:
+        return append()
+    if authorize is not None:
+        authorize()
+    with (root / "admissions.lock").open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            return append()
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)

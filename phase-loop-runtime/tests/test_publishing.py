@@ -21,6 +21,32 @@ from pathlib import Path
 
 import pytest
 
+
+def test_exact_pr_publication_presentation_is_truthful_and_nonresuming():
+    from phase_loop_runtime.publishing import present_exact_pr_reconciliation
+
+    result = present_exact_pr_reconciliation(
+        {
+            "pr_url": "https://github.com/Consiliency/agent-harness/pull/1849",
+            "head_sha": "a" * 40,
+            "branch": "fix/exact-pr",
+            "settlement_digest": "b" * 64,
+            "settlement_provenance": "immutable_per_key_file",
+            "title_equal": True,
+            "body_equal": False,
+            "original_body_sha256": "c" * 64,
+            "observed_body_sha256": "d" * 64,
+            "authorization_kind": "operator_procedural",
+            "creator_attribution": "not_proven_broker",
+        }
+    )
+    assert result["status"] == "publication_blocked"
+    assert result["effective_publication"] is True
+    assert result["provider_call_made"] is False
+    assert result["broker_created_pr"] is False
+    assert result["independently_approved"] is False
+    assert result["body_equal"] is False
+
 from _fabpub_tdd_guard import fabpub_migrated_activated, fabpub_symbol
 from phase_loop_runtime.publishing import (
     PROTECTED_BRANCHES,

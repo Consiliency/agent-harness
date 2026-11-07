@@ -1,6 +1,7 @@
 """Credential boundary and GitHub publish adapter."""
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -262,6 +263,10 @@ class GitHubBrokerAdapter:
         return self._slug_for(self._origin_url())
     def _slug_for(self, url: str) -> str:
         return resolve_host_qualified_repo_slug(url, allowed_hosts=self.allowed_hosts)
+
+    def read_exact_pr_witness(self, *, pr_url: str, branch: str) -> dict:
+        """Read the complete, mutation-free witness for one existing pull request."""
+        return read_exact_pr_witness(self, pr_url=pr_url, branch=branch)
     def _ambiguous(self, request: BrokerRequest, reference: str):
         # v5 rule: a failed/empty remote read is NEVER inferred as no_effect and
         # NEVER fabricated as success — it is a permanent ambiguous block.
@@ -558,3 +563,147 @@ class GitHubBrokerAdapter:
             if round_index == 3:
                 return self._ambiguous(request, reason)
             sleep(round_index)
+
+
+class ExactPRWitnessRefused(PermissionError):
+    """The provider did not return one complete, exact pull-request witness."""
+
+
+_EXACT_PR_LIST_LIMIT = 10000
+_EXACT_PR_VIEW_FIELDS = (
+    "url,number,state,isDraft,mergedAt,baseRefName,headRefName,headRefOid,"
+    "headRepository,headRepositoryOwner,isCrossRepository,title,body"
+)
+_EXACT_PR_LIST_FIELDS = "number,url,headRefName,headRefOid"
+
+
+def _exact_pr_completed_bytes(completed, *, label: str) -> bytes:
+    if getattr(completed, "returncode", 1) != 0:
+        raise ExactPRWitnessRefused(f"{label} failed")
+    stdout = getattr(completed, "stdout", None)
+    if isinstance(stdout, bytes):
+        return stdout
+    # Synthetic runners in tests may return str even though the production call
+    # explicitly requests bytes.  Re-encoding is a test seam; production never
+    # opts into universal-newline translation.
+    if isinstance(stdout, str):
+        return stdout.encode("utf-8")
+    raise ExactPRWitnessRefused(f"{label} returned no byte output")
+
+
+def _exact_pr_json_object(body: bytes, *, label: str) -> dict:
+    try:
+        decoded = body.decode("utf-8")
+        value = json.loads(decoded)
+    except (UnicodeDecodeError, ValueError, RecursionError) as error:
+        raise ExactPRWitnessRefused(f"{label} returned invalid UTF-8 JSON: {error}") from error
+    if not isinstance(value, dict):
+        raise ExactPRWitnessRefused(f"{label} did not return a JSON object")
+    return value
+
+
+def _exact_pr_json_list(body: bytes, *, label: str) -> list:
+    try:
+        decoded = body.decode("utf-8")
+        value = json.loads(decoded)
+    except (UnicodeDecodeError, ValueError, RecursionError) as error:
+        raise ExactPRWitnessRefused(f"{label} returned invalid UTF-8 JSON: {error}") from error
+    if not isinstance(value, list):
+        raise ExactPRWitnessRefused(f"{label} did not return a JSON array")
+    return value
+
+
+def read_exact_pr_witness(
+    adapter: GitHubBrokerAdapter,
+    *,
+    pr_url: str,
+    branch: str,
+) -> dict:
+    """Observe one exact existing PR without exposing any mutation command.
+
+    The JSON-producing calls capture bytes, then decode UTF-8 explicitly.  In
+    particular the body string is hashed after JSON escape decoding and UTF-8
+    re-encoding; it is never stripped or newline-normalized.
+    """
+    origin_url = adapter._origin_url()
+    origin_repo = adapter._slug_for(origin_url)
+    if not adapter._pr_url_matches_origin(pr_url, origin_repo):
+        raise ExactPRWitnessRefused("pull-request URL is not canonical for the validated origin")
+    try:
+        number = int(pr_url.rsplit("/", 1)[1])
+    except (ValueError, IndexError) as error:
+        raise ExactPRWitnessRefused("pull-request URL carries no canonical number") from error
+    if not isinstance(branch, str) or not branch or branch.startswith("-"):
+        raise ExactPRWitnessRefused("branch is not a safe exact-ref name")
+    ref = build_non_force_branch_ref(branch)
+
+    view_completed = adapter.run(
+        [
+            "gh", "pr", "view", str(number), "--repo", origin_repo,
+            "--json", _EXACT_PR_VIEW_FIELDS,
+        ],
+        cwd=adapter.repo_path,
+        capture_output=True,
+        text=False,
+        timeout=60,
+    )
+    view = _exact_pr_json_object(
+        _exact_pr_completed_bytes(view_completed, label="gh pr view"),
+        label="gh pr view",
+    )
+
+    # gh paginates until --limit results or exhaustion.  A result set that
+    # reaches the cap is therefore not accepted as proof of uniqueness.
+    list_completed = adapter.run(
+        [
+            "gh", "pr", "list", "--repo", origin_repo, "--head", branch,
+            "--state", "all", "--limit", str(_EXACT_PR_LIST_LIMIT),
+            "--json", _EXACT_PR_LIST_FIELDS,
+        ],
+        cwd=adapter.repo_path,
+        capture_output=True,
+        text=False,
+        timeout=60,
+    )
+    listed = _exact_pr_json_list(
+        _exact_pr_completed_bytes(list_completed, label="gh pr list"),
+        label="gh pr list",
+    )
+    if len(listed) >= _EXACT_PR_LIST_LIMIT:
+        raise ExactPRWitnessRefused("all-state pull-request enumeration did not prove exhaustion")
+
+    remote_completed = adapter.run(
+        ["git", "-C", str(adapter.repo_path), "ls-remote", origin_url, ref],
+        capture_output=True,
+        text=False,
+        timeout=60,
+    )
+    remote_bytes = _exact_pr_completed_bytes(remote_completed, label="git ls-remote")
+    try:
+        remote_text = remote_bytes.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ExactPRWitnessRefused("git ls-remote returned non-UTF-8 output") from error
+    remote_refs = []
+    for line in remote_text.splitlines():
+        fields = line.split("\t")
+        if len(fields) != 2 or fields[1] != ref:
+            raise ExactPRWitnessRefused("git ls-remote returned an unexpected ref shape")
+        remote_refs.append({"head_sha": fields[0], "ref": fields[1]})
+    if len(remote_refs) != 1:
+        raise ExactPRWitnessRefused("git ls-remote did not return exactly one branch ref")
+
+    body = view.get("body")
+    if not isinstance(body, str):
+        raise ExactPRWitnessRefused("pull-request body is not a string")
+    return {
+        "schema": "ExactPRProviderWitness.v1",
+        "origin_url": origin_url,
+        "origin_repository": origin_repo,
+        "requested_pr_url": pr_url,
+        "requested_pr_number": number,
+        "view": view,
+        "all_state_branch_prs": listed,
+        "all_state_enumeration_exhausted": True,
+        "remote_refs": remote_refs,
+        "body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+    }

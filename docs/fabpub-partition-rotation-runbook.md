@@ -646,6 +646,68 @@ publication. Use matching SDK and broker support; older supported SDK entrypoint
 do not accept the new keyword. Do not edit receipts or use generic prebuilt mode
 to imitate it.
 
+## 8c. Reconcile one exact existing pull request
+
+The exact-PR operation is a bounded administrative overlay for an already
+ambiguous `publish_committed_branch` effect. It does not retry the publish,
+change the raw evidence terminal, edit the pull request, or advance the frozen
+publication checkpoint. The active generation retains its
+`outcome_ambiguous_blocked` row and gains two records: a compatible
+`PostAmbiguityObservation.v1` row and an immutable `ExactPRSettlement.v1` file.
+
+Use only a runtime release that contains agent-harness#1849 and record its
+installed path, version and source commit in the one-shot execution packet.
+The packet must also bind the current canonical repository identity and common
+directory, active receipt and generation, ACTIVE writer latch, transaction
+checkpoint and pointer, exact owner bytes and liveness result, ambiguity row,
+pull-request URL/head/base/draft/title, the complete two-pass provider witness,
+the exact original and observed body digests, the owner instruction reference
+and digest, and the plan digest. Changed bytes require a newly qualified packet.
+
+First run the point-in-time, zero-write check:
+
+```sh
+phase-loop fabpub-reconcile-exact-pr \
+  --worktree "$WORKTREE" \
+  --authority-root "$CHECKPOINT_ROOT" \
+  --transaction-id "$TRANSACTION_ID" \
+  --pr-url "$PR_URL" \
+  --disposition "$DISPOSITION_JSON" \
+  --check --json
+```
+
+A successful check reports `commit_authorized: false`. It grants no authority
+to a later invocation; commit mode repeats every local and provider validation.
+After the owner gives live approval for the exact body-digest exception in the
+qualified packet, omit `--check` once. An identical retry returns the immutable
+receipt. A different disposition for the same effect key refuses and never
+overwrites the winner.
+
+Inspect the raw and effective views without calling the provider:
+
+```sh
+phase-loop fabpub-inspect-exact-pr \
+  --worktree "$WORKTREE" \
+  --authority-root "$CHECKPOINT_ROOT" \
+  --transaction-id "$TRANSACTION_ID" \
+  --json
+```
+
+Do not retry the original publish. Older runtimes continue to see the permanent
+raw ambiguity and the compatible observed-effect row. The settlement-aware
+runtime permits unrelated effects while replaying the exact settled key without
+provider entry.
+
+Future partition rotation also requires the settlement-aware runtime. For every
+settled blocked key, the attestation must use `observed_landed` with the exact PR
+URL, observed head and `settlement_digest`, and must bind the predecessor's
+`exact_pr_settlement_snapshot_sha256`. The successor inventory embeds the full
+settlement proof. `attested_not_landed` or a wrong binding refuses. A successor
+sealed by an older runtime loses the
+embedded proof; the settlement-aware runtime then refuses the settled key
+(typed, no provider entry) while routing unrelated work. Later qualified
+rotations for unrelated ambiguity preserve the embedded proof unchanged.
+
 ## 9. Residuals carried out of the 2026-09-09 preparation
 
 - Consiliency/agent-harness#820 — leases carry no liveness; orphan detection is

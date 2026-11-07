@@ -367,8 +367,8 @@ def test_guard_missing_row_gets_retry_once(tmp_path, monkeypatch):
         finally:
             calls["guard"] = False
 
-    def replay(self):
-        rows = real_replay(self)
+    def replay(self, snapshot=None):
+        rows = real_replay(self, snapshot)
         # Inside the guard only: the store no longer holds this attempt's row.
         return {} if calls["guard"] else rows
 
