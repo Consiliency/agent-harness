@@ -1303,11 +1303,12 @@ def _run_help(image, env):
             with gh.owned_profile(env, settings_bytes=panel._broker_agy_settings_bytes(),
                                   credential_path=Path(home) / ".gemini/antigravity-cli/antigravity-oauth-token",
                                   admission=admission) as profile:
-                proc = panel._run_leg_with_liveness(
-                    [profile.executable, "--help"], cwd=scratch, env=profile.env,
-                    deadline_s=panel._MAX_LEG_TIMEOUT_S, input_text=None,
-                    review_monitor=monitor, gemini_profile=profile,
-                )
+                with panel._uncapped_nonseat_probe():
+                    proc = panel._run_leg_with_liveness(
+                        [profile.executable, "--help"], cwd=scratch, env=profile.env,
+                        deadline_s=panel._MAX_LEG_TIMEOUT_S, input_text=None,
+                        review_monitor=monitor, gemini_profile=profile,
+                    )
         # agy prints its usage on stderr; the measured help is both streams, in that
         # order (``agy --help > help.txt 2>&1`` for a tool that writes only one).
         text = proc.stdout + proc.stderr

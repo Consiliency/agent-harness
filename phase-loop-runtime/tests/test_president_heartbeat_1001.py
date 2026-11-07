@@ -219,6 +219,7 @@ def test_seats_firstseat_president_tui_open_turn_resets_clock(tmp_path, monkeypa
         contextlib.nullcontext((command, panel_invoker.SeatProfile(env=kw["env"]))))
     launched = []
     def launch(command, *, profile, role, **kw):
+        assert kw.pop("seat_caps").startswith("president:claude:")
         kw.update(stdin=profile.terminal_fd, stdout=profile.terminal_fd, stderr=profile.terminal_fd)
         proc = subprocess.Popen(command, **kw)
         launched.append(proc)
@@ -515,7 +516,7 @@ def test_the_claude_rung_hands_the_broker_latch_to_the_tui_session(tmp_path):
     ("review", "end_turn", "claude_tui_broker_terminal_nonconforming"),
 ])
 def test_terminal_nonconforming_claude_turn_reaches_president_reask(
-    tmp_path, monkeypatch, mode, stop_reason, expected_log,
+    tmp_path, monkeypatch, mode, stop_reason, expected_log, live_seat_attempt,
 ):
     monkeypatch.setattr(panel_invoker, "_CLAUDE_TUI_SUBMIT_DELAY_S", .1)
     monkeypatch.setattr(panel_invoker, "_CLAUDE_TUI_READY_QUIESCENCE_S", .05)
@@ -756,12 +757,15 @@ def _run_terminal_child(tmp_path, monkeypatch, *, shape, interval_s, cancel_on_f
     with select_patch, patch.object(panel_invoker, "_final_assistant_text_from_jsonl", extract), patch.object(
         panel_invoker, "launch_provider", capture_launch,
     ):
-        result = panel_invoker._run_claude_tui_session(
-            command=["/usr/bin/python3", "-c", _TERMINAL_CHILD, shape, text], cwd=tmp_path, prompt="rule on F001",
-            output_file=tmp_path / "president.txt", timeout_s=10, env={"PATH": "/usr/bin:/bin"},
-            mode="president", backstop_s=10, review_monitor=monitor,
-            allow_transcript_final=True, broker_transcript_path=tmp_path / "owned.jsonl",
-        )
+        from phase_loop_runtime.seat_resource_caps import _seat_scope
+
+        with _seat_scope("test:president-terminal-child"):
+            result = panel_invoker._run_claude_tui_session(
+                command=["/usr/bin/python3", "-c", _TERMINAL_CHILD, shape, text], cwd=tmp_path, prompt="rule on F001",
+                output_file=tmp_path / "president.txt", timeout_s=10, env={"PATH": "/usr/bin:/bin"},
+                mode="president", backstop_s=10, review_monitor=monitor,
+                allow_transcript_final=True, broker_transcript_path=tmp_path / "owned.jsonl",
+            )
     assert (tmp_path / "terminal-written").exists()
     assert len(launched) == 1 and launched[0].poll() is not None  # reaped
     return result

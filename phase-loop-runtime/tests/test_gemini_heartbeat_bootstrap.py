@@ -698,14 +698,16 @@ def _run_profile(profile, tmp_path, cancel=None):
     monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "profile", 0,
                                    cancel if cancel is not None else threading.Event())
     from phase_loop_runtime import sandbox_egress
+    from phase_loop_runtime.seat_resource_caps import _seat_scope
     with sandbox_egress.isolated_network(timeout_s=None, required=True) as prefix:
         token = panel._EGRESS_LAUNCH_PREFIX.set(prefix)
         try:
-            return panel._run_leg_with_liveness(
-                [profile.executable], cwd=tmp_path, env=profile.env,
-                deadline_s=.01, stall_threshold_s=.01, review_monitor=monitor,
-                gemini_profile=profile,
-            )
+            with _seat_scope("test:gemini-heartbeat-profile"):
+                return panel._run_leg_with_liveness(
+                    [profile.executable], cwd=tmp_path, env=profile.env,
+                    deadline_s=.01, stall_threshold_s=.01, review_monitor=monitor,
+                    gemini_profile=profile,
+                )
         finally:
             panel._EGRESS_LAUNCH_PREFIX.reset(token)
 
@@ -886,7 +888,9 @@ def test_profile_refresh_preserves_target_and_discards_private_replacement(fixtu
     assert not Path("/dev/phase-loop-agy").exists()
 
 
-def test_gemini_exec_wait_crosses_old_clocks_with_its_monitor(fixture_cli, tmp_path, monkeypatch):
+def test_gemini_exec_wait_crosses_old_clocks_with_its_monitor(
+    fixture_cli, tmp_path, monkeypatch, live_seat_attempt,
+):
     fixture_cli.mode.write_text("wait")
     elapsed = 0
     clock = SimpleNamespace(monotonic=lambda: time.monotonic() + elapsed,
@@ -1113,8 +1117,13 @@ def test_owner_loss_through_real_broker_reclaims_namespace(fixture_cli, tmp_path
     worker_code = f'''
 from dataclasses import replace
 from pathlib import Path
-from phase_loop_runtime import panel_invoker as panel, gemini_heartbeat as gh
+import subprocess
+from phase_loop_runtime import panel_invoker as panel, gemini_heartbeat as gh, seat_resource_caps as caps
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+def capped(command, *, seat_key, **kwargs):
+    assert seat_key and seat_key == caps.live_seat_key()
+    return subprocess.Popen(command, **kwargs)
+caps.capped_popen=capped
 gh.QUALIFIED_IMAGES={fixture_cli.module.QUALIFIED_IMAGES!r}
 panel._measuring_qualification_candidate=lambda: True
 view=panel._seat_filesystem_view

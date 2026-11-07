@@ -28,7 +28,7 @@ import phase_loop_runtime.panel_invoker as pi
 from phase_loop_runtime.panel_invoker import _run_claude_tui_session
 
 pytestmark = [pytest.mark.skipif(shutil.which("sh") is None, reason="needs POSIX sh"),
-              pytest.mark.usefixtures("owned_review_network")]
+              pytest.mark.usefixtures("owned_review_network", "live_seat_attempt")]
 
 # A hermetic empty transcript: tmp cwds have no ~/.claude project, but pin it so the
 # transcript-growth heartbeat can never spuriously reset the clock in these tests.

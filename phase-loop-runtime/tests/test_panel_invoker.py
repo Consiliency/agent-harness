@@ -972,9 +972,16 @@ def test_seats_firstseat_exec_record_window_launch_order(
     tmp_path, monkeypatch, kind, seeded, credential, bracketed,
 ):
     from phase_loop_runtime import panel_invoker as pi
+    from phase_loop_runtime import seat_resource_caps as caps
     qualification = _install_firstseat_supplier_double(monkeypatch)
     events = []
+    keys = []
     session = _window_session(events)
+    raw = "\n".join((
+        json.dumps({"event": "init", "conversation_id": "c"}),
+        json.dumps({"event": "result", "conversation_id": "c", "result": {
+            "conversation_id": "c", "status": "SUCCESS", "response": "READY"}}),
+    ))
 
     @contextmanager
     def opened(spec):
@@ -987,7 +994,8 @@ def test_seats_firstseat_exec_record_window_launch_order(
     class Watch:
         def prove_sentinel(self, run):
             events.append("sentinel")
-            return True
+            step = run(["sentinel"], env={}, use_proxy=False, timeout_s=1)
+            return step.exit_code == 0 and not step.timed_out
         def drain_and_close(self, *, quiescent):
             events.append("watch_close")
             return SimpleNamespace(read_marker_opened=kind == "measured")
@@ -996,17 +1004,14 @@ def test_seats_firstseat_exec_record_window_launch_order(
         events.append(f"fence:{marker}:{window}")
         return SimpleNamespace(acknowledged=True, acked_ns=1, fence_id=marker)
 
-    def process(*args, **kwargs):
-        events.append("provider")
-        raw = "\n".join((
-            json.dumps({"event": "init", "conversation_id": "c"}),
-            json.dumps({"event": "result", "conversation_id": "c", "result": {
-                "conversation_id": "c", "status": "SUCCESS", "response": "READY"}}),
-        ))
-        return pi._WindowProcess(0, False, raw)
+    def run_leg(*args, **kwargs):
+        keys.append(caps.live_seat_key())
+        if kwargs["cwd"] == pi._seat_jail.SEAT_GEMINI_WORKSPACE:
+            events.append("provider")
+        return SimpleNamespace(returncode=0, stdout=raw, stderr="")
 
     monkeypatch.setattr(pi, "_open_window_launch", opened)
-    monkeypatch.setattr(pi, "_run_window_process", process)
+    monkeypatch.setattr(pi, "_run_leg_with_liveness", run_leg)
     monkeypatch.setattr(pi, "_read_window_trace", lambda *a: ((), (), True))
     monkeypatch.setattr(pi, "_hold_window_fence_gap", lambda ns: events.append("quiet"))
     monkeypatch.setattr(pi._seat_egress_proxy, "fence", fence, raising=False)
@@ -1044,6 +1049,8 @@ def test_seats_firstseat_exec_record_window_launch_order(
     )
     result = pi.window_control_launch(spec)
     assert result.status == "SUCCESS" and result.error is None
+    assert keys and len(set(keys)) == 1
+    assert keys[0].startswith(f"window:{kind}:")
     assert ("seed" in events) is seeded
     assert ("scan:credential" in events) is credential
     assert ("bracket" in events) is bracketed
@@ -1246,6 +1253,41 @@ def test_seats_firstseat_exec_record_window_board_hooks_real_gemini_leg(monkeypa
     assert events == [
         "qualify:True", "watch_start", "provider", "watch_finish", "cleanup",
     ]
+
+
+def test_window_board_sentinel_inherits_the_live_board_seat_key(monkeypatch):
+    from phase_loop_runtime import panel_invoker as pi
+    from phase_loop_runtime import seat_resource_caps as caps
+
+    qualification = _install_firstseat_supplier_double(monkeypatch)
+    session = _window_session([])
+    seen = []
+
+    class Watch:
+        def prove_sentinel(self, run):
+            step = run(["sentinel"], env={}, use_proxy=False, timeout_s=1)
+            return step.exit_code == 0 and not step.timed_out
+
+    monkeypatch.setattr(
+        qualification, "arm_watch", lambda *_a, **_k: Watch(), raising=False,
+    )
+    monkeypatch.setattr(
+        pi._seat_egress_proxy, "fence",
+        lambda *_a, **_k: SimpleNamespace(acknowledged=True), raising=False,
+    )
+
+    def run_leg(*_args, **_kwargs):
+        seen.append(caps.live_seat_key())
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(pi, "_run_leg_with_liveness", run_leg)
+    runtime = pi._WindowBoardLegRuntime(SimpleNamespace(layout=SimpleNamespace()))
+    with caps._seat_scope("gemini:window-board-seat"):
+        assert runtime.start(
+            session.seat, session.proxy, session.quiescence_latch,
+            ["agy"], "prompt", session.authorization,
+        )
+    assert seen == ["gemini:window-board-seat"]
 
 
 def test_seats_firstseat_exec_record_window_board_launch(tmp_path, monkeypatch):

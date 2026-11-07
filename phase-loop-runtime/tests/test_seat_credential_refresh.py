@@ -31,6 +31,10 @@ def test_near_expiry_refresh_runs_once_with_empty_cwd_and_fixed_argv(tmp_path, m
     original = subprocess.Popen
 
     def launch(command, **kwargs):
+        from phase_loop_runtime import seat_resource_caps
+        seat_key = kwargs.pop("seat_caps")
+        assert seat_key.startswith("cred:gemini:")
+        assert seat_resource_caps.live_seat_key() == seat_key
         assert panel_invoker._EGRESS_LAUNCH_PREFIX.get() == ()
         calls.append((command, Path(kwargs["cwd"]), kwargs["env"], kwargs.get("process_owner")))
         token_path.write_text(json.dumps({"auth_method": "oauth", "token": {
@@ -52,8 +56,12 @@ def test_near_expiry_refresh_runs_once_with_empty_cwd_and_fixed_argv(tmp_path, m
 def test_failed_refresh_refuses_the_seat(tmp_path, monkeypatch):
     _state(tmp_path, datetime.now(timezone.utc) - timedelta(minutes=1))
     original = subprocess.Popen
-    monkeypatch.setattr(panel_invoker, "launch_provider",
-                        lambda _argv, **kwargs: original(["/bin/false"], **kwargs))
+
+    def fail(_argv, **kwargs):
+        kwargs.pop("seat_caps")
+        return original(["/bin/false"], **kwargs)
+
+    monkeypatch.setattr(panel_invoker, "launch_provider", fail)
     with pytest.raises(sandbox_egress.SeatIdentityUnverified, match="gemini_credential_near_expiry"):
         panel_invoker._refresh_gemini_credential(tmp_path, _Image())
 
@@ -125,6 +133,10 @@ def test_sibling_profiles_share_one_operator_refresh_and_private_copies(tmp_path
             pass
 
     def launch(command, **kwargs):
+        from phase_loop_runtime import seat_resource_caps
+        seat_key = kwargs.pop('seat_caps')
+        assert seat_key.startswith('cred:gemini:')
+        assert seat_resource_caps.live_seat_key() == seat_key
         assert panel_invoker._EGRESS_LAUNCH_PREFIX.get() == ()
         assert kwargs.get('process_owner') is None
         assert command[1:] == ['models'] and list(Path(kwargs['cwd']).iterdir()) == []

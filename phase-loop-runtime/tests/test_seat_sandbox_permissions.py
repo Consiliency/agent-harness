@@ -1069,7 +1069,9 @@ def test_a_seat_launched_with_an_override_bound_elsewhere_uses_the_login(monkeyp
 # Joins with agent-harness#896's placement record (main merge 9bfb6700).
 # --------------------------------------------------------------------------------------
 
-def test_a_jailed_provider_launch_is_counted_as_a_provider_spawn(monkeypatch, tmp_path):
+def test_a_jailed_provider_launch_is_counted_as_a_provider_spawn(
+    monkeypatch, tmp_path, live_seat_attempt,
+):
     # The placement record reports `sandbox_local_provider_spawns`; a jailed Claude provider
     # is a local provider spawn, so the leg's counter must see it.
     import types
@@ -1084,7 +1086,12 @@ def test_a_jailed_provider_launch_is_counted_as_a_provider_spawn(monkeypatch, tm
     counter = panel_invoker._SpawnCounter()
     try:
         with panel_invoker._bind_spawn_counter(counter):
-            panel_invoker.launch_provider(["true"], process_owner=jail, probe_owner=probe)
+            from phase_loop_runtime import seat_resource_caps
+
+            panel_invoker.launch_provider(
+                ["true"], process_owner=jail, probe_owner=probe,
+                seat_caps=seat_resource_caps.live_seat_key(),
+            )
     finally:
         seat_jail.close_jail_fds(jail)
         seat_jail.close_jail_fds(probe)

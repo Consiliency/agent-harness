@@ -10,7 +10,7 @@ import pytest
 
 from executable_dependency_test_support import build_fixture
 from phase_loop_runtime import executable_dependency_startup as startup
-from phase_loop_runtime import launcher, panel_invoker, seat_jail
+from phase_loop_runtime import launcher, panel_invoker, seat_jail, seat_resource_caps
 from phase_loop_runtime.executable_dependency import ExecutableDependencyError
 from phase_loop_runtime.executable_dependency_startup import (
     DependencyStartupSpec,
@@ -324,6 +324,7 @@ def test_owned_launch_rechecks_output_directory_collision_before_any_owner_effec
 def test_managed_launcher_and_production_jails_share_one_dependency_lifetime(
     monkeypatch,
     tmp_path: Path,
+    live_seat_attempt,
 ) -> None:
     fixture = build_fixture(tmp_path / "fixture", layout="layout-b", provider="claude")
     monkeypatch.setattr(startup, "_validate_runtime_package", lambda _package: None)
@@ -437,6 +438,7 @@ def test_managed_launcher_and_production_jails_share_one_dependency_lifetime(
                     process_owner=production,
                     probe_owner=probe,
                     env={},
+                    seat_caps=seat_resource_caps.live_seat_key(),
                 )
                 assert qualified == [production]
                 assert len(probed) == 1
@@ -457,6 +459,7 @@ def test_managed_launcher_and_production_jails_share_one_dependency_lifetime(
                         process_owner=production,
                         probe_owner=probe,
                         env={},
+                        seat_caps=seat_resource_caps.live_seat_key(),
                     )
                 assert effects_before_refusal == (
                     len(qualified),

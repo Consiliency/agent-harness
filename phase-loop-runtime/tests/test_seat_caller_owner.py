@@ -13,7 +13,10 @@ import pytest
 from phase_loop_runtime import panel_invoker, sandbox_egress
 
 
-pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux owned review callers")
+pytestmark = [
+    pytest.mark.skipif(sys.platform != "linux", reason="Linux owned review callers"),
+    pytest.mark.usefixtures("live_seat_attempt"),
+]
 
 
 @pytest.mark.parametrize("heartbeat", [False, True])

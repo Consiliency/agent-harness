@@ -199,7 +199,7 @@ def test_host_collection_accepts_completed_tool_cycle():
                                       (records[0], records[1], records[3])).encode()) == ""
 
 
-def test_canonical_file_waits_for_final_journal(tmp_path, monkeypatch):
+def test_canonical_file_waits_for_final_journal(tmp_path, monkeypatch, live_seat_attempt):
     from phase_loop_runtime import sandbox_egress
 
     for name in ("_CLAUDE_TUI_SUBMIT_DELAY_S", "_CLAUDE_TUI_READY_QUIESCENCE_S",

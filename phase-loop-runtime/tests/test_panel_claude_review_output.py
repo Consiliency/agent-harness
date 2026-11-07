@@ -275,7 +275,9 @@ def test_raw_unicode_separator_at_message_edge_survives(tmp_path, separator):
     ("review", "REVIEW START\n1. Edge separator\u2028", "REVIEW END\nPARTIALLY AGREE"),
     ("president", "FINDING F001: BLOCKING — Preserve the first finding", "FORCING DECISION: Fix F001 before landing"),
 ])
-def test_brokered_tui_returns_complete_split_review(tmp_path, monkeypatch, mode, first, last):
+def test_brokered_tui_returns_complete_split_review(
+    tmp_path, monkeypatch, mode, first, last, live_seat_attempt,
+):
     monkeypatch.setattr(pi, "_CLAUDE_TUI_SUBMIT_DELAY_S", 0.1)
     monkeypatch.setattr(pi, "_CLAUDE_TUI_READY_QUIESCENCE_S", 0.1)
     completion_inputs = []

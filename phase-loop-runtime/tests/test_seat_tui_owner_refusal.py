@@ -16,7 +16,7 @@ from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime import seat_seccomp
 
 pytestmark = [pytest.mark.skipif(shutil.which("sh") is None, reason="needs POSIX sh"),
-              pytest.mark.usefixtures("owned_review_network")]
+              pytest.mark.usefixtures("owned_review_network", "live_seat_attempt")]
 
 
 def test_a_final_link_refusal_is_typed_on_the_tui_route(tmp_path, monkeypatch):

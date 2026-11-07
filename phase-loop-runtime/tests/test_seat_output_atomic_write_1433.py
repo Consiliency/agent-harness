@@ -868,7 +868,7 @@ def test_a_host_file_left_by_an_earlier_launch_is_emptied_when_the_launch_is_acc
     assert output.read_text() == ""
 
 
-@pytest.mark.usefixtures("owned_review_network")
+@pytest.mark.usefixtures("owned_review_network", "live_seat_attempt")
 def test_a_session_never_returns_an_earlier_launchs_verdict(tmp_path, elsewhere, monkeypatch):
     """The host file already holds "Earlier launch / AGREE"; this seat ends its turn and
     writes nothing. The session refuses (it used to return the stale AGREE with rc 0), and
@@ -1045,7 +1045,7 @@ def test_view_refuses_a_private_directory_the_seat_can_see_through_an_input(tmp_
 
 # --- the live session: the review is read while the seat runs, and delivered when it ends ------
 
-@pytest.mark.usefixtures("owned_review_network")
+@pytest.mark.usefixtures("owned_review_network", "live_seat_attempt")
 @pytest.mark.parametrize("layout", LAYOUTS)
 def test_a_tui_session_accepts_and_delivers_an_atomically_written_review(
         tmp_path, elsewhere, layout, monkeypatch):

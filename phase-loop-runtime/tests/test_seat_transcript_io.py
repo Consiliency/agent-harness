@@ -4,6 +4,8 @@ import os
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("live_seat_attempt")
+
 from phase_loop_runtime import panel_invoker, sandbox_egress
 from phase_loop_runtime.agy_canary_evidence import AgyCanaryEvidenceError
 

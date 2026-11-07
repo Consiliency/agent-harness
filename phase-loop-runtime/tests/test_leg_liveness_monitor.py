@@ -31,7 +31,7 @@ from phase_loop_runtime import panel_invoker as pi
 # Availability is therefore a plain /proc (linux) check, not a self-pid probe.
 _CPU_AVAILABLE = sys.platform.startswith("linux") and os.path.isdir("/proc")
 
-pytestmark = pytest.mark.usefixtures("owned_review_network")
+pytestmark = pytest.mark.usefixtures("owned_review_network", "live_seat_attempt")
 
 
 @pytest.fixture(autouse=True)
@@ -54,7 +54,11 @@ def _run(cmd, *, deadline_s, stall_threshold_s, input_text=None):
 def test_silent_idle_leg_is_reclaimed_on_stall_not_deadline():
     # sleep: no stdout, no CPU. Must die ~stall_threshold, FAR before the deadline.
     t0 = time.monotonic()
-    result = _run(["sleep", "600"], deadline_s=60, stall_threshold_s=2)
+    result = _run(
+        ["/usr/bin/python3", "-c", "import time; time.sleep(600)"],
+        deadline_s=60,
+        stall_threshold_s=2,
+    )
     elapsed = time.monotonic() - t0
     assert "[leg-liveness] stalled" in result.stderr
     assert elapsed < 15, f"took {elapsed:.1f}s — should be ~stall_threshold (2s), not the 60s deadline"
@@ -112,7 +116,12 @@ def test_deadline_backstop_preserves_best_available_streams():
 def test_stdin_is_fed_by_writer_thread_without_deadlock():
     # cat echoes stdin then exits on EOF — proves the daemon writer thread feeds stdin
     # and closes it (no deadlock, correct stdout capture).
-    result = _run(["cat"], deadline_s=15, stall_threshold_s=10, input_text="hello-from-stdin\n")
+    result = _run(
+        ["/usr/bin/python3", "-c", "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())"],
+        deadline_s=15,
+        stall_threshold_s=10,
+        input_text="hello-from-stdin\n",
+    )
     assert result.returncode == 0
     assert "hello-from-stdin" in result.stdout
 

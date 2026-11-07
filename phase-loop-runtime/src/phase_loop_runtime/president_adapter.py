@@ -574,11 +574,14 @@ class PresidentInvoke:
                 credential_path=Path(subscription_env.get("HOME", str(Path.home())))
                 / ".gemini/antigravity-cli/antigravity-oauth-token",
             ) as profile:
-                proc = panel_invoker._run_leg_with_liveness(
-                    [profile.executable, *command[1:]], cwd=out_dir, env=profile.env,
-                    deadline_s=deadline_s, input_text=protocol.transport,
-                    quiescence_latch=latch, review_monitor=monitor, gemini_profile=profile,
-                )
+                from .seat_resource_caps import _seat_scope
+                seat_key = f"president:gemini:{self.invocation}:{uuid.uuid4().hex}"
+                with _seat_scope(seat_key):
+                    proc = panel_invoker._run_leg_with_liveness(
+                        [profile.executable, *command[1:]], cwd=out_dir, env=profile.env,
+                        deadline_s=deadline_s, input_text=protocol.transport,
+                        quiescence_latch=latch, review_monitor=monitor, gemini_profile=profile,
+                    )
         else:
             # Bounded: agy runs on the host, so its scratch is relocated like a leg's
             # (agent-harness#1147); only the heartbeat jail above has a private /tmp.
@@ -586,11 +589,14 @@ class PresidentInvoke:
                 panel_invoker._broker_leg_env(self.base_env, "gemini"),
             ) as env:
                 try:
-                    proc = panel_invoker._run_leg_with_liveness(
-                        command, cwd=out_dir, env=env, deadline_s=deadline_s,
-                        input_text=protocol.transport,
-                        **({"quiescence_latch": latch} if latch is not None else {}),
-                    )
+                    from .seat_resource_caps import _seat_scope
+                    seat_key = f"president:gemini:{self.invocation}:{uuid.uuid4().hex}"
+                    with _seat_scope(seat_key):
+                        proc = panel_invoker._run_leg_with_liveness(
+                            command, cwd=out_dir, env=env, deadline_s=deadline_s,
+                            input_text=protocol.transport,
+                            **({"quiescence_latch": latch} if latch is not None else {}),
+                        )
                 except subprocess.TimeoutExpired:
                     return 124, "", "Gemini president deadline exceeded"
         if proc.returncode != 0:
@@ -628,19 +634,22 @@ class PresidentInvoke:
                 return 1, "", auth_detail
             timeout_s = panel_invoker._leg_timeout_for(out_dir)
             backstop_s = max(1, int(timeout_s), panel_invoker._MAX_LEG_TIMEOUT_S)
-            rc, text, log, _tail = panel_invoker._run_claude_print_session(
-                panel_invoker._claude_print_seat_command(
-                    route_model, None, brokered=True, env=self.base_env),
-                panel_invoker._BROKER_CLAUDE_DIRECT_REQUEST + prompt,
-                env=env,
-                cwd=out_dir.resolve(),
-                mode="president",
-                timeout_s=timeout_s,
-                stall_s=panel_invoker._broker_claude_stall_threshold(prompt, backstop_s),
-                backstop_s=backstop_s,
-                **({"review_monitor": monitor} if monitor is not None else {}),
-                **({"quiescence_latch": latch} if latch is not None else {}),
-            )
+            from .seat_resource_caps import _seat_scope
+            seat_key = f"president:claude:{self.invocation}:{uuid.uuid4().hex}"
+            with _seat_scope(seat_key):
+                rc, text, log, _tail = panel_invoker._run_claude_print_session(
+                    panel_invoker._claude_print_seat_command(
+                        route_model, None, brokered=True, env=self.base_env),
+                    panel_invoker._BROKER_CLAUDE_DIRECT_REQUEST + prompt,
+                    env=env,
+                    cwd=out_dir.resolve(),
+                    mode="president",
+                    timeout_s=timeout_s,
+                    stall_s=panel_invoker._broker_claude_stall_threshold(prompt, backstop_s),
+                    backstop_s=backstop_s,
+                    **({"review_monitor": monitor} if monitor is not None else {}),
+                    **({"quiescence_latch": latch} if latch is not None else {}),
+                )
             return rc, text, log
         # The brokered self-PTY session: tools off, no directory grant, answer read from
         # the session transcript. Called directly (not through the review wrapper) so a
@@ -655,23 +664,26 @@ class PresidentInvoke:
         timeout_s = panel_invoker._leg_timeout_for(out_dir)
         backstop_s = max(1, int(timeout_s), panel_invoker._MAX_LEG_TIMEOUT_S)
         try:
-            rc, text, log, _tail = panel_invoker._run_claude_tui_session(
-                command=command,
-                cwd=cwd,
-                prompt=prompt,
-                output_file=out_dir / "president-claude.txt",
-                timeout_s=timeout_s,
-                env=panel_invoker._broker_leg_env(self.base_env, "claude"),
-                mode="president",
-                backstop_s=backstop_s,
-                stall_threshold_s=panel_invoker._broker_claude_stall_threshold(prompt, backstop_s),
-                allow_transcript_final=True,
-                broker_transcript_path=transcript,
-                **({"review_monitor": monitor} if monitor is not None else {}),
-                # The broker's stop path reaches the Claude process through the latch,
-                # exactly as for the review TUI seat.
-                **({"quiescence_latch": latch} if latch is not None else {}),
-            )
+            from .seat_resource_caps import _seat_scope
+            seat_key = f"president:claude:{self.invocation}:{uuid.uuid4().hex}"
+            with _seat_scope(seat_key):
+                rc, text, log, _tail = panel_invoker._run_claude_tui_session(
+                    command=command,
+                    cwd=cwd,
+                    prompt=prompt,
+                    output_file=out_dir / "president-claude.txt",
+                    timeout_s=timeout_s,
+                    env=panel_invoker._broker_leg_env(self.base_env, "claude"),
+                    mode="president",
+                    backstop_s=backstop_s,
+                    stall_threshold_s=panel_invoker._broker_claude_stall_threshold(prompt, backstop_s),
+                    allow_transcript_final=True,
+                    broker_transcript_path=transcript,
+                    **({"review_monitor": monitor} if monitor is not None else {}),
+                    # The broker's stop path reaches the Claude process through the latch,
+                    # exactly as for the review TUI seat.
+                    **({"quiescence_latch": latch} if latch is not None else {}),
+                )
         finally:
             panel_invoker._cleanup_broker_claude_transcript(transcript, None)
         return rc, text, log

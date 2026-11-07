@@ -49,6 +49,8 @@ from test_review_seat_stall_1176 import (
     REQUEST, THINKING_FIRST, _JOURNAL, _ProviderTimer, _answer, _fast_tui,
 )
 
+pytestmark = pytest.mark.usefixtures("live_seat_attempt")
+
 CODE = "claude_seat_delivery_refused"
 
 

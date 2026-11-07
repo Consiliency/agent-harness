@@ -146,11 +146,14 @@ def _brokered_codex(monkeypatch, tmp_path, script: str):
     # (agent-harness#1244); with one it takes this branch, which is what is driven here.
     monkeypatch.setattr(pi, "_seat_route_for_spawn", lambda *a, **k: (None, [], None))
     monkeypatch.setattr(_FakeBroker, "invoked", 0)
-    spawned = pi._default_spawn(
-        "codex", "ARTIFACT", mode="review", model="gpt-test",
-        review_authorization=types.SimpleNamespace(staged_tree_sha256=None),
-        canonical_repo_authority=tmp_path,
-    )
+    from phase_loop_runtime.seat_resource_caps import _seat_scope
+
+    with _seat_scope("test:brokered-codex-detail"):
+        spawned = pi._default_spawn(
+            "codex", "ARTIFACT", mode="review", model="gpt-test",
+            review_authorization=types.SimpleNamespace(staged_tree_sha256=None),
+            canonical_repo_authority=tmp_path,
+        )
     assert _FakeBroker.invoked == 1, f"the brokered branch never ran: {spawned!r}"
     return spawned
 
