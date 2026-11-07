@@ -20,7 +20,10 @@ from phase_loop_runtime import seat_admission
 from phase_loop_runtime import seat_jail
 from phase_loop_runtime import seat_profiles
 from phase_loop_runtime import seat_subject
-from phase_loop_runtime.executable_dependency import ExecutableDependencyError
+from phase_loop_runtime.executable_dependency import (
+    ExecutableDependencyError,
+    admit_executable_dependency,
+)
 
 
 pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux managed seat")
@@ -31,6 +34,7 @@ def _managed_world(tmp_path, monkeypatch, *, resolver_code=None, authority_code=
         tmp_path / "dependency",
         provider="claude",
         provider_destination=Path(f"{seat_jail.SEAT_BIN}/claude"),
+        include_entries=False,
     )
     subject = seat_subject.SeatSubject(
         leg="claude",
@@ -157,6 +161,35 @@ def test_optional_profile_launches_the_declared_subject_without_changing_profile
     finally:
         fixture.close()
     assert seat_jail.jail_profile_digest("claude", "x86_64") == before
+
+
+def test_subject_only_declaration_admits_without_auxiliary_projection_entries(tmp_path):
+    fixture = build_fixture(
+        tmp_path / "subject-only",
+        provider="claude",
+        provider_destination=Path(f"{seat_jail.SEAT_BIN}/claude"),
+        include_entries=False,
+    )
+    try:
+        assert fixture.declaration["entries"] == []
+        admitted = admit_executable_dependency(
+            fixture.requirement,
+            fixture.authority_fd,
+            fixture.requirement.expected_authority_sha256,
+        )
+        try:
+            projection = admitted.reopen_projection()
+            try:
+                assert [entry.destination for entry in projection.entries] == [
+                    f"{seat_jail.SEAT_BIN}/claude"
+                ]
+                assert len(projection.pass_fds) == 1
+            finally:
+                projection.close()
+        finally:
+            admitted.close()
+    finally:
+        fixture.close()
 
 
 def test_removing_the_managed_authority_gate_breaks_doctor_launch_agreement(

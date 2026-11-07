@@ -82,6 +82,7 @@ def build_fixture(
     subject_mode: int = 0o755,
     helper_mode: int = 0o644,
     directory_mode: int = 0o755,
+    include_entries: bool = True,
     authority_transform: Callable[[dict[str, Any]], bytes | dict[str, Any]] | None = None,
 ) -> BuiltFixture:
     release = root / ("release-a" if layout == "layout-a" else "versions/v2")
@@ -106,7 +107,7 @@ def build_fixture(
     exclusions: list[dict[str, str]] = []
     exclusions_sha256 = sha256(rfc8785.dumps(exclusions))
     entries: list[dict[str, Any]] = []
-    if provider_destination is None:
+    if provider_destination is None and include_entries:
         entries.append(
             {
                 "source": None,
@@ -122,37 +123,38 @@ def build_fixture(
                 "target": None,
             }
         )
-    entries.extend(
-        [
-            {
-                "source": None,
-                "destination": str(helper_destination.parent),
-                "kind": "directory",
-                "uid": uid,
-                "gid": gid,
-                "mode": f"0{directory_mode:03o}",
-                "nlink": None,
-                "size": None,
-                "sha256": None,
-                "link_text": None,
-                "target": None,
-            },
-            {
-                "source": str(helper),
-                "destination": str(helper_destination),
-                "kind": "file",
-                "uid": uid,
-                "gid": gid,
-                "mode": f"0{helper_mode:03o}",
-                "nlink": 1,
-                "size": helper.stat().st_size,
-                "sha256": sha256(helper.read_bytes()),
-                "link_text": None,
-                "target": None,
-            },
-        ]
-    )
-    if layout == "layout-b":
+    if include_entries:
+        entries.extend(
+            [
+                {
+                    "source": None,
+                    "destination": str(helper_destination.parent),
+                    "kind": "directory",
+                    "uid": uid,
+                    "gid": gid,
+                    "mode": f"0{directory_mode:03o}",
+                    "nlink": None,
+                    "size": None,
+                    "sha256": None,
+                    "link_text": None,
+                    "target": None,
+                },
+                {
+                    "source": str(helper),
+                    "destination": str(helper_destination),
+                    "kind": "file",
+                    "uid": uid,
+                    "gid": gid,
+                    "mode": f"0{helper_mode:03o}",
+                    "nlink": 1,
+                    "size": helper.stat().st_size,
+                    "sha256": sha256(helper.read_bytes()),
+                    "link_text": None,
+                    "target": None,
+                },
+            ]
+        )
+    if layout == "layout-b" and include_entries:
         entries.append(
             {
                 "source": None,
