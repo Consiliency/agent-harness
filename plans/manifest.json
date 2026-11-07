@@ -14616,7 +14616,7 @@
       "file": "plans/phase-plan-v13-PLACECLI.md",
       "frozen_inputs": {
         "plans/artifacts/v13-PLACECLI-contract-v1.schema.json": {
-          "sha256": "7bf7781dd30de55e7b30200d70f6b90b49a7c7a9b73804892408fa7667181105"
+          "sha256": "ddf3649953bc6ee28fc90466cd825a85e7c282188d84eb97aef107a77234fd57"
         }
       },
       "gate_status": "declared_not_produced",
@@ -14705,6 +14705,51 @@
       "status": "committed",
       "type": "phase",
       "updated_at": "2026-11-07T02:58:11Z"
+    },
+    {
+      "created_at": "2026-11-07T02:24:52Z",
+      "file": "plans/phase-plan-v13-LANEEXEC.md",
+      "frozen_inputs": {
+        "plans/artifacts/v13-LANEEXEC-contract-v1.schema.json": {
+          "sha256": "41db02e67cb37c5c7fc5d70e152e882495bc7f1548a0d7898384eb7ef0f3f36b"
+        },
+        "plans/artifacts/v13-PLACECLI-contract-v1.schema.json": {
+          "sha256": "ddf3649953bc6ee28fc90466cd825a85e7c282188d84eb97aef107a77234fd57"
+        },
+        "plans/seats-jailcore-caps-contract.md": {
+          "sha256": "a2fe08ef0e3a6b7d888e948a10e22f7c70c11258db355a551063cf69c2c2a1f2"
+        }
+      },
+      "gate_status": "declared_not_produced",
+      "handoff_ref": null,
+      "if_gates_produced": [
+        "IF-0-LANEEXEC-1"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2",
+        "SL-3",
+        "SL-4",
+        "SL-5",
+        "SL-6"
+      ],
+      "lifecycle": [],
+      "owner_skill": "claude-plan-phase",
+      "phase_alias": "LANEEXEC",
+      "planning_artifact_only": true,
+      "reflection_ref": null,
+      "review_status": "pending",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v13.md",
+        "slug": "phase-plans-v13",
+        "status": "committed",
+        "type": "phase"
+      },
+      "slug": "v13-LANEEXEC",
+      "status": "committed",
+      "type": "phase",
+      "updated_at": "2026-11-07T02:24:52Z"
     }
   ],
   "schema_version": 1

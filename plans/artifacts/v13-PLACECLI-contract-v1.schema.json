@@ -148,7 +148,9 @@
       "e2b only after a later owner account-and-spend activation"
     ],
     "workload_rank_policy": "pi-runner is the only workload on agent_and_executor_order. leg, qualification and implementation are the existing seat workloads. For those three, reserve does not rank and does not probe. It admits only the single target already chosen by the landed SEATS JAILCORE route decision in trusted operator configuration. A missing decision refuses with sandbox_placement_workload_unsupported before any probe. An owned-host remote seat target also requires the current generic egress-and-credential probe receipt for the declared providers. A third-party seat target also requires a current OD-7 record for every declared provider. The request carries no target, rank, certificate or route decision.",
-    "reserve_idempotency": "The same request_id and the same canonical request body return the original response and do not create a second reservation. The same request_id with a different canonical body refuses with sandbox_placement_refused and creates nothing. Reap is not the retry path for one lost reserve response.",
+    "reserve_idempotency": "The same request_id and the same canonical request body return the original response and do not create a second reservation; while the original attempt is unsettled, reserve_replay defines that response. The same request_id with a different canonical body refuses with sandbox_placement_refused and creates nothing. Reap is not the retry path for one lost reserve response.",
+    "reserve_replay": "An attempt is unsettled from its journaled start until it reaches a settled outcome. Every attempt whose outcome was admitted, at_capacity, refused or unreachable, and every attempt that settles under this rule, is settled. While unsettled, a replay of the same request_id and canonical body returns outcome timeout, code sandbox_placement_operation_timeout, reservation null and the journaled trail, exits 20, and creates nothing: no create RPC, no new target attempt, no lease, no journal reservation and no bridge. A replay may run read-only reconciliation of the journaled uncertain effect, bounded by the smaller of its own deadline_ms and the time left before the settle bound. Reconciliation settles the attempt as admitted, exit 0, when the effect is a held, ready lease bound to this walk, or as outcome unreachable with code sandbox_placement_operation_timeout, exit 10, when the target's authority confirms nothing is held. The settle bound is the journaled start plus the original request's deadline_ms plus replay_settle_allowance_ms. The first replay, release, reap or lifecycle start-up that observes the bound passed, an unreadable journaled start, or a clock earlier than that start settles the attempt terminally as outcome timeout, code sandbox_placement_end_reached, reservation null, exit 20. It journals that record and arms the uncertain_cleanup barrier for the selected client and the reservation_id, or the request_id until a reservation_id is known; the uncertain effect becomes a cleanup journal entry. Once settled, every replay returns the settled response byte for byte, exits as that outcome's class and makes no target call. A client stops replaying on sandbox_placement_end_reached and uses a new request_id for a new admission; independent request_ids are never blocked. Reap may clean the cleanup journal entry but never returns, completes or replaces a reserve response, and a replay after reap still returns the settled response.",
+    "replay_settle_allowance_ms": 300000,
     "release_binding": "release loads the stored reservation by reservation_id from the inventory selected by --client. A client mismatch or any supplied reservation field that differs from the stored record returns state rejected and code sandbox_placement_refused, releases nothing, changes no stored flag, arms no barrier and leaves the lease held. A repeated release of the same journaled reservation returns released while its tombstone remains, or unknown_reservation after tombstone expiry; neither state creates an admission barrier.",
     "outcomes_and_effects": "unreachable means a certain failure with nothing held. timeout means an effect may be held. A failure after a request may have been sent is timeout, never unreachable. Its barrier applies only to that reservation in the selected client inventory; it blocks later targets or retries for that reserve walk until release confirms the barrier, but never blocks another reservation, another client or the host.",
     "bridge_bytes": "For pi-runner or leg on openshell the runtime creates one directory in its own state directory, mode 0700, containing one Unix socket, mode 0600. The socket is a bidirectional raw byte pipe of the admitted ForwardTcp stream, including model connection bytes carried to the requester's credential proxy. The toolkit keeps link framing, relay and credentials; the placement service and sandbox hold no provider credential. The caller does not supply the path, service name, host or port. Every other reservation, including a local pi-runner or local leg, has bridge null; local launchers use their requester-owned credential proxy in process.",
@@ -163,9 +165,37 @@
     "e2b": "Represented but disabled until ai is live and the owner supplies an account and spend cap."
   },
   "x-cross-process-vocabulary": {
-    "placement": "Reserve trails and terminal placement results use AdmissionOutcome, AdmissionReason, CoordinatorErrorCode and PlacementCode only. TrailEntry.code is a required ResultCode, never null. A refusal before any target uses target preflight. seat_placement_waiting is a walk notice and is not a ResultCode.",
+    "placement": "Reserve trails and terminal placement results use AdmissionOutcome, AdmissionReason, CoordinatorErrorCode and PlacementCode only. TrailEntry.code is required: it is null if and only if the entry's outcome is admitted, and otherwise a ResultCode. A refusal before any target uses target preflight. seat_placement_waiting is a walk notice and is not a ResultCode.",
     "admission": "supervised_worker_cli admission uses AdmissionDiagnostic only; placement does not relabel admission failures.",
     "run": "Run status uses RunState and Termination. sandbox_placement_lost_after_launch and sandbox_placement_release_unconfirmed are attempt-evidence codes, not invented run states."
+  },
+  "x-errata": {
+    "version_rule": "An erratum keeps protocol v1 and may only (a) correct a conditional that the previous bytes could satisfy only with a placeholder value, or (b) specify behaviour the previous bytes left unspecified. It never renames, removes or adds a message schema constant, member, verb, exit class, code or policy name. Any other change is a new protocol artifact version. The wire identity is VersionResponse.protocol_schema_sha256, so a client that pinned earlier bytes refuses on its version check instead of misreading these bytes.",
+    "entries": [
+      {
+        "id": "PLACECLI-v1-errata-1",
+        "date": "2026-11-06",
+        "previous_sha256": "7bf7781dd30de55e7b30200d70f6b90b49a7c7a9b73804892408fa7667181105",
+        "changes": [
+          {
+            "member": "$defs.TrailEntry, x-cross-process-vocabulary.placement",
+            "class": "a",
+            "rule": "code is null if and only if outcome is admitted. Under the previous bytes an admitted trail entry had no meaningful code. Every non-admitted entry valid under the previous bytes stays valid; an admitted entry carrying a non-null code is now invalid."
+          },
+          {
+            "member": "x-placement-semantics.reserve_idempotency, x-placement-semantics.reserve_replay, x-placement-semantics.replay_settle_allowance_ms",
+            "class": "b",
+            "rule": "Defines the replay response while an attempt is unsettled, replay after settlement, and the bound after which an uncertain attempt settles terminally. replay_settle_allowance_ms equals the pinned driver-default transfer allowance. Reap is still not the retry path."
+          }
+        ],
+        "test_obligations": [
+          "R1 unsettled replay: a reserve whose create reply is lost, replayed with the same request_id and body before the settle bound, returns outcome timeout, code sandbox_placement_operation_timeout, reservation null and exit 20 on every replay, and the injected counters record zero create RPCs, target attempts, leases, journal reservations and bridges.",
+          "R2 settled replay: after reconciliation confirms a held, ready lease, every later replay, including one after process restart, returns the byte-identical admitted response with exit 0; after reconciliation confirms nothing is held, every later replay returns the byte-identical unreachable response with code sandbox_placement_operation_timeout and exit 10; neither replay makes a target call.",
+          "R3 settle bound: with the injected clock at the bound, past it, or earlier than the journaled start, the next replay settles terminally as timeout with code sandbox_placement_end_reached and exit 20, arms the barrier for that walk only, and later replays repeat that record byte for byte with zero target calls while an independent request_id admits. A reap between replays returns only an InventoryReapResult, and the following replay still returns the settled record. A mutation that removes the bound leaves the replay at operation_timeout and fails the test.",
+          "T1 trail conditional: an admitted TrailEntry with a null code validates; an admitted entry with any ResultCode, and a non-admitted entry with a null code, each fail schema validation through the production decoder."
+        ]
+      }
+    ]
   },
   "$defs": {
     "Sha256Digest": {
@@ -492,7 +522,14 @@
           "$ref": "#/$defs/AdmissionOutcome"
         },
         "code": {
-          "$ref": "#/$defs/ResultCode"
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ResultCode"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "reason": {
           "oneOf": [
@@ -504,7 +541,35 @@
             }
           ]
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "admitted"
+              }
+            },
+            "required": [
+              "outcome"
+            ]
+          },
+          "then": {
+            "properties": {
+              "code": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "code": {
+                "$ref": "#/$defs/ResultCode"
+              }
+            }
+          }
+        }
+      ]
     },
     "LeaseFlags": {
       "type": "object",

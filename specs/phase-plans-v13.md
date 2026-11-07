@@ -66,7 +66,7 @@ target already selected by SEATS JAILCORE and never enter that ladder.
 
 | Input | Pin |
 | --- | --- |
-| Placement process protocol v1 | `plans/artifacts/v13-PLACECLI-contract-v1.schema.json`, sha256 `7bf7781dd30de55e7b30200d70f6b90b49a7c7a9b73804892408fa7667181105` |
+| Placement process protocol v1 | `plans/artifacts/v13-PLACECLI-contract-v1.schema.json` with erratum PLACECLI-v1-errata-1, sha256 `ddf3649953bc6ee28fc90466cd825a85e7c282188d84eb97aef107a77234fd57` |
 | Shared placement BAML | `phase-loop-runtime/src/phase_loop_runtime/baml_src/placement_contract.baml`, sha256 `f662ea044dbe37a65c8bd782aeb7a5b2dd75b5851944c05b4f055061fcd27ace` |
 | Placement policy vectors | `phase-loop-runtime/src/phase_loop_runtime/contracts/placement/vectors/policies.json`, sha256 `5b3bc7f515bd2a4cbc10a18d98465d511f65e8089213ceb8c21f9cce2409020f` |
 | Credential-proxy reference | Consiliency/agent-toolkit commit `9304a5b92c8c409473ca3d2182557b8592697476`, `harnesses/pi/sandbox/cred-proxy.mjs` and `docs/remote-placement.md` |
