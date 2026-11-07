@@ -351,6 +351,12 @@ def test_second_jail_revalidation_failure_closes_all_inputs(tmp_path, monkeypatc
     fixture = build_fixture(tmp_path / 'fixture', provider=provider)
     try:
         with _managed(monkeypatch, fixture):
+            if provider == 'gemini':
+                monkeypatch.setattr(gemini_heartbeat, '_local_capabilities', lambda: None)
+                monkeypatch.setattr(
+                    gemini_heartbeat, 'QUALIFIED_IMAGES',
+                    {sha256(fixture.subject.read_bytes()): '0' * 64},
+                )
             egress = _synthetic_credentials(monkeypatch, tmp_path)
             review = tmp_path / 'review'
             tree = review / seat_jail.HOST_TREE_DIRNAME

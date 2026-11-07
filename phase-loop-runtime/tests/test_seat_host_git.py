@@ -128,17 +128,28 @@ def test_executor_review_inventory_does_not_run_a_project_helper(tmp_path):
     assert not marker.exists()
 
 
-def test_review_provider_lookup_uses_the_frozen_host_search(tmp_path, monkeypatch):
+def test_review_provider_lookup_uses_the_call_time_environment(tmp_path, monkeypatch):
     from phase_loop_runtime import panel_invoker
-    planted = tmp_path / 'claude'
-    planted.write_text('#!/bin/sh\nexit 42\n')
-    planted.chmod(0o700)
-    search = panel_invoker._PROVIDER_SEARCH_PATH
-    monkeypatch.setattr(panel_invoker.shutil, 'which',
-                        lambda name, path: '/usr/bin/true' if path == search else str(planted))
-    harness, source = panel_invoker._seat_provider_source('claude', {'PATH': str(tmp_path)})
-    assert harness == 'claude'
-    assert source == str(Path('/usr/bin/true').resolve(strict=True))
+    first = tmp_path / 'first' / 'claude'
+    second = tmp_path / 'second' / 'claude'
+    for planted in (first, second):
+        planted.parent.mkdir()
+        planted.write_text('#!/bin/sh\nexit 42\n')
+        planted.chmod(0o700)
+    seen = []
+
+    def which(name, path):
+        seen.append(path)
+        return str(Path(path) / Path(name).name)
+
+    monkeypatch.setattr(panel_invoker.shutil, 'which', which)
+    one = panel_invoker._seat_provider_source('claude', {'PATH': str(first.parent)})
+    two = panel_invoker._seat_provider_source('claude', {'PATH': str(second.parent)})
+
+    assert panel_invoker._PROVIDER_SEARCH_PATH is None
+    assert one == ('claude', str(first.resolve(strict=True)))
+    assert two == ('claude', str(second.resolve(strict=True)))
+    assert seen and set(seen) == {str(first.parent), str(second.parent)}
 
 
 def test_review_authority_uses_the_base_manifest(tmp_path):
