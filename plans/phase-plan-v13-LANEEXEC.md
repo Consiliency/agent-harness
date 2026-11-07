@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: LANEEXEC
 roadmap: specs/phase-plans-v13.md
-roadmap_sha256: 1b33da8ce3b43bf109e2a55aa3fece806aa9e0a4966eac64f23fad98ba0e05e0
+roadmap_sha256: a5cd5f2bedbda38c99ad516113fd839dae8af6ea4482760e8efd18a5d413428d
 automation:
   suite_command: ["bash", "-lc", "cd phase-loop-runtime && PYTHONPATH=$PWD/src:$PWD/tests timeout 900 .venv/bin/python -m pytest -q -n 0 -p no:cacheprovider tests/test_launch_process_contract.py tests/test_gate_a_wheel_isolation.py tests/test_launch_snapshot.py tests/test_launch_return.py tests/test_launch_service.py tests/test_launch_local_caps.py tests/test_launch_lifetime.py tests/test_launch_release_reap.py tests/test_sandbox_placement.py tests/test_placement_lease.py tests/test_openshell_backend.py tests/test_phase_loop_lane_placement.py tests/test_phase_loop_lane_harnesses.py tests/test_launch_cli.py tests/test_agent_cli_scratch_inventory_1147.py tests/test_seat_launch_helpers_trusted.py tests/test_seat_reference_inventory.py tests/test_laneexec_receipt.py"]
 ---
@@ -18,7 +18,7 @@ after a reservation. agent-toolkit#54 already reserves through PLACECLI, but it
 cannot run a remote Pi end to end until these launch inputs exist.
 
 **Frozen artifact.** `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`,
-sha256 `59fc9297514ffca33fa2fb4758e8c05c16b255e22cd751ed1f8e456cbb9d1e00`,
+sha256 `d5388314aa784c51fa7e5831f2ac4cd087dcc4b336bec5fc4d15eeda298814c7`,
 holds IF-0-LANEEXEC-1. It covers:
 
 - the process entry `agent-harness-launch --client … launch|status|cancel|version`
@@ -51,28 +51,46 @@ amendment, not a lane decision.
    re-pinned to the new bytes.
 2. *Reserve replay after a timeout.* This is the same erratum, class b, as
    `x-placement-semantics.reserve_replay`:
-   - While the attempt is unsettled, a replay returns `timeout`, code
-     `sandbox_placement_operation_timeout`, exit 20, and creates nothing.
-   - Once the attempt settles, every replay returns the settled response
-     byte for byte.
-   - The settle bound is the journaled start plus the original `deadline_ms`
-     plus `replay_settle_allowance_ms` (300000, the pinned transfer allowance).
-     Past the bound, the attempt settles terminally as `timeout` with code
-     `sandbox_placement_end_reached`, and the `uncertain_cleanup` barrier is
-     armed.
-   - Reap is still not the retry path.
+   A replay runs in a fixed order:
+   1. Identical-request check.
+   2. If the attempt is settled, return the journaled bytes.
+   3. Clock check. When `now >= settle_bound`, settle terminally without
+      reconciliation: `timeout`, code `sandbox_placement_end_reached`, exit 20,
+      and arm the `uncertain_cleanup` barrier. `settle_bound` is the journaled
+      start plus the original `deadline_ms` plus `replay_settle_allowance_ms`
+      (300000, the pinned transfer allowance).
+   4. Otherwise, at most one bounded read-only reconciliation.
 
-   The erratum's obligations R1–R3 (and T1) are executed by PLACECLI's lifecycle
-   lane. The PLACECLI plan's SL-0 and SL-1 test tasks now name them.
+   The reconciling call itself journals and returns any settled result:
+   `admitted` with exit 0, or `unreachable` with
+   `sandbox_placement_operation_timeout` and exit 10. Only an indeterminate
+   reconciliation returns `timeout` with `sandbox_placement_operation_timeout`
+   and exit 20, and it creates nothing. Later replays return the journaled bytes
+   with no target call. Reap is still not the retry path.
+
+   The erratum's obligations R1–R3 and T1–T3 are executed by PLACECLI's
+   lifecycle and CLI lanes. T3 is the cross-version check: a client pinned to
+   the pre-erratum bytes refuses on `version` before any effect. The PLACECLI
+   plan's SL-0, SL-1 and SL-3 test tasks name them.
 3. *Lifetime past `ttl_s` = 3600.* There is no `renew` verb. The pinned envelope
    v2 caps `launch.stop.timeout_seconds` at 3600 and forbids any deadline change
    after admission. PLACECLI v1 forbids deadline fallback after admission, and
    the roadmap makes every attempt bounded and one-shot, so a renew could never
    lengthen an admitted attempt. The real failure, a lease lapsing while an
    attempt is live, is fixed inside the service. The detached attempt supervisor
-   holds the lease lock and renews internally, using the existing heartbeat
-   pattern, without touching the stored `Reservation` or the deadline. `ttl_s`
-   becomes the window without a heartbeat (`x-lifetime`).
+   holds the lease lock and renews on a latest-success rule
+   (`x-lifetime.liveness`):
+   - after a confirmed heartbeat at `h`, the next renewal starts by `h + T/3`
+     and is bounded by `T/3`;
+   - with no confirmed renewal by `h + 2T/3`, the supervisor fences the attempt
+     and kills its process group, so nothing executes at `h + T`;
+   - timeout, rejection, a malformed reply, a lost acknowledgement and an
+     unknown outcome all fail closed with `sandbox_launch_liveness_lost`;
+   - when the supervisor dies, a parent-death kill ends a local attempt, and on
+     `openshell` the lease lapses by `h + T`;
+   - `ttl_s` below 45 refuses before snapshot.
+
+   Renewal never touches the stored `Reservation` or the deadline.
 4. *Local `pi-runner`.* `x-activation.local_pi_runner_launcher` ships as
    `toolkit_interim`. The toolkit's capped bwrap route stays the default until
    ACTIVATE (EC-LANEEXEC-5), and LaneExec refuses
@@ -89,6 +107,30 @@ agent-toolkit#54 also raised these, and the artifact settles them:
 - the exit class for schema-invalid input: exit 70 with stdout absent and
   no effect. This is written into the erratum (class b, obligation T2) and
   stated for this CLI too.
+
+**Pi launches (`x-argv-templates.pi_runner_templates`).**
+
+- A `pi-runner` request names its reservation's resolved vector:
+  `full-remote-pi-runner` on `openshell`, or `minimal-without-app` on local. A
+  crossed pair refuses `sandbox_launch_input_mismatch` before any effect.
+- Two concrete templates are frozen, and LaneExec selects one by target kind:
+  - `pi-runner.openshell.v1` is the pinned toolkit engine's exact one exec:
+    `landlock-exec --policy {manifest} -- <node> <remote_inner> --listen
+    {relay_endpoint} --landlock {manifest} {manifest_digest}`. The guest
+    endpoint is `127.0.0.1:17690`, which is the port the reservation's bridge
+    forwards.
+  - `pi-runner.local.v1` runs a fixed bwrap shape with an unshared network and
+    `--die-with-parent`. `remote-inner` runs in stdio mode, and LaneExec relays
+    it to one reservation-scoped 0600 link socket under `local_link_root`.
+- The template hash is the SHA-256 of the record's RFC 8785 bytes, so a client
+  recomputes it.
+- Executable pins cover `remote-inner.mjs` and its closure, the image recipe and
+  the helper.
+- Both templates return `none`. There is one exec and no download, so the
+  runner's output, a writer's included, travels over the client's own link.
+- A phase-loop Pi lane therefore reaches LaneExec through the toolkit shim.
+  `place_lane` selects the shim's agent-harness endpoint for that run, and
+  phase-loop never speaks the link itself.
 
 **Caps.** `seat_resource_caps.v1` from the pinned caps contract is the single
 cap schema. LaneExec applies the whole effective record to one capped parent per
@@ -142,7 +184,7 @@ The artifact's `x-contract-pins` carries every full digest and source revision.
 - LaneExec launch protocol v1: the artifact named in Context.
 - Placement process protocol v1 with PLACECLI-v1-errata-1:
   `plans/artifacts/v13-PLACECLI-contract-v1.schema.json`, sha256
-  `8b6fe858fc95894c39af8d8e091090074effb38e38acec95e71bd7b1d69576a1`.
+  `130a894df327ddca2eebf83c8b52e068b25176320af3e0a4e15319a315ba83ea`.
 - `seat_resource_caps.v1`: `plans/seats-jailcore-caps-contract.md` with the §1a
   amendment this PR applies to the main digest. The new digest is sha256
   `01abb145297bbfc98fd977769f67322c666c798628906af8c6da42063c70c190`.
@@ -151,9 +193,17 @@ The artifact's `x-contract-pins` carries every full digest and source revision.
 - Admitted launch envelope v2 and run status at the roadmap-pinned
   consiliency-contract revision (`x-contract-pins.admitted_launch_envelope_v2`,
   `x-contract-pins.run_status`).
-- agent-toolkit `writer-snapshot.mjs`, `policy.json`, `cred-proxy.mjs` and
-  `docs/remote-placement.md` at the roadmap-pinned revision. These are design
-  inputs, read and never copied.
+- agent-toolkit files at the roadmap-pinned revision, all design inputs that
+  are read and never copied:
+  - snapshot and placement: `writer-snapshot.mjs`, `policy.json`,
+    `cred-proxy.mjs` and `docs/remote-placement.md`;
+  - Pi template inputs: `remote-inner.mjs`, `link.mjs`, `exec-clean.mjs`,
+    `remote-launch.mjs`, `landlock/manifest.mjs` and the `landlock/Dockerfile`
+    helper recipe;
+  - the engines `openshell-image.mjs`, `openshell-landlock.mjs`,
+    `openshell-cli.mjs`, `openshell.mjs` and `loopback.mjs`;
+  - the `image/Dockerfile` and `image/build-runner-image.mjs` runner-image
+    recipe.
 
 No future implementation SHA, commit count or landing topology is pinned.
 
@@ -162,11 +212,12 @@ No future implementation SHA, commit count or landing topology is pinned.
 - [ ] IF-0-LANEEXEC-1 — The artifact above, byte-equal in source-tree checks to
   the packaged copy. It covers the closed messages and the CLI; the client
   routes, the writer-route rule and executor resolution before reserve;
-  template registration and slots; git/full snapshot construction, masks,
+  template registration, the hash rule, the slots and the two concrete
+  `pi-runner` templates; git/full snapshot construction, masks,
   limits and upload; envelope field derivation, including the egress grant from
   `Reservation.egress_sha256`; one exec claim and route entries; the
-  per-reservation capped parent; the fixed deadline with internal lease
-  liveness; bridge attach and loss; status, cancel, release and reap
+  per-reservation capped parent; the fixed deadline with fail-closed
+  latest-success lease renewal; bridge attach and loss, and the local Pi link; status, cancel, release and reap
   interplay; patch, result and none return with bounded descriptors; and
   disabled activation defaults.
 
@@ -182,7 +233,10 @@ diagnostics or evidence.
 
 - [ ] IF-XR-1 (agent-toolkit, consumer) — The toolkit:
   - vendors this artifact by sha256 and refuses on a `version` mismatch;
-  - launches `openshell` `pi-runner` reservations through `agent-harness-launch`;
+  - launches `openshell` `pi-runner` reservations through `agent-harness-launch`
+    with `pi-runner.openshell.v1`. Its link hello places every runner tree below
+    `scratch/` and expects `result_kind` `none`. Under `laneexec` it connects to
+    the `pi-runner.local.v1` link socket within 120 s;
   - keeps its capped bwrap launcher for local `pi-runner` while
     `local_pi_runner_launcher` is `toolkit_interim`. That route applies the full
     `seat_resource_caps.v1` record with readback, follows the caps contract §1a
@@ -257,7 +311,7 @@ SL-6 — Documentation, receipt and spec reconciliation
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-0.1 | test | — | `tests/test_launch_process_contract.py`, `tests/test_gate_a_wheel_isolation.py` | Obligation C1. Valid examples for all seven families. Path-entered negatives for every enum and conditional, including `RepoPath` grammar, the workload/action/result_kind pairs, refused→zero invocations and the snapshot_reason/admission_diagnostic pairing. Packaged bytes equal the artifact. Reservation resolves through the PLACECLI `$id`. Installed-wheel load. | `V0` |
+| SL-0.1 | test | — | `tests/test_launch_process_contract.py`, `tests/test_gate_a_wheel_isolation.py` | Obligation C1. Valid examples for all seven families. Path-entered negatives for every enum and conditional, including `RepoPath` grammar, the workload/action/result_kind pairs, refused→zero invocations and the snapshot_reason/admission_diagnostic pairing. Pi cases: one valid remote Pi request (openshell, `full-remote-pi-runner`, `none`) and one valid local Pi request (local, `minimal-without-app`, `none`). Both crossed policy/target pairs decode as schema-valid and are left to the SL-3 binding refusal, and `patch` with `pi-runner` is refused. Packaged bytes equal the artifact. Reservation resolves through the PLACECLI `$id`. Installed-wheel load. | `V0` |
 | SL-0.2 | impl | SL-0.1 | `launch_process_contract.py`, `contracts/placement/launch-v1.schema.json` | — | — |
 | SL-0.3 | verify | SL-0.2 | SL-0 files | SL-0 tests | `V0`; mutating the packaged bytes while updating only a test expectation must still fail. |
 
@@ -299,9 +353,9 @@ SL-6 — Documentation, receipt and spec reconciliation
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-3.1 | test | — | SL-3 test files | Obligations C2, C4–C7 through `build_launch_service` with a fake coordinator, fake cgroupfs/sysfs and fake `systemd-run` (`real_seat_caps` marker). (1) Every refusal through `pre_exec` with zero snapshot, upload, envelope or invocation counters. (2) The egress grant equals the reservation digest's hex. (3) Exec claim survives concurrency and restart. (4) Missing controllers each refuse capability_unmet, and the caps contract §1a cases hold on LaneExec's automatic paths: tmpfs is accepted only with `memory.max` and `memory.swap.max` read back, every other major-0 type refuses, and tmpfs content is removed before the parent is collected. (5) A readback mismatch gives finished/failed_to_start with no target marker. (6) An attempt longer than `ttl_s` stays live by renewal while the stored Reservation is byte-identical. (7) lifetime_exceeded ends the attempt timed_out. (8) Bridge loss ends it cancelled. (9) Cancel affects only the verified owner. (10) Release cancels a live attempt, then cleanup_pending. (11) Reap settles a dead supervisor in its own inventory only. (12) route_disabled is refused under the shipped defaults. (13) toolkit_interim refuses local `pi-runner`. | `V3` |
+| SL-3.1 | test | — | SL-3 test files | Obligations C2, C4–C7 through `build_launch_service` with a fake coordinator, fake cgroupfs/sysfs and fake `systemd-run` (`real_seat_caps` marker). (1) Every refusal through `pre_exec` with zero snapshot, upload, envelope or invocation counters. (2) The egress grant equals the reservation digest's hex. (3) Exec claim survives concurrency and restart. (4) Missing controllers each refuse capability_unmet, and the caps contract §1a cases hold on LaneExec's automatic paths: tmpfs is accepted only with `memory.max` and `memory.swap.max` read back, every other major-0 type refuses, and tmpfs content is removed before the parent is collected. (5) A readback mismatch gives finished/failed_to_start with no target marker. (6) Renewal on an injected clock. An attempt longer than `ttl_s` stays live through confirmed renewals, the next renewal starts by `h + T/3`, and the stored Reservation stays byte-identical. A renewal timeout, lost acknowledgement, rejection, malformed reply or lost connection each fences at exactly `h + 2T/3` and kills the group before `h + T`, with `sandbox_launch_liveness_lost`. Supervisor death ends a local chain and lets an openshell lease lapse. No re-admission overlaps a workload that may still run. `ttl_s` below 45 refuses before snapshot. (7) lifetime_exceeded ends the attempt timed_out. (8) Bridge loss ends it cancelled. (9) Cancel affects only the verified owner. (10) Release cancels a live attempt, then cleanup_pending. (11) Reap settles a dead supervisor in its own inventory only. (12) route_disabled is refused under the shipped defaults. (13) toolkit_interim refuses local `pi-runner`. (14) Both crossed Pi pairs refuse `sandbox_launch_input_mismatch` before effects. (15) Template selection is by target kind. The openshell and local Pi argv expand exactly to their frozen forms, with `relay_endpoint` as the single argument `127.0.0.1:17690`. The other target's template id, or a `template_sha256` mismatch, refuses before effects. The local link accepts one connection within 120 s, and no connection ends the attempt with `sandbox_launch_bridge_lost`. | `V3` |
 | SL-3.2 | impl | SL-3.1 | `launch_service.py`, `launch_routes.py`, `sandbox_placement.py`, `placement_lease.py`, `openshell_backend.py` | — | — |
-| SL-3.3 | verify | SL-3.2 | SL-3 files | SL-3 tests | `V3`. Mutation controls, each failing through a production path: drop the capped parent, renew by rewriting the Reservation, skip the exec-claim journal, launch after `pre_exec` refuses, reach a coordinator under the shipped defaults. |
+| SL-3.3 | verify | SL-3.2 | SL-3 files | SL-3 tests | `V3`. Mutation controls, each failing through a production path: drop the capped parent, renew by rewriting the Reservation, skip the exec-claim journal, launch after `pre_exec` refuses, reach a coordinator under the shipped defaults, swallow a renewal failure, and accept a non-canonical template record. |
 
 ### SL-4 — Phase-loop lane placement site
 
@@ -313,7 +367,7 @@ SL-6 — Documentation, receipt and spec reconciliation
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-4.1 | test | — | SL-4 test files | Obligation C9 through `launch_harness_lane_work_unit`. (1) `lane_placement` disabled leaves the existing launch and its argv byte-identical. (2) Enabled, a Pi lane reserves `agent-toolkit`/`pi-runner` and other executors reserve `agent-harness`/`implementation`. (3) Reducer, review, verify and closeout units never reach the site. (4) An executor or provider change after reserve refuses. (5) A typed refusal releases and does not fall back. | `V4` |
+| SL-4.1 | test | — | SL-4 test files | Obligation C9 through `launch_harness_lane_work_unit`. (1) `lane_placement` disabled leaves the existing launch and its argv byte-identical. (2) Enabled, a Pi lane starts its existing Pi executor with the toolkit shim's agent-harness endpoint selected for that run and never reserves `pi-runner` or speaks the link itself (a fake shim records the selection). Other executors reserve `agent-harness`/`implementation`. (3) Reducer, review, verify and closeout units never reach the site. (4) An executor or provider change after reserve refuses. (5) A typed refusal releases and does not fall back. | `V4` |
 | SL-4.2 | impl | SL-4.1 | `lane_launch.py`, `runner.py`, `capability_registry.py` | — | — |
 | SL-4.3 | verify | SL-4.2 | SL-4 files | SL-4 tests | `V4` |
 
@@ -393,9 +447,9 @@ SL-6 — Documentation, receipt and spec reconciliation
 ## Acceptance Criteria
 
 - [ ] EC-LANEEXEC-1 — proven by `V3`, `V4` and `V5` through `build_launch_service`, `place_lane` and the installed entry for every `x-client-routes` row; falsified by a path-entered reducer or review unit reaching `place_lane`, a provider or executor change after reserve, or a second launch for one reservation reaching the launch-chain counter.
-- [ ] EC-LANEEXEC-2 — proven by `V1`, `V2` and `V3` (snapshot, envelope derivation, one exec, local caps before exec, return bounds); falsified by a path-entered omitted or mismatched egress grant, an undeclared launch input entering argv, a target marker running before readback, a `not_armed` placed attempt, or a proposal over cap returned.
+- [ ] EC-LANEEXEC-2 — proven by `V1`, `V2` and `V3` (snapshot, envelope derivation, one exec, local caps before exec, return bounds); falsified by a path-entered omitted or mismatched egress grant, a crossed Pi policy/target pair or a non-selected Pi template reaching snapshot, an undeclared launch input entering argv, a target marker running before readback, a `not_armed` placed attempt, or a proposal over cap returned.
 - [ ] EC-LANEEXEC-3 — proven by `V3` and `V5` (`pi-runner` identity and inventory, bridge only on `openshell`, local `bridge: null`, capability_unmet with nothing run, caller-scoped reap, inventory rows for agent-harness#1787 to agent-harness#1790 controls); falsified by a path-entered credential sentinel in the sandbox, template, environment, record or evidence, a local bridge, cross-inventory reap or an uncapped local start.
-- [ ] EC-LANEEXEC-4 — proven by `V3` and `V4` fake-coordinator, egress-digest, headroom-refusal, bridge-loss, cancel, timeout, crash/restart and return mutations at the production construction sites; falsified by any coordinator connection under shipped configuration, or by a test that replaces `build_launch_service` or `build_snapshot`.
+- [ ] EC-LANEEXEC-4 — proven by `V3` and `V4` fake-coordinator, egress-digest, headroom-refusal, bridge-loss, cancel, timeout, crash/restart and return mutations at the production construction sites; falsified by any coordinator connection under shipped configuration, a swallowed renewal failure or a target process alive at `h + T`, or by a test that replaces `build_launch_service` or `build_snapshot`.
 - [ ] EC-LANEEXEC-5 — proven by `V4` (lane_placement disabled leaves the existing launch byte-identical) and `V3` (toolkit_interim refuses local `pi-runner` with zero invocations), plus the `V6` receipt showing both shipped defaults; falsified by a shipped `laneexec` or `enabled` default, or by the existing local route being removed.
 
 ## Verification

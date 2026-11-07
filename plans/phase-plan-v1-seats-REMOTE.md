@@ -47,9 +47,9 @@ This plan points at its sections (§0–§8) and does not repeat them.
 
   The inputs are consumed at these content digests:
   - roadmap `specs/phase-plans-v13.md`, sha256
-    `1b33da8ce3b43bf109e2a55aa3fece806aa9e0a4966eac64f23fad98ba0e05e0`;
+    `a5cd5f2bedbda38c99ad516113fd839dae8af6ea4482760e8efd18a5d413428d`;
   - artifact `plans/artifacts/v13-PLACECLI-contract-v1.schema.json`, sha256
-    `8b6fe858fc95894c39af8d8e091090074effb38e38acec95e71bd7b1d69576a1`
+    `130a894df327ddca2eebf83c8b52e068b25176320af3e0a4e15319a315ba83ea`
     (PLACECLI-v1-errata-1).
 
   If different bytes land, the plan is repinned before execution.
@@ -127,7 +127,7 @@ other roadmap.
   - one bounded non-patch result, as a non-writer route (EC-LANEEXEC-1).
 
   Frozen by `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`, sha256
-  `59fc9297514ffca33fa2fb4758e8c05c16b255e22cd751ed1f8e456cbb9d1e00`
+  `d5388314aa784c51fa7e5831f2ac4cd087dcc4b336bec5fc4d15eeda298814c7`
   (`x-argv-templates.per_vendor_seat_templates`, `x-snapshot.full_mode`, `x-return.result`, and the
   in-process `pre_exec` and `withhold` hooks). SL-4 and SL-5 still wait on the landed LANEEXEC
   implementation (Upstream implementation, below).

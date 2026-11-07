@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: PLACECLI
 roadmap: specs/phase-plans-v13.md
-roadmap_sha256: 1b33da8ce3b43bf109e2a55aa3fece806aa9e0a4966eac64f23fad98ba0e05e0
+roadmap_sha256: a5cd5f2bedbda38c99ad516113fd839dae8af6ea4482760e8efd18a5d413428d
 automation:
   suite_command: ["bash", "-lc", "cd phase-loop-runtime && PYTHONPATH=$PWD/src:$PWD/tests timeout 900 .venv/bin/python -m pytest -q -n 0 -p no:cacheprovider tests/test_placement_process_contract.py tests/test_placement_lifecycle_process.py tests/test_placement_bridge.py tests/test_placement_cli.py tests/test_sandbox_placement.py tests/test_placement_driver.py tests/test_placement_ladder_model.py tests/test_placement_lease.py tests/test_openshell_backend.py tests/test_openshell_channel.py tests/test_openshell_journal.py tests/test_openshell_transport.py tests/test_openshell_worker.py tests/test_advisor_board_config.py tests/test_sandbox_policy.py tests/test_agent_cli_scratch_inventory_1147.py tests/test_seat_launch_helpers_trusted.py tests/test_seat_reference_inventory.py tests/test_gate_a_wheel_isolation.py"]
 ---
@@ -16,7 +16,7 @@ implements the process boundary that agent-toolkit can consume without importing
 agent-harness Python. The frozen input is
 `plans/artifacts/v13-PLACECLI-contract-v1.schema.json` with erratum
 PLACECLI-v1-errata-1 (its `x-errata` member), sha256
-`8b6fe858fc95894c39af8d8e091090074effb38e38acec95e71bd7b1d69576a1`.
+`130a894df327ddca2eebf83c8b52e068b25176320af3e0a4e15319a315ba83ea`.
 The artifact fixes the stable console entry, required client/config flag,
 version response, exact message shapes, code vocabularies, target-bound policy
 and provider names, reservation egress digest, two isolated identities/inventories,
@@ -200,7 +200,7 @@ SL-3 — Process CLI, documentation and evidence reducer
 - **Interfaces consumed**: `decode_request`, `encode_response` (SL-0); `PlacementLifecycle` (SL-1); `ForwardTcpUnixBridge`, toolkit fixture results (SL-2)
 - **Parallel-safe**: no
 - **Tasks**:
-  - test: Spawn the installed console script and module path with an isolated import path, controlled HOME/config and hostile client-selection environment variables. Require `--client`, reject client/workload mismatch before effects, and compare both paths. Assert exact exit classes, one JSON line for every schema-valid outcome, exit 70 with stdout absent for schema-invalid input (errata-1 obligation T2), empty ordinary stderr, zero effects on invalid input and no secret/exception/path sentinel leakage. Verify `version` reads empty stdin and reports the packaged protocol schema SHA-256, selected config SHA-256 and effective local-headroom thresholds. Verify legacy reap reaches the same service with an explicit client and returns exactly that inventory. Update launch/scratch/reference inventories for every new subprocess, file and dynamic import; bind the receipt to actual V0–V4 results and artifact hashes.
+  - test: Spawn the installed console script and module path with an isolated import path, controlled HOME/config and hostile client-selection environment variables. Require `--client`, reject client/workload mismatch before effects, and compare both paths. Assert exact exit classes, one JSON line for every schema-valid outcome, exit 70 with stdout absent for schema-invalid input (errata-1 obligation T2), a client pinned to the pre-erratum bytes refusing on `version` with zero placement effects (T3), empty ordinary stderr, zero effects on invalid input and no secret/exception/path sentinel leakage. Verify `version` reads empty stdin and reports the packaged protocol schema SHA-256, selected config SHA-256 and effective local-headroom thresholds. Verify legacy reap reaches the same service with an explicit client and returns exactly that inventory. Update launch/scratch/reference inventories for every new subprocess, file and dynamic import; bind the receipt to actual V0–V4 results and artifact hashes.
   - impl: Register the stable `agent-harness-placement` console script and assemble the CLI without reading client/config/target settings from environment or request fields. Compute `version` from the installed schema bytes and canonical selected host config, including its effective headroom values. Publish JSON examples, exit/flag semantics, provider refusal and egress-digest rules, per-reservation barriers, caller-scoped reap, target-bound local/remote Pi policies, credential-proxy ForwardTcp boundary and exact per-host defaults/fail-closed PSI semantics. State that model selection stays with each harness, provider credentials never enter placement/sandbox, live routes/E2B remain disabled and toolkit cutover waits on all three conditions. Add one Unreleased changelog entry; record actual outcomes in the PLACECLI evidence artifact and append lifecycle metadata to the existing manifest entry without editing the frozen input.
   - verify: Run V3, then V4 and the effective suite. The reducer depends on all producers and refuses missing/skipped-only results, stale hashes, unqualified policy status or any live-activation claim.
 

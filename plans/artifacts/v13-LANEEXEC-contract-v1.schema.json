@@ -48,7 +48,7 @@
   "x-contract-pins": {
     "placement_process_v1": {
       "path": "plans/artifacts/v13-PLACECLI-contract-v1.schema.json",
-      "sha256": "8b6fe858fc95894c39af8d8e091090074effb38e38acec95e71bd7b1d69576a1",
+      "sha256": "130a894df327ddca2eebf83c8b52e068b25176320af3e0a4e15319a315ba83ea",
       "errata": "PLACECLI-v1-errata-1"
     },
     "admitted_launch_envelope_v2": {
@@ -101,12 +101,90 @@
       "path": "docs/remote-placement.md",
       "sha256": "84318f64183d7291bdba6474dca1e75e42f7078f7595675592edfa5d6d1562ee"
     },
+    "toolkit_remote_inner": {
+      "repository": "Consiliency/agent-toolkit",
+      "commit": "9304a5b92c8c409473ca3d2182557b8592697476",
+      "path": "harnesses/pi/sandbox/remote-inner.mjs",
+      "sha256": "64a0351c0c9f60f496ecf2b00ba590e12d83c8ec1f28dc93dde9fca8aef44f51"
+    },
+    "toolkit_link": {
+      "repository": "Consiliency/agent-toolkit",
+      "commit": "9304a5b92c8c409473ca3d2182557b8592697476",
+      "path": "harnesses/pi/sandbox/link.mjs",
+      "sha256": "0375816abe60f90b675ec9d8b889a64534750f294d3ff1287332fbf274841f5d"
+    },
+    "toolkit_exec_clean": {
+      "repository": "Consiliency/agent-toolkit",
+      "commit": "9304a5b92c8c409473ca3d2182557b8592697476",
+      "path": "harnesses/pi/sandbox/exec-clean.mjs",
+      "sha256": "71e2a46c0e30579d6d389303e5f8ae905f5a34e9d004d9c6b09f512be744f302"
+    },
+    "toolkit_landlock_manifest": {
+      "repository": "Consiliency/agent-toolkit",
+      "commit": "9304a5b92c8c409473ca3d2182557b8592697476",
+      "path": "harnesses/pi/sandbox/landlock/manifest.mjs",
+      "sha256": "84a1a1d743ef9ed374805b7262d49b58597a838a9a4218a9e4e0dafff3612d39"
+    },
+    "toolkit_landlock_helper_recipe": {
+      "repository": "Consiliency/agent-toolkit",
+      "commit": "9304a5b92c8c409473ca3d2182557b8592697476",
+      "path": "harnesses/pi/sandbox/landlock/Dockerfile",
+      "sha256": "360ac287479fcb42f7d8c935eee148ce82bb4b94509784e6bcac9ecf2ef85f27"
+    },
+    "toolkit_openshell_image": {
+      "repository": "Consiliency/agent-toolkit",
+      "commit": "9304a5b92c8c409473ca3d2182557b8592697476",
+      "path": "harnesses/pi/sandbox/engines/openshell-image.mjs",
+      "sha256": "88954e774ba519e0093bd007cc89c797275bdcb42e2c129843c49446651b6005"
+    },
+    "toolkit_openshell_layout": {
+      "repository": "Consiliency/agent-toolkit",
+      "commit": "9304a5b92c8c409473ca3d2182557b8592697476",
+      "path": "harnesses/pi/sandbox/engines/openshell-landlock.mjs",
+      "sha256": "4611af31f6faad504acafc01610d34380d5395c1022f09a58d37a93ceab1c19b"
+    },
+    "toolkit_openshell_cli": {
+      "repository": "Consiliency/agent-toolkit",
+      "commit": "9304a5b92c8c409473ca3d2182557b8592697476",
+      "path": "harnesses/pi/sandbox/engines/openshell-cli.mjs",
+      "sha256": "42f5e18d7cc403f02abcd47f695e7a8a2fb123e130c8ffa4b27ca1be506473ca"
+    },
+    "toolkit_openshell_engine": {
+      "repository": "Consiliency/agent-toolkit",
+      "commit": "9304a5b92c8c409473ca3d2182557b8592697476",
+      "path": "harnesses/pi/sandbox/engines/openshell.mjs",
+      "sha256": "4b5dd9a2804190fc4c138484a4b05498f80d0ea8f8a9d6d6d8b07236fbfd6852"
+    },
+    "toolkit_loopback_engine": {
+      "repository": "Consiliency/agent-toolkit",
+      "commit": "9304a5b92c8c409473ca3d2182557b8592697476",
+      "path": "harnesses/pi/sandbox/engines/loopback.mjs",
+      "sha256": "8c1981c66924d39e060c208076f0835686257c243a171430ee01d4b04fa70cd8"
+    },
+    "toolkit_remote_launch": {
+      "repository": "Consiliency/agent-toolkit",
+      "commit": "9304a5b92c8c409473ca3d2182557b8592697476",
+      "path": "harnesses/pi/sandbox/remote-launch.mjs",
+      "sha256": "3c8d5bdf8bea4255e2240d899f7ba2fe7fc6f14bdcd32a8f02cf6d3485d360b4"
+    },
+    "toolkit_runner_image_recipe": {
+      "repository": "Consiliency/agent-toolkit",
+      "commit": "9304a5b92c8c409473ca3d2182557b8592697476",
+      "path": "harnesses/pi/sandbox/image/Dockerfile",
+      "sha256": "958251ac4e6c40a8b7149a92b4d4cf4350fb11dfa591dff6eb33da7042bcf3fb"
+    },
+    "toolkit_runner_image_build": {
+      "repository": "Consiliency/agent-toolkit",
+      "commit": "9304a5b92c8c409473ca3d2182557b8592697476",
+      "path": "harnesses/pi/sandbox/image/build-runner-image.mjs",
+      "sha256": "d65dd968f3a6d02ca7d9519fc48efb0981f5ddbb310452ec30b6302b6d8c30ec"
+    },
     "rule": "These bytes are design inputs. The toolkit files are read, never copied into agent-harness. Changed bytes need reviewed repinning before execution."
   },
   "x-placecli-clarifications": {
     "trail_code": "Resolved by PLACECLI-v1-errata-1 (class a): TrailEntry.code is null if and only if outcome is admitted. Erratum, not v2: no constant, member, verb, exit class, code or policy name changes, and the wire identity protocol_schema_sha256 changes with the bytes.",
-    "reserve_replay": "Resolved by PLACECLI-v1-errata-1 (class b): x-placement-semantics.reserve_replay and replay_settle_allowance_ms. An unsettled replay returns timeout, code sandbox_placement_operation_timeout, exit 20 and creates nothing. Once settled, every replay returns the settled response. The settle bound is the journaled start plus the original deadline_ms plus 300000 ms; after it the attempt settles terminally as timeout with code sandbox_placement_end_reached and the uncertain_cleanup barrier is armed. Reap is not the retry path. Test obligations R1-R3 live in the errata entry and are executed by the PLACECLI lifecycle lane.",
-    "renew": "No renew verb, in PLACECLI or here. (1) The pinned envelope v2 caps launch.stop.timeout_seconds at 3600 and forbids any deadline change after admission (x-launch-semantics.no_fallback), so a renew could never lengthen an admitted attempt. (2) PLACECLI v1 after_admission forbids a deadline fallback after admission. (3) The roadmap makes every admitted attempt bounded and one-shot, and a longer job uses a fresh attempt. (4) A verb would be a new placement protocol version for every client. The real problem, a lease expiring at ttl_s while an attempt is live, is solved inside the launch service: x-lifetime.",
+    "reserve_replay": "Resolved by PLACECLI-v1-errata-1 (class b): x-placement-semantics.reserve_replay and replay_settle_allowance_ms. A replay runs in a fixed order. (1) Identical-request check. (2) The journaled settled bytes when the attempt is settled. (3) The clock check: now >= settle_bound, which is the journaled start plus the original deadline_ms plus 300000 ms, settles terminally as timeout with code sandbox_placement_end_reached, exit 20, arms the uncertain_cleanup barrier and runs no reconciliation. (4) Otherwise at most one bounded read-only reconciliation. When reconciliation confirms, the reconciling call itself journals and returns the settled response: admitted with exit 0, or unreachable with sandbox_placement_operation_timeout and exit 10. Only an indeterminate reconciliation returns timeout with sandbox_placement_operation_timeout and exit 20, and it creates nothing. Later replays return the journaled bytes with no target call. Reap is not the retry path. Test obligations R1-R3 and T1-T3 live in the errata entry; the PLACECLI lifecycle and CLI lanes execute them.",
+    "renew": "No renew verb, in PLACECLI or here. (1) The pinned envelope v2 caps launch.stop.timeout_seconds at 3600 and forbids any deadline change after admission (x-launch-semantics.no_fallback), so a renew could never lengthen an admitted attempt. (2) PLACECLI v1 after_admission forbids a deadline fallback after admission. (3) The roadmap makes every admitted attempt bounded and one-shot, and a longer job uses a fresh attempt. (4) A verb would be a new placement protocol version for every client. The real problem, a lease expiring at ttl_s while an attempt is live, is solved inside the launch service by the latest-success renewal rule of x-lifetime.liveness, which fails closed.",
     "local_pi_runner_launcher": "Resolved by x-activation.local_pi_runner_launcher: the toolkit's capped bwrap route stays the default until ACTIVATE, LANEEXEC-owned local launch is built and proven offline here, and the switch is one operator configuration value.",
     "launch_inputs": "Resolved by $defs.LaunchRequest and x-launch-inputs.",
     "caps_schema": "Resolved by x-contract-pins.seat_resource_caps and x-local-cgroup.",
@@ -121,14 +199,16 @@
         "client": "agent-toolkit",
         "workload": "pi-runner",
         "action": "execution",
-        "result_kind": "patch for a writer, none for a read-only agent whose results return over its own link"
+        "result_kind": "none: a writer's output and every runner result travel over the client's own remote-inner link, never through a LaneExec return",
+        "templates": "x-argv-templates.pi_runner_templates"
       },
       {
         "caller": "phase-loop writable lane_execute work unit whose resolved executor is pi (the default)",
         "client": "agent-toolkit",
         "workload": "pi-runner",
         "action": "execution",
-        "result_kind": "patch"
+        "result_kind": "none",
+        "path": "place_lane starts the existing Pi executor with the agent-toolkit shim's operator-named agent-harness endpoint selected for that one run (the one-run placement selection of x-contract-pins.remote_placement_reference). The shim is the process client and speaks the remote-inner link. phase-loop never reserves pi-runner or speaks the link itself."
       },
       {
         "caller": "phase-loop writable lane_execute work unit whose resolved executor is claude, codex or opencode",
@@ -153,29 +233,201 @@
         "result_kind": "result"
       }
     ],
-    "writer_route": "Only a writable lane_execute unit, a pi-runner writer and an implementation launch take result_kind patch. A reducer, review, verify or closeout unit never reaches the lane placement site, and a request pairing result_kind patch with leg or qualification fails schema validation; any other writer-route mismatch refuses sandbox_launch_writer_route_refused before reserve.",
+    "writer_route": "Only an implementation launch from a writable lane_execute unit takes result_kind patch; a pi-runner writer returns over the client's link with result_kind none. A reducer, review, verify or closeout unit never reaches the lane placement site, and a request pairing result_kind patch with leg or qualification fails schema validation; any other writer-route mismatch refuses sandbox_launch_writer_route_refused before reserve.",
     "executor_resolution": "The lane site resolves its executor (default pi) through capability_registry before reserve and never changes it afterwards. A second provider or route decision after reservation refuses sandbox_launch_input_mismatch.",
     "further_clients": "OpenCode, Claude and Codex run as executors inside the routes above. A standalone harness with its own --client value is a PLACECLI Client enum change, so a new protocol artifact version."
   },
   "x-launch-inputs": {
     "client_supplied": "Exactly: image_digest, command (an operator-registered argv template id and its sha256), policy_vector, providers, snapshot (root, mode, masks, mask_dirs, cwd), instructions, action, result_kind, timeout_seconds and caller_context, plus the reservation echo and request_id. Nothing else is a launch input.",
     "reservation_echo": "Loaded by reservation_id from the inventory that --client selects and compared field by field with the stored record, as PLACECLI v1 release_binding does. Any difference refuses sandbox_launch_reservation_mismatch and changes nothing. A released, expired, fenced or never-journaled reservation refuses sandbox_launch_reservation_unknown.",
-    "binding": "image_digest equals Reservation.image_digest and is on the operator image allowlist for (client, workload, target.kind), else sandbox_launch_image_refused. providers equals Reservation.providers as a set and policy_vector resolves to Reservation.policy_vector through the PLACECLI v1 target bindings (pi-runner: openshell to full-remote-pi-runner, local to minimal-without-app), else sandbox_launch_input_mismatch. workload equals Reservation.workload, else sandbox_launch_refused. caller_context is echoed and never read.",
+    "binding": "image_digest equals Reservation.image_digest and is on the operator image allowlist for (client, workload, target.kind), else sandbox_launch_image_refused. providers equals Reservation.providers as a set, else sandbox_launch_input_mismatch. policy_vector equals Reservation.policy_vector, which for pi-runner is the PLACECLI v1 target binding: an openshell reservation carries full-remote-pi-runner and a local one minimal-without-app. A crossed pair, meaning a schema-valid request naming the other vector, refuses sandbox_launch_input_mismatch before template resolution, snapshot or any effect. workload equals Reservation.workload, else sandbox_launch_refused. caller_context is echoed and never read.",
     "idempotency": "One launch per reservation. The same request_id and canonical body return the journaled LaunchResponse and start nothing; while the original attempt is not terminal, a replay observes it and returns its terminal record when journaled. A different body under the same request_id refuses sandbox_launch_refused. A second request_id for a reservation whose exec is claimed refuses sandbox_launch_exec_claimed.",
     "instructions": "none: stdin devnull and instructions {sha256 of empty bytes, byte_length 0, source null}. snapshot: a workspace source at that path in the captured tree, stdin input. inline: at most 32768 decoded bytes, stdin input, source null. Instructions never enter argv.",
     "order": "decode, client/workload, reservation echo, binding, activation (x-activation), template, lifetime budget (x-lifetime), snapshot, envelope admission, exec claim, upload, recheck_before_start, pre_exec, chain start. Every refusal up to and including pre_exec happens with zero launch-chain processes."
   },
   "x-argv-templates": {
-    "record": "An operator-registered template is a closed JSON record {template_id, workload, policy_vectors, action, result_kind, argv, environment_policy, references, max_timeout_seconds, result_schema_id}. argv is an array whose items are literal strings or slot objects {slot}. template_sha256 is the raw-byte SHA-256 of the registered record file and becomes the envelope launch.trusted_policy.template_sha256.",
+    "record": "An operator-registered template is a closed JSON record {template_id, workload, target_kind, policy_vectors, action, result_kinds, image_digest, argv, executable_chain, ro_trees, link, environment_policy, references, max_timeout_seconds, result_schema_id}. argv items are literal strings or slot objects {slot}, and each slot expands to exactly one argument. executable_chain lists every entry the argv starts, outermost first, as {role, locator_kind, locator, sha256}; after the route entries of x-exec it becomes the envelope launch.executable_chain. ro_trees lists each read-only runtime tree a local template binds, as {path, tree_sha256}, where tree_sha256 is the rfc8785_tree_manifest digest. link is null or {mode, guest_port}.",
+    "template_hash_rule": "The registered file's bytes are exactly the UTF-8 RFC 8785 serialization of the record, with no trailing newline; any other bytes refuse at registration. template_sha256 is the SHA-256 of those bytes, so a client recomputes it from the record it expects, and it becomes the envelope launch.trusted_policy.template_sha256. Registration also refuses a record whose executable_chain or ro_trees digests disagree with the bytes at their locators (local) or with the registered image's runtime manifest (openshell). recheck_before_start recomputes every such digest.",
     "slots": {
-      "tree": "absolute execution-tree path at the target",
+      "tree": "the execution-tree path the worker sees: /work/<run_id>/fs followed by snapshot.root on openshell, and the LaneExec execution-tree directory on the host for local",
+      "tree_dest": "snapshot.root: the path at which a local template binds the execution tree",
       "home": "private placeholder-only home",
       "out": "private output directory",
-      "run_id": "the attempt_id",
-      "relay_port": "the in-guest relay port for a bridged reservation, otherwise refused at registration",
-      "manifest": "the restriction manifest path for an openshell target"
+      "scratch": "/work/<run_id>/scratch on openshell, and the attempt's private scratch directory on local",
+      "run_id": "the attempt_id, which LaneExec generates under the envelope identifier grammar",
+      "relay_port": "the in-guest relay port for a bridged seat reservation, otherwise refused at registration",
+      "relay_endpoint": "the single argument 127.0.0.1:<guest_port> from the template's link.guest_port, valid only for a bridged reservation",
+      "manifest": "/work/<run_id>/inputs/landlock-policy.bin, the restriction manifest LaneExec writes for an openshell target",
+      "manifest_digest": "the single argument sha256:<64 lowercase hex> of the manifest bytes"
     },
-    "rules": "A client names a template and its expected sha256; an unknown id, a template not registered for (client, workload, policy_vector, action, result_kind), or a sha256 mismatch refuses sandbox_launch_template_refused. Slot values come only from LANEEXEC. No client string enters argv. timeout_seconds above max_timeout_seconds refuses sandbox_launch_lifetime_unbounded. The registry is part of the per-client operator configuration, so config_sha256 binds it.",
+    "rules": "A client names a template and its expected sha256; an unknown id, a template not registered for (client, workload, policy_vector, action, result_kind), or a sha256 mismatch refuses sandbox_launch_template_refused. Slot values come only from LANEEXEC. No client string enters argv. A slot outside x-argv-templates.slots, or one not valid for the template's target_kind, refuses at registration. timeout_seconds above max_timeout_seconds refuses sandbox_launch_lifetime_unbounded. The registry is part of the per-client operator configuration, so config_sha256 binds it.",
+    "pi_runner_templates": {
+      "rule": "agent-toolkit registers exactly one template per supported target kind, under these ids, and LaneExec selects by Reservation.target.kind: openshell takes pi-runner.openshell.v1 and local takes pi-runner.local.v1. Naming the other id, or a template_sha256 that differs from the registered bytes, refuses sandbox_launch_template_refused before snapshot or any effect. Literals are fixed. Values written <...> are fixed per registration: on openshell they are read from the registered image's runtime manifest (openshell-runtime.json, RUNTIME_VERSION 3, x-contract-pins.toolkit_openshell_image), and on local from host files. e2b has no template.",
+      "openshell": {
+        "template_id": "pi-runner.openshell.v1",
+        "workload": "pi-runner",
+        "target_kind": "openshell",
+        "policy_vectors": [
+          "full-remote-pi-runner"
+        ],
+        "action": "execution",
+        "result_kinds": [
+          "none"
+        ],
+        "image_digest": "<the registered pi-runner image, equal to Reservation.image_digest>",
+        "argv": [
+          "/usr/libexec/agent-toolkit/landlock-exec",
+          "--policy",
+          {
+            "slot": "manifest"
+          },
+          "--",
+          "<node>",
+          "<remote_inner>",
+          "--listen",
+          {
+            "slot": "relay_endpoint"
+          },
+          "--landlock",
+          {
+            "slot": "manifest"
+          },
+          {
+            "slot": "manifest_digest"
+          }
+        ],
+        "argv_source": "the argv of x-contract-pins.toolkit_openshell_engine start(): the landlock-exec wrapper, then the runner node and remote-inner.mjs, then --listen and --landlock",
+        "executable_chain": [
+          {
+            "role": "wrapper",
+            "locator_kind": "declared",
+            "locator": "/usr/libexec/agent-toolkit/landlock-exec",
+            "sha256": "<the runtime manifest's helper digest, HELPER_VERSION 1 of x-contract-pins.toolkit_landlock_manifest>"
+          },
+          {
+            "role": "wrapper",
+            "locator_kind": "declared",
+            "locator": "<node: the runtime manifest's node path>",
+            "sha256": "<its runtime manifest digest>"
+          },
+          {
+            "role": "worker",
+            "locator_kind": "declared",
+            "locator": "<remote_inner: the runtime manifest's launcher path of remote-inner.mjs>",
+            "sha256": "64a0351c0c9f60f496ecf2b00ba590e12d83c8ec1f28dc93dde9fca8aef44f51"
+          }
+        ],
+        "import_closure": "Every file of remote-inner.mjs's import closure recorded in the runtime manifest equals its bytes at x-contract-pins commit, including link.mjs, exec-clean.mjs and landlock/manifest.mjs as pinned.",
+        "ro_trees": [],
+        "link": {
+          "mode": "listen",
+          "guest_port": 17690
+        },
+        "guest_endpoint": "remote-inner listens on 127.0.0.1:17690 inside the sandbox (LINK_PORT of x-contract-pins.toolkit_openshell_cli). The reservation's ForwardTcpUnixBridge forwards exactly that service to the client's 0600 socket. A bridge forwarding another port refuses sandbox_launch_input_mismatch before upload.",
+        "guest_layout": "One upload of /work/<run_id>: fs followed by snapshot.root holds the execution tree with its .git, inputs/landlock-policy.bin holds the manifest, and scratch/ is empty. Every other tree the runner needs (HOME, session and run directories, runner configuration, placeholders) arrives over the link as remote-inner down files below scratch/. A hello naming a tree elsewhere fails in the guest.",
+        "manifest_rules": "LaneExec writes the manifest in the x-contract-pins.toolkit_landlock_manifest format: MANIFEST_VERSION 1, at most 512 rules, at most 1048576 bytes. It is read-only for the full-remote-pi-runner read_only paths, the image runtime trees and inputs/, and read-write for /dev/null, /tmp, scratch/ and the execution tree.",
+        "environment_policy": "constructed and empty, apart from the evidence variable landlock-exec sets; the runner's environment arrives in the client's link hello",
+        "references": [
+          "the manifest, role configuration"
+        ],
+        "max_timeout_seconds": 3600,
+        "result_schema_id": null
+      },
+      "local": {
+        "template_id": "pi-runner.local.v1",
+        "workload": "pi-runner",
+        "target_kind": "local",
+        "policy_vectors": [
+          "minimal-without-app"
+        ],
+        "action": "execution",
+        "result_kinds": [
+          "none"
+        ],
+        "image_digest": "<equal to Reservation.image_digest; it names the registration and binds no container locally>",
+        "argv": [
+          "/usr/bin/bwrap",
+          "--unshare-all",
+          "--die-with-parent",
+          "--new-session",
+          "--cap-drop",
+          "ALL",
+          "--clearenv",
+          "--proc",
+          "/proc",
+          "--dev",
+          "/dev",
+          "--tmpfs",
+          "/tmp",
+          "--ro-bind",
+          "/etc",
+          "/etc",
+          "--ro-bind",
+          "/lib",
+          "/lib",
+          "--ro-bind",
+          "/usr",
+          "/usr",
+          "--ro-bind",
+          "/var/log",
+          "/var/log",
+          "<host symlink entries>",
+          "<ro_trees binds>",
+          "--bind",
+          {
+            "slot": "tree"
+          },
+          {
+            "slot": "tree_dest"
+          },
+          "--bind",
+          {
+            "slot": "scratch"
+          },
+          {
+            "slot": "scratch"
+          },
+          "--chdir",
+          {
+            "slot": "tree_dest"
+          },
+          "--",
+          "<node>",
+          "<remote_inner>"
+        ],
+        "argv_rule": "The /etc, /lib, /usr and /var/log binds are the minimal-without-app filesystem.read_only paths other than /proc and /dev/urandom, which --proc and --dev supply, kept in vector order. <host symlink entries> is --symlink <target> <link> for each of /bin, /sbin, /lib32 and /lib64 that is a host symlink into /usr, in that order. <ro_trees binds> is --ro-bind <path> <path> for each ro_trees entry, in record order. Nothing else may appear. The shape follows x-contract-pins.toolkit_loopback_engine.",
+        "executable_chain": [
+          {
+            "role": "wrapper",
+            "locator_kind": "declared",
+            "locator": "/usr/bin/bwrap",
+            "sha256": "<host bytes>"
+          },
+          {
+            "role": "wrapper",
+            "locator_kind": "declared",
+            "locator": "<node: an absolute path inside an ro_trees entry>",
+            "sha256": "<host bytes>"
+          },
+          {
+            "role": "worker",
+            "locator_kind": "declared",
+            "locator": "<remote_inner: an absolute path inside an ro_trees entry>",
+            "sha256": "64a0351c0c9f60f496ecf2b00ba590e12d83c8ec1f28dc93dde9fca8aef44f51"
+          }
+        ],
+        "ro_trees": "The node release root, the toolkit tree holding remote-inner.mjs and its import closure, and the Pi and runner package trees, each with tree_sha256. The closure files equal their x-contract-pins bytes.",
+        "link": {
+          "mode": "stdio",
+          "guest_port": null
+        },
+        "local_link": "remote-inner runs in its stdio link mode. LaneExec relays its stdin and stdout, byte for byte, to one Unix socket at <local_link_root>/<reservation_id>/link.sock (directory 0700, socket 0600), created when the chain starts. It accepts exactly one connection, from the client's uid, within 120 seconds (the remote-inner LISTEN_TIMEOUT_MS of x-contract-pins.toolkit_remote_inner), never reconnects, and removes the socket at teardown. No connection in time, or a lost connection, ends the attempt with termination {reason: cancelled, by: harness} and code sandbox_launch_bridge_lost. version reports local_link_root. Reservation.bridge stays null, and because the network is unshared, model bytes reach the client's credential proxy only as link channels.",
+        "environment_policy": "constructed and empty (--clearenv); the runner's environment arrives in the link hello",
+        "references": [],
+        "max_timeout_seconds": 3600,
+        "result_schema_id": null
+      }
+    },
     "per_vendor_seat_templates": "Each SEATS REMOTE vendor registers one template for workload leg: landlock-exec --policy {manifest} -- <relay> --port {relay_port} -- <profile.argv(remote inputs)>, as the pinned seats-remote-contract §6 states. Its result_schema_id is seat_remote_result.v1."
   },
   "x-snapshot": {
@@ -220,7 +472,7 @@
     "supervisor": "launch starts one detached attempt supervisor in its own session, which owns the lease lock and the v12 launcher, and waits for its terminal record. The caller exiting never ends the attempt; only cancel, release, the fixed deadline or lifetime_exceeded do. A supervisor that is verifiably gone is settled by reap.",
     "one_exec": "Exactly one exec per reservation. Before the first launch-chain process, LaneExec durably sets LeaseFlags.exec_claimed in the reservation journal and reserves the attempt_id through the v12 journal; a crash after the claim makes any later launch for that reservation refuse sandbox_launch_exec_claimed. The launch is one supervised_worker_cli launch of the admitted envelope on the launching host, under the pinned recheck_before_start rule.",
     "route_entries": {
-      "local": "The outermost chain entries are the trusted cgroup entry of x-local-cgroup, then the template argv in the execution tree. bridge null.",
+      "local": "The outermost chain entries are the trusted cgroup entry of x-local-cgroup, then the template argv (for pi-runner, the bwrap of pi-runner.local.v1). Every chain process is bound to the supervisor by a parent-death SIGKILL (bwrap --die-with-parent in the Pi template). bridge null.",
       "openshell": "One coordinator exec in the reserved sandbox of landlock-exec --policy {manifest} -- <template argv>. The landlock-exec helper path and digest come from the pinned review-runner image, never from the request. No second exec, upload, download or replacement link follows."
     },
     "pre_exec": "In-process callers may pass pre_exec, called once after recheck_before_start and before chain start. A non-null return refuses sandbox_launch_pre_exec_refused with zero worker invocations, and the caller's own code stays in process. The process boundary has no pre_exec.",
@@ -237,14 +489,22 @@
   "x-lifetime": {
     "deadline": "The attempt deadline is fixed at envelope admission: timeout_seconds under terminate_process_group, measured from the first chain process. It never moves.",
     "budget": "snapshot_budget_s (default 300, the pinned driver-default transfer allowance) + timeout_seconds + return_budget_s (default 120) + release deadline must fit the backend's declared maximum lifetime when one is declared, else sandbox_launch_lifetime_unbounded before snapshot. Operators may only lower the two budgets.",
-    "liveness": "The attempt supervisor holds the reservation's lease lock from exec claim to terminal state and renews it internally: the coordinator renew wire for openshell, and the journaled slot liveness for local. It renews at most once per third of the remaining liveness window, using the existing sandbox_placement heartbeat pattern. ttl_s (at most 3600) is therefore the liveness window without a heartbeat: when the supervisor dies, the lease lapses within ttl_s. Renewal never changes the stored Reservation, its expires_at or the deadline, and LaunchEvidence.renewals counts it.",
+    "liveness": "The attempt supervisor holds the reservation's lease lock from exec claim to terminal state and renews internally, with T = the ttl_s of the stored reserve request. Let h be the time of the last confirmed heartbeat; the first h is the lease confirmation at exec claim. The next renewal begins no later than h + T/3, and each renewal call is bounded by T/3. A heartbeat is confirmed only when the coordinator has acknowledged the renewal (openshell) or the durable journal and slot heartbeat write has completed (local). If no renewal is confirmed by h + 2T/3, the supervisor fences the attempt: it sets LeaseFlags.fenced, stops renewing, sends SIGTERM to the process group, sends SIGKILL after kill_grace_s, and enters cancel and release reconciliation. No target process may still execute at h + T. ttl_s is therefore the window without a confirmed heartbeat. Renewal never changes the stored Reservation, its expires_at or the deadline, and LaunchEvidence.renewals counts confirmed heartbeats.",
+    "fail_closed": "A renewal timeout, a rejection, a malformed reply, a lost connection and an unknown outcome all take the fencing path at h + 2T/3. None counts as a confirmed heartbeat, none extends the fixed attempt deadline, and none permits another owner to admit while the workload may still run. The fenced attempt ends with termination {reason: cancelled, by: harness} and code sandbox_launch_liveness_lost. It is state finished when the process group's end is observed, or state uncertain with sandbox_placement_lost_after_launch when it is not. Reap and release do not release a fenced openshell lease before its end is confirmed or its last acknowledged expiry has passed.",
+    "supervisor_death": "local: every chain process dies with the supervisor (parent-death SIGKILL, bwrap --die-with-parent), and reap writes cgroup.kill on the capped parent before collecting it. openshell: no renewal follows, so the coordinator's lease lapses by h + T and the sandbox ends with it.",
+    "constants": {
+      "kill_grace_s": 10,
+      "fail_closed_margin_s": 5,
+      "minimum_ttl_s": 45
+    },
+    "minimum_ttl": "A launch refuses sandbox_launch_lifetime_unbounded before snapshot when T/3 < kill_grace_s + fail_closed_margin_s, that is when ttl_s < 45. That is the frozen renewal-call bound (T/3) plus the fail-closed margin needed to end every target process before h + T.",
     "lifetime_exceeded": "A coordinator lifetime_exceeded or expired observation ends the attempt: the harness terminates the process group, with termination {reason: timed_out, by: harness}, and return runs within the remaining return budget.",
     "interim_route_bound": "Until the switch, the toolkit's interim local launcher bounds its run by the local reservation's expires_at when that is non-null, and releases on exit."
   },
   "x-bridge": {
     "attach": "A reservation with a non-null bridge (pi-runner or leg on openshell) gets the guest side of that same ForwardTcp stream inside the one exec, through the template's relay slot. The host side is the requester's credential proxy on the PLACECLI socket. LaneExec opens no second bridge, listener or link and never reads the bytes.",
     "loss": "Bridge loss after chain start ends the attempt with termination {reason: cancelled, by: harness} and code sandbox_launch_bridge_lost. There is no reconnect or replacement link.",
-    "local": "Local reservations have bridge null; the local launcher passes the requester-owned proxy boundary in process. No provider credential enters LaneExec, the sandbox, a template, the environment, a record or evidence."
+    "local": "Local reservations have bridge null. A local pi-runner launch reaches the requester only through the local link of pi-runner.local.v1; other local launchers pass the requester-owned proxy boundary in process. No provider credential enters LaneExec, the sandbox, a template, the environment, a record or evidence."
   },
   "x-status-cancel": {
     "status": "Read-only. It returns the attempt's run-status projection state (queued, running, cancelling) or the terminal LaunchResponse, from the inventory selected by --client only. An attempt in the other client's inventory is unknown_attempt.",
@@ -256,7 +516,8 @@
     "reap": "agent-harness-placement reap examines LaneExec attempt state in the selected inventory only. An attempt whose owning launcher is verifiably gone is cancelled and settled, and its execution tree, empty cgroup parent and stale return directories are removed in the PLACECLI v1 reap order. It never inspects the other inventory and never returns or replaces a LaunchResponse."
   },
   "x-return": {
-    "patch": "result_kind patch: the bounded proposal bytes of the v12 IF-0-WORKER-1 proposal transport for the execution tree against S, unchanged, plus its post-run audit. format worker_proposal_bytes. Default cap 67108864 bytes, which operator configuration may only lower; over the cap is sandbox_launch_result_invalid with no return. LaneExec applies nothing to any protected tree: application and the pinned write_scope apply check belong to the controller. A proposal touching a masked path, an audit error or an unexplained change withholds the return with sandbox_launch_audit_failed.",
+    "pi_runner": "pi-runner launches take result_kind none on both templates: one exec, no download, and the runner's output, a writer's included, travels over the client's own link, never through a LaneExec return.",
+    "patch": "result_kind patch (implementation launches only): the bounded proposal bytes of the v12 IF-0-WORKER-1 proposal transport for the execution tree against S, unchanged, plus its post-run audit. format worker_proposal_bytes. Default cap 67108864 bytes, which operator configuration may only lower; over the cap is sandbox_launch_result_invalid with no return. LaneExec applies nothing to any protected tree: application and the pinned write_scope apply check belong to the controller. A proposal touching a masked path, an audit error or an unexplained change withholds the return with sandbox_launch_audit_failed.",
     "result": "result_kind result: exactly one JSON object read from {out}/result.json after the worker ends. It is at most 1048576 bytes, strictly decoded (no duplicate keys, non-finite numbers or trailing data), with truncated, when present, false. format json_object. LaneExec validates bounds and syntax only; the client validates the template's result_schema_id. There is no patch.",
     "none": "result_kind none: no workspace return; return null.",
     "descriptor": "Returned bytes are written once to a 0600 file in a 0700 per-attempt directory under the LaneExec state directory for that client, and named by ReturnDescriptor with sha256 and byte_length. The client verifies the digest before use.",
@@ -290,15 +551,15 @@
     "rule": "The console entry and every in-process caller use the one LaunchService that build_launch_service constructs; no caller builds a second service, snapshot builder or envelope. Records are the typed forms of this schema, and exceptions translate to closed codes from None."
   },
   "x-test-obligations": [
-    "C1 codec: every message family valid, every closed enum and conditional path-entered negative, PLACECLI Reservation reuse by $id, 64 KiB bound, strictness rules, exit 70 for schema-invalid input with stdout absent.",
-    "C2 binding: reservation echo mismatch, unknown reservation, image off the allowlist, provider or policy disagreement, template id or sha mismatch, writer-route mismatch and route_disabled each refuse with zero snapshot reads, uploads, envelopes and invocations.",
+    "C1 codec: every message family valid, every closed enum and conditional path-entered negative, PLACECLI Reservation reuse by $id, 64 KiB bound, strictness rules, exit 70 for schema-invalid input with stdout absent. One valid remote Pi request (openshell reservation, full-remote-pi-runner, result_kind none) and one valid local Pi request (local reservation, minimal-without-app, result_kind none) validate, and both crossed policy/target pairs are schema-valid, leaving their refusal to C2.",
+    "C2 binding: each case refuses with zero snapshot reads, uploads, envelopes and invocations: reservation echo mismatch, unknown reservation, image off the allowlist, provider or policy disagreement, template id or sha mismatch, writer-route mismatch, and route_disabled. Both crossed Pi pairs, an openshell reservation with minimal-without-app and a local reservation with full-remote-pi-runner, refuse sandbox_launch_input_mismatch.",
     "C3 snapshot: git-mode inventory classes, a self-contained .git with only B-reachable objects and no hooks, remotes or alternates, masks omitted and skip-worktree, the secret matcher on without request control, full mode only where permitted, a non-work-tree root in full mode, too_large at each cap, source_changed from a mid-copy mutation, and each path rule.",
     "C4 envelope: egress grant equals the reservation digest's hex, transport grammar refusal, not_armed refused, instructions never in argv, recheck_before_start difference refused, one exec claim across concurrent and restarted launches.",
     "C5 local caps: a capped parent per reservation with child readback; each missing controller or record field refusing capability_unmet with no target marker; no uncapped path. The §1a cases run on LaneExec's automatic paths: a tmpfs scratch accepted only with memory.max and memory.swap.max read back; ramfs, overlay, NFS, FUSE, btrfs and a magic/mountinfo disagreement refusing; and the execution tree on tmpfs removed before the parent is collected.",
-    "C6 lifetime: internal renewal across an attempt longer than ttl_s without changing the stored Reservation, lifetime_exceeded ending the attempt timed_out, budget refusal.",
+    "C6 lifetime, on an injected clock and a fake coordinator and journal: Success: an attempt runs past ttl_s through confirmed renewals, and the stored Reservation stays byte-identical. Clock boundaries: renewal begins by h + T/3, and an unconfirmed renewal fences exactly at h + 2T/3. Fencing: a renewal timeout, a lost acknowledgement, a rejection, a malformed reply and a lost connection each fence the attempt and kill its process group before h + T, with code sandbox_launch_liveness_lost. Supervisor death: it ends every chain process locally, and the lease lapses on openshell. No overlap: no re-admission of the reservation happens while the workload may run. Other cases: lifetime_exceeded ending the attempt timed_out, budget refusal, and ttl_s below 45 refusing before snapshot. Mutation control: a mutation that swallows a renewal failure fails the test.",
     "C7 bridge, status, cancel, release, reap: bridge loss ending the attempt, cancel only through verified owner identity, release cancelling a live attempt then cleanup_pending, caller-scoped reap of LaneExec state, other inventory invisible.",
     "C8 return: patch cap, masked-path and audit withholding, result.json bound and strictness, withhold predicate, descriptor modes, no raw output in records.",
-    "C9 routes: Pi lane to agent-toolkit/pi-runner, other executors to agent-harness/implementation, reducer and review units never reaching the site, lane_placement disabled leaving the existing launch unchanged, toolkit_interim refusing local pi-runner."
+    "C9 routes: the target-specific Pi template selection, with openshell taking pi-runner.openshell.v1 and local taking pi-runner.local.v1. Each template's argv expands to exactly its frozen form, with relay_endpoint as the single argument 127.0.0.1:17690 and manifest_digest as sha256:<hex>. Naming the other target's template, or a template_sha256 mismatch, refuses before effects. The local link accepts one connection within 120 s, and none ends the attempt with sandbox_launch_bridge_lost. A Pi lane goes through the toolkit shim to agent-toolkit/pi-runner, other executors to agent-harness/implementation, reducer and review units never reaching the site, lane_placement disabled leaving the existing launch unchanged, toolkit_interim refusing local pi-runner."
   ],
   "$defs": {
     "RepoPath": {
@@ -376,6 +637,7 @@
         "sandbox_launch_pre_exec_refused",
         "sandbox_launch_upload_refused",
         "sandbox_launch_bridge_lost",
+        "sandbox_launch_liveness_lost",
         "sandbox_launch_result_invalid",
         "sandbox_launch_result_withheld",
         "sandbox_launch_audit_failed"
@@ -575,16 +837,16 @@
           "then": {
             "properties": {
               "policy_vector": {
-                "const": "full-remote-pi-runner"
+                "enum": [
+                  "full-remote-pi-runner",
+                  "minimal-without-app"
+                ]
               },
               "action": {
                 "const": "execution"
               },
               "result_kind": {
-                "enum": [
-                  "patch",
-                  "none"
-                ]
+                "const": "none"
               }
             }
           }
@@ -1435,6 +1697,7 @@
         "config_sha256",
         "seat_caps_sha256",
         "local_pi_runner_launcher",
+        "local_link_root",
         "templates"
       ],
       "properties": {
@@ -1460,6 +1723,16 @@
           "enum": [
             "toolkit_interim",
             "laneexec"
+          ]
+        },
+        "local_link_root": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/AbsolutePath"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "templates": {
