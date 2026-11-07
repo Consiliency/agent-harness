@@ -55,7 +55,8 @@ This plan points at its sections (§0–§8) and does not repeat them.
   If different bytes land, the plan is repinned before execution.
 - **The rest.** The guest wrapper is `landlock-exec` (agent-harness#1795 revision 14), the
   helper the review-runner Containerfile already pins at agent-toolkit revision d945fdd0. Link
-  framing follows agent-toolkit `docs/remote-placement.md` at the v13-pinned revision 9304a5b9.
+  framing follows agent-toolkit `docs/remote-placement.md` as pinned by the toolkit pins manifest
+  (role `remote_placement_reference`, through the LANEEXEC artifact's `x-contract-pins.toolkit_pins`).
 
 **Design in one paragraph.**
 
