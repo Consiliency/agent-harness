@@ -51,9 +51,7 @@ LEGACY_0_7_27_RECORD_HASHES = {
     "convergence/provider_contracts.py": "I_R8HQtC_wb7AaD6Zl69krPnllhRJokRCfyARouN0cQ",
     "convergence/broker/__init__.py": "LzvG9224LYIaOliVydQLqZT6Hiq1Vf1gesQLUeIuzTI",
     "convergence/broker/admission.py": "u97xqH6kOlNxLCA_tTXxA8E39Avw0EaQp6Df5UEDkQ8",
-    "convergence/broker/credsep.py": "".join(
-        ("-HsTcz3iF1qWCbfY", "Evegw3ZCWC2LAGRH_ux8YmTjB1M")
-    ),
+    "convergence/broker/credsep.py": "-HsTcz3iF1qWCbfYEvegw3ZCWC2LAGRH_ux8YmTjB1M",
     "convergence/broker/evidence.py": "wY6mS74VVU5-THr3vvh9k_304xYkdtsTAKj_mDCI4zU",
     "convergence/broker/live.py": "I4lj6CHu2A1iB9T_jK5EceaVltUKHG3eKghMbVbK7zA",
     "convergence/broker/verbs.py": "Qp4WWyWQ9t5LzHPL2VLRp6D5Ux005G8XXR06fgNHhCM",
