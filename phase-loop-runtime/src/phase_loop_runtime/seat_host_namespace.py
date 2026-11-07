@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import grp
 import os
 from pathlib import Path
-import pwd
 import secrets
 import stat
 import tempfile
@@ -13,16 +11,22 @@ from typing import Literal
 
 from . import seat_jail
 
+try:
+    import grp
+    import pwd
+except ImportError:  # Windows has neither; the scratch checks below still import here.
+    grp = pwd = None
+
 
 OperatorStateKind = Literal["seat_uid_leases", "native_fill", "scratch"]
 
 SUBUID_FILE = Path("/etc/subuid")
 SUBGID_FILE = Path("/etc/subgid")
 
-_LEAFS: dict[OperatorStateKind, str] = {
-    "seat_uid_leases": "seat-uid",
-    "native_fill": "native-fill",
-    "scratch": "scratch",
+_LEAFS: dict[OperatorStateKind, tuple[str, ...]] = {
+    "seat_uid_leases": ("phase-loop", "seat-uid"),
+    "native_fill": (),
+    "scratch": ("scratch",),
 }
 
 ISSUE_1108_DISPOSITIONS = {
@@ -40,16 +44,25 @@ ISSUE_1108_DISPOSITIONS = {
 def operator_private_dir(kind: OperatorStateKind, *, base: Path | None = None) -> Path:
     """Create or validate one owner-only directory without following a path link.
 
-    ``base`` names the exact requested directory.  Without it, the directory is selected
-    from the operator's standard runtime/state locations.
+    ``seat_uid_leases`` and ``scratch`` take ``base`` as the first private component, and
+    every component from it down to the leaf is owned by the euid at mode 0700.
+    ``native_fill`` takes ``base`` as the exact request directory below an operator-chosen
+    root: only the two runtime-named components are checked, with the rule
+    :func:`write_private_atomic` applies.
     """
 
     if kind not in _LEAFS:
         raise ValueError("unknown operator state kind")
-    target = Path(base) if base is not None else _default_private_dir(kind)
-    if not target.is_absolute():
+    if kind == "native_fill" and base is None:
+        raise ValueError("native_fill needs its request directory")
+    start = Path(base) if base is not None else _default_private_base()
+    if not start.is_absolute():
         _refuse("private directory must be absolute")
-    _ensure_private_path(target)
+    if kind == "native_fill":
+        target, strict_from = start, len(start.parts) - 2
+    else:
+        target, strict_from = start.joinpath(*_LEAFS[kind]), len(start.parts) - 1
+    _ensure_private_path(target, strict_from, exact_mode=kind != "native_fill")
     return target
 
 
@@ -117,6 +130,8 @@ def subordinate_ranges_disjoint(
 ) -> bool:
     """Whether all of this operator's subordinate uid/gid ranges are exclusive."""
 
+    if pwd is None or grp is None:
+        return False
     operator = _uid() if uid is None else uid
     try:
         name = pwd.getpwuid(operator).pw_name
@@ -157,49 +172,43 @@ def scratch_root_allowed(path: Path) -> bool:
     return True
 
 
-def _default_private_dir(kind: OperatorStateKind) -> Path:
-    uid = _uid()
-    if kind == "seat_uid_leases":
-        runtime = os.environ.get("XDG_RUNTIME_DIR")
-        if runtime and os.path.isabs(runtime):
-            return Path(runtime) / "phase-loop" / _LEAFS[kind]
-        return Path(tempfile.gettempdir()) / f"phase-loop-{uid}" / "phase-loop" / _LEAFS[kind]
-    if kind == "native_fill":
-        state = os.environ.get("XDG_STATE_HOME")
-        root = Path(state) if state and os.path.isabs(state) else Path.home() / ".local/state"
-        return root / "phase-loop" / _LEAFS[kind]
-    return Path(tempfile.gettempdir()) / f"phase-loop-{uid}" / _LEAFS[kind]
+def _default_private_base() -> Path:
+    return Path(tempfile.gettempdir()) / f"phase-loop-{_uid()}"
 
 
-def _ensure_private_path(target: Path) -> None:
+def _ensure_private_path(target: Path, strict_from: int, *, exact_mode: bool) -> None:
     parts = target.parts
     if not parts or parts[0] != "/" or any(part in {"", ".", ".."} for part in parts[1:]):
         _refuse("invalid private directory path")
     walk = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
     directory = os.open("/", walk)
-    private_started = False
+    created = False
     try:
         for index, part in enumerate(parts[1:], start=1):
             try:
                 child = os.open(part, walk, dir_fd=directory)
             except FileNotFoundError:
-                private_started = True
+                created = True
                 try:
                     os.mkdir(part, 0o700, dir_fd=directory)
+                except FileExistsError:
+                    pass  # a concurrent seat made it; the checks below still apply
+                except OSError as exc:
+                    _refuse("private directory creation", exc)
+                try:
                     child = os.open(part, walk, dir_fd=directory)
                 except OSError as exc:
                     _refuse("private directory creation", exc)
             info = os.fstat(child)
+            mode = stat.S_IMODE(info.st_mode)
             if not stat.S_ISDIR(info.st_mode):
                 os.close(child)
                 _refuse("private directory component")
-            if index == len(parts) - 1:
-                private_started = True
-            if private_started:
-                if info.st_uid != _euid() or stat.S_IMODE(info.st_mode) != 0o700:
+            if created or index >= strict_from:
+                if info.st_uid != _euid() or (mode != 0o700 if exact_mode else mode & 0o022):
                     os.close(child)
                     _refuse("private directory owner or mode")
-            elif info.st_mode & 0o022 and not (
+            elif exact_mode and info.st_mode & 0o022 and not (
                 info.st_uid == 0 and info.st_mode & stat.S_ISVTX
             ):
                 os.close(child)

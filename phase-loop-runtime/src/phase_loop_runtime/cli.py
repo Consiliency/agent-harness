@@ -2355,7 +2355,7 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
             payload = native_fill_request_payload(
                 board, artifact_text, **({"brief_ref": advisory_brief_ref} if advisory else {}),
             )
-            root = Path(getattr(args, "native_fill_dir", None) or artifact_path.resolve().parent)
+            root = Path(getattr(args, "native_fill_dir", None) or artifact_path.parent).resolve()
             out_dir = operator_private_dir(
                 "native_fill", base=root / "native-fill" / str(payload["request_id"]),
             )

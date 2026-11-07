@@ -724,7 +724,11 @@ def governed_board_gate(
 
         try:
             brief_text = _pi._resolve_brief("review", brief_ref)
-            out_root = Path(native_fill_dir) if native_fill_dir is not None else Path(tempfile.mkdtemp(prefix="native-fill-"))
+            out_root = (
+                Path(native_fill_dir)
+                if native_fill_dir is not None
+                else Path(tempfile.mkdtemp(prefix="native-fill-"))
+            ).resolve()
             payload = _pi.native_fill_request_payload(board, artifact, brief_ref=brief_ref)
             out_dir = operator_private_dir(
                 "native_fill", base=out_root / "native-fill" / str(payload["request_id"]),

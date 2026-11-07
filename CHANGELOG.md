@@ -9,6 +9,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Jailed-seat qualification keys are built from the live profile, allowlist,
   falsifier-layout, projection, variant and host inputs, and dependency projections are
   admitted per profile declaration (SEATS JAILCORE SL-2, agent-harness#1820).
+- TEAMHOST operator state now uses descriptor-checked private directories for seat-id leases,
+  native-fill requests, and child scratch; subordinate uid/gid ranges must be disjoint before
+  the seat route can proceed (SEATS TEAMHOST SL-2, agent-harness#1820).
+
 - JAILCORE publishes the frozen jailed-seat profile and route-resolver contracts, and seat
   egress selects one packaged allowlist per proxy, binds its canonical content digest and
   probe rows, and reports a typed code for each unavailable cause (SEATS JAILCORE SL-0/SL-1,

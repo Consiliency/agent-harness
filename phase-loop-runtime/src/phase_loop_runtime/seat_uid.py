@@ -107,13 +107,14 @@ def _privileged_helper(path: str) -> bool:
 
 
 def seat_runtime_dir() -> Path:
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime and os.path.isabs(runtime):
+        return Path(runtime) / "phase-loop" / "seat-uid"
     from .seat_host_namespace import operator_private_dir
 
-    runtime = os.environ.get("XDG_RUNTIME_DIR")
-    target = ((Path(runtime) / "phase-loop" / "seat-uid")
-              if runtime and os.path.isabs(runtime)
-              else Path(tempfile.gettempdir()) / f"phase-loop-{os.getuid()}" / "phase-loop" / "seat-uid")
-    return operator_private_dir("seat_uid_leases", base=target)
+    return operator_private_dir(
+        "seat_uid_leases", base=Path(tempfile.gettempdir()) / f"phase-loop-{os.getuid()}"
+    )
 
 
 def seat_uid_available(
