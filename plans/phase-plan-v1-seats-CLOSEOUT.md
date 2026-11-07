@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: CLOSEOUT
 roadmap: specs/phase-plans-seats-v1.md
-roadmap_sha256: 9dc889c61a8d682dde30af65bf1597c1dca9a0df094fac747194d3629939b16e
+roadmap_sha256: 33f3f073db869be2349cce35a6f7bd86f1280b3f713c8c6f8a4dfa43d4aa8cbd
 automation:
   suite_command: ["timeout", "900", "env", "PYTEST_ADDOPTS=", "python3", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_seats_closeout_seat_routes.py", "phase-loop-runtime/tests/test_sealed_seat_never_counts.py", "phase-loop-runtime/tests/test_seats_closeout_president.py", "phase-loop-runtime/tests/test_president_wiring.py", "phase-loop-runtime/tests/test_president_ladder_config.py", "phase-loop-runtime/tests/test_president_heartbeat_1001.py", "phase-loop-runtime/tests/test_seats_closeout_ledger.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
 ---

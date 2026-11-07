@@ -7,7 +7,7 @@ amendment. Sections are cited as §1–§8.
 
 | Input | sha256 |
 |---|---|
-| `specs/phase-plans-seats-v1.md` | `9dc889c61a8d682dde30af65bf1597c1dca9a0df094fac747194d3629939b16e` |
+| `specs/phase-plans-seats-v1.md` | `33f3f073db869be2349cce35a6f7bd86f1280b3f713c8c6f8a4dfa43d4aa8cbd` |
 | `plans/seats-jailcore-route-contract.md` (JAILCORE; consumed only through IF-0-JAILCORE-1, IF-0-JAILCORE-2 and EC-JAILCORE-4) | `235f1faded1d7f15d0ff69668b6a451cee7167e6438d258da57257faf7bdae81` |
 | `docs/executable-dependency-projection.md` (roadmap External Input) | `c3e955fcdcae3d36dc59c60c293d84cb4df5df3fbcb6efdc3abe9e86ba1a8d9c` |
 | `.consiliency/plans/detailed-lkg-cli-qualification-1602-20261014-0359.md` (reference only; agent-harness#1602 owns its lifecycle) | `9fbfb9d08c3ae69dfc400db2a3a7ca9db0f558d0a5a597c3ddcccfa3ccb0a63b` |
