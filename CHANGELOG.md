@@ -6,6 +6,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- A Gemini seat whose agy login has expired renews it under the seat attempt's own resource-cap
+  key again. Since SEATS JAILCORE SL-5 the renewal took a second key, so every heartbeat or
+  jailed Gemini seat with an expired login was refused before agy started and reported
+  `Gemini broker local provider failure` (agent-harness#1895 follow-up).
 - TEAMHOST records the measured Gemini configuration writes, keeps the writable overlay at
   `.gemini/config` (the narrowest bind that admits them), proves writes outside that bind
   stay read-only, and carries the resolved agy subject through qualification `run` and

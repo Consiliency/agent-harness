@@ -53,6 +53,62 @@ def test_near_expiry_refresh_runs_once_with_empty_cwd_and_fixed_argv(tmp_path, m
     assert not cwd.exists()
 
 
+def test_refresh_inside_a_seat_attempt_keeps_the_attempt_seat_key(tmp_path, monkeypatch):
+    from phase_loop_runtime import seat_resource_caps
+
+    token_path = _state(tmp_path, datetime.now(timezone.utc) - timedelta(hours=13))
+    board_key = "gemini:gemini-4-argon:medium:alternative-approach"
+    keys = []
+    original = subprocess.Popen
+
+    def launch(command, **kwargs):
+        seat_key = kwargs.pop("seat_caps")
+        keys.append((seat_key, seat_resource_caps.live_seat_key()))
+        token_path.write_text(json.dumps({"auth_method": "oauth", "token": {
+            "access_token": "synthetic-fresh-access", "refresh_token": "synthetic-refresh",
+            "token_type": "Bearer", "expiry": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()}}))
+        return original(["/bin/true"], **kwargs)
+
+    monkeypatch.setattr(panel_invoker, "launch_provider", launch)
+    with seat_resource_caps._seat_scope(board_key):
+        panel_invoker._refresh_gemini_credential(tmp_path, _Image())
+        assert seat_resource_caps.live_seat_key() == board_key
+    assert keys == [(board_key, board_key)]
+
+
+def test_heartbeat_profile_with_an_expired_login_renews_under_its_seat(tmp_path, monkeypatch):
+    from phase_loop_runtime import gemini_heartbeat, seat_resource_caps
+
+    token_path = _state(tmp_path, datetime.now(timezone.utc) - timedelta(hours=13))
+    board_key = "gemini:gemini-4-argon:medium:alternative-approach"
+    keys = []
+    original = subprocess.Popen
+
+    def launch(command, **kwargs):
+        keys.append(kwargs.pop("seat_caps"))
+        assert command[1:] == ["models"]
+        token_path.write_text(json.dumps({"auth_method": "oauth", "token": {
+            "access_token": "synthetic-fresh-access", "refresh_token": "synthetic-refresh",
+            "token_type": "Bearer", "expiry": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()}}))
+        return original(["/bin/true"], **kwargs)
+
+    image = gemini_heartbeat.VerifiedImage.from_bytes(b"synthetic agy image")
+    admission = gemini_heartbeat.Admission(image, None, "qualification_candidate")
+    monkeypatch.setattr(panel_invoker, "launch_provider", launch)
+    with seat_resource_caps._seat_scope(board_key):
+        with gemini_heartbeat.owned_profile(
+            {"HOME": str(tmp_path)}, settings_bytes=panel_invoker._broker_agy_settings_bytes(),
+            credential_path=token_path, admission=admission,
+        ) as profile:
+            with panel_invoker.seat_profile(
+                harness="gemini", executable=profile.executable, cwd=tmp_path,
+                env={"HOME": str(tmp_path)}, gemini_profile=profile,
+            ):
+                pass
+    image.close()
+    assert keys == [board_key]
+
+
 def test_failed_refresh_refuses_the_seat(tmp_path, monkeypatch):
     _state(tmp_path, datetime.now(timezone.utc) - timedelta(minutes=1))
     original = subprocess.Popen
