@@ -5225,8 +5225,13 @@ def _refresh_gemini_credential(home, image):
             token = _OWNED_LAUNCH.set(True)
             egress_token = _EGRESS_LAUNCH_PREFIX.set(())
             try:
-                from .seat_resource_caps import _seat_scope
-                seat_key = f"cred:gemini:{uuid.uuid4().hex}"
+                from .seat_resource_caps import _seat_scope, live_seat_key
+                # A renewal during a seat attempt (a heartbeat or jailed Gemini seat whose
+                # login has expired) is a launch of that attempt, so it keeps the attempt's
+                # key and lands below the seat's one capped parent. A fresh key here is a
+                # second seat key in one context, which refuses before agy starts. Only a
+                # renewal outside any seat attempt gets its own key.
+                seat_key = live_seat_key() or f"cred:gemini:{uuid.uuid4().hex}"
                 with _seat_scope(seat_key):
                     process = launch_provider(
                         [f"/proc/self/fd/{descriptor}", "models"], cwd=temporary, env=env,
