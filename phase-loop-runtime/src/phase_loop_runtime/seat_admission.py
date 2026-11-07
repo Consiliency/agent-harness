@@ -82,7 +82,14 @@ def _pass_record(leg: str) -> Verdict | None:
     if passed:
         return None
     if reason.startswith("store_unsafe:"):
-        return _refuses(leg, seat_jail.refused("pass_store_unsafe"))
+        from . import seat_jail_autoqualify
+
+        return Verdict(
+            leg,
+            "refuses",
+            code="seat_jail_qualification_failed",
+            fix=seat_jail_autoqualify.fix_for("store_unsafe"),
+        )
     return Verdict(leg, "unknown", reason="launch_measurement")
 
 
@@ -97,16 +104,6 @@ def _base_verdict(leg: str, env: Mapping[str, str], execute: bool) -> Verdict | 
         return _refuses(leg, exc.code)
     except Exception:  # noqa: BLE001 - doctor inventory degrades rather than raising
         return Verdict(leg, "unknown", reason="inventory_failed")
-
-    if leg == "claude":
-        from . import claude_seat_transport
-
-        try:
-            _transport, refusal = claude_seat_transport.resolve_jailed_claude_transport(env)
-        except Exception:  # noqa: BLE001 - doctor inventory degrades rather than raising
-            return Verdict(leg, "unknown", reason="inventory_failed")
-        if refusal is not None:
-            return _refuses(leg, refusal)
 
     for gate in _GATES.get(leg, ()):
         try:
@@ -176,6 +173,16 @@ def _base_verdict(leg: str, env: Mapping[str, str], execute: bool) -> Verdict | 
         passed = _pass_record(leg)
         if passed is not None:
             return passed
+
+    if leg == "claude":
+        from . import claude_seat_transport
+
+        try:
+            _transport, refusal = claude_seat_transport.resolve_jailed_claude_transport(env)
+        except Exception:  # noqa: BLE001 - doctor inventory degrades rather than raising
+            return Verdict(leg, "unknown", reason="inventory_failed")
+        if refusal is not None:
+            return _refuses(leg, refusal)
 
     if leg == "gemini":
         from .agy_qualification import admission_verdict

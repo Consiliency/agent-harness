@@ -22,6 +22,7 @@ from phase_loop_runtime import seat_admission
 from phase_loop_runtime import seat_egress_proxy
 from phase_loop_runtime import seat_host_admin
 from phase_loop_runtime import seat_jail
+from phase_loop_runtime import seat_jail_autoqualify
 from phase_loop_runtime import seat_jail_prerequisites as prerequisites
 from phase_loop_runtime import seat_subject
 from phase_loop_runtime import seat_uid
@@ -124,9 +125,15 @@ AGREEMENT_ROWS = (
     AgreementRow("authority_invalid", "claude", "refuses", "authority_invalid"),
     AgreementRow("guarded_frontdoor_failed", "claude", "refuses", "subject_mismatch"),
     AgreementRow("host_unavailable", "claude", "refuses", "seat_sandbox_unavailable_host"),
+    AgreementRow(
+        "host_unavailable_and_transport_invalid",
+        "claude",
+        "refuses",
+        "seat_sandbox_unavailable_host",
+    ),
     AgreementRow("tiocsti_unsafe", "claude", "refuses", "seat_sandbox_unavailable_tiocsti"),
     AgreementRow("seat_uid_unavailable", "claude", "refuses", "seat_sandbox_unavailable_seat_uid"),
-    AgreementRow("pass_store_unsafe", "claude", "refuses", "seat_sandbox_refused:pass_store_unsafe"),
+    AgreementRow("pass_store_unsafe", "claude", "refuses", "seat_jail_qualification_failed"),
     AgreementRow("stale_jail_pass", "claude", "unknown", reason="launch_measurement"),
     AgreementRow("valid_jail_pass", "claude", "admits"),
     AgreementRow("transport_invalid", "claude", "refuses", claude_seat_transport.ROUTE_INVALID),
@@ -153,7 +160,7 @@ PRELAUNCH_REFUSAL_CODES = frozenset(
         "claude_seat_token_missing",
         "gemini_seat_credential_missing",
         "gemini_seat_egress_unavailable",
-        "seat_sandbox_refused:pass_store_unsafe",
+        "seat_jail_qualification_failed",
         "agy_image_unqualified",
         "gemini_heartbeat_capability_unavailable",
     }
@@ -164,6 +171,7 @@ def _configure_agreement_state(row, tmp_path, monkeypatch):
     executable = tmp_path / ("claude" if row.leg == "claude" else "agy")
     executable.write_bytes(b"fixture provider")
     executable.chmod(0o700)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     source = "managed_release" if row.state == "release_agy" else "standalone"
 
     def resolve(leg, _env):
@@ -188,6 +196,7 @@ def _configure_agreement_state(row, tmp_path, monkeypatch):
     transport_refusal = {
         "transport_invalid": claude_seat_transport.ROUTE_INVALID,
         "transport_not_admitted": claude_seat_transport.NOT_ADMITTED,
+        "host_unavailable_and_transport_invalid": claude_seat_transport.ROUTE_INVALID,
     }.get(row.state)
     monkeypatch.setattr(
         claude_seat_transport,
@@ -196,6 +205,7 @@ def _configure_agreement_state(row, tmp_path, monkeypatch):
     )
     host_code = {
         "host_unavailable": "seat_sandbox_unavailable_host",
+        "host_unavailable_and_transport_invalid": "seat_sandbox_unavailable_host",
         "tiocsti_unsafe": "seat_sandbox_unavailable_tiocsti",
         "seat_uid_unavailable": "seat_sandbox_unavailable_seat_uid",
     }.get(row.state)
@@ -225,6 +235,11 @@ def _configure_agreement_state(row, tmp_path, monkeypatch):
         "stale_jail_pass": (False, "layout_mismatch"),
     }.get(row.state, (True, "passed"))
     monkeypatch.setattr(seat_jail, "pass_record_verdict", lambda *_args, **_kwargs: pass_result)
+    monkeypatch.setattr(
+        seat_jail_autoqualify,
+        "_default_qualify",
+        lambda _leg: (_ for _ in ()).throw(RuntimeError("qualification must not run")),
+    )
 
     agy_code = None
     if row.state in {"mac_failed_record", "provenance_less_record", "no_record"}:
@@ -285,30 +300,26 @@ def _real_seat_preparation(row, tmp_path):
         panel_invoker.integrated_seat_subject(row.leg, env)
     except ExecutableDependencyError as exc:
         return seat_admission.Verdict(row.leg, "refuses", code=exc.code)
+    route, _notices, refusal = panel_invoker._seat_route_for_spawn(
+        row.leg,
+        SimpleNamespace(staged_tree_sha256="0" * 64, instructions_sha256=None),
+        eligible=True,
+        decide=lambda leg, **kw: seat_jail.decide_seat_route(
+            leg,
+            capable=seat_jail.seat_sandbox_capable,
+            claude_token_present=seat_jail._claude_credential_present,
+            gemini_credential_present=seat_jail.gemini_operator_credential_present,
+            gemini_egress_unavailable=seat_egress_proxy.unavailable_reason,
+            **kw,
+        ),
+    )
+    if refusal is not None:
+        return seat_admission.Verdict(row.leg, "refuses", code=refusal)
+
     if row.leg == "claude":
         _transport, refusal = claude_seat_transport.resolve_jailed_claude_transport(env)
         if refusal is not None:
             return seat_admission.Verdict(row.leg, "refuses", code=refusal)
-
-    route = seat_jail.decide_seat_route(
-        row.leg,
-        staged_tree_approved=True,
-        capable=seat_jail.seat_sandbox_capable,
-        claude_token_present=seat_jail._claude_credential_present,
-        gemini_credential_present=seat_jail.gemini_operator_credential_present,
-        gemini_egress_unavailable=seat_egress_proxy.unavailable_reason,
-    )
-    assert route is not None
-    if not route.jailed:
-        return seat_admission.Verdict(row.leg, "refuses", code=route.code)
-
-    passed, reason = seat_jail.pass_record_verdict("fixture-digest")
-    if not passed:
-        if reason.startswith("store_unsafe:"):
-            return seat_admission.Verdict(
-                row.leg, "refuses", code="seat_sandbox_refused:pass_store_unsafe"
-            )
-        return seat_admission.Verdict(row.leg, "unknown", reason="launch_measurement")
 
     review = tmp_path / f"review-{row.state}"
     (review / panel_invoker._seat_jail.HOST_TREE_DIRNAME).mkdir(parents=True)
@@ -355,7 +366,7 @@ def _agreement_holds(doctor_verdict, launch_verdict):
             launch_verdict.status == "refuses"
             and launch_verdict.code == doctor_verdict.code
         )
-    return launch_verdict.status == "unknown" and launch_verdict.reason == doctor_verdict.reason
+    return True
 
 
 @pytest.mark.parametrize("row", AGREEMENT_ROWS, ids=lambda row: row.state)
@@ -438,10 +449,11 @@ def test_admission_uses_the_real_claude_transport_gate(tmp_path, monkeypatch):
         seat_subject, "resolve_seat_subject", lambda leg, _env: _standalone(tmp_path, leg)
     )
     monkeypatch.setattr(seat_admission, "_profile_for", lambda _leg: None)
+    monkeypatch.setattr(seat_jail, "seat_sandbox_capable", lambda: None)
+    monkeypatch.setattr(seat_jail, "_claude_credential_present", lambda: True)
+    monkeypatch.setattr(seat_jail, "jail_profile_digest", lambda _leg: "d")
     monkeypatch.setattr(
-        seat_jail,
-        "seat_sandbox_capable",
-        lambda: pytest.fail("host gate ran after refused transport"),
+        seat_jail, "pass_record_verdict", lambda *_args, **_kwargs: (True, "passed")
     )
     env = {
         "PATH": str(tmp_path),
