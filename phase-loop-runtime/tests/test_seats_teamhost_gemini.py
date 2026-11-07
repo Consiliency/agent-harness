@@ -451,6 +451,34 @@ def test_lookup_only_verdict_agrees_with_the_seat_admission_code(tmp_path, monke
     assert q.admission_verdict(env, path, execute=True) == expected
 
 
+def test_lookup_only_verdict_mirrors_a_seat_without_pidfd_support(tmp_path, monkeypatch):
+    from phase_loop_runtime import agy_integrity
+
+    image = b"#!/bin/sh\necho release\n"
+    path = _subject(tmp_path, "agy", image)
+    env = {"PATH": str(tmp_path)}
+    monkeypatch.setattr(gh, "QUALIFIED_IMAGES", {sha256(image).hexdigest(): "e" * 64})
+    monkeypatch.delattr(os, "pidfd_open")
+    agy_integrity.admit_for_seat(path, env).close()
+    assert q.admission_verdict({}, path, execute=False).status == "admits"
+    assert q.admission_verdict(env, path, execute=True).status == "admits"
+
+
+def test_lookup_only_verdict_refuses_when_the_image_cannot_be_sealed(tmp_path, monkeypatch):
+    image = b"#!/bin/sh\necho release\n"
+    path = _subject(tmp_path, "agy", image)
+    env = {"PATH": str(tmp_path)}
+    monkeypatch.setattr(gh, "QUALIFIED_IMAGES", {sha256(image).hexdigest(): "e" * 64})
+
+    def unsealed(_data, _path=None):
+        raise ValueError(gh._CAPABILITY)
+
+    monkeypatch.setattr(gh.VerifiedImage, "from_bytes", unsealed)
+    expected = q.AgyVerdict("refuses", "agy_image_unqualified", None)
+    assert q.admission_verdict({}, path, execute=False) == expected
+    assert q.admission_verdict(env, path, execute=True) == expected
+
+
 def test_lookup_only_verdict_counts_the_last_known_good_image(tmp_path, monkeypatch):
     subject, _lkg, _store = _lkg_fixture(tmp_path, monkeypatch)
     assert q.admission_verdict({}, subject, execute=False) == q.AgyVerdict(
@@ -489,6 +517,20 @@ def test_requalification_threads_the_resolved_subject_path(tmp_path, monkeypatch
     assert q.requalify_once({}, subject_path=subject) == "first"
     assert q.requalify_once({}, subject_path=subject) == "second"
     assert seen == [("ensure", subject), ("lookup", subject)]
+
+
+def test_first_use_admits_the_threaded_subject_not_the_path_hit(tmp_path, monkeypatch):
+    _subject(tmp_path, "agy", b"#!/bin/sh\necho frontdoor\n")
+    native_bytes = b"#!/bin/sh\necho native\n"
+    native = _subject(tmp_path, "agy-native", native_bytes)
+    digest = sha256(native_bytes).hexdigest()
+    monkeypatch.setattr(gh, "QUALIFIED_IMAGES", {digest: "e" * 64})
+    monkeypatch.setattr(q, "self_qualification_enabled", lambda: False)
+    admission = q.ensure_admitted({"PATH": str(tmp_path)}, subject_path=native)
+    try:
+        assert admission.image.sha256 == digest
+    finally:
+        admission.close()
 
 
 class _FakeProxyProcess:
@@ -541,9 +583,10 @@ def test_start_proxy_refuses_each_missing_runtime_integrity_fact(tmp_path, monke
     monkeypatch.setattr(seat_egress_proxy, "ensure_ca", lambda *_a: (cert, key))
     monkeypatch.setattr(subprocess, "Popen", lambda *_a, **_kw: process)
     monkeypatch.setattr(seat_egress_proxy, "_read_ready", lambda _process: ready)
-    with pytest.raises(seat_egress_proxy.EgressLayerUnavailable):
+    with pytest.raises(seat_egress_proxy.EgressLayerUnavailable) as refused:
         with seat_egress_proxy.start_proxy():
             pass
+    assert refused.value.code == seat_egress_proxy.TLS_UNTERMINATED_CODE
 
 
 def test_gemini_jail_view_contains_no_ca_key_bytes(tmp_path):
@@ -603,6 +646,8 @@ def test_shape_b_nonstandard_record_is_refused_by_the_installed_front():
 def _receipt_runner_module():
     path = (Path(__file__).resolve().parents[2] / "plans/evidence/seat-jail-1132"
             / "run_mutation_receipts_1170.py")
+    if not path.is_file():
+        pytest.skip("the receipt runner is a repo-only file")
     spec = importlib.util.spec_from_file_location("teamhost_receipt_runner", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

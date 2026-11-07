@@ -1217,8 +1217,8 @@ def admission_verdict(env, subject_path: Path | None, *, execute: bool) -> AgyVe
             image.close()
             return AgyVerdict("admits", None, None)
     try:
-        gh._local_capabilities()
         data = gh._read_image(path)
+        gh.VerifiedImage.from_bytes(data, path).close()
     except (OSError, ValueError, gh.AgyCanaryEvidenceError):
         return AgyVerdict("refuses", "agy_image_unqualified", None)
     image_sha256 = sha256(data).hexdigest()
