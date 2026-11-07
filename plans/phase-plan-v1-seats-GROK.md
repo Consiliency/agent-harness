@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: GROK
 roadmap: specs/phase-plans-seats-v1.md
-roadmap_sha256: 9dc889c61a8d682dde30af65bf1597c1dca9a0df094fac747194d3629939b16e
+roadmap_sha256: 785e5ada02bc80319d23f9f5cfb577aa5fdefcb425cca9bf4f779962a01c16f9
 automation:
   suite_command: ["timeout", "900", "env", "PYTEST_ADDOPTS=", "python3", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_grok_seat_containment.py", "phase-loop-runtime/tests/test_seat_credentials.py", "phase-loop-runtime/tests/test_seat_route_contract.py", "phase-loop-runtime/tests/test_seat_notices.py", "phase-loop-runtime/tests/test_grok_seat_jail.py", "phase-loop-runtime/tests/test_grok_sandbox_seat_approval.py", "phase-loop-runtime/tests/test_seat_profiles.py", "phase-loop-runtime/tests/test_seat_jail_qualification_entry.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
 ---
@@ -284,7 +284,7 @@ row and records the launch-reference inventory decision.
   - CODEX and PI also edit `seat_profiles.py` (profile and window data), `seat_jail.NOTICES`,
     `OD10_CLASSES` and the readiness doc, each for its own entries only. Whichever lands
     second rebases.
-- **Row window (EC-GROK-4).** SL-2.4 records the provider-free team-host qualification, and
+- **Row window (EC-GROK-4).** SL-2.4 records the provider-free qualification on the designated seat host, and
   the row reads `candidate`. The next row window (LA-2, LA-3) runs the IF-0-FIRSTSEAT-2 kit.
   Its reviewed PR edits only the Grok row and `plans/evidence/seat-qualification/`.
 - **Known destructive changes**: none. **Expected add/add conflicts**: none.
@@ -325,7 +325,7 @@ row and records the launch-reference inventory decision.
 - [ ] EC-GROK-1 — proven by `V2` cases (b), (c) and (e), and by `VL` case (c), with the result in `write-confinement.json`. Falsified by a `live_jail` probe write found outside the per-launch copy, or by a host path in the provider argv. Path-entered control: the write is issued by the real CLI's tool inside the jail built by `build_seat_jail`.
 - [ ] EC-GROK-2 — proven by `V2` case (d), by `VK` on the pinned version (`tool-surface.json`) and by `VD` case (i). Falsified by a spawn under a receipt that offers a tool outside `--tools`, or by a cancelled jailed turn. Path-entered control: the receipt enters through `record_tool_probe` and the private record store.
 - [ ] EC-GROK-3 — proven by `V1` (b) and `VL` (h). Falsified by the `grok` proxy or a jailed tool command reaching an unlisted host or Gemini's listed host. Path-entered control: requests go through the real `proxy.mjs` and the jailed tool command.
-- [ ] EC-GROK-4 — proven by `VK` qualify on a team host (`provider-free.json`, row `candidate`), then by the row-window record under `plans/evidence/seat-qualification/` (row `done-local`). Falsified by a `done-local` Grok row with no window record on its current qualification key. Path-entered control: through `seat-window verify` on the retained record.
+- [ ] EC-GROK-4 — proven by `VK` qualify on the designated seat host (`provider-free.json`, row `candidate`), then by the row-window record under `plans/evidence/seat-qualification/` (row `done-local`). Falsified by a `done-local` Grok row with no window record on its current qualification key. Path-entered control: through `seat-window verify` on the retained record.
 - [ ] EC-GROK-5 — proven by `V1` (c) and (d), `V2` (e) and (f), and the scope, refresh and lifetime ids in `containment.json`. Falsified by a credential readable outside its declared delivery, an expiry with no typed code, or a refresh that goes undetected. Path-entered control: the store enters through `stage_grok_seat_credential` from a fixture operator home.
 
 ## Verification

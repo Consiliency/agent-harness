@@ -45,8 +45,8 @@ president hung (agent-harness#1822), and when degraded legs left no evidence of 
 (agent-harness#1821, agent-harness#1823). The governance board is part of the problem, so
 this roadmap owns those failures.
 
-**Thesis.** The first phase is one live, jailed, tool-using seat on a team host, together
-with a native board that always terminates. Gemini is already jailed, so it goes first and
+**Thesis.** The first phase is one live, jailed, tool-using seat on the designated seat host,
+together with a native board that always terminates. Gemini is already jailed, so it goes first and
 waits on nothing else. The Claude bake-off and the records work start the same day as
 separate roots. The jail registry, the other vendors and the remote fallback follow. Live
 qualification runs in batched owner windows, and each vendor qualifies in the first window
@@ -55,7 +55,7 @@ after its own phase is ready.
 **Binding owner decisions (2026-11-04).**
 
 - **Both routes, every vendor.** Claude, Gemini, Codex, Grok and Pi (Pi reaches models such
-  as DeepSeek) each get a local per-seat jail with tools on our hosts, team hosts included.
+  as DeepSeek) each get a local per-seat jail with tools on our hosts (host coverage: OD-12).
   Any vendor the local jail cannot hold gets an OpenShell review-runner with provider egress
   and credential projection, behind its own security review and owner approval.
 - **The Claude transport is chosen by bake-off.** The `ClaudeTransport` seam
@@ -73,6 +73,11 @@ after its own phase is ready.
   matches vendor and host class, and one current generic egress-and-credential probe receipt
   binds the target. Packaged policy contains no grants. Per-vendor OD-7 activation is required
   only for third-party targets.
+- **OD-12 (2026-11-07): host coverage.** `done-local` means the row qualified on the owner's
+  designated seat host, a standard host with one operator account. Team-host coverage, a
+  shared team host under two operator accounts, becomes the later row status `done-team`,
+  which nothing in this roadmap requires. This ruling amends principle 1 and every gate below.
+  All extant SEATS plans are amended and repinned with this decision.
 
 **Readiness snapshot (input, origin/main at the External Inputs baseline).** FIRSTSEAT
 turns this into the maintained matrix (IF-0-FIRSTSEAT-1).
@@ -158,6 +163,9 @@ All pins are inputs. None is an output of this roadmap.
 
 - macOS Seatbelt and Windows AppContainer/WSL jails. Hosts without the Linux jail
   prerequisites use the remote rung. The per-OS jails stay tracked under agent-harness#1244.
+- `done-team`. Live team-host coverage under two operator accounts is a later row status
+  (OD-12). TEAMHOST's code and offline proofs stay in scope. No phase here implements that
+  status or runs a team-host window.
 - Extracting the sandbox code to its own package. Only the seat-side interface of
   agent-harness#1704 is in scope (JAILCORE).
 - Stage 2 itself: transport, coordinator, image build and deployment. REMOTE amends Stage
@@ -189,8 +197,8 @@ All pins are inputs. None is an output of this roadmap.
      Egress is confined to its own provider allowlist through a per-seat proxy. It holds only
      the capability its profile declares (EC-HARDEN-6), and its containment evidence is
      recorded (EC-JAILCORE-6).
-   - **On our hosts.** At least one standard host, and one team host under two operator
-     accounts. The matrix names host classes, never private hosts.
+   - **On our hosts.** The owner's designated seat host, a standard host with one operator
+     account (OD-12). The matrix names host classes, never private hosts.
    - **Live-qualified.** An admitted canonical review in an owner window, on a released
      runtime, produced through the native board's seat-launch path. It carries a tool receipt
      proving a staged-tree read and the leg's exec record (IF-0-FIRSTSEAT-3). Other seats on
@@ -203,7 +211,9 @@ All pins are inputs. None is an output of this roadmap.
    record on a third-party target. A capacity-offload grant does not mark a local row
    `done-remote`. Row statuses are `not-started`, `candidate`, `done-local`,
    `remote-pending` and `done-remote`.
-   `remote-pending` is an open deferral, not done.
+   `remote-pending` is an open deferral, not done. `done-team` is a later status for a row
+   also qualified on a shared team host under two operator accounts. No EC, gate or window
+   in this roadmap requires it.
 2. **Governance, every phase.**
    - **Plan and implementation review.** The native agent-harness advisor board runs first.
      A T3 cross-vendor delegate replaces any failed native seat. If the native board fails as
@@ -240,7 +250,7 @@ All pins are inputs. None is an output of this roadmap.
    own phases. JAILCORE changes no digest.
 5. **Batch live work.** The live windows are W1 (FIRSTSEAT), W0 (CLAUDE's bake-off), rolling
    row windows, and REMOTE's activation window. The owner runs a row window whenever any row
-   is `candidate`. It qualifies every `candidate` row on its hosts with the IF-0-FIRSTSEAT-2
+   is `candidate`. It qualifies every `candidate` row on its host with the IF-0-FIRSTSEAT-2
    kit, and it waits for no other row, phase or owner decision. A vendor phase exits
    through the first row window after its row is ready, so no window joins vendors. A
    window's records and matrix changes land through a reviewed PR, and proxy evidence never
@@ -252,8 +262,9 @@ All pins are inputs. None is an output of this roadmap.
    records a diagnosis or a can't-hold determination. A can't-hold determination:
    - cites a failed jail falsifier on a named host class, OD-3b's record that no transport was
      admitted, or an OD-4 rejection, never an amendment count alone;
-   - is allowed only after the team-host work the row needs has landed (FIRSTSEAT lane A
-     for Gemini, TEAMHOST for the others), with LA-1 done or recorded impossible on that host;
+   - is allowed only after the prerequisite seat-host code and interfaces the row needs have landed
+     (FIRSTSEAT lane A for Gemini, TEAMHOST for the others), with LA-1 done or recorded impossible
+     on that host;
    - states the interim route: degraded by default, or an owner exception with an expiry
      (principle 3), never silently unconfined;
    - moves the row to `remote-pending`, an open deferral that REMOTE tracks. It does not
@@ -269,7 +280,7 @@ All pins are inputs. None is an output of this roadmap.
 
 ## Owner Decisions and Live Owner Actions
 
-**Decided.** The binding decisions above, including OD-1 and OD-10. Neither gates anything.
+**Decided.** The binding decisions above, including OD-1, OD-10 and OD-12. None gates anything.
 
 **Blocking, each for a narrow scope only.**
 
@@ -354,8 +365,8 @@ All pins are inputs. None is an output of this roadmap.
 ### Phase 0 — First Live Seat and a Terminating Board (FIRSTSEAT)
 
 **Objective**
-Get one jailed, tool-using seat (Gemini, already jailed) to `done-local` on a team host, and
-make a plan-tier native board on that host terminate with a typed outcome. Nothing else in
+Get one jailed, tool-using seat (Gemini, already jailed) to `done-local` on the designated
+seat host, and make a plan-tier native board on that host terminate with a typed outcome. Nothing else in
 this roadmap gates it.
 
 **Exit criteria**
@@ -363,13 +374,13 @@ this roadmap gates it.
 - [ ] EC-FIRSTSEAT-2 — President bound (agent-harness#1822). Each president rung writes a ledger entry when its attempt starts, on every path. On `bounded` monitoring, the route agent-harness#1822 hit, a no-output bound ends a silent rung in a typed timeout, and the board then advances the ladder or returns typed. `heartbeat_only` keeps its documented no-silence-kill contract unless OD-11 changes it. Falsified by a stub rung on `bounded` monitoring that emits nothing and is not ended typed within its bound, or by an attempt on any path with no start entry.
 - [ ] EC-FIRSTSEAT-3 — Leg evidence (agent-harness#1823, agent-harness#1821). Under IF-0-FIRSTSEAT-3, every seat leg writes a bounded, redacted exec record, degraded or not. A post-launch auth classifier types each existing leg's not-signed-in or unavailable failure with a fix line, never `unknown failure`. It classifies only a non-zero exit with no model turn and no verdict, using host-side auth state where one exists. That covers Grok's "Not signed in" and Gemini's `gemini_heartbeat_capability_unavailable`. Grok's fix line does not recommend `XAI_API_KEY`. Falsified by an untyped leg failure, a degraded leg with no exec record, a planted token found in a record in any `contains_secret` encoding, or planted auth text in a reviewed tree that changes a seat's outcome.
 - [ ] EC-FIRSTSEAT-4 — Grok tool surface. The tool-definition probe runs against each installed grok CLI version. A confirmed out-of-list tool is reported privately before any record lands, and the Grok leg resolves DEGRADED with a typed code until EC-GROK-2 passes. An inconclusive probe, or a CLI version not yet probed, also resolves DEGRADED until that version passes. The offered tool set is then recorded as metadata. Falsified by a leg that launches on a CLI version without a passing probe.
-- [ ] EC-FIRSTSEAT-5 — Gemini on a team host. The jailed Gemini seat resolves `jailed`, not the heartbeat route, on the window team host. `phase-loop seat-sandbox qualify` and the Gemini egress install pass provider-free there. Staging works from a partial-clone checkout (agent-harness#1419). The namespace resolver is readable by the seat uid under a private umask (salvaged from agent-harness#1623). Falsified by a DNS failure or a heartbeat-route resolution on that host.
+- [ ] EC-FIRSTSEAT-5 — Gemini on the designated seat host. The jailed Gemini seat resolves `jailed`, not the heartbeat route, on that host. `phase-loop seat-sandbox qualify` and the Gemini egress install pass provider-free there. Staging works from a partial-clone checkout (agent-harness#1419). The namespace resolver is readable by the seat uid under a private umask (salvaged from agent-harness#1623). Falsified by a DNS failure or a heartbeat-route resolution on that host.
 - [ ] EC-FIRSTSEAT-6 — Matrix and kit. `docs/review-seats-readiness.md` holds the IF-0-FIRSTSEAT-1 schema with rows for each vendor (Claude, Gemini, Codex, Grok, Pi), each remote route and each president rung, every status supported by its evidence. Codex and Grok carry their named unconfined exceptions, and Claude its open-egress exception, each with an expiry (principle 3). One command qualifies every `candidate` row on a host and writes IF-0-FIRSTSEAT-2 records. Falsified by a missing row, a status its evidence does not support, or a vendor needing its own procedure.
-- [ ] EC-FIRSTSEAT-7 — Window W1. On the team host, under two operator accounts (sequential runs suffice), and on one standard host, a plan-tier native board terminates with a typed outcome. On that board, the jailed Gemini seat returns an admitted canonical review with tools, a tool receipt proving a staged-tree read, egress through its allowlist proxy, and its exec record retained. The W1 record names any co-seat that ran unconfined. Gemini's containment evidence for these hosts is recorded: the existing measurements plus a planted-config check (EC-JAILCORE-6). The Gemini row then reads `done-local` with its evidence digest, and a later EC-JAILCORE-6 failure returns it to `candidate`. If the stall rule fires instead, OD-9 may route the row to `remote-pending` once lane A's work has landed, citing the failed falsifier, EC-FIRSTSEAT-5's or W1's (principle 6). The phase then exits with EC-FIRSTSEAT-1 to EC-FIRSTSEAT-4 and EC-FIRSTSEAT-6 met. Only the Gemini `done-local` evidence is waived, plus EC-FIRSTSEAT-5 when its falsifier is the one cited.
+- [ ] EC-FIRSTSEAT-7 — Window W1. On the designated seat host, under its one operator account (principle 1), a plan-tier native board terminates with a typed outcome. On that board, the jailed Gemini seat returns an admitted canonical review with tools, a tool receipt proving a staged-tree read, egress through its allowlist proxy, and its exec record retained. The W1 record names any co-seat that ran unconfined. Gemini's containment evidence for this host is recorded: the existing measurements plus a planted-config check (EC-JAILCORE-6). The Gemini row then reads `done-local` with its evidence digest, and a later EC-JAILCORE-6 failure returns it to `candidate`. If the stall rule fires instead, OD-9 may route the row to `remote-pending` once lane A's work has landed, citing the failed falsifier, EC-FIRSTSEAT-5's or W1's (principle 6). The phase then exits with EC-FIRSTSEAT-1 to EC-FIRSTSEAT-4 and EC-FIRSTSEAT-6 met. Only the Gemini `done-local` evidence is waived, plus EC-FIRSTSEAT-5 when its falsifier is the one cited.
 
 **Scope notes**
 - Plan against current origin/main. Decompose into 5 lanes:
-  - **Lane A** owns EC-FIRSTSEAT-5, the Gemini team-host path. It is the single writer of
+  - **Lane A** owns EC-FIRSTSEAT-5, the Gemini seat-host path. It is the single writer of
     `seat_jail.py` and the Gemini route files in this phase. It may land the part of a
     TEAMHOST issue that the window host reproduces; the issue stays owned by its TEAMHOST EC.
   - **Lane B** owns EC-FIRSTSEAT-1, in `advisor_board/composition.py`.
@@ -381,7 +392,16 @@ this roadmap gates it.
     day one. It is the single writer of `panel_invoker.py` in this phase; lanes B and C hand
     it their call-site changes.
   - **Lane E** owns EC-FIRSTSEAT-6 and EC-FIRSTSEAT-7, publishes IF-0-FIRSTSEAT-1 and
-    IF-0-FIRSTSEAT-2 on day one, and prepares W1.
+    IF-0-FIRSTSEAT-2 on day one, and prepares W1. Before W1 it moves the window kit to OD-12,
+    so a passing set is one `standard` context under one operator account. That covers, in
+    `seat_window.py`, the `verify_records` coverage check, the `account_isolation` condition
+    in `_valid_record` (a one-account host has no peer record), `host_classes` in
+    `readiness_rows` and the `--host-class` default. It also covers the `host_classes` literal
+    in `president_adapter.py`, `docs/review-seats-readiness.md`, the window-kit README and
+    `test_seat_qualification_host_context.py`. The field and
+    `--peer-record` stay for `done-team`, and no reducer path emits that status. JAILCORE's
+    window-kit edit shares `seat_window.py`; whichever lands second reruns both phases' window-kit
+    tests.
 - Any Gemini profile-digest change made here is qualified in W1 (principle 4).
 - agent-harness#1729, agent-harness#1821, agent-harness#1822 and agent-harness#1823 close
   when their ECs hold, not at CLOSEOUT.
@@ -403,8 +423,10 @@ this roadmap gates it.
 - `phase-loop-runtime/src/phase_loop_runtime/seat_egress_proxy.py`
 - `phase-loop-runtime/src/phase_loop_runtime/review_stage.py`
 - `phase-loop-runtime/src/phase_loop_runtime/seat_jail_qualification.py`
+- `phase-loop-runtime/src/phase_loop_runtime/seat_window.py`
 - `phase-loop-runtime/src/phase_loop_runtime/cli.py`
 - `docs/review-seats-readiness.md`
+- `plans/evidence/seat-qualification/README.md`
 
 **Depends on**
 - (none)
@@ -625,6 +647,8 @@ truthful, and finish the Gemini follow-ups.
   first row window after this phase exits (principle 4).
 - This phase runs no window and needs no owner decision, so the vendor phases that depend
   on it never wait for either.
+- No EC here needs a live team host (OD-12). EC-TEAMHOST-2 stays proven offline; live
+  two-account coverage is `done-team`.
 
 **Governance**
 - Principle 2. LA-1 is an owner/admin action and is not required to land code.
@@ -649,7 +673,7 @@ truthful, and finish the Gemini follow-ups.
 - (none)
 
 **Spec closeout policy**
-schema: `spec_delta_closeout.v1`; expected decision: `canonical_spec_update`; target surfaces: `docs/TEAM-ONBOARDING.md`, the capabilities card; evidence paths: team-host provider-free receipts; `redaction_posture: metadata_only`; missing or malformed evidence routes non-human `blocker_class=contract_bug`.
+schema: `spec_delta_closeout.v1`; expected decision: `canonical_spec_update`; target surfaces: `docs/TEAM-ONBOARDING.md`, the capabilities card; evidence paths: provider-free receipts; `redaction_posture: metadata_only`; missing or malformed evidence routes non-human `blocker_class=contract_bug`.
 
 ---
 
@@ -713,7 +737,7 @@ Run the Codex seat inside its per-seat jail, with the jail as its only boundary
 - [ ] EC-CODEX-1 — A registered Codex profile runs the codex CLI on the staged tree, with its own sandbox off inside the jail (OD-4) and full tools. The mode line reads `jailed`. The route is enabled only after EC-CODEX-2, EC-CODEX-3 and EC-CODEX-5 hold. Falsified by a nested namespace attempt, by `seat_filesystem_unconfined` on a capable host, or by enabling the route before egress is confined.
 - [ ] EC-CODEX-2 — The codex launcher and its native image are projected (agent-harness#1774). Credential delivery is stated as it really is: Codex's auth file in seat home. Its scope is measured and its containment evidence recorded under EC-JAILCORE-6. An auth file carrying an API key is refused for jailed seats. A "Not logged in" probe is not treated as logged in (agent-harness#1528). Falsified by an API-key auth file reaching a seat, or a not-logged-in probe read as logged in.
 - [ ] EC-CODEX-3 — Codex egress uses its measured allowlist under IF-0-JAILCORE-2 (agent-harness#1653). Falsified by the jailed Codex seat, or a tool command it runs, reaching an unlisted host or another provider's listed host.
-- [ ] EC-CODEX-4 — Codex row. A provider-free qualification passes on a team host where agent-harness#1335 reproduces, and the row reads `candidate`. It then qualifies in the next row window (principle 1) and reads `done-local`. If the jail fails a falsifier on a named host class, OD-9 applies (principle 6). Falsified by a `done-local` Codex row with no window record on its current qualification key.
+- [ ] EC-CODEX-4 — Codex row. A provider-free qualification passes on the designated seat host, and the row reads `candidate`. It then qualifies in the next row window (principle 1) and reads `done-local`. If the jail fails a falsifier on a named host class, OD-9 applies (principle 6). A team host where agent-harness#1335 reproduces is `done-team` coverage, not required here. Falsified by a `done-local` Codex row with no window record on its current qualification key.
 - [ ] EC-CODEX-5 — On every run, a Codex seat whose tools could not run is typed and not counted as a review (agent-harness#1480). The agent-harness#1480 decision on the seat-launch-owner host fallback is recorded: removed, or kept with a written reason. Falsified by a seat that returns OK having read nothing (the agent-harness#1335 record).
 
 **Scope notes**
@@ -722,7 +746,8 @@ Run the Codex seat inside its per-seat jail, with the jail as its only boundary
   (agent-harness#1472). Lanes B and C land before lane A enables the route.
 - The `setfcap` retention in `sandbox_egress.py` does not carry into the jailed route, and
   it retires when agent-harness#1335 closes.
-- Expected to close agent-harness#1335, agent-harness#1003 and agent-harness#941.
+- agent-harness#1335 stays open as later `done-team` evidence. Expected to close agent-harness#1003 and
+  agent-harness#941.
 
 **Governance**
 - Principle 2. OD-4 is required before lane A enables the route; lanes B and C do not wait
@@ -761,7 +786,7 @@ provider-only egress and a contained credential.
 - [ ] EC-GROK-1 — A registered Grok profile runs grok on a writable disposable clone. A probe write lands in the clone and nowhere else (agent-harness#1686). The `--cwd` path resolves inside the seat (agent-harness#1460).
 - [ ] EC-GROK-2 — Headless tool approval does not cancel turns (agent-harness#1091). On the CLI version the profile pins, the tool-definition probe (first run in EC-FIRSTSEAT-4) fails on any tool outside the allow-list. Falsified by an offered tool outside the list.
 - [ ] EC-GROK-3 — Grok egress uses its measured allowlist under IF-0-JAILCORE-2 (agent-harness#1653). Falsified by a jailed Grok seat, or a tool it runs, reaching an unlisted host or another provider's listed host.
-- [ ] EC-GROK-4 — Grok row. The row reads `candidate` after a provider-free team-host qualification, then qualifies in the next row window (principle 1) and reads `done-local`. If the jail fails a falsifier on a named host class, OD-9 applies (principle 6). Falsified by a `done-local` Grok row with no window record on its current qualification key.
+- [ ] EC-GROK-4 — Grok row. The row reads `candidate` after a provider-free qualification on the designated seat host, then qualifies in the next row window (principle 1) and reads `done-local`. If the jail fails a falsifier on a named host class, OD-9 applies (principle 6). Falsified by a `done-local` Grok row with no window record on its current qualification key.
 - [ ] EC-GROK-5 — The Grok credential's delivery, measured scope and actual expiry are recorded under EC-JAILCORE-6. The refresh path on seat-only hosts is typed, with a fix line (agent-harness#1289). Falsified by a credential readable outside its declared delivery, or an untyped expiry.
 
 **Scope notes**
@@ -803,7 +828,7 @@ through its declared provider, and that is counted as that provider.
 - [ ] EC-PI-1 — `pi` is a panel leg on the homebrew backing, with a headless structured-output invocation and the board's verdict contract. The leg is enabled only once the Pi profile is registered and EC-PI-3 and EC-PI-5 hold, so it never runs with open egress or unattested attribution. Falsified by a Pi seat that only resolves through the omnigent gateway, or a Pi leg reachable before its profile, credential narrowing, allowlist or attribution.
 - [ ] EC-PI-2 — A registered Pi profile projects the Pi runtime and packages (agent-harness#1782) and runs with full tools in the jail, with its configuration surface closed (EC-JAILCORE-6).
 - [ ] EC-PI-3 — OD-5 is implemented. The credential is narrowed to the routed provider, with no aggregator unless OD-5 allows one, and a spend cap on any API-billed lane. Egress is confined to the routed provider's allowlist. Falsified by a Pi seat, or a tool it runs, reaching another provider.
-- [ ] EC-PI-4 — Pi row. The row reads `candidate` after a provider-free team-host qualification, then qualifies in the next row window (principle 1) and reads `done-local`. If the jail fails a falsifier on a named host class, OD-9 applies (principle 6). Falsified by a `done-local` Pi row with no window record on its current qualification key.
+- [ ] EC-PI-4 — Pi row. The row reads `candidate` after a provider-free qualification on the designated seat host, then qualifies in the next row window (principle 1) and reads `done-local`. If the jail fails a falsifier on a named host class, OD-9 applies (principle 6). Falsified by a `done-local` Pi row with no window record on its current qualification key.
 - [ ] EC-PI-5 — The routed provider is attested from the launch configuration and the provider's response, not from the declared model name. Landing-policy aliases are keyed on harness and model, so a Pi seat never fills another vendor's slot. Author/reviewer independence refuses a Pi seat routed to the author's vendor. Falsified by a Pi seat counted as the wrong vendor, a `gemini-*` model name filling the gemini slot through Pi, or a same-routed-vendor review counted as independent.
 
 **Scope notes**
@@ -948,9 +973,9 @@ the matrix and close the issues this roadmap owns. Local closeout does not wait 
 
 **Exit criteria**
 - [ ] EC-CLOSEOUT-1 — Seats. Under OD-8, review-seat defaults contain no sealed route and no reachable `MODE_UNCONFINED`; the Codex, Grok and Claude-egress exceptions have ended. Falsified by any reachable sealed or unconfined review-seat command.
-- [ ] EC-CLOSEOUT-2 — Every matrix row reads `done-local`, `done-remote`, or `remote-pending` with a degraded interim route and an open REMOTE tracking issue. A row still `candidate` rides a row window first. The capabilities card matches the matrix. `remote-pending` is recorded as an open deferral, not as done.
+- [ ] EC-CLOSEOUT-2 — Every matrix row reads `done-local`, `done-remote`, or `remote-pending` with a degraded interim route and an open REMOTE tracking issue. A row still `candidate` rides a row window first. No row needs `done-team`. The capabilities card matches the matrix. `remote-pending` is recorded as an open deferral, not as done.
 - [ ] EC-CLOSEOUT-3 — agent-harness#1132 and agent-harness#1288 close, citing the matrix. agent-harness#1244 receives the matrix and stays open only for the per-OS jails (Non-Goals). Only once REMOTE has also exited, the registry entry and line 3 (`> # DELIVERED — CLOSED (assessed <date>)`) move to `delivered` in one commit.
-- [ ] EC-CLOSEOUT-4 — President. For each rung on each supported host class, the matrix's president rows show a tooled route, or, where the rung's vendor row is `remote-pending`, a typed-degraded rung the ladder advances past. Under OD-8, the president's sealed last resort is removed (agent-harness#1250), and every rung keeps the EC-FIRSTSEAT-2 bound. Falsified by a rung that is neither tooled nor typed-degraded, or a reachable sealed president command.
+- [ ] EC-CLOSEOUT-4 — President. For each rung on the designated seat host, the matrix's president rows show a tooled route, or, where the rung's vendor row is `remote-pending`, a typed-degraded rung the ladder advances past. Under OD-8, the president's sealed last resort is removed (agent-harness#1250), and every rung keeps the EC-FIRSTSEAT-2 bound. Falsified by a rung that is neither tooled nor typed-degraded, or a reachable sealed president command.
 
 **Scope notes**
 - Decompose into 3 lanes. **Lane A** owns seat sealed and unconfined removal. **Lane B** owns
@@ -1056,7 +1081,7 @@ schema: `spec_delta_closeout.v1`; expected decision: `canonical_spec_update`; ta
 
 - [ ] Every vendor (Claude, Gemini, Codex, Grok, Pi) meets principle 1, locally or remotely, with evidence digests in the matrix.
 - [ ] No review seat can reach a sealed, toolless or unconfined route, and every president rung meets EC-CLOSEOUT-4.
-- [ ] A plan-tier native board on `bounded` monitoring on a team host always terminates with a typed outcome, and every leg leaves an exec record.
+- [ ] A plan-tier native board on `bounded` monitoring on the designated seat host always terminates with a typed outcome, and every leg leaves an exec record.
 - [ ] The jailed Claude default equals OD-3b, which cites W0 evidence; TUI is last.
 - [ ] Each row the matrix routes remote, and each host class with no local jail, has a remote route activated by a current generic probe receipt on owner-controlled targets or per vendor under OD-7 on third-party targets, after the Stage 2 proof amendment. A vendor that reached `done-local` needs no remote activation.
 
@@ -1069,7 +1094,7 @@ schema: `spec_delta_closeout.v1`; expected decision: `canonical_spec_update`; ta
 phase-loop validate-roadmap specs/phase-plans-seats-v1.md
 phase-loop validate-roadmap --repo . --roadmap specs/phase-plans-seats-v1.md
 phase-loop validate-roadmap --repo . --roadmap specs/phase-plans-v11.md
-# per host, each operator account
+# on the designated seat host, under its operator account
 phase-loop seat-sandbox qualify
 phase-loop seat-egress status
 phase-loop doctor --json

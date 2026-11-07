@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: CLAUDENET
 roadmap: specs/phase-plans-seats-v1.md
-roadmap_sha256: 9dc889c61a8d682dde30af65bf1597c1dca9a0df094fac747194d3629939b16e
+roadmap_sha256: 785e5ada02bc80319d23f9f5cfb577aa5fdefcb425cca9bf4f779962a01c16f9
 automation:
   suite_command: ["timeout", "900", "env", "PYTEST_ADDOPTS=", "uv", "run", "--quiet", "--project", "phase-loop-runtime", "--group", "test", "--python", "/usr/bin/python3", "--python-preference", "only-system", "--locked", "python", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_seat_egress_allowlist_claude.py", "phase-loop-runtime/tests/test_seat_claude_credential_scope.py", "phase-loop-runtime/tests/test_seat_profile_claude_egress.py", "phase-loop-runtime/tests/test_seat_claude_containment.py", "phase-loop-runtime/tests/test_seat_profiles.py", "phase-loop-runtime/tests/test_seat_notices.py", "phase-loop-runtime/tests/test_seat_route_contract.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py", "phase-loop-runtime/tests/test_seat_egress_allowlists_jailcore.py", "phase-loop-runtime/tests/test_seat_jail.py", "phase-loop-runtime/tests/test_seat_route.py", "phase-loop-runtime/tests/test_panel_invoker.py", "phase-loop-runtime/tests/test_seat_claude_provider_free.py", "phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py", "phase-loop-runtime/tests/test_seat_launch_helpers_trusted.py"]
 ---
@@ -215,7 +215,7 @@ that one selection profile-driven. Nothing else.
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
 | SL-3.1 | test | — | `phase-loop-runtime/tests/test_seat_claude_provider_free.py`, `phase-loop-runtime/tests/fixtures/claude_probe_provider.py` | `live_jail` cases. The fixture provider is bound in place of the CLI and launched through the real Claude profile. Requests to each refused host, an unlisted host and a Gemini-listed host through `HTTPS_PROXY` are refused. Direct DNS and IP connections have no route. A written `.claude/.credentials.json` ends the leg on `claude_seat_token_refreshed_in_jail`. JAILCORE SL-3.6's Claude planted-config falsifier runs on this digest for each admitted transport, and no planted marker loads. When `sdk` is admitted, the worker's external and planted host-loopback connections are refused on the installed release. Mutation control: a fixture allowlist that lists the unlisted host turns its case red. | `VL` |
-| SL-3.2 | verify | SL-3.1 | SL-3 files | `VL` on a standard host and on a team host, from `main` after SL-2. Each record holds metadata only and binds its `key_digest`. | `VL` |
+| SL-3.2 | verify | SL-3.1 | SL-3 files | `VL` on the designated seat host, from `main` after SL-2. Each record holds metadata only and binds its `key_digest`. | `VL` |
 
 ### SL-4 — Row window and documentation reducer (SL-docs)
 
@@ -229,7 +229,7 @@ that one selection profile-driven. Nothing else.
 |---|---|---|---|---|
 | SL-docs.1 | docs | — | `.claude/docs-catalog.json` | Rescan with `python3 "$(git rev-parse --show-toplevel)/.claude/skills/_shared/scaffold_docs_catalog.py" --rescan`; if the helper is absent, record "manual catalog audit". |
 | SL-docs.2 | docs | SL-docs.1 | per catalog | On each landing: inventory rows for any changed launch reference, and an `[Unreleased]` CHANGELOG entry. After SL-2, CONTRACTS.md and the card state that Claude egress is confined to its allowlist through a per-seat proxy, that `DISABLE_UPDATES=1` is set, and the new code. The card drops "runs on open egress until CLAUDENET exits". |
-| SL-docs.3 | docs | SL-docs.2 | `docs/review-seats-readiness.md`, `plans/evidence/seat-qualification/claude-row-*.json` | After SL-2, the Claude row reads `candidate`, with its allowlist id and digest, its exception ended by this phase, and the requalification note. The first Claude row window then runs through the profile-sourced kit on the OD-3b default, on a standard host and on a team host under two operator accounts (LA-2, LA-3). Its record takes the row to `done-local`, or OD-9 routes it to `remote-pending`, citing the failed falsifier. In the no-transport branch, OD-9 applies directly. Comment closure on agent-harness#1804. |
+| SL-docs.3 | docs | SL-docs.2 | `docs/review-seats-readiness.md`, `plans/evidence/seat-qualification/claude-row-*.json` | After SL-2, the Claude row reads `candidate`, with its allowlist id and digest, its exception ended by this phase, and the requalification note. The first Claude row window then runs through the profile-sourced kit on the OD-3b default, on the designated seat host only (LA-2, LA-3). Its record takes the row to `done-local`, or OD-9 routes it to `remote-pending`, citing the failed falsifier. In the no-transport branch, OD-9 applies directly. Comment closure on agent-harness#1804. |
 | SL-docs.4 | verify | SL-docs.3 | — | `V5` and the hosted docs-freshness audit. |
 
 ## Execution Notes
@@ -248,8 +248,8 @@ that one selection profile-driven. Nothing else.
     it does not need OD-3b when at least one transport is admitted.
   - SL-2 needs JAILCORE's Claude registration and SL-1.
   - SL-3 needs SL-2.
-  - The row window needs CLAUDE, JAILCORE and TEAMHOST to have exited, since principle 1
-    needs a team host under two accounts, and it needs SL-3's receipts.
+  - The row window needs CLAUDE, JAILCORE and TEAMHOST to have exited, TEAMHOST for its
+    interfaces, and it needs SL-3's receipts.
   - SL-1, SL-2 and SL-3 tests may be authored against their frozen interfaces before their
     landing gates open.
 - **Stale-base guidance.** Lane teammates working in isolated worktrees do not see

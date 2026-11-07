@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: FIRSTSEAT
 roadmap: specs/phase-plans-seats-v1.md
-roadmap_sha256: 9dc889c61a8d682dde30af65bf1597c1dca9a0df094fac747194d3629939b16e
+roadmap_sha256: 785e5ada02bc80319d23f9f5cfb577aa5fdefcb425cca9bf4f779962a01c16f9
 automation:
   suite_command:
     - 'timeout'
@@ -177,7 +177,7 @@ code interfaces, never LA-1 or host evidence. E alone schedules live qualificati
 
 ## Lane Index & Dependencies
 
-SL-0 — A: Gemini team-host path
+SL-0 — A: Gemini designated-seat-host path
   Depends on: (none)
   Blocks: SL-3, SL-4
   Parallel-safe: yes
@@ -204,12 +204,13 @@ SL-4 — E: Window kit, matrix and documentation reducer
 
 ## Lanes
 
-### SL-0 — A: Gemini team-host path
+### SL-0 — A: Gemini designated-seat-host path
 
 - **Scope**: Implement EC-FIRSTSEAT-5 at the existing Gemini jail and staging boundaries, and supply IF-0-FIRSTSEAT-5 for EC-FIRSTSEAT-7's W1 containment fields.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_jail.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_egress_proxy.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_egress/proxy.mjs`, `phase-loop-runtime/src/phase_loop_runtime/sandbox_egress.py`, `phase-loop-runtime/tests/test_sandbox_egress.py`, `phase-loop-runtime/src/phase_loop_runtime/review_stage.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail_qualification.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_uid.py`, `phase-loop-runtime/tests/test_seat_jail.py`, `phase-loop-runtime/tests/test_gemini_seat_egress_1170.py`, `phase-loop-runtime/tests/test_review_stage_binding.py`
 - **Ownership amendment (2026-11-04, extended 2026-11-05):** `seat_egress/proxy.mjs` is owned only to emit metadata-only request-observation events (method, host, templated path, decision) to its Python wrapper and to acknowledge §14 fences. Its allow/deny decisions, allowlist and readiness protocol stay byte-for-byte unchanged in behaviour, and existing egress tests must pass unmodified; §14's regressions prove it. `seat_uid.py` is owned only to add §16's read-only `scan` verb; no other verb, hand-off or teardown changes.
 - **Interfaces provided**: `gemini_teamhost_route`, IF-0-FIRSTSEAT-5.
+- **Compatibility names**: `gemini_teamhost_route`, `seats_firstseat_teamhost` and `seats_firstseat_teamhost_containment` are legacy identifiers kept as compatibility names. They do not imply team-host coverage (OD-12).
 - **Interfaces consumed**: IF-0-FIRSTSEAT-1 (pre-existing roadmap contract), IF-0-FIRSTSEAT-2 (pre-existing roadmap contract), `stage_review_tree` (pre-existing), `seat-sandbox qualify` (pre-existing).
 - **Parallel-safe**: yes.
 - **Tasks**:
@@ -374,7 +375,8 @@ SL-4 — E: Window kit, matrix and documentation reducer
 ### SL-4 — E: Window kit, matrix and documentation reducer
 
 - **Scope**: Implement EC-FIRSTSEAT-6 and EC-FIRSTSEAT-7 and reconcile all producer evidence.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_window.py`, `phase-loop-runtime/src/phase_loop_runtime/cli.py`, `phase-loop-runtime/src/phase_loop_runtime/executable_dependency_startup.py`, `phase-loop-runtime/tests/test_executable_dependency_startup.py`, `phase-loop-runtime/tests/test_seat_jail_qualification_entry.py`, `phase-loop-runtime/tests/test_seat_qualification_host_context.py`, `docs/review-seats-readiness.md`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md`, `docs/advisor-board-capabilities-card.md`, `plans/evidence/seat-qualification/*`, `CHANGELOG.md`, `phase-loop-runtime/tests/data/seat_launch_references.json`, `phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py`
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_window.py`, `phase-loop-runtime/src/phase_loop_runtime/cli.py`, `phase-loop-runtime/src/phase_loop_runtime/executable_dependency_startup.py`, `phase-loop-runtime/tests/test_executable_dependency_startup.py`, `phase-loop-runtime/tests/test_seat_jail_qualification_entry.py`, `phase-loop-runtime/tests/test_seat_qualification_host_context.py`, `docs/review-seats-readiness.md`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md`, `docs/advisor-board-capabilities-card.md`, `plans/evidence/seat-qualification/*`, `CHANGELOG.md`, `phase-loop-runtime/tests/data/seat_launch_references.json`, `phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py`, `plans/evidence/seat-qualification/README.md`
+- **Ownership amendment (2026-11-07):** Lane C's code has landed, so E takes the one `host_classes` literal in `phase-loop-runtime/src/phase_loop_runtime/president_adapter.py`. SL-2 keeps the rest of that file.
 - **Ownership amendment (2026-11-05):** `executable_dependency_startup.py` is owned only to add the `seat-window` command to its closed CLI command inventory with the correct route class and a regression; no other inventory entry or rule changes.
 - **Ownership amendment (2026-11-05, inventories):** E owns `CHANGELOG.md`, `seat_launch_references.json` and the `INVENTORY` of `test_agent_cli_scratch_inventory_1147.py` entry by entry. Each lane's change carries the entries for its own sites, with existing roles; no other entry, rule or assertion changes.
 - **Interfaces provided**: IF-0-FIRSTSEAT-1, IF-0-FIRSTSEAT-2, IF-0-FIRSTSEAT-3.
@@ -387,7 +389,8 @@ SL-4 — E: Window kit, matrix and documentation reducer
   - test: Add `seats_firstseat_window` to `test_seat_jail_qualification_entry.py`
     entering the CLI and all-candidate selector, and `seats_firstseat_w1_receipt`
     to `test_seat_qualification_host_context.py` entering the evidence verifier.
-    Include two-account isolation, missing/co-seat disclosures, stale digests,
+    Require one-account designated-host coverage. Two-account isolation stays only as offline validation for `done-team`.
+    Include missing/co-seat disclosures, stale digests,
     incomplete host coverage, exception expiry and a board input other than §6's. Require one missing/failed
     negative control per containment/observed-egress field; refuse `done-local`.
     Containment failures produce no public file. Export refuses hostnames, absolute
@@ -395,7 +398,7 @@ SL-4 — E: Window kit, matrix and documentation reducer
     Valid native-board receipts are the path-entered controls; fixture receipts
     test validation only and never stand in for W1.
   - impl: Add the frozen commands and canonical docs. Preflight all four vendors'
-    `is_available` and `auth_ok` under EACH operator account before launching the
+    `is_available` and `auth_ok` under the designated seat host's operator account before launching the
     plan-tier board. A composition refusal blocks that window attempt and routes
     LA-2 remediation; it is not a jail falsifier and cannot trigger OD-9.
   - impl: `seat-window qualify` runs §15's launches and the board in each context, and
@@ -415,16 +418,17 @@ SL-4 — E: Window kit, matrix and documentation reducer
     metadata. All containment, output-secret, refresh, egress or install-integrity
     failures follow OD-10: private record and owner summary, neutral `candidate`
     status without public reason. OD-9 security citations refer privately to records.
-    Public account labels are opaque, never username hashes. W1 checks that the
-    two real accounts cannot read each other's records; state plainly that 0600
+    Public account labels are opaque, never username hashes. W1 runs under one operator
+    account, and the two-account record check stays only as offline validation for
+    `done-team`; state plainly that 0600
     does not isolate an unconfined co-seat using the same operator identity.
     Parent-computed digests are captured as each leg ends. Bind records to observed
     runtime/profile/allowlist digests, board identity, tool receipts and review
     admission; never invent host readiness or owner actions. Reconcile vendor,
     remote and president rows from every producer; name exceptions and expiries.
     A later EC-JAILCORE-6 failure returns Gemini to `candidate`.
-  - verify: Run V-E and V-W, execute the window command sequentially on the
-    required operator/host contexts, then `phase-loop seat-window verify --window W1`.
+  - impl: The overlap with JAILCORE SL-3.5 (agent-harness#1890) covers `seat_window.readiness_rows()` and the Gemini goldens: whichever of the two lands second captures the Gemini golden from the merged base containing both, and reruns both phases' window-kit tests. The result keeps `JailProfile.window` vendor-neutral, and coverage and CLI host class default to `standard`.
+  - verify: Run V-E and V-W, execute one window run on the designated standard host under its operator account, then `phase-loop seat-window verify --window W1`.
     Publish reviewed metadata and update status only from validated evidence.
 
 ## Execution Notes
@@ -483,9 +487,8 @@ verification; do not run `make check-full` or unscoped pytest locally.
 
 Provider-free host commands: `timeout 300 phase-loop seat-sandbox qualify` and
 `timeout 300 phase-loop seat-egress install`. W1: execute the frozen qualify
-command sequentially on team-host account 1, team-host account 2 and one standard
-host, `timeout 7200` each. Run A's planted-config and containment/observed-egress
-measurements (IF-0-FIRSTSEAT-5) in every context; outer timeout is failed evidence, never a typed-success
+command as one run on the designated standard host under its operator account, `timeout 7200`. Run A's planted-config and containment/observed-egress
+measurements (IF-0-FIRSTSEAT-5) in that run; outer timeout is failed evidence, never a typed-success
 substitute. Offline W1 verify:
 `timeout 300 phase-loop seat-window verify --window W1`.
 
