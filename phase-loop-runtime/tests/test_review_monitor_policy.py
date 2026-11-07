@@ -630,10 +630,14 @@ def test_broker_launch_exception_leaves_no_server_thread(tmp_path, monkeypatch):
 def test_signal_cancellation_joins_worker_and_child(tmp_path, signum):
     marker = tmp_path / "started"
     code = f'''
-import os,sys,threading
+import os,subprocess,sys,threading
 from pathlib import Path
 from phase_loop_runtime import panel_invoker as p, seat_resource_caps as caps
 from phase_loop_runtime.sandbox_egress import isolated_network
+def capped(command, *, seat_key, **kwargs):
+    assert seat_key and seat_key == caps.live_seat_key()
+    return subprocess.Popen(command, **kwargs)
+caps.capped_popen=capped
 event=threading.Event()
 monitor=p._ReviewMonitor(Path({str(tmp_path / 'monitor.json')!r}), 'test', 0, event)
 def run(item):

@@ -1117,8 +1117,13 @@ def test_owner_loss_through_real_broker_reclaims_namespace(fixture_cli, tmp_path
     worker_code = f'''
 from dataclasses import replace
 from pathlib import Path
-from phase_loop_runtime import panel_invoker as panel, gemini_heartbeat as gh
+import subprocess
+from phase_loop_runtime import panel_invoker as panel, gemini_heartbeat as gh, seat_resource_caps as caps
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+def capped(command, *, seat_key, **kwargs):
+    assert seat_key and seat_key == caps.live_seat_key()
+    return subprocess.Popen(command, **kwargs)
+caps.capped_popen=capped
 gh.QUALIFIED_IMAGES={fixture_cli.module.QUALIFIED_IMAGES!r}
 panel._measuring_qualification_candidate=lambda: True
 view=panel._seat_filesystem_view
