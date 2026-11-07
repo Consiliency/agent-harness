@@ -264,6 +264,8 @@ def test_pinned_executable_changed_or_linked_refused(experiment, tmp_path, monke
     spec.executable.version = "codex-cli test"
     calls = []
     def metadata(argv, **kwargs):
+        from phase_loop_runtime import seat_resource_caps
+        assert seat_resource_caps.nonseat_probe_active()
         calls.append((argv, kwargs))
         return SimpleNamespace(returncode=0, stdout="codex-cli test\n", stderr="")
     monkeypatch.setattr(panel_invoker, "_run_leg_with_liveness", metadata)

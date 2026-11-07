@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+from collections import Counter
 from dataclasses import replace
 import hashlib
 import json
@@ -718,7 +720,7 @@ _PANEL_LAUNCH_CLASSIFICATION = {
     ("_leg_auth_ok", "run_provider", "owned", 1):
         ("Exempt", "short authentication probe"),
     ("_refresh_gemini_credential", "launch_provider", "host-helper", 1):
-        ("Exempt", "credential maintenance helper"),
+        ("Capped", "credential provider CLI is a seat attempt"),
     ("_require_seat_identity", "subprocess.run", "host-helper", 1):
         ("Exempt", "identity probe"),
     ("_run_claude_tui_session", "subprocess.Popen", "host-helper", 1):
@@ -760,6 +762,13 @@ _NON_PANEL_LAUNCH_CLASSIFICATION = {
     "agy_qualification._run_help": ("Exempt", "help measurement; not a seat attempt"),
     "legible_evidence._invoke_reviewtruth_fable_adapter":
         ("Exempt", "legible-evidence probe; not a seat attempt"),
+    "skill_eval_runner.verify_executable":
+        ("Exempt", "pinned executable version check; not a seat attempt"),
+    "panel_invoker._spawn_2tuple": ("Capped", "invoke_panel leg is a seat attempt"),
+    "panel_invoker.window_control_launch":
+        ("Capped", "window control launch is a jailed seat attempt"),
+    "panel_invoker._WindowBoardLegRuntime.start":
+        ("Capped", "window board sentinel inherits the board seat scope"),
     "president_adapter.PresidentInvoke._launch_gemini:heartbeat":
         ("Capped", "president rung is a seat attempt"),
     "president_adapter.PresidentInvoke._launch_gemini:bounded":
@@ -1145,14 +1154,60 @@ def test_sdk_leg_hands_the_live_key_to_the_real_worker_boundary(monkeypatch, tmp
     assert seen == ["claude:sdk-leg"]
 
 
-def test_only_ruled_nonseat_callers_select_the_uncapped_probe_context():
-    import inspect
-    from phase_loop_runtime import agy_qualification, legible_evidence
+def test_invoke_panel_legs_get_distinct_live_keys(monkeypatch):
+    seen = []
 
-    assert "with panel._uncapped_nonseat_probe():" in inspect.getsource(agy_qualification._run_help)
-    assert inspect.getsource(
-        legible_evidence._invoke_reviewtruth_fable_adapter,
-    ).count("with panel_invoker._uncapped_nonseat_probe():") == 2
+    def spawn(leg, _artifact, **_kwargs):
+        seen.append(caps.live_seat_key())
+        return "OK", "review\nAGREE"
+
+    monkeypatch.setattr(panel_invoker, "_default_spawn", spawn)
+    first = panel_invoker.invoke_panel("artifact", ("codex",), max_concurrency=1)
+    second = panel_invoker.invoke_panel("artifact", ("codex",), max_concurrency=1)
+    assert first.legs[0].usable and second.legs[0].usable
+    assert len(seen) == 2 and len(set(seen)) == 2
+    assert all(key.startswith("panel:codex:") for key in seen)
+
+
+def test_only_ruled_nonseat_callers_select_the_uncapped_probe_context():
+    target = "_uncapped_nonseat_probe"
+    counts = Counter()
+    source_root = Path(panel_invoker.__file__).parent
+
+    class ProbeUseVisitor(ast.NodeVisitor):
+        def __init__(self, module):
+            self.module = module
+            self.functions = []
+
+        def visit_FunctionDef(self, node):
+            self.functions.append(node.name)
+            if node.name == target:
+                counts[(self.module, node.name)] += 1
+            self.generic_visit(node)
+            self.functions.pop()
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_Call(self, node):
+            name = (
+                node.func.id if isinstance(node.func, ast.Name)
+                else node.func.attr if isinstance(node.func, ast.Attribute)
+                else None
+            )
+            if name == target:
+                counts[(self.module, self.functions[-1] if self.functions else "<module>")] += 1
+            self.generic_visit(node)
+
+    for path in source_root.rglob("*.py"):
+        ProbeUseVisitor(path.stem).visit(ast.parse(path.read_text(encoding="utf-8")))
+
+    assert counts == Counter({
+        ("agy_qualification", "_run_help"): 1,
+        ("legible_evidence", "_invoke_reviewtruth_fable_adapter"): 2,
+        ("skill_eval_runner", "verify_executable"): 1,
+        ("panel_invoker", "_uncapped_nonseat_probe"): 1,
+        ("seat_resource_caps", "_uncapped_nonseat_probe"): 1,
+    })
 
 
 def test_each_gemini_president_route_has_its_own_live_seat_key(monkeypatch, tmp_path):

@@ -102,12 +102,14 @@ def _assert_process_marker(marker, processes):
 
 class TestTheCLILegLaunch:
     def test_the_prefix_actually_executes_in_front_of_the_provider(self, tmp_path, monkeypatch):
+        from phase_loop_runtime import seat_resource_caps
         marker = tmp_path / "PREFIX_RAN"
         with _filtered_marker(marker, monkeypatch) as processes:
-            run = panel_invoker._run_leg_with_liveness(
-                ["/bin/sh", "-c", "echo provider-output"],
-                cwd=tmp_path, env=dict(os.environ), deadline_s=60.0,
-            )
+            with seat_resource_caps._seat_scope("test:prefix-cli"):
+                run = panel_invoker._run_leg_with_liveness(
+                    ["/bin/sh", "-c", "echo provider-output"],
+                    cwd=tmp_path, env=dict(os.environ), deadline_s=60.0,
+                )
         _assert_process_marker(marker, processes)
         assert run.returncode == 0, run.stderr
         assert "provider-output" in run.stdout
@@ -186,14 +188,16 @@ class TestTheTUILaunch:
         return ["/usr/bin/python3", "-I", "-S", "-c", source]
 
     def test_the_prefix_actually_executes_in_front_of_the_tui_provider(self, tmp_path, monkeypatch):
+        from phase_loop_runtime import seat_resource_caps
         marker = tmp_path / "TUI_PREFIX_RAN"
         output_file = tmp_path / "panel-claude.txt"
         with _filtered_marker(marker, monkeypatch) as processes:
-            rc, text, status, tail = panel_invoker._run_claude_tui_session(
-                command=self._provider(output_file), cwd=tmp_path, prompt="review this",
-                output_file=output_file, timeout_s=60,
-                env={"PATH": "/usr/bin:/bin"}, backstop_s=60,
-            )
+            with seat_resource_caps._seat_scope("test:prefix-tui"):
+                rc, text, status, tail = panel_invoker._run_claude_tui_session(
+                    command=self._provider(output_file), cwd=tmp_path, prompt="review this",
+                    output_file=output_file, timeout_s=60,
+                    env={"PATH": "/usr/bin:/bin"}, backstop_s=60,
+                )
         _assert_process_marker(marker, processes)
         assert rc == 0 and status == "claude_tui_file_output", (status, tail)
         assert "AGREE" in text

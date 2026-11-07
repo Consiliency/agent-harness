@@ -5225,24 +5225,28 @@ def _refresh_gemini_credential(home, image):
             token = _OWNED_LAUNCH.set(True)
             egress_token = _EGRESS_LAUNCH_PREFIX.set(())
             try:
-                process = launch_provider(
-                    [f"/proc/self/fd/{descriptor}", "models"], cwd=temporary, env=env,
-                    pass_fds=(descriptor,), stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
-                )
-                _anchor_process_group(process)
-                try:
+                from .seat_resource_caps import _seat_scope
+                seat_key = f"cred:gemini:{uuid.uuid4().hex}"
+                with _seat_scope(seat_key):
+                    process = launch_provider(
+                        [f"/proc/self/fd/{descriptor}", "models"], cwd=temporary, env=env,
+                        pass_fds=(descriptor,), stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
+                        seat_caps=seat_key,
+                    )
+                    _anchor_process_group(process)
                     try:
-                        process.communicate(timeout=15)
-                    except subprocess.TimeoutExpired as exc:
-                        raise _sandbox_egress.SeatIdentityUnverified(
-                            "gemini_credential_refresh_timeout",
-                        ) from exc
-                finally:
-                    _terminate_process_group(process)
-                    for pipe in (process.stdout, process.stderr):
-                        if pipe is not None:
-                            pipe.close()
+                        try:
+                            process.communicate(timeout=15)
+                        except subprocess.TimeoutExpired as exc:
+                            raise _sandbox_egress.SeatIdentityUnverified(
+                                "gemini_credential_refresh_timeout",
+                            ) from exc
+                    finally:
+                        _terminate_process_group(process)
+                        for pipe in (process.stdout, process.stderr):
+                            if pipe is not None:
+                                pipe.close()
             finally:
                 _EGRESS_LAUNCH_PREFIX.reset(egress_token)
                 _OWNED_LAUNCH.reset(token)
@@ -13877,7 +13881,10 @@ def window_control_launch(spec: WindowLaunchSpec) -> WindowLaunchResult:
     delivered = None
     end = None
     try:
-        with _open_window_launch(spec) as session:
+        from .seat_resource_caps import _seat_scope
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(_seat_scope(f"window:{spec.kind}:{uuid.uuid4().hex}"))
+            session = stack.enter_context(_open_window_launch(spec))
             proxy = session.proxy
             if spec.kind in _WINDOW_RUNTIME_KINDS:
                 try:
@@ -17077,9 +17084,11 @@ def _default_spawn_via_provider(
                         leg, artifact, repo_dir=repo_dir, mode=mode, model=model, **extra
                     )
             else:
-                spawned = _default_spawn(
-                    leg, artifact, repo_dir=repo_dir, mode=mode, model=model, **extra
-                )
+                from .seat_resource_caps import _seat_scope
+                with _seat_scope(f"panel:{leg}:{uuid.uuid4().hex}"):
+                    spawned = _default_spawn(
+                        leg, artifact, repo_dir=repo_dir, mode=mode, model=model, **extra
+                    )
         except ProviderProcessGroupQuiescenceError as exc:
             # HomebrewAgentRuntimeProvider deliberately turns ordinary spawn
             # exceptions into failed turns.  Process-group quiescence is not an

@@ -108,9 +108,10 @@ def verify_executable(spec):
     harness, native = panel_invoker._seat_provider_source(str(path), os.environ)
     if harness != "codex" or Path(native).resolve() != path.resolve():
         raise ValueError("pin the actual native Codex executable, not a wrapper")
-    result = panel_invoker._run_leg_with_liveness(
-        [str(path), "--version"], cwd=sandbox_policy.staging_root(), env=os.environ,
-        deadline_s=panel_invoker._CODEX_SANDBOX_PROBE_TIMEOUT_S)
+    with panel_invoker._uncapped_nonseat_probe():
+        result = panel_invoker._run_leg_with_liveness(
+            [str(path), "--version"], cwd=sandbox_policy.staging_root(), env=os.environ,
+            deadline_s=panel_invoker._CODEX_SANDBOX_PROBE_TIMEOUT_S)
     if result.returncode != 0 or result.stdout.strip() != spec.executable.version or result.stderr.strip():
         raise ValueError("executable version changed or unavailable")
 
