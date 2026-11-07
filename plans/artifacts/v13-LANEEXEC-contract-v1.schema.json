@@ -77,109 +77,108 @@
       "path": "plans/seats-remote-contract.md",
       "sha256": "1cea960ddd28ef5e1c4bf79083fa9f9938b2c99c2e29dbd937864944ca76d7e8"
     },
+    "toolkit_pins": {
+      "repository": "Consiliency/agent-toolkit",
+      "path": "harnesses/pi/contracts/pins.json",
+      "toolkit_commit": "bdf1e4b29b69fdfd83229ba8c76c408da07ad8a4",
+      "sha256": "72b7f4ff89d6fc7305710e9a27b5d09432eac3d5249630aad53a046b6eeb5608",
+      "schema": "toolkit_pins.v1",
+      "byte_length": 4314,
+      "serialization": "RFC 8785 (JCS) of the manifest object, UTF-8, with no trailing newline.",
+      "source": "LaneExec never fetches the manifest. The agent-toolkit client's operator configuration carries its bytes as a referenced artifact of that client's template registry, so x-launch-inputs.config_binding resolves them into config_sha256. The bytes are trusted only through this pin.",
+      "manifest_check": "LaneExec accepts the manifest only when all of these hold: its bytes are exactly byte_length long and their SHA-256 equals sha256; they are the RFC 8785 serialization of the object they parse to; schema equals toolkit_pins.v1; toolkit_commit equals this pin's toolkit_commit; files is an array sorted by path whose entries are exactly {path, role, sha256}, each with a unique path, a unique role and a 64-character lowercase hex sha256. Anything else refuses.",
+      "role_mapping": "Every other x-contract-pins entry whose pinned_by is toolkit_pins is a required role. The manifest must hold exactly one entry whose role is that entry's key, and the manifest entry's path must equal the role's path. The role's bytes are that manifest entry's sha256, at toolkit_commit. A required role that is missing, duplicated or at another path refuses. Besides the required roles, the manifest may hold only remote_inner_closure:<path> roles, each naming its own path. Any other role refuses. Role names stay stable across repins.",
+      "remote_inner_closure": "remote-inner.mjs's import closure is exactly the manifest entries whose role is toolkit_remote_inner, toolkit_link, toolkit_exec_clean, toolkit_landlock_manifest, snapshot_limits_reference or writer_snapshot_reference, or begins remote_inner_closure:. It is remote-inner.mjs's static import closure, also followed from exec-clean.mjs, which it spawns, plus policy.json, which it reads. A recorded or bound closure that adds a file to this set, or omits one, refuses.",
+      "file_check": "Every toolkit file that a registered agent-toolkit template starts, binds or records is checked by path against its manifest entry: each executable_chain entry located in a toolkit tree, and each closure file. Its bytes' SHA-256 must equal the entry's sha256. A file whose path the manifest does not list, or whose bytes differ, refuses.",
+      "when": "Checked at registration and again at every recheck_before_start. Each failure refuses sandbox_launch_template_refused before snapshot or any effect, for every agent-toolkit template of that registry.",
+      "repin_rule": "A changed toolkit byte means a new manifest. Only a reviewed repin of this entry's toolkit_commit, sha256 and byte_length admits it."
+    },
     "writer_snapshot_reference": {
       "repository": "Consiliency/agent-toolkit",
-      "commit": "9304a5b92c8c409473ca3d2182557b8592697476",
       "path": "harnesses/pi/sandbox/writer-snapshot.mjs",
-      "sha256": "d4d9f1b23fd359b83457adfe1c0df1b451f115a5435dcda79573492e25fe51ab"
+      "pinned_by": "toolkit_pins"
     },
     "snapshot_limits_reference": {
       "repository": "Consiliency/agent-toolkit",
-      "commit": "9304a5b92c8c409473ca3d2182557b8592697476",
       "path": "harnesses/pi/sandbox/policy.json",
-      "sha256": "137fcfb44284937c4c4cd1981e20d016fae8dbda9b6f46ee3fa6c2dc8d94b8c6"
+      "pinned_by": "toolkit_pins"
     },
     "cred_proxy_reference": {
       "repository": "Consiliency/agent-toolkit",
-      "commit": "9304a5b92c8c409473ca3d2182557b8592697476",
       "path": "harnesses/pi/sandbox/cred-proxy.mjs",
-      "sha256": "dc84548328c38345f0d190e89fa1bb5c2ac1d438273c49408b172796d6844c30"
+      "pinned_by": "toolkit_pins"
     },
     "remote_placement_reference": {
       "repository": "Consiliency/agent-toolkit",
-      "commit": "9304a5b92c8c409473ca3d2182557b8592697476",
       "path": "docs/remote-placement.md",
-      "sha256": "84318f64183d7291bdba6474dca1e75e42f7078f7595675592edfa5d6d1562ee"
+      "pinned_by": "toolkit_pins"
     },
     "toolkit_remote_inner": {
       "repository": "Consiliency/agent-toolkit",
-      "commit": "9304a5b92c8c409473ca3d2182557b8592697476",
       "path": "harnesses/pi/sandbox/remote-inner.mjs",
-      "sha256": "64a0351c0c9f60f496ecf2b00ba590e12d83c8ec1f28dc93dde9fca8aef44f51"
+      "pinned_by": "toolkit_pins"
     },
     "toolkit_link": {
       "repository": "Consiliency/agent-toolkit",
-      "commit": "9304a5b92c8c409473ca3d2182557b8592697476",
       "path": "harnesses/pi/sandbox/link.mjs",
-      "sha256": "0375816abe60f90b675ec9d8b889a64534750f294d3ff1287332fbf274841f5d"
+      "pinned_by": "toolkit_pins"
     },
     "toolkit_exec_clean": {
       "repository": "Consiliency/agent-toolkit",
-      "commit": "9304a5b92c8c409473ca3d2182557b8592697476",
       "path": "harnesses/pi/sandbox/exec-clean.mjs",
-      "sha256": "71e2a46c0e30579d6d389303e5f8ae905f5a34e9d004d9c6b09f512be744f302"
+      "pinned_by": "toolkit_pins"
     },
     "toolkit_landlock_manifest": {
       "repository": "Consiliency/agent-toolkit",
-      "commit": "9304a5b92c8c409473ca3d2182557b8592697476",
       "path": "harnesses/pi/sandbox/landlock/manifest.mjs",
-      "sha256": "84a1a1d743ef9ed374805b7262d49b58597a838a9a4218a9e4e0dafff3612d39"
+      "pinned_by": "toolkit_pins"
     },
     "toolkit_landlock_helper_recipe": {
       "repository": "Consiliency/agent-toolkit",
-      "commit": "9304a5b92c8c409473ca3d2182557b8592697476",
       "path": "harnesses/pi/sandbox/landlock/Dockerfile",
-      "sha256": "360ac287479fcb42f7d8c935eee148ce82bb4b94509784e6bcac9ecf2ef85f27"
+      "pinned_by": "toolkit_pins"
     },
     "toolkit_openshell_image": {
       "repository": "Consiliency/agent-toolkit",
-      "commit": "9304a5b92c8c409473ca3d2182557b8592697476",
       "path": "harnesses/pi/sandbox/engines/openshell-image.mjs",
-      "sha256": "88954e774ba519e0093bd007cc89c797275bdcb42e2c129843c49446651b6005"
+      "pinned_by": "toolkit_pins"
     },
     "toolkit_openshell_layout": {
       "repository": "Consiliency/agent-toolkit",
-      "commit": "9304a5b92c8c409473ca3d2182557b8592697476",
       "path": "harnesses/pi/sandbox/engines/openshell-landlock.mjs",
-      "sha256": "4611af31f6faad504acafc01610d34380d5395c1022f09a58d37a93ceab1c19b"
+      "pinned_by": "toolkit_pins"
     },
     "toolkit_openshell_cli": {
       "repository": "Consiliency/agent-toolkit",
-      "commit": "9304a5b92c8c409473ca3d2182557b8592697476",
       "path": "harnesses/pi/sandbox/engines/openshell-cli.mjs",
-      "sha256": "42f5e18d7cc403f02abcd47f695e7a8a2fb123e130c8ffa4b27ca1be506473ca"
+      "pinned_by": "toolkit_pins"
     },
     "toolkit_openshell_engine": {
       "repository": "Consiliency/agent-toolkit",
-      "commit": "9304a5b92c8c409473ca3d2182557b8592697476",
       "path": "harnesses/pi/sandbox/engines/openshell.mjs",
-      "sha256": "4b5dd9a2804190fc4c138484a4b05498f80d0ea8f8a9d6d6d8b07236fbfd6852"
+      "pinned_by": "toolkit_pins"
     },
     "toolkit_loopback_engine": {
       "repository": "Consiliency/agent-toolkit",
-      "commit": "9304a5b92c8c409473ca3d2182557b8592697476",
       "path": "harnesses/pi/sandbox/engines/loopback.mjs",
-      "sha256": "8c1981c66924d39e060c208076f0835686257c243a171430ee01d4b04fa70cd8"
+      "pinned_by": "toolkit_pins"
     },
     "toolkit_remote_launch": {
       "repository": "Consiliency/agent-toolkit",
-      "commit": "9304a5b92c8c409473ca3d2182557b8592697476",
       "path": "harnesses/pi/sandbox/remote-launch.mjs",
-      "sha256": "3c8d5bdf8bea4255e2240d899f7ba2fe7fc6f14bdcd32a8f02cf6d3485d360b4"
+      "pinned_by": "toolkit_pins"
     },
     "toolkit_runner_image_recipe": {
       "repository": "Consiliency/agent-toolkit",
-      "commit": "9304a5b92c8c409473ca3d2182557b8592697476",
       "path": "harnesses/pi/sandbox/image/Dockerfile",
-      "sha256": "958251ac4e6c40a8b7149a92b4d4cf4350fb11dfa591dff6eb33da7042bcf3fb"
+      "pinned_by": "toolkit_pins"
     },
     "toolkit_runner_image_build": {
       "repository": "Consiliency/agent-toolkit",
-      "commit": "9304a5b92c8c409473ca3d2182557b8592697476",
       "path": "harnesses/pi/sandbox/image/build-runner-image.mjs",
-      "sha256": "d65dd968f3a6d02ca7d9519fc48efb0981f5ddbb310452ec30b6302b6d8c30ec"
+      "pinned_by": "toolkit_pins"
     },
-    "rule": "These bytes are design inputs. The toolkit files are read, never copied into agent-harness. Changed bytes need reviewed repinning before execution."
+    "rule": "These bytes are design inputs. The toolkit files are read, never copied into agent-harness. Their digests live only in the manifest that x-contract-pins.toolkit_pins pins, and changed bytes need a reviewed repin of that entry before execution."
   },
   "x-placecli-clarifications": {
     "trail_code": "Resolved by PLACECLI-v1-errata-1 (class a): TrailEntry.code is null if and only if outcome is admitted. Erratum, not v2: no constant, member, verb, exit class, code or policy name changes, and the wire identity protocol_schema_sha256 changes with the bytes.",
@@ -263,7 +262,7 @@
     },
     "rules": "A client names a template and its expected sha256; an unknown id, a template not registered for (client, workload, policy_vector, action, result_kind), or a sha256 mismatch refuses sandbox_launch_template_refused. Slot values come only from LANEEXEC. No client string enters argv. A slot outside x-argv-templates.slots, or one not valid for the template's target_kind, refuses at registration. timeout_seconds above max_timeout_seconds refuses sandbox_launch_lifetime_unbounded. The registry is part of the per-client operator configuration, so config_sha256 binds it.",
     "pi_runner_templates": {
-      "rule": "agent-toolkit registers exactly one template per supported target kind, under these ids, and LaneExec selects by Reservation.target.kind: openshell takes pi-runner.openshell.v1 and local takes pi-runner.local.v1. Naming the other id, or a template_sha256 that differs from the registered bytes, refuses sandbox_launch_template_refused before snapshot or any effect. Literals are fixed. Values written <...> are fixed per registration: on openshell they are read from the registered image's runtime manifest (openshell-runtime.json, RUNTIME_VERSION 3, x-contract-pins.toolkit_openshell_image), and on local from host files. e2b has no template.",
+      "rule": "agent-toolkit registers exactly one template per supported target kind, under these ids, and LaneExec selects by Reservation.target.kind: openshell takes pi-runner.openshell.v1 and local takes pi-runner.local.v1. Naming the other id, or a template_sha256 that differs from the registered bytes, refuses sandbox_launch_template_refused before snapshot or any effect. Literals are fixed. Values written <...> are fixed per registration: on openshell they are read from the registered image's runtime manifest (openshell-runtime.json, RUNTIME_VERSION 3, x-contract-pins.toolkit_openshell_image), and on local from host files. On both targets, the remote_inner digest is read from the toolkit_remote_inner entry of the manifest that x-contract-pins.toolkit_pins pins. e2b has no template.",
       "openshell": {
         "template_id": "pi-runner.openshell.v1",
         "workload": "pi-runner",
@@ -315,10 +314,10 @@
             "role": "worker",
             "locator_kind": "declared",
             "locator": "<remote_inner: the runtime manifest's launcher path of remote-inner.mjs>",
-            "sha256": "64a0351c0c9f60f496ecf2b00ba590e12d83c8ec1f28dc93dde9fca8aef44f51"
+            "sha256": "<the sha256 of the toolkit_remote_inner entry of the x-contract-pins.toolkit_pins manifest>"
           }
         ],
-        "import_closure": "Every file of remote-inner.mjs's import closure recorded in the runtime manifest equals its bytes at x-contract-pins commit, including link.mjs, exec-clean.mjs and landlock/manifest.mjs as pinned.",
+        "import_closure": "The import closure recorded in the runtime manifest is exactly x-contract-pins.toolkit_pins.remote_inner_closure, and every recorded file equals its manifest entry's sha256.",
         "ro_trees": [],
         "link": {
           "mode": "listen",
@@ -414,10 +413,10 @@
             "role": "worker",
             "locator_kind": "declared",
             "locator": "<remote_inner: an absolute path inside an ro_trees entry>",
-            "sha256": "64a0351c0c9f60f496ecf2b00ba590e12d83c8ec1f28dc93dde9fca8aef44f51"
+            "sha256": "<the sha256 of the toolkit_remote_inner entry of the x-contract-pins.toolkit_pins manifest>"
           }
         ],
-        "ro_trees": "The node release root, the toolkit tree holding remote-inner.mjs and its import closure, and the Pi and runner package trees, each with tree_sha256. The closure files equal their x-contract-pins bytes.",
+        "ro_trees": "The node release root, the toolkit tree holding remote-inner.mjs and its import closure, and the Pi and runner package trees, each with tree_sha256. The toolkit tree holds every file of x-contract-pins.toolkit_pins.remote_inner_closure, each equal to its manifest entry's sha256.",
         "link": {
           "mode": "stdio",
           "guest_port": null
@@ -554,7 +553,7 @@
   },
   "x-test-obligations": [
     "C1 codec: every message family valid, every closed enum and conditional path-entered negative, PLACECLI Reservation reuse by $id, 64 KiB bound, strictness rules, exit 70 for schema-invalid input with stdout absent. One valid remote Pi request (openshell reservation, full-remote-pi-runner, result_kind none) and one valid local Pi request (local reservation, minimal-without-app, result_kind none) validate, and both crossed policy/target pairs are schema-valid, leaving their refusal to C2.",
-    "C2 binding: each case refuses with zero snapshot reads, uploads, envelopes and invocations: reservation echo mismatch, unknown reservation, image off the allowlist, provider or policy disagreement, template id or sha mismatch, writer-route mismatch, and route_disabled. Both crossed Pi pairs, an openshell reservation with minimal-without-app and a local reservation with full-remote-pi-runner, refuse sandbox_launch_input_mismatch.",
+    "C2 binding: each case refuses with zero snapshot reads, uploads, envelopes and invocations: reservation echo mismatch, unknown reservation, image off the allowlist, provider or policy disagreement, template id or sha mismatch, writer-route mismatch, and route_disabled. Both crossed Pi pairs, an openshell reservation with minimal-without-app and a local reservation with full-remote-pi-runner, refuse sandbox_launch_input_mismatch. Toolkit pins, at registration and at recheck_before_start, each refusing sandbox_launch_template_refused with zero effects: manifest bytes whose length or sha256 differ from x-contract-pins.toolkit_pins, a non-canonical serialization, or a schema or toolkit_commit mismatch; each required role missing, duplicated or at another path, one at a time across all 17; an unknown role, or a remote_inner_closure:<path> role naming another path; a listed file whose bytes differ; a chain or closure file the manifest does not list; and a recorded closure that adds or omits a file of remote_inner_closure. The pinned manifest itself, with every listed file matching, registers both Pi templates.",
     "C3 snapshot: git-mode inventory classes, a self-contained .git with only B-reachable objects and no hooks, remotes or alternates, masks omitted and skip-worktree, the secret matcher on without request control, full mode only where permitted, a non-work-tree root in full mode, too_large at each cap, source_changed from a mid-copy mutation, and each path rule.",
     "C4 envelope: egress grant equals the reservation digest's hex, transport grammar refusal, not_armed refused, instructions never in argv, recheck_before_start difference refused, one exec claim across concurrent and restarted launches. Claim order: each refusal through pre_exec, path-entered, leaves LeaseFlags.exec_claimed false with no claim record, and a new request_id then launches the same reservation; racing launches leave exactly one claim. Each claim_rollback failure (upload confirmed empty, chain-start caps re-check, link socket creation) clears the claim in one durable write, and a new request_id then launches. An unknown upload, duplicate_binding and an injected crash between claim and chain start each keep the claim, so a new request_id refuses sandbox_launch_exec_claimed and reap settles it. Configuration: trusted_policy.config_sha256 equals Reservation.config_sha256 and the raw-byte SHA-256 of the captured effective configuration. Changing a referenced provider mapping, a threshold, the seat_resource_caps record or a template registry entry between reserve and launch refuses sandbox_launch_input_mismatch before snapshot. Mutation controls, each of which must fail: claiming before pre_exec, rolling back an unknown upload, and hashing the raw client configuration file.",
     "C5 local caps: a capped parent per reservation with child readback; each missing controller or record field refusing capability_unmet with no target marker; no uncapped path. The §1a cases run on LaneExec's automatic paths: a tmpfs scratch accepted only with memory.max and memory.swap.max read back; ramfs, overlay, NFS, FUSE, btrfs and a magic/mountinfo disagreement refusing; and the execution tree on tmpfs removed before the parent is collected.",
