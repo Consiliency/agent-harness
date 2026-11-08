@@ -1,0 +1,255 @@
+{
+  "ai_runs": 0,
+  "all_profile_digests_unchanged": true,
+  "auth_source": "synthetic fixture only",
+  "carried_verification": {
+    "source_registration_landing": "388be402",
+    "v3_v4": {
+      "fail": 0,
+      "pass": 612,
+      "receipt": "v3-v4.xml",
+      "sha256": "2738e68f7f389000d094ae58b1c30ee4de03d92a1dc7ce1e61bafa201c4daf83",
+      "skip": 2
+    },
+    "v4_panel_codex": {
+      "fail": 0,
+      "pass": 2,
+      "receipt": "v4-panel.xml",
+      "sha256": "160aea692491452ebd8957c099dbc74113e2c7aa200ece21e6fd21f7e02d7649",
+      "skip": 0
+    },
+    "v5": {
+      "fail": 0,
+      "pass": 44,
+      "receipt": "v5-compat.xml",
+      "scope": "the three V5 inventory/helper/reference modules passed; compatibility failures from that run are superseded by compatibility_replay",
+      "sha256": "fdf73b0d2ede96885c4aaf4391e50924efdac1fb0773c1a8fc21a924f6d56512",
+      "skip": 0
+    }
+  },
+  "compatibility_replay": {
+    "corrected_expectations": [
+      {
+        "outcome": "pass",
+        "seconds": 0.054,
+        "test": "tests.test_seat_notices::test_seat_modes_are_published_before_launch"
+      },
+      {
+        "outcome": "pass",
+        "seconds": 0.364,
+        "test": "tests.test_seat_argv_bound_paths_1441::test_a_seat_argv_builder_names_only_host_paths_the_profile_binds[codex-builder-tree]"
+      }
+    ],
+    "counts": {
+      "fail": 0,
+      "pass": 396,
+      "skip": 0
+    },
+    "receipt": "compat-final.xml",
+    "seconds": 11.57,
+    "sha256": "ea442bc79b239bdd77d5d4a6b2feb65fa0654157e6d4eeaad8ae7f318460d099"
+  },
+  "execution": {
+    "bundle_timeout_seconds": 1200,
+    "compatibility_timeout_seconds": 180,
+    "jailed_claude_excluded": true,
+    "python": "3.12.14",
+    "require_live_jail": true,
+    "serial": true,
+    "uv": "run --python 3.12 --frozen",
+    "vl_timeout_seconds": 900
+  },
+  "golden_sha256": "37eef1d92ec26a66dbe1fe29777373d32cdb5c608dc8f2e6d2d40c19f5bf0a15",
+  "host": "dev0",
+  "issue_closures": 0,
+  "od4": {
+    "accepted_input_head": "36d785c19464f5b9dcde202528f9c7651755296a",
+    "accepted_input_sha256": {
+      "plans/evidence/seat-codex/provider-free.json": "2d3ec21ed625e2a766547d59c0471ee8b727be67484e0fdc83cb440b6e07c83e",
+      "plans/evidence/seat-codex/refresh-detection.json": "b59d933d12445c2a97a048b4714c43bb1d5349e2d306301022131fb84218dfa6"
+    },
+    "accepted_records_unchanged": true,
+    "date": "2026-11-08",
+    "record": "plans/decision-seats-codex-boundary.md",
+    "status": "accepted"
+  },
+  "production_registration": "registered; review seats use CODEX_PROFILE",
+  "profile_digests": {
+    "claude": "5ccd7e8669f41716754787d8bde9bb6a64450774e2c5bf9b8862d7e0acaa2b00",
+    "codex": "d905feb08208bce2ae6fcaad0f78083ab86ce463b8dfc031e9dd8265e8f5e488",
+    "gemini": "09827a0ed4f51ac2bfac6510e9d0f5b111abcf33a66638046e67ebdca2d097c2"
+  },
+  "provider_free_vl": {
+    "cases": [
+      {
+        "outcome": "pass",
+        "seconds": 3.757,
+        "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[sentinel]"
+      },
+      {
+        "outcome": "pass",
+        "seconds": 2.92,
+        "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[planted_markers]"
+      },
+      {
+        "outcome": "pass",
+        "seconds": 3.003,
+        "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[rewritten_auth]"
+      },
+      {
+        "outcome": "pass",
+        "seconds": 2.983,
+        "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[nested_namespace]"
+      },
+      {
+        "outcome": "pass",
+        "seconds": 3.355,
+        "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[workspace_write]"
+      },
+      {
+        "outcome": "pass",
+        "seconds": 5.382,
+        "test": "tests.test_seat_egress_allowlist_codex::test_live_jail_codex_refused_rows_from_a_jailed_tool_command"
+      }
+    ],
+    "counts": {
+      "fail": 0,
+      "pass": 6,
+      "skip": 0
+    },
+    "receipt": "vl.xml",
+    "seconds": 21.534,
+    "sha256": "f84e41d0d598fd019671e8259ed912d9523df65e8c3dba409e9668673e4a327d"
+  },
+  "provider_turns": 0,
+  "qualification_rerun": false,
+  "real_login_copies": 0,
+  "real_login_reads": 0,
+  "real_login_renewals": 0,
+  "receipt_sha256": {
+    "pipeline.log": "5cbddc375b9cd7a9d84d0ceb81cb2058c3f718b20be973ae33ff820236f0d767",
+    "predicate-self-test.log": "04f7e605edb5fcf93b72d7d898e40e39c2f62a804a5fd7d1d183e91a937fe87a",
+    "preflight-samples.jsonl": "314780ee031747689365eb5075e4f21fad882c94f3a039ab2ccfa8eb2849652d",
+    "psi-summary.json": "cf2cc8154f48965c3cffeebbb40f91aa273cde62e044d5647d548f4fc7dd23ec",
+    "psi.jsonl": "7d8e8e14c4b29710a073cdd5856cfaadb95b04b8bf3547efe476e9df3e33ed0a",
+    "run.sh": "69506fb1cf64757287b63e6ceef09eabb9f58c7f63bc44ff8af0bf0e74e5eeb3",
+    "status.json": "9ed89ffdbf5ad33deac06c89a5f2a68280096bc0f79f76fb646990e34e7df598",
+    "supervisor.py": "854dca67b0186d36376dc4318b90f3b26683dae0d554978fe5378aa8bdd6f811",
+    "test_watchdog_rule.py": "e34a5d56abca6bda71f4ea81c552161faf5f51d61aad63778c84cc79615229c4",
+    "watchdog_rule.py": "ce3cf52fe442d8be469bf4eb24c436f8f9021739ba6cf387bb2a1a28a46d724a"
+  },
+  "recorded_at": "2026-11-08T16:03:23.889712+00:00",
+  "redaction_posture": "metadata_only",
+  "refresh_detection": {
+    "case": {
+      "outcome": "pass",
+      "seconds": 3.003,
+      "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[rewritten_auth]"
+    },
+    "expected_code": "codex_seat_token_refreshed_in_jail",
+    "outcome": "pass"
+  },
+  "remaining_scope": "Independent review next; SL-4 row-window and post-merge issue reducer not executed.",
+  "row_window": false,
+  "schema": "phase_loop_codex_post_registration.v1",
+  "sl3_status": "complete",
+  "status": "passed",
+  "task": "SL-3.9",
+  "validation_head": "388be402924ab0c5aaedb64037c6322e9d40f5c7",
+  "watchdog": {
+    "abort_rule": {
+      "independent_sustained_seconds": 10,
+      "memory_full_avg10_gt": 2,
+      "memory_some_avg10_gt": 10,
+      "other_resource_abort_rules": false,
+      "single_memory_full_avg10_gt": 5
+    },
+    "all_descendants_exited": true,
+    "approved_deliberate_retry": true,
+    "bundle_attempts_this_authorization": 1,
+    "further_retry": false,
+    "predicate_self_test": {
+      "extra_controls": [
+        "some threshold duration",
+        "strict thresholds",
+        "full timer reset",
+        "independent full/some timers",
+        "prior interrupted trace does not abort"
+      ],
+      "fail": 0,
+      "pass": 8,
+      "receipt": "predicate-self-test.log",
+      "required_controls": {
+        "full_2_40_for_10_seconds": "abort",
+        "full_2_40_under_10_seconds": "no abort",
+        "single_full_5_1": "abort"
+      },
+      "sha256": "04f7e605edb5fcf93b72d7d898e40e39c2f62a804a5fd7d1d183e91a937fe87a"
+    },
+    "preflight_rule": {
+      "available_gib_gt": 6,
+      "io_full_avg10_lt": 5,
+      "load_lt": 24,
+      "memory_full_avg10_le": 1,
+      "sample_spacing_seconds": 300,
+      "window_seconds": 3600
+    },
+    "preflight_samples": [
+      {
+        "checks": {
+          "available_gt_6_gib": true,
+          "io_full_lt_5": true,
+          "load_lt_24": true,
+          "memory_full_le_1": true
+        },
+        "passed": true,
+        "sample": {
+          "at": "2026-11-08T16:00:58.345774+00:00",
+          "available_bytes": 12178964480,
+          "elapsed_s": 0.0,
+          "io_full_avg10": 0.25,
+          "io_some_avg10": 0.26,
+          "load_1m": 2.43,
+          "memory_full_avg10": 0.0,
+          "memory_some_avg10": 0.0
+        }
+      }
+    ],
+    "project_admission_held_through_process_tree": true,
+    "summary": {
+      "all_descendants_exited": true,
+      "duration_s": 39.035,
+      "extrema": {
+        "available_bytes": {
+          "max": 12558868480,
+          "min": 10820784128
+        },
+        "io_full_avg10": {
+          "max": 2.69,
+          "min": 0.19
+        },
+        "io_some_avg10": {
+          "max": 2.69,
+          "min": 0.19
+        },
+        "load_1m": {
+          "max": 3.41,
+          "min": 2.43
+        },
+        "memory_full_avg10": {
+          "max": 0.21,
+          "min": 0.0
+        },
+        "memory_some_avg10": {
+          "max": 0.21,
+          "min": 0.0
+        }
+      },
+      "lock_held_through_cleanup": true,
+      "max_sample_gap_s": 1.0010000000000012,
+      "sample_interval_s": 1,
+      "samples": 40,
+      "status": "passed"
+    }
+  }
+}

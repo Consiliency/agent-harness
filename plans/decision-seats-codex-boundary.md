@@ -78,3 +78,13 @@ reducer belong to SL-4, not this SL-3 landing.
 agent-harness#1644 and agent-harness#1731 were already closed by INVENTORY on
 2026-11-06. OD-4 acceptance does not trigger their conditional reopening. No
 issue or PR is closed by this change.
+
+## SL-3.9 follow-up
+
+[post-registration.json](evidence/seat-codex/post-registration.json) records the
+passing post-registration dev0 compatibility replay and provider-free VL against
+source head `388be402`, completing SL-3 verification. The exact owner watchdog
+predicate passed eight synthetic controls before the single authorized retry.
+The accepted OD-4 input records above remain byte-identical. No ai run, live
+provider turn, real-login operation, issue closure or row-window promotion was
+performed in this follow-up. Independent review remains the next step.
