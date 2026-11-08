@@ -108,6 +108,8 @@ def test_clock_margin_is_rechecked_immediately_before_delivery(tmp_path, monkeyp
     ("success", None), ("zero_commands", "codex_seat_tools_unavailable"),
     ("unknown", "codex_seat_unknown_event"), ("refresh", "codex_seat_token_refreshed_in_jail"),
     ("expired", "codex_seat_token_expiring"), ("secret", "codex_seat_token_in_output"),
+    ("expired_no_command", "codex_seat_token_expiring"),
+    ("failed_commands", "codex_seat_tools_unavailable"),
     ("stderr", "codex_seat_token_in_output"), ("output", "codex_seat_token_in_output"),
     ("proxy", "codex_seat_token_in_output"),
 ])
@@ -118,15 +120,17 @@ def test_real_liveness_output_and_post_launch_order(tmp_path, monkeypatch, codex
     if case in {"secret", "stderr", "output", "proxy", "refresh"}:
         path = seat.seat_dir / "seat-home/.codex/auth.json"
         path.write_text('{}')
-    if case in {"expired", "refresh"}:
+    if case in {"expired", "refresh", "expired_no_command"}:
         seat.codex_copy = replace(copy, expires_at=0)
-    data = stream(command=case != "zero_commands", extra=({"type": "new.event"},) if case == "unknown" else ())
+    data = stream(command=case not in {"zero_commands", "expired_no_command"},
+                  exit_code=1 if case == "failed_commands" else 0,
+                  extra=({"type": "new.event"},) if case == "unknown" else ())
     secret = copy.secrets[0] if case != "proxy" else b"synthetic-proxy-password"
     out = data + (secret if case in {"secret", "proxy"} else b"")
     err = secret if case == "stderr" else b""
     review = secret if case == "output" else b"The fixture was read.\n\nAGREE"
     (seat.seat_dir / "seat-out/panel-codex.txt").write_bytes(review)
-    child = "import sys; sys.stdin.read(); sys.stdout.buffer.write(" + repr(out) + "); sys.stderr.buffer.write(" + repr(err) + "); sys.exit(" + str(1 if case in {"expired", "refresh"} else 0) + ")"
+    child = "import sys; sys.stdin.read(); sys.stdout.buffer.write(" + repr(out) + "); sys.stderr.buffer.write(" + repr(err) + "); sys.exit(" + str(1 if case in {"expired", "refresh", "expired_no_command"} else 0) + ")"
     def launch(argv, **kwargs):
         assert kwargs["process_owner"] is seat.jail and kwargs["probe_owner"] is seat.probe_jail
         return subprocess.Popen([sys.executable, "-c", child], stdin=kwargs["stdin"],
@@ -146,20 +150,29 @@ def test_real_liveness_output_and_post_launch_order(tmp_path, monkeypatch, codex
     ("success", None), ("zero_commands", "codex_seat_tools_unavailable"),
     ("unknown", "codex_seat_unknown_event"), ("refresh", "codex_seat_token_refreshed_in_jail"),
     ("expired", "codex_seat_token_expiring"), ("secret", "codex_seat_token_in_output"),
+    ("expired_no_command", "codex_seat_token_expiring"),
+    ("failed_commands", "codex_seat_tools_unavailable"),
 ])
 def test_default_spawn_holds_route_lease_through_codex_leg(tmp_path, monkeypatch, codex_profile, case, expected):
     from test_seat_notices import _brokered
     seat = prepare(tmp_path, monkeypatch)
     local_reads(monkeypatch)
+    cleanup = pi._cleanup_jailed_seat
+    def cleanup_with_notice(seat, **kwargs):
+        cleanup(seat, **kwargs)
+        seat.notices.append("seat_sandbox_retained_after_teardown")
+    monkeypatch.setattr(pi, "_cleanup_jailed_seat", cleanup_with_notice)
     if case in {"refresh", "secret"}:
         (seat.seat_dir / "seat-home/.codex/auth.json").write_text("{}")
-    if case in {"expired", "refresh", "secret"}:
+    if case in {"expired", "refresh", "secret", "expired_no_command"}:
         seat.codex_copy = replace(seat.codex_copy, expires_at=0)
     (seat.seat_dir / "seat-out/panel-codex.txt").write_text("Fixture read.\n\nAGREE")
-    data = stream(command=case != "zero_commands", extra=({"type": "new.event"},) if case == "unknown" else ())
+    data = stream(command=case not in {"zero_commands", "expired_no_command"},
+                  exit_code=1 if case == "failed_commands" else 0,
+                  extra=({"type": "new.event"},) if case == "unknown" else ())
     if case == "secret":
         data += seat.codex_copy.secrets[0]
-    child = "import sys; sys.stdin.read(); sys.stdout.buffer.write(" + repr(data) + "); sys.exit(" + str(1 if case in {"expired", "refresh", "secret"} else 0) + ")"
+    child = "import sys; sys.stdin.read(); sys.stdout.buffer.write(" + repr(data) + "); sys.exit(" + str(1 if case in {"expired", "refresh", "secret", "expired_no_command"} else 0) + ")"
     released = []
     lease = SimpleNamespace(seat_id=7, release=lambda: released.append(True))
     route = SimpleNamespace(jailed=True, lease=lease)
@@ -198,4 +211,5 @@ def test_default_spawn_holds_route_lease_through_codex_leg(tmp_path, monkeypatch
     assert tuple(spawned)[0] == ("DEGRADED" if expected else "OK")
     if expected:
         assert expected in spawned.seat_notices
+    assert "seat_sandbox_retained_after_teardown" in spawned.seat_notices
     assert released == [True]

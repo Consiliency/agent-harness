@@ -85,6 +85,7 @@ and nothing on main can reach the route early.
   | `window` | `CODEX_WINDOW_ROWS`, below |
 
   `digest_placeholders` and `mount_points` cover the CA and every runtime destination.
+  The profile also creates the runtime bind parents (`/run`, `/run/phase-loop-seat`, the runtime root, `bin`, `codex-path`) as 0755 directories before the file binds, because bwrap would otherwise create a missing bind parent as 0700.
   `CODEX_TREE_ROWS` is one list of `(path, role)` rows. `CODEX_PLANTED_PATHS` is its paths, so
   the falsifier and the window plant the same set. SL-3 may extend it, never shrink it:
 

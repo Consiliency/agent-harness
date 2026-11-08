@@ -22,6 +22,10 @@ CODEX_TREE_ROWS = (
     (".codex/hooks.json", "hooks"), (".mcp.json", "mcp_servers"),
 )
 CODEX_PLANTED_PATHS = tuple(path for path, _role in CODEX_TREE_ROWS)
+_CODEX_RUNTIME_DIRECTORIES = frozenset({
+    "/run", "/run/phase-loop-seat", CODEX_RUNTIME_ROOT,
+    f"{CODEX_RUNTIME_ROOT}/bin", f"{CODEX_RUNTIME_ROOT}/codex-path",
+})
 CODEX_WINDOW_ROWS = WindowRows(
     "canonical_codex", "codex_route", "jailed",
     (("tree", "/seat/tree", "reviewed-tree"),
@@ -86,9 +90,13 @@ def _env(inputs):
 
 
 def _check(name):
-    raw = credential.read_auth()
-    return (credential.token_margin_problem(raw, now=time.time()) if name == "token_margin"
-            else getattr(credential, name)(raw))
+    from .seat_jail import SeatSandboxRefused
+    try:
+        raw = credential.read_auth()
+        return (credential.token_margin_problem(raw, now=time.time()) if name == "token_margin"
+                else getattr(credential, name)(raw))
+    except SeatSandboxRefused as exc:
+        return exc.code
 
 
 def _subscription():
@@ -112,10 +120,13 @@ def validate_codex_projection(dependency):
     if dependency is None:
         return
     from .executable_dependency import ExecutableDependencyError
-    destinations = {entry.destination for entry in dependency.entries}
-    if (not set(CODEX_RUNTIME_DESTINATIONS) <= destinations
+    directories = {entry.destination for entry in dependency.entries if entry.kind == "directory"}
+    leaves = {entry.destination for entry in dependency.entries if entry.kind != "directory"}
+    if (leaves != set(CODEX_RUNTIME_DESTINATIONS)
+            or not directories <= _CODEX_RUNTIME_DIRECTORIES
+            or any(entry.kind not in {"directory", "file"} for entry in dependency.entries)
             or dependency.subject_destination != CODEX_RUNTIME_DESTINATIONS[0]
-            or any("codex-resources" in Path(path).parts for path in destinations)):
+    ):
         raise ExecutableDependencyError("authority_invalid", "Codex runtime destinations")
 
 

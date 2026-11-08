@@ -39,6 +39,14 @@ def test_unknown_top_level_event_has_its_code():
     assert tools_ran_code(read_tool_record(stream(extra=({"type": "new.event"},)))) == "codex_seat_unknown_event"
 
 
+def test_plan_updates_count_and_failed_turns_do_not():
+    updated = {"type": "item.updated", "item": {"id": "plan_0", "type": "plan", "steps": []}}
+    assert tools_ran_code(read_tool_record(stream(extra=(updated,)))) is None
+    failed = ({"type": "error", "message": "Reconnect failed"},
+              {"type": "turn.failed", "error": {"message": "Fixture failure"}})
+    assert tools_ran_code(read_tool_record(stream(complete=False, extra=failed))) == "codex_seat_tools_unavailable"
+
+
 @pytest.mark.parametrize("data", [b"", b"{}\n", b"not-json\n", stream()[:-1], stream() + b'{"type":'])
 def test_truncated_or_malformed_stream(data):
     assert tools_ran_code(read_tool_record(data)) == "codex_seat_tools_unavailable"

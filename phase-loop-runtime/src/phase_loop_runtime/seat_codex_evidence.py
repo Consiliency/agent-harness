@@ -5,8 +5,8 @@ import json
 
 
 CODEX_TOOL_EVENTS = frozenset({
-    "thread.started", "turn.started", "item.started", "item.completed", "error",
-    "turn.completed",
+    "thread.started", "turn.started", "item.started", "item.updated", "item.completed",
+    "error", "turn.completed", "turn.failed",
 })
 
 
@@ -47,6 +47,8 @@ def read_tool_record(stream: bytes) -> CodexToolRecord:
             completed = started
             if not started:
                 valid = False
+        if name == "turn.failed":
+            valid = False
         if name != "item.completed":
             continue
         item = event.get("item")

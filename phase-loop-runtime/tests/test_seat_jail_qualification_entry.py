@@ -59,6 +59,50 @@ def test_codex_qualification_records_a_v2_pass(tmp_path, monkeypatch, codex_prof
     assert seat_jail.pass_record_verdict(key) == (True, "pass")
 
 
+@pytest.mark.parametrize("launch_error", [False, True])
+def test_codex_probe_closes_its_managed_dependency(tmp_path, monkeypatch, codex_profile, launch_error):
+    import contextlib
+    import os
+    import subprocess
+    from types import SimpleNamespace
+    from phase_loop_runtime import panel_invoker as pi, seat_jail
+    from phase_loop_runtime.seat_codex_runtime import CODEX_RUNTIME_DESTINATIONS
+    from phase_loop_runtime.seat_subject import SeatSubject
+
+    closed = []
+    dependency = SimpleNamespace(
+        _jailcore_owned=True, subject_source="/fixture/codex",
+        subject_destination=CODEX_RUNTIME_DESTINATIONS[0],
+        entries=tuple(SimpleNamespace(kind="file", destination=path) for path in CODEX_RUNTIME_DESTINATIONS),
+        close=lambda: closed.append(True))
+    subject = SeatSubject("codex", "managed_release", None, None, None)
+    monkeypatch.setattr(pi, "_resolved_jail_subject", lambda *a: (subject, dependency))
+    monkeypatch.setattr(qualification.seat_uid, "subordinate_range", lambda _: SimpleNamespace(count=65536))
+    monkeypatch.setattr(qualification.seat_uid, "lease_seat_id", lambda _: contextlib.nullcontext(7))
+    monkeypatch.setattr(qualification.sandbox_egress, "isolated_network", lambda **k: contextlib.nullcontext(("fixture",)))
+    monkeypatch.setattr(qualification.seat_uid, "holder_pid_from_prefix", lambda _: 42)
+    def build(leg, directory, provider, **kwargs):
+        assert leg == "codex" and provider == Path(dependency.subject_source)
+        assert kwargs["dependency"] is dependency
+        return SimpleNamespace(pass_fds=(kwargs["bundle_memfd"], kwargs["instructions_memfd"]))
+    monkeypatch.setattr(seat_jail, "build_seat_jail", build)
+    monkeypatch.setattr(seat_jail, "close_jail_fds", lambda jail: [os.close(fd) for fd in jail.pass_fds])
+    monkeypatch.setattr(qualification.seat_uid, "teardown_in_h", lambda *a: ())
+    monkeypatch.setattr(pi, "_require_canonical_jail", lambda _: None)
+    monkeypatch.setattr(pi, "_compose_seat_jail_prefix", lambda _: ())
+    def run(*a, **kwargs):
+        if launch_error:
+            raise OSError("fixture launch unavailable")
+        return subprocess.CompletedProcess(a[0], 0, "{}\n", "")
+    monkeypatch.setattr(qualification.subprocess, "run", run)
+    if launch_error:
+        with pytest.raises(OSError, match="fixture launch unavailable"):
+            qualification._run_probe_in_jail("codex", tmp_path, {}, None, None)
+    else:
+        assert qualification._run_probe_in_jail("codex", tmp_path, {}, None, None) == {}
+    assert closed == [True]
+
+
 def test_seats_firstseat_window_cli(tmp_path, monkeypatch, capsys):
     from phase_loop_runtime import cli, seat_window as window
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))

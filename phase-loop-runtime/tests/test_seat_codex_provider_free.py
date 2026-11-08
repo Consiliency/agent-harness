@@ -104,13 +104,28 @@ def test_live_jail_codex_fixture_provider(tmp_path, monkeypatch, codex_profile, 
                     env={"HOME": str(operator), "PATH": os.environ.get("PATH", "")})
                 # The provider-free receipt does not create an EC-EXECFIND-2 host pass.
                 monkeypatch.setattr(seat_jail, "pass_record_verdict", lambda _: (True, "pass"))
-                # Check the actual jailed connect before asking the CLI to start a turn.
-                # This emits errno metadata only and sends no provider request.
-                probe = pi._run_leg_with_liveness(
-                    ["/usr/bin/python3", "-I", "-c",
-                     "import socket\ntry:\n s=socket.create_connection(('127.0.0.1',3128),timeout=3); s.close(); print('connected')\nexcept OSError as e:\n print('connect_errno='+str(e.errno)); raise SystemExit(1)"],
-                    cwd="/seat/home/workspace", env=dict(seat.jail.env), deadline_s=10,
-                    seat_jail=seat.jail, probe_jail=seat.probe_jail)
+                # Check the jailed connect in a jail pair of its own: a launch spends the
+                # descriptors of the jail it runs in.
+                def connect_jail(name):
+                    directory = seat.seat_dir / name
+                    (directory / seat_jail.HOST_TREE_DIRNAME).mkdir(mode=0o700, parents=True)
+                    return pi._build_jail_with_owned_inputs(
+                        "codex", directory, Path(seat.jail.provider_path), artifact=b"",
+                        instructions=b"", seat_ids=seat.jail.seat_ids,
+                        egress_ca=pi._write_egress_ca(directory, proxy.ca_cert),
+                        egress_proxy=proxy.proxy_url, dependency=None)
+                check, check_probe = connect_jail("seat-connect"), connect_jail("seat-connect-probe")
+                try:
+                    probe = pi._run_leg_with_liveness(
+                        ["/usr/bin/python3", "-I", "-c",
+                         "import socket\ntry:\n s=socket.create_connection(('127.0.0.1',3128),timeout=3); s.close(); print('connected')\nexcept OSError as e:\n print('connect_errno='+str(e.errno)); raise SystemExit(1)"],
+                        cwd="/seat/home/workspace", env=dict(check.env), deadline_s=10,
+                        seat_jail=check, probe_jail=check_probe)
+                finally:
+                    for built in (check, check_probe):
+                        seat_jail.close_jail_fds(built)
+                    for name in ("seat-connect", "seat-connect-probe"):
+                        seat_uid.teardown_in_h(seat.holder_pid, str(seat.seat_dir / name))
                 if probe.returncode != 0:
                     pi._cleanup_jailed_seat(seat)
                     pytest.fail("jailed connect unavailable: " + probe.stdout.strip())
@@ -130,5 +145,6 @@ def test_live_jail_codex_fixture_provider(tmp_path, monkeypatch, codex_profile, 
         outputs = json.dumps(upstream.tool_outputs)
         if case == "nested_namespace":
             assert "NESTED_REFUSED" in outputs and "NESTED_CREATED" not in outputs
+            assert "Operation not permitted" in outputs
         else:
             assert sentinel in outputs

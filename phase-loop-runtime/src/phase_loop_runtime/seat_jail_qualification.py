@@ -433,32 +433,36 @@ def _run_probe_in_jail(leg, base: Path, config: dict, provider: Path | None, mut
         shape = {"egress_ca": certificate,
                  "egress_proxy": "http://srt:qualification@127.0.0.1:3128",
                  "dependency": dependency}
-    with seat_uid.lease_seat_id(seat_uid.seat_id_count(uids, gids)) as n, \
-            sandbox_egress.isolated_network(timeout_s=900, required=True, seat_uid_map=True) as egress:
-        token = pi._EGRESS_LAUNCH_PREFIX.set(tuple(egress))
-        holder = seat_uid.holder_pid_from_prefix(egress)
-        jail = seat_jail.build_seat_jail(
-            leg, seat_dir, provider or Path("/usr/bin/python3"), tree=tree,
-            bundle_memfd=seat_jail.memfd_with("b", b"B"),
-            instructions_memfd=seat_jail.memfd_with("i", b"I"),
-            token_fd=seat_jail.token_pipe(b"QUALIFY-SENTINEL") if leg == "claude" else None,
-            seat_ids=(n, n), **shape)
-        try:
-            if mutate is not None:
-                mutate(jail)
-            else:
-                # The probe runs in the canonical jail and nowhere else.
-                pi._require_canonical_jail(jail)
-            prefix = pi._compose_seat_jail_prefix(jail)
-            done = subprocess.run(
-                [*prefix, "/usr/bin/python3", "-I", "-c", _PROBE_SOURCE, json.dumps(config)],
-                capture_output=True, text=True, timeout=600, pass_fds=jail.pass_fds,
-                env=pi._jail_launch_env(), stdin=subprocess.DEVNULL)
-        finally:
-            seat_jail.close_jail_fds(jail)
-            for parent in (review, seat_dir):
-                seat_uid.teardown_in_h(holder, str(parent))
-            pi._EGRESS_LAUNCH_PREFIX.reset(token)
+    try:
+        with seat_uid.lease_seat_id(seat_uid.seat_id_count(uids, gids)) as n, \
+                sandbox_egress.isolated_network(timeout_s=900, required=True, seat_uid_map=True) as egress:
+            token = pi._EGRESS_LAUNCH_PREFIX.set(tuple(egress))
+            holder = seat_uid.holder_pid_from_prefix(egress)
+            jail = seat_jail.build_seat_jail(
+                leg, seat_dir, provider or Path("/usr/bin/python3"), tree=tree,
+                bundle_memfd=seat_jail.memfd_with("b", b"B"),
+                instructions_memfd=seat_jail.memfd_with("i", b"I"),
+                token_fd=seat_jail.token_pipe(b"QUALIFY-SENTINEL") if leg == "claude" else None,
+                seat_ids=(n, n), **shape)
+            try:
+                if mutate is not None:
+                    mutate(jail)
+                else:
+                    # The probe runs in the canonical jail and nowhere else.
+                    pi._require_canonical_jail(jail)
+                prefix = pi._compose_seat_jail_prefix(jail)
+                done = subprocess.run(
+                    [*prefix, "/usr/bin/python3", "-I", "-c", _PROBE_SOURCE, json.dumps(config)],
+                    capture_output=True, text=True, timeout=600, pass_fds=jail.pass_fds,
+                    env=pi._jail_launch_env(), stdin=subprocess.DEVNULL)
+            finally:
+                seat_jail.close_jail_fds(jail)
+                for parent in (review, seat_dir):
+                    seat_uid.teardown_in_h(holder, str(parent))
+                pi._EGRESS_LAUNCH_PREFIX.reset(token)
+    finally:
+        if dependency is not None and getattr(dependency, "_jailcore_owned", False):
+            dependency.close()
     if done.returncode != 0:
         raise QualificationError(f"probe failed to run: {done.stderr[-400:]}")
     return json.loads(done.stdout.strip().splitlines()[-1])

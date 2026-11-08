@@ -16919,6 +16919,7 @@ def _default_spawn(
                         return claude_status, claude_text
                     if leg == "codex" and jailed:
                         codex_sink: list[_LegFailure] = []
+                        seat = None
                         try:
                             seat = _prepare_jailed_codex(
                                 review_dir, base / "seat", review_authorization, seat_id,
@@ -16937,6 +16938,8 @@ def _default_spawn(
                             codex_sink.append(_LegFailure(template=exc.code))
                             codex_status, codex_text = "DEGRADED", ""
                             seat_notices.extend(exc.also)
+                        if seat is not None:
+                            seat_notices.extend(seat.notices)
                         if codex_status != "OK" and codex_sink:
                             leg_detail = codex_sink[-1]
                             seat_notices.append(leg_detail.template)

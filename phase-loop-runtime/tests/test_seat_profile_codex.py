@@ -78,23 +78,39 @@ def test_admission_preconditions_and_shape(monkeypatch, execute):
     assert (verdict.code == "codex_seat_cli_shape" if execute else verdict.reason == "launch_measurement")
 
 
-@pytest.mark.parametrize("mutation", [None, "missing", "subject", "resources"])
+@pytest.mark.parametrize("mutation", [None, "missing", "subject", "resources", "extra"])
 def test_projected_runtime_is_the_declared_file_set(mutation):
     from types import SimpleNamespace
     from phase_loop_runtime.executable_dependency import ExecutableDependencyError
-    from phase_loop_runtime.seat_codex_runtime import CODEX_RUNTIME_DESTINATIONS
+    from phase_loop_runtime.seat_codex_runtime import CODEX_RUNTIME_DESTINATIONS, CODEX_RUNTIME_ROOT
     paths = list(CODEX_RUNTIME_DESTINATIONS)
     if mutation == "missing":
         paths.pop()
     if mutation == "resources":
         paths.append("/run/phase-loop-seat/codex-runtime/codex-resources/bwrap")
-    dependency = SimpleNamespace(entries=[SimpleNamespace(destination=path) for path in paths],
+    if mutation == "extra":
+        paths.append(f"{CODEX_RUNTIME_ROOT}/codex-path/extra")
+    entries = [SimpleNamespace(destination=path, kind="file") for path in paths]
+    entries.extend(SimpleNamespace(destination=path, kind="directory")
+                   for path in codex._CODEX_RUNTIME_DIRECTORIES)
+    dependency = SimpleNamespace(entries=entries,
         subject_destination="/other" if mutation == "subject" else CODEX_RUNTIME_DESTINATIONS[0])
     if mutation is None:
         codex.validate_codex_projection(dependency)
     else:
         with pytest.raises(ExecutableDependencyError, match="authority_invalid"):
             codex.validate_codex_projection(dependency)
+
+
+def test_preconditions_return_the_auth_file_code(tmp_path, monkeypatch):
+    auth = tmp_path / ".codex/auth.json"
+    auth.parent.mkdir()
+    auth.write_text("{}")
+    auth.chmod(0o644)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    for precondition in codex.CODEX_PROFILE.preconditions:
+        assert precondition.check() == "seat_sandbox_refused:token_file_unsafe"
 
 
 def _jail(tmp_path, *, dependency=False):
