@@ -10,12 +10,13 @@
     "dev0": {
       "case": {
         "outcome": "pass",
-        "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[rewritten_auth]"
+        "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[rewritten_auth]",
+        "total_seconds": 2.357
       },
       "observed_code": "codex_seat_token_refreshed_in_jail",
       "receipt": "dev0-vl.xml",
       "refresh_detection_proven": true,
-      "sha256": "67fa930af98552f98de9032449da2cb2837076557d0c0334161df2fdd992d085"
+      "sha256": "52f7b132f3ae3d88abf57566d166a689d4d72fff6f1c088780a1db8d0b1a902e"
     }
   },
   "mutation": "scripted tool changes only the synthetic seat copy refresh_token",
@@ -26,11 +27,11 @@
   "real_login_reads": 0,
   "real_login_renewals": 0,
   "rebase_base": "c4a9abc8828d4fb22dcda0970ce2f734fa90c71a",
-  "recorded_at": "2026-11-08T06:27:11+00:00",
+  "recorded_at": "2026-11-08T08:39:24+00:00",
   "redaction_posture": "metadata_only",
   "schema": "phase_loop_codex_refresh_detection.v1",
   "status": "blocked",
   "status_reason": "Passed on dev0; designated-host ai validation remains deferred",
   "task": "SL-3.6",
-  "validation_head": "e9b17c242267339ee70367c84f6536c6bc9aec80"
+  "validation_head": "c5902488c465058435bd0903f807db18b993bce6"
 }

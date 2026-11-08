@@ -1,5 +1,206 @@
 {
   "auth_source": "synthetic fixture only",
+  "ci_timing_investigation": {
+    "attribution_limit": "Percentage-only parallel logs cannot identify the cancelled job's exact slow tests. The full 50+ minute increase is not attributed or claimed resolved by the local timings.",
+    "ci_live_opt_in": "PHASE_LOOP_REQUIRE_LIVE_JAIL was not set in the job",
+    "ci_per_test_timings_available": false,
+    "ci_result": "cancelled at the 100-minute job timeout; progress reached 91%; no F/E observed; no final JUnit",
+    "ci_scheduler": "loadfile",
+    "ci_workers": 4,
+    "dev0_serial_timings": {
+      "after": {
+        "counts": {
+          "fail": 0,
+          "pass": 161,
+          "skip": 5
+        },
+        "elapsed_seconds": 4.95,
+        "top_calls": [
+          {
+            "phase": "call",
+            "seconds": 0.55,
+            "test": "tests/test_seat_codex_leg.py::test_default_spawn_holds_route_lease_through_codex_leg[unknown-codex_seat_unknown_event]"
+          },
+          {
+            "phase": "call",
+            "seconds": 0.55,
+            "test": "tests/test_seat_codex_leg.py::test_default_spawn_holds_route_lease_through_codex_leg[refresh-codex_seat_token_refreshed_in_jail]"
+          },
+          {
+            "phase": "call",
+            "seconds": 0.54,
+            "test": "tests/test_seat_codex_leg.py::test_default_spawn_holds_route_lease_through_codex_leg[failed_commands-codex_seat_tools_unavailable]"
+          },
+          {
+            "phase": "call",
+            "seconds": 0.54,
+            "test": "tests/test_seat_codex_leg.py::test_real_liveness_output_and_post_launch_order[failed_commands-codex_seat_tools_unavailable]"
+          },
+          {
+            "phase": "call",
+            "seconds": 0.53,
+            "test": "tests/test_seat_codex_leg.py::test_real_liveness_output_and_post_launch_order[expired_no_command-codex_seat_token_expiring]"
+          },
+          {
+            "phase": "call",
+            "seconds": 0.53,
+            "test": "tests/test_seat_codex_leg.py::test_real_liveness_output_and_post_launch_order[unknown-codex_seat_unknown_event]"
+          },
+          {
+            "phase": "call",
+            "seconds": 0.12,
+            "test": "tests/test_seat_codex_leg.py::test_default_spawn_holds_route_lease_through_codex_leg[success-None]"
+          },
+          {
+            "phase": "call",
+            "seconds": 0.11,
+            "test": "tests/test_seat_jail_qualification_entry.py::test_codex_qualification_records_a_v2_pass"
+          },
+          {
+            "phase": "call",
+            "seconds": 0.1,
+            "test": "tests/test_seat_codex_leg.py::test_real_liveness_output_and_post_launch_order[proxy-codex_seat_token_in_output]"
+          },
+          {
+            "phase": "call",
+            "seconds": 0.09,
+            "test": "tests/test_seat_codex_leg.py::test_default_spawn_holds_route_lease_through_codex_leg[secret-codex_seat_token_in_output]"
+          }
+        ]
+      },
+      "before": {
+        "counts": {
+          "fail": 0,
+          "pass": 158,
+          "skip": 5
+        },
+        "elapsed_seconds": 10.53,
+        "top_calls": [
+          {
+            "phase": "call",
+            "seconds": 4.49,
+            "test": "tests/test_seat_codex_leg.py::test_default_spawn_holds_route_lease_through_codex_leg[success-None]"
+          },
+          {
+            "phase": "call",
+            "seconds": 0.78,
+            "test": "tests/test_seat_codex_leg.py::test_default_spawn_holds_route_lease_through_codex_leg[expired_no_command-codex_seat_token_expiring]"
+          },
+          {
+            "phase": "call",
+            "seconds": 0.53,
+            "test": "tests/test_seat_codex_leg.py::test_real_liveness_output_and_post_launch_order[output-codex_seat_token_in_output]"
+          },
+          {
+            "phase": "call",
+            "seconds": 0.53,
+            "test": "tests/test_seat_codex_leg.py::test_real_liveness_output_and_post_launch_order[failed_commands-codex_seat_tools_unavailable]"
+          },
+          {
+            "phase": "call",
+            "seconds": 0.52,
+            "test": "tests/test_seat_codex_leg.py::test_real_liveness_output_and_post_launch_order[expired_no_command-codex_seat_token_expiring]"
+          },
+          {
+            "phase": "call",
+            "seconds": 0.36,
+            "test": "tests/test_seat_codex_leg.py::test_default_spawn_holds_route_lease_through_codex_leg[zero_commands-codex_seat_tools_unavailable]"
+          },
+          {
+            "phase": "call",
+            "seconds": 0.3,
+            "test": "tests/test_seat_codex_leg.py::test_default_spawn_holds_route_lease_through_codex_leg[expired-codex_seat_token_expiring]"
+          },
+          {
+            "phase": "call",
+            "seconds": 0.28,
+            "test": "tests/test_seat_codex_leg.py::test_default_spawn_holds_route_lease_through_codex_leg[failed_commands-codex_seat_tools_unavailable]"
+          },
+          {
+            "phase": "call",
+            "seconds": 0.28,
+            "test": "tests/test_seat_codex_leg.py::test_default_spawn_holds_route_lease_through_codex_leg[refresh-codex_seat_token_refreshed_in_jail]"
+          },
+          {
+            "phase": "call",
+            "seconds": 0.27,
+            "test": "tests/test_seat_codex_leg.py::test_default_spawn_holds_route_lease_through_codex_leg[unknown-codex_seat_unknown_event]"
+          }
+        ]
+      },
+      "comparison_limit": "Single before/after runs; not a controlled speedup benchmark.",
+      "opt_out_sentinel": {
+        "after": "5 skipped in 0.10 seconds; no readiness call",
+        "before": "5 setup errors"
+      },
+      "required_live": {
+        "call_durations": [
+          {
+            "phase": "call",
+            "seconds": 5.18,
+            "test": "tests/test_seat_egress_allowlist_codex.py::test_live_jail_codex_refused_rows_from_a_jailed_tool_command"
+          },
+          {
+            "phase": "call",
+            "seconds": 2.44,
+            "test": "tests/test_seat_codex_provider_free.py::test_live_jail_codex_fixture_provider[sentinel]"
+          },
+          {
+            "phase": "call",
+            "seconds": 2.42,
+            "test": "tests/test_seat_codex_provider_free.py::test_live_jail_codex_fixture_provider[nested_namespace]"
+          },
+          {
+            "phase": "call",
+            "seconds": 2.11,
+            "test": "tests/test_seat_codex_provider_free.py::test_live_jail_codex_fixture_provider[rewritten_auth]"
+          },
+          {
+            "phase": "call",
+            "seconds": 2.11,
+            "test": "tests/test_seat_codex_provider_free.py::test_live_jail_codex_fixture_provider[workspace_write]"
+          },
+          {
+            "phase": "call",
+            "seconds": 2.06,
+            "test": "tests/test_seat_codex_provider_free.py::test_live_jail_codex_fixture_provider[planted_markers]"
+          }
+        ],
+        "counts": {
+          "fail": 0,
+          "pass": 6,
+          "skip": 0
+        },
+        "elapsed_seconds": 18.0
+      }
+    },
+    "failed_head": "35e8db1dd9d74bf21c6661b62315dc390bc57776",
+    "failed_job": 128651689721,
+    "failed_job_url": "https://github.com/Consiliency/agent-harness/actions/runs/42454851767/job/128651689721",
+    "failed_run": 42454851767,
+    "findings": [
+      "Five live cases requested codex_front before their body-level opt-in check; the fixture could run Node/srt integrity and CA readiness before skipping (Node has a 30-second bound; CA generation has a 120-second bound).",
+      "A fail-on-proxy-readiness sentinel reproduced five setup errors while live tests were opted out; after the fix all five skip without reaching readiness.",
+      "Eight synthetic route-lease dispatch cases ran global host scratch GC. A narrowed profile observed 25,935 sandbox-discovery calls; GC accounted for 0.56 seconds of the warmed profiled call. The first unprofiled call took 4.49 seconds."
+    ],
+    "fixes": [
+      "Check the live opt-in and required host prerequisites in a wrapper fixture before dynamically resolving the proxy fixture.",
+      "Keep explicit required-live runs failing when prerequisites are missing; regression tests cover unset/zero opt-in and missing prerequisites.",
+      "Stub unrelated global scratch GC only in the synthetic dispatch unit test; preserve its actual dispatch, lease and post-launch assertions."
+    ],
+    "job_timeout_changed": false,
+    "receipt_sha256": {
+      "ci-job.log": "ba77a030ff740d8aed3bc86cfcc1a3f1c48ed95a43775409591bb1ed6976ee34",
+      "dev0-vl.xml": "52f7b132f3ae3d88abf57566d166a689d4d72fff6f1c088780a1db8d0b1a902e",
+      "opt-out-after.log": "e991386902f22ace45c7b8cd5a497301621b7e86e9c89626a72ed466b227472d",
+      "opt-out-before.log": "8dad4ad701d84f78cd9b36e7edfc2ddb150ebb42162485ce74b08fe31ecba27e",
+      "spawn.prof": "7b642dfb10dcdecd32bf9437d3c8cec2aa2407d8f0c56d911a5c7930c29ac2c3",
+      "timings-after.xml": "bc09424ad58c7b5f649b0aab879a776bece16513a3c516fc27348d04bbf8fd78",
+      "timings-before.xml": "5af2ccde36a3577b2497aa4d18f4fa105e05f337f9d8990b40a603a1f6c2ab36"
+    },
+    "remaining_validation": "Hosted CI must confirm the full-suite result; ai remains deferred and OD-4 remains on hold",
+    "runtime_and_workflow_changes": false
+  },
   "digests": {
     "baseline_origin_main": {
       "claude": "5ccd7e8669f41716754787d8bde9bb6a64450774e2c5bf9b8862d7e0acaa2b00",
@@ -176,27 +377,33 @@
         "cases": [
           {
             "outcome": "pass",
-            "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[sentinel]"
+            "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[sentinel]",
+            "total_seconds": 2.759
           },
           {
             "outcome": "pass",
-            "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[planted_markers]"
+            "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[planted_markers]",
+            "total_seconds": 2.39
           },
           {
             "outcome": "pass",
-            "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[rewritten_auth]"
+            "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[rewritten_auth]",
+            "total_seconds": 2.357
           },
           {
             "outcome": "pass",
-            "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[nested_namespace]"
+            "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[nested_namespace]",
+            "total_seconds": 2.648
           },
           {
             "outcome": "pass",
-            "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[workspace_write]"
+            "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[workspace_write]",
+            "total_seconds": 2.54
           },
           {
             "outcome": "pass",
-            "test": "tests.test_seat_egress_allowlist_codex::test_live_jail_codex_refused_rows_from_a_jailed_tool_command"
+            "test": "tests.test_seat_egress_allowlist_codex::test_live_jail_codex_refused_rows_from_a_jailed_tool_command",
+            "total_seconds": 5.176
           }
         ],
         "counts": {
@@ -205,7 +412,7 @@
           "skip": 0
         },
         "receipt": "dev0-vl.xml",
-        "sha256": "67fa930af98552f98de9032449da2cb2837076557d0c0334161df2fdd992d085"
+        "sha256": "52f7b132f3ae3d88abf57566d166a689d4d72fff6f1c088780a1db8d0b1a902e"
       }
     }
   },
@@ -217,7 +424,7 @@
   "real_login_reads": 0,
   "real_login_renewals": 0,
   "rebase_base": "c4a9abc8828d4fb22dcda0970ce2f734fa90c71a",
-  "recorded_at": "2026-11-08T06:27:11+00:00",
+  "recorded_at": "2026-11-08T08:39:24+00:00",
   "redaction_posture": "metadata_only",
   "required_next_step": "Obtain designated-host ai VL and qualification only after pressure recovers; keep production unregistered and remain at the OD-4 hold",
   "schema": "phase_loop_codex_provider_free.v1",
@@ -234,5 +441,5 @@
     "umask": "077",
     "xdist": false
   },
-  "validation_head": "e9b17c242267339ee70367c84f6536c6bc9aec80"
+  "validation_head": "c5902488c465058435bd0903f807db18b993bce6"
 }
