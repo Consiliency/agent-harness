@@ -6,6 +6,41 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+## [0.7.29] - Unreleased candidate
+
+### Release preparation (agent-harness#1779)
+
+- 0.7.29 is the next release after 0.7.27 and supersedes 0.7.28. The `v0.7.28` tag
+  marks a source candidate that was never merged to `main` or published to PyPI, so
+  no `0.7.28` package exists; downstream consumers move from 0.7.27 straight to 0.7.29.
+- This preparation updates release metadata only. The entries below are the complete
+  change record on `main` since v0.7.27. In summary:
+  - SEATS sandbox work (agent-harness#1820): jailed Claude and Gemini seat profiles,
+    the closed local/remote/native/degraded review-seat resolver, keyed host
+    qualification, per-seat resource caps, TEAMHOST managed-release admission and
+    doctor agreement, the Codex seat vocabulary, and the seat-window qualification kit.
+  - The built-in release-qualified agy catalog retains only 1.3.5; older hosts
+    self-qualify only inside the upstream recency window.
+  - Executable dependency admission (agent-harness#1774), supervised-worker contract
+    intake (agent-harness#1818), OpenShell placement contract and coordinator v1
+    (agent-harness#1795), and placement driver bounds (agent-harness#1504).
+  - Typed review composition outcomes (agent-harness#1729), president attempt
+    lifecycle records (agent-harness#1822), run output retention, offline
+    repository-map mode, diagnostic planning skill evaluation (agent-harness#1321),
+    and the execute-phase skills brought under the size limit (agent-harness#1358).
+- Release builds are byte-reproducible: `publish-pypi.yml` sets `SOURCE_DATE_EPOCH`
+  from the built commit's committer time, builds under `umask 022`, and rewrites the
+  sdist's member times, owners and gzip header from that epoch, since setuptools
+  stamps them from the checkout and the wall clock.
+- The agy live qualification record is regenerated on the exact release-cut commit,
+  because the release-only qualification source-pin check covers every package
+  source file, including `__version__`.
+- FABPUB exact pull-request reconciliation preserves the legacy `RECORD` hash
+  literal with its narrow scanner allowlist, completing the runtime side required
+  by dotfiles settlement (agent-harness#1849; PR agent-harness#1876).
+- Tagging, publication, deployment, installation and release-workflow dispatch are
+  outside this preparation.
+
 - The built-in release-qualified agy catalog now retains only 1.3.5. A host on an older
   release self-qualifies it only while it is among the newest four stable upstream releases
   (`agy_provenance.RECENCY_WINDOW`). Today that excludes every retired release, so such a

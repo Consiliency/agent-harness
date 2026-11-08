@@ -5,7 +5,36 @@ outside-agent conformance runtime. It is metadata-only: the document itself did
 not publish a package, create a tag, dispatch a workflow, edit governed-pipeline,
 or make production merge enforcement live.
 
-## Package Identity
+## 0.7.29 source preparation
+
+- Source base: `origin/main` after agent-harness#1901 (the agy 1.3.5 catalog)
+- Package: `phase-loop-runtime`
+- Version: `0.7.29`
+- Runtime `phase_loop_runtime.__version__`: `0.7.29`
+- Candidate release pin: `v0.7.29`
+- Unpublished wheel: `phase_loop_runtime-0.7.29-py3-none-any.whl`
+- Unpublished source archive: `phase_loop_runtime-0.7.29.tar.gz`
+- Supersedes: `0.7.28`. The `v0.7.28` tag marks an earlier source candidate that was
+  never merged to `main` or published to PyPI; no `0.7.28` package exists.
+
+This is source preparation tracked by agent-harness#1779. The candidate artifacts
+are local outputs only; no tag, publication, deployment, installation or release
+workflow dispatch is claimed. Release acceptance and publication authorization
+remain separate from these package checks.
+
+The release-only qualification source-pin check covers every package source file,
+including `__version__`, so the agy live qualification record
+(`plans/evidence/agy-1.3.5-linux-x64-qualification.json`) is regenerated on the
+exact release-cut commit and added on top of it as a non-source commit.
+
+`publish-pypi.yml` builds with `SOURCE_DATE_EPOCH` set to the built commit's
+committer time and `umask 022`, then rewrites the source archive's member times
+(clamped to that epoch), owners and gzip header, because setuptools stamps them
+from the checkout and the wall clock. Two fresh checkouts of one commit then produce
+a byte-identical wheel and source archive. Reproduce locally by running that
+workflow step's commands from a `umask 022` checkout.
+
+## Historical published package identity — 0.7.27
 
 - Package: `phase-loop-runtime`
 - Version: `0.7.27`
