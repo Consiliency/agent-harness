@@ -434,6 +434,21 @@ def test_v7_will_not_derive_when_another_form_could_shadow_the_jail_source(repo,
     assert bk.tui_digests_at(repo, _head(repo)) == frozenset()
 
 
+@pytest.mark.parametrize("name", [
+    "seat_profile_codex.py", "seat_codex_cli_shape.py", "seat_admission.py",
+    "seat_subject.py", "executable_dependency.py", "executable_dependency_startup.py",
+])
+def test_v7_pins_each_source_loaded_by_codex_registration(repo, tmp_path, name):
+    _head_before, marker = _runtime_head(repo, tmp_path)
+    source = repo / RUNTIME / name
+    source.write_bytes(source.read_bytes() + b"\n# changed at the recorded head\n")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "commit.gpgsign=false", "commit", "-qm", "changed dependency")
+    _publish(repo)
+    assert bk.tui_digests_at(repo, _head(repo)) == frozenset()
+    assert not marker.exists(), "derivation must never execute the recorded head"
+
+
 def test_the_jail_digest_reads_only_the_declared_sources():
     """Computing the TUI digest loads, of this package, only its ``__init__`` and
     JAIL_PROFILE_SOURCES; a new dependency must be declared there."""

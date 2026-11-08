@@ -53,32 +53,14 @@ def _sandbox(tmp_path: Path) -> Path:
 
 # --- codex ----------------------------------------------------------------------
 
-def test_brokered_codex_works_in_the_sandbox_when_one_is_authorized(tmp_path):
+def test_staged_tree_does_not_enable_the_legacy_codex_route(tmp_path):
     tree = _sandbox(tmp_path)
-    cmd = panel_invoker._brokered_codex_command(
-        model=None, out_dir=tmp_path / "out", out_file=tmp_path / "out" / "x.txt",
-        codex_effort_args=(), staged_tree=tree,
-    )
-    # The seat lands IN the code, not in an empty output folder.
-    assert cmd[cmd.index("--cd") + 1] == str(tree)
-    # It can run things: that is the entire point. codex runs commands through the
-    # code-mode host, so enabling the bare shell alone is not enough ("code-mode host
-    # is disabled" on every sandboxed seat before this was lifted too).
-    assert "shell_tool" not in _disabled_features(cmd)
-    assert "code_mode_host" not in _disabled_features(cmd)
-    # Everything else stays disabled: exactly this literal pair is lifted, so widening
-    # the constant later fails here rather than passing by construction.
-    assert set(panel_invoker._BROKER_CODEX_DISABLED_FEATURES) - set(_disabled_features(cmd)) == {
-        "shell_tool", "code_mode_host",
-    }
-    # /tmp and $TMPDIR are NOT writable: the round's scratch dir (every seat's verdict
-    # file) lives under /tmp, and workspace-write leaves both writable by default.
-    for setting in ("sandbox_workspace_write.exclude_slash_tmp=true",
-                    "sandbox_workspace_write.exclude_tmpdir_env_var=true"):
-        assert setting in cmd and cmd[cmd.index(setting) - 1] == "-c", setting
-    assert cmd[cmd.index("--sandbox") + 1] != "read-only", (
-        "a read-only sandbox cannot host a test run"
-    )
+    kwargs = dict(model=None, out_dir=tmp_path / "out", out_file=tmp_path / "out/x", codex_effort_args=())
+    plain = panel_invoker._brokered_codex_command(**kwargs)
+    staged = panel_invoker._brokered_codex_command(**kwargs, staged_tree=tree)
+    assert staged == plain
+    assert staged[staged.index("--sandbox") + 1] == "read-only"
+    assert {"shell_tool", "code_mode_host"} <= _disabled_features(staged)
 
 
 def test_brokered_codex_is_byte_identical_when_no_tree_is_authorized(tmp_path):
@@ -268,7 +250,7 @@ def test_the_real_spawn_path_hands_a_seat_a_working_sandbox(tmp_path, monkeypatc
     assert tree is not None, "the real spawn path must produce a sandbox"
 
     # The seat is pointed at it, by both vendors and by the prompt.
-    assert seen["codex_argv"][seen["codex_argv"].index("--cd") + 1] == str(tree)
+    assert str(tree) not in seen["codex_argv"]
     assert str(tree) in seen["gemini_argv"]
     assert str(tree) in seen["prompt"]
 
@@ -303,7 +285,7 @@ def test_every_seat_is_pointed_at_the_sandbox(tmp_path):
         model=None, out_dir=tmp_path / "o", out_file=tmp_path / "o" / "x",
         codex_effort_args=(), staged_tree=tree,
     )
-    assert codex[codex.index("--cd") + 1] == str(tree)
+    assert str(tree) not in codex  # the review route uses jailed_codex_command instead
 
     gemini = panel_invoker._brokered_gemini_command(
         model="m", deadline_s=1.0, staged_tree=tree,
@@ -423,12 +405,9 @@ def test_the_evidence_records_the_controls_actually_in_force(tmp_path):
     codex_plain = panel_invoker._broker_tool_controls("codex", None)
     codex_boxed = panel_invoker._broker_tool_controls("codex", tree)
     assert "read-only" in codex_plain and "shell_tool" in codex_plain
-    assert "read-only" not in codex_boxed, "it is workspace-write with a sandbox"
-    assert "shell_tool" not in codex_boxed, "the shell is enabled with a sandbox"
+    assert codex_boxed == codex_plain
     assert "code_mode_host" in codex_plain
-    assert "code_mode_host" not in codex_boxed, "command execution is enabled with a sandbox"
-    assert "tmp-not-writable" in codex_boxed, "the /tmp exclusion is a control in force"
-    assert "tmp-not-writable" not in codex_plain, "read-only needs no /tmp exclusion"
+    assert "tmp-not-writable" not in codex_plain
 
     grok_plain = panel_invoker._broker_tool_controls("grok", None)
     grok_boxed = panel_invoker._broker_tool_controls("grok", tree)
@@ -618,14 +597,9 @@ def test_the_opt_out_lets_that_same_host_proceed(tmp_path, monkeypatch):
     assert launched == ["leg"], "the opt-out must let an unfilterable host still review"
 
 
-def test_only_a_sandboxed_codex_seat_keeps_setfcap_at_launch(tmp_path, monkeypatch):
+def test_no_legacy_seat_keeps_capabilities_at_launch(tmp_path, monkeypatch):
     monkeypatch.setattr(panel_invoker, "grok_tool_gate", lambda *a: True)
-    """agent-harness#1003: the retained capability is scoped to the ONE seat that needs it.
-
-    A sandboxed codex seat runs commands in codex's own bubblewrap, which needs CAP_SETFCAP
-    to start inside the egress namespace. The sealed codex seat and every other seat keep
-    an empty bounding set.
-    """
+    # OD-4 removes the former nested-sandbox capability retention.
     seen: list[tuple[str, tuple[str, ...]]] = []
 
     def fake_liveness(cmd, **kwargs):
@@ -646,7 +620,7 @@ def test_only_a_sandboxed_codex_seat_keeps_setfcap_at_launch(tmp_path, monkeypat
 
     # Distinct launches, in order: the leg may retry a soft-empty attempt, and every
     # attempt must carry the same decision, so dedupe rather than pin the retry count.
-    assert list(dict.fromkeys(seen)) == [("codex", ("setfcap",)), ("codex", ()), ("grok", ())], seen
-    assert panel_invoker._BROKER_CODEX_SANDBOX_RETAINED_CAPS == ("setfcap",)
-    assert "bounding-set-setfcap-only" in panel_invoker._broker_tool_controls("codex", tree)
+    assert list(dict.fromkeys(seen)) == [("codex", ()), ("grok", ())], seen
+    assert not hasattr(panel_invoker, "_BROKER_CODEX_SANDBOX_RETAINED_CAPS")
+    assert "bounding-set-setfcap-only" not in panel_invoker._broker_tool_controls("codex", tree)
     assert "bounding-set-setfcap-only" not in panel_invoker._broker_tool_controls("codex", None)

@@ -200,8 +200,9 @@ def test_local_equivalence_matches_the_base_golden(tmp_path_factory, monkeypatch
     """With no root configured, placement is byte-for-byte today's: the same steps in the
     same order (egress exit included), the same provider argv and the same attested cwd.
 
-    The golden was captured on the base this change starts from, before any code moved
-    (`PHASE_LOOP_896_CAPTURE_GOLDEN=1`). Mutations that go red: `mark_as_sandbox` before
+    The placement facts were captured before the seam moved. SL-3 updates only the
+    Codex argv to its sealed advisory command; the placement sequence and Claude entry
+    remain unchanged. Mutations that go red: `mark_as_sandbox` before
     the rename; the local tree reported at its pre-rename path; release before egress exit.
     """
     record = _equivalence_record(tmp_path_factory, monkeypatch)
@@ -276,6 +277,10 @@ class _Counters:
 def _setup_branch(monkeypatch, branch: str, launches: list[str]) -> None:
     """Route a leg to ``branch``; record every launch the branch reaches."""
     if branch == "brokered":
+        # This control measures shared placement, not the registered Codex jail's
+        # earlier admission refusal. Keep the production broker and adapters live.
+        from .brokered_codex_control import use_unregistered_codex_broker
+        use_unregistered_codex_broker(monkeypatch)
         # The production path. The fixture authorization is not a live HARDEN lease, so the
         # lease checks are replaced; nothing below them is.
         monkeypatch.setattr(
@@ -1248,6 +1253,8 @@ def test_a_brokered_success_records_the_spawn_it_made(tmp_path, monkeypatch):
     """The brokered record is refreshed when it is serialized: a spawn after the pre-launch
     snapshot is in it, and the result carries the placement. Mutations: drop the refresh;
     pass no placement on the brokered success return."""
+    from .brokered_codex_control import use_unregistered_codex_broker
+    use_unregistered_codex_broker(monkeypatch)
     _env(monkeypatch, tmp_path)
     repo = _repo(tmp_path)
     _egress(monkeypatch)
