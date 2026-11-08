@@ -15002,6 +15002,43 @@
       "status": "committed",
       "type": "phase",
       "updated_at": "2026-11-07T02:24:52Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-11-08T14:59:50Z",
+      "file": "plans/phase-plan-v12-JOURNAL.md",
+      "frozen_inputs": {
+        "plans/artifacts/v12-JOURNAL-interface.md": {
+          "sha256": "2c9b07ab1ef62a93303b3dabee9c3a131f326ca2d8b74d67fcf7764437ec966e"
+        }
+      },
+      "gate_status": "declared_not_produced",
+      "handoff_ref": ".dev-skills/handoffs/claude-plan-phase/20261108T150500Z-v12-JOURNAL-plan.md",
+      "if_gates_produced": [
+        "IF-0-JOURNAL-1"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2"
+      ],
+      "lifecycle": [],
+      "owner_skill": "claude-plan-phase",
+      "phase_alias": "JOURNAL",
+      "planning_artifact_only": true,
+      "reflection_ref": "/home/viperjuice/.codex/skills/claude-plan-phase/reflections/775c69fe44ee/t3-v12-plan-journal/20261108T150500Z-v12-JOURNAL-plan.md",
+      "review_status": "pending",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v12.md",
+        "slug": "phase-plans-v12",
+        "status": "committed",
+        "type": "phase"
+      },
+      "slug": "v12-JOURNAL",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-11-08T17:30:00Z"
     }
   ],
   "schema_version": 1
