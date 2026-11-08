@@ -14,6 +14,46 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   Jailed Codex notices reflect its confinement, canonical `max` maps to `xhigh`,
   admission measures the prepared binary, and manual qualification binds the launch projection.
 
+## [0.7.30] - Unreleased candidate
+
+### Release preparation
+
+- 0.7.30 is the next release after 0.7.29, which was published to PyPI on 2026-11-08.
+  The entries below are the complete change record on `main` since v0.7.29. In
+  summary: the jailed Codex seat's runtime file set, credential copy, egress allowlist
+  and CLI shape check (SEATS CODEX SL-1 and SL-2, agent-harness#1911,
+  agent-harness#1914); jailed-seat egress fixes (agent-harness#1917, agent-harness#1922);
+  TEAMHOST documentation closeout (agent-harness#1904); and roadmap repins
+  (agent-harness#1918, agent-harness#1919). agent-harness#1920 (release Gate A on
+  ubuntu-24.04) merged after the v0.7.29 tag but shipped in 0.7.29, whose tag is its head.
+- **TypeScript publication parser pin moves to `tree-sitter==0.26.0`** (from 0.25.2).
+  `tree-sitter-typescript` stays `==0.23.2`, and both pins stay exact, because
+  publication source classification must be deterministic (agent-harness#1765). This
+  lets the runtime share one lock with tools that need `tree_sitter>=0.26,<0.27`, such as
+  treesitter-chunker 6.0.0. TypeScript publication evidence now records
+  `tree_sitter_version: "0.26.0"`. Resume rederives that evidence and requires an exact
+  match, so a TypeScript source-exception publication frozen under 0.7.29 and not yet
+  finished refuses to resume under 0.7.30 (fail closed); restart it.
+- **The release-qualified agy moves from 1.3.5 to 1.5.3** (google-antigravity/antigravity-cli
+  1.5.3, published 2026-11-07; `agy_cli_linux_x64.tar.gz` SHA256 `1b485059…6807`, entry image
+  `7ca21274…96a3`, owned-profile help `e92946f8…40fd`). 1.5.3 is the sole built-in member;
+  1.3.5 is retired the way agent-harness#1901 retired the older members (constant, catalog
+  entry and record removed). 1.5.3's `--help` only adds `--remote-agent`, `--settings` and
+  `acp` relative to 1.3.5; every flag the heartbeat route passes is unchanged, and no adapter
+  source changed. A host still on 1.3.5 is outside the newest-four recency window, so it
+  refuses with `gemini_heartbeat_provenance_unverified` until agy is updated.
+- The agy 1.5.3 live qualification record is produced on the exact release-cut commit,
+  because the release-only qualification source-pin check covers every package source
+  file, including `__version__`.
+- Tagging, publication, deployment, installation and release-workflow dispatch are
+  outside this preparation.
+
+### Changes since v0.7.29
+
+- The Codex seat egress allowlist (`seat_egress/codex-allowlist.json`, measured on
+  codex-cli 0.167.0), its probe evidence, and `codex_cli_shape_problem`, which names any
+  jailed-argv option, sandbox value or disabled feature the installed Codex CLI lacks.
+  Nothing registers the Codex profile yet (SEATS CODEX SL-2, agent-harness#1820).
 - In a jailed seat's proxy-only network namespace, a connect to any loopback port other than
   the proxy bridge (IPv4 or `::1`) is now refused at once instead of hanging to the TCP
   timeout. The catch-all REJECT was dropping its own ICMP port-unreachable reply on `lo`;
@@ -40,7 +80,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   0.7.29 standard-host doctor receipt remains tracked for CLOSEOUT (SEATS TEAMHOST SL-6,
   agent-harness#1820).
 
-## [0.7.29] - Unreleased candidate
+## [0.7.29] - 2026-11-08
 
 ### Release Gate A runs on ubuntu-24.04; sandbox tests gated on host capability
 

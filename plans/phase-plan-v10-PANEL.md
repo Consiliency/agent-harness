@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: PANEL
 roadmap: specs/phase-plans-v10.md
-roadmap_sha256: 72403259ef767cf4835993622c04d15590dc9d5a61fcf0d51c9a2343b2939327
+roadmap_sha256: ac6416f306e3fad3a5d697c05f866942b50cb302e4bb082a5462c27d84f48dd8
 automation:
   suite_command:
     - bash
