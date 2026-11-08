@@ -28,9 +28,10 @@ remain exact (agent-harness#1765). A TypeScript source-exception publication fro
 under 0.7.29 and not yet finished refuses to resume under 0.7.30, because its
 recorded parser version no longer matches. Restart it.
 
-As for 0.7.29, the agy live qualification record
-(`plans/evidence/agy-1.3.5-linux-x64-qualification.json`) is regenerated on the exact
-release-cut commit and added on top of it as a non-source commit.
+The release-qualified agy moves from 1.3.5 to 1.5.3, the sole built-in member. Its live
+qualification record (`plans/evidence/agy-1.5.3-linux-x64-qualification.json`) is produced
+on the exact release-cut commit and added on top of it as a non-source commit, which also
+retires the 1.3.5 record.
 
 ## 0.7.29 source preparation (published 2026-11-08)
 

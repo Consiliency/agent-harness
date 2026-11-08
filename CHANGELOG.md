@@ -26,7 +26,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `tree_sitter_version: "0.26.0"`. Resume rederives that evidence and requires an exact
   match, so a TypeScript source-exception publication frozen under 0.7.29 and not yet
   finished refuses to resume under 0.7.30 (fail closed); restart it.
-- The agy live qualification record is regenerated on the exact release-cut commit,
+- **The release-qualified agy moves from 1.3.5 to 1.5.3** (google-antigravity/antigravity-cli
+  1.5.3, published 2026-11-07; `agy_cli_linux_x64.tar.gz` SHA256 `1b485059…6807`, entry image
+  `7ca21274…96a3`, owned-profile help `e92946f8…40fd`). 1.5.3 is the sole built-in member;
+  1.3.5 is retired the way agent-harness#1901 retired the older members (constant, catalog
+  entry and record removed). 1.5.3's `--help` only adds `--remote-agent`, `--settings` and
+  `acp` relative to 1.3.5; every flag the heartbeat route passes is unchanged, and no adapter
+  source changed. A host still on 1.3.5 is outside the newest-four recency window, so it
+  refuses with `gemini_heartbeat_provenance_unverified` until agy is updated.
+- The agy 1.5.3 live qualification record is produced on the exact release-cut commit,
   because the release-only qualification source-pin check covers every package source
   file, including `__version__`.
 - Tagging, publication, deployment, installation and release-workflow dispatch are

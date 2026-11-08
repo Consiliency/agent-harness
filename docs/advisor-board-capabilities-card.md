@@ -16,7 +16,7 @@ cannot drift; a `pytest` smoke (`phase-loop-runtime/tests/test_advisor_board_ali
 For the 0.7.30 candidate, the runtime requires Python 3.12+ (agent-harness#1549).
 Context-file adapter launches now carry their skills' linked `references/` files
 (agent-harness#1738; plan agent-harness#1690), and skills-parity runs the warn-first
-size gate (agent-harness#1691). The release-qualified agy catalog retains only 1.3.5,
+size gate (agent-harness#1691). The release-qualified agy catalog moves from 1.3.5 to 1.5.3 alone,
 and its live qualification is renewed on the exact 0.7.30 release-cut commit. Final
 package, compatibility, I1, CI and review checks remain release-cut gates.
 Historical runtime CLI failures and unverified panel
@@ -541,7 +541,7 @@ provider health. No reviewer is dropped or substituted by policy preflight.
 
 The Gemini extension (agent-harness#905) admits only a closed set of qualified
 `agy` Linux x64 entry images, `gemini_heartbeat.QUALIFIED_IMAGES`:
-1.3.5 (SHA256 `b5385638174a5e720e904f3a2678752534fb8414d10c2c302fa16daf56cbcfc9`).
+1.5.3 (SHA256 `7ca212748ca0dfda718efbc39a776a104472e7e9344d4b6ea147c543684f96a3`).
 A host on an older release self-qualifies it only while it is among the newest four stable
 upstream releases (`agy_provenance.RECENCY_WINDOW`). Today that excludes every retired
 release, so such a host refuses with `gemini_heartbeat_provenance_unverified` until agy is
