@@ -518,7 +518,7 @@ def test_typescript_source_evidence(tmp_path, monkeypatch, path, body, parent):
         "parent_blob_oid": _git(repo, "rev-parse", "HEAD:" + path).stdout.strip() if parent else None,
         "blob_oid": _git(repo, "rev-parse", ":" + path).stdout.strip(),
         "blob_sha256": hashlib.sha256(body.encode()).hexdigest(),
-        "tree_sitter_version": "0.25.2",
+        "tree_sitter_version": "0.26.0",
         "tree_sitter_typescript_version": "0.23.2",
         "policy": "typescript-detect-secrets-1.5.0-v1",
     }
@@ -779,7 +779,7 @@ def test_typescript_persisted_audit_tamper_refuses(tmp_path, kind, field, replac
     payload = json.loads(tx.checkpoint_path.read_text())
     original_values = {
         "parent_blob_oid": _git(repo, "rev-parse", "HEAD:src/credentials.ts").stdout.strip() if kind == "existing" else None,
-        "tree_sitter_version": "0.25.2",
+        "tree_sitter_version": "0.26.0",
         "tree_sitter_typescript_version": "0.23.2",
         "policy": "typescript-detect-secrets-1.5.0-v1",
         "blob_sha256": hashlib.sha256(_TS_MODULE.encode()).hexdigest(),

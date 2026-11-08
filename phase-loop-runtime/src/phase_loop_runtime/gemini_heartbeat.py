@@ -19,9 +19,9 @@ from .agy_canary_evidence import AgyCanaryEvidenceError, _linux_memfd_seal_abi, 
 # plans/evidence/qualified-provider-images.json; verify_qualified_agy_image.py requires this
 # literal and that catalog to name exactly the same members (agent-harness#1008).
 QUALIFIED_IMAGES = {
-    # agy 1.3.5
-    "b5385638174a5e720e904f3a2678752534fb8414d10c2c302fa16daf56cbcfc9":
-        "a12355e8fc064b330eeb25ba52de596406582752442e293083bcda6388a63b78",
+    # agy 1.5.3
+    "7ca212748ca0dfda718efbc39a776a104472e7e9344d4b6ea147c543684f96a3":
+        "e92946f85cec63eca61f93014ca49f53b1e84277eac7954e7fac7d8d712940fd",
 }
 PROFILE_ID = "agy_memfd_home_deny_all_v1"
 PRIVATE_HOME = "/dev/phase-loop-agy"

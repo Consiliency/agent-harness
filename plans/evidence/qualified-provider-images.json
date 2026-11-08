@@ -8,10 +8,10 @@
       "architecture": "x86_64",
       "images": [
         {
-          "release_version": "1.3.5",
-          "image_sha256": "b5385638174a5e720e904f3a2678752534fb8414d10c2c302fa16daf56cbcfc9",
-          "help_sha256": "a12355e8fc064b330eeb25ba52de596406582752442e293083bcda6388a63b78",
-          "record": "agy-1.3.5-linux-x64-qualification.json"
+          "release_version": "1.5.3",
+          "image_sha256": "7ca212748ca0dfda718efbc39a776a104472e7e9344d4b6ea147c543684f96a3",
+          "help_sha256": "e92946f85cec63eca61f93014ca49f53b1e84277eac7954e7fac7d8d712940fd",
+          "record": "agy-1.5.3-linux-x64-qualification.json"
         }
       ]
     }
