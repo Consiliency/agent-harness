@@ -184,6 +184,7 @@ def test_terminal_precondition_enters_no_later_rung(monkeypatch, ready_gemini):
 
 
 def test_unregistered_named_exception_expires(monkeypatch):
+    monkeypatch.delitem(seat_profiles._REGISTRY, "codex", raising=False)
     expiry = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)
     exception = NamedException("codex", "unconfined", expiry, "fixture")
     decision = seat_route.resolve(
@@ -228,6 +229,7 @@ def test_capacity_offload_ships_disabled(ready_gemini):
 
 
 def test_routed_vendor_row_skips_local_and_uses_derived_vendor(monkeypatch):
+    monkeypatch.delitem(seat_profiles._REGISTRY, "codex", raising=False)
     remote = Remote(RemoteAdmission(True, "seat_remote_rung_inactive", None))
     decision = seat_route.resolve(
         request("codex"),
@@ -370,7 +372,8 @@ def test_import_refuses_an_od10_table_outside_the_mode_line_closure(monkeypatch)
 
 
 @pytest.mark.parametrize("leg", ["codex", "grok"])
-def test_unregistered_vendor_uses_only_its_unconfined_window(leg):
+def test_unregistered_vendor_uses_only_its_unconfined_window(leg, monkeypatch):
+    monkeypatch.delitem(seat_profiles._REGISTRY, leg, raising=False)
     now = dt.datetime.now(dt.timezone.utc)
     exception = NamedException(
         leg, "unconfined", now + dt.timedelta(minutes=1), "fixture",
@@ -868,6 +871,7 @@ def test_every_typed_degraded_code_reaches_the_launch_tuple(monkeypatch, code):
 
 @pytest.mark.parametrize("leg", ["codex", "grok"])
 def test_unconfined_exception_reaches_spawn_through_the_real_resolver(monkeypatch, leg):
+    monkeypatch.delitem(seat_profiles._REGISTRY, leg, raising=False)
     exception = NamedException(
         leg, "unconfined", dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=1), "fixture",
     )
@@ -886,6 +890,7 @@ def test_unconfined_exception_reaches_spawn_through_the_real_resolver(monkeypatc
 def test_unconfined_exception_expiry_is_path_entered_with_an_injected_clock(
     monkeypatch, tmp_path, leg,
 ):
+    monkeypatch.delitem(seat_profiles._REGISTRY, leg, raising=False)
     now = dt.datetime(2026, 11, 7, tzinfo=dt.timezone.utc)
     exception = NamedException(
         leg, "unconfined", now + dt.timedelta(minutes=1), "fixture",

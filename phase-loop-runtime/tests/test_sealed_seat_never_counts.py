@@ -49,10 +49,9 @@ def test_every_sealed_route_code_is_a_refusal(code, leg):
 
 
 def test_a_seat_with_no_jail_route_and_no_staged_tree_is_a_refusal():
-    # codex and grok have no jail route (decide_seat_route answers None); without a staged
-    # tree their launch would carry only the inlined bundle.
-    assert seat_jail.decide_seat_route("codex", staged_tree_approved=False) is None
-    for leg in ("codex", "grok"):
+    # Grok still has no registered jail route. Codex is registered by SL-3 and
+    # must never take this exception (its independent control follows below).
+    for leg in ("grok",):
         route, notices, refusal = pi._seat_route_for_spawn(
             leg, _auth(False), eligible=True,
         )
@@ -62,6 +61,16 @@ def test_a_seat_with_no_jail_route_and_no_staged_tree_is_a_refusal():
         assert pi._seat_route_for_spawn(leg, _auth(True), eligible=True) == (
             None, ["seat_filesystem_unconfined"], None,
         )
+
+
+def test_registered_codex_refuses_instead_of_using_the_unconfined_exception(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "no-login"))
+    monkeypatch.setattr(seat_jail, "seat_sandbox_capable", lambda: None)
+    route, notices, refusal = pi._seat_route_for_spawn("codex", _auth(False), eligible=True)
+    assert not route.jailed and refusal == "seat_sandbox_not_staged" and notices == []
+    route, notices, refusal = pi._seat_route_for_spawn("codex", _auth(True), eligible=True)
+    assert not route.jailed and route.code == refusal == "codex_seat_credential_missing"
+    assert notices == []
 
 
 def test_the_real_route_decision_for_a_seat_with_no_staged_tree_is_a_refusal():

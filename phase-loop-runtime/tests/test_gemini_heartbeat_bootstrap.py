@@ -780,6 +780,10 @@ def test_other_routes_respect_their_required_launch_capabilities(fixture_cli, tm
     if missing == "pidfd": monkeypatch.delattr(gh.os, "pidfd_open", raising=False)
     board, policy = gemini_board(), "bounded"
     if route == "heartbeat_codex":
+        # The unrelated route control measures the common owner capabilities, not
+        # Codex's registered admission/runtime/proxy prerequisites.
+        from .brokered_codex_control import use_unregistered_codex_broker
+        use_unregistered_codex_broker(monkeypatch)
         cli = fixture_cli.path.with_name("codex")
         cli.write_text(
             "#!/usr/bin/python3\nimport sys\nfrom pathlib import Path\n"
@@ -791,6 +795,8 @@ def test_other_routes_respect_their_required_launch_capabilities(fixture_cli, tm
         auth = fixture_cli.home / ".codex/auth.json"
         auth.parent.mkdir()
         auth.write_text("{}")
+        auth.chmod(0o600)
+        monkeypatch.setenv("CODEX_HOME", str(auth.parent))
         board = replace(DEFAULT_BOARD, seats=tuple(s for s in DEFAULT_BOARD.seats if s.harness == "codex"))
         policy = "heartbeat_only"
     result = panel.invoke_board(board, "synthetic other-route control", monitoring_policy=policy,

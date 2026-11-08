@@ -1,0 +1,682 @@
+{
+  "ai_runs": 0,
+  "all_profile_digests_unchanged": true,
+  "auth_source": "synthetic fixture only",
+  "ci_compatibility": {
+    "additional_regression": {
+      "cause": "The rewritten assertion is not caused by SL-3. On this launch path the composed prefix replaces the setpriv --pdeathsig step with the bwrap owner, so PDEATHSIG reflects the host's bwrap (it read 0 on dev0 at the merge-base too). The test now asserts empty capability sets and keeps owner-loss reaping of the detached descendant as its guarantee.",
+      "classification": "expectation_update",
+      "fix": "Measure all five capability sets as empty and retain the owner-loss/detached-descendant reaping assertion.",
+      "result": "pass",
+      "test": "test_owned_launch_owner_death_reaps_detached_descendant"
+    },
+    "ai_runs": 0,
+    "baseline_head": "f378649b548973f6479c51d6c28cd652e739fd4c",
+    "classifications": [
+      {
+        "cause": "Import-time Codex registration loads six package sources outside JAIL_PROFILE_SOURCES.",
+        "classification": "source_fix",
+        "file": "phase-loop-runtime/tests/test_seats_claude_bakeoff.py",
+        "fix": "Declare the six exact sources; preserve the subset audit and add one changed-source refusal control per dependency.",
+        "test": "test_the_jail_digest_reads_only_the_declared_sources"
+      },
+      {
+        "cause": "The separate placement golden retained the retired workspace-write Codex advisory argv.",
+        "classification": "expectation_update",
+        "file": "phase-loop-runtime/tests/test_sandbox_placement.py",
+        "fix": "Update only Codex argv to sealed read-only: disable shell_tool/code_mode_host and use the output cwd. Preserve all placement facts and the Claude entry.",
+        "test": "test_local_equivalence_matches_the_base_golden"
+      },
+      {
+        "cause": "The separate placement golden retained the retired workspace-write Codex advisory argv.",
+        "classification": "expectation_update",
+        "file": "phase-loop-runtime/tests/test_sandbox_placement.py",
+        "fix": "Update only Codex argv to sealed read-only: disable shell_tool/code_mode_host and use the output cwd. Preserve all placement facts and the Claude entry.",
+        "test": "test_local_equivalence_isolates_unrelated_legacy_cleanup"
+      },
+      {
+        "cause": "Registered Codex correctly refuses during route admission before placement; this test measures the shared pre-registration broker/placement contract.",
+        "classification": "fixture_update",
+        "file": "phase-loop-runtime/tests/test_sandbox_placement.py",
+        "fix": "Use an explicit, per-test legacy registration/policy control. Keep placement receipt, fixed remote-required refusal, zero-effects, and spawn-count assertions. Add registered L5-before-placement controls with remote-required on/off.",
+        "test": "test_an_egress_failure_after_prepare_keeps_the_placement[brokered-no-monitor]"
+      },
+      {
+        "cause": "Registered Codex correctly refuses during route admission before placement; this test measures the shared pre-registration broker/placement contract.",
+        "classification": "fixture_update",
+        "file": "phase-loop-runtime/tests/test_sandbox_placement.py",
+        "fix": "Use an explicit, per-test legacy registration/policy control. Keep placement receipt, fixed remote-required refusal, zero-effects, and spawn-count assertions. Add registered L5-before-placement controls with remote-required on/off.",
+        "test": "test_an_egress_failure_after_prepare_keeps_the_placement[brokered-monitor]"
+      },
+      {
+        "cause": "Registered Codex correctly refuses during route admission before placement; this test measures the shared pre-registration broker/placement contract.",
+        "classification": "fixture_update",
+        "file": "phase-loop-runtime/tests/test_sandbox_placement.py",
+        "fix": "Use an explicit, per-test legacy registration/policy control. Keep placement receipt, fixed remote-required refusal, zero-effects, and spawn-count assertions. Add registered L5-before-placement controls with remote-required on/off.",
+        "test": "test_the_knob_refuses_every_seat_leg_this_build_cannot_place_remotely[hostpath-reachable-brokered]"
+      },
+      {
+        "cause": "Registered Codex correctly refuses during route admission before placement; this test measures the shared pre-registration broker/placement contract.",
+        "classification": "fixture_update",
+        "file": "phase-loop-runtime/tests/test_sandbox_placement.py",
+        "fix": "Use an explicit, per-test legacy registration/policy control. Keep placement receipt, fixed remote-required refusal, zero-effects, and spawn-count assertions. Add registered L5-before-placement controls with remote-required on/off.",
+        "test": "test_the_knob_refuses_every_seat_leg_this_build_cannot_place_remotely[hostpath-unreachable-brokered]"
+      },
+      {
+        "cause": "Registered Codex correctly refuses during route admission before placement; this test measures the shared pre-registration broker/placement contract.",
+        "classification": "fixture_update",
+        "file": "phase-loop-runtime/tests/test_sandbox_placement.py",
+        "fix": "Use an explicit, per-test legacy registration/policy control. Keep placement receipt, fixed remote-required refusal, zero-effects, and spawn-count assertions. Add registered L5-before-placement controls with remote-required on/off.",
+        "test": "test_the_knob_refuses_every_seat_leg_this_build_cannot_place_remotely[local-root-brokered]"
+      },
+      {
+        "cause": "Registered Codex correctly refuses during route admission before placement; this test measures the shared pre-registration broker/placement contract.",
+        "classification": "fixture_update",
+        "file": "phase-loop-runtime/tests/test_sandbox_placement.py",
+        "fix": "Use an explicit, per-test legacy registration/policy control. Keep placement receipt, fixed remote-required refusal, zero-effects, and spawn-count assertions. Add registered L5-before-placement controls with remote-required on/off.",
+        "test": "test_the_knob_refuses_every_seat_leg_this_build_cannot_place_remotely[unrecognised-knob-brokered]"
+      },
+      {
+        "cause": "Registered Codex correctly refuses during route admission before placement; this test measures the shared pre-registration broker/placement contract.",
+        "classification": "fixture_update",
+        "file": "phase-loop-runtime/tests/test_sandbox_placement.py",
+        "fix": "Use an explicit, per-test legacy registration/policy control. Keep placement receipt, fixed remote-required refusal, zero-effects, and spawn-count assertions. Add registered L5-before-placement controls with remote-required on/off.",
+        "test": "test_the_knob_refuses_every_seat_leg_this_build_cannot_place_remotely[unregistered-scheme-brokered]"
+      },
+      {
+        "cause": "Registered Codex correctly refuses during route admission before placement; this test measures the shared pre-registration broker/placement contract.",
+        "classification": "fixture_update",
+        "file": "phase-loop-runtime/tests/test_sandbox_placement.py",
+        "fix": "Use an explicit, per-test legacy registration/policy control. Keep placement receipt, fixed remote-required refusal, zero-effects, and spawn-count assertions. Add registered L5-before-placement controls with remote-required on/off.",
+        "test": "test_the_knob_refuses_every_seat_leg_this_build_cannot_place_remotely[unset-brokered]"
+      },
+      {
+        "cause": "Registered Codex correctly refuses during route admission before placement; this test measures the shared pre-registration broker/placement contract.",
+        "classification": "fixture_update",
+        "file": "phase-loop-runtime/tests/test_sandbox_placement.py",
+        "fix": "Use an explicit, per-test legacy registration/policy control. Keep placement receipt, fixed remote-required refusal, zero-effects, and spawn-count assertions. Add registered L5-before-placement controls with remote-required on/off.",
+        "test": "test_a_brokered_success_records_the_spawn_it_made"
+      },
+      {
+        "cause": "The unrelated common-owner capability control now unintentionally enters registered Codex admission with an empty synthetic login.",
+        "classification": "fixture_update",
+        "file": "phase-loop-runtime/tests/test_gemini_heartbeat_bootstrap.py",
+        "fix": "Select the explicit legacy broker control only for heartbeat_codex; retain OK/verdict assertions for unrelated image/pidfd facts and refusal/no-launch assertions for missing memfd.",
+        "test": "test_other_routes_respect_their_required_launch_capabilities[image-heartbeat_codex]"
+      },
+      {
+        "cause": "The unrelated common-owner capability control now unintentionally enters registered Codex admission with an empty synthetic login.",
+        "classification": "fixture_update",
+        "file": "phase-loop-runtime/tests/test_gemini_heartbeat_bootstrap.py",
+        "fix": "Select the explicit legacy broker control only for heartbeat_codex; retain OK/verdict assertions for unrelated image/pidfd facts and refusal/no-launch assertions for missing memfd.",
+        "test": "test_other_routes_respect_their_required_launch_capabilities[pidfd-heartbeat_codex]"
+      },
+      {
+        "cause": "Codex has a registered jail route and no longer belongs to the unregistered-vendor exception.",
+        "classification": "expectation_update",
+        "file": "phase-loop-runtime/tests/test_sealed_seat_never_counts.py",
+        "fix": "Keep the unregistered contract on Grok; independently assert registered Codex refuses missing staging or credentials and never takes the unconfined exception.",
+        "test": "test_a_seat_with_no_jail_route_and_no_staged_tree_is_a_refusal"
+      },
+      {
+        "cause": "These executable-fixture tests measure real broker, owner, monitoring and cleanup, not Codex-specific jail admission. Their synthetic login is intentionally incomplete for the registered route.",
+        "classification": "fixture_update",
+        "file": "phase-loop-runtime/tests/test_review_monitor_policy.py",
+        "fix": "Opt into the explicit historical unregistered broker/policy control; keep the real broker, synthetic CLI, namespace/filtering, exact outcome, launch-count, cancellation and cleanup assertions. Pin CODEX_HOME to the private synthetic credential directory with mode 0600.",
+        "test": "test_public_board_real_broker_and_fixture_cli[False-False]"
+      },
+      {
+        "cause": "These executable-fixture tests measure real broker, owner, monitoring and cleanup, not Codex-specific jail admission. Their synthetic login is intentionally incomplete for the registered route.",
+        "classification": "fixture_update",
+        "file": "phase-loop-runtime/tests/test_review_monitor_policy.py",
+        "fix": "Opt into the explicit historical unregistered broker/policy control; keep the real broker, synthetic CLI, namespace/filtering, exact outcome, launch-count, cancellation and cleanup assertions. Pin CODEX_HOME to the private synthetic credential directory with mode 0600.",
+        "test": "test_public_board_real_broker_and_fixture_cli[True-False]"
+      },
+      {
+        "cause": "These executable-fixture tests measure real broker, owner, monitoring and cleanup, not Codex-specific jail admission. Their synthetic login is intentionally incomplete for the registered route.",
+        "classification": "fixture_update",
+        "file": "phase-loop-runtime/tests/test_review_monitor_policy.py",
+        "fix": "Opt into the explicit historical unregistered broker/policy control; keep the real broker, synthetic CLI, namespace/filtering, exact outcome, launch-count, cancellation and cleanup assertions. Pin CODEX_HOME to the private synthetic credential directory with mode 0600.",
+        "test": "test_public_board_real_broker_and_fixture_cli[False-True]"
+      },
+      {
+        "cause": "Registered Codex now refuses at L3 before common egress, like Claude; Grok remains unregistered.",
+        "classification": "expectation_update",
+        "file": "phase-loop-runtime/tests/test_review_monitor_policy.py",
+        "fix": "Pin the unavailable-host fact; assert exact Claude/Codex route codes and the Grok egress refusal, with empty output and no filtered-network evidence.",
+        "test": "test_heartbeat_egress_unavailable_stays_degraded"
+      },
+      {
+        "cause": "The legacy decide_seat_route patch does not control the registered resolver, and Codex now shares the jailed-seat refusal ordering.",
+        "classification": "fixture_and_expectation_update",
+        "file": "phase-loop-runtime/tests/test_review_monitor_policy.py",
+        "fix": "Drive both registered seats with the real L3 host fact; assert exact codes and fail immediately if either egress function is consulted.",
+        "test": "test_heartbeat_seat_refused_by_its_route_never_reaches_egress"
+      },
+      {
+        "cause": "These executable-fixture tests measure real broker, owner, monitoring and cleanup, not Codex-specific jail admission. Their synthetic login is intentionally incomplete for the registered route.",
+        "classification": "fixture_update",
+        "file": "phase-loop-runtime/tests/test_review_monitor_policy.py",
+        "fix": "Opt into the explicit historical unregistered broker/policy control; keep the real broker, synthetic CLI, namespace/filtering, exact outcome, launch-count, cancellation and cleanup assertions. Pin CODEX_HOME to the private synthetic credential directory with mode 0600.",
+        "test": "test_bounded_broker_expiry_returns_leg_after_successful_cleanup"
+      }
+    ],
+    "digests": {
+      "actual": {
+        "claude": "5ccd7e8669f41716754787d8bde9bb6a64450774e2c5bf9b8862d7e0acaa2b00",
+        "codex": "d905feb08208bce2ae6fcaad0f78083ab86ce463b8dfc031e9dd8265e8f5e488",
+        "gemini": "09827a0ed4f51ac2bfac6510e9d0f5b111abcf33a66638046e67ebdca2d097c2"
+      },
+      "golden_sha256": "37eef1d92ec26a66dbe1fe29777373d32cdb5c608dc8f2e6d2d40c19f5bf0a15",
+      "normalized": {
+        "aarch64": {
+          "claude": "7b6b8613ffb5d9475d72b69adc98338da9d164f14e2d1d5d8ccb061cd6dbf5e6",
+          "codex": "de148170ec3cc855ea8fd6f4c5e9349aef9ef7fcd5d691d47b64d323eda640e7",
+          "gemini": "317e6e6419b857a8d5d0caa542338cd5a959c3e8d8855d74e158f465f571495a"
+        },
+        "x86_64": {
+          "claude": "91ce53149412560377a29c01d9ef74af09d00769982cee7240f36e50caa3d543",
+          "codex": "2baabd1cfafc3654ac4f86e0c74d36086e783ca8f08a94abde59944ff17521a6",
+          "gemini": "62fc4258995145850bd2bab41642093b2c3dffd647063d7d660587ea74ab33b2"
+        }
+      }
+    },
+    "fixture_control": "Explicit, per-test pre-registration profile/gate/policy control for common broker/owner tests. Never autouse or production policy. Registered Codex keeps independent exact admission and no-unconfined controls.",
+    "full_local_suite": false,
+    "hosted_failure": {
+      "failed": 21,
+      "job": 128799982461,
+      "passed": 18367,
+      "run": 42503126653
+    },
+    "interrupted_command": {
+      "action": "SIGINT for pytest cleanup; no relaunch",
+      "completed_fail": 1,
+      "completed_pass": 632,
+      "completed_skip": 1,
+      "descendants_exited": true,
+      "io_full_avg10": 25.17,
+      "memory_full_avg10": 0.24,
+      "pre_interruption_failure": "test_owned_launch_owner_death_reaps_detached_descendant: obsolete retained-capability PDEATHSIG assertion",
+      "pytest_exit_code": 2,
+      "pytest_pids": [
+        98737
+      ],
+      "reason": "shared-host I/O full avg10 spike observed at 25.17; stop targeted run",
+      "status": "interrupted"
+    },
+    "named_file_coverage": {
+      "counts": {
+        "error": 0,
+        "fail": 0,
+        "pass": 674,
+        "skip": 2
+      },
+      "first_four_counts": {
+        "error": 0,
+        "fail": 0,
+        "pass": 605,
+        "skip": 1
+      },
+      "interrupted_receipt_sha256": "51378d354d3bdbb6745971c3c0694c6d0d6cc2f557c6cf7dbf1672cd808acb27",
+      "source": "Four files completed in named.xml before the interruption; test_review_monitor_policy.py was rerun in full afterward. The interrupted command itself is not a pass."
+    },
+    "narrowed_retry": {
+      "bundle_sha256": "441d4734e2bd0b627283ec0e2788e0c990dbce3888d0f4fdbc5577485fbfcec7",
+      "memory_predicate_sha256": "ce3cf52fe442d8be469bf4eb24c436f8f9021739ba6cf387bb2a1a28a46d724a",
+      "preflight": {
+        "checks": {
+          "available_gt_6_gib": true,
+          "io_full_lt_5": true,
+          "load_lt_24": true,
+          "memory_full_le_1": true
+        },
+        "passed": true,
+        "sample": {
+          "at": "2026-11-08T18:15:06.457245+00:00",
+          "available_bytes": 10965909504,
+          "elapsed_s": 0.001,
+          "io_full_avg10": 0.04,
+          "io_some_avg10": 0.07,
+          "load_1m": 3.59,
+          "memory_full_avg10": 0.0,
+          "memory_some_avg10": 0.0
+        }
+      },
+      "status_sha256": "d60424a012a0aedd3d066a3fc99a7b98f574897d33007705fb6592bf163e51a2",
+      "trace_sha256": "5987653ed9f846d45ec9cbe97d907ec4246cc7f0ee602de807483c4c1e67c998",
+      "watchdog": {
+        "all_descendants_exited": true,
+        "duration_s": 345.165,
+        "extrema": {
+          "available_bytes": {
+            "max": 11708100608,
+            "min": 8642093056
+          },
+          "io_full_avg10": {
+            "max": 3.85,
+            "min": 0.04
+          },
+          "io_some_avg10": {
+            "max": 4.08,
+            "min": 0.07
+          },
+          "load_1m": {
+            "max": 7.31,
+            "min": 3.01
+          },
+          "memory_full_avg10": {
+            "max": 0.4,
+            "min": 0.0
+          },
+          "memory_some_avg10": {
+            "max": 0.55,
+            "min": 0.0
+          }
+        },
+        "lock_held_through_cleanup": true,
+        "max_sample_gap_s": 1.0020000000000095,
+        "sample_interval_s": 1,
+        "samples": 346,
+        "status": "passed"
+      }
+    },
+    "placement_golden_change": "Only the separate sandbox_placement_896/local_equivalence.json Codex argv changes: shell_tool/code_mode_host disabled, read-only sandbox, output cwd. Claude entry and all placement/order/cwd digest/result facts are unchanged.",
+    "provider_free_vl_rerun": false,
+    "provider_turns": 0,
+    "real_login_operations": 0,
+    "reason_no_vl_rerun": "No launch source, argv, profile or qualification key changed; preserve the existing max-to-xhigh post-registration VL receipt.",
+    "receipts": {
+      "monitor": {
+        "counts": {
+          "error": 0,
+          "fail": 0,
+          "pass": 69,
+          "skip": 1
+        },
+        "path": "/home/viperjuice/workspace/evidence/20261108-sl3-ci-repair/retry/monitor.xml",
+        "sha256": "816bba26fce4ae5fcbe1bdac188cd269d7b38b64d015d8ff25ed91dc81c7b866"
+      },
+      "panel": {
+        "counts": {
+          "error": 0,
+          "fail": 0,
+          "pass": 2,
+          "skip": 0
+        },
+        "path": "/home/viperjuice/workspace/evidence/20261108-sl3-ci-repair/retry/panel.xml",
+        "sha256": "8a0fa168eecf417d80e096d05f052a481a51dc7fd5ef23ab194d357f73f6ef5b"
+      },
+      "regressions": {
+        "counts": {
+          "error": 0,
+          "fail": 0,
+          "pass": 445,
+          "skip": 0
+        },
+        "path": "/home/viperjuice/workspace/evidence/20261108-sl3-ci-repair/retry/regressions.xml",
+        "sha256": "3cc7028287b1c9259864b62956dcebc4e7f5fee4d4ca7f456ebf1415b4b9e5d8"
+      },
+      "sl3": {
+        "counts": {
+          "error": 0,
+          "fail": 0,
+          "pass": 896,
+          "skip": 2
+        },
+        "path": "/home/viperjuice/workspace/evidence/20261108-sl3-ci-repair/retry/sl3.xml",
+        "sha256": "df141acb6c53bef96695dd5b3326a07eaaa524e6607d3f6956230a1148342045"
+      }
+    },
+    "recorded_at": "2026-11-08T18:22:42.028674+00:00",
+    "skips": [
+      {
+        "file": "tests.test_gemini_heartbeat_bootstrap",
+        "reason": "this host refuses a namespace nested inside unprivileged bwrap: on Ubuntu 25.04 and later the bwrap-userns-restrict AppArmor profile runs bwrap's children as `unpriv_bwrap`, which denies every capability. This is host policy, probed with no runtime code in the path [unshare: unshare failed: Operation not permitted]",
+        "test": "test_helper_observer_includes_nested_pid_namespaces"
+      },
+      {
+        "file": "tests.test_review_monitor_policy",
+        "reason": "this host refuses a namespace nested inside unprivileged bwrap: on Ubuntu 25.04 and later the bwrap-userns-restrict AppArmor profile runs bwrap's children as `unpriv_bwrap`, which denies every capability. This is host policy, probed with no runtime code in the path [bwrap: No permissions to create a new namespace, likely because the kernel does not allow non-privileged user namespaces. See <https://deb.li/bubblewrap> or <file:///usr/share/doc/bubblewrap/README.De]",
+        "test": "test_owned_review_starts_nested_sandbox_without_firewall_access"
+      },
+      {
+        "file": "tests.test_seat_codex_credential",
+        "reason": "SL-1.5 measurement runs only with PHASE_LOOP_CODEX_MEASURE=1",
+        "test": "test_measured_credential_scope"
+      },
+      {
+        "file": "tests.test_seat_egress_allowlist_codex",
+        "reason": "set PHASE_LOOP_CODEX_DISCOVER=1 with PHASE_LOOP_CODEX_MEASURE_CLI",
+        "test": "test_provider_free_path_discovery_through_the_fixture_upstream"
+      }
+    ],
+    "sl3_counts": {
+      "error": 0,
+      "fail": 0,
+      "pass": 1343,
+      "skip": 2
+    },
+    "source_change": "Declare the six exact import-time Codex registration dependencies in JAIL_PROFILE_SOURCES. The source-read subset audit and byte-identity derivation remain strict.",
+    "status": "passed_after_one_narrowed_retry",
+    "validation_head": "79173a22570f5417f412f202c90016875add6849"
+  },
+  "compatibility_replay": {
+    "counts": {
+      "fail": 0,
+      "pass": 396,
+      "skip": 0
+    },
+    "receipts": {
+      "regressions.xml": "5ea634369a38d034e6cabdae59ef24a8e96b0461c5e845510c6bcfebd3b0d1e9",
+      "targeted.xml": "6368203f8a9549b6d8fa9a62007e85f86d8137628447d01f4782d38fa01b7ab7"
+    },
+    "source": "the complete notice and argv-bound-path modules within targeted/review regressions"
+  },
+  "execution": {
+    "bundle_timeout_seconds": 1200,
+    "compatibility_timeout_seconds": 180,
+    "jailed_claude_excluded": true,
+    "python": "3.12.14",
+    "require_live_jail": true,
+    "serial": true,
+    "uv": "run --python 3.12 --frozen",
+    "vl_timeout_seconds": 900
+  },
+  "golden_sha256": "37eef1d92ec26a66dbe1fe29777373d32cdb5c608dc8f2e6d2d40c19f5bf0a15",
+  "host": "dev0",
+  "issue_closures": 0,
+  "od4": {
+    "accepted_input_head": "36d785c19464f5b9dcde202528f9c7651755296a",
+    "accepted_input_sha256": {
+      "plans/evidence/seat-codex/provider-free.json": "2d3ec21ed625e2a766547d59c0471ee8b727be67484e0fdc83cb440b6e07c83e",
+      "plans/evidence/seat-codex/refresh-detection.json": "b59d933d12445c2a97a048b4714c43bb1d5349e2d306301022131fb84218dfa6"
+    },
+    "accepted_records_unchanged": true,
+    "date": "2026-11-08",
+    "record": "plans/decision-seats-codex-boundary.md",
+    "status": "accepted"
+  },
+  "previous_validation": {
+    "compatibility_replay": {
+      "fail": 0,
+      "pass": 396,
+      "skip": 0
+    },
+    "git_record": "original SL-3.9 receipt at c78a00f8",
+    "provider_free_vl": {
+      "fail": 0,
+      "pass": 6,
+      "skip": 0
+    },
+    "receipt_sha256": "b86e8ce4a3b159664f87f9f241144ca7ddcae4185bb1fd3f4d129d3d6f310f24",
+    "validation_head": "388be402924ab0c5aaedb64037c6322e9d40f5c7"
+  },
+  "production_registration": "registered; review seats use CODEX_PROFILE",
+  "profile_digests": {
+    "claude": "5ccd7e8669f41716754787d8bde9bb6a64450774e2c5bf9b8862d7e0acaa2b00",
+    "codex": "d905feb08208bce2ae6fcaad0f78083ab86ce463b8dfc031e9dd8265e8f5e488",
+    "gemini": "09827a0ed4f51ac2bfac6510e9d0f5b111abcf33a66638046e67ebdca2d097c2"
+  },
+  "provider_free_vl": {
+    "cases": [
+      {
+        "outcome": "pass",
+        "seconds": 3.766,
+        "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[sentinel]"
+      },
+      {
+        "outcome": "pass",
+        "seconds": 2.996,
+        "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[planted_markers]"
+      },
+      {
+        "outcome": "pass",
+        "seconds": 3.197,
+        "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[rewritten_auth]"
+      },
+      {
+        "outcome": "pass",
+        "seconds": 3.219,
+        "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[nested_namespace]"
+      },
+      {
+        "outcome": "pass",
+        "seconds": 3.084,
+        "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[workspace_write]"
+      },
+      {
+        "outcome": "pass",
+        "seconds": 5.323,
+        "test": "tests.test_seat_egress_allowlist_codex::test_live_jail_codex_refused_rows_from_a_jailed_tool_command"
+      }
+    ],
+    "counts": {
+      "fail": 0,
+      "pass": 6,
+      "skip": 0
+    },
+    "effort_shape": {
+      "canonical": "max",
+      "native_cli_cases": 5,
+      "remaining_case": "refused-host jailed-tool control",
+      "rendered": "xhigh"
+    },
+    "jailed_argv_sha256": "c1179899fd47ca44c0c71ae953462178b7b58f9c01bd446354c56b400cfa6f0d",
+    "receipt": "vl.xml",
+    "seconds": 21.79,
+    "sha256": "284b3d4330eecb9966effddc35023797f6086777c28e7e26da6ec9f05788c80c"
+  },
+  "provider_turns": 0,
+  "qualification_rerun": false,
+  "real_login_copies": 0,
+  "real_login_reads": 0,
+  "real_login_renewals": 0,
+  "receipt_sha256": {
+    "pipeline.log": "9ed7299357db66b1a4a0503c063e061745051c18752e749c4b69a0f360eb98b5",
+    "predicate-self-test.log": "04f7e605edb5fcf93b72d7d898e40e39c2f62a804a5fd7d1d183e91a937fe87a",
+    "preflight-samples.jsonl": "11eee6299b3f7f0225ebf3922d82cd99a72049d7e7fe123b0a4210e9dbea9298",
+    "psi-summary.json": "fd60abf9306d9ea80ae3adbfce04c01c691347f2fe981432e3988002ed178ff2",
+    "psi.jsonl": "aa7d4c01eeb4ca5801489e43f70aa040a918d7cfa8e9b400e43aa72afc301764",
+    "run.sh": "024bf8b0c0fad6b67d960322c37d238f82235ce5d5338f184398e17621186e9a",
+    "status.json": "7b36a387e26013d09161d34f6d89aa9101813d3b81407ce384fc1e9cb4eeaa74",
+    "supervisor.py": "47f2399625984fd5fe25ca1fc505512e427f6355ceecab9b312dda5e2ad6a665",
+    "test_watchdog_rule.py": "e34a5d56abca6bda71f4ea81c552161faf5f51d61aad63778c84cc79615229c4",
+    "watchdog_rule.py": "ce3cf52fe442d8be469bf4eb24c436f8f9021739ba6cf387bb2a1a28a46d724a"
+  },
+  "recorded_at": "2026-11-08T16:42:02.046822+00:00",
+  "redaction_posture": "metadata_only",
+  "refresh_detection": {
+    "case": {
+      "outcome": "pass",
+      "seconds": 3.197,
+      "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[rewritten_auth]"
+    },
+    "expected_code": "codex_seat_token_refreshed_in_jail",
+    "outcome": "pass"
+  },
+  "remaining_scope": "Owner coordinates review follow-up; SL-4 row-window and post-merge issue reducer not executed.",
+  "review_edits": {
+    "findings": {
+      "F1": {
+        "fix": "Append seat_filesystem_unconfined only when not jailed; assert exact notice tuples. Keep root-unapplied only for actual placement mismatch, retention only for actual/faked retained residue, and tool-unavailable for missing/failed command evidence.",
+        "tests": [
+          "test_default_spawn_holds_route_lease_through_codex_leg",
+          "test_jailed_codex_keeps_real_placement_and_retention_notices",
+          "independent reviewer notice probe (2 passed)"
+        ]
+      },
+      "F2": {
+        "canonical_effort": "max",
+        "cli_effort": "xhigh",
+        "fix": "Use render_seat_invocation for canonical effort; max maps to xhigh in jailed argv and actual launch. Final native CLI fixture cases run with canonical max."
+      },
+      "F3": {
+        "fix": "Preparation passes its resolved executable and dependency to admission; no second subject resolution or borrowed dependency close. Standalone doctor gate resolves with the broker subscription environment.",
+        "tests": [
+          "test_admission_measures_the_prepared_binary_without_resolving_or_closing_it",
+          "prepare fixture asserts one resolution"
+        ]
+      },
+      "F4": {
+        "fix": "Manual Codex qualification derives its projection via seat_route._projection_for_launch, matching the managed projection tested by the probe.",
+        "tests": [
+          "test_codex_qualification_records_a_v2_pass[False]",
+          "test_codex_qualification_records_a_v2_pass[True]"
+        ]
+      },
+      "F5": {
+        "fix": "Restore read-only-tree, add-dir, non-directory writable-view and default-prefix live negative controls. Remove singular writable grant/retry parameters and forwarding, workspace-write probe map/settings, dead retained-capability/no-namespace branch; update obsolete comments. Keep generic writable_trees with restored source checks.",
+        "tests": [
+          "test_the_unbrokered_read_only_codex_seat_still_cannot_write_its_tree",
+          "test_add_dir_is_never_writable",
+          "test_the_view_refuses_a_writable_tree_that_is_not_a_directory",
+          "test_default_prefix_refuses_nested_sandbox_and_firewall_changes",
+          "test_profile_projection_binds_changed_refuses_identity (missing/duplicate/altered)"
+        ]
+      },
+      "F6": {
+        "fix": "Record the SL-3 single-writer ruling for minimal runtime-bind normalization and unchanged Claude/Gemini digests in the boundary decision."
+      },
+      "F7": {
+        "fix": "Correct Grok grammar and list Codex missing-credential and L6 credential codes in the J7 credential section."
+      }
+    },
+    "fresh_review_not_claimed": true,
+    "independent_reviewer_probe_pass": 2,
+    "panel_codex": {
+      "counts": {
+        "fail": 0,
+        "pass": 2,
+        "skip": 0
+      },
+      "receipt": "panel.xml",
+      "seconds": 1.853,
+      "sha256": "2d6dbab77d7baa338ad024640f996bed87602d10b74551b20f1cb022c4ce78e0"
+    },
+    "regressions": {
+      "counts": {
+        "fail": 0,
+        "pass": 447,
+        "skip": 0
+      },
+      "receipt": "regressions.xml",
+      "seconds": 124.338,
+      "sha256": "5ea634369a38d034e6cabdae59ef24a8e96b0461c5e845510c6bcfebd3b0d1e9"
+    },
+    "reviewed_input_head": "c78a00f8bd38d107c138342172a0bcd5d6049b3c",
+    "targeted": {
+      "counts": {
+        "fail": 0,
+        "pass": 555,
+        "skip": 0
+      },
+      "receipt": "targeted.xml",
+      "seconds": 71.718,
+      "sha256": "6368203f8a9549b6d8fa9a62007e85f86d8137628447d01f4782d38fa01b7ab7"
+    },
+    "total_targeted_pass": 1004
+  },
+  "row_window": false,
+  "schema": "phase_loop_codex_post_registration.v1",
+  "sl3_status": "complete",
+  "status": "passed",
+  "task": "SL-3.9",
+  "validation_head": "ea98df5c19fadd5511196e1b39d71268778c9d75",
+  "watchdog": {
+    "abort_rule": {
+      "independent_sustained_seconds": 10,
+      "memory_full_avg10_gt": 2,
+      "memory_some_avg10_gt": 10,
+      "other_resource_abort_rules": false,
+      "single_memory_full_avg10_gt": 5
+    },
+    "all_descendants_exited": true,
+    "approved_deliberate_retry": false,
+    "bundle_attempts_this_authorization": 1,
+    "further_retry": false,
+    "predicate_self_test": {
+      "extra_controls": [
+        "some threshold duration",
+        "strict thresholds",
+        "full timer reset",
+        "independent full/some timers",
+        "prior interrupted trace does not abort"
+      ],
+      "fail": 0,
+      "pass": 8,
+      "receipt": "predicate-self-test.log",
+      "required_controls": {
+        "full_2_40_for_10_seconds": "abort",
+        "full_2_40_under_10_seconds": "no abort",
+        "single_full_5_1": "abort"
+      },
+      "sha256": "04f7e605edb5fcf93b72d7d898e40e39c2f62a804a5fd7d1d183e91a937fe87a"
+    },
+    "preflight_rule": {
+      "available_gib_gt": 6,
+      "io_full_avg10_lt": 5,
+      "load_lt": 24,
+      "memory_full_avg10_le": 1,
+      "sample_spacing_seconds": 300,
+      "window_seconds": 3600
+    },
+    "preflight_samples": [
+      {
+        "checks": {
+          "available_gt_6_gib": true,
+          "io_full_lt_5": true,
+          "load_lt_24": true,
+          "memory_full_le_1": true
+        },
+        "passed": true,
+        "sample": {
+          "at": "2026-11-08T16:39:43.596339+00:00",
+          "available_bytes": 9069826048,
+          "elapsed_s": 0.001,
+          "io_full_avg10": 1.39,
+          "io_some_avg10": 1.42,
+          "load_1m": 5.48,
+          "memory_full_avg10": 0.03,
+          "memory_some_avg10": 0.03
+        }
+      }
+    ],
+    "project_admission_held_through_process_tree": true,
+    "summary": {
+      "all_descendants_exited": true,
+      "duration_s": 25.033,
+      "extrema": {
+        "available_bytes": {
+          "max": 9204252672,
+          "min": 8198868992
+        },
+        "io_full_avg10": {
+          "max": 1.59,
+          "min": 0.86
+        },
+        "io_some_avg10": {
+          "max": 1.61,
+          "min": 0.87
+        },
+        "load_1m": {
+          "max": 5.48,
+          "min": 5.34
+        },
+        "memory_full_avg10": {
+          "max": 0.2,
+          "min": 0.02
+        },
+        "memory_some_avg10": {
+          "max": 0.2,
+          "min": 0.02
+        }
+      },
+      "lock_held_through_cleanup": true,
+      "max_sample_gap_s": 1.0010000000000012,
+      "sample_interval_s": 1,
+      "samples": 26,
+      "status": "passed"
+    }
+  }
+}

@@ -691,9 +691,9 @@ too (agent-harness#1170): the seat's egress goes through an allowlisting proxy, 
 once per user with `phase-loop seat-egress install` (node 22.12+ and npm); without it the
 Gemini seat is degraded and does not run, with that fix. The pinned proxy also needs `bwrap`,
 `socat` and `rg` (ripgrep) on the host; without one, the layer reports
-`seat_egress_not_installed` and names the missing tool (agent-harness#1912). Codex and grok are
-not jailed yet (agent-harness#895) and carry `seat_filesystem_unconfined` when given a tree;
-on a review with no staged tree they are degraded and do not run (`seat_sandbox_not_staged`).
+`seat_egress_not_installed` and names the missing tool (agent-harness#1912). Grok is
+not jailed yet (agent-harness#895) and carries `seat_filesystem_unconfined` when given a tree;
+on a review with no staged tree it is degraded and does not run (`seat_sandbox_not_staged`).
 An `--advisory` run stages no tree on purpose and keeps every seat on the inline route.
 
 **Where the host supports the jail, Claude seats are jailed by default, and the jail is
@@ -713,11 +713,22 @@ seat with a staged tree takes the jailed route.
   `PHASE_LOOP_SEAT_JAIL_QUALIFY_RETRY_S` (default one hour), or as soon as the jail or the
   host layout changes.
 
+**Codex review seats (OD-4 accepted 2026-11-08).** The registered jail profile is
+Codex's boundary, with `--sandbox danger-full-access` inside it. Tools can read their
+own seat login copy and share its proxy-only measured allowlist; the copied refresh
+token is empty. The CLI-shape and credential gates refuse before delivery, and a leg
+counts only with parent-held evidence of a completed turn and successful command.
+`codex_seat_tools_unavailable`, `codex_seat_unknown_event`, token output and refresh
+codes refuse the leg. The staged workspace-write grant and retained `setfcap` are
+retired; the non-brokered route retains its sandbox probe. There is no unconfined
+review-seat fallback. Decision: `plans/decision-seats-codex-boundary.md`
+(agent-harness#1916). The provider-free receipt is not a `done-local` row window.
+
 **Seat modes.** Before any seat launches, the board prints one line per seat
 (`advisor-board: seat mode: ...`), and the `--json` payload carries `seat_modes`. The modes
 are:
 - `jailed`: tools inside the jail. `credential` names `login` or `seat_token`.
-- `unconfined`: tools on the staged tree without a jail (codex, grok).
+- `unconfined`: tools on the staged tree without a jail (Grok).
 - `remote`: selected by the remote rung. JAILCORE publishes the mode but ships the rung off.
 - `sealed`: no tools; the bundle is inlined. A brokered review seat is never `sealed`: a
   route that is not jailed is `degraded` (agent-harness#1244).
@@ -733,8 +744,9 @@ profile, remote placement, native fill, then degraded. A failed local rung desce
 `seat_sandbox_unavailable_host`, `seat_sandbox_unavailable_tiocsti`,
 `seat_sandbox_unavailable_seat_uid` or `seat_egress_not_installed`, unless a reviewed
 routed-remote row or capacity grant explicitly selects remote. All other route failures are
-terminal and retain their typed route code. The expiring named exceptions are Codex and Grok
-`unconfined`, and Claude `open egress`; an expired exception is a typed refusal.
+terminal and retain their typed route code. Grok's `unconfined` and Claude's `open egress`
+exceptions expire with a typed refusal. Codex review seats have a registered profile,
+so their legacy `unconfined` exception is never consulted.
 
 The `remote` mode is inactive in the shipped kit: its descend set and packaged capacity
 grants are empty. Local capacity exhaustion therefore remains degraded unless a later remote

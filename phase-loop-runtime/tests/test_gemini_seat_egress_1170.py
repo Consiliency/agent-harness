@@ -39,7 +39,7 @@ def _decide(leg="gemini", *, egress=None, qualified=None, cred=True, capable=Non
 
 def test_gemini_has_no_recorded_stop_and_is_a_jailed_leg():
     assert seat_jail.GEMINI_RECORDED_STOP is None
-    assert seat_jail.JAILED_LEGS == frozenset({"claude", "gemini"})
+    assert seat_jail.JAILED_LEGS == frozenset({"claude", "gemini", "codex"})
 
 
 def test_a_capable_host_with_its_egress_layer_jails_the_gemini_seat():

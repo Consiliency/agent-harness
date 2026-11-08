@@ -353,6 +353,13 @@ JAIL_PROFILE_SOURCES = (
     "seat_profiles.py",
     "seat_resource_caps.py",
     "seat_route_contract.py",
+    # seat_profiles registers Codex at import; pin its complete import closure too.
+    "seat_profile_codex.py",
+    "seat_codex_cli_shape.py",
+    "seat_admission.py",
+    "seat_subject.py",
+    "executable_dependency.py",
+    "executable_dependency_startup.py",
 )
 _RUNTIME_DIR = "phase-loop-runtime/src/phase_loop_runtime"
 

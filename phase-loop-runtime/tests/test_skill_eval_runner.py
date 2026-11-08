@@ -87,7 +87,7 @@ def test_effective_command_and_features(experiment):
     settings = [command[i+1] for i, value in enumerate(command[:-1]) if value == "-c"]
     assert 'web_search="disabled"' in settings
     for feature in panel_invoker._BROKER_CODEX_DISABLED_FEATURES:
-        enabled = feature in panel_invoker._BROKER_CODEX_SANDBOX_ENABLED_FEATURES
+        enabled = feature in runner.CODEX_SANDBOX_ENABLED_FEATURES
         assert f"features.{feature}={str(enabled).lower()}" in settings
     assert not any("mcp_servers" in item for item in command)
     assert frozen["config"] == ev.protocol_config(spec)

@@ -342,8 +342,7 @@ def _seat_view_layers(cwd, readonly_paths=(), *, check=True,
         checked = _seat_bind_source(source) if check else os.path.abspath(source)
         layers.append((os.path.abspath(source), False,
                        ["--ro-bind", checked, os.path.abspath(source)]))
-    # agent-harness#1470: the one directory a seat may write, decided by
-    # `_seat_command_profile` (a codex seat's own staged tree). Here it must still be a
+    # Explicit generic profile inputs (not the retired Codex argv grant). Each must be a
     # real directory of the operator's, never a link. It shows the host, so it is not
     # private: no output directory is mounted over it.
     for source in writable_trees:
@@ -4273,32 +4272,6 @@ _BROKER_CODEX_DISABLED_FEATURES: tuple[str, ...] = (
     "view_image",
     "workspace_dependencies",
 )
-# Re-enabled ONLY when a sandbox (a disposable staged review tree) is authorized, so a
-# seat can run the code it reviews. codex >= 0.156 executes commands through the
-# code-mode host, not the bare shell tool: lifting `shell_tool` alone left every
-# sandboxed codex seat answering "code-mode host is disabled". Both stay disabled on
-# the sealed (no-tree) path.
-_BROKER_CODEX_SANDBOX_ENABLED_FEATURES: tuple[str, ...] = ("shell_tool", "code_mode_host")
-# What confines a sandboxed codex seat's WRITES: the `workspace-write` sandbox rooted at
-# the disposable tree, WITH `/tmp` and `$TMPDIR` removed from its writable set. codex's
-# `workspace-write` leaves both writable by default, and the round's scratch directory
-# (`pl-panel-*`, holding every seat's `out/panel-<leg>.txt`) lived there, so without
-# these a seat that can run commands could overwrite a SIBLING seat's verdict mid-round
-# (reproduced live on codex 0.156.1). The scratch now defaults to a per-user cache dir
-# (agent-harness#1147), which is neither the cwd nor `/tmp`, so it is not writable either
-# way; the exclusions stay for an operator who points the staging dir at `/tmp`. With them, writes land only in the tree; the tree
-# itself stays writable because it is the sandbox root. READS are NOT confined: the seat
-# can read any file the invoking user can (credentials included). What bounds that is the
-# egress policy (private networks denied) and the seat's report being the only output.
-# The one capability a sandboxed codex seat keeps in its bounding set, so codex's own
-# bubblewrap sandbox can start inside the egress namespace (agent-harness#1003; the
-# allowlist and the argument that it cannot restore the firewall live in
-# `sandbox_egress.SEAT_RETAINABLE_CAPS`). Every other seat keeps an EMPTY bounding set.
-_BROKER_CODEX_SANDBOX_RETAINED_CAPS: tuple[str, ...] = ("setfcap",)
-_BROKER_CODEX_SANDBOX_CONFIG: tuple[str, ...] = (
-    "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
-    "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true",
-)
 
 
 def _require_staged_tree(staged_tree: Path | None) -> Path | None:
@@ -4556,18 +4529,12 @@ def _compose_launch_prefix(cwd, process_owner=(), retain_caps=()) -> list[str]:
     prefix = _provider_launch_prefix(cwd, retain_caps)
     if not process_owner:
         return prefix
-    if tuple(retain_caps) not in ((), ("setfcap",)):
+    if retain_caps:
         raise ValueError("unsupported owned provider capability policy")
     switch = _seat_identity_switch(retain_caps)
     namespaced = _enters_namespace(prefix)
     # Structurally, not by counting from the end: the owner goes where the switch is.
     position = _sublist_index(prefix, switch) if namespaced else len(prefix)
-    if retain_caps and not namespaced:
-        # The codex supervisor route exists only inside the egress namespace. Without one
-        # it would run the provider with the operator's full capabilities (a root operator
-        # under the opt-out), and main refused it too. Refuse, typed.
-        # (agent-harness#1098) an owned codex seat needs the egress namespace.
-        raise _sandbox_egress.SeatIdentityUnverified("seat_filtered_egress_unavailable")
     owner = list(process_owner)
     if owner[0] != "/usr/bin/bwrap":
         raise ValueError("unsupported owned provider")
@@ -4754,7 +4721,7 @@ def _expected_seat_identity(prefix: "Sequence[str]", retain_caps=()) -> list[str
             f"CapBnd:\t{bounding:016x}", f"NoNewPrivs:\t{no_new_privs}"]
 
 
-_CAP_NUMBERS = {"setfcap": 31}
+_CAP_NUMBERS: dict[str, int] = {}
 
 
 @contextmanager
@@ -4877,7 +4844,7 @@ class SeatProfile:
     pass_fds: tuple[int, ...] = ()
     keep_fds: tuple[int, ...] = ()
     terminal_fd: int | None = None
-    #: agent-harness#1470: a codex seat's own staged tree, bound writable (at most one).
+    #: Explicit generic profile mounts; the Codex argv-based grant is retired.
     writable_trees: tuple[str | Path, ...] = ()
     journal: _SeatClaudeJournal | None = field(default=None, repr=False)
     broker_socket: str | Path | None = None
@@ -5749,49 +5716,10 @@ def _precreate_seat_output(path):
         os.close(descriptor)
 
 
-def _granted_writable_tree(path: Path, command, harness, *, provenance_checked=False) -> Path:
-    """Check a writable-tree grant where the seat's view is built (agent-harness#1470).
-
-    A seat's view is read-only except its declared outputs. The one exception: a codex seat
-    run with ``--sandbox workspace-write`` gets the tree it is rooted at writable, because
-    codex's own sandbox must create its mount points there before any command can start.
-    That tree must be THIS launch's disposable staged clone, so every condition is checked
-    here, whatever the caller believed: a codex argv that says ``workspace-write`` (or the
-    sandbox probe's ``--permission-profile :workspace`` for that same mode); a staged
-    review tree by provenance (`_require_staged_tree`); inside a directory this process
-    itself marked as its sandbox; a real directory of the operator's, not a link. Anything
-    else REFUSES the launch -- a grant is never widened to another path, and never quietly
-    dropped (that would leave the seat unable to run a command).
-
-    ``provenance_checked``: the leg already checked this tree's provenance before its first
-    attempt, and a relaunch of the same leg reuses that check instead of repeating it. Every
-    other condition is checked on every launch."""
-    words = [os.fspath(word) for word in command]
-    # The seat's own spelling, or the sandbox probe's for the same mode: the probe has to
-    # see the tree exactly as the seat will, or it answers for a different view.
-    workspace_write = any(
-        words[index:index + 2] in (["--sandbox", "workspace-write"],
-                                   ["--permission-profile", _CODEX_SANDBOX_PROBE_PROFILES["workspace-write"]])
-        for index in range(len(words) - 1))
-    try:
-        if harness != "codex" or not workspace_write:
-            raise ValueError("a writable tree is granted only to a workspace-write codex seat")
-        if not any(_sandbox_retention.staged_by_this_process(parent)
-                   for parent in (path.parent, path.parent.parent)):
-            raise ValueError("the tree is not in a sandbox this process staged")
-        if not provenance_checked:
-            _require_staged_tree(path)
-    except ValueError as exc:
-        raise _sandbox_egress.SeatIdentityUnverified("seat_bind_source_unavailable") from exc
-    _seat_bind_source(path, tree=True)
-    return path
-
-
 @contextmanager
 def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None,
                           gemini_profile=None, role=SeatLaunchRole.PROVIDER_REVIEW,
-                          readonly_paths=(), replaceable_outputs=(), writable_tree=None,
-                          writable_tree_checked=False):
+                          readonly_paths=(), replaceable_outputs=()):
     """The owned seat's command and profile for one launch.
 
     ``outputs`` are bound in place: each is one precreated host file, shared live with the
@@ -5808,10 +5736,7 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
     before the profile is built, so it never holds another launch's review (also when the
     launch is then refused for another reason).
 
-    ``writable_tree`` (agent-harness#1470) grants a workspace-write codex seat its own staged
-    tree writable; ``_granted_writable_tree`` checks the grant and refuses one it cannot
-    honour exactly. ``writable_tree_checked`` passes on that the leg already checked the
-    tree's provenance (a relaunch of the same leg)."""
+    The Codex writable-tree grant is retired by OD-4; argv inputs are read-only."""
     from .executable_dependency_startup import current_dependency_for_provider
 
     if gemini_profile is None:
@@ -5834,8 +5759,6 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
     )
     readonly = list(readonly_paths)
     cwd = Path(cwd)
-    # agent-harness#1470: at most one writable tree, and only the path `--cd` names.
-    granted = Path(writable_tree) if writable_tree is not None else None
     writable: list[Path] = []
     for name in ("review-bundle.md", "review-instructions.md", _review_stage.REVIEW_STAGE_TREE_DIRNAME):
         path = cwd / name
@@ -5852,20 +5775,11 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
             if not path.is_absolute():
                 path = cwd / path
             if path != cwd and str(path) not in {"/dev/stdin", "/dev/null"}:
-                if granted is not None and item == "--cd" and path == granted:
-                    if path not in writable:
-                        writable.append(_granted_writable_tree(
-                            path, command, harness, provenance_checked=writable_tree_checked))
-                else:
-                    _seat_bind_source(path)
-                    readonly.append(path)
+                _seat_bind_source(path)
+                readonly.append(path)
         if item == "--output-last-message":
             path = Path(command[index + 1])
             outputs = (*outputs, path if path.is_absolute() else cwd / path)
-    if granted is not None and (not writable or any(Path(path) == granted for path in readonly)):
-        # The grant matched nothing the argv names with `--cd`, or the same path is also
-        # bound read-only: refuse rather than guess which was meant.
-        raise _sandbox_egress.SeatIdentityUnverified("seat_bind_source_unavailable")
     # agent-harness#1433: the directory of each replaceable output is a private per-launch
     # directory in the seat's view, which may go only where it hides nothing of the host's
     # (``_seat_output_anchor``), and it lives on the host where this seat cannot see it.
@@ -6531,14 +6445,8 @@ def _broker_tool_controls(leg: str, staged_tree: "Path | None") -> tuple[str, ..
     a reader cannot tell a confined seat from one that merely recorded itself as confined.
     """
     if leg == "codex":
-        if staged_tree is None:
-            return ("ignore-user-config", "ignore-rules", "ephemeral",
-                    *_BROKER_CODEX_DISABLED_FEATURES, "stdin-sealed-input", "read-only")
         return ("ignore-user-config", "ignore-rules", "ephemeral",
-                *(f for f in _BROKER_CODEX_DISABLED_FEATURES
-                  if f not in _BROKER_CODEX_SANDBOX_ENABLED_FEATURES),
-                "stdin-sealed-input", "workspace-write-sandbox-only", "tmp-not-writable",
-                "bounding-set-setfcap-only")
+                *_BROKER_CODEX_DISABLED_FEATURES, "stdin-sealed-input", "read-only")
     if leg == "grok":
         if staged_tree is None:
             return ("tools-empty", "disable-web-search", "no-memory", "no-subagents",
@@ -6566,6 +6474,11 @@ _JAILED_CLAUDE_TOOL_CONTROLS: tuple[str, ...] = (
 _JAILED_GEMINI_TOOL_CONTROLS: tuple[str, ...] = (
     "disable-slash-commands", "workspace-empty-cwd", "tree-not-a-workspace",
     "config-dir-read-only", "subagent-ends-leg", "permission-bypass-inside-seat-jail",
+    "egress-allowlisting-proxy", "seat-jail",
+)
+
+_JAILED_CODEX_TOOL_CONTROLS: tuple[str, ...] = (
+    "inner-sandbox-off-inside-seat-jail", "workspace-empty-cwd", "tree-not-a-workspace",
     "egress-allowlisting-proxy", "seat-jail",
 )
 
@@ -6603,22 +6516,14 @@ def _brokered_codex_command(
     be asserted on directly. `provider_cwd_sha256` is recomputed from this argv by the
     verifier, so drift here is an attestation failure rather than a style question.
     """
-    tree = _require_staged_tree(staged_tree)
-    # With a sandbox: work IN the code, and be able to run things. `workspace-write`
-    # confines writes to the working directory, which IS the disposable clone -- so a
-    # runaway seat can only damage a directory that is deleted at the end of the round.
-    # Without one: byte-for-byte the historical posture.
-    disabled = _BROKER_CODEX_DISABLED_FEATURES if tree is None else tuple(
-        f for f in _BROKER_CODEX_DISABLED_FEATURES
-        if f not in _BROKER_CODEX_SANDBOX_ENABLED_FEATURES
-    )
+    # Review seats use jailed_codex_command. This retained advisory path is sealed
+    # even when a caller has staged a tree; it cannot grant tools or writable inputs.
+    _require_staged_tree(staged_tree)
     return [
         "codex",
-        *(item for feature in disabled for item in ("--disable", feature)),
+        *(item for feature in _BROKER_CODEX_DISABLED_FEATURES for item in ("--disable", feature)),
         "exec", "--ignore-user-config", "--ignore-rules", "--ephemeral",
-        "--cd", str(out_dir if tree is None else tree), "--skip-git-repo-check",
-        "--sandbox", "read-only" if tree is None else "workspace-write",
-        *(() if tree is None else _BROKER_CODEX_SANDBOX_CONFIG),
+        "--cd", str(out_dir), "--skip-git-repo-check", "--sandbox", "read-only",
         "--model", model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["codex"],
         *codex_effort_args, "--output-last-message", str(out_file), "-",
     ]
@@ -6627,9 +6532,8 @@ def _brokered_codex_command(
 # Tools a grok review seat may use INSIDE a sandbox. The allow-list, not an approval
 # mode, is the lever that holds (agent-harness#147), which is why it is the thing that
 # changes here rather than a sandbox flag. The seat works in the disposable clone, which is
-# bind-mounted read-only, so `write` and `search_replace` are offered but fail; only codex
-# gets a writable tree (agent-harness#1470), and writable-tree parity for grok is
-# agent-harness#1686.
+# bind-mounted read-only, so `write` and `search_replace` are offered but fail;
+# writable-tree parity for grok is agent-harness#1686.
 GROK_SANDBOX_TOOLS = "read_file,grep,list_dir,search_tool,write,search_replace,run_terminal_command"
 
 # The approval mode the sandboxed seat runs in. Headless grok (1.0.52) does NOT auto-approve
@@ -9519,8 +9423,6 @@ def _run_leg_with_liveness(
     child_scratch: str | None = None,
     stdout_guard: Callable[[bytes], bool] | None = None,
     stderr_guard: Callable[[bytes], bool] | None = None,
-    writable_tree: "Path | None" = None,
-    writable_tree_checked: bool = False,
     broker_evidence: dict[str, object] | None = None,
     seat_jail: "_seat_jail.SeatJail | None" = None,
     probe_jail: "_seat_jail.SeatJail | None" = None,
@@ -9604,9 +9506,6 @@ def _run_leg_with_liveness(
         # The request's own refusals (an unavailable profile) come before the host's.
         owned_command, profile = profile_stack.enter_context(_seat_command_profile(
             cmd, env=env, cwd=cwd, gemini_profile=gemini_profile,
-            # agent-harness#1470: a codex seat's own staged tree; checked again there.
-            **({"writable_tree": writable_tree, "writable_tree_checked": writable_tree_checked}
-               if writable_tree is not None else {}),
         ))
         if broker_evidence is not None:
             broker_evidence.update(profile.evidence)
@@ -12551,6 +12450,7 @@ class _JailedSeat:
     #: The ``sdk`` transport's prepared launch, from its pre-credential preflight
     #: (IF-0-CLAUDE-3): the verified install and the worker payload's verified bytes.
     sdk_prepared: object | None = None
+    codex_copy: object | None = field(default=None, repr=False)
 
 
 def _cleanup_jailed_seat(
@@ -13240,6 +13140,9 @@ def _write_egress_ca(seat_dir: Path, certificate: Path) -> Path:
     fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o444)
     try:
         os.write(fd, data)
+        # The launcher may use umask 077; the dropped seat uid must still read
+        # this public certificate through its read-only bind.
+        os.fchmod(fd, 0o444)
     finally:
         os.close(fd)
     return target
@@ -13377,6 +13280,186 @@ def _prepare_jailed_gemini(
             if getattr(dependency, "_jailcore_owned", False):
                 dependency.close()
         raise
+
+
+def _prepare_jailed_codex(
+    review_dir: Path, seat_dir: Path, review_authorization: "ReviewIsolationAuthorization",
+    seat_id: int, holder_pid: int, prompt_parts: tuple[str, str], egress,
+    *, env: Mapping[str, str] | None = None,
+) -> _JailedSeat:
+    from . import seat_codex_credential as cred, seat_codex_runtime as runtime
+    from .seat_profile_codex import codex_admission_gate, validate_codex_projection
+
+    tree = _approved_stage_or_refuse(review_dir, review_authorization)
+    subject, dependency = _resolved_jail_subject("codex", _broker_subscription_env(env))
+    jails = []
+    try:
+        _validate_jail_dependency("codex", dependency)
+        validate_codex_projection(dependency)
+        if subject.source != "standalone" and dependency is None:
+            raise ExecutableDependencyError("authority_missing")
+        resolved = runtime.subject_runtime(subject)
+        executable = Path(dependency.subject_source) if dependency is not None else subject.subject_path
+        if executable is None or (dependency is None and resolved is None):
+            raise _seat_jail.SeatSandboxRefused("seat_provider_unavailable")
+        verdict = codex_admission_gate("codex", os.environ if env is None else env, True,
+                                       executable=executable, dependency=dependency)
+        if verdict is not None:
+            raise _seat_jail.SeatSandboxRefused(verdict.code or "codex_seat_cli_shape")
+        raw = cred.read_auth(os.environ if env is None else env)
+        for check in (cred.subscription_login_problem,
+                      lambda data: cred.token_margin_problem(data, now=time.time()), cred.scope_problem):
+            code = check(raw)
+            if code:
+                raise _seat_jail.SeatSandboxRefused(code)
+        copy = cred.build_seat_copy(raw)
+        seat_dir.mkdir(mode=0o700)
+        ca = _write_egress_ca(seat_dir, egress.ca_cert)
+        artifact, instructions = prompt_parts
+        jail = _build_jail_with_owned_inputs(
+            "codex", seat_dir, executable, tree=tree,
+            artifact=artifact.encode(), instructions=instructions.encode(),
+            seat_ids=(seat_id, seat_id), egress_ca=ca, egress_proxy=egress.proxy_url,
+            dependency=dependency,
+        )
+        jails.append(jail)
+        home_fd = _seat_jail.open_dir_nofollow(seat_dir / _seat_jail.HOST_HOME_DIRNAME)
+        try:
+            # Recheck the clock immediately before delivery, after jail preparation.
+            code = cred.token_margin_problem(raw, now=time.time())
+            if code:
+                raise _seat_jail.SeatSandboxRefused(code)
+            cred.install_seat_copy(home_fd, copy)
+        finally:
+            os.close(home_fd)
+        probe_dir = seat_dir / _JAIL_PROBE_DIRNAME
+        (probe_dir / _seat_jail.HOST_TREE_DIRNAME).mkdir(mode=0o700, parents=True)
+        probe = _build_jail_with_owned_inputs(
+            "codex", probe_dir, executable, artifact=b"", instructions=b"",
+            seat_ids=(seat_id, seat_id), egress_ca=_write_egress_ca(probe_dir, egress.ca_cert),
+            egress_proxy=egress.proxy_url, dependency=dependency,
+        )
+        jails.append(probe)
+        return _JailedSeat(jail, probe, holder_pid, b"", review_dir, seat_dir,
+                           source=_seat_credentials.SOURCE_LOGIN, expires_at=copy.expires_at,
+                           delivered_copy=copy.data, codex_copy=copy)
+    except BaseException:
+        for built in jails:
+            _seat_jail.close_jail_fds(built)
+        if dependency is not None and getattr(dependency, "_jailcore_owned", False):
+            dependency.close()
+        shutil.rmtree(seat_dir, ignore_errors=True)
+        raise
+
+
+def _exec_jailed_codex_leg(
+    seat: _JailedSeat, *, deadline_s: int, model: str, prompt: str,
+    broker_evidence: dict[str, object] | None, effort: str | None = None,
+    egress_evidence: Mapping[str, object] | None = None,
+    failure_detail_sink: list[_LegFailure] | None = None,
+    quiescence_latch: _ProviderQuiescenceLatch | None = None,
+    review_monitor: _ReviewMonitor | None = None,
+) -> tuple[str, str]:
+    from . import seat_codex_credential as cred, seat_codex_evidence as evidence
+    from .seat_profile_codex import jailed_codex_command
+
+    copy = seat.codex_copy
+    if not isinstance(copy, cred.CodexSeatCopy):
+        raise ValueError("Codex seat copy unavailable")
+    command = list(jailed_codex_command(_seat_route_contract.ArgvInputs(
+        seat.jail.provider_argv0, model=model, effort=effort)))
+    password = urllib.parse.urlsplit(seat.jail.env.get("HTTPS_PROXY", "")).password
+    secrets = (*copy.secrets, *((password.encode(),) if password else ()))
+    observation = _EXEC_OBSERVATION.get()
+    if observation is not None:
+        observation["scan_secrets"] = secrets
+    tails = [b"", b""]
+    longest = max((len(secret) for secret in secrets), default=1)
+    secret_seen = False
+
+    def guard(index):
+        def feed(chunk):
+            nonlocal secret_seen
+            window = tails[index] + chunk
+            secret_seen |= any(_seat_jail.contains_secret(window, secret) for secret in secrets)
+            tails[index] = window[-4 * longest:]
+            return secret_seen
+        return feed
+
+    stdout_guard, stderr_guard = guard(0), guard(1)
+    proc = None
+    text = observed = b""
+    unsafe = False
+    try:
+        if review_monitor is not None and review_monitor.cancel.is_set():
+            return "UNAVAILABLE", "review_operation_cancelled"
+        _record_broker_provider_evidence(
+            broker_evidence, harness="codex", model=model, command=command, prompt=prompt,
+            cwd=Path("/seat/home/workspace"),
+            env={key: "<egress-proxy>" if key == "HTTPS_PROXY" else value
+                 for key, value in seat.jail.env.items()},
+            prompt_transport="stdin", stdin_prompt=True, no_tool_controls=_JAILED_CODEX_TOOL_CONTROLS,
+        )
+        if broker_evidence is not None:
+            broker_evidence.update({
+                "provider_input_mode": "pointer", "provider_input_inline": False,
+                "provider_cwd_class": "seat_jail_empty_workspace",
+                "provider_cwd_sha256": sha256(
+                    f"/seat/home/workspace\0{seat.jail.profile_digest}".encode()).hexdigest(),
+                "sandbox_filesystem_confined": True,
+                "seat_jail_profile_id": seat.jail.profile_id,
+                "seat_jail_profile_digest": seat.jail.profile_digest,
+                "seat_jail_filter_sha256": seat.jail.filter_digest,
+                **({"egress": dict(egress_evidence)} if egress_evidence is not None else {}),
+            })
+        _record_executable_dependency_evidence(broker_evidence, seat.jail)
+        try:
+            proc = _run_leg_with_liveness(
+                command, cwd="/seat/home/workspace", env=dict(seat.jail.env),
+                deadline_s=deadline_s, input_text=prompt, stdout_guard=stdout_guard,
+                stderr_guard=stderr_guard, seat_jail=seat.jail, probe_jail=seat.probe_jail,
+                quiescence_latch=quiescence_latch,
+                **({"review_monitor": review_monitor} if review_monitor is not None else {}),
+            )
+        except subprocess.TimeoutExpired:
+            pass
+        try:
+            observed = _seat_uid.read_in_h(
+                seat.holder_pid, str(seat.seat_dir / _seat_jail.HOST_HOME_DIRNAME),
+                cred.SEAT_AUTH_RELPATH, cred.AUTH_CAP_BYTES)
+        except (_seat_uid.SeatObjectMissing, _seat_jail.UnsafeSeatObject, OSError,
+                subprocess.SubprocessError):
+            observed = b""
+        try:
+            text = _seat_uid.read_in_h(
+                seat.holder_pid, str(seat.seat_dir / _seat_jail.HOST_OUT_DIRNAME),
+                "panel-codex.txt", _seat_jail.OUTPUT_READ_CAP_BYTES)
+        except _seat_uid.SeatObjectMissing:
+            text = b""
+        except (_seat_jail.UnsafeSeatObject, OSError, subprocess.SubprocessError):
+            unsafe = True
+    finally:
+        _cleanup_jailed_seat(seat, primary=sys.exception())
+    if proc is not None:
+        _note_exec_result(proc.returncode, command, seat.jail.env)
+    kept = text + (f"{proc.stdout}{proc.stderr}".encode(errors="replace") if proc else b"")
+    if secret_seen or any(_seat_jail.contains_secret(kept, secret) for secret in secrets):
+        return _jailed_failure("codex_seat_token_in_output", failure_detail_sink)
+    if cred.tokens_changed(copy, observed):
+        return _jailed_failure("codex_seat_token_refreshed_in_jail", failure_detail_sink)
+    if proc is not None and proc.returncode != 0 and time.time() >= copy.expires_at:
+        return _jailed_failure("codex_seat_token_expiring", failure_detail_sink)
+    record = evidence.read_tool_record(proc.stdout.encode() if proc is not None else b"")
+    code = evidence.tools_ran_code(record)
+    if code:
+        return _jailed_failure(code, failure_detail_sink)
+    if unsafe:
+        return _jailed_failure("seat_sandbox_refused:output_unsafe", failure_detail_sink)
+    if broker_evidence is not None:
+        broker_evidence["provider_stream_tool_steps"] = record.commands_completed
+    review = text.decode("utf-8", errors="replace")
+    _note_exec_signals(model_turn=record.turn_completed, verdict=terminal_verdict(review) is not None)
+    return _classify_leg(proc.returncode, review, proc.stderr, "review"), review
 
 
 def _jailed_gemini_secrets(seat: "_JailedSeat") -> tuple[bytes, ...]:
@@ -14625,15 +14708,14 @@ def _claude_seat_login_margin_s(timeout_s: int | None) -> float:
 
 # agent-harness#1335: how long the codex command-sandbox probe may take. It runs `true`.
 _CODEX_SANDBOX_PROBE_TIMEOUT_S = 30
-_CODEX_SANDBOX_PROBE_PROFILES = {"workspace-write": ":workspace", "read-only": ":read-only"}
+_CODEX_SANDBOX_PROBE_PROFILES = {"read-only": ":read-only"}
 
 
 def _codex_sandbox_probe_command(cmd: "Sequence[str]") -> "list[str] | None":
     """The no-inference probe for the command sandbox THIS codex launch will use, or ``None``.
 
     ``codex sandbox`` runs one command in codex's own sandbox. The probe names the same tree
-    (``--cd``), the same sandbox mode and the same ``sandbox_workspace_write`` settings as the
-    launch, and runs ``true``. ``None`` when the argv is not a codex launch this can mirror
+    (``--cd``) and read-only sandbox mode as the launch, and runs ``true``. ``None`` when the argv is not a codex launch this can mirror
     (no tree or sandbox mode named, or a mode with no sandbox)."""
     words = [os.fspath(word) for word in cmd]
     if not words or Path(words[0]).name != "codex":
@@ -14643,17 +14725,13 @@ def _codex_sandbox_probe_command(cmd: "Sequence[str]") -> "list[str] | None":
         profile = _CODEX_SANDBOX_PROBE_PROFILES[words[words.index("--sandbox") + 1]]
     except (ValueError, IndexError, KeyError):
         return None
-    settings = [item for index, word in enumerate(words[:-1])
-                if word == "-c" and words[index + 1].startswith("sandbox_workspace_write.")
-                for item in ("-c", words[index + 1])]
     return ["codex", "sandbox", "--permission-profile", profile, "--cd", workdir,
-            *settings, "--", "true"]
+            "--", "true"]
 
 
 def _codex_command_sandbox_cannot_start(cmd: "Sequence[str]", *, cwd, env, retain_caps=(),
                                         child_scratch: "str | None" = None,
-                                        quiescence_latch: "_ProviderQuiescenceLatch | None" = None,
-                                        writable_tree: "Path | None" = None) -> bool:
+                                        quiescence_latch: "_ProviderQuiescenceLatch | None" = None) -> bool:
     """Measure the capability, not the reply: can codex start a command in this seat's view?
 
     codex runs every command inside its own bubblewrap sandbox. Where that sandbox cannot
@@ -14661,7 +14739,7 @@ def _codex_command_sandbox_cannot_start(cmd: "Sequence[str]", *, cwd, env, retai
     read-only) the seat reads nothing, yet codex exits 0 with a verdict, and for some of
     those failures it leaves no record of the attempt in any stream. So the probe is
     launched exactly as the seat will be -- the same function, owner, working directory,
-    environment, retained capability and writable tree, under the leg's quiescence latch (a
+    environment and read-only view, under the leg's quiescence latch (a
     cancel kills it like any launch of the leg) -- and only the argv after ``codex`` differs.
 
     True ONLY for a failed probe that printed the launcher's own diagnostic. Everything else
@@ -14677,7 +14755,6 @@ def _codex_command_sandbox_cannot_start(cmd: "Sequence[str]", *, cwd, env, retai
             probe, cwd=cwd, env=env, deadline_s=_CODEX_SANDBOX_PROBE_TIMEOUT_S,
             retain_caps=retain_caps, child_scratch=child_scratch,
             quiescence_latch=quiescence_latch,
-            **({"writable_tree": writable_tree} if writable_tree is not None else {}),
         )
     except (OSError, subprocess.TimeoutExpired, _sandbox_egress.EgressUnavailable):
         return False  # inconclusive; the leg's own launch reports its own refusal
@@ -15175,33 +15252,17 @@ def _exec_leg(
             str(out_file),
             "-",
         ]
-        codex_retain_caps: tuple[str, ...] = ()
-        staged_tree: Path | None = None
         if brokered:
-            # One sandbox decision, read by the argv, the recorded controls, and the launch.
-            staged_tree = _sandbox_in(review_dir)
-            if staged_tree is not None:
-                codex_retain_caps = _BROKER_CODEX_SANDBOX_RETAINED_CAPS
             cmd = _brokered_codex_command(
                 model=model, out_dir=out_dir, out_file=out_file,
                 codex_effort_args=codex_effort_args,
-                staged_tree=staged_tree,
             )
-        # agent-harness#1470: the workspace-write seat is rooted at ITS OWN staged tree, and
-        # codex's sandbox has to create its mount points there, so that one tree is bound
-        # writable in the seat's view (the probe and the launch get the same grant;
-        # `_seat_command_profile` checks it again). No other route is granted anything.
-        codex_tree_grant: dict[str, Path] = (
-            {"writable_tree": staged_tree} if brokered and staged_tree is not None else {})
-        # agent-harness#1335: where this route gives codex a shell, its command sandbox is
-        # probed in the seat's own view BEFORE the model is called; a sandbox that cannot
-        # start ends the leg here, typed. Not probed: the sealed route (the seat has no
-        # shell) and the capture route (its launch is frozen), which has no such check.
-        if (agy_capture is None and (not brokered or staged_tree is not None)
+        # agent-harness#1469 remains on the non-brokered route. Jailed review
+        # seats use their CLI-shape gate and parent-held completed-command record.
+        if (agy_capture is None and not brokered
                 and _codex_command_sandbox_cannot_start(
-                    cmd, cwd=provider_cwd, env=env, retain_caps=codex_retain_caps,
-                    child_scratch=leg_scratch, quiescence_latch=quiescence_latch,
-                    **codex_tree_grant)):
+                    cmd, cwd=provider_cwd, env=env,
+                    child_scratch=leg_scratch, quiescence_latch=quiescence_latch)):
             return 1, "", _HarnessCode(_seat_tool_evidence.TOOL_SANDBOX_UNAVAILABLE)
         if brokered:
             _record_broker_provider_evidence(
@@ -15209,7 +15270,7 @@ def _exec_leg(
                 model=model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["codex"],
                 command=cmd, prompt=prompt, cwd=out_dir, env=env,
                 prompt_transport="stdin_sealed",
-                no_tool_controls=_broker_tool_controls("codex", staged_tree),
+                no_tool_controls=_broker_tool_controls("codex", None),
                 stdin_prompt=True,
             )
         if agy_capture is not None:
@@ -15255,12 +15316,7 @@ def _exec_leg(
                     deadline_s=deadline_s,
                     input_text=prompt,
                     quiescence_latch=quiescence_latch,
-                    retain_caps=codex_retain_caps,
                     child_scratch=leg_scratch,
-                    **codex_tree_grant,
-                    # The tree's provenance was checked before the first attempt; a retry
-                    # relaunches on that same tree and reuses the check.
-                    **({"writable_tree_checked": True} if _attempt and codex_tree_grant else {}),
                     **({"review_monitor": review_monitor} if review_monitor is not None else {}),
                 )
             except subprocess.TimeoutExpired:
@@ -16538,7 +16594,7 @@ def _default_spawn(
                 seat_notices.append("seat_sandbox_root_fell_back")
             if not _sandbox_evidence().get("sandbox_root_applied", True):
                 seat_notices.append("seat_sandbox_root_unapplied")
-            if leg in ("codex", "grok") and sandbox_usable_by(leg, brokered=True):
+            if not jailed and leg in ("codex", "grok") and sandbox_usable_by(leg, brokered=True):
                 seat_notices.append("seat_filesystem_unconfined")
         capture_staged: dict[str, dict[str, object]] | None = None
         if agy_capture is not None:
@@ -16735,6 +16791,33 @@ def _default_spawn(
                             if claude_sink[-1].template in _claude_seat_transport.mode_line_codes():
                                 seat_notices.append(claude_sink[-1].template)
                         return claude_status, claude_text
+                    if leg == "codex" and jailed:
+                        codex_sink: list[_LegFailure] = []
+                        seat = None
+                        try:
+                            seat = _prepare_jailed_codex(
+                                review_dir, base / "seat", review_authorization, seat_id,
+                                _seat_uid.holder_pid_from_prefix(_EGRESS_LAUNCH_PREFIX.get()),
+                                (staged_bundle, staged_instructions), gemini_egress, env=env,
+                            )
+                            seat = _bind_route_qualification(seat, seat_route)
+                            codex_status, codex_text = _exec_jailed_codex_leg(
+                                seat, deadline_s=int(leg_deadline), model=broker_model, effort=effort,
+                                prompt=sealed_prompt, broker_evidence=broker.evidence,
+                                egress_evidence=_seat_egress_proxy.egress_evidence(gemini_egress),
+                                failure_detail_sink=codex_sink, quiescence_latch=broker_latch,
+                                review_monitor=review_monitor,
+                            )
+                        except _seat_jail.SeatSandboxRefused as exc:
+                            codex_sink.append(_LegFailure(template=exc.code))
+                            codex_status, codex_text = "DEGRADED", ""
+                            seat_notices.extend(exc.also)
+                        if seat is not None:
+                            seat_notices.extend(seat.notices)
+                        if codex_status != "OK" and codex_sink:
+                            leg_detail = codex_sink[-1]
+                            seat_notices.append(leg_detail.template)
+                        return codex_status, codex_text
                     if leg == "gemini" and jailed:
                         gemini_sink: list[_LegFailure] = []
                         if window_board is not None:
@@ -16979,8 +17062,8 @@ def _default_spawn(
                 if provider_output_dir is not None and agy_capture is None and not quiescence_failed:
                     shutil.rmtree(provider_output_dir, ignore_errors=True)
                 if base is not None and not quiescence_failed:
-                    # A seat can leave read-only directories in its staged tree (a codex
-                    # seat writes there, agent-harness#1470), and `rmtree(ignore_errors=
+                    # A staged tree can contain read-only directories, and
+                    # `rmtree(ignore_errors=
                     # True)` cannot unlink through a 0o500 directory -- it would fail
                     # SILENTLY and leak the whole stage every round. `release` drops it
                     # first, through the helper that restores modes on the way down.
