@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import secrets
 import shutil
+from types import SimpleNamespace
 
 import pytest
 
@@ -11,11 +12,47 @@ from phase_loop_runtime import panel_invoker as pi, seat_codex_credential as cre
 from phase_loop_runtime import seat_jail, seat_uid, sandbox_egress, seat_egress_proxy
 from phase_loop_runtime import seat_profile_codex as codex, seat_subject
 from test_seat_profile_codex import codex_profile as _codex_profile
-from test_seat_egress_allowlist_codex import codex_front as _codex_front, _live_jail_or_fail, _synthetic_login
+from test_seat_egress_allowlist_codex import (
+    codex_front as _codex_front,  # noqa: F401 - pytest fixture requested dynamically after the gate
+    _live_jail_or_fail, _synthetic_login,
+)
 from fixtures.codex_fixture_provider import CodexFixtureProvider, FIXTURE_CONFIG, scripted_call, response_events
 
 codex_profile = _codex_profile
-codex_front = _codex_front
+
+
+@pytest.fixture
+def codex_front(request):
+    # Fixture setup precedes the test body. Opt out before even probing Node/srt
+    # or generating a CA (their own readiness deadlines can be much longer).
+    _live_jail_or_fail()
+    return request.getfixturevalue("_codex_front")
+
+
+@pytest.mark.parametrize("opt_in", [None, "0"])
+def test_live_opt_out_precedes_all_proxy_and_host_probes(monkeypatch, opt_in):
+    if opt_in is None:
+        monkeypatch.delenv("PHASE_LOOP_REQUIRE_LIVE_JAIL", raising=False)
+    else:
+        monkeypatch.setenv("PHASE_LOOP_REQUIRE_LIVE_JAIL", opt_in)
+    def unexpected(*args, **kwargs):
+        pytest.fail("an opted-out live test reached host or proxy setup")
+    monkeypatch.setattr(seat_uid, "seat_uid_available", unexpected)
+    monkeypatch.setattr(sandbox_egress, "egress_isolation_available", unexpected)
+    monkeypatch.setattr(seat_egress_proxy, "unavailable_reason", unexpected)
+    with pytest.raises(pytest.skip.Exception, match="PHASE_LOOP_REQUIRE_LIVE_JAIL"):
+        codex_front.__wrapped__(SimpleNamespace(getfixturevalue=unexpected))
+
+
+def test_required_live_run_fails_missing_prerequisites_before_proxy_setup(monkeypatch):
+    monkeypatch.setenv("PHASE_LOOP_REQUIRE_LIVE_JAIL", "1")
+    monkeypatch.setattr(seat_uid, "seat_uid_available", lambda: False)
+    monkeypatch.setattr(sandbox_egress, "egress_isolation_available", lambda: False)
+    monkeypatch.setattr(seat_egress_proxy, "unavailable_reason", lambda: "fixture missing srt")
+    def unexpected(*args, **kwargs):
+        pytest.fail("missing prerequisites reached proxy setup")
+    with pytest.raises(pytest.fail.Exception, match="live jail unavailable"):
+        codex_front.__wrapped__(SimpleNamespace(getfixturevalue=unexpected))
 
 
 @pytest.mark.parametrize("name,key", [("shell_command", "command"), ("exec_command", "cmd"), ("shell", "command")])
@@ -34,7 +71,6 @@ def test_fixture_rejects_a_cli_without_the_scripted_tool():
 @pytest.mark.parametrize("case", ["sentinel", "planted_markers", "rewritten_auth", "nested_namespace", "workspace_write"])
 @pytest.mark.host_seat_credentials  # Existing installed-CLI opt-in; this test supplies only synthetic auth.
 def test_live_jail_codex_fixture_provider(tmp_path, monkeypatch, codex_profile, codex_front, case, live_seat_attempt):
-    _live_jail_or_fail()
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(seat_jail, "state_home", lambda: tmp_path / "state")
     cli = shutil.which("codex")

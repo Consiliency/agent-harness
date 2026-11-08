@@ -171,6 +171,9 @@ def test_real_liveness_output_and_post_launch_order(tmp_path, monkeypatch, codex
 ])
 def test_default_spawn_holds_route_lease_through_codex_leg(tmp_path, monkeypatch, codex_profile, case, expected):
     from test_seat_notices import _brokered
+    # This dispatch test owns its temporary tree; global host scratch collection
+    # is unrelated and can scan thousands of sibling suite sandboxes in CI.
+    monkeypatch.setattr(pi, "_gc_stale_panel_scratch", lambda: None)
     seat = prepare(tmp_path, monkeypatch)
     local_reads(monkeypatch)
     cleanup = pi._cleanup_jailed_seat
