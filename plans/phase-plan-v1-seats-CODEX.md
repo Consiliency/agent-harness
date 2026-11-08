@@ -192,6 +192,7 @@ and nothing on main can reach the route early.
   `codex_seat_tools_unavailable` when the stream is truncated or no command completed, and
   `None` when the leg counts. Event names are bound in `CODEX_TOOL_EVENTS` from SL-3.1's
   measurement.
+  `CODEX_TOOL_EVENTS` includes the measured top-level `error` name; an `error` followed by `turn.completed` in the same turn does not itself invalidate the leg, while all existing stream-validity, completed-command and unknown-event requirements remain in force.
 
   Post-launch order, first match ends the leg:
   1. a copied secret or the proxy credential in any kept byte: `codex_seat_token_in_output`;

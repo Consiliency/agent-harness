@@ -6569,6 +6569,11 @@ _JAILED_GEMINI_TOOL_CONTROLS: tuple[str, ...] = (
     "egress-allowlisting-proxy", "seat-jail",
 )
 
+_JAILED_CODEX_TOOL_CONTROLS: tuple[str, ...] = (
+    "inner-sandbox-off-inside-seat-jail", "workspace-empty-cwd", "tree-not-a-workspace",
+    "egress-allowlisting-proxy", "seat-jail",
+)
+
 
 def _jailed_gemini_command(model: str) -> list[str]:
     """The jailed agy argv (agent-harness#1170): heartbeat stream-json, tools approved inside
@@ -12551,6 +12556,7 @@ class _JailedSeat:
     #: The ``sdk`` transport's prepared launch, from its pre-credential preflight
     #: (IF-0-CLAUDE-3): the verified install and the worker payload's verified bytes.
     sdk_prepared: object | None = None
+    codex_copy: object | None = field(default=None, repr=False)
 
 
 def _cleanup_jailed_seat(
@@ -13377,6 +13383,176 @@ def _prepare_jailed_gemini(
             if getattr(dependency, "_jailcore_owned", False):
                 dependency.close()
         raise
+
+
+def _prepare_jailed_codex(
+    review_dir: Path, seat_dir: Path, review_authorization: "ReviewIsolationAuthorization",
+    seat_id: int, holder_pid: int, prompt_parts: tuple[str, str], egress,
+    *, env: Mapping[str, str] | None = None,
+) -> _JailedSeat:
+    from . import seat_codex_credential as cred, seat_codex_runtime as runtime
+
+    tree = _approved_stage_or_refuse(review_dir, review_authorization)
+    subject, dependency = _resolved_jail_subject("codex", _broker_subscription_env(env))
+    jails = []
+    try:
+        _validate_jail_dependency("codex", dependency)
+        if subject.source != "standalone" and dependency is None:
+            raise ExecutableDependencyError("authority_missing")
+        resolved = runtime.subject_runtime(subject)
+        executable = Path(dependency.subject_source) if dependency is not None else subject.subject_path
+        if executable is None or (dependency is None and resolved is None):
+            raise _seat_jail.SeatSandboxRefused("seat_provider_unavailable")
+        raw = cred.read_auth(os.environ if env is None else env)
+        for check in (cred.subscription_login_problem,
+                      lambda data: cred.token_margin_problem(data, now=time.time()), cred.scope_problem):
+            code = check(raw)
+            if code:
+                raise _seat_jail.SeatSandboxRefused(code)
+        copy = cred.build_seat_copy(raw)
+        seat_dir.mkdir(mode=0o700)
+        ca = _write_egress_ca(seat_dir, egress.ca_cert)
+        artifact, instructions = prompt_parts
+        jail = _build_jail_with_owned_inputs(
+            "codex", seat_dir, executable, tree=tree,
+            artifact=artifact.encode(), instructions=instructions.encode(),
+            seat_ids=(seat_id, seat_id), egress_ca=ca, egress_proxy=egress.proxy_url,
+            dependency=dependency,
+        )
+        jails.append(jail)
+        home_fd = _seat_jail.open_dir_nofollow(seat_dir / _seat_jail.HOST_HOME_DIRNAME)
+        try:
+            # Recheck the clock immediately before delivery, after jail preparation.
+            code = cred.token_margin_problem(raw, now=time.time())
+            if code:
+                raise _seat_jail.SeatSandboxRefused(code)
+            cred.install_seat_copy(home_fd, copy)
+        finally:
+            os.close(home_fd)
+        probe_dir = seat_dir / _JAIL_PROBE_DIRNAME
+        (probe_dir / _seat_jail.HOST_TREE_DIRNAME).mkdir(mode=0o700, parents=True)
+        probe = _build_jail_with_owned_inputs(
+            "codex", probe_dir, executable, artifact=b"", instructions=b"",
+            seat_ids=(seat_id, seat_id), egress_ca=_write_egress_ca(probe_dir, egress.ca_cert),
+            egress_proxy=egress.proxy_url, dependency=dependency,
+        )
+        jails.append(probe)
+        return _JailedSeat(jail, probe, holder_pid, b"", review_dir, seat_dir,
+                           source=_seat_credentials.SOURCE_LOGIN, expires_at=copy.expires_at,
+                           delivered_copy=copy.data, codex_copy=copy)
+    except BaseException:
+        for built in jails:
+            _seat_jail.close_jail_fds(built)
+        if dependency is not None and getattr(dependency, "_jailcore_owned", False):
+            dependency.close()
+        shutil.rmtree(seat_dir, ignore_errors=True)
+        raise
+
+
+def _exec_jailed_codex_leg(
+    seat: _JailedSeat, *, deadline_s: int, model: str, prompt: str,
+    broker_evidence: dict[str, object] | None, effort: str | None = None,
+    egress_evidence: Mapping[str, object] | None = None,
+    failure_detail_sink: list[_LegFailure] | None = None,
+    quiescence_latch: _ProviderQuiescenceLatch | None = None,
+    review_monitor: _ReviewMonitor | None = None,
+) -> tuple[str, str]:
+    from . import seat_codex_credential as cred, seat_codex_evidence as evidence
+    from .seat_profile_codex import jailed_codex_command
+
+    copy = seat.codex_copy
+    if not isinstance(copy, cred.CodexSeatCopy):
+        raise ValueError("Codex seat copy unavailable")
+    command = list(jailed_codex_command(_seat_route_contract.ArgvInputs(
+        seat.jail.provider_argv0, model=model, effort=effort)))
+    password = urllib.parse.urlsplit(seat.jail.env.get("HTTPS_PROXY", "")).password
+    secrets = (*copy.secrets, *((password.encode(),) if password else ()))
+    observation = _EXEC_OBSERVATION.get()
+    if observation is not None:
+        observation["scan_secrets"] = secrets
+    tails = [b"", b""]
+    longest = max((len(secret) for secret in secrets), default=1)
+    secret_seen = False
+
+    def guard(index):
+        def feed(chunk):
+            nonlocal secret_seen
+            window = tails[index] + chunk
+            secret_seen |= any(_seat_jail.contains_secret(window, secret) for secret in secrets)
+            tails[index] = window[-4 * longest:]
+            return secret_seen
+        return feed
+
+    stdout_guard, stderr_guard = guard(0), guard(1)
+    proc = None
+    text = observed = b""
+    unsafe = False
+    try:
+        if review_monitor is not None and review_monitor.cancel.is_set():
+            return "UNAVAILABLE", "review_operation_cancelled"
+        _record_broker_provider_evidence(
+            broker_evidence, harness="codex", model=model, command=command, prompt=prompt,
+            cwd=Path("/seat/home/workspace"),
+            env={key: "<egress-proxy>" if key == "HTTPS_PROXY" else value
+                 for key, value in seat.jail.env.items()},
+            prompt_transport="stdin", stdin_prompt=True, no_tool_controls=_JAILED_CODEX_TOOL_CONTROLS,
+        )
+        if broker_evidence is not None:
+            broker_evidence.update({
+                "provider_input_mode": "pointer", "provider_input_inline": False,
+                "provider_cwd_class": "seat_jail_empty_workspace",
+                "sandbox_filesystem_confined": True,
+                "seat_jail_profile_id": seat.jail.profile_id,
+                "seat_jail_profile_digest": seat.jail.profile_digest,
+                "seat_jail_filter_sha256": seat.jail.filter_digest,
+                **({"egress": dict(egress_evidence)} if egress_evidence is not None else {}),
+            })
+        _record_executable_dependency_evidence(broker_evidence, seat.jail)
+        try:
+            proc = _run_leg_with_liveness(
+                command, cwd="/seat/home/workspace", env=dict(seat.jail.env),
+                deadline_s=deadline_s, input_text=prompt, stdout_guard=stdout_guard,
+                stderr_guard=stderr_guard, seat_jail=seat.jail, probe_jail=seat.probe_jail,
+                quiescence_latch=quiescence_latch,
+                **({"review_monitor": review_monitor} if review_monitor is not None else {}),
+            )
+        except subprocess.TimeoutExpired:
+            pass
+        try:
+            observed = _seat_uid.read_in_h(
+                seat.holder_pid, str(seat.seat_dir / _seat_jail.HOST_HOME_DIRNAME),
+                cred.SEAT_AUTH_RELPATH, cred.AUTH_CAP_BYTES)
+        except (_seat_uid.SeatObjectMissing, _seat_jail.UnsafeSeatObject, OSError,
+                subprocess.SubprocessError):
+            observed = b""
+        try:
+            text = _seat_uid.read_in_h(
+                seat.holder_pid, str(seat.seat_dir / _seat_jail.HOST_OUT_DIRNAME),
+                "panel-codex.txt", _seat_jail.OUTPUT_READ_CAP_BYTES)
+        except _seat_uid.SeatObjectMissing:
+            text = b""
+        except (_seat_jail.UnsafeSeatObject, OSError, subprocess.SubprocessError):
+            unsafe = True
+    finally:
+        _cleanup_jailed_seat(seat, primary=sys.exception())
+    kept = text + (f"{proc.stdout}{proc.stderr}".encode(errors="replace") if proc else b"")
+    if secret_seen or any(_seat_jail.contains_secret(kept, secret) for secret in secrets):
+        return _jailed_failure("codex_seat_token_in_output", failure_detail_sink)
+    if cred.tokens_changed(copy, observed):
+        return _jailed_failure("codex_seat_token_refreshed_in_jail", failure_detail_sink)
+    if proc is not None and proc.returncode != 0 and time.time() >= copy.expires_at:
+        return _jailed_failure("codex_seat_token_expiring", failure_detail_sink)
+    record = evidence.read_tool_record(proc.stdout.encode() if proc is not None else b"")
+    code = evidence.tools_ran_code(record)
+    if code:
+        return _jailed_failure(code, failure_detail_sink)
+    if unsafe:
+        return _jailed_failure("seat_sandbox_refused:output_unsafe", failure_detail_sink)
+    _note_exec_result(proc.returncode, command, seat.jail.env)
+    if broker_evidence is not None:
+        broker_evidence["provider_stream_tool_steps"] = record.commands_completed
+    review = text.decode("utf-8", errors="replace")
+    return _classify_leg(proc.returncode, review, proc.stderr, "review"), review
 
 
 def _jailed_gemini_secrets(seat: "_JailedSeat") -> tuple[bytes, ...]:
@@ -16735,6 +16911,30 @@ def _default_spawn(
                             if claude_sink[-1].template in _claude_seat_transport.mode_line_codes():
                                 seat_notices.append(claude_sink[-1].template)
                         return claude_status, claude_text
+                    if leg == "codex" and jailed:
+                        codex_sink: list[_LegFailure] = []
+                        try:
+                            seat = _prepare_jailed_codex(
+                                review_dir, base / "seat", review_authorization, seat_id,
+                                _seat_uid.holder_pid_from_prefix(_EGRESS_LAUNCH_PREFIX.get()),
+                                (staged_bundle, staged_instructions), gemini_egress, env=env,
+                            )
+                            seat = _bind_route_qualification(seat, seat_route)
+                            codex_status, codex_text = _exec_jailed_codex_leg(
+                                seat, deadline_s=int(leg_deadline), model=broker_model, effort=effort,
+                                prompt=sealed_prompt, broker_evidence=broker.evidence,
+                                egress_evidence=_seat_egress_proxy.egress_evidence(gemini_egress),
+                                failure_detail_sink=codex_sink, quiescence_latch=broker_latch,
+                                review_monitor=review_monitor,
+                            )
+                        except _seat_jail.SeatSandboxRefused as exc:
+                            codex_sink.append(_LegFailure(template=exc.code))
+                            codex_status, codex_text = "DEGRADED", ""
+                            seat_notices.extend(exc.also)
+                        if codex_status != "OK" and codex_sink:
+                            leg_detail = codex_sink[-1]
+                            seat_notices.append(leg_detail.template)
+                        return codex_status, codex_text
                     if leg == "gemini" and jailed:
                         gemini_sink: list[_LegFailure] = []
                         if window_board is not None:
