@@ -12,6 +12,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   executor availability check now reads `Not logged in` from `codex login status` as
   logged out. Nothing registers the Codex profile yet (SEATS CODEX SL-1,
   agent-harness#1820).
+- TEAMHOST documents managed-release subject and authority admission, the doctor and host-admin
+  vocabulary, the provider-front bounds, and the first post-TEAMHOST Gemini row window; its
+  0.7.29 standard-host doctor receipt remains tracked for CLOSEOUT (SEATS TEAMHOST SL-6,
+  agent-harness#1820).
 
 ## [0.7.29] - Unreleased candidate
 

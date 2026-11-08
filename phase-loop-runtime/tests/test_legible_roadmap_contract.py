@@ -2607,10 +2607,12 @@ def test_catalog_rescan_is_stable_sorted_idempotent_and_never_invents_positive_c
     docs_dir.mkdir()
     (docs_dir / "b.md").write_text("# B\n", encoding="utf-8")
     (docs_dir / "a.md").write_text("# A\n", encoding="utf-8")
+    (docs_dir / "team-host-admin.md").write_text("# Team host\n", encoding="utf-8")
     first = rescan_catalog(repo)
     second = rescan_catalog(repo)
     assert first == second, "rescan must be idempotent"
     assert list(first) == sorted(first), "rescan must be stable path-sorted"
+    assert "docs/team-host-admin.md" in first
 
 
 # ===========================================================================

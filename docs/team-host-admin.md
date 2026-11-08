@@ -48,6 +48,15 @@ Root action: install a managed release that carries every declared seat dependen
 
 Serves EC-TEAMHOST-1. Read-only check: inspect the root-owned seat-authority pin for an entry for
 each active release and leg, containing `authority_sha256`, `authority_id` and
-`base_profile_sha256`. Root action: write the pin from the independently reviewed declaration;
-release bytes never establish their own authority. The pin path is
-`/etc/consiliency/tooling/seat-authority.json`.
+`base_profile_sha256`. Root action: the administrator, or the administrator's root-owned release
+updater under contract §7, writes the pin. The updater may write an entry only for a release it
+built and admitted through the release runtime in the same run, before promotion. It takes
+`release_id` and all three entry values from that same admitted build record, binds the identity
+to the exact bytes built and admitted in that run, and refuses a reused identity whose bytes
+differ. All updater instances serialize on a root-owned exclusive lock held across re-reading,
+validating, merging or pruning, and atomically replacing the pin. A malformed pin or entry, or
+any absent required field, refuses; a conflicting release entry is never overwritten; only
+entries for releases confirmed no longer retained are pruned. The replacement is root-owned,
+mode 0644, and reached through root-only ancestors. Every written or pruned entry is logged to a
+root-owned, non-group-or-world-writable updater log. Release bytes never establish their own
+authority at seat time. The pin path is `/etc/consiliency/tooling/seat-authority.json`.

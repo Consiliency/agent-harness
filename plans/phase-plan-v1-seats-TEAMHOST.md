@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: TEAMHOST
 roadmap: specs/phase-plans-seats-v1.md
-roadmap_sha256: 785e5ada02bc80319d23f9f5cfb577aa5fdefcb425cca9bf4f779962a01c16f9
+roadmap_sha256: b91c98ad7b9097ba411ca21f39cf390878dabac449e59d6fdfd1750915c16a09
 automation:
   suite_command: ["timeout", "900", "uv", "run", "--quiet", "--project", "phase-loop-runtime", "--group", "test", "--python", "3.14", "--python-preference", "only-system", "--locked", "python", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_seats_teamhost_subject.py", "phase-loop-runtime/tests/test_seats_teamhost_accounts.py", "phase-loop-runtime/tests/test_seats_teamhost_gemini.py", "phase-loop-runtime/tests/test_seats_teamhost_integration.py", "phase-loop-runtime/tests/test_seats_teamhost_doctor.py", "phase-loop-runtime/tests/test_seats_teamhost_overlay.py", "phase-loop-runtime/tests/test_seats_teamhost_switchon.py", "phase-loop-runtime/tests/test_seat_jail_prerequisites_1357.py", "phase-loop-runtime/tests/test_agy_self_qualification.py", "phase-loop-runtime/tests/test_seat_host_uid_1098.py", "phase-loop-runtime/tests/test_sandbox_policy.py", "phase-loop-runtime/tests/test_agy_integrity_seat_admission.py", "phase-loop-runtime/tests/test_doctor_bom.py", "phase-loop-runtime/tests/test_seat_profiles.py", "phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py", "phase-loop-runtime/tests/test_seat_launch_helpers_trusted.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
 ---
@@ -420,6 +420,13 @@ Without a recorded measurement, item 6 is deferred with the contract's reason, a
 - evidence paths: `plans/evidence/seat-teamhost/`
 - redaction posture: `metadata_only`
 - downstream handling: `roadmap amendment` (record gates G-A and G-D, which hold lanes SL-8 and SL-7, beside TEAMHOST's dependency line; accepted by the coordinator on 2026-11-06)
+
+### Post-execution amendments
+
+- 2026-11-07 — SL-docs.3 is pending post-publication: phase-loop-runtime 0.7.29 is the first
+  runtime that carries TEAMHOST. CLOSEOUT tracks an owner-gated receipt from
+  `phase-loop doctor --json` on the designated standard host. No dev0 or other team-host
+  observation substitutes for that receipt.
 
 ## Acceptance Criteria
 

@@ -1479,10 +1479,15 @@ are recorded on agent-harness#1132.
   recorded Gemini P4/P3 stop -> its code (none today: the containment probe re-run through
   the seat's egress layer and P3 pass, agent-harness#1170); (2) host capability ->
   `seat_sandbox_unavailable_host`, `_tiocsti`, or `_seat_uid`; (3) credential presence ->
-  `claude_seat_token_missing` / `gemini_seat_credential_missing`; (4) the Gemini tooled
-  profile -> `gemini_seat_profile_unqualified`, then its egress layer ->
-  `gemini_seat_egress_unavailable`. A seat stopped at any of steps 0-4 is DEGRADED and not
-  run, with that code as its detail and notice (agent-harness#1244, below). Codex and grok
+  `claude_seat_token_missing` / `gemini_seat_credential_missing`; (4) profile preconditions,
+  including Gemini's tooled profile -> `gemini_seat_profile_unqualified`; (5) the profile's
+  allowlisted egress layer, or its named open-egress exception -> the route's egress code;
+  (6) the selected subject and, for a managed release, its contract-§7 authority and declared
+  projection -> `seat_sandbox_refused:identity`; (7) the jail pass for the resulting live
+  qualification key -> `seat_sandbox_refused:pass_store_unsafe`,
+  `seat_jail_qualification_failed` or `seat_sandbox_refused:jail_unqualified`. A seat stopped
+  at any of steps 0-7 is DEGRADED and not run, with that code as its detail and notice
+  (agent-harness#1244, below). Codex and grok
   are not jailed (agent-harness#895) and carry `seat_filesystem_unconfined` when given a
   tree; without a staged tree they too are DEGRADED and not run, with
   `seat_sandbox_not_staged`.
@@ -1561,7 +1566,12 @@ are recorded on agent-harness#1132.
   front forwards to srt only a positively-inspected ClientHello whose SNI is on the pinned request
   allowlist (`seat_egress/gemini-allowlist.json`); every other first flight is refused, so no
   Host or SNI inside a tunnel reaches a non-allowlisted service, and srt's opaque-tunnel fallback
-  is never reached. The interception CA is the host's own
+  is never reached. The front parses at most one TLS record: every nested ClientHello,
+  extension and server-name length must fit its enclosing length, and an overrun is refused
+  rather than clamped. It buffers at most 16,389 bytes before the splice and applies the
+  30-second idle bound only to that pre-splice first flight; the timer is cancelled before an
+  admitted provider stream is spliced, so provider silence never closes an established stream.
+  The interception CA is the host's own
   (`$XDG_STATE_HOME/phase-loop/seat-egress-ca`, 0700, key 0600); only its certificate enters the
   seat, as its whole trust bundle. Both credentials the leg hands the seat -- the model bearer and
   the proxy's session credential -- are scanned out of the returned review. The leg's evidence

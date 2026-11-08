@@ -214,6 +214,24 @@ bullets above. **It depends on which install you ran**, so pick the matching sur
 A missing `phase-loop` on `PATH` is the one failure that surfaces before any of this — see
 Troubleshooting below.
 
+### Confined review-seat rows
+
+The doctor report has two additional arrays for confined review seats. Use the
+[team-host administrator checklist](team-host-admin.md) for every row that names a checklist
+item; the runtime prints the required root actions but never applies them.
+
+- `seat_jail_prerequisites[]` reports each host and runtime prerequisite as `present`,
+  `missing` or `unknown`. A missing row may include one fix sentence and its LA-1 checklist id.
+- `seat_cli_qualification[]` reports each registered seat as `admits`, `refuses` or `unknown`.
+  `admits` means the provider-free admission checks passed. `refuses` includes the launch code
+  and fix. `unknown` means a launch-only measurement was deliberately not run; it is not an
+  admission pass.
+
+For a managed release, `authority_missing` and `authority_invalid` select
+LA1-AUTHORITY-PIN. They are diagnostic refinements of the launch refusal
+`seat_sandbox_refused:identity`. Pin production and update authority are governed by contract
+§7; release bytes never establish their own authority.
+
 ## First run in your project
 
 Use a clean disposable project for the first preview. The runner executes a roadmap;
