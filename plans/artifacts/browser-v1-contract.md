@@ -1,10 +1,11 @@
 # BROWSER v1 contract: browser and UI visibility for review seats
 
 Frozen planning artifact for `specs/phase-plans-browser-v1.md`. Sections 1–7 are
-**frozen** for VISART (IF-0-VISART-1..3). Section 8.1, the seat-channel rule, is **frozen**
-for every phase. The rest of section 8 is **informative**: it records the design later
-phases start from, and each part freezes only when its phase is planned. A change to a
-frozen section needs a reviewed repin of this file's sha256 in the roadmap.
+**frozen** for VISART (IF-0-VISART-1..3). Section 8.1 (the seat-channel rule) and section
+8.6 (the target-mode and interactive rules, from owner rulings OR-6 and OR-7) are
+**frozen** for every phase. The rest of section 8 is **informative**: it records the
+design later phases start from, and each part freezes only when its phase is planned. A
+change to a frozen section needs a reviewed repin of this file's sha256 in the roadmap.
 
 ## 1. Scope and owner rulings this contract implements
 
@@ -21,8 +22,17 @@ Rulings of 2026-11-08 (recorded in the roadmap's Owner Rulings):
   copying them to the viewer's host is the fallback.
 - **OR-5.** No T3 delegation inside seats. T3 sandboxing is left alone.
 
-Open owner decisions OD-1 and OD-2 are in the roadmap. Nothing in sections 1–7 depends on
-them.
+Rulings of 2026-11-08 on the former open decisions OD-1 and OD-2, with the board's
+trade-offs, are in the roadmap. Section 8.6 freezes their rules.
+
+- **OR-6.** The target source is operator-selectable: `preview_url` (the default),
+  `static_bundle` or `build_and_serve`. `build_and_serve` is opt-in and lands in its own
+  later phase. A seat can never choose or raise the mode.
+- **OR-7.** v1 is observe plus frozen replay only. `interactive` comes in a later phase,
+  and only against disposable per-review environments.
+
+Sections 1–7 implement no browser. Section 2.3 records the target mode on broker
+observations, so the schema needs no later bump.
 
 ## 2. `browser_observation.v1`
 
@@ -75,6 +85,13 @@ whole directory is at most 128 MiB. A review takes at most 4 observations.
   `playwright_pmcp` or `t3_preview`. `t3_preview` requires `profile: "incognito"` (OR-3).
   A broker observation names `browser_broker` with `profile: "ephemeral"`, a non-null
   `egress_allowlist_sha256` and a journal.
+- **Target rules** (schema-enforced).
+  - An executor observation has `target.mode: null` and `target.policy_sha256: null`. The
+    executor is not sandboxed, and its target is not governed by section 8.6.
+  - A broker observation records the effective `target.mode` and the
+    `target.policy_sha256` of the operator target policy (8.6) that selected it.
+  - `target.bundle_sha256` is non-null exactly when the mode is `static_bundle`. For that
+    mode, `target.url` is the broker's synthetic bundle origin.
 - `host` is a short host label (the host's short name, lowercase). It never carries an
   address, a domain or an account name.
 - An executor observation is a **claim by the executor**. Nothing treats it as an
@@ -338,7 +355,14 @@ Sandbox-profile seats keep `SeatProfile.broker_socket` for their broker channel.
   - recheck every redirect hop;
   - deny private ranges, loopback, NAT64, 6to4 and the host's own addresses;
   - disable non-proxied UDP, including QUIC and WebRTC.
-- **Targets.** `review_target.kind: url` only while OD-1 is open.
+- **Targets (8.6).**
+  - `preview_url` renders board-supplied URLs whose origins match the operator policy's
+    preview origins and the egress allowlist.
+  - `static_bundle` serves a read-only, validated copy of an executor-built static
+    directory. The executor supplies it to the board before seat launch. The broker serves
+    it at a synthetic origin inside its own sandbox and records `bundle_sha256`.
+  - `build_and_serve` refuses `browser_target_mode_unavailable` until VISBUILD lands, and
+    is enabled only by the operator.
 
 ### 8.3 Seat-driven observe channel (VISBROKER)
 
@@ -368,8 +392,11 @@ Sandbox-profile seats keep `SeatProfile.broker_socket` for their broker channel.
     `none` and maps to `browser_automation`.
   - `replay` lets a seat re-run frozen steps authored before launch. A seat-authored
     step counts as `interactive`.
-  - `interactive` refuses `browser_policy_tier_unavailable` while OD-2 is open.
+  - `interactive` refuses `browser_policy_tier_unavailable` until VISINTERACT (8.8).
   - Each seat session gets one browser process.
+  - No seat-facing tool or argument names a target mode or a tier. The session's origin
+    set and tier are fixed from operator policy and the review profile before the seat
+    launches (8.6).
 - **Never.**
   - the shared PMCP gateway;
   - any host browser that holds operator logins;
@@ -393,3 +420,72 @@ Sandbox-profile seats keep `SeatProfile.broker_socket` for their broker channel.
   broker holding the session.
 - **Never in a seat.** KVM, displays and VNC never enter a seat. VNC is only an operator
   watch window.
+
+### 8.6 Target-mode and interactive rules (frozen; OR-6, OR-7)
+
+**Target-mode policy.** The target mode comes from an operator target policy, following
+the seat-route policy convention:
+
+- The file is `$XDG_STATE_HOME/phase-loop/browser-target-policy.json`, read through the
+  same private-chain ownership checks and the private-file reader, with a 64 KiB cap.
+- It is closed JSON: `{"schema": "browser_target_policy.v1", "mode": …,
+  "preview_origins": […]}`. Unknown members refuse.
+- If the file is absent, the effective policy is the shipped default: `mode: preview_url`
+  with no preview origins. If it is unsafe or malformed, it is ignored, the default
+  applies, and the board result says the overlay was ignored.
+- `target.policy_sha256` is the sha256 of the canonical JSON of the effective policy,
+  including the default. It is recorded in every broker observation and in the board
+  result.
+
+**Modes.**
+
+- `preview_url` (default): only origins that match `preview_origins` and the egress
+  allowlist. Loopback, private ranges and tailnet addresses stay denied after resolution
+  in every mode.
+- `static_bundle`: the executor builds a static directory before the seat launches. The
+  broker serves a validated, read-only copy from inside its own sandbox at a synthetic
+  origin, with no code execution beyond the browser rendering it.
+- `build_and_serve`: off by default. It is enabled only by the operator policy, and only
+  once VISBUILD has landed. It builds and runs the reviewed tree, including install
+  scripts, in a dedicated app-runner sandbox that never shares the broker's or any seat's
+  uid, mount namespace, network namespace, filesystem, sockets or credentials. The broker
+  reaches the app only over the app runner's single private serving channel.
+
+**Who can set the mode and tier.** A seat can never choose or raise either:
+
+- No seat-facing tool, argument, bundle field or instruction carries one.
+- The session's origin set and tier are fixed before the seat launches.
+- A request for any other origin refuses.
+
+**Interactive control.**
+
+- In v1, `interactive` refuses `browser_policy_tier_unavailable`.
+- Replay steps are authored by the plan or the executor before the seat launches.
+- A seat-authored step counts as `interactive`.
+- VISINTERACT may enable `interactive` only against a disposable, per-review environment
+  with throwaway test data and least-privilege accounts. That environment is created for
+  one review, destroyed after it, and attested by the disposable-environment mechanism
+  (roadmap EXT-DISPOSABLE). It is never enabled against shared or persistent staging.
+
+### 8.7 App runner (VISBUILD, informative)
+
+- **Instances.** One instance per review, built from the staged reviewed tree after
+  review authorization, in the app-runner sandbox of 8.6. It is destroyed when the review
+  ends.
+- **Egress.** Install traffic reaches only declared package registries. The running app
+  has no egress beyond what the operator policy declares.
+- **Threat model.** A reviewed threat model (EXT-BUILDTM) is the phase's planning input.
+- **Output.** Observations of a served app record `target.mode: build_and_serve` and the
+  reviewed `source_commit`.
+
+### 8.8 Interactive control (VISINTERACT, informative)
+
+- **Tools.** The interactive tools are `browser_click`, `browser_type`,
+  `browser_press_key`, `browser_select_option`, `browser_hover` and
+  `browser_navigate_back`, by `aria-ref`, behind the 8.3 shim.
+- **When they are allowed.** Only when the review profile says `interactive` and the
+  target environment carries a valid disposable attestation. Otherwise the request
+  refuses `browser_environment_not_disposable`.
+- **Session.** A session time cap applies. Every input action writes a journal line.
+  Per-review least-privilege credentials are injected broker-side, as placeholders in the
+  seat, and revoked at teardown.

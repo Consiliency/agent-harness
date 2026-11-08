@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: VISART
 roadmap: specs/phase-plans-browser-v1.md
-roadmap_sha256: bbde8809ad8faaebf83ee4ff66f6f85f91d1a052e121e724ec355c6629cfe4cd
+roadmap_sha256: 6436a924ff97340f6316933021b40a25f23141ded59cd45a4dfbc86234a7b897
 automation:
   suite_command: ["timeout", "900", "env", "PYTEST_ADDOPTS=", "python3", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_browser_observation_contract.py", "phase-loop-runtime/tests/test_seat_visual_staging.py", "phase-loop-runtime/tests/test_seat_uid_visual_handoff.py", "phase-loop-runtime/tests/test_seat_visual_profile_neutrality.py", "phase-loop-runtime/tests/test_seat_route_contract.py", "phase-loop-runtime/tests/test_seat_jail.py", "phase-loop-runtime/tests/test_seat_sandbox_permissions.py", "phase-loop-runtime/tests/test_board_visual_delivery.py", "phase-loop-runtime/tests/test_cli_observation.py", "phase-loop-runtime/tests/test_native_fill_visual.py", "phase-loop-runtime/tests/test_seat_notices.py", "phase-loop-runtime/tests/test_broker_staged_tree_delivery.py", "phase-loop-runtime/tests/test_review_stage_binding.py", "phase-loop-runtime/tests/test_sandbox_egress.py", "phase-loop-runtime/tests/test_panel_native_fill_183.py", "phase-loop-runtime/tests/test_native_fill_refusal_cause.py", "phase-loop-runtime/tests/test_execute_skill_visual_capture.py", "phase-loop-runtime/tests/test_skills_bundle_drift.py", "phase-loop-runtime/tests/test_launchspec_golden.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
 ---
@@ -17,6 +17,12 @@ EC-VISART-7. Every rule a lane implements is in the frozen contract
 `plans/artifacts/browser-v1-observation.schema.json`, both pinned in the roadmap's
 External Inputs. This plan does not restate them. No browser runs anywhere in this phase,
 and no jail changes.
+
+The owner rulings OR-6 (operator-selected target mode) and OR-7 (observe plus frozen
+replay in v1) reach VISART only through the schema. Every observation carries
+`target.mode`, `target.bundle_sha256` and `target.policy_sha256`. They are null for
+executor observations, which are all that VISART accepts, so the later broker phases need
+no schema bump.
 
 What exists today, and what each lane builds on:
 
@@ -159,6 +165,9 @@ SL-0.1 test outline:
   - media and digest defects: a wrong magic number, digest drift and size drift;
   - each cap;
   - producer defects: `t3_preview` without `incognito`;
+  - target defects (§2.3): an executor observation with a non-null `target.mode` or
+    `target.policy_sha256`; a broker observation without them; `static_bundle` without
+    `target.bundle_sha256`; any other mode with one;
   - URL defects: a `file:` URL (code `observation_target_forbidden`, not
     `observation_schema_invalid`), a userinfo URL and a backtick in a URL;
   - an edited `index.html`.
@@ -166,8 +175,9 @@ SL-0.1 test outline:
 - **`index.html`.** Byte-identical across two renderings of one manifest, rendered without
   the `index` member, passes the §3 forbidden-element scan, and renders `observation_id`
   and `created_at`.
-- **Importer.** Builds from PNG, JPEG and WebP images under a temp repo root. It refuses
-  GIF and BMP, refuses `--tool browser_broker`, and opens no socket or process.
+- **Importer.** Builds from PNG, JPEG and WebP images under a temp repo root, writing
+  `target.mode`, `target.bundle_sha256` and `target.policy_sha256` as null. It refuses GIF
+  and BMP, refuses `--tool browser_broker`, and opens no socket or process.
 
 Files are opened with `O_NOFOLLOW` relative to a directory descriptor, and the manifest is
 read once. The module imports nothing from `panel_invoker`, `seat_jail` or `cli`.

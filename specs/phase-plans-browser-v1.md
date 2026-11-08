@@ -65,6 +65,10 @@ The contract (External Inputs) carries the detail.
  board result: absolute paths ──► owner's T3 thread (inline) or Chrome
 ```
 
+The operator target policy (`preview_url` by default, `static_bundle`, or opt-in
+`build_and_serve` in its own app-runner sandbox) decides what the broker may render. No
+seat can choose or raise it.
+
 ## Assumptions
 
 1. `build_seat_jail` creates the seat home fresh for each leg, and `seat_uid.handoff`
@@ -83,8 +87,8 @@ The contract (External Inputs) carries the detail.
 
 | Input | Pin |
 | --- | --- |
-| BROWSER v1 contract | `plans/artifacts/browser-v1-contract.md`, sha256 `12a3182aad66e2fe9b2b53cbbd551a9033ef4e7b322bf104eacde0ceeeb68e2b` |
-| `browser_observation.v1` schema | `plans/artifacts/browser-v1-observation.schema.json`, sha256 `ecd7ebf24fbb7cdf48f09fa3624f24c6deee651707365d5e53943002534760b1` |
+| BROWSER v1 contract | `plans/artifacts/browser-v1-contract.md`, sha256 `6946226f5e31a04cb32b1eb925fdebfbad0485d6169d1d6c7456243b791e7a23` |
+| `browser_observation.v1` schema | `plans/artifacts/browser-v1-observation.schema.json`, sha256 `169c05daaa03788bdfe10fb3efa4a3fe31d3a58bbe1767826645ced4e3ec9a1d` |
 | Research report (operator-held, not published) | `sandbox-browser-visibility-20261108/report.md`, sha256 `d6d0494f74d5df2c8dadc478fb5b5d60cacc2be6f0ff1794b8e97a99c8193fb3`. The contract restates every fact a phase relies on. |
 | v13 placement contract | `plans/artifacts/v13-PLACECLI-contract-v1.schema.json`, as pinned by `specs/phase-plans-v13.md` |
 | Managed browser tree | `/opt/consiliency/browsers` with `playwright-core` 1.65.0 and `chromium_headless_shell-1254`, observed on dev0 2026-11-08; repinned at VISRENDER planning |
@@ -104,20 +108,43 @@ a future implementation commit, commit count or landing topology.
   copying them is the fallback.
 - **OR-5.** No T3 delegation inside seats. T3 sandboxing is left alone.
 
-## Open Owner Decisions
+The owner decided the former open decisions on 2026-11-08, after the plan-tier board's
+review. Contract §8.6 freezes their rules.
 
-Both are open owner rulings. Until the owner rules, each defaults to the board's
-recommendation from the 2026-11-08 plan-tier review.
-
-| ID | Decision | Recommended default, in force until ruled | Effect of a different ruling |
-| --- | --- | --- | --- |
-| OD-1 | For v1, does the broker only look at a preview URL the review already has, or does a separate phase build and serve the reviewed tree? | **Preview URL only.** VISRENDER and VISBROKER accept `review_target.kind: url`; any other kind refuses `browser_target_kind_unsupported`. Changes with no reachable allowlisted preview get executor screenshots only. Loopback, private and tailnet-only dev servers are denied. | "Build and serve" adds an app-runner phase after VISRENDER, with its own sandbox and threat model, because it runs untrusted PR code and install scripts. A `static_bundle` target (an executor-built static directory the broker serves read-only) can be added later by amendment. |
-| OD-2 | Does a review seat ever drive a live browser against staging, or does v1 stop at observation plus replays written before the seat launches? | **Observe plus frozen replay only.** The plan or the executor authors replay steps before seat launch. `interactive` refuses `browser_policy_tier_unavailable` and is never allowed against shared or persistent staging. | "Allowed" adds interactive tools, a session time cap and action-journal rules by amendment, against disposable staging only. Either way, replay needs disposable test state and least-privilege accounts. |
+- **OR-6 (target source, formerly OD-1).** The target mode is operator-selectable and
+  digest-bound. Its values are `preview_url` (the default), `static_bundle` and
+  `build_and_serve`.
+  - `preview_url` allows public or allowlisted preview origins only. Loopback, private
+    ranges and the tailnet stay denied.
+  - In `static_bundle`, the executor builds a static directory before the seat launches,
+    and the broker serves it read-only.
+  - `build_and_serve` is opt-in and off by default, and lands in its own later phase
+    (VISBUILD) with its own sandbox and threat model. Untrusted PR code and install
+    scripts never share the broker's or a seat's sandbox. VISBUILD does not block v1.
+  - A seat can never choose or raise the mode.
+  - *Board trade-off:* under `preview_url`, changes with no reachable allowlisted preview
+    get executor screenshots only, and loopback, private and tailnet-only dev servers get
+    nothing independent. `static_bundle` covers many of those without running PR code;
+    `build_and_serve` covers the rest at the cost of a new sandbox and threat model.
+- **OR-7 (interactive control, formerly OD-2).** v1 is observe plus frozen replay only.
+  - `interactive` stays refused in v1. Replay steps are authored before the seat
+    launches, and a seat-authored step counts as `interactive`.
+  - A later phase (VISINTERACT) adds `interactive`, allowed only against disposable,
+    per-review environments with throwaway test data and least-privilege accounts, and
+    never against shared or persistent staging. It is gated on the disposable-environment
+    mechanism (EXT-DISPOSABLE).
+  - *Board trade-off:* v1 loses exploratory clicking, auth-flow probing and bug
+    reproduction. In return, page-text prompt injection has no path to mutate shared
+    state. Replay already needs disposable test state and least-privilege accounts.
+  - *Placement:* the owner placed VISINTERACT "after VISHARDEN". Revision 2 merged
+    VISHARDEN's hardening into VISRENDER and its session isolation and profile field into
+    VISBROKER. VISINTERACT therefore follows VISBROKER, the last phase holding former
+    VISHARDEN work.
 
 Open questions (not blocking any phase):
 
-- When a test account is needed, is it injected broker-side on the credential-proxy
-  pattern?
+- Which mechanism provides disposable per-review environments (EXT-DISPOSABLE)? VISBUILD's
+  per-review app instances are one candidate.
 - On `ai`, does the board run as the same uid as the linked T3 environment's user? If
   not, OR-4's copy fallback is the normal path there.
 
@@ -127,8 +154,14 @@ Open questions (not blocking any phase):
   `panel_invoker.py`, `seat_jail.py`, `seat_profiles.py` and `sandbox_egress.py`, the docs
   and launch-reference inventory that VISART's SL-4 edits, and tests that SL-1 and SL-2
   run. VISART lanes branch from a main that includes it, and no lane is gated on it.
-- **EXT-OD.** An owner ruling on OD-1 before any target kind other than `url`, and on OD-2
-  before `interactive`.
+- **EXT-BUILDTM.** A reviewed, maintainer-approved threat model for building and running
+  untrusted PR code and install scripts in the app-runner sandbox. It gates VISBUILD's
+  planning.
+- **EXT-DISPOSABLE.** A disposable-environment mechanism gives each review its own
+  environment, with throwaway test data and least-privilege accounts. The environment is
+  destroyed after the review and carries an attestation the broker can verify. This gates
+  VISINTERACT's planning. VISBUILD's per-review instances are one candidate provider, and
+  VISINTERACT's plan pins whichever interface is used.
 - **EXT-BROWSERTREE.** Assumption 2 holds on the broker host. Gates VISRENDER's live
   evidence and VISREMOTE.
 - **EXT-PLACECLI.** v13 IF-0-PLACECLI-1 and IF-0-PLACECLI-2 are implemented and landed.
@@ -149,8 +182,9 @@ Open questions (not blocking any phase):
 - Any mount projection or digest-stripping path into the jail (contract §8.1).
 - Firefox and WebKit engines.
 - Native desktop and mobile UI (see Later Work).
-- Broker-built targets and live interactive control, unless OD-1 and OD-2 are ruled
-  otherwise.
+- `build_and_serve` and `interactive` in v1. They land in VISBUILD and VISINTERACT, off
+  the v1 path (OR-6, OR-7).
+- `interactive` against shared or persistent staging, in any phase.
 - Planning around v13 or v12 before their interfaces land. VISREMOTE consumes them.
 
 ## Cross-Cutting Principles
@@ -171,6 +205,9 @@ Open questions (not blocking any phase):
    - Nothing strips a mount from the profile digest.
 5. **No logged-in browser.** Broker profiles are ephemeral. The broker's bwrap holds no
    operator home and no credentials. Executors use T3 preview on `incognito` only.
+   - **Operator chooses, seat cannot raise.** The target mode comes from digest-bound
+     operator policy, and the tier from the review profile. Both are fixed before the
+     seat launches. No seat-facing surface names either (contract §8.6).
 6. **Page content is untrusted.** Pixels, accessibility YAML, console text and URLs are
    data, never instructions. Every seat route's trusted text says so, and says not to
    follow those URLs (contract §4.6).
@@ -206,12 +243,19 @@ Open questions (not blocking any phase):
   and refusal codes.
 - IF-0-VISRENDER-4 — Render list, frozen replay step vocabulary and result, and the
   board-to-staging handoff of broker observations.
+- IF-0-VISRENDER-5 — Operator target policy (`browser_target_policy.v1`): location,
+  closed fields, default, `policy_sha256`, the `preview_url` and `static_bundle` modes, and
+  the `build_and_serve` refusal (contract §8.6).
 - IF-0-VISBROKER-3 — Seat channel: per-seat socket lifecycle on sandbox-profile seats, and
   the jailed declared socket slot with its requalification.
 - IF-0-VISBROKER-4 — Review-profile `browser` field, its `browser_automation` mapping and
   per-session process isolation.
 - IF-0-VISREMOTE-1 — Remote broker channel over the per-reservation bridge, with pool
   capacity accounting.
+- IF-0-VISBUILD-1 — App-runner sandbox and per-review instance lifecycle for
+  `build_and_serve`, with its serving channel to the broker.
+- IF-0-VISINTERACT-1 — Interactive tool set, disposable-environment attestation check,
+  session cap and input-action journal.
 
 ## Phases
 
@@ -299,24 +343,29 @@ with no seat channel and no jail change.
 - [ ] EC-VISRENDER-1 — The broker runs as a dedicated non-operator uid in its own bwrap with no operator home and no credentials. Chromium starts with its own sandbox, using an AppArmor profile where unprivileged user namespaces are restricted. A host where that sandbox cannot start refuses; nothing ever passes `--no-sandbox`.
 - [ ] EC-VISRENDER-2 — Playwright MCP runs headless and isolated from `/opt/consiliency/browsers`, with pipe CDP, an ephemeral profile, downloads denied and no TCP listener. A writable or non-root-owned browser tree refuses.
 - [ ] EC-VISRENDER-3 — All browser traffic crosses a broker-side proxy with a review-target allowlist kind. The proxy connects only to the address it just checked and rechecks every redirect hop. It denies private ranges, loopback, NAT64, 6to4 and the host's own addresses, and non-proxied UDP (QUIC, WebRTC) is disabled. Each observation records `egress_allowlist_sha256`.
-- [ ] EC-VISRENDER-4 — The board renders a render list (URLs × viewports × colour schemes) authored before seat launch, writes broker observations and stages them through IF-0-VISART-2 to every route. `review_target.kind: url` is accepted, and any other kind refuses `browser_target_kind_unsupported` under the OD-1 default.
+- [ ] EC-VISRENDER-4 — The board renders a render list (URLs × viewports × colour schemes) authored before seat launch, writes broker observations and stages them through IF-0-VISART-2 to every route.
 - [ ] EC-VISRENDER-5 — Frozen replay runs steps authored by the plan or the executor before seat launch, from the contract §8.2 vocabulary, with no script execution, and returns pass/fail plus a broker observation. A step list arriving after composition refuses.
 - [ ] EC-VISRENDER-6 — The broker runs under `seat_resource_caps` limits. After completion, crash or timeout, no broker or browser process, socket or profile directory remains.
 - [ ] EC-VISRENDER-7 — Operational evidence: one board run on the review-seat host stages a broker observation of a preview URL to every local route, recorded as runner-stamped evidence.
 - [ ] EC-VISRENDER-8 — The shim exposes exactly the contract §8.3 allowed tools to the board driver. Every denied tool, flag and target refuses with a closed code before reaching Playwright MCP, and each call writes one journal line.
+- [ ] EC-VISRENDER-9 — The target mode comes only from the operator target policy of contract §8.6. An absent policy yields `preview_url`, and an unsafe or malformed one is ignored with the default applied and the board result saying so. Every broker observation and the board result record `target.mode` and `target.policy_sha256`. `build_and_serve` refuses `browser_target_mode_unavailable`.
+- [ ] EC-VISRENDER-10 — Under `preview_url`, only URLs whose origins match the policy's preview origins and the egress allowlist render. Loopback, private ranges and tailnet addresses are denied after resolution in every mode.
+- [ ] EC-VISRENDER-11 — Under `static_bundle`, the board takes an executor-built directory before seat launch, validates it (regular single-link files, no symlinks, caps) and serves a read-only copy at a synthetic origin inside the broker sandbox, with no other code running. The observation records `target.bundle_sha256`.
+- [ ] EC-VISRENDER-12 — No render input, bundle field or seat-reachable surface can choose or raise the mode. A render request outside the session's fixed origin set refuses.
 
 **Scope notes**
 
-- Decompose into 5 lanes plus docs: launcher and posture (uid, bwrap, AppArmor, browser
+- Decompose into 6 lanes plus docs: launcher and posture (uid, bwrap, AppArmor, browser
   tree); shim and tool filter; review-target allowlist kind in the srt proxy machinery;
-  render and replay driver; board integration and staging.
+  target policy and static-bundle serving; render and replay driver; board integration and
+  staging.
 - Single-writer: `panel_invoker.py` and `cli.py` (integration lane).
 - Plannable after VISART's plan freezes IF-0-VISART-2.
 
 **Non-goals**
 
 Seat channels, a review-profile `browser` field, input driven by a seat, remote runners and
-app runners.
+`build_and_serve` (VISBUILD).
 
 **Key files**
 
@@ -340,6 +389,7 @@ app runners.
 - IF-0-VISRENDER-2 — Review-target egress allowlist kind and digest.
 - IF-0-VISRENDER-3 — Filtering shim tool allowlist, journal line and refusal codes.
 - IF-0-VISRENDER-4 — Render list, frozen replay vocabulary and result, and staging handoff.
+- IF-0-VISRENDER-5 — Operator target policy, `preview_url` and `static_bundle` modes, and the `build_and_serve` refusal.
 
 **Spec closeout policy**
 
@@ -363,8 +413,9 @@ that follows the seat-channel rule, under review-profile policy.
 - [ ] EC-VISBROKER-7 — Operational evidence: one jailed and one sandbox-profile seat each record a seat-driven observation of a preview URL, as runner-stamped evidence.
 - [ ] EC-VISBROKER-8 — Review profiles carry `browser: none|observe|replay|interactive`, defaulting to `none`. `browser_automation` is true only when a channel is attached, and unknown values refuse.
 - [ ] EC-VISBROKER-9 — `replay` lets a seat re-run only frozen steps authored before launch. A seat-authored step is handled as `interactive`.
-- [ ] EC-VISBROKER-10 — `interactive` refuses `browser_policy_tier_unavailable` under the OD-2 default.
+- [ ] EC-VISBROKER-10 — `interactive` refuses `browser_policy_tier_unavailable` (OR-7) until VISINTERACT lands.
 - [ ] EC-VISBROKER-11 — Each seat session gets its own browser process. Contexts are shared only among seats of one review, and a cross-review share refuses.
+- [ ] EC-VISBROKER-12 — No seat-facing tool or argument names a target mode or a tier. The session's origin set and tier are fixed from operator policy and the review profile before the seat launches. A seat request outside them refuses.
 
 **Scope notes**
 
@@ -376,7 +427,7 @@ that follows the seat-channel rule, under review-profile policy.
 
 **Non-goals**
 
-Interactive tools, broker-built targets and remote runners.
+Interactive tools (VISINTERACT), `build_and_serve` (VISBUILD) and remote runners.
 
 **Key files**
 
@@ -452,6 +503,109 @@ target surfaces: `docs/browser-broker.md`, `docs/placement-process-cli.md`; evid
 `plans/evidence/browser/VISREMOTE.md`; `redaction_posture: metadata_only`; missing or
 malformed evidence routes non-human `blocker_class=contract_bug`.
 
+### Phase 5 — Opt-in build-and-serve app runner (VISBUILD)
+
+**Objective**
+
+When the operator enables `build_and_serve` (OR-6), the reviewed tree is built and served
+per review in a dedicated app-runner sandbox, and the VISRENDER broker renders it. This
+phase is off the v1 path and blocks no other phase.
+
+**Exit criteria**
+
+- [ ] EC-VISBUILD-1 — `build_and_serve` is off by default and is enabled only by the operator target policy. Otherwise, and before this phase lands, it refuses `browser_target_mode_unavailable`. No seat-reachable surface can enable it.
+- [ ] EC-VISBUILD-2 — Builds, install scripts and the running app execute only in the app-runner sandbox. It has its own uid, mount and network namespaces, and no operator home or credentials. It has no access to the broker's or any seat's filesystem, sockets, namespaces or credentials. Tests prove each separation from both sides.
+- [ ] EC-VISBUILD-3 — Each review gets one instance, built from the staged reviewed tree after review authorization and destroyed when the review ends; no state survives into another review. Its observations record `target.mode: build_and_serve` and the reviewed `source_commit`.
+- [ ] EC-VISBUILD-4 — Install traffic reaches only declared package registries. The running app has no egress beyond what the operator policy declares. The broker reaches the app only over its single private serving channel.
+- [ ] EC-VISBUILD-5 — Every control the EXT-BUILDTM threat model requires has a test or a recorded evidence item.
+- [ ] EC-VISBUILD-6 — Build and serve run under `seat_resource_caps` limits, and no instance process, network namespace or file survives teardown, crash or timeout.
+- [ ] EC-VISBUILD-7 — Operational evidence: one opt-in review renders a served instance of its reviewed tree, as runner-stamped evidence.
+
+**Scope notes**
+
+- Decompose into 4 lanes plus docs: app-runner sandbox; per-review instance lifecycle;
+  registry egress and serving channel; target-policy and board integration.
+- Plan only after EXT-BUILDTM. Single-writer: `panel_invoker.py` (integration lane).
+
+**Non-goals**
+
+Running PR code anywhere but the app-runner sandbox; persistent or shared app instances;
+interactive control.
+
+**Key files**
+
+- `phase-loop-runtime/src/phase_loop_runtime/browser_app_runner.py`
+- `phase-loop-runtime/src/phase_loop_runtime/browser_broker.py`
+- `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`
+- `docs/threat-models/browser-app-runner.md`
+- `docs/browser-broker.md`
+
+**Depends on**
+
+- VISRENDER
+
+**Produces**
+
+- IF-0-VISBUILD-1 — App-runner sandbox, per-review instance lifecycle and serving channel.
+
+**Spec closeout policy**
+
+schema: `spec_delta_closeout.v1`; expected decision: `canonical_spec_update`;
+target surfaces: `docs/browser-broker.md`, `docs/threat-models/browser-app-runner.md`;
+evidence paths: `plans/evidence/browser/VISBUILD.md`; `redaction_posture: metadata_only`;
+missing or malformed evidence routes non-human `blocker_class=contract_bug`.
+
+### Phase 6 — Interactive control on disposable environments (VISINTERACT)
+
+**Objective**
+
+A seat whose review profile says `interactive` can drive the browser, but only against a
+disposable per-review environment with throwaway test data and least-privilege accounts
+(OR-7). This phase is off the v1 path and blocks no other phase.
+
+**Exit criteria**
+
+- [ ] EC-VISINTERACT-1 — The contract §8.8 interactive tools are enabled only when the review profile says `interactive` and the target environment carries a valid EXT-DISPOSABLE attestation for this review. Otherwise they refuse `browser_environment_not_disposable`, and without the profile tier they refuse `browser_policy_tier_unavailable`.
+- [ ] EC-VISINTERACT-2 — A shared or persistent environment, or one whose attestation is missing, expired, for another review or unverifiable, never gets interactive tools.
+- [ ] EC-VISINTERACT-3 — Accounts are per-review and least-privilege, with credentials injected broker-side as placeholders in the seat. They are revoked at teardown, and test data is throwaway.
+- [ ] EC-VISINTERACT-4 — An interactive session has a time cap, and every input action writes one journal line (tool, `aria-ref`, outcome, timing; no page content).
+- [ ] EC-VISINTERACT-5 — The environment is destroyed after the review, with teardown evidence. A seat cannot choose or raise the tier, the target mode or the environment.
+- [ ] EC-VISINTERACT-6 — Operational evidence: one interactive review against a disposable environment, as runner-stamped evidence.
+
+**Scope notes**
+
+- Decompose into 4 lanes plus docs: attestation check; interactive tool enablement and
+  journal; per-review credentials; session cap and teardown.
+- Plan only after EXT-DISPOSABLE. The owner's "after VISHARDEN" maps to after VISBROKER
+  (see OR-7).
+
+**Non-goals**
+
+Interactive control against shared or persistent staging; seat-chosen environments; any
+change to the seat-channel rule.
+
+**Key files**
+
+- `phase-loop-runtime/src/phase_loop_runtime/browser_broker_shim.py`
+- `phase-loop-runtime/src/phase_loop_runtime/browser_interactive.py`
+- `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`
+- `docs/browser-broker.md`
+
+**Depends on**
+
+- VISBROKER
+
+**Produces**
+
+- IF-0-VISINTERACT-1 — Interactive tools, attestation check, session cap and input journal.
+
+**Spec closeout policy**
+
+schema: `spec_delta_closeout.v1`; expected decision: `canonical_spec_update`;
+target surfaces: `docs/browser-broker.md`, `advisor_board/CONTRACTS.md`; evidence paths:
+`plans/evidence/browser/VISINTERACT.md`; `redaction_posture: metadata_only`; missing or
+malformed evidence routes non-human `blocker_class=contract_bug`.
+
 ## Later Work (not phased in v1)
 
 Native UI comes after v1, behind the same broker interface (contract §8.5): Electron
@@ -462,34 +616,41 @@ hosts. Adding it needs a new roadmap or an append.
 ## Phase Dependency DAG
 
 ```
-VISART ──> VISRENDER ──> VISBROKER ──> VISREMOTE
-                                         ^
-         EXT-PLACECLI, EXT-LANEEXEC, EXT-WORKER
+VISART ──> VISRENDER ──┬──> VISBROKER ──┬──> VISREMOTE   (EXT-PLACECLI, EXT-LANEEXEC, EXT-WORKER)
+                       │                └──> VISINTERACT (EXT-DISPOSABLE; later, off v1)
+                       └──> VISBUILD                      (EXT-BUILDTM; opt-in, later, off v1)
 ```
 
-- The chain is serial because each phase freezes what the next one consumes: the artifact
-  and staging, then the hardened broker and shim, then the seat channel that remote
-  reservations bridge.
+- **v1** is VISART → VISRENDER → VISBROKER, plus VISREMOTE once its gates land.
+  VISBUILD and VISINTERACT are planned now, so their gating is explicit. No v1 phase
+  depends on either.
+- The v1 chain is serial because each phase freezes what the next one consumes: the
+  artifact and staging, then the hardened broker, shim and target policy, then the seat
+  channel that remote reservations bridge.
 - Board-driven render comes before any seat channel. Every route gets an independent
   observation before any jail change is considered.
-- An OD-1 "build and serve" ruling adds an app-runner phase after VISRENDER.
-- Critical path: VISART → VISRENDER → VISBROKER → VISREMOTE.
+- VISBUILD can run in parallel with VISBROKER once its threat model is approved.
+- Critical path for v1: VISART → VISRENDER → VISBROKER → VISREMOTE.
 
 ## Execution Notes
 
 - **Planning commands:** `/claude-plan-phase specs/phase-plans-browser-v1.md <ALIAS> --output plans/phase-plan-v1-browser-<ALIAS>.md`.
 - **Concurrency:** VISRENDER can be planned once VISART's plan is approved, in parallel
   with VISART's execution. VISBROKER is planned after VISRENDER's plan freezes
-  IF-0-VISRENDER-1 to IF-0-VISRENDER-3. VISREMOTE waits for its external gates.
+  IF-0-VISRENDER-1 to IF-0-VISRENDER-3 and IF-0-VISRENDER-5. VISREMOTE waits for its
+  external gates. VISBUILD is planned after EXT-BUILDTM, and VISINTERACT after
+  EXT-DISPOSABLE.
 - **Retired IDs.** The 2026-11-08 revision merged the former VISHARDEN phase into
   VISRENDER and VISBROKER. It retired EC-VISBROKER-1, -2, -3 and -5, IF-0-VISBROKER-1 and
   -2, and every VISHARDEN ID. None is reused.
 - **Single-writer files across phases and roadmaps:**
-  - `panel_invoker.py`: VISART, then VISRENDER, then VISBROKER. AGYROLL's REQUAL and
+  - `panel_invoker.py`: VISART, then VISRENDER, then VISBROKER, then VISBUILD. AGYROLL's REQUAL and
     EXECADMIT phases (planned in agent-harness#1927) will also edit it; serialize by
     landing order.
   - `seat_uid.py` and `seat_route_contract.py`: VISART.
-  - `seat_jail.py` and `seat_profiles.py`: VISBROKER only (the declared slot).
+  - `seat_jail.py`: VISBROKER only (the declared slot).
+  - `seat_profiles.py`: VISBROKER, then VISINTERACT.
+  - `browser_broker_shim.py`: VISRENDER, then VISINTERACT.
   - `cli.py`: VISART, then VISRENDER.
   - `plans/manifest.json` and `specs/roadmap-status.json`: every planning PR, including
     agent-harness#1926 and agent-harness#1927. Each keeps main's rows and appends its
@@ -500,6 +661,8 @@ VISART ──> VISRENDER ──> VISBROKER ──> VISREMOTE
 - [ ] A UI change's executor screenshots reach every local review seat read-only and the owner's T3 thread, with no change to any jail profile digest or seat egress digest.
 - [ ] Every local route receives an independent broker observation of an allowed preview URL before seats launch, with no browser in any seat and no path to CDP, T3 or the PMCP gateway.
 - [ ] A seat-driven channel exists only as a declared, requalified slot or a sandbox-profile broker socket.
+- [ ] The target mode is operator-selected and digest-bound, `preview_url` by default. No seat can choose or raise the mode or its tier.
+- [ ] `build_and_serve` runs only when the operator opts in, in its own sandbox. `interactive` runs only against a disposable per-review environment, never against shared or persistent staging.
 - [ ] Every artifact opens in T3 and in standard desktop and mobile Chrome without a viewer service.
 
 ## Verification
