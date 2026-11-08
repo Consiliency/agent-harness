@@ -48,6 +48,7 @@ __all__ = [
     "ProxyWindow",
     "RequestEvent",
     "SeatEgressProxy",
+    "SRT_HOST_TOOLS",
     "SRT_VERSION",
     "allowlist",
     "allowlist_ref",
@@ -68,6 +69,13 @@ SRT_INTEGRITY = ("sha512-WjBmS9fbTpnQwQkM9SU+JjhM2CcXo9eWEELktY1100RMvTy/jPhP44y
 #: lockfile: what was verified at install is what runs.
 SRT_TREE_SHA256 = "a5039f84e95ab8f7994ef2a4e64b9293306811ba1eb7b67a055b7c8d7ea2aeaf"
 NODE_MIN_VERSION = (22, 12, 0)
+#: The host tools the pinned srt refuses to start without (agent-harness#1912). Its Linux
+#: dependency check, run inside ``SandboxManager.initialize``, looks each one up with
+#: ``which`` on the PATH the proxy runs with (``_proxy_env``) and stops with "Sandbox
+#: dependencies not available" when one is missing; ``which`` is how it looks them up.
+SRT_HOST_TOOLS = ("which", "bwrap", "socat", "rg")
+#: The proxy's PATH after node's own directory.
+_PROXY_SYSTEM_PATH = "/usr/bin:/bin"
 #: The seat's loopback port; the bridge listens here inside the seat's namespace.
 SEAT_PROXY_PORT = 3128
 UNAVAILABLE_CODE = "gemini_seat_egress_unavailable"
@@ -277,10 +285,21 @@ def _node() -> str:
 def _proxy_env(node: str, home: Path | None) -> dict[str, str]:
     """The proxy's whole environment: nothing from the operator's, so no credential, proxy
     or trust setting reaches it."""
-    env = {"PATH": f"{Path(node).parent}:/usr/bin:/bin", "LANG": "C.UTF-8"}
+    env = {"PATH": f"{Path(node).parent}:{_PROXY_SYSTEM_PATH}", "LANG": "C.UTF-8"}
     if home is not None:
         env["HOME"] = str(home)
     return env
+
+
+def _require_srt_host_tools(node: str) -> None:
+    """Raise :class:`EgressLayerUnavailable` unless every tool in ``SRT_HOST_TOOLS`` is on the
+    proxy's own PATH, resolved the way srt resolves it. Checked before srt runs, so a host
+    without one is reported unavailable up front rather than by a proxy that never starts."""
+    search = _proxy_env(node, None)["PATH"]
+    for tool in SRT_HOST_TOOLS:
+        if shutil.which(tool, path=search) is None:
+            raise EgressLayerUnavailable(
+                NOT_INSTALLED_CODE, f"{tool} is not installed (the pinned srt needs it)")
 
 
 def verify_install(root: Path | None = None) -> Path:
@@ -417,12 +436,17 @@ def ensure_ca(srt_index: Path, node: str) -> tuple[Path, Path]:
     return cert, key
 
 
+def _require_layer() -> None:
+    node = _node()
+    _require_srt_host_tools(node)
+    ensure_ca(verify_install(), node)
+
+
 def unavailable_reason() -> str | None:
     """``None`` when this host can run the seat's egress layer, else the one reason. Read
     only, except that it creates this host's CA on first use."""
     try:
-        node = _node()
-        ensure_ca(verify_install(), node)
+        _require_layer()
     except EgressLayerUnavailable as exc:
         return str(exc)
     return None
@@ -431,8 +455,7 @@ def unavailable_reason() -> str | None:
 def unavailable_code() -> str | None:
     """``None`` when the layer is ready, otherwise its stable route code."""
     try:
-        node = _node()
-        ensure_ca(verify_install(), node)
+        _require_layer()
     except EgressLayerUnavailable as exc:
         return exc.code
     return None
@@ -677,6 +700,7 @@ def start_proxy(*, allowlist_id: str,
     rules, and the production allowlist file is unchanged. The proxy's observation stream
     and fences go through :func:`fence` and :func:`proxy_stream`."""
     node = _node()
+    _require_srt_host_tools(node)
     srt_index = verify_install()
     cert, key = ensure_ca(srt_index, node)
     selected = allowlist_ref(allowlist_id)

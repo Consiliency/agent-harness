@@ -1,14 +1,18 @@
 """The AppArmor override for the seat jail on Ubuntu 24.04+/26.04 (agent-harness#1276).
 
 The policy cannot be loaded in CI, so these tests pin what makes it safe (narrow, named, no
-path attachment, stacked, hands the seat back) and run the generated root scripts against a
-scratch directory with a fake `apparmor_parser`.
+path attachment, entered stacked, hands the seat back out of the profile) and run the
+generated root scripts against a scratch directory with a fake `apparmor_parser`. Where the
+host has a parser, the profile is also compiled with it, without loading anything. The live
+check that a jailed seat reaches its proxy after the hand-back (agent-harness#1915) is in
+`test_seat_jail_proxy_reach_1915.py`.
 """
 
 from __future__ import annotations
 
 import os
 import re
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -48,7 +52,24 @@ def test_the_profile_is_narrow_named_and_has_no_path_attachment():
     caps = re.findall(r"^\s*allow capability (\w+),$", text, re.MULTILINE)
     assert sorted(caps) == ["setgid", "setpcap", "setuid"]
     assert not re.search(r"^\s*(allow )?capability,", text, re.MULTILINE)   # never a blanket grant
-    assert "allow pix /** -> &bwrap//&unpriv_bwrap," in text   # the seat is handed back
+    assert "allow px /** -> bwrap//&unpriv_bwrap," in text   # the seat is handed back
+
+
+def test_the_hand_back_leaves_the_uid_drop_profile():
+    """agent-harness#1915: the one exec rule is a transition to `bwrap//&unpriv_bwrap`, not a
+    stack on this profile (no leading `&`), so after the drop the seat runs with the same
+    confinement as every other bwrap child; `px` has no inherit fallback, so the seat never
+    stays here. The profile itself stays narrow: no network or other rule is added to it."""
+    exec_rules = re.findall(r"^\s*allow (\w+) (\S+) -> (\S+),$", aa.PROFILE_TEXT, re.MULTILINE)
+    assert exec_rules == [("px", "/**", "bwrap//&unpriv_bwrap")]
+    body = aa.PROFILE_TEXT.split("{", 1)[1]
+    rules = [line.strip() for line in body.splitlines()
+             if line.strip() and not line.strip().startswith(("#", "}"))]
+    assert rules == [
+        "allow capability setuid,", "allow capability setgid,", "allow capability setpcap,",
+        "allow file rwlkm /{**,},", "allow signal,", "allow unix,",
+        "allow px /** -> bwrap//&unpriv_bwrap,",
+    ]
 
 
 def test_the_local_block_is_one_stacked_rule_for_setpriv_only():
@@ -76,6 +97,47 @@ def test_install_is_idempotent_and_keeps_an_administrators_local_rules(tmp_path)
     text = local.read_text()
     assert text.startswith("allow /srv/data/** r,\n")      # not clobbered
     assert text.count(aa.BEGIN_MARK) == 1                  # appended exactly once
+
+
+def test_reinstall_over_an_earlier_profile_rewrites_it_and_keeps_one_local_block(tmp_path):
+    """A host that installed the earlier, stacked hand-back reruns the script: the profile is
+    rewritten, the local block it already holds is not appended again, and both reload."""
+    directory, parser = _shipped_profile(tmp_path), _fake_parser(tmp_path)
+    earlier = aa.PROFILE_TEXT.replace(
+        "allow px /** -> bwrap//&unpriv_bwrap,", "allow pix /** -> &bwrap//&unpriv_bwrap,")
+    assert earlier != aa.PROFILE_TEXT
+    (directory / aa.PROFILE_FILE).write_text(earlier)
+    (directory / aa.LOCAL_FILE).write_text(aa.LOCAL_TEXT)
+    result = _run(aa.install_script(), directory, parser)
+    assert result.returncode == 0, result.stderr
+    assert (directory / aa.PROFILE_FILE).read_text() == aa.PROFILE_TEXT
+    assert (directory / aa.LOCAL_FILE).read_text() == aa.LOCAL_TEXT
+    calls = (tmp_path / "parser.log").read_text().splitlines()
+    assert calls == [f"-r {directory / aa.PROFILE_FILE}", f"-r {directory / 'bwrap-userns-restrict'}"]
+
+
+def test_the_profile_compiles_with_the_hosts_parser(tmp_path):
+    """Compile only (`-Q` skips the kernel load, `-K` the cache): nothing is installed or
+    loaded. Skips where the host has no parser or cannot compile a trivial control profile."""
+    parser = shutil.which("apparmor_parser") or next(
+        (path for path in ("/usr/sbin/apparmor_parser", "/sbin/apparmor_parser")
+         if os.access(path, os.X_OK)), None)
+    if parser is None:
+        pytest.skip("no apparmor_parser on this host")
+    control = tmp_path / "control"
+    preamble = [line for line in aa.PROFILE_TEXT.splitlines()
+                if line.startswith(("abi ", "include "))]
+    assert preamble == ["abi <abi/5.0>,", "include <tunables/global>"]
+    control.write_text("\n".join(preamble)
+                       + "\nprofile phase_loop_compile_control {\n  allow file r /,\n}\n")
+    if subprocess.run([parser, "-Q", "-K", str(control)], capture_output=True,
+                      timeout=60).returncode != 0:
+        pytest.skip("this host's parser cannot compile a control profile here")
+    profile = tmp_path / aa.PROFILE_FILE
+    profile.write_text(aa.PROFILE_TEXT)
+    done = subprocess.run([parser, "-Q", "-K", str(profile)], capture_output=True, text=True,
+                          timeout=60)
+    assert done.returncode == 0, done.stderr
 
 
 def test_install_does_nothing_on_a_host_that_does_not_confine_bwrap(tmp_path):
