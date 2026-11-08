@@ -1262,7 +1262,7 @@ def _source_path_evidence(repo: Path, path: str, parent: str, tree: str) -> dict
     ):
         return None
     if typescript:
-        if version("tree-sitter") != "0.25.2" or version("tree-sitter-typescript") != "0.23.2":
+        if version("tree-sitter") != "0.26.0" or version("tree-sitter-typescript") != "0.23.2":
             raise ValueError("unsupported publication parser version")
         from tree_sitter import Language, Parser
         import tree_sitter_typescript
@@ -1344,7 +1344,7 @@ def _source_path_evidence(repo: Path, path: str, parent: str, tree: str) -> dict
     record = {"path": path, "parent_blob_oid": blobs[0][0], "blob_oid": oid,
               "blob_sha256": _sha256(blob), "policy": "tracked-python-detect-secrets-1.5.0-v1"}
     if typescript:
-        record.update(tree_sitter_version="0.25.2", tree_sitter_typescript_version="0.23.2",
+        record.update(tree_sitter_version="0.26.0", tree_sitter_typescript_version="0.23.2",
                       policy="typescript-detect-secrets-1.5.0-v1")
     return record
 

@@ -1308,8 +1308,8 @@ review text and the exception in detail; sandbox facts describe actual enforceme
 ### Qualified Gemini extension (agent-harness#905)
 
 The Linux x64 subscription `agy` entry image must match one member of the closed
-set `gemini_heartbeat.QUALIFIED_IMAGES`: 1.3.5 SHA256
-`b5385638174a5e720e904f3a2678752534fb8414d10c2c302fa16daf56cbcfc9`. A host on an
+set `gemini_heartbeat.QUALIFIED_IMAGES`: 1.5.3 SHA256
+`7ca212748ca0dfda718efbc39a776a104472e7e9344d4b6ea147c543684f96a3`. A host on an
 older release self-qualifies it only while it is among the newest four stable upstream
 releases (`agy_provenance.RECENCY_WINDOW`). Today that excludes every retired release,
 so such a host refuses with `gemini_heartbeat_provenance_unverified` until agy is updated.
