@@ -45,10 +45,15 @@ def _direct_review_owner(request, tmp_path, monkeypatch):
     if not broker and request.node.originalname != 'test_heartbeat_launch_executes_prefix_and_provider':
         request.getfixturevalue('owned_review_network')
     if broker:
+        from .brokered_codex_control import use_unregistered_codex_broker
+        use_unregistered_codex_broker(monkeypatch)
         home = tmp_path / 'operator'
         (home / '.codex').mkdir(parents=True)
-        (home / '.codex/auth.json').write_text('{"tokens":{"access_token":"synthetic-access-token"}}')
+        auth = home / '.codex/auth.json'
+        auth.write_text('{"tokens":{"access_token":"synthetic-access-token"}}')
+        auth.chmod(0o600)
         monkeypatch.setenv('HOME', str(home))
+        monkeypatch.setenv('CODEX_HOME', str(auth.parent))
         monkeypatch.setattr(panel, '_PROVIDER_SEARCH_PATH', str(tmp_path) + os.pathsep + os.environ['PATH'])
     names = {
         'test_heartbeat_tui_survives_silence': ('native-completed',),
@@ -393,17 +398,20 @@ def test_owner_death_reaps_detached_descendant(tmp_path):
 
 
 def test_owned_launch_owner_death_reaps_detached_descendant(tmp_path):
-    marker = tmp_path / "setfcap-descendant"
-    death_signal = tmp_path / "setfcap-pdeathsig"
+    marker = tmp_path / "owned-descendant"
+    capability_sets = tmp_path / "owned-capabilities"
     child_code = (
         "import os,time,pathlib; os.setsid(); "
         f"pathlib.Path({str(marker)!r}).write_text(os.readlink('/proc/self/ns/pid')+' '+str(os.getpid())); "
         "time.sleep(60)"
     )
     provider_code = (
-        "import ctypes,subprocess,sys,time,pathlib; "
-        "sig=ctypes.c_int(); ctypes.CDLL(None).prctl(2,ctypes.byref(sig)); "
-        f"pathlib.Path({str(death_signal)!r}).write_text(str(sig.value)); "
+        "import subprocess,sys,time,pathlib; "
+        # The retained-setfcap route (and its conditional PDEATHSIG) was retired
+        # by SL-3. Measure the current empty-capability path, then its owner cleanup.
+        "caps = [line.split()[1] for line in pathlib.Path('/proc/self/status').read_text().splitlines() "
+        "if line.startswith(('CapInh:', 'CapPrm:', 'CapEff:', 'CapBnd:', 'CapAmb:'))]; "
+        f"pathlib.Path({str(capability_sets)!r}).write_text(' '.join(caps)); "
         f"subprocess.Popen([sys.executable,'-c',{child_code!r}]); time.sleep(60)"
     )
     owner_code = (
@@ -414,7 +422,7 @@ def test_owned_launch_owner_death_reaps_detached_descendant(tmp_path):
         " token=p._EGRESS_LAUNCH_PREFIX.set(prefix)\n"
         " try:\n"
         f"  with p._seat_command_profile(['/usr/bin/python3','-c',{provider_code!r}],"
-        f"cwd=Path({str(tmp_path)!r}),env=os.environ,outputs=(Path({str(marker)!r}),Path({str(death_signal)!r}))) as (cmd,profile):\n"
+        f"cwd=Path({str(tmp_path)!r}),env=os.environ,outputs=(Path({str(marker)!r}),Path({str(capability_sets)!r}))) as (cmd,profile):\n"
         f"   p.launch_owned(cmd,role=p.SeatLaunchRole.PROVIDER_REVIEW,profile=profile,cwd={str(tmp_path)!r},start_new_session=True).wait()\n"
         " finally: p._EGRESS_LAUNCH_PREFIX.reset(token)"
     )
@@ -427,14 +435,15 @@ def test_owned_launch_owner_death_reaps_detached_descendant(tmp_path):
             assert owner.poll() is None
             time.sleep(.02)
         assert marker.exists()
-        assert int(death_signal.read_text()) == int(signal.SIGKILL)
+        caps = capability_sets.read_text().split()
+        assert len(caps) == 5 and all(int(value, 16) == 0 for value in caps)
         descendant = _host_pid(marker.read_text())
         owner.kill()
         owner.wait(5)
         deadline = time.monotonic() + 5
         while Path(f"/proc/{descendant}").exists() and time.monotonic() < deadline:
             time.sleep(.02)
-        assert not Path(f"/proc/{descendant}").exists(), "setfcap descendant escaped owner loss"
+        assert not Path(f"/proc/{descendant}").exists(), "owned descendant escaped owner loss"
     finally:
         if owner.poll() is None:
             owner.kill()
@@ -445,7 +454,11 @@ def test_owned_launch_owner_death_reaps_detached_descendant(tmp_path):
 
 @pytest.mark.parametrize("empty,cancelled", [(False, False), (True, False), (False, True)])
 def test_public_board_real_broker_and_fixture_cli(tmp_path, monkeypatch, empty, cancelled):
-    """No factory/spawn replacement: the fixture is an executable CLI on PATH."""
+    """Shared legacy broker/owner control, with no factory/spawn replacement.
+
+    The opt-in control above leaves Codex unregistered; its executable is a synthetic
+    CLI on PATH. Registered Codex admission and tools are separate jailed-route tests.
+    """
     from phase_loop_runtime import sandbox_egress
     monkeypatch.delenv("PHASE_LOOP_SANDBOX_DISABLE", raising=False)
     monkeypatch.delenv("PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", raising=False)
@@ -1075,40 +1088,43 @@ def test_heartbeat_egress_unavailable_stays_degraded(tmp_path, monkeypatch):
     monkeypatch.delenv("PHASE_LOOP_SANDBOX_DISABLE", raising=False)
     monkeypatch.delenv("PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", raising=False)
     monkeypatch.setattr(sandbox_egress, "egress_isolation_available", lambda: False)
+    monkeypatch.setattr(seat_jail, "seat_sandbox_capable", lambda: "seat_sandbox_unavailable_host")
+    monkeypatch.setattr(panel, "_under_claude_code", lambda *a, **k: False)
     result = panel.invoke_board(supported_board(), "synthetic review material",
         monitoring_policy="heartbeat_only", stream_dir=tmp_path / "records")
     assert all(leg.status == "DEGRADED" for leg in result.legs)
-    # agent-harness#1244: a seat whose route is not jailed on this host (no jail prerequisites,
-    # e.g. a CI runner) is refused by its route before staging, so it never reaches the egress
-    # check; its detail is that route code. Every other seat is refused for egress.
-    route_refused = seat_jail.SEALED_FALLBACK_CODES | seat_jail.JAIL_NOT_RUN_CODES
-    assert all("egress isolation unavailable" in leg.detail or leg.detail in route_refused
-               for leg in result.legs), [(leg.leg, leg.detail) for leg in result.legs]
-    assert all("egress isolation unavailable" in leg.detail
-               for leg in result.legs if leg.leg in ("codex", "grok"))
+    # Registered seats refuse at L3 before egress; the remaining unregistered route
+    # reaches the egress check. Pin host facts so this asserts the same ordering on CI.
+    by_leg = {leg.leg: leg for leg in result.legs}
+    assert {leg: by_leg[leg].detail for leg in ("claude", "codex")} == {
+        "claude": "seat_sandbox_unavailable_host", "codex": "seat_sandbox_unavailable_host",
+    }
+    assert "egress isolation unavailable" in by_leg["grok"].detail
     assert all(not leg.text for leg in result.legs)
     assert all(not (leg.harden_isolation_evidence or {}).get("sandbox_network_filtered") for leg in result.legs)
 
 
 def test_heartbeat_seat_refused_by_its_route_never_reaches_egress(tmp_path, monkeypatch):
-    """The same board on a host without the jail prerequisites, on every host: the Claude
-    seat is refused by its route (agent-harness#1244) with its own code, before staging and
-    before the egress check; the other seats are refused for egress as before."""
+    """Both registered seats refuse before even consulting egress (agent-harness#1244)."""
     from phase_loop_runtime import sandbox_egress
     monkeypatch.delenv("PHASE_LOOP_SANDBOX_DISABLE", raising=False)
     monkeypatch.delenv("PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", raising=False)
-    monkeypatch.setattr(sandbox_egress, "egress_isolation_available", lambda: False)
-    monkeypatch.setattr(seat_jail, "decide_seat_route", lambda leg, **k: (
-        seat_jail.SeatRoute(False, "seat_sandbox_unavailable_host") if leg == "claude" else None))
+    def forbidden(*args, **kwargs):
+        pytest.fail("a route-refused seat reached egress")
+    monkeypatch.setattr(sandbox_egress, "egress_isolation_available", forbidden)
+    monkeypatch.setattr(sandbox_egress, "isolated_network", forbidden)
+    monkeypatch.setattr(seat_jail, "seat_sandbox_capable", lambda: "seat_sandbox_unavailable_host")
     # Not a session under Claude Code, where the Claude seat takes no seat route at all.
     monkeypatch.setattr(panel, "_under_claude_code", lambda *a, **k: False)
-    result = panel.invoke_board(supported_board(), "synthetic review material",
+    board = replace(DEFAULT_BOARD, seats=tuple(s for s in DEFAULT_BOARD.seats
+                                              if s.harness in ("claude", "codex")))
+    result = panel.invoke_board(board, "synthetic review material",
         monitoring_policy="heartbeat_only", stream_dir=tmp_path / "records")
     by_leg = {leg.leg: leg for leg in result.legs}
-    assert (by_leg["claude"].status, by_leg["claude"].detail) == (
-        "DEGRADED", "seat_sandbox_unavailable_host")
-    assert all(by_leg[leg].status == "DEGRADED"
-               and "egress isolation unavailable" in by_leg[leg].detail for leg in ("codex", "grok"))
+    assert set(by_leg) == {"claude", "codex"}
+    assert {(leg.status, leg.detail) for leg in result.legs} == {
+        ("DEGRADED", "seat_sandbox_unavailable_host"),
+    }
     assert all(not leg.text for leg in result.legs)
 
 

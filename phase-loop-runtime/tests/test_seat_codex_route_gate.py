@@ -158,6 +158,32 @@ def test_doctor_and_launch_agree_on_each_codex_prelaunch_refusal(ready_codex, mo
         assert decision.code == code and decision.steps[-1].step == step
 
 
+@pytest.mark.parametrize("remote_required", [False, True])
+def test_registered_codex_admission_refuses_before_placement_or_egress(
+    ready_codex, monkeypatch, remote_required,
+):
+    """L5 precedes placement even when the operator also requires remote execution."""
+    ready_codex.unlink()
+    repo = ready_codex.parents[1]
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_STAGING_DIR", str(repo / "staging"))
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_REMOTE_REQUIRED", "1" if remote_required else "0")
+    monkeypatch.setattr(pi, "revalidate_review_isolation_authorization", lambda *a, **k: None)
+    monkeypatch.setattr(pi, "_canonical_review_repo_authority", lambda *a: repo)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("credential refusal reached placement, egress or the broker")
+
+    monkeypatch.setattr(pi._sandbox_policy, "select_sandbox_root", forbidden)
+    monkeypatch.setattr(pi._sandbox_egress, "isolated_network", forbidden)
+    monkeypatch.setattr(pi, "ParentUnixBroker", forbidden)
+    result = pi._default_spawn("codex", "synthetic review", repo_dir=repo,
+                               canonical_repo_authority=repo,
+                               review_authorization=SimpleNamespace(staged_tree_sha256="a" * 64))
+    assert tuple(result) == ("DEGRADED", "", "codex_seat_credential_missing")
+    assert result.seat_notices == ("codex_seat_credential_missing",)
+    assert not result.sandbox_placement_evidence
+
+
 def test_no_retained_capability_can_be_requested():
     from phase_loop_runtime import sandbox_egress
     assert sandbox_egress.SEAT_RETAINABLE_CAPS == frozenset()
