@@ -13246,6 +13246,9 @@ def _write_egress_ca(seat_dir: Path, certificate: Path) -> Path:
     fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o444)
     try:
         os.write(fd, data)
+        # The launcher may use umask 077; the dropped seat uid must still read
+        # this public certificate through its read-only bind.
+        os.fchmod(fd, 0o444)
     finally:
         os.close(fd)
     return target

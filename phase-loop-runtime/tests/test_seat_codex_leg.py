@@ -20,6 +20,22 @@ from test_seat_profile_codex import codex_profile as _codex_profile
 codex_profile = _codex_profile
 
 
+@pytest.mark.parametrize("mask", [0o077, 0o027])
+def test_egress_ca_copy_is_readable_by_the_seat_under_a_private_umask(tmp_path, mask):
+    source = tmp_path / "source-ca.pem"
+    source.write_bytes(b"public certificate bytes")
+    seat = tmp_path / "seat"
+    seat.mkdir(mode=0o700)
+    previous = os.umask(mask)
+    try:
+        copied = pi._write_egress_ca(seat, source)
+    finally:
+        os.umask(previous)
+    assert copied.read_bytes() == source.read_bytes()
+    assert copied.stat().st_mode & 0o777 == 0o444
+    assert seat.stat().st_mode & 0o777 == 0o700
+
+
 def prepare(tmp_path, monkeypatch, *, expiry=None):
     from phase_loop_runtime.seat_codex_runtime import CODEX_RUNTIME_FILES
     root = tmp_path / "vendor/x86_64-unknown-linux-musl"

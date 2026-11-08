@@ -1322,7 +1322,10 @@ def _curl_refusal(done: JailedStep) -> str | None:
     if not marker or len(codes) != 2:
         return None
     http_code, connect_code = codes
-    if done.exit_code == _CURL_RECV_ERROR and connect_code == b"403":
+    # curl/curl commit a186ecf4 (8.20.0, also backported to Ubuntu's 8.18.0)
+    # uses exit 7 for a readable rejected CONNECT, where older clients use 56.
+    # An ordinary exit 7 without the observed CONNECT 403 is still unavailable.
+    if done.exit_code in {_CURL_RECV_ERROR, _CURL_COULDNT_CONNECT} and connect_code == b"403":
         return "proxy_connect_refused"
     if (done.exit_code == _CURL_OK and http_code == b"403" and connect_code == b"200"
             and _PROXY_ERROR_HEADER in head.lower()):

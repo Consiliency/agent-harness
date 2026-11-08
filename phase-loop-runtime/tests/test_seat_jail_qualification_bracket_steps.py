@@ -218,6 +218,31 @@ def test_curl_refusal_requires_matching_exit_and_response_fields():
     assert qualification._curl_refusal(CERTIFICATE_FAILURE) is None
 
 
+@pytest.mark.parametrize("exit_code", [56, 7])
+def test_curl_connect_refusal_accepts_both_client_exits_with_connect_403(exit_code):
+    refused = _step(exit_code, b"\nPHASE_LOOP_CURL 000 403\n")
+    assert qualification._curl_refusal(refused) == "proxy_connect_refused"
+    assert qualification.BRACKET_STEPS["token_post"](FakeJailedRun((refused,))) == "proxy_connect_refused"
+    assert qualification.BRACKET_STEPS["b_forbidden_hosts"](
+        FakeJailedRun((refused,) * 4)) == "proxy_connect_refused"
+
+
+@pytest.mark.parametrize("stdout", [
+    b"\nPHASE_LOOP_CURL 000 000\n",  # No connection or proxy response.
+    b"\nPHASE_LOOP_CURL 000 200\n",  # Tunnel established; later connect failed.
+    b"\nPHASE_LOOP_CURL 000 407\n",  # Proxy authentication is not a policy refusal.
+    b"\nPHASE_LOOP_CURL 000 502\n",  # Upstream failure is not a policy refusal.
+    FILTER_REFUSED.stdout,             # Inner 403 is not a CONNECT 403.
+    b"HTTP/1.1 403 Forbidden\r\n\r\n",  # Missing observed CONNECT status.
+])
+def test_curl_connect_refusal_does_not_treat_every_exit_7_as_a_proxy_refusal(stdout):
+    assert qualification._curl_refusal(_step(7, stdout)) is None
+
+
+def test_curl_connect_refusal_does_not_accept_a_timed_out_403():
+    assert qualification._curl_refusal(_step(7, PROXY_REFUSED.stdout, timed_out=True)) is None
+
+
 def test_multi_attempt_steps_report_each_supported_refusal_exit():
     path_run = FakeJailedRun((PROXY_REFUSED, PROXY_REFUSED))
     assert qualification.BRACKET_STEPS["b_forbidden_paths"](path_run) == "proxy_connect_refused"
