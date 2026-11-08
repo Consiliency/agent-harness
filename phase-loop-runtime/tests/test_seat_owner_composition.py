@@ -22,7 +22,7 @@ OWNER = (
 )
 
 
-@pytest.mark.parametrize("retain_caps", [(), ("setfcap",)])
+@pytest.mark.parametrize("retain_caps", [()])
 def test_mapping_capability_preserves_the_same_namespace_owner(retain_caps, tmp_path):
     token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(HOLDER)
     try:
@@ -44,7 +44,7 @@ def test_mapping_capability_preserves_the_same_namespace_owner(retain_caps, tmp_
     assert "--mount-proc" not in prefix
 
 
-@pytest.mark.parametrize("retain_caps", [(), ("setfcap",)])
+@pytest.mark.parametrize("retain_caps", [()])
 def test_owned_provider_identity_has_no_retained_mapping_capability(retain_caps, tmp_path):
     token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(HOLDER)
     try:
@@ -69,10 +69,11 @@ def test_real_root_operator_is_refused_before_owner_composition(monkeypatch, tmp
         panel_invoker._EGRESS_LAUNCH_PREFIX.reset(token)
 
 
-def test_unapproved_mapping_capability_is_refused(tmp_path):
+@pytest.mark.parametrize("cap", ["net_admin", "setfcap"])
+def test_unapproved_mapping_capability_is_refused(tmp_path, cap):
     token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(HOLDER)
     try:
         with pytest.raises(ValueError):
-            panel_invoker._compose_launch_prefix(tmp_path, OWNER, ("net_admin",))
+            panel_invoker._compose_launch_prefix(tmp_path, OWNER, (cap,))
     finally:
         panel_invoker._EGRESS_LAUNCH_PREFIX.reset(token)

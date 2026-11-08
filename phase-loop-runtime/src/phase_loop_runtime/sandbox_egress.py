@@ -98,15 +98,8 @@ PRIVATE_CIDRS: tuple[str, ...] = (
 # Capabilities a seat MAY keep in its bounding set, by explicit request only. The egress
 # prefix empties the bounding set so a seat can never hold CAP_NET_ADMIN over the namespace
 # that confines it (board round 3: `iptables -F OUTPUT` took qdrant from BLOCKED to 200).
-# One seat needs one capability back: a sandboxed codex seat runs commands inside codex's
-# OWN bubblewrap sandbox, and bwrap's nested user namespace must map uid 0 (the seat is
-# root inside this namespace), which since Linux 5.12 requires CAP_SETFCAP. Without it
-# codex answers "bwrap: setting up uid map: Operation not permitted" and runs nothing
-# (agent-harness#1003). SETFCAP cannot restore the firewall: it grants no NET_ADMIN, file
-# capabilities it sets are still capped by this same bounding set at exec, and a nested
-# namespace's capabilities do not reach the network namespace this one owns. Nothing else
-# is retainable; widening this set is a security decision, not a refactor.
-SEAT_RETAINABLE_CAPS: frozenset[str] = frozenset({"setfcap"})
+# OD-4 retires Codex's nested-sandbox retention. No seat may retain a capability.
+SEAT_RETAINABLE_CAPS: frozenset[str] = frozenset()
 _EMPTY_BOUNDING_SET = "--bounding-set=-all"
 
 

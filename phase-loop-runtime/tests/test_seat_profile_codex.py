@@ -1,4 +1,4 @@
-"""The unregistered Codex profile's declared runtime and window inputs."""
+"""The registered Codex profile's declared runtime and window inputs."""
 from dataclasses import replace
 
 import pytest
@@ -14,12 +14,13 @@ def codex_profile(monkeypatch):
     monkeypatch.setattr(seat_profiles, "_REGISTRY", dict(seat_profiles._REGISTRY))
     monkeypatch.setattr(seat_admission, "_GATES", dict(seat_admission._GATES))
     monkeypatch.setattr(seat_subject, "_PROVIDER_EXECUTABLES", dict(seat_subject._PROVIDER_EXECUTABLES))
+    monkeypatch.delitem(seat_profiles._REGISTRY, "codex", raising=False)
     codex.register_codex()
     return seat_profiles.profile_for("codex")
 
 
-def test_profile_is_inert_until_registered():
-    assert seat_profiles.profile_for("codex") is None
+def test_profile_is_registered_after_od4():
+    assert seat_profiles.profile_for("codex").vendor == "codex"
     profile = codex.CODEX_PROFILE
     assert (profile.leg, profile.vendor, profile.new_session, profile.token_fd) == ("codex", "codex", True, False)
     assert profile.home_dirs == (".codex", "workspace")
@@ -92,7 +93,7 @@ def test_projected_runtime_is_the_declared_file_set(mutation):
         paths.append(f"{CODEX_RUNTIME_ROOT}/codex-path/extra")
     entries = [SimpleNamespace(destination=path, kind="file") for path in paths]
     entries.extend(SimpleNamespace(destination=path, kind="directory")
-                   for path in codex._CODEX_RUNTIME_DIRECTORIES)
+                   for path in codex._runtime_directories())
     dependency = SimpleNamespace(entries=entries,
         subject_destination="/other" if mutation == "subject" else CODEX_RUNTIME_DESTINATIONS[0])
     if mutation is None:

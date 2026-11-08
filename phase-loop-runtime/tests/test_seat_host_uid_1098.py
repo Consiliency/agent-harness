@@ -49,8 +49,8 @@ def test_the_switch_maps_the_operator_then_locks_down():
         "/usr/bin/unshare", "--user", f"--map-user={UID}", f"--map-group={GID}", "--keep-caps",
         "/usr/bin/setpriv", "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all", "--",
     ]
-    kept = panel_invoker._seat_identity_switch(("setfcap",))
-    assert "--bounding-set=-all,+setfcap" in kept and kept[-3:] == ["--pdeathsig", "SIGKILL", "--"]
+    with pytest.raises(ValueError):
+        panel_invoker._seat_identity_switch(("setfcap",))
     with pytest.raises(ValueError):
         panel_invoker._seat_identity_switch(("net_admin",))
 
@@ -60,7 +60,7 @@ _USERNS_ENTRY = ("-U", "--user", "--unshare-user")
 
 @pytest.mark.parametrize("egress", ["empty", "holder"])
 @pytest.mark.parametrize("owned", [False, True])
-@pytest.mark.parametrize("caps", [(), ("setfcap",)])
+@pytest.mark.parametrize("caps", [()])
 def test_every_composed_prefix_ends_in_the_lock_down_or_refuses(tmp_path, egress, owned, caps):
     """The ORDER is load-bearing: a user-namespace switch resets the lock-down, so the
     bounding-set drop must follow EVERY user-namespace entry, and every prefix that enters
@@ -119,7 +119,7 @@ def test_the_probe_runs_through_the_exact_launch_prefix(tmp_path, monkeypatch):
     def fake_run(argv, **kwargs):
         seen.append(list(argv))
         return subprocess.CompletedProcess(
-            argv, 0, "\n".join(panel_invoker._expected_seat_identity(argv, ("setfcap",))) + "\n", "")
+            argv, 0, "\n".join(panel_invoker._expected_seat_identity(argv, ())) + "\n", "")
 
     class FakePopen:
         def __init__(self, argv, **kwargs):
@@ -130,7 +130,7 @@ def test_the_probe_runs_through_the_exact_launch_prefix(tmp_path, monkeypatch):
     owner = _owner(tmp_path)
     with _egress(HOLDER):
         panel_invoker.launch_provider(["/bin/echo", "exec"], process_owner=owner,
-                                      retain_caps=("setfcap",), cwd=str(tmp_path))
+                                      retain_caps=(), cwd=str(tmp_path))
     probe, launch = seen
     assert launch[-2:] == ["/bin/echo", "exec"]
     assert probe[:len(launch) - 2] == launch[:-2], "the probe used a different prefix"
@@ -165,7 +165,7 @@ def test_every_route_runs_the_seat_as_the_operator(tmp_path):
     assert parent_nnp in ("0", "1"), parent_nnp
     routes = {
         "plain": ({}, "0000000000000000", parent_nnp),
-        "codex": ({"process_owner": _owner(tmp_path), "retain_caps": ("setfcap",)},
+        "codex": ({"process_owner": _owner(tmp_path), "retain_caps": ()},
                   "0000000000000000", "1"),
         "owned": ({"process_owner": _owner(tmp_path)}, "0000000000000000", "1"),
     }
@@ -226,7 +226,7 @@ def test_an_owned_codex_launch_without_a_namespace_is_refused_live(tmp_path):
         with pytest.raises(sandbox_egress.SeatIdentityUnverified):
             panel_invoker.launch_provider(
                 ["/bin/sh", "-c", f"touch {ran}"], cwd=str(tmp_path),
-                process_owner=_owner(tmp_path), retain_caps=("setfcap",))
+                process_owner=_owner(tmp_path), retain_caps=())
     assert not ran.exists()
 
 
@@ -388,7 +388,7 @@ DRIVER = textwrap.dedent("""
     route = {"plain": {}, "codex": {
         "process_owner": ["/usr/bin/bwrap", "--die-with-parent", "--unshare-pid",
                           "--bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--"],
-        "retain_caps": ("setfcap",)}}[sys.argv[2]]
+        "retain_caps": ()}}[sys.argv[2]]
     with sandbox_egress.isolated_network(timeout_s=None) as prefix:
         print("NAMESPACE-UP", file=sys.stderr, flush=True)
         token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(tuple(prefix))

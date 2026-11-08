@@ -1,14 +1,10 @@
-"""Codex jail profile; production registration awaits OD-4."""
+"""Codex jail profile enabled by the recorded OD-4 acceptance."""
 
 from pathlib import Path
 import time
 from types import MappingProxyType
 
-from . import seat_codex_credential as credential
 from .seat_codex_cli_shape import JAILED_CODEX_DISABLED_FEATURES, codex_cli_shape_problem
-from .seat_codex_runtime import (
-    CODEX_RUNTIME_ROOT, CODEX_RUNTIME_FILES, CODEX_RUNTIME_DESTINATIONS, CodexRuntime, runtime_binds,
-)
 from .seat_route_contract import (
     ArgvInputs, ConfigSurface, ContainmentEvidence, CredentialDelivery, JailProfile,
     Precondition, WindowRows,
@@ -22,10 +18,6 @@ CODEX_TREE_ROWS = (
     (".codex/hooks.json", "hooks"), (".mcp.json", "mcp_servers"),
 )
 CODEX_PLANTED_PATHS = tuple(path for path, _role in CODEX_TREE_ROWS)
-_CODEX_RUNTIME_DIRECTORIES = frozenset({
-    "/run", "/run/phase-loop-seat", CODEX_RUNTIME_ROOT,
-    f"{CODEX_RUNTIME_ROOT}/bin", f"{CODEX_RUNTIME_ROOT}/codex-path",
-})
 CODEX_WINDOW_ROWS = WindowRows(
     "canonical_codex", "codex_route", "jailed",
     (("tree", "/seat/tree", "reviewed-tree"),
@@ -36,6 +28,7 @@ CODEX_WINDOW_ROWS = WindowRows(
 
 
 def jailed_codex_command(inputs: ArgvInputs) -> tuple[str, ...]:
+    from .seat_codex_runtime import CODEX_RUNTIME_ROOT
     return (
         f"{CODEX_RUNTIME_ROOT}/bin/codex",
         *(arg for feature in JAILED_CODEX_DISABLED_FEATURES for arg in ("--disable", feature)),
@@ -50,12 +43,14 @@ def jailed_codex_command(inputs: ArgvInputs) -> tuple[str, ...]:
 
 
 def _runtime_sources(provider):
+    from .seat_codex_runtime import CODEX_RUNTIME_FILES
     root = "<runtime>" if provider == "<provider>" else str(Path(provider).parent.parent)
     return tuple(provider if path == "bin/codex" else f"{root}/{path}"
                  for path in CODEX_RUNTIME_FILES)
 
 
 def _binds(paths):
+    from .seat_codex_runtime import CODEX_RUNTIME_ROOT, CODEX_RUNTIME_FILES, CodexRuntime, runtime_binds
     if paths.egress_ca is None:
         from .seat_jail import SeatSandboxRefused, refused
         raise SeatSandboxRefused(refused("jail_build"))
@@ -82,6 +77,7 @@ def _placeholders(paths):
 
 
 def _env(inputs):
+    from .seat_codex_runtime import CODEX_RUNTIME_ROOT
     return MappingProxyType({
         "CODEX_HOME": "/seat/home/.codex", "HTTPS_PROXY": inputs.egress_proxy or "",
         "SSL_CERT_FILE": "/seat/egress-ca.pem", "CODEX_CA_CERTIFICATE": "/seat/egress-ca.pem",
@@ -90,6 +86,7 @@ def _env(inputs):
 
 
 def _check(name):
+    from . import seat_codex_credential as credential
     from .seat_jail import SeatSandboxRefused
     try:
         raw = credential.read_auth()
@@ -116,14 +113,31 @@ def _auth_probe():
     return _parent_auth_state("codex")
 
 
+def _runtime_directories():
+    from .seat_codex_runtime import CODEX_RUNTIME_ROOT
+    return frozenset({"/run", "/run/phase-loop-seat", CODEX_RUNTIME_ROOT,
+                      f"{CODEX_RUNTIME_ROOT}/bin", f"{CODEX_RUNTIME_ROOT}/codex-path"})
+
+
+def _mount_points(_paths):
+    from .seat_codex_runtime import CODEX_RUNTIME_DESTINATIONS
+    return ("/seat/egress-ca.pem", *CODEX_RUNTIME_DESTINATIONS)
+
+
+def _credential_present():
+    from . import seat_codex_credential as credential
+    return credential.present()
+
+
 def validate_codex_projection(dependency):
+    from .seat_codex_runtime import CODEX_RUNTIME_DESTINATIONS
     if dependency is None:
         return
     from .executable_dependency import ExecutableDependencyError
     directories = {entry.destination for entry in dependency.entries if entry.kind == "directory"}
     leaves = {entry.destination for entry in dependency.entries if entry.kind != "directory"}
     if (leaves != set(CODEX_RUNTIME_DESTINATIONS)
-            or not directories <= _CODEX_RUNTIME_DIRECTORIES
+            or not directories <= _runtime_directories()
             or any(entry.kind not in {"directory", "file"} for entry in dependency.entries)
             or dependency.subject_destination != CODEX_RUNTIME_DESTINATIONS[0]
     ):
@@ -131,6 +145,7 @@ def validate_codex_projection(dependency):
 
 
 def codex_admission_gate(leg, env, execute):
+    from . import seat_codex_credential as credential
     from . import panel_invoker as pi, seat_admission, seat_jail
     try:
         raw = credential.read_auth(env)
@@ -166,10 +181,10 @@ def codex_admission_gate(leg, env, execute):
 CODEX_PROFILE = JailProfile(
     leg="codex", vendor="codex", owner_binds=_binds, env=_env,
     home_dirs=(".codex", "workspace"), digest_placeholders=_placeholders,
-    mount_points=lambda _paths: ("/seat/egress-ca.pem", *CODEX_RUNTIME_DESTINATIONS),
+    mount_points=_mount_points,
     new_session=True, token_fd=False, argv=jailed_codex_command, projection="optional",
     credential=CredentialDelivery("home_file", "codex-credential-scope"),
-    credential_present=credential.present, credential_missing_code="codex_seat_credential_missing",
+    credential_present=_credential_present, credential_missing_code="codex_seat_credential_missing",
     preconditions=(Precondition("subscription_login", _subscription), Precondition("token_margin", _margin),
                    Precondition("scope_ceiling", _scope)),
     recorded_stop=None, variant=None, config_surface=ConfigSurface(True, CODEX_PLANTED_PATHS),

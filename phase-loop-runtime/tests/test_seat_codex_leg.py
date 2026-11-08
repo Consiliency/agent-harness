@@ -57,6 +57,9 @@ def prepare(tmp_path, monkeypatch, *, expiry=None):
     auth.chmod(0o600)
     monkeypatch.setattr(pi, "_resolved_jail_subject", lambda *a: (
         SeatSubject("codex", "standalone", root / "bin/codex", None, None), None))
+    from test_seat_codex_cli_shape import EXEC_HELP_0_167_0, FEATURES_0_167_0
+    monkeypatch.setattr(pi, "run_provider", lambda cmd, **k: SimpleNamespace(
+        returncode=0, stdout=EXEC_HELP_0_167_0 if "--help" in cmd else FEATURES_0_167_0))
     ca = tmp_path / "ca.pem"
     ca.write_bytes(b"certificate")
     proxy = SimpleNamespace(ca_cert=ca, proxy_url="http://srt:synthetic-proxy-password@127.0.0.1:3128")
