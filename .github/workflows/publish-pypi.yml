@@ -20,7 +20,7 @@ permissions:
 jobs:
   build:
     name: build + verify wheel + sdist
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned: test.yml's Gate A image; ubuntu-latest moved to 26.04 (agent-harness#1763)
     # A pull_request run deselects the CONFORM chronology node and is measured at
     # 7-12 minutes (docs/releases/publish-pypi-build-timeout.md). A tag or
     # workflow_dispatch run executes the FULL standalone suite in Gate A and is

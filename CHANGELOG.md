@@ -8,6 +8,19 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [0.7.29] - Unreleased candidate
 
+### Release Gate A runs on ubuntu-24.04; sandbox tests gated on host capability
+
+- `publish-pypi.yml`'s `build` job runs on `ubuntu-24.04`, the image `test.yml`'s Gate A
+  already uses (agent-harness#1763). The v0.7.29 tag run got Ubuntu 26.04 from
+  `ubuntu-latest` and failed 17 tests. `test.yml`'s Gate A at the same commit on
+  ubuntu-24.04 passed.
+- Some tests need the seat to switch uid inside bwrap, or need a namespace nested inside
+  bwrap. On a host that refuses either, they now skip and say why. The uid-switch gate runs
+  the seat-jail qualification's own probe step through the runtime's `uid_switch_denied`
+  classifier. `PHASE_LOOP_REQUIRE_LIVE_JAIL=1` turns these skips into failures.
+- Tests no longer assume that `/usr/bin/true` is a regular file or that `sleep` is
+  single-call; neither holds on Ubuntu 26.04. No runtime source changed.
+
 ### Release preparation (agent-harness#1779)
 
 - 0.7.29 is the next release after 0.7.27 and supersedes 0.7.28. The `v0.7.28` tag

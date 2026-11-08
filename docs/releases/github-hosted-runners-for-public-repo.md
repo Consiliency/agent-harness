@@ -4,11 +4,26 @@
 GitHub-hosted runners are free and unmetered. Every job in this repo therefore
 uses a standard GitHub-hosted label rather than a Blacksmith label: paid runner
 minutes on a public repo buy nothing that GitHub does not already give away for free.
-Most jobs use `ubuntu-latest`; see the pin below for the three that do not.
+Most jobs use `ubuntu-latest`; see the pins below for the four that do not.
 
 Blacksmith remains in use for the org's private repositories, where minutes are
 metered and its per-minute rate is the cheaper of the two. Treat a new
 `runs-on: blacksmith-*` line in this repo as a cost regression.
+
+## Release build job pinned to `ubuntu-24.04` (2026-11-07)
+
+`publish-pypi.yml`'s `build` job, which runs the release Gate A, now pins
+`runs-on: ubuntu-24.04`. That is the image `test.yml`'s clean-room Gate A already runs on.
+The v0.7.29 tag run (run 42432285172) got an Ubuntu 26.04 image from `ubuntu-latest` and
+failed 17 tests. `test.yml`'s clean-room Gate A at the same commit on ubuntu-24.04 ran the
+same 17511 tests and passed.
+
+On 26.04 the causes are known. The tests now account for most of them: they skip, with the
+reason, on a host that refuses a seat uid switch or a namespace nested inside bwrap. They
+also stop assuming that `/usr/bin/true` is a regular file and that `sleep` is single-call.
+One review-route test still needs a runtime change on such hosts. Until that lands, the
+release job stays on the image that both Gate A runs share. Moving it needs its own
+validation.
 
 ## Native-test jobs pinned to `ubuntu-24.04` (2026-10-25)
 
