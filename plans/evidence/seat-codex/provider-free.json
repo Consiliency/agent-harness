@@ -188,6 +188,11 @@
       "Keep explicit required-live runs failing when prerequisites are missing; regression tests cover unset/zero opt-in and missing prerequisites.",
       "Stub unrelated global scratch GC only in the synthetic dispatch unit test; preserve its actual dispatch, lease and post-launch assertions."
     ],
+    "hosted_followup": {
+      "pytest_py312": "passed",
+      "suite_gate": "passed",
+      "validation_head": "335916ff19e4771beabd387d33a7c04870d1ba70"
+    },
     "job_timeout_changed": false,
     "receipt_sha256": {
       "ci-job.log": "ba77a030ff740d8aed3bc86cfcc1a3f1c48ed95a43775409591bb1ed6976ee34",
@@ -198,7 +203,7 @@
       "timings-after.xml": "bc09424ad58c7b5f649b0aab879a776bece16513a3c516fc27348d04bbf8fd78",
       "timings-before.xml": "5af2ccde36a3577b2497aa4d18f4fa105e05f337f9d8990b40a603a1f6c2ab36"
     },
-    "remaining_validation": "Hosted CI must confirm the full-suite result; ai remains deferred and OD-4 remains on hold",
+    "remaining_validation": "Designated-host ai VL and Codex qualification now passed; OD-4 owner decision remains on hold",
     "runtime_and_workflow_changes": false
   },
   "digests": {
@@ -234,6 +239,36 @@
     }
   },
   "external_interruptions": 0,
+  "historical_ai_deferral": {
+    "blocker": "I/O PSI full spike with full swap; stopped without retry before validation",
+    "counts": {
+      "fail": 0,
+      "pass": 0,
+      "skip": 0
+    },
+    "designated_seat_host": true,
+    "live_cases_not_run": 6,
+    "proxy_readiness": {
+      "available": true,
+      "reason": null,
+      "srt_version": "0.0.79"
+    },
+    "qualification": "not_run",
+    "readiness_receipt": {
+      "name": "ai-readiness-and-pressure.log",
+      "sha256": "58e82c403125b4fd27f7d81ecf88b744e132e595d22220cc9a672ca00909ab5a"
+    },
+    "resource_observation": {
+      "available_memory_gib_at_stop": 88,
+      "confirmed_io_full_avg10_percent": 7.36,
+      "initial_io_full_avg10_percent": 0.49,
+      "memory_full_avg10_percent": 0.0,
+      "stop_io_full_avg10_percent": 5.46,
+      "swap_free_kib_at_stop": 524,
+      "swap_total_gib": 8.0
+    },
+    "status": "deferred"
+  },
   "historical_validation": {
     "dev0_narrowed_diagnostic_counts": {
       "fail": 1,
@@ -250,34 +285,209 @@
   },
   "hosts": {
     "ai": {
-      "blocker": "I/O PSI full spike with full swap; stopped without retry before validation",
       "counts": {
         "fail": 0,
-        "pass": 0,
+        "pass": 6,
         "skip": 0
       },
       "designated_seat_host": true,
-      "live_cases_not_run": 6,
+      "execution": {
+        "admission_lock_held_through_process_tree_cleanup": true,
+        "admission_lock_released": true,
+        "jailed_claude_tests": 0,
+        "provider_turns": 0,
+        "python": "CPython 3.12.15; uv run --python 3.12 --frozen",
+        "qualification_timeout_s": 900,
+        "real_login_operations": 0,
+        "serial": true,
+        "source_verified_files": 2226,
+        "timeout_s": 1200,
+        "umask": "077",
+        "vl_timeout_s": 900,
+        "xdist": false
+      },
+      "preflight": {
+        "checks": {
+          "available_gt_32_gib": true,
+          "io_full_lt_5": true,
+          "load_lt_24": true,
+          "memory_full_le_1": true
+        },
+        "passed": true,
+        "sample": {
+          "at": "2026-11-08T14:47:59.848865+00:00",
+          "available_bytes": 92191145984,
+          "elapsed_s": 0.0,
+          "io_full_avg10": 0.62,
+          "io_some_avg10": 0.87,
+          "load_1m": 14.68,
+          "memory_full_avg10": 0.0,
+          "memory_some_avg10": 0.0
+        }
+      },
       "proxy_readiness": {
         "available": true,
         "reason": null,
         "srt_version": "0.0.79"
       },
-      "qualification": "not_run",
-      "readiness_receipt": {
-        "name": "ai-readiness-and-pressure.log",
-        "sha256": "58e82c403125b4fd27f7d81ecf88b744e132e595d22220cc9a672ca00909ab5a"
+      "qualification": {
+        "checks": {
+          "falsifier_run_green_on_head": true,
+          "no_probe_entry_in_protected_dirs": true,
+          "no_seat_descriptor_resolves_to_protected_object": true,
+          "no_seat_mount_resolves_to_protected_object_or_ancestor": true,
+          "no_signal_or_connection_observed_by_run": true,
+          "probe_resolved_no_protected_path": true,
+          "protected_files_single_link": true,
+          "sentinels_intact": true
+        },
+        "credential_reads": 0,
+        "falsifier_layout": "execfind-falsifier-layout.v1:7d9103e917279b7686fa0ead3358b978dc721f4d0ab3ff2214680c1743b3ec22",
+        "profile_digest": "76c3d38de9a2a9257480ddd556102d57c045489f9472cb4b2c40c92d0b14b4a9",
+        "protected_dir_count": 45,
+        "provider_turns": 0,
+        "record_schema": "seat_jail_pass.v2",
+        "record_sha256": "bdbc4d3fe521b62426d78b412469f4d87e28014cdbcdd77bc72d77a98d0668ce",
+        "record_verdict": [
+          true,
+          "pass"
+        ],
+        "registration": "process-local; production registry unchanged",
+        "result": "pass",
+        "run_outcome": "green_on_head",
+        "sentinel_count": 45,
+        "subject_source": "standalone"
       },
-      "resource_observation": {
-        "available_memory_gib_at_stop": 88,
-        "confirmed_io_full_avg10_percent": 7.36,
-        "initial_io_full_avg10_percent": 0.49,
-        "memory_full_avg10_percent": 0.0,
-        "stop_io_full_avg10_percent": 5.46,
-        "swap_free_kib_at_stop": 524,
-        "swap_total_gib": 8.0
+      "qualification_receipt": {
+        "name": "ai-qualification.json",
+        "sha256": "8cf3b143173fafcefabddc3fefe65b60c4169cd41f01854309ff224e437eb3e5"
       },
-      "status": "deferred"
+      "receipts": [
+        {
+          "name": "preflight.json",
+          "sha256": "e4bd6c37f60fac38bc258c3a1ac27172d3eed11dfe05abaff7de5adab45f5ef4"
+        },
+        {
+          "name": "psi.jsonl",
+          "sha256": "e7125dbf06d1c24ceabcc40d6e42b8520e7f152227b337d55d1ca459823fb9ca"
+        },
+        {
+          "name": "psi-summary.json",
+          "sha256": "8c924c27807d4f6c8562ee8ec91db8cf6486e6dfb3ec421ceb2f73e6af0c67bf"
+        },
+        {
+          "name": "proxy-readiness.json",
+          "sha256": "8a8b87ffefff57d7cb04b4c75abe07d3ac6a347fb4fb158cc5c52728684af3f2"
+        },
+        {
+          "name": "status.json",
+          "sha256": "41091ce52c6959db6b2b00bb4cc9ba110e316bcaf5ad4dbd900cea4749781bd6"
+        },
+        {
+          "name": "source-manifest.json",
+          "sha256": "e0489023ef2ac5afb81b6bddd4ac92eb7d8afb0aabcaa7fe3f1f3cf7ba9b539e"
+        }
+      ],
+      "runtime_admission": {
+        "native_runtime": "0.167.0-x86_64-unknown-linux-musl",
+        "permission_change_by_executor": false,
+        "receipt": {
+          "name": "runtime-admission.json",
+          "sha256": "38d03b05f1440289c80c5d96e2a54088dea4ecf004b4c85fc85a0ad9f3f05ec0"
+        },
+        "refused_paths": [],
+        "resolve_runtime_accepted": true,
+        "runtime_file_count": 4,
+        "target_mode": "0755"
+      },
+      "status": "passed",
+      "validation_head": "335916ff19e4771beabd387d33a7c04870d1ba70",
+      "vl": {
+        "cases": [
+          {
+            "outcome": "pass",
+            "seconds": 2.845,
+            "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[sentinel]"
+          },
+          {
+            "outcome": "pass",
+            "seconds": 2.355,
+            "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[planted_markers]"
+          },
+          {
+            "outcome": "pass",
+            "seconds": 2.373,
+            "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[rewritten_auth]"
+          },
+          {
+            "outcome": "pass",
+            "seconds": 2.576,
+            "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[nested_namespace]"
+          },
+          {
+            "outcome": "pass",
+            "seconds": 2.544,
+            "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[workspace_write]"
+          },
+          {
+            "outcome": "pass",
+            "seconds": 5.073,
+            "test": "tests.test_seat_egress_allowlist_codex::test_live_jail_codex_refused_rows_from_a_jailed_tool_command"
+          }
+        ],
+        "counts": {
+          "fail": 0,
+          "pass": 6,
+          "skip": 0
+        },
+        "receipt": "ai-vl.xml",
+        "sha256": "b4eae1138345e1367b207dd74eb458ba579f31124e800110fd84d6c21906225b"
+      },
+      "watchdog": {
+        "abort_rules": {
+          "memory_full_single_sample_gt": 5,
+          "memory_full_sustained_gt": 2,
+          "memory_some_sustained_gt": 10,
+          "sustained_seconds": 10
+        },
+        "aborted": false,
+        "all_descendants_exited": true,
+        "duration_s": 36.073,
+        "extrema": {
+          "available_bytes": {
+            "max": 94670102528,
+            "min": 91443802112
+          },
+          "io_full_avg10": {
+            "max": 5.26,
+            "min": 0.18
+          },
+          "io_some_avg10": {
+            "max": 6.12,
+            "min": 0.33
+          },
+          "load_1m": {
+            "max": 15.62,
+            "min": 13.97
+          },
+          "memory_full_avg10": {
+            "max": 0.99,
+            "min": 0.0
+          },
+          "memory_some_avg10": {
+            "max": 1.04,
+            "min": 0.0
+          }
+        },
+        "io_note": "I/O full <5 is the pre-launch gate; the approved during-run abort rules are memory-only",
+        "lock_held_through_cleanup": true,
+        "max_sample_gap_s": 1.0010000000000048,
+        "owner_approved_attempts_this_run": 1,
+        "retry": false,
+        "sample_interval_s": 1,
+        "samples": 37,
+        "status": "passed"
+      }
     },
     "dev0": {
       "classifier_root_cause": {
@@ -416,19 +626,19 @@
       }
     }
   },
-  "od4": "not recorded; hold remains",
-  "od4_evidence_packet_ready": false,
+  "od4": "not recorded; owner decision required before SL-3.7",
+  "od4_evidence_packet_ready": true,
   "production_registration": "unchanged; unregistered",
   "provider_turns": 0,
   "real_login_copies": 0,
   "real_login_reads": 0,
   "real_login_renewals": 0,
   "rebase_base": "c4a9abc8828d4fb22dcda0970ce2f734fa90c71a",
-  "recorded_at": "2026-11-08T08:39:24+00:00",
+  "recorded_at": "2026-11-08T14:52:34+00:00",
   "redaction_posture": "metadata_only",
-  "required_next_step": "Obtain designated-host ai VL and qualification only after pressure recovers; keep production unregistered and remain at the OD-4 hold",
+  "required_next_step": "Present the complete SL-3.6 evidence packet to the owner for OD-4; stop before OD-4 is recorded and before SL-3.7",
   "schema": "phase_loop_codex_provider_free.v1",
-  "status": "blocked",
+  "status": "passed",
   "task": "SL-3.6",
   "validation": {
     "live_gate": "PHASE_LOOP_REQUIRE_LIVE_JAIL=1",
@@ -441,5 +651,5 @@
     "umask": "077",
     "xdist": false
   },
-  "validation_head": "c5902488c465058435bd0903f807db18b993bce6"
+  "validation_head": "335916ff19e4771beabd387d33a7c04870d1ba70"
 }

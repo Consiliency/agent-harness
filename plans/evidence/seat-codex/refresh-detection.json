@@ -4,8 +4,16 @@
   "expected_code": "codex_seat_token_refreshed_in_jail",
   "hosts": {
     "ai": {
-      "reason": "I/O PSI full spike with full swap; stopped without retry before validation",
-      "status": "not_run"
+      "case": {
+        "outcome": "pass",
+        "seconds": 2.373,
+        "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[rewritten_auth]"
+      },
+      "observed_code": "codex_seat_token_refreshed_in_jail",
+      "receipt": "ai-vl.xml",
+      "refresh_detection_proven": true,
+      "sha256": "b4eae1138345e1367b207dd74eb458ba579f31124e800110fd84d6c21906225b",
+      "validation_head": "335916ff19e4771beabd387d33a7c04870d1ba70"
     },
     "dev0": {
       "case": {
@@ -20,18 +28,18 @@
     }
   },
   "mutation": "scripted tool changes only the synthetic seat copy refresh_token",
-  "od4": "not recorded; hold remains",
+  "od4": "not recorded; owner decision required before SL-3.7",
   "production_registration": "unchanged; unregistered",
   "provider_turns": 0,
   "real_login_copies": 0,
   "real_login_reads": 0,
   "real_login_renewals": 0,
   "rebase_base": "c4a9abc8828d4fb22dcda0970ce2f734fa90c71a",
-  "recorded_at": "2026-11-08T08:39:24+00:00",
+  "recorded_at": "2026-11-08T14:52:34+00:00",
   "redaction_posture": "metadata_only",
   "schema": "phase_loop_codex_refresh_detection.v1",
-  "status": "blocked",
-  "status_reason": "Passed on dev0; designated-host ai validation remains deferred",
+  "status": "passed",
+  "status_reason": "Live refresh detection passed on both dev0 and the designated seat host ai",
   "task": "SL-3.6",
-  "validation_head": "c5902488c465058435bd0903f807db18b993bce6"
+  "validation_head": "335916ff19e4771beabd387d33a7c04870d1ba70"
 }
