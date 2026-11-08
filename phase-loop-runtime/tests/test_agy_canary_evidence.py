@@ -323,10 +323,35 @@ def test_git_run_uses_sealed_executable_and_strict_environment(
     assert not marker.exists()
 
 
+def _direct_usr_bin_true(candidate: Path = Path("/usr/bin/true"),
+                         directory: Path = Path("/usr/bin")) -> Path:
+    """A no-op stand-in for /usr/bin/gh in the shape the canonical authority demands: a
+    direct regular file in /usr/bin. On Ubuntu 26.04, /usr/bin/true is a symlink to the
+    regular file /usr/bin/gnutrue, and the authority rightly refuses a symlink, so the
+    stand-in is that file. Without one the test cannot run as written: that is a FAILURE,
+    not a host-capability skip."""
+    trusted = candidate.resolve(strict=True) if candidate.is_symlink() else candidate
+    if trusted.parent != directory or trusted.is_symlink() or not trusted.is_file():
+        pytest.fail(f"no direct regular no-op executable in {directory} to stand in for "
+                    f"/usr/bin/gh ({candidate} -> {trusted})")
+    return trusted
+
+
+def test_github_stand_in_fails_rather_than_skips_without_a_direct_regular_file(tmp_path):
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "true").write_text("")
+    link = tmp_path / "true"
+    link.symlink_to(outside / "true")
+    with pytest.raises(pytest.fail.Exception, match="no direct regular no-op executable"):
+        _direct_usr_bin_true(link, directory=tmp_path)
+    assert _direct_usr_bin_true(outside / "true", directory=outside) == outside / "true"
+
+
 def test_github_run_uses_sealed_executable_and_strict_environment(
     monkeypatch, tmp_path,
 ):
-    trusted = Path("/usr/bin/true")
+    trusted = _direct_usr_bin_true()
     assert trusted.is_file()
     monkeypatch.setattr(evidence, "_GITHUB_EXECUTABLE", trusted)
     monkeypatch.setattr(evidence, "_SEALED_GITHUB_AUTHORITY", None)
@@ -357,7 +382,7 @@ def test_github_run_uses_sealed_executable_and_strict_environment(
     monkeypatch.setattr(evidence.subprocess, "run", record_run)
     assert evidence._github_run("--version").returncode == 0
     assert len(seen) == 1
-    assert seen[0][0] == ["/usr/bin/true", "--version"]
+    assert seen[0][0] == [str(trusted), "--version"]
     assert seen[0][1]["env"] == {
         "HOME": str(evidence._account_home()), "PATH": "/usr/bin", "LC_ALL": "C",
     }
@@ -4413,7 +4438,9 @@ def test_probe_selects_1_1_13_stream_json_only_after_complete_capability_matrix(
         assert result["complete"] is True
         assert result["mode"] == "stream_json"
         assert result["schema"] == "agy_capability_probe.v2"
-        assert result["agy_runtime"]["path"] == "/usr/bin/true"
+        # The runtime _install_capability_process sealed: /bin/true resolved, which is
+        # /usr/bin/gnutrue on Ubuntu 26.04.
+        assert result["agy_runtime"]["path"] == str(Path("/bin/true").resolve(strict=True))
         assert result["agy_runtime"]["version"] == result["agy_version"]
         assert [row["class"] for row in result["classes"]] == [item[0] for item in evidence._CAPABILITY_CLASSES]
         assert all(row["attempt"] and row["execution"] and row["result"] == "text" for row in result["classes"])

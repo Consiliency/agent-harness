@@ -1224,6 +1224,12 @@ def test_owned_namespace_cannot_flush_parent_firewall(tmp_path):
 def test_owned_review_starts_nested_sandbox_without_firewall_access(tmp_path):
     from phase_loop_runtime.sandbox_egress import isolated_network
 
+    from ._seat_prereq import nested_namespace_refusal, skip_unless_capable
+
+    # Whether this HOST lets bwrap nest at all, probed with no runtime code in the path.
+    host_refusal = nested_namespace_refusal((
+        "/usr/bin/bwrap", "--unshare-user", "--ro-bind", "/", "/", "--dev", "/dev",
+        "--proc", "/proc", "--", "/usr/bin/true"))
     command = ["/usr/bin/python3", "-c",
         "import json,subprocess; from pathlib import Path; "
         "caps=next(x.split()[1] for x in Path('/proc/self/status').read_text().splitlines() "
@@ -1241,8 +1247,11 @@ def test_owned_review_starts_nested_sandbox_without_firewall_access(tmp_path):
                 assert proc.returncode == 0, error
                 record = json.loads(output)
                 assert int(record["caps"], 16) == 0
-                assert record["inner_rc"] == 0 and record["inner_text"] == "NESTED-OK"
                 assert record["flush_rc"] != 0
+                if host_refusal is not None and record["inner_rc"] != 0:
+                    # Host policy refuses every nested bwrap, so the seat cannot be judged.
+                    skip_unless_capable(host_refusal)
+                assert record["inner_rc"] == 0 and record["inner_text"] == "NESTED-OK"
         finally:
             panel._EGRESS_LAUNCH_PREFIX.reset(token)
 

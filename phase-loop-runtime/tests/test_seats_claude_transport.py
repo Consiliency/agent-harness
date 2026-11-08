@@ -1421,9 +1421,11 @@ def require_live_worker() -> None:
     from phase_loop_runtime import sandbox_egress
 
     try:
-        from ._seat_prereq import SEAT_UID_PREREQUISITE, seat_uid_ready
+        from ._seat_prereq import (SEAT_UID_PREREQUISITE, seat_uid_ready,
+                                   seat_uid_switch_refusal, skip_unless_capable)
     except ImportError:
-        from _seat_prereq import SEAT_UID_PREREQUISITE, seat_uid_ready
+        from _seat_prereq import (SEAT_UID_PREREQUISITE, seat_uid_ready,
+                                  seat_uid_switch_refusal, skip_unless_capable)
     missing = []
     if not hasattr(os, "memfd_create"):
         missing.append("this interpreter has no os.memfd_create")
@@ -1434,11 +1436,14 @@ def require_live_worker() -> None:
     for tool in (pi._PRLIMIT, seat_jail.BWRAP, pi._CLAUDE_SDK_WORKER_DROP_TOOL):
         if not os.access(tool, os.X_OK):
             missing.append(f"needs {tool}")
+    if not missing:
+        # The worker's identity drop is the seat jail's own `setpriv` step inside bwrap, so
+        # a host that denies the jail's uid switch denies the worker's too.
+        refusal = seat_uid_switch_refusal()
+        if refusal is not None:
+            missing.append(refusal)
     if missing:
-        message = "live worker unavailable: " + "; ".join(missing)
-        if REQUIRE_LIVE:
-            pytest.fail(message)
-        pytest.skip(message)
+        skip_unless_capable("live worker unavailable: " + "; ".join(missing))
 
 
 @contextlib.contextmanager

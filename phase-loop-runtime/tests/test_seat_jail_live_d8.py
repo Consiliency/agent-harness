@@ -27,13 +27,26 @@ import pytest
 from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime import sandbox_egress, seat_jail, seat_uid
 
-from ._seat_prereq import SEAT_UID_PREREQUISITE, seat_uid_ready
+from ._seat_prereq import SEAT_UID_PREREQUISITE, require_seat_uid_switch, seat_uid_ready
 
 pytestmark = [
     pytest.mark.skipif(not seat_uid_ready(), reason=SEAT_UID_PREREQUISITE),
     pytest.mark.skipif(not sandbox_egress.egress_isolation_available(),
                        reason="needs unshare + slirp4netns + iptables"),
 ]
+
+
+@pytest.fixture
+def seat_uid_switch():
+    """The seat becomes its uid inside bwrap on this host. Where it cannot (Ubuntu's
+    `unpriv_bwrap` without the seat-jail AppArmor override, agent-harness#1276), a test that
+    needs the seat to run as that uid skips with the runtime's `uid_switch_denied` reason,
+    or fails under PHASE_LOOP_REQUIRE_LIVE_JAIL=1."""
+    require_seat_uid_switch()
+
+
+#: For a test whose seat command must run as the seat uid through the unmodified prefix.
+needs_seat_uid_switch = pytest.mark.usefixtures("seat_uid_switch")
 
 
 @contextlib.contextmanager
@@ -82,11 +95,13 @@ def _run(prefix, jail, script, *args, timeout=60):
 # J6 / J15: the seat is its subordinate uid, with nothing left.
 # --------------------------------------------------------------------------------------
 
+@needs_seat_uid_switch
 def test_j6_live_identity_probe_passes_through_the_production_prefix(tmp_path):
     with live_seat(tmp_path) as (jail, prefix, _holder, _dirs):
         pi._require_jailed_seat_identity(prefix, jail, jail.pass_fds)
 
 
+@needs_seat_uid_switch
 def test_j6_live_setuid_and_uid_map_writes_fail(tmp_path):
     script = ('python3 -c "import os\ntry:\n os.setuid(0); print(\'SETUID-OK\')\nexcept OSError: print(\'setuid-refused\')"; '
               'echo "0 0 1" > /proc/self/uid_map 2>/dev/null && echo MAP-OK || echo map-refused')
@@ -115,6 +130,7 @@ def test_j6_live_mutation_skipping_setpriv_leaves_h_root_with_three_caps(tmp_pat
     assert lines[0] == "0" and "00000000000001c0" in done.stdout
 
 
+@needs_seat_uid_switch
 def test_j15_dac_is_a_second_layer_under_the_mounts(tmp_path):
     """A test-only READ-WRITE bind of operator-owned objects: DAC alone refuses the seat."""
     canary_dir = tmp_path / "operator-dir"
@@ -162,6 +178,7 @@ def test_handoff_live_refuses_a_hard_link_and_leaves_the_outside_file_alone(tmp_
 # J4: concurrent seats cannot reach each other.
 # --------------------------------------------------------------------------------------
 
+@needs_seat_uid_switch
 def test_j4_live_concurrent_seats_are_isolated(tmp_path):
     with live_seat(tmp_path, "a") as (jail_a, prefix_a, holder_a, dirs_a), \
             live_seat(tmp_path, "b") as (jail_b, prefix_b, _hb, dirs_b):
@@ -224,6 +241,7 @@ def test_live_reap_removes_a_recorded_seat_owned_directory(tmp_path, monkeypatch
 # P5/P1 findings folded into the production jail, each proven on the live chain.
 # --------------------------------------------------------------------------------------
 
+@needs_seat_uid_switch
 def test_live_seat_can_use_tmp_etc_and_its_tree(tmp_path):
     """The seat uid can write its sticky tmpfs, traverse /etc and /seat, and starts in its
     tree. Each broke on the plan's literal argv (P5 and P1)."""
@@ -408,6 +426,7 @@ def test_r4_live_a_record_owned_by_a_seat_uid_is_no_pass(tmp_path):
 # EC-EXECFIND-2 jail falsifiers (seat_jail_qualification), live, with a real falsifier run.
 # --------------------------------------------------------------------------------------
 
+@needs_seat_uid_switch
 def test_execfind2_jail_falsifiers_pass_on_the_production_jail(tmp_path, monkeypatch):
     from phase_loop_runtime import seat_jail_qualification as q
 
@@ -425,6 +444,7 @@ def _leak_host_tmp(jail):
     object.__setattr__(jail, "process_owner", tuple(owner))
 
 
+@needs_seat_uid_switch
 def test_execfind2_jail_falsifiers_catch_a_jail_that_exposes_the_run(tmp_path, monkeypatch):
     """Mutation: the jail binds the host temp dir (where the falsifier run's staged tree and
     dependency root live). The qualification FAILS: a seat mount resolves to an ancestor of

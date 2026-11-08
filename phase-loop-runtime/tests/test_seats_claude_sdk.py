@@ -479,9 +479,6 @@ def _lines(chunks) -> list[dict]:
 # The owned launcher: the same leg, with the worker in its sandbox in a seat-uid holder.
 # --------------------------------------------------------------------------------------
 
-REQUIRE_LIVE = os.environ.get("PHASE_LOOP_REQUIRE_LIVE_JAIL") == "1"
-
-
 def live_worker_missing() -> list[str]:
     """What this host lacks to run the owned launcher's sandboxed worker."""
     from phase_loop_runtime import sandbox_egress, seat_uid
@@ -496,7 +493,21 @@ def live_worker_missing() -> list[str]:
     for tool in (pi._PRLIMIT, seat_jail.BWRAP, pi._CLAUDE_SDK_WORKER_DROP_TOOL):
         if not os.access(tool, os.X_OK):
             missing.append(f"needs {tool}")
+    if not missing:
+        # The worker's identity drop is the seat jail's own `setpriv` step inside bwrap, so
+        # a host that denies the jail's uid switch denies the worker's too.
+        refusal = _seat_prereq().seat_uid_switch_refusal()
+        if refusal is not None:
+            missing.append(refusal)
     return missing
+
+
+def _seat_prereq():
+    try:
+        from . import _seat_prereq as prereq
+    except ImportError:  # imported as a top-level module by a sibling test
+        import _seat_prereq as prereq
+    return prereq
 
 
 def require_live_worker() -> None:
@@ -504,10 +515,7 @@ def require_live_worker() -> None:
     prerequisite fails the test."""
     missing = live_worker_missing()
     if missing:
-        message = "live worker unavailable: " + "; ".join(missing)
-        if REQUIRE_LIVE:
-            pytest.fail(message)
-        pytest.skip(message)
+        _seat_prereq().skip_unless_capable("live worker unavailable: " + "; ".join(missing))
 
 
 @contextlib.contextmanager

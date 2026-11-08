@@ -119,13 +119,18 @@ def test_record_auth_ok_callable_bound():
 
 # --- probe timeout + fail-closed (AUTOSEL change #2) ------------------------
 
-def test_run_probe_passes_a_strict_timeout():
+def test_run_probe_passes_a_strict_timeout(tmp_path):
     # The real probe runner must bound the subprocess so a hung CLI cannot freeze
     # the dispatch hot path. A sleep longer than the bound raises TimeoutExpired.
     import pytest
 
+    from ._seat_prereq import sleep_runnable_as_seat_provider
+
+    # The seat runs a probe from a file named `provider`; a multicall `sleep` (Ubuntu
+    # 26.04's uutils) exits at once there, so the stand-in is one that still sleeps.
+    sleep = sleep_runnable_as_seat_provider(tmp_path)
     with pytest.raises(subprocess.TimeoutExpired):
-        ea._run_probe(f"sleep {ea._PROBE_TIMEOUT_SECONDS + 5}")
+        ea._run_probe(f"{sleep} {ea._PROBE_TIMEOUT_SECONDS + 5}")
 
 
 def test_auth_ok_fails_closed_on_probe_timeout():
