@@ -1,0 +1,34 @@
+{
+  "auth_source": "synthetic fixture only",
+  "evidence_id": "codex-refresh-detection",
+  "expected_code": "codex_seat_token_refreshed_in_jail",
+  "hosts": {
+    "ai": {
+      "reason": "I/O PSI full spike with full swap; stopped without retry before validation",
+      "status": "not_run"
+    },
+    "dev0": {
+      "case": {
+        "outcome": "fail",
+        "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[rewritten_auth]"
+      },
+      "receipt": "dev0-vl.xml",
+      "refresh_detection_proven": false,
+      "sha256": "d0e6a8fa3fbeeef8f98425c25bdbe99758a2ad5219f385e7623258c2a17cb1ad"
+    }
+  },
+  "mutation": "scripted tool changes only the synthetic seat copy refresh_token",
+  "od4": "not recorded; hold remains",
+  "production_registration": "unchanged; unregistered",
+  "provider_turns": 0,
+  "real_login_copies": 0,
+  "real_login_reads": 0,
+  "real_login_renewals": 0,
+  "rebase_base": "c4a9abc8828d4fb22dcda0970ce2f734fa90c71a",
+  "recorded_at": "2026-11-08T06:10:17+00:00",
+  "redaction_posture": "metadata_only",
+  "schema": "phase_loop_codex_refresh_detection.v1",
+  "status": "blocked",
+  "task": "SL-3.6",
+  "validation_head": "ab34301e521a32ff93b6ed840eb5a351cf3d3f24"
+}

@@ -1,0 +1,202 @@
+{
+  "auth_source": "synthetic fixture only",
+  "digests": {
+    "baseline_origin_main": {
+      "claude": "5ccd7e8669f41716754787d8bde9bb6a64450774e2c5bf9b8862d7e0acaa2b00",
+      "gemini": "09827a0ed4f51ac2bfac6510e9d0f5b111abcf33a66638046e67ebdca2d097c2"
+    },
+    "claude_gemini_unchanged": true,
+    "golden_digest_match": true,
+    "host": "dev0",
+    "normalized_profile_digests": {
+      "aarch64": {
+        "claude": "7b6b8613ffb5d9475d72b69adc98338da9d164f14e2d1d5d8ccb061cd6dbf5e6",
+        "codex": "de148170ec3cc855ea8fd6f4c5e9349aef9ef7fcd5d691d47b64d323eda640e7",
+        "gemini": "317e6e6419b857a8d5d0caa542338cd5a959c3e8d8855d74e158f465f571495a"
+      },
+      "x86_64": {
+        "claude": "91ce53149412560377a29c01d9ef74af09d00769982cee7240f36e50caa3d543",
+        "codex": "2baabd1cfafc3654ac4f86e0c74d36086e783ca8f08a94abde59944ff17521a6",
+        "gemini": "62fc4258995145850bd2bab41642093b2c3dffd647063d7d660587ea74ab33b2"
+      }
+    },
+    "profile_digests": {
+      "claude": "5ccd7e8669f41716754787d8bde9bb6a64450774e2c5bf9b8862d7e0acaa2b00",
+      "codex": "d905feb08208bce2ae6fcaad0f78083ab86ce463b8dfc031e9dd8265e8f5e488",
+      "gemini": "09827a0ed4f51ac2bfac6510e9d0f5b111abcf33a66638046e67ebdca2d097c2"
+    },
+    "unchanged_file_sha256": {
+      "phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py": "4284a5ecf008b3e3e5594bcb010de9d8b746ee3f40bc7e456dfdd986d8697b61",
+      "phase-loop-runtime/tests/data/seat_profile_digests_jailcore.json": "37eef1d92ec26a66dbe1fe29777373d32cdb5c608dc8f2e6d2d40c19f5bf0a15"
+    }
+  },
+  "external_interruptions": 0,
+  "hosts": {
+    "ai": {
+      "blocker": "I/O PSI full spike with full swap; stopped without retry before validation",
+      "counts": {
+        "fail": 0,
+        "pass": 0,
+        "skip": 0
+      },
+      "designated_seat_host": true,
+      "live_cases_not_run": 6,
+      "proxy_readiness": {
+        "available": true,
+        "reason": null,
+        "srt_version": "0.0.79"
+      },
+      "qualification": "not_run",
+      "readiness_receipt": {
+        "name": "ai-readiness-and-pressure.log",
+        "sha256": "58e82c403125b4fd27f7d81ecf88b744e132e595d22220cc9a672ca00909ab5a"
+      },
+      "resource_observation": {
+        "available_memory_gib_at_stop": 88,
+        "confirmed_io_full_avg10_percent": 7.36,
+        "initial_io_full_avg10_percent": 0.49,
+        "memory_full_avg10_percent": 0.0,
+        "stop_io_full_avg10_percent": 5.46,
+        "swap_free_kib_at_stop": 524,
+        "swap_total_gib": 8.0
+      },
+      "status": "deferred"
+    },
+    "dev0": {
+      "failures": [
+        {
+          "cases": 5,
+          "fixture_cli_deadline_s": 90,
+          "observation": "fixture received no CLI request"
+        },
+        {
+          "cases": 1,
+          "curl_version": "8.18.0",
+          "expected_exit_code": 56,
+          "observation": "CONNECT 403 observed; refusal signature unrecognized",
+          "observed_exit_code": 7
+        }
+      ],
+      "narrowed_diagnostic": {
+        "cases": [
+          {
+            "outcome": "fail",
+            "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[sentinel]"
+          }
+        ],
+        "counts": {
+          "fail": 1,
+          "pass": 0,
+          "skip": 0
+        },
+        "observation": "CLI starts a turn, repeatedly reports network error sending request, then reaches the 90-second leg deadline; fixture received no CLI request",
+        "receipt": "dev0-diagnostic.xml",
+        "root_cause": "unresolved",
+        "sha256": "d728bc373e167c63ff523edb9d07e5d98b20b9c2c550a675339e64e75e03c869"
+      },
+      "qualification": {
+        "checks": {
+          "falsifier_run_green_on_head": true,
+          "no_probe_entry_in_protected_dirs": true,
+          "no_seat_descriptor_resolves_to_protected_object": true,
+          "no_seat_mount_resolves_to_protected_object_or_ancestor": true,
+          "no_signal_or_connection_observed_by_run": true,
+          "probe_resolved_no_protected_path": true,
+          "protected_files_single_link": true,
+          "sentinels_intact": true
+        },
+        "credential_reads": 0,
+        "falsifier_layout": "execfind-falsifier-layout.v1:7d9103e917279b7686fa0ead3358b978dc721f4d0ab3ff2214680c1743b3ec22",
+        "profile_digest": "d905feb08208bce2ae6fcaad0f78083ab86ce463b8dfc031e9dd8265e8f5e488",
+        "protected_dir_count": 44,
+        "provider_turns": 0,
+        "record_schema": "seat_jail_pass.v2",
+        "record_sha256": "8ae8159d4ee767a4dd4b63c5c22b44787f3152b8cb410a14e3f4d8359e89968d",
+        "record_verdict": [
+          true,
+          "pass"
+        ],
+        "registration": "process-local; production registry unchanged",
+        "result": "pass",
+        "run_outcome": "green_on_head",
+        "sentinel_count": 44,
+        "subject_source": "standalone"
+      },
+      "qualification_receipt": {
+        "name": "dev0-qualification.json",
+        "sha256": "8c80ccb9fa07a02a42a0e3d5aba6955ac342ce65eab40dd1ede97238c8416e47"
+      },
+      "v3": {
+        "counts": {
+          "fail": 0,
+          "pass": 329,
+          "skip": 2
+        },
+        "receipt": "dev0-v3.xml",
+        "sha256": "5f183bd1cf98c795ce70662e61944d036b9e4640cf402fac09f4a3489ae3a1a7",
+        "skipped_cases": [
+          "tests.test_seat_profiles::test_live_jail_registered_profiles_pass_provider_free_falsifiers",
+          "tests.test_seat_route::test_live_jail_proxy_refuses_another_vendor_and_unlisted_host"
+        ]
+      },
+      "vl": {
+        "cases": [
+          {
+            "outcome": "fail",
+            "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[sentinel]"
+          },
+          {
+            "outcome": "fail",
+            "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[planted_markers]"
+          },
+          {
+            "outcome": "fail",
+            "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[rewritten_auth]"
+          },
+          {
+            "outcome": "fail",
+            "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[nested_namespace]"
+          },
+          {
+            "outcome": "fail",
+            "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[workspace_write]"
+          },
+          {
+            "outcome": "fail",
+            "test": "tests.test_seat_egress_allowlist_codex::test_live_jail_codex_refused_rows_from_a_jailed_tool_command"
+          }
+        ],
+        "counts": {
+          "fail": 6,
+          "pass": 0,
+          "skip": 0
+        },
+        "receipt": "dev0-vl.xml",
+        "sha256": "d0e6a8fa3fbeeef8f98425c25bdbe99758a2ad5219f385e7623258c2a17cb1ad"
+      }
+    }
+  },
+  "od4": "not recorded; hold remains",
+  "od4_evidence_packet_ready": false,
+  "production_registration": "unchanged; unregistered",
+  "provider_turns": 0,
+  "real_login_copies": 0,
+  "real_login_reads": 0,
+  "real_login_renewals": 0,
+  "rebase_base": "c4a9abc8828d4fb22dcda0970ce2f734fa90c71a",
+  "recorded_at": "2026-11-08T06:10:17+00:00",
+  "redaction_posture": "metadata_only",
+  "required_next_step": "Resolve dev0 fixture failures and obtain designated-host VL and qualification after capacity recovers; remain at OD-4 hold",
+  "schema": "phase_loop_codex_provider_free.v1",
+  "status": "blocked",
+  "task": "SL-3.6",
+  "validation": {
+    "live_gate": "PHASE_LOOP_REQUIRE_LIVE_JAIL=1",
+    "python": "CPython 3.12.14; uv run --python 3.12 --frozen",
+    "selector": "test_seat_codex_provider_free.py test_seat_egress_allowlist_codex.py -k live_jail",
+    "serial": true,
+    "timeout_s": 900,
+    "xdist": false
+  },
+  "validation_head": "ab34301e521a32ff93b6ed840eb5a351cf3d3f24"
+}
