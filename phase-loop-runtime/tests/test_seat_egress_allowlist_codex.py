@@ -700,19 +700,95 @@ def test_live_jail_codex_refused_rows_from_a_jailed_tool_command(
         "profile": "fixture-registered (gemini-shaped, allowlist_id codex)",
         "rows": [{"label": label, "signature": signatures[label]} for label, _ in targets],
         "window_events": len(events), "window_allow_events": 0,
-    })
+    }, secrets_to_check=(urllib.parse.urlsplit(proxy.proxy_url).password or proxy.proxy_url,))
 
 
-def _write_private_receipt(kind: str, record: dict) -> None:
-    """A metadata-only record for the lane's evidence, written only when asked for."""
+def _write_private_receipt(kind: str, record: dict, *, secrets_to_check=()) -> Path | None:
+    """A metadata-only record for the lane's evidence, written only when asked for, and
+    only beneath the private root. The serialized line is checked before it is appended."""
     target = os.environ.get("PHASE_LOOP_CODEX_PROBE_RECORD")
     if not target:
-        return
-    path = Path(target)
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    with open(os.open(path, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600), "a",
-              encoding="utf-8") as handle:
-        handle.write(json.dumps({"kind": kind, **record}, sort_keys=True) + "\n")
+        return None
+    path = _private_target(Path(target))
+    line = (json.dumps({"kind": kind, **record}, sort_keys=True) + "\n").encode("utf-8")
+    if _contains_secret(line, secrets_to_check):
+        pytest.fail("codex_seat_token_in_output: the receipt would carry a secret")
+    descriptor = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+    try:
+        _require_private_file(os.fstat(descriptor), path.name)
+        _write_all(descriptor, line)
+    finally:
+        os.close(descriptor)
+    return path
+
+
+def _write_all(descriptor: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        view = view[os.write(descriptor, view):]
+
+
+def _require_private_dir(path: Path) -> None:
+    """``path`` is a directory (never a link), owned by this uid, mode exactly 0700."""
+    info = os.lstat(path)
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o700):
+        pytest.fail(f"private directory is not an owned 0700 directory: {path.name}")
+
+
+def _require_private_file(info: os.stat_result, name: str) -> None:
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o600):
+        pytest.fail(f"private file is not an owned regular 0600 file: {name}")
+
+
+def _private_root() -> Path:
+    root = Path(os.path.abspath(_OBSERVATION_DIR))
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _require_private_dir(root)
+    return root
+
+
+def _private_target(path: Path) -> Path:
+    """``path`` beneath the private root, reached through owned 0700 directories only."""
+    root = _private_root()
+    absolute = Path(os.path.abspath(path))
+    if absolute == root or not absolute.is_relative_to(root):
+        pytest.fail("private artifacts live beneath ~/.local/state/agent-harness/codex-sl2/")
+    current = root
+    for part in absolute.relative_to(root).parts[:-1]:
+        current = current / part
+        _require_private_dir(current)
+    return absolute
+
+
+def _contains_secret(blob: bytes, secrets_to_check) -> bool:
+    return any(value and value.encode("utf-8") in blob for value in secrets_to_check)
+
+
+def _scan_private(paths, secrets_to_check) -> list[str]:
+    """Check every retained artifact under ``paths``: owned 0700 directories, owned regular
+    0600 files, and no secret in any byte. A file that holds a secret is shredded."""
+    problems: list[str] = []
+    for top in paths:
+        top = Path(top)
+        if not os.path.lexists(top):
+            continue
+        items = [top] if not top.is_dir() or top.is_symlink() else [top, *top.rglob("*")]
+        for item in items:
+            info = os.lstat(item)
+            if stat.S_ISLNK(info.st_mode):
+                problems.append(f"a link is retained: {item.name}")
+            elif stat.S_ISDIR(info.st_mode):
+                if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+                    problems.append(f"a retained directory is not owned 0700: {item.name}")
+            elif (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                  or stat.S_IMODE(info.st_mode) != 0o600):
+                problems.append(f"a retained file is not owned regular 0600: {item.name}")
+            elif _contains_secret(item.read_bytes(), secrets_to_check):
+                _shred_tree(item)
+                problems.append(f"codex_seat_token_in_output: {item.name}")
+    return problems
 
 
 # --------------------------------------------------------------------------------------
@@ -850,6 +926,13 @@ raise SystemExit(code)
 """
 
 
+def _login_secrets(login: dict) -> tuple[str, ...]:
+    tokens = login.get("tokens") if isinstance(login.get("tokens"), dict) else {}
+    return tuple(value for value in (tokens.get("access_token"), tokens.get("id_token"),
+                                     tokens.get("refresh_token"))
+                 if isinstance(value, str) and len(value) >= 16)
+
+
 def _private_file(path: Path) -> bytes:
     info = os.lstat(path)
     if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
@@ -902,12 +985,17 @@ def _synthetic_login() -> dict:
 
 
 def _shred_tree(root: Path) -> None:
-    """Overwrite, then unlink, every file under ``root``; then remove the tree."""
-    if not root.exists():
+    """Overwrite, then unlink, ``root`` if it is a file, else every file under it; then
+    remove the tree. Links are unlinked, never followed."""
+    if not os.path.lexists(root):
         return
     shred = shutil.which("shred", path="/usr/bin:/bin")
-    for path in sorted(root.rglob("*"), key=lambda item: len(item.parts), reverse=True):
-        if path.is_file() and not path.is_symlink():
+    files = [root] if not root.is_dir() or root.is_symlink() else sorted(
+        root.rglob("*"), key=lambda item: len(item.parts), reverse=True)
+    for path in files:
+        if path.is_symlink():
+            path.unlink()
+        elif path.is_file():
             if shred is not None:
                 subprocess.run([shred, "-u", "-z", str(path)], check=False, timeout=60,
                                capture_output=True)
@@ -918,16 +1006,20 @@ def _shred_tree(root: Path) -> None:
                     handle.flush()
                     os.fsync(handle.fileno())
                 path.unlink()
-    shutil.rmtree(root, ignore_errors=True)
+    if root.is_dir() and not root.is_symlink():
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def _private_mkdir(path: Path) -> Path:
+    path = _private_target(path)
+    path.mkdir(mode=0o700)
+    _require_private_dir(path)
+    return path
 
 
 def _private_run_dir(kind: str) -> Path:
-    _OBSERVATION_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(_OBSERVATION_DIR, 0o700)
-    run = _OBSERVATION_DIR / f"{kind}-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-" \
-        f"{secrets.token_hex(3)}"
-    run.mkdir(mode=0o700)
-    return run
+    return _private_mkdir(_private_root() / (
+        f"{kind}-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{secrets.token_hex(3)}"))
 
 
 def _mask(text: str) -> str:
@@ -994,25 +1086,52 @@ class TurnResult:
     nonce: str
 
 
-def _write_private_json(path: Path, value: dict) -> None:
-    with open(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "w",
-              encoding="utf-8") as handle:
-        json.dump(value, handle)
+def _write_private_json(path: Path, value: dict, *, secrets_to_check=()) -> None:
+    """Create ``path`` new (never through a link) beneath the private root, 0600. When
+    ``secrets_to_check`` is given, the serialized content is checked before it is written."""
+    path = _private_target(path)
+    data = json.dumps(value).encode("utf-8")
+    if _contains_secret(data, secrets_to_check):
+        pytest.fail(f"codex_seat_token_in_output: {path.name} would carry a secret")
+    descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    try:
+        _require_private_file(os.fstat(descriptor), path.name)
+        _write_all(descriptor, data)
+    finally:
+        os.close(descriptor)
 
 
-def _run_codex_turn(proxy, run: Path, *, cli: str, login: dict, model: str) -> TurnResult:
-    """One codex exec turn in a namespace with no uplink, bridged to ``proxy``."""
+def _close_turn(run: Path, work: Path, secrets_to_check) -> None:
+    """The closeout of every turn, on every exit: shred the working tree (the login copy
+    with it), prove no copy remains, then check every retained artifact under ``run``."""
+    _shred_tree(work)
+    problems = []
+    if os.path.lexists(work):
+        problems.append("the working tree remains")
+    if any(path.name == "auth.json" for path in run.rglob("*")):
+        problems.append("a login copy remains")
+    problems.extend(_scan_private([run], secrets_to_check))
+    if problems:
+        raise AssertionError("turn closeout failed: " + "; ".join(problems))
+
+
+def _run_codex_turn(proxy, run: Path, *, cli: str, login: dict, model: str,
+                    kept_secrets=()) -> TurnResult:
+    """One codex exec turn in a namespace with no uplink, bridged to ``proxy``. Whatever
+    happens, ``_close_turn`` runs before this returns or raises."""
     work = run / "work"
-    out = run / "out"
-    out.mkdir(mode=0o700)
-    for name in ("codex-home", "home", "tmp", "workspace", "tree"):
-        (work / name).mkdir(mode=0o700, parents=True)
-    codex_home = work / "codex-home"
+    proxy_token = urllib.parse.urlsplit(proxy.proxy_url).password or proxy.proxy_url
+    secrets_to_check = (*kept_secrets, proxy_token)
     nonce = secrets.token_hex(16)
     started = time.monotonic()
     start = end = None
     tokens_changed = True
     try:
+        out = _private_mkdir(run / "out")
+        _private_mkdir(work)
+        for name in ("codex-home", "home", "tmp", "workspace", "tree"):
+            _private_mkdir(work / name)
+        codex_home = work / "codex-home"
         _write_private_json(codex_home / "auth.json", login)
         (work / "tree" / "SENTINEL").write_text(nonce + "\n", encoding="ascii")
         (work / "prompt.txt").write_text(
@@ -1044,10 +1163,7 @@ def _run_codex_turn(proxy, run: Path, *, cli: str, login: dict, model: str) -> T
                           or json.loads(observed.read_text(encoding="utf-8")).get("tokens")
                           != login["tokens"])
     finally:
-        _shred_tree(codex_home)
-        _shred_tree(work)
-    assert not codex_home.exists() and not work.exists()
-    assert not [path for path in run.rglob("auth.json")], "a login copy remains"
+        _close_turn(run, work, secrets_to_check)
     return TurnResult(exit_code=done.returncode, duration_s=round(time.monotonic() - started, 1),
                       start_acked=bool(start and start.acknowledged),
                       end_acked=bool(end and end.acknowledged), tokens_changed=tokens_changed,
@@ -1122,14 +1238,18 @@ def test_measured_turn_completes_over_https_through_the_codex_proxy(monkeypatch)
     run = _private_run_dir("turn-a" if observation else "turn-b")
     with seat_egress_proxy.start_proxy(allowlist_id="codex") as proxy:
         assert proxy.allowlist_digest == selected.content_digest
-        result = _run_codex_turn(proxy, run, cli=cli, login=copy, model=model)
+        result = _run_codex_turn(proxy, run, cli=cli, login=copy, model=model,
+                                 kept_secrets=kept_secrets)
     stream = seat_egress_proxy.proxy_stream(proxy)
     proxy_token = urllib.parse.urlsplit(proxy.proxy_url).password or proxy.proxy_url
     record = {"turn": "a-observation" if observation else "b-committed", "model": model,
               "effort": "low", "allowlist_digest": proxy.allowlist_digest,
               "upgrades": "refused by srt inside every terminated tunnel",
               **_turn_record(result, stream, kept_secrets, proxy_token)}
-    _write_private_receipt("measured_turn", record)
+    receipt = _write_private_receipt("measured_turn", record,
+                                     secrets_to_check=(*kept_secrets, proxy_token))
+    assert _scan_private([run, *([receipt] if receipt else [])],
+                         (*kept_secrets, proxy_token)) == []
     assert not record["secret_in_output"], "codex_seat_token_in_output"
     assert not record["tokens_changed"], "codex_seat_token_refreshed_in_jail"
     assert record["exit_code"] == 0, record
@@ -1286,12 +1406,15 @@ def test_provider_free_path_discovery_through_the_fixture_upstream(codex_front, 
         watcher = threading.Thread(target=watch, daemon=True)
         watcher.start()
         try:
-            result = _run_codex_turn(proxy, run, cli=cli, login=login, model="gpt-6-astra")
+            result = _run_codex_turn(proxy, run, cli=cli, login=login, model="gpt-6-astra",
+                                     kept_secrets=_login_secrets(login))
         finally:
             stop.set()
             watcher.join(timeout=5)
     stream = seat_egress_proxy.proxy_stream(proxy)
-    record = _turn_record(result, stream, (), urllib.parse.urlsplit(proxy.proxy_url).password)
+    proxy_token = urllib.parse.urlsplit(proxy.proxy_url).password or proxy.proxy_url
+    checked = (*_login_secrets(login), proxy_token)
+    record = _turn_record(result, stream, checked[:-1], proxy_token)
     paths: dict[tuple, int] = {}
     for sni, method, target, host in upstream.requests:
         key = (sni or host, method, _path_template(target))
@@ -1305,9 +1428,9 @@ def test_provider_free_path_discovery_through_the_fixture_upstream(codex_front, 
         "proxy_peers": sorted(peers), "off_loopback_peers": off_loopback,
         **record,
     }
-    _write_private_receipt("path_discovery", discovery)
-    (run / "discovery.json").write_text(json.dumps(discovery, indent=1), encoding="utf-8")
-    os.chmod(run / "discovery.json", 0o600)
+    receipt = _write_private_receipt("path_discovery", discovery, secrets_to_check=checked)
+    _write_private_json(run / "discovery.json", discovery, secrets_to_check=checked)
+    assert _scan_private([run, *([receipt] if receipt else [])], checked) == []
     assert off_loopback == [], off_loopback
     assert record["outside_events"] == 0 and record["fences_acknowledged"]
     assert upstream.requests, "the CLI made no request through the proxy"
@@ -1332,3 +1455,115 @@ def test_the_probe_evidence_names_the_committed_allowlist():
             for rule in CODEX.request_set}
     assert allowed == rows
     assert document["vl"]["status"] in {"pending", "pass"}
+
+
+# --------------------------------------------------------------------------------------
+# The measurement harness keeps its artifacts private and closes out on every exit.
+# No codex runs in these tests.
+# --------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("leak", [False, True], ids=["clean-output", "leaked-output"])
+@pytest.mark.parametrize("stage", ["fence", "launch", "auth-parse", "completed"])
+def test_turn_closeout_runs_on_an_exceptional_exit(stage, leak, tmp_path, monkeypatch):
+    """The turn fails at the start fence, at launch, or while reading the login back, or
+    completes (``/usr/bin/true`` stands in for the launcher). In each case the working tree
+    and the login copy are gone, and every retained output was checked: a leaked one is
+    shredded and the closeout failure names it."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(sys.modules[__name__], "_OBSERVATION_DIR", tmp_path / "private")
+    login = _synthetic_login()
+    checked = _login_secrets(login)
+    proxy = SimpleNamespace(proxy_url="http://srt:" + "p" * 24 + "@127.0.0.1:3128",
+                            socket=str(tmp_path / "no-front.sock"),
+                            ca_cert=tmp_path / "no-ca.pem")
+    run = _private_run_dir("closeout")
+    real_which = shutil.which
+
+    def which(name, *args, **kwargs):
+        if name == "unshare":
+            return ("/usr/bin/true" if stage in ("auth-parse", "completed")
+                    else str(tmp_path / "no-unshare"))
+        return real_which(name, *args, **kwargs)
+
+    def fence(_proxy, marker, _window):
+        if marker == "start":
+            if leak:
+                descriptor = os.open(run / "out" / "stdout",
+                                     os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                os.write(descriptor, b"partial output " + checked[0].encode())
+                os.close(descriptor)
+            if stage == "fence":
+                raise RuntimeError("injected fence failure")
+        if marker == "end" and stage == "auth-parse":
+            (run / "work" / "codex-home" / "auth.json").write_text("not json")
+        return SimpleNamespace(acknowledged=True)
+
+    monkeypatch.setattr(shutil, "which", which)
+    monkeypatch.setattr(seat_egress_proxy, "fence", fence)
+    original = {"fence": RuntimeError, "launch": FileNotFoundError,
+                "auth-parse": ValueError, "completed": None}[stage]
+    if original is None and not leak:
+        result = _run_codex_turn(proxy, run, cli=str(tmp_path / "no-codex"), login=login,
+                                 model="fixture", kept_secrets=checked)
+        assert result.exit_code == 0 and not result.tokens_changed
+        assert result.start_acked and result.end_acked and result.out == run / "out"
+    else:
+        with pytest.raises(AssertionError if leak else original) as caught:
+            _run_codex_turn(proxy, run, cli=str(tmp_path / "no-codex"), login=login,
+                            model="fixture", kept_secrets=checked)
+        if leak:
+            assert "codex_seat_token_in_output: stdout" in str(caught.value)
+            if original is not None:
+                assert isinstance(caught.value.__context__, original)
+            assert not os.path.lexists(run / "out" / "stdout")
+    assert not os.path.lexists(run / "work")
+    assert not any(path.name == "auth.json" for path in run.rglob("*"))
+    assert _scan_private([run], checked) == []
+
+
+def test_private_writers_constrain_place_mode_and_content(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], "_OBSERVATION_DIR", tmp_path / "private")
+    secret = "s" * 32
+    receipt = tmp_path / "private" / "probes.jsonl"
+    monkeypatch.setenv("PHASE_LOOP_CODEX_PROBE_RECORD", str(receipt))
+    assert _write_private_receipt("probe", {"ok": True}, secrets_to_check=(secret,)) == receipt
+    assert stat.S_IMODE(os.lstat(receipt).st_mode) == 0o600
+    before = receipt.read_bytes()
+    with pytest.raises(pytest.fail.Exception, match="codex_seat_token_in_output"):
+        _write_private_receipt("probe", {"value": secret}, secrets_to_check=(secret,))
+    assert receipt.read_bytes() == before  # checked before it was appended
+
+    receipt.chmod(0o640)
+    with pytest.raises(pytest.fail.Exception, match="0600"):
+        _write_private_receipt("probe", {"ok": True})
+    receipt.chmod(0o600)
+
+    linked = tmp_path / "private" / "linked.jsonl"
+    linked.symlink_to(receipt)
+    monkeypatch.setenv("PHASE_LOOP_CODEX_PROBE_RECORD", str(linked))
+    with pytest.raises(OSError):
+        _write_private_receipt("probe", {"ok": True})
+    assert "a link is retained: linked.jsonl" in _scan_private([tmp_path / "private"], ())
+    linked.unlink()
+
+    monkeypatch.setenv("PHASE_LOOP_CODEX_PROBE_RECORD", str(tmp_path / "elsewhere.jsonl"))
+    with pytest.raises(pytest.fail.Exception, match="beneath"):
+        _write_private_receipt("probe", {"ok": True})
+
+    opened = tmp_path / "private" / "opened"
+    opened.mkdir(mode=0o755)
+    opened.chmod(0o755)
+    monkeypatch.setenv("PHASE_LOOP_CODEX_PROBE_RECORD", str(opened / "probes.jsonl"))
+    with pytest.raises(pytest.fail.Exception, match="0700"):
+        _write_private_receipt("probe", {"ok": True})
+
+    record = tmp_path / "private" / "discovery.json"
+    with pytest.raises(pytest.fail.Exception, match="codex_seat_token_in_output"):
+        _write_private_json(record, {"value": secret}, secrets_to_check=(secret,))
+    assert not record.exists()
+    _write_private_json(record, {"ok": True}, secrets_to_check=(secret,))
+    with pytest.raises(FileExistsError):
+        _write_private_json(record, {"ok": True})
+    assert set(_scan_private([tmp_path / "private"], (secret,))) == {
+        "a retained directory is not owned 0700: opened"}
