@@ -2,52 +2,17 @@
   "ai_runs": 0,
   "all_profile_digests_unchanged": true,
   "auth_source": "synthetic fixture only",
-  "carried_verification": {
-    "source_registration_landing": "388be402",
-    "v3_v4": {
-      "fail": 0,
-      "pass": 612,
-      "receipt": "v3-v4.xml",
-      "sha256": "2738e68f7f389000d094ae58b1c30ee4de03d92a1dc7ce1e61bafa201c4daf83",
-      "skip": 2
-    },
-    "v4_panel_codex": {
-      "fail": 0,
-      "pass": 2,
-      "receipt": "v4-panel.xml",
-      "sha256": "160aea692491452ebd8957c099dbc74113e2c7aa200ece21e6fd21f7e02d7649",
-      "skip": 0
-    },
-    "v5": {
-      "fail": 0,
-      "pass": 44,
-      "receipt": "v5-compat.xml",
-      "scope": "the three V5 inventory/helper/reference modules passed; compatibility failures from that run are superseded by compatibility_replay",
-      "sha256": "fdf73b0d2ede96885c4aaf4391e50924efdac1fb0773c1a8fc21a924f6d56512",
-      "skip": 0
-    }
-  },
   "compatibility_replay": {
-    "corrected_expectations": [
-      {
-        "outcome": "pass",
-        "seconds": 0.054,
-        "test": "tests.test_seat_notices::test_seat_modes_are_published_before_launch"
-      },
-      {
-        "outcome": "pass",
-        "seconds": 0.364,
-        "test": "tests.test_seat_argv_bound_paths_1441::test_a_seat_argv_builder_names_only_host_paths_the_profile_binds[codex-builder-tree]"
-      }
-    ],
     "counts": {
       "fail": 0,
       "pass": 396,
       "skip": 0
     },
-    "receipt": "compat-final.xml",
-    "seconds": 11.57,
-    "sha256": "ea442bc79b239bdd77d5d4a6b2feb65fa0654157e6d4eeaad8ae7f318460d099"
+    "receipts": {
+      "regressions.xml": "5ea634369a38d034e6cabdae59ef24a8e96b0461c5e845510c6bcfebd3b0d1e9",
+      "targeted.xml": "6368203f8a9549b6d8fa9a62007e85f86d8137628447d01f4782d38fa01b7ab7"
+    },
+    "source": "the complete notice and argv-bound-path modules within targeted/review regressions"
   },
   "execution": {
     "bundle_timeout_seconds": 1200,
@@ -73,6 +38,21 @@
     "record": "plans/decision-seats-codex-boundary.md",
     "status": "accepted"
   },
+  "previous_validation": {
+    "compatibility_replay": {
+      "fail": 0,
+      "pass": 396,
+      "skip": 0
+    },
+    "git_record": "original SL-3.9 receipt at c78a00f8",
+    "provider_free_vl": {
+      "fail": 0,
+      "pass": 6,
+      "skip": 0
+    },
+    "receipt_sha256": "b86e8ce4a3b159664f87f9f241144ca7ddcae4185bb1fd3f4d129d3d6f310f24",
+    "validation_head": "388be402924ab0c5aaedb64037c6322e9d40f5c7"
+  },
   "production_registration": "registered; review seats use CODEX_PROFILE",
   "profile_digests": {
     "claude": "5ccd7e8669f41716754787d8bde9bb6a64450774e2c5bf9b8862d7e0acaa2b00",
@@ -83,32 +63,32 @@
     "cases": [
       {
         "outcome": "pass",
-        "seconds": 3.757,
+        "seconds": 3.766,
         "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[sentinel]"
       },
       {
         "outcome": "pass",
-        "seconds": 2.92,
+        "seconds": 2.996,
         "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[planted_markers]"
       },
       {
         "outcome": "pass",
-        "seconds": 3.003,
+        "seconds": 3.197,
         "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[rewritten_auth]"
       },
       {
         "outcome": "pass",
-        "seconds": 2.983,
+        "seconds": 3.219,
         "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[nested_namespace]"
       },
       {
         "outcome": "pass",
-        "seconds": 3.355,
+        "seconds": 3.084,
         "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[workspace_write]"
       },
       {
         "outcome": "pass",
-        "seconds": 5.382,
+        "seconds": 5.323,
         "test": "tests.test_seat_egress_allowlist_codex::test_live_jail_codex_refused_rows_from_a_jailed_tool_command"
       }
     ],
@@ -117,9 +97,16 @@
       "pass": 6,
       "skip": 0
     },
+    "effort_shape": {
+      "canonical": "max",
+      "native_cli_cases": 5,
+      "remaining_case": "refused-host jailed-tool control",
+      "rendered": "xhigh"
+    },
+    "jailed_argv_sha256": "c1179899fd47ca44c0c71ae953462178b7b58f9c01bd446354c56b400cfa6f0d",
     "receipt": "vl.xml",
-    "seconds": 21.534,
-    "sha256": "f84e41d0d598fd019671e8259ed912d9523df65e8c3dba409e9668673e4a327d"
+    "seconds": 21.79,
+    "sha256": "284b3d4330eecb9966effddc35023797f6086777c28e7e26da6ec9f05788c80c"
   },
   "provider_turns": 0,
   "qualification_rerun": false,
@@ -127,35 +114,116 @@
   "real_login_reads": 0,
   "real_login_renewals": 0,
   "receipt_sha256": {
-    "pipeline.log": "5cbddc375b9cd7a9d84d0ceb81cb2058c3f718b20be973ae33ff820236f0d767",
+    "pipeline.log": "9ed7299357db66b1a4a0503c063e061745051c18752e749c4b69a0f360eb98b5",
     "predicate-self-test.log": "04f7e605edb5fcf93b72d7d898e40e39c2f62a804a5fd7d1d183e91a937fe87a",
-    "preflight-samples.jsonl": "314780ee031747689365eb5075e4f21fad882c94f3a039ab2ccfa8eb2849652d",
-    "psi-summary.json": "cf2cc8154f48965c3cffeebbb40f91aa273cde62e044d5647d548f4fc7dd23ec",
-    "psi.jsonl": "7d8e8e14c4b29710a073cdd5856cfaadb95b04b8bf3547efe476e9df3e33ed0a",
-    "run.sh": "69506fb1cf64757287b63e6ceef09eabb9f58c7f63bc44ff8af0bf0e74e5eeb3",
-    "status.json": "9ed89ffdbf5ad33deac06c89a5f2a68280096bc0f79f76fb646990e34e7df598",
-    "supervisor.py": "854dca67b0186d36376dc4318b90f3b26683dae0d554978fe5378aa8bdd6f811",
+    "preflight-samples.jsonl": "11eee6299b3f7f0225ebf3922d82cd99a72049d7e7fe123b0a4210e9dbea9298",
+    "psi-summary.json": "fd60abf9306d9ea80ae3adbfce04c01c691347f2fe981432e3988002ed178ff2",
+    "psi.jsonl": "aa7d4c01eeb4ca5801489e43f70aa040a918d7cfa8e9b400e43aa72afc301764",
+    "run.sh": "024bf8b0c0fad6b67d960322c37d238f82235ce5d5338f184398e17621186e9a",
+    "status.json": "7b36a387e26013d09161d34f6d89aa9101813d3b81407ce384fc1e9cb4eeaa74",
+    "supervisor.py": "47f2399625984fd5fe25ca1fc505512e427f6355ceecab9b312dda5e2ad6a665",
     "test_watchdog_rule.py": "e34a5d56abca6bda71f4ea81c552161faf5f51d61aad63778c84cc79615229c4",
     "watchdog_rule.py": "ce3cf52fe442d8be469bf4eb24c436f8f9021739ba6cf387bb2a1a28a46d724a"
   },
-  "recorded_at": "2026-11-08T16:03:23.889712+00:00",
+  "recorded_at": "2026-11-08T16:42:02.046822+00:00",
   "redaction_posture": "metadata_only",
   "refresh_detection": {
     "case": {
       "outcome": "pass",
-      "seconds": 3.003,
+      "seconds": 3.197,
       "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[rewritten_auth]"
     },
     "expected_code": "codex_seat_token_refreshed_in_jail",
     "outcome": "pass"
   },
-  "remaining_scope": "Independent review next; SL-4 row-window and post-merge issue reducer not executed.",
+  "remaining_scope": "Owner coordinates review follow-up; SL-4 row-window and post-merge issue reducer not executed.",
+  "review_edits": {
+    "findings": {
+      "F1": {
+        "fix": "Append seat_filesystem_unconfined only when not jailed; assert exact notice tuples. Keep root-unapplied only for actual placement mismatch, retention only for actual/faked retained residue, and tool-unavailable for missing/failed command evidence.",
+        "tests": [
+          "test_default_spawn_holds_route_lease_through_codex_leg",
+          "test_jailed_codex_keeps_real_placement_and_retention_notices",
+          "independent reviewer notice probe (2 passed)"
+        ]
+      },
+      "F2": {
+        "canonical_effort": "max",
+        "cli_effort": "xhigh",
+        "fix": "Use render_seat_invocation for canonical effort; max maps to xhigh in jailed argv and actual launch. Final native CLI fixture cases run with canonical max."
+      },
+      "F3": {
+        "fix": "Preparation passes its resolved executable and dependency to admission; no second subject resolution or borrowed dependency close. Standalone doctor gate resolves with the broker subscription environment.",
+        "tests": [
+          "test_admission_measures_the_prepared_binary_without_resolving_or_closing_it",
+          "prepare fixture asserts one resolution"
+        ]
+      },
+      "F4": {
+        "fix": "Manual Codex qualification derives its projection via seat_route._projection_for_launch, matching the managed projection tested by the probe.",
+        "tests": [
+          "test_codex_qualification_records_a_v2_pass[False]",
+          "test_codex_qualification_records_a_v2_pass[True]"
+        ]
+      },
+      "F5": {
+        "fix": "Restore read-only-tree, add-dir, non-directory writable-view and default-prefix live negative controls. Remove singular writable grant/retry parameters and forwarding, workspace-write probe map/settings, dead retained-capability/no-namespace branch; update obsolete comments. Keep generic writable_trees with restored source checks.",
+        "tests": [
+          "test_the_unbrokered_read_only_codex_seat_still_cannot_write_its_tree",
+          "test_add_dir_is_never_writable",
+          "test_the_view_refuses_a_writable_tree_that_is_not_a_directory",
+          "test_default_prefix_refuses_nested_sandbox_and_firewall_changes",
+          "test_profile_projection_binds_changed_refuses_identity (missing/duplicate/altered)"
+        ]
+      },
+      "F6": {
+        "fix": "Record the SL-3 single-writer ruling for minimal runtime-bind normalization and unchanged Claude/Gemini digests in the boundary decision."
+      },
+      "F7": {
+        "fix": "Correct Grok grammar and list Codex missing-credential and L6 credential codes in the J7 credential section."
+      }
+    },
+    "fresh_review_not_claimed": true,
+    "independent_reviewer_probe_pass": 2,
+    "panel_codex": {
+      "counts": {
+        "fail": 0,
+        "pass": 2,
+        "skip": 0
+      },
+      "receipt": "panel.xml",
+      "seconds": 1.853,
+      "sha256": "2d6dbab77d7baa338ad024640f996bed87602d10b74551b20f1cb022c4ce78e0"
+    },
+    "regressions": {
+      "counts": {
+        "fail": 0,
+        "pass": 447,
+        "skip": 0
+      },
+      "receipt": "regressions.xml",
+      "seconds": 124.338,
+      "sha256": "5ea634369a38d034e6cabdae59ef24a8e96b0461c5e845510c6bcfebd3b0d1e9"
+    },
+    "reviewed_input_head": "c78a00f8bd38d107c138342172a0bcd5d6049b3c",
+    "targeted": {
+      "counts": {
+        "fail": 0,
+        "pass": 555,
+        "skip": 0
+      },
+      "receipt": "targeted.xml",
+      "seconds": 71.718,
+      "sha256": "6368203f8a9549b6d8fa9a62007e85f86d8137628447d01f4782d38fa01b7ab7"
+    },
+    "total_targeted_pass": 1004
+  },
   "row_window": false,
   "schema": "phase_loop_codex_post_registration.v1",
   "sl3_status": "complete",
   "status": "passed",
   "task": "SL-3.9",
-  "validation_head": "388be402924ab0c5aaedb64037c6322e9d40f5c7",
+  "validation_head": "ea98df5c19fadd5511196e1b39d71268778c9d75",
   "watchdog": {
     "abort_rule": {
       "independent_sustained_seconds": 10,
@@ -165,7 +233,7 @@
       "single_memory_full_avg10_gt": 5
     },
     "all_descendants_exited": true,
-    "approved_deliberate_retry": true,
+    "approved_deliberate_retry": false,
     "bundle_attempts_this_authorization": 1,
     "further_retry": false,
     "predicate_self_test": {
@@ -204,51 +272,51 @@
         },
         "passed": true,
         "sample": {
-          "at": "2026-11-08T16:00:58.345774+00:00",
-          "available_bytes": 12178964480,
-          "elapsed_s": 0.0,
-          "io_full_avg10": 0.25,
-          "io_some_avg10": 0.26,
-          "load_1m": 2.43,
-          "memory_full_avg10": 0.0,
-          "memory_some_avg10": 0.0
+          "at": "2026-11-08T16:39:43.596339+00:00",
+          "available_bytes": 9069826048,
+          "elapsed_s": 0.001,
+          "io_full_avg10": 1.39,
+          "io_some_avg10": 1.42,
+          "load_1m": 5.48,
+          "memory_full_avg10": 0.03,
+          "memory_some_avg10": 0.03
         }
       }
     ],
     "project_admission_held_through_process_tree": true,
     "summary": {
       "all_descendants_exited": true,
-      "duration_s": 39.035,
+      "duration_s": 25.033,
       "extrema": {
         "available_bytes": {
-          "max": 12558868480,
-          "min": 10820784128
+          "max": 9204252672,
+          "min": 8198868992
         },
         "io_full_avg10": {
-          "max": 2.69,
-          "min": 0.19
+          "max": 1.59,
+          "min": 0.86
         },
         "io_some_avg10": {
-          "max": 2.69,
-          "min": 0.19
+          "max": 1.61,
+          "min": 0.87
         },
         "load_1m": {
-          "max": 3.41,
-          "min": 2.43
+          "max": 5.48,
+          "min": 5.34
         },
         "memory_full_avg10": {
-          "max": 0.21,
-          "min": 0.0
+          "max": 0.2,
+          "min": 0.02
         },
         "memory_some_avg10": {
-          "max": 0.21,
-          "min": 0.0
+          "max": 0.2,
+          "min": 0.02
         }
       },
       "lock_held_through_cleanup": true,
       "max_sample_gap_s": 1.0010000000000012,
       "sample_interval_s": 1,
-      "samples": 40,
+      "samples": 26,
       "status": "passed"
     }
   }
