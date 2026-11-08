@@ -725,8 +725,10 @@ OBSERVE_ONLY_PATH = "/phase-loop-observe-only"
 _OBSERVATION_DIR = Path.home() / ".local" / "state" / "agent-harness" / "codex-sl2"
 
 
-def _observation_ref(path: Path):
-    """Turn (a)'s private, uncommitted observation allowlist, bound like the packaged one."""
+def _observation_ref(path: Path, *, observe_token: bool = True):
+    """Turn (a)'s private, uncommitted observation allowlist, bound like the packaged one.
+    ``observe_token=False`` admits a private candidate set that leaves the token endpoint
+    host unlisted (refused at CONNECT), for the provider-free sufficiency check."""
     from phase_loop_runtime.seat_route_contract import AllowlistRef
 
     resolved = path.resolve()
@@ -736,7 +738,8 @@ def _observation_ref(path: Path):
     seat_egress_proxy._validate_allowlist_document("codex", document)
     rules = document["allow"]
     token_rows = [rule for rule in rules if rule["host"] == CODEX_TOKEN_ENDPOINT_HOST]
-    if not token_rows or any(rule.get("path") != OBSERVE_ONLY_PATH for rule in token_rows):
+    if (observe_token and not token_rows) or any(
+            rule.get("path") != OBSERVE_ONLY_PATH for rule in token_rows):
         pytest.fail("the token endpoint host may carry observe-only rows alone")
     if any(rule.get("path_prefix") == "/" or "*" in rule["host"] for rule in rules):
         pytest.fail("the observation allowlist has a wildcard host or a / prefix")
@@ -1162,14 +1165,25 @@ _SSE_REPLY = "".join(
     )).encode()
 
 
+#: The workspace-routing discovery reply (codex-rs backend-client ``AccountsCheckResponse``,
+#: rust-v0.167.0): one account, the synthetic login's, with no backend or routing constraint.
+_ACCOUNTS_CHECK_REPLY = json.dumps({
+    "accounts": [{"id": "acct-synthetic", "workspace_backend_origin": "NO_CONSTRAINT",
+                  "account_routing_override": "NO_CONSTRAINT", "structure": "personal"}],
+    "account_ordering": ["acct-synthetic"], "default_account_id": "acct-synthetic",
+}).encode()
+
+
 class CodexFixtureUpstream(FixtureUpstream):
-    """Minimal well-formed replies, so the CLI goes as far as it can: a models list, one
-    streamed inference reply, and 404 for everything else."""
+    """Minimal well-formed replies, so the CLI goes as far as it can: a models list, the
+    workspace-routing account check, one streamed inference reply, and 404 otherwise."""
 
     def _respond(self, tls, method: str, target: str) -> None:
         path = target.split("?", 1)[0]
         if method == "GET" and path.endswith("/models"):
             self._reply(tls, 200, "application/json", b'{"models":[]}')
+        elif method == "GET" and path.endswith("/accounts/check"):
+            self._reply(tls, 200, "application/json", _ACCOUNTS_CHECK_REPLY)
         elif method == "POST" and path.startswith("/backend-api/codex/"):
             self._reply(tls, 200, "text/event-stream", _SSE_REPLY)
         else:
@@ -1248,7 +1262,11 @@ def test_provider_free_path_discovery_through_the_fixture_upstream(codex_front, 
         pytest.skip("set PHASE_LOOP_CODEX_DISCOVER=1 with PHASE_LOOP_CODEX_MEASURE_CLI")
     cli = _live_cli_or_fail()
     upstream = codex_front(hosts=DISCOVERY_HOSTS, upstream_class=CodexFixtureUpstream)
-    ref = _discovery_ref()
+    # PHASE_LOOP_CODEX_DISCOVER_ALLOWLIST names a private candidate set instead: the proxy
+    # then refuses every other request, as production would, against the same fixture.
+    candidate = os.environ.get("PHASE_LOOP_CODEX_DISCOVER_ALLOWLIST")
+    ref = _observation_ref(Path(candidate), observe_token=False) if candidate \
+        else _discovery_ref()
     real_ref = seat_egress_proxy.allowlist_ref
     monkeypatch.setattr(seat_egress_proxy, "allowlist_ref",
                         lambda allowlist_id: ref if allowlist_id == "codex"
