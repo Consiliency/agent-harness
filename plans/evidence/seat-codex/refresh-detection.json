@@ -1,0 +1,45 @@
+{
+  "auth_source": "synthetic fixture only",
+  "evidence_id": "codex-refresh-detection",
+  "expected_code": "codex_seat_token_refreshed_in_jail",
+  "hosts": {
+    "ai": {
+      "case": {
+        "outcome": "pass",
+        "seconds": 2.373,
+        "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[rewritten_auth]"
+      },
+      "observed_code": "codex_seat_token_refreshed_in_jail",
+      "receipt": "ai-vl.xml",
+      "refresh_detection_proven": true,
+      "sha256": "b4eae1138345e1367b207dd74eb458ba579f31124e800110fd84d6c21906225b",
+      "validation_head": "335916ff19e4771beabd387d33a7c04870d1ba70"
+    },
+    "dev0": {
+      "case": {
+        "outcome": "pass",
+        "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[rewritten_auth]",
+        "total_seconds": 2.357
+      },
+      "observed_code": "codex_seat_token_refreshed_in_jail",
+      "receipt": "dev0-vl.xml",
+      "refresh_detection_proven": true,
+      "sha256": "52f7b132f3ae3d88abf57566d166a689d4d72fff6f1c088780a1db8d0b1a902e"
+    }
+  },
+  "mutation": "scripted tool changes only the synthetic seat copy refresh_token",
+  "od4": "not recorded; owner decision required before SL-3.7",
+  "production_registration": "unchanged; unregistered",
+  "provider_turns": 0,
+  "real_login_copies": 0,
+  "real_login_reads": 0,
+  "real_login_renewals": 0,
+  "rebase_base": "c4a9abc8828d4fb22dcda0970ce2f734fa90c71a",
+  "recorded_at": "2026-11-08T14:52:34+00:00",
+  "redaction_posture": "metadata_only",
+  "schema": "phase_loop_codex_refresh_detection.v1",
+  "status": "passed",
+  "status_reason": "Live refresh detection passed on both dev0 and the designated seat host ai",
+  "task": "SL-3.6",
+  "validation_head": "335916ff19e4771beabd387d33a7c04870d1ba70"
+}

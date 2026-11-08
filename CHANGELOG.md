@@ -6,6 +6,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- Register the Codex review-seat jail after the owner's 2026-11-08 OD-4 acceptance
+  (agent-harness#1916). The jail is the boundary with the inner sandbox off; tools can
+  read their seat login copy and share its proxy-only egress. Completed-command evidence
+  gates review counting. Remove the review-seat owner fallback, staged workspace-write
+  grant and retained setfcap capability; preserve the non-brokered read-only sandbox probe.
+  Jailed Codex notices reflect its confinement, canonical `max` maps to `xhigh`,
+  admission measures the prepared binary, and manual qualification binds the launch projection.
+
 ## [0.7.30] - Unreleased candidate
 
 ### Release preparation

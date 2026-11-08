@@ -17,16 +17,20 @@ from .seat_tool_evidence import launcher_diagnostic_in
 from .skill_eval_access import AccessObserver
 
 
+# Read tools the skill-eval Codex trial keeps enabled. Previously panel_invoker
+# carried this for the retired brokered workspace-write route (agent-harness#1916).
+CODEX_SANDBOX_ENABLED_FEATURES: tuple[str, ...] = ("shell_tool", "code_mode_host")
+
 def command_for(root, spec, prompt):
     command = launcher.build_codex_command(
         root, ModelSelection(profile="plan", model=spec.model, effort=spec.effort),
         prompt, read_only=True, json_output=True)
     flags = ["--ephemeral", "--ignore-rules", "--strict-config", "-c", 'web_search="disabled"']
     flags.extend(word for feature in panel_invoker._BROKER_CODEX_DISABLED_FEATURES
-                 if feature not in panel_invoker._BROKER_CODEX_SANDBOX_ENABLED_FEATURES
+                 if feature not in CODEX_SANDBOX_ENABLED_FEATURES
                  for word in ("-c", f"features.{feature}=false"))
     # Explicit enables prevent a future CLI default from silently removing read tools.
-    flags.extend(word for feature in panel_invoker._BROKER_CODEX_SANDBOX_ENABLED_FEATURES
+    flags.extend(word for feature in CODEX_SANDBOX_ENABLED_FEATURES
                  for word in ("-c", f"features.{feature}=true"))
     command[-1:-1] = flags
     command[0] = spec.executable.path

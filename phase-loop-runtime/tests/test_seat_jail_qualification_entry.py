@@ -7,6 +7,10 @@ from typing import Mapping
 
 import pytest
 
+from test_seat_profile_codex import codex_profile as _codex_profile
+
+codex_profile = _codex_profile
+
 from phase_loop_runtime import __version__
 from phase_loop_runtime import executable_dependency_startup as startup
 from phase_loop_runtime import seat_jail_qualification as qualification
@@ -15,6 +19,98 @@ from phase_loop_runtime.executable_dependency_startup import (
     QualifiedRuntimePackage,
     current_dependency_for_provider,
 )
+
+
+@pytest.mark.parametrize("managed", [False, True])
+def test_codex_qualification_records_a_v2_pass(tmp_path, monkeypatch, codex_profile, managed):
+    import json
+    import time
+    from phase_loop_runtime import falsifier, seat_jail, seat_egress_proxy
+    from phase_loop_runtime import seat_qualification_key, seat_route
+    from types import SimpleNamespace
+    projection = SimpleNamespace(projection_digest="a" * 64) if managed else None
+    projections = []
+    def projected(profile, env):
+        assert profile.leg == "codex"
+        projections.append(projection)
+        return projection
+    monkeypatch.setattr(seat_route, "_projection_for_launch", projected)
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(qualification.seat_uid, "seat_uid_available", lambda: True)
+    monkeypatch.setattr(qualification.sandbox_egress, "egress_isolation_available", lambda: True)
+    monkeypatch.setattr(qualification.review_stage, "falsifier_distribution_available", lambda _: True)
+    def repo(base):
+        directory = base / "fixture"
+        directory.mkdir()
+        return directory
+    monkeypatch.setattr(qualification, "_sentinel_repo", repo)
+    monkeypatch.setattr(qualification.review_stage, "stage_review_tree", lambda path: path)
+    monkeypatch.setattr(qualification.review_stage, "_snapshot_falsifier_dependencies", lambda *a: None)
+    def sentinel(*, staged, **kwargs):
+        temporary = staged / "ready.tmp"
+        temporary.write_text(json.dumps({"tcp": 1, "udp": 2, "abstract": "fixture"}))
+        temporary.rename(staged / qualification._READY)
+        deadline = time.monotonic() + 5
+        while not (staged / qualification._RELEASE).exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return 0, "", "", None, {}
+    monkeypatch.setattr(qualification.review_stage, "_run_bounded_falsifier_node", sentinel)
+    monkeypatch.setattr(falsifier, "_outcome_from_report", lambda *a: "green_on_head")
+    monkeypatch.setattr(qualification, "_find_host_pid", lambda *a: 42)
+    monkeypatch.setattr(qualification, "_run_probe_in_jail", lambda *a: {})
+    result = qualification.qualify("codex")
+    key = seat_qualification_key.key_for_launch(codex_profile, variant=None, projection=projection,
+        allowlist_digest=seat_egress_proxy.allowlist_ref("codex").content_digest)
+    assert result["result"] == "pass"
+    assert projections == [projection]
+    record = json.loads(Path(result["recorded_pass"]).read_text())
+    assert record["schema"] == "seat_jail_pass.v2"
+    assert seat_jail.pass_record_verdict(key) == (True, "pass")
+
+
+@pytest.mark.parametrize("launch_error", [False, True])
+def test_codex_probe_closes_its_managed_dependency(tmp_path, monkeypatch, codex_profile, launch_error):
+    import contextlib
+    import os
+    import subprocess
+    from types import SimpleNamespace
+    from phase_loop_runtime import panel_invoker as pi, seat_jail
+    from phase_loop_runtime.seat_codex_runtime import CODEX_RUNTIME_DESTINATIONS
+    from phase_loop_runtime.seat_subject import SeatSubject
+
+    closed = []
+    dependency = SimpleNamespace(
+        _jailcore_owned=True, subject_source="/fixture/codex",
+        subject_destination=CODEX_RUNTIME_DESTINATIONS[0],
+        entries=tuple(SimpleNamespace(kind="file", destination=path) for path in CODEX_RUNTIME_DESTINATIONS),
+        close=lambda: closed.append(True))
+    subject = SeatSubject("codex", "managed_release", None, None, None)
+    monkeypatch.setattr(pi, "_resolved_jail_subject", lambda *a: (subject, dependency))
+    monkeypatch.setattr(qualification.seat_uid, "subordinate_range", lambda _: SimpleNamespace(count=65536))
+    monkeypatch.setattr(qualification.seat_uid, "lease_seat_id", lambda _: contextlib.nullcontext(7))
+    monkeypatch.setattr(qualification.sandbox_egress, "isolated_network", lambda **k: contextlib.nullcontext(("fixture",)))
+    monkeypatch.setattr(qualification.seat_uid, "holder_pid_from_prefix", lambda _: 42)
+    def build(leg, directory, provider, **kwargs):
+        assert leg == "codex" and provider == Path(dependency.subject_source)
+        assert kwargs["dependency"] is dependency
+        return SimpleNamespace(pass_fds=(kwargs["bundle_memfd"], kwargs["instructions_memfd"]))
+    monkeypatch.setattr(seat_jail, "build_seat_jail", build)
+    monkeypatch.setattr(seat_jail, "close_jail_fds", lambda jail: [os.close(fd) for fd in jail.pass_fds])
+    monkeypatch.setattr(qualification.seat_uid, "teardown_in_h", lambda *a: ())
+    monkeypatch.setattr(pi, "_require_canonical_jail", lambda _: None)
+    monkeypatch.setattr(pi, "_compose_seat_jail_prefix", lambda _: ())
+    def run(*a, **kwargs):
+        if launch_error:
+            raise OSError("fixture launch unavailable")
+        return subprocess.CompletedProcess(a[0], 0, "{}\n", "")
+    monkeypatch.setattr(qualification.subprocess, "run", run)
+    if launch_error:
+        with pytest.raises(OSError, match="fixture launch unavailable"):
+            qualification._run_probe_in_jail("codex", tmp_path, {}, None, None)
+    else:
+        assert qualification._run_probe_in_jail("codex", tmp_path, {}, None, None) == {}
+    assert closed == [True]
 
 
 def test_seats_firstseat_window_cli(tmp_path, monkeypatch, capsys):

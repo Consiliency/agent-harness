@@ -32,6 +32,17 @@
         "plans/evidence/seat-teamhost/doctor-receipts.json",
         "agent-harness#1903"
       ]
+    },
+    {
+      "surface": "seat-codex",
+      "decision": "docs_updated",
+      "reason": "CODEX SL-3 records the owner's OD-4 acceptance, registered review-seat jail, retired inner-sandbox retention and review-seat owner fallback. The catalog rescan helper is absent; manual catalog audit found no new launch primitive or launch-reference row. SL-4 retains row-window promotion and post-merge issue closure.",
+      "evidence": [
+        "plans/decision-seats-codex-boundary.md",
+        "phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md",
+        "docs/advisor-board-capabilities-card.md",
+        "CHANGELOG.md"
+      ]
     }
   ]
 }
