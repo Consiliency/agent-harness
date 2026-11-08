@@ -68,7 +68,7 @@
         "url": {
           "type": ["string", "null"],
           "maxLength": 2048,
-          "pattern": "^https?://[^\\s]+$"
+          "pattern": "^https?://[A-Za-z0-9._~:/?#\\[\\]@!$&'()*+,;=%-]+$"
         },
         "source_commit": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"}
       }
@@ -87,7 +87,7 @@
           "url": {
             "type": ["string", "null"],
             "maxLength": 2048,
-            "pattern": "^https?://[^\\s]+$"
+            "pattern": "^https?://[A-Za-z0-9._~:/?#\\[\\]@!$&'()*+,;=%-]+$"
           },
           "viewport": {
             "type": ["object", "null"],

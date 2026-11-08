@@ -15046,10 +15046,10 @@
       "file": "plans/phase-plan-v1-browser-VISART.md",
       "frozen_inputs": {
         "plans/artifacts/browser-v1-contract.md": {
-          "sha256": "cd8cbb9c4140216dc07dbae910f63d5810d9cc238bceddb30d16a13ae5856a4e"
+          "sha256": "12a3182aad66e2fe9b2b53cbbd551a9033ef4e7b322bf104eacde0ceeeb68e2b"
         },
         "plans/artifacts/browser-v1-observation.schema.json": {
-          "sha256": "c5508465b49b87de775eda3e711ee5ef4727c6d5965ae4256a456575f2995080"
+          "sha256": "ecd7ebf24fbb7cdf48f09fa3624f24c6deee651707365d5e53943002534760b1"
         }
       },
       "gate_status": "declared_not_produced",
@@ -15082,7 +15082,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-11-08T18:35:31Z"
+      "updated_at": "2026-11-08T20:40:06Z"
     }
   ],
   "schema_version": 1
