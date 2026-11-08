@@ -25,6 +25,10 @@ One review-route test still needs a runtime change on such hosts. Until that lan
 release job stays on the image that both Gate A runs share. Moving it needs its own
 validation.
 
+Track the runner migration against GitHub's runner-image support policy, which keeps at
+most two GA images per OS. When a newer Ubuntu image reaches GA, `ubuntu-24.04` will be
+deprecated and removed, so this pin and `test.yml`'s three must be revisited before then.
+
 ## Native-test jobs pinned to `ubuntu-24.04` (2026-10-25)
 
 `test.yml`'s `pytest`, `clean-room` and `wheel-smoke` jobs pin
