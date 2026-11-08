@@ -407,8 +407,9 @@ def test_owned_launch_owner_death_reaps_detached_descendant(tmp_path):
     )
     provider_code = (
         "import subprocess,sys,time,pathlib; "
-        # The retained-setfcap route (and its conditional PDEATHSIG) was retired
-        # by SL-3. Measure the current empty-capability path, then its owner cleanup.
+        # This path never carried the setpriv --pdeathsig step (the composed prefix
+        # replaces it with the bwrap owner), so PDEATHSIG here depends on the host's
+        # bwrap. Assert the empty capability sets; owner-loss reaping is the guarantee.
         "caps = [line.split()[1] for line in pathlib.Path('/proc/self/status').read_text().splitlines() "
         "if line.startswith(('CapInh:', 'CapPrm:', 'CapEff:', 'CapBnd:', 'CapAmb:'))]; "
         f"pathlib.Path({str(capability_sets)!r}).write_text(' '.join(caps)); "

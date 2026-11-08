@@ -3,7 +3,8 @@
 These controls measure placement, monitoring and owner cleanup through the real broker
 and a synthetic CLI. They do not measure Codex admission or its jail: those enter the
 registered route in test_seat_codex_route_gate and test_seat_codex_leg. Keep both the
-profile and its admission gate absent together, as they were before SL-3 registration.
+profile and its admission gate absent together. This is not a full pre-SL-3 state:
+the codex provider-executable registration stays in place, which these tests do not use.
 Never install this control implicitly for a file or for the suite.
 """
 

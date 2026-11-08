@@ -4,7 +4,7 @@
   "auth_source": "synthetic fixture only",
   "ci_compatibility": {
     "additional_regression": {
-      "cause": "The test expected the conditional PDEATHSIG of the retired retained-setfcap route. The source only arms it for a nonempty retain_caps request, which SL-3 disallows.",
+      "cause": "The rewritten assertion is not caused by SL-3. On this launch path the composed prefix replaces the setpriv --pdeathsig step with the bwrap owner, so PDEATHSIG reflects the host's bwrap (it read 0 on dev0 at the merge-base too). The test now asserts empty capability sets and keeps owner-loss reaping of the detached descendant as its guarantee.",
       "classification": "expectation_update",
       "fix": "Measure all five capability sets as empty and retain the owner-loss/detached-descendant reaping assertion.",
       "result": "pass",
