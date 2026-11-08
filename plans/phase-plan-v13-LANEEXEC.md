@@ -18,7 +18,7 @@ after a reservation. agent-toolkit#54 already reserves through PLACECLI, but it
 cannot run a remote Pi end to end until these launch inputs exist.
 
 **Frozen artifact.** `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`,
-sha256 `a90c0e5914b4c62ac884b17195f10aafc509f606ee40358f0a8c82cffe4fdaec`,
+sha256 `bd0e6694e6df9e4ae0bc640c138645adf6b49e8f56aa3f5af7488107062676f3`,
 holds IF-0-LANEEXEC-1. It covers:
 
 - the process entry `agent-harness-launch --client … prepare|launch|status|cancel|version`
@@ -72,6 +72,14 @@ schema cases, SL-1.1 the snapshot and seed-source cases and SL-3.1 the rest.
 (Consiliency/agent-toolkit#78).** `x-contract-pins.toolkit_pins` moves to a new
 `toolkit_commit` and manifest digest under its `repin_rule`. Six roles change
 bytes, and the role names, paths and remote-inner closure are unchanged.
+
+**Amendment (2026-11-08): toolkit repin for the image launcher tree and staging
+trust (Consiliency/agent-toolkit#85, closing Consiliency/agent-toolkit#83 and
+Consiliency/agent-toolkit#79).** `x-contract-pins.toolkit_pins` moves to a new
+`toolkit_commit` and manifest digest under its `repin_rule`. Three roles change
+bytes (`remote_placement_reference`, `toolkit_openshell_image`,
+`toolkit_runner_image_build`), and the role names, paths and remote-inner
+closure are unchanged.
 
 **Resolved toolkit gaps** (artifact `x-placecli-clarifications`):
 
@@ -230,7 +238,7 @@ The artifact's `x-contract-pins` carries every full digest and source revision.
   `x-contract-pins.run_status`).
 - agent-toolkit files through the pins manifest
   `harnesses/pi/contracts/pins.json` (`toolkit_pins.v1`, sha256
-  `8ec2c77d40ee3e06b6ec536386cf75c29131a16f0dcbf47b4c3f7b25b3d9d9a8`), whose
+  `5cb911cb9740c358b823a8020fe204f91399988cb39811662f56094f8cb38c27`), whose
   source revision is `x-contract-pins.toolkit_pins.toolkit_commit`. At that
   revision, `writer-snapshot.mjs` and `cred-proxy.mjs` have the same bytes as at
   the roadmap-cited revision. All of these are design inputs that are read and
