@@ -18,7 +18,7 @@ after a reservation. agent-toolkit#54 already reserves through PLACECLI, but it
 cannot run a remote Pi end to end until these launch inputs exist.
 
 **Frozen artifact.** `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`,
-sha256 `8c6b1f3d12375ed4178a13c50670f8c0ea14a068bd8a4b9f814334f091affc13`,
+sha256 `a90c0e5914b4c62ac884b17195f10aafc509f606ee40358f0a8c82cffe4fdaec`,
 holds IF-0-LANEEXEC-1. It covers:
 
 - the process entry `agent-harness-launch --client … prepare|launch|status|cancel|version`
@@ -67,6 +67,11 @@ provisioning refusal rolls the claim back, journaling `claim_rolled_back`.
 Changing `seed_root` or a seed limit changes `config_sha256`. Obligations C10
 and C11 hold the tests, and C2, C3, C4 and C9 gain cases. SL-0.1 runs the
 schema cases, SL-1.1 the snapshot and seed-source cases and SL-3.1 the rest.
+
+**Amendment (2026-11-08): toolkit repin for user-independent image paths
+(Consiliency/agent-toolkit#78).** `x-contract-pins.toolkit_pins` moves to a new
+`toolkit_commit` and manifest digest under its `repin_rule`. Six roles change
+bytes, and the role names, paths and remote-inner closure are unchanged.
 
 **Resolved toolkit gaps** (artifact `x-placecli-clarifications`):
 
@@ -225,7 +230,7 @@ The artifact's `x-contract-pins` carries every full digest and source revision.
   `x-contract-pins.run_status`).
 - agent-toolkit files through the pins manifest
   `harnesses/pi/contracts/pins.json` (`toolkit_pins.v1`, sha256
-  `92dfdb186065d55d47a4aba3dd24836ca3005317222af2fb86624ae9db84965b`), whose
+  `8ec2c77d40ee3e06b6ec536386cf75c29131a16f0dcbf47b4c3f7b25b3d9d9a8`), whose
   source revision is `x-contract-pins.toolkit_pins.toolkit_commit`. At that
   revision, `writer-snapshot.mjs` and `cred-proxy.mjs` have the same bytes as at
   the roadmap-cited revision. All of these are design inputs that are read and
