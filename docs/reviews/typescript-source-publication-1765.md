@@ -13,7 +13,7 @@ additions require successful parent absence and frozen changed-path membership.
 Declarations, unsupported syntax/forms/roots, nonregular entries and excluded
 artifact names retain the refusal. No repository code executes during parsing.
 
-Parser pins are tree-sitter0.25.2 and tree-sitter-typescript0.23.2. The complete
+Parser pins are tree-sitter0.26.0 and tree-sitter-typescript0.23.2. The complete
 staged text passes the existing detect-secrets1.5.0 built-in detectors without
 repository baselines, inline suppression or online verification. Detector
 findings, including synthetic test canaries, remain refusals. This is heuristic:
