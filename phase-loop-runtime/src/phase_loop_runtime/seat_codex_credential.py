@@ -55,9 +55,10 @@ CODEX_SCOPE_CEILING: frozenset[str] = frozenset({
 #: Seconds an access token must still be valid for a seat to receive it. SL-1.5 measured
 #: no renewal by the 0.167.0 CLI while its access token is valid, at any ``last_refresh``
 #: age up to 29 days, and a seat's copy cannot be renewed in the jail. So the copy must
-#: outlast the longest leg: the panel's wall-clock backstop
-#: (``panel_invoker._LEG_TIMEOUT_MAX_S``).
-CODEX_LOGIN_MIN_S: int = 1800
+#: outlast the longest leg, plus clock skew and launch work before that leg's timer
+#: starts: the panel backstop plus the 300s the namespace already adds
+#: (``panel_invoker._LEG_TIMEOUT_MAX_S + 300``).
+CODEX_LOGIN_MIN_S: int = 2100
 
 API_KEY_REFUSED = "codex_seat_api_key_refused"
 TOKEN_EXPIRING = "codex_seat_token_expiring"
