@@ -1496,10 +1496,17 @@ def test_directory_validator_cannot_select_success_from_an_incomplete_attempt_se
 
 
 def test_helper_observer_includes_nested_pid_namespaces(tmp_path):
+    from ._seat_prereq import nested_namespace_refusal, skip_unless_capable
+
     driver = _qualification_validator().__globals__
+    # The synthetic helper tree needs a user+pid namespace nested inside unprivileged bwrap.
+    nested = ("/usr/bin/unshare", "--user", "--map-root-user", "--pid", "--fork", "--kill-child")
+    skip_unless_capable(nested_namespace_refusal((*nested, "/usr/bin/true")))
     command = ["bwrap", "--unshare-user", "--unshare-pid", "--ro-bind", "/", "/",
-               "--proc", "/proc", "--dev", "/dev", "--", "/usr/bin/unshare",
-               "--user", "--map-root-user", "--pid", "--fork", "--kill-child", "/usr/bin/sleep", "30"]
+               "--proc", "/proc", "--dev", "/dev", "--", *nested, "/usr/bin/sleep", "30"]
+    # /proc/<pid>/exe names the file that ran: on Ubuntu 26.04 /usr/bin/sleep is a symlink
+    # to the multicall coreutils.
+    sleep_image = Path("/usr/bin/sleep").resolve(strict=True)
     proc = panel.launch_provider(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True)
     try:
         deadline = time.monotonic() + 5  # synthetic process startup only
@@ -1509,7 +1516,7 @@ def test_helper_observer_includes_nested_pid_namespaces(tmp_path):
             sleeping = []
             for pid in children:
                 try:
-                    if Path(f"/proc/{pid}/exe").resolve() == Path("/usr/bin/sleep"):
+                    if Path(f"/proc/{pid}/exe").resolve() == sleep_image:
                         sleeping.append(pid)
                 except (FileNotFoundError, ProcessLookupError):
                     pass

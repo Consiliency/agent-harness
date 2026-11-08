@@ -496,6 +496,16 @@ def live_worker_missing() -> list[str]:
     for tool in (pi._PRLIMIT, seat_jail.BWRAP, pi._CLAUDE_SDK_WORKER_DROP_TOOL):
         if not os.access(tool, os.X_OK):
             missing.append(f"needs {tool}")
+    if not missing:
+        # The worker's identity drop is the seat jail's own `setpriv` step inside bwrap, so
+        # a host that denies the jail's uid switch denies the worker's too.
+        try:
+            from ._seat_prereq import seat_uid_switch_refusal
+        except ImportError:  # imported as a top-level module by a sibling test
+            from _seat_prereq import seat_uid_switch_refusal
+        refusal = seat_uid_switch_refusal()
+        if refusal is not None:
+            missing.append(refusal)
     return missing
 
 
