@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: RECBIND
 roadmap: specs/phase-plans-agyroll-v1.md
-roadmap_sha256: 474825aa044e1d9f2d6989c37b08c226755fc6cea31f18c44e1609833fa42993
+roadmap_sha256: 1461a6a23df3a601da22836f377c4a52bcc254ef02d7a16c761d9bf7a6a40331
 automation:
   suite_command: ["bash", "-lc", "cd phase-loop-runtime && PYTHONPATH=$PWD/src:$PWD/tests timeout 900 .venv/bin/python -m pytest -q -p no:cacheprovider tests/test_agy_qci.py tests/test_agy_catalog_data.py tests/test_agy_record_v2.py tests/test_agy_route_conformance.py tests/test_qualified_agy_image_set.py tests/test_verify_qualified_agy_route_core.py tests/test_agy_upstream_advisory.py tests/test_agy_static_integrity.py tests/test_agy_integrity_seat_admission.py tests/test_gemini_heartbeat_bootstrap.py tests/test_agy_self_qualification.py tests/test_outside_agent_release_surface.py tests/test_seat_reference_inventory.py && python scripts/verify_qualified_agy_image.py --contract"]
 ---
@@ -42,8 +42,15 @@ agent-harness#1923):
 
 **Gates.**
 - EXT-0730 is met: agent-harness#1923 merged on 2026-11-08.
-- **R1 must be recorded on agent-harness#1008 before execution.** If R1 keeps the pins, this
-  plan is void: route a roadmap amendment (AGYROLL §6.4).
+- **R1 was APPROVED by the owner on 2026-11-08**, as recorded on agent-harness#1008. Its
+  conditions are binding on this plan:
+  - conformance cannot pass by skipping: SL-3 strict mode, plus SL-2's `--release` report
+    check;
+  - the semantic validator guard covers transitive predicates (SL-1);
+  - both removed gates, `--route-core` (agent-harness#1029) and the full pin
+    (agent-harness#1032), are named and deleted (SL-2).
+
+  If a lane cannot meet a condition, it stops and routes an amendment.
 
 **Invariants.**
 - `seat_qci()` equals `agy_profile_digest()` at `agy_validator_v1`, so no store key, no
@@ -56,7 +63,7 @@ agent-harness#1923):
 - [ ] IF-0-RECBIND-1 — AGYROLL §2.1 and §3.1–§3.5, as frozen. They are published day-1 from the artifact:
   - `QUALIFICATION_VALIDATOR` and `seat_qci()` in `agy_qualification`;
   - `load_catalog(path=None) -> dict[str, str]` in `gemini_heartbeat`, which fills `QUALIFIED_IMAGES`;
-  - `data/agy_catalog.json`, schema `qualified_agy_catalog.v3`, with the `published_at`, `pinned` and `capture_surface_sha256` fields;
+  - `data/agy_catalog.json`, schema `qualified_agy_catalog.v3`, with the `published_at` and `pinned` fields (no capture-surface field, since R3 is approved);
   - record v2;
   - verifier flags `--contract`, `--release --conformance-report <junit.xml>` and `--upstream-only`.
 - [ ] IF-0-RECBIND-2 — The strict conformance suite (AGYROLL §3.4):
@@ -106,7 +113,7 @@ SL-4 — Documentation & spec reconciliation
     - closed keys and hex64 digests;
     - unique images and versions;
     - `routes` == `{"linux-x64"}`;
-    - `pinned` is a bool, and `capture_surface_sha256` is a hex64 or null.
+    - `pinned` is a bool.
 
     Any failure returns `{}`, never raises at import, and sets `CATALOG_STATUS`.
   - **Data file.** It is generated from the 1.5.3 literal, with `qci` = `seat_qci()` and with

@@ -4,7 +4,7 @@
 >
 > This roadmap is planned and landed manually while `specs/phase-plans-v11.md`
 > remains the sole active runner-selected roadmap. This status grants no live run,
-> no `ai` access and no ruling authority; the owner rulings below are requests.
+> no `ai` access. The owner rulings below were decided by the owner on 2026-11-08.
 
 ## Context
 
@@ -75,7 +75,7 @@ red when breached.
         custody:  shipped catalog (package data)   |   host_user store (euid boundary)
                          ^
    ai: watch (timer) -- signed v2 record, one member/tick --> draft PR -> base-branch policy CI
-                                                              -> owner approval (interim) -> main
+                                                              -> job + owner signatures -> main
                                                                    |
         admit_for_seat        admit_for_executor (memfd)    admit_for_canary (memfd)
         (board preflight)     (runner-start preflight)      (capture-start preflight)
@@ -98,7 +98,7 @@ red when breached.
 
 | Input | Pin |
 | --- | --- |
-| AGYROLL contract | `plans/artifacts/agyroll-v1-contract.md`, sha256 `231cd9208c050b40204e24bc77de70d2d5d797e7775d4137bae7b738e0e9be59` |
+| AGYROLL contract | `plans/artifacts/agyroll-v1-contract.md`, sha256 `260689d9b827d5240bd8c5501de04b63cd3264fc7f34dfb38cac89d223ee6546` |
 | TEAMHOST contract §5 (agy key, `requalify_once` call sites) | `plans/seats-teamhost-contract.md`, sha256 `3ca3d3a57346acca8bf4e16e50304f00e3e2e19bc5bcd20b1831b4f837c3b1b1`. **REQUAL amends §5** to add the runner and canary preflight call sites. The key stays unchanged, because `seat_qci()` equals `agy_profile_digest()` at `agy_validator_v1`. The repin lands in REQUAL's docs lane. |
 | Q10 and (G) promotion rules | `.consiliency/plans/detailed-lkg-cli-qualification-1602-20261014-0359.md` §(G) and the Q10 ruling |
 | Upstream provenance surface | the GitHub releases API for `google-antigravity/antigravity-cli`: per-asset `digest`; the attestations endpoint returned 404 on 2026-11-08 |
@@ -106,79 +106,84 @@ red when breached.
 These are immutable planning inputs, and a change needs a reviewed repin. No plan pins a
 future implementation commit, a commit count or a landing topology.
 
-## Owner Rulings Needed
+## Owner Rulings (2026-11-08)
 
-These are **open questions to the owner**. They are posted on agent-harness#1008, and none
-is decided here. Each "proposed default" is the plan-tier board's recommended answer on
-agent-harness#1927, together with its conditions. A phase does not implement a ruled-on part
-until the ruling is recorded (EXT-R).
+The owner ruled R1–R9 on 2026-11-08 and accepted the plan-tier board's recommendations from
+its agent-harness#1927 comment as written. The rulings are recorded on agent-harness#1008.
+Each condition below is binding on the phase that implements it. A lane that cannot meet a
+condition stops and routes an amendment.
 
-- **R1. Can a release ship without re-running agy live?** It would rest on QCI binding, the
-  strict conformance suite and the validator guard instead.
-  - **Rulings revisited:**
-    - the agent-harness#1032 maintainer ruling, the full pin;
-    - its president line: "No publish path ships a tree whose full pin set differs…";
+- **R1 — APPROVED with conditions.** A harness release ships without re-running agy live. It
+  relies on records bound to the QCI, the strict conformance suite and the validator guard.
+  - **Conditions:**
+    - conformance cannot pass by skipping (AGYROLL §3.4; EC-RECBIND-5);
+    - the semantic validator guard covers transitive predicates (§2.1; EC-RECBIND-2);
+    - both removed gates are named here (§3.3).
+  - **Superseded:**
+    - the agent-harness#1032 maintainer ruling (the full pin);
+    - its president line, "No publish path ships a tree whose full pin set differs…";
     - agent-harness#1119, "kept at full strength";
     - the **per-PR route-core gate** from agent-harness#1029 (2026-09-24,
-      `qualified-agy-image.yml:48-53`). R1 deletes `--route-core` as well as the full pin.
-    - Q11, the newest-only cut.
-  - **Proposed default:** approve, on three conditions:
-    - conformance cannot pass by skipping (AGYROLL §3.4);
-    - the semantic validator guard covers its dependencies transitively (§2.1);
-    - both removed gates are named here.
-  - **If declined:** the job automates the per-cut live run (§6.4), and PROVFWD and REQUAL
-    route-core edits need job re-records. The roadmap is amended.
-- **R2. Can executor lanes admit an image this user account qualified itself?**
-  - **Ruling revisited:** the agent-harness#1333 scope cut, confirmed on agent-harness#1350.
-  - **Forgery boundary:** any process running as that euid can forge a `host_user` entry.
-    The provenance re-check catches upstream withdrawal, not local forgery.
-  - **Proposed default:** approve, with memfd exec of the admitted bytes (§4) and the
-    boundary stated above.
-  - **If declined:** shipped only. The memfd fix lands either way.
-- **R3. Can the canary admit any image that passes digest admission plus a complete capability
-  matrix, instead of the self-reported `1.1.13`?** This strengthens the canary's admission.
-  - **Proposed default:** approve, with memfd exec and the `stream-json` check kept.
-  - **If declined:** the canary admits only matrix digests listed in the shipped catalog.
-- **R4. Can any genuine stable release be admitted, not only the newest four?**
-  - **Ruling revisited:** D4.
-  - **Proposed default:** approve, on two conditions:
-    - retryable outcomes never consume the preflight cap;
-    - downloads are capped per call (2) and in total (12 per image per day), with no
-      freshness refusal (§1.2).
-- **R5. Should attestations be recorded but not required, with the installer-manifest
-  cross-check run only in the job?**
-  - **Proposed default:** approve.
-- **R6. How do catalog PRs merge?**
-  - **Rulings revisited:**
-    - Q10: a draft promotion PR, at least 2 distinct signers, the publisher digest, a
-      maintainer merge;
-    - (G): signers, the verifier and the quorum rule are read from the base branch.
-  - **Interim, until ruled:** one owner approval and a maintainer merge.
-  - **Proposed default** (the board's answer, "reject as written"):
-    - the policy is read from the base branch;
-    - Q10's second signer is an enrolled owner key;
-    - auto-merge applies only to data-only diffs, and only once `main` has a non-bypassable
-      ruleset.
+      `qualified-agy-image.yml:48-53`);
+    - Q11's cut re-run.
+  - **Implemented by:** RECBIND.
+- **R2 — APPROVED with conditions.** Executor lanes may admit a `host_user` image that this
+  account qualified itself, after the provenance re-check.
+  - **Conditions:**
+    - The executor execs the admitted memfd, never a path (§4; EC-EXECADMIT-1).
+    - The forgery boundary is stated: any process running as that euid can forge a
+      `host_user` entry. The re-check catches upstream withdrawal, not local forgery.
+  - **Superseded:** the agent-harness#1333 executor scope cut, confirmed on
+    agent-harness#1350.
+  - **Implemented by:** EXECADMIT.
+- **R3 — APPROVED with conditions.** The canary admits by `admit_for_canary` plus a complete
+  capability matrix, which replaces the self-reported `1.1.13`. This strengthens admission.
+  - **Conditions:** memfd exec, and the `stream-json` check is kept (EC-EXECADMIT-3).
+  - **Implemented by:** EXECADMIT.
+- **R4 — APPROVED with conditions.** Any genuine stable release is admissible, not only the
+  newest four.
+  - **Conditions:**
+    - the retryable outcomes (`budget_exhausted`, `download_cap_reached`) never consume the
+      preflight cap (EC-REQUAL-1);
+    - a total download bound applies: 2 per call and 12 per (store, image) per 24 h
+      (§1.2; EC-PROVFWD-2);
+    - there is no freshness refusal.
+  - **Superseded:** D4, the recency window.
+  - **Implemented by:** PROVFWD and REQUAL.
+- **R5 — APPROVED.** Attestations are recorded but not required. The installer-manifest
+  cross-check runs only in the catalog job.
+  - **Implemented by:** PROVFWD.
+- **R6 — REJECTED as written; the board's alternative is adopted.** "One job signature plus
+  green CI auto-merges" is rejected. Instead (§6.1; EC-ROLLJOB-4):
+  - the signer list, verifier and merge rule are read from the base branch;
+  - Q10's two distinct signers are the job key plus an **enrolled owner key**;
+  - auto-merge applies only to data-only diffs, and only once `main` has a non-bypassable
+    ruleset. Until then a maintainer merges after both signatures verify.
 
-    Today `main` has no branch ruleset (the only ruleset covers `conform-evidence/*` tags),
-    no required review and `enforce_admins=false`. `gate` is self-certifiable
-    (`.github/CODEOWNERS:5-9`).
-- **R7. Can the `ai` job renew its own Gemini login, outside any seat?** Today only the owner
-  renews it, and that rule is not written down (agent-harness#1923, agent-harness#1924).
-  - **Proposed default:** approve, on three conditions:
-    - renewal uses the named path `_await_gemini_login` → `_refresh_gemini_credential` (§5);
+  Q10's draft promotion PR and (G) stand.
+  - **Implemented by:** ROLLJOB.
+- **R7 — APPROVED with conditions.** The `ai` job renews its own Gemini login, outside any
+  seat.
+  - **Conditions:**
+    - renewal goes only through `_await_gemini_login` → `_refresh_gemini_credential`
+      (§5, §6.2);
     - the refresh token stays out of seats (agent-harness#1222);
-    - expiry turns red.
-- **R8. Should the shipped catalog keep only recent members?**
-  - **Proposed default:** approve, keeping a member that is among the newest 3 *or* younger
-    than 14 days. A `pinned` member is never pruned. This supersedes Q11's cut rule and the
-    2026-10-08 Q5.
-- **R9. Should the `ai` job get a repository-only GitHub identity?** The premise is false
-  today: there is no `main` ruleset, and agent-harness#1138 is open.
-  - **Proposed default:** approve, on three conditions:
-    - a non-admin GitHub App or machine user, with no `workflows` permission;
-    - a non-bypassable `main` ruleset;
-    - all of it in place before ACTIVATE.
+    - expiry reports `gemini_login_expired` and turns the lag rule red (EC-ROLLJOB-6).
+  - **Superseded:** the unwritten owner-only renewal rule on `ai` (agent-harness#1923,
+    agent-harness#1924).
+  - **Implemented by:** REQUAL (path) and ROLLJOB (job).
+- **R8 — APPROVED with conditions.** The shipped catalog keeps only recent members.
+  - **Conditions:**
+    - keep a member while it is among the newest 3 *or* younger than 14 days;
+    - never prune a `pinned` member;
+    - **Q11 is superseded**, together with the 2026-10-08 Q5 (§6.1; EC-ROLLJOB-5).
+  - **Implemented by:** ROLLJOB.
+- **R9 — APPROVED with conditions.** The `ai` job gets a repository-only GitHub identity.
+  - **Conditions, all in place before ACTIVATE (EC-ACTIVATE-1):**
+    - a non-admin GitHub App or machine user;
+    - no `workflows` permission;
+    - a non-bypassable `main` ruleset.
+  - **Implemented by:** ACTIVATE (with agent-harness#1138).
 
 ## External Readiness Gates
 
@@ -186,14 +191,8 @@ until the ruling is recorded (EXT-R).
   gate is met.
 - **EXT-1916.** agent-harness#1916 shares `panel_invoker.py`. REQUAL and EXECADMIT implement
   after it merges or closes, and rebase onto it.
-- **EXT-R.** A phase implements a ruled-on part only after that ruling is recorded on
-  agent-harness#1008. Until then it implements only "interim" text. A "no" routes a roadmap
-  amendment before that phase is planned:
-  - RECBIND needs R1;
-  - PROVFWD needs R4 and R5;
-  - EXECADMIT needs R2 and R3;
-  - ROLLJOB needs R6, R7 and R8;
-  - ACTIVATE needs R9.
+- **EXT-R.** Every owner ruling is recorded on agent-harness#1008 (decided 2026-11-08), so the
+  gate is met. Each phase implements its rulings' conditions as listed in Owner Rulings.
 
 ## Non-Goals
 
@@ -257,7 +256,7 @@ Decompose into 3 lanes plus docs:
   both workflows, and the watch tests and inventory that depend on them.
 - **Conformance suite:** tests and fixtures only.
 
-The lanes own disjoint files. Gated on R1.
+The lanes own disjoint files. Implements R1 (approved) and its three conditions.
 
 **Non-goals**
 
@@ -318,7 +317,7 @@ Decompose into 3 lanes plus docs:
 - **Attestation and second channel:** a new `agy_attestation.py`.
 - **Callers:** the `agy_watch.py` listing caller and the verifier's `--upstream-only` fetch.
 
-`agy_qualification.py` is not touched; REQUAL passes the hint. Gated on R4 and R5.
+`agy_qualification.py` is not touched; REQUAL passes the hint. Implements R4 and R5 (approved).
 
 **Non-goals**
 
@@ -415,7 +414,7 @@ named custody tiers (goal c, local path).
 **Exit criteria**
 
 - [ ] EC-EXECADMIT-1 — `trusted_command`, `admitted_command`, the `EXECUTOR_TRUSTED` role and the executor availability probes admit through `admit_for_executor` using the launch env's PATH, and exec `/proc/self/fd/N` held across the spawn; a path-replacement test shows the admitted bytes run.
-- [ ] EC-EXECADMIT-2 — With R2 approved, a `host_user` image that passes the provenance re-check is admitted; with R2 denied, only `shipped` images are admitted and others refuse `agy_executor_image_unqualified`.
+- [ ] EC-EXECADMIT-2 — Under R2 (approved), a `shipped` image or a `host_user` image that passes the provenance re-check is admitted, and any other image refuses `agy_executor_image_unqualified`; the forgery boundary is stated in the admission's evidence and docs.
 - [ ] EC-EXECADMIT-3 — The canary admits through `admit_for_canary` plus a complete capability matrix that keeps the `stream-json` check, and execs the memfd; no `"1.1.13"` literal gates production code.
 - [ ] EC-EXECADMIT-4 — The provenance re-check refuses an image whose upstream asset metadata no longer matches.
 - [ ] EC-EXECADMIT-5 — Every refusal is a typed AGYROLL §8 code, and none is sealed.
@@ -430,7 +429,7 @@ Decompose into 3 lanes plus docs:
 - **Canary:** `agy_canary_evidence.py`.
 
 The memfd exec fix in EC-EXECADMIT-1 is independent of R2, so it may land first as a
-standalone fix. Gated on R2, R3 and EXT-1916.
+standalone fix. Implements R2 and R3 (approved). Gated on EXT-1916.
 
 **Non-goals**
 
@@ -473,7 +472,7 @@ member, through Q10/(G) promotion. A breach of the lag bound turns CI red (goals
 - [ ] EC-ROLLJOB-1 — A tick qualifies only the newest non-member release, retries the whole series up to `SERIES_RETRIES`, signs the record and opens a draft `agy-catalog-auto` PR; other members change only when their `qci` differs.
 - [ ] EC-ROLLJOB-2 — `watch --install-units` and `--check` install and report the timer and the last tick's status line.
 - [ ] EC-ROLLJOB-3 — Nightly `--upstream-only` fails under the AGYROLL §6.3 lag rule, and warns inside the bound or while a PR awaits approval.
-- [ ] EC-ROLLJOB-4 — Promotion CI runs the base branch's verifier, signer list and merge rule, and reads only the catalog and agy records from the PR head; a PR touching any other path or the policy fails and never auto-merges; until R6 is ruled, merging needs one owner approval.
+- [ ] EC-ROLLJOB-4 — Promotion CI runs the base branch's verifier, signer list and merge rule, and reads only the catalog and agy records from the PR head; a PR touching any other path or the policy fails and never auto-merges; under R6 (rejected as written, alternative adopted), a PR merges only with valid job and enrolled-owner signatures, and auto-merges only for a data-only diff once `main` has a non-bypassable ruleset.
 - [ ] EC-ROLLJOB-5 — Aging keeps the newest `CATALOG_KEEP` members or those younger than `CATALOG_MIN_AGE`, and never prunes a `pinned` member (R8).
 - [ ] EC-ROLLJOB-6 — An expired login ends the tick with `gemini_login_expired` and opens no PR.
 
@@ -484,7 +483,7 @@ Decompose into 3 lanes plus docs:
 - **Promotion CI:** the verifier's signature, lag and base-policy checks, plus the workflows.
 - **Units and install/check:** `docs/ops/agy-upstream-watch/**` and the `watch` flags.
 
-Gated on R6, R7 and R8. The promotion path is safe to land under the interim rule.
+Implements R6 (alternative), R7 and R8. Auto-merge stays disabled until a `main` ruleset exists.
 
 **Non-goals**
 
@@ -527,7 +526,7 @@ release and a release cut both pass with no hand step. Then close agent-harness#
 **Exit criteria**
 
 - [ ] EC-ACTIVATE-1 — Before install, the R9 identity (non-admin, no `workflows` permission) and a non-bypassable `main` ruleset exist; then `watch --check` on `ai` reports `installed`; both are recorded in `plans/evidence/agyroll-activate.json`.
-- [ ] EC-ACTIVATE-2 — The newest stable upstream release at activation reaches `main` through an `agy-catalog-auto` PR, with no hand step other than the R6 merge rule.
+- [ ] EC-ACTIVATE-2 — The newest stable upstream release at activation reaches `main` through an `agy-catalog-auto` PR, with no hand step other than the owner's R6 signature.
 - [ ] EC-ACTIVATE-3 — The first release cut after RECBIND passes strict conformance and `--release` with no hand live run.
 - [ ] EC-ACTIVATE-4 — An executor lane and a canary capture on `ai` admit a current release, neither 1.3.5 nor 1.1.13, through their preflights, and exec the memfd.
 - [ ] EC-ACTIVATE-5 — agent-harness#1008 closes with that evidence linked.
@@ -587,7 +586,7 @@ RECBIND ──> PROVFWD ──┬──> REQUAL ──> EXECADMIT ──┐
 - **Planning.** Run `/claude-plan-phase specs/phase-plans-agyroll-v1.md <ALIAS> --output plans/phase-plan-v1-agyroll-<ALIAS>.md`.
   - PROVFWD can be planned now.
   - ROLLJOB and REQUAL can be planned after PROVFWD.
-  - Each phase implements a ruled-on part only after its ruling (EXT-R).
+  - All rulings are decided (EXT-R met); each phase implements its conditions.
 - **Before RECBIND lands**, PROVFWD and REQUAL must not land: `--route-core` would demand a
   live re-record.
 - **Single-writer files across phases:**

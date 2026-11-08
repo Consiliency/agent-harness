@@ -4,10 +4,12 @@ This is a frozen planning input for `specs/phase-plans-agyroll-v1.md`. Phase pla
 section, for example `AGYROLL §3.2`. Changing this file is a reviewed repin: amend the
 roadmap's External Inputs row in the same PR.
 
-Sections tagged `[R<n>]` depend on the open owner ruling with that number in the roadmap.
-**Until R<n> is ruled, a lane implements only the part marked "interim"**, or, where there
-is no interim part, waits for the ruling. "Proposed default" text is the board's recommended
-answer, put to the owner. It is not a decision.
+Sections tagged `[R<n>]` implement the owner ruling of that number. The owner ruled all
+nine on **2026-11-08**, accepting the plan-tier board's recommendations on
+agent-harness#1927 as written. The decisions are in the roadmap ("Owner Rulings
+(2026-11-08)") and are recorded on agent-harness#1008. The ruling conditions written into
+those sections are binding: a lane that cannot meet a condition stops and routes an
+amendment.
 
 ## 0. Vocabulary
 
@@ -131,11 +133,11 @@ schema `qualified_agy_catalog.v3`:
  "routes": {"linux-x64": [{"release_version": "<x.y.z>", "image_sha256": "<hex64>",
    "help_sha256": "<hex64>", "asset_sha256": "<hex64>", "qci": "<hex64>",
    "published_at": "<RFC 3339>", "pinned": false,
-   "capture_surface_sha256": null,
    "record": "agy-<x.y.z>-linux-x64-qualification.json"}]}}
 ```
 
-- `capture_surface_sha256` is a hex64 or null. Only the R3-denied canary path reads it (§4).
+- R3 is approved, so the canary does not depend on catalog-listed capability digests. The
+  schema therefore has no `capture_surface_sha256` field.
 - `pinned` is set only by a human PR. Aging never prunes a pinned member (§6.1, R8).
 - **Runtime loader.** It is strict and makes no network calls. If the file is missing or
   malformed, the runtime sees an empty catalog, which is fail-closed: local qualification or
@@ -169,8 +171,10 @@ and the `publish-pypi.yml` step from agent-harness#1032. It also removes the **p
 route-core gate** `--route-core` from the agent-harness#1029 ruling of 2026-09-24
 (`qualified-agy-image.yml:48-53`). `--contract` and the conformance suite replace both.
 
-If R1 keeps the pins, RECBIND does not execute, and the roadmap is amended to the §6.4
-variant.
+R1 is approved (2026-11-08) on three conditions:
+- conformance cannot pass by skipping (§3.4, strict mode);
+- the semantic validator guard covers transitive predicates (§2.1);
+- both removed gates are named in this section.
 
 **3.4 Route conformance suite** (hermetic, no provider).
 - **What it runs.** The production driver: `qualify_image` → worker → `run_operation` →
@@ -232,8 +236,9 @@ roadmap is amended. Nothing converts by assumption.
   - Both take the launch env's PATH, replacing the import-time `_PROVIDER_SEARCH_PATH`.
   - A path-replacement test swaps the file between admission and exec. The admitted bytes
     must run.
-- **If R2 is denied:** `admit_for_executor` admits only `shipped` images and refuses others
-  with `agy_executor_image_unqualified`. The memfd exec fix applies either way.
+- **R2 approved (2026-11-08)** on two conditions: the memfd exec above, and the forgery
+  boundary stated above. `admit_for_executor` admits `shipped` and `host_user` images that
+  pass the provenance re-check. It refuses others with `agy_executor_image_unqualified`.
 - **Canary (corrected).** The production canary never calls `check()`. It admits through
   `_trusted_agy_runtime`, which applies fixed paths and mode checks and records a digest, plus
   the **self-reported** `agy --version == "1.1.13"`. Its digest is checked against nothing,
@@ -245,8 +250,8 @@ roadmap is amended. Nothing converts by assumption.
   - `_trusted_agy_runtime` keeps its path and mode checks;
   - the canary executes the admitted memfd;
   - the production-unreachable branch `_trusted_provider_runtime("gemini")` is deleted.
-- **If R3 is denied:** the canary admits an image only when its matrix digest equals a
-  shipped member's `capture_surface_sha256`, still executing from the memfd.
+- **R3 approved (2026-11-08)** on two conditions: memfd exec, and the kept `stream-json`
+  check.
 
 ## 5. Per-instantiation preflight and recovery (goal b)
 
@@ -312,19 +317,24 @@ outcomes from §1.2 do not count toward that limit. Spawn stays lookup-only.
   3. A catalog PR that changes the signer list, the verifier, the merge-rule workflow or any
      path outside those two fails the promotion check, and never auto-merges.
   4. On a pass, CI marks the PR ready.
-- **Merge [R6].**
-  - **Interim, until R6 is ruled:** one owner approval, and a maintainer merges.
-  - **Proposed default:** the board's answer, "reject as written". The policy comes from the
-    base branch. Q10's two distinct signers are the job key plus an **enrolled owner key**.
-    Auto-merge is allowed only for a data-only diff, and only once `main` has a
-    non-bypassable ruleset.
+- **Merge [R6].** The owner **rejected** "one job signature plus green CI auto-merges" as
+  written (2026-11-08) and adopted the board's alternative:
+  - **Base-branch policy.** The signer list, verifier and merge rule come from the base
+    branch (steps 2 and 3).
+  - **Two distinct signers (Q10).** The job's key and an **enrolled owner key**, both listed
+    in the base branch's `agy-allowed-signers`. A PR without both valid signatures never
+    merges.
+  - **Auto-merge.** Only for a data-only diff (`data/agy_catalog.json` plus agy records), and
+    only once `main` has a non-bypassable ruleset. Until then, a maintainer merges the PR
+    after both signatures verify.
   - **Today `main` has none.** The only ruleset covers `conform-evidence/*` tags. Classic
     protection requires status checks but no review, `enforce_admins` is false, and the
     `gate` check is self-certifiable (`.github/CODEOWNERS:5-9`).
-- **Aging [R8].** The proposed default keeps a member while it is among the newest
-  `CATALOG_KEEP = 3` or was published less than `CATALOG_MIN_AGE = 14 d` ago. It never prunes
-  a `pinned` member, and it prunes in the same PR. This supersedes Q11's cut rule; the cut
-  re-runs nothing under R1.
+- **Aging [R8].** Approved 2026-11-08. A member is kept while it is among the newest
+  `CATALOG_KEEP = 3` or was published less than `CATALOG_MIN_AGE = 14 d` ago. A `pinned`
+  member is never pruned, and pruning happens in the same PR. **Q11 is superseded**, as is
+  the 2026-10-08 Q5: under R1 the cut re-runs nothing, and the catalog is bounded by aging
+  instead of by requalification.
 - **Unchanged.** Idempotence, oid agreement, push-destination checks and create-only writes
   stay as in `docs/ops/agy-upstream-watch.md`.
 
@@ -334,13 +344,16 @@ outcomes from §1.2 do not count toward that limit. Spawn stays lookup-only.
   ticks a day).
 - **Status.** `--check` reports `installed`, `stale` or `absent`, plus the last tick's status
   line.
-- **Login [R7].** The job renews through the §5 path, outside any seat. On expiry it reports
-  `gemini_login_expired` and stops, and the lag rule turns red.
-- **Identity [R9].** The proposed default:
-  - a non-admin GitHub App or machine user, scoped to this repository only, with contents and
-    pull-requests write and no `workflows` permission;
-  - a non-bypassable `main` ruleset in place;
-  - both before ACTIVATE (agent-harness#1138).
+- **Login [R7].** Approved 2026-11-08 on three conditions:
+  - The job renews only through the named path `_await_gemini_login` →
+    `_refresh_gemini_credential` (§5), outside any seat.
+  - The refresh token stays in the owner home and never enters a seat (agent-harness#1222).
+  - On expiry the tick reports `gemini_login_expired` and stops, and the lag rule turns red.
+- **Identity [R9].** Approved 2026-11-08 on three conditions, all in place before ACTIVATE:
+  - The job uses a non-admin GitHub App or machine user. It is scoped to this repository
+    only, has contents and pull-requests write, and has no `workflows` permission.
+  - `main` has a non-bypassable ruleset.
+  - agent-harness#1138 is closed by that setup.
 
 ### 6.3 Lag rule (bounded, and red)
 
@@ -349,7 +362,7 @@ Let `L` be the newest stable upstream release.
 - **Fail.** Nightly `--upstream-only` fails when `L` is more than `LAG_BOUND = 48 h` old,
   `L` is not a member, and no open `agy-catalog-auto` PR for `L` exists.
 - **Warn.** It warns when such a PR has been open longer than `LAG_BOUND`, naming the awaited
-  approval. It also warns inside the bound.
+  owner signature or merge. It also warns inside the bound.
 
 Expected lag by consumer:
 - to `main`: one tick, plus the series, plus CI, plus the merge rule;
@@ -358,10 +371,8 @@ Expected lag by consumer:
 
 ### 6.4 Release cut
 
-- **R1 approved:** there is no live run, and `--release` gates the cut.
-- **R1 keeps the pins:** the job also watches `RELEASE_PIN` PRs. For each one, it requalifies
-  the newest member (Q11) on the PR head and opens a create-only record PR into that release
-  branch.
+R1 is approved, so a cut needs no live run. Strict conformance plus `--release` (§3.3) gate
+the cut, and the job does not watch release PRs.
 
 ## 7. Non-goals
 
