@@ -2,9 +2,9 @@
 phase_loop_plan_version: 1
 phase: VISART
 roadmap: specs/phase-plans-browser-v1.md
-roadmap_sha256: 6436a924ff97340f6316933021b40a25f23141ded59cd45a4dfbc86234a7b897
+roadmap_sha256: add064be0447385d0d35082651ffc911e6eb7226f2952f04fab490fabde5cde3
 automation:
-  suite_command: ["timeout", "900", "env", "PYTEST_ADDOPTS=", "python3", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_browser_observation_contract.py", "phase-loop-runtime/tests/test_seat_visual_staging.py", "phase-loop-runtime/tests/test_seat_uid_visual_handoff.py", "phase-loop-runtime/tests/test_seat_visual_profile_neutrality.py", "phase-loop-runtime/tests/test_seat_route_contract.py", "phase-loop-runtime/tests/test_seat_jail.py", "phase-loop-runtime/tests/test_seat_sandbox_permissions.py", "phase-loop-runtime/tests/test_board_visual_delivery.py", "phase-loop-runtime/tests/test_cli_observation.py", "phase-loop-runtime/tests/test_native_fill_visual.py", "phase-loop-runtime/tests/test_seat_notices.py", "phase-loop-runtime/tests/test_broker_staged_tree_delivery.py", "phase-loop-runtime/tests/test_review_stage_binding.py", "phase-loop-runtime/tests/test_sandbox_egress.py", "phase-loop-runtime/tests/test_panel_native_fill_183.py", "phase-loop-runtime/tests/test_native_fill_refusal_cause.py", "phase-loop-runtime/tests/test_execute_skill_visual_capture.py", "phase-loop-runtime/tests/test_skills_bundle_drift.py", "phase-loop-runtime/tests/test_launchspec_golden.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
+  suite_command: ["timeout", "900", "env", "PYTEST_ADDOPTS=", "python3", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_browser_observation_contract.py", "phase-loop-runtime/tests/test_seat_visual_staging.py", "phase-loop-runtime/tests/test_seat_uid_visual_handoff.py", "phase-loop-runtime/tests/test_seat_visual_rehash_in_h.py", "phase-loop-runtime/tests/test_seat_visual_profile_neutrality.py", "phase-loop-runtime/tests/test_seat_route_contract.py", "phase-loop-runtime/tests/test_seat_jail.py", "phase-loop-runtime/tests/test_seat_sandbox_permissions.py", "phase-loop-runtime/tests/test_board_visual_delivery.py", "phase-loop-runtime/tests/test_cli_observation.py", "phase-loop-runtime/tests/test_native_fill_visual.py", "phase-loop-runtime/tests/test_seat_notices.py", "phase-loop-runtime/tests/test_advisor_board_golden.py", "phase-loop-runtime/tests/test_broker_staged_tree_delivery.py", "phase-loop-runtime/tests/test_review_stage_binding.py", "phase-loop-runtime/tests/test_sandbox_egress.py", "phase-loop-runtime/tests/test_panel_native_fill_183.py", "phase-loop-runtime/tests/test_native_fill_refusal_cause.py", "phase-loop-runtime/tests/test_execute_skill_visual_capture.py", "phase-loop-runtime/tests/test_skills_bundle_drift.py", "phase-loop-runtime/tests/test_launchspec_golden.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
 ---
 
 # VISART: Observation artifacts and seat staging
@@ -42,18 +42,35 @@ What exists today, and what each lane builds on:
   and files 0440 (`_handoff_gemini_tree_at`). Contract §4.3 reuses that shape under the
   seat home, so `seat_jail.py`, the owner argv, `expected_mount_points` and
   `jail_profile_digest` stay untouched.
-- **Other routes.** The sandbox-profile route builds its view in
-  `panel_invoker._seat_filesystem_view` from `SeatProfile.readonly_paths`. Brokered parent
-  seats read the staged review directory. A brokered seat without a staged tree gets only
-  the sealed prompt (`_BROKER_SEALED_PROMPT_MAX_BYTES`, 512 KiB). Native fill writes
-  `native-fill/<request_id>/` from `cli._advisor_board_command`. That same function builds
-  the `--json` payload, including `legs`.
-- **Notices.** A leg code needs:
-  - a `seat_route_contract.CODES` row, which feeds `OD10_CLASSES`;
-  - membership in `panel_invoker._HARNESS_DETAIL_CODES`, which already unions
-    `seat_route_contract.CODES`.
+- **Jailed post-run reads.** After the handoff, `seat-home` is seat-owned and 0700, so
+  the parent cannot traverse it. Every existing post-run read of seat-owned objects runs
+  in H through the holder pid:
+  - `seat_uid.read_in_h` and `scan_in_h`, over `in_h_argv(holder_pid, …)`;
+  - the J10 reader `seat_jail.read_regular_file_at`, which opens components
+    `O_DIRECTORY|O_NOFOLLOW` and leaves `O_NOFOLLOW|O_NONBLOCK`, then checks with `fstat`.
+  These reads run after quiescence and before `teardown_in_h`, against
+  `_JailedSeat.seat_dir`. That is the leg's own directory, distinct from the board's
+  `review_dir`. The visual rehash follows the same pattern (contract §4.3).
+- **Other launch paths** (contract §4.2):
+  - The sandbox-profile route builds its view in `panel_invoker._seat_filesystem_view` from
+    `SeatProfile.readonly_paths`.
+  - A direct Claude seat is already granted `review_dir` by `_claude_direct_add_dirs`.
+  - Brokered codex and Claude seats with a staged tree are granted only the reviewed-tree
+    clone (`_require_staged_tree`, `_render_broker_inline_prompt`,
+    `test_broker_staged_tree_delivery.py`). Brokered agy gets only `--add-dir <clone>`. So
+    every brokered row is `visual_delivered: false`, with no new grant.
+  - A brokered seat without a staged tree gets only the sealed prompt
+    (`_BROKER_SEALED_PROMPT_MAX_BYTES`, 512 KiB).
+  - Native fill writes `native-fill/<request_id>/` from `cli._advisor_board_command`,
+    which also builds the `--json` payload, including `legs`.
+- **Notices.** `OD10_CLASSES` folds in only `ordinary` `seat_route_contract.CODES` rows;
+  security codes are listed by hand in `_SECURITY_CODES`. A `security` leg code therefore
+  needs all three of:
+  - a `CODES` row;
+  - an explicit `_SECURITY_CODES` entry;
+  - membership in `panel_invoker._HARNESS_DETAIL_CODES`.
   `test_seat_route_contract.py::test_every_current_mode_line_code_has_an_explicit_class`
-  and `test_seat_notices.py` enforce both.
+  and `test_seat_notices.py` enforce them.
 - **Package data.** `schemas/*.json` already ships as package data, and `jsonschema` is a
   runtime dependency.
 
@@ -87,23 +104,33 @@ several tests these lanes run. Every lane branches from a main that includes it.
     `VisualStage(root, observations, entries, stage_sha256, video_paths)`;
   - `stage_observations(records, review_dir) -> VisualStage | None` (the seat subset, the
     64 MiB budget, None for no records);
-  - `revalidate_stage(stage, root) -> None` (raises `seat_visual_stage_changed`);
+  - `revalidate_stage(stage, root) -> None` (checks against the stage entries and
+    `stage_sha256`, never section 2; raises `seat_visual_stage_changed`);
   - `bundle_appendix(stage, records) -> str` (route-neutral, at most 64 KiB, otherwise
     `observation_cap_exceeded`);
-  - `place_jailed_copy(stage, review_dir) -> Path` (fresh files under
-    `seat-home/review-visual`);
-  - `rehash_jailed_copy(stage, review_dir) -> bool`.
-  `seat_uid.handoff(review_dir, seat_id, *, gemini=False, visual=False, tree=None)` and the
-  `handoff … --visual` verb implement contract §4.3, including the `st_nlink == 1` check
-  before any chown. `seat_route_contract.CODES` gains `seat_visual_stage_changed`, class
-  `security`. Contract §4.1–§4.4, §4.6.
+  - `place_jailed_copy(stage, seat_dir) -> Path` (fresh files under
+    `<seat_dir>/seat-home/review-visual`, via `write_new_file_at`, hashed while copying).
+  `seat_uid` adds:
+  - `handoff(review_dir, seat_id, *, gemini=False, visual=False, tree=None)` and the
+    `handoff … --visual` verb, with the `st_nlink == 1` check before any chown and a
+    per-inode `fstat`/`fchown`/`fchmod`;
+  - `rehash_visual_in_h(holder_pid, seat_dir, entries, *, cap_bytes, time_limit_s) ->
+    RehashResult(intact, reason)`, a frozen dataclass whose `reason` comes from a closed
+    set, and the `rehash <seat_dir> <cap_bytes> <time_limit_ms>` verb, with entries on
+    stdin.
+  The rehash runs in H as H-root with no-follow walks, and returns not intact on every
+  case in contract §4.3. `seat_route_contract` gains `seat_visual_stage_changed` as a
+  `CODES` row of class `security` and an explicit `_SECURITY_CODES` entry. Contract
+  §4.1–§4.4, §4.6, §7.
 - [ ] IF-0-VISART-3 — The CLI:
   - `phase-loop observation validate <dir> [--json]`;
   - `phase-loop observation import …` with the contract §5 arguments and exit codes;
   - `phase-loop advisor-board … --observation <dir>` (repeatable, at most 4,
     executor-only, validated before composition in governed and default runs).
   `cli._advisor_board_command` appends the appendix before both the emit and the invoke
-  arms, and refuses `observation_set_mismatch` per §4.5. The `--json` payload gains a
+  arms. It refuses `observation_set_mismatch` per §4.5, by comparing the recomputed
+  appendix with the `artifact.md` tail before the `artifact_sha256` refusal. The `--json`
+  payload gains a
   top-level `visual_evidence` block and per-leg `visual_delivered` and
   `visual_post_run_intact`; the text summary prints the same paths. Each route's trusted
   instructions name its visual root, or unavailability, and carry `UNTRUSTED_NOTICE`.
@@ -184,39 +211,58 @@ read once. The module imports nothing from `panel_invoker`, `seat_jail` or `cli`
 
 ### SL-1 — Staging, jailed handoff and notice row
 
-- **Scope**: Stage the seat subset under its budget, render the route-neutral appendix, place and hand off the jailed copy read-only under the seat home, rehash it after the run, and add the notice row.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_visual_staging.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_uid.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_route_contract.py`, `phase-loop-runtime/tests/test_seat_visual_staging.py`, `phase-loop-runtime/tests/test_seat_uid_visual_handoff.py`, `phase-loop-runtime/tests/test_seat_visual_profile_neutrality.py`, `phase-loop-runtime/tests/test_seat_route_contract.py`
+- **Scope**: Stage the seat subset under its budget, render the route-neutral appendix, place and hand off the jailed copy read-only under the leg's seat home, provide the in-H post-run rehash, and add the notice entries.
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_visual_staging.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_uid.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_route_contract.py`, `phase-loop-runtime/tests/test_seat_visual_staging.py`, `phase-loop-runtime/tests/test_seat_uid_visual_handoff.py`, `phase-loop-runtime/tests/test_seat_visual_rehash_in_h.py`, `phase-loop-runtime/tests/test_seat_visual_profile_neutrality.py`, `phase-loop-runtime/tests/test_seat_route_contract.py`
 - **Interfaces provided**: IF-0-VISART-2
-- **Interfaces consumed**: IF-0-VISART-1 (`ObservationRecord`, `load_observation`, `ObservationRefused`); `seat_jail.build_seat_jail`, `jail_profile_digest`, `actual_profile_digest`, `open_dir_nofollow`, `tree_is_private`, `HOST_HOME_DIRNAME`, `seat_profiles.registered_legs` and `seat_uid._handoff_gemini_tree_at` (pre-existing)
+- **Interfaces consumed**: IF-0-VISART-1 (`ObservationRecord`, `load_observation`, `ObservationRefused`); `seat_jail.build_seat_jail`, `jail_profile_digest`, `actual_profile_digest`, `open_dir_nofollow`, `tree_is_private`, `read_regular_file_at`, `write_new_file_at`, `HOST_HOME_DIRNAME`, `seat_profiles.registered_legs`, `seat_uid._handoff_gemini_tree_at`, `seat_uid.in_h_argv` and `seat_uid._pythonpath_env` (pre-existing)
 - **Tasks**:
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-1.1 | test | — | `phase-loop-runtime/tests/test_seat_visual_staging.py`, `phase-loop-runtime/tests/test_seat_uid_visual_handoff.py`, `phase-loop-runtime/tests/test_seat_visual_profile_neutrality.py`, `phase-loop-runtime/tests/test_seat_route_contract.py` | See the test outline below | `timeout 600 env PYTEST_ADDOPTS= python3 -m pytest -p no:cacheprovider -q phase-loop-runtime/tests/test_seat_visual_staging.py phase-loop-runtime/tests/test_seat_uid_visual_handoff.py phase-loop-runtime/tests/test_seat_visual_profile_neutrality.py phase-loop-runtime/tests/test_seat_route_contract.py` |
+| SL-1.1 | test | — | `phase-loop-runtime/tests/test_seat_visual_staging.py`, `phase-loop-runtime/tests/test_seat_uid_visual_handoff.py`, `phase-loop-runtime/tests/test_seat_visual_rehash_in_h.py`, `phase-loop-runtime/tests/test_seat_visual_profile_neutrality.py`, `phase-loop-runtime/tests/test_seat_route_contract.py` | See the test outline below | `timeout 600 env PYTEST_ADDOPTS= python3 -m pytest -p no:cacheprovider -q phase-loop-runtime/tests/test_seat_visual_staging.py phase-loop-runtime/tests/test_seat_uid_visual_handoff.py phase-loop-runtime/tests/test_seat_visual_rehash_in_h.py phase-loop-runtime/tests/test_seat_visual_profile_neutrality.py phase-loop-runtime/tests/test_seat_route_contract.py` |
 | SL-1.2 | impl | SL-1.1 | `phase-loop-runtime/src/phase_loop_runtime/seat_visual_staging.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_uid.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_route_contract.py` | — | — |
-| SL-1.3 | verify | SL-1.2 | `phase-loop-runtime/src/phase_loop_runtime/seat_uid.py` | SL-1 tests plus jail and permission regressions | `timeout 900 env PYTEST_ADDOPTS= python3 -m pytest -p no:cacheprovider -q phase-loop-runtime/tests/test_seat_visual_staging.py phase-loop-runtime/tests/test_seat_uid_visual_handoff.py phase-loop-runtime/tests/test_seat_visual_profile_neutrality.py phase-loop-runtime/tests/test_seat_route_contract.py phase-loop-runtime/tests/test_seat_jail.py phase-loop-runtime/tests/test_seat_sandbox_permissions.py` |
+| SL-1.3 | verify | SL-1.2 | `phase-loop-runtime/src/phase_loop_runtime/seat_uid.py` | SL-1 tests plus jail and permission regressions | `timeout 900 env PYTEST_ADDOPTS= python3 -m pytest -p no:cacheprovider -q phase-loop-runtime/tests/test_seat_visual_staging.py phase-loop-runtime/tests/test_seat_uid_visual_handoff.py phase-loop-runtime/tests/test_seat_visual_rehash_in_h.py phase-loop-runtime/tests/test_seat_visual_profile_neutrality.py phase-loop-runtime/tests/test_seat_route_contract.py phase-loop-runtime/tests/test_seat_jail.py phase-loop-runtime/tests/test_seat_sandbox_permissions.py` |
 
 SL-1.1 test outline:
 
 - **Stage.**
   - The stage is a copy of the seat subset with no video; its digest matches §4.1.
+  - With-video fixture: an observation whose manifest names `video/01.webm` stages and
+    revalidates clean against the stage entries, though its copied manifest still names
+    the unstaged video.
   - The 64 MiB budget refuses `observation_cap_exceeded`.
   - A byte change after staging raises `seat_visual_stage_changed`.
 - **Appendix.**
   - Byte-stable, and route-neutral: no route path appears.
   - Carries `UNTRUSTED_NOTICE` verbatim.
   - The maximum-size fixture stays under 64 KiB, and a synthetic over-cap input refuses.
-- **Handoff.** Runs in a user namespace where available, otherwise skips with a reason.
-  - A placed copy ends H-root:seat, with directories 0550 and files 0440.
+- **Placement and handoff.** Runs in a user namespace where available, otherwise skips
+  with a reason.
+  - `place_jailed_copy` refuses a source byte that changes mid-copy.
+  - A placed copy ends H-root:seat, with directories 0550 and files 0440, set per inode
+    on the opened descriptor.
   - A hard-linked file, a symlink or a FIFO refuses `seat_sandbox_refused:stage_not_private`
     before any chown changes ownership.
-  - `rehash_jailed_copy` is false after a rename-and-replace of `review-visual`.
+- **In-H rehash** (`test_seat_visual_rehash_in_h.py`). Runs in a user namespace where
+  available, otherwise skips with a reason.
+  - The fixture is a seat-owned 0700 `seat-home`, as after the handoff. A parent-side read
+    from outside H gets EACCES and is never reported intact.
+  - Through `in_h_argv`, a clean copy is reported intact.
+  - Not intact in each case:
+    - a rename-and-replace of `review-visual`;
+    - a missing file and an extra file;
+    - a symlink to an outside canary (the canary is never opened);
+    - a FIFO (returns within the time limit and never blocks);
+    - an over-cap file;
+    - a timeout and a failed or malformed helper answer.
+  - Entries travel on stdin, never on argv.
 - **Profile neutrality.** For every leg in `registered_legs()`, compare a jail built
   in-process with a placed copy against one built without it: identical owner argv,
   `jail_profile_digest` and `actual_profile_digest`. The per-host digest goes to evidence
   only, never to a stored fixture.
 - **Notice classes.** `test_every_current_mode_line_code_has_an_explicit_class` covers
-  `seat_visual_stage_changed` as `security`.
+  `seat_visual_stage_changed` as `security`, through both its `CODES` row and its
+  `_SECURITY_CODES` entry.
 
 SL-1 never edits `seat_jail.py`. New file-read references go to SL-4 for the
 launch-reference inventory.
@@ -226,27 +272,34 @@ launch-reference inventory.
 - **Scope**: Accept executor-only `--observation`, stage before composition, append the appendix before both board arms, deliver per route with trusted instructions, revalidate before and rehash after jailed legs, enforce native-fill identity, and emit the result block and `observation` subcommands.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/src/phase_loop_runtime/cli.py`, `phase-loop-runtime/tests/test_board_visual_delivery.py`, `phase-loop-runtime/tests/test_cli_observation.py`, `phase-loop-runtime/tests/test_native_fill_visual.py`, `phase-loop-runtime/tests/test_panel_invoker.py`, `phase-loop-runtime/tests/test_seat_notices.py`
 - **Interfaces provided**: IF-0-VISART-3
-- **Interfaces consumed**: IF-0-VISART-1 (`load_observation`, `validate_observation`, `require_executor`, `import_visual_evidence`, `REFUSAL_CODES`); IF-0-VISART-2 (`UNTRUSTED_NOTICE`, `stage_observations`, `revalidate_stage`, `bundle_appendix`, `place_jailed_copy`, `rehash_jailed_copy`, `handoff --visual`, the `seat_visual_stage_changed` row); `SeatProfile.readonly_paths`, `_seat_filesystem_view`, `invoke_board` and `_BROKER_SEALED_PROMPT_MAX_BYTES` (pre-existing)
+- **Interfaces consumed**: IF-0-VISART-1 (`load_observation`, `validate_observation`, `require_executor`, `import_visual_evidence`, `REFUSAL_CODES`); IF-0-VISART-2 (`UNTRUSTED_NOTICE`, `stage_observations`, `revalidate_stage`, `bundle_appendix`, `place_jailed_copy`, `seat_uid.rehash_visual_in_h`, `handoff --visual`, the `seat_visual_stage_changed` entries); `_JailedSeat.seat_dir`, `_JailedSeat.holder_pid`, `teardown_in_h`, `SeatProfile.readonly_paths`, `_seat_filesystem_view`, `_claude_direct_add_dirs`, `_require_staged_tree`, `preflight_native_leg_fills`, `invoke_board` and `_BROKER_SEALED_PROMPT_MAX_BYTES` (pre-existing)
 - **Tasks**:
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
 | SL-2.1 | test | — | `phase-loop-runtime/tests/test_board_visual_delivery.py`, `phase-loop-runtime/tests/test_cli_observation.py`, `phase-loop-runtime/tests/test_native_fill_visual.py` | See the test outline below | `timeout 600 env PYTEST_ADDOPTS= python3 -m pytest -p no:cacheprovider -q phase-loop-runtime/tests/test_board_visual_delivery.py phase-loop-runtime/tests/test_cli_observation.py phase-loop-runtime/tests/test_native_fill_visual.py` |
 | SL-2.2 | impl | SL-2.1 | `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/src/phase_loop_runtime/cli.py` | — | — |
-| SL-2.3 | verify | SL-2.2 | `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/src/phase_loop_runtime/cli.py` | SL-2 tests plus board, notice and native-fill regressions | `timeout 900 env PYTEST_ADDOPTS= python3 -m pytest -p no:cacheprovider -q phase-loop-runtime/tests/test_board_visual_delivery.py phase-loop-runtime/tests/test_cli_observation.py phase-loop-runtime/tests/test_native_fill_visual.py phase-loop-runtime/tests/test_seat_notices.py phase-loop-runtime/tests/test_broker_staged_tree_delivery.py phase-loop-runtime/tests/test_review_stage_binding.py phase-loop-runtime/tests/test_sandbox_egress.py phase-loop-runtime/tests/test_panel_native_fill_183.py phase-loop-runtime/tests/test_native_fill_refusal_cause.py` |
+| SL-2.3 | verify | SL-2.2 | `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/src/phase_loop_runtime/cli.py` | SL-2 tests plus board, notice and native-fill regressions | `timeout 900 env PYTEST_ADDOPTS= python3 -m pytest -p no:cacheprovider -q phase-loop-runtime/tests/test_board_visual_delivery.py phase-loop-runtime/tests/test_cli_observation.py phase-loop-runtime/tests/test_native_fill_visual.py phase-loop-runtime/tests/test_seat_notices.py phase-loop-runtime/tests/test_advisor_board_golden.py phase-loop-runtime/tests/test_broker_staged_tree_delivery.py phase-loop-runtime/tests/test_review_stage_binding.py phase-loop-runtime/tests/test_sandbox_egress.py phase-loop-runtime/tests/test_panel_native_fill_183.py phase-loop-runtime/tests/test_native_fill_refusal_cause.py` |
 
 SL-2.1 test outline. Every case enters through `invoke_board` with a fake provider, or
 through `cli.main`.
 
-- **Delivery per §4.2 route.**
-  - Jailed: the copy sits under `seat-home/review-visual`, and the handoff argv carries
-    `--visual`.
-  - Sandbox: a read-only bind.
-  - Parent: the staged directory.
+- **Delivery per §4.2 launch path.**
+  - Jailed: the copy sits under `<seat_dir>/seat-home/review-visual`. The process
+    handoff prefix carries `--visual`, and the probe prefix does not.
+  - Sandbox-profile: a read-only bind.
+  - Direct Claude: under the already granted `review_dir`.
+  - Brokered codex, Claude and agy: `visual_delivered: false`. Their grants and argv are
+    byte-identical to a run without `--observation`, and `test_broker_staged_tree_delivery.py`
+    stays green.
   - Native fill: a copy beside `artifact.md`, with `request.json` bytes unchanged.
   - Sealed and remote: `visual_delivered: false`.
   - Every route's instructions carry `UNTRUSTED_NOTICE` and name the visual root, or say
     the files are unavailable.
+- **No-op.** With no `--observation`, every route's instructions, argv and bundle are
+  unchanged, and `test_advisor_board_golden.py` passes.
+- **With video.** A with-video observation is delivered with its video unstaged and
+  listed in the board result.
 - **Bundle.** It ends with the appendix, identically in the emit and invoke arms. A bundle
   plus appendix over 512 KiB refuses `observation_cap_exceeded`.
 - **Refusals with zero seat launches**, each exiting 2:
@@ -255,10 +308,19 @@ through `cli.main`.
   - a fifth observation.
   Each also refuses identically in a governed run.
 - **Stage drift.** A stage changed before a jailed launch degrades that leg with
-  `seat_visual_stage_changed`. A post-run rehash mismatch sets
-  `visual_post_run_intact: false` and flags the leg.
-- **Native fill.** A `--native-leg` run with a different observation set refuses
-  `observation_set_mismatch`, and one with the same set proceeds.
+  `seat_visual_stage_changed`.
+- **Post-run rehash.**
+  - `rehash_visual_in_h` is called with the leg's `holder_pid` and `seat_dir`, after
+    quiescence and before `teardown_in_h`.
+  - A not-intact result, or a helper failure, records `seat_visual_stage_changed`, sets
+    `visual_post_run_intact: false` and flags the leg.
+  - No parent-side read of `seat-home` is attempted.
+- **Native fill.**
+  - A `--native-leg` run with a different observation set refuses
+    `observation_set_mismatch`, before the `artifact_sha256` refusal.
+  - The check compares recomputed appendix bytes with the `artifact.md` tail. It never
+    parses the stage digest out of `artifact.md`.
+  - A run with the same set proceeds.
 - **Observation subcommands.** `observation validate|import` exit codes and JSON.
 - **Result block.** The `visual_evidence` fields are present.
 - **Egress.** No seat egress allowlist digest changes.
@@ -299,7 +361,7 @@ It also takes the new launch references SL-1 and SL-2 report, and SL-3's regener
 | Task ID | Type | Depends on | Files in scope | Action |
 |---|---|---|---|---|
 | SL-docs.1 | docs | — | `.claude/docs-catalog.json` | Rescan with `python3 "$(git rev-parse --show-toplevel)/.claude/skills/_shared/scaffold_docs_catalog.py" --rescan`; if the helper is absent, record "manual catalog audit". |
-| SL-docs.2 | docs | SL-docs.1 | `docs/browser-observation.md`, `CONTRACTS.md`, `docs/advisor-board-capabilities-card.md`, `CHANGELOG.md`, `.doc-decisions.json`, `phase-loop-runtime/tests/data/seat_launch_references.json` | New guide: the artifact, `observation import|validate`, `--observation`, the untrusted-content notice, viewing in T3 and in desktop or mobile Chrome, and OR-4's linked `ai` environment with its copy fallback. CONTRACTS.md: jailed seats find visual evidence at `/seat/home/review-visual`, handed off read-only with no new mount; the seat-channel rule of contract §8.1; the new notice. Also the card and an `[Unreleased]` entry, plus inventory rows for SL-1 and SL-2 references. |
+| SL-docs.2 | docs | SL-docs.1 | `docs/browser-observation.md`, `CONTRACTS.md`, `docs/advisor-board-capabilities-card.md`, `CHANGELOG.md`, `.doc-decisions.json`, `phase-loop-runtime/tests/data/seat_launch_references.json` | New guide: the artifact, `observation import|validate`, `--observation`, the untrusted-content notice, viewing in T3 and in desktop or mobile Chrome, and OR-4's linked `ai` environment with its copy fallback. CONTRACTS.md: jailed seats find visual evidence at `/seat/home/review-visual`, handed off read-only with no new mount, and rehashed after the run in H as final-state audit evidence; the per-launch-path delivery table; the seat-channel rule of contract §8.1; the new notice. Also the card and an `[Unreleased]` entry, plus inventory rows for SL-1 and SL-2 references. |
 | SL-docs.3 | docs | SL-docs.2 | `specs/phase-plans-browser-v1.md`, `plans/evidence/browser/VISART.md` | Metadata-only evidence: test receipts, each host's per-leg `jail_profile_digest` (evidence only) and the regenerated-bundle check. Append `### Post-execution amendments` to VISART only if a freeze proved wrong. |
 | SL-docs.4 | verify | SL-docs.3 | — | `timeout 300 env PYTEST_ADDOPTS= python3 -m pytest -p no:cacheprovider -q phase-loop-runtime/tests/test_seat_reference_inventory.py`, then `PYTHONPATH=phase-loop-runtime/src timeout 120 python3 -m phase_loop_runtime.cli validate-roadmap --repo . --roadmap specs/phase-plans-browser-v1.md`, then the hosted docs-freshness audit. |
 
@@ -352,9 +414,27 @@ It also takes the new launch references SL-1 and SL-2 report, and SL-3's regener
 
 - [ ] EC-VISART-1 — proven by `V0` (`test_browser_observation_contract.py`), falsified by any §7 negative fixture loading cleanly, by the maximum-size fixture refused, or by a `file:` URL reported as `observation_schema_invalid`. Path-entered control: each fixture enters through `load_observation` on a real directory.
 - [ ] EC-VISART-2 — proven by `V0` and `V2` (`test_cli_observation.py`), falsified by two renderings of one manifest differing, by `observation import` accepting a broker tool, `t3_preview` without `incognito`, or a GIF or BMP image, or by the import opening a socket or spawning a process. Path-entered control: images enter through the installed `phase-loop observation import` entry point and `resolve_visual_evidence_artifact`.
-- [ ] EC-VISART-3 — proven by `V2` (`test_board_visual_delivery.py`), falsified by a delivering route whose seat view lacks the stage or can write it, by any route's trusted instructions missing `UNTRUSTED_NOTICE`, by an over-cap appendix or bundle reaching a seat, or by an invalid or broker observation reaching a launch. Path-entered control: observations enter through `phase-loop advisor-board --observation` and `invoke_board` with a fake provider.
-- [ ] EC-VISART-4 — proven by `V1` (`test_seat_visual_profile_neutrality.py`, `test_seat_uid_visual_handoff.py`, `test_seat_jail.py`) and `V2`, falsified by any registered leg whose owner argv, `jail_profile_digest` or `actual_profile_digest` differs with and without a placed copy, by a changed seat egress digest, by a hard-linked or FIFO entry surviving handoff, or by a drifted stage launching or rehashing clean. Path-entered control: the copy enters through `place_jailed_copy` and `seat_uid handoff --visual`.
-- [ ] EC-VISART-5 — proven by `V2` (`test_cli_observation.py`, `test_board_visual_delivery.py`), falsified by a `--json` payload missing any contract §5 `visual_evidence` field, by a leg missing `visual_delivered`, by the sealed or remote route reporting `true`, or by a jailed leg missing `visual_post_run_intact`. Path-entered control: through `cli.main(["advisor-board", …])`.
+- [ ] EC-VISART-3 — proven by `V2` (`test_board_visual_delivery.py`, `test_advisor_board_golden.py`, `test_broker_staged_tree_delivery.py`), falsified by:
+  - a delivering route whose seat view lacks the stage or can write it;
+  - any route gaining a new grant, or a brokered route reporting `true`;
+  - any change to instructions, argv or bundle when no `--observation` is given;
+  - any route's trusted instructions missing `UNTRUSTED_NOTICE`;
+  - an over-cap appendix or bundle reaching a seat;
+  - a with-video observation refused;
+  - an invalid or broker observation reaching a launch.
+
+  Path-entered control: Path-entered control: observations enter through `phase-loop advisor-board --observation` and `invoke_board` with a fake provider.
+- [ ] EC-VISART-4 — proven by `V1` (`test_seat_visual_profile_neutrality.py`, `test_seat_uid_visual_handoff.py`, `test_seat_visual_rehash_in_h.py`, `test_seat_jail.py`) and `V2`, falsified by:
+  - any registered leg whose owner argv, `jail_profile_digest` or `actual_profile_digest` differs with and without a placed copy;
+  - a changed seat egress digest;
+  - a hard-linked or FIFO entry surviving handoff;
+  - a drifted stage launching;
+  - a seat-owned 0700 `seat-home` read from outside H being reported intact;
+  - an in-H rehash reporting intact over a renamed, missing, extra, linked, FIFO or over-cap entry, or after a timeout or helper failure;
+  - the rehash opening an outside canary or blocking on a FIFO.
+
+  Path-entered control: the copy enters through `place_jailed_copy` and `seat_uid handoff --visual`, and the rehash through `rehash_visual_in_h` over `in_h_argv`.
+- [ ] EC-VISART-5 — proven by `V2` (`test_cli_observation.py`, `test_board_visual_delivery.py`), falsified by a `--json` payload missing any contract §5 `visual_evidence` field, by a leg missing `visual_delivered`, by any brokered, sealed or remote path reporting `true`, or by a jailed leg missing `visual_post_run_intact`. Path-entered control: through `cli.main(["advisor-board", …])`.
 - [ ] EC-VISART-6 — proven by `V3` (`test_execute_skill_visual_capture.py`, `test_skills_bundle_drift.py`, `test_launchspec_golden.py`), falsified by a generated bundle that differs from its regenerated source, or by guidance that accepts T3's default profile. Path-entered control: text enters through the two `skills-src` files and the regeneration scripts.
 - [ ] EC-VISART-7 — proven by `V2` (`test_native_fill_visual.py`), falsified by a `--native-leg` run with a different observation set reaching a seat, or by the same set being refused. Path-entered control: both runs enter through `cli.main(["advisor-board", …])` with `--emit-native-request`, then `--native-leg`.
 
@@ -366,8 +446,8 @@ so these selectors name the tests to run once they exist; they are not run recei
 `automation.suite_command` is the union of `V0` to `V4`.
 
 - `V0`: `P test_browser_observation_contract.py`
-- `V1`: `P test_seat_visual_staging.py test_seat_uid_visual_handoff.py test_seat_visual_profile_neutrality.py test_seat_route_contract.py test_seat_jail.py test_seat_sandbox_permissions.py`
-- `V2`: `P test_board_visual_delivery.py test_cli_observation.py test_native_fill_visual.py test_seat_notices.py test_broker_staged_tree_delivery.py test_review_stage_binding.py test_sandbox_egress.py test_panel_native_fill_183.py test_native_fill_refusal_cause.py`
+- `V1`: `P test_seat_visual_staging.py test_seat_uid_visual_handoff.py test_seat_visual_rehash_in_h.py test_seat_visual_profile_neutrality.py test_seat_route_contract.py test_seat_jail.py test_seat_sandbox_permissions.py`
+- `V2`: `P test_board_visual_delivery.py test_cli_observation.py test_native_fill_visual.py test_seat_notices.py test_advisor_board_golden.py test_broker_staged_tree_delivery.py test_review_stage_binding.py test_sandbox_egress.py test_panel_native_fill_183.py test_native_fill_refusal_cause.py`
 - `V3`: `P test_execute_skill_visual_capture.py test_skills_bundle_drift.py test_launchspec_golden.py`
 - `V4`: `P test_seat_reference_inventory.py`, then `PYTHONPATH=phase-loop-runtime/src timeout 120 python3 -m phase_loop_runtime.cli validate-roadmap --repo . --roadmap specs/phase-plans-browser-v1.md`
 - **Visual check** (no browser in any sandbox): open one fixture observation's `index.html`

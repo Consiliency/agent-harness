@@ -130,12 +130,27 @@ shows the image and video files inline by absolute path.
 
 ### 4.1 Stage
 
-The board validates each observation (section 2), then copies its **seat subset**, never
-the live directory, to `<review_dir>/visual/<observation_id>/`, and revalidates the copy.
-The seat subset is `observation.json`, `index.html`, the screenshots, the a11y files and
-`console.json`. **Video is never staged to seats.** It stays in the source directory, and
-the board result lists it for the owner. In a seat's copy, `index.html` video links point
-at absent files, and that is expected.
+**Two directories, named distinctly.**
+
+- `review_dir` is the board's staged review directory, which holds the bundle. The stage
+  lives at `<review_dir>/visual/`.
+- `seat_dir` is one jailed leg's own directory, the one `build_seat_jail` lays out
+  (`_JailedSeat.seat_dir`), holding `seat-home/`, `seat-out/` and the reviewed tree.
+
+**Validate, then copy the seat subset.** The board validates each source observation
+against section 2. It then copies the observation's **seat subset**, never the live
+directory, to `<review_dir>/visual/<observation_id>/`.
+
+- The seat subset is `observation.json`, `index.html`, the screenshots, the a11y files
+  and `console.json`.
+- **Video is never staged to seats.** It stays in the source directory, and the board
+  result lists it for the owner.
+
+**Revalidate against the stage, not section 2.** The copy is revalidated against the
+stage entries and `visual_stage_sha256`. Section 2 is not reapplied, because the copy's
+manifest names unstaged files by design: video now, and broker `journal.jsonl` later.
+In a seat's copy, `index.html` links to those files point at absent files, and that is
+expected.
 
 - **Stage budget.** At most 64 MiB of staged bytes per board across all observations.
   Over budget refuses `observation_cap_exceeded` (detail `stage`) before composition.
@@ -144,8 +159,9 @@ at absent files, and that is expected.
   `<observation_id>/<path>`.
 - **Where it is recorded.** The digest goes into each seat's evidence and the board
   result.
-- **Revalidation.** The stage is revalidated immediately before each launch. A mismatch
-  refuses that leg with `seat_visual_stage_changed`.
+- **Revalidation.** Immediately before each launch, the stage is revalidated against its
+  entries and `visual_stage_sha256`. A mismatch refuses that leg with
+  `seat_visual_stage_changed`.
 
 ### 4.2 Delivery by route
 
@@ -153,14 +169,26 @@ The **visual root** is where a route's seat finds the stage. Each route's truste
 instructions, which are harness-authored text and never the bundle, name the visual root,
 or say the files are unavailable. They always carry the notice in 4.6.
 
-| Route | Visual root (seat view) | Delivery | `visual_delivered` |
+There is one row per launch path. No row adds a new grant: a route delivers only through
+a view it already has.
+
+| Launch path | Visual root (seat view) | Delivery | `visual_delivered` |
 | --- | --- | --- | --- |
-| Jailed seat (`seat_jail_v1`) | `/seat/home/review-visual` | Per-leg copy handed off read-only (4.3) | true |
+| Jailed seat (`seat_jail_v1`) | `/seat/home/review-visual` | Per-leg copy under `seat_dir`, handed off read-only (4.3) | true |
 | Sandbox-profile seat (`SeatProfile`) | `<review_dir>/visual` | The existing `readonly_paths` bind | true |
-| Brokered parent seat with a staged tree | `<review_dir>/visual` | Read from the review directory | true |
+| Direct Claude seat | `<review_dir>/visual` | `_claude_direct_add_dirs` already grants `review_dir` | true |
+| Brokered codex seat with a staged tree | none | Its only grant is the reviewed-tree clone (`_require_staged_tree`) | false |
+| Brokered Claude seat with a staged tree | none | Its only grant is the reviewed-tree clone | false |
+| Brokered agy seat | none | Only `--add-dir <clone>`; a read outside its workspace can empty the response | false, always |
 | Sealed brokered seat (sealed prompt, no staged tree) | none | Not delivered | false |
 | Native-fill request | `native-fill/<request_id>/visual` | Copy beside `artifact.md`; `request.json` unchanged (4.5) | true |
 | Remote seat route | none | Not delivered | false |
+
+**Brokered seats.** VISART pins no read-only relaxation for brokered codex or Claude, so
+both stay false. Adding one is a per-provider contract change with its own repin and
+tests. Brokered agy is false in every version.
+
+**No-op clause.** With no `--observation`, no route's instructions, argv or bundle change.
 
 ### 4.3 Jailed delivery
 
@@ -172,24 +200,63 @@ The jail is not changed:
 
 Delivery uses the seat home, which is already mounted:
 
-1. After `build_seat_jail` creates `seat-home/`, the parent copies the stage into
-   `<review_dir>/seat-home/review-visual/` as fresh files (`O_CREAT|O_EXCL|O_NOFOLLOW`).
-   Each jailed leg gets its own copy.
-2. `seat_uid.handoff` takes a new `--visual` flag. Running as H-root, before any chown, it
-   opens `seat-home/review-visual` without following links. Every entry must be a
-   directory or a regular file with `st_nlink == 1`. Anything else refuses
-   `seat_sandbox_refused:stage_not_private`.
-3. After the existing tree, home and out chown, the handoff re-owns that subtree to
-   H-root:seat, with directories 0550 and files 0440, and refuses non-regular entries.
-   This is the same shape as the Gemini config handoff. The seat can read the files but
-   cannot write or chmod them.
+1. **Copy.** After `build_seat_jail` creates `<seat_dir>/seat-home/`, the parent copies the
+   stage into `<seat_dir>/seat-home/review-visual/` with `seat_jail.write_new_file_at`,
+   which creates fresh files `O_CREAT|O_EXCL|O_NOFOLLOW`.
+   - It hashes each file while copying and refuses on any mismatch with the stage entry.
+   - Each jailed leg gets its own copy.
+   - This runs before the handoff, while the operator still owns `seat-home`.
+2. **Privacy check.** `seat_uid.handoff` takes a new `--visual` flag. Running as H-root,
+   before any chown, it opens `seat-home/review-visual` without following links. Every
+   entry must be a directory or a regular file with `st_nlink == 1`. Anything else
+   refuses `seat_sandbox_refused:stage_not_private`.
+3. **Re-own.** After the existing tree, home and out chown, the handoff re-owns that
+   subtree to H-root:seat, with directories 0550 and files 0440.
+   - It works per inode: open without following, `fstat`, then `fchown` and `fchmod` on
+     that same descriptor.
+   - It refuses non-regular entries.
+   - Ownership and modes match the Gemini handoff. Unlike `.gemini` (agent-harness#1170
+     F006), `review-visual` is not a mount point, hence the rename residual below.
+   - The seat can read the files but cannot write or chmod them.
+4. **Process only.** `--visual` appears only in the process launch's handoff prefix. The
+   probe jail's prefix never carries it.
+
+No seat process exists until the handoff `execv`s the owner, so the seat has no window
+between the privacy check and the chown.
+
+**Post-run rehash, in H.**
+
+- **Why in H.** After the handoff, `seat-home` is seat-owned and 0700, so the parent gets
+  EACCES on it. Like every other post-run read of seat-owned objects (`read_in_h`,
+  `scan_in_h`, the J10 reader), the rehash therefore runs in H.
+- **When.** `seat_uid.rehash_visual_in_h(holder_pid, seat_dir, entries, *, cap_bytes,
+  time_limit_s)` runs a new `seat_uid rehash` verb through `in_h_argv(holder_pid, …)` as
+  H-root. It runs after the leg's process tree is quiescent and before `teardown_in_h`.
+- **Inputs.** The expected entries travel on stdin, never on argv.
+- **Walk.** The verb opens `seat_dir` and then `seat-home` as directory descriptors, and
+  looks `review-visual` up again by name.
+  - Every path component is opened `O_DIRECTORY|O_NOFOLLOW`.
+  - Every file is opened `O_NOFOLLOW|O_NONBLOCK` and must pass an `fstat` regular-file
+    check, as `seat_jail.read_regular_file_at` already does.
+  - A per-file byte cap and a total time limit apply.
+- **Not intact.** Each of the following is not intact, records `seat_visual_stage_changed`
+  on the leg, sets `visual_post_run_intact: false`, and makes the board result flag the
+  leg's verdict:
+  - an entry that is missing, unreadable, a link, a FIFO or any other non-regular entry;
+  - an extra entry;
+  - a file over the cap;
+  - a digest mismatch;
+  - a timeout;
+  - a helper failure, or an answer outside the closed shape.
+- **Not the predicate.** `tree_is_private` is not used here; it is the handoff's check.
+- **Never from outside H.** The parent never reads `seat-home` from outside H.
 
 **Residual (rename).** The seat owns `/seat/home`, so it can rename or replace the
 `review-visual` entry itself, though never its contents. That can only mislead the seat's
-own review. After the leg exits, the parent rehashes
-`<review_dir>/seat-home/review-visual/` against `visual_stage_sha256`. A mismatch records
-`seat_visual_stage_changed` on that leg, sets `visual_post_run_intact: false`, and the
-board result flags that leg's verdict.
+own review. The rehash is **final-state audit evidence**:
+
+- A rename-and-restore before exit is invisible to it.
+- `visual_post_run_intact: true` does not prove that the seat consulted the files.
 
 ### 4.4 Bundle appendix
 
@@ -207,7 +274,7 @@ Paths are relative to the visual root your instructions name. These are executor
 not independent observations. Video is not staged to seats. Stage digest:
 <visual_stage_sha256>.
 
-### <observation_id> — <producer.kind>/<producer.tool>[/<profile>] on <host>
+### <observation_id> — <producer.kind>/<producer.tool>[/<profile>] [`<tool_version>`] on <host>
 - Target: `<target.url>` (or: not recorded)
 - 01 <W>x<H> <color_scheme> — <observation_id>/shots/01….png (sha256 <12 hex>); a11y <observation_id>/a11y/01.yaml
 - Console: <error_count> errors, <warning_count> warnings, <failed_request_count> failed requests
@@ -232,9 +299,16 @@ a11y, and 2048-character target URLs) proves the bound.
 ### 4.5 Native fill across two invocations
 
 The `--native-leg` invocation must pass the same `--observation` set as the
-`--emit-native-request` invocation. It recomputes `visual_stage_sha256` and compares it
-with the digest in the emitted `artifact.md` appendix. Absence on both sides matches. Any
-difference refuses `observation_set_mismatch` before any seat runs.
+`--emit-native-request` invocation.
+
+- It recomputes the stage and the expected appendix bytes from its own `--observation`
+  set.
+- It compares those bytes with the tail of the emitted `artifact.md`. With no
+  observations on either side, the artifact has no appendix tail, and that matches.
+- It never parses the stage digest out of `artifact.md`, which is untrusted.
+- Any difference refuses `observation_set_mismatch`. The check runs before
+  `preflight_native_leg_fills`'s existing `artifact_sha256` refusal, and before any seat
+  runs.
 
 ### 4.6 Untrusted-content notice
 
@@ -303,12 +377,15 @@ keeps `visual_evidence_path` unchanged.
 | `observation_target_forbidden` | A URL scheme or userinfo outside 2.3 |
 | `observation_index_invalid` | `index.html` differs from the deterministic rendering (section 3) |
 | `observation_set_mismatch` | A `--native-leg` run whose observation set or stage digest differs from the emit run (4.5) |
-| `seat_visual_stage_changed` | Staged bytes differ from `visual_stage_sha256` at launch, or after a jailed leg exits (4.1, 4.3) |
+| `seat_visual_stage_changed` | Staged bytes differ from `visual_stage_sha256` at launch; or, after a jailed leg exits, the in-H rehash finds the copy not intact, including a missing, unreadable, link, FIFO, non-regular, extra or over-cap entry, a timeout or a helper failure (4.1, 4.3) |
 
-`seat_visual_stage_changed` is a seat notice. It needs:
+`seat_visual_stage_changed` is a seat notice of OD-10 class `security`, because it signals
+tampering. `OD10_CLASSES` folds in only `ordinary` `CODES` rows, so it needs all three of
+these:
 
-- a `seat_route_contract.CODES` row of OD-10 class `security` (it signals tampering),
-  which places it in `OD10_CLASSES`;
+- a `seat_route_contract.CODES` row with class `security` and its what, why and fix text;
+- an explicit entry in `seat_route_contract._SECURITY_CODES`, which lists security codes
+  by hand;
 - a literal in `panel_invoker._HARNESS_DETAIL_CODES`.
 
 Handoff defects use the existing `seat_sandbox_refused:stage_not_private`.
@@ -320,6 +397,12 @@ Handoff defects use the existing `seat_sandbox_refused:stage_not_private`.
 **Inert data may skip requalification.** Inert, sealed, digest-bound data may reach a seat
 without requalification, through a view the seat already has, as section 4.3 does.
 
+- **Sealed** means the bytes cannot change after hand-off. That is either a sealed memfd,
+  or files copied once before launch whose owner and mode the seat cannot alter
+  (H-root:seat, 0440 files under 0550 directories).
+- Any file exchange that continues after launch is a live channel, even through an
+  existing view. That covers a mailbox, a spool and a watched directory.
+
 **Everything else is a declared slot.** That covers:
 
 - any live channel: a socket, FIFO, device or inherited file descriptor;
@@ -328,7 +411,10 @@ without requalification, through a view the seat already has, as section 4.3 doe
 
 A declared slot is named in the profile, covered by `jail_profile_digest`, present in
 `expected_mount_points`, attested by the identity probe, and requalified for every leg
-before use. There is no projection or digest-stripping path for any of these.
+before use.
+
+No channel this roadmap adds has a projection or digest-stripping path. The existing
+digest stripping of qualified dependency mounts is outside this roadmap and unchanged.
 
 Sandbox-profile seats keep `SeatProfile.broker_socket` for their broker channel.
 
@@ -430,12 +516,18 @@ the seat-route policy convention:
   same private-chain ownership checks and the private-file reader, with a 64 KiB cap.
 - It is closed JSON: `{"schema": "browser_target_policy.v1", "mode": …,
   "preview_origins": […]}`. Unknown members refuse.
-- If the file is absent, the effective policy is the shipped default: `mode: preview_url`
-  with no preview origins. If it is unsafe or malformed, it is ignored, the default
-  applies, and the board result says the overlay was ignored.
-- `target.policy_sha256` is the sha256 of the canonical JSON of the effective policy,
-  including the default. It is recorded in every broker observation and in the board
-  result.
+- **Absent file.** The effective policy is the shipped default: `mode: preview_url` with
+  no preview origins. The default is the least-privileged policy, since it renders
+  nothing, and every valid policy is a superset of it.
+- **Future fields.** Any field added in a later schema version defaults to deny.
+- **Unsafe or malformed file.** It is ignored and the default applies. The board result
+  carries the closed ordinary notice `browser_target_policy_ignored`, following
+  `seat_route_policy_ignored`.
+- **`policy_source`.** The board result records it as `default`, `operator` or
+  `ignored_overlay`.
+- **`policy_sha256`.** `target.policy_sha256` is the sha256 of the RFC 8785 (JCS)
+  canonical JSON of the effective policy, including the default. It is recorded in every
+  broker observation and in the board result.
 
 **Modes.**
 
@@ -453,7 +545,9 @@ the seat-route policy convention:
 
 **Who can set the mode and tier.** A seat can never choose or raise either:
 
-- No seat-facing tool, argument, bundle field or instruction carries one.
+- No untrusted input selects either. That includes seat-facing tools and arguments,
+  bundle and observation fields, static-bundle contents and page content. Only the
+  operator policy selects the mode, and only the review profile selects the tier.
 - The session's origin set and tier are fixed before the seat launches.
 - A request for any other origin refuses.
 

@@ -87,7 +87,7 @@ seat can choose or raise it.
 
 | Input | Pin |
 | --- | --- |
-| BROWSER v1 contract | `plans/artifacts/browser-v1-contract.md`, sha256 `6946226f5e31a04cb32b1eb925fdebfbad0485d6169d1d6c7456243b791e7a23` |
+| BROWSER v1 contract | `plans/artifacts/browser-v1-contract.md`, sha256 `86b8cdecc98fdbb8e36ba5bd8217402cb14de237e9f2c0322663b70aecb51da8` |
 | `browser_observation.v1` schema | `plans/artifacts/browser-v1-observation.schema.json`, sha256 `169c05daaa03788bdfe10fb3efa4a3fe31d3a58bbe1767826645ced4e3ec9a1d` |
 | Research report (operator-held, not published) | `sandbox-browser-visibility-20261108/report.md`, sha256 `d6d0494f74d5df2c8dadc478fb5b5d60cacc2be6f0ff1794b8e97a99c8193fb3`. The contract restates every fact a phase relies on. |
 | v13 placement contract | `plans/artifacts/v13-PLACECLI-contract-v1.schema.json`, as pinned by `specs/phase-plans-v13.md` |
@@ -139,7 +139,9 @@ review. Contract §8.6 freezes their rules.
   - *Placement:* the owner placed VISINTERACT "after VISHARDEN". Revision 2 merged
     VISHARDEN's hardening into VISRENDER and its session isolation and profile field into
     VISBROKER. VISINTERACT therefore follows VISBROKER, the last phase holding former
-    VISHARDEN work.
+    VISHARDEN work, and it also needs VISBROKER's seat channel. The 2026-11-08 delta board
+    reached the same equivalence independently, and the owner has not objected, so the
+    placement stands.
 
 Open questions (not blocking any phase):
 
@@ -202,7 +204,8 @@ Open questions (not blocking any phase):
      without requalification.
    - Any live channel (socket, FIFO, device, inherited fd), writable bind or new mount
      class is a declared, digest-covered, probe-attested slot, requalified for every leg.
-   - Nothing strips a mount from the profile digest.
+   - No channel this roadmap adds is stripped from the profile digest. The existing
+     stripping of qualified dependency mounts is outside this roadmap.
 5. **No logged-in browser.** Broker profiles are ephemeral. The broker's bwrap holds no
    operator home and no credentials. Executors use T3 preview on `incognito` only.
    - **Operator chooses, seat cannot raise.** The target mode comes from digest-bound
@@ -271,9 +274,9 @@ runs anywhere in this phase.
 
 - [ ] EC-VISART-1 — `phase-loop observation validate` accepts a directory exactly when it conforms to the pinned schema and contract §2–§3; every refusal is one closed code from contract §7, proven by positive fixtures and one negative fixture per code, including the maximum-size fixture.
 - [ ] EC-VISART-2 — `phase-loop observation import` turns `visual_evidence_path` images into a valid executor observation whose `index.html` is byte-identical across two renderings of one manifest. A broker tool, `t3_preview` without `incognito`, and GIF or BMP input refuse with their §7 codes. No browser is launched or contacted.
-- [ ] EC-VISART-3 — `advisor-board --observation` accepts executor observations only, stages the seat subset under the §4.1 budget, and delivers it per contract §4.2. Jailed seats find it read-only at `/seat/home/review-visual`. Every route's trusted instructions carry the §4.6 notice, and the bundle carries the route-neutral §4.4 appendix within its cap. An invalid or broker observation exits 2 before any seat launch.
-- [ ] EC-VISART-4 — Across `seat_profiles.registered_legs()`, a jail built in-process with a staged visual copy has the same owner argv, `jail_profile_digest` and `actual_profile_digest` as one built without it. Every seat egress allowlist digest is unchanged. A hard-linked or non-regular staged entry refuses at handoff, and a stage changed before launch or after a jailed leg exits records `seat_visual_stage_changed`.
-- [ ] EC-VISART-5 — The board result's `visual_evidence` block lists each observation's host label, absolute source, staged and `index.html` paths, manifest sha256, `visual_stage_sha256` and unstaged video. Every leg records `visual_delivered`, false for the sealed and remote routes, and jailed legs record `visual_post_run_intact`.
+- [ ] EC-VISART-3 — `advisor-board --observation` accepts executor observations only, stages the seat subset under the §4.1 budget, and delivers it per contract §4.2 with no new grant on any route. Jailed seats find it read-only at `/seat/home/review-visual`, and with no `--observation` no route's instructions, argv or bundle change. Every route's trusted instructions carry the §4.6 notice, and the bundle carries the route-neutral §4.4 appendix within its cap. An invalid or broker observation exits 2 before any seat launch.
+- [ ] EC-VISART-4 — Across `seat_profiles.registered_legs()`, a jail built in-process with a staged visual copy has the same owner argv, `jail_profile_digest` and `actual_profile_digest` as one built without it. Every seat egress allowlist digest is unchanged. A hard-linked or non-regular staged entry refuses at handoff. A stage changed before launch records `seat_visual_stage_changed`. So does a copy that the in-H post-run rehash (contract §4.3) cannot confirm intact, which is never judged from outside H.
+- [ ] EC-VISART-5 — The board result's `visual_evidence` block lists each observation's host label, absolute source, staged and `index.html` paths, manifest sha256, `visual_stage_sha256` and unstaged video. Every leg records `visual_delivered`, false for every launch path contract §4.2 marks false (brokered, sealed and remote), and jailed legs record `visual_post_run_intact`.
 - [ ] EC-VISART-6 — The execute skills name T3 preview on `profileId: "incognito"` as a capture source beside claude-in-chrome and Playwright via PMCP. They direct moving the screenshot into the worktree, then `observation import` and `--observation`. Regenerated bundles and launch-spec goldens match their sources.
 - [ ] EC-VISART-7 — A `--native-leg` run with a different observation set or stage digest from its `--emit-native-request` run refuses `observation_set_mismatch` before any seat runs; the same set is accepted.
 
@@ -436,6 +439,7 @@ Interactive tools (VISINTERACT), `build_and_serve` (VISBUILD) and remote runners
 - `phase-loop-runtime/src/phase_loop_runtime/seat_jail.py`
 - `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`
 - `phase-loop-runtime/src/phase_loop_runtime/seat_jail_qualification.py`
+- `phase-loop-runtime/src/phase_loop_runtime/browser_broker_shim.py`
 - `docs/browser-broker.md`
 
 **Depends on**
@@ -629,7 +633,8 @@ VISART ──> VISRENDER ──┬──> VISBROKER ──┬──> VISREMOTE  
   channel that remote reservations bridge.
 - Board-driven render comes before any seat channel. Every route gets an independent
   observation before any jail change is considered.
-- VISBUILD can run in parallel with VISBROKER once its threat model is approved.
+- VISBUILD can be planned in parallel with VISBROKER once its threat model is approved.
+  The two land serially, because both edit `panel_invoker.py`.
 - Critical path for v1: VISART → VISRENDER → VISBROKER → VISREMOTE.
 
 ## Execution Notes
@@ -650,7 +655,9 @@ VISART ──> VISRENDER ──┬──> VISBROKER ──┬──> VISREMOTE  
   - `seat_uid.py` and `seat_route_contract.py`: VISART.
   - `seat_jail.py`: VISBROKER only (the declared slot).
   - `seat_profiles.py`: VISBROKER, then VISINTERACT.
-  - `browser_broker_shim.py`: VISRENDER, then VISINTERACT.
+  - `browser_broker_shim.py`: VISRENDER, then VISBROKER, then VISINTERACT.
+  - VISBUILD and VISBROKER may be planned in parallel, but they land serially because
+    both edit `panel_invoker.py`.
   - `cli.py`: VISART, then VISRENDER.
   - `plans/manifest.json` and `specs/roadmap-status.json`: every planning PR, including
     agent-harness#1926 and agent-harness#1927. Each keeps main's rows and appends its
@@ -678,7 +685,8 @@ PYTHONPATH=phase-loop-runtime/src timeout 120 python3 \
 cd phase-loop-runtime
 timeout 900 env PYTEST_ADDOPTS= python3 -m pytest -q -p no:cacheprovider \
   tests/test_browser_observation_contract.py tests/test_seat_visual_staging.py \
-  tests/test_seat_visual_profile_neutrality.py tests/test_board_visual_delivery.py \
+  tests/test_seat_visual_profile_neutrality.py tests/test_seat_visual_rehash_in_h.py \
+  tests/test_board_visual_delivery.py tests/test_advisor_board_golden.py \
   tests/test_cli_observation.py tests/test_seat_route_contract.py tests/test_seat_notices.py
 ```
 
