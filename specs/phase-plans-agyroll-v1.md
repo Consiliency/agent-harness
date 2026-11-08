@@ -98,8 +98,8 @@ red when breached.
 
 | Input | Pin |
 | --- | --- |
-| AGYROLL contract | `plans/artifacts/agyroll-v1-contract.md`, sha256 `260689d9b827d5240bd8c5501de04b63cd3264fc7f34dfb38cac89d223ee6546` |
-| TEAMHOST contract §5 (agy key, `requalify_once` call sites) | `plans/seats-teamhost-contract.md`, sha256 `3ca3d3a57346acca8bf4e16e50304f00e3e2e19bc5bcd20b1831b4f837c3b1b1`. **REQUAL amends §5** to add the runner and canary preflight call sites. The key stays unchanged, because `seat_qci()` equals `agy_profile_digest()` at `agy_validator_v1`. The repin lands in REQUAL's docs lane. |
+| AGYROLL contract | `plans/artifacts/agyroll-v1-contract.md`, sha256 `31e5a33b6e154bf746a6b4887ba098dfed977f5d4587a80c6631752424caf626` |
+| TEAMHOST contract §5 (agy key, `requalify_once` call sites) | `plans/seats-teamhost-contract.md`, sha256 `3ca3d3a57346acca8bf4e16e50304f00e3e2e19bc5bcd20b1831b4f837c3b1b1`. **REQUAL amends §5.** The amendment adds the runner and canary preflight call sites, and names `seat_qci()` as the `qualified` key. Its value equals `agy_profile_digest()` at `agy_validator_v1`, so no entry drops, and §5 stays correct after a validator bump. The repin lands in REQUAL's docs lane. |
 | Q10 and (G) promotion rules | `.consiliency/plans/detailed-lkg-cli-qualification-1602-20261014-0359.md` §(G) and the Q10 ruling |
 | Upstream provenance surface | the GitHub releases API for `google-antigravity/antigravity-cli`: per-asset `digest`; the attestations endpoint returned 404 on 2026-11-08 |
 
@@ -160,7 +160,7 @@ condition stops and routes an amendment.
   - auto-merge applies only to data-only diffs, and only once `main` has a non-bypassable
     ruleset. Until then a maintainer merges after both signatures verify.
 
-  Q10's draft promotion PR and (G) stand.
+  Q10's draft promotion PR, signer quorum and publisher digest stand, and so does (G)'s base-branch rule. R6 **conditionally supersedes** Q10/(G)'s "a maintainer merges": once `main` has a non-bypassable ruleset, a data-only diff auto-merges. Every other diff, and every PR before that ruleset exists, is still merged by a maintainer.
   - **Implemented by:** ROLLJOB.
 - **R7 — APPROVED with conditions.** The `ai` job renews its own Gemini login, outside any
   seat.
@@ -168,7 +168,7 @@ condition stops and routes an amendment.
     - renewal goes only through `_await_gemini_login` → `_refresh_gemini_credential`
       (§5, §6.2);
     - the refresh token stays out of seats (agent-harness#1222);
-    - expiry reports `gemini_login_expired` and turns the lag rule red (EC-ROLLJOB-6).
+    - **expiry turns red directly**: the tick exits non-zero with `gemini_login_expired`, its systemd unit enters `failed`, and `watch --check` reports it at once. CI fails through the lag rule once the newest release passes `LAG_BOUND` (EC-ROLLJOB-6).
   - **Superseded:** the unwritten owner-only renewal rule on `ai` (agent-harness#1923,
     agent-harness#1924).
   - **Implemented by:** REQUAL (path) and ROLLJOB (job).
@@ -176,7 +176,7 @@ condition stops and routes an amendment.
   - **Conditions:**
     - keep a member while it is among the newest 3 *or* younger than 14 days;
     - never prune a `pinned` member;
-    - **Q11 is superseded**, together with the 2026-10-08 Q5 (§6.1; EC-ROLLJOB-5).
+    - **Q11 is superseded for the agy route only** (§6.1; EC-ROLLJOB-5). Q11 had itself already superseded the 2026-10-08 Q5, and other harnesses keep Q11.
   - **Implemented by:** ROLLJOB.
 - **R9 — APPROVED with conditions.** The `ai` job gets a repository-only GitHub identity.
   - **Conditions, all in place before ACTIVATE (EC-ACTIVATE-1):**
@@ -250,13 +250,15 @@ records, so later phases land without hand live runs (goal d).
 
 **Scope notes**
 
-Decompose into 3 lanes plus docs:
-- **Runtime:** `seat_qci`, the validator guard and the catalog loader.
-- **Verifier and workflows:** record v2, the converter, the verifier, `agy_watch`'s writers,
-  both workflows, and the watch tests and inventory that depend on them.
+Decompose into 2 lanes plus docs:
+- **Catalog, QCI and records:** one sequential lane covering the runtime catalog loader,
+  `seat_qci`, the validator guard, record v2, the converter stop gate, the verifier,
+  `agy_watch`'s writers, both workflows, and the watch tests and inventory.
 - **Conformance suite:** tests and fixtures only.
 
-The lanes own disjoint files. Implements R1 (approved) and its three conditions.
+The runtime and records work cannot split. The watch and verifier tests and the exact
+inventory couple them, and the lane-IR overlap check refuses shared owned files. The lanes
+own disjoint files. This phase implements R1 (approved) and its three conditions.
 
 **Non-goals**
 
@@ -361,7 +363,7 @@ automatically at every instantiation point, and every refusal is visible (goal b
 - [ ] EC-REQUAL-4 — The local `qualified` key is `seat_qci()`, unchanged at `agy_validator_v1`; an upgrade with an unchanged QCI keeps entries, and a QCI change requalifies at the next preflight for any stable release.
 - [ ] EC-REQUAL-5 — `repeated_transient` failed entries expire after 24 h, and `violation` entries persist until cleared.
 - [ ] EC-REQUAL-6 — A near-expiry login in `seat_profile` waits and renews through `_await_gemini_login` → `_refresh_gemini_credential`, and the doctor's auth hint names the runtime token path.
-- [ ] EC-REQUAL-7 — TEAMHOST §5 is repinned to list the runner and canary preflight call sites, and its key text is unchanged.
+- [ ] EC-REQUAL-7 — TEAMHOST §5 is repinned to list the runner and canary preflight call sites and to name `seat_qci()` as the `qualified` key, equal to `agy_profile_digest()` at `agy_validator_v1`; falsified by a §5 that still names `agy_profile_digest` as the key, or by a validator bump that leaves §5's key description wrong.
 
 **Scope notes**
 
@@ -474,7 +476,7 @@ member, through Q10/(G) promotion. A breach of the lag bound turns CI red (goals
 - [ ] EC-ROLLJOB-3 — Nightly `--upstream-only` fails under the AGYROLL §6.3 lag rule, and warns inside the bound or while a PR awaits approval.
 - [ ] EC-ROLLJOB-4 — Promotion CI runs the base branch's verifier, signer list and merge rule, and reads only the catalog and agy records from the PR head; a PR touching any other path or the policy fails and never auto-merges; under R6 (rejected as written, alternative adopted), a PR merges only with valid job and enrolled-owner signatures, and auto-merges only for a data-only diff once `main` has a non-bypassable ruleset.
 - [ ] EC-ROLLJOB-5 — Aging keeps the newest `CATALOG_KEEP` members or those younger than `CATALOG_MIN_AGE`, and never prunes a `pinned` member (R8).
-- [ ] EC-ROLLJOB-6 — An expired login ends the tick with `gemini_login_expired` and opens no PR.
+- [ ] EC-ROLLJOB-6 — An expired login ends the tick with `gemini_login_expired` and a non-zero exit, opens no PR, and makes `watch --check` report `failed: gemini_login_expired`; falsified by an expired-login tick that exits 0, opens a PR, or leaves `--check` reporting `installed`, or by nightly `--upstream-only` passing once the newest release exceeds `LAG_BOUND` while the login stays expired.
 
 **Scope notes**
 
@@ -609,8 +611,13 @@ PYTHONPATH=$PWD/src:$PWD/tests timeout 900 .venv/bin/python -m pytest -q -p no:c
   tests/test_agy_canary_evidence.py tests/test_verify_qualified_agy_route_core.py \
   tests/test_qualified_agy_image_set.py tests/test_agy_upstream_advisory.py \
   tests/test_seat_reference_inventory.py
-python scripts/verify_qualified_agy_image.py --contract
-AGY_CONFORMANCE_STRICT=1 python scripts/verify_qualified_agy_image.py --release   # CI / Gate A only
+timeout 300 uv run --locked python scripts/verify_qualified_agy_image.py --contract
+# CI / Gate A only: strict conformance into a private run directory, then the release gate
+RUN_DIR="${RUNNER_TEMP:-$(mktemp -d)}/agy-conformance" && mkdir -p -m 0700 "$RUN_DIR"
+AGY_CONFORMANCE_STRICT=1 PYTHONPATH=$PWD/src:$PWD/tests timeout 900 .venv/bin/python -m pytest -q \
+  -p no:cacheprovider tests/test_agy_route_conformance.py --junitxml="$RUN_DIR/conformance.xml"
+timeout 600 uv run --locked python scripts/verify_qualified_agy_image.py --release \
+  --conformance-report "$RUN_DIR/conformance.xml"
 ```
 
 Operational evidence comes from ACTIVATE, in `plans/evidence/agyroll-activate.json`, stamped

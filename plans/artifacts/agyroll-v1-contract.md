@@ -189,6 +189,8 @@ R1 is approved (2026-11-08) on three conditions:
   - `--release` reads the suite's JUnit report and requires every obligation id to be present
     and passed, exactly once, with zero skipped, xfailed or errored cases.
   - A missing report, a partial report or an uncollected obligation fails `--release`.
+  - Release CI writes the report into a private run directory (`$RUNNER_TEMP`, or a
+    `mktemp -d` directory locally), never to a fixed `/tmp` path.
 - **Outside release CI.** Local and ordinary runs may skip, with a reason.
 - **Never mocked.** If the production driver cannot run hermetically, the lane stops and
   routes a roadmap amendment. It never mocks the driver.
@@ -198,7 +200,8 @@ R1 is approved (2026-11-08) on three conditions:
    `git log -- plans/evidence/<record>` whose tree's package sources match the record's
    `source_sha256` exactly.
 2. It requires two things:
-   - `seat_qci(record commit) == seat_qci(head)`;
+   - `agy_profile_digest(record commit) == agy_profile_digest(head)`. A v1 record commit has
+     no `seat_qci()`, and the two digests are equal at `agy_validator_v1`;
    - an equal source-hash closure table for the validator (§2.1) at both commits.
 3. It writes the v2 record with no signatures.
 
@@ -269,7 +272,10 @@ It runs `ensure_admitted` for the agy on the launch env's PATH, plus the route's
 - at canary capture start (`agy_canary_evidence.py`, EXECADMIT).
 
 The last two are new call sites. TEAMHOST §5 freezes `requalify_once` to two call sites, so
-**REQUAL repins TEAMHOST §5** to list both new ones. The key stays unchanged (§2.1).
+**REQUAL repins TEAMHOST §5.** The repin lists both new call sites and names `seat_qci()`
+as the `qualified` key, instead of `agy_profile_digest`. Its value is unchanged at
+`agy_validator_v1` (§2.1), so no entry drops, and §5 stays correct after the first validator
+bump.
 
 **Cost.** It runs at most once per (store, route QCI, image). The retryable provenance
 outcomes from §1.2 do not count toward that limit. Spawn stays lookup-only.
@@ -307,8 +313,11 @@ outcomes from §1.2 do not count toward that limit. Spawn stays lookup-only.
 - **Retries.** It retries the whole series up to `SERIES_RETRIES = 3` per tick, because
   Gemini non-conformance is intermittent (agent-harness#1008). An observed `violation` stops
   the tick.
-- **Promotion path.** Q10 and (G) are kept
-  (`.consiliency/plans/detailed-lkg-cli-qualification-1602-20261014-0359.md`):
+- **Promotion path.** This keeps Q10's draft promotion PR, its signer quorum and its
+  publisher digest, and (G)'s base-branch rule
+  (`.consiliency/plans/detailed-lkg-cli-qualification-1602-20261014-0359.md`). The only
+  thing R6 replaces is Q10/(G)'s "a maintainer merges", and only conditionally (see Merge
+  below):
   1. The job signs the record with its enrolled key and opens a **draft** PR labelled
      `agy-catalog-auto`.
   2. CI checks out the **base** branch and runs the base's verifier, `agy-allowed-signers`
@@ -324,17 +333,19 @@ outcomes from §1.2 do not count toward that limit. Spawn stays lookup-only.
   - **Two distinct signers (Q10).** The job's key and an **enrolled owner key**, both listed
     in the base branch's `agy-allowed-signers`. A PR without both valid signatures never
     merges.
-  - **Auto-merge.** Only for a data-only diff (`data/agy_catalog.json` plus agy records), and
-    only once `main` has a non-bypassable ruleset. Until then, a maintainer merges the PR
-    after both signatures verify.
+  - **Auto-merge (conditional supersession of Q10/(G)'s "a maintainer merges").** Once
+    `main` has a non-bypassable ruleset, a data-only diff (`data/agy_catalog.json` plus agy
+    records) auto-merges after both signatures verify. Every other diff, and every PR opened
+    before that ruleset exists, is still merged by a maintainer.
   - **Today `main` has none.** The only ruleset covers `conform-evidence/*` tags. Classic
     protection requires status checks but no review, `enforce_admins` is false, and the
     `gate` check is self-certifiable (`.github/CODEOWNERS:5-9`).
 - **Aging [R8].** Approved 2026-11-08. A member is kept while it is among the newest
   `CATALOG_KEEP = 3` or was published less than `CATALOG_MIN_AGE = 14 d` ago. A `pinned`
-  member is never pruned, and pruning happens in the same PR. **Q11 is superseded**, as is
-  the 2026-10-08 Q5: under R1 the cut re-runs nothing, and the catalog is bounded by aging
-  instead of by requalification.
+  member is never pruned, and pruning happens in the same PR. **Q11 is superseded for the agy
+  route only.** Q11 had already superseded the 2026-10-08 Q5. Under R1 the cut re-runs
+  nothing, so aging bounds the agy catalog instead of requalification. Other harnesses keep
+  Q11.
 - **Unchanged.** Idempotence, oid agreement, push-destination checks and create-only writes
   stay as in `docs/ops/agy-upstream-watch.md`.
 
@@ -348,7 +359,10 @@ outcomes from §1.2 do not count toward that limit. Spawn stays lookup-only.
   - The job renews only through the named path `_await_gemini_login` →
     `_refresh_gemini_credential` (§5), outside any seat.
   - The refresh token stays in the owner home and never enters a seat (agent-harness#1222).
-  - On expiry the tick reports `gemini_login_expired` and stops, and the lag rule turns red.
+  - **Expiry turns red directly.** On expiry the tick prints `gemini_login_expired` and
+    exits non-zero, so the systemd unit enters `failed`. `watch --check` then reports
+    `failed: gemini_login_expired` at once. No PR is opened. CI turns red through the lag
+    rule (§6.3) once `L` passes `LAG_BOUND` with the login still expired.
 - **Identity [R9].** Approved 2026-11-08 on three conditions, all in place before ACTIVATE:
   - The job uses a non-admin GitHub App or machine user. It is scoped to this repository
     only, has contents and pull-requests write, and has no `workflows` permission.
