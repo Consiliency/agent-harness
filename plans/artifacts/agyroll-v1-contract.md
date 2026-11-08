@@ -194,8 +194,9 @@ R1 is approved (2026-11-08) on three conditions:
   - it signals the process group with TERM then KILL, and kills pid 1;
   - `--die-with-parent` namespace teardown kills orphans.
 
-  The owner ruled this a test-design correction consistent with R1's intent. The rulings are
-  unchanged. The controls are therefore split by who enforces the predicate.
+  The coordinator ruled this a test-design correction consistent with R1's intent; the
+  owner's R1–R9 rulings are unchanged. The controls are therefore split by who enforces the
+  predicate.
 - **Negative controls** (a provider *can* trip them; each must **not** pass):
   - `neg_no_terminal_event`: the stand-in never emits a terminal event. Measured outcome:
     `transient` at `completion`. The test pins that outcome.

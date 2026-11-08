@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: RECBIND
 roadmap: specs/phase-plans-agyroll-v1.md
-roadmap_sha256: f0b2214ef4ef8ee1364536fb8c2d75def782a77738b7413078142ef37dd809e8
+roadmap_sha256: 2f552469e31b49d9791eb3a73e682d3caabbf1ddfa450b30b6bece4f6961f91b
 automation:
   suite_command: ["bash", "-lc", "cd phase-loop-runtime && PYTHONPATH=$PWD/src:$PWD/tests timeout 900 .venv/bin/python -m pytest -q -p no:cacheprovider tests/test_agy_qci.py tests/test_agy_catalog_data.py tests/test_agy_record_v2.py tests/test_agy_route_conformance.py tests/test_qualified_agy_image_set.py tests/test_verify_qualified_agy_route_core.py tests/test_agy_upstream_advisory.py tests/test_agy_static_integrity.py tests/test_agy_integrity_seat_admission.py tests/test_gemini_heartbeat_bootstrap.py tests/test_agy_self_qualification.py tests/test_outside_agent_release_surface.py tests/test_seat_reference_inventory.py && timeout 300 uv run --locked python scripts/verify_qualified_agy_image.py --contract"]
 ---
@@ -184,8 +184,9 @@ SL-2 is the smaller lane and touches only tests and fixtures.
       `--die-with-parent` teardown kills orphans;
     - "no terminal event" does not pass (`transient` at `completion`).
 
-    The owner ruled this a test-design correction under R1. The controls are now split as
-    follows (AGYROLL §3.4).
+    The coordinator ruled this a test-design correction consistent with R1's intent; the
+    owner's R1–R9 rulings are unchanged. The controls are now split as follows (AGYROLL
+    §3.4).
   - **Negative controls** (each must not pass):
     - `neg_no_terminal_event`: completion is `transient`, as measured, and pinned.
     - `neg_no_progress_event` (provisional): the stand-in answers without a progress event,

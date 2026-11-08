@@ -99,7 +99,7 @@ red when breached.
 
 | Input | Pin |
 | --- | --- |
-| AGYROLL contract | `plans/artifacts/agyroll-v1-contract.md`, sha256 `26e257dc40244aea48725264a660801b980c083870711e85bf9019887cf0c25a` |
+| AGYROLL contract | `plans/artifacts/agyroll-v1-contract.md`, sha256 `f73feded14786c7fd692c2e6f17c660b8e3d5918744596415ac623b517439117` |
 | TEAMHOST contract §5 (agy key, `requalify_once` call sites) | `plans/seats-teamhost-contract.md`, sha256 `3ca3d3a57346acca8bf4e16e50304f00e3e2e19bc5bcd20b1831b4f837c3b1b1`. **REQUAL amends §5.** The amendment adds the runner and canary preflight call sites, and names `seat_qci()` as the `qualified` key. Its value equals `agy_profile_digest()` at `agy_validator_v1`, so no entry drops, and §5 stays correct after a validator bump. The repin lands in REQUAL's docs lane. |
 | Q10 and (G) promotion rules | `.consiliency/plans/detailed-lkg-cli-qualification-1602-20261014-0359.md` §(G) and the Q10 ruling |
 | Upstream provenance surface | the GitHub releases API for `google-antigravity/antigravity-cli`: per-asset `digest`; the attestations endpoint returned 404 on 2026-11-08 |
