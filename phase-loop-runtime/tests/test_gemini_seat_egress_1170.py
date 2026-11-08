@@ -206,8 +206,18 @@ def test_the_proxy_only_rules_admit_one_loopback_port_and_nothing_else():
     assert accepts == [
         "-A OUTPUT -o lo -s 127.0.0.1 -d 127.0.0.1 -p tcp --dport 3128 -j ACCEPT",
         "-A OUTPUT -o lo -s 127.0.0.1 -d 127.0.0.1 -p tcp --sport 3128 -j ACCEPT",
+        # The catch-all's own refusal, so other loopback ports refuse instead of hanging.
+        "-A OUTPUT -o lo -p icmp --icmp-type port-unreachable -j ACCEPT",
     ]
     assert rules[-2:] == ["-A OUTPUT -j REJECT", "-P OUTPUT DROP"]
+
+
+def test_the_proxy_only_ipv6_rules_admit_only_the_loopback_refusal():
+    assert sandbox_egress.proxy_only_ipv6_rules() == [
+        "-A OUTPUT -o lo -p ipv6-icmp --icmpv6-type port-unreachable -j ACCEPT",
+        "-A OUTPUT -j REJECT",
+        "-P OUTPUT DROP",
+    ]
 
 
 def test_a_proxy_only_namespace_is_only_a_jailed_seat_namespace():
