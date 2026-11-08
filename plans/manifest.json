@@ -15004,12 +15004,11 @@
       "updated_at": "2026-11-07T02:24:52Z"
     },
     {
-      "acceptance_criteria_count": 6,
       "created_at": "2026-11-08T15:23:52Z",
       "file": "plans/phase-plan-v1-agyroll-RECBIND.md",
       "frozen_inputs": {
         "plans/artifacts/agyroll-v1-contract.md": {
-          "sha256": "8640374dcf30beb8a7a544c867b25e242152cf1a37fe7debf82b69ef15f5ee72"
+          "sha256": "231cd9208c050b40204e24bc77de70d2d5d797e7775d4137bae7b738e0e9be59"
         },
         "plans/seats-teamhost-contract.md": {
           "sha256": "3ca3d3a57346acca8bf4e16e50304f00e3e2e19bc5bcd20b1831b4f837c3b1b1"
@@ -15041,7 +15040,6 @@
       },
       "slug": "v1-agyroll-RECBIND",
       "status": "committed",
-      "task_summary": "AGYROLL RECBIND: bind agy catalog records to the seat QCI, move the catalog to package data, hermetic route conformance, retire full source pins",
       "type": "phase",
       "updated_at": "2026-11-08T15:23:52Z"
     }
