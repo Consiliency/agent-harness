@@ -10,7 +10,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   (agent-harness#1916). The jail is the boundary with the inner sandbox off; tools can
   read their seat login copy and share its proxy-only egress. Completed-command evidence
   gates review counting. Remove the review-seat owner fallback, staged workspace-write
-  grant and retained setfcap capability; preserve the non-brokered sandbox probe.
+  grant and retained setfcap capability; preserve the non-brokered read-only sandbox probe.
+  Jailed Codex notices reflect its confinement, canonical `max` maps to `xhigh`,
+  admission measures the prepared binary, and manual qualification binds the launch projection.
 
 - In a jailed seat's proxy-only network namespace, a connect to any loopback port other than
   the proxy bridge (IPv4 or `::1`) is now refused at once instead of hanging to the TCP

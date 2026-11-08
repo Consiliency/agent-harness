@@ -34,13 +34,13 @@ def test_profile_is_registered_after_od4():
 def test_argv_and_environment_literals():
     from phase_loop_runtime import panel_invoker as pi
     from phase_loop_runtime.seat_codex_runtime import CODEX_RUNTIME_ROOT
-    command = codex.jailed_codex_command(ArgvInputs("ignored", model="model", effort="xhigh"))
+    command = codex.jailed_codex_command(ArgvInputs("ignored", model="model", effort="max"))
     assert command[0] == CODEX_RUNTIME_ROOT + "/bin/codex"
     assert command[command.index("exec"):] == (
         "exec", "--ignore-user-config", "--ignore-rules", "--ephemeral", "--json",
         "--cd", "/seat/home/workspace", "--skip-git-repo-check", "--sandbox", "danger-full-access",
         "-c", 'approval_policy="never"', "-c", 'cli_auth_credentials_store="file"',
-        "--model", "model", "-c", 'model_reasoning_effort="xhigh"',
+        "--model", "model", "-c", 'model_reasoning_effort=xhigh',
         "--output-last-message", "/seat/out/panel-codex.txt", "-")
     forbidden = {"--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust",
                  "--add-dir", "--worktree", "--oss", "--profile"}
@@ -180,3 +180,49 @@ def test_runtime_bind_mutations_remain_observable(tmp_path, codex_profile, depen
             pass
     finally:
         jail.close_jail_fds(built)
+
+
+@pytest.mark.parametrize("mutation", ["missing", "duplicate", "altered"])
+def test_profile_projection_binds_changed_refuses_identity(tmp_path, codex_profile, mutation):
+    built = _jail(tmp_path, dependency=True)
+    try:
+        owner = list(built.process_owner)
+        anchor = owner.index("/seat/egress-ca.pem") - 2
+        if mutation == "missing":
+            del owner[anchor:anchor + 3]
+        elif mutation == "duplicate":
+            projected = owner[anchor - 20:anchor + 3]
+            assert projected[:4] == ["--perms", "0755", "--dir", "/run"]
+            owner[anchor - 20:anchor - 20] = projected
+        else:
+            owner[anchor] = "--bind"
+        with pytest.raises(jail.SeatSandboxRefused, match="profile projection binds changed") as caught:
+            jail.actual_profile_digest(replace(built, process_owner=tuple(owner)))
+        assert caught.value.code == jail.refused("identity")
+    finally:
+        jail.close_jail_fds(built)
+
+
+def test_admission_measures_the_prepared_binary_without_resolving_or_closing_it(monkeypatch):
+    from types import SimpleNamespace
+    from pathlib import Path
+    from phase_loop_runtime import panel_invoker as pi, seat_codex_credential as credential
+    from test_seat_codex_cli_shape import EXEC_HELP_0_167_0, FEATURES_0_167_0
+    from phase_loop_runtime.seat_codex_runtime import CODEX_RUNTIME_DESTINATIONS
+    monkeypatch.setattr(credential, "read_auth", lambda env: b"fixture")
+    for name in ("subscription_login_problem", "token_margin_problem", "scope_problem"):
+        monkeypatch.setattr(credential, name, lambda *a, **k: None)
+    def forbidden(*args):
+        pytest.fail("prepared subject was resolved again or its dependency was closed")
+    monkeypatch.setattr(pi, "_resolved_jail_subject", forbidden)
+    dependency = SimpleNamespace(_jailcore_owned=True, close=forbidden,
+        entries=[SimpleNamespace(kind="file", destination=p) for p in CODEX_RUNTIME_DESTINATIONS],
+        subject_destination=CODEX_RUNTIME_DESTINATIONS[0])
+    seen = []
+    def run(cmd, **kwargs):
+        seen.append(cmd[0])
+        return SimpleNamespace(returncode=0, stdout=EXEC_HELP_0_167_0 if "--help" in cmd else FEATURES_0_167_0)
+    monkeypatch.setattr(pi, "run_provider", run)
+    executable = Path("/prepared/runtime/bin/codex")
+    assert codex.codex_admission_gate("codex", {}, True, executable=executable, dependency=dependency) is None
+    assert seen == [str(executable), str(executable)]

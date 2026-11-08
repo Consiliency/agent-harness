@@ -692,8 +692,8 @@ once per user with `phase-loop seat-egress install` (node 22.12+ and npm); witho
 Gemini seat is degraded and does not run, with that fix. The pinned proxy also needs `bwrap`,
 `socat` and `rg` (ripgrep) on the host; without one, the layer reports
 `seat_egress_not_installed` and names the missing tool (agent-harness#1912). Grok is
-not jailed yet (agent-harness#895) and carry `seat_filesystem_unconfined` when given a tree;
-on a review with no staged tree it is degraded and do not run (`seat_sandbox_not_staged`).
+not jailed yet (agent-harness#895) and carries `seat_filesystem_unconfined` when given a tree;
+on a review with no staged tree it is degraded and does not run (`seat_sandbox_not_staged`).
 An `--advisory` run stages no tree on purpose and keeps every seat on the inline route.
 
 **Where the host supports the jail, Claude seats are jailed by default, and the jail is

@@ -278,11 +278,11 @@ def qualify(leg: str = "claude", *, record: bool = True, provider: Path | None =
         raise QualificationError("no /etc/machine-id: this host has no identity to bind a pass to")
     if leg == "codex" and qualification_key is None:
         from .seat_qualification_key import key_for_launch
-        from .executable_dependency_startup import current_dependency_for_provider
+        from .seat_route import _projection_for_launch
         qualification_key = key_for_launch(
             profile_for(leg), variant=None,
             allowlist_digest=seat_egress_proxy.allowlist_ref("codex").content_digest,
-            projection=current_dependency_for_provider("codex"),
+            projection=_projection_for_launch(profile_for(leg), os.environ),
         )
     nonce = secrets.token_hex(12)
     base = Path(tempfile.mkdtemp(prefix="pl-jail-qualify-"))

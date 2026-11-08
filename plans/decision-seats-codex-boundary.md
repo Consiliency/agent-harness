@@ -88,3 +88,24 @@ predicate passed eight synthetic controls before the single authorized retry.
 The accepted OD-4 input records above remain byte-identical. No ai run, live
 provider turn, real-login operation, issue closure or row-window promotion was
 performed in this follow-up. Independent review remains the next step.
+
+## SL-3 single-writer ruling
+
+The coordinator assigned `seat_jail.py` a single writer under SL-3, limited to
+minimal normalization of profile-declared runtime binds. This does not authorize
+other jail changes. Claude and Gemini profile digests and golden bytes stay
+unchanged. The Codex projection-anchor refusal remains enforced and tested.
+
+## Independent-review negative controls (F5)
+
+- Restored the unbrokered read-only Codex tree-write control, the `--add-dir`
+  write refusal and the generic writable-view non-directory refusal. Generic
+  `writable_trees` profile mounts still exist and keep their source checks; they
+  are not a Codex argv grant.
+- Removed the retired singular `writable_tree` / `writable_tree_checked` arguments
+  and forwarding, the workspace-write sandbox-probe mapping/settings, and the
+  unreachable retained-capability/no-namespace branch. Stale keyword requests
+  fail before setup; the non-brokered read-only sandbox probe remains.
+- Restored the live default-prefix control: its bounding set is empty, the
+  firewall cannot be cleared and a nested sandbox cannot start. No retained
+  `setfcap` arm remains. Updated the obsolete Codex-grant comments accordingly.

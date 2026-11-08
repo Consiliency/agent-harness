@@ -166,7 +166,7 @@ def test_live_jail_codex_fixture_provider(tmp_path, monkeypatch, codex_profile, 
                     pi._cleanup_jailed_seat(seat)
                     pytest.fail("jailed connect unavailable: " + probe.stdout.strip())
                 sink = []
-                result = pi._exec_jailed_codex_leg(seat, deadline_s=90, model="fixture",
+                result = pi._exec_jailed_codex_leg(seat, deadline_s=90, model="fixture", effort="max",
                     prompt="Follow the fixture command, then give your review.", broker_evidence={}, failure_detail_sink=sink)
             finally:
                 pi._EGRESS_LAUNCH_PREFIX.reset(token)

@@ -21,11 +21,20 @@ from phase_loop_runtime.executable_dependency_startup import (
 )
 
 
-def test_codex_qualification_records_a_v2_pass(tmp_path, monkeypatch, codex_profile):
+@pytest.mark.parametrize("managed", [False, True])
+def test_codex_qualification_records_a_v2_pass(tmp_path, monkeypatch, codex_profile, managed):
     import json
     import time
     from phase_loop_runtime import falsifier, seat_jail, seat_egress_proxy
-    from phase_loop_runtime import seat_qualification_key
+    from phase_loop_runtime import seat_qualification_key, seat_route
+    from types import SimpleNamespace
+    projection = SimpleNamespace(projection_digest="a" * 64) if managed else None
+    projections = []
+    def projected(profile, env):
+        assert profile.leg == "codex"
+        projections.append(projection)
+        return projection
+    monkeypatch.setattr(seat_route, "_projection_for_launch", projected)
 
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(qualification.seat_uid, "seat_uid_available", lambda: True)
@@ -51,9 +60,10 @@ def test_codex_qualification_records_a_v2_pass(tmp_path, monkeypatch, codex_prof
     monkeypatch.setattr(qualification, "_find_host_pid", lambda *a: 42)
     monkeypatch.setattr(qualification, "_run_probe_in_jail", lambda *a: {})
     result = qualification.qualify("codex")
-    key = seat_qualification_key.key_for_launch(codex_profile, variant=None, projection=None,
+    key = seat_qualification_key.key_for_launch(codex_profile, variant=None, projection=projection,
         allowlist_digest=seat_egress_proxy.allowlist_ref("codex").content_digest)
     assert result["result"] == "pass"
+    assert projections == [projection]
     record = json.loads(Path(result["recorded_pass"]).read_text())
     assert record["schema"] == "seat_jail_pass.v2"
     assert seat_jail.pass_record_verdict(key) == (True, "pass")

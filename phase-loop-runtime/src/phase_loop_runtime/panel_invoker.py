@@ -342,8 +342,7 @@ def _seat_view_layers(cwd, readonly_paths=(), *, check=True,
         checked = _seat_bind_source(source) if check else os.path.abspath(source)
         layers.append((os.path.abspath(source), False,
                        ["--ro-bind", checked, os.path.abspath(source)]))
-    # agent-harness#1470: the one directory a seat may write, decided by
-    # `_seat_command_profile` (a codex seat's own staged tree). Here it must still be a
+    # Explicit generic profile inputs (not the retired Codex argv grant). Each must be a
     # real directory of the operator's, never a link. It shows the host, so it is not
     # private: no output directory is mounted over it.
     for source in writable_trees:
@@ -4536,12 +4535,6 @@ def _compose_launch_prefix(cwd, process_owner=(), retain_caps=()) -> list[str]:
     namespaced = _enters_namespace(prefix)
     # Structurally, not by counting from the end: the owner goes where the switch is.
     position = _sublist_index(prefix, switch) if namespaced else len(prefix)
-    if retain_caps and not namespaced:
-        # The codex supervisor route exists only inside the egress namespace. Without one
-        # it would run the provider with the operator's full capabilities (a root operator
-        # under the opt-out), and main refused it too. Refuse, typed.
-        # (agent-harness#1098) an owned codex seat needs the egress namespace.
-        raise _sandbox_egress.SeatIdentityUnverified("seat_filtered_egress_unavailable")
     owner = list(process_owner)
     if owner[0] != "/usr/bin/bwrap":
         raise ValueError("unsupported owned provider")
@@ -4851,7 +4844,7 @@ class SeatProfile:
     pass_fds: tuple[int, ...] = ()
     keep_fds: tuple[int, ...] = ()
     terminal_fd: int | None = None
-    #: agent-harness#1470: a codex seat's own staged tree, bound writable (at most one).
+    #: Explicit generic profile mounts; the Codex argv-based grant is retired.
     writable_trees: tuple[str | Path, ...] = ()
     journal: _SeatClaudeJournal | None = field(default=None, repr=False)
     broker_socket: str | Path | None = None
@@ -5726,8 +5719,7 @@ def _precreate_seat_output(path):
 @contextmanager
 def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None,
                           gemini_profile=None, role=SeatLaunchRole.PROVIDER_REVIEW,
-                          readonly_paths=(), replaceable_outputs=(), writable_tree=None,
-                          writable_tree_checked=False):
+                          readonly_paths=(), replaceable_outputs=()):
     """The owned seat's command and profile for one launch.
 
     ``outputs`` are bound in place: each is one precreated host file, shared live with the
@@ -5744,12 +5736,9 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
     before the profile is built, so it never holds another launch's review (also when the
     launch is then refused for another reason).
 
-    The former Codex writable-tree grant is retired by OD-4. Stale callers that
-    request it are refused before any output or credential is prepared."""
+    The Codex writable-tree grant is retired by OD-4; argv inputs are read-only."""
     from .executable_dependency_startup import current_dependency_for_provider
 
-    if writable_tree is not None or writable_tree_checked:
-        raise _sandbox_egress.SeatIdentityUnverified("seat_bind_source_unavailable")
     if gemini_profile is None:
         dependency = current_dependency_for_provider(command=command)
         if dependency is not None:
@@ -9434,8 +9423,6 @@ def _run_leg_with_liveness(
     child_scratch: str | None = None,
     stdout_guard: Callable[[bytes], bool] | None = None,
     stderr_guard: Callable[[bytes], bool] | None = None,
-    writable_tree: "Path | None" = None,
-    writable_tree_checked: bool = False,
     broker_evidence: dict[str, object] | None = None,
     seat_jail: "_seat_jail.SeatJail | None" = None,
     probe_jail: "_seat_jail.SeatJail | None" = None,
@@ -9519,9 +9506,6 @@ def _run_leg_with_liveness(
         # The request's own refusals (an unavailable profile) come before the host's.
         owned_command, profile = profile_stack.enter_context(_seat_command_profile(
             cmd, env=env, cwd=cwd, gemini_profile=gemini_profile,
-            # agent-harness#1470: a codex seat's own staged tree; checked again there.
-            **({"writable_tree": writable_tree, "writable_tree_checked": writable_tree_checked}
-               if writable_tree is not None else {}),
         ))
         if broker_evidence is not None:
             broker_evidence.update(profile.evidence)
@@ -13318,7 +13302,8 @@ def _prepare_jailed_codex(
         executable = Path(dependency.subject_source) if dependency is not None else subject.subject_path
         if executable is None or (dependency is None and resolved is None):
             raise _seat_jail.SeatSandboxRefused("seat_provider_unavailable")
-        verdict = codex_admission_gate("codex", os.environ if env is None else env, True)
+        verdict = codex_admission_gate("codex", os.environ if env is None else env, True,
+                                       executable=executable, dependency=dependency)
         if verdict is not None:
             raise _seat_jail.SeatSandboxRefused(verdict.code or "codex_seat_cli_shape")
         raw = cred.read_auth(os.environ if env is None else env)
@@ -14723,15 +14708,14 @@ def _claude_seat_login_margin_s(timeout_s: int | None) -> float:
 
 # agent-harness#1335: how long the codex command-sandbox probe may take. It runs `true`.
 _CODEX_SANDBOX_PROBE_TIMEOUT_S = 30
-_CODEX_SANDBOX_PROBE_PROFILES = {"workspace-write": ":workspace", "read-only": ":read-only"}
+_CODEX_SANDBOX_PROBE_PROFILES = {"read-only": ":read-only"}
 
 
 def _codex_sandbox_probe_command(cmd: "Sequence[str]") -> "list[str] | None":
     """The no-inference probe for the command sandbox THIS codex launch will use, or ``None``.
 
     ``codex sandbox`` runs one command in codex's own sandbox. The probe names the same tree
-    (``--cd``), the same sandbox mode and the same ``sandbox_workspace_write`` settings as the
-    launch, and runs ``true``. ``None`` when the argv is not a codex launch this can mirror
+    (``--cd``) and read-only sandbox mode as the launch, and runs ``true``. ``None`` when the argv is not a codex launch this can mirror
     (no tree or sandbox mode named, or a mode with no sandbox)."""
     words = [os.fspath(word) for word in cmd]
     if not words or Path(words[0]).name != "codex":
@@ -14741,17 +14725,13 @@ def _codex_sandbox_probe_command(cmd: "Sequence[str]") -> "list[str] | None":
         profile = _CODEX_SANDBOX_PROBE_PROFILES[words[words.index("--sandbox") + 1]]
     except (ValueError, IndexError, KeyError):
         return None
-    settings = [item for index, word in enumerate(words[:-1])
-                if word == "-c" and words[index + 1].startswith("sandbox_workspace_write.")
-                for item in ("-c", words[index + 1])]
     return ["codex", "sandbox", "--permission-profile", profile, "--cd", workdir,
-            *settings, "--", "true"]
+            "--", "true"]
 
 
 def _codex_command_sandbox_cannot_start(cmd: "Sequence[str]", *, cwd, env, retain_caps=(),
                                         child_scratch: "str | None" = None,
-                                        quiescence_latch: "_ProviderQuiescenceLatch | None" = None,
-                                        writable_tree: "Path | None" = None) -> bool:
+                                        quiescence_latch: "_ProviderQuiescenceLatch | None" = None) -> bool:
     """Measure the capability, not the reply: can codex start a command in this seat's view?
 
     codex runs every command inside its own bubblewrap sandbox. Where that sandbox cannot
@@ -14759,7 +14739,7 @@ def _codex_command_sandbox_cannot_start(cmd: "Sequence[str]", *, cwd, env, retai
     read-only) the seat reads nothing, yet codex exits 0 with a verdict, and for some of
     those failures it leaves no record of the attempt in any stream. So the probe is
     launched exactly as the seat will be -- the same function, owner, working directory,
-    environment, retained capability and writable tree, under the leg's quiescence latch (a
+    environment and read-only view, under the leg's quiescence latch (a
     cancel kills it like any launch of the leg) -- and only the argv after ``codex`` differs.
 
     True ONLY for a failed probe that printed the launcher's own diagnostic. Everything else
@@ -14775,7 +14755,6 @@ def _codex_command_sandbox_cannot_start(cmd: "Sequence[str]", *, cwd, env, retai
             probe, cwd=cwd, env=env, deadline_s=_CODEX_SANDBOX_PROBE_TIMEOUT_S,
             retain_caps=retain_caps, child_scratch=child_scratch,
             quiescence_latch=quiescence_latch,
-            **({"writable_tree": writable_tree} if writable_tree is not None else {}),
         )
     except (OSError, subprocess.TimeoutExpired, _sandbox_egress.EgressUnavailable):
         return False  # inconclusive; the leg's own launch reports its own refusal
@@ -16615,7 +16594,7 @@ def _default_spawn(
                 seat_notices.append("seat_sandbox_root_fell_back")
             if not _sandbox_evidence().get("sandbox_root_applied", True):
                 seat_notices.append("seat_sandbox_root_unapplied")
-            if leg in ("codex", "grok") and sandbox_usable_by(leg, brokered=True):
+            if not jailed and leg in ("codex", "grok") and sandbox_usable_by(leg, brokered=True):
                 seat_notices.append("seat_filesystem_unconfined")
         capture_staged: dict[str, dict[str, object]] | None = None
         if agy_capture is not None:
@@ -17083,8 +17062,8 @@ def _default_spawn(
                 if provider_output_dir is not None and agy_capture is None and not quiescence_failed:
                     shutil.rmtree(provider_output_dir, ignore_errors=True)
                 if base is not None and not quiescence_failed:
-                    # A seat can leave read-only directories in its staged tree (a codex
-                    # seat writes there, agent-harness#1470), and `rmtree(ignore_errors=
+                    # A staged tree can contain read-only directories, and
+                    # `rmtree(ignore_errors=
                     # True)` cannot unlink through a 0o500 directory -- it would fail
                     # SILENTLY and leak the whole stage every round. `release` drops it
                     # first, through the helper that restores modes on the way down.

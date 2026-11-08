@@ -798,7 +798,7 @@ class TestTheRecordDoesNotOverstateWhatIsProtected:
         assert "filesystem_confined" not in report or report["filesystem_confined"] is False
 
 
-# --- agent-harness#1003: one retainable capability for a nested sandbox -----------------
+# --- OD-4: empty capability bounding set, no nested sandbox retention -----------------
 
 _SETPRIV_PREFIX = ("nsenter", "--net", "-t", "1", "-U", "--preserve-credentials",
                    "setpriv", "--bounding-set=-all", "--inh-caps=-all", "--")
@@ -827,3 +827,23 @@ def test_seats_firstseat_resolver_private_umask(tmp_path):
         os.umask(old)
     assert stat.S_IMODE(path.stat().st_mode) == 0o644
     assert path.read_text().startswith("nameserver ")
+
+
+def test_default_prefix_refuses_nested_sandbox_and_firewall_changes():
+    import shutil
+    import subprocess
+    if not sandbox_egress.egress_isolation_available():
+        pytest.skip("user namespaces unavailable")
+    bwrap = shutil.which("bwrap")
+    if bwrap is None:
+        pytest.skip("bubblewrap not installed")
+    script = ("grep CapBnd: /proc/self/status | awk '{print $2}'; "
+              "iptables -F OUTPUT >/dev/null 2>&1 && echo FLUSHED || echo REFUSED; "
+              f"{bwrap} --unshare-user --ro-bind / / --dev /dev --proc /proc -- /bin/echo NESTED-OK 2>&1 | tail -1")
+    with sandbox_egress.isolated_network() as prefix:
+        assert prefix
+        result = subprocess.run([*prefix, "bash", "-c", script], capture_output=True, text=True, timeout=30)
+    rows = result.stdout.splitlines()
+    assert int(rows[0], 16) == 0, rows
+    assert rows[1] == "REFUSED", rows
+    assert "NESTED-OK" not in rows[2], rows

@@ -1479,7 +1479,11 @@ are recorded on agent-harness#1132.
   recorded Gemini P4/P3 stop -> its code (none today: the containment probe re-run through
   the seat's egress layer and P3 pass, agent-harness#1170); (2) host capability ->
   `seat_sandbox_unavailable_host`, `_tiocsti`, or `_seat_uid`; (3) credential presence ->
-  `claude_seat_token_missing` / `gemini_seat_credential_missing`; (4) profile preconditions,
+  `claude_seat_token_missing` / `gemini_seat_credential_missing` /
+  `codex_seat_credential_missing`. Codex's L6 credential checks then refuse
+  `codex_seat_api_key_refused`, `codex_seat_token_expiring` or
+  `codex_seat_token_scope_excess`; an unsafe auth file uses
+  `seat_sandbox_refused:token_file_unsafe`; (4) other profile preconditions,
   including Gemini's tooled profile -> `gemini_seat_profile_unqualified`; (5) the profile's
   allowlisted egress layer, or its named open-egress exception -> the route's egress code;
   (6) the selected subject and, for a managed release, its contract-§7 authority and declared
@@ -1488,7 +1492,7 @@ are recorded on agent-harness#1132.
   `seat_jail_qualification_failed` or `seat_sandbox_refused:jail_unqualified`. A seat stopped
   at any of steps 0-7 is DEGRADED and not run, with that code as its detail and notice
   (agent-harness#1244, below). Grok
-  is not jailed (agent-harness#895) and carry `seat_filesystem_unconfined` when given a
+  is not jailed (agent-harness#895) and carries `seat_filesystem_unconfined` when given a
   tree; without a staged tree it too is DEGRADED and not run, with
   `seat_sandbox_not_staged`.
 - **Codex boundary (OD-4 accepted 2026-11-08, agent-harness#1916).**

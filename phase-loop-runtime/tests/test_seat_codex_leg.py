@@ -55,8 +55,11 @@ def prepare(tmp_path, monkeypatch, *, expiry=None):
     auth.parent.mkdir(parents=True)
     auth.write_text(json.dumps(_login(claims=_claims(exp=expiry or int(time.time()) + 7200))))
     auth.chmod(0o600)
-    monkeypatch.setattr(pi, "_resolved_jail_subject", lambda *a: (
-        SeatSubject("codex", "standalone", root / "bin/codex", None, None), None))
+    resolutions = []
+    def resolve(*args):
+        resolutions.append(args)
+        return SeatSubject("codex", "standalone", root / "bin/codex", None, None), None
+    monkeypatch.setattr(pi, "_resolved_jail_subject", resolve)
     from test_seat_codex_cli_shape import EXEC_HELP_0_167_0, FEATURES_0_167_0
     monkeypatch.setattr(pi, "run_provider", lambda cmd, **k: SimpleNamespace(
         returncode=0, stdout=EXEC_HELP_0_167_0 if "--help" in cmd else FEATURES_0_167_0))
@@ -67,6 +70,7 @@ def prepare(tmp_path, monkeypatch, *, expiry=None):
     seat = pi._prepare_jailed_codex(review, tmp_path / "seat", authorization, 1, 1,
                                    ("bundle", "instructions"), proxy,
                                    env={"HOME": str(auth.parents[1])})
+    assert len(resolutions) == 1, "admission must measure the already-resolved jailed binary"
     return seat
 
 
@@ -152,12 +156,14 @@ def test_real_liveness_output_and_post_launch_order(tmp_path, monkeypatch, codex
     child = "import sys; sys.stdin.read(); sys.stdout.buffer.write(" + repr(out) + "); sys.stderr.buffer.write(" + repr(err) + "); sys.exit(" + str(1 if case in {"expired", "refresh", "expired_no_command"} else 0) + ")"
     def launch(argv, **kwargs):
         assert kwargs["process_owner"] is seat.jail and kwargs["probe_owner"] is seat.probe_jail
+        assert "model_reasoning_effort=xhigh" in argv
+        assert not any('model_reasoning_effort=max' in arg for arg in argv)
         return subprocess.Popen([sys.executable, "-c", child], stdin=kwargs["stdin"],
                                 stdout=kwargs["stdout"], stderr=kwargs["stderr"], start_new_session=True)
     monkeypatch.setattr(pi, "launch_provider", launch)
     sink, evidence = [], {}
     result = pi._exec_jailed_codex_leg(seat, deadline_s=20, model="fixture", prompt="fixture",
-                                      broker_evidence=evidence, failure_detail_sink=sink)
+                                      broker_evidence=evidence, failure_detail_sink=sink, effort="max")
     if expected:
         assert result == ("DEGRADED", "") and sink[-1].template == expected
     else:
@@ -172,7 +178,7 @@ def test_real_liveness_output_and_post_launch_order(tmp_path, monkeypatch, codex
     ("expired_no_command", "codex_seat_token_expiring"),
     ("failed_commands", "codex_seat_tools_unavailable"),
 ])
-def test_default_spawn_holds_route_lease_through_codex_leg(tmp_path, monkeypatch, codex_profile, case, expected):
+def test_default_spawn_holds_route_lease_through_codex_leg(tmp_path, monkeypatch, codex_profile, case, expected, root_applied=True, retained=False):
     from test_seat_notices import _brokered
     # This dispatch test owns its temporary tree; global host scratch collection
     # is unrelated and can scan thousands of sibling suite sandboxes in CI.
@@ -182,7 +188,8 @@ def test_default_spawn_holds_route_lease_through_codex_leg(tmp_path, monkeypatch
     cleanup = pi._cleanup_jailed_seat
     def cleanup_with_notice(seat, **kwargs):
         cleanup(seat, **kwargs)
-        seat.notices.append("seat_sandbox_retained_after_teardown")
+        if retained:
+            seat.notices.append("seat_sandbox_retained_after_teardown")
     monkeypatch.setattr(pi, "_cleanup_jailed_seat", cleanup_with_notice)
     if case in {"refresh", "secret"}:
         (seat.seat_dir / "seat-home/.codex/auth.json").write_text("{}")
@@ -215,7 +222,7 @@ def test_default_spawn_holds_route_lease_through_codex_leg(tmp_path, monkeypatch
     monkeypatch.setattr(pi._review_stage, "stage_review_tree", staged)
     monkeypatch.setattr(pi._sandbox_policy, "select_sandbox_root",
                         lambda **k: pi._sandbox_policy.SandboxRootChoice(
-                            host=None, path=tmp_path, fell_back=False, reason=""))
+                            host=None, path=k["fallback"] if root_applied else tmp_path, fell_back=False, reason=""))
     monkeypatch.setattr(pi._sandbox_policy, "ensure_staging_space", lambda *a, **k: None)
     monkeypatch.setattr(pi._sandbox_retention, "mark_as_sandbox", lambda *a, **k: None)
     monkeypatch.setattr(pi, "_exception_failure", lambda exc: (_ for _ in ()).throw(exc))
@@ -231,7 +238,16 @@ def test_default_spawn_holds_route_lease_through_codex_leg(tmp_path, monkeypatch
     monkeypatch.setattr(pi, "launch_provider", launch)
     spawned = _brokered(monkeypatch, tmp_path, "codex", "a" * 64)
     assert tuple(spawned)[0] == ("DEGRADED" if expected else "OK")
+    expected_notices = (["seat_sandbox_root_unapplied"] if not root_applied else [])
+    if retained:
+        expected_notices.append("seat_sandbox_retained_after_teardown")
     if expected:
-        assert expected in spawned.seat_notices
-    assert "seat_sandbox_retained_after_teardown" in spawned.seat_notices
+        expected_notices.append(expected)
+    assert tuple(spawned.seat_notices) == tuple(expected_notices)
     assert released == [True]
+
+
+def test_jailed_codex_keeps_real_placement_and_retention_notices(tmp_path, monkeypatch, codex_profile):
+    test_default_spawn_holds_route_lease_through_codex_leg(
+        tmp_path, monkeypatch, codex_profile, "zero_commands", "codex_seat_tools_unavailable",
+        root_applied=False, retained=True)

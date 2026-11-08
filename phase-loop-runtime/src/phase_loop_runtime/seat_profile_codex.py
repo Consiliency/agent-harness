@@ -29,6 +29,7 @@ CODEX_WINDOW_ROWS = WindowRows(
 
 def jailed_codex_command(inputs: ArgvInputs) -> tuple[str, ...]:
     from .seat_codex_runtime import CODEX_RUNTIME_ROOT
+    from .advisor_board.harness_mapping import render_seat_invocation
     return (
         f"{CODEX_RUNTIME_ROOT}/bin/codex",
         *(arg for feature in JAILED_CODEX_DISABLED_FEATURES for arg in ("--disable", feature)),
@@ -37,7 +38,7 @@ def jailed_codex_command(inputs: ArgvInputs) -> tuple[str, ...]:
         "--sandbox", "danger-full-access", "-c", 'approval_policy="never"',
         "-c", 'cli_auth_credentials_store="file"',
         *(("--model", inputs.model) if inputs.model else ()),
-        "-c", f'model_reasoning_effort="{inputs.effort or "high"}"',
+        *render_seat_invocation("codex", inputs.model or "", inputs.effort or "high").effort_args,
         "--output-last-message", inputs.output_path or "/seat/out/panel-codex.txt", "-",
     )
 
@@ -144,7 +145,7 @@ def validate_codex_projection(dependency):
         raise ExecutableDependencyError("authority_invalid", "Codex runtime destinations")
 
 
-def codex_admission_gate(leg, env, execute):
+def codex_admission_gate(leg, env, execute, *, executable=None, dependency=None):
     from . import seat_codex_credential as credential
     from . import panel_invoker as pi, seat_admission, seat_jail
     try:
@@ -159,11 +160,13 @@ def codex_admission_gate(leg, env, execute):
         return seat_admission.Verdict(leg, "refuses", code=exc.code)
     if not execute:
         return seat_admission.Verdict(leg, "unknown", reason="launch_measurement")
-    subject, dependency = pi._resolved_jail_subject(leg, env)
+    owns_dependency = executable is None
+    if executable is None:
+        subject, dependency = pi._resolved_jail_subject(leg, pi._broker_subscription_env(env))
+        executable = dependency.subject_source if dependency is not None else subject.subject_path
     texts = []
     try:
         validate_codex_projection(dependency)
-        executable = dependency.subject_source if dependency is not None else subject.subject_path
         if executable is None:
             return seat_admission.Verdict(leg, "refuses", code="seat_provider_unavailable")
         for args in (("exec", "--help"), ("features", "list")):
@@ -171,7 +174,7 @@ def codex_admission_gate(leg, env, execute):
                                    capture_output=True, text=True, timeout=30)
             texts.append(done.stdout if done.returncode == 0 else "")
     finally:
-        if dependency is not None and getattr(dependency, "_jailcore_owned", False):
+        if owns_dependency and dependency is not None and getattr(dependency, "_jailcore_owned", False):
             dependency.close()
     if codex_cli_shape_problem(*texts):
         return seat_admission.Verdict(leg, "refuses", code="codex_seat_cli_shape")

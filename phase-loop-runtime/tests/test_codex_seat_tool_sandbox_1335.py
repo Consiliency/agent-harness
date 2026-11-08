@@ -325,6 +325,7 @@ def test_the_probe_argv_mirrors_the_launch(tmp_path):
 
 
 @pytest.mark.parametrize("argv", [
+    ["codex", "exec", "--cd", "/r", "--sandbox", "workspace-write", "-"],       # retired route
     ["codex", "exec", "--cd", "/r", "--sandbox", "danger-full-access", "-"],   # nothing to probe
     ["codex", "exec", "--sandbox", "read-only", "-"],                           # no tree named
     ["codex", "exec", "--cd", "/r", "-"],                                       # no sandbox named
