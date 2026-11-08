@@ -1311,3 +1311,24 @@ def test_provider_free_path_discovery_through_the_fixture_upstream(codex_front, 
     assert off_loopback == [], off_loopback
     assert record["outside_events"] == 0 and record["fences_acknowledged"]
     assert upstream.requests, "the CLI made no request through the proxy"
+
+
+def test_the_probe_evidence_names_the_committed_allowlist():
+    """The SL-2.3 record (evidence id ``codex-unlisted-endpoint``) binds the committed rows:
+    a changed allowlist leaves it stale until it is measured again. Repo-only."""
+    record = (Path(__file__).resolve().parents[2] / "plans" / "evidence" / "seat-codex"
+              / "allowlist-probes.json")
+    if not record.is_file():
+        pytest.skip("repo-only evidence is absent on an installed wheel")
+    document = json.loads(record.read_text(encoding="utf-8"))
+    assert document["evidence_id"] == "codex-unlisted-endpoint"
+    assert document["allowlist"]["content_digest"] == CODEX.content_digest
+    committed = [turn for turn in document["vm"]["turns"] if turn["turn"] == "b-committed"]
+    assert len(committed) == 1 and committed[0]["allowlist_digest"] == CODEX.content_digest
+    assert committed[0]["turn_completed"] and committed[0]["commands_completed"] >= 1
+    allowed = {(item["method"], item["host"], item["path"])
+               for item in committed[0]["requests"] if item["decision"] == "allow"}
+    rows = {(rule["method"], rule["host"], rule.get("path", rule.get("path_prefix", "") + "*"))
+            for rule in CODEX.request_set}
+    assert allowed == rows
+    assert document["vl"]["status"] in {"pending", "pass"}

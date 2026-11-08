@@ -1,0 +1,405 @@
+{
+  "schema": "seat_codex_allowlist_probes.v1",
+  "evidence_id": "codex-unlisted-endpoint",
+  "phase": "CODEX",
+  "lane": "SL-2",
+  "task": "SL-2.3",
+  "redaction": "metadata only: methods, hosts, path templates, counts and outcomes; no token, prompt, reply or command output",
+  "allowlist": {
+    "id": "codex",
+    "file": "phase-loop-runtime/src/phase_loop_runtime/seat_egress/codex-allowlist.json",
+    "content_digest": "559e7973c7c0d4e1234d1d23db3d5eab6c83996dfaaf75ff65482f19abffa21e"
+  },
+  "proxy": {
+    "package": "@anthropic-ai/sandbox-runtime",
+    "version": "0.0.79",
+    "upgrades": "refused inside every terminated tunnel",
+    "front_idle_bound": "pre-splice only (FRONT_IDLE_MS default, not passed by the wrapper)"
+  },
+  "route": "codex exec with the IF-0-CODEX-1 argv, in a user and network namespace with no uplink; one loopback port bridged to the real start_proxy(allowlist_id='codex') front",
+  "vm": {
+    "status": "pass",
+    "host_class": "developer host, developer's own subscription login (principle 5)",
+    "login_handling": "copied per turn with an empty refresh token and a null API key; the copy and its working tree were overwritten and removed after each turn; the operator's login file was unchanged (metadata and content hash) across every run",
+    "turns": [
+      {
+        "turn": "a-observation-v1",
+        "allowlist": "private observation set v1 (never committed): catch-all codex prefixes",
+        "allowlist_digest": "c04e139ee4617ce5a09a2203a77ca29486da042e70f467fc0bb2b8143d2b8dcf",
+        "cli_version": "codex-cli 0.167.0",
+        "model": "gpt-6-astra",
+        "effort": "low",
+        "exit_code": 1,
+        "duration_s": 18.2,
+        "turn_completed": false,
+        "event_types": [
+          "error",
+          "item.completed",
+          "thread.started",
+          "turn.failed",
+          "turn.started"
+        ],
+        "error_class": "not recorded (this run predates the field); see notes",
+        "commands_completed": 0,
+        "commands_failed": 0,
+        "sentinel_quoted": false,
+        "secret_in_output": false,
+        "tokens_changed": false,
+        "outside_events": 0,
+        "fences_acknowledged": true,
+        "requests": [
+          {
+            "count": 2,
+            "decision": "allow",
+            "host": "chatgpt.com",
+            "method": "GET",
+            "path": "/backend-api/codex/models"
+          },
+          {
+            "count": 17,
+            "decision": "deny",
+            "host": "chatgpt.com",
+            "method": "GET",
+            "path": "<other>"
+          },
+          {
+            "count": 2,
+            "decision": "allow",
+            "host": "chatgpt.com",
+            "method": "POST",
+            "path": "/backend-api/codex/*"
+          }
+        ]
+      },
+      {
+        "turn": "a-observation-v2",
+        "allowlist": "private observation set v2 (never committed): the two rows below plus eight observe-only hosts",
+        "allowlist_digest": "67ff9d76fe57f4e7e4e90ffa90bc3efdb1730a84b60668cef3386413479545c4",
+        "cli_version": "codex-cli 0.167.0",
+        "model": "gpt-6-astra",
+        "effort": "low",
+        "exit_code": 0,
+        "duration_s": 22.6,
+        "turn_completed": true,
+        "event_types": [
+          "error",
+          "item.completed",
+          "item.started",
+          "thread.started",
+          "turn.completed",
+          "turn.started"
+        ],
+        "error_class": "Reconnecting... 2/5 (stream disconnected before completion: peer closed connection without sending TLS close_notify: https://docs.<long>.html#unexpected-eof)",
+        "commands_completed": 1,
+        "commands_failed": 0,
+        "sentinel_quoted": true,
+        "secret_in_output": false,
+        "tokens_changed": false,
+        "outside_events": 0,
+        "fences_acknowledged": true,
+        "requests": [
+          {
+            "count": 1,
+            "decision": "allow",
+            "host": "chatgpt.com",
+            "method": "GET",
+            "path": "/backend-api/wham/accounts/check"
+          },
+          {
+            "count": 6,
+            "decision": "deny",
+            "host": "chatgpt.com",
+            "method": "GET",
+            "path": "<other>"
+          },
+          {
+            "count": 1,
+            "decision": "deny",
+            "host": "ab.chatgpt.com",
+            "method": "POST",
+            "path": "<other>"
+          },
+          {
+            "count": 2,
+            "decision": "allow",
+            "host": "chatgpt.com",
+            "method": "POST",
+            "path": "/backend-api/codex/responses"
+          },
+          {
+            "count": 3,
+            "decision": "deny",
+            "host": "chatgpt.com",
+            "method": "POST",
+            "path": "<other>"
+          }
+        ]
+      },
+      {
+        "turn": "b-committed",
+        "allowlist": "the committed codex-allowlist.json",
+        "allowlist_digest": "559e7973c7c0d4e1234d1d23db3d5eab6c83996dfaaf75ff65482f19abffa21e",
+        "cli_version": "codex-cli 0.167.0",
+        "model": "gpt-6-astra",
+        "effort": "low",
+        "exit_code": 0,
+        "duration_s": 18.5,
+        "turn_completed": true,
+        "event_types": [
+          "error",
+          "item.completed",
+          "item.started",
+          "thread.started",
+          "turn.completed",
+          "turn.started"
+        ],
+        "error_class": "Reconnecting... 2/5 (stream disconnected before completion: peer closed connection without sending TLS close_notify: https://docs.<long>.html#unexpected-eof)",
+        "commands_completed": 1,
+        "commands_failed": 0,
+        "sentinel_quoted": true,
+        "secret_in_output": false,
+        "tokens_changed": false,
+        "outside_events": 0,
+        "fences_acknowledged": true,
+        "requests": [
+          {
+            "count": 1,
+            "decision": "deny",
+            "host": "<other>",
+            "method": "CONNECT",
+            "path": null
+          },
+          {
+            "count": 1,
+            "decision": "allow",
+            "host": "chatgpt.com",
+            "method": "GET",
+            "path": "/backend-api/wham/accounts/check"
+          },
+          {
+            "count": 6,
+            "decision": "deny",
+            "host": "chatgpt.com",
+            "method": "GET",
+            "path": "<other>"
+          },
+          {
+            "count": 2,
+            "decision": "allow",
+            "host": "chatgpt.com",
+            "method": "POST",
+            "path": "/backend-api/codex/responses"
+          },
+          {
+            "count": 3,
+            "decision": "deny",
+            "host": "chatgpt.com",
+            "method": "POST",
+            "path": "<other>"
+          }
+        ]
+      }
+    ],
+    "notes": [
+      "a-observation-v1 refused the workspace-routing account check, so the turn failed before any inference request; its two catch-all POSTs were analytics",
+      "every completed turn logged one reconnect (stream closed without TLS close_notify) and then completed"
+    ]
+  },
+  "provider_free_discovery": {
+    "login": "synthetic, no credential",
+    "upstream": "loopback fixture (test dial hook)",
+    "off_loopback_peers": [],
+    "runs": [
+      {
+        "fixture": "account check answered 404",
+        "exit_code": 1,
+        "turn_completed": false,
+        "error_class": "Reconnecting... 2/5 (workspace routing discovery failed)",
+        "fixture_requests": [
+          {
+            "count": 2,
+            "host": "chatgpt.com",
+            "method": "GET",
+            "path": "/backend-api/codex/models"
+          },
+          {
+            "count": 15,
+            "host": "chatgpt.com",
+            "method": "GET",
+            "path": "/backend-api/wham/accounts/check"
+          },
+          {
+            "count": 1,
+            "host": "chatgpt.com",
+            "method": "GET",
+            "path": "/backend-api/wham/settings/user"
+          },
+          {
+            "count": 2,
+            "host": "chatgpt.com",
+            "method": "POST",
+            "path": "/backend-api/codex/analytics-events/events"
+          }
+        ]
+      },
+      {
+        "fixture": "account check answered",
+        "exit_code": 0,
+        "turn_completed": true,
+        "fixture_requests": [
+          {
+            "count": 1,
+            "host": "ab.chatgpt.com",
+            "method": "POST",
+            "path": "/otlp/v1/metrics"
+          },
+          {
+            "count": 2,
+            "host": "chatgpt.com",
+            "method": "GET",
+            "path": "/backend-api/codex/models"
+          },
+          {
+            "count": 1,
+            "host": "chatgpt.com",
+            "method": "GET",
+            "path": "/backend-api/wham/accounts/check"
+          },
+          {
+            "count": 1,
+            "host": "chatgpt.com",
+            "method": "GET",
+            "path": "/backend-api/wham/settings/user"
+          },
+          {
+            "count": 2,
+            "host": "chatgpt.com",
+            "method": "POST",
+            "path": "/backend-api/codex/analytics-events/events"
+          },
+          {
+            "count": 1,
+            "host": "chatgpt.com",
+            "method": "POST",
+            "path": "/backend-api/codex/responses"
+          }
+        ]
+      },
+      {
+        "fixture": "account check answered; proxy on the committed set",
+        "exit_code": 0,
+        "turn_completed": true,
+        "fixture_requests": [
+          {
+            "count": 1,
+            "host": "chatgpt.com",
+            "method": "GET",
+            "path": "/backend-api/wham/accounts/check"
+          },
+          {
+            "count": 1,
+            "host": "chatgpt.com",
+            "method": "POST",
+            "path": "/backend-api/codex/responses"
+          }
+        ],
+        "requests": [
+          {
+            "count": 1,
+            "decision": "deny",
+            "host": "<other>",
+            "method": "CONNECT",
+            "path": null
+          },
+          {
+            "count": 1,
+            "decision": "allow",
+            "host": "chatgpt.com",
+            "method": "GET",
+            "path": "/backend-api/wham/accounts/check"
+          },
+          {
+            "count": 4,
+            "decision": "deny",
+            "host": "chatgpt.com",
+            "method": "GET",
+            "path": "<other>"
+          },
+          {
+            "count": 1,
+            "decision": "allow",
+            "host": "chatgpt.com",
+            "method": "POST",
+            "path": "/backend-api/codex/responses"
+          },
+          {
+            "count": 2,
+            "decision": "deny",
+            "host": "chatgpt.com",
+            "method": "POST",
+            "path": "<other>"
+          }
+        ]
+      }
+    ]
+  },
+  "decisions": [
+    {
+      "method": "POST",
+      "host": "chatgpt.com",
+      "path": "/backend-api/codex/responses",
+      "decision": "allow",
+      "reason": "the inference request"
+    },
+    {
+      "method": "GET",
+      "host": "chatgpt.com",
+      "path": "/backend-api/wham/accounts/check",
+      "decision": "allow",
+      "reason": "workspace-routing discovery runs before every model request; refused, the turn fails"
+    },
+    {
+      "method": "GET",
+      "host": "chatgpt.com",
+      "path": "/backend-api/codex/models",
+      "decision": "refuse",
+      "reason": "model catalog; the turn completes without it"
+    },
+    {
+      "method": "GET",
+      "host": "chatgpt.com",
+      "path": "/backend-api/wham/settings/user",
+      "decision": "refuse",
+      "reason": "user settings; the turn completes without it"
+    },
+    {
+      "method": "POST",
+      "host": "chatgpt.com",
+      "path": "/backend-api/codex/analytics-events/events",
+      "decision": "refuse",
+      "reason": "analytics"
+    },
+    {
+      "method": "POST",
+      "host": "ab.chatgpt.com",
+      "path": "/otlp/v1/metrics",
+      "decision": "refuse host",
+      "reason": "metrics; measured_and_refused"
+    },
+    {
+      "method": "*",
+      "host": "auth.openai.com",
+      "path": "*",
+      "decision": "refuse host",
+      "reason": "token endpoint (IF-0-CODEX-3); not contacted"
+    }
+  ],
+  "vl": {
+    "status": "pending",
+    "blocked_on": [
+      "agent-harness#1915",
+      "agent-harness#1912"
+    ],
+    "selector": "PHASE_LOOP_REQUIRE_LIVE_JAIL=1 -k live_jail"
+  }
+}
