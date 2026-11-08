@@ -122,9 +122,14 @@ def test_j6_live_mutation_skipping_the_bounding_drop_shows_capbnd(tmp_path):
 
 
 def test_j6_live_mutation_skipping_setpriv_leaves_h_root_with_three_caps(tmp_path):
+    """Mutation: omit the drop. The seat's cwd step goes with it: it runs AFTER the drop, as
+    the tree's owner, and H-root (no DAC capability) cannot enter a 0700 tree -- which is
+    what the tree is under a 077 umask, and what production stages."""
     with live_seat(tmp_path) as (jail, prefix, _h, _d):
         drop = prefix.index("/usr/bin/setpriv")
-        mutated = prefix[:drop] + prefix[prefix.index("/usr/bin/env", drop):]
+        cwd = prefix.index("/usr/bin/env", drop)
+        assert prefix[cwd:cwd + len(seat_jail.seat_cwd())] == seat_jail.seat_cwd()
+        mutated = prefix[:drop] + prefix[cwd + len(seat_jail.seat_cwd()):]
         done = _run(mutated, jail, 'id -u; grep CapEff /proc/self/status')
     lines = done.stdout.split()
     assert lines[0] == "0" and "00000000000001c0" in done.stdout
@@ -134,7 +139,8 @@ def test_j6_live_mutation_skipping_setpriv_leaves_h_root_with_three_caps(tmp_pat
 def test_j15_dac_is_a_second_layer_under_the_mounts(tmp_path):
     """A test-only READ-WRITE bind of operator-owned objects: DAC alone refuses the seat."""
     canary_dir = tmp_path / "operator-dir"
-    canary_dir.mkdir(mode=0o755)
+    canary_dir.mkdir()
+    canary_dir.chmod(0o755)  # explicit: `mkdir(mode=)` is masked, and a 077 umask hides it all
     canary = canary_dir / "file"
     canary.write_text("operator\n")
     canary.chmod(0o644)

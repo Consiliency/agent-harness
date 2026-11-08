@@ -6,6 +6,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- In a jailed seat's proxy-only network namespace, a connect to any loopback port other than
+  the proxy bridge (IPv4 or `::1`) is now refused at once instead of hanging to the TCP
+  timeout. The catch-all REJECT was dropping its own ICMP port-unreachable reply on `lo`;
+  that one error type is now admitted on `lo`, which never leaves the namespace. Nothing
+  new is reachable (agent-harness#1915 live run on dev0).
 - Jailed seats reach their egress proxy on Ubuntu 24.04+/26.04 hosts that use the seat-jail
   AppArmor override (agent-harness#1915). The uid-drop profile now hands the seat back to
   `bwrap//&unpriv_bwrap` as a transition instead of a stack, so after the uid drop the seat

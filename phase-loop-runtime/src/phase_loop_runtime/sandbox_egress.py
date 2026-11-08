@@ -211,10 +211,27 @@ def egress_rules(policy: EgressPolicy | None = None, *, host_addresses=()) -> li
 def proxy_only_rules(port: int) -> list[str]:
     """The rules of a namespace whose only way out is one loopback port: the bridge to an
     allowlisting proxy on the host (agent-harness#1170). There is no uplink in such a
-    namespace, so these reject what has no route anyway; they are the second wall."""
+    namespace, so these reject what has no route anyway; they are the second wall.
+
+    The catch-all REJECT answers with an ICMP port-unreachable that is itself sent out
+    ``lo`` through this chain, so without the ICMP rule it rejects its own answer and a
+    connect to any other loopback port hangs to the TCP timeout instead of being refused.
+    The rule admits only that error type, and only on ``lo``, which never leaves the
+    namespace (agent-harness#1915 live run)."""
     return [
         f"-A OUTPUT -o lo -s 127.0.0.1 -d 127.0.0.1 -p tcp --dport {port} -j ACCEPT",
         f"-A OUTPUT -o lo -s 127.0.0.1 -d 127.0.0.1 -p tcp --sport {port} -j ACCEPT",
+        "-A OUTPUT -o lo -p icmp --icmp-type port-unreachable -j ACCEPT",
+        "-A OUTPUT -j REJECT",
+        "-P OUTPUT DROP",
+    ]
+
+
+def proxy_only_ipv6_rules() -> list[str]:
+    """The IPv6 half of :func:`proxy_only_rules`: nothing is admitted but the catch-all's
+    own port-unreachable on ``lo``, so ``::1`` refuses rather than hangs."""
+    return [
+        "-A OUTPUT -o lo -p ipv6-icmp --icmpv6-type port-unreachable -j ACCEPT",
         "-A OUTPUT -j REJECT",
         "-P OUTPUT DROP",
     ]
@@ -470,8 +487,7 @@ def isolated_network(
         return
     if proxy_socket is not None:
         rules = "\n".join([*(f"{helpers['iptables']} {rule}" for rule in proxy_only_rules(proxy_port)),
-                           *(f"{helpers['ip6tables']} {rule}" for rule in ("-A OUTPUT -j REJECT",
-                                                                          "-P OUTPUT DROP"))])
+                           *(f"{helpers['ip6tables']} {rule}" for rule in proxy_only_ipv6_rules())])
     else:
         rules = "\n".join([*(f"{helpers['iptables']} {rule}" for rule in egress_rules(policy, host_addresses=addresses)),
                            *(f"{helpers['ip6tables']} {rule}" for rule in ipv6_egress_rules(addresses))])
