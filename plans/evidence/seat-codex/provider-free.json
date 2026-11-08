@@ -20,17 +20,33 @@
         "gemini": "62fc4258995145850bd2bab41642093b2c3dffd647063d7d660587ea74ab33b2"
       }
     },
+    "prior_qualification_still_valid": true,
     "profile_digests": {
       "claude": "5ccd7e8669f41716754787d8bde9bb6a64450774e2c5bf9b8862d7e0acaa2b00",
       "codex": "d905feb08208bce2ae6fcaad0f78083ab86ce463b8dfc031e9dd8265e8f5e488",
       "gemini": "09827a0ed4f51ac2bfac6510e9d0f5b111abcf33a66638046e67ebdca2d097c2"
     },
+    "qualification_key_unchanged": true,
     "unchanged_file_sha256": {
       "phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py": "4284a5ecf008b3e3e5594bcb010de9d8b746ee3f40bc7e456dfdd986d8697b61",
       "phase-loop-runtime/tests/data/seat_profile_digests_jailcore.json": "37eef1d92ec26a66dbe1fe29777373d32cdb5c608dc8f2e6d2d40c19f5bf0a15"
     }
   },
   "external_interruptions": 0,
+  "historical_validation": {
+    "dev0_narrowed_diagnostic_counts": {
+      "fail": 1,
+      "pass": 0,
+      "skip": 0
+    },
+    "dev0_vl_counts": {
+      "fail": 6,
+      "pass": 0,
+      "skip": 0
+    },
+    "summary": "Superseded on dev0 by the scoped CA-permission and CONNECT-signature repairs",
+    "validation_head": "ab34301e521a32ff93b6ed840eb5a351cf3d3f24"
+  },
   "hosts": {
     "ai": {
       "blocker": "I/O PSI full spike with full swap; stopped without retry before validation",
@@ -63,37 +79,33 @@
       "status": "deferred"
     },
     "dev0": {
-      "failures": [
-        {
-          "cases": 5,
-          "fixture_cli_deadline_s": 90,
-          "observation": "fixture received no CLI request"
-        },
-        {
-          "cases": 1,
-          "curl_version": "8.18.0",
-          "expected_exit_code": 56,
-          "observation": "CONNECT 403 observed; refusal signature unrecognized",
-          "observed_exit_code": 7
-        }
-      ],
-      "narrowed_diagnostic": {
-        "cases": [
-          {
-            "outcome": "fail",
-            "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[sentinel]"
-          }
+      "classifier_root_cause": {
+        "fix": "Recognize exit 7 only with the observed CONNECT 403; retain exit 56 support",
+        "installed_package": "curl 8.18.0-1ubuntu2.8",
+        "negative_controls": "Plain connect failure, CONNECT 200/407/502, inner 403, missing status and timed-out 403 remain unrecognized",
+        "source_urls": [
+          "https://github.com/curl/curl/commit/a186ecf4bf0c8ebb3a9a826155b3392164ec257a",
+          "https://github.com/curl/curl/pull/21084",
+          "https://curl.se/changes.html#8_20_0"
         ],
-        "counts": {
-          "fail": 1,
-          "pass": 0,
-          "skip": 0
-        },
-        "observation": "CLI starts a turn, repeatedly reports network error sending request, then reaches the 90-second leg deadline; fixture received no CLI request",
-        "receipt": "dev0-diagnostic.xml",
-        "root_cause": "unresolved",
-        "sha256": "d728bc373e167c63ff523edb9d07e5d98b20b9c2c550a675339e64e75e03c869"
+        "ubuntu_backport": "8.18.0-1ubuntu2.1, 2026-04-29; debian/patches/CVE-2026-6253-pre1.patch",
+        "upstream_change": "curl/curl#21084; readable rejected CONNECT changed from CURLE_RECV_ERROR (56) to CURLE_COULDNT_CONNECT (7)",
+        "upstream_commit": "a186ecf4bf0c8ebb3a9a826155b3392164ec257a",
+        "upstream_commit_date": "2026-03-25",
+        "upstream_release": "8.20.0, 2026-04-29"
       },
+      "diagnostic_receipts": {
+        "ca-mode-before.log": "754d80c6dc7665ae8c4611e10b5fd1b6f4be6062e55e479f1f73dfe1c3dcacce",
+        "classifier-before.log": "f6dd911c80c1d0b35a51b22c7a8ddf3f5ed6072eb7a231f6791d8be82c37b0da",
+        "proxy-ca-unreadable.stderr": "e982030539ee72017365de2588e0b437a66adea5673e50bd7e575f4a8ef775fd",
+        "proxy.stderr": "31d46ea6ad85f5b240d7372272d8cb53d0ae43d2e278053deac88578a46dd846",
+        "trace-ca-unreadable.json": "e96c2ce05c77ef25b86a083fc220877e959047bea3fb79b77bedec4f10d481c0",
+        "trace.json": "f1d90b3efcc2f2a7c8c2ce50a3ee10daed15e252704344f72e802613b76364ee"
+      },
+      "fixes": [
+        "panel_invoker._write_egress_ca explicitly fchmods the public certificate to 0444 inside the private seat directory, independent of umask",
+        "seat_jail_qualification._curl_refusal accepts exit 7 or 56 only with observed CONNECT 403"
+      ],
       "qualification": {
         "checks": {
           "falsifier_run_green_on_head": true,
@@ -126,14 +138,35 @@
         "name": "dev0-qualification.json",
         "sha256": "8c80ccb9fa07a02a42a0e3d5aba6955ac342ce65eab40dd1ede97238c8416e47"
       },
-      "v3": {
+      "qualification_validation": "Prior eight-check pass remains valid: current profile, allowlist, falsifier layout and qualification key are unchanged; pass_record_verdict is (true, pass)",
+      "root_causes": {
+        "ca_writer_before_sha256": "ed4fa97e549d8282c05329b30f390d6cf0c74f155efc07cb6abcda1b3d1b63cb",
+        "ca_writer_identical_before_and_after_rebase": true,
+        "client_tls_alert": 48,
+        "fixed_ca_mode": "0444",
+        "fixed_ca_readable": true,
+        "fixed_cli_exit": 0,
+        "fixture_connections_after": 6,
+        "fixture_connections_before": 0,
+        "fixture_http_requests_after": 3,
+        "fixture_responses_posts_after": 2,
+        "jail_ca_read_errno": 13,
+        "jail_tcp_probe": "connected",
+        "models_endpoint": "still refused by unchanged allowlist; not required for fixture turn",
+        "network_rules_changed": false,
+        "original_private_umask_ca_mode": "0400",
+        "pre_rebase_head": "c66143b7",
+        "rebased_head": "ab8b30ba",
+        "tls_connect_status": 200
+      },
+      "v3_and_classifier": {
         "counts": {
           "fail": 0,
-          "pass": 329,
+          "pass": 380,
           "skip": 2
         },
-        "receipt": "dev0-v3.xml",
-        "sha256": "5f183bd1cf98c795ce70662e61944d036b9e4640cf402fac09f4a3489ae3a1a7",
+        "receipt": "dev0-v3-classifier.xml",
+        "sha256": "37bcbb35afabe7f8d4e266dd9b868f1a790b1a421814e7468b2c6d64c9ba6a93",
         "skipped_cases": [
           "tests.test_seat_profiles::test_live_jail_registered_profiles_pass_provider_free_falsifiers",
           "tests.test_seat_route::test_live_jail_proxy_refuses_another_vendor_and_unlisted_host"
@@ -142,37 +175,37 @@
       "vl": {
         "cases": [
           {
-            "outcome": "fail",
+            "outcome": "pass",
             "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[sentinel]"
           },
           {
-            "outcome": "fail",
+            "outcome": "pass",
             "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[planted_markers]"
           },
           {
-            "outcome": "fail",
+            "outcome": "pass",
             "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[rewritten_auth]"
           },
           {
-            "outcome": "fail",
+            "outcome": "pass",
             "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[nested_namespace]"
           },
           {
-            "outcome": "fail",
+            "outcome": "pass",
             "test": "tests.test_seat_codex_provider_free::test_live_jail_codex_fixture_provider[workspace_write]"
           },
           {
-            "outcome": "fail",
+            "outcome": "pass",
             "test": "tests.test_seat_egress_allowlist_codex::test_live_jail_codex_refused_rows_from_a_jailed_tool_command"
           }
         ],
         "counts": {
-          "fail": 6,
-          "pass": 0,
+          "fail": 0,
+          "pass": 6,
           "skip": 0
         },
         "receipt": "dev0-vl.xml",
-        "sha256": "d0e6a8fa3fbeeef8f98425c25bdbe99758a2ad5219f385e7623258c2a17cb1ad"
+        "sha256": "67fa930af98552f98de9032449da2cb2837076557d0c0334161df2fdd992d085"
       }
     }
   },
@@ -184,19 +217,22 @@
   "real_login_reads": 0,
   "real_login_renewals": 0,
   "rebase_base": "c4a9abc8828d4fb22dcda0970ce2f734fa90c71a",
-  "recorded_at": "2026-11-08T06:10:17+00:00",
+  "recorded_at": "2026-11-08T06:27:11+00:00",
   "redaction_posture": "metadata_only",
-  "required_next_step": "Resolve dev0 fixture failures and obtain designated-host VL and qualification after capacity recovers; remain at OD-4 hold",
+  "required_next_step": "Obtain designated-host ai VL and qualification only after pressure recovers; keep production unregistered and remain at the OD-4 hold",
   "schema": "phase_loop_codex_provider_free.v1",
   "status": "blocked",
   "task": "SL-3.6",
   "validation": {
     "live_gate": "PHASE_LOOP_REQUIRE_LIVE_JAIL=1",
     "python": "CPython 3.12.14; uv run --python 3.12 --frozen",
+    "regressions": "V3 plus test_seat_jail_qualification_bracket_steps.py; serial, timeout 900",
+    "ruff": "0.15.5; four changed Python files; passed",
     "selector": "test_seat_codex_provider_free.py test_seat_egress_allowlist_codex.py -k live_jail",
     "serial": true,
     "timeout_s": 900,
+    "umask": "077",
     "xdist": false
   },
-  "validation_head": "ab34301e521a32ff93b6ed840eb5a351cf3d3f24"
+  "validation_head": "e9b17c242267339ee70367c84f6536c6bc9aec80"
 }
