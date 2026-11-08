@@ -8,10 +8,10 @@ monorepo (Apache-2.0).
 
 ## Install
 
-Version 0.7.29 requires Python 3.12+ (agent-harness#1549). The host-side jail helpers
+Version 0.7.30 requires Python 3.12+ (agent-harness#1549). The host-side jail helpers
 remain 3.10-compatible, but a governed-review falsifier node importing the runtime
 under an older host interpreter ends in `error` and remains a blocking receipt.
-The agy live qualification is renewed on the exact 0.7.29 release-cut commit.
+The agy live qualification is renewed on the exact 0.7.30 release-cut commit.
 Exact-candidate package and compatibility checks remain release-cut gates;
 qualification evidence and historical runtime smoke limitations are recorded in the
 [release handoff](https://github.com/Consiliency/agent-harness/blob/main/docs/releases/outside-agent-release-handoff.md).
@@ -23,12 +23,12 @@ git clone https://github.com/Consiliency/agent-harness
 agent-harness/install-agent-harness.sh --harness claude
 ```
 
-To install just this runtime package directly (0.7.29 is an unpublished candidate;
+To install just this runtime package directly (0.7.30 is an unpublished candidate;
 the exact pin below becomes available only after publication):
 
 ```sh
 pip install phase-loop-runtime              # latest compatible release
-pip install phase-loop-runtime==0.7.29      # candidate pin; unavailable before publication
+pip install phase-loop-runtime==0.7.30      # candidate pin; unavailable before publication
 ```
 
 To pin a specific tag from source instead, substitute a tag from
@@ -177,7 +177,7 @@ recovery against the frozen Git objects. The existing FABPUB tree binding and
 transaction identity are unchanged. Legacy and prebuilt publication do not gain
 the source exception; there is no caller-controlled path allowlist.
 
-The TypeScript parser pins are `tree-sitter==0.25.2` and
+The TypeScript parser pins are `tree-sitter==0.26.0` and
 `tree-sitter-typescript==0.23.2`. Its flat JSON evidence records both versions and
 a null parent blob only for a proven addition. Python evidence is unchanged.
 

@@ -5,7 +5,34 @@ outside-agent conformance runtime. It is metadata-only: the document itself did
 not publish a package, create a tag, dispatch a workflow, edit governed-pipeline,
 or make production merge enforcement live.
 
-## 0.7.29 source preparation
+## 0.7.30 source preparation
+
+- Source base: `origin/main` after agent-harness#1922
+- Package: `phase-loop-runtime`
+- Version: `0.7.30`
+- Runtime `phase_loop_runtime.__version__`: `0.7.30`
+- Candidate release pin: `v0.7.30`
+- Unpublished wheel: `phase_loop_runtime-0.7.30-py3-none-any.whl`
+- Unpublished source archive: `phase_loop_runtime-0.7.30.tar.gz`
+- Previous release: `0.7.29`, published to PyPI on 2026-11-08.
+
+This is source preparation only. The candidate artifacts are local outputs; no tag,
+publication, deployment, installation or release workflow dispatch is claimed.
+Release acceptance and publication authorization remain separate from these
+package checks.
+
+The TypeScript publication parser pin moves from `tree-sitter==0.25.2` to
+`tree-sitter==0.26.0`, so the runtime can share a lock with tools that require
+`tree_sitter>=0.26,<0.27`. `tree-sitter-typescript` stays `==0.23.2`. Both pins
+remain exact (agent-harness#1765). A TypeScript source-exception publication frozen
+under 0.7.29 and not yet finished refuses to resume under 0.7.30, because its
+recorded parser version no longer matches. Restart it.
+
+As for 0.7.29, the agy live qualification record
+(`plans/evidence/agy-1.3.5-linux-x64-qualification.json`) is regenerated on the exact
+release-cut commit and added on top of it as a non-source commit.
+
+## 0.7.29 source preparation (published 2026-11-08)
 
 - Source base: `origin/main` after agent-harness#1901 (the agy 1.3.5 catalog)
 - Package: `phase-loop-runtime`
