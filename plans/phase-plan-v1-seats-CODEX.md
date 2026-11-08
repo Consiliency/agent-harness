@@ -85,6 +85,7 @@ and nothing on main can reach the route early.
   | `window` | `CODEX_WINDOW_ROWS`, below |
 
   `digest_placeholders` and `mount_points` cover the CA and every runtime destination.
+  The profile also creates the runtime bind parents (`/run`, `/run/phase-loop-seat`, the runtime root, `bin`, `codex-path`) as 0755 directories before the file binds, because bwrap would otherwise create a missing bind parent as 0700.
   `CODEX_TREE_ROWS` is one list of `(path, role)` rows. `CODEX_PLANTED_PATHS` is its paths, so
   the falsifier and the window plant the same set. SL-3 may extend it, never shrink it:
 
@@ -192,6 +193,7 @@ and nothing on main can reach the route early.
   `codex_seat_tools_unavailable` when the stream is truncated or no command completed, and
   `None` when the leg counts. Event names are bound in `CODEX_TOOL_EVENTS` from SL-3.1's
   measurement.
+  `CODEX_TOOL_EVENTS` includes the measured top-level `error` name; an `error` followed by `turn.completed` in the same turn does not itself invalidate the leg, while all existing stream-validity, completed-command and unknown-event requirements remain in force.
 
   Post-launch order, first match ends the leg:
   1. a copied secret or the proxy credential in any kept byte: `codex_seat_token_in_output`;

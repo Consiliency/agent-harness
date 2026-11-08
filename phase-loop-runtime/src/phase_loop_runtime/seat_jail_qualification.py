@@ -258,7 +258,8 @@ def qualify(leg: str = "claude", *, record: bool = True, provider: Path | None =
             qualification_key=None, _mutate_jail=None) -> dict[str, object]:
     """Run the EC-EXECFIND-2 jail falsifiers on this host. Returns the evidence; on a pass
     (and ``record``), writes the evidence and pass record to this host's store."""
-    if leg not in seat_jail.JAILED_LEGS:
+    from .seat_profiles import profile_for
+    if profile_for(leg) is None:
         raise QualificationError(f"no {leg} jail is shipped")
     if not seat_uid.seat_uid_available():
         raise QualificationError(seat_uid.PREREQUISITE)
@@ -275,6 +276,14 @@ def qualify(leg: str = "claude", *, record: bool = True, provider: Path | None =
     host = seat_jail.host_identity()
     if host is None:
         raise QualificationError("no /etc/machine-id: this host has no identity to bind a pass to")
+    if leg == "codex" and qualification_key is None:
+        from .seat_qualification_key import key_for_launch
+        from .seat_route import _projection_for_launch
+        qualification_key = key_for_launch(
+            profile_for(leg), variant=None,
+            allowlist_digest=seat_egress_proxy.allowlist_ref("codex").content_digest,
+            projection=_projection_for_launch(profile_for(leg), os.environ),
+        )
     nonce = secrets.token_hex(12)
     base = Path(tempfile.mkdtemp(prefix="pl-jail-qualify-"))
     evidence: dict[str, object] = {
@@ -407,32 +416,53 @@ def _run_probe_in_jail(leg, base: Path, config: dict, provider: Path | None, mut
     seat_dir.mkdir(mode=0o700)
     uids = seat_uid.subordinate_range(seat_uid.SUBUID_FILE)
     gids = seat_uid.subordinate_range(seat_uid.SUBGID_FILE)
-    with seat_uid.lease_seat_id(seat_uid.seat_id_count(uids, gids)) as n, \
-            sandbox_egress.isolated_network(timeout_s=900, required=True, seat_uid_map=True) as egress:
-        token = pi._EGRESS_LAUNCH_PREFIX.set(tuple(egress))
-        holder = seat_uid.holder_pid_from_prefix(egress)
-        jail = seat_jail.build_seat_jail(
-            leg, seat_dir, provider or Path("/usr/bin/python3"), tree=tree,
-            bundle_memfd=seat_jail.memfd_with("b", b"B"),
-            instructions_memfd=seat_jail.memfd_with("i", b"I"),
-            token_fd=seat_jail.token_pipe(b"QUALIFY-SENTINEL") if leg == "claude" else None,
-            seat_ids=(n, n), **(_gemini_shape(seat_dir) if leg == "gemini" else {}))
-        try:
-            if mutate is not None:
-                mutate(jail)
-            else:
-                # The probe runs in the canonical jail and nowhere else.
-                pi._require_canonical_jail(jail)
-            prefix = pi._compose_seat_jail_prefix(jail)
-            done = subprocess.run(
-                [*prefix, "/usr/bin/python3", "-I", "-c", _PROBE_SOURCE, json.dumps(config)],
-                capture_output=True, text=True, timeout=600, pass_fds=jail.pass_fds,
-                env=pi._jail_launch_env(), stdin=subprocess.DEVNULL)
-        finally:
-            seat_jail.close_jail_fds(jail)
-            for parent in (review, seat_dir):
-                seat_uid.teardown_in_h(holder, str(parent))
-            pi._EGRESS_LAUNCH_PREFIX.reset(token)
+    dependency = None
+    shape = _gemini_shape(seat_dir) if leg == "gemini" else {}
+    if leg == "codex":
+        from .seat_codex_runtime import subject_runtime
+        from .seat_profile_codex import validate_codex_projection
+        subject, dependency = pi._resolved_jail_subject(leg, os.environ)
+        validate_codex_projection(dependency)
+        if subject.source != "standalone" and dependency is None:
+            raise QualificationError("Codex projection unavailable")
+        subject_runtime(subject)
+        provider = Path(dependency.subject_source) if dependency is not None else subject.subject_path
+        certificate = seat_dir / "egress-ca.pem"
+        certificate.write_text("qualification placeholder certificate\n", encoding="ascii")
+        certificate.chmod(0o444)
+        shape = {"egress_ca": certificate,
+                 "egress_proxy": "http://srt:qualification@127.0.0.1:3128",
+                 "dependency": dependency}
+    try:
+        with seat_uid.lease_seat_id(seat_uid.seat_id_count(uids, gids)) as n, \
+                sandbox_egress.isolated_network(timeout_s=900, required=True, seat_uid_map=True) as egress:
+            token = pi._EGRESS_LAUNCH_PREFIX.set(tuple(egress))
+            holder = seat_uid.holder_pid_from_prefix(egress)
+            jail = seat_jail.build_seat_jail(
+                leg, seat_dir, provider or Path("/usr/bin/python3"), tree=tree,
+                bundle_memfd=seat_jail.memfd_with("b", b"B"),
+                instructions_memfd=seat_jail.memfd_with("i", b"I"),
+                token_fd=seat_jail.token_pipe(b"QUALIFY-SENTINEL") if leg == "claude" else None,
+                seat_ids=(n, n), **shape)
+            try:
+                if mutate is not None:
+                    mutate(jail)
+                else:
+                    # The probe runs in the canonical jail and nowhere else.
+                    pi._require_canonical_jail(jail)
+                prefix = pi._compose_seat_jail_prefix(jail)
+                done = subprocess.run(
+                    [*prefix, "/usr/bin/python3", "-I", "-c", _PROBE_SOURCE, json.dumps(config)],
+                    capture_output=True, text=True, timeout=600, pass_fds=jail.pass_fds,
+                    env=pi._jail_launch_env(), stdin=subprocess.DEVNULL)
+            finally:
+                seat_jail.close_jail_fds(jail)
+                for parent in (review, seat_dir):
+                    seat_uid.teardown_in_h(holder, str(parent))
+                pi._EGRESS_LAUNCH_PREFIX.reset(token)
+    finally:
+        if dependency is not None and getattr(dependency, "_jailcore_owned", False):
+            dependency.close()
     if done.returncode != 0:
         raise QualificationError(f"probe failed to run: {done.stderr[-400:]}")
     return json.loads(done.stdout.strip().splitlines()[-1])
@@ -1292,7 +1322,10 @@ def _curl_refusal(done: JailedStep) -> str | None:
     if not marker or len(codes) != 2:
         return None
     http_code, connect_code = codes
-    if done.exit_code == _CURL_RECV_ERROR and connect_code == b"403":
+    # curl/curl commit a186ecf4 (8.20.0, also backported to Ubuntu's 8.18.0)
+    # uses exit 7 for a readable rejected CONNECT, where older clients use 56.
+    # An ordinary exit 7 without the observed CONNECT 403 is still unavailable.
+    if done.exit_code in {_CURL_RECV_ERROR, _CURL_COULDNT_CONNECT} and connect_code == b"403":
         return "proxy_connect_refused"
     if (done.exit_code == _CURL_OK and http_code == b"403" and connect_code == b"200"
             and _PROXY_ERROR_HEADER in head.lower()):

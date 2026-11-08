@@ -1,4 +1,5 @@
 [
+  {"count": 1, "function": "codex_admission_gate", "module": "seat_profile_codex", "primitive": "run_provider", "role": "qualification"},
   {"count": 1, "function": "_checkout_reader.read", "module": "claude_seat_sdk", "primitive": "io.read_bytes", "role": "host-io"},
   {"count": 1, "function": "main", "module": "claude_seat_transport", "primitive": "io.read_bytes", "role": "host-io"},
   {"count": 1, "function": "<module>", "module": "seat_resource_caps", "primitive": "import.ctypes", "role": "host-io"},

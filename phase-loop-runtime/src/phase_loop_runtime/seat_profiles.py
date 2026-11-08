@@ -411,6 +411,12 @@ GEMINI = register(JailProfile(
 ))
 
 
+# OD-4 accepted 2026-11-08; profile and launch wiring enable together (CODEX SL-3).
+from .seat_profile_codex import register_codex
+
+register_codex()
+
+
 def _digest_receipt() -> dict[str, object]:
     from . import seat_jail
 

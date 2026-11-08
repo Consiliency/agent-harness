@@ -311,16 +311,18 @@ def test_jailcore_profile_digests_are_byte_identical_to_the_unmodified_base(monk
         "--ro-bind", "/fixed/usr", "/usr", "--perms", "0755", "--dir", "/etc",
         "--ro-bind", "/fixed/etc/hosts", "/etc/hosts",
     ])
-    assert set(seat_profiles.registered_legs()) == {"claude", "gemini"}
+    assert set(seat_profiles.registered_legs()) == {"claude", "gemini", "codex"}
     for arch, rows in golden.items():
         for leg, expected in rows.items():
             assert seat_jail.jail_profile_digest(leg, arch) == expected
 
 
-def test_jailcore_registered_profiles_declare_closed_containment():
+def test_jailcore_registered_profiles_declare_closed_containment(monkeypatch):
     from phase_loop_runtime import seat_profiles
     from phase_loop_runtime.seat_route_contract import OD10_CLASSES
 
+    # Profile declaration checks must not probe an operator's real login.
+    monkeypatch.setattr(panel_invoker, "_parent_auth_state", lambda *_: "unavailable")
     for leg in seat_profiles.registered_legs():
         profile = seat_profiles.profile_for(leg)
         assert profile is not None
@@ -439,6 +441,8 @@ def test_live_jail_registered_profiles_pass_provider_free_falsifiers(monkeypatch
     if missing:
         pytest.fail("live jail unavailable: " + "; ".join(missing))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    # Profile declaration checks must not probe an operator's real login.
+    monkeypatch.setattr(panel_invoker, "_parent_auth_state", lambda *_: "unavailable")
     for leg in seat_profiles.registered_legs():
         evidence = seat_jail_qualification.qualify(leg, record=False)
         assert evidence["result"] == "pass", (leg, evidence.get("checks"))

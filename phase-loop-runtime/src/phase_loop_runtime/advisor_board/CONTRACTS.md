@@ -1473,13 +1473,17 @@ A non-release `agy` image is admitted only by verifying it, never by trusting it
 Plan: `plans/detailed-seat-sandbox-permissions-1132-20260928.md`. Maintainer decisions D1-D8
 are recorded on agent-harness#1132.
 
-- **Route (J7).** A production brokered Claude or Gemini leg decides its route once, after
+- **Route (J7).** A production brokered Claude, Gemini or Codex leg decides its route once, after
   the public-entry authorization and before staging, in this order; the first failure wins
   and yields exactly one code: (0) no staged tree -> `seat_sandbox_not_staged`; (1) a
   recorded Gemini P4/P3 stop -> its code (none today: the containment probe re-run through
   the seat's egress layer and P3 pass, agent-harness#1170); (2) host capability ->
   `seat_sandbox_unavailable_host`, `_tiocsti`, or `_seat_uid`; (3) credential presence ->
-  `claude_seat_token_missing` / `gemini_seat_credential_missing`; (4) profile preconditions,
+  `claude_seat_token_missing` / `gemini_seat_credential_missing` /
+  `codex_seat_credential_missing`. Codex's L6 credential checks then refuse
+  `codex_seat_api_key_refused`, `codex_seat_token_expiring` or
+  `codex_seat_token_scope_excess`; an unsafe auth file uses
+  `seat_sandbox_refused:token_file_unsafe`; (4) other profile preconditions,
   including Gemini's tooled profile -> `gemini_seat_profile_unqualified`; (5) the profile's
   allowlisted egress layer, or its named open-egress exception -> the route's egress code;
   (6) the selected subject and, for a managed release, its contract-§7 authority and declared
@@ -1487,45 +1491,31 @@ are recorded on agent-harness#1132.
   qualification key -> `seat_sandbox_refused:pass_store_unsafe`,
   `seat_jail_qualification_failed` or `seat_sandbox_refused:jail_unqualified`. A seat stopped
   at any of steps 0-7 is DEGRADED and not run, with that code as its detail and notice
-  (agent-harness#1244, below). Codex and grok
-  are not jailed (agent-harness#895) and carry `seat_filesystem_unconfined` when given a
-  tree; without a staged tree they too are DEGRADED and not run, with
+  (agent-harness#1244, below). Grok
+  is not jailed (agent-harness#895) and carries `seat_filesystem_unconfined` when given a
+  tree; without a staged tree it too is DEGRADED and not run, with
   `seat_sandbox_not_staged`.
-- **A codex seat whose command sandbox cannot start is DEGRADED before it runs
-  (agent-harness#1335).** codex runs each command inside its own sandbox. Where that sandbox
-  cannot start in the seat's view, the seat reads nothing, yet codex exits 0 with a verdict.
-  - **One check, a probe before the run.** Where the route gives codex a shell,
-    `codex sandbox --permission-profile <mode> --cd <tree> ... -- true` is launched exactly
-    as the seat will be (same owner, view, working directory, environment and retained
-    capability, under the leg's quiescence latch) and with no model call. A probe that exits
-    non-zero AND prints the sandbox launcher's own diagnostic (a line starting `bwrap: `)
-    ends the leg: `DEGRADED`, `seat_tool_sandbox_unavailable`, empty text, the seat not run.
-  - **Which way it can err.** Every other probe outcome is inconclusive: a timeout, a launch
-    refusal, a codex whose `sandbox` subcommand differs, a launcher error that does not start
-    with `bwrap: `. The seat then runs and is classified and counted exactly as before this
-    check existed, so a seat that cannot run commands can still be `OK` in those cases.
-  - **Not probed.** The sealed route (the seat has no shell) and the capture route (its
-    launch is frozen). The capture route therefore has no such check.
-  - **Nothing after the run.** No rule reads the seat's transcript or reply for this.
-  - **Consequence.** The degraded seat is not a usable review: the reviewer floor does not
-    count it, the president receives `unusable (DEGRADED)` for it, the governed gate records
-    a warning. The runtime has no substitute for a codex seat: it accepts no native fill for
-    one, and on the plan and production_code tiers the composition cannot omit or replace it.
-  Other harnesses' seats have no such probe.
-- **A workspace-write codex seat's own staged tree is writable in its view
-  (agent-harness#1470).** Every other path a provider names is bound read-only into the
-  seat-launch owner's view; outputs are the declared files only. The one exception is the
-  tree a codex seat is rooted at when it runs `--sandbox workspace-write`: codex's sandbox
-  creates its mount points in the workspace root before any command starts. The grant is
-  explicit (`_exec_leg` passes the tree it staged, to the sandbox probe and to the launch
-  alike) and is checked again in `_seat_command_profile`: harness codex, an argv that says
-  `workspace-write` (or the probe's profile for that mode) and names the tree with `--cd`,
-  `_require_staged_tree` provenance, a parent directory this process marked as its sandbox
-  (`sandbox_retention.staged_by_this_process`), a real directory of the operator's, not a
-  link. A grant that fails any check refuses the launch
-  (`seat_bind_source_unavailable`); it is never widened to another path and never dropped.
-  The unbrokered read-only codex route, grok's `--cwd` tree and `--add-dir` stay read-only.
-  Nothing recorded after the run is read from the tree; `remove_review_stage` removes it.
+- **Codex boundary (OD-4 accepted 2026-11-08, agent-harness#1916).**
+  `CODEX_PROFILE` is registered with its executable and admission gate. Contract L1
+  therefore ignores Codex's former `unconfined` exception for review seats; no
+  seat-launch-owner fallback remains. The mode is `jailed` on a capable, qualified
+  host, or the contract's typed later rung/refusal. The argv runs with
+  `--sandbox danger-full-access`: the jail is the boundary, the CLI's inner sandbox
+  is off, and nested namespaces are denied. Tools can read their own seat login
+  copy in `/seat/home/.codex/auth.json` and share the proxy-only allowlisted egress.
+  The access-token scope ceiling is measured, the refresh token is empty, and an
+  observed token change refuses `codex_seat_token_refreshed_in_jail`.
+  The admission gate checks subscription login, token margin, scope and CLI shape
+  (`codex_seat_cli_shape`) before delivery. Parent-held JSON evidence must show a
+  valid completed turn and a successful completed command; unavailable tools give
+  `codex_seat_tools_unavailable`, an unknown event gives `codex_seat_unknown_event`,
+  and a copied secret in output gives `codex_seat_token_in_output`. Such legs never
+  count as reviews. The staged workspace-write grant and capability retention are
+  retired (agent-harness#1470, agent-harness#1003).
+  The non-brokered Codex route retains the agent-harness#1469 pre-run sandbox probe
+  and its `seat_tool_sandbox_unavailable` refusal. Advisory and qualification-candidate
+  runs retain their contract routes. Decision and evidence:
+  `plans/decision-seats-codex-boundary.md`. Row-window qualification remains SL-4.
 - **No sealed fallback for a jail-eligible seat (plan amendment A3b).** A Claude seat that
   would take the jailed route but cannot (no credential, a failed first-use qualification,
   a login not renewed within the wait, an unqualified or unsafe gate, an unsafe override)
@@ -1724,8 +1714,9 @@ are recorded on agent-harness#1132.
   rung. `MODE_REMOTE` is published as `remote`, but JAILCORE ships it inactive:
   `REMOTE_DESCEND_CODES` and the packaged capacity grants are empty. Capacity exhaustion
   therefore stays degraded unless an operator-private, receipt-bound grant is installed by
-  a later remote implementation. The named window exceptions are the expiring Codex and
-  Grok `unconfined` routes and Claude `open egress`; expiry is terminal and typed. Route,
+  a later remote implementation. The named exceptions are Grok `unconfined` and
+  Claude `open egress`; expiry is terminal and typed. The registered Codex review
+  profile ignores its legacy exception row. Route,
   egress and skip codes are the closed `seat_route_contract.CODES` table, and unclassified
   codes fail closed.
 - **Seat modes (plan amendment A1).** Before any seat launches, every board publishes one

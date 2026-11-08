@@ -1523,7 +1523,7 @@ def actual_profile_digest(jail: "SeatJail", arch: str | None = None) -> str:
     if jail.token_fd is not None:
         substitute[str(jail.token_fd)] = _PLACEHOLDERS["token_fd"]
     home = str(Path(jail.review_dir) / HOST_HOME_DIRNAME)
-    substitute.update(profile.digest_placeholders(OwnerPaths(
+    paths = OwnerPaths(
         tree=jail.tree_dir,
         home=home,
         out=str(Path(jail.review_dir) / HOST_OUT_DIRNAME),
@@ -1535,7 +1535,8 @@ def actual_profile_digest(jail: "SeatJail", arch: str | None = None) -> str:
         provider_config=jail.gemini_config_dir or None,
         egress_ca=jail.egress_ca or None,
         egress_proxy=jail.egress_proxy or None,
-    )))
+    )
+    substitute.update(profile.digest_placeholders(paths))
     owner = list(jail.process_owner)
     if jail.dependency_mount_args:
         parsed_destinations = _dependency_mount_destinations(jail.dependency_mount_args)
@@ -1550,6 +1551,20 @@ def actual_profile_digest(jail: "SeatJail", arch: str | None = None) -> str:
             jail.provider_argv0,
         )
         owner = _without_contiguous(owner, jail.dependency_mount_args)
+        # Restore only the profile-declared standalone shape. Match the complete
+        # projected sequence first so an altered or additional mount stays observable.
+        projected_binds = tuple(profile.owner_binds(dataclasses.replace(paths, provider_bind=False)))
+        standalone_binds = tuple(profile.owner_binds(paths))
+        if projected_binds != standalone_binds:
+            if not projected_binds:
+                raise SeatSandboxRefused(refused("identity"), "profile projection anchor missing")
+            width = len(projected_binds)
+            matches = [index for index in range(len(owner) - width + 1)
+                       if tuple(owner[index:index + width]) == projected_binds]
+            if len(matches) != 1:
+                raise SeatSandboxRefused(refused("identity"), "profile projection binds changed")
+            index = matches[0]
+            owner[index:index + width] = standalone_binds
         try:
             anchor = next(
                 index

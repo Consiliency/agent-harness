@@ -140,7 +140,7 @@ def test_a_brokered_seat_can_see_every_host_path_its_launch_argv_names(tmp_path,
         assert argv[0] == leg
         assert cwd == out_dir
         named = _assert_every_named_path_is_bound(argv, cwd=cwd, root=tmp_path)
-        if tree is not None:
+        if tree is not None and leg != "codex":
             # The instrument's own check: it does find the staged tree in this argv, so a
             # pass above is a statement about that path and not about an empty list.
             assert tree in [path for _flag, path in named], (leg, argv)
@@ -171,7 +171,7 @@ def _builder_cases(tmp_path: Path):
     return tree, out_dir, {
         "codex-builder-tree": (pi._brokered_codex_command(
             model=None, out_dir=out_dir, out_file=out_dir / "x.txt", codex_effort_args=(),
-            staged_tree=tree), True),
+            staged_tree=tree), False),
         "grok-builder-tree": (pi._brokered_grok_command(
             model=None, out_dir=out_dir, grok_effort_args=(), staged_tree=tree), True),
         "gemini-bounded-tree": (pi._brokered_gemini_command(
