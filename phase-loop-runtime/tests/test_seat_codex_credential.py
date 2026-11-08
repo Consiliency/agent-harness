@@ -449,6 +449,19 @@ def test_every_codex_code_this_lane_raises_is_an_if0_codex5_code():
         assert code in seat_jail.NOTICES
 
 
+def test_the_measured_constants_are_pinned():
+    # SL-1.5 (plans/evidence/seat-codex/credential-scope.json): the token sits inside the
+    # sign-in's requested scopes, and the CLI renews nothing while the token is valid, so
+    # the margin is the longest a leg can run.
+    from phase_loop_runtime import panel_invoker
+
+    assert cred.CODEX_SCOPE_CEILING == frozenset({
+        "openid", "profile", "email", "offline_access",
+        "api.connectors.read", "api.connectors.invoke",
+    })
+    assert cred.CODEX_LOGIN_MIN_S == panel_invoker._LEG_TIMEOUT_MAX_S == 1800
+
+
 def test_the_unsafe_file_refusal_reuses_the_existing_code():
     assert UNSAFE in seat_jail.NOTICES
     assert cred.SEAT_AUTH_RELPATH == ".codex/auth.json"

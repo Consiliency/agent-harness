@@ -44,16 +44,20 @@ SEAT_AUTH_RELPATH = ".codex/" + AUTH_FILE_NAME
 AUTH_CAP_BYTES = 64 * 1024
 _ACCESS_TOKEN_CAP = 16 * 1024
 
-#: The scopes a seat's access token may carry. Provisional until the SL-1.5 measurement on
-#: a developer host replaces it: the scope set the 0.167.0 CLI's sign-in requests.
+#: The scopes a seat's access token may carry: the set the 0.167.0 CLI's sign-in requests.
+#: SL-1.5 measured a developer login's access token inside it
+#: (``plans/evidence/seat-codex/credential-scope.json``).
 CODEX_SCOPE_CEILING: frozenset[str] = frozenset({
     "openid", "profile", "email", "offline_access",
     "api.connectors.read", "api.connectors.invoke",
 })
 
-#: Seconds an access token must still be valid for a seat to receive it. Provisional until
-#: the SL-1.5 measurement of the CLI's refresh threshold replaces it.
-CODEX_LOGIN_MIN_S: int = 2 * 24 * 60 * 60
+#: Seconds an access token must still be valid for a seat to receive it. SL-1.5 measured
+#: no renewal by the 0.167.0 CLI while its access token is valid, at any ``last_refresh``
+#: age up to 29 days, and a seat's copy cannot be renewed in the jail. So the copy must
+#: outlast the longest leg: the panel's wall-clock backstop
+#: (``panel_invoker._LEG_TIMEOUT_MAX_S``).
+CODEX_LOGIN_MIN_S: int = 1800
 
 API_KEY_REFUSED = "codex_seat_api_key_refused"
 TOKEN_EXPIRING = "codex_seat_token_expiring"
