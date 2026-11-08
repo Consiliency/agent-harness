@@ -3,7 +3,7 @@
 This index gives every issue and PR named in `specs/phase-plans-seats-v1.md` one owning
 exit criterion, or records it as a reference or out of scope. It is rendered from
 `plans/evidence/seat-inventory/index.json`, bound to roadmap SHA-256
-`785e5ada02bc80319d23f9f5cfb577aa5fdefcb425cca9bf4f779962a01c16f9`.
+`b91c98ad7b9097ba411ca21f39cf390878dabac449e59d6fdfd1750915c16a09`.
 
 Exit criteria are cited by ID; the roadmap is authoritative for their text. Other exit
 criteria may cite an item they do not own. An item has more than one row only where the
@@ -80,6 +80,7 @@ roadmap itself separates parts.
 | agent-harness#1822 | whole | owned | EC-FIRSTSEAT-2 | Closes when this EC holds, not at CLOSEOUT. | [1822](https://github.com/Consiliency/agent-harness/issues/1822) |
 | agent-harness#1823 | whole | owned | EC-FIRSTSEAT-3 | Closes when this EC holds, not at CLOSEOUT. | [1823](https://github.com/Consiliency/agent-harness/issues/1823) |
 | agent-harness#1824 | whole | reference | — | Closed PR; cited for the registry status workaround. | [1824](https://github.com/Consiliency/agent-harness/pull/1824) |
+| agent-harness#1903 | whole | reference | — | Open issue; cited as tracking the deferred Gemini overlay narrowing for the next agy requalification window. | [1903](https://github.com/Consiliency/agent-harness/issues/1903) |
 
 ## Split items
 
