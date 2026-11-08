@@ -119,38 +119,16 @@ def test_record_auth_ok_callable_bound():
 
 # --- probe timeout + fail-closed (AUTOSEL change #2) ------------------------
 
-def _sleep_that_runs_as_provider(tmp_path) -> str:
-    """A ``sleep`` that still sleeps when its file is named ``provider``, as the seat binds a
-    probe's executable at ``/run/phase-loop-seat/provider``. A multicall coreutils dispatches
-    on the executable's file name and exits at once (``coreutils: unknown program
-    'provider'``). That is Ubuntu 26.04's default ``sleep`` (uutils), and there GNU's is
-    ``gnusleep``. Each candidate is tried as a copy named ``provider``."""
-    import shutil
-
-    import pytest
-
-    for name in ("sleep", "gnusleep"):
-        path = shutil.which(name)
-        if path is None:
-            continue
-        named = tmp_path / name / "provider"
-        named.parent.mkdir()
-        try:
-            shutil.copy2(path, named)
-            done = subprocess.run([str(named), "0"], capture_output=True, timeout=10)
-        except (OSError, subprocess.SubprocessError):
-            continue
-        if done.returncode == 0:
-            return name
-    pytest.skip("no sleep on this host runs from a file named `provider`, as the seat runs it")
-
-
 def test_run_probe_passes_a_strict_timeout(tmp_path):
     # The real probe runner must bound the subprocess so a hung CLI cannot freeze
     # the dispatch hot path. A sleep longer than the bound raises TimeoutExpired.
     import pytest
 
-    sleep = _sleep_that_runs_as_provider(tmp_path)
+    from ._seat_prereq import sleep_runnable_as_seat_provider
+
+    # The seat runs a probe from a file named `provider`; a multicall `sleep` (Ubuntu
+    # 26.04's uutils) exits at once there, so the stand-in is one that still sleeps.
+    sleep = sleep_runnable_as_seat_provider(tmp_path)
     with pytest.raises(subprocess.TimeoutExpired):
         ea._run_probe(f"{sleep} {ea._PROBE_TIMEOUT_SECONDS + 5}")
 

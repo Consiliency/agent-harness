@@ -323,17 +323,29 @@ def test_git_run_uses_sealed_executable_and_strict_environment(
     assert not marker.exists()
 
 
-def _direct_usr_bin_true() -> Path:
+def _direct_usr_bin_true(candidate: Path = Path("/usr/bin/true"),
+                         directory: Path = Path("/usr/bin")) -> Path:
     """A no-op stand-in for /usr/bin/gh in the shape the canonical authority demands: a
     direct regular file in /usr/bin. On Ubuntu 26.04, /usr/bin/true is a symlink to the
     regular file /usr/bin/gnutrue, and the authority rightly refuses a symlink, so the
-    stand-in is that file."""
-    trusted = Path("/usr/bin/true")
-    if trusted.is_symlink():
-        trusted = trusted.resolve(strict=True)
-    if trusted.parent != Path("/usr/bin") or trusted.is_symlink() or not trusted.is_file():
-        pytest.skip("no direct regular no-op executable in /usr/bin on this host")
+    stand-in is that file. Without one the test cannot run as written: that is a FAILURE,
+    not a host-capability skip."""
+    trusted = candidate.resolve(strict=True) if candidate.is_symlink() else candidate
+    if trusted.parent != directory or trusted.is_symlink() or not trusted.is_file():
+        pytest.fail(f"no direct regular no-op executable in {directory} to stand in for "
+                    f"/usr/bin/gh ({candidate} -> {trusted})")
     return trusted
+
+
+def test_github_stand_in_fails_rather_than_skips_without_a_direct_regular_file(tmp_path):
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "true").write_text("")
+    link = tmp_path / "true"
+    link.symlink_to(outside / "true")
+    with pytest.raises(pytest.fail.Exception, match="no direct regular no-op executable"):
+        _direct_usr_bin_true(link, directory=tmp_path)
+    assert _direct_usr_bin_true(outside / "true", directory=outside) == outside / "true"
 
 
 def test_github_run_uses_sealed_executable_and_strict_environment(

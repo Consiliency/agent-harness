@@ -1422,10 +1422,10 @@ def require_live_worker() -> None:
 
     try:
         from ._seat_prereq import (SEAT_UID_PREREQUISITE, seat_uid_ready,
-                                   seat_uid_switch_refusal)
+                                   seat_uid_switch_refusal, skip_unless_capable)
     except ImportError:
         from _seat_prereq import (SEAT_UID_PREREQUISITE, seat_uid_ready,
-                                  seat_uid_switch_refusal)
+                                  seat_uid_switch_refusal, skip_unless_capable)
     missing = []
     if not hasattr(os, "memfd_create"):
         missing.append("this interpreter has no os.memfd_create")
@@ -1443,10 +1443,7 @@ def require_live_worker() -> None:
         if refusal is not None:
             missing.append(refusal)
     if missing:
-        message = "live worker unavailable: " + "; ".join(missing)
-        if REQUIRE_LIVE:
-            pytest.fail(message)
-        pytest.skip(message)
+        skip_unless_capable("live worker unavailable: " + "; ".join(missing))
 
 
 @contextlib.contextmanager
