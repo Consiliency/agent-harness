@@ -22,7 +22,9 @@ to `0` and persist it.
 ## LA1-APPARMOR — Ubuntu user namespaces
 
 Serves EC-TEAMHOST-3. Read-only check: `python3 -m phase_loop_runtime.seat_jail_apparmor` prints
-the required Ubuntu 24.04+ override. Root action: install the printed AppArmor policy.
+the required Ubuntu 24.04+ override. Root action: install the printed AppArmor policy. A host
+that installed it before agent-harness#1915 runs the printed script again, so that jailed seats
+reach their egress proxy.
 
 ## LA1-USERNS — unprivileged user namespaces
 

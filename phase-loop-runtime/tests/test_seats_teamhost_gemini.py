@@ -545,13 +545,14 @@ class _FakeProxyProcess:
         return None
 
 
-@pytest.mark.parametrize("failed", ["node", "install", "ca"])
+@pytest.mark.parametrize("failed", ["node", "tools", "install", "ca"])
 def test_start_proxy_checks_every_startup_integrity_gate_before_spawn(monkeypatch, failed):
     def stop(name):
         if failed == name:
             raise seat_egress_proxy.EgressLayerUnavailable(name, name)
 
     monkeypatch.setattr(seat_egress_proxy, "_node", lambda: stop("node") or "/usr/bin/node")
+    monkeypatch.setattr(seat_egress_proxy, "_require_srt_host_tools", lambda _node: stop("tools"))
     monkeypatch.setattr(
         seat_egress_proxy, "verify_install", lambda: stop("install") or Path("/srt.mjs"))
     monkeypatch.setattr(
@@ -579,6 +580,7 @@ def test_start_proxy_refuses_each_missing_runtime_integrity_fact(tmp_path, monke
     key.write_text("unused")
     process = _FakeProxyProcess()
     monkeypatch.setattr(seat_egress_proxy, "_node", lambda: "/usr/bin/node")
+    monkeypatch.setattr(seat_egress_proxy, "_require_srt_host_tools", lambda _node: None)
     monkeypatch.setattr(seat_egress_proxy, "verify_install", lambda: Path("/srt.mjs"))
     monkeypatch.setattr(seat_egress_proxy, "ensure_ca", lambda *_a: (cert, key))
     monkeypatch.setattr(subprocess, "Popen", lambda *_a, **_kw: process)

@@ -15,10 +15,20 @@ grants exactly those three capabilities, and that profile hands the seat back to
 effective and bounding sets and no-new-privs, it cannot switch uid again, other bwrap
 children keep `bwrap//&unpriv_bwrap`, and a plain `setpriv` elsewhere is unaffected.
 
+The hand-back is a transition, not a stack (agent-harness#1915): its target has no leading
+`&`, so at that exec the seat leaves this profile and runs as `bwrap//&unpriv_bwrap`, like
+every other bwrap child, with none of this profile's rules. A stacked target kept this
+profile in the seat's label (`bwrap//&phase_loop_seat_uid_drop//&unpriv_bwrap`), and its
+narrow rule set has no network rule, so a networked seat could not reach its proxy. bwrap
+sets no-new-privs while it still runs as `bwrap`, and the new label keeps `bwrap`, so the
+transition stays within what no-new-privs allows. The rule is `px`, with no inherit fallback:
+if that label were missing, the exec would be refused rather than run under this profile.
+
 The runtime never installs this: it needs root and changes host security policy, so a host
 administrator runs the printed script. `python -m phase_loop_runtime.seat_jail_apparmor`
 prints it; `--revert` prints the script that removes it; `--profile` and `--local` print the
-two policy files.
+two policy files. A host that installed an earlier version runs the printed script again:
+it rewrites the profile, keeps the local block it already appended, and reloads both.
 """
 
 from __future__ import annotations
@@ -41,6 +51,8 @@ PROFILE_TEXT = f"""\
 # local/bwrap-userns-restrict, so a plain `setpriv` elsewhere on the host is untouched. It is
 # stacked with `bwrap`, so the seat's effective capabilities are the intersection (setuid,
 # setgid, setpcap only), and the exec rule hands the seat back to the confinement it had before.
+# The hand-back target has no leading `&` (agent-harness#1915): the seat leaves this profile at
+# that exec and runs as `bwrap//&unpriv_bwrap`, like every other bwrap child.
 abi <abi/5.0>,
 include <tunables/global>
 
@@ -51,7 +63,7 @@ profile {PROFILE_NAME} flags=(attach_disconnected,mediate_deleted) {{
   allow file rwlkm /{{**,}},
   allow signal,
   allow unix,
-  allow pix /** -> &bwrap//&unpriv_bwrap,
+  allow px /** -> bwrap//&unpriv_bwrap,
 }}
 """
 

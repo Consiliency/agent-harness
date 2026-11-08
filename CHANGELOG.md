@@ -6,6 +6,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- Jailed seats reach their egress proxy on Ubuntu 24.04+/26.04 hosts that use the seat-jail
+  AppArmor override (agent-harness#1915). The uid-drop profile now hands the seat back to
+  `bwrap//&unpriv_bwrap` as a transition instead of a stack, so after the uid drop the seat
+  runs with the same confinement as every other bwrap child. A host that installed the
+  override earlier runs the script from `python3 -m phase_loop_runtime.seat_jail_apparmor`
+  again as root; it rewrites the profile and reloads it.
+- Seat egress readiness now checks the host tools the pinned srt needs (`bwrap`, `socat`,
+  `rg`, and `which` to find them) on the proxy's own PATH. A host without one reports
+  `seat_egress_not_installed`, naming the tool, before srt runs, instead of a proxy that
+  never starts (agent-harness#1912).
 - The jailed Codex seat gains its runtime file set (one read-only bind per vendored runtime
   file, never `codex-resources/`) and its narrowed credential copy, with ordered
   subscription, margin and scope checks that decode the access token on the host. The

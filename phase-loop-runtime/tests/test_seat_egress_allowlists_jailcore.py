@@ -157,6 +157,7 @@ def _proxy_inputs(monkeypatch, tmp_path):
     cert.write_text("certificate", encoding="ascii")
     key.write_text("key", encoding="ascii")
     monkeypatch.setattr(seat_egress_proxy, "_node", lambda: "/trusted/node")
+    monkeypatch.setattr(seat_egress_proxy, "_require_srt_host_tools", lambda _node: None)
     monkeypatch.setattr(seat_egress_proxy, "verify_install", lambda: Path("/srt.js"))
     monkeypatch.setattr(seat_egress_proxy, "ensure_ca", lambda _srt, _node: (cert, key))
     monkeypatch.setattr(seat_egress_proxy, "ca_fingerprint", lambda _cert: "a" * 64)

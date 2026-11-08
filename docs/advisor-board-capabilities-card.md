@@ -689,7 +689,9 @@ qualification nor the gate ever changes these permissions for you. The store def
 seat uid, stale records, other hosts and accidental reuse. Gemini seats are jailed with tools
 too (agent-harness#1170): the seat's egress goes through an allowlisting proxy, installed
 once per user with `phase-loop seat-egress install` (node 22.12+ and npm); without it the
-Gemini seat is degraded and does not run, with that fix. Codex and grok are
+Gemini seat is degraded and does not run, with that fix. The pinned proxy also needs `bwrap`,
+`socat` and `rg` (ripgrep) on the host; without one, the layer reports
+`seat_egress_not_installed` and names the missing tool (agent-harness#1912). Codex and grok are
 not jailed yet (agent-harness#895) and carry `seat_filesystem_unconfined` when given a tree;
 on a review with no staged tree they are degraded and do not run (`seat_sandbox_not_staged`).
 An `--advisory` run stages no tree on purpose and keeps every seat on the inline route.
@@ -800,6 +802,10 @@ profile (Ubuntu 22.04, and 24.04 as measured) needs nothing. The jail itself is 
   `bwrap//&unpriv_bwrap` on its next exec. It uses the local include the shipped profile
   provides, appends between markers instead of overwriting, and is idempotent. The runtime
   never runs it.
+- **Hosts that installed it before agent-harness#1915:** run the printed script again. The
+  earlier profile stacked the hand-back instead of leaving the uid-drop profile, so jailed
+  seats could not reach their egress proxy. The script rewrites the profile, keeps the local
+  block it already appended, and reloads both.
 - **What it changes for the seat:** nothing it could use. Measured on Ubuntu 26.04 (bubblewrap
   0.11.1): after the drop the seat has the seat uid, empty permitted, effective and bounding
   sets and no-new-privs, and cannot switch uid again; other bwrap children keep
