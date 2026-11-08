@@ -15002,6 +15002,48 @@
       "status": "committed",
       "type": "phase",
       "updated_at": "2026-11-07T02:24:52Z"
+    },
+    {
+      "acceptance_criteria_count": 6,
+      "created_at": "2026-11-08T15:23:52Z",
+      "file": "plans/phase-plan-v1-agyroll-RECBIND.md",
+      "frozen_inputs": {
+        "plans/artifacts/agyroll-v1-contract.md": {
+          "sha256": "8640374dcf30beb8a7a544c867b25e242152cf1a37fe7debf82b69ef15f5ee72"
+        },
+        "plans/seats-teamhost-contract.md": {
+          "sha256": "3ca3d3a57346acca8bf4e16e50304f00e3e2e19bc5bcd20b1831b4f837c3b1b1"
+        }
+      },
+      "gate_status": "declared_not_produced",
+      "handoff_ref": null,
+      "if_gates_produced": [
+        "IF-0-RECBIND-1",
+        "IF-0-RECBIND-2"
+      ],
+      "lanes": [
+        "SL-1",
+        "SL-2",
+        "SL-3",
+        "SL-4"
+      ],
+      "lifecycle": [],
+      "owner_skill": "claude-plan-phase",
+      "phase_alias": "RECBIND",
+      "planning_artifact_only": true,
+      "reflection_ref": null,
+      "review_status": "pending",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-agyroll-v1.md",
+        "slug": "phase-plans-agyroll-v1",
+        "status": "committed",
+        "type": "phase"
+      },
+      "slug": "v1-agyroll-RECBIND",
+      "status": "committed",
+      "task_summary": "AGYROLL RECBIND: bind agy catalog records to the seat QCI, move the catalog to package data, hermetic route conformance, retire full source pins",
+      "type": "phase",
+      "updated_at": "2026-11-08T15:23:52Z"
     }
   ],
   "schema_version": 1
