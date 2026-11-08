@@ -51,9 +51,9 @@ review dispatch, merge or live use.
 - IF-0-ENVELOPE-1 as landed on main (its acceptance stays a CLOSEOUT/hosted
   matter);
 - IF-0-JOURNAL-1 implemented and landed;
-- its landed names match artifact §8 (J1–J6, named against JOURNAL's §10).
-  A rename needs a WORKER artifact amendment before work, never an in-lane
-  workaround.
+- its landed names match artifact §8 (J1–J6, reconciled with JOURNAL's
+  revised §10/§11 on agent-harness#1925). A rename needs a WORKER artifact
+  amendment before work, never an in-lane workaround.
 
 **Owner rulings in force (2026-11-08).** These are the board-recommended
 answers on agent-harness#1926, accepted by the owner. The artifact applies them.
@@ -119,7 +119,8 @@ the frontmatter pins an input, never a future WORKER head.
     `run_patch_return` and `cancel_attempt`.
   - `codex.py` adds `run_codex_patch_return`.
   - `supervised_worker_cli.py` exports `main` (keyword-only `state_root` test
-    seam), `read_envelope_file`, `open_result_file` and `_production_codec`.
+    seam), `STATUS_PAGE_SIZE`, `read_envelope_file`, `open_result_file` and
+    `_production_codec`.
     `_production_codec` returns None until CLOSEOUT SL-2 wires it.
   - Evidence: `plans/evidence/supervised-worker/WORKER.md`.
 
@@ -189,8 +190,9 @@ SL-2 — Isolated CLI, documentation and evidence reducer
     - Replay one envelope sequentially and from 4 concurrent processes. Kill a
       launcher between reservation and spawn and rerun the envelope. Retry
       under the same run with a new attempt id.
-    - Cover Rule W at each writer call, including a `running` append that
-      lands and then fails.
+    - Cover Rule W at each writer call through injected `os.write`/`os.fsync`
+      failures in the real writer, including a `running` append that lands and
+      then fails. Cover a dropped `event_cap_reached` event.
     - Exercise every §3.2 row, each §3.3 scope and every pre-spawn recheck.
     - For cancel, start a real fixture launcher (admitted only through the
       in-process `launcher_commands` parameter) and race it in queued,
@@ -225,7 +227,7 @@ SL-2 — Isolated CLI, documentation and evidence reducer
     unchanged.
   - `plans/manifest.json` is owned only for the `v12-WORKER` entry's lifecycle
     metadata.
-- **Interfaces provided**: `main`, `read_envelope_file`, `open_result_file`, `_production_codec`; `plans/evidence/supervised-worker/WORKER.md` (runner-stamped per-node outcomes, deferred obligations and source bindings)
+- **Interfaces provided**: `main`, `STATUS_PAGE_SIZE`, `read_envelope_file`, `open_result_file`, `_production_codec`; `plans/evidence/supervised-worker/WORKER.md` (runner-stamped per-node outcomes, deferred obligations and source bindings)
 - **Interfaces consumed**: `run_patch_return`, `cancel_attempt`, `default_state_root`, `evidence_resolver`, `PRODUCTION_LAUNCHER_COMMANDS`, `CANCEL_WAIT_SECONDS`, `WorkerResult`, `CancelOutcome`, `run_bounded_capture`; `preflight_supervised_route`, `Refused` (pre-existing); IF-0-JOURNAL-1 (upstream; artifact §8 names)
 - **Parallel-safe**: no
 - **Tasks**:

@@ -12,7 +12,9 @@ supersedes them by amendment. The roadmap's EC-WORKER-1..4 remain the only
 acceptance authority; this file never restates them.
 
 Revision 2 applies the agent-harness#1926 board edits and the owner rulings
-recorded in the plan's Context (2026-11-08).
+recorded in the plan's Context (2026-11-08). Revision 3 reconciles §3–§8 with
+JOURNAL's revised §10/§11 (agent-harness#1925 at 86d11deda7bbb1088b9cb1e300064c34f52c71e6,
+an input pin).
 
 ## 1. Consumed interfaces
 
@@ -36,10 +38,11 @@ Pre-existing, landed, and not edited by WORKER:
 
 Upstream, from IF-0-JOURNAL-1 as JOURNAL's §10 names it (§8):
 `run_status.{AttemptIdentity, Units, Ref, Termination, TerminalRefusal,
-ResultBinding, Reservation, ChainHead, JournalRefused, open_journal_root,
-process_start_identity, make_ref, reserve_attempt, open_writer, AttemptWriter,
-read_attempt, resolve_run}` and `run_status_projection.{attempt_status,
-read_page, proc_observer, EvidenceResolver}`.
+ResultBinding, Reservation, WriterIdentity, ChainHead, JournalRefused,
+default_journal_root, open_journal_root, process_start_identity, make_ref,
+reserve_attempt, open_writer, AttemptWriter, read_attempt, resolve_run}` and
+`run_status_projection.{attempt_status, read_page, PageResult, proc_observer,
+EvidenceResolver}`.
 
 WORKER edits none of `supervised_launch.py`, `supervised_launch_binding.py`,
 `supervised_dependency.py`, `executable_dependency_startup.py`,
@@ -191,7 +194,7 @@ CancelOutcome = Literal["cancelled", "already_terminal", "cancel_pending",
                         "unknown_attempt", "owner_unverified", "owner_not_live"]
 
 def default_state_root() -> Path: ...
-def evidence_resolver(state_root: Path) -> run_status_projection.EvidenceResolver: ...
+def evidence_resolver(state_root: Path) -> run_status_projection.EvidenceResolver: ...   # (AttemptIdentity, Ref) -> str
 def run_patch_return(prepared: PreparedLaunch, *, config_bytes: bytes,
                      state_root: Path, cancel: threading.Event | None = None) -> WorkerResult: ...
 def cancel_attempt(*, state_root: Path, run_id: str | None = None,
@@ -226,11 +229,14 @@ Steps 1–2 have no attempt-scoped effects on refusal.
    - require `state_root` outside the workspace, target and `reference_roots`,
      with operator uid and mode 0700 (`state_root_unsafe`);
    - `open_journal_root(<state_root>/journal, create=True, excluded=(workspace,
-     target, *reference_roots))`. A `JournalRefused` refuses with its code.
+     target, *reference_roots))`. A `JournalRefused` refuses with its code. For
+     `default_state_root()` this path equals `default_journal_root()`; a test
+     asserts that equality.
 3. `reserve_attempt(root, AttemptIdentity(...), units=Units(...),
    launch_digest, caller_context_sha256)`. A `JournalRefused` (duplicate,
    terminal, crash-reserved or unavailable) refuses with zero invocations and
-   no further effects. Then `open_writer(root, reservation)` and
+   no further effects. Then `open_writer(root, reservation)` in the same
+   launcher process (JOURNAL refuses `writer_identity_mismatch` elsewhere) and
    `writer.state("queued", worker_invocations=0)`.
 4. Launcher record `launchers/<attempt_id>.json` (§5).
 5. Before-audit (§3.3). An error refuses `audit_error`.
@@ -261,8 +267,10 @@ Steps 1–2 have no attempt-scoped effects on refusal.
       refs=(make_ref("evidence_envelope", evidence_bytes, None),))`;
     - when `returned`, `writer.event("proposal bytes captured",
       refs=(make_ref("proposal_bytes", proposal, None),))`;
-    - when withheld for an audit reason, the phrase `workspace audit failed;
-      proposal withheld`, with no refs;
+    - for `withheld_audit_error` or `withheld_unexplained_change`, the phrase
+      `workspace audit failed; proposal withheld`; for every other `withheld_*`
+      status, the phrase `proposal withheld`. Neither carries refs, and
+      `absent` emits no withholding phrase;
     - `writer.terminal("finished", worker_invocations, termination,
       refusal=None, result_binding=ResultBinding(...))`;
     - `JournalAnchor` from the returned `ChainHead`, then `writer.close()`.
@@ -275,10 +283,20 @@ worker_invocations=0, termination=None, refusal=TerminalRefusal(...),
 result_binding=None)`, from `queued`. That is the only refusal the journal
 records.
 
-**Rule W (writer failure).** From step 3 onward, if any `AttemptWriter` call
-returns `JournalRefused` or raises, WORKER makes no further journal call for
-the attempt. The append may already have landed, as a `running` line whose
-fsync failed.
+**Rule W (writer failure).** This rule matches JOURNAL §6 poisoning. From step
+3 onward, a writer failure is any of:
+
+- a `JournalRefused` from `open_writer`, `state` or `terminal`;
+- a `JournalRefused` from `event` other than `event_cap_reached`;
+- any raised exception.
+
+`writer_poisoned` and the I/O refusal that poisoned the writer are writer
+failures. After the first one, WORKER makes no further `state`, `event` or
+`terminal` call; a poisoned writer would refuse them anyway. It calls only
+`close()`, which releases the lock. The failed append may already be on disk,
+for example a `running` line whose fsync failed, or a partial line that readers
+report as `journal_torn_line`. An `event_cap_reached` refusal drops only that
+event; JOURNAL reserves the slot for the terminal line.
 
 - Before spawn: no spawn, no evidence. Return `state=refused`,
   `refusal="journal_unavailable"`, `journal_anchor=None`,
@@ -369,21 +387,22 @@ Layout (dirs 0700, files 0600):
   per attempt, named `a-` + the first 32 hex digits of
   sha256(assignment_digest `\0` run_id `\0` attempt_id). It holds `evidence.json`
   and optional `proposal.bin`.
-- `<state_root>/evidence-ledger/<ref_sha256>/<run>`: one O_EXCL entry per
-  (journal ref, run), holding `{kind}`, written after sealing. A
-  `<run>.retired` O_EXCL mark is added only for a run that WORKER's own
-  `prune(apply=True)` returned as retired.
+- `<state_root>/evidence-ledger/<run>.json`: created O_EXCL after sealing.
+  It lists the refs this attempt journals, as `{kind: sha256}`.
+- `<state_root>/evidence-ledger/<run>.retired`: an O_EXCL mark, added only for
+  a run that WORKER's own `prune(apply=True)` returned as retired.
 
-`evidence_resolver(state_root)(ref)` returns:
+`evidence_resolver(state_root)(identity, ref)` derives `<run>` from the
+`AttemptIdentity` (same digest as above), then returns:
 
-- `present` when any listed run's evidence directory exists, is `sealed`, and
-  matches its retention record;
-- `retention_dropped` when every listed run carries a `.retired` mark;
-- `unknown` otherwise, including no ledger entry and deletions WORKER did not
-  record.
+- `unknown` when the ref's (kind, sha256) is not in `<run>.json`;
+- `retention_dropped` when `<run>.retired` exists;
+- `present` when the run directory exists, is `sealed`, and matches its
+  retention record;
+- `unknown` otherwise, including deletions WORKER did not record.
 
-Equal digests across attempts resolve by content: retained bytes with that
-digest count as present.
+Equal proposal digests in different attempts resolve independently, per
+identity.
 
 Journal refs always carry `locator: null`; the pinned locator is
 repository-relative or null. `evidence.json` is a local, metadata-only record
@@ -417,8 +436,10 @@ serialized, including `journal_anchor` as the controller-held anchor.
 
 The launcher:
 
-1. takes its nonce from `Reservation.writer.writer_instance_id`, which
-   `reserve_attempt` mints at random (J3);
+1. takes its nonce from `Reservation.writer.writer_instance_id`. That value is
+   128-bit random lowercase hex, minted once by `reserve_attempt` and copied
+   unchanged by `open_writer` (J3). A later cancel reads it from
+   `read_attempt(root, attempt_id).writer`;
 2. at step 4 creates `launchers/<attempt_id>.json` with
    O_CREAT|O_EXCL|O_NOFOLLOW, mode 0600, holding {run_id, attempt_id,
    assignment_digest, pid, process_start_time (`process_start_identity(pid)`),
@@ -437,8 +458,8 @@ reservation and record creation finds no record and returns `owner_unverified`.
 `cancel_attempt` resolves the target as follows:
 
 - `--attempt` reads `read_attempt` and `attempt_status`;
-- `--run` takes the last id from `resolve_run`; an empty or refused resolution
-  gives `unknown_attempt`.
+- `--run` takes the last id from `resolve_run`. An absent run, which returns
+  `()`, or a `JournalRefused` gives `unknown_attempt`.
 
 On the first look, the outcome is:
 
@@ -481,7 +502,8 @@ environment or config can.
 ## 6. CLI — `supervised_worker_cli.py` (SL-2)
 
 `python -I -m phase_loop_runtime.supervised_worker_cli` with
-`main(argv: Sequence[str] | None = None, *, state_root: Path | None = None) -> int`.
+`main(argv: Sequence[str] | None = None, *, state_root: Path | None = None) -> int`
+and the constant `STATUS_PAGE_SIZE`.
 The keyword-only `state_root` is the in-process test seam; no argv, environment
 or config reaches it. The verbs are exactly:
 
@@ -511,13 +533,19 @@ imports only stdlib, `rfc8785` and `phase_loop_runtime`. It does not replace
     dir_fd. It opens O_CREAT|O_EXCL|O_NOFOLLOW with mode 0600, outside the
     workspace, target, reference roots and state root.
 - `status` is provider-free. It opens the journal root without creating it and
-  prints one JSON object `{"attempt": <attempt_status>, "page": <page | null>}`:
+  prints one JSON object `{"attempt": <attempt_status>, "page": <page | null>,
+  "next_cursor": <str | null>}`:
   - `--attempt` uses `attempt_status(root, id)`, with JOURNAL's liveness
     observer;
-  - `--run` uses the last id from `resolve_run`;
-  - `--page` adds `read_page` keyed by that attempt's assignment digest, at
-    JOURNAL's default size, with `evidence=evidence_resolver(state_root)`;
-  - `--cursor` passes JOURNAL's `next_cursor` from a previous page.
+  - `--run` uses the last id from `resolve_run`. An absent run (`()`) or a
+    refusal prints `unknown_attempt` and exits as a refusal;
+  - `--page` adds `read_page` with the request `{assignment_digest:
+    read_attempt(root, id).identity.assignment_digest, page_size:
+    STATUS_PAGE_SIZE, cursor}` and `evidence=evidence_resolver(state_root)`.
+    The output then includes `next_cursor`;
+  - `--cursor` passes a `next_cursor` from a previous page; otherwise `cursor`
+    is null.
+  - `STATUS_PAGE_SIZE = 50`, within JOURNAL's bound of 100.
   Display text comes only from JOURNAL's closed phrase sets.
 - `cancel` prints the `CancelOutcome`.
 - Subprocess CLI tests exercise only paths that end before state-root
@@ -533,9 +561,11 @@ imports only stdlib, `rfc8785` and `phase_loop_runtime`. It does not replace
 
 Path-entered tests use real offline subprocesses (synthetic provider scripts in
 `tests/fixtures/supervised_worker_local/`, labelled non-authoritative) and the
-real landed JOURNAL writer. Writer faults are injected by wrapping the real
-`AttemptWriter` in process: the wrapper delegates, so the bytes land, then
-returns `JournalRefused`. No live provider, credential or network is used.
+real landed JOURNAL writer. Writer faults are injected below that real writer,
+by failing `os.write` or `os.fsync` for the journal segment, so JOURNAL's own
+poisoning runs and a landed-then-failed `running` line is genuine. Only
+`event_cap_reached` uses a delegating wrapper. No live provider, credential or
+network is used.
 
 Isolated-Python children insert the checkout's absolute source root and assert
 `phase_loop_runtime.__file__` lies beneath it (ENVELOPE rule). Mode-checking
@@ -580,9 +610,10 @@ path-entered assertion red. Mutating a test-side oracle never counts.
 
 ## 8. JOURNAL interfaces consumed (J1–J6)
 
-These are named against JOURNAL's §10 at the agent-harness#1925 plan head. They
-must be re-checked against its revised §10 before WORKER execution (work-start
-gate). A rename is a WORKER artifact amendment, not an in-lane workaround.
+These are reconciled with JOURNAL's revised §10 and §11 at agent-harness#1925
+head 86d11deda7bbb1088b9cb1e300064c34f52c71e6, an input pin. The work-start
+gate re-checks them against the landed code. A later rename is a WORKER artifact
+amendment, not an in-lane workaround.
 
 - J1 — `reserve_attempt(root, identity, *, units, launch_digest,
   caller_context_sha256) -> Reservation | JournalRefused` and
@@ -590,19 +621,28 @@ gate). A rename is a WORKER artifact amendment, not an in-lane workaround.
   reservation is atomic, durable and claims the attempt id globally.
 - J2 — `AttemptWriter.state`, `.event`, `.terminal` and `.close`. Appends
   return `ChainHead(segment_index, segment_sha256, last_seq)` or
-  `JournalRefused`.
+  `JournalRefused`. Any I/O failure poisons the writer: later calls refuse
+  `writer_poisoned`, and `close()` only releases the lock (Rule W).
 - J3 — `Reservation.writer` (`WriterIdentity`). `writer_instance_id` is minted
-  at random by `reserve_attempt`; `process_start_identity(pid)` is importable.
-- J4 — `resolve_run`, `read_attempt` and `attempt_status` with `proc_observer`
-  liveness (`stale_unknown` for a dead or reused owner).
-- J5 — `read_page(root, request, *, evidence: EvidenceResolver)`, with
-  `next_cursor` for continuation; `omitted.retention_dropped` counts refs the
-  resolver reports dropped.
-- J6 — `open_journal_root(path, *, create, excluded)`; WORKER passes
-  `<state_root>/journal`, outside every output_retention root.
+  once by `reserve_attempt` and copied unchanged by `open_writer`, which refuses
+  `writer_identity_mismatch` in another process. `process_start_identity(pid)`
+  is importable, and `read_attempt(...).writer` returns the identity later.
+- J4 — `resolve_run`, which returns `()` for an absent run; `read_attempt`,
+  whose `.identity.assignment_digest` is the page key; and `attempt_status`
+  with `proc_observer` liveness (`stale_unknown` for a dead or reused owner).
+- J5 — `read_page(root, request, *, evidence)`, with
+  `EvidenceResolver = Callable[[AttemptIdentity, Ref], str]` and a
+  `page_request` of `{assignment_digest, page_size <= 100, cursor}`. It returns
+  `PageResult(page, next_cursor, diagnostics)`; `omitted.retention_dropped`
+  counts refs the resolver reports dropped.
+- J6 — `default_journal_root()`, with no arguments, from `pw_dir`, equals
+  `<default_state_root()>/journal`. `open_journal_root(path, *, create,
+  excluded)` takes WORKER's `<state_root>/journal`, outside every
+  output_retention root.
 
-WORKER uses only JOURNAL's closed phrase sets and builds refs only with
-`make_ref(kind, data, None)`.
+WORKER uses only JOURNAL's closed phrase sets, including `proposal withheld`,
+and builds refs only with `make_ref(kind, data, None)`. Reservation and writer
+are Linux-only (`liveness_unsupported` elsewhere), as is `pidfd_open`.
 
 ## 9. Deferred pinned obligations
 
