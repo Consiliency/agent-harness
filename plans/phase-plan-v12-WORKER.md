@@ -4,7 +4,7 @@ phase: WORKER
 roadmap: specs/phase-plans-v12.md
 roadmap_sha256: 98a5bc1994698c65a5a460872a4871a02bdd4b15ee7f0d3230891b6712640ac5
 automation:
-  suite_command: ["timeout", "900", "python3", "-m", "pytest", "-q", "-n", "0", "-p", "no:cacheprovider", "phase-loop-runtime/tests/test_convergence_adapters.py", "phase-loop-runtime/tests/test_supervised_worker.py", "phase-loop-runtime/tests/test_supervised_worker_cli.py", "phase-loop-runtime/tests/test_supervised_worker_receipt.py", "phase-loop-runtime/tests/test_output_retention.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py", "phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py", "phase-loop-runtime/tests/test_supervised_launch_receipt.py"]
+  suite_command: ["timeout", "900", "python3", "-m", "pytest", "-q", "-p", "no:cacheprovider", "phase-loop-runtime/tests/test_convergence_adapters.py", "phase-loop-runtime/tests/test_supervised_worker.py", "phase-loop-runtime/tests/test_supervised_worker_cli.py", "phase-loop-runtime/tests/test_supervised_worker_receipt.py", "phase-loop-runtime/tests/test_output_retention.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py", "phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py", "phase-loop-runtime/tests/test_supervised_launch_receipt.py"]
 ---
 
 # WORKER: Bounded patch-return worker
@@ -33,7 +33,7 @@ review dispatch, merge or live use.
   - its receipt says `synthetic_fixture_only`, `final_tree_validated: false`
     and every EC-ENVELOPE `pending_hosted_ci`.
 - JOURNAL is unimplemented: there is no `run_status*.py` on main. Its plan is
-  being written in parallel.
+  agent-harness#1925.
 - SCHEMA completed ahead of its DAG position under owner-authorized manual
   intake, which has four effects:
   1. The v1 bundle is available, but WORKER does not consume it at runtime.
@@ -51,9 +51,32 @@ review dispatch, merge or live use.
 - IF-0-ENVELOPE-1 as landed on main (its acceptance stays a CLOSEOUT/hosted
   matter);
 - IF-0-JOURNAL-1 implemented and landed;
-- JOURNAL's landed API reconciled with requirements J1–J6 in the frozen
-  artifact. A mismatch requires a WORKER plan/artifact amendment before work,
-  never an in-lane workaround.
+- its landed names match artifact §8 (J1–J6, named against JOURNAL's §10).
+  A rename needs a WORKER artifact amendment before work, never an in-lane
+  workaround.
+
+**Owner rulings in force (2026-11-08).** These are the board-recommended
+answers on agent-harness#1926, accepted by the owner. The artifact applies them.
+
+- OQ-1: the child gets the scrubbed launcher environment, narrowed by the
+  digest-bound `worker_environment_allow`, which defaults to empty. Binding
+  values to admission waits for CLOSEOUT v2.
+- OQ-2: CLOSEOUT SL-1 raises ENVELOPE's 1 MiB executable cap, using a
+  streaming hash and a configured ceiling, and still refuses symlinked
+  executables.
+- OQ-3: stdout carries the git-style unified-diff proposal.
+- OQ-4: SL-2 makes the narrow ENVELOPE receipt binding amendment
+  (agent-harness#1818 precedent).
+- MM-2: WORKER's reservation is the only attempt reservation; LANEEXEC keeps
+  only `exec_claimed`.
+- MM-3: a cancelled or timed-out attempt never returns any part of a patch.
+- MM-4: openshell patch return stays closed until a remote audit and evidence
+  contract exists.
+- Audit scope: the promise is "tree and refs", with the object-store
+  disclosure.
+- `-n`: dropped everywhere, in all four phases.
+- State root: production selection of a non-default root is digest-bound
+  operator configuration, designed in LANEEXEC.
 
 Existing code inspected:
 
@@ -62,7 +85,9 @@ Existing code inspected:
   group. It returns only `ConvergenceResultEnvelope`.
 - `prepare_launch`/`consume_admission` give a process-local single-use token
   over `LaunchInputs`, whose argv excludes instructions.
-- `output_retention.mark/prune` supply the evidence-retention discipline.
+- `output_retention.mark/prune` supply the evidence-retention discipline;
+  `prune` records nothing after retiring a run, hence WORKER's ledger.
+- `rfc8785` is already a locked dependency.
 - The seat reference and agent-CLI scratch inventories classify every new
   launch and I/O site.
 - ENVELOPE's receipt hash-binds `docs/supervised-worker.md`.
@@ -71,11 +96,11 @@ Existing code inspected:
 
 - Frozen contract: `plans/artifacts/v12-WORKER-contract.md`, sealed by this
   plan's manifest `frozen_inputs` digest. It holds every exact signature,
-  ordering rule, proposal/audit/cancel rule, test obligation W1–W14, mutation
-  list and JOURNAL requirement. Read it in full before any lane starts. This
-  plan points at it and does not repeat it.
+  ordering rule, proposal/audit/cancel rule, test obligation W1–W15, mutation
+  list and the JOURNAL names consumed. Read it in full before any lane starts.
+  This plan points at it and does not repeat it.
 - Landed IF-0-ENVELOPE-1 symbols and IF-0-SCHEMA-1 receipt rows on main.
-- IF-0-JOURNAL-1 as frozen by the roadmap.
+- IF-0-JOURNAL-1 as frozen by the roadmap and named by agent-harness#1925 §10.
 
 No external commit, private schema or vector is consumed. The roadmap hash in
 the frontmatter pins an input, never a future WORKER head.
@@ -87,35 +112,20 @@ the frontmatter pins an input, never a future WORKER head.
     `SpawnRefused`, `BoundedCapture`, `PROPOSAL_CAP_MAX`, `WORKER_ENV_DROP`,
     `WORKER_ENV_DROP_PREFIXES`, `worker_child_environment` and
     `run_bounded_capture`. `run_bounded` keeps its behavior.
-  - `convergence/adapters/patch_return.py` exports `WorkerSettings`,
-    `WorkerAttemptIdentity`, `BaselineIdentity`, `ProposalReturn`,
-    `JournalAnchor`, `WorkerResult`, `CancelOutcome`,
-    `PRODUCTION_LAUNCHER_COMMANDS`, `default_state_root`, `run_patch_return`
-    and `cancel_attempt`.
+  - `convergence/adapters/patch_return.py` exports `CANCEL_WAIT_SECONDS`,
+    `WorkerSettings`, `WorkerAttemptIdentity`, `BaselineIdentity`,
+    `ProposalReturn`, `JournalAnchor`, `WorkerResult`, `CancelOutcome`,
+    `PRODUCTION_LAUNCHER_COMMANDS`, `default_state_root`, `evidence_resolver`,
+    `run_patch_return` and `cancel_attempt`.
   - `codex.py` adds `run_codex_patch_return`.
-  - `supervised_worker_cli.py` exports `main`, `read_envelope_file`,
-    `open_result_file` and `_production_codec` (None until CLOSEOUT).
+  - `supervised_worker_cli.py` exports `main` (keyword-only `state_root` test
+    seam), `read_envelope_file`, `open_result_file` and `_production_codec`.
+    `_production_codec` returns None until CLOSEOUT SL-2 wires it.
   - Evidence: `plans/evidence/supervised-worker/WORKER.md`.
 
-Frozen decisions the lanes must not reinterpret:
-
-- **Proposal channel.** The proposal is the admitted chain's stdout. It is
-  bounded by an operator-lowerable cap with a 64 MiB ceiling and digested in
-  full; stderr is digested and never retained.
-- **Order.** Admission is consumed, then a durable JOURNAL reservation, then
-  audit and pre-spawn identity recheck, then `running` is journaled
-  immediately before the spawn. Refusals happen only before start. Spawn
-  failure is finished/`failed_to_start`.
-- **Returned proposals.** Only completed, exit-0, in-cap, audit-clean,
-  structurally valid proposals return. Every other case is a named
-  withholding.
-- **Cancel.** Cancel signals only a pidfd of a launcher verified by pid,
-  start time, interpreter, cmdline, record lock and nonce/writer-instance
-  match.
-- **CLI launch.** It refuses `codec_unavailable` before any effect until
-  CLOSEOUT wires the public codec.
-
-Exit codes, lifecycle enums and record labels stay provisional until public
+Behavior is frozen only by artifact §2–§7 and accepted only against
+EC-WORKER-1 to EC-WORKER-4. This plan does not restate either. Exit codes,
+lifecycle enums and record labels stay provisional until public
 reconciliation.
 
 ## Lane Index & Dependencies
@@ -146,49 +156,57 @@ SL-2 — Isolated CLI, documentation and evidence reducer
 - **Parallel-safe**: no
 - **Tasks**:
   - test: Add W1–W3 to `test_convergence_adapters.py` using real offline
-    subprocess providers. Cover streams over and under the cap, binary stdout,
-    a large stderr flood, EPIPE on stdin and instruction sentinels absent from
-    argv. Cover deadline expiry, the cancel event, a failed exec and a
-    `before_spawn` refusal with a spawn spy. Cover descendant group reclaim and
-    planted credential variables. Add W2 parity: each existing `run_bounded`
-    status, detail and bound, unchanged. Add the SL-0 source-copy mutants from
-    artifact §7.
+    subprocess providers. Cover:
+    - streams over and under the cap, binary stdout and a large stderr flood;
+    - EPIPE on stdin, and instruction sentinels absent from argv;
+    - deadline expiry, the cancel event, a failed exec, and a `before_spawn`
+      refusal checked with a spawn spy;
+    - descendant group reclaim, and an escaped descendant holding a pipe past
+      the deadline (`streams_complete=False`);
+    - planted credential variables, and the empty default allowlist.
+    Add W2 parity: each existing `run_bounded` status, detail and bound,
+    unchanged. Add the SL-0 source-copy mutants from artifact §7.
   - impl: Implement §2 on `launch_owned` with execute-mode timing. Keep the
     existing `RUNTIME-RED-ANCHOR` cases and module imports intact. Any shared
     helper must leave `run_bounded` observably identical.
   - verify: V0 and V0-reg. Every mutant must turn a previously passing
-    path-entered assertion red. Inventory tests are expected to stay red for
-    the new site until SL-2 classifies it; they are not run here.
+    path-entered assertion red. The new launch site is classified by SL-2 on
+    the same phase branch (Execution Notes), so the inventory tests are not
+    run here.
 
 ### SL-1 — Patch-return adapter and attempt lifecycle
 
-- **Scope**: Compose admission, JOURNAL reservation, audit, capture, proposal decision, evidence, retention and native cancel per artifact §3–§5.
+- **Scope**: Compose admission, JOURNAL reservation, audit, capture, proposal decision, evidence, ledger, retention and native cancel per artifact §3–§5 and §8.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/patch_return.py`, `phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/codex.py`, `phase-loop-runtime/tests/test_supervised_worker.py`, `phase-loop-runtime/tests/fixtures/supervised_worker_local/**`
-- **Interfaces provided**: `WorkerSettings`, `WorkerAttemptIdentity`, `BaselineIdentity`, `ProposalReturn`, `JournalAnchor`, `WorkerResult`, `CancelOutcome`, `PRODUCTION_LAUNCHER_COMMANDS`, `default_state_root`, `run_patch_return`, `cancel_attempt`, `run_codex_patch_return`
-- **Interfaces consumed**: `CaptureRequest`, `BoundedCapture`, `SpawnRefused`, `worker_child_environment`, `run_bounded_capture`, `PROPOSAL_CAP_MAX`; `prepare_launch`, `consume_admission`, `classify_workspace`, `LaunchInputs`, `LaunchConfig`, `PreparedLaunch` (pre-existing); IF-0-JOURNAL-1 (upstream); `output_retention.mark`, `output_retention.prune` (pre-existing)
+- **Interfaces provided**: `CANCEL_WAIT_SECONDS`, `WorkerSettings`, `WorkerAttemptIdentity`, `BaselineIdentity`, `ProposalReturn`, `JournalAnchor`, `WorkerResult`, `CancelOutcome`, `PRODUCTION_LAUNCHER_COMMANDS`, `default_state_root`, `evidence_resolver`, `run_patch_return`, `cancel_attempt`, `run_codex_patch_return`
+- **Interfaces consumed**: `CaptureRequest`, `BoundedCapture`, `SpawnRefused`, `worker_child_environment`, `run_bounded_capture`, `PROPOSAL_CAP_MAX`; `prepare_launch`, `consume_admission`, `classify_workspace`, `LaunchInputs`, `LaunchConfig`, `PreparedLaunch`, `trusted_bytes` (pre-existing); IF-0-JOURNAL-1 (upstream; artifact §8 names); `output_retention.mark`, `output_retention.prune`, `rfc8785.dumps` (pre-existing)
 - **Parallel-safe**: no
 - **Tasks**:
-  - test: Add W4–W12 to `test_supervised_worker.py` through
-    `run_patch_return` and `cancel_attempt`. Use real JOURNAL writers, the
-    synthetic codec and validator injected in process, and labelled fixture
-    providers.
+  - test: Add W4–W12 and W15 to `test_supervised_worker.py` through
+    `run_patch_return` and `cancel_attempt`. Use the real JOURNAL writer,
+    with faults injected only by wrapping it. Inject the synthetic codec and
+    validator in process, and use labelled fixture providers.
     - Replay one envelope sequentially and from 4 concurrent processes. Kill a
-      launcher between reservation and spawn and rerun the envelope. Assert at
-      most one spawn in total.
-    - Force reservation failure through filesystem state, not a mock.
+      launcher between reservation and spawn and rerun the envelope. Retry
+      under the same run with a new attempt id.
+    - Cover Rule W at each writer call, including a `running` append that
+      lands and then fails.
     - Exercise every §3.2 row, each §3.3 scope and every pre-spawn recheck.
     - For cancel, start a real fixture launcher (admitted only through the
       in-process `launcher_commands` parameter) and race it in queued,
       running and terminal states. Repeat the cancel. Forge a record naming an
       unrelated same-user process and assert zero signals. Cover a stale owner.
     - Run the setsid escape test, which reaps its own escapee.
-    - Expire evidence through prune's injected clock and check JOURNAL's
-      `retention_dropped` page.
+    - Assert the evidence events, ledger and resolver. Expire evidence through
+      WORKER's prune and its injected clock, and check JOURNAL's
+      `retention_dropped` page. Assert that an unrecorded deletion reads
+      `unknown`.
+    - Cover JCS digests of `caller_context`.
     - Check that `run_codex_patch_return` refuses a non-codex basename.
     Add the SL-1 mutants from artifact §7.
   - impl: Implement §3–§5. Do not edit ENVELOPE, JOURNAL, SCHEMA or retention
-    modules. Missing JOURNAL capabilities J1–J6 stop the lane as
-    `upstream_phase_unmet`.
+    modules. A JOURNAL name that differs from §8 stops the lane as
+    `upstream_phase_unmet` pending an artifact amendment.
   - verify: V1. Kill every listed mutant through a production path. Record
     per-node outcomes and proof cost. Any node over roughly five minutes is
     flagged.
@@ -196,31 +214,32 @@ SL-2 — Isolated CLI, documentation and evidence reducer
 ### SL-2 — Isolated CLI, documentation and evidence reducer
 
 - **Scope**: Ship the isolated module CLI, classify every new site, document the integrated seam and record the receipt.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/supervised_worker_cli.py`, `phase-loop-runtime/tests/test_supervised_worker_cli.py`, `phase-loop-runtime/tests/test_supervised_worker_receipt.py`, `phase-loop-runtime/tests/data/seat_launch_references.json`, `phase-loop-runtime/tests/test_seat_reference_inventory.py`, `phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py`, `docs/supervised-worker.md`, `CHANGELOG.md`, `plans/evidence/supervised-worker/WORKER.md`, `plans/evidence/supervised-worker/ENVELOPE.md`
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/supervised_worker_cli.py`, `phase-loop-runtime/tests/test_supervised_worker_cli.py`, `phase-loop-runtime/tests/test_supervised_worker_receipt.py`, `phase-loop-runtime/tests/data/seat_launch_references.json`, `phase-loop-runtime/tests/test_seat_reference_inventory.py`, `phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py`, `docs/supervised-worker.md`, `CHANGELOG.md`, `plans/evidence/supervised-worker/WORKER.md`, `plans/evidence/supervised-worker/ENVELOPE.md`, `plans/manifest.json`
 - **Ownership limits**:
   - The inventory files are owned only for rows classifying WORKER's new launch
     and I/O sites; their rules and role sets stay unchanged.
-  - `ENVELOPE.md` is owned only for a binding amendment: recompute its
+  - `ENVELOPE.md` is owned only for the OQ-4 binding amendment: recompute its
     `docs/supervised-worker.md` source-hash row and derived
     `source_tree_digest`, and add one dated paragraph. Producer rows,
     outcomes, `ec_status`, `final_tree_validated` and authority stay
-    unchanged. This follows the agent-harness#1818 binding-amendment
-    precedent.
+    unchanged.
+  - `plans/manifest.json` is owned only for the `v12-WORKER` entry's lifecycle
+    metadata.
 - **Interfaces provided**: `main`, `read_envelope_file`, `open_result_file`, `_production_codec`; `plans/evidence/supervised-worker/WORKER.md` (runner-stamped per-node outcomes, deferred obligations and source bindings)
-- **Interfaces consumed**: `run_patch_return`, `cancel_attempt`, `default_state_root`, `PRODUCTION_LAUNCHER_COMMANDS`, `WorkerResult`, `CancelOutcome`, `run_bounded_capture`; `preflight_supervised_route`, `Refused` (pre-existing); IF-0-JOURNAL-1 (upstream)
+- **Interfaces consumed**: `run_patch_return`, `cancel_attempt`, `default_state_root`, `evidence_resolver`, `PRODUCTION_LAUNCHER_COMMANDS`, `CANCEL_WAIT_SECONDS`, `WorkerResult`, `CancelOutcome`, `run_bounded_capture`; `preflight_supervised_route`, `Refused` (pre-existing); IF-0-JOURNAL-1 (upstream; artifact §8 names)
 - **Parallel-safe**: no
 - **Tasks**:
-  - test: Add W13 to `test_supervised_worker_cli.py` with installed-style
-    `python -I -m` children:
-    - required-session launch and cancel refuse before reads;
-    - `codec_unavailable` with spies on envelope, binding, journal, evidence
-      and result effects, and zero probes and spawns;
-    - status is provider-free;
-    - shadowed stdlib and validator modules in the workspace cwd do not load;
-    - envelope owner, mode, symlink, size and inline-instruction read-mode
-      refusals;
-    - result O_EXCL, 0600, no-follow and outside roots;
-    - CLI cancel rejects a fixture launcher and returns `unknown_attempt`.
+  - test: Add W13 to `test_supervised_worker_cli.py`.
+    - Subprocess `python -I -m` children cover only paths that end before
+      state-root resolution: required-session refusals, `codec_unavailable`
+      with zero probes and effects, usage, and the shadowed stdlib and
+      validator modules in the workspace cwd. They never touch the real root.
+    - In-process tests call `main(..., state_root=tmp)`:
+      - CLI cancel against a live fixture launcher returns `owner_unverified`,
+        with zero `pidfd_send_signal` calls and the launcher still running;
+      - `status` prints `attempt_status`, with liveness, and an optional page
+        that follows `next_cursor`;
+      - envelope-file and result-file checks.
     Add W14 to `test_supervised_worker_receipt.py`. It validates WORKER.md
     against observed producer results. It derives the deferred-obligation set
     from SCHEMA's receipt and requires equality. It falsifies stale bindings,
@@ -229,23 +248,29 @@ SL-2 — Isolated CLI, documentation and evidence reducer
   - impl:
     - Implement artifact §6.
     - Classify every WORKER site in both inventories.
-    - Document in `docs/supervised-worker.md`: the seam, order, proposal
-      table, audit scope and `.git/objects` exclusion, cancel identity,
-      state layout, the setsid limit, same-login journal/credential limits,
-      the descriptor-exec residual window and codec gating.
+    - Document in `docs/supervised-worker.md`: the seam, order and Rule W, the
+      proposal table, the audit scope and object-store disclosure, cancel
+      identity and the nonce disclosure, the state layout and ledger, the
+      setsid limit, same-login journal/credential limits, the empty
+      environment default, the descriptor-exec residual window and codec
+      gating.
     - Add an Unreleased `CHANGELOG.md` entry.
     - Apply the ENVELOPE binding amendment.
     - Write WORKER.md with `authority: synthetic_fixture_only`, the 113
-      deferred rows, J1–J6 reconciliation and the pending items: public
+      deferred rows and the J1–J6 reconciliation. List as pending: public
       reconciliation, installed-tool qualification, registry activation and
       CLOSEOUT codec wiring.
+    - Record the `v12-WORKER` lifecycle.
   - verify: V2, then the effective suite. Finalize only runner-stamped,
     actually observed results.
 
 ## Execution Notes
 
-All lanes are sequential with disjoint ownership. No subagent, scheduler fanout
-or worktree creation is authorized. New modules are auto-discovered: no
+All lanes are sequential with disjoint ownership, and land together on one
+phase branch. SL-0 and SL-1 add launch and I/O sites that only SL-2
+classifies, so the inventory tests are required at the phase head, not after
+each lane. No lane merges to main alone. No subagent, scheduler fanout or
+worktree creation is authorized. New modules are auto-discovered: no
 `__init__.py`, `pyproject.toml`, `uv.lock`, `MANIFEST.in` or console-script
 change.
 
@@ -259,73 +284,62 @@ change.
 
 **Serial edges with later phases:**
 
-- CLOSEOUT SL-1/SL-2 own `supervised_launch*.py`, `base.py`, `codex.py`,
-  `patch_return.py`, `supervised_worker_cli.py`, the worker tests and
-  `docs/supervised-worker.md` next.
+- CLOSEOUT SL-1 owns `supervised_launch*.py` next, including the OQ-2 cap.
+- CLOSEOUT SL-2 owns `base.py`, `codex.py`, `patch_return.py`,
+  `supervised_worker_cli.py` (codec wiring) and the worker tests next.
+- CLOSEOUT SL-3 owns `docs/supervised-worker.md` and `CHANGELOG.md` next.
 - PLACECLI SL-3 and LANEEXEC SL-5 own the inventories and `CHANGELOG.md`
-  later.
-- Each starts only after WORKER lands and must rebase onto WORKER's rows.
+  later. Each rebases onto WORKER's rows.
 
 Validator check (N) warns only because SL-2 owns `CHANGELOG.md`, a packaging
 heuristic. This phase dispatches no release or tag, so no post-dispatch reducer
-applies. Readiness
-needs CLOSEOUT's live required checks, Gate A, independent board and
-president. Proxy evidence needs a roadmap amendment.
+applies. Readiness needs CLOSEOUT's live required checks, Gate A, independent
+board and president. Proxy evidence needs a roadmap amendment.
 
-**Open questions (recorded, not resolved here):**
+**Downstream amendments (recorded here; those plans are not edited).**
 
-- OQ-1: The cross-cutting rule "never ambient environment" conflicts with the
-  WORKER note "use base scrubbers". The child environment here is the scrubbed
-  launcher environment narrowed by the trusted `worker_environment_allow`.
-  Admission binding of the environment arrives only with CLOSEOUT's v2
-  classified environment.
-- OQ-2: ENVELOPE's 1 MiB executable capture cap and its refusal of symlinked
-  executables block typical installed provider binaries. WORKER must not edit
-  `supervised_launch.py`, so the owner should assign this to CLOSEOUT SL-1,
-  its next owner.
-- OQ-3: The roadmap never names the proposal channel. Stdout was chosen
-  because the roadmap motivates the transport by `run_bounded`'s output cap.
-  A tree-diff proposal would be an amendment.
-- OQ-4: Editing `docs/supervised-worker.md` forces the ENVELOPE receipt
-  binding amendment. The owner may prefer a different route.
-
-**Consumer mismatches (PLACECLI, LANEEXEC, CLOSEOUT):**
-
-- MM-1: The launch path is WORKER, JOURNAL, PLACECLI, LANEEXEC, but it is
-  insufficient. Under EC-WORKER-2 the production `launch` refuses
-  `codec_unavailable` until CLOSEOUT wires the pinned codec. LANEEXEC's
-  `x-envelope-construction` also builds v2 envelopes through `prepare_launch`,
-  which needs CLOSEOUT SL-1's `prepare_launch_v2`. Real launches therefore
-  also need CLOSEOUT SL-0–SL-2.
-- MM-2: LANEEXEC `x-exec.one_exec` reserves the attempt through the v12
-  journal at exec claim. WORKER then reserves again, as EC-WORKER-2 requires,
-  and EC-JOURNAL-3 forbids that reuse, so every placed launch would refuse.
-  LANEEXEC's artifact must drop its own reservation or delegate the claim to
-  WORKER's.
-- MM-3: LANEEXEC C8 expects a return on cancelled or timed-out attempts.
-  WORKER withholds such patches as `withheld_incomplete`, so LANEEXEC's patch
-  return must be null with the termination unchanged.
-- MM-4: On LANEEXEC's openshell route the execution tree is remote, and
-  WORKER's audit sees only the local workspace and target.
-- MM-5: CLOSEOUT's sealed V2 group names `test_supervised_worker.py` but not
-  `test_supervised_worker_cli.py` or `test_supervised_worker_receipt.py`.
-  CLOSEOUT needs the input amendment its Execution Notes anticipate.
-- MM-6 (compatible): LANEEXEC's 64 MiB patch cap equals
-  `PROPOSAL_CAP_MAX`. pi-runner uses `result_kind none`, so on the toolkit
-  path WORKER's role is launch, status, cancel, reservation, lifecycle and
-  evidence. WORKER adds no CLI registry, so PLACECLI's packaging assumption
-  holds.
+- CLOSEOUT:
+  - (a) echo cases enter through WORKER's `caller_context_sha256` site and are
+    compared by exact bytes, with mutations of `__proto__` loss and a changed
+    number before hashing;
+  - (b) add `test_supervised_worker_cli.py`, `test_supervised_worker_receipt.py`
+    and JOURNAL's `test_run_status_receipt.py` to the sealed V2 group;
+  - (c) SL-1 owns the executable cap; SL-2 owns codec wiring and the first
+    end-to-end launch→cancel test with `PRODUCTION_LAUNCHER_COMMANDS`;
+  - (d) keep the `supervised_contracts` allowlist once JOURNAL's fix lands;
+  - (e) drop `-n`.
+  - The activation path also needs CLOSEOUT SL-0–SL-2, because `launch`
+    refuses `codec_unavailable` until then.
+- PLACECLI:
+  - drop `-n 0`;
+  - narrow `OpaqueId` to 128 characters where ids reach the journal;
+  - state that its reservation journal is a separate store.
+- LANEEXEC:
+  - (a) `x-exec.one_exec` claims only `exec_claimed`; WORKER reserves once.
+    Map `attempt_reserved` and define the crash states between the two
+    claims;
+  - (b) `status` maps `unknown`, `stale_unknown`, `refused` and the finished
+    displays;
+  - (c) `cancel` maps `owner_unverified` to `cancel_pending` and handles
+    `owner_not_live`. It runs on the launching host with the launcher's
+    interpreter and exactly `PRODUCTION_LAUNCHER_COMMANDS`;
+  - (d) C8: a cancelled or timed-out patch return is null, with termination
+    unchanged;
+  - (e) reject ids over 128 characters before the claim;
+  - (f) keep openshell patch return closed;
+  - (g) activation depends on CLOSEOUT SL-0–SL-2;
+  - (h) select per-client state and journal roots through digest-bound trusted
+    configuration;
+  - (i) drop `-n 0`.
 
 ## Verification
 
 These commands are for future execution and are not run by this planning PR.
 
 **Shared-host rule.** Run individual files serially under `timeout 900` with
-`-n 0 -p no:cacheprovider`. Check `uptime` and `/proc/pressure/io` before each
-command and stop if degraded. Full suites, Gate A and CI stay hosted.
-`-n 0` needs pytest-xdist, which CI pins at 3.8.0 but the locked dev
-environment lacks. Where it is absent, omit `-n 0`: pytest runs serially by
-default.
+`-p no:cacheprovider` and never `-n` (owner ruling). Check `uptime` and
+`/proc/pressure/io` before each command and stop if degraded. Full suites,
+Gate A and CI stay hosted.
 
 **Environment.** Use the locked Python 3.12+ environment with absolute
 source/test PYTHONPATH (CONTRIBUTING.md).
@@ -334,10 +348,10 @@ source/test PYTHONPATH (CONTRIBUTING.md).
 nodes. Exit 5, zero collection or skipped-only runs fail. Record per-node
 outcomes, not collection counts.
 
-- V0: `timeout 900 python3 -m pytest -q -n 0 -p no:cacheprovider phase-loop-runtime/tests/test_convergence_adapters.py`
-- V0-reg: `timeout 900 python3 -m pytest -q -n 0 -p no:cacheprovider phase-loop-runtime/tests/test_convergence_runtime_imports.py phase-loop-runtime/tests/test_seat_executor_review.py phase-loop-runtime/tests/test_pr1161_r2_F002.py phase-loop-runtime/tests/test_runtime_adapter_output_720.py phase-loop-runtime/tests/test_sandbox_staging_1147.py phase-loop-runtime/tests/test_subscription_scrub_xai_864.py`
-- V1: `timeout 900 python3 -m pytest -q -n 0 -p no:cacheprovider phase-loop-runtime/tests/test_supervised_worker.py phase-loop-runtime/tests/test_output_retention.py`
-- V2: `timeout 900 python3 -m pytest -q -n 0 -p no:cacheprovider phase-loop-runtime/tests/test_supervised_worker_cli.py phase-loop-runtime/tests/test_supervised_worker_receipt.py phase-loop-runtime/tests/test_seat_reference_inventory.py phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py phase-loop-runtime/tests/test_supervised_launch_receipt.py`
+- V0: `timeout 900 python3 -m pytest -q -p no:cacheprovider phase-loop-runtime/tests/test_convergence_adapters.py`
+- V0-reg: `timeout 900 python3 -m pytest -q -p no:cacheprovider phase-loop-runtime/tests/test_convergence_runtime_imports.py phase-loop-runtime/tests/test_seat_executor_review.py phase-loop-runtime/tests/test_pr1161_r2_F002.py phase-loop-runtime/tests/test_runtime_adapter_output_720.py phase-loop-runtime/tests/test_sandbox_staging_1147.py phase-loop-runtime/tests/test_subscription_scrub_xai_864.py`
+- V1: `timeout 900 python3 -m pytest -q -p no:cacheprovider phase-loop-runtime/tests/test_supervised_worker.py phase-loop-runtime/tests/test_output_retention.py`
+- V2: `timeout 900 python3 -m pytest -q -p no:cacheprovider phase-loop-runtime/tests/test_supervised_worker_cli.py phase-loop-runtime/tests/test_supervised_worker_receipt.py phase-loop-runtime/tests/test_seat_reference_inventory.py phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py phase-loop-runtime/tests/test_supervised_launch_receipt.py`
 - Effective suite: the frontmatter `automation.suite_command`, the union of
   V0, V1 and V2. V0-reg is a separate required command.
 
@@ -348,10 +362,10 @@ execution verification. Restore production sources after every mutant.
 
 ## Acceptance Criteria
 
-- [ ] EC-WORKER-1 — proven by `timeout 900 python3 -m pytest -q -n 0 -p no:cacheprovider phase-loop-runtime/tests/test_convergence_adapters.py phase-loop-runtime/tests/test_supervised_worker.py`; falsified by path-entered source-copy mutants removing the proposal cap, a §3.2 withholding row, an audit scope or the `run_bounded` parity bound in `run_bounded_capture`/`run_patch_return`.
-- [ ] EC-WORKER-2 — proven by `timeout 900 python3 -m pytest -q -n 0 -p no:cacheprovider phase-loop-runtime/tests/test_supervised_worker.py phase-loop-runtime/tests/test_supervised_worker_cli.py`; falsified by mutants reordering reservation after spawn, skipping a pre-spawn identity recheck, dropping an evidence binding field or bypassing the `codec_unavailable` gate, each entering `run_patch_return` or `main`.
-- [ ] EC-WORKER-3 — proven by `timeout 900 python3 -m pytest -q -n 0 -p no:cacheprovider phase-loop-runtime/tests/test_supervised_worker.py`; falsified by mutants removing each `cancel_attempt` identity check or the pidfd target, observed as a signal to a forged unrelated process.
-- [ ] EC-WORKER-4 — proven by `timeout 900 python3 -m pytest -q -n 0 -p no:cacheprovider phase-loop-runtime/tests/test_convergence_adapters.py phase-loop-runtime/tests/test_supervised_worker.py phase-loop-runtime/tests/test_supervised_worker_cli.py phase-loop-runtime/tests/test_supervised_worker_receipt.py` plus V0-reg; falsified by any surviving artifact §7 mutant in `run_bounded_capture`, `run_patch_return`, `cancel_attempt` or `main`, a skipped-only owned file, or a receipt claiming authority, qualification or resolution of a deferred SCHEMA row.
+- [ ] EC-WORKER-1 — proven by `timeout 900 python3 -m pytest -q -p no:cacheprovider phase-loop-runtime/tests/test_convergence_adapters.py phase-loop-runtime/tests/test_supervised_worker.py`; falsified by path-entered source-copy mutants removing the proposal cap, the drain deadline bound, a §3.2 withholding row, an audit scope or the `run_bounded` parity bound in `run_bounded_capture`/`run_patch_return`.
+- [ ] EC-WORKER-2 — proven by `timeout 900 python3 -m pytest -q -p no:cacheprovider phase-loop-runtime/tests/test_supervised_worker.py phase-loop-runtime/tests/test_supervised_worker_cli.py`; falsified by mutants reordering reservation after spawn, skipping a pre-spawn identity recheck, continuing to journal after a writer failure, dropping an evidence binding field or bypassing the `codec_unavailable` gate, each entering `run_patch_return` or `main`.
+- [ ] EC-WORKER-3 — proven by `timeout 900 python3 -m pytest -q -p no:cacheprovider phase-loop-runtime/tests/test_supervised_worker.py phase-loop-runtime/tests/test_supervised_worker_cli.py`; falsified by mutants removing each `cancel_attempt` identity check or the pidfd target, observed as a signal to a forged or fixture launcher, or by re-keying launcher records so a same-run retry is refused.
+- [ ] EC-WORKER-4 — proven by `timeout 900 python3 -m pytest -q -p no:cacheprovider phase-loop-runtime/tests/test_convergence_adapters.py phase-loop-runtime/tests/test_supervised_worker.py phase-loop-runtime/tests/test_supervised_worker_cli.py phase-loop-runtime/tests/test_supervised_worker_receipt.py` plus V0-reg; falsified by any surviving artifact §7 mutant in `run_bounded_capture`, `run_patch_return`, `cancel_attempt` or `main`, a skipped-only owned file, or a receipt claiming authority, qualification or resolution of a deferred SCHEMA row.
 
 ## Spec Closeout Plan
 
@@ -363,5 +377,5 @@ execution verification. Restore production sources after every mutant.
 - downstream handling: `none`
 
 Missing or malformed evidence routes to `contract_bug` with
-`human_required=false`. Missing JOURNAL capabilities route to
+`human_required=false`. Missing or renamed JOURNAL names route to
 `upstream_phase_unmet`.

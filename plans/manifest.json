@@ -15009,7 +15009,7 @@
       "file": "plans/phase-plan-v12-WORKER.md",
       "frozen_inputs": {
         "plans/artifacts/v12-WORKER-contract.md": {
-          "sha256": "d080dde43893aeb91646b8c915b7079bb45f254d144a041a492d7e63a1403579"
+          "sha256": "13db642f69a9cbb70e5554d09395cf148773bf579f1c15af6af92a5da054ea63"
         }
       },
       "gate_status": "declared_not_produced",
@@ -15027,7 +15027,7 @@
       "phase_alias": "WORKER",
       "planning_artifact_only": true,
       "reflection_ref": null,
-      "review_status": "pending",
+      "review_status": "board_edits_applied_pending_journal_s10_rebase",
       "roadmap_ref": {
         "file": "specs/phase-plans-v12.md",
         "slug": "phase-plans-v12",
@@ -15038,7 +15038,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-11-08T15:04:34Z"
+      "updated_at": "2026-11-08T18:35:49Z"
     }
   ],
   "schema_version": 1
