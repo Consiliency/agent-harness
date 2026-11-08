@@ -15,7 +15,9 @@ from phase_loop_runtime import panel_invoker as pi, seat_codex_credential as cre
 from phase_loop_runtime.seat_subject import SeatSubject
 from test_seat_codex_credential import _login, _claims
 from test_seat_codex_evidence import stream
-from test_seat_profile_codex import codex_profile  # noqa: F401
+from test_seat_profile_codex import codex_profile as _codex_profile
+
+codex_profile = _codex_profile
 
 
 def prepare(tmp_path, monkeypatch, *, expiry=None):
@@ -74,6 +76,20 @@ def test_clock_margin_refuses_before_install(tmp_path, monkeypatch, codex_profil
     assert installed == []
 
 
+def test_production_and_probe_views_agree_without_a_probe_credential(tmp_path, monkeypatch, codex_profile):
+    seat = prepare(tmp_path, monkeypatch)
+    try:
+        assert seat.jail.profile_digest == seat.probe_jail.profile_digest == seat_jail.jail_profile_digest("codex")
+        assert seat.jail.env == seat.probe_jail.env
+        copied = seat.seat_dir / "seat-home/.codex/auth.json"
+        assert copied.read_bytes() == seat.codex_copy.data
+        assert copied.stat().st_mode & 0o777 == 0o600
+        assert not (Path(seat.probe_jail.review_dir) / "seat-home/.codex/auth.json").exists()
+    finally:
+        seat_jail.close_jail_fds(seat.jail)
+        seat_jail.close_jail_fds(seat.probe_jail)
+
+
 def test_clock_margin_is_rechecked_immediately_before_delivery(tmp_path, monkeypatch, codex_profile):
     installed = []
     calls = []
@@ -126,8 +142,24 @@ def test_real_liveness_output_and_post_launch_order(tmp_path, monkeypatch, codex
         assert evidence["provider_stream_tool_steps"] == 1
 
 
-def test_default_spawn_holds_route_lease_through_codex_leg(tmp_path, monkeypatch, codex_profile):
+@pytest.mark.parametrize("case,expected", [
+    ("success", None), ("zero_commands", "codex_seat_tools_unavailable"),
+    ("unknown", "codex_seat_unknown_event"), ("refresh", "codex_seat_token_refreshed_in_jail"),
+    ("expired", "codex_seat_token_expiring"), ("secret", "codex_seat_token_in_output"),
+])
+def test_default_spawn_holds_route_lease_through_codex_leg(tmp_path, monkeypatch, codex_profile, case, expected):
     from test_seat_notices import _brokered
+    seat = prepare(tmp_path, monkeypatch)
+    local_reads(monkeypatch)
+    if case in {"refresh", "secret"}:
+        (seat.seat_dir / "seat-home/.codex/auth.json").write_text("{}")
+    if case in {"expired", "refresh", "secret"}:
+        seat.codex_copy = replace(seat.codex_copy, expires_at=0)
+    (seat.seat_dir / "seat-out/panel-codex.txt").write_text("Fixture read.\n\nAGREE")
+    data = stream(command=case != "zero_commands", extra=({"type": "new.event"},) if case == "unknown" else ())
+    if case == "secret":
+        data += seat.codex_copy.secrets[0]
+    child = "import sys; sys.stdin.read(); sys.stdout.buffer.write(" + repr(data) + "); sys.exit(" + str(1 if case in {"expired", "refresh", "secret"} else 0) + ")"
     released = []
     lease = SimpleNamespace(seat_id=7, release=lambda: released.append(True))
     route = SimpleNamespace(jailed=True, lease=lease)
@@ -154,15 +186,16 @@ def test_default_spawn_holds_route_lease_through_codex_leg(tmp_path, monkeypatch
     monkeypatch.setattr(pi, "_exception_failure", lambda exc: (_ for _ in ()).throw(exc))
     def prepared(*a, **k):
         assert not released
-        return SimpleNamespace(jail=None, probe_jail=None, notices=[])
+        return seat
     monkeypatch.setattr(pi, "_prepare_jailed_codex", prepared)
     monkeypatch.setattr(pi, "_bind_route_qualification", lambda seat, route: seat)
-    def execute(seat, **kwargs):
+    def launch(argv, **kwargs):
         assert not released
-        kwargs["failure_detail_sink"].append(pi._LegFailure(template="codex_seat_tools_unavailable"))
-        return "DEGRADED", ""
-    monkeypatch.setattr(pi, "_exec_jailed_codex_leg", execute)
+        return subprocess.Popen([sys.executable, "-c", child], stdin=kwargs["stdin"],
+                                stdout=kwargs["stdout"], stderr=kwargs["stderr"], start_new_session=True)
+    monkeypatch.setattr(pi, "launch_provider", launch)
     spawned = _brokered(monkeypatch, tmp_path, "codex", "a" * 64)
-    assert tuple(spawned)[0] == "DEGRADED"
-    assert "codex_seat_tools_unavailable" in spawned.seat_notices
+    assert tuple(spawned)[0] == ("DEGRADED" if expected else "OK")
+    if expected:
+        assert expected in spawned.seat_notices
     assert released == [True]

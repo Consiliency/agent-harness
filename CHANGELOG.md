@@ -6,6 +6,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- Add the Codex jail profile, command-completion evidence and leg preparation as
+  unregistered building blocks for SEATS CODEX SL-3. Production registration awaits OD-4.
+
 - In a jailed seat's proxy-only network namespace, a connect to any loopback port other than
   the proxy bridge (IPv4 or `::1`) is now refused at once instead of hanging to the TCP
   timeout. The catch-all REJECT was dropping its own ICMP port-unreachable reply on `lo`;

@@ -420,7 +420,9 @@ def _run_probe_in_jail(leg, base: Path, config: dict, provider: Path | None, mut
     shape = _gemini_shape(seat_dir) if leg == "gemini" else {}
     if leg == "codex":
         from .seat_codex_runtime import subject_runtime
+        from .seat_profile_codex import validate_codex_projection
         subject, dependency = pi._resolved_jail_subject(leg, os.environ)
+        validate_codex_projection(dependency)
         if subject.source != "standalone" and dependency is None:
             raise QualificationError("Codex projection unavailable")
         subject_runtime(subject)

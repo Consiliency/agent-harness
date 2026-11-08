@@ -5,7 +5,7 @@ import pytest
 
 from phase_loop_runtime import seat_jail as jail, seat_profiles
 from phase_loop_runtime import seat_profile_codex as codex
-from phase_loop_runtime.seat_route_contract import ArgvInputs, EnvInputs, OwnerPaths
+from phase_loop_runtime.seat_route_contract import ArgvInputs, EnvInputs
 
 
 @pytest.fixture
@@ -51,6 +51,50 @@ def test_argv_and_environment_literals():
         "CODEX_HOME": "/seat/home/.codex", "HTTPS_PROXY": "fixture",
         "SSL_CERT_FILE": "/seat/egress-ca.pem", "CODEX_CA_CERTIFICATE": "/seat/egress-ca.pem",
         "PATH": CODEX_RUNTIME_ROOT + "/codex-path:/seat/bin:/usr/bin:/bin"}
+
+
+def test_window_rows_reach_the_generic_plant_kit(codex_profile):
+    from phase_loop_runtime import seat_jail_qualification as q, seat_window
+    assert seat_window.window_rows_for("codex") is codex.CODEX_WINDOW_ROWS
+    layout = q.plant_layout(plugin_form="nested", window=codex_profile.window)
+    assert {row.row_id for row in layout.rows} == {
+        location + ":" + path for location, _, _ in codex.CODEX_WINDOW_ROWS.plant_locations
+        for path in codex.CODEX_PLANTED_PATHS}
+
+
+@pytest.mark.parametrize("execute", [False, True])
+def test_admission_preconditions_and_shape(monkeypatch, execute):
+    from types import SimpleNamespace
+    from phase_loop_runtime import panel_invoker as pi, seat_codex_credential as credential
+    monkeypatch.setattr(credential, "read_auth", lambda env: b"fixture")
+    order = []
+    for name in ("subscription_login_problem", "token_margin_problem", "scope_problem"):
+        monkeypatch.setattr(credential, name,
+                            lambda raw, _name=name, **k: order.append(_name))
+    monkeypatch.setattr(pi, "_resolved_jail_subject", lambda *a: (SimpleNamespace(subject_path="fixture"), None))
+    monkeypatch.setattr(pi, "run_provider", lambda *a, **k: SimpleNamespace(returncode=0, stdout=""))
+    verdict = codex.codex_admission_gate("codex", {}, execute)
+    assert order == ["subscription_login_problem", "token_margin_problem", "scope_problem"]
+    assert (verdict.code == "codex_seat_cli_shape" if execute else verdict.reason == "launch_measurement")
+
+
+@pytest.mark.parametrize("mutation", [None, "missing", "subject", "resources"])
+def test_projected_runtime_is_the_declared_file_set(mutation):
+    from types import SimpleNamespace
+    from phase_loop_runtime.executable_dependency import ExecutableDependencyError
+    from phase_loop_runtime.seat_codex_runtime import CODEX_RUNTIME_DESTINATIONS
+    paths = list(CODEX_RUNTIME_DESTINATIONS)
+    if mutation == "missing":
+        paths.pop()
+    if mutation == "resources":
+        paths.append("/run/phase-loop-seat/codex-runtime/codex-resources/bwrap")
+    dependency = SimpleNamespace(entries=[SimpleNamespace(destination=path) for path in paths],
+        subject_destination="/other" if mutation == "subject" else CODEX_RUNTIME_DESTINATIONS[0])
+    if mutation is None:
+        codex.validate_codex_projection(dependency)
+    else:
+        with pytest.raises(ExecutableDependencyError, match="authority_invalid"):
+            codex.validate_codex_projection(dependency)
 
 
 def _jail(tmp_path, *, dependency=False):

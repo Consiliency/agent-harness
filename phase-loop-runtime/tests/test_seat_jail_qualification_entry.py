@@ -7,6 +7,10 @@ from typing import Mapping
 
 import pytest
 
+from test_seat_profile_codex import codex_profile as _codex_profile
+
+codex_profile = _codex_profile
+
 from phase_loop_runtime import __version__
 from phase_loop_runtime import executable_dependency_startup as startup
 from phase_loop_runtime import seat_jail_qualification as qualification
@@ -15,6 +19,44 @@ from phase_loop_runtime.executable_dependency_startup import (
     QualifiedRuntimePackage,
     current_dependency_for_provider,
 )
+
+
+def test_codex_qualification_records_a_v2_pass(tmp_path, monkeypatch, codex_profile):
+    import json
+    import time
+    from phase_loop_runtime import falsifier, seat_jail, seat_egress_proxy
+    from phase_loop_runtime import seat_qualification_key
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(qualification.seat_uid, "seat_uid_available", lambda: True)
+    monkeypatch.setattr(qualification.sandbox_egress, "egress_isolation_available", lambda: True)
+    monkeypatch.setattr(qualification.review_stage, "falsifier_distribution_available", lambda _: True)
+    def repo(base):
+        directory = base / "fixture"
+        directory.mkdir()
+        return directory
+    monkeypatch.setattr(qualification, "_sentinel_repo", repo)
+    monkeypatch.setattr(qualification.review_stage, "stage_review_tree", lambda path: path)
+    monkeypatch.setattr(qualification.review_stage, "_snapshot_falsifier_dependencies", lambda *a: None)
+    def sentinel(*, staged, **kwargs):
+        temporary = staged / "ready.tmp"
+        temporary.write_text(json.dumps({"tcp": 1, "udp": 2, "abstract": "fixture"}))
+        temporary.rename(staged / qualification._READY)
+        deadline = time.monotonic() + 5
+        while not (staged / qualification._RELEASE).exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return 0, "", "", None, {}
+    monkeypatch.setattr(qualification.review_stage, "_run_bounded_falsifier_node", sentinel)
+    monkeypatch.setattr(falsifier, "_outcome_from_report", lambda *a: "green_on_head")
+    monkeypatch.setattr(qualification, "_find_host_pid", lambda *a: 42)
+    monkeypatch.setattr(qualification, "_run_probe_in_jail", lambda *a: {})
+    result = qualification.qualify("codex")
+    key = seat_qualification_key.key_for_launch(codex_profile, variant=None, projection=None,
+        allowlist_digest=seat_egress_proxy.allowlist_ref("codex").content_digest)
+    assert result["result"] == "pass"
+    record = json.loads(Path(result["recorded_pass"]).read_text())
+    assert record["schema"] == "seat_jail_pass.v2"
+    assert seat_jail.pass_record_verdict(key) == (True, "pass")
 
 
 def test_seats_firstseat_window_cli(tmp_path, monkeypatch, capsys):

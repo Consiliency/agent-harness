@@ -13391,12 +13391,14 @@ def _prepare_jailed_codex(
     *, env: Mapping[str, str] | None = None,
 ) -> _JailedSeat:
     from . import seat_codex_credential as cred, seat_codex_runtime as runtime
+    from .seat_profile_codex import validate_codex_projection
 
     tree = _approved_stage_or_refuse(review_dir, review_authorization)
     subject, dependency = _resolved_jail_subject("codex", _broker_subscription_env(env))
     jails = []
     try:
         _validate_jail_dependency("codex", dependency)
+        validate_codex_projection(dependency)
         if subject.source != "standalone" and dependency is None:
             raise ExecutableDependencyError("authority_missing")
         resolved = runtime.subject_runtime(subject)
@@ -13501,6 +13503,8 @@ def _exec_jailed_codex_leg(
             broker_evidence.update({
                 "provider_input_mode": "pointer", "provider_input_inline": False,
                 "provider_cwd_class": "seat_jail_empty_workspace",
+                "provider_cwd_sha256": sha256(
+                    f"/seat/home/workspace\0{seat.jail.profile_digest}".encode()).hexdigest(),
                 "sandbox_filesystem_confined": True,
                 "seat_jail_profile_id": seat.jail.profile_id,
                 "seat_jail_profile_digest": seat.jail.profile_digest,
@@ -13535,6 +13539,8 @@ def _exec_jailed_codex_leg(
             unsafe = True
     finally:
         _cleanup_jailed_seat(seat, primary=sys.exception())
+    if proc is not None:
+        _note_exec_result(proc.returncode, command, seat.jail.env)
     kept = text + (f"{proc.stdout}{proc.stderr}".encode(errors="replace") if proc else b"")
     if secret_seen or any(_seat_jail.contains_secret(kept, secret) for secret in secrets):
         return _jailed_failure("codex_seat_token_in_output", failure_detail_sink)
@@ -13548,10 +13554,10 @@ def _exec_jailed_codex_leg(
         return _jailed_failure(code, failure_detail_sink)
     if unsafe:
         return _jailed_failure("seat_sandbox_refused:output_unsafe", failure_detail_sink)
-    _note_exec_result(proc.returncode, command, seat.jail.env)
     if broker_evidence is not None:
         broker_evidence["provider_stream_tool_steps"] = record.commands_completed
     review = text.decode("utf-8", errors="replace")
+    _note_exec_signals(model_turn=record.turn_completed, verdict=terminal_verdict(review) is not None)
     return _classify_leg(proc.returncode, review, proc.stderr, "review"), review
 
 

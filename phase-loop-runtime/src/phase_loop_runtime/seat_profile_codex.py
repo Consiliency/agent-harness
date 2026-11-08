@@ -6,7 +6,9 @@ from types import MappingProxyType
 
 from . import seat_codex_credential as credential
 from .seat_codex_cli_shape import JAILED_CODEX_DISABLED_FEATURES, codex_cli_shape_problem
-from .seat_codex_runtime import CODEX_RUNTIME_ROOT, CODEX_RUNTIME_FILES, CODEX_RUNTIME_DESTINATIONS
+from .seat_codex_runtime import (
+    CODEX_RUNTIME_ROOT, CODEX_RUNTIME_FILES, CODEX_RUNTIME_DESTINATIONS, CodexRuntime, runtime_binds,
+)
 from .seat_route_contract import (
     ArgvInputs, ConfigSurface, ContainmentEvidence, CredentialDelivery, JailProfile,
     Precondition, WindowRows,
@@ -56,11 +58,12 @@ def _binds(paths):
     # Explicit traversable parents for the runtime's file mounts.
     directories = ("/run", "/run/phase-loop-seat", CODEX_RUNTIME_ROOT,
                    f"{CODEX_RUNTIME_ROOT}/bin", f"{CODEX_RUNTIME_ROOT}/codex-path")
+    runtime = CodexRuntime(Path(paths.provider).parent.parent,
+                           tuple(zip(CODEX_RUNTIME_FILES, _runtime_sources(paths.provider))))
     return (
         *(arg for directory in directories for arg in ("--perms", "0755", "--dir", directory)),
         "--ro-bind", paths.egress_ca, "/seat/egress-ca.pem",
-        *(arg for source, destination in zip(_runtime_sources(paths.provider), CODEX_RUNTIME_DESTINATIONS)
-          for arg in ("--ro-bind", source, destination) if paths.provider_bind),
+        *(runtime_binds(runtime) if paths.provider_bind else ()),
     )
 
 
@@ -105,6 +108,17 @@ def _auth_probe():
     return _parent_auth_state("codex")
 
 
+def validate_codex_projection(dependency):
+    if dependency is None:
+        return
+    from .executable_dependency import ExecutableDependencyError
+    destinations = {entry.destination for entry in dependency.entries}
+    if (not set(CODEX_RUNTIME_DESTINATIONS) <= destinations
+            or dependency.subject_destination != CODEX_RUNTIME_DESTINATIONS[0]
+            or any("codex-resources" in Path(path).parts for path in destinations)):
+        raise ExecutableDependencyError("authority_invalid", "Codex runtime destinations")
+
+
 def codex_admission_gate(leg, env, execute):
     from . import panel_invoker as pi, seat_admission, seat_jail
     try:
@@ -119,13 +133,20 @@ def codex_admission_gate(leg, env, execute):
         return seat_admission.Verdict(leg, "refuses", code=exc.code)
     if not execute:
         return seat_admission.Verdict(leg, "unknown", reason="launch_measurement")
-    from .seat_subject import resolve_seat_subject
-    subject = resolve_seat_subject(leg, env)
+    subject, dependency = pi._resolved_jail_subject(leg, env)
     texts = []
-    for args in (("exec", "--help"), ("features", "list")):
-        done = pi.run_provider([str(subject.subject_path), *args], env=dict(env),
-                               capture_output=True, text=True, timeout=30)
-        texts.append(done.stdout if done.returncode == 0 else "")
+    try:
+        validate_codex_projection(dependency)
+        executable = dependency.subject_source if dependency is not None else subject.subject_path
+        if executable is None:
+            return seat_admission.Verdict(leg, "refuses", code="seat_provider_unavailable")
+        for args in (("exec", "--help"), ("features", "list")):
+            done = pi.run_provider([str(executable), *args], env=dict(env),
+                                   capture_output=True, text=True, timeout=30)
+            texts.append(done.stdout if done.returncode == 0 else "")
+    finally:
+        if dependency is not None and getattr(dependency, "_jailcore_owned", False):
+            dependency.close()
     if codex_cli_shape_problem(*texts):
         return seat_admission.Verdict(leg, "refuses", code="codex_seat_cli_shape")
     return None
