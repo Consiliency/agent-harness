@@ -22,8 +22,8 @@ Local checks, required CI checks, Gate A dispatch and the skill-regeneration rul
 ## Test load on shared hosts
 
 On team hosts and other shared machines, never run whole-suite or unbounded parallel
-tests (`local_check.py --full`, `pytest -n auto`, `make check`). Run targeted files with
-`-n 0` (at most `-n 2`) and a timeout, and leave full verification to hosted CI or Gate A.
+tests (`local_check.py --full`, `pytest -n auto`, `make check`). Run targeted files
+serially without `-n` and with a timeout, and leave full verification to hosted CI or Gate A.
 Details: `phase-loop-runtime/AGENTS.md`.
 
 ## Referencing issues & PRs (multi-repo)
