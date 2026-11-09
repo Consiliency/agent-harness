@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import os
+import pwd
 import sys
 from types import ModuleType
 from typing import Callable
@@ -10,6 +12,9 @@ from typing import Callable
 from .supervised_launch import (
     LaunchConfig, Refused, Validator, _Refusal, _json, _path, _require, sha256, trusted_bytes,
 )
+
+
+MANAGED_BINDING = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".local/state/phase-loop/supervised-launch-binding.json"
 
 
 @dataclass(frozen=True)

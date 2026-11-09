@@ -181,3 +181,19 @@ def test_binding_callback_refusal(case, kind, error):
     paths = binding_files(case)
     paths[kind].write_text(f"raise {error}()\n")
     assert child(case, paths)["reason"] == "binding_invalid"
+
+
+def test_managed_binding_uses_password_database(tmp_path, monkeypatch):
+    import importlib
+    from types import SimpleNamespace
+    original = binding.MANAGED_BINDING
+    with monkeypatch.context() as patch:
+        patch.setenv("HOME", str(tmp_path / "env-home"))
+        patch.setenv("XDG_STATE_HOME", str(tmp_path / "env-state"))
+        patch.setenv("XDG_CONFIG_HOME", str(tmp_path / "env-config"))
+        patch.setattr(binding.pwd, "getpwuid", lambda uid: SimpleNamespace(pw_dir=str(tmp_path / "operator")))
+        importlib.reload(binding)
+        assert binding.MANAGED_BINDING == tmp_path / "operator/.local/state/phase-loop/supervised-launch-binding.json"
+        assert not binding.MANAGED_BINDING.exists()
+    importlib.reload(binding)
+    assert binding.MANAGED_BINDING == original

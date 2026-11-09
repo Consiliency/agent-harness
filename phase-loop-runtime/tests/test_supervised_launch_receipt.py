@@ -43,11 +43,11 @@ def read_receipt(path):
 
 
 def validate_receipt(record):
+    from historical_receipts import verify_historical_receipt
+    verify_historical_receipt(RECEIPT, record=record, producer_nodes=current_producer_nodes(), mutation_controls=CONTROLS)
     assert record["authority"] == "synthetic_fixture_only"
     assert record["gate"] == "IF-0-ENVELOPE-1"
     assert set(CONTROLS) <= set(record["mutation_controls"])
-    for relative, digest in record["source_hashes"].items():
-        assert hashlib.sha256((REPO / relative).read_bytes()).hexdigest() == digest, relative
     assert len(record["source_hashes"]) >= 8
     nodes = record["producer_nodes"]
     outcomes = record["producer_outcomes"]
@@ -61,7 +61,7 @@ def validate_receipt(record):
     assert observed_files <= set(PRODUCERS)
     if record["final_tree_validated"]:
         assert observed_files == set(PRODUCERS)
-        assert current_producer_nodes() <= set(nodes)
+        assert set(nodes) <= current_producer_nodes()
         assert all(value == "local_fixture_pass" for value in record["ec_status"].values())
     else:
         assert all(value == "pending_hosted_ci" for value in record["ec_status"].values())
@@ -114,24 +114,18 @@ def test_receipt_mutations_after_production_entry(case, tmp_path, control):
 
 
 def test_receipt_current_inventory(monkeypatch):
+    from historical_receipts import verify_historical_receipt
     record = read_receipt(RECEIPT)
-    record["final_tree_validated"] = True
-    record["ec_status"] = dict.fromkeys(record["ec_status"], "local_fixture_pass")
     current = current_producer_nodes()
-    record["producer_nodes"] = sorted(current)[1:]
-    record["producer_outcomes"] = dict.fromkeys(record["producer_nodes"], "passed")
-    record["producer_passed"] = len(record["producer_nodes"])
+    verify_historical_receipt(RECEIPT, record=record, producer_nodes=current, mutation_controls=CONTROLS)
+    node = record["producer_nodes"][0]
     with pytest.raises(AssertionError):
-        validate_receipt(record)
-    # Source-copy mutant: removing the current-inventory guard accepts the
-    # otherwise internally consistent historical rows as a final stamp.
-    source = inspect.getsource(validate_receipt)
-    needle = '        assert current_producer_nodes() <= set(nodes)'
+        verify_historical_receipt(RECEIPT, record=record, producer_nodes=current - {node}, mutation_controls=CONTROLS)
+    source = inspect.getsource(verify_historical_receipt)
+    needle = '    assert required <= {normalize(node) for node in producer_nodes}'
     assert source.count(needle) == 1
-    namespace = dict(globals())
-    exec(compile(source.replace(needle, '        pass'), __file__, "exec"), namespace)
-    namespace["validate_receipt"](record)
-    record["producer_nodes"] = sorted(current)
-    record["producer_outcomes"] = dict.fromkeys(current, "passed")
-    record["producer_passed"] = len(current)
-    validate_receipt(record)
+    import historical_receipts
+    namespace = dict(vars(historical_receipts))
+    exec(compile(source.replace(needle, '    pass'), __file__, "exec"), namespace)
+    namespace["verify_historical_receipt"](RECEIPT, record=record, producer_nodes=current - {node}, mutation_controls=CONTROLS)
+
