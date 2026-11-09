@@ -29,7 +29,7 @@ Standalone planner for one bounded change. Not part of the `claude-phase-roadmap
 |---|---|---|
 | `<task>` | no | Free-form task description. Falls back to prior conversation context if omitted. |
 | `--output <path>` | no | Override the generated plan path. Default: `.consiliency/plans/detailed-<slug>-<YYYYMMDD-HHMM>.md` (dir auto-created). |
-| `--review-external` | no | Run Gemini + Codex review after writing the plan. Requires both CLIs installed and the frontier-model cache populated. |
+| `--review-external` | no | Run the runtime advisor board after writing the plan. Requires the selected subscription CLIs and broker prerequisites. |
 
 ## Deferred tool preloading
 
@@ -134,15 +134,14 @@ Plan Mode is not required. The artifact and handoff are the deliverables either 
 ### Step 5 — External CLI review (only if `--review-external`)
 
 ```bash
-python3 "$(git rev-parse --show-toplevel)/.claude/skills/_shared/review_with_cli.py" \
-  --artifact <plan-path> \
-  --prompt-file "$(git rev-parse --show-toplevel)/.claude/skills/claude-plan-detailed/assets/review_prompt.md" \
-  --out <plan-path>_reviews.md
+phase-loop advisor-board <plan-path> --json
 ```
 
-On stale/missing frontier-model cache, surface via `AskUserQuestion` with `[run discovery now, skip review this run, abort]`.
-
-Tell the user: "Review written to `<path>_reviews.md`. Agreements between Gemini and Codex are real signal; divergences are context."
+Follow `claude-advisor-board` for native-fill handling under Claude Code and
+for the selected board's prerequisites. Save the review result to the
+`<plan-path>_reviews.md` sibling and report structured unavailable or failed
+legs as incomplete review evidence. This uses the runtime's composed board,
+not a separate two-CLI helper or frontier-model cache.
 
 ### Step 6 — Resolve the approval path (Plan Mode is optional)
 
@@ -170,7 +169,7 @@ git commit -m "chore(plan): detailed plan for <short task summary>"
 
 Write the plan first, then write the reflection and handoff serially. The handoff should reference the final plan path and may quote final decisions verbatim; do not parallelize handoff writing with the final plan-body write.
 
-Resolve `REFLECTION_PATH` (`resolve_skill_bundle_root("codex")/claude-plan-detailed/reflections/<repo_hash>/<branch_slug>/<run_id>.md`) and the repo-local handoff slot (`phase_loop_runtime.skill_paths.resolve_handoff_root`, falling back to `resolve_handoff_path` in `shared/phase-loop/handoff_path.py`). Then spawn ONE close-out agent on the `frontier` tier; it writes both files via the Write tool:
+Resolve `REFLECTION_PATH` (`resolve_skill_bundle_root("claude")/claude-plan-detailed/reflections/<repo_hash>/<branch_slug>/<run_id>.md`) and the repo-local handoff slot (`phase_loop_runtime.skill_paths.resolve_handoff_root`, falling back to `resolve_handoff_path` in `shared/phase-loop/handoff_path.py`). Then spawn ONE close-out agent on the `frontier` tier; it writes both files via the Write tool:
 
 - FILE 1, a repo-agnostic reflection with `## Run context`, `## What worked`, `## What didn't` and `## Improvements to SKILL.md`. It must not reference this project or the specific plan produced.
 - FILE 2, the repo-specific handoff (`from: claude-plan-detailed`, `timestamp`, `artifact`), opening with the consumer-validation preamble described under `## Consumer contract`.
@@ -190,7 +189,7 @@ Then the recommended next step depends on the Step 6 path:
 
 ## Consumer contract
 
-`claude-plan-detailed` has no paired executor skill — the "implementer" is typically a fresh Claude Code session launched after `/clear` (except on the continue-to-implementation path of Step 6, where Plan Mode was inactive and the operator asked to implement — then this same session implements the plan directly). The handoff is the only channel carrying pre-`/clear` context forward, so validation has to be self-serve. Every handoff this skill writes embeds the consumer-validation preamble (see the FILE 2 template in [references/closeout-reflection-handoff.md](references/closeout-reflection-handoff.md)); a fresh implementer reading the file sees those instructions first and should apply them before acting on any downstream content:
+`claude-execute-detailed` is the paired executor; a fresh Claude Code session can invoke it after `/clear` (except on the continue-to-implementation path of Step 6, where Plan Mode was inactive and the operator asked to implement — then this same session implements the plan directly). The handoff is the only channel carrying pre-`/clear` context forward, so validation has to be self-serve. Every handoff this skill writes embeds the consumer-validation preamble (see the FILE 2 template in [references/closeout-reflection-handoff.md](references/closeout-reflection-handoff.md)); a fresh implementer reading the file sees those instructions first and should apply them before acting on any downstream content:
 
 1. **`from:` check** — must be `claude-plan-detailed`. A mismatch means the file belongs to a different skill and should not be consumed as a claude-plan-detailed handoff.
 2. **Timestamp check** — must be within the last 7 days. Older handoffs are likely stale; the plan artifact may already be merged, abandoned, or superseded.
@@ -274,8 +273,8 @@ Closeout payload shape is defined by `EmitPhaseCloseout` in `phase_loop_runtime/
 
 ### Manifest write
 
-After the plan artifact path and repo-local handoff path are known, best-effort append a `type=detailed` entry to `plans/manifest.json` through `phase_loop_runtime.plan_manifest.append_entry` (`plan-manifest append`). `append_entry(repo, entry)` takes a typed `phase_loop_runtime.plan_manifest.DotfilesPlanEntry` constructed with keyword fields (`slug`, `file`, `type`, `status`, `created_at`, `updated_at`, `owner_skill`, …), NOT a plain dict — passing a dict fails. Use `phase_loop_runtime.skill_paths` resolver helpers for any reflection or handoff paths needed by the metadata. The manifest entry must record `status=committed`, `slug`, `file`, `created_at`, `updated_at`, `owner_skill=claude-plan-detailed`, `task_summary`, `acceptance_criteria_count`, and the handoff path metadata (`handoff_path` / `handoff_ref`). Include a committed lifecycle event with `by=claude-plan-detailed` when the helper contract requires lifecycle provenance.
+After the plan artifact path and repo-local handoff path are known, best-effort append a `type=detailed` entry to `plans/manifest.json` through `phase_loop_runtime.plan_manifest.append_entry`. `append_entry(repo, entry)` takes a typed `phase_loop_runtime.plan_manifest.DotfilesPlanEntry` constructed with keyword fields (`slug`, `file`, `type`, `status`, `created_at`, `updated_at`, `owner_skill`, …), NOT a plain dict — passing a dict fails. Use `phase_loop_runtime.skill_paths` resolver helpers for any reflection or handoff paths needed by the metadata. The manifest entry must record `status=committed`, `slug`, `file`, `created_at`, `updated_at`, `owner_skill=claude-plan-detailed`, `task_summary`, `acceptance_criteria_count`, and the handoff path metadata (`handoff_ref`). Include a committed lifecycle event with `by=claude-plan-detailed` when the helper contract requires lifecycle provenance.
 
 Manifest write failures are non-fatal during the dual-mode window: emit a ledger warning, add the failure to the mandatory reflection, and preserve the existing closeout, handoff, and final response behavior.
 
-Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("codex")/claude-plan-detailed/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
+Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("claude")/claude-plan-detailed/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.

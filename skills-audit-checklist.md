@@ -3,8 +3,8 @@
 Audit baseline: `origin/main` at `23a30561e9b2ef23933fcbb4225a1d86120a5195`. Pending entries have not yet been audited. `skills-src/` is canonical; generated outputs in `phase-loop-skills/` and the packaged bundle are reviewed through regeneration and parity checks. The hand-authored `phase-loop-skills/README.md` is audited separately. No skill source is owned by agent-harness#1934, agent-harness#1937 or agent-harness#1939.
 
 - [x] `skills-src/claude/claude-advisor-board/SKILL.md` — fixed; runtime `seat_profile_codex.py:33`, `panel_invoker.py:13355` (jailed launch, single attempt), `panel_invoker.py:444` (memfd gate); issue qualification retained from prior commit
-- [ ] `skills-src/claude/claude-execute-detailed/SKILL.md` — pending
-- [ ] `skills-src/claude/claude-execute-detailed/references/pr-writing.md` — pending
+- [x] `skills-src/claude/claude-execute-detailed/SKILL.md` — fixed; runtime `publishing.py:2085; plan_manifest.py:339; skill_paths.py:24 — reflection root and absent manifest CLI`
+- [x] `skills-src/claude/claude-execute-detailed/references/pr-writing.md` — checked-clean; runtime `publishing.py:2085 pr_body and commit_message; publication_mode.py`
 - [ ] `skills-src/claude/claude-execute-phase/SKILL.md` — pending
 - [ ] `skills-src/claude/claude-execute-phase/references/closeout-reflection-handoff.md` — pending
 - [ ] `skills-src/claude/claude-execute-phase/references/interactive-path.md` — pending
@@ -32,9 +32,9 @@ Audit baseline: `origin/main` at `23a30561e9b2ef23933fcbb4225a1d86120a5195`. Pen
 - [ ] `skills-src/claude/claude-phase-roadmap-builder/references/roadmap-template.md` — pending
 - [ ] `skills-src/claude/claude-phase-roadmap-builder/references/validator-format-contract.md` — pending
 - [ ] `skills-src/claude/claude-phase-roadmap-builder/scripts/validate_roadmap.py` — pending
-- [ ] `skills-src/claude/claude-plan-detailed/SKILL.md` — pending
+- [x] `skills-src/claude/claude-plan-detailed/SKILL.md` — fixed; runtime `cli.py advisor-board parser; plan_manifest.py:95,327; skill_paths.py:24 — absent CLI helper, paired executor and reflection root`
 - [ ] `skills-src/claude/claude-plan-detailed/assets/review_prompt.md` — pending
-- [ ] `skills-src/claude/claude-plan-detailed/references/closeout-reflection-handoff.md` — pending
+- [x] `skills-src/claude/claude-plan-detailed/references/closeout-reflection-handoff.md` — fixed; runtime `skill_paths.py:24,35 — executable shell root resolution and quoted run paths`
 - [ ] `skills-src/claude/claude-plan-phase/SKILL.md` — pending
 - [ ] `skills-src/claude/claude-plan-phase/assets/review_prompt.md` — pending
 - [ ] `skills-src/claude/claude-plan-phase/references/closeout-reflection-handoff.md` — pending
@@ -63,7 +63,7 @@ Audit baseline: `origin/main` at `23a30561e9b2ef23933fcbb4225a1d86120a5195`. Pen
 - [x] `skills-src/codex/codex-run-train/SKILL.md` — checked-clean; runtime `phase-loop-runtime/src/phase_loop_runtime/train_runner.py:340-380,3030; cli.py run-train parser`
 - [x] `skills-src/codex/codex-skill-editor/SKILL.md` — checked-clean; runtime `phase-loop-runtime/src/phase_loop_runtime/reflection_corpus.py archive; build_bundle.py DEFAULT_SOURCES; skill_paths.py:24-39`
 - [ ] `skills-src/codex/codex-skill-improvement-planner/SKILL.md` — pending
-- [ ] `skills-src/codex/codex-task-contextualizer/SKILL.md` — pending
+- [x] `skills-src/codex/codex-task-contextualizer/SKILL.md` — checked-clean; runtime `models.py HarnessLaneAssignment; skill_paths.py:24-39`
 - [x] `skills-src/gemini/gemini-advisor-board/SKILL.md` — fixed; runtime `seat_profile_codex.py:33`, `panel_invoker.py:13355` (jailed launch, single attempt), `panel_invoker.py:444` (memfd gate); issue qualification retained from prior commit
 - [x] `skills-src/gemini/gemini-execute-detailed/SKILL.md` — fixed; runtime `publishing.py:2085; plan_manifest.py:339; skill_paths.py:24 (reflection root and absent CLI alias)`
 - [ ] `skills-src/gemini/gemini-execute-phase/SKILL.md` — pending
@@ -93,4 +93,4 @@ Audit baseline: `origin/main` at `23a30561e9b2ef23933fcbb4225a1d86120a5195`. Pen
 - [ ] `skills-src/opencode/opencode-task-contextualizer/SKILL.md` — pending
 
 - [ ] `skills-src/claude/claude-skill-editor/applied-plans.log` — pending
-- [ ] `phase-loop-skills/README.md` — pending
+- [x] `phase-loop-skills/README.md` — checked-clean; runtime `skill_install.py install_skills; skill_paths.py HARNESS_DEFAULT_SKILL_ROOTS; cli.py install parser`
