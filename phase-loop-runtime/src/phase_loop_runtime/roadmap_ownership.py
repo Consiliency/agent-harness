@@ -772,7 +772,7 @@ def replay(
     ``candidate_roadmap`` scores the SAME landed changes against one hypothetical
     roadmap text instead of the historical roadmap at each commit. That answers
     "what would this proposal have flagged" -- the question a narrowing decision
-    needs (agent-harness#688) -- without editing the roadmap. The commit sample and the diff
+    needs (ah#688) -- without editing the roadmap. The commit sample and the diff
     per commit are identical to the historical run; only the ownership map differs.
     The candidate goes through ``ownership_map`` and therefore through every gate a
     real roadmap does, so a malformed proposal raises rather than scoring smaller.
