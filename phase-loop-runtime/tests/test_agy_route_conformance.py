@@ -97,20 +97,9 @@ TOKEN = ".gemini/antigravity-cli/antigravity-oauth-token"
 
 # ------------------------------------------------------------------ prerequisites
 
-def _caps_placement_gap(proc_cgroup: str, uid: int) -> str | None:
-    """The capped launch moves its caller into a scope of the user manager; the kernel allows
-    that only from inside the same manager (docs/seat-resource-caps.md)."""
-    manager = f"/user.slice/user-{uid}.slice/user@{uid}.service/"
-    paths = [line.split("::", 1)[1] for line in proc_cgroup.splitlines() if line.startswith("0::")]
-    if len(paths) != 1 or not paths[0].startswith(manager):
-        return (f"this process is not inside the systemd user manager ({manager}); run the suite under "
-                "it, for example with `systemd-run --user --pipe --wait`")
-    return None
-
-
 def prerequisite_gap(*, bwrap: str = BWRAP, setpriv: str = SETPRIV, helper: str = HELPER,
                      which=shutil.which, run=subprocess.run, machine_id=q.read_machine_id,
-                     caps_readiness=None, proc_cgroup=None, uid=None) -> str | None:
+                     caps_readiness=None) -> str | None:
     """The first missing prerequisite of a hermetic driver run, or ``None``."""
     if not sys.platform.startswith("linux"):
         return "the agy heartbeat route is Linux-only"
@@ -131,11 +120,7 @@ def prerequisite_gap(*, bwrap: str = BWRAP, setpriv: str = SETPRIV, helper: str 
     code = (caps_readiness or CAPS_READINESS)()
     if code is not None:
         return f"per-seat resource caps are unavailable ({code}; docs/seat-resource-caps.md)"
-    try:
-        placement = Path("/proc/self/cgroup").read_text() if proc_cgroup is None else proc_cgroup
-    except OSError:
-        return "the cgroup placement of this process is unreadable"
-    return _caps_placement_gap(placement, os.getuid() if uid is None else uid)
+    return None
 
 
 def require_prerequisites(gap: str | None, *, strict: bool) -> None:
@@ -340,8 +325,7 @@ def _host_without(**missing):
     present = sys.executable  # an executable that exists everywhere this suite runs
     facts = {"bwrap": present, "setpriv": present, "helper": present, "which": lambda name: present,
              "run": lambda *a, **k: subprocess.CompletedProcess(a, 0, b"", b""), "machine_id": lambda: "0" * 32,
-             "caps_readiness": lambda: None, "uid": 1000,
-             "proc_cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-x.service\n"}
+             "caps_readiness": lambda: None}
     return prerequisite_gap(**{**facts, **missing})
 
 
@@ -355,8 +339,6 @@ def test_a_complete_host_has_no_gap():
     ({"setpriv": "/nonexistent/setpriv"}, "setpriv"),
     ({"helper": "/nonexistent/sleep"}, "helper executable"),
     ({"caps_readiness": lambda: "seat_resource_caps_unavailable"}, "per-seat resource caps"),
-    ({"proc_cgroup": "0::/user.slice/user-1000.slice/session-7.scope\n"}, "systemd user manager"),
-    ({"proc_cgroup": "0::/system.slice/actions.runner.service\n"}, "systemd user manager"),
 ])
 def test_strict_mode_fails_on_every_other_gap(missing, named):
     gap = _host_without(**missing)
