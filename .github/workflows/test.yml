@@ -71,9 +71,10 @@ jobs:
           # reviewed offload environment proves the real egress tests pass.
           OFFLOAD_SANDBOX_READY: 'false'
           # Org-wide pause switch for CI offload to the `ai` host (cross-repo
-          # contract): the exact string `true` in the org variable
-          # CI_OFFLOAD_PAUSED diverts to the existing hosted path; unset or any
-          # other value is normal. Never a new fallback, never a failure.
+          # contract): `true` in the org variable CI_OFFLOAD_PAUSED diverts to
+          # the existing hosted path; unset or any other value is normal. GitHub's
+          # `==` is case-insensitive, so `TRUE` also pauses. Never a new fallback,
+          # never a failure.
           OFFLOAD_PAUSED: ${{ vars.CI_OFFLOAD_PAUSED == 'true' }}
         run: |
           set -euo pipefail

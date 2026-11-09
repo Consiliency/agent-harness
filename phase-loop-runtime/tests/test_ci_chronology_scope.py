@@ -491,16 +491,17 @@ def test_offload_requires_trust_secret_and_supported_sandbox(
            "PR_HEAD_REPO": head_repo, "REPO": "owner/repo",
            "TS_AUTHKEY_SET": secret, "OFFLOAD_SANDBOX_READY": sandbox_ready,
            "GITHUB_OUTPUT": str(output)}
-    env.pop("OFFLOAD_PAUSED", None)
-    if paused is not None:
-        env["OFFLOAD_PAUSED"] = paused
+    # `paused` is the org variable's raw value. GitHub evaluates the env
+    # expression to the string `true` or `false`, and its `==` compares strings
+    # case-insensitively, so `TRUE` also pauses. Model that boundary here.
+    serialized = "true" if (paused or "").lower() == "true" else "false"
+    env["OFFLOAD_PAUSED"] = serialized
     result = subprocess.run(
         ["bash", "-c", step["run"]], capture_output=True, text=True, env=env,
     )
     assert result.returncode == 0, result.stderr
-    shown = "false" if paused is None else paused
-    assert f"offload paused (CI_OFFLOAD_PAUSED): {shown}" in result.stdout
-    eligible = trusted and secret == "true" and sandbox_ready == "true" and paused != "true"
+    assert f"offload paused (CI_OFFLOAD_PAUSED): {serialized}" in result.stdout
+    eligible = trusted and secret == "true" and sandbox_ready == "true" and serialized != "true"
     assert output.read_text().strip() == f"eligible={str(eligible).lower()}"
     assert jobs["offload"]["if"] == "needs.elig.outputs.eligible == 'true'"
     assert jobs["pytest"]["if"] == "needs.elig.outputs.eligible != 'true'"

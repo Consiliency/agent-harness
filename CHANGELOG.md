@@ -7,8 +7,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 ## [Unreleased]
 
 - CI: honour the org-wide `CI_OFFLOAD_PAUSED` switch in the CI-offload eligibility
-  job. The exact string `true` diverts runs to the existing hosted path, and the
-  job logs `offload paused (CI_OFFLOAD_PAUSED): <value>`. Unset or any other value
+  job. `true` diverts runs to the existing hosted path (GitHub compares
+  case-insensitively, so `TRUE` does too), and the job logs `offload paused (CI_OFFLOAD_PAUSED): <value>`. Unset or any other value
   leaves behaviour unchanged. Fail-closed offload, tailnet logic and pins are
   untouched.
 
