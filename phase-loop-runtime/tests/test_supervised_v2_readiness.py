@@ -114,6 +114,29 @@ def test_producer_results_require_executed_passes(tmp_path, outcome):
         assert all(len(group) == 1 for group in rows.values())
 
 
+@pytest.mark.parametrize("control", ["observed", "different-reason", "different-node"])
+def test_optional_dependency_unavailable_is_explicit(tmp_path, control):
+    files = []
+    for name in ("test_supervised_contracts", "test_supervised_envelope_v2", "test_supervised_worker", "test_supervised_v2_readiness"):
+        path = tmp_path / (name + ".xml")
+        path.write_text(f'<testsuite><testcase classname="{name}" name="test_control"/></testsuite>')
+        files.append(path)
+    name = "test_xdist_workers_remove_owned_audit_scratch" if control != "different-node" else "test_required_control"
+    reason = "could not import 'xdist': No module named 'xdist'" if control != "different-reason" else "not executed"
+    path = tmp_path / "retention.xml"
+    path.write_text(f'<testsuite><testcase classname="test_output_retention" name="{name}"><skipped message="{reason}"/></testcase></testsuite>')
+    files.append(path)
+    if control != "observed":
+        with pytest.raises(evidence.EvidenceRefused, match="producer_not_passed"):
+            evidence.collect_producer_results(files, run_id="fixture", tested_head="a" * 40, resources={})
+    else:
+        rows = evidence.collect_producer_results(files, run_id="fixture", tested_head="a" * 40, resources={})
+        unavailable = [row for group in rows.values() for row in group if row["outcome"] != "passed"]
+        assert len(unavailable) == 1 and unavailable[0]["outcome"] == "unavailable"
+        assert unavailable[0]["unavailable_reason"] == "xdist_unavailable"
+        assert not unavailable[0]["production_witnesses"]
+
+
 @pytest.mark.parametrize("field,value", [("head_sha", "b" * 40), ("path", "other.yml"), ("conclusion", "failure"), ("status", "in_progress")])
 def test_run_identity_is_api_bound(field, value):
     run = dict(repository={"full_name": evidence.REPOSITORY}, path="workflow.yml", head_sha="a" * 40, status="completed", conclusion="success")

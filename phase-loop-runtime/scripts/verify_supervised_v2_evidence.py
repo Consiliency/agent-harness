@@ -53,6 +53,7 @@ SOURCE_PATHS = (
     "phase-loop-runtime/tests/test_supervised_worker_cli.py",
     "phase-loop-runtime/tests/test_supervised_worker_receipt.py",
     "phase-loop-runtime/tests/test_run_status_receipt.py",
+    "phase-loop-runtime/tests/test_stamp_evidence_receipt.py",
     "plans/artifacts/v12-CLOSEOUT-inputs.md",
     "plans/artifacts/v12-CLOSEOUT-landed-binding.md",
     "plans/artifacts/v12-CLOSEOUT-binding-location.md",
@@ -72,6 +73,7 @@ MISSING_PRODUCERS = (
     ("president", "review evidence publisher", "authenticated separate-president publisher binding"),
     ("publication", "contract publisher", "reviewed non-provisional successor input"),
 )
+OPTIONAL_UNAVAILABLE = {"tests/test_output_retention.py::test_xdist_workers_remove_owned_audit_scratch": "xdist_unavailable"}
 
 
 class EvidenceRefused(ValueError):
@@ -170,12 +172,15 @@ def collect_producer_results(paths, *, run_id, tested_head, resources, job_id="o
         raw = path.read_bytes()
         artifact_digest = sha256(raw).hexdigest()
         for case in ET.fromstring(raw).iter("testcase"):
-            require(not any(case.find(tag) is not None for tag in ("failure", "error", "skipped")), "producer_not_passed")
+            require(not any(case.find(tag) is not None for tag in ("failure", "error")), "producer_not_passed")
             components = case.attrib["classname"].split(".")
             filename = next((part for part in components if part.startswith("test_")), None)
             require(filename is not None, "producer_node_invalid")
             classes = components[components.index(filename) + 1:]
             node = "tests/" + filename + ".py::" + "::".join([*classes, case.attrib["name"]])
+            skipped = case.find("skipped")
+            require(skipped is None or (node in OPTIONAL_UNAVAILABLE
+                    and skipped.attrib.get("message") == "could not import 'xdist': No module named 'xdist'"), "producer_not_passed")
             require(node not in seen, "producer_duplicate")
             seen.add(node)
             properties = {item.attrib["name"]: item.attrib["value"] for item in case.findall("properties/property")}
@@ -186,13 +191,15 @@ def collect_producer_results(paths, *, run_id, tested_head, resources, job_id="o
                        runner_artifact_sha256=artifact_digest, runner_artifact_ref=path.name,
                        runner_run_id=run_id, runner_job_id=job_id, tested_head=tested_head, owner="CLOSEOUT",
                        source_pointer=node.split("::", 1)[0], host="ai")
+            if skipped is not None:
+                row.update(outcome="unavailable", unavailable_reason=OPTIONAL_UNAVAILABLE[node])
             if "contract_diagnostics" in properties:
                 row["contract_diagnostics"] = strict_json(properties["contract_diagnostics"])
                 row["supported_route"] = properties["supported_route"]
                 row["auxiliary_starts"] = properties["auxiliary_starts"]
                 row["chain_starts"] = properties["chain_starts"]
             groups[_group(filename)].append(row)
-    require(all(groups.values()), "producer_group_missing")
+    require(all(any(row["outcome"] == "passed" for row in rows) for rows in groups.values()), "producer_group_missing")
     return groups
 
 
@@ -225,7 +232,7 @@ def _schema_obligations(repo):
 def obligation_results(repo, producers):
     """Link the historical inventory to executed production families and cases."""
     schema = read_receipt(repo / "plans/evidence/supervised-worker/SCHEMA.md")
-    rows = [row for group in producers.values() for row in group if row["production_witnesses"]]
+    rows = [row for group in producers.values() for row in group if row["outcome"] == "passed" and row["production_witnesses"]]
     result = []
     for group in ("coverage_inventory", "semantic_inventory", "semantic_cases"):
         for obligation in schema[group]:
@@ -277,19 +284,25 @@ def verify_offline(repo, record):
     resources = {name: sha256(data).hexdigest() for name, data in bundle._captured}
     groups = record["producer_results"]
     require(set(groups) == set(GROUPS) and all(groups.values()), "producer_group_missing")
-    nodes = set()
+    nodes, passed_nodes, unavailable = set(), set(), []
     for group, rows in groups.items():
         for row in rows:
             expected_fields = {"test_node_id", "case_or_control_id", "resource_digests", "production_witnesses", "outcome",
                                "runner_artifact_sha256", "runner_artifact_ref", "runner_run_id", "runner_job_id", "tested_head", "owner", "source_pointer", "host"}
-            require(expected_fields <= set(row) <= expected_fields | {"contract_diagnostics", "supported_route", "auxiliary_starts", "chain_starts"}, "producer_row_invalid")
+            require(expected_fields <= set(row) <= expected_fields | {"contract_diagnostics", "supported_route", "auxiliary_starts", "chain_starts", "unavailable_reason"}, "producer_row_invalid")
             node = row["test_node_id"]
             require(row["owner"] == "CLOSEOUT" and row["host"] == "ai" and row["source_pointer"] == node.split("::", 1)[0], "producer_identity_invalid")
             require(type(node) is str and len(node) <= 2048 and re.fullmatch(r"tests/test_[A-Za-z0-9_]+\.py::[^\r\n]+", node) is not None,
                     "producer_node_invalid")
             require(all(re.fullmatch(r"[A-Za-z0-9_.<>]+", symbol) is not None for symbol in row["production_witnesses"]), "witness_invalid")
             require(re.fullmatch(r"[A-Za-z0-9_.-]+\.xml", row["runner_artifact_ref"]) is not None, "producer_artifact_invalid")
-            require(node not in nodes and row["outcome"] == "passed", "producer_not_passed")
+            require(node not in nodes, "producer_not_passed")
+            if row["outcome"] == "unavailable":
+                require(node in OPTIONAL_UNAVAILABLE and row.get("unavailable_reason") == OPTIONAL_UNAVAILABLE[node], "producer_not_passed")
+                unavailable.append(dict(test_node_id=node, reason=row["unavailable_reason"]))
+            else:
+                require(row["outcome"] == "passed" and "unavailable_reason" not in row, "producer_not_passed")
+                passed_nodes.add(node)
             nodes.add(node)
             require(row["resource_digests"] == resources and row["tested_head"] == record["tested_head"], "producer_identity_invalid")
             require(re.fullmatch(r"[0-9a-f]{64}", row["runner_artifact_sha256"]) is not None
@@ -302,13 +315,14 @@ def verify_offline(repo, record):
         if case["kind"] == "admission":
             require(case["id"] in rows, "admission_case_missing")
             row = rows[case["id"]]
+            require(row["test_node_id"] in passed_nodes, "admission_proof_invalid")
             ordered = next(([code for code in stage if code in case["expected"]] for stage in stages if set(case["expected"]) <= set(stage)), [])
             require(row["contract_diagnostics"] == ordered and row["production_witnesses"], "admission_proof_invalid")
             require(row["auxiliary_starts"] == "0" and row["chain_starts"] == "0", "admission_effect_invalid")
             require(row["supported_route"] == "contract_only", "route_claim_invalid")
         else:
-            require(any(node.endswith("::test_v2_published_echo_at_real_writer_and_reader[" + case["id"] + "]") for node in nodes), "echo_case_missing")
-        require(any(node.endswith("::test_v2_published_schema_only[" + case["id"] + "]") for node in nodes), "schema_case_missing")
+            require(any(node.endswith("::test_v2_published_echo_at_real_writer_and_reader[" + case["id"] + "]") for node in passed_nodes), "echo_case_missing")
+        require(any(node.endswith("::test_v2_published_schema_only[" + case["id"] + "]") for node in passed_nodes), "schema_case_missing")
     require(_current_producer_nodes(str(repo), record["tested_head"]) <= nodes, "producer_nodes_missing")
     require(record["schema_obligations"] == _schema_obligations(repo), "obligation_inventory_invalid")
     require(record["obligation_results"] == obligation_results(repo, groups), "obligation_proof_invalid")
@@ -318,7 +332,8 @@ def verify_offline(repo, record):
             and len(external["controller_case_ids"]) == 13 and external["status"] == "upstream_phase_unmet", "external_intake_invalid")
     require(record["spec_delta_closeout"] == dict(schema="spec_delta_closeout.v1", decision="canonical_spec_update", redaction_posture="metadata_only"), "spec_closeout_invalid")
     return dict(verification_status="blocked", blocker_class="upstream_phase_unmet", human_required=False,
-                byte_pin_authority=False, offline_proof="verified", missing_producers=[dict(id=key, owner=owner, blocked_edge=edge)
+                byte_pin_authority=False, offline_proof="verified", unavailable_checks=unavailable,
+                missing_producers=[dict(id=key, owner=owner, blocked_edge=edge)
                 for key, owner, edge in MISSING_PRODUCERS])
 
 
