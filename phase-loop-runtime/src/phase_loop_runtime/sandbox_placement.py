@@ -2505,9 +2505,11 @@ class PlacementLifecycle:
     @property
     def bridge(self) -> object:
         if self._bridge is None:
-            from .placement_bridge import ForwardTcpUnixBridge
+            from .placement_bridge import ForwardTcpUnixBridge, default_bridge_root
 
-            self._bridge = ForwardTcpUnixBridge()
+            # Under the inventory when the socket path fits, else the runtime directory.
+            self._bridge = ForwardTcpUnixBridge(self.state_root / "b",
+                                                fallback_root=default_bridge_root())
         return self._bridge
 
     @property
@@ -2678,8 +2680,11 @@ class PlacementLifecycle:
         kind = target.kind  # type: ignore[attr-defined]
         providers = tuple(request.providers)  # type: ignore[attr-defined]
         if kind == "e2b":
-            # Represented but disabled until a later owner account-and-spend activation.
-            return _TargetPlan(target, None, None, None, _DRIVER_UNAVAILABLE)  # type: ignore[arg-type]
+            # A third-party target needs a current OD-7 clearance for every declared
+            # provider; and it stays disabled until a later account-and-spend activation.
+            refusal = (_PROVIDER_REFUSED if not set(providers) <= target.od7_providers  # type: ignore[attr-defined]
+                       else _DRIVER_UNAVAILABLE)
+            return _TargetPlan(target, None, None, None, refusal)  # type: ignore[arg-type]
         vector = (_PI_RUNNER_BINDINGS[kind] if request.workload == "pi-runner"  # type: ignore[attr-defined]
                   else request.policy_vector)  # type: ignore[attr-defined]
         registry = config.providers  # type: ignore[attr-defined]
@@ -2840,7 +2845,14 @@ class PlacementLifecycle:
             return self._unsettled(record, request, trail, code)
         from .placement_process_contract import result_codes
 
-        reason = trail[-1].reason if trail else None  # type: ignore[attr-defined]
+        decisive = [entry for entry in trail  # type: ignore[attr-defined]
+                    if not (plans.get(entry.target) is not None  # type: ignore[attr-defined]
+                            and plans[entry.target].target.kind == "e2b"  # type: ignore[attr-defined]
+                            and entry.code == _DRIVER_UNAVAILABLE)]  # type: ignore[attr-defined]
+        if decisive and len(decisive) < len(trail):
+            # A disabled E2B target is recorded, but the last real target decides.
+            code = decisive[-1].code or code  # type: ignore[attr-defined]
+        reason = decisive[-1].reason if decisive else None  # type: ignore[attr-defined]
         if code in (_CAPACITY, _CAPACITY_EXHAUSTED):
             outcome = "at_capacity"
         elif code in (_UNREACHABLE, _TIMEOUT):
@@ -3009,11 +3021,13 @@ class PlacementLifecycle:
             context = record.get("caller_context")
             request = _RequestEcho(str(record["request_id"]),
                                    dict(context) if isinstance(context, dict) else {})
+        started = record.get("started_at")
+        created = float(started) if type(started) in (int, float) and math.isfinite(started) else self.clock()  # type: ignore[arg-type]
         for effect in record.get("pending") or []:  # type: ignore[union-attr]
             entry_id = f"{record['request_id']}-{self.new_id()}"
             _write_journal(self._dir("cleanup") / f"{entry_id}.json",
-                           {"created_at": record.get("started_at", self.clock()),
-                            "request_id": record["request_id"], "effect": effect})
+                           {"created_at": created, "request_id": record["request_id"],
+                            "effect": effect})
         record["pending"] = []
         record["barrier"] = "armed"
         return self._settle(record, self._reserve_response(request, "timeout", _END_REACHED, trail))

@@ -975,3 +975,42 @@ def test_sl1_markers_precede_schema_validation(marker):
         assert placement_lease.openshell_journal_kind(value, lease.lease_id) == 'fork'
     finally:
         lease.abandon()
+
+
+# --------------------------------------------------------------------------------------
+# v13 PLACECLI: per-client inventories.
+# --------------------------------------------------------------------------------------
+
+def test_each_placement_client_has_its_own_journal_and_owner_id(tmp_path):
+    toolkit, harness = tmp_path / "inv" / "agent-toolkit", tmp_path / "inv" / "agent-harness"
+    for directory in (toolkit, harness):
+        directory.mkdir(parents=True, mode=0o700)
+    remote = Remote()
+    one = placement_lease.open_lease("ai", _root(), inventory=toolkit)
+    two = placement_lease.open_lease("ai", _root(), inventory=harness)
+    legacy = placement_lease.open_lease("stage", _root())
+    owners = {placement_lease.owner_id(toolkit), placement_lease.owner_id(harness),
+              placement_lease.owner_id()}
+    assert len(owners) == 3
+    assert one.path.parent == toolkit / "placement-leases"
+    assert two.path.parent == harness / "placement-leases"
+    for lease, inventory in ((one, toolkit), (two, harness), (legacy, None)):
+        remote.hold(placement_lease.owner_id(inventory), lease.lease_id, f"sbx-{lease.lease_id[:4]}")
+        lease.abandon()
+    done = placement_lease.reap(Lookup(remote), _bound(), inventory=toolkit)
+    assert done == {"cleared": (one.lease_id,), "kept": ()}
+    assert remote.killed() == [one.lease_id]
+    assert two.path.exists() and legacy.path.exists()
+    assert placement_lease.recover_lease(two.lease_id, inventory=harness).lease_id == two.lease_id
+    with pytest.raises(FileNotFoundError):
+        placement_lease.recover_lease(two.lease_id, inventory=toolkit)
+
+
+def test_a_detached_lease_stays_recorded_unabandoned_and_unlocked(tmp_path):
+    inventory = tmp_path / "inv"
+    inventory.mkdir(mode=0o700)
+    lease = placement_lease.open_lease("ai", _root(), inventory=inventory)
+    assert _locked(lease.path)
+    lease.detach()
+    assert not _locked(lease.path) and _entry(lease.path)["abandoned"] is False
+    assert not lease.held
