@@ -123,7 +123,7 @@ def test_real_writer_fault_stops_journal_calls(worker_case, monkeypatch, phase, 
     case = worker_case
     original_open = rs.open_writer
     original_io = getattr(os, operation)
-    calls, failed = [], []
+    calls, failed, after_failure = [], [], []
     def opened(*args, **kwargs):
         real = original_open(*args, **kwargs)
         class Delegating:
@@ -132,6 +132,8 @@ def test_real_writer_fault_stops_journal_calls(worker_case, monkeypatch, phase, 
                 if name == "close":
                     return method
                 def invoke(*a, **kw):
+                    if failed:
+                        after_failure.append(name)
                     assert not failed, "WORKER called writer after failure"
                     calls.append((name, a))
                     selected = (a and a[0] == phase) or name == phase
@@ -153,6 +155,7 @@ def test_real_writer_fault_stops_journal_calls(worker_case, monkeypatch, phase, 
     monkeypatch.setattr(rs, "open_writer", opened)
     result = run(case)
     assert failed, calls
+    assert not after_failure
     assert not result.journal_complete and result.journal_anchor is None
     assert result.worker_invocations == (0 if phase in ("queued", "running") else 1)
     if not result.worker_invocations:
@@ -406,3 +409,353 @@ def test_worker_setsid_limit_and_reap(worker_case):
             os.kill(pid, signal.SIGKILL)
             os.waitpid(pid, 0)
         assert library.prctl(36, previous.value, 0, 0, 0) == 0
+
+
+def test_consumed_admission_has_no_effects(worker_case):
+    from phase_loop_runtime import supervised_launch
+    case = worker_case
+    prepared = prepare(case)
+    assert not isinstance(supervised_launch.consume_admission(prepared), supervised_launch.Refused)
+    result = worker.run_patch_return(prepared, config_bytes=case.config.config_path.read_bytes(), state_root=case.state)
+    assert result.refusal == "token_spent" and not case.state.exists()
+
+
+def test_reservation_failure_has_no_followup(worker_case, monkeypatch):
+    case = worker_case
+    called = []
+    monkeypatch.setattr(rs, "reserve_attempt", lambda *a, **k: rs.JournalRefused("synthetic_reservation_refusal"))
+    original = rs.open_writer
+    def opened(*args, **kwargs):
+        called.append(1)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(rs, "open_writer", opened)
+    result = run(case)
+    assert result.refusal == "synthetic_reservation_refusal" and not called
+
+
+def test_reservation_and_running_precede_spawn(worker_case, monkeypatch):
+    order = []
+    original_reserve, original_capture = rs.reserve_attempt, worker.run_bounded_capture
+    def reserve(*args, **kwargs):
+        result = original_reserve(*args, **kwargs)
+        order.append("reserved")
+        return result
+    def capture(request, *, before_spawn, cancel):
+        def before():
+            refusal = before_spawn()
+            root = rs.open_journal_root(worker_case.state / "journal", create=False)
+            observed = rs.read_attempt(root, worker_case.envelope["attempt_id"])
+            order.append(observed.state)
+            return refusal
+        return original_capture(request, before_spawn=before, cancel=cancel)
+    monkeypatch.setattr(rs, "reserve_attempt", reserve)
+    monkeypatch.setattr(worker, "run_bounded_capture", capture)
+    result = run(worker_case)
+    assert result.state == "finished" and order == ["reserved", "running"]
+
+
+def test_evidence_events_and_bindings(worker_case):
+    case = worker_case
+    result = run(case)
+    assert result.state == "finished" and result.journal_complete
+    root = rs.open_journal_root(case.state / "journal", create=False)
+    read = rs.read_attempt(root, case.envelope["attempt_id"])
+    lines = [json.loads(line) for line in read.lines]
+    events = [line["body"] for line in lines if line["line_kind"] == "event"]
+    assert [event["message"]["text"] for event in events] == ["attempt evidence bound", "proposal bytes captured"]
+    assert all(ref["locator"] is None for event in events for ref in event["refs"])
+    path = case.state / "evidence" / worker._run(result.identity) / "evidence.json"
+    record = json.loads(path.read_bytes())
+    assert record["identity"] == json.loads(json.dumps(worker.asdict(result.identity)))
+    assert record["instruction_digest"] == sha256(b"synthetic instructions").hexdigest()
+    assert record["config_digest"] == sha256(case.config.config_path.read_bytes()).hexdigest()
+    assert record["template_digest"] == sha256(case.config.template_path.read_bytes()).hexdigest()
+    assert record["executable"]["sha256"] == sha256(case.executable.read_bytes()).hexdigest()
+    assert record["argv"] == [str(case.executable), "patch"]
+    assert record["streams_complete"] and record["stdin_delivered"]
+    assert record["workspace_kind"] == "separate" and record["tier"] == "post_write_audit_only"
+    assert record["device"] == (case.root / "workspace").stat().st_dev
+    assert record["inode"] == (case.root / "workspace").stat().st_ino
+    assert record["environment_names"] == sorted(worker.worker_child_environment(frozenset()))
+    assert record["exec_binding"] == "path_recheck"
+    assert record["worker_invocations"] == 1 and record["duration_ns"] > 0
+    assert record["proposal"]["proposal_bytes_digest"] == result.proposal.proposal_bytes_digest
+    serialized = json.dumps(worker.asdict(result)).encode()
+    for sentinel in (b"synthetic instructions", b"fixture-stderr-sentinel", b"-old", b"+new"):
+        assert sentinel not in serialized and sentinel not in b"".join(read.lines) and sentinel not in path.read_bytes()
+
+
+def test_retention_ordering(worker_case, monkeypatch):
+    actions = []
+    original_mark, original_write = worker.retention.mark, worker._write
+    def mark(root, run_id, state, **kwargs):
+        actions.append(state)
+        return original_mark(root, run_id, state, **kwargs)
+    def write(path, data):
+        if path.name in ("proposal.bin", "evidence.json") or path.parent.name == "evidence-ledger":
+            actions.append(path.name if path.parent.name != "evidence-ledger" else "ledger")
+        return original_write(path, data)
+    monkeypatch.setattr(worker.retention, "mark", mark)
+    monkeypatch.setattr(worker, "_write", write)
+    assert run(worker_case).state == "finished"
+    assert actions == ["active", "proposal.bin", "evidence.json", "sealed", "ledger"]
+
+
+def test_after_audit_error_and_incomplete(worker_case, monkeypatch, incomplete=False):
+    if incomplete:
+        from dataclasses import replace
+        original = worker.run_bounded_capture
+        monkeypatch.setattr(worker, "run_bounded_capture", lambda *a, **k: replace(original(*a, **k), streams_complete=False))
+    else:
+        original = worker._audit
+        calls = []
+        def audit(*args):
+            calls.append(1)
+            if len(calls) == 2:
+                raise ValueError("synthetic after-audit failure")
+            return original(*args)
+        monkeypatch.setattr(worker, "_audit", audit)
+    result = run(worker_case)
+    assert result.proposal.status == ("withheld_incomplete" if incomplete else "withheld_audit_error")
+
+
+WORKER_CONTROLS = {
+    "consume-before-reserve": ('inputs = consume_admission(prepared)', 'inputs = prepared.view.inputs', "consumed"),
+    "reservation-failure": ('if isinstance(reservation, journal.JournalRefused):', 'if False and isinstance(reservation, journal.JournalRefused):', "reservation"),
+    "reservation-before-spawn": ('reservation = journal.reserve_attempt(root, jid,', 'run_bounded_capture(CaptureRequest(identity.attempt_id, inputs.argv, Path(inputs.workspace), inputs.timeout, inputs.instruction, settings.proposal_cap, worker_child_environment(settings.environment_allow)), before_spawn=lambda: None, cancel=threading.Event())\n    reservation = journal.reserve_attempt(root, jid,', "order"),
+    "running-before-spawn": ('writer.call("state", "running", worker_invocations=1)', 'None', "order"),
+    "rule-w-stop": ('if self.failed:\n            return None', 'if False and self.failed:\n            return None', "writer"),
+    "evidence-event": ('writer.call("event", "attempt evidence bound", refs=', 'writer.call("event", "proposal withheld", refs=', "bindings"),
+    "proposal-event": ('writer.call("event", "proposal bytes captured", refs=', 'writer.call("event", "proposal withheld", refs=', "bindings"),
+    "cancel-before-start": ('if cancel.is_set():\n                return SpawnRefused("cancelled_before_start")', 'if False and cancel.is_set():\n                return SpawnRefused("cancelled_before_start")', "cancel"),
+    "decision-incomplete": ('if termination.reason != "completed" or captured.exit_code != 0 or not captured.streams_complete:', 'if False:', "incomplete"),
+    "decision-oversized": ('elif captured.proposal_overflow:', 'elif False:', "oversized"),
+    "decision-audit-error": ('elif audit_error:', 'elif False:', "audit-error"),
+    "decision-unexplained": ('elif unexplained:', 'elif False:', "target"),
+    "decision-absent": ('elif not data:', 'elif False:', "absent"),
+    "decision-malformed": ('paths = _paths(data)', 'paths = []', "malformed"),
+    "decision-returned": ('status = "returned"', 'status = "withheld_malformed"', "returned"),
+    "evidence-error": ('ProposalReturn("withheld_evidence_error",', 'ProposalReturn("absent",', "evidence-error"),
+    "baseline": ('baselines.get(path, BaselineIdentity(path, None, None))', 'BaselineIdentity(path, None, None)', "returned"),
+    "audit-workspace": ('if key[0] == "target" or inputs.tier == "provider_readonly_patch_return_audit":', 'if key[0] == "target":', "workspace"),
+    "audit-target": ('if key[0] == "target" or inputs.tier == "provider_readonly_patch_return_audit":', 'if inputs.tier == "provider_readonly_patch_return_audit":', "target"),
+    "audit-refs": ('if path == ".git/objects" or path.startswith(".git/objects/"):', 'if path.startswith(".git/refs") or path == ".git/objects" or path.startswith(".git/objects/"):', "refs"),
+    "evidence-binding": ('config_digest=inputs.config_digest, template_digest=', 'config_digest="stale", template_digest=', "bindings"),
+    "active-before-write": ('retention.mark(evidence_root, run, "active", owner_pid=os.getpid())', 'None', "retention-order"),
+    "seal-after-write": ('retention.mark(evidence_root, run, "sealed")', 'None', "retention-order"),
+    "ledger-retirement": ('_write(state_root / "evidence-ledger" / (retired + ".retired"), b"")', 'None', "retention"),
+    "resolver-unknown": ('        return "unknown"\n    return resolve', '        return "present"\n    return resolve', "retention"),
+    "jcs-digest": ('context_digest = sha256(rfc8785.dumps(_plain(prepared.view.envelope["caller_context"]))).hexdigest()', 'context_digest = "0" * 64', "jcs"),
+}
+for _field in ("workspace", "device", "inode"):
+    WORKER_CONTROLS["recheck-" + _field] = ('if actual != expected:', f'if actual != expected and reason != "{_field}_changed":', _field + "-recheck")
+for _field in ("executable", "wrapper"):
+    WORKER_CONTROLS["recheck-" + _field] = ('if _executable_digest(Path(executable.path)) != executable.digest:',
+        f'if reason != "{_field}_changed" and _executable_digest(Path(executable.path)) != executable.digest:', _field + "-recheck")
+
+
+def _worker_source_copy(monkeypatch, control):
+    import sys
+    import types
+    source = Path(worker.__file__).read_text()
+    old, new, _ = WORKER_CONTROLS[control]
+    assert old in source, control
+    module = types.ModuleType("phase_loop_runtime.convergence.adapters._worker_copy")
+    module.__package__, module.__file__ = worker.__package__, worker.__file__
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    exec(compile(source.replace(old, new, 1), module.__file__, "exec"), module.__dict__)
+    return module
+
+
+def _worker_control_witness(case, monkeypatch, witness):
+    if witness == "consumed":
+        test_consumed_admission_has_no_effects(case)
+    elif witness == "reservation":
+        test_reservation_failure_has_no_followup(case, monkeypatch)
+    elif witness == "order":
+        test_reservation_and_running_precede_spawn(case, monkeypatch)
+    elif witness == "writer":
+        test_real_writer_fault_stops_journal_calls(case, monkeypatch, "event", "fsync")
+    elif witness == "bindings":
+        test_evidence_events_and_bindings(case)
+    elif witness == "cancel":
+        test_prestart_cancel_and_unknown_cancel(case)
+    elif witness == "incomplete":
+        test_after_audit_error_and_incomplete(case, monkeypatch, incomplete=True)
+    elif witness == "audit-error":
+        test_after_audit_error_and_incomplete(case, monkeypatch)
+    elif witness in ("target", "refs", "workspace"):
+        test_audit_scopes(case, monkeypatch,
+            "provider_readonly_patch_return_audit" if witness == "workspace" else "post_write_audit_only", witness)
+    elif witness in ("returned", "absent", "malformed", "oversized"):
+        mode = {"returned": "patch", "absent": "empty"}.get(witness, witness)
+        status = witness if witness in ("returned", "absent") else "withheld_" + witness
+        test_proposal_table_and_binding(case, mode, status)
+    elif witness == "evidence-error":
+        test_evidence_operation_failure_null_binding(case, monkeypatch, "evidence")
+    elif witness == "retention-order":
+        test_retention_ordering(case, monkeypatch)
+    elif witness == "retention":
+        test_retention_identity_and_unrecorded_deletion(case, monkeypatch)
+    elif witness == "jcs":
+        test_jcs_context_and_provider_basename(case)
+    elif witness.endswith("-recheck"):
+        test_each_prespawn_recheck(case, monkeypatch, witness.removesuffix("-recheck"))
+    else:
+        raise AssertionError("unrecognized control")
+
+
+@pytest.mark.parametrize("control", sorted(WORKER_CONTROLS))
+@pytest.mark.parametrize("mutated", [False, True], ids=["intact", "killed"])
+def test_worker_source_controls(worker_case, monkeypatch, control, mutated):
+    import sys
+    if mutated:
+        copy = _worker_source_copy(monkeypatch, control)
+        monkeypatch.setattr(sys.modules[__name__], "worker", copy)
+        with pytest.raises(AssertionError):
+            _worker_control_witness(worker_case, monkeypatch, WORKER_CONTROLS[control][2])
+    else:
+        _worker_control_witness(worker_case, monkeypatch, WORKER_CONTROLS[control][2])
+
+
+CANCEL_CONTROLS = {
+    "record-mode": ('or stat.S_IMODE(info.st_mode) != 0o600', ''),
+    "record-owner": ('or info.st_uid != os.geteuid()', ''),
+    "record-regular": ('not stat.S_ISREG(info.st_mode) or ', ''),
+    "record-nofollow": ('fd = os.open(attempt_id + ".json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)', 'fd = os.open(attempt_id + ".json", os.O_RDONLY | os.O_NONBLOCK, dir_fd=parent)'),
+    "writer-identity": ('!= (pid, record["process_start_time"], record["nonce"])', '== (pid, record["process_start_time"], record["nonce"])'),
+    "pidfd-open": ('pidfd = os.pidfd_open(pid)', 'pidfd = os.open("/dev/null", os.O_RDONLY)'),
+    "start-identity": ('if journal.process_start_identity(pid) != record["process_start_time"]:', 'if False:'),
+    "exe-record": ('if exe != record["exe_realpath"] or exe != str(Path("/proc/self/exe").resolve()):', 'if exe != str(Path("/proc/self/exe").resolve()):'),
+    "exe-interpreter": ('if exe != record["exe_realpath"] or exe != str(Path("/proc/self/exe").resolve()):', 'if exe != record["exe_realpath"]:'),
+    "cmdline-digest": ('if sha256(cmdline).hexdigest() != record["cmdline_sha256"]:', 'if False:'),
+    "command-policy": ('if not any(args[1:1 + len(command)] == command for command in launcher_commands):', 'if False:'),
+    "record-lock": ('if lock_type == fcntl.F_UNLCK or owner != pid:', 'if False:'),
+    "pidfd-target": ('signal.pidfd_send_signal(pidfd, signal.SIGTERM)', 'signal.pidfd_send_signal(pid, signal.SIGTERM)'),
+}
+
+
+def _cancel_source_copy(monkeypatch, control):
+    import sys
+    import types
+    source = Path(worker.__file__).read_text()
+    # Scope record guards to cancel, never alter an earlier matching file guard.
+    prefix, tail = source.split("def cancel_attempt(", 1)
+    old, new = CANCEL_CONTROLS[control]
+    assert old in tail
+    module = types.ModuleType("phase_loop_runtime.convergence.adapters._cancel_copy")
+    module.__file__, module.__package__ = worker.__file__, worker.__package__
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    exec(compile(prefix + "def cancel_attempt(" + tail.replace(old, new, 1), module.__file__, "exec"), module.__dict__)
+    return module
+
+
+def _cancel_control_witness(case, monkeypatch, module, control):
+    import fcntl
+    import struct
+    import stat
+    from types import SimpleNamespace
+    case.config.template_path.write_text('["{executable}", "wait"]')
+    process, commands = _start_launcher(case)
+    try:
+        _await_state(case, "running")
+        path = case.state / "launchers" / (case.envelope["attempt_id"] + ".json")
+        record = json.loads(path.read_bytes())
+        sent = []
+        def signal_spy(target, sig):
+            try:
+                kind = os.readlink(f"/proc/self/fd/{target}")
+            except OSError:
+                kind = "not-a-descriptor"
+            sent.append((target, kind, sig))
+        monkeypatch.setattr(module.signal, "pidfd_send_signal", signal_spy)
+        if control == "record-mode":
+            path.chmod(0o644)
+        elif control in ("record-owner", "record-regular"):
+            original = os.fstat
+            def fstat(fd):
+                result = original(fd)
+                if os.readlink(f"/proc/self/fd/{fd}") == str(path):
+                    return SimpleNamespace(st_uid=-1 if control == "record-owner" else result.st_uid,
+                        st_mode=stat.S_IFIFO | 0o600 if control == "record-regular" else result.st_mode,
+                        st_size=result.st_size)
+                return result
+            monkeypatch.setattr(os, "fstat", fstat)
+        elif control == "record-nofollow":
+            held = path.with_name("held.json")
+            path.rename(held)
+            path.symlink_to(held)
+        elif control == "writer-identity":
+            record["nonce"] = "0" * 32
+        elif control == "pidfd-open":
+            def unavailable(_pid):
+                raise OSError("synthetic pidfd unavailable")
+            monkeypatch.setattr(os, "pidfd_open", unavailable)
+        elif control == "start-identity":
+            monkeypatch.setattr(module.journal, "process_start_identity", lambda _pid: "synthetic-other-start")
+        elif control == "exe-record":
+            record["exe_realpath"] = "/synthetic/other-interpreter"
+        elif control == "exe-interpreter":
+            original = Path.resolve
+            def resolve(path, *args, **kwargs):
+                if str(path) == "/proc/self/exe":
+                    return Path("/synthetic/other-interpreter")
+                return original(path, *args, **kwargs)
+            monkeypatch.setattr(Path, "resolve", resolve)
+        elif control == "cmdline-digest":
+            record["cmdline_sha256"] = "0" * 64
+        elif control == "command-policy":
+            commands = (("-I", "synthetic-other-launcher"),)
+        elif control == "record-lock":
+            original = fcntl.fcntl
+            def unlocked(fd, command, *args):
+                if command == fcntl.F_GETLK:
+                    return struct.pack("hhqqi", fcntl.F_UNLCK, os.SEEK_SET, 0, 0, 0)
+                return original(fd, command, *args)
+            monkeypatch.setattr(fcntl, "fcntl", unlocked)
+        if control not in ("record-nofollow",):
+            path.write_text(json.dumps(record))
+        result = module.cancel_attempt(state_root=case.state, attempt_id=case.envelope["attempt_id"],
+            launcher_commands=commands, wait_seconds=.05)
+        if control == "pidfd-target":
+            assert result == "cancel_pending" and len(sent) == 1 and sent[0][1] == "anon_inode:[pidfd]"
+        else:
+            assert result == "owner_unverified" and not sent
+        assert process.poll() is None
+    finally:
+        process.terminate()
+        _finish_launcher(process)
+
+
+@pytest.mark.parametrize("control", sorted(CANCEL_CONTROLS))
+@pytest.mark.parametrize("mutated", [False, True], ids=["intact", "killed"])
+def test_cancel_source_controls(worker_case, monkeypatch, control, mutated):
+    module = _cancel_source_copy(monkeypatch, control) if mutated else worker
+    if mutated:
+        with pytest.raises(AssertionError):
+            _cancel_control_witness(worker_case, monkeypatch, module, control)
+    else:
+        _cancel_control_witness(worker_case, monkeypatch, module, control)
+
+
+@pytest.mark.parametrize("mutated", [False, True], ids=["intact", "killed"])
+def test_codex_basename_source_control(worker_case, monkeypatch, mutated):
+    import sys
+    import types
+    from phase_loop_runtime.convergence.adapters import codex
+    module = codex
+    if mutated:
+        source = Path(codex.__file__).read_text()
+        old = 'if Path(prepared.view.inputs.executable.path).name != CODEX_EXECUTABLE:'
+        assert old in source
+        module = types.ModuleType("phase_loop_runtime.convergence.adapters._codex_copy")
+        module.__package__, module.__file__ = codex.__package__, codex.__file__
+        monkeypatch.setitem(sys.modules, module.__name__, module)
+        exec(compile(source.replace(old, 'if False:', 1), module.__file__, "exec"), module.__dict__)
+    result = module.run_codex_patch_return(prepare(worker_case),
+        config_bytes=worker_case.config.config_path.read_bytes(), state_root=worker_case.state)
+    if mutated:
+        with pytest.raises(AssertionError):
+            assert result.refusal == "provider_mismatch" and not worker_case.state.exists()
+    else:
+        assert result.refusal == "provider_mismatch" and not worker_case.state.exists()

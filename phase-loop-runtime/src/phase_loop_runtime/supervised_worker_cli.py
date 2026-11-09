@@ -98,7 +98,7 @@ def main(argv: Sequence[str] | None = None, *, state_root: Path | None = None) -
     if args.verb == "launch":
         if _production_codec() is None:
             return refuse("codec_unavailable")
-        return refuse("codec_unavailable")
+        return refuse("codec_unwired")
     from . import run_status as journal, run_status_projection as projection
     from .convergence.adapters.patch_return import (default_state_root, evidence_resolver,
         cancel_attempt, PRODUCTION_LAUNCHER_COMMANDS, CANCEL_WAIT_SECONDS)
