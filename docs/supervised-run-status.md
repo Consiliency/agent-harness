@@ -241,6 +241,12 @@ unchanged into every line and never mints a second id.
 | `segment_max_lines` / `segment_max_bytes` | 1000 / 1 MiB | local |
 | `read_segment_max_bytes` | 4 MiB | local |
 | `index_max_entries` | 100000 (index read cap 64 MiB) | local |
+
+`open_writer` refuses `limits_invalid` for any limit above these reader bounds:
+`per_attempt_line_cap` at most 10000, `segment_max_bytes` and
+`read_segment_max_bytes` at most 4 MiB, and `index_max_entries` at most 100000.
+Readers always replay with the defaults, so every journal an admitted writer
+finishes reads back cleanly.
 | page size / attempts per page | 100 / 20 | public |
 
 ## Reader rules and diagnostics
@@ -329,6 +335,11 @@ filesystem primitive of its own; every read goes through `run_status`.
   one digest verdict computed from the requested segment in-stream. No segment
   list or line outlives its attempt. `project_assignment` validates its result
   against that same replay instead of reading the journal again.
+- **Behind rows.** A row behind the tail is stale only when both its digest and
+  its `state` derive from the journal. A prefix digest at its `journal_seq` must
+  carry the replayed state at that seq. The full current segment digest must
+  carry the current state. Anything else, such as a historical digest with an
+  edited state, is `projection_not_from_journal`.
 - **Pages.** The request must be a structurally valid `page_request`
   (`page_request_invalid`). A null `page_size` or one above 100 refuses
   `read_unbounded`, and one below 1 refuses `page_size_invalid`. Events are
