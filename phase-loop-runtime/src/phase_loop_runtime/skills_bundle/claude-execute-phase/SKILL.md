@@ -14,7 +14,9 @@ For reflections, handoffs, and latest handoff pointers, follow `phase_loop_runti
 manual event import, and downstream roadmap-amendment handling.
 
 When launched by the live phase-loop adapter, this skill runs through
-the runtime-selected Harness route (Agent View by default; print only through its explicitly admitted route); its final reply must still emit the shared
+the runtime-selected Harness route (Channel by default outside CI, with route `<harness>_channel` and reason
+`default_channel`; CI requires an explicit route, and Agent View is used only
+when explicitly selected); its final reply must still emit the shared
 `automation:` closeout or the parent runner will reduce the turn to
 `repeated_verification_failure` rather than silent success. The repo-injected
 workflow bundle remains authoritative whether the adapter delivers it inline or

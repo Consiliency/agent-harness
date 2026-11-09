@@ -157,6 +157,8 @@ Append the plan's timestamp + path to `resolve_skill_bundle_root("claude")/<harn
 
 Resolve paths:
 
+Resolve `REPO_HASH` and `BRANCH_SLUG` from `phase_loop_runtime.discovery.repo_identity(repo_root)` (`repo_hash` and `branch_slug`). Use the active runner's `RUN_ID`, or allocate one unique ID for this manual run; `repo_identity` does not generate run IDs.
+
 ```bash
 SKILL_ROOT=$(python3 -c 'from phase_loop_runtime.skill_paths import resolve_skill_bundle_root; print(resolve_skill_bundle_root("claude"))')
 : "${REPO_HASH:?set REPO_HASH}" "${BRANCH_SLUG:?set BRANCH_SLUG}" "${RUN_ID:?set RUN_ID}"

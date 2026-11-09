@@ -21,7 +21,9 @@ execution-ready plan metadata, including `phase_loop_plan_version: 1`,
 rules.
 
 When this skill runs through the live phase-loop adapter, the child launch is a
-runtime-selected Harness session (Agent View by default; print only through its explicitly admitted route) and the final response must still include a
+runtime-selected Harness session (Channel by default outside CI, with route `<harness>_channel` and reason
+`default_channel`; CI requires an explicit route, and Agent View is used only
+when explicitly selected) and the final response must still include a
 shared `automation:` closeout with `verification_status`. The repo-injected
 workflow bundle remains authoritative whether the adapter delivers it inline or
 through the run-local context-file fallback.
@@ -155,7 +157,7 @@ The skill references these `_shared/` helpers. Each degrades gracefully if absen
 
 - `_shared/next_reflection_path.py` — legacy helper only; current closeout writes reflections to `resolve_skill_bundle_root("claude")/<harness>-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`.
 - External review uses `phase-loop advisor-board <plan-path> --json`, not the absent `_shared/review_with_cli.py` helper.
-- `_shared/scaffold_docs_catalog.py` — used by `SL-docs.1`. If absent, the docs lane records "docs-catalog rescan helper unavailable; manual catalog audit" in its commit message and proceeds.
+- A repo-maintained docs catalog may be used when present; no `scaffold_docs_catalog.py` helper is shipped. Otherwise inspect the relevant repo docs directly.
 
 ## Deferred tool preloading
 
@@ -171,7 +173,7 @@ The main thread is an orchestrator only: brief specialists, synthesize output, e
 
 ### Step 0 — Read predecessor handoff (if present)
 
-The predecessor is `<harness>-phase-roadmap-builder` (first phase planned against a new roadmap) or `<harness>-execute-phase` (the next phase after one finished executing). Resolve both repo-keyed `latest.md` handoff paths (`phase_loop_runtime.skill_paths.resolve_handoff_root`, falling back to `resolve_handoff_path` in `shared/phase-loop/handoff_path.py`), use the one with the newer `timestamp:`, or proceed standalone if neither exists. Before trusting it, check that `from:` matches the predecessor, the timestamp is under 7 days old and every `artifact:` path resolves under `$(git rev-parse --show-toplevel)`; on any failure ask via `AskUserQuestion` with `[use anyway, ignore, abort]`. Fold its "Open items" and "Repo-specific gotchas" into the Step 2 briefs. The path-resolution script is in [references/interactive-workflow.md](references/interactive-workflow.md).
+The predecessor is `<harness>-phase-roadmap-builder` (first phase planned against a new roadmap) or `<harness>-execute-phase` (the next phase after one finished executing). Resolve both repo-keyed `latest.md` handoff paths (`phase_loop_runtime.skill_paths.resolve_handoff_root`, falling back to `resolve_handoff_path` in `phase_loop_runtime.handoff_path`), use the one with the newer `timestamp:`, or proceed standalone if neither exists. Before trusting it, check that `from:` matches the predecessor, the timestamp is under 7 days old and every `artifact:` path resolves under `$(git rev-parse --show-toplevel)`; on any failure ask via `AskUserQuestion` with `[use anyway, ignore, abort]`. Fold its "Open items" and "Repo-specific gotchas" into the Step 2 briefs. The path-resolution script is in [references/interactive-workflow.md](references/interactive-workflow.md).
 
 ### Step 1 — Resolve spec path, phase, and PHASE_ID
 
@@ -234,7 +236,7 @@ For each lane, author an ordered task list:
 
 Tasks are identified `<SL-ID>.<N>`.
 
-**Every phase must include a terminal `SL-docs` lane** after the impl/verify lanes. Copy it from the docs-sweep template in [references/lane-templates.md](references/lane-templates.md). No opt-out — force a conscious doc decision every phase, even if the lane ends up recording "no cross-cutting changes needed."
+**Every phase must include a terminal documentation lane with a free numeric `SL-N` ID** after the impl/verify lanes. Copy it from the docs-sweep template in [references/lane-templates.md](references/lane-templates.md). No opt-out — force a conscious doc decision every phase, even if the lane ends up recording "no cross-cutting changes needed."
 
 ### Step 6 — Emit per-lane tasks via TaskCreate
 
@@ -292,7 +294,7 @@ Then `# <PHASE_ID>: <Phase Name>` and these headings in order: `## Context`, `##
 
 - Each lane's `Owned files` is a single-line inline bullet of comma-separated backticked globs, never nested sub-bullets.
 - Each `## Acceptance Criteria` item is `- [ ] EC-<ALIAS>-<N> — proven by <command / test>, falsified by <assertion / negative control>`, and the falsifier must target a production construction site with path-entered control.
-- The docs-sweep `SL-docs` lane comes from [references/lane-templates.md](references/lane-templates.md); non-numeric lane aliases still appear as `SL-<N>` in the Lane Index.
+- The docs reducer comes from [references/lane-templates.md](references/lane-templates.md); use its numeric `SL-N` ID in both the lane heading and Lane Index.
 
 ## Lane validation checklist
 
@@ -302,7 +304,7 @@ Walk the full checklist in [references/lane-validation-checklist.md](references/
 - [ ] **DAG has no cycles** — a topological sort of `Depends on:` succeeds.
 - [ ] **Synthesis lanes are explicit reducers** — any lane that writes a docs summary, truth table, readiness matrix, release summary, or other synthesized artifact lists every producer lane under `Depends on` and every consumed finding under `Interfaces consumed`. Mark these lanes `Parallel-safe: no`.
 
-The reference adds inline concrete `Owned files`, a `test` before every `impl`, testable acceptance items that reference their roadmap `EC-<ALIAS>-<N>` ID as plain text and name their proving command, grep-only checks paired with a test, a browser step for UI changes, stale-base `Interfaces consumed`, and the terminal `SL-docs` lane.
+The reference adds inline concrete `Owned files`, a `test` before every `impl`, testable acceptance items that reference their roadmap `EC-<ALIAS>-<N>` ID as plain text and name their proving command, grep-only checks paired with a test, a browser step for UI changes, stale-base `Interfaces consumed`, and the terminal numeric documentation lane.
 
 ## Teamwork & delegation posture
 

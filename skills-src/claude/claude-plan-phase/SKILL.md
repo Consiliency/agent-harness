@@ -21,7 +21,9 @@ execution-ready plan metadata, including `phase_loop_plan_version: 1`,
 rules.
 
 When this skill runs through the live phase-loop adapter, the child launch is a
-runtime-selected Claude session (Channel (`claude_channel`, reason `default_channel`) by default outside CI; CI requires an explicit route, and Agent View is used only when explicitly selected) and the final response must still include a
+runtime-selected Claude session (Channel by default outside CI, with route `claude_channel` and reason
+`default_channel`; CI requires an explicit route, and Agent View is used only
+when explicitly selected) and the final response must still include a
 shared `automation:` closeout with `verification_status`. The repo-injected
 workflow bundle remains authoritative whether the adapter delivers it inline or
 through the run-local context-file fallback.

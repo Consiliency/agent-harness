@@ -82,7 +82,7 @@ Report:
 - reflections archived;
 - validation commands run.
 
-If writing self-improvement state, resolve handoff writes through `shared/phase-loop/handoff_path.py` and the repo-local handoff resolver; legacy harness handoff roots are read only for migration. Follow the repo/branch/run-isolated layout from `phase_loop_runtime.skill_paths` and use Harness paths only:
+If writing self-improvement state, resolve handoff writes through `phase_loop_runtime.handoff_path` and the repo-local handoff resolver; legacy harness handoff roots are read only for migration. Follow the repo/branch/run-isolated layout from `phase_loop_runtime.skill_paths` and use Harness paths only:
 
 - Reflection: `resolve_skill_bundle_root("gemini")/<harness>-skill-editor/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
 - Handoff: `<repo>/.dev-skills/handoffs/<harness>-skill-editor/<run_id>.md`

@@ -57,7 +57,7 @@ timeouts, bypass the broker, or silently replace reviewers.
 
 Heartbeat-only supports brokered subscription `claude` (print or TUI), `codex` and `grok`
 on Linux. The gemini/agy route requires the qualified executable digest and sealed
-memfd/pidfd support in the running Python/kernel. Check the active interpreter: the uv Python 3.14.5 build lacks `os.memfd_create`, so that build cannot satisfy this capability even on Linux. It uses the CLI's literal
+memfd/pidfd support in the running Python/kernel. Check `hasattr(os, 'memfd_create')` in the active interpreter; the capability requires that support even on Linux. It uses the CLI's literal
 `--print-timeout 0`, one attempt and a private namespace-owned HOME. See
 `docs/advisor-board-capabilities-card.md` for the measured image and limitations.
 API/gateway, capture, research, native host fill and legacy `invoke_panel` remain

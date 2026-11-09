@@ -31,8 +31,8 @@ Plan-location variables are inherited from `claude-plan-phase` so the two skills
 | `PLAN_PHASE_ALIASES` | Built-in alias table | Path to alias-map JSON. |
 | `PLAN_DOC` | `plans/phase-plan-<VERSION>-<PHASE_ALIAS>.md` | Override the resolved plan-doc path directly. |
 | `EXECUTE_MERGE_TARGET` | Current branch at invocation | Branch lanes merge into. |
-| `EXECUTE_WORKTREE_ROOT` | `.worktrees/` (inside repo; auto-gitignored) | Root dir for per-lane worktrees. |
-| `EXECUTE_MAX_PARALLEL_LANES` | `1` | Serial by default; raise only with explicit parallel authorization, machine-verified disjoint ownership and scheduler-owned worktrees. Check shared-host capacity and cap inner test workers separately. |
+| `EXECUTE_WORKTREE_ROOT` | `.worktrees/` (inside repo; ignore coverage is checked, not added automatically) | Root dir for per-lane worktrees. |
+| `EXECUTE_MAX_PARALLEL_LANES` | `4` | Max concurrent lane dispatches per wave. Parallel execution still requires authorization, machine-verified disjoint ownership and scheduler-owned worktrees. Check shared-host capacity and cap inner test workers separately. |
 
 ## Expected helpers
 
@@ -82,13 +82,9 @@ try:
     # Primary: the installed phase_loop_runtime.skill_paths resolver.
     from phase_loop_runtime.skill_paths import resolve_handoff_root
     print(resolve_handoff_root(repo) / skill / "latest.md")
-except Exception:
-    # Fallback: the repo-local handoff_path.py mirror, only when the runtime is not importable.
-    from importlib import util
-    spec = util.spec_from_file_location("handoff_path", repo / "shared" / "phase-loop" / "handoff_path.py")
-    mod = util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    print(mod.resolve_handoff_path(repo, skill))
+except ImportError:
+    from phase_loop_runtime.handoff_path import resolve_handoff_path
+    print(resolve_handoff_path(repo, skill))
 PYH
 )"
 ```
@@ -123,7 +119,7 @@ Build the lane graph. Topologically sort it; reject on cycle with a clear error.
 
 ## Step 2 — Preflight
 
-- **Run `scripts/verify_harness.sh <merge-target>`.** Enforces the hard gates: git + git-worktree available, inside a work tree, merge-target branch exists locally, working tree clean (allowlist: `.claude/worktrees/`, `.claude/claude-execute-phase-state.json`), `.gitignore` covers worktree paths. **Non-zero exit blocks dispatch.** On dirty-tree failure, invoke `AskUserQuestion` with `[commit the changes as a chore, stash for the duration of the phase, abort /claude-execute-phase]` and take the user's answer. No override.
+- **Run `scripts/verify_harness.sh <merge-target>`.** Enforces the hard gates: git + git-worktree available, inside a work tree, merge-target branch exists locally, working tree clean (allowlist: `.claude/worktrees/`, `.claude/claude-execute-phase-state.json`). Missing `.gitignore` worktree coverage is a warning only; the helper does not edit it. **Non-zero exit from a hard-gate failure blocks dispatch.** On dirty-tree failure, invoke `AskUserQuestion` with `[commit the changes as a chore, stash for the duration of the phase, abort /claude-execute-phase]` and take the user's answer. No override.
 - Record merge target = current branch (or `$EXECUTE_MERGE_TARGET`).
 - Apply the merge-target safety gate in `SKILL.md` (Step 2) before any lane dispatch or merge.
 - Sanity check: every symbol appearing in any lane's `Interfaces consumed` must either be produced by an upstream lane's `Interfaces provided` OR be pre-existing (skip unknown symbols with a warning, don't hard-fail).

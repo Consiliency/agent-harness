@@ -169,7 +169,7 @@ git commit -m "chore(plan): detailed plan for <short task summary>"
 
 Write the plan first, then write the reflection and handoff serially. The handoff should reference the final plan path and may quote final decisions verbatim; do not parallelize handoff writing with the final plan-body write.
 
-Resolve `REFLECTION_PATH` (`resolve_skill_bundle_root("claude")/<harness>-plan-detailed/reflections/<repo_hash>/<branch_slug>/<run_id>.md`) and the repo-local handoff slot (`phase_loop_runtime.skill_paths.resolve_handoff_root`, falling back to `resolve_handoff_path` in `shared/phase-loop/handoff_path.py`). Then spawn ONE close-out agent on the `frontier` tier; it writes both files via the Write tool:
+Resolve `REFLECTION_PATH` (`resolve_skill_bundle_root("claude")/<harness>-plan-detailed/reflections/<repo_hash>/<branch_slug>/<run_id>.md`) and the repo-local handoff slot (`phase_loop_runtime.skill_paths.resolve_handoff_root`, falling back to `resolve_handoff_path` in `phase_loop_runtime.handoff_path`). Then spawn ONE close-out agent on the `frontier` tier; it writes both files via the Write tool:
 
 - FILE 1, a repo-agnostic reflection with `## Run context`, `## What worked`, `## What didn't` and `## Improvements to SKILL.md`. It must not reference this project or the specific plan produced.
 - FILE 2, the repo-specific handoff (`from: <harness>-plan-detailed`, `timestamp`, `artifact`), opening with the consumer-validation preamble described under `## Consumer contract`.
