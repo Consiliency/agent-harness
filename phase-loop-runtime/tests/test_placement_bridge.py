@@ -10,7 +10,6 @@ message.
 from __future__ import annotations
 
 import ast
-from dataclasses import replace
 import json
 import os
 from pathlib import Path
