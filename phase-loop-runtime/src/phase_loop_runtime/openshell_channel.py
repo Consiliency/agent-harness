@@ -25,12 +25,26 @@ def _positive_timeout(value):
         raise TransportError("invalid_channel_timeout")
 
 
+#: The certificate OU each placement client presents (``x-identity-inventories``).
+CLIENT_CERTIFICATE_OU = {"agent-harness": "agent-harness", "agent-toolkit": "agent-toolkit"}
+
+
+def certificate_ou_for(client: str) -> str:
+    """The OU a placement client's certificate must carry; unknown clients refuse."""
+    try:
+        return CLIENT_CERTIFICATE_OU[client]
+    except (KeyError, TypeError):
+        raise TransportError("invalid_mtls_identity") from None
+
+
 @dataclass(frozen=True)
 class MTLSConfig:
     """Explicit coordinator/proxy identity; local journal ownership is separate.
 
     No settings, ambient roots, tokens, proxies or authority overrides are read.
     Certificates and keys are caller supplied, never included in diagnostics.
+    ``client_ou`` is the selected placement client's OU: agent-harness seats keep
+    OU=agent-harness and every Pi target uses OU=agent-toolkit.
     """
 
     endpoint: str
@@ -41,6 +55,7 @@ class MTLSConfig:
     client_key_pem: bytes = field(repr=False)
     receive_limit_bytes: int
     connect_timeout_s: float
+    client_ou: str = "agent-harness"
 
     def target(self):
         try:
@@ -79,6 +94,8 @@ class MTLSConfig:
                     for v in (self.owner_cn, self.local_owner_id))
                 or local_owner_id != self.local_owner_id):
             raise TransportError('invalid_local_owner_binding')
+        if self.client_ou not in CLIENT_CERTIFICATE_OU.values():
+            raise TransportError('invalid_mtls_identity')
         if type(self.receive_limit_bytes) is not int or not 0 < self.receive_limit_bytes <= 2**31 - 1:
             raise TransportError('invalid_receive_limit')
         _positive_timeout(self.connect_timeout_s)
@@ -102,7 +119,7 @@ class MTLSConfig:
                 subject = [item for rdn in identity['subject'] for item in rdn]
                 cns = [v for k, v in subject if k == 'commonName']
                 ous = [v for k, v in subject if k == 'organizationalUnitName']
-                if cns != [self.owner_cn] or ous != ['agent-harness']:
+                if cns != [self.owner_cn] or ous != [self.client_ou]:
                     raise TransportError('invalid_mtls_identity')
                 # Never let OpenSSL prompt for an ambient key passphrase.
                 context.load_cert_chain(cert, key, password=lambda: b'')
