@@ -119,7 +119,7 @@ def test_default_roots_agree():
 
 @pytest.mark.parametrize("phase", ["queued", "running", "terminal", "event"])
 @pytest.mark.parametrize("operation", ["write", "fsync"])
-def test_real_writer_fault_stops_journal_calls(worker_case, monkeypatch, phase, operation):
+def test_real_writer_fault_stops_journal_calls(worker_case, monkeypatch, phase, operation, prestart=False):
     case = worker_case
     original_open = rs.open_writer
     original_io = getattr(os, operation)
@@ -153,13 +153,26 @@ def test_real_writer_fault_stops_journal_calls(worker_case, monkeypatch, phase, 
                 return invoke
         return Delegating()
     monkeypatch.setattr(rs, "open_writer", opened)
-    result = run(case)
+    event = threading.Event()
+    if prestart:
+        event.set()
+    result = run(case, cancel=event)
     assert failed, calls
     assert not after_failure
     assert not result.journal_complete and result.journal_anchor is None
-    assert result.worker_invocations == (0 if phase in ("queued", "running") else 1)
+    assert result.worker_invocations == (0 if phase in ("queued", "running") or prestart else 1)
     if not result.worker_invocations:
         assert result.refusal == "journal_unavailable" and not (case.state / "evidence").exists()
+    if operation == "fsync":
+        root = rs.open_journal_root(case.state / "journal", create=False)
+        live = projection.attempt_status(root, case.envelope["attempt_id"])
+        stale = projection.attempt_status(root, case.envelope["attempt_id"], observer=lambda _: (False, None))
+        if phase == "running":
+            assert live.display == "running" and stale.display == "stale_unknown"
+        elif phase == "terminal":
+            assert live.state == stale.state == ("refused" if prestart else "finished")
+            if prestart:
+                assert live.refusal.reason == "cancelled_before_start" and result.refusal == "journal_unavailable"
 
 
 @pytest.mark.parametrize("operation", ["active", "proposal", "evidence", "sealed", "ledger"])
@@ -692,7 +705,12 @@ def _cancel_control_witness(case, monkeypatch, module, control):
                 raise OSError("synthetic pidfd unavailable")
             monkeypatch.setattr(os, "pidfd_open", unavailable)
         elif control == "start-identity":
-            monkeypatch.setattr(module.journal, "process_start_identity", lambda _pid: "synthetic-other-start")
+            original = module.journal.process_start_identity
+            starts = []
+            def changed_start(pid):
+                starts.append(pid)
+                return original(pid) if len(starts) == 1 else "synthetic-other-start"
+            monkeypatch.setattr(module.journal, "process_start_identity", changed_start)
         elif control == "exe-record":
             record["exe_realpath"] = "/synthetic/other-interpreter"
         elif control == "exe-interpreter":
@@ -759,3 +777,51 @@ def test_codex_basename_source_control(worker_case, monkeypatch, mutated):
             assert result.refusal == "provider_mismatch" and not worker_case.state.exists()
     else:
         assert result.refusal == "provider_mismatch" and not worker_case.state.exists()
+
+
+def test_landed_refusal_then_writer_failure(worker_case, monkeypatch):
+    test_real_writer_fault_stops_journal_calls(worker_case, monkeypatch, "terminal", "fsync", prestart=True)
+
+
+def test_jcs_changed_number_and_unencodable(worker_case):
+    case = worker_case
+    case.envelope["caller_context"] = {"__proto__": {"number": 1}}
+    first = run(case)
+    case.envelope["attempt_id"] += "-number"
+    case.envelope["caller_context"]["__proto__"]["number"] = 2
+    second = run(case)
+    assert first.identity.caller_context_sha256 != second.identity.caller_context_sha256
+    case.envelope["attempt_id"] += "-large"
+    case.envelope["caller_context"] = {"number": 2 ** 60}
+    result = run(case)
+    assert result.refusal == "caller_context_unencodable" and result.worker_invocations == 0
+    root = rs.open_journal_root(case.state / "journal", create=False)
+    assert rs.read_attempt(root, case.envelope["attempt_id"]).identity is None
+
+
+@pytest.mark.parametrize("path", ["../file", "/file", ".git/config", ".GIT/config", "a//b", "./file", "a/../b", "", "x" * 4097])
+def test_proposal_normalized_paths(worker_case, path):
+    case = worker_case
+    proposal = f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n".encode()
+    case.executable.write_text("#!/usr/bin/python3\nimport os\nos.write(1," + repr(proposal) + ")\n")
+    assert run(case).proposal.status == "withheld_malformed"
+
+
+def test_absent_baseline_and_event_cap(worker_case, monkeypatch):
+    case = worker_case
+    (case.root / "workspace/file").unlink()
+    original = rs.open_writer
+    dropped = []
+    def open_writer(*args, **kwargs):
+        real = original(*args, **kwargs)
+        class Capped:
+            def __getattr__(self, name):
+                return getattr(real, name)
+            def event(self, phrase, **kwargs):
+                dropped.append(phrase)
+                return rs.JournalRefused("event_cap_reached")
+        return Capped()
+    monkeypatch.setattr(rs, "open_writer", open_writer)
+    result = run(case)
+    assert result.journal_complete and result.journal_anchor and dropped
+    assert all(row.git_blob_sha1 is None and row.sha256 is None for row in result.proposal.baselines)

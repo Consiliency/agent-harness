@@ -164,3 +164,96 @@ Documentation decision: these local APIs are documented here. ENVELOPE adds no
 public CLI or release, so README and release notes remain current. WORKER closeout
 owns the integrated feature's CHANGELOG update; no CHANGELOG handoff is required
 for ENVELOPE completion.
+
+## Local bounded WORKER seam
+
+`convergence.adapters.patch_return.run_patch_return` composes admission with
+JOURNAL and a single bounded, offline-qualified patch-return invocation. It
+consumes the admission token, validates the held config bytes and canonical
+caller-context digest, reserves the attempt, records `queued`, creates and locks
+the launcher record, and audits before the final identity checks. `running` is
+appended immediately before spawn. The worker receives instructions on stdin;
+argv contains only admitted, prompt-free template words. Its environment defaults
+to the scratch relocation names alone. Allowlisted values remain unbound to
+admission until CLOSEOUT's environment reconciliation.
+
+Capture drains and hashes stdout and stderr under one monotonic deadline. Only
+stdout up to the configured proposal cap is retained; stderr is never retained.
+The proposal is a UTF-8 git-style unified diff. The first matching decision wins:
+
+| Observation | Proposal status |
+| --- | --- |
+| Non-completed termination, nonzero exit, or incomplete streams | `withheld_incomplete` |
+| Stdout exceeds the proposal cap | `withheld_oversized` |
+| Audit error | `withheld_audit_error` |
+| Unexplained protected change | `withheld_unexplained_change` |
+| Empty stdout | `absent` |
+| Invalid diff headers or paths | `withheld_malformed` |
+| Otherwise | `returned` |
+
+Evidence-writing failures override the decision with `withheld_evidence_error`:
+no proposal digest, locator, evidence refs or terminal result binding authorizes
+partial files. Cancellation and timeout never return patch bytes. The external
+controller owns grants, spans, application and acceptance.
+
+The audit covers workspace and target trees and target refs without executing
+git or reading git configuration. Walks use directory descriptors and no-follow
+opens, with entry and byte caps. A target gitfile pointing elsewhere refuses.
+The audit promise is **tree and refs**: `.git/objects/**` is excluded in both
+trees, so object additions, modifications and deletions are outside that promise.
+Workspace writes are detection-only under `post_write_audit_only`; under
+`provider_readonly_patch_return_audit`, they withhold the proposal. Target-tree
+and ref changes withhold in both tiers. Baselines describe regular files in the
+before-audit workspace; the worker never applies the diff.
+
+Rule W governs JOURNAL failures. After the first writer failure, WORKER calls
+only `close()` on that writer. Before spawn it refuses with zero invocations and
+no evidence. After spawn it completes capture, audit and evidence, preserving
+termination but returning no journal anchor and `journal_complete=False`.
+`event_cap_reached` alone drops its event and preserves the terminal slot. A
+complete append whose fsync failed may remain visible; torn history may display
+`unknown`. Neither a reader-derived chain head nor a terminal display replaces
+the controller-held append acknowledgement. Run status is not a work outcome.
+
+The operator-owned 0700 state root is selected from the account's passwd home,
+not `$HOME`; production configuration of another root is deferred to LANEEXEC.
+In-process callers can pass a separate root outside workspace, target and
+reference roots. Its layout is:
+
+- `journal/`: durable attempt reservations and history, outside retention roots;
+- `launchers/<attempt_id>.json`: one locked 0600 launcher identity per attempt;
+- `evidence/a-<identity-digest-prefix>/`: active-then-sealed evidence and optional
+  proposal bytes, one directory per attempt;
+- `evidence-ledger/<run>.json` and `<run>.retired`: recorded refs and retirement
+  marks for runs retired by WORKER's own prune operation.
+
+The evidence resolver keys refs by attempt identity. It reports `present` only
+for matching sealed retention records, `retention_dropped` only for a recorded
+retirement, and `unknown` for an unrecorded deletion or unmatched ref. Retention
+never prunes the journal. A retry requires a fresh admission and attempt id;
+prior attempts and evidence remain independent.
+
+Cancel verifies the journal writer against the launcher record, live process
+start identity, interpreter, exact allowed launcher argv, cmdline digest and
+record-lock holder. It opens a pidfd and uses only that descriptor as its signal
+target. SIGTERM requests cancellation in the launcher; the capture loop journals
+`cancelling` and reclaims its own process group. The reservation's writer nonce
+is not secret: it appears in same-login-readable journal history. It supplements
+the live identity and held-lock checks. Same-login processes can also access
+journal files and on-disk provider/git credentials; this seam adds no same-login
+containment or network policy. Descendants that call `setsid` can escape the
+owned group. Pipe draining still ends at the deadline, and `finished` does not
+prove that all descendants are gone.
+
+Descriptor execution is used for supported ELF images. Script and other
+path-based execution records `exec_binding: "path_recheck"`, with a residual
+check-to-exec window despite the immediate identity recheck.
+
+The isolated `supervised_worker_cli` module has `launch`, `status` and `cancel`
+verbs. Each performs supervised-route preflight first. Production launch remains
+`codec_unavailable` until CLOSEOUT wires the production codec. Envelope and
+result file helpers are frozen for that wiring, and status reads only JOURNAL's
+closed display phrases, liveness and bounded pages. There is no new console
+script, registry activation, installed-provider qualification or public contract
+claim. WORKER's evidence remains synthetic; CLOSEOUT owns public reconciliation
+and all deferred SCHEMA rows.

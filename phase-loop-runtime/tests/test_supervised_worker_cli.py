@@ -17,7 +17,8 @@ def test_isolated_cli_before_root(tmp_path, argv, reason):
     for name in ("json.py", "argparse.py", "validator.py"):
         (tmp_path / name).write_text('raise RuntimeError("shadow loaded")')
     result = subprocess.run([sys.executable, "-I", "-c",
-        'import sys; sys.path.insert(0,sys.argv.pop(1)); '
+        'import sys; from pathlib import Path; root=Path(sys.argv.pop(1)); sys.path.insert(0,str(root)); '
+        'import phase_loop_runtime; assert Path(phase_loop_runtime.__file__).resolve().is_relative_to(root.resolve()); '
         'from phase_loop_runtime.supervised_worker_cli import main; raise SystemExit(main())',
         str(root), *argv], cwd=tmp_path, capture_output=True, text=True, timeout=30)
     assert result.returncode in (2, 10)
@@ -236,3 +237,19 @@ def test_cli_source_controls(worker_case, tmp_path, monkeypatch, capsys, control
             _cli_control_witness(module, control, tmp_path, monkeypatch, capsys, worker_case)
     else:
         _cli_control_witness(module, control, tmp_path, monkeypatch, capsys, worker_case)
+
+
+def test_status_follows_next_cursor(worker_case, monkeypatch, capsys):
+    import json
+    from test_supervised_worker import run
+    fixture = worker_case
+    assert run(fixture).state == "finished"
+    monkeypatch.setattr(cli, "sys", SimpleNamespace(flags=SimpleNamespace(isolated=1)))
+    monkeypatch.setattr(cli, "STATUS_PAGE_SIZE", 1)
+    argv = ["status", "--attempt", fixture.envelope["attempt_id"], "--page"]
+    assert cli.main(argv, state_root=fixture.state) == 0
+    first = json.loads(capsys.readouterr().out)
+    assert first["next_cursor"]
+    assert cli.main(argv + ["--cursor", first["next_cursor"]], state_root=fixture.state) == 0
+    second = json.loads(capsys.readouterr().out)
+    assert first["page"]["events"][0]["seq"] < second["page"]["events"][0]["seq"]

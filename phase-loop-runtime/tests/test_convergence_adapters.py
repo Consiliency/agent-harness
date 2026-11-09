@@ -471,3 +471,25 @@ def test_worker_capture_source_controls(tmp_path, monkeypatch, control, mutated)
         if pidfile.exists():
             os.waitpid(int(pidfile.read_text()), 0)
         restore()
+
+
+@pytest.mark.parametrize("status", _FROZEN_STATUSES)
+def test_worker_preserves_convergence_status_and_detail(tmp_path, monkeypatch, status):
+    script = _install(tmp_path / "bin", "codex", _emit({"status": status}), monkeypatch)
+    result = run_codex_adapter(_request((str(script),), tmp_path))
+    assert result.status.value == status and result.detail == capture_base._DETAIL_OK
+
+
+@pytest.mark.parametrize("mode,expected,detail", [
+    ("oversized", "blocked", capture_base._DETAIL_OVERFLOW),
+    ("binary", "blocked", capture_base._DETAIL_MALFORMED),
+    ("nonzero", "failed", capture_base._DETAIL_NONZERO),
+    ("timeout", "degraded", capture_base._DETAIL_TIMEOUT),
+    ("malformed", "blocked", capture_base._DETAIL_MALFORMED),
+])
+def test_worker_preserves_convergence_bounds(tmp_path, monkeypatch, mode, expected, detail):
+    bodies = {"oversized": 'head -c 65537 /dev/zero', "binary": "printf '\\377'",
+              "nonzero": "exit 7", "timeout": "sleep .3", "malformed": "printf fixture"}
+    script = _install(tmp_path / "bin", "codex", bodies[mode], monkeypatch)
+    result = run_codex_adapter(_request((str(script),), tmp_path, timeout=.1))
+    assert result.status.value == expected and result.detail == detail

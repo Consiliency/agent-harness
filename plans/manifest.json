@@ -15190,7 +15190,24 @@
         "SL-1",
         "SL-2"
       ],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-11-09T09:34:58Z",
+          "by": "claude-execute-phase",
+          "metadata": {
+            "branch": "t3/v12-worker",
+            "lanes": [
+              "SL-0",
+              "SL-1",
+              "SL-2"
+            ],
+            "pending_input": "agent-harness#1957",
+            "publication": "draft; coordinator merges",
+            "verification_host": "ai"
+          },
+          "transition": "executing"
+        }
+      ],
       "owner_skill": "claude-plan-phase",
       "phase_alias": "WORKER",
       "planning_artifact_only": true,
@@ -15203,10 +15220,10 @@
         "type": "phase"
       },
       "slug": "v12-WORKER",
-      "status": "committed",
+      "status": "executing",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-11-08T18:39:57Z"
+      "updated_at": "2026-11-09T09:34:58Z"
     },
     {
       "created_at": "2026-11-08T15:23:52Z",
