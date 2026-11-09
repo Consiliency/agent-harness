@@ -60,7 +60,7 @@ The contract (External Inputs) carries the detail.
                               ▼                    │                 │ slot (VISBROKER)
                 stage (inert, digest-bound) ◄──────┘                 │
                  ├─ jailed: /seat/home/review-visual (H-root:seat, 0550/0440)
-                 ├─ sandbox / parent: <review_dir>/visual (read-only)
+                 ├─ direct Claude: <review_dir>/visual (existing grant)
                  └─ native fill: native-fill/<id>/visual
  board result: absolute paths ──► owner's T3 thread (inline) or Chrome
 ```
@@ -87,7 +87,7 @@ seat can choose or raise it.
 
 | Input | Pin |
 | --- | --- |
-| BROWSER v1 contract | `plans/artifacts/browser-v1-contract.md`, sha256 `86b8cdecc98fdbb8e36ba5bd8217402cb14de237e9f2c0322663b70aecb51da8` |
+| BROWSER v1 contract | `plans/artifacts/browser-v1-contract.md`, sha256 `4e5ca7d066bd64cff483293cc24e9f247b8534c5e1ba2bb54c90fd44b058ca4e` |
 | `browser_observation.v1` schema | `plans/artifacts/browser-v1-observation.schema.json`, sha256 `169c05daaa03788bdfe10fb3efa4a3fe31d3a58bbe1767826645ced4e3ec9a1d` |
 | Research report (operator-held, not published) | `sandbox-browser-visibility-20261108/report.md`, sha256 `d6d0494f74d5df2c8dadc478fb5b5d60cacc2be6f0ff1794b8e97a99c8193fb3`. The contract restates every fact a phase relies on. |
 | v13 placement contract | `plans/artifacts/v13-PLACECLI-contract-v1.schema.json`, as pinned by `specs/phase-plans-v13.md` |
@@ -276,7 +276,7 @@ runs anywhere in this phase.
 - [ ] EC-VISART-2 — `phase-loop observation import` turns `visual_evidence_path` images into a valid executor observation whose `index.html` is byte-identical across two renderings of one manifest. A broker tool, `t3_preview` without `incognito`, and GIF or BMP input refuse with their §7 codes. No browser is launched or contacted.
 - [ ] EC-VISART-3 — `advisor-board --observation` accepts executor observations only, stages the seat subset under the §4.1 budget, and delivers it per contract §4.2 with no new grant on any route. Jailed seats find it read-only at `/seat/home/review-visual`, and with no `--observation` no route's instructions, argv or bundle change. Every route's trusted instructions carry the §4.6 notice, and the bundle carries the route-neutral §4.4 appendix within its cap. An invalid or broker observation exits 2 before any seat launch.
 - [ ] EC-VISART-4 — Across `seat_profiles.registered_legs()`, a jail built in-process with a staged visual copy has the same owner argv, `jail_profile_digest` and `actual_profile_digest` as one built without it. Every seat egress allowlist digest is unchanged. A hard-linked or non-regular staged entry refuses at handoff. A stage changed before launch records `seat_visual_stage_changed`. So does a copy that the in-H post-run rehash (contract §4.3) cannot confirm intact, which is never judged from outside H.
-- [ ] EC-VISART-5 — The board result's `visual_evidence` block lists each observation's host label, absolute source, staged and `index.html` paths, manifest sha256, `visual_stage_sha256` and unstaged video. Every leg records `visual_delivered`, false for every launch path contract §4.2 marks false (brokered, sealed and remote), and jailed legs record `visual_post_run_intact`.
+- [ ] EC-VISART-5 — The board result's `visual_evidence` block lists each observation's host label, absolute source, staged and `index.html` paths, manifest sha256, `visual_stage_sha256` and unstaged video. Every leg records `visual_delivered`, false for every launch path contract §4.2 marks false (sandbox-profile, brokered, sealed and remote), and jailed legs record `visual_post_run_intact`.
 - [ ] EC-VISART-6 — The execute skills name T3 preview on `profileId: "incognito"` as a capture source beside claude-in-chrome and Playwright via PMCP. They direct moving the screenshot into the worktree, then `observation import` and `--observation`. Regenerated bundles and launch-spec goldens match their sources.
 - [ ] EC-VISART-7 — A `--native-leg` run with a different observation set or stage digest from its `--emit-native-request` run refuses `observation_set_mismatch` before any seat runs; the same set is accepted.
 
@@ -294,7 +294,10 @@ runs anywhere in this phase.
 
 - Any browser process.
 - Broker observations at ingress.
-- Delivery to the sealed and remote routes.
+- Delivery to the sealed and remote routes, and to the masked seats: the non-brokered
+  sandbox-profile seats and the brokered codex, Claude and grok seats. v1 makes no grant
+  relaxation. Delivering to masked seats would be a later, deliberate grant relaxation
+  that needs an owner decision, its own contract repin and its own tests.
 - Video in seats.
 - Runner wiring that passes a closeout's `visual_evidence_path` to the board
   automatically.

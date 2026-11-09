@@ -175,17 +175,20 @@ a view it already has.
 | Launch path | Visual root (seat view) | Delivery | `visual_delivered` |
 | --- | --- | --- | --- |
 | Jailed seat (`seat_jail_v1`) | `/seat/home/review-visual` | Per-leg copy under `seat_dir`, handed off read-only (4.3) | true |
-| Sandbox-profile seat (`SeatProfile`) | `<review_dir>/visual` | The existing `readonly_paths` bind | true |
-| Direct Claude seat | `<review_dir>/visual` | `_claude_direct_add_dirs` already grants `review_dir` | true |
-| Brokered codex seat with a staged tree | none | Its only grant is the reviewed-tree clone (`_require_staged_tree`) | false |
-| Brokered Claude seat with a staged tree | none | Its only grant is the reviewed-tree clone | false |
+| Non-brokered sandbox-profile seat (codex, gemini, grok; cwd is `review_dir`) | none | A tmpfs covers the cwd; only the bundle, the instructions and the reviewed tree are bound back | false |
+| Direct Claude seat | `<review_dir>/visual` | Runs from `out_dir` with `--add-dir review_dir` (`_claude_direct_add_dirs`) | true |
+| Brokered codex seat with a staged tree | none | No grant: sealed argv from `out_dir` | false |
+| Brokered Claude seat with a staged tree | none | No grant: `--tools ""`, no add-dirs | false |
+| Brokered grok seat with a staged tree | none | Runs from `out_dir`; only `--cwd <clone>` is bound | false |
 | Brokered agy seat | none | Only `--add-dir <clone>`; a read outside its workspace can empty the response | false, always |
 | Sealed brokered seat (sealed prompt, no staged tree) | none | Not delivered | false |
 | Native-fill request | `native-fill/<request_id>/visual` | Copy beside `artifact.md`; `request.json` unchanged (4.5) | true |
 | Remote seat route | none | Not delivered | false |
 
-**Brokered seats.** VISART pins no read-only relaxation for brokered codex or Claude, so
-both stay false. Adding one is a per-provider contract change with its own repin and
+**Masked seats.** v1 makes no grant relaxation (coordinator ruling, 2026-11-08). The
+non-brokered sandbox-profile seats and the brokered codex, Claude and grok seats
+therefore do not get the stage, and stay false. Delivering to any of them would be a
+later, deliberate grant relaxation that needs an owner decision, its own repin and its own
 tests. Brokered agy is false in every version.
 
 **No-op clause.** With no `--observation`, no route's instructions, argv or bundle change.
@@ -243,6 +246,10 @@ between the privacy check and the chown.
   on the leg, sets `visual_post_run_intact: false`, and makes the board result flag the
   leg's verdict:
   - an entry that is missing, unreadable, a link, a FIFO or any other non-regular entry;
+  - an entry, including `review-visual` itself, whose owner in H is not uid 0, whose group
+    is not the seat's, or whose mode is not 0550 for a directory or 0440 for a file. The
+    seat cannot create uid-0 inodes, so a copy the seat makes is never intact, even when
+    its bytes are identical;
   - an extra entry;
   - a file over the cap;
   - a digest mismatch;
@@ -377,7 +384,7 @@ keeps `visual_evidence_path` unchanged.
 | `observation_target_forbidden` | A URL scheme or userinfo outside 2.3 |
 | `observation_index_invalid` | `index.html` differs from the deterministic rendering (section 3) |
 | `observation_set_mismatch` | A `--native-leg` run whose observation set or stage digest differs from the emit run (4.5) |
-| `seat_visual_stage_changed` | Staged bytes differ from `visual_stage_sha256` at launch; or, after a jailed leg exits, the in-H rehash finds the copy not intact, including a missing, unreadable, link, FIFO, non-regular, extra or over-cap entry, a timeout or a helper failure (4.1, 4.3) |
+| `seat_visual_stage_changed` | Staged bytes differ from `visual_stage_sha256` at launch; or, after a jailed leg exits, the in-H rehash finds the copy not intact. That includes a missing, unreadable, link, FIFO, non-regular, extra or over-cap entry; an entry not owned by uid 0 in H, not in the seat's group, or not mode 0550 (directory) or 0440 (file); a timeout; or a helper failure (4.1, 4.3) |
 
 `seat_visual_stage_changed` is a seat notice of OD-10 class `security`, because it signals
 tampering. `OD10_CLASSES` folds in only `ordinary` `CODES` rows, so it needs all three of

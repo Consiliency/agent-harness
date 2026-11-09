@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: VISART
 roadmap: specs/phase-plans-browser-v1.md
-roadmap_sha256: add064be0447385d0d35082651ffc911e6eb7226f2952f04fab490fabde5cde3
+roadmap_sha256: 6e3444c54ef27a380048f8033a82f183dddafbff150dc664307a0e5db43c6383
 automation:
   suite_command: ["timeout", "900", "env", "PYTEST_ADDOPTS=", "python3", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_browser_observation_contract.py", "phase-loop-runtime/tests/test_seat_visual_staging.py", "phase-loop-runtime/tests/test_seat_uid_visual_handoff.py", "phase-loop-runtime/tests/test_seat_visual_rehash_in_h.py", "phase-loop-runtime/tests/test_seat_visual_profile_neutrality.py", "phase-loop-runtime/tests/test_seat_route_contract.py", "phase-loop-runtime/tests/test_seat_jail.py", "phase-loop-runtime/tests/test_seat_sandbox_permissions.py", "phase-loop-runtime/tests/test_board_visual_delivery.py", "phase-loop-runtime/tests/test_cli_observation.py", "phase-loop-runtime/tests/test_native_fill_visual.py", "phase-loop-runtime/tests/test_seat_notices.py", "phase-loop-runtime/tests/test_advisor_board_golden.py", "phase-loop-runtime/tests/test_broker_staged_tree_delivery.py", "phase-loop-runtime/tests/test_review_stage_binding.py", "phase-loop-runtime/tests/test_sandbox_egress.py", "phase-loop-runtime/tests/test_panel_native_fill_183.py", "phase-loop-runtime/tests/test_native_fill_refusal_cause.py", "phase-loop-runtime/tests/test_execute_skill_visual_capture.py", "phase-loop-runtime/tests/test_skills_bundle_drift.py", "phase-loop-runtime/tests/test_launchspec_golden.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
 ---
@@ -52,13 +52,20 @@ What exists today, and what each lane builds on:
   `_JailedSeat.seat_dir`. That is the leg's own directory, distinct from the board's
   `review_dir`. The visual rehash follows the same pattern (contract §4.3).
 - **Other launch paths** (contract §4.2):
-  - The sandbox-profile route builds its view in `panel_invoker._seat_filesystem_view` from
-    `SeatProfile.readonly_paths`.
-  - A direct Claude seat is already granted `review_dir` by `_claude_direct_add_dirs`.
-  - Brokered codex and Claude seats with a staged tree are granted only the reviewed-tree
-    clone (`_require_staged_tree`, `_render_broker_inline_prompt`,
-    `test_broker_staged_tree_delivery.py`). Brokered agy gets only `--add-dir <clone>`. So
-    every brokered row is `visual_delivered: false`, with no new grant.
+  - Non-brokered sandbox-profile seats (codex, gemini, grok) run with cwd equal to
+    `review_dir`. `_seat_view_layers` covers that cwd with a tmpfs, and
+    `_seat_command_profile` binds back only `review-bundle.md`, `review-instructions.md`
+    and `reviewed-tree`. So `<review_dir>/visual` is outside their view, and they are
+    `visual_delivered: false`.
+  - A direct Claude seat runs from `out_dir` with `--add-dir review_dir`
+    (`_claude_direct_add_dirs`), so it is true.
+  - Brokered codex has no grant (sealed argv from `out_dir`). Brokered Claude has no grant
+    (`--tools ""`, no add-dirs). Brokered grok runs from `out_dir` with only
+    `--cwd <clone>` bound. Brokered agy gets only `--add-dir <clone>`
+    (`_require_staged_tree`, `_render_broker_inline_prompt`,
+    `test_broker_staged_tree_delivery.py`). Every brokered row is false.
+  - v1 makes no grant relaxation (coordinator ruling), so these masked seats do not get
+    the stage.
   - A brokered seat without a staged tree gets only the sealed prompt
     (`_BROKER_SEALED_PROMPT_MAX_BYTES`, 512 KiB).
   - Native fill writes `native-fill/<request_id>/` from `cli._advisor_board_command`,
@@ -118,8 +125,10 @@ several tests these lanes run. Every lane branches from a main that includes it.
     RehashResult(intact, reason)`, a frozen dataclass whose `reason` comes from a closed
     set, and the `rehash <seat_dir> <cap_bytes> <time_limit_ms>` verb, with entries on
     stdin.
-  The rehash runs in H as H-root with no-follow walks, and returns not intact on every
-  case in contract §4.3. `seat_route_contract` gains `seat_visual_stage_changed` as a
+  The rehash runs in H as H-root with no-follow walks. It returns not intact on every
+  case in contract §4.3, including any entry (`review-visual` itself included) whose
+  owner in H is not uid 0, whose group is not the seat's, or whose mode is not 0550 for a
+  directory or 0440 for a file. `seat_route_contract` gains `seat_visual_stage_changed` as a
   `CODES` row of class `security` and an explicit `_SECURITY_CODES` entry. Contract
   §4.1–§4.4, §4.6, §7.
 - [ ] IF-0-VISART-3 — The CLI:
@@ -249,7 +258,8 @@ SL-1.1 test outline:
     from outside H gets EACCES and is never reported intact.
   - Through `in_h_argv`, a clean copy is reported intact.
   - Not intact in each case:
-    - a rename-and-replace of `review-visual`;
+    - a byte-identical, seat-owned rename-and-replace of `review-visual`;
+    - an entry with the wrong owner, group or mode;
     - a missing file and an extra file;
     - a symlink to an outside canary (the canary is never opened);
     - a FIFO (returns within the time limit and never blocks);
@@ -287,11 +297,11 @@ through `cli.main`.
 - **Delivery per §4.2 launch path.**
   - Jailed: the copy sits under `<seat_dir>/seat-home/review-visual`. The process
     handoff prefix carries `--visual`, and the probe prefix does not.
-  - Sandbox-profile: a read-only bind.
   - Direct Claude: under the already granted `review_dir`.
-  - Brokered codex, Claude and agy: `visual_delivered: false`. Their grants and argv are
-    byte-identical to a run without `--observation`, and `test_broker_staged_tree_delivery.py`
-    stays green.
+  - Non-brokered sandbox-profile (codex, gemini, grok), and brokered codex, Claude, grok
+    and agy: `visual_delivered: false`. Their binds, grants and argv are byte-identical
+    to a run without `--observation`, and `test_broker_staged_tree_delivery.py` stays
+    green.
   - Native fill: a copy beside `artifact.md`, with `request.json` bytes unchanged.
   - Sealed and remote: `visual_delivered: false`.
   - Every route's instructions carry `UNTRUSTED_NOTICE` and name the visual root, or say
@@ -434,7 +444,7 @@ It also takes the new launch references SL-1 and SL-2 report, and SL-3's regener
   - the rehash opening an outside canary or blocking on a FIFO.
 
   Path-entered control: the copy enters through `place_jailed_copy` and `seat_uid handoff --visual`, and the rehash through `rehash_visual_in_h` over `in_h_argv`.
-- [ ] EC-VISART-5 — proven by `V2` (`test_cli_observation.py`, `test_board_visual_delivery.py`), falsified by a `--json` payload missing any contract §5 `visual_evidence` field, by a leg missing `visual_delivered`, by any brokered, sealed or remote path reporting `true`, or by a jailed leg missing `visual_post_run_intact`. Path-entered control: through `cli.main(["advisor-board", …])`.
+- [ ] EC-VISART-5 — proven by `V2` (`test_cli_observation.py`, `test_board_visual_delivery.py`), falsified by a `--json` payload missing any contract §5 `visual_evidence` field, by a leg missing `visual_delivered`, by any sandbox-profile, brokered, sealed or remote path reporting `true`, or by a jailed leg missing `visual_post_run_intact`. Path-entered control: through `cli.main(["advisor-board", …])`.
 - [ ] EC-VISART-6 — proven by `V3` (`test_execute_skill_visual_capture.py`, `test_skills_bundle_drift.py`, `test_launchspec_golden.py`), falsified by a generated bundle that differs from its regenerated source, or by guidance that accepts T3's default profile. Path-entered control: text enters through the two `skills-src` files and the regeneration scripts.
 - [ ] EC-VISART-7 — proven by `V2` (`test_native_fill_visual.py`), falsified by a `--native-leg` run with a different observation set reaching a seat, or by the same set being refused. Path-entered control: both runs enter through `cli.main(["advisor-board", …])` with `--emit-native-request`, then `--native-leg`.
 
