@@ -45,10 +45,10 @@ Audit baseline: `origin/main` at `23a30561e9b2ef23933fcbb4225a1d86120a5195`. Pen
 - [ ] `skills-src/claude/claude-plan-phase/references/plan-document-template.md` — pending
 - [ ] `skills-src/claude/claude-plan-phase/scripts/validate_plan_doc.py` — pending
 - [x] `skills-src/claude/claude-run-train/SKILL.md` — checked-clean; runtime `train_runner.py` native request/leg and review-only branches, `cli.py` run-train flags
-- [ ] `skills-src/claude/claude-skill-editor/SKILL.md` — pending
-- [ ] `skills-src/claude/claude-skill-editor/assets/editor_prompt.md` — pending
-- [ ] `skills-src/claude/claude-skill-improvement-planner/SKILL.md` — pending
-- [ ] `skills-src/claude/claude-skill-improvement-planner/assets/aggregator_prompt.md` — pending
+- [x] `skills-src/claude/claude-skill-editor/SKILL.md` — fixed; runtime `skill_paths.py:24,35; reflection_corpus.py:615; nonexistent helper/table replaced and locked serial parity command`
+- [x] `skills-src/claude/claude-skill-editor/assets/editor_prompt.md` — checked-clean; runtime `build_bundle.py DEFAULT_SOURCES; scoped editor response contract`
+- [x] `skills-src/claude/claude-skill-improvement-planner/SKILL.md` — fixed; runtime `skill_paths.py:24,35; reflection_corpus.py:650; executable path examples, root inventory and plan numbering`
+- [x] `skills-src/claude/claude-skill-improvement-planner/assets/aggregator_prompt.md` — checked-clean; runtime `reflection_corpus.py:69,473; quality filter, redaction and bundle schema`
 - [x] `skills-src/claude/claude-task-contextualizer/SKILL.md` — fixed; runtime `skill_paths.py:24-39`; briefing workflow and harness role names
 - [x] `skills-src/claude/claude-task-contextualizer/references/task-templates.md` — checked-clean; generic briefing templates consistent with entrypoint
 - [x] `skills-src/codex/codex-advisor-board/SKILL.md` — fixed; runtime `seat_profile_codex.py:33`, `panel_invoker.py:13355` (jailed launch, single attempt), `panel_invoker.py:444` (memfd gate); issue qualification retained from prior commit
@@ -92,5 +92,5 @@ Audit baseline: `origin/main` at `23a30561e9b2ef23933fcbb4225a1d86120a5195`. Pen
 - [x] `skills-src/opencode/opencode-skill-improvement-planner/SKILL.md` — checked-clean; runtime `reflection_corpus.py:650-675; rule_enforcement registry`
 - [x] `skills-src/opencode/opencode-task-contextualizer/SKILL.md` — checked-clean; runtime `skill_paths.py:24-39`; briefing workflow and harness role names
 
-- [ ] `skills-src/claude/claude-skill-editor/applied-plans.log` — pending
+- [x] `skills-src/claude/claude-skill-editor/applied-plans.log` — checked-clean; runtime `historical application record; not a command or current runtime claim`
 - [x] `phase-loop-skills/README.md` — checked-clean; runtime `skill_install.py install_skills; skill_paths.py HARNESS_DEFAULT_SKILL_ROOTS; cli.py install parser`

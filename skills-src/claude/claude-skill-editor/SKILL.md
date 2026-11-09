@@ -33,7 +33,7 @@ Canonical source for every `claude-*` workflow skill is `skills-src/claude/claud
 
 | Arg | Required | Meaning |
 |---|---|---|
-| `<plan-path>` | no | Absolute path to a plan produced by `claude-skill-improvement-planner`. Default: read `resolve_skill_bundle_root("claude")/claude-skill-improvement-planner/latest.md`'s `artifact:` field. |
+| `<plan-path>` | no | Absolute path to a plan produced by `claude-skill-improvement-planner`. Default: read `resolve_handoff_root(repo)/claude-skill-improvement-planner/latest.md`'s `artifact:` field. |
 | `--dry-run` | no | Parse the plan and print what WOULD change without editing any files. |
 | `--no-push` | no | Commit but skip `git push`. Default: push the feature branch. |
 
@@ -43,7 +43,7 @@ Canonical source for every `claude-*` workflow skill is `skills-src/claude/claud
 
 If `<plan-path>` passed, use it verbatim.
 
-Else read `resolve_skill_bundle_root("claude")/claude-skill-improvement-planner/latest.md`:
+Else read `resolve_handoff_root(repo)/claude-skill-improvement-planner/latest.md`:
 
 - Validate YAML frontmatter `from: claude-skill-improvement-planner`. On mismatch → flag via `AskUserQuestion` with `[use anyway, provide plan path, abort]`.
 - Validate timestamp < 7 days old. On staleness → same AskUserQuestion.
@@ -78,7 +78,7 @@ On `--dry-run`, skip to Step 7 (print the worklist and exit).
 
 ### Step 3 — Apply recommendations (per-recommendation frontier-tier Agent)
 
-For each recommendation, spawn an Agent to apply it. Resolve `<frontier>` from the `claude-execute-phase` Model tiers table.
+For each recommendation, spawn an Agent to apply it. Use the active runtime executor/model policy for `<frontier>`; `claude-execute-phase` does not publish a Model tiers table.
 
 ```
 Agent(
@@ -106,9 +106,12 @@ From the agent-harness checkout root:
 ```bash
 python3 phase-loop-runtime/scripts/regenerate_skills_bundle.py
 python3 phase-loop-runtime/scripts/sync_skills_bundle.py
-uv run --quiet --with pytest --with-editable ./phase-loop-runtime python -m pytest \
+timeout 180 uv run --project phase-loop-runtime --locked python -m pytest \
   phase-loop-runtime/tests/test_skills_canon_parity.py phase-loop-runtime/tests/test_skills_bundle_drift.py -q
 ```
+
+Use the locked runtime environment (`uv sync --locked` in `phase-loop-runtime`)
+and run serially with no `-n`; check shared-host headroom before this narrow check.
 
 If either gate fails, treat every recommendation applied this run as failed for archival purposes.
 
@@ -141,7 +144,7 @@ Applied N of M recommendations from <plan-path>. skills-src/ is the edit;
 phase-loop-skills/ and skills_bundle/ are regenerated output. Consumed
 reflections moved to each skill's reflections/<repo_hash>/<branch_slug>/archive/.
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: <actual contributing model name> <noreply@anthropic.com>"
 ```
 
 `git push` the feature branch unless `--no-push`. Opening and merging the PR follow the repo's own review rules.
@@ -153,9 +156,11 @@ Append the plan's timestamp + path to `resolve_skill_bundle_root("claude")/claud
 Resolve paths:
 
 ```bash
-REFLECTION_PATH=$(python3 resolve_skill_bundle_root("claude")/_shared/next_reflection_path.py claude-skill-editor)
-REPO_LOCAL_HANDOFF=<repo>/.dev-skills/handoffs/claude-skill-editor/latest.md
-SKILL_MD=resolve_skill_bundle_root("claude")/claude-skill-editor/SKILL.md
+SKILL_ROOT=$(python3 -c 'from phase_loop_runtime.skill_paths import resolve_skill_bundle_root; print(resolve_skill_bundle_root("claude"))')
+: "${REPO_HASH:?set REPO_HASH}" "${BRANCH_SLUG:?set BRANCH_SLUG}" "${RUN_ID:?set RUN_ID}"
+REFLECTION_PATH="$SKILL_ROOT/claude-skill-editor/reflections/$REPO_HASH/$BRANCH_SLUG/$RUN_ID.md"
+REPO_LOCAL_HANDOFF=$(python3 -c 'from pathlib import Path; from phase_loop_runtime.skill_paths import resolve_handoff_root; print(resolve_handoff_root(Path.cwd()) / "claude-skill-editor" / "latest.md")')
+SKILL_MD="$SKILL_ROOT/claude-skill-editor/SKILL.md"
 ```
 
 Spawn ONE close-out agent on the `frontier` tier. It writes both files via the Write tool:
