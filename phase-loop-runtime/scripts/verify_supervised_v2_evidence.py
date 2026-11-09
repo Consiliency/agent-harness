@@ -421,14 +421,20 @@ def evaluate(repo, record, *, api=None, current_head=None):
     check_applicability(repo, record, current_head, api=api)
     result["content_identity"] = record["content_identity"]
     result["tested_head"] = record["tested_head"]
+    result["assessed_head"] = current_head
     if api is None:
         result["hosted_status"] = "unverified"
         return result
-    result["required_checks"] = authenticate_required_checks(api, record["tested_head"])
+    result["required_checks"] = authenticate_required_checks(api, current_head)
+    def run_content_head(run_id):
+        require(type(run_id) is int and run_id > 0, "run_identity_invalid")
+        head = api.json(f"repos/{REPOSITORY}/actions/runs/{run_id}")["head_sha"]
+        check_applicability(repo, record, head, api=api)
+        return head
     publication = record.get("hosted_evidence", {}).get("publication_run_id")
-    result["publication"] = authenticate_publication(api, publication, record["tested_head"])
+    result["publication"] = authenticate_publication(api, publication, run_content_head(publication))
     gate = record.get("hosted_evidence", {}).get("gate_a_run_id")
-    authenticate_run(api, gate, head=record["tested_head"], workflow=".github/workflows/test.yml")
+    authenticate_run(api, gate, head=run_content_head(gate), workflow=".github/workflows/test.yml")
     jobs = api.json(f"repos/{REPOSITORY}/actions/runs/{gate}/jobs?per_page=100")
     require(jobs["total_count"] <= 100 and any(job["name"] == "clean-room (standalone-from-wheel, Gate A)"
             and job["conclusion"] == "success" for job in jobs["jobs"]), "gate_a_missing")
@@ -452,7 +458,7 @@ def evaluate(repo, record, *, api=None, current_head=None):
     result["hosted_status"] = "ci_and_publication_verified"
     verifier = record.get("hosted_evidence", {}).get("verifier_run_id")
     if verifier is not None:
-        result["verifier"] = authenticate_assessment(api, verifier, record["tested_head"], record["content_identity"])
+        result["verifier"] = authenticate_assessment(api, verifier, run_content_head(verifier), record["content_identity"])
     else:
         result["hosted_status"] = "verifier_artifact_pending"
     # The pinned revision establishes no external publisher trust roots.
