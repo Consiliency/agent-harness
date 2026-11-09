@@ -57,9 +57,9 @@ Audit baseline: `origin/main` at `23a30561e9b2ef23933fcbb4225a1d86120a5195`. Pen
 - [ ] `skills-src/codex/codex-execute-phase/references/interactive-path.md` — pending
 - [ ] `skills-src/codex/codex-execute-phase/references/worker-fanout.md` — pending
 - [x] `skills-src/codex/codex-phase-loop/SKILL.md` — fixed; runtime `cli.py:324,3340`, `runner.py:710`, `launcher.py:944`, `capability_registry.py:116`; qualified issue and corrected launcher/path claims
-- [ ] `skills-src/codex/codex-phase-roadmap-builder/SKILL.md` — pending
+- [x] `skills-src/codex/codex-phase-roadmap-builder/SKILL.md` — checked-clean; runtime `roadmap_lint.py phase/goal/IF parsing; skill_paths.py:24 (correct harness root)`
 - [x] `skills-src/codex/codex-plan-detailed/SKILL.md` — fixed; runtime `phase-loop-runtime/src/phase_loop_runtime/plan_manifest.py:95,327; skill_paths.py:24-39 — removed nonexistent CLI alias, corrected handoff field and artifact-write contradiction`
-- [ ] `skills-src/codex/codex-plan-phase/SKILL.md` — pending
+- [x] `skills-src/codex/codex-plan-phase/SKILL.md` — fixed; runtime `plan_manifest.py:95,327; planner_validation.py:54; source validate_plan_doc.py:166-320 (lane index/task table and required headings)`
 - [x] `skills-src/codex/codex-run-train/SKILL.md` — checked-clean; runtime `phase-loop-runtime/src/phase_loop_runtime/train_runner.py:340-380,3030; cli.py run-train parser`
 - [x] `skills-src/codex/codex-skill-editor/SKILL.md` — checked-clean; runtime `phase-loop-runtime/src/phase_loop_runtime/reflection_corpus.py archive; build_bundle.py DEFAULT_SOURCES; skill_paths.py:24-39`
 - [ ] `skills-src/codex/codex-skill-improvement-planner/SKILL.md` — pending
@@ -71,9 +71,9 @@ Audit baseline: `origin/main` at `23a30561e9b2ef23933fcbb4225a1d86120a5195`. Pen
 - [ ] `skills-src/gemini/gemini-execute-phase/references/worker-fanout.md` — pending
 - [ ] `skills-src/gemini/gemini-execute-phase/references/worktree-pruning.md` — pending
 - [x] `skills-src/gemini/gemini-phase-loop/SKILL.md` — fixed; runtime `cli.py:324,3340`, `runner.py:710`, `launcher.py:944`, `capability_registry.py:116`; qualified issue and corrected launcher/path claims
-- [ ] `skills-src/gemini/gemini-phase-roadmap-builder/SKILL.md` — pending
+- [x] `skills-src/gemini/gemini-phase-roadmap-builder/SKILL.md` — fixed; runtime `roadmap_lint.py phase/goal/IF parsing; skill_paths.py:24 (correct harness root)`
 - [x] `skills-src/gemini/gemini-plan-detailed/SKILL.md` — fixed; runtime `plan_manifest.py:95,327 and skill_paths.py:24 (artifact rule, typed handoff field, reflection root, absent CLI alias)`
-- [ ] `skills-src/gemini/gemini-plan-phase/SKILL.md` — pending
+- [x] `skills-src/gemini/gemini-plan-phase/SKILL.md` — fixed; runtime `plan_manifest.py:95,327; planner_validation.py:54; source validate_plan_doc.py:166-320 (lane index/task table and required headings)`
 - [x] `skills-src/gemini/gemini-run-train/SKILL.md` — checked-clean; runtime `train_runner.py:340-380,3030 and cli.py run-train parser`
 - [x] `skills-src/gemini/gemini-skill-editor/SKILL.md` — checked-clean; runtime `build_bundle.py DEFAULT_SOURCES; reflection_corpus.py:615-693`
 - [x] `skills-src/gemini/gemini-skill-improvement-planner/SKILL.md` — checked-clean; runtime `reflection_corpus.py:650-675; rule_enforcement registry`
@@ -84,9 +84,9 @@ Audit baseline: `origin/main` at `23a30561e9b2ef23933fcbb4225a1d86120a5195`. Pen
 - [ ] `skills-src/opencode/opencode-execute-phase/references/interactive-publication.md` — pending
 - [ ] `skills-src/opencode/opencode-execute-phase/references/worktree-pruning.md` — pending
 - [x] `skills-src/opencode/opencode-phase-loop/SKILL.md` — fixed; runtime `cli.py:324,3340`, `runner.py:710`, `launcher.py:944`, `capability_registry.py:116`; qualified issue and corrected launcher/path claims
-- [ ] `skills-src/opencode/opencode-phase-roadmap-builder/SKILL.md` — pending
+- [x] `skills-src/opencode/opencode-phase-roadmap-builder/SKILL.md` — fixed; runtime `roadmap_lint.py phase/goal/IF parsing; skill_paths.py:24 (correct harness root)`
 - [x] `skills-src/opencode/opencode-plan-detailed/SKILL.md` — fixed; runtime `plan_manifest.py:95,327 and skill_paths.py:24 (artifact rule, typed handoff field, reflection root, absent CLI alias)`
-- [ ] `skills-src/opencode/opencode-plan-phase/SKILL.md` — pending
+- [x] `skills-src/opencode/opencode-plan-phase/SKILL.md` — fixed; runtime `plan_manifest.py:95,327; planner_validation.py:54; source validate_plan_doc.py:166-320 (lane index/task table and required headings)`
 - [x] `skills-src/opencode/opencode-run-train/SKILL.md` — checked-clean; runtime `train_runner.py:340-380,3030 and cli.py run-train parser`
 - [x] `skills-src/opencode/opencode-skill-editor/SKILL.md` — checked-clean; runtime `build_bundle.py DEFAULT_SOURCES; reflection_corpus.py:615-693`
 - [x] `skills-src/opencode/opencode-skill-improvement-planner/SKILL.md` — checked-clean; runtime `reflection_corpus.py:650-675; rule_enforcement registry`

@@ -152,7 +152,10 @@ Then use these headings:
 - [ ] IF-0-<PHASE>-<N> — <contract>
 
 ## Lane Index & Dependencies
-- SL-0 — <name>; Depends on: (none); Blocks: SL-1; Parallel-safe: no
+SL-0 — <name>
+  Depends on: (none)
+  Blocks: (none)
+  Parallel-safe: no
 
 ## Lanes
 
@@ -162,12 +165,16 @@ Then use these headings:
 - **Interfaces provided**: <symbols or none>
 - **Interfaces consumed**: <symbols or none>
 - **Parallel-safe**: yes|no|mixed
-- **Tasks**:
-  - test: <failing or contract test>
-  - impl: <implementation work>
-  - verify: <commands>
+| Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
+|---|---|---|---|---|---|
+| SL-0-T1 | test | (none) | `<test-path>` | `<test-name>` | `<command>` |
+| SL-0-T2 | impl | SL-0-T1 | `<source-path>` | (none) | `<command>` |
+| SL-0-T3 | verify | SL-0-T2 | `<test-path>` | `<test-name>` | `<command>` |
 
 ## Verification
+
+## Execution Notes
+<planning notes and explicit deferrals>
 
 ## Acceptance Criteria
 - [ ] EC-<ALIAS>-<N> — proven by `<command / test>`, falsified by `<assertion / negative control>` (must target a production construction site with path-entered control)
@@ -277,7 +284,7 @@ Generated plans must contain machine-checkable verification commands and an effe
 
 ### Manifest write
 
-After the plan artifact and repo-local handoff path are known, perform a best-effort `plan-manifest append` through `phase_loop_runtime.plan_manifest.append_entry`. Append a `type=phase` entry with `status=committed`, `slug`, `file`, `created_at`, `owner_skill=codex-plan-phase`, `handoff_ref`, `roadmap_ref`, `phase_alias`, `if_gates_produced`, and `lanes`.
+After the plan artifact and repo-local handoff path are known, perform a best-effort Python API append through `phase_loop_runtime.plan_manifest.append_entry`. Append a `type=phase` entry with `status=committed`, `slug`, `file`, `created_at`, `updated_at`, `owner_skill=codex-plan-phase`, `handoff_ref`, `roadmap_ref`, `phase_alias`, `if_gates_produced`, and `lanes`.
 Resolve paths with `phase_loop_runtime.skill_paths` helpers and keep the manifest write best-effort during the dual-mode window: failures are non-fatal, emit a ledger warning, and are mentioned in the mandatory reflection without changing the existing plan closeout result.
 A legacy `plans/manifest.json` using the `schema`/`entries` layout raises `unsupported manifest schema_version: 0`; treat that exact error as the expected non-fatal case (warn, do not block or migrate in place).
 `phase_loop_runtime` may resolve from the installed dotfiles runtime on `PYTHONPATH` even when the target repo neither vendors nor installs it — use the importable package; a missing repo-local checkout is not a blocker.

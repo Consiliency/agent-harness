@@ -104,7 +104,10 @@ Use these headings:
 - [ ] IF-0-<PHASE>-<N> — <contract>
 
 ## Lane Index & Dependencies
-- SL-0 — <name>; Depends on: (none); Blocks: SL-1; Parallel-safe: no
+SL-0 — <name>
+  Depends on: (none)
+  Blocks: (none)
+  Parallel-safe: no
 
 ## Lanes
 
@@ -114,12 +117,16 @@ Use these headings:
 - **Interfaces provided**: <symbols or none>
 - **Interfaces consumed**: <symbols or none>
 - **Parallel-safe**: yes|no|mixed
-- **Tasks**:
-  - test: <failing or contract test>
-  - impl: <implementation work>
-  - verify: <commands>
+| Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
+|---|---|---|---|---|---|
+| SL-0-T1 | test | (none) | `<test-path>` | `<test-name>` | `<command>` |
+| SL-0-T2 | impl | SL-0-T1 | `<source-path>` | (none) | `<command>` |
+| SL-0-T3 | verify | SL-0-T2 | `<test-path>` | `<test-name>` | `<command>` |
 
 ## Verification
+
+## Execution Notes
+<planning notes and explicit deferrals>
 
 ## Acceptance Criteria
 - [ ] EC-<ALIAS>-<N> — proven by `<command / test>`, falsified by `<assertion / negative control>` (must target a production construction site with path-entered control)
@@ -186,7 +193,7 @@ Generated plans must contain machine-checkable verification commands and an effe
 
 ### Manifest write
 
-After the plan artifact and repo-local handoff path are known, perform a best-effort `plan-manifest append` through `phase_loop_runtime.plan_manifest.append_entry`. Append a `type=phase` entry with `status=committed`, `slug`, `file`, `created_at`, `owner_skill=opencode-plan-phase`, `handoff_ref`, `roadmap_ref`, `phase_alias`, `if_gates_produced`, and `lanes`.
+After the plan artifact and repo-local handoff path are known, perform a best-effort Python API append through `phase_loop_runtime.plan_manifest.append_entry`. Append a `type=phase` entry with `status=committed`, `slug`, `file`, `created_at`, `updated_at`, `owner_skill=opencode-plan-phase`, `handoff_ref`, `roadmap_ref`, `phase_alias`, `if_gates_produced`, and `lanes`.
 Resolve paths with `phase_loop_runtime.skill_paths` helpers and keep the manifest write best-effort during the dual-mode window: failures are non-fatal, emit a ledger warning, and are mentioned in the mandatory reflection without changing the existing plan closeout result.
 A legacy `plans/manifest.json` using the `schema`/`entries` layout raises `unsupported manifest schema_version: 0`; treat that exact error as the expected non-fatal case (warn, do not block or migrate in place).
 `phase_loop_runtime` may resolve from the installed dotfiles runtime on `PYTHONPATH` even when the target repo neither vendors nor installs it — use the importable package; a missing repo-local checkout is not a blocker.
@@ -204,11 +211,11 @@ When the generated plan is ready to execute, report `Next phase: <alias> - execu
 
 Add a machine-readable automation handoff that agrees with the human-readable next step fields. Closeout payload shape is defined by `EmitPhaseCloseout` in `phase_loop_runtime/baml_src/emit_phase_closeout.baml` (if that path is absent in the checkout, use the operator/prompt-supplied field contract or the installed `phase_loop_runtime` package — the missing vendored BAML source is not a blocker); keep skill text focused on value selection and handoff routing, not duplicated field ceremony.
 
-Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("codex")/opencode-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
+Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("opencode")/opencode-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
 
 Resolve closeout writes through the `phase_loop_runtime.skill_paths` resolver as the primary source — `resolve_handoff_root(repo)` for the handoff root and `resolve_reflection_root(skill_name)` for reflection roots; fall back to the repo-local `shared/phase-loop/handoff_path.py` resolver only when `phase_loop_runtime` is not importable. Legacy harness handoff roots are read only for migration. Follow `opencode-config/shared/runtime-state.md` and use OpenCode paths only:
 
-- Reflection: `resolve_skill_bundle_root("codex")/opencode-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
+- Reflection: `resolve_skill_bundle_root("opencode")/opencode-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
 - Handoff: `<repo>/.dev-skills/handoffs/opencode-plan-phase/<run_id>.md`
 - Latest handoff pointer: `<repo>/.dev-skills/handoffs/opencode-plan-phase/latest.md`
 
