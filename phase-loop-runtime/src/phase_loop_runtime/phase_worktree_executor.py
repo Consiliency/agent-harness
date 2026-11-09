@@ -5,7 +5,7 @@ runs in its *own* git worktree: the children run ``git add``/``commit``/``status
 and would otherwise race on ``index.lock``/HEAD in a shared tree even when their
 owned files are disjoint. ``validate_concurrent_phase_ownership`` guarantees the
 file-disjointness; this module provides the isolation that makes concurrent git
-operations safe and the merge-back conflict-free.
+operations separate and allows sequential integration.
 
 Lifecycle per phase in a ready wave:
 
@@ -16,7 +16,8 @@ Lifecycle per phase in a ready wave:
    ``wrapped_cwd`` points the child into the isolated tree.
 3. ``integrate_phase_worktree`` — fast-forward/merge the phase's temp branch back
    onto the pipeline branch in the *main* worktree. Because waved siblings own
-   disjoint files (enforced upstream), sequential merges never conflict.
+   disjoint files (enforced upstream), merges should be independent; a conflict
+   is aborted and returned to the caller.
 4. ``teardown_phase_worktree`` — remove the worktree and delete the temp branch.
 
 Only repo-tracked content crosses the worktree boundary via the temp branch.

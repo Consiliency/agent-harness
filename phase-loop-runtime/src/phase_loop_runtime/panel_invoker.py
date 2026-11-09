@@ -1,13 +1,12 @@
-"""Panel-invoker interface (model-routing-v1 P2, IF-0-P2-2).
+"""Advisor-board and legacy panel invocation boundary.
 
-The deterministic Python runner has no native "invoke a skill" primitive, so a
-3-harness advisor panel means spawning the subscription CLI legs
-(codex / agy / native-claude) as child processes. This module is the *named,
-fail-closed* boundary for that — not an inline call buried in the runner.
+``invoke_board`` runs model-first board seats with explicit result statuses;
+``invoke_panel`` preserves the legacy three-harness panel surface. Production
+review operations require HARDEN authorization. Seat routing, jail admission,
+provider completion evidence and typed failures determine whether a result is usable.
 
-Real CLI execution is a single injectable seam (`spawn`); the test suite mocks
-it and never calls a frontier model. Each leg's result carries an explicit
-status so a verbose auth error is never mistaken for a real review.
+Provider launch seams are injectable for offline tests. Explicitly opt-in live
+qualification and attended probes are separate from mocked test execution.
 """
 
 from __future__ import annotations

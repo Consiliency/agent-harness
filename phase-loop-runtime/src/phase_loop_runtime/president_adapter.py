@@ -1,4 +1,4 @@
-"""President seam adapter (ah#736; PRESROUTE agent-harness#952): ladder rung -> one seat.
+"""President seam adapter (agent-harness#736; PRESROUTE agent-harness#952): ladder rung -> one seat.
 
 ``panel_invoker.invoke_president`` is transport-agnostic: it walks
 ``PRESIDENT_LADDER`` calling ``invoke(rung, prompt) -> {"status", "code", "text"}``

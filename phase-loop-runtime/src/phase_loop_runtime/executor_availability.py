@@ -10,9 +10,8 @@ Provides the two boolean gates that hang off ``ExecutorCapabilityRecord`` as
   (the same command tuples ``run_auth_preflight`` uses), **cached with a bounded
   TTL** so it is not re-run on every dispatch.
 
-Both gates are **dormant** on the execute path until AUTOSEL wires them into
-default-executor resolution — EXECREG only makes them present, correct, and
-testable. The cache/memo lives here (module level, keyed by executor); the frozen
+AUTOSEL uses these gates in default-executor resolution; explicit overrides
+bypass AUTOSEL's candidate selection. The cache/memo lives here (module level, keyed by executor); the frozen
 record only holds a thin closure, never mutable state.
 """
 from __future__ import annotations

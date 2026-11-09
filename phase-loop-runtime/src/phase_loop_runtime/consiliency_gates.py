@@ -1,8 +1,8 @@
-"""CS-0.6 -- the four L0 `.consiliency/` gates.
+"""CS-0.6 -- the six L0 `.consiliency/` gates.
 
 Wired at top-of-loop (an advisory print, like the existing ``_governed_warning``
 early-loop notice) and at closeout (threaded into ``build_phase_loop_closeout``,
-like ``docs_freshness`` -- see issue #18). :func:`scan_consiliency_gates` is the
+like ``docs_freshness`` -- see agent-harness#18). :func:`scan_consiliency_gates` is the
 single pure pre-scan both call sites share; it never mutates the repo.
 
 Gate families (``consiliency_contract``'s ``loop-gate-protocol``):
@@ -12,22 +12,24 @@ Gate families (``consiliency_contract``'s ``loop-gate-protocol``):
   whose declared ``path``/``ref`` actually resolves.
 * **local-integrity** -- documents the manifest has promoted to
   ``hash-checked`` maturity have a recorded git-scoped digest snapshot that
-  still matches. A no-op today: Phase 0's required-documents registry floors
-  every doc at ``presence-only``, so nothing is hash-checked yet -- the gate
-  exists so upgrading a doc's maturity later has somewhere to land.
+  still matches; declared document maturity determines whether a snapshot
+  is checked.
 * **layout-validity** -- the manifest (and, if present, the status/interface
   artifacts) validate against the vendored ``consiliency_contract`` schemas.
 * **version-skew** -- the repo-declared ``contract_version`` against the
   installed ``consiliency_contract`` package version, per the version-skew
   protocol's own compatible ranges.
 
+* **git-discipline** -- contract-owned ref classes, write footprint and ref invariants.
+* **spec-conformance** -- required document maturity, including sanctioned stubs.
+
 CONSENT GATE: this module acts ONLY on repos that already have a
 `.consiliency/manifest.json` (see :func:`find_consiliency_manifest`). A repo
 without one is a pure no-op -- ``status: "skipped"``, nothing read beyond the
-one existence check, nothing written. The full adoption-profile consent check
-(CS-0.12 / contract 0.2.0) tightens this later; this is the seam.
+one existence check, nothing written. This scan gates on manifest-file presence; the finer
+adoption-profile scope evaluator lives in ``consiliency_ingest``.
 
-Default-safe posture (roadmap CS-0.6, mirrors docs_freshness/issue #18):
+Default-safe posture (roadmap CS-0.6, mirrors docs_freshness/agent-harness#18):
 SOFT/warn by default. Blocking is opt-in via ``PHASE_LOOP_CONSILIENCY_GATES=hard``.
 ``human_required`` is NEVER set by this module. The version-skew gate additionally
 never escalates past ``warn`` even in ``hard`` mode -- the version-skew protocol's

@@ -7,8 +7,9 @@ pinned help-probe environment, the admission classes, the operations runner and 
 candidate token, ``lookup`` and ``ensure_admitted``, the per-user store and lock, and the
 closed export schema.
 
-It is inert in PR2: ``ADAPTERS`` is empty and no seat call site imports it. PR3 adds the
-first adapters and wires the preflight and spawn gates; the contract itself is in
+``ADAPTERS`` is empty; Claude and Gemini are listed as pending adapters.
+``seat_preflight`` imports the admission-class vocabulary, but this module does not
+by itself wire a production qualification adapter. The contract is in
 ``advisor_board/CONTRACTS.md`` ("CLI qualification (all harnesses)").
 """
 from __future__ import annotations

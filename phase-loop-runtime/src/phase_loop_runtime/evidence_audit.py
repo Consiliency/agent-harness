@@ -1,19 +1,10 @@
-"""Operator-callable evidence audit.
+"""Operator-callable evidence audit with opt-in deeper checks.
 
-Spot-checks dirty-tree artifacts for the fake-evidence patterns surfaced
-in the regen VISUALMATCH 2026-05-22 incident:
-
-1. duplicate-content — multiple cited files share the same sha256
-   (e.g., "19 prototype PNGs" all having md5 8d7f1750)
-2. uniform-numeric — numeric arrays > 3 elements where all values are
-   within epsilon (e.g., 19/19 similarity values at 0.999999)
-3. missing-references — JSON artifacts cite path-shaped strings that
-   don't exist on disk
-
-This is a Tier 1.5 helper: codifies the operator spot-check protocol
-that catches evidence faking the v20 IF-gate Tier 1 validator (which
-only matches names, not content) can't see. Full Tier 2 evidence
-verification with runner enforcement is deferred to a future roadmap.
+The default scan detects duplicate contents, uniform numeric arrays and missing
+artifact references. Tier 2 adds loose numeric uniformity, boilerplate text and
+sibling-size distribution checks. Default-off Tier 3 uses a bounded LLM judgment
+budget for uncertain Tier 2 findings. Closeout integration is separately opt-in;
+operator scans and closeout ledger audits are exposed through the CLI.
 """
 from __future__ import annotations
 
