@@ -383,7 +383,11 @@ def test_a_helper_that_never_becomes_ready_is_bounded_by_the_operation_deadline(
         with pytest.raises(pb.BridgeUnavailable):
             bridge.open(reservation("nr-1"), pb.BridgeExposure("pi-link", "/tmp/up"),
                         cancelled=threading.Event())
-    assert time.monotonic() - started < 3.0
+    assert time.monotonic() - started < 0.5 + 0.4
+    # It was signalled within the budget; an unconfirmed child stays owned for collection.
+    end = time.monotonic() + 3
+    while started_children[0].poll() is None and time.monotonic() < end:
+        time.sleep(0.02)
     assert started_children[0].poll() is not None
 
 
@@ -412,11 +416,58 @@ def test_teardown_of_a_stubborn_helper_is_bounded_by_the_release_deadline(tmp_pa
     assert code == 0
     started = time.monotonic()
     released, code = release(env.lifecycle(bridge=bridge), response.reservation.to_json(), deadline_ms=500)
-    assert time.monotonic() - started < 3.0
-    # The helper is gone, but no time was left to confirm the lease: ownership is kept.
+    assert time.monotonic() - started < 0.5 + 0.4
+    # No time was left to confirm everything: the reservation keeps owning its effects.
     assert (code, released.state) == (20, "cleanup_pending")
     assert len(env.reservations()) == 1
+    released, code = release(env.lifecycle(bridge=bridge), response.reservation.to_json(), "rel-2",
+                             deadline_ms=5000)
+    assert (code, released.state) == (0, "released")
     assert not Path(response.reservation.bridge.socket_path).parent.exists()
+
+
+class _SlowProcess:
+    """A process that never exits and whose waits consume exactly the timeout given."""
+
+    def __init__(self):
+        self.waits, self.killed = [], False
+
+    def poll(self):
+        return None
+
+    def send_signal(self, _signal):
+        pass
+
+    def kill(self):
+        self.killed = True
+
+    def wait(self, timeout=None):
+        import subprocess
+
+        self.waits.append(timeout)
+        time.sleep(timeout or 0)
+        raise subprocess.TimeoutExpired("helper", timeout)
+
+
+def test_every_stop_wait_is_capped_by_the_remaining_operation_time(short_dir):
+    bridge = pb.ForwardTcpUnixBridge(short_dir / "b")
+    process = _SlowProcess()
+    started = time.monotonic()
+    with pb.operation_deadline(time.monotonic() + 0.3):
+        stopped = bridge._stop(424242, None, process)
+    elapsed = time.monotonic() - started
+    assert stopped is False and process.killed
+    # The post-kill wait got only what was left, never a fresh allowance.
+    assert sum(process.waits) <= 0.3 + 0.05 and process.waits[-1] <= 0.05
+    assert elapsed < 0.3 + 0.1
+    assert bridge._children[424242] is process             # kept owned for a later collection
+    directory = short_dir / "kept"
+    directory.mkdir(mode=0o700)
+    handle = pb.BridgeHandle(contract.BridgeDescriptor("pi-link", str(directory / "s")), "rsv-k",
+                             str(directory), 424242, None)
+    with pb.operation_deadline(time.monotonic() + 0.1):
+        flags = bridge.close(handle, cancelled=threading.Event())
+    assert flags.cleanup_pending and directory.exists()    # an unconfirmed helper keeps its socket
 
 
 def test_an_interruption_after_the_bridge_started_is_reclaimed_by_its_directory(tmp_path, short_dir, monkeypatch):
