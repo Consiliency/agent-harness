@@ -15190,7 +15190,59 @@
         "SL-1",
         "SL-2"
       ],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-11-09T09:34:58Z",
+          "by": "claude-execute-phase",
+          "metadata": {
+            "branch": "t3/v12-worker",
+            "lanes": [
+              "SL-0",
+              "SL-1",
+              "SL-2"
+            ],
+            "pending_input": "agent-harness#1957",
+            "publication": "draft; coordinator merges",
+            "verification_host": "ai"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-11-09T10:34:12Z",
+          "by": "claude-execute-phase",
+          "metadata": {
+            "authority": "synthetic_fixture_only",
+            "dirty_worktree_summary": "phase-owned lifecycle metadata only; no unowned changes",
+            "hosted_ci": "pending",
+            "if_gates_produced": [
+              "IF-0-WORKER-1"
+            ],
+            "installed_wheel_input_commit": "1c03278ab72765ba735217e8ce04a3e637e8ac2f",
+            "issue_dispositions": [],
+            "issue_inventory": [],
+            "merge_authority": "coordinator",
+            "runtime_input_commit": "f616d3c0945dc20be02ed43895937c5664e057d0",
+            "spec_delta_closeout": {
+              "decision": "canonical_spec_update",
+              "evidence_paths": [
+                "plans/evidence/supervised-worker/WORKER.md"
+              ],
+              "redaction_posture": "metadata_only",
+              "schema": "spec_delta_closeout.v1",
+              "target_surfaces": [
+                "docs/supervised-worker.md",
+                "CHANGELOG.md"
+              ]
+            },
+            "verification_artifact_path": "plans/evidence/supervised-worker/WORKER.md",
+            "verification_host": "ai",
+            "verification_scope": "local synthetic fixtures and targeted installed-wheel checks",
+            "verification_status": "passed",
+            "verification_summary": "317 producer nodes passed; all 80 mutation control pairs passed; 113 SCHEMA rows deferred to CLOSEOUT"
+          },
+          "transition": "completed"
+        }
+      ],
       "owner_skill": "claude-plan-phase",
       "phase_alias": "WORKER",
       "planning_artifact_only": true,
@@ -15203,10 +15255,10 @@
         "type": "phase"
       },
       "slug": "v12-WORKER",
-      "status": "committed",
+      "status": "completed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-11-08T18:39:57Z"
+      "updated_at": "2026-11-09T10:34:12Z"
     },
     {
       "created_at": "2026-11-08T15:23:52Z",

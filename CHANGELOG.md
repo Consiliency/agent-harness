@@ -6,6 +6,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Added
+
+- Local supervised WORKER capture, patch-return, attempt evidence, retention
+  resolution, native cancel verification and isolated status/CLI seams. Production
+  launch remains codec-gated pending CLOSEOUT; fixture results grant no public
+  conformance or installed-provider qualification.
+
 - agy evidence binds to the seat QCI, not file hashes (AGYROLL RECBIND,
   agent-harness#1008 R1):
   - The qualified agy catalog moves out of the route core into package data,
