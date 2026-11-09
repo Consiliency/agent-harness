@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 from hashlib import sha256
 from pathlib import Path
@@ -412,7 +413,8 @@ def release_io(verifier, evidence, tmp_path):
         return 0
 
     return {"fetch": metadata.__getitem__, "download": lambda url, target: Path(target).write_bytes(archives[url]),
-            "identity": IDENTITY, "run_suite": run_suite, "_metadata": metadata, "_archives": archives}
+            "identity": IDENTITY, "run_suite": run_suite, "status_of_tree": lambda: "",
+            "_metadata": metadata, "_archives": archives}
 
 
 def _io(release_io):
@@ -661,3 +663,67 @@ def test_download_does_not_retry_a_client_error(verifier, tmp_path):
     with pytest.raises(HTTPError):
         verifier.download_asset("https://example.invalid/a", tmp_path / "asset", opener=opener, sleep=slept.append)
     assert len(calls) == 1 and slept == []
+
+
+def test_release_refuses_a_dirty_tree_before_running(verifier, evidence, obligations, release_io, tmp_path):
+    """A planted conftest would run under the committed identity (re-check hardening 4)."""
+    ran = []
+    io = {**_io(release_io), "run_suite": lambda path: ran.append(path) or 0,
+          "status_of_tree": lambda: "?? phase-loop-runtime/tests/conftest_planted.py\n"}
+    with pytest.raises(ValueError, match="uncommitted or untracked"):
+        verifier.release(tmp_path / "conformance.xml", **io)
+    assert ran == []
+
+
+def test_tree_status_reads_only_phase_loop_runtime(verifier, monkeypatch):
+    seen = {}
+
+    def run(argv, **kwargs):
+        seen["argv"] = argv
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(verifier.subprocess, "run", run)
+    assert verifier.tree_status() == ""
+    assert seen["argv"][-5:] == ["status", "--porcelain", "--untracked-files=all", "--", "phase-loop-runtime"]
+
+
+def test_the_conformance_run_gets_no_ambient_pytest_or_python_configuration(verifier, monkeypatch, tmp_path):
+    for name, value in {"PYTEST_ADDOPTS": "-k op_completion", "PYTEST_PLUGINS": "evil", "PYTHONSTARTUP": "/x.py",
+                        "PYTHONPATH": "/elsewhere", "HOME": "/home/kept"}.items():
+        monkeypatch.setenv(name, value)
+    seen = {}
+
+    def runner(argv, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(argv, 0)
+
+    verifier.run_conformance_suite(tmp_path / "conformance.xml", runner=runner)
+    env = seen["env"]
+    assert not any(key.startswith("PYTEST_") for key in env) and "PYTHONSTARTUP" not in env
+    assert env["PYTHONPATH"].split(os.pathsep) == [str(verifier.REPO / "phase-loop-runtime/src"),
+                                                   str(verifier.REPO / "phase-loop-runtime/tests")]
+    assert env["AGY_CONFORMANCE_STRICT"] == "1" and env["HOME"] == "/home/kept"
+
+
+def test_download_closes_a_failed_response_before_retrying(verifier, tmp_path):
+    from urllib.error import HTTPError
+
+    class Body:
+        closed = 0
+
+        def close(self):
+            Body.closed += 1
+
+        def read(self, *args):
+            return b""
+
+    outcomes = [503, b"official archive"]
+
+    def opener(request, timeout):
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, int):
+            raise HTTPError(request.full_url, outcome, "error", {}, Body())
+        return _Response(outcome)
+
+    verifier.download_asset("https://example.invalid/a", tmp_path / "asset", opener=opener, sleep=lambda s: None)
+    assert Body.closed >= 1

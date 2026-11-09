@@ -293,6 +293,7 @@ def download_asset(url, target, *, opener=None, sleep=None):
         except HTTPError as exc:
             if not 500 <= exc.code < 600 or attempt == DOWNLOAD_ATTEMPTS - 1:
                 raise
+            exc.close()
             sleep(DOWNLOAD_BACKOFF_S[attempt])
 
 
@@ -300,15 +301,24 @@ def run_conformance_suite(report, *, runner=subprocess.run, python=sys.executabl
     """Run the strict conformance suite (AGYROLL §3.4) in a subprocess, writing its JUnit
     report to ``report``; returns the exit status."""
     root = REPO / "phase-loop-runtime"
-    env = {**os.environ, "AGY_CONFORMANCE_STRICT": "1", "PYTHONDONTWRITEBYTECODE": "1",
+    # No ambient pytest or Python configuration reaches the run (PYTEST_ADDOPTS could deselect
+    # an obligation, PYTEST_PLUGINS or PYTHONSTARTUP could load code): only the fixed keys.
+    base = {key: value for key, value in os.environ.items() if not key.startswith(("PYTEST_", "PYTHON"))}
+    env = {**base, "AGY_CONFORMANCE_STRICT": "1", "PYTHONDONTWRITEBYTECODE": "1",
            "PYTHONPATH": os.pathsep.join([str(root / "src"), str(root / "tests")])}
     done = runner([python, "-m", "pytest", "-q", "-p", "no:cacheprovider", str(CONFORMANCE_SUITE),
                    f"--junitxml={report}"], cwd=root, env=env, timeout=900)
     return done.returncode
 
 
+def tree_status():
+    """Uncommitted or untracked paths under phase-loop-runtime/, as git prints them."""
+    return subprocess.run(["git", "-C", str(REPO), "status", "--porcelain", "--untracked-files=all", "--",
+                           "phase-loop-runtime"], capture_output=True, text=True, check=True, timeout=60).stdout
+
+
 def release(report, *, fetch=fetch_release, download=download_asset, identity=None,
-            run_suite=run_conformance_suite):
+            run_suite=run_conformance_suite, status_of_tree=tree_status):
     """``--release``: the contract; a strict conformance run executed HERE, whose fresh report
     must be bound to this checkout; and every member's official archive by tag, whose
     extracted executable must be the record's and the catalog's image (agent-harness#1937)."""
@@ -317,6 +327,12 @@ def release(report, *, fetch=fetch_release, download=download_asset, identity=No
     require(not os.path.lexists(report),
             f"conformance report {report} already exists: --release writes its own report and never accepts one")
     require(report.parent.is_dir(), f"conformance report directory {report.parent} does not exist")
+    # The run's identity is the committed tree, so the tree must BE committed: a planted
+    # conftest or any other uncommitted file would run under the same identity. Checked before
+    # the run, so nothing the suite creates can trip it.
+    dirty = status_of_tree()
+    require(not dirty.strip(), "phase-loop-runtime has uncommitted or untracked files; --release runs only a "
+                               "committed tree:\n" + dirty[:2000])
     status = run_suite(report)
     require(status == 0, f"the strict conformance run failed (exit status {status})")
     obligations = check_conformance_report(report, conformance_obligations(), identity)

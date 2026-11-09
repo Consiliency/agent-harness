@@ -56,6 +56,9 @@ def test_publication_gates_on_release_which_runs_strict_conformance_before_the_b
     # the conformance run it executes -- runs inside the user manager: real caps, no bypass.
     assert "Delegate=cpu cpuset io memory pids" in run and "loginctl enable-linger" in run
     assert run.index("systemd-run --user --pipe --wait") < run.index("verify_qualified_agy_image.py")
+    # Without Type=oneshot, systemd counts death by SIGHUP/INT/TERM/PIPE as a clean exit, and
+    # timeout re-raises its child's signal: a killed gate would read as success.
+    assert "-p Type=oneshot" in run
     assert "SEAT_CAPS" not in run and "readiness_code" not in run
     assert "if" not in gate and "continue-on-error" not in gate
     assert names.index("Install review sandbox prerequisites") < names.index(gate["name"]) \

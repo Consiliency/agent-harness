@@ -80,7 +80,7 @@ jobs:
               || { echo "::error::user manager does not delegate $controller"; exit 1; }
           done
           cd phase-loop-runtime
-          systemd-run --user --pipe --wait --collect --quiet --same-dir \
+          systemd-run --user --pipe --wait --collect --quiet --same-dir -p Type=oneshot \
             -E PYTHONDONTWRITEBYTECODE=1 -E PATH="$PATH" -E HOME="$HOME" \
             -- timeout 1800 "$UV_PROJECT_ENVIRONMENT/bin/python" scripts/verify_qualified_agy_image.py \
             --release --conformance-report "$RUNNER_TEMP/agy-conformance/conformance.xml"
