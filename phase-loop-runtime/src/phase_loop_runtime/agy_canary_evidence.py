@@ -7071,6 +7071,7 @@ def _record_rows(data: bytes, *, wheel: bool) -> list[tuple[str, str, str]]:
 # only a real release build validates. `test_release_console_allowlist_matches_pyproject`
 # pins this against pyproject.toml so the two cannot drift again.
 _CANONICAL_CONSOLE_SCRIPTS = [
+    {"name": "agent-harness-placement", "target": "phase_loop_runtime.placement_cli:main"},
     {"name": "codex-phase-loop", "target": "phase_loop_runtime.cli:main"},
     {"name": "phase-loop", "target": "phase_loop_runtime.cli:main"},
     {
