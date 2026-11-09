@@ -30,6 +30,15 @@ bounded-read wording to match the code.
 
 WORKER's J1–J6 are still unchanged.
 
+Revision 5 applies two P2 findings from the hosted review of agent-harness#1934:
+
+- `check_projection` verifies a behind row's `state` as well as its digest
+  (section 8). `AttemptWindow` gains a trailing `prefix_state` (section 10).
+- `open_writer` refuses `limits_invalid` for any limit above the readers' fixed
+  bounds (section 6).
+
+WORKER's J1–J6 are still unchanged; WORKER uses the default limits.
+
 ## 1. Inputs and validation boundary
 
 Recorded 2026-11-08 by hashing the vendored files and fetching the same paths
@@ -321,6 +330,18 @@ returns `event_cap_reached`.
 | `read_segment_max_bytes` | 4 MiB | local |
 | `index_max_entries` | 100000 | local |
 
+**Writer limits stay within the reader bounds (revision 5).** Readers always replay
+with `DEFAULT_LIMITS`. So `open_writer` refuses `limits_invalid` unless:
+
+- `4 <= per_attempt_line_cap <= 10000`;
+- `2 * 64 KiB <= segment_max_bytes <= read_segment_max_bytes <= 4 MiB`;
+- `index_max_entries <= 100000`;
+- `1 <= event_message_max_chars <= 200`;
+- `segment_max_lines >= 2`.
+
+Every journal an admitted writer finishes therefore reads back without
+`journal_oversize`.
+
 ## 7. Reader rules and diagnostics
 
 `read_attempt` and `read_index` make one bounded pass. Segments are ordered by
@@ -408,6 +429,17 @@ section 10's `run_status` API.
   projection with a fresh replay. It returns `projection_behind_journal`
   (display `stale`), `projection_not_from_journal` (refused) or nothing (display
   `current`).
+- **Behind rows (revision 5).** A row whose `journal_seq` is behind the tail is
+  stale only when both its digest and its `state` derive from the journal:
+  - a row naming the segment's prefix digest at its `journal_seq` is historical,
+    and its `state` must equal the replayed state at that seq;
+  - a row naming the segment's full current digest is anchored to the current
+    segment, the shape of the pinned behind vector, and its `state` must equal
+    the current state.
+
+  Any other combination, including a historical digest with an edited state, is
+  `projection_not_from_journal`. The state at that seq is captured inside the same
+  streaming pass, so retention stays per-attempt head-only.
 
 **Liveness.**
 
@@ -534,8 +566,9 @@ TerminalRecord(state, worker_invocations, termination, refusal, result_binding) 
 STRUCTURE; check_structure(definition: str, value) -> bool                          # closed structural checker
 HARNESS_ID; EVENT_PHRASES; REF_KINDS; PUBLIC_CODES; LOCAL_CODES; EVENT_KINDS; WINDOW_EVENTS_MAX (= 100)
 AttemptWindow(attempt_id, identity, diagnostics, state, chain_head, total_lines, skipped, lead, events, tail,
-              more_events, found_after_seq, segment, prefix_digest, evidence_digest)
+              more_events, found_after_seq, segment, prefix_digest, evidence_digest, prefix_state=None)
 # revision 4: segment = (index, first_seq, last_seq, sha256) of the segment named by prefix_at, else None
+# revision 5: prefix_state = the replayed state as of prefix_at's seq, when that line exists
 read_attempt_window(root, index: IndexRead, entry: IndexEntry, *, after_seq=-1, max_events=0,
                     earlier_evidence=frozenset(), event_kinds=EVENT_KINDS, prefix_at=None) -> AttemptWindow
 default_journal_root() -> Path
