@@ -93,7 +93,17 @@ def contract_capture(value, original):
 
 
 @pytest.mark.parametrize("case", [case for case in V2_CORPUS if case["kind"] == "admission"], ids=lambda case: case["id"])
-def test_published_admission_production(case):
+def test_published_admission_production(case, request, monkeypatch):
+    import os
+    import subprocess
+    effects = []
+    def forbidden(*args, **kwargs):
+        effects.append("spawn")
+        raise AssertionError("unexpected admission effect")
+    monkeypatch.setattr(subprocess, "Popen", forbidden)
+    for name in ("fork", "system", "posix_spawn", "posix_spawnp"):
+        if hasattr(os, name):
+            monkeypatch.setattr(os, name, forbidden)
     value = expand_v2(case)
     cases = {row["id"]: row for row in V2_CORPUS}
     original = case["input"] if case["role"] == "control" else cases[case["control"]]["input"]
@@ -107,4 +117,10 @@ def test_published_admission_production(case):
         decision = validate_v2_admission(envelope, context=context, capture=capture, attempt=attempt)
         observed = decision.diagnostics
     expected = case["expected"]
-    assert set(observed) == set(expected), case["id"]
+    stages = json.loads(load_contract_bundle(version="v2").resource_bytes("admitted-launch-envelope.v2.schema.json"))["x-evaluation-order"]["stages"]
+    ordered = next((tuple(code for code in stage if code in expected) for stage in stages if set(expected) <= set(stage)), ())
+    assert tuple(observed) == ordered, case["id"]
+    assert not effects
+    request.node.user_properties.extend([
+        ("contract_case_id", case["id"]), ("contract_diagnostics", json.dumps(list(observed))),
+        ("supported_route", "contract_only"), ("auxiliary_starts", "0"), ("chain_starts", "0")])

@@ -256,13 +256,13 @@ def v2_operator(case, monkeypatch):
     roots = dict(workspace=case.root / "workspace", target=case.root / "target",
                  reference_roots=(case.root / "references",))
     controller_context = {key: value for key, value in context.items() if key != "policy"}
-    controller = dict(h="d" * 64, attempt=dict(assignment_digest=authority, run_id="run-1", attempt_id="attempt-1"),
+    controller = dict(h="d" * 64, attempt=dict(assignment_digest=authority, run_id=case.root.name, attempt_id="attempt-1"),
                       context=controller_context, slots={"workspace": str(roots["workspace"]), "target": str(roots["target"]),
                                                         "reference_roots": [str(roots["reference_roots"][0])]})
     monkeypatch.setattr(binding, "sys", SimpleNamespace(flags=SimpleNamespace(isolated=True), modules=sys.modules))
     return SimpleNamespace(path=path, document=document, context=context, context_path=context_path,
                            spec_path=spec_path, marker=marker, roots=roots, codec=codec,
-                           controller=controller, attempt=AttemptBinding(authority, "run-1", "attempt-1"), write=write)
+                           controller=controller, attempt=AttemptBinding(authority, case.root.name, "attempt-1"), write=write)
 
 
 def test_v2_passive_agreement_activation_from_held_bytes(v2_operator):

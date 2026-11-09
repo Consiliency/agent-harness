@@ -5,6 +5,7 @@ repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 cd "$repo_root"
 python="$repo_root/phase-loop-runtime/.venv/bin/python"
 [[ -x "$python" ]] || { echo 'locked_python_missing' >&2; exit 2; }
+export PHASE_LOOP_SUPERVISED_EVIDENCE=1
 export PYTHONPATH="$repo_root/phase-loop-runtime/src:$repo_root/phase-loop-runtime/tests"
 "$python" -I -c 'import pathlib,sys; import phase_loop_runtime.supervised_contracts as m; assert pathlib.Path(m.__file__).resolve() == pathlib.Path(sys.argv[1]).resolve(); print("isolated source provenance:", sys.executable, m.__file__)' "$repo_root/phase-loop-runtime/src/phase_loop_runtime/supervised_contracts.py"
 case "${1:-}" in
