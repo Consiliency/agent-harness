@@ -15009,7 +15009,7 @@
       "file": "plans/phase-plan-v12-JOURNAL.md",
       "frozen_inputs": {
         "plans/artifacts/v12-JOURNAL-interface.md": {
-          "sha256": "2c9b07ab1ef62a93303b3dabee9c3a131f326ca2d8b74d67fcf7764437ec966e"
+          "sha256": "6aa4c3325c3ec99516dc5da8f115b77affb332a8f70d3cdf700c98405a9ba791"
         }
       },
       "gate_status": "declared_not_produced",
@@ -15022,7 +15022,23 @@
         "SL-1",
         "SL-2"
       ],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-11-08T23:42:20Z",
+          "by": "claude-execute-phase",
+          "metadata": {
+            "branch": "t3/v12-journal",
+            "lanes": [
+              "SL-0",
+              "SL-1",
+              "SL-2"
+            ],
+            "phase_alias": "JOURNAL",
+            "run_id": "v12-journal-impl"
+          },
+          "transition": "executing"
+        }
+      ],
       "owner_skill": "claude-plan-phase",
       "phase_alias": "JOURNAL",
       "planning_artifact_only": true,
@@ -15035,10 +15051,10 @@
         "type": "phase"
       },
       "slug": "v12-JOURNAL",
-      "status": "committed",
+      "status": "executing",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-11-08T17:30:00Z"
+      "updated_at": "2026-11-08T23:42:20Z"
     },
     {
       "acceptance_criteria_count": null,

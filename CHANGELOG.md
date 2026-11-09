@@ -6,6 +6,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- Add the supervised attempt journal for v12 JOURNAL (agent-harness#1818). This is an
+  internal API with no CLI. `phase_loop_runtime.run_status` reserves attempts
+  durably under a per-assignment admission index, writes one locked, chained,
+  fsynced journal per attempt under a fixed per-user root, and reads it back
+  read-only with the pinned `supervised_run_status.v1` diagnostics.
+  `phase_loop_runtime.run_status_projection` derives replay-only projections,
+  owner liveness, memory-bounded streaming pages with cursors, and reader views.
+  Every reservation completes its fsync barriers, including on adopted entries.
+  The writer is Linux-only. Run status is never a work outcome. See
+  `docs/supervised-run-status.md` and `plans/evidence/supervised-worker/JOURNAL.md`.
 - Register the Codex review-seat jail after the owner's 2026-11-08 OD-4 acceptance
   (agent-harness#1916). The jail is the boundary with the inner sandbox off; tools can
   read their seat login copy and share its proxy-only egress. Completed-command evidence

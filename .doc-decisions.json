@@ -43,6 +43,17 @@
         "docs/advisor-board-capabilities-card.md",
         "CHANGELOG.md"
       ]
+    },
+    {
+      "surface": "supervised-run-status",
+      "decision": "docs_updated",
+      "reason": "JOURNAL SL-2 documents the internal run_status and run_status_projection API, fixed per-user root, storage layout, trust checks, reservation and fsync order, crash windows, manual quarantine, diagnostics, caps, closed phrases, the Linux-only writer and the unsupported same-login forgery boundary. No CLI or public configuration changes. A manual catalog audit found that .claude/docs-catalog.json lists no supervised docs, so it is unchanged.",
+      "evidence": [
+        "plans/phase-plan-v12-JOURNAL.md#sl-2--documentation-evidence-and-receipt-reducer",
+        "docs/supervised-run-status.md",
+        "plans/evidence/supervised-worker/JOURNAL.md",
+        "CHANGELOG.md"
+      ]
     }
   ]
 }
