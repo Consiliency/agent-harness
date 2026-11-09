@@ -197,19 +197,44 @@ R1 is approved (2026-11-08) on three conditions:
   The coordinator ruled this a test-design correction consistent with R1's intent; the
   owner's R1–R9 rulings are unchanged. The controls are therefore split by who enforces the
   predicate.
-- **Negative controls** (a provider *can* trip them; each must **not** pass):
-  - `neg_no_terminal_event`: the stand-in never emits a terminal event. Measured outcome:
-    `transient` at `completion`. The test pins that outcome.
-  - `neg_no_progress_event` *(provisional)*: the stand-in answers without any progress event,
-    so cancel never lands before the answer, and `cancel` must not pass.
-  - `neg_unregistered_helper` *(provisional)*: the stand-in's child execs an executable
-    outside the registered helper policy, and the helper check must reject it (expected
-    `failed`).
-- **Measuring the provisional controls.** The two provisional controls are measured in SL-2.1
-  before they are frozen. Each runs 5 consecutive times and must give the same non-passing
-  outcome every time; the test then pins that outcome. If either control passes or flaps, the
-  stop rule applies: the lane stops and reports back for an amendment. It never weakens the
-  control.
+- **Amendment A2 (2026-11-09).** After A1 merged, the executor measured the two provisional
+  controls, plus one candidate, under the stop rule: 5 consecutive production `qualify_image`
+  runs each, under the real bwrap profile.
+  - `neg_no_progress_event` **flapped**: it failed once, at `cancel`, and passed 4 times.
+    - The broker treats any output byte as progress, so the answer itself opens the cancel
+      window, and the cancel races the answer's acceptance.
+    - A provider-side version cannot be made deterministic: emitting nothing at all hangs,
+      because the heartbeat-only route has no deadline.
+
+    It is **dropped**. Driver semantics make it non-deterministic.
+  - `neg_unregistered_helper` was **stable**. All 5 runs gave `failed` at `completion`,
+    reason `operation_validation_failed` (helper outside the registered identity policy,
+    `rejected_image: true`). The internal stage varied: `helper_observation` 4 times,
+    `admission_observation` once.
+  - Candidate `neg_tool_step` was **stable**. It emits a progress step whose `step_type` is
+    `tool`, and gave `transient` at `completion` in all 5 runs.
+
+  The coordinator ruled this a test-design correction consistent with R1's intent, as with
+  A1; the owner's R1–R9 rulings are unchanged.
+- **Negative controls** (a provider *can* trip them; each must **not** pass; all measured and
+  frozen):
+  - `neg_no_terminal_event`: the stand-in never emits a terminal event. Pinned outcome:
+    `transient` at `completion` (A1).
+  - `neg_unregistered_helper`: the stand-in's child execs an executable outside the
+    registered helper policy. Pinned outcome: `failed` at `completion` with reason
+    `operation_validation_failed`. The test does **not** pin the internal failure stage,
+    which is observed as either `helper_observation` or `admission_observation` (A2).
+  - `neg_tool_step`: the stand-in emits a progress step whose `step_type` is `tool`.
+    Pinned outcome: `transient` at `completion` (A2).
+- **Why the stream-surface negatives are `transient`.** `neg_no_terminal_event` and
+  `neg_tool_step` classify as `transient`, not `failed`, because `_classify_failure` files
+  any non-OK completion as a provider transient. That is a property of the
+  `agy_qualification.py` driver and lies outside RECBIND. The coordinator is filing it as a
+  separate issue, and the tests pin today's classification.
+- **Measure before freezing (future controls).** Any control added later is measured 5
+  consecutive times before it is frozen, and must give the same non-passing outcome every
+  time. If it passes or flaps, the stop rule applies: stop and report back. A control is
+  never weakened.
 - **Driver-enforcement controls** (positive; each must **pass**). These prove the driver
   enforces cancel and cleanup without trusting the provider:
   - `pos_ignores_cancel`: the stand-in ignores SIGTERM/SIGINT/SIGHUP. `cancel` passes because
