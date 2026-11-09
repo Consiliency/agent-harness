@@ -45,6 +45,7 @@ produced record. Runtime modules never import the contract-intake module.
 | `AttemptWriter.state` / `.event` / `.terminal` / `.close` | appends returning `ChainHead(segment_index, segment_sha256, last_seq)` |
 | `read_attempt(root, attempt_id)` | one bounded, read-only replay of one attempt (`AttemptRead`) |
 | `read_index(root, assignment_digest)` | the verified admission index (`IndexRead` of `IndexEntry`) |
+| `read_attempt_window(root, index, entry, *, after_seq=-1, max_events=0, earlier_evidence=frozenset(), event_kinds=EVENT_KINDS, prefix_at=None)` | the same verification as `read_attempt`, retaining at most `max_events` (≤ 100) lines (`AttemptWindow`) |
 | `resolve_run(root, run_id)` | the attempt ids of a run, in index order; `()` for an absent run |
 | `process_start_identity(pid)` | `linux-proc:<boot_id>:<starttime>` for a live process, else `None` |
 | `make_ref(kind, data, locator)` | a digest-only `Ref`; `data` is hashed and dropped |
@@ -68,8 +69,9 @@ produced record. Runtime modules never import the contract-intake module.
 All records are frozen dataclasses. Diagnostics and refusals carry closed codes
 only, never input values, paths or exception text. Beyond the frozen artifact the
 implementation adds these names: `IndexEntry`, `TerminalRecord`, `check_structure`,
-`STRUCTURE`, and two trailing fields on `AttemptStatus` (`identity`, `units`) that
-`build_reader_view` needs to fill the public `run_record`.
+`STRUCTURE`, `AttemptWindow`/`read_attempt_window`, and two trailing defaulted
+fields on `AttemptStatus` (`identity`, `units`) that `build_reader_view` needs to
+fill the public `run_record`. Revision 3 of the frozen interface lists them all.
 
 ## Root and storage layout
 
@@ -101,9 +103,11 @@ The journal must sit outside the target repository. It is also outside every
   `excluded` root (compared lexically, through `realpath`, and by device and inode
   along the opened chain), or a root whose owner or mode is wrong.
 - With `create=True`, each missing component is made with `mkdir` 0700 and an
-  explicit `fchmod`, and its parent is fsynced. An existing directory with the wrong
-  mode is refused, never repaired. `create=False` on an absent root refuses
-  `journal_missing`.
+  explicit `fchmod`. The parent of every component this account owns is fsynced,
+  whether the component was created now or adopted, and the root is fsynced once
+  its subdirectories exist. An existing directory with the wrong mode is refused,
+  never repaired. `create=False` on an absent root refuses `journal_missing` and
+  fsyncs nothing.
 - Every later open walks from `/` one component at a time with `O_NOFOLLOW` and
   `dir_fd`. The root must still have the device and inode that `open_journal_root`
   recorded.
@@ -130,30 +134,37 @@ over the RFC 8785 bytes of the admitted value. JOURNAL never receives the value.
 
 `reserve_attempt` mints the writer identity once: harness id `phase-loop-runtime`,
 the package version, a 128-bit random lowercase-hex `writer_instance_id`, the current
-pid and its process start identity. It then runs the following steps:
+pid and its process start identity.
 
-1. If `assignments/<digest>` is absent, create it and fsync `assignments/`.
-2. Open or create `lock`; if created, fsync the assignment directory. Take
-   `LOCK_EX`. Steps 3 to 7 run under this lock.
+**Barrier rule.** Every fsync below runs on every reservation. It runs whether
+this call created the entry or adopted one left by a creator that was killed, or
+whose fsync failed, before reaching it. A reservation therefore never acknowledges
+an entry whose durability chain is incomplete. An fsync failure refuses
+`journal_write_failed`. The steps are:
+
+1. Create `assignments/<digest>` if it is absent, then fsync `assignments/`.
+2. Open or create `lock`, then fsync the assignment directory. Take `LOCK_EX`.
+   Steps 3 to 7 run under this lock.
 3. Read and verify the whole index: canonical JCS lines, the hash chain, gapless
    `index_seq`, schema and version, the directory key, unique attempt ids, no
    torn tail and the size caps. Any defect refuses `index_unverifiable`. The index
    is never repaired.
 4. An attempt id already in the index refuses `attempt_reserved`.
 5. Run claim. An existing `runs/<run_id>` must hold exactly this assignment's
-   digest. Another digest refuses `run_assignment_mismatch`. An empty, short,
-   malformed or unsafe record refuses `run_record_unreadable`. An absent record
-   is created exclusively, written fully, then the file and `runs/` are fsynced.
+   digest, and is then adopted. Another digest refuses `run_assignment_mismatch`.
+   An empty, short, malformed or unsafe record refuses `run_record_unreadable`.
+   An absent record is created exclusively and written fully. Created or
+   adopted, the claim file and then `runs/` are fsynced.
 6. `mkdir attempts/<attempt_id>` (exclusive) and fsync `attempts/`. If it already
    exists, refuse `attempt_reserved`. This also covers ids used by another
    assignment and ids left by a crashed reservation.
-7. Append the entry with `O_APPEND` and a full-write loop and fsync the index. If
-   the index was created, also fsync the assignment directory.
+7. Append the entry with `O_APPEND` and a full-write loop, then fsync the index
+   and the assignment directory.
 
-On a fresh root, the fsync order is `assignments/`, the assignment directory,
-`runs/<run_id>`, `runs/`, `attempts/`, `index.jsonl`, then the assignment
-directory again. The result is `Reservation(identity, units, index_seq,
-entry_sha256, writer)`.
+Every reservation fsyncs, in order, `assignments/`, the assignment directory,
+`runs/<run_id>`, `runs/`, `attempts/`, `index.jsonl`, then the assignment directory
+again. The result is `Reservation(identity, units, index_seq, entry_sha256,
+writer)`.
 
 ### Crash windows
 
@@ -164,16 +175,25 @@ entry_sha256, writer)`.
 | step 5 | a valid run claim with no attempt; harmless, and `resolve_run` returns `()` |
 | step 6 | the attempt id can never be reused; readers report `journal_missing` and `attempt_unindexed` |
 | a torn index append | the assignment is `index_unverifiable` for readers and reservations |
+| before any barrier, or a failed fsync | the next reservation adopts the entries and completes every barrier before it acknowledges |
 
 ### Manual quarantine
 
-v12 has no automatic recovery. To clear a torn index or unreadable run record, an
-operator stops the affected worker. They then rename the assignment directory or
-run record aside **within the same root**, for example
-`assignments/<digest>.quarantined-<date>`, and keep its bytes. Every attempt and run
-id it held stays claimed through `attempts/` and `runs/`, so those ids cannot be
-reused. Nothing deletes or rewrites journal files. A sealed recovery record is
-deferred to a later phase.
+v12 has no automatic recovery, and quarantine never releases a claim.
+
+- **Torn index.** Stop the affected worker. Rename the assignment directory aside
+  within `assignments/`, under a name that is not 64-hex, for example
+  `assignments/<digest>.quarantined-<date>`, and keep its bytes. New reservations
+  for that assignment start a fresh index. Every attempt id the old index held
+  stays claimed through `attempts/`, and every run id through `runs/`. The old
+  attempts then read `attempt_unindexed`.
+- **Run records.** Never rename, move or delete one. An empty, short, malformed or
+  unsafe record stays at its key as a permanent tombstone, and that run id refuses
+  `run_record_unreadable` from then on. Use a new run id. To keep forensic bytes,
+  copy the record elsewhere and leave the original in place.
+
+Nothing deletes or rewrites journal files. A sealed recovery record is deferred
+to a later phase.
 
 ## Writer
 
@@ -183,8 +203,9 @@ deferred to a later phase.
 it refuses `attempt_unindexed`. The limits must be valid, otherwise it refuses
 `limits_invalid`.
 
-It then creates the attempt `lock` exclusively and takes `LOCK_EX | LOCK_NB`; a
-busy lock refuses `journal_writer_busy`. Any existing segment refuses
+It then creates the attempt `lock` exclusively, or adopts an existing one, and
+fsyncs the attempt directory either way. It takes `LOCK_EX | LOCK_NB`; a busy lock
+refuses `journal_writer_busy`. Any existing segment refuses
 `journal_exists`, so a writer is never resumed. It creates `0000.jsonl` with its
 header and fsyncs the file and the attempt directory. It copies `Reservation.writer`
 unchanged into every line and never mints a second id.
@@ -254,7 +275,7 @@ Local codes never appear in a public record:
 | `index_unverifiable` | index chain, sequence, schema, key, canonical form, torn tail or size defect |
 | `run_record_unreadable` | run record empty, short, malformed or unsafe (refusal) |
 | `journal_root_unsafe`, `identifier_invalid`, `liveness_unsupported`, `attempt_reserved`, `run_assignment_mismatch` | reservation and root refusals |
-| `writer_identity_mismatch`, `journal_writer_busy`, `journal_exists`, `limits_invalid`, `journal_write_failed`, `writer_poisoned`, `writer_closed`, `event_cap_reached`, `phrase_invalid`, `ref_invalid` | writer refusals |
+| `writer_identity_mismatch`, `journal_writer_busy`, `journal_exists`, `limits_invalid`, `journal_write_failed`, `writer_poisoned`, `writer_closed`, `event_cap_reached`, `phrase_invalid`, `ref_invalid` | writer refusals (`journal_write_failed` also covers a failed reservation or root barrier) |
 | `page_size_invalid`, `page_request_invalid`, `page_invalid`, `cursor_invalid`, `evidence_unknown` | page refusals and diagnostics |
 | `reader_view_invalid`, `runtime_state_invalid`, `run_record_unknown` | reader-view refusals and checks |
 
@@ -294,6 +315,14 @@ filesystem primitive of its own; every read goes through `run_status`.
   `running`. A failing or malformed observer counts as not live. Terminal attempts
   never consult the observer. `termination`, `refusal` and `result_binding` pass
   through unchanged.
+- **Bounded reads.** `read_page`, `project_assignment` and `check_projection` load
+  the index once and read each attempt once, in index order, through
+  `read_attempt_window`. They retain only the selected events (at most
+  `page_size`) and count every other verified line. Each attempt's
+  evidence-envelope digest is carried forward to the later attempts' copy check,
+  so no earlier attempt is rescanned. Peak memory is bounded by the index, one
+  segment (`read_segment_max_bytes`) and the page, not by the assignment's
+  history.
 - **Pages.** The request must be a structurally valid `page_request`
   (`page_request_invalid`). A null `page_size` or one above 100 refuses
   `read_unbounded`, and one below 1 refuses `page_size_invalid`. Events are
