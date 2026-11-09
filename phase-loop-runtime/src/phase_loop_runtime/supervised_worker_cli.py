@@ -191,6 +191,15 @@ def read_controller_snapshot(controller_root: Path, envelope_sha256: str, *, cap
                   "qualified_routes", "policy_epoch", "revoked_record_ids", "caller_context_suitability"}
         if set(authority) != fields or set(document["attempt"]) != {"assignment_digest", "run_id", "attempt_id"}:
             return Refused("binding_invalid")
+        maximum = authority["timeout_max_seconds"]
+        if (type(maximum) not in (int, float) or maximum != int(maximum) or not 0 < maximum <= 3600
+                or not isinstance(authority["qualified_routes"], tuple)
+                or not isinstance(authority["revoked_record_ids"], tuple)
+                or not all(type(value) is str and value for value in authority["revoked_record_ids"])
+                or type(authority["policy_epoch"]) is not str or not authority["policy_epoch"]
+                or (authority["caller_context_suitability"] is not None
+                    and not hasattr(authority["caller_context_suitability"], "items"))):
+            return Refused("binding_invalid")
         for name in ("expected_assignment_digest", "expected_snapshot_ref", "expected_crosswalk_ref"):
             if type(authority[name]) is not str or re.fullmatch(r"[0-9a-f]{64}", authority[name]) is None:
                 return Refused("binding_invalid")

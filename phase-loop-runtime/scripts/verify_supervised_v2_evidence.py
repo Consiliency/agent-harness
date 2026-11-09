@@ -46,6 +46,7 @@ SOURCE_PATHS = (
     "plans/artifacts/v12-v13-replan-ownership.md",
 )
 CHECK_WORKFLOWS = {
+    "supervised contract publication": ".github/workflows/supervised-contract-intake.yml",
     "suite gate": ".github/workflows/test.yml", "lint (pyflakes)": ".github/workflows/test.yml",
     "chronology retention guard": ".github/workflows/test.yml", "docs-freshness audit": ".github/workflows/docs-audit.yml",
     "gitleaks": ".github/workflows/scrub.yml", "check": ".github/workflows/release-consistency.yml",

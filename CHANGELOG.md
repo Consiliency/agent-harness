@@ -14,6 +14,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
+- Supervised v2 held-input admission, operator binding bootstrap, exact caller-context
+  echoes and schema-bound status projection, with metadata-only CLOSEOUT evidence
+  reduction. External producer evidence and installed-provider qualification remain
+  separate readiness gates.
+
 - Local supervised WORKER capture, patch-return, attempt evidence, retention
   resolution, native cancel verification and isolated status/CLI seams. Production
   launch remains codec-gated pending CLOSEOUT; fixture results grant no public

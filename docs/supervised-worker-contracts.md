@@ -1,103 +1,75 @@
-# Supervised worker schema intake
+# Supervised worker contracts
 
-`phase_loop_runtime.supervised_contracts` provides an internal, offline JSON Schema
-seam for the frozen v1 public distribution. `load_contract_bundle()` returns an
-immutable `ContractBundle`; `resource_bytes(name)` returns the captured bytes for
-an exact allowlisted resource. `validate_record(bundle, family, record: bytes,
-definition=None)` returns `None` for schema validity and raises a closed
-`ContractError(code, resource)` otherwise. It performs no admission or runtime
-semantic evaluation. Launch and journal modules do not consume this seam.
+`phase_loop_runtime.supervised_contracts.load_contract_bundle()` preserves the
+v1 default. `load_contract_bundle(version="v2")` selects the separately pinned
+public v2 envelope and unchanged `supervised_run_status.v1`. Both return captured,
+immutable resource bytes. `validate_record(bundle, family, raw, definition=None)`
+checks structure and returns `None`, or a closed `ContractError`. Structural
+validity alone grants no admission or qualification.
 
-The families are `admitted_launch_envelope.v1` (no definition selector) and
-`supervised_run_status.v1` (default `journal_line`, also `projection`,
-`page_request`, `page`, `reader_view`). Strict JSON intake rejects duplicate
-keys, lone Unicode surrogates, nonfinite numbers and integer literals outside the exact interoperable
-integer domain. Finite numeric forms keep their JSON Schema types. These
-conditions are distinct from the schemas' structural rules and from JCS byte
-canonicalization. Record objects must be supplied as UTF-8 JSON bytes.
+The reviewed inputs are [SCHEMA](../plans/artifacts/v12-SCHEMA-inputs.md) and
+[CLOSEOUT](../plans/artifacts/v12-CLOSEOUT-inputs.md). The latter pins
+`Consiliency/consiliency-contract` revision
+`2b91ef85bfdc76239ae52806b3318513951543ab`. Package resources preserve the
+approved original bytes and version declarations. The manifest seals the inputs;
+changing pins requires a reviewed input amendment on the trusted base before an
+implementation uses them. Historical SCHEMA, ENVELOPE, JOURNAL and WORKER receipts
+retain their original bytes and describe their original runs.
 
-The loader hashes and parses one captured buffer per resource. It uses
-`importlib.resources` inside the runtime package, an offline `referencing`
-registry and draft 2020-12 validation. It checks support for jsonschema 4.18+
-and compatible referencing APIs; older installations refuse with
-`runtime_unsupported`. The dependency floor is unchanged. Pattern compatibility
-preserves ECMA-262 end-anchor behavior for every declared SHA-256 reference
-without editing upstream bytes. Errors contain only approved codes and resource
-names, with no instance values or underlying exception text.
+Strict public intake rejects duplicate keys, nonfinite numbers, invalid Unicode
+scalars and numbers outside the v2 interoperable binary64 domain. The codec
+implements RFC 8785 bytes and digest computation. The private corpus extractor
+retains deliberately invalid number tokens and scalar strings for negative
+controls; it cannot produce an admissible public record. Verified schemas use
+an offline reference registry. Resource bytes are hashed before parsing.
 
-## Publication and provenance
+## Production binding and held inputs
 
-The sole input commit is public `Consiliency/consiliency-contract` revision
-`93db4b4fcc4e3d40c62f6658b6a67b519c750491`, path `core/supervised-run/`.
-The complete reviewed digest/blob inventory is
-[`v12-SCHEMA-inputs.md`](../plans/artifacts/v12-SCHEMA-inputs.md), sealed by
-the SCHEMA entry in `plans/manifest.json`. The code-owned pin table and an
-independent SHA256SUMS anchor are compared with that inventory. Changed bytes
-require reviewed repinning.
+The isolated worker chooses one operator-owned record:
+`<passwd-home>/.local/state/phase-loop/supervised-launch-binding.json`. The home
+comes from `pwd.getpwuid(os.getuid()).pw_dir`; environment variables, argv,
+controller documents and cwd cannot select another location. Provisioning that
+record is deployment work. Missing or untrusted configuration refuses before
+launch, without discovery or fallback. The
+[binding-location decision](../plans/artifacts/v12-CLOSEOUT-binding-location.md)
+fixes the exact sequence and refusal mapping.
 
-Six resources are byte-identical: both schemas, both vector files, the conformance
-README and SHA256SUMS. Upstream `provenance.json` is inventoried by digest/blob
-only and is excluded from the runtime closure. The separately named
-`harness-provenance.json` is harness-authored, digest-pinned metadata, outside the
-six upstream files. The installed package carries the complete nested closure.
+Route preflight and isolation precede envelope intake. The CLI holds the envelope
+bytes, reads only the trusted binding locator, then holds the complete controller
+document named by the envelope-bytes SHA-256. The document supplies the
+`AttemptBinding`, independent expected assignment/snapshot/crosswalk context and
+complete root/argv slots. A passive `load_v2_binding` checks all referenced inputs
+under those exclusions. Literal binding-byte agreement and controller
+reconciliation precede separate activation from the held implementation bytes.
+Production never calls the eager fixture loader for this full load.
 
-The `supervised contract publication` check is required and is a successful no-op
-on non-contract changes. Its `supervised-contract-intake` workflow runs on every
-pull request and every push to main with no path filter. The workflow pins the
-vendored resource subtree, loader, packaging declarations, comparison script,
-independent anchor test, frozen artifact and workflow paths; manifest changes
-count only when the SCHEMA frozen-input seal changes. For contract changes it fetches the public commit
-read-only, checks protected default
-branch ancestry, compares actual vendor bytes/blobs and sealed inputs, and runs
-intake tests with an extracted wheel ahead of the checkout. Ordinary tests never
-fetch the network. Hosted run/job/head and result artifact identities belong in
-the receipt; a failed hosted comparison blocks intake completion and landing.
-The check is required by the current `main` branch protection. The workflow
-itself does not modify repository settings.
+`capture_launch_v2` holds the effective launch material. `prepare_launch_v2`
+validates that capture with the independent context and public codec. The
+process-local admission token is spent once; `discard_admission` closes an unused
+capture. Rechecks at consumption and the final spawn boundary preserve the
+captured launch. Actual environment delivery is separate from the public
+`{non_secret, secret_names}` commitment. Credentials and their value hashes are
+excluded from public material, validators, receipts and diagnostics.
 
-## Authority and coverage
+## Trusted boot and evidence
 
-[`SCHEMA.md`](../plans/evidence/supervised-worker/SCHEMA.md) separates intake,
-structural schema and mutation runner results. Published negative cases are
-schema-valid by construction: schema success never proves their expected
-semantic diagnostics or effects. All 16 envelope and 35 status cases are
-inventoried, along with every semantic rule, recursive journal-rule entry and
-named obligation. Even obligations without vectors stay explicit and unresolved
-as `upstream_phase_unmet` until production proof at CLOSEOUT.
+Helpers and the production worker launch through
+`seat_uid.trusted_module_argv("phase_loop_runtime.supervised_worker_cli", ...)`.
+The isolated installation-root boot is part of the production launcher identity,
+including native cancellation matching (agent-harness#1132 and
+agent-harness#1957). This is the WORKER contract section 6 clarification tracked
+by agent-harness#1960 item 6; the other follow-ups remain separate.
 
-`IF-0-SCHEMA-1` records the v1 intake interface independently of
-`byte_pin_authority`, which remains **false**. No v2 revision or digest is pinned.
-The owner will publish v2 alongside unchanged v1 through a reviewed squash merge.
-Publication alone cannot resolve the outstanding runtime obligations.
+The `supervised contract publication` check compares the complete approved
+resource distribution and an extracted wheel. Only its full-path artifact with
+`contract=true` supplies publication proof. The CLOSEOUT verifier resolves live
+protected-main requirements and hosted run/job/artifact identities through the
+GitHub API. It checks content identity, receipt-only stamp deltas and verified
+post-landing correspondence. A governing-content change invalidates the old
+assessment.
 
-The launch coverage reconciliation includes instruction/reference bytes, argv
-JCS digest, executable/wrapper identity, workspace source/baseline and integer
-timeout bounds. It also covers effective environment, trusted policy and tool
-qualification, action/route/delivery, and conditional execution-view/egress
-grants. Opaque caller context, snapshot/crosswalk references and obligation
-digests cannot stand in for those bindings. v2 has no caller_context or
-harness-local fields. Local wire additions are outside this phase.
-
-The v1 tier annotations describe semantics and limits; they do not qualify a
-provider. `provider_readonly_patch_return_audit` has `checked_before_apply`
-write scope, `post_write_audit_only` has `not_enforced`, and `os_enforced` is
-unqualified. Preserve independent qualification and `route_not_qualified`.
-`E-admitted`, `E-echo` and `E-dependency-declared` each need write-scope
-reconciliation; declared dependencies also need an owner-approved route mapping.
-Standalone dependency refusal remains in effect.
-
-The runtime proof inventory covers the public-codec envelope/attempt join, fresh
-sequential/concurrent/restart identity, unit/snapshot/crosswalk provenance and
-EC-JOURNAL-4 correlation. It includes lifecycle shape, transitions, process
-results, all four journal numeric bounds, projection and liveness behavior,
-producer-owned event and terminal evidence, and exact digest text.
-`S-evidence-copied` must eventually be refused through production journal/worker
-paths. `V-two-attempts` permits equal proposal digests while requiring distinct
-evidence and envelope/run/attempt identities. Equal proposals transfer no
-acceptance or freshness; baseline identity and evidence remain independently
-bound. `N20-raw-stdout-ref` and `N18-run-status-as-evidence` remain explicit
-runtime obligations too.
-
-This internal intake adds no CLI or release behavior. WORKER owns integrated
-feature documentation. Full regression, Gate A and independent review belong
-to hosted CI and CLOSEOUT; targeted local results are not those gates.
+Both versions' harness provenance and the CLOSEOUT assessment retain
+`byte_pin_authority=false`. The pinned publisher is provisional. Independently
+owned controller/display evidence and approved board/president publisher
+bindings remain required. Read [readiness](supervised-worker-readiness.md) for
+those blocked edges and the separate offline, installed and live statuses.

@@ -1185,3 +1185,36 @@ def test_v2_public_status_is_unknown_without_acknowledged_anchor():
     result = worker.WorkerResult(None, "refused", None, "binding_invalid", 0, None, None, None, False)
     mapped = projection.v2_status_mapping(result)
     assert mapped.runtime_state == "unknown" and mapped.public_status_bytes is None and not mapped.journal_acknowledged
+
+
+@pytest.mark.parametrize("stage", ["before-link", "after-link", "equal", "concurrent", "conflict"])
+def test_v2_echo_publication_lifetime(tmp_path, monkeypatch, stage):
+    from phase_loop_runtime import supervised_echo as echo
+    tmp_path.chmod(0o700)
+    payload = b'{"fixture":"opaque"}'
+    digest = sha256(payload).hexdigest()
+    if stage in {"before-link", "after-link"}:
+        original = echo.os.fsync
+        calls = []
+        def sync(fd):
+            calls.append(fd)
+            if len(calls) == (1 if stage == "before-link" else 2):
+                raise OSError()
+            return original(fd)
+        monkeypatch.setattr(echo.os, "fsync", sync)
+        assert echo.write_echo(tmp_path, payload) == echo.EchoRefused()
+        assert not list((tmp_path / "echo").glob(".echo-*"))
+        if stage == "after-link": assert echo.read_echo(tmp_path, digest) == payload
+        else: assert echo.read_echo(tmp_path, digest) == echo.EchoRefused()
+    elif stage == "concurrent":
+        results = []
+        threads = [threading.Thread(target=lambda: results.append(echo.write_echo(tmp_path, payload))) for _ in range(2)]
+        for thread in threads: thread.start()
+        for thread in threads: thread.join(timeout=10)
+        assert all(not thread.is_alive() for thread in threads) and results == [digest, digest]
+        assert echo.read_echo(tmp_path, digest) == payload
+    else:
+        assert echo.write_echo(tmp_path, payload) == digest
+        if stage == "conflict": (tmp_path / "echo" / digest).write_bytes(b"different")
+        assert echo.write_echo(tmp_path, payload) == (echo.EchoRefused() if stage == "conflict" else digest)
+        assert (tmp_path / "echo" / digest).read_bytes() == (b"different" if stage == "conflict" else payload)

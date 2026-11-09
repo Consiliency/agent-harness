@@ -374,3 +374,59 @@ def test_controller_snapshot_excluded_location(v2_operator, root_kind):
     path = _write_controller(operator, root=root)
     assert cli.read_controller_snapshot(path.parent, operator.controller["h"]) == Refused("binding_invalid")
     assert not operator.marker.exists()
+
+
+@pytest.mark.parametrize("change", [None, "binding-replaced", "controller-missing", "controller-timeout", "policy-slot"])
+def test_v2_cli_bootstrap_order_enters_real_worker(v2_operator, monkeypatch, change):
+    import json
+    from test_supervised_capture_v2 import build_v2_attempt
+    from phase_loop_runtime import supervised_launch_binding as binding, supervised_launch as launch
+    from phase_loop_runtime.convergence.adapters import patch_return
+    fixture = build_v2_attempt(v2_operator)
+    operator = fixture.operator
+    launch.discard_admission(fixture.prepared)
+    operator.marker.unlink()
+    envelope = operator.path.parent / "public-envelope.json"
+    envelope.write_bytes(fixture.raw)
+    envelope.chmod(0o600)
+    result = operator.path.parent / "result.json"
+    state = operator.path.parent / "worker-state"
+    if change == "controller-timeout": operator.controller["context"]["timeout_max_seconds"] = True
+    if change == "policy-slot": operator.controller["slots"]["policy_epoch"] = "changed"
+    controller_path = _write_controller(operator)
+    if change == "controller-missing": controller_path.unlink()
+    monkeypatch.setattr(binding, "MANAGED_BINDING", operator.path)
+    monkeypatch.setattr(cli, "sys", SimpleNamespace(flags=SimpleNamespace(isolated=True)))
+    events = []
+    def wrap(owner, name, event):
+        original = getattr(owner, name)
+        def entered(*args, **kwargs):
+            events.append(event)
+            if event in {"envelope", "locator", "controller", "full", "agreement"}:
+                assert not operator.marker.exists() and not result.exists() and not state.exists()
+            value = original(*args, **kwargs)
+            if event == "locator" and change == "binding-replaced":
+                operator.path.write_bytes(operator.path.read_bytes() + b" ")
+            if event == "activation" and isinstance(value, binding.V2Binding):
+                wrap(value.codec, "decode_v2", "decode")
+                wrap(value.validator, "validate", "validate")
+            return value
+        monkeypatch.setattr(owner, name, entered)
+    for owner, name, event in ((cli, "read_envelope_file", "envelope"), (binding, "read_binding_locator", "locator"),
+            (cli, "read_controller_snapshot", "controller"), (binding, "load_v2_binding", "full"),
+            (binding, "reconcile_v2_binding", "agreement"), (binding, "activate_v2_binding", "activation"),
+            (cli, "prepare_launch_v2", "prepare"), (cli, "open_result_file", "result"),
+            (patch_return, "run_patch_return", "journal-spawn")):
+        wrap(owner, name, event)
+    outcome = cli.main(["launch", "--envelope", str(envelope), "--result", str(result)], state_root=state)
+    if change:
+        assert outcome == 10 and not result.exists() and not state.exists()
+        assert not operator.marker.exists()
+        assert not {"activation", "decode", "validate", "prepare", "result", "journal-spawn"} & set(events)
+    else:
+        assert outcome == 0
+        for before, after in zip(("envelope", "locator", "controller", "full", "agreement", "activation", "decode", "prepare", "validate", "result"),
+                                 ("locator", "controller", "full", "agreement", "activation", "decode", "prepare", "validate", "result", "journal-spawn")):
+            assert events.index(before) < events.index(after), events
+        record = json.loads(result.read_bytes())
+        assert record["runtime_state"] == "finished" and record["journal_acknowledged"]

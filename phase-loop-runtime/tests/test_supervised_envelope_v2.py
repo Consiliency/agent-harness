@@ -124,3 +124,56 @@ def test_published_admission_production(case, request, monkeypatch):
     request.node.user_properties.extend([
         ("contract_case_id", case["id"]), ("contract_diagnostics", json.dumps(list(observed))),
         ("supported_route", "contract_only"), ("auxiliary_starts", "0"), ("chain_starts", "0")])
+
+
+V2_GUARD_CODES = sorted({code for case in V2_CORPUS if case["kind"] == "admission"
+                         for code in case["expected"]} - {"envelope_schema_invalid"})
+
+
+@pytest.mark.parametrize("code", V2_GUARD_CODES)
+@pytest.mark.parametrize("mutated", [False, True], ids=["intact", "killed"])
+def test_v2_reporting_guards_entered_in_source_copy(code, mutated):
+    import ast
+    import inspect
+    from phase_loop_runtime import supervised_envelope_v2 as production
+    case = next(row for row in V2_CORPUS if row["kind"] == "admission" and code in row["expected"])
+    value = expand_v2(case)
+    cases = {row["id"]: row for row in V2_CORPUS}
+    original = case["input"] if case["role"] == "control" else cases[case["control"]]["input"]
+    envelope = decode_v2(json.dumps(value["envelope"]).encode(), bundle=load_contract_bundle(version="v2"))
+    capture, context, attempt = contract_capture(value, original)
+    function = production._evaluate_v2_admission
+    if mutated:
+        class Bypass(ast.NodeTransformer):
+            changed = 0
+            def visit_Return(self, node):
+                if any(isinstance(child, ast.Constant) and child.value == code for child in ast.walk(node)):
+                    self.changed += 1
+                    return ast.Pass()
+                return self.generic_visit(node)
+            def visit_Expr(self, node):
+                if (isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Attribute)
+                        and node.value.func.attr == "append" and any(isinstance(child, ast.Constant) and child.value == code for child in ast.walk(node))):
+                    self.changed += 1
+                    return ast.Pass()
+                return self.generic_visit(node)
+            def visit_Assign(self, node):
+                if any(isinstance(target, ast.Name) and target.id == "groups" for target in node.targets):
+                    kept = [row for row in node.value.elts if row.elts[0].value != code]
+                    self.changed += len(node.value.elts) - len(kept)
+                    node.value.elts = kept
+                return self.generic_visit(node)
+        tree = ast.parse(inspect.getsource(function))
+        bypass = Bypass()
+        tree = ast.fix_missing_locations(bypass.visit(tree))
+        assert bypass.changed == 1
+        namespace = dict(vars(production))
+        exec(compile(tree, "<v2-reporting-control>", "exec"), namespace)
+        function = namespace["_evaluate_v2_admission"]
+    decision = function(envelope, context=context, capture=capture, attempt=attempt)
+    def production_assertion():
+        assert code in decision.diagnostics
+    if mutated:
+        with pytest.raises(AssertionError): production_assertion()
+    else:
+        production_assertion()
