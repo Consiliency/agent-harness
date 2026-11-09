@@ -95,9 +95,9 @@ Existing code inspected:
 ## External Inputs
 
 - Frozen contract: `plans/artifacts/v12-WORKER-contract.md`, sealed by this
-  manifest amendment row `v12-WORKER-amend-withheld`'s `frozen_inputs`
+  manifest amendment row `v12-WORKER-amend-journal-sweep`'s `frozen_inputs`
   digest (sha256:
-  `2b9c1f95308fe517a3897f85acca1c3b2d7ba52aa9060060b5a8afa65be1b95b`). It holds every exact signature,
+  `222c6c07695f91e7bbaf47c5ff5fbc4590b4b677d6c31a4885d67646146da523`). It holds every exact signature,
   ordering rule, proposal/audit/cancel rule, test obligation W1–W15, mutation
   list and the JOURNAL names consumed. Read it in full before any lane starts.
   This plan points at it and does not repeat it.

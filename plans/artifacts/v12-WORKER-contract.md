@@ -16,7 +16,10 @@ Revision 2 applies the agent-harness#1926 board edits and the owner rulings
 recorded in the plan's Context (2026-11-08). Revision 3 reconciles §3–§8 with
 JOURNAL's revised §10/§11 (agent-harness#1925 at 86d11deda7bbb1088b9cb1e300064c34f52c71e6,
 an input pin). Revision 4 (2026-11-09) reconciles the evidence-error terminal
-binding with landed JOURNAL (agent-harness#1934).
+binding with landed JOURNAL (agent-harness#1934). Revision 5 (2026-11-09)
+reconciles all JOURNAL calls, nullable reads and failed-append reporting with
+landed code; the sweep and sentence changes are recorded in
+`plans/artifacts/v12-WORKER-journal-sweep.md`.
 
 ## 1. Consumed interfaces
 
@@ -315,9 +318,19 @@ event; JOURNAL reserves the slot for the terminal line.
   `state=finished` with the capture's termination, `journal_anchor=None` and
   `journal_complete=False`.
 
-In both cases JOURNAL reports the attempt `unknown` or `stale_unknown`; WORKER
-never relabels it. A missing anchor is the controller's signal to treat the
-outcome as uncertain.
+In either case a complete line written before an append or fsync failure may
+remain readable, and `attempt_status` reports the last verified line. A
+nonterminal (`queued`, `running` or `cancelling`) displays as itself while the
+owner is live and as `stale_unknown` after owner exit or pid reuse. A terminal
+displays `refused` or `finished (<termination reason>)` whatever the owner's
+liveness, so a pre-spawn failure can leave a `refused` line whose reason differs
+from `WorkerResult.refusal`. Torn or otherwise unverifiable history, or history
+with no state line, displays `unknown`. Poisoning is writer-local; `close()`
+neither removes landed lines nor records poisoning. No anchor was returned and
+`journal_complete=False`, so the controller treats the outcome as uncertain. A
+reader-derived `chain_head` or terminal display never substitutes for the
+missing anchor, and WORKER never appends to or relabels the journal to match its
+result. Run status is never a work outcome (`runtime_not_work_outcome`).
 
 Descriptor execution (ELF through an inherited fd path) is used where
 supported. Otherwise evidence records `exec_binding: "path_recheck"` and
@@ -449,7 +462,11 @@ The launcher:
 1. takes its nonce from `Reservation.writer.writer_instance_id`. That value is
    128-bit random lowercase hex, minted once by `reserve_attempt` and copied
    unchanged by `open_writer` (J3). A later cancel reads it from
-   `read_attempt(root, attempt_id).writer`;
+   `read_attempt(root, attempt_id).writer`. Identity and writer are None
+   together, when JOURNAL returns no index entry for the id (for example an
+   invalid or never-reserved id, an unverifiable index or an unreadable attempt
+   directory); cancel then returns `unknown_attempt` on the first look, with
+   zero signals and no launcher-record read;
 2. at step 4 creates `launchers/<attempt_id>.json` with
    O_CREAT|O_EXCL|O_NOFOLLOW, mode 0600, holding {run_id, attempt_id,
    assignment_digest, pid, process_start_time (`process_start_identity(pid)`),
@@ -465,7 +482,9 @@ the record lock held by the live pid and the live process identity below.
 then the capture kills only its own group. A cancel arriving between
 reservation and record creation finds no record and returns `owner_unverified`.
 
-`cancel_attempt` resolves the target as follows:
+`cancel_attempt` opens `<state_root>/journal` with `create=False`; a
+`JournalRefused` gives `unknown_attempt` with zero signals. It resolves the
+target as follows:
 
 - `--attempt` reads `read_attempt` and `attempt_status`;
 - `--run` takes the last id from `resolve_run`. An absent run, which returns
@@ -473,6 +492,7 @@ reservation and record creation finds no record and returns `owner_unverified`.
 
 On the first look, the outcome is:
 
+- `read_attempt(...).identity` is None: `unknown_attempt`;
 - already terminal: `already_terminal`;
 - `attempt_status` display `stale_unknown` (dead or reused owner):
   `owner_not_live`, with zero signals;
@@ -542,17 +562,21 @@ imports only stdlib, `rfc8785` and `phase_loop_runtime`. It does not replace
     requires an absolute path with a verified 0700 operator parent opened by
     dir_fd. It opens O_CREAT|O_EXCL|O_NOFOLLOW with mode 0600, outside the
     workspace, target, reference roots and state root.
-- `status` is provider-free. It opens the journal root without creating it and
-  prints one JSON object `{"attempt": <attempt_status>, "page": <page | null>,
-  "next_cursor": <str | null>}`:
+- `status` is provider-free. It opens the journal root with `create=False`; a
+  `JournalRefused` (for example `journal_missing` before any launch) prints its
+  code and exits as a refusal. Otherwise it prints one JSON object
+  `{"attempt": <attempt_status>, "page": <page | null>,
+  "next_cursor": <str | null>, "page_diagnostics": <list[str] | null>}`:
   - `--attempt` uses `attempt_status(root, id)`, with JOURNAL's liveness
     observer;
   - `--run` uses the last id from `resolve_run`. An absent run (`()`) or a
     refusal prints `unknown_attempt` and exits as a refusal;
-  - `--page` adds `read_page` with the request `{assignment_digest:
+  - `--page` requires a non-null `read_attempt(root, id).identity`; if absent,
+    print `unknown_attempt` and exit as a refusal. Otherwise call `read_page`
+    with UTF-8 JSON bytes encoding `{assignment_digest:
     read_attempt(root, id).identity.assignment_digest, page_size:
     STATUS_PAGE_SIZE, cursor}` and `evidence=evidence_resolver(state_root)`.
-    The output then includes `next_cursor`;
+    A `JournalRefused` prints its code and exits as a refusal; a `PageResult` supplies `page`, `next_cursor` and `page_diagnostics` (JOURNAL's closed codes; an attempt with diagnostics contributes no events);
   - `--cursor` passes a `next_cursor` from a previous page; otherwise `cursor`
     is null.
   - `STATUS_PAGE_SIZE = 50`, within JOURNAL's bound of 100.
@@ -586,7 +610,7 @@ tests pin umask 077 and restore it. Tests run serially, never with `-n`.
 | W1 | SL-0 | Capture: stdout/stderr digests over all bytes, cap + overflow, stdin one-shot and not in argv, deadline, cancel, group reclaim, failed start, `before_spawn` refusal = zero spawns; a pipe-holding escaped descendant ends at the deadline with `streams_complete=False` | EC-WORKER-1, EC-WORKER-4 |
 | W2 | SL-0 | `run_bounded` parity: every existing status/detail/bound unchanged | EC-WORKER-1 |
 | W3 | SL-0 | Planted `SSH_AUTH_SOCK`, `GIT_ASKPASS`, `SSH_ASKPASS`, `GIT_CONFIG_*` credential-helper, vendor and GH tokens absent from the child; empty default allowlist passes only scratch names | EC-WORKER-4 |
-| W4 | SL-1 | Order §3.1: zero invocations and zero attempt effects for every refusal at steps 1–3; healthy-writer refusals journal `refused` from `queued`; Rule W for a failing `queued`, a `running` append that lands then fails (no spawn, `stale_unknown`), and a post-spawn terminal failure (`finished`, no anchor) | EC-WORKER-2, EC-WORKER-4 |
+| W4 | SL-1 | Order §3.1: zero invocations for every refusal at steps 1–3, zero attempt effects at steps 1–2, and no further WORKER effects after a reservation refusal (failed reservation may leave JOURNAL claims); healthy-writer refusals journal `refused` from `queued`; Rule W for a failing `queued`, a `running` append that lands then fails (no spawn, `running` while the owner is live, `stale_unknown` after owner exit or pid reuse), a healthy-writer `refused` terminal that lands then fails (WORKER `refused`/`journal_unavailable`; JOURNAL keeps `refused` with the original reason), and a post-spawn terminal failure (WORKER `finished`, no anchor, `journal_complete=False`; a complete terminal keeps `finished (<reason>)` after owner exit or pid reuse; torn history displays `unknown`) | EC-WORKER-2, EC-WORKER-4 |
 | W5 | SL-1 | Replay one envelope sequentially, concurrently across 4 processes, and after a crash between reservation and spawn: at most one spawn in total; a retry under the same run with a new attempt id launches | EC-WORKER-2, EC-WORKER-3, EC-WORKER-4 |
 | W6 | SL-1 | Pre-spawn recheck of each identity element | EC-WORKER-2 |
 | W7 | SL-1 | Proposal decision table, every row including `streams_complete=False` and `withheld_evidence_error` (fault each step-9 operation; real JOURNAL accepts `finished` with unchanged termination and null binding, no evidence refs, no proposal digest or locator, and no readable valid result even with partial files); baselines; malformed and oversized | EC-WORKER-1, EC-WORKER-4 |
@@ -620,15 +644,17 @@ path-entered assertion red. Mutating a test-side oracle never counts.
 
 ## 8. JOURNAL interfaces consumed (J1–J6)
 
-These are reconciled with JOURNAL's revised §10 and §11 at agent-harness#1925
-head 86d11deda7bbb1088b9cb1e300064c34f52c71e6, an input pin. The work-start
+These are reconciled with landed JOURNAL at origin/main
+504355e020c271b649dd01e5f494c516d5164319, an input pin. The work-start
 gate re-checks them against the landed code. A later rename is a WORKER artifact
 amendment, not an in-lane workaround.
 
 - J1 — `reserve_attempt(root, identity, *, units, launch_digest,
   caller_context_sha256) -> Reservation | JournalRefused` and
-  `open_writer(root, reservation) -> AttemptWriter | JournalRefused`. The
-  reservation is atomic, durable and claims the attempt id globally.
+  `open_writer(root, reservation, *, limits=DEFAULT_LIMITS) -> AttemptWriter | JournalRefused`.
+  A successful reservation durably claims the attempt id globally via atomic
+  creation; a failed reservation may leave a run claim, attempt claim or index
+  bytes, and WORKER never rolls them back or reuses the attempt id. A torn index tail or short run record then refuses later reservations for that assignment or run (`index_unverifiable`, `run_record_unreadable`) until operator quarantine (JOURNAL §5); WORKER refuses with that code.
 - J2 — `AttemptWriter.state`, `.event`, `.terminal` and `.close`. Appends
   return `ChainHead(segment_index, segment_sha256, last_seq)` or
   `JournalRefused`. Any I/O failure poisons the writer: later calls refuse
@@ -639,12 +665,17 @@ amendment, not an in-lane workaround.
   is importable, and `read_attempt(...).writer` returns the identity later.
 - J4 — `resolve_run`, which returns `()` for an absent run; `read_attempt`,
   whose `.identity.assignment_digest` is the page key; and `attempt_status`
-  with `proc_observer` liveness (`stale_unknown` for a dead or reused owner).
-- J5 — `read_page(root, request, *, evidence)`, with
+  with keyword-only `observer=proc_observer` liveness (`stale_unknown` for a
+  dead or reused owner of a verified nonterminal; verified terminals retain
+  their terminal display). `read_attempt` always returns `AttemptRead`, whose
+  identity and writer may be None on unknown reads; check before dereferencing.
+- J5 — `read_page(root, request: bytes, *, evidence)`, with
   `EvidenceResolver = Callable[[AttemptIdentity, Ref], str]` and a
-  `page_request` of `{assignment_digest, page_size <= 100, cursor}`. It returns
-  `PageResult(page, next_cursor, diagnostics)`; `omitted.retention_dropped`
-  counts refs the resolver reports dropped.
+  UTF-8 JSON `page_request` bytes encoding `{assignment_digest,
+  1 <= page_size <= 100, cursor}` (all keys required; cursor nullable).
+  It returns `PageResult(page, next_cursor, diagnostics) | JournalRefused`;
+  `next_cursor` is nullable, and `omitted.retention_dropped` counts refs in the
+  returned page that the resolver reports dropped.
 - J6 — `default_journal_root()`, with no arguments, from `pw_dir`, equals
   `<default_state_root()>/journal`. `open_journal_root(path, *, create,
   excluded)` takes WORKER's `<state_root>/journal`, outside every
