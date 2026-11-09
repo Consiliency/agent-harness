@@ -142,7 +142,7 @@ unchanged; the record still says pending_hosted_ci and synthetic_fixture_only.
 
 2026-11-09 (WORKER OQ-4 binding amendment): admission, mutation, binding,
 route and startup verification ran on ai at
-`3e23439c93320eaacf74d7c1295a93fda4e19f81`: 115, 80, 45, 12 and 21 passed
+`38cd69ffac777896ad20cbdd817ec2edd2ab8df9`: 115, 80, 45, 12 and 21 passed
 respectively (273 total, no skips). The pinned files remain byte-identical to
 that observed input. The committed `stamp_evidence_receipt.py` refreshes the
 integrated WORKER doc binding and derived tree digest; producer outcomes,
@@ -164,7 +164,7 @@ authority, acceptance fields and final-tree claims remain unchanged.
     "observed_utc": "2026-11-05T06:15:55.801107+00:00",
     "observed_input_head": "00c6c1e95960839e6a6299e14bbf8d54cb9707e0",
     "approved_plan_input_head": "c1aac3c19b711f9688bddc2bda11128d928b3ad9",
-    "source_tree_digest": "e3e50dba33ad617b8aaeb583082fcc983286d25314889e7e2c313bcec4403455"
+    "source_tree_digest": "0d4bc8005d742713a64247269d13b9916ed0c62a2171e09ab90e272cb2a66a9d"
   },
   "source_hashes": {
     "phase-loop-runtime/src/phase_loop_runtime/supervised_launch.py": "9c339674bef0b52bd6520d1e6d72bcee5157d5d80b4ba21f9baa425d4cfb0a22",
@@ -177,7 +177,7 @@ authority, acceptance fields and final-tree claims remain unchanged.
     "phase-loop-runtime/tests/test_supervised_launch_route.py": "9353ef72842b0a0cadf748f2622c279970ce7ee4453b816b7be8f348a66893d4",
     "phase-loop-runtime/tests/test_supervised_launch_receipt.py": "13475dff1a4aebf4db2da694c36bafb4de58230c390008a7c126c62aade22073",
     "phase-loop-runtime/tests/fixtures/supervised_launch_local/envelope.json": "2c69f75c4bdcaf8f28b8ff40a92b9db21e4403bf7fd2ab8ff10d4df622463298",
-    "docs/supervised-worker.md": "f6d39f5df70f58f57994b7758f3e7eb61496eace645eb03edd43e2c7a342e9e7",
+    "docs/supervised-worker.md": "fca78bcc4ea8069a542cf4802ac0580f8ee67c8c91b412a5095bda8c51a2b733",
     "plans/phase-plan-v12-ENVELOPE.md": "b4421f5c3fae3e855b0f9eb8e17e5f8949f6914f60f609c2a2925e4e8c79d4b0"
   },
   "producer_nodes": [
