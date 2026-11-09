@@ -61,3 +61,17 @@ def test_command_output_is_not_a_nested_event_stream():
 def test_duplicate_command_or_second_turn_does_not_count():
     data = stream(complete=False)
     assert tools_ran_code(read_tool_record(data + data + b'{"type":"turn.completed"}\n')) == "codex_seat_tools_unavailable"
+
+
+def test_failed_command_beside_successful_command_counts():
+    # IF-0-CODEX-4: a failed-command leg is one with NO successful completed command. A
+    # failed command beside a successful one does not by itself stop the leg.
+    failed = {"id": "item_1", "type": "command_execution", "command": "false",
+              "aggregated_output": "", "exit_code": 1, "status": "failed"}
+    record = read_tool_record(stream(extra=(
+        {"type": "item.started", "item": {**failed, "status": "in_progress"}},
+        {"type": "item.completed", "item": failed},
+    )))
+    assert record.stream_valid and record.turn_completed
+    assert record.commands_completed == 1 and record.commands_failed == 1
+    assert tools_ran_code(record) is None

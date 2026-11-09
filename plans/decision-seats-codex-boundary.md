@@ -16,8 +16,10 @@ seat's own Codex login copy in seat home and inherit its allowlisted proxy
 egress. Credential delivery is a file copy, not a sealed descriptor. Its measured
 scope ceiling, empty refresh token, refresh detection and parent-held completed
 command evidence remain required. A zero-command or failed-command leg does not
-count as a review. This accepts the boundary described above; it does not admit
-a wider credential or egress set.
+count as a review. A failed-command leg is one with no successful completed command
+(IF-0-CODEX-4); a failed command beside a successful one does not by itself stop the
+leg. This accepts the boundary described above; it does not admit a wider credential
+or egress set.
 
 ## Evidence accepted by the owner
 
@@ -54,9 +56,10 @@ CLI-shape gate. Claude/Gemini profiles and golden digests are unchanged.
 
 ## Related dispositions and post-merge text
 
-These are prepared texts, **not posted closure actions**. Independent review and
-merge of agent-harness#1916 remain outstanding. The row window and `done-local`
-reducer belong to SL-4, not this SL-3 landing.
+These are prepared texts, **not posted closure actions**. agent-harness#1916 merged
+on 2026-11-08 as `9aee35dd` and ships in phase-loop-runtime 0.7.31
+(agent-harness#1938); posting these texts and closing the issues remain separate
+actions. The row window and `done-local` reducer belong to SL-4, not this SL-3 landing.
 
 - **agent-harness#1480 — post-merge closure draft:** “Delivered by agent-harness#1916.
   OD-4 was accepted on 2026-11-08 with the linked credential, egress, completed-command
@@ -88,7 +91,8 @@ Both validations are retained in the record, completing SL-3 verification. The e
 predicate passed eight synthetic controls before the single authorized retry.
 The accepted OD-4 input records above remain byte-identical. No ai run, live
 provider turn, real-login operation, issue closure or row-window promotion was
-performed in this follow-up. Independent review remains the next step.
+performed in this follow-up. Independent review followed, and agent-harness#1916
+merged on 2026-11-08; the 0.7.31 release board reviewed the delta in agent-harness#1939.
 
 ## SL-3 single-writer ruling
 

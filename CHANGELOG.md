@@ -36,6 +36,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   grant and retained setfcap capability; preserve the non-brokered read-only sandbox probe.
   Jailed Codex notices reflect its confinement, canonical `max` maps to `xhigh`,
   admission measures the prepared binary, and manual qualification binds the launch projection.
+- Every jailed seat (agent-harness#1916): seat-jail qualification now classifies curl
+  exit 7 with an observed CONNECT 403 as `proxy_connect_refused`, as it already did exit
+  56. curl 8.20.0 (also backported to Ubuntu's 8.18.0) uses exit 7 for a readable
+  rejected CONNECT where older clients use 56; an ordinary exit 7 without the observed
+  CONNECT 403 is still unavailable. The seat's copy of the egress CA certificate is
+  forced to mode 0444 (`_write_egress_ca`, `fchmod`), so a launcher running under umask
+  077 still leaves it readable by the dropped seat uid through its read-only bind.
 - Plans only, no package source: the v13 LANEEXEC toolkit repin for the image launcher
   tree and staging trust (agent-harness#1928, Consiliency/agent-toolkit#85); the v12
   JOURNAL attempt journal and projection plan (agent-harness#1925) and WORKER bounded
@@ -45,6 +52,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   controls) (agent-harness#1927, agent-harness#1933, agent-harness#1936,
   agent-harness#1008); and the advisory browser roadmap and VISART plan for review-seat UI
   visibility (agent-harness#1931).
+
+### Known issues
+
+- The jailed Codex seat's prompt describes general network access, but its egress is
+  limited to the two allowlisted provider endpoints. Containment is unaffected.
+- A jailed Codex seat timeout or cancellation is reported as
+  `codex_seat_tools_unavailable`.
+- A heartbeat-only Codex leg is not bounded by the 2100 s token margin
+  (`CODEX_LOGIN_MIN_S`).
 
 ## [0.7.30] - 2026-11-08
 
