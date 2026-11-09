@@ -484,7 +484,7 @@ def test_offload_requires_trust_secret_and_supported_sandbox(
     jobs = yaml.safe_load(WORKFLOW_PATH.read_text())["jobs"]
     step = next(s for s in jobs["elig"]["steps"] if s.get("id") == "elig")
     assert step["env"]["OFFLOAD_SANDBOX_READY"] == "false"
-    # The org-wide pause switch: only the exact string `true` pauses offload.
+    # The org-wide pause switch: `true` in any letter case pauses offload.
     assert step["env"]["OFFLOAD_PAUSED"] == "${{ vars.CI_OFFLOAD_PAUSED == 'true' }}"
     output = tmp_path / "outputs"
     env = {**os.environ, "EVENT_NAME": event, "REF": ref,
