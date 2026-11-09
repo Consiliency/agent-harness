@@ -362,9 +362,10 @@ refuses the ceremony fail-closed (`the predecessor store changed between
 attestation and drain; re-attest over the current bytes`). The failure mode is a
 refused ceremony or a fenced writer, not a silent divergence. A routing client
 from `build_routing_broker_client()` that a surviving holder built before the
-flip refuses every later request with `WriterGenerationBlocked` (`this broker
+flip refuses every request it starts after the flip with `WriterGenerationBlocked` (`this broker
 client is bound to retired partition generation …`) before it reads or writes
-either generation's store. It never rebinds itself, so restart that process
+either generation's store. A request already past that check may still read the
+retired generation; write fences remain the backstop. It never rebinds itself, so restart that process
 (agent-harness#1315). The refusal's type is `RoutingClientGenerationRetired`, and
 the human route answers it with next step `rebuild_broker_client_and_retry`, not
 `repair_fabpub_authority`.
@@ -417,7 +418,7 @@ restored from outside).
    `generations/1`; `load_partition_receipt` returns the v3 receipt; the
    pre-dispatch replay answers the `…54771bd3` key as a duplicate with no owner
    read (Lane D3 behaviour).
-3. **Governed publish demo** (the second half of ah#789 acceptance item 5): run
+3. **Governed publish demo** (the second half of agent-harness#789 acceptance item 5): run
    one governed publish through the rotated partition and record that it
    admits, dispatches, and seals with `generation 1`.
 4. Close out on Consiliency/agent-harness#789 with the result JSON, the
@@ -556,9 +557,12 @@ is on the remote branch or a pull request exists for it, otherwise
 1. Leave the worktree, branch, commit, plan file and verification artifact
    exactly as they were. Do not make an empty commit, switch branch, force
    push, rebuild the proof, or edit checkpoint or broker files.
-2. Build the attestation (§3) with `disposition: attested_not_landed`, no
+2. Write and review the attestation JSON described in
+   `docs/fabpub-pre-admission-ambiguity.md` ("The attestation"), with
+   `disposition: attested_not_landed`, no
    `observed_head`, and the owner's `owner_nonce` and `transaction_id` copied
-   verbatim. The `transaction_id` must equal the sealed checkpoint's; a
+   verbatim. The §3 builder only emits `observed_landed` and requires an
+   observed head; it cannot build this disposition. The `transaction_id` must equal the sealed checkpoint's; a
    disposition that binds no transaction id authorizes nothing. A later missing
    remote ref, or a successful `git push --dry-run`, is not proof that the
    historical attempt had no effect. The attestation is the operator's judgement
@@ -574,13 +578,15 @@ is on the remote branch or a pull request exists for it, otherwise
 
 **Retrying after a later rotation.** The disposition stays valid across later
 rotations for other keys (agent-harness#1310). The retry walks the authenticated
-receipt chain back to the disposing rotation, and records both generations in
+receipt chain back to the disposing rotation. Each receipt load re-authenticates its predecessor chain,
+so the walk can take quadratic receipt loads as generation count grows. It records both generations in
 the recovery record (`disposing_generation`, `readmitting_generation`,
 `intervening_rotations`). These three fields appear only when a rotation
 intervened; a same-generation record keeps the agent-harness#1296 shape
 (agent-harness#1576). It is refused, with nothing written, once any
 generation since the disposing rotation holds evidence or an adapter-start
-owner for the key, or a later receipt carries or re-adjudicates it. A
+owner for the key, or a later receipt carries it as completed. A newer `attested_not_landed`
+re-adjudication selects that newer authorization rather than the older one. A
 disposition authorizes one re-admission. Retrying promptly is still best, and a
 retry is refused if any receipt in the chain fails to authenticate.
 

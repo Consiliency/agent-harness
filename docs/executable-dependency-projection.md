@@ -139,6 +139,14 @@ With no requirement and no authority, the existing standalone transports and
 launch paths remain unchanged. This API coordinates trusted in-process code; it
 is not a boundary against malicious Python running in the same interpreter.
 
+## Interpreter prerequisite
+
+Immutable snapshots require Linux `os.memfd_create`, seal support and the matching
+`os.MFD_*` constants in the selected Python build. Python version alone does not
+prove availability: uv-managed CPython 3.14.5 lacks that API on the audited host.
+A missing API refuses admission as `immutable snapshot unavailable`; it does not
+fall back to mutable files. Check the interpreter actually used by the runtime.
+
 ## Qualification status
 
 Offline fixtures establish admission, projection bytes, launch-boundary refusal,

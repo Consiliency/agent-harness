@@ -46,7 +46,7 @@ as `no_effect_terminal_proven`. The maintainer rejected that (plan
   landed yet; the runtime therefore must not consult the remote when deciding a
   refusal (Consiliency/agent-harness#789 acceptance item 3).
 
-Under C-keep the ah#789 ambiguity record is left in place. Neither this note nor
+Under C-keep the agent-harness#789 ambiguity record is left in place. Neither this note nor
 any code in this repository rewrites transaction
 `b72b68ff03f2058ff0ea29641e5f003e89fa3ca1e298079eba7b6f1ff09655f8` or unblocks
 repository partition `1da3e3433e00173dec7aaa5ca564038a1df5ccd64498be0506aab80b579e7681`.
@@ -80,28 +80,29 @@ promoted exactly as before.
 - **A refused section leaves no owner (agent-harness#1314).** Inside the one
   `admissions.lock` acquisition, `_owner_and_admission_under_one_lock` reads the raw
   bytes of `adapter-start-owner.json` (absent, or a sealed owner), writes this
-  attempt's owner, and calls `admit_next`. If anything refuses after the owner write
+  attempt's owner, and calls `admit_next`. If an ordinary exception occurs after the owner write
   (generation lease, partition floor, `epoch_blocked`, policy, the request build, the
   admission append), it puts those exact bytes back, or removes the file if there
   were none, before the refusal propagates. The owner never reached the provider, so
   no effect is possible, and no other writer can observe it, because the restore
   happens under the same acquisition. Only an owner this attempt wrote is ever
   restored. A simulated crash (`PublishCrashInjected`) gets no cleanup, as a real
-  crash would not.
+  crash would not. `BaseException` interruptions such as `KeyboardInterrupt` also
+  bypass that ordinary-exception restore.
 - **A live writer's owner is not promoted (agent-harness#1313).** From the owner write
   until its attempt ends, the writer holds an advisory `flock` on the owner file's
   inode. Before `_block_unsealed_owner` appends `provider_call_in_flight` or
   `outcome_ambiguous_blocked` for an owner with no known terminal, it probes that
   lock non-blocking. If it is held, the publish refuses with `AdapterStartOwnerLive`
   (a `PermissionError` whose message says to retry), and nothing is written. The
-  kernel releases the lock when the writer process dies, so a crashed writer's owner
+  kernel releases the lock when every process sharing that open-file description
+  closes it or exits; do not fork without exec during an attempt, so a crashed writer's owner
   is promoted as before. No file and no owner field were added, so mixed versions are
   unchanged: an older writer never takes the lock and its owner is promoted as
   before, and an older reader ignores the lock. The lock relies on the same `flock`
-  coherence that `admissions.lock` already does. On NFS, where Linux emulates `flock`
-  with per-process POSIX locks, a probe from the writer's own process can read the
-  writer as dead (today's behaviour), and a crashed client's lock lasts until its
-  lease expires (a retryable refusal meanwhile).
+  coherence that `admissions.lock` already does. Local open-file-description `flock` semantics are required. NFS-style
+  per-process POSIX emulation is unsupported: the admission lock-held check
+  refuses, so publication cannot proceed under those semantics.
 
 ## Provider entry and failures around it
 
@@ -112,7 +113,7 @@ owner equalled this attempt's (nonce included) and was unsealed and the key's ro
 through the provider call cannot be prevented; since agent-harness#1591 a definite
 provider outcome after it is kept rather than lost.
 
-- **A guard right before the provider call (agent-harness#1577).** Under one
+- **A guard before the provider-entry preparation (agent-harness#1577).** Under one
   `admissions.lock` acquisition, `BrokerService._provider_entry_guard` checks that the
   on-disk owner is exactly this attempt's owner (nonce included) and unsealed, and
   that the key's evidence row is `provider_call_in_flight`. If not, the attempt makes
@@ -157,7 +158,8 @@ provider outcome after it is kept rather than lost.
     ambiguity would make the partition unrotatable, and an older reader would treat
     it as landed), the owner stays unsealed, the checkpoint stays `ADAPTER_STARTED`,
     and the epoch stays blocked. The key is never resolved as landed automatically
-    (C-keep); clearing it always needs a rotation.
+    (C-keep); ordinary retries do not clear it. Reviewed rotation or the bounded exact-PR
+    settlement in runbook §8c requires separate authority.
   - The result is not accepted and has no `publish_result`. Its `reason` is
     `effect_observed_after_ambiguity` or `no_effect_observed_after_ambiguity`, and
     `observed_after_ambiguity` carries the observation. Every retry replays the
@@ -286,10 +288,12 @@ it repeats the warning against a second `attested_not_landed` without new eviden
 
 ## Recovery
 
-There is **no governed recovery** for a partition that is already blocked. What
-the runtime offers is a refusal, not a repair.
+An ordinary publish retry does **not** repair an already blocked partition.
+Reviewed partition rotation is described below. For an exact existing PR, the
+bounded administrative settlement in runbook §8c is another supported path;
+it preserves the raw ambiguity rather than rewriting it.
 
-**What happened in ah#789, in order.** The governed publish refused and the
+**What happened in agent-harness#789, in order.** The governed publish refused and the
 partition stayed blocked; the responder did not improvise a repair. The incident
 record's step 5 — "no further publish was attempted … no direct push, evidence
 rewrite, flag disablement, or replacement authority root was used" — describes
@@ -310,7 +314,7 @@ still unpublished *by the governed path*, and the partition is still blocked.
 **What C-keep sanctions** is exactly that shape: a documented, recorded,
 **one-time** operator override outside the governed path — publish the intended
 branch by hand, record what was done and against which transaction on the issue.
-This note prescribes no command sequence; the ah#789 override comment is the
+This note prescribes no command sequence; the agent-harness#789 override comment is the
 record of the one that was performed. Anything beyond a recorded manual
 publication is a contract change and needs review.
 
@@ -328,7 +332,7 @@ The supported way to restore governed publication for a permanently blocked
 repository is a reviewed **partition rotation**: the blocked partition is
 retired as a read-only predecessor generation and a fresh, authenticated
 generation is onboarded for the same canonical repository identity. Workstream D
-of the ah#789 plan (`plans/detailed-789d-fabpub-partition-rotation-20260908.md`)
+of the agent-harness#789 plan (`plans/detailed-789d-fabpub-partition-rotation-20260908.md`)
 landed it in Consiliency/agent-harness#816 (the ceremony, the v3 receipt, and the
 generational resolver) and Consiliency/agent-harness#818 (the operator verb below).
 
@@ -554,7 +558,7 @@ partition blocked in the incident has **not** been rotated — that is Lane D5 o
 the plan, an operational step under its own maintainer authorisation after the
 runtime re-pin above. The step-by-step operator procedure, the read-only
 preflight, and the rehearsal technique are in
-`docs/fabpub-partition-rotation-runbook.md`. Until it runs, ah#789 acceptance item (5)'s first half —
+`docs/fabpub-partition-rotation-runbook.md`. Until it runs, agent-harness#789 acceptance item (5)'s first half —
 "a completed recovery can publish the exact intended branch once" — is a
 capability (`test_fabpub_partition_rotation_789d.py` A2) rather than an
 observed outcome for that repository, and Consiliency/agent-harness#789 stays

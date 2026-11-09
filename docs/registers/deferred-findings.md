@@ -5,6 +5,11 @@
 This is a record, not a work queue. Nothing in the runtime, CI or phase discovery reads this file. In the
 words of the register it absorbs (Consiliency/agent-harness#361): "Do not schedule from this register directly."
 
+The `current-main check` fields below are historical observations at their named
+commits, not continuously refreshed claims. Verbatim findings and comments retain
+their original references and commands; they are evidence, not run instructions.
+Current shared-host checks run serially, under `timeout`, in the locked environment.
+
 ## How findings enter
 
 1. **Filing is unchanged.** Filing is governed by the maintainer-ratified design on
@@ -793,6 +798,9 @@ https://github.com/Consiliency/agent-harness/pull/846#issuecomment-5672494503
 ````
 
 <!-- row:R-025 -->
+
+Audit update (2026-11-09): Ask 1 wording corrected in the rotation runbook: refusal is for requests starting after the flip; in-flight reads remain possible.
+
 ### R-025 — FABPUB: deferred board findings from agent-harness#1552 (stale routing client wording and handoff)
 - **source:** Consiliency/agent-harness#1573
 - **origin:** FABPUB, advisor-board ruling on agent-harness#1552 (fixes agent-harness#1315), merge authorized at `9f0fbc18`
@@ -996,6 +1004,9 @@ Ask 3, an end-to-end test of retry after rotation, is still open.
 ````
 
 <!-- row:R-027 -->
+
+Audit update (2026-11-09): Runbook asks 3b and 4 corrected: the newest re-attestation governs, and repeated chain authentication can be quadratic. Runtime docstring/test follow-ups remain separate.
+
 ### R-027 — FABPUB: deferred board findings from agent-harness#1550 (mixed-version recovery-record conflict; chain-walk docs)
 - **source:** Consiliency/agent-harness#1576
 - **origin:** FABPUB, advisor-board ruling on agent-harness#1550 (fixes agent-harness#1310), merge authorized at `b9a0e75d`
@@ -1129,6 +1140,9 @@ Comment by ViperJuice at 2026-10-14T06:54:08Z:
 ````
 
 <!-- row:R-028 -->
+
+Audit update (2026-11-09): Ask 2 and fork-liveness wording corrected in the pre-admission guide; ordinary-exception restore exclusions are now explicit.
+
 ### R-028 — FABPUB: deferred board findings from agent-harness#1551 (post-section gap, NFS doc, restore edge cases)
 - **source:** Consiliency/agent-harness#1578
 - **origin:** FABPUB, advisor-board ruling on agent-harness#1551 (agent-harness#1314, agent-harness#1313, agent-harness#1311), merge authorized at `d2b363d5`
@@ -1268,6 +1282,9 @@ Comment by ViperJuice at 2026-10-14T08:19:12Z:
 ````
 
 <!-- row:R-029 -->
+
+Audit update (2026-11-09): Doc heading now names the pre-entry preparation boundary; original refusal evidence remains necessary to judge no effect.
+
 ### R-029 — FABPUB: deferred board findings from agent-harness#1593 (guard edge cases, lease-refusal handoff, doc precision)
 - **source:** Consiliency/agent-harness#1594
 - **origin:** FABPUB, advisor-board rulings on agent-harness#1593 (fixes agent-harness#1577), round 2 authorized the merge at `d9b0d6f7`

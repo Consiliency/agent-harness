@@ -366,10 +366,13 @@ one that cannot pass without work having happened*.
 
 ### Offloading to another machine (needs a second machine — optional)
 
-We moved heavy CI to a spare machine over a private network using a container pipeline.
+Historical measurement: we moved heavy CI to a spare machine over a private network using a container pipeline.
 Measured: the clean-room gate went from **86:36 to 51:18**, the heavy matrix lane from
 **65:59 to 41:55**, total wall clock from about **87 minutes to 51**, with hosted-runner
 minutes for that work dropping to zero.
+
+The current offload path is disabled (`OFFLOAD_SANDBOX_READY=false` in
+`.github/workflows/test.yml`); these are historical timings, not current routing.
 
 This is the least important item here. The plan discipline is what we believe made the phase
 converge; the offload made iterating cheaper. **If you have one machine, skip this section and
@@ -377,7 +380,7 @@ lose nothing structural.**
 
 If you do adopt it, three findings that will otherwise cost a day each:
 
-- **Run stages concurrently and aggregate verdicts.** Sequential composition stops at the
+- **Within admitted, bounded compute, run stages concurrently and aggregate verdicts.** Sequential composition stops at the
   first failure, so each run surfaces exactly one defect — ours cost roughly 45 minutes per
   defect discovered until the stages ran in parallel.
 - **Do not let evidence export re-run the work.** If exporting test reports re-invokes the

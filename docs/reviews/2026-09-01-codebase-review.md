@@ -1,5 +1,10 @@
 # agent-harness codebase review — 2026-09-01
 
+> Historical review at the revision below. Findings, versions, metrics and recipes
+> describe that tree, not current implementation or an active work queue. Current
+> host policy requires serial tests under `timeout`; the old parallelism proposal
+> below is superseded. Use `CONTRIBUTING.md` for current validation.
+
 Full-codebase review of `Consiliency/agent-harness` at `d96f85a` (`phase-loop-runtime`
 0.7.14). Every finding below was verified against the tree by reading the code; each
 carries a `file:line` anchor (paths are relative to
@@ -592,8 +597,8 @@ value; the 40-minute chronology node is the extreme case.
 
 **T-4. Parallelism.** `pytest-xdist` is not used. Blockers: module-level env mutation in
 `conftest.py`, tests that `chdir`/touch the real repo, global caches (A-6). Once those are
-fenced (`monkeypatch.setenv`, `tmp_path` repos, `cache_clear` fixtures), `-n auto` should
-cut the 14-minute local run to ~3-4 and the hosted lanes proportionally.
+fenced (`monkeypatch.setenv`, `tmp_path` repos, `cache_clear` fixtures), bounded parallel execution was proposed as a possible optimization. That timing
+was an estimate, not a measurement; current shared-host checks run serially.
 
 Additional xdist blocker: `verification_evidence.execute_proofgate_mutation_manifest`
 (`1259-1266`) does `git worktree add`/`remove --force` against the shared `.git`, so
