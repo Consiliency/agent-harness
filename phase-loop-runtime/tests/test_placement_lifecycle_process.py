@@ -1122,6 +1122,31 @@ def test_a_replay_that_runs_out_of_time_or_is_cancelled_publishes_nothing(env, m
         assert response.code == TIMEOUT and not record["settled"] and record["commit"]["complete"]
 
 
+def test_file_lock_checks_budget_after_retry_sleep(tmp_path, monkeypatch):
+    import fcntl
+
+    now = [0.0]
+    calls = []
+    monkeypatch.setattr(sp, "_monotonic", lambda: now[0])
+
+    def flock(_fd, flags):
+        calls.append(flags)
+        assert flags & fcntl.LOCK_NB
+        if len(calls) == 1:
+            raise BlockingIOError()
+
+    def sleep(_seconds):
+        now[0] = 1.0
+
+    monkeypatch.setattr(fcntl, "flock", flock)
+    monkeypatch.setattr(sp.time, "sleep", sleep)
+    lock = sp._FileLock(tmp_path / "budget.lock", blocking=True, deadline=sp._Deadline.after(1.0))
+    with lock as held:
+        assert not held
+    assert len(calls) == 1
+    assert lock.fd is None
+
+
 def test_a_contended_slot_lock_is_bounded_and_never_mutates_the_attempt_late(env):
     env.toolkit(targets=[{"name": "local", "kind": "local", "rank": 1, "transport_id": "local"}])
     env.state.mkdir(parents=True, exist_ok=True)
