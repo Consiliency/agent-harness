@@ -15022,7 +15022,23 @@
         "SL-1",
         "SL-2"
       ],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-11-08T23:42:20Z",
+          "by": "claude-execute-phase",
+          "metadata": {
+            "branch": "t3/v12-journal",
+            "lanes": [
+              "SL-0",
+              "SL-1",
+              "SL-2"
+            ],
+            "phase_alias": "JOURNAL",
+            "run_id": "v12-journal-impl"
+          },
+          "transition": "executing"
+        }
+      ],
       "owner_skill": "claude-plan-phase",
       "phase_alias": "JOURNAL",
       "planning_artifact_only": true,
@@ -15035,10 +15051,10 @@
         "type": "phase"
       },
       "slug": "v12-JOURNAL",
-      "status": "committed",
+      "status": "executing",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-11-08T17:30:00Z"
+      "updated_at": "2026-11-08T23:42:20Z"
     },
     {
       "acceptance_criteria_count": null,
