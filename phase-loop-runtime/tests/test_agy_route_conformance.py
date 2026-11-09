@@ -223,9 +223,12 @@ def driver(conformance_base, monkeypatch):
 def test_obligation(obligation, driver):
     mode, expected = EXPECTED[obligation]
     run = driver(mode)
-    assert run["outcome"] == expected, (obligation, run["outcome"], {
-        name: {key: failure.get(key) for key in ("stage", "reason")} for name, failure in run["failures"].items()},
-        run["diagnostics"])
+    if run["outcome"] != expected:
+        # A plain string, so CI shows the worker's refusal untruncated.
+        pytest.fail(json.dumps({"obligation": obligation, "expected": expected, "outcome": run["outcome"],
+                                "failures": {name: {key: failure.get(key) for key in ("stage", "reason")}
+                                             for name, failure in run["failures"].items()},
+                                "diagnostics": run["diagnostics"]}, sort_keys=True), pytrace=False)
     receipts, failures = run["receipts"], run["failures"]
     if obligation == "op_completion":
         record = receipts["completion"]
