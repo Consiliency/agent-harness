@@ -286,6 +286,9 @@ def unexpected(*args, **kwargs):
 cli._production_codec = unexpected
 cli.read_envelope_file = unexpected
 cli.open_result_file = unexpected
+from phase_loop_runtime.convergence.adapters import patch_return as worker
+worker.default_state_root = unexpected
+worker.cancel_attempt = unexpected
 args = (["launch", "--envelope", "/absent", "--result", "/absent"] if verb == "launch" else ["cancel", "--attempt", "fixture"])
 try:
     if lease:
