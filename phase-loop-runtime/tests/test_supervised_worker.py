@@ -261,6 +261,10 @@ def test_retention_identity_and_unrecorded_deletion(worker_case, monkeypatch):
     assert resolver(jid, ref) == "retention_dropped"
     rootj = rs.open_journal_root(case.state / "journal", create=False)
     assert rs.read_attempt(rootj, jid.attempt_id).terminal is not None
+    page = projection.read_page(rootj, json.dumps(dict(assignment_digest=jid.assignment_digest,
+        page_size=100, cursor=None)).encode(), evidence=resolver)
+    assert isinstance(page, projection.PageResult) and page.page["omitted"]["retention_dropped"] >= 2
+    assert first.proposal.proposal_bytes_digest.encode() in b"".join(rs.read_attempt(rootj, jid.attempt_id).lines)
     other = run(case)  # replay does not create any evidence
     assert other.worker_invocations == 0
     (case.state / "evidence-ledger" / (worker._run(jid) + ".retired")).unlink()
@@ -799,9 +803,11 @@ def test_jcs_changed_number_and_unencodable(worker_case):
     assert rs.read_attempt(root, case.envelope["attempt_id"]).identity is None
 
 
-@pytest.mark.parametrize("path", ["../file", "/file", ".git/config", ".GIT/config", "a//b", "./file", "a/../b", "", "x" * 4097])
+@pytest.mark.parametrize("path", ["../file", "/file", ".git/config", ".GIT/config", "a//b", "./file", "a/../b", "", "x" * 4097], ids=["parent", "absolute", "git", "git-case", "empty-component", "dot", "nested-parent", "empty", "long"])
 def test_proposal_normalized_paths(worker_case, path):
     case = worker_case
+    case.settings["worker_proposal_cap"] = 100000
+    case.config.config_path.write_text(json.dumps(case.settings))
     proposal = f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n".encode()
     case.executable.write_text("#!/usr/bin/python3\nimport os\nos.write(1," + repr(proposal) + ")\n")
     assert run(case).proposal.status == "withheld_malformed"
@@ -825,3 +831,33 @@ def test_absent_baseline_and_event_cap(worker_case, monkeypatch):
     result = run(case)
     assert result.journal_complete and result.journal_anchor and dropped
     assert all(row.git_blob_sha1 is None and row.sha256 is None for row in result.proposal.baselines)
+
+
+def test_torn_running_append_is_unknown(worker_case, monkeypatch):
+    original_open, original_write = rs.open_writer, os.write
+    landed = []
+    def opened(*args, **kwargs):
+        real = original_open(*args, **kwargs)
+        class Wrapped:
+            def __getattr__(self, name):
+                return getattr(real, name)
+            def state(self, state, **kwargs):
+                if state != "running":
+                    return real.state(state, **kwargs)
+                def partial(fd, data):
+                    path = os.readlink(f"/proc/self/fd/{fd}")
+                    if "segments" in path or path.endswith(".jsonl"):
+                        original_write(fd, data[:max(1, len(data) // 2)])
+                        landed.append(1)
+                        raise OSError("synthetic partial append")
+                    return original_write(fd, data)
+                with pytest.MonkeyPatch.context() as patch:
+                    patch.setattr(os, "write", partial)
+                    return real.state(state, **kwargs)
+        return Wrapped()
+    monkeypatch.setattr(rs, "open_writer", opened)
+    result = run(worker_case)
+    assert landed and result.refusal == "journal_unavailable" and result.worker_invocations == 0
+    root = rs.open_journal_root(worker_case.state / "journal", create=False)
+    observed = projection.attempt_status(root, worker_case.envelope["attempt_id"])
+    assert observed.display == "unknown" and "journal_torn_line" in observed.diagnostics

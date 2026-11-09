@@ -493,3 +493,17 @@ def test_worker_preserves_convergence_bounds(tmp_path, monkeypatch, mode, expect
     script = _install(tmp_path / "bin", "codex", bodies[mode], monkeypatch)
     result = run_codex_adapter(_request((str(script),), tmp_path, timeout=.1))
     assert result.status.value == expected and result.detail == detail
+
+
+def test_worker_preserves_convergence_devnull_stdin(tmp_path, monkeypatch):
+    import subprocess
+    from phase_loop_runtime import panel_invoker
+    original = panel_invoker.launch_owned
+    observed = []
+    def launched(*args, **kwargs):
+        observed.append(kwargs["stdin"])
+        return original(*args, **kwargs)
+    monkeypatch.setattr(panel_invoker, "launch_owned", launched)
+    script = _install(tmp_path / "bin", "codex", _emit({"status": "completed"}), monkeypatch)
+    assert run_codex_adapter(_request((str(script),), tmp_path)).status.value == "completed"
+    assert observed == [subprocess.DEVNULL]
