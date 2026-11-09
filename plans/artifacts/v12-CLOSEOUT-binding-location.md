@@ -57,3 +57,44 @@ satisfy it. The binding is an operator record, not a root-managed one.
    directory.
 6. Provisioning the record on hosts is deployment work outside CLOSEOUT, and
    EC-CLOSEOUT acceptance stays as the plan states.
+
+## Bootstrap order (coordinator, 2026-11-09, after the build's second STOP)
+
+The frozen `load_v2_binding(path, *, workspace, target, reference_roots)`
+(`v12-CLOSEOUT-inputs.md:300-301`) needs the exclusion roots before it reads the
+binding. Those roots come from the per-attempt controller document, and binding
+§4.2 locates that document under the binding's `controller_root`. The CLI breaks
+this cycle with a two-pass bootstrap. The frozen signatures stay unchanged, and
+no exclusion is relaxed.
+
+1. Run route preflight, then read the envelope once, as WORKER requires. Compute
+   `h`, the SHA-256 of the exact envelope bytes.
+2. **Locator read.** Read `MANAGED_BINDING` once through `trusted_bytes` with no
+   excluded roots (all other checks unchanged). Parse it, and take **only**
+   `controller_root` from it. Nothing else in these bytes is used: no reference is
+   read, no code is executed or decoded, and nothing is journalled or spawned.
+   Keep the bytes for step 5.
+3. Read `<controller_root>/<h>.json` through the binding §4.2 single-descriptor
+   read and checks, and take `workspace`, `target` and the local roots from it.
+   That read also requires the document's own location to lie outside those
+   roots; it is checked once they are known, and refuses `binding_invalid`
+   otherwise.
+4. **Full load.** Call `load_v2_binding(MANAGED_BINDING, workspace=...,
+   target=..., reference_roots=...)` with the complete exclusions. It re-reads the
+   binding and every referenced file under them. A binding or reference inside
+   any excluded root refuses `untrusted_location`.
+5. **Swap check.** The binding bytes from step 2 must equal the bytes that step 4
+   read. Otherwise refuse `binding_invalid`. The `controller_root` used in step 3
+   must equal the one in the fully loaded binding.
+6. Nothing from the binding is executed, no admission is prepared, and nothing is
+   spawned or journalled until step 4 and step 5 succeed. Any refusal in steps
+   1–5 happens before any effect.
+
+SL-1 owns the locator read and the swap check in `supervised_launch_binding.py`.
+SL-2 owns calling them in this order from `supervised_worker_cli`. The tests for
+SL-1 and SL-2 cover:
+- a binding placed under the workspace, the target and a reference root, each of
+  which refuses at step 4;
+- a binding swapped between steps 2 and 4, which refuses at step 5;
+- a controller document inside an excluded root, which refuses at step 3;
+- no execution before step 4.

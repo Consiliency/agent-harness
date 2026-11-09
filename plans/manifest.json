@@ -15619,7 +15619,7 @@
       "file": "plans/artifacts/v12-CLOSEOUT-binding-location.md",
       "frozen_inputs": {
         "plans/artifacts/v12-CLOSEOUT-binding-location.md": {
-          "sha256": "c3a8d1dba6aa834801faffd1fd7a30a29a1c1d01bd441576221502b060efa6b7"
+          "sha256": "09cddf98937c801b1bbf5be13de5cb0fa899a0d757932488fed6012af78da936"
         }
       },
       "gate_status": "declared_not_produced",
