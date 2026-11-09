@@ -15230,7 +15230,79 @@
         "SL-2",
         "SL-3"
       ],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-11-09T10:44:23Z",
+          "by": "claude-execute-phase",
+          "metadata": {
+            "branch": "t3/agyroll-recbind",
+            "lanes": [
+              "SL-2",
+              "SL-1",
+              "SL-3"
+            ],
+            "note": "Recorded at closeout: execution ran 2026-11-08..09 on t3/agyroll-recbind (amendments A1, A2).",
+            "phase_alias": "RECBIND",
+            "run_id": "v1-agyroll-recbind-impl"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-11-09T10:44:23Z",
+          "by": "claude-execute-phase",
+          "metadata": {
+            "dirty_worktree_summary": "Only the authorized manifest lifecycle row changed.",
+            "if_gates_produced": [
+              "IF-0-RECBIND-1",
+              "IF-0-RECBIND-2"
+            ],
+            "implementation_pr": "agent-harness#1937",
+            "issue_dispositions": [
+              {
+                "disposition": "carried_with_owner",
+                "issue_id": "agent-harness#1008",
+                "owner": "PROVFWD",
+                "phase": "RECBIND",
+                "successor_plan": "specs/phase-plans-agyroll-v1.md"
+              },
+              {
+                "disposition": "carried_with_owner",
+                "issue_id": "agent-harness#1935",
+                "owner": "REQUAL",
+                "phase": "RECBIND",
+                "successor_plan": "specs/phase-plans-agyroll-v1.md"
+              },
+              {
+                "disposition": "carried_with_owner",
+                "issue_id": "agent-harness#1947",
+                "owner": "REQUAL docs lane (next advisor_board/CONTRACTS.md writer)",
+                "phase": "RECBIND",
+                "successor_plan": "specs/phase-plans-agyroll-v1.md"
+              },
+              {
+                "disposition": "carried_with_owner",
+                "issue_id": "agent-harness#1958",
+                "owner": "per-seat resource caps (agent-harness#1895) owner; external to RECBIND",
+                "phase": "RECBIND"
+              }
+            ],
+            "issue_inventory": [
+              "agent-harness#1008",
+              "agent-harness#1935",
+              "agent-harness#1947",
+              "agent-harness#1958"
+            ],
+            "merged_commit": "71e560022a97815736c97ef10719221bbe1d7e36",
+            "phase_alias": "RECBIND",
+            "review_disposition": "Independent review BLOCK findings H1-H5 and re-check M4 plus the CI per-seat-caps prerequisite were all repaired and confirmed before merge; no deferred review issue was filed.",
+            "run_id": "v1-agyroll-recbind-closeout-20261109",
+            "verification_artifact_path": "plans/evidence/agy-1.5.3-linux-x64-qualification.json",
+            "verification_scope": "Converted v2 record via convert_agy_record_v2.py --check/--write at record commit dec1d3d9; plan Verification block, --contract and strict conformance through --release on ai (tests-on-ai ruling); hosted release gate (strict conformance + --release) green on agent-harness#1937.",
+            "verification_status": "passed"
+          },
+          "transition": "completed"
+        }
+      ],
       "owner_skill": "claude-plan-phase",
       "phase_alias": "RECBIND",
       "planning_artifact_only": true,
@@ -15243,9 +15315,9 @@
         "type": "phase"
       },
       "slug": "v1-agyroll-RECBIND",
-      "status": "committed",
+      "status": "completed",
       "type": "phase",
-      "updated_at": "2026-11-08T15:23:52Z"
+      "updated_at": "2026-11-09T10:44:23Z"
     },
     {
       "acceptance_criteria_count": null,
