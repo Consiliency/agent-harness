@@ -65,31 +65,31 @@ Audit baseline: `origin/main` at `23a30561e9b2ef23933fcbb4225a1d86120a5195`. Pen
 - [ ] `skills-src/codex/codex-skill-improvement-planner/SKILL.md` — pending
 - [ ] `skills-src/codex/codex-task-contextualizer/SKILL.md` — pending
 - [ ] `skills-src/gemini/gemini-advisor-board/SKILL.md` — pending
-- [ ] `skills-src/gemini/gemini-execute-detailed/SKILL.md` — pending
+- [x] `skills-src/gemini/gemini-execute-detailed/SKILL.md` — fixed; runtime `publishing.py:2085; plan_manifest.py:339; skill_paths.py:24 (reflection root and absent CLI alias)`
 - [ ] `skills-src/gemini/gemini-execute-phase/SKILL.md` — pending
 - [ ] `skills-src/gemini/gemini-execute-phase/references/interactive-path.md` — pending
 - [ ] `skills-src/gemini/gemini-execute-phase/references/worker-fanout.md` — pending
 - [ ] `skills-src/gemini/gemini-execute-phase/references/worktree-pruning.md` — pending
 - [ ] `skills-src/gemini/gemini-phase-loop/SKILL.md` — pending
 - [ ] `skills-src/gemini/gemini-phase-roadmap-builder/SKILL.md` — pending
-- [ ] `skills-src/gemini/gemini-plan-detailed/SKILL.md` — pending
+- [x] `skills-src/gemini/gemini-plan-detailed/SKILL.md` — fixed; runtime `plan_manifest.py:95,327 and skill_paths.py:24 (artifact rule, typed handoff field, reflection root, absent CLI alias)`
 - [ ] `skills-src/gemini/gemini-plan-phase/SKILL.md` — pending
-- [ ] `skills-src/gemini/gemini-run-train/SKILL.md` — pending
-- [ ] `skills-src/gemini/gemini-skill-editor/SKILL.md` — pending
-- [ ] `skills-src/gemini/gemini-skill-improvement-planner/SKILL.md` — pending
+- [x] `skills-src/gemini/gemini-run-train/SKILL.md` — checked-clean; runtime `train_runner.py:340-380,3030 and cli.py run-train parser`
+- [x] `skills-src/gemini/gemini-skill-editor/SKILL.md` — checked-clean; runtime `build_bundle.py DEFAULT_SOURCES; reflection_corpus.py:615-693`
+- [x] `skills-src/gemini/gemini-skill-improvement-planner/SKILL.md` — checked-clean; runtime `reflection_corpus.py:650-675; rule_enforcement registry`
 - [ ] `skills-src/gemini/gemini-task-contextualizer/SKILL.md` — pending
 - [ ] `skills-src/opencode/opencode-advisor-board/SKILL.md` — pending
-- [ ] `skills-src/opencode/opencode-execute-detailed/SKILL.md` — pending
+- [x] `skills-src/opencode/opencode-execute-detailed/SKILL.md` — fixed; runtime `publishing.py:2085; plan_manifest.py:339; skill_paths.py:24 (reflection root and absent CLI alias)`
 - [ ] `skills-src/opencode/opencode-execute-phase/SKILL.md` — pending
 - [ ] `skills-src/opencode/opencode-execute-phase/references/interactive-publication.md` — pending
 - [ ] `skills-src/opencode/opencode-execute-phase/references/worktree-pruning.md` — pending
 - [ ] `skills-src/opencode/opencode-phase-loop/SKILL.md` — pending
 - [ ] `skills-src/opencode/opencode-phase-roadmap-builder/SKILL.md` — pending
-- [ ] `skills-src/opencode/opencode-plan-detailed/SKILL.md` — pending
+- [x] `skills-src/opencode/opencode-plan-detailed/SKILL.md` — fixed; runtime `plan_manifest.py:95,327 and skill_paths.py:24 (artifact rule, typed handoff field, reflection root, absent CLI alias)`
 - [ ] `skills-src/opencode/opencode-plan-phase/SKILL.md` — pending
-- [ ] `skills-src/opencode/opencode-run-train/SKILL.md` — pending
-- [ ] `skills-src/opencode/opencode-skill-editor/SKILL.md` — pending
-- [ ] `skills-src/opencode/opencode-skill-improvement-planner/SKILL.md` — pending
+- [x] `skills-src/opencode/opencode-run-train/SKILL.md` — checked-clean; runtime `train_runner.py:340-380,3030 and cli.py run-train parser`
+- [x] `skills-src/opencode/opencode-skill-editor/SKILL.md` — checked-clean; runtime `build_bundle.py DEFAULT_SOURCES; reflection_corpus.py:615-693`
+- [x] `skills-src/opencode/opencode-skill-improvement-planner/SKILL.md` — checked-clean; runtime `reflection_corpus.py:650-675; rule_enforcement registry`
 - [ ] `skills-src/opencode/opencode-task-contextualizer/SKILL.md` — pending
 
 - [ ] `skills-src/claude/claude-skill-editor/applied-plans.log` — pending
