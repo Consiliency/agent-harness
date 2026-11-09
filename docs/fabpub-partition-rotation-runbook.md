@@ -365,7 +365,8 @@ from `build_routing_broker_client()` that a surviving holder built before the
 flip refuses every request it starts after the flip with `WriterGenerationBlocked` (`this broker
 client is bound to retired partition generation …`) before it reads or writes
 either generation's store. A request already past that check may still read the
-retired generation; write fences remain the backstop. It never rebinds itself, so restart that process
+retired generation; write fences remain the backstop. The client never rebinds itself,
+so restart that process
 (agent-harness#1315). The refusal's type is `RoutingClientGenerationRetired`, and
 the human route answers it with next step `rebuild_broker_client_and_retry`, not
 `repair_fabpub_authority`.

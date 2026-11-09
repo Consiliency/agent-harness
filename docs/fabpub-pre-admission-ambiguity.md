@@ -159,7 +159,8 @@ provider outcome after it is kept rather than lost.
     it as landed), the owner stays unsealed, the checkpoint stays `ADAPTER_STARTED`,
     and the epoch stays blocked. The key is never resolved as landed automatically
     (C-keep); ordinary retries do not clear it. Reviewed rotation or the bounded exact-PR
-    settlement in runbook §8c requires separate authority.
+    settlement in runbook §8c require separate authority. Exact-PR settlement shipped
+    after `v0.7.27`.
   - The result is not accepted and has no `publish_result`. Its `reason` is
     `effect_observed_after_ambiguity` or `no_effect_observed_after_ambiguity`, and
     `observed_after_ambiguity` carries the observation. Every retry replays the
@@ -290,7 +291,8 @@ it repeats the warning against a second `attested_not_landed` without new eviden
 
 An ordinary publish retry does **not** repair an already blocked partition.
 Reviewed partition rotation is described below. For an exact existing PR, the
-bounded administrative settlement in runbook §8c is another supported path;
+bounded administrative settlement in runbook §8c, shipped after `v0.7.27`, is
+another supported path;
 it preserves the raw ambiguity rather than rewriting it.
 
 **What happened in agent-harness#789, in order.** The governed publish refused and the

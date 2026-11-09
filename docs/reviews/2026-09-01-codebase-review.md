@@ -597,8 +597,8 @@ value; the 40-minute chronology node is the extreme case.
 
 **T-4. Parallelism.** `pytest-xdist` is not used. Blockers: module-level env mutation in
 `conftest.py`, tests that `chdir`/touch the real repo, global caches (A-6). Once those are
-fenced (`monkeypatch.setenv`, `tmp_path` repos, `cache_clear` fixtures), bounded parallel execution was proposed as a possible optimization. That timing
-was an estimate, not a measurement; current shared-host checks run serially.
+fenced (`monkeypatch.setenv`, `tmp_path` repos, `cache_clear` fixtures), `-n auto` should
+cut the 14-minute local run to ~3-4 and the hosted lanes proportionally.
 
 Additional xdist blocker: `verification_evidence.execute_proofgate_mutation_manifest`
 (`1259-1266`) does `git worktree add`/`remove --force` against the shared `.git`, so

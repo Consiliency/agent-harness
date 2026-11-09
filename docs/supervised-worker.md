@@ -150,7 +150,7 @@ context; declared envelope dependencies still refuse standalone admission.
 There is no same-login containment, network denial or protection of on-disk
 git/gh credentials. User-owned tools remain writable by the same login. Without
 descriptor execution there is a residual check-to-exec race; WORKER must disclose
-it and repeat checks. Durable journal records cannot prove trust against
+it and repeat checks. JOURNAL's future durable records cannot prove trust against
 a same-login writer. WORKER/JOURNAL own cancellation, durable replay prevention,
 bounded subprocesses and journal implementation; a `finished` result will not
 prove all descendants are gone. The external controller owns apply/acceptance.
