@@ -11,19 +11,19 @@ Audit baseline: `origin/main` at `23a30561e9b2ef23933fcbb4225a1d86120a5195`. Pen
 - [ ] `skills-src/claude/claude-execute-phase/references/interactive-steps.md` — pending
 - [ ] `skills-src/claude/claude-execute-phase/references/lane-dispatch.md` — pending
 - [ ] `skills-src/claude/claude-execute-phase/references/merge-and-verify.md` — pending
-- [ ] `skills-src/claude/claude-execute-phase/scripts/allocate_worktree_name.sh` — pending
-- [ ] `skills-src/claude/claude-execute-phase/scripts/audit_lane_file_touches.py` — pending
-- [ ] `skills-src/claude/claude-execute-phase/scripts/cleanup_lane_worktrees.sh` — pending
-- [ ] `skills-src/claude/claude-execute-phase/scripts/parent_tree_leakage_check.sh` — pending
-- [ ] `skills-src/claude/claude-execute-phase/scripts/post_merge_import_smoke.sh` — pending
-- [ ] `skills-src/claude/claude-execute-phase/scripts/pre_merge_destructiveness_check.sh` — pending
-- [ ] `skills-src/claude/claude-execute-phase/scripts/prune_merged_worktrees.sh` — pending
-- [ ] `skills-src/claude/claude-execute-phase/scripts/resolve_branch_from_sha.sh` — pending
-- [ ] `skills-src/claude/claude-execute-phase/scripts/state.py` — pending
-- [ ] `skills-src/claude/claude-execute-phase/scripts/sweep_stale_worktrees.sh` — pending
-- [ ] `skills-src/claude/claude-execute-phase/scripts/team_teardown.sh` — pending
+- [x] `skills-src/claude/claude-execute-phase/scripts/allocate_worktree_name.sh` — fixed; bundled executable data inspected against its command parser and implementation; documentation/comments only, no behavior edits
+- [x] `skills-src/claude/claude-execute-phase/scripts/audit_lane_file_touches.py` — fixed; bundled executable data inspected against its command parser and implementation; documentation/comments only, no behavior edits
+- [x] `skills-src/claude/claude-execute-phase/scripts/cleanup_lane_worktrees.sh` — fixed; bundled executable data inspected against its command parser and implementation; documentation/comments only, no behavior edits
+- [x] `skills-src/claude/claude-execute-phase/scripts/parent_tree_leakage_check.sh` — fixed; bundled executable data inspected against its command parser and implementation; documentation/comments only, no behavior edits
+- [x] `skills-src/claude/claude-execute-phase/scripts/post_merge_import_smoke.sh` — fixed; bundled executable data inspected against its command parser and implementation; documentation/comments only, no behavior edits
+- [x] `skills-src/claude/claude-execute-phase/scripts/pre_merge_destructiveness_check.sh` — fixed; bundled executable data inspected against its command parser and implementation; documentation/comments only, no behavior edits
+- [x] `skills-src/claude/claude-execute-phase/scripts/prune_merged_worktrees.sh` — checked-clean; bundled executable data inspected against its command parser and implementation; documentation/comments only, no behavior edits
+- [x] `skills-src/claude/claude-execute-phase/scripts/resolve_branch_from_sha.sh` — checked-clean; bundled executable data inspected against its command parser and implementation; documentation/comments only, no behavior edits
+- [x] `skills-src/claude/claude-execute-phase/scripts/state.py` — fixed; bundled executable data inspected against its command parser and implementation; documentation/comments only, no behavior edits
+- [x] `skills-src/claude/claude-execute-phase/scripts/sweep_stale_worktrees.sh` — checked-clean; bundled executable data inspected against its command parser and implementation; documentation/comments only, no behavior edits
+- [x] `skills-src/claude/claude-execute-phase/scripts/team_teardown.sh` — fixed; bundled executable data inspected against its command parser and implementation; documentation/comments only, no behavior edits
 - [ ] `skills-src/claude/claude-execute-phase/scripts/validate_plan_doc.py` — pending
-- [ ] `skills-src/claude/claude-execute-phase/scripts/verify_harness.sh` — pending
+- [x] `skills-src/claude/claude-execute-phase/scripts/verify_harness.sh` — checked-clean; bundled executable data inspected against its command parser and implementation; documentation/comments only, no behavior edits
 - [x] `skills-src/claude/claude-phase-loop/SKILL.md` — fixed; runtime `cli.py:324,3340`, `runner.py:710`, `launcher.py:944`, `capability_registry.py:116`; qualified issue and corrected launcher/path claims
 - [x] `skills-src/claude/claude-phase-roadmap-builder/SKILL.md` — fixed; runtime `roadmap_lint.py:70,402; cli.py advisor-board; skill_paths.py:24; absent helper and published install pin`
 - [x] `skills-src/claude/claude-phase-roadmap-builder/assets/review_prompt.md` — fixed; runtime `roadmap_lint.py dependency graph; corrected concurrency condition`
