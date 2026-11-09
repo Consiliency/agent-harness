@@ -149,7 +149,7 @@ def test_v2_reporting_guards_entered_in_source_copy(code, mutated):
             def visit_Return(self, node):
                 if any(isinstance(child, ast.Constant) and child.value == code for child in ast.walk(node)):
                     self.changed += 1
-                    return ast.Pass()
+                    return ast.parse("return V2Decision(True, ())").body[0]
                 return self.generic_visit(node)
             def visit_Expr(self, node):
                 if (isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Attribute)

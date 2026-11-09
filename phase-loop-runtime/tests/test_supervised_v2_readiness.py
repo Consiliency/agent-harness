@@ -150,7 +150,7 @@ def assessment(history, monkeypatch):
     def row(node, case_id):
         return dict(test_node_id=node, case_or_control_id=case_id, resource_digests=resources,
                     production_witnesses=["phase_loop_runtime.supervised_envelope_v2.validate_v2_admission"], outcome="passed",
-                    runner_artifact_sha256="c" * 64, runner_artifact_ref="results.xml", runner_run_id="offline-fixture", tested_head=tested)
+                    owner="CLOSEOUT", source_pointer=node.split("::", 1)[0], host="ai", runner_artifact_sha256="c" * 64, runner_artifact_ref="results.xml", runner_run_id="offline-fixture", tested_head=tested)
     cases = evidence.strict_json(bundle.resource_bytes("conformance/envelope.v2.vectors.json"))["cases"]
     for case in cases:
         groups["intake_results"].append(row("tests/test_supervised_contracts.py::test_v2_published_schema_only[" + case["id"] + "]", case["id"]))

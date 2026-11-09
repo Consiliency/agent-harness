@@ -40,6 +40,19 @@ SOURCE_PATHS = (
     "phase-loop-runtime/tests/test_supervised_capture_v2.py",
     "phase-loop-runtime/tests/test_supervised_v2_readiness.py",
     "phase-loop-runtime/tests/historical_receipts.py",
+    "phase-loop-runtime/tests/test_supervised_contracts.py",
+    "phase-loop-runtime/tests/test_supervised_contracts_vectors.py",
+    "phase-loop-runtime/tests/test_supervised_contracts_mutations.py",
+    "phase-loop-runtime/tests/test_supervised_contracts_receipt.py",
+    "phase-loop-runtime/tests/test_supervised_launch.py",
+    "phase-loop-runtime/tests/test_supervised_launch_binding.py",
+    "phase-loop-runtime/tests/test_supervised_launch_route.py",
+    "phase-loop-runtime/tests/test_supervised_launch_mutations.py",
+    "phase-loop-runtime/tests/test_supervised_launch_receipt.py",
+    "phase-loop-runtime/tests/test_supervised_worker.py",
+    "phase-loop-runtime/tests/test_supervised_worker_cli.py",
+    "phase-loop-runtime/tests/test_supervised_worker_receipt.py",
+    "phase-loop-runtime/tests/test_run_status_receipt.py",
     "plans/artifacts/v12-CLOSEOUT-inputs.md",
     "plans/artifacts/v12-CLOSEOUT-landed-binding.md",
     "plans/artifacts/v12-CLOSEOUT-binding-location.md",
@@ -47,6 +60,7 @@ SOURCE_PATHS = (
 )
 CHECK_WORKFLOWS = {
     "supervised contract publication": ".github/workflows/supervised-contract-intake.yml",
+    "supervised v2 evidence assessment": ".github/workflows/supervised-v2-evidence.yml",
     "suite gate": ".github/workflows/test.yml", "lint (pyflakes)": ".github/workflows/test.yml",
     "chronology retention guard": ".github/workflows/test.yml", "docs-freshness audit": ".github/workflows/docs-audit.yml",
     "gitleaks": ".github/workflows/scrub.yml", "check": ".github/workflows/release-consistency.yml",
@@ -170,7 +184,8 @@ def collect_producer_results(paths, *, run_id, tested_head, resources):
             row = dict(test_node_id=node, case_or_control_id=properties.get("contract_case_id", case.attrib["name"]),
                        resource_digests=resources, production_witnesses=witnesses, outcome="passed",
                        runner_artifact_sha256=artifact_digest, runner_artifact_ref=path.name,
-                       runner_run_id=run_id, tested_head=tested_head)
+                       runner_run_id=run_id, tested_head=tested_head, owner="CLOSEOUT",
+                       source_pointer=node.split("::", 1)[0], host="ai")
             if "contract_diagnostics" in properties:
                 row["contract_diagnostics"] = strict_json(properties["contract_diagnostics"])
                 row["supported_route"] = properties["supported_route"]
@@ -231,9 +246,10 @@ def verify_offline(repo, record):
     for group, rows in groups.items():
         for row in rows:
             expected_fields = {"test_node_id", "case_or_control_id", "resource_digests", "production_witnesses", "outcome",
-                               "runner_artifact_sha256", "runner_artifact_ref", "runner_run_id", "tested_head"}
+                               "runner_artifact_sha256", "runner_artifact_ref", "runner_run_id", "tested_head", "owner", "source_pointer", "host"}
             require(expected_fields <= set(row) <= expected_fields | {"contract_diagnostics", "supported_route"}, "producer_row_invalid")
             node = row["test_node_id"]
+            require(row["owner"] == "CLOSEOUT" and row["host"] == "ai" and row["source_pointer"] == node.split("::", 1)[0], "producer_identity_invalid")
             require(type(node) is str and len(node) <= 2048 and re.fullmatch(r"tests/test_[A-Za-z0-9_]+\.py::[^\r\n]+", node) is not None,
                     "producer_node_invalid")
             require(all(re.fullmatch(r"[A-Za-z0-9_.<>]+", symbol) is not None for symbol in row["production_witnesses"]), "witness_invalid")
@@ -339,10 +355,34 @@ def authenticate_publication(api, run_id, head):
     return dict(run_id=run_id, artifact_id=artifact["id"], artifact_sha256=digest, contract=True, outcome="passed")
 
 
+def authenticate_assessment(api, run_id, head, identity):
+    """A later read-only assessment verifies the completed verifier artifact."""
+    authenticate_run(api, run_id, head=head, workflow=".github/workflows/supervised-v2-evidence.yml")
+    artifacts = api.json(f"repos/{REPOSITORY}/actions/runs/{run_id}/artifacts?per_page=100")
+    require(artifacts["total_count"] <= 100, "artifact_pagination_required")
+    rows = [row for row in artifacts["artifacts"] if row["name"] == f"supervised-v2-assessment-{run_id}" and not row["expired"]]
+    require(len(rows) == 1 and rows[0]["size_in_bytes"] <= 16777216, "assessment_artifact_missing")
+    artifact = rows[0]
+    raw = api.bytes(f"repos/{REPOSITORY}/actions/artifacts/{artifact['id']}/zip")
+    digest = sha256(raw).hexdigest()
+    require(artifact["digest"] == "sha256:" + digest, "artifact_digest_invalid")
+    with zipfile.ZipFile(BytesIO(raw)) as archive:
+        require(archive.namelist() == ["supervised-v2-assessment.json"] and archive.infolist()[0].file_size <= 16777216,
+                "assessment_artifact_invalid")
+        assessment = strict_json(archive.read("supervised-v2-assessment.json"))
+        require(assessment["assessment_runner"]["head"] == head
+                and str(assessment["assessment_runner"]["run"]) == str(run_id)
+                and assessment["content_identity"] == identity and assessment["byte_pin_authority"] is False,
+                "assessment_identity_invalid")
+    return dict(run_id=run_id, artifact_id=artifact["id"], artifact_sha256=digest, outcome="passed")
+
+
 def evaluate(repo, record, *, api=None, current_head=None):
     result = verify_offline(repo, record)
     current_head = current_head or git(repo, "rev-parse", "HEAD").decode().strip()
     check_applicability(repo, record, current_head, api=api)
+    result["content_identity"] = record["content_identity"]
+    result["tested_head"] = record["tested_head"]
     if api is None:
         result["hosted_status"] = "unverified"
         return result
@@ -372,6 +412,11 @@ def evaluate(repo, record, *, api=None, current_head=None):
     require(phase_cases and all(case.find("skipped") is None for case in phase_cases), "gate_a_phase_proof_missing")
     result["gate_a"] = dict(run_id=gate, artifact_id=artifact["id"], artifact_sha256=digest, outcome="passed")
     result["hosted_status"] = "ci_and_publication_verified"
+    verifier = record.get("hosted_evidence", {}).get("verifier_run_id")
+    if verifier is not None:
+        result["verifier"] = authenticate_assessment(api, verifier, record["tested_head"], record["content_identity"])
+    else:
+        result["hosted_status"] = "verifier_artifact_pending"
     # The pinned revision establishes no external publisher trust roots.
     # Authenticated CI cannot substitute for those producer-owned bindings.
     return result

@@ -408,8 +408,13 @@ def test_v2_cli_bootstrap_order_enters_real_worker(v2_operator, monkeypatch, cha
             if event == "locator" and change == "binding-replaced":
                 operator.path.write_bytes(operator.path.read_bytes() + b" ")
             if event == "activation" and isinstance(value, binding.V2Binding):
+                from dataclasses import replace
                 wrap(value.codec, "decode_v2", "decode")
-                wrap(value.validator, "validate", "validate")
+                validator = value.validator
+                def validate(*args, **kwargs):
+                    events.append("validate")
+                    return validator(*args, **kwargs)
+                value = replace(value, validator=validate)
             return value
         monkeypatch.setattr(owner, name, entered)
     for owner, name, event in ((cli, "read_envelope_file", "envelope"), (binding, "read_binding_locator", "locator"),
