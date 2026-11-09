@@ -15,9 +15,10 @@ oldest-first as well.
 * ``reviewed-tree/`` is RECONSTRUCTIBLE -- a clone, recoverable from git. Pure waste once cold.
 * ``work/`` is IRREPRODUCIBLE -- the panelist's notes, probes and partial findings.
 
-So the rules are: never archive the bulk, never reap the record, and archive BEFORE reaping.
-If the archive fails, the sandbox stays. Losing the irreproducible half to a cleanup bug is
-the one failure here that cannot be undone, and disk space is always recoverable later.
+When ``archive_dest`` is configured, archive only ``work/`` before removing the
+sandbox; an archive failure keeps the sandbox. Without an archive destination,
+reaping removes the sandbox without preserving ``work/``. TTL, total-footprint
+and free-space reaps skip entries whose recorded owning process is still live.
 """
 
 from __future__ import annotations

@@ -5,7 +5,8 @@ namespace, iptables and slirp4netns to allow public internet while blocking
 private destinations except explicit policy allowances. The proxy-only posture
 has no uplink and bridges one loopback port to a host proxy; proxy allowlists
 are enforced by ``seat_egress_proxy``. Both require the relevant host helpers
-and namespace capabilities and refuse when enforcement cannot be established.
+and namespace capabilities. Missing enforcement refuses when ``required`` is true;
+an optional call instead warns and yields an empty launch prefix.
 
 This module supplies the network boundary. Filesystem and credential isolation
 for jailed review seats are supplied separately by ``seat_jail`` and profiles;
