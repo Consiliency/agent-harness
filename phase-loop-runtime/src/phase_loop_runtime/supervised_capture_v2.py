@@ -50,6 +50,11 @@ class TrustedLaunchSpec:
     envelope_cap: int = 1048576
     reference_cap: int = 1048576
     aggregate_cap: int = 16777216
+    stdin: str = "input"
+    declared_roots: tuple[tuple[str, Path], ...] = ()
+    view_roots: tuple[tuple[str, Path], ...] = ()
+    template_slots: tuple[tuple[str, str], ...] = ()
+    discovery_names: tuple[str, ...] = ()
 
     def __post_init__(self):
         object.__setattr__(self, "cwd_locator", _freeze(_plain(self.cwd_locator)))
@@ -77,7 +82,13 @@ class _Delivery:
 class CapturedLaunch:
     __slots__ = ("spec", "attempt", "context", "commitments", "diagnostics", "credential_sources",
                  "instruction", "references", "workspace_identity", "local_digest", "_snapshots", "_fds",
-                 "_delivery", "_tree_digest", "_closed", "_spent", "uncheckable")
+                 "_delivery", "_tree_digest", "_closed", "_spent", "uncheckable",
+                 "_executable_fds", "_descriptor_snapshots", "_spawn_cwd", "_discoveries", "_sealed")
+
+    def __setattr__(self, name, value):
+        if getattr(self, "_sealed", False) and not name.startswith("_"):
+            raise AttributeError("capture_immutable")
+        object.__setattr__(self, name, value)
 
     def __repr__(self):
         return "<one-attempt launch capture>"
@@ -151,6 +162,7 @@ def _tree_manifest(entries):
     rows, kinds = [], {}
     for entry in entries:
         path = entry["path"]
+        _require(type(path) is str, "launch_input_unbound")
         if path == ".git" or path.startswith(".git/"):
             continue
         _require(_relative(path) and path not in kinds, "launch_input_unbound")
@@ -177,7 +189,7 @@ def _tree_manifest(entries):
     return rows
 
 
-def _walk_tree(root, cap):
+def _walk_tree(root, cap, *, with_entries=False):
     entries, total = [], 0
     def walk(directory, prefix=""):
         nonlocal total
@@ -219,7 +231,8 @@ def _walk_tree(root, cap):
         walk(directory)
     finally:
         os.close(directory)
-    return _tree_manifest(entries)
+    manifest = _tree_manifest(entries)
+    return (manifest, entries) if with_entries else manifest
 
 
 def capture_launch_v2(*, spec: TrustedLaunchSpec, context, attempt: AttemptBinding):
@@ -227,6 +240,7 @@ def capture_launch_v2(*, spec: TrustedLaunchSpec, context, attempt: AttemptBindi
     from .supervised_launch import trusted_bytes
     capture = CapturedLaunch()
     capture._fds, capture._snapshots = [], []
+    capture._executable_fds, capture._descriptor_snapshots, capture._discoveries = [], [], []
     capture._delivery = _Delivery({}, [])
     capture._closed, capture._spent = False, False
     try:
@@ -235,12 +249,14 @@ def capture_launch_v2(*, spec: TrustedLaunchSpec, context, attempt: AttemptBindi
         _require(all(type(limit) is int and limit > 0 for limit in
                      (spec.envelope_cap, spec.reference_cap, spec.aggregate_cap)), "launch_input_unbound")
         capture.spec, capture.context, capture.attempt = spec, context, attempt
+        capture._snapshots.extend((path, data, True, False) for path, data in context.snapshots)
         capture.workspace_identity = classify_workspace(spec.workspace, spec.target, spec.tier)
         excluded = (spec.workspace, spec.target, *spec.reference_roots)
         documents = {}
         for name, path in (("config", spec.config_path), ("template", spec.template_path),
                            ("qualification", spec.qualification_path), ("environment", spec.environment_policy_path)):
-            raw = trusted_bytes(path, excluded=excluded)
+            raw = dict(context.snapshots).get(path)
+            _require(type(raw) is bytes, "launch_input_unbound")
             documents[name] = raw
             capture._snapshots.append((path, raw, True, False))
         environment = dict(spec.non_secret_environment)
@@ -263,7 +279,7 @@ def capture_launch_v2(*, spec: TrustedLaunchSpec, context, attempt: AttemptBindi
         canonicalize_v2(environment)
         capture._delivery.environment = environment
         capture.credential_sources = tuple(credential_sources)
-        redacted = dict(non_secret=dict(spec.non_secret_environment), secret_names=sorted(secret_names, key=lambda name: name.encode("utf-16-be")))
+        _require(environment.get("PHASE_LOOP_SCRATCH_DECIDED") == "frozen_capture", "launch_input_unbound")
         total = 0
         def source_bytes(source):
             nonlocal total
@@ -277,13 +293,14 @@ def capture_launch_v2(*, spec: TrustedLaunchSpec, context, attempt: AttemptBindi
                 capture._fds.append(fd)
                 _require(stat.S_ISREG(os.fstat(fd).st_mode), "launch_input_unbound")
                 raw = os.pread(fd, spec.reference_cap + 1, 0)
+                capture._descriptor_snapshots.append((fd, raw))
             else:
                 _require(source.path is not None and _relative(source.wire["path"]), "launch_input_unbound")
                 if source.wire["namespace"] == "workspace":
                     _require(source.path == spec.workspace / source.wire["path"], "launch_input_unbound")
                 else:
                     # A declared root has one operator-bound name and physical path.
-                    roots = getattr(context, "declared_roots", {})
+                    roots = dict(spec.declared_roots)
                     root = roots.get(source.wire.get("root"))
                     _require(root is not None and Path(root) in spec.reference_roots
                              and source.path == Path(root) / source.wire["path"], "launch_input_unbound")
@@ -302,48 +319,96 @@ def capture_launch_v2(*, spec: TrustedLaunchSpec, context, attempt: AttemptBindi
             references.append(dict(role=role, source=_plain(source.wire), sha256=sha256(raw).hexdigest(), byte_length=len(raw)))
         capture.references = tuple(reference_bytes)
         chain = []
+        for _name, root in (*spec.declared_roots, *spec.view_roots):
+            _require(root in spec.reference_roots, "launch_input_unbound")
         for declared, path in spec.executable_chain:
             fd, raw, _info = _open_snapshot(path, spec.reference_cap, trusted=True, executable=True, excluded=excluded)
             capture._fds.append(fd)
+            capture._executable_fds.append(fd)
             capture._snapshots.append((path, raw, True, True))
             chain.append({**_plain(declared), "sha256": sha256(raw).hexdigest()})
         _require(bool(chain) and spec.argv and spec.argv[0] == str(spec.executable_chain[0][1]), "launch_input_unbound")
         _require(all(type(word) is str and "\x00" not in word for word in spec.argv), "launch_input_unbound")
         template = json.loads(documents["template"])
-        _require(template.get("argv") == list(spec.argv), "launch_input_unbound")
-        _require(not template.get("helpers"), "launch_input_unbound")
-        _require(spec.cwd == spec.workspace / spec.cwd_locator["path"] and spec.cwd_locator["namespace"] == "workspace",
-                 "launch_input_unbound")
-        _require(_relative(spec.cwd_locator["path"], cwd=True), "launch_input_unbound")
-        _require(all(not parent.is_symlink() for parent in (spec.cwd, *spec.cwd.parents)) and spec.cwd.is_dir(), "launch_input_unbound")
-        manifest = _walk_tree(spec.workspace, spec.aggregate_cap)
+        import string
+        slots = dict(spec.template_slots)
+        expanded = []
+        for word in template["argv"]:
+            for _literal, field_name, format_spec, conversion in string.Formatter().parse(word):
+                _require(field_name is None or (field_name in slots and not format_spec and conversion is None), "launch_input_unbound")
+            expanded.append(word.format_map(slots))
+        _require(expanded == list(spec.argv), "launch_input_unbound")
+        def local_cwd(locator):
+            _require(_relative(locator["path"], cwd=True), "launch_input_unbound")
+            root = spec.workspace if locator["namespace"] == "workspace" else dict(spec.view_roots).get(locator.get("root"))
+            _require(root is not None, "launch_input_unbound")
+            path = root / locator["path"]
+            _require(path.is_dir() and all(not parent.is_symlink() for parent in (path, *path.parents)), "launch_input_unbound")
+            return path
+        spawn_locator = template["spawn_cwd"]
+        capture._spawn_cwd = local_cwd(spawn_locator)
+        worker_argv, worker_environment, worker_cwd = list(spec.argv), dict(environment), spawn_locator
+        _require(len(template.get("helpers", ())) == len(chain) - 1, "launch_input_unbound")
+        for index, helper in enumerate(template.get("helpers", ())):
+            _require(helper["chain_index"] == index and type(helper["argv_shift"]) is int
+                     and 0 < helper["argv_shift"] < len(worker_argv), "launch_input_unbound")
+            worker_argv = worker_argv[helper["argv_shift"]:]
+            for name, value in helper.get("env_consumed", {}).items():
+                _require(worker_environment.pop(name, None) == value, "launch_input_unbound")
+            worker_environment.update(helper.get("env_set", {}))
+            worker_cwd = helper.get("cwd", worker_cwd)
+        _require(local_cwd(worker_cwd) == spec.cwd and _plain(worker_cwd) == _plain(spec.cwd_locator), "launch_input_unbound")
+        _require(spec.stdin in ("input", "devnull") and spec.deadline_action == "terminate_process_group", "launch_input_unbound")
+        manifest, tree_entries = _walk_tree(spec.workspace, spec.aggregate_cap, with_entries=True)
         capture._tree_digest = sha256(canonicalize_v2(manifest)).hexdigest()
+        for entry in tree_entries:
+            data = entry.get("bytes", bytes.fromhex(entry.get("target_hex", "")))
+            for secret in capture._delivery.values:
+                _require(secret.encode() not in data and sha256(secret.encode()).hexdigest().encode() not in data,
+                         "launch_input_unbound")
         grants = {}
         for name, form, value in spec.grants:
             _require(name not in grants and form in ("raw_bytes", "rfc8785"), "launch_input_unbound")
             if form == "raw_bytes":
                 raw = trusted_bytes(value, excluded=excluded)
                 capture._snapshots.append((value, raw, True, False))
+                grants[name] = dict(canonical_form=form, text=raw)
             else:
-                raw = canonicalize_v2(value)
-            grants[name] = dict(canonical_form=form, sha256=sha256(raw).hexdigest())
-        capture.commitments = _freeze(dict(
-            instructions=dict(source=_plain(spec.instructions.wire), sha256=sha256(capture.instruction).hexdigest(), byte_length=len(capture.instruction)),
-            references=references, argv=dict(canonical_form="rfc8785_array_of_strings", sha256=sha256(canonicalize_v2(spec.argv)).hexdigest(), element_count=len(spec.argv)),
-            executable_chain=chain, workspace_state=dict(base_commit=spec.base_commit, content_form="rfc8785_tree_manifest",
-                content_sha256=capture._tree_digest, cwd=_plain(spec.cwd_locator), target_map=_plain(spec.target_map)),
-            environment=dict(canonical_form="rfc8785_redacted_environment", map_sha256=sha256(canonicalize_v2(redacted)).hexdigest(),
-                             policy=dict(id=spec.environment_policy_id, sha256=sha256(documents["environment"]).hexdigest())),
-            trusted_policy={name + "_sha256": sha256(documents[name]).hexdigest() for name in ("config", "template", "qualification")},
-            stop=dict(timeout_seconds=spec.timeout_seconds, deadline_action=spec.deadline_action), **({"grants": grants} if grants else {})))
-        for raw in (*documents.values(), capture.instruction, *(raw for _role, raw in capture.references)):
-            text = raw.decode("utf-8", errors="replace")
-            _require(not capture.contains_secret(text), "launch_input_unbound")
-        capture.diagnostics = ()
+                grants[name] = dict(canonical_form=form, value=_plain(value))
+        discovered = []
+        for name in spec.discovery_names:
+            _require(_relative(name), "launch_input_unbound")
+            path = spec.cwd / name
+            exists = path.exists() or path.is_symlink()
+            capture._discoveries.append((path, exists))
+            if exists:
+                match = next((source for _role, source in spec.references if source.path == path), None)
+                _require(match is not None, "launch_input_unbound")
+                discovered.append(_plain(match.wire))
+        material = dict(instructions=dict(source=_plain(spec.instructions.wire), content=capture.instruction, within_root=True),
+            references=[dict(role=role, source=_plain(source.wire), content=data, within_root=True)
+                        for (role, source), (_captured_role, data) in zip(spec.references, capture.references)],
+            stdin=dict(mode="pipe" if spec.stdin == "input" else "devnull",
+                       writes=[dict(after="start", text=capture.instruction)] if spec.stdin == "input" else []),
+            process=dict(spawn=dict(argv=list(spec.argv), env=environment, cwd=spawn_locator),
+                         worker=dict(argv=worker_argv, env=worker_environment, cwd=worker_cwd),
+                         cwd_resolution=dict(within_root=True, discovered=discovered),
+                         deadline=dict(origin="first_chain_process", seconds=spec.timeout_seconds, restarted_at_helper=False), probes=[]),
+            executable_chain=chain, workspace=dict(base_commit=spec.base_commit, capture=tree_entries, target_map=_plain(spec.target_map)),
+            environment=dict(policy_id=spec.environment_policy_id, policy=documents["environment"]),
+            policy=dict(**{name: data for name, data in documents.items() if name != "environment"}, grants=grants), unbound_inputs=[])
+        capture.commitments, capture.diagnostics, capture.credential_sources, capture.uncheckable = _commit_material(
+            material, timeout_seconds=spec.timeout_seconds, deadline_action=spec.deadline_action)
+        _require(not capture.diagnostics and not capture.uncheckable, "launch_input_unbound")
+        _require(not capture.contains_secret(spec.argv) and not capture.contains_secret(capture.commitments), "launch_input_unbound")
+        for raw in (capture.instruction, *(row[1] for row in capture._snapshots)):
+            for secret in capture._delivery.values:
+                _require(secret.encode() not in raw and sha256(secret.encode()).hexdigest().encode() not in raw, "launch_input_unbound")
         capture.local_digest = sha256(b"agent-harness:supervised-launch:v2\0" + canonicalize_v2(dict(
             commitments=capture.commitments, assignment_digest=attempt.assignment_digest, run_id=attempt.run_id,
             attempt_id=attempt.attempt_id, workspace=str(spec.workspace), target=str(spec.target),
-            argv=spec.argv, cwd=str(spec.cwd), credential_sources=credential_sources))).hexdigest()
+            argv=spec.argv, cwd=str(spec.cwd), credential_sources=capture.credential_sources))).hexdigest()
+        capture._sealed = True
         return capture
     except (OSError, ValueError, TypeError, KeyError, UnicodeError, RecursionError, _Refusal) as error:
         reason = str(error) if isinstance(error, _Refusal) else "launch_input_unbound"
@@ -369,6 +434,10 @@ def recheck_launch_v2(capture: CapturedLaunch, *, context):
                                                 excluded=excluded if trusted else ())
                 os.close(fd)
             _require(raw == expected, "launch_input_unbound")
+        for fd, expected in capture._descriptor_snapshots:
+            _require(os.pread(fd, spec.reference_cap + 1, 0) == expected, "launch_input_unbound")
+        for path, existed in capture._discoveries:
+            _require((path.exists() or path.is_symlink()) == existed, "launch_input_unbound")
         for _name, _source, path in spec.secret_sources:
             # Presence and source remain bound; a same-source value rotation is allowed.
             trusted_bytes(path, excluded=excluded)
@@ -384,6 +453,18 @@ def _commit_material(material, *, timeout_seconds, deadline_action):
     from collections.abc import Mapping
     errors, unavailable, credentials = set(), set(), set()
     commitments = {}
+    import re
+    config = material["policy"]["config"]
+    if isinstance(config, bytes):
+        config = config.decode("utf-8")
+    root_names = set(re.findall(r"^root ([A-Za-z0-9._-]+) = .+$", config, re.M))
+    try:
+        root_names.update(json.loads(config).get("declared_roots", {}))
+    except (ValueError, TypeError):
+        pass
+    applied = material["policy"].get("grants", {})
+    descriptor_names = {row["id"] for row in applied.get("descriptor_capabilities_sha256", {}).get("value", {}).get("descriptors", ())}
+    view_names = {row["id"] for row in applied.get("filesystem_view_sha256", {}).get("value", {}).get("roots", ())}
     def digest(value):
         return sha256(canonicalize_v2(value)).hexdigest()
     def raw(value):
@@ -392,8 +473,12 @@ def _commit_material(material, *, timeout_seconds, deadline_action):
         wire = source["source"]
         if not source.get("within_root", False):
             errors.add("launch_input_unbound")
+        if wire is not None and ((wire["namespace"] == "declared_root" and wire.get("root") not in root_names)
+                                 or (wire["namespace"] == "descriptor" and wire.get("descriptor") not in descriptor_names)):
+            errors.add("launch_input_unbound")
+        _require(type(source["content"]) in (str, bytes), "launch_input_unbound")
         content = raw(source["content"])
-        if wire is not None and wire["namespace"] == "workspace":
+        if wire is not None and wire["namespace"] == "workspace" and "workspace_state" not in unavailable:
             entry = tree.get(wire["path"])
             if entry is None or entry[1] not in ("file", "executable_file") or entry[2] != sha256(content).hexdigest():
                 errors.add(code)
@@ -414,7 +499,7 @@ def _commit_material(material, *, timeout_seconds, deadline_action):
         commitments["instructions"] = bound_source(instruction, "launch_instructions_mismatch", tree)
         commits = [dict(role=source["role"], **bound_source(source, "launch_reference_mismatch", tree)) for source in material["references"]]
         commitments["references"] = commits
-    except (ValueError, TypeError, KeyError, UnicodeError):
+    except (ValueError, TypeError, KeyError, UnicodeError, _Refusal):
         unavailable.update(("instructions", "references"))
         errors.add("launch_input_unbound")
     spawn, worker = process["spawn"], process["worker"]
@@ -428,7 +513,7 @@ def _commit_material(material, *, timeout_seconds, deadline_action):
     template = json.loads(material["policy"]["template"])
     derived_argv, derived_env, derived_cwd = list(spawn["argv"]), dict(spawn["env"]), spawn["cwd"]
     if _plain(template.get("spawn_cwd")) != _plain(derived_cwd):
-        errors.add("launch_workspace_mismatch")
+        errors.add("launch_input_unbound")
     for index, helper in enumerate(template.get("helpers", ())):
         if (helper.get("chain_index") != index or type(helper.get("argv_shift")) is not int
                 or not 0 < helper["argv_shift"] < len(derived_argv)):
@@ -437,13 +522,17 @@ def _commit_material(material, *, timeout_seconds, deadline_action):
         derived_argv = derived_argv[helper["argv_shift"]:]
         for name, value in helper.get("env_consumed", {}).items():
             if derived_env.pop(name, None) != value:
-                errors.add("launch_environment_mismatch")
+                errors.add("launch_input_unbound")
         derived_env.update(helper.get("env_set", {}))
         if "cwd" in helper:
             derived_cwd = helper["cwd"]
     if derived_argv != list(worker["argv"]):
         errors.add("launch_argv_mismatch")
-    if derived_env != dict(worker["env"]):
+    environment_policy = json.loads(material["environment"]["policy"])
+    unknown_spawn = any(name not in environment_policy["classification"] for name in spawn["env"])
+    if unknown_spawn:
+        errors.add("launch_input_unbound")
+    elif derived_env != dict(worker["env"]):
         errors.add("launch_environment_mismatch")
     if _plain(derived_cwd) != _plain(worker["cwd"]):
         errors.add("launch_workspace_mismatch")
@@ -453,19 +542,26 @@ def _commit_material(material, *, timeout_seconds, deadline_action):
     if any(_plain(source) not in sources for source in process["cwd_resolution"].get("discovered", ())):
         errors.add("launch_input_unbound")
     if stdin["mode"] == "pipe":
-        if _plain(stdin.get("writes")) != [{"after": "start", "text": instruction["content"]}]:
+        writes = stdin.get("writes", ())
+        if len(writes) != 1 or writes[0].get("after") != "start":
             errors.add("launch_input_unbound")
+        elif writes[0].get("text") != instruction["content"]:
+            errors.add("launch_instructions_mismatch")
         delivery = "input"
-    elif stdin["mode"] == "devnull" and not stdin.get("writes"):
+    elif stdin["mode"] == "devnull":
         delivery = "devnull"
+        if stdin.get("writes"):
+            errors.add("launch_input_unbound")
     else:
         delivery = None
         errors.add("launch_input_unbound")
-    if instruction["source"] is None and not (delivery == "input" or list(worker["argv"]).count(instruction["content"]) == 1):
+    if instruction["source"] is None and delivery == "devnull" and list(worker["argv"]).count(instruction["content"]) != 1:
         errors.add("launch_instructions_mismatch")
+    if worker["cwd"]["namespace"] == "view_root" and worker["cwd"].get("root") not in view_names:
+        errors.add("launch_input_unbound")
     commitments["executable_chain"] = _plain(material["executable_chain"])
     for entry in material["executable_chain"]:
-        if entry["locator_kind"] == "repo_relative":
+        if entry["locator_kind"] == "repo_relative" and "workspace_state" not in unavailable:
             actual = tree.get(entry["locator"])
             if actual is None or actual[1] not in ("file", "executable_file") or actual[2] != entry["sha256"]:
                 errors.add("launch_executable_mismatch")
@@ -497,7 +593,7 @@ def _commit_material(material, *, timeout_seconds, deadline_action):
     for name, grant in policy.get("grants", {}).items():
         form = grant["canonical_form"]
         if form == "raw_bytes":
-            data = raw(grant["value"])
+            data = raw(grant.get("text", grant.get("value")))
         elif form == "rfc8785":
             data = canonicalize_v2(grant["value"])
         else:
@@ -512,7 +608,8 @@ def _commit_material(material, *, timeout_seconds, deadline_action):
             or deadline.get("seconds") != (timeout_seconds if deadline_action == "terminate_process_group" else None)):
         errors.add("launch_timeout_mismatch")
     if material.get("unbound_inputs") or any(probe.get("mutated_captured") or probe.get("phase") != "before_admission"
-                                            or probe.get("is_worker") for probe in process.get("probes", ())):
+                                            or probe.get("is_worker") or list(probe.get("argv", ()))[1:] != ["--version"]
+                                            for probe in process.get("probes", ())):
         errors.add("launch_input_unbound")
     # Scan every committed public string, including decoded member names. Secret
     # delivery values themselves are excluded from the scan's public view.

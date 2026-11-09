@@ -228,6 +228,9 @@ def load_v2_binding(path: Path, *, workspace: Path, target: Path, reference_root
                  and set(document["context_slots"]) <= {"expected_assignment_digest", "expected_snapshot_ref", "expected_crosswalk_ref",
                                                          "timeout_max_seconds", "caller_context_suitability"}, "binding_invalid")
         implementations, snapshots = [], [(path, raw), (spec_path, spec_raw), *context.snapshots]
+        for member in ("config_path", "template_path", "qualification_path", "environment_policy_path"):
+            referenced = _path(spec["launch"][member])
+            snapshots.append((referenced, _private_snapshot(referenced, excluded=exclusions)))
         _require(set(document["implementations"]) == {"codec", "validator"}, "binding_invalid")
         for kind in ("codec", "validator"):
             selected = document["implementations"][kind]
@@ -283,6 +286,10 @@ def reconcile_v2_binding(locator: BindingLocator, binding: V2Binding, *, control
             value = slots[name]
             if kind == "root":
                 _path(value)
+            elif kind == "roots":
+                _require(isinstance(value, (tuple, list)), "binding_invalid")
+                for root in value:
+                    _path(root)
             else:
                 _require(kind == "argv" and type(value) is str and "\x00" not in value, "binding_invalid")
                 value.encode("utf-8")
@@ -297,9 +304,11 @@ def reconcile_v2_binding(locator: BindingLocator, binding: V2Binding, *, control
         launch = substitute(binding.spec["launch"])
         roots = (_path(launch["workspace"]), _path(launch["target"]), *(_path(root) for root in launch["reference_roots"]))
         _require(roots == binding.exclusions, "binding_invalid")
-        effective = replace(binding.context, **{name: _freeze(_plain(context[name])) for name in allowed})
+        effective = replace(binding.context, snapshots=binding.snapshots,
+                            **{name: _freeze(_plain(context[name])) for name in allowed})
         agreement = (attempt, controller["h"], _freeze(_plain(controller)))
-        return replace(binding, context=effective, spec=_freeze(launch), agreement=agreement)
+        spec = _spec_from_document(launch)
+        return replace(binding, context=effective, spec=spec, agreement=agreement)
     except (OSError, ValueError, KeyError, TypeError, AttributeError, _Refusal) as error:
         return Refused(_binding_reason(error))
 
@@ -328,3 +337,49 @@ def activate_v2_binding(binding: V2Binding):
         return replace(binding, codec=codec, validator=validator.validate)
     except BaseException as error:
         return Refused(_binding_reason(error))
+
+
+
+def _spec_from_document(document):
+    """Construct a final immutable local spec from the agreed operator slots."""
+    from .supervised_capture_v2 import SourceSpec, TrustedLaunchSpec
+    def source(value):
+        _require(set(value) <= {"source", "path", "descriptor", "content"} and "source" in value, "binding_invalid")
+        descriptor = value.get("descriptor")
+        if descriptor is not None:
+            _require(type(descriptor) in (int, float) and descriptor == int(descriptor) and descriptor >= 0, "binding_invalid")
+            descriptor = int(descriptor)
+        content = value.get("content")
+        _require(content is None or type(content) is str, "binding_invalid")
+        return SourceSpec(value["source"], _path(value["path"]) if "path" in value else None,
+                          descriptor, content.encode() if content is not None else None)
+    required = {"workspace", "target", "reference_roots", "argv", "cwd", "cwd_locator", "instructions", "references",
+                "executable_chain", "config_path", "template_path", "qualification_path", "environment_policy_path",
+                "environment_policy_id", "non_secret_environment", "secret_sources", "timeout_seconds", "deadline_action",
+                "tier", "base_commit", "target_map"}
+    optional = {"grants", "envelope_cap", "reference_cap", "aggregate_cap", "stdin", "declared_roots", "view_roots",
+                "template_slots", "discovery_names"}
+    _require(required <= set(document) and set(document) <= required | optional, "binding_invalid")
+    values = dict(document)
+    for name in ("workspace", "target", "cwd", "config_path", "template_path", "qualification_path", "environment_policy_path"):
+        values[name] = _path(values[name])
+    values["reference_roots"] = tuple(_path(path) for path in values["reference_roots"])
+    values["instructions"] = source(values["instructions"])
+    values["references"] = tuple((row["role"], source({key: value for key, value in row.items() if key != "role"})) for row in values["references"])
+    values["executable_chain"] = tuple((row["wire"], _path(row["path"])) for row in values["executable_chain"])
+    values["non_secret_environment"] = tuple(values["non_secret_environment"].items())
+    values["secret_sources"] = tuple((row["name"], row["source"], _path(row["path"])) for row in values["secret_sources"])
+    values["argv"] = tuple(values["argv"])
+    values["target_map"] = tuple(values["target_map"])
+    values["grants"] = tuple((name, row["canonical_form"], _path(row["path"]) if row["canonical_form"] == "raw_bytes" else row["value"])
+                            for name, row in values.get("grants", {}).items())
+    for name in ("declared_roots", "view_roots"):
+        values[name] = tuple((key, _path(path)) for key, path in values.get(name, {}).items())
+    values["template_slots"] = tuple(values.get("template_slots", {}).items())
+    values["discovery_names"] = tuple(values.get("discovery_names", ()))
+    for name in ("timeout_seconds", "envelope_cap", "reference_cap", "aggregate_cap"):
+        if name in values:
+            number = values[name]
+            _require(type(number) in (int, float) and number == int(number) and number > 0, "binding_invalid")
+            values[name] = int(number)
+    return TrustedLaunchSpec(**values)

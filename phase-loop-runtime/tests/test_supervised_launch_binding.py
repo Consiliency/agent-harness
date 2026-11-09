@@ -222,9 +222,25 @@ def v2_operator(case, monkeypatch):
         expected_crosswalk_ref="c" * 64, timeout_max_seconds=60, qualified_routes=[], policy_epoch="epoch-1",
         revoked_record_ids=[], caller_context_suitability={}, policy={"issuer_records": {}, "time_basis": "system_utc"})
     context_path = write("v2-context.json", context)
-    spec = {"slots": {"workspace": "root", "target": "root", "reference": "root"},
+    qualification_path = root / "v2-qualification.txt"
+    qualification_path.write_text("synthetic qualification only")
+    environment_path = write("v2-environment.json", {"classification": {"LANG": "non_secret", "PHASE_LOOP_SCRATCH_DECIDED": "non_secret"}})
+    template_path = write("v2-template.json", {"argv": [str(case.executable)], "helpers": [],
+                                               "spawn_cwd": {"namespace": "workspace", "path": "."}})
+    spec = {"slots": {"workspace": "root", "target": "root", "reference_roots": "roots"},
             "launch": {"workspace": {"slot": "workspace"}, "target": {"slot": "target"},
-                       "reference_roots": [{"slot": "reference"}]}}
+                       "reference_roots": {"slot": "reference_roots"}, "argv": [str(case.executable)],
+                       "cwd": {"slot": "workspace"}, "cwd_locator": {"namespace": "workspace", "path": "."},
+                       "instructions": {"source": None, "content": "synthetic instructions"},
+                       "references": [{"role": "baseline", "source": {"namespace": "declared_root", "root": "refs", "path": "baseline"},
+                                       "path": str(case.root / "references/baseline")}],
+                       "executable_chain": [{"wire": {"role": "executable", "locator_kind": "declared", "locator": "synthetic"}, "path": str(case.executable)}],
+                       "config_path": str(case.config.config_path), "template_path": str(template_path),
+                       "qualification_path": str(qualification_path), "environment_policy_path": str(environment_path),
+                       "environment_policy_id": "fixture", "non_secret_environment": {"LANG": "C.UTF-8", "PHASE_LOOP_SCRATCH_DECIDED": "frozen_capture"},
+                       "secret_sources": [], "timeout_seconds": 30, "deadline_action": "terminate_process_group",
+                       "tier": "post_write_audit_only", "base_commit": None, "target_map": [],
+                       "declared_roots": {"refs": str(case.root / "references")}}}
     spec_path = write("v2-spec.json", spec)
     controllers = root / "controllers"
     controllers.mkdir(mode=0o700)
@@ -239,7 +255,7 @@ def v2_operator(case, monkeypatch):
     controller_context = {key: value for key, value in context.items() if key != "policy"}
     controller = dict(h="d" * 64, attempt=dict(assignment_digest=authority, run_id="run-1", attempt_id="attempt-1"),
                       context=controller_context, slots={"workspace": str(roots["workspace"]), "target": str(roots["target"]),
-                                                        "reference": str(roots["reference_roots"][0])})
+                                                        "reference_roots": [str(roots["reference_roots"][0])]})
     monkeypatch.setattr(binding, "sys", SimpleNamespace(flags=SimpleNamespace(isolated=True), modules=sys.modules))
     return SimpleNamespace(path=path, document=document, context=context, context_path=context_path,
                            spec_path=spec_path, marker=marker, roots=roots, codec=codec,
@@ -314,7 +330,7 @@ def test_v2_controller_agreement_closed(v2_operator, change):
     elif change == "epoch": document["context"]["policy_epoch"] = "epoch-2"
     elif change == "slot": document["slots"]["unexpected"] = "value"
     elif change == "roots": document["slots"]["workspace"] = str(operator.roots["target"])
-    else: document["slots"].pop("reference")
+    else: document["slots"].pop("reference_roots")
     assert binding.reconcile_v2_binding(locator, passive, controller=document, attempt=operator.attempt) == binding.Refused("binding_invalid")
     assert not operator.marker.exists()
 

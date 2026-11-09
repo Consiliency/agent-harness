@@ -206,6 +206,7 @@ class LaunchInputs:
     config_digest: str
     template_digest: str
     qualification_digest: str
+    spawn_capability: object = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -239,6 +240,9 @@ class PreparedLaunch:
     view: EnvelopeView
     admit: Admit
     _token: object = field(default_factory=object, repr=False)
+    attempt_binding: AttemptBinding | None = None
+    _capture: object = field(default=None, repr=False, compare=False)
+    diagnostics: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -365,6 +369,7 @@ def _launch_digest(raw_digest: str, inputs: LaunchInputs, attempt: str) -> str:
     # Bytes are represented by their bound hashes in the canonical input encoding.
     payload.pop("instruction")
     payload.pop("baseline")
+    payload.pop("spawn_capability", None)
     chunks = (raw_digest.encode(), _canonical(payload), attempt.encode())
     return sha256(b"agent-harness:supervised-launch:v1\0" +
                   b"".join(len(chunk).to_bytes(8, "big") + chunk for chunk in chunks))
@@ -476,8 +481,21 @@ def consume_admission(prepared: PreparedLaunch) -> LaunchInputs | Refused:
         view, inputs = prepared.view, prepared.view.inputs
         _require(inputs == registered.inputs and view.raw_digest == registered.raw_digest and
                  prepared.admit == Admit(registered.digest, registered.attempt), "consume_binding")
-        _require(prepared.admit == Admit(_launch_digest(view.raw_digest, inputs, view.envelope["attempt_id"]),
-                                          view.envelope["attempt_id"]), "consume_binding")
+        if prepared.attempt_binding is not None:
+            from .supervised_capture_v2 import recheck_launch_v2
+            capture = prepared._capture
+            _require(prepared.attempt_binding == capture.attempt and view.launch_digest == capture.local_digest,
+                     "consume_binding")
+            refusal = recheck_launch_v2(capture, context=capture.context)
+            if isinstance(refusal, Refused):
+                return refusal
+            with _LOCK:
+                _require(registered.attempt_key not in _CONSUMED, "attempt_replayed")
+                _CONSUMED.add(registered.attempt_key)
+            return registered.inputs
+        else:
+            _require(prepared.admit == Admit(_launch_digest(view.raw_digest, inputs, view.envelope["attempt_id"]),
+                                              view.envelope["attempt_id"]), "consume_binding")
         with _LOCK:
             _require(registered.attempt_key not in _CONSUMED, "attempt_replayed")
             _CONSUMED.add(registered.attempt_key)
@@ -492,4 +510,89 @@ def consume_admission(prepared: PreparedLaunch) -> LaunchInputs | Refused:
                      "wrapper_changed")  # MUTATION: consume_wrapper
         return registered.inputs
     except BaseException as exc:
+        if type(prepared) is PreparedLaunch and prepared._capture is not None:
+            prepared._capture.close()
         return Refused(str(exc) if isinstance(exc, _Refusal) else "consume_invalid")
+
+
+class _SpawnCapability:
+    __slots__ = ("_capture", "_taken")
+
+    def __init__(self, capture):
+        self._capture, self._taken = capture, False
+
+    def __repr__(self):
+        return "<one-use spawn capability>"
+
+    def __deepcopy__(self, memo):
+        return self
+
+    def __reduce__(self):
+        raise TypeError("capability_not_serializable")
+
+    def take(self):
+        capture = self._capture
+        _require(not self._taken and not capture._closed, "token_spent")
+        self._taken = True
+        return dict(capture._delivery.environment), capture._spawn_cwd, capture._executable_fds[0], tuple(capture._fds)
+
+    def close(self):
+        self._capture.close()
+
+
+def discard_admission(prepared: PreparedLaunch) -> None:
+    if type(prepared) is not PreparedLaunch:
+        return
+    with _LOCK:
+        _TOKENS.pop(prepared._token, None)
+    if prepared._capture is not None:
+        prepared._capture.close()
+
+
+def prepare_launch_v2(raw: bytes, *, binding, capture, attempt: AttemptBinding):
+    """Admit only a public v2 record against an agreed, activated trusted binding."""
+    from .supervised_capture_v2 import CapturedLaunch, recheck_launch_v2
+    from .supervised_contracts import ContractError
+    try:
+        refuse_unwired_dependency_route("supervised-launch")
+        _require(type(attempt) is AttemptBinding and type(capture) is CapturedLaunch
+                 and not capture._closed and capture.attempt == attempt and capture.context is binding.context,
+                 "launch_input_unbound")
+        _require(binding.agreement is not None and binding.agreement[0] == attempt
+                 and binding.codec is not None and binding.validator is not None, "binding_unavailable")
+        _require(len(raw) <= capture.spec.envelope_cap, "envelope_cap")
+        envelope = binding.codec.decode_v2(raw, bundle=binding.bundle)
+        decision = binding.codec.validate_v2_admission(envelope, context=binding.context, capture=capture, attempt=attempt)
+        if not decision.admitted:
+            capture.close()
+            return Refused(decision.diagnostics[0])
+        _require(not envelope.value["executable_dependencies"]["declared"], "dependency_route_unwired")
+        tier = envelope.value["enforcement"]["tier"]
+        _require(tier == capture.spec.tier, "launch_input_unbound")
+        _require(not (tier == "post_write_audit_only" and envelope.value["enforcement"]["required_constraints"]), "constraints_unsupported")
+        baseline = [data for role, data in capture.references if role == "baseline"]
+        _require(len(baseline) == 1, "baseline_reference_required")
+        identities = tuple(ExecutableIdentity(str(path), capture.commitments["executable_chain"][index]["sha256"])
+                           for index, (_wire, path) in enumerate(capture.spec.executable_chain))
+        kind, device, inode = capture.workspace_identity
+        policy = capture.commitments["trusted_policy"]
+        capability = _SpawnCapability(capture)
+        inputs = LaunchInputs(capture.instruction, sha256(capture.instruction), baseline[0], sha256(baseline[0]),
+            capture.spec.argv, identities[-1], identities[:-1], str(capture.spec.workspace), str(capture.spec.target),
+            kind, device, inode, tier, tuple(envelope.value["enforcement"]["required_constraints"]),
+            capture.spec.timeout_seconds, policy["config_sha256"], policy["template_sha256"], policy["qualification_sha256"], capability)
+        view = EnvelopeView(envelope.value, envelope.public_digest, envelope.raw_digest, capture.local_digest, inputs)
+        verdict = binding.validator(view)
+        _require(type(verdict) is Admit, "admit_required")
+        _require(verdict == Admit(view.launch_digest, attempt.attempt_id), "admit_binding")
+        _require(recheck_launch_v2(capture, context=binding.context) is None, "launch_input_unbound")
+        prepared = PreparedLaunch(view, verdict, attempt_binding=attempt, _capture=capture, diagnostics=decision.diagnostics)
+        with _LOCK:
+            _TOKENS[prepared._token] = _Admission(id(prepared), view.launch_digest, attempt.attempt_id, envelope.raw_digest,
+                                                 inputs, (attempt.assignment_digest, attempt.run_id, attempt.attempt_id))
+        return prepared
+    except BaseException as error:
+        if type(capture) is CapturedLaunch:
+            capture.close()
+        return Refused(error.code if isinstance(error, ContractError) else str(error) if isinstance(error, _Refusal)
+                       else "binding_invalid")
