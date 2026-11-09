@@ -1,16 +1,15 @@
-"""Opt-in construction of a live, credential-capable GitHub broker client.
+"""Construction and activation of credential-capable GitHub broker clients.
 
-This is the *only* helper that assembles a broker able to perform a real GitHub
-mutation.  It is never auto-instantiated: legacy ``run_train`` callers that pass
-no ``coordinator_runtime`` (or a runtime with ``broker_client=None``) publish
-exactly as before.  A caller wanting broker-mediated publication builds a client
-here and attaches it to :class:`CoordinatorRuntime.broker_client`.
+The GitHub and repository-routing builders assemble admission, evidence and
+provider adapters. The run-train CLI constructs a client, and publication may
+construct a routing client when FABPUB is active and none was injected. Importing
+this module alone creates no client or provider effect.
 
-The wired client enforces every already-merged safety property: linearizable
-admission, permanent fail-closed ``outcome_ambiguous_blocked`` evidence, canonical
-``(repo, branch, head_sha)`` idempotency, and the adapter's exact-published-head
-verification.  Only the ``publish_committed_branch``/``github`` verb is SUPPORTED
-(see ``provider_contracts``); the service refuses every other verb.
+FABPUB routing separates canonical per-repository allocator state from train
+coordinator state. Generation leases and authenticated receipts gate admission;
+raw ambiguous outcomes stay fail-closed, while operator reconciliation supplies
+explicit settlement or recovery authority. Only the supported
+publish_committed_branch/github provider contract authorizes that effect.
 """
 from __future__ import annotations
 

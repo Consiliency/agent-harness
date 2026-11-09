@@ -7,11 +7,10 @@ The scaffolder (``consiliency_scaffold``), the L0 gates
 this path -- drift here would be a silent bug (an operator could scaffold a
 manifest the gates never find).
 
-Version-gated DUAL-READ (CS-0.5 scope): this module is purely additive. It
-never reads or writes ``.phase-loop/`` or ``.pipeline/``, and nothing in the
-existing runtime is rewired to prefer `.consiliency/` yet -- that fallback
-seam is for CS-0.12 once the adoption-profile consent check lands. Today,
-`.consiliency/` and legacy layouts simply coexist.
+These helpers address .consiliency artifacts and contract registry data. They
+do not read or write .phase-loop or .pipeline state. Adoption-profile scope
+classification lives in consiliency_ingest; runner state paths remain in
+runtime_paths.
 """
 from __future__ import annotations
 

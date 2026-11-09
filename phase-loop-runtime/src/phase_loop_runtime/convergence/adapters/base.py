@@ -15,9 +15,10 @@ Four bounds hold on every execution:
   endpoint escape reaches it. The provider's own scratch is then moved off a
   RAM-backed temp dir (agent-harness#1147): only ``TMPDIR`` / ``CLAUDE_CODE_TMPDIR``
   may be added, set to the runtime's own private disk-backed dir.
-* **Time and process group.** The child runs in its own session; a timeout kills
-  the whole process group, so a provider that forked helpers cannot outlive its
-  bound.
+* **Time and process group.** The child runs in its own session. Non-review
+  actions use the requested wall-clock timeout; review actions have no such
+  deadline. Cleanup sends SIGKILL to the owned process group and waits for the
+  leader; this is not a guarantee about descendants that leave that group.
 * **Output.** Each pipe is limited in bytes before accumulation, and the
   returned diagnostic is a fixed metadata-only phrase. Provider text is never
   copied into the envelope, so a credential the provider printed cannot be

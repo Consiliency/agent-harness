@@ -1,7 +1,7 @@
 """Read-only exact-state reconciliation for recovered convergence events.
 
-Every decision re-probes all four authority domains -- Git, GitHub, provider,
-and registry -- from scratch. A cached observation is never authority: the whole
+Each reconciliation probes Git, GitHub, provider and registry afresh,
+stopping at the first missing, failed, malformed or stale required probe. A cached observation is never authority: the whole
 point of reconciliation is that the world may have moved since the ledger was
 written, so a probe result is used once and discarded.
 
@@ -9,9 +9,9 @@ Two properties hold on every path:
 
 * **Metadata-only.** An observation is reduced to the exact fields a
   reconciliation decision reads (:data:`_OBSERVED_FIELDS`) and each value is
-  bounded. Everything else a probe hands back -- including anything
-  credential-shaped -- is dropped before it can reach a verdict, a repr, or a
-  log line. The retained set is an allow-list, so a probe that grows a new
+  bounded. Unlisted fields are dropped. Retained values are stringified and
+  truncated, not content-redacted, so probe adapters must supply metadata in
+  those fields. The retained set is an allow-list, so a probe that grows a new
   field cannot silently widen what is retained.
 * **Fail closed.** A required probe that is absent, errors, returns nothing,
   returns a non-mapping, or declares itself stale yields a blocked verdict
