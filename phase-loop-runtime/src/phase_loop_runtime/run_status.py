@@ -1216,9 +1216,13 @@ def _limits_ok(limits) -> bool:
               limits.segment_max_bytes, limits.read_segment_max_bytes, limits.index_max_entries)
     if not all(type(value) is int and value > 0 for value in values):
         return False
-    return (4 <= limits.per_attempt_line_cap <= 19998 and limits.segment_max_lines >= 2
-            and limits.segment_max_bytes >= 2 * _LINE_MAX_BYTES
-            and limits.read_segment_max_bytes >= limits.segment_max_bytes
+    # Readers always replay with DEFAULT_LIMITS, so a writer may never be admitted
+    # with a bound they cannot read back: every journal it finishes stays readable.
+    reader = DEFAULT_LIMITS
+    return (4 <= limits.per_attempt_line_cap <= reader.per_attempt_line_cap and limits.segment_max_lines >= 2
+            and 2 * _LINE_MAX_BYTES <= limits.segment_max_bytes <= limits.read_segment_max_bytes
+            and limits.read_segment_max_bytes <= reader.read_segment_max_bytes
+            and limits.index_max_entries <= reader.index_max_entries
             and 1 <= limits.event_message_max_chars <= _MESSAGE_MAX)
 
 
@@ -1730,7 +1734,7 @@ class _Pass:
     def __init__(self):
         self.diagnostics: set[str] = set()
         self.entry: IndexEntry | None = None
-        self.state = self.terminal = self.head = self.prefix = self.evidence = None
+        self.state = self.terminal = self.head = self.prefix = self.prefix_state = self.evidence = None
         self.verified = False
         #: Only the segment named by ``prefix_at``; never a history-wide list.
         self.segment: tuple[int, int, int, str] | None = None
@@ -1781,6 +1785,8 @@ def _replay(root_fd: int, attempts_fd: int, attempt_fd: int, attempt_id: str, li
                 running.update(raw + b"\n")
                 if seq is not None and seq == prefix_at[1]:
                     result.prefix = running.hexdigest()
+                    # The replayed state as of that seq, for historical rows.
+                    result.prefix_state = replay.state
         del parts, complete
         if tail:
             replay.total += 1
@@ -1909,6 +1915,8 @@ class AttemptWindow:
     segment: tuple[int, int, int, str] | None
     prefix_digest: str | None
     evidence_digest: str | None
+    #: Revision 5: the replayed state as of ``prefix_at``'s seq, when requested and present.
+    prefix_state: str | None = None
 
 
 def _empty_window(attempt_id: str, entry, diagnostics, evidence=None) -> AttemptWindow:
@@ -1953,7 +1961,7 @@ def read_attempt_window(root: JournalRoot, index: IndexRead, entry: IndexEntry, 
         return _empty_window(attempt_id, entry, result.diagnostics, result.evidence)
     return AttemptWindow(attempt_id, entry.identity, (), result.state, result.head, sink.total, sink.skipped,
                          sink.lead, tuple(sink.events), sink.tail, sink.more, sink.found, result.segment,
-                         result.prefix, result.evidence)
+                         result.prefix, result.evidence, result.prefix_state)
 
 
 __all__ = [

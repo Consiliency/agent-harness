@@ -693,12 +693,57 @@ def test_rotation_chains_segments(tmp_path):
 def test_limits_validated(tmp_path):
     root = make_root(production, tmp_path)
     reservation = reserve(production, root)
+    reader = production.DEFAULT_LIMITS
     for limits in (production.JournalLimits(per_attempt_line_cap=3), production.JournalLimits(segment_max_lines=1),
                    production.JournalLimits(segment_max_bytes=1000),
                    production.JournalLimits(read_segment_max_bytes=1024),
-                   production.JournalLimits(event_message_max_chars=201), "big"):
+                   production.JournalLimits(event_message_max_chars=201), "big",
+                   production.JournalLimits(per_attempt_line_cap=reader.per_attempt_line_cap + 1),
+                   production.JournalLimits(read_segment_max_bytes=reader.read_segment_max_bytes + 1),
+                   production.JournalLimits(segment_max_bytes=reader.read_segment_max_bytes + 1,
+                                            read_segment_max_bytes=reader.read_segment_max_bytes + 1),
+                   production.JournalLimits(index_max_entries=reader.index_max_entries + 1)):
         assert production.open_writer(root, reservation, limits=limits) == refused(production, "limits_invalid")
     assert isinstance(production.open_writer(root, reservation), production.AttemptWriter)
+
+
+def test_writer_at_the_reader_bounds_reads_back_cleanly(tmp_path, monkeypatch):
+    """Every accepted writer limit is one the fixed-limit readers can replay."""
+    reader = production.DEFAULT_LIMITS
+    root = make_root(production, tmp_path)
+    reservation = reserve(production, root)
+    widest = production.JournalLimits(per_attempt_line_cap=reader.per_attempt_line_cap,
+                                      segment_max_lines=reader.per_attempt_line_cap,
+                                      segment_max_bytes=reader.read_segment_max_bytes,
+                                      read_segment_max_bytes=reader.read_segment_max_bytes)
+    for over in (dict(per_attempt_line_cap=reader.per_attempt_line_cap + 1),
+                 dict(segment_max_bytes=reader.read_segment_max_bytes + 1,
+                      read_segment_max_bytes=reader.read_segment_max_bytes + 1)):
+        limits = production.JournalLimits(**{**vars_dict(widest), **over})
+        assert production.open_writer(root, reservation, limits=limits) == refused(production, "limits_invalid")
+    attempt_writer = production.open_writer(root, reservation, limits=widest)
+    assert isinstance(attempt_writer, production.AttemptWriter)
+    monkeypatch.setattr(os, "fsync", lambda fd: None)  # durability is not under test here
+    attempt_writer.state("queued", worker_invocations=0)
+    attempt_writer.state("running", worker_invocations=1)
+    while isinstance(attempt_writer.event("output streams digested"), production.ChainHead):
+        pass
+    assert attempt_writer.event("output streams digested") == refused(production, "event_cap_reached")
+    head = attempt_writer.terminal("finished", worker_invocations=1,
+                                   termination=production.Termination("completed", None, "worker"), refusal=None,
+                                   result_binding=binding(production, reservation))
+    attempt_writer.close()
+    assert isinstance(head, production.ChainHead)
+    files = segment_files(root)
+    total = sum(len(path.read_bytes().splitlines()) for path in files)
+    assert reader.per_attempt_line_cap - 2 <= total <= reader.per_attempt_line_cap
+    assert len(files) >= 2 and max(path.stat().st_size for path in files) > reader.read_segment_max_bytes - 65536
+    assert all(path.stat().st_size <= reader.read_segment_max_bytes for path in files)
+    read = production.read_attempt(root, "attempt-1")
+    assert read.diagnostics == () and read.display == "finished" and len(read.lines) == total
+    index = production.read_index(root, A)
+    window = production.read_attempt_window(root, index, index.entries[0])
+    assert window.diagnostics == () and window.total_lines == total
 
 
 # --------------------------------------------------------------------------

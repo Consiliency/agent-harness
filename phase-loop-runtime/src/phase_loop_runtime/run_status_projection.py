@@ -121,8 +121,8 @@ def _replay(root, assignment_digest, supplied=None):
 
     Each verified attempt keeps only ``(index_seq, item, known)``. ``item`` is its
     head-derived projection row. ``known`` is the verdict for the supplied row's
-    segment digest, compared inside the streaming pass, or None when none was
-    supplied. Unknown attempts keep ``(index_seq, attempt_id, diagnostics)``. No
+    segment digest and state, compared inside the streaming pass, or None when
+    none was supplied. Unknown attempts keep ``(index_seq, attempt_id, diagnostics)``. No
     window, segment list or journal line outlives its attempt. There is one index
     load and one window per attempt, and no earlier attempt is rescanned.
     """
@@ -148,12 +148,25 @@ def _replay(root, assignment_digest, supplied=None):
 
 
 def _digest_known(window, row) -> bool:
-    """The supplied segment digest is that segment's full digest or its prefix ending at ``journal_seq``."""
+    """A behind row is derivable from the journal: its digest and its state both match.
+
+    A row naming the segment's prefix digest at its ``journal_seq`` is historical,
+    so its state must equal the replayed state at that seq. A row naming the
+    segment's full current digest is anchored to the current segment, so its state
+    must equal the current state (the pinned behind vector's shape). Anything else
+    is not from the journal.
+    """
     summary = window.segment
     if summary is None or summary[0] != row["segment_index"]:
         return False
     _, first, last, full = summary
-    return first <= row["journal_seq"] <= last and row["segment_sha256"] in (full, window.prefix_digest)
+    if not first <= row["journal_seq"] <= last:
+        return False
+    if row["segment_sha256"] == window.prefix_digest:
+        return row["state"] == window.prefix_state
+    if row["segment_sha256"] == full:
+        return row["state"] == window.state
+    return False
 
 
 def _compare(value: dict, replayed) -> tuple[str, ...]:

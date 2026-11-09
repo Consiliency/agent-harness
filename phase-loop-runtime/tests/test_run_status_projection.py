@@ -349,6 +349,29 @@ def test_cached_projection_is_stale_or_refused_never_current(tmp_path):
     assert production.check_projection(dict(current, attempts=[]), root) == ("projection_behind_journal",)
 
 
+def test_behind_row_state_is_checked_against_the_replay(tmp_path):
+    """Review case: a queued capture, a later running append, and an edited cached state."""
+    root = make_root(tmp_path)
+    _, writer = open_attempt(root, "attempt-1")
+    writer.state("queued", worker_invocations=0)
+    cached = production.project_assignment(root, A).projection
+    assert cached["attempts"][0]["state"] == "queued"
+    writer.state("running", worker_invocations=1)
+    assert production.check_projection(cached, root) == ("projection_behind_journal",)
+    for state in ("refused", "running", "finished", "cancelling"):
+        forged = json.loads(json.dumps(cached))
+        forged["attempts"][0]["state"] = state
+        assert production.check_projection(forged, root) == ("projection_not_from_journal",), state
+    # A behind row anchored to the full current segment digest carries the current state.
+    current = production.project_assignment(root, A).projection
+    anchored = json.loads(json.dumps(current))
+    anchored["attempts"][0]["journal_seq"] -= 1
+    assert production.check_projection(anchored, root) == ("projection_behind_journal",)
+    anchored["attempts"][0]["state"] = "queued"
+    assert production.check_projection(anchored, root) == ("projection_not_from_journal",)
+    writer.close()
+
+
 def test_projection_attempt_order_must_follow_index(tmp_path):
     root = make_root(tmp_path)
     for attempt in ("attempt-1", "attempt-2"):
