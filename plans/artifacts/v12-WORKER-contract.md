@@ -1,7 +1,8 @@
 # v12 WORKER frozen contract (IF-0-WORKER-1)
 
-Planning input for `plans/phase-plan-v12-WORKER.md`, sealed by that plan's
-`plans/manifest.json` `frozen_inputs` entry. It is read-only during execution; a
+Planning input for `plans/phase-plan-v12-WORKER.md`, sealed by the
+`frozen_inputs` digest of the newest `plans/manifest.json` row that names this
+file (the plan names that row). It is read-only during execution; a
 needed change is an artifact amendment with a new seal, never a lane decision.
 
 Everything here is a harness-local Python/CLI surface. It is not a public wire
@@ -14,7 +15,8 @@ acceptance authority; this file never restates them.
 Revision 2 applies the agent-harness#1926 board edits and the owner rulings
 recorded in the plan's Context (2026-11-08). Revision 3 reconciles §3–§8 with
 JOURNAL's revised §10/§11 (agent-harness#1925 at 86d11deda7bbb1088b9cb1e300064c34f52c71e6,
-an input pin).
+an input pin). Revision 4 (2026-11-09) reconciles the evidence-error terminal
+binding with landed JOURNAL (agent-harness#1934).
 
 ## 1. Consumed interfaces
 
@@ -233,7 +235,7 @@ Steps 1–2 have no attempt-scoped effects on refusal.
      `default_state_root()` this path equals `default_journal_root()`; a test
      asserts that equality.
 3. `reserve_attempt(root, AttemptIdentity(...), units=Units(...),
-   launch_digest, caller_context_sha256)`. A `JournalRefused` (duplicate,
+   launch_digest=..., caller_context_sha256=...)`. A `JournalRefused` (duplicate,
    terminal, crash-reserved or unavailable) refuses with zero invocations and
    no further effects. Then `open_writer(root, reservation)` in the same
    launcher process (JOURNAL refuses `writer_identity_mismatch` elsewhere) and
@@ -261,9 +263,13 @@ Steps 1–2 have no attempt-scoped effects on refusal.
    - write the ledger entries (§4).
    Evidence is created only here, so refused attempts leave no evidence
    directory. A failure here removes `proposal.bin`, sets the status to
-   `withheld_evidence_error` and binds `evidence_envelope_digest: null`.
+   `withheld_evidence_error`, clears the proposal digest and locator, and sets
+   `WorkerResult.evidence_envelope_digest` to null; no `ResultBinding` is built.
+   Partial evidence or ledger files never authorize a result: this path emits
+   no evidence refs and its terminal has `result_binding=None`, even if the
+   capture completed successfully.
 10. Journal the evidence events, then the terminal line:
-    - `writer.event("attempt evidence bound",
+    - unless `withheld_evidence_error`, `writer.event("attempt evidence bound",
       refs=(make_ref("evidence_envelope", evidence_bytes, None),))`;
     - when `returned`, `writer.event("proposal bytes captured",
       refs=(make_ref("proposal_bytes", proposal, None),))`;
@@ -271,8 +277,12 @@ Steps 1–2 have no attempt-scoped effects on refusal.
       `workspace audit failed; proposal withheld`; for every other `withheld_*`
       status, the phrase `proposal withheld`. Neither carries refs, and
       `absent` emits no withholding phrase;
-    - `writer.terminal("finished", worker_invocations, termination,
-      refusal=None, result_binding=ResultBinding(...))`;
+    - `writer.terminal("finished", worker_invocations=worker_invocations,
+      termination=termination, refusal=None,
+      result_binding=ResultBinding(...))`, except that
+      `withheld_evidence_error` passes `result_binding=None`; `finished` records
+      process termination only, and a null binding must never authorize a
+      valid result;
     - `JournalAnchor` from the returned `ChainHead`, then `writer.close()`.
 11. Best-effort `prune(evidence_root, days=retention_days, apply=True)`. Every
     run it returns gets a ledger retirement mark (§4). Failure never alters the
@@ -579,7 +589,7 @@ tests pin umask 077 and restore it. Tests run serially, never with `-n`.
 | W4 | SL-1 | Order §3.1: zero invocations and zero attempt effects for every refusal at steps 1–3; healthy-writer refusals journal `refused` from `queued`; Rule W for a failing `queued`, a `running` append that lands then fails (no spawn, `stale_unknown`), and a post-spawn terminal failure (`finished`, no anchor) | EC-WORKER-2, EC-WORKER-4 |
 | W5 | SL-1 | Replay one envelope sequentially, concurrently across 4 processes, and after a crash between reservation and spawn: at most one spawn in total; a retry under the same run with a new attempt id launches | EC-WORKER-2, EC-WORKER-3, EC-WORKER-4 |
 | W6 | SL-1 | Pre-spawn recheck of each identity element | EC-WORKER-2 |
-| W7 | SL-1 | Proposal decision table, every row including `streams_complete=False` and `withheld_evidence_error`; baselines; malformed and oversized | EC-WORKER-1, EC-WORKER-4 |
+| W7 | SL-1 | Proposal decision table, every row including `streams_complete=False` and `withheld_evidence_error` (fault each step-9 operation; real JOURNAL accepts `finished` with unchanged termination and null binding, no evidence refs, no proposal digest or locator, and no readable valid result even with partial files); baselines; malformed and oversized | EC-WORKER-1, EC-WORKER-4 |
 | W8 | SL-1 | Audit: workspace change per tier, target change, ref change, gitfile escape, cap and special-file errors | EC-WORKER-1, EC-WORKER-4 |
 | W9 | SL-1 | Evidence binding fields of §4; prompt, stdout and stderr sentinels absent from journal, evidence and result; refs carry `locator: null` | EC-WORKER-2, EC-WORKER-4 |
 | W10 | SL-1 | Cancel: real fixture launcher raced in queued (→ `cancelled`), running (→ `cancelled`) and terminal (→ `already_terminal`) states; idempotent repeat; forged record naming an unrelated same-user process (zero signals); stale owner (`owner_not_live`); pid reuse | EC-WORKER-3, EC-WORKER-4 |
