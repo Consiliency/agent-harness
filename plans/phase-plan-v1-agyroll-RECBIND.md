@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: RECBIND
 roadmap: specs/phase-plans-agyroll-v1.md
-roadmap_sha256: 047c83b3a4bdcd82fd9a3c6e9263bbe78cc9b1821b1052584a6f25c86f277f15
+roadmap_sha256: 2f552469e31b49d9791eb3a73e682d3caabbf1ddfa450b30b6bece4f6961f91b
 automation:
   suite_command: ["bash", "-lc", "cd phase-loop-runtime && PYTHONPATH=$PWD/src:$PWD/tests timeout 900 .venv/bin/python -m pytest -q -p no:cacheprovider tests/test_agy_qci.py tests/test_agy_catalog_data.py tests/test_agy_record_v2.py tests/test_agy_route_conformance.py tests/test_qualified_agy_image_set.py tests/test_verify_qualified_agy_route_core.py tests/test_agy_upstream_advisory.py tests/test_agy_static_integrity.py tests/test_agy_integrity_seat_admission.py tests/test_gemini_heartbeat_bootstrap.py tests/test_agy_self_qualification.py tests/test_outside_agent_release_surface.py tests/test_seat_reference_inventory.py && timeout 300 uv run --locked python scripts/verify_qualified_agy_image.py --contract"]
 ---
@@ -74,7 +74,7 @@ dependencies.
   - `scripts/convert_agy_record_v2.py --check|--write`.
 - [ ] IF-0-RECBIND-2 — The strict conformance suite (AGYROLL §3.4):
   - entry point `tests/test_agy_route_conformance.py`;
-  - `CONFORMANCE_OBLIGATIONS`: six ids, three operations and three mutants;
+  - `CONFORMANCE_OBLIGATIONS`: eight ids, made up of three operations, three negative controls (two provisional until measured in SL-2.1) and two driver-enforcement controls (AGYROLL §3.4, A1);
   - `AGY_CONFORMANCE_STRICT=1`, under which a missing bwrap or user namespace is a failure, not a skip;
   - release CI writes the JUnit report under `$RUNNER_TEMP`, and `--release` consumes it.
 
@@ -98,7 +98,7 @@ SL-3 — Documentation & spec reconciliation
 | Lane | Size | Estimate |
 |---|---|---|
 | SL-1 | XL | about 1,150 lines, in three ordered test/impl pairs: converter check, runtime, then records/verifier/watch/workflows/inventory |
-| SL-2 | L | about 550 lines, plus the stand-in, the mutants and strict mode |
+| SL-2 | L | about 600 lines, plus the stand-in, the five controls and strict mode |
 | SL-3 | S | docs only |
 
 SL-1 consumes SL-2's `CONFORMANCE_OBLIGATIONS`, so the order is SL-2, then SL-1, then SL-3.
@@ -168,7 +168,7 @@ SL-2 is the smaller lane and touches only tests and fixtures.
 | SL-1.7 | verify | SL-1.6 | SL-1 owned files | all SL-1 tests, plus the verifier on the real evidence | `cd phase-loop-runtime && timeout 900 .venv/bin/python -m pytest -q -p no:cacheprovider tests/test_agy_qci.py tests/test_agy_catalog_data.py tests/test_agy_record_v2.py tests/test_qualified_agy_image_set.py tests/test_verify_qualified_agy_route_core.py tests/test_agy_upstream_advisory.py tests/test_outside_agent_release_surface.py tests/test_agy_static_integrity.py tests/test_agy_integrity_seat_admission.py tests/test_gemini_heartbeat_bootstrap.py tests/test_agy_self_qualification.py tests/test_seat_reference_inventory.py && timeout 300 uv run --locked python scripts/verify_qualified_agy_image.py --contract` |
 
 ### SL-2 — Strict hermetic route conformance suite
-- **Scope**: Prove in CI, with no provider, that the production qualification driver meets every pass predicate. This is the harness-side guarantee the full pin stood in for, and it cannot pass by skipping.
+- **Scope**: Prove in CI, with no provider, that the production qualification driver meets every pass predicate and enforces cancel and cleanup itself. This is the harness-side guarantee the full pin stood in for, and it cannot pass by skipping.
 - **Owned files**: `phase-loop-runtime/tests/test_agy_route_conformance.py`, `phase-loop-runtime/tests/fixtures/agy_conformance/**`
 - **Interfaces provided**: `CONFORMANCE_OBLIGATIONS`, `IF-0-RECBIND-2`
 - **Interfaces consumed**: `qualify_image` (pre-existing), `run_operation` (pre-existing) and the validator path, all read-only
@@ -177,10 +177,28 @@ SL-2 is the smaller lane and touches only tests and fixtures.
     shape, with no raw receipt.
   - **Operations.** `completion`, `cancel` and `owner-loss` run through `qualify_image`
     under the real profile and seal checks.
-  - **Mutants.** Each must fail its operation:
-    - one emits no terminal event;
-    - one ignores cancel;
-    - one leaves an orphaned child.
+  - **Amendment A1 (2026-11-08).** The first SL-2.1 run stopped on a probe that ran the real
+    driver under the real bwrap profile with compiled stand-ins. It found:
+    - "ignores cancel" and "orphaned child" **pass**, because the driver enforces them: the
+      broker returns `cancelled`, it sends TERM then KILL to the process group, and
+      `--die-with-parent` teardown kills orphans;
+    - "no terminal event" does not pass (`transient` at `completion`).
+
+    The coordinator ruled this a test-design correction consistent with R1's intent; the
+    owner's R1–R9 rulings are unchanged. The controls are now split as follows (AGYROLL
+    §3.4).
+  - **Negative controls** (each must not pass):
+    - `neg_no_terminal_event`: completion is `transient`, as measured, and pinned.
+    - `neg_no_progress_event` (provisional): the stand-in answers without a progress event,
+      so `cancel` must not pass.
+    - `neg_unregistered_helper` (provisional): the child execs an executable outside the
+      helper policy, and the helper check rejects it (expected `failed`).
+  - **Driver-enforcement controls** (each must pass): `pos_ignores_cancel` and
+    `pos_orphaned_child`. They prove that the driver, not the provider, enforces cancel and
+    cleanup.
+  - **Measure before freezing.** SL-2.1 runs each provisional control 5 consecutive times.
+    Every run must give the same non-passing outcome, and the test then pins it. If either
+    control passes or flaps, stop and report back for an amendment. Never weaken a control.
   - **Strict mode.** With `AGY_CONFORMANCE_STRICT=1`, a missing bwrap or user namespace is
     `pytest.fail`, and every obligation is a parametrized case with its id in
     `CONFORMANCE_OBLIGATIONS`.
@@ -190,8 +208,8 @@ SL-2 is the smaller lane and touches only tests and fixtures.
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-2.1 | test | — | `tests/test_agy_route_conformance.py`, `tests/fixtures/agy_conformance/**` | Three operations pass with the conforming stand-in. Each mutant fails. Strict mode fails on a missing bwrap or user namespace. The obligation ids equal `CONFORMANCE_OBLIGATIONS`. | `cd phase-loop-runtime && AGY_CONFORMANCE_STRICT=1 timeout 900 .venv/bin/python -m pytest -q -p no:cacheprovider tests/test_agy_route_conformance.py` |
-| SL-2.2 | impl | SL-2.1 | stand-in, mutants, strict-mode hook | — | — |
+| SL-2.1 | test | — | `tests/test_agy_route_conformance.py`, `tests/fixtures/agy_conformance/**` | First, measure the two provisional negative controls 5 times each, and stop and report if either passes or flaps. Then: the three operations pass with the conforming stand-in; the three negative controls do not pass, each with its pinned outcome; the two driver-enforcement controls pass; strict mode fails on a missing bwrap or user namespace; and the obligation ids equal the eight in `CONFORMANCE_OBLIGATIONS`. | `cd phase-loop-runtime && AGY_CONFORMANCE_STRICT=1 timeout 900 .venv/bin/python -m pytest -q -p no:cacheprovider tests/test_agy_route_conformance.py` |
+| SL-2.2 | impl | SL-2.1 | stand-in modes for the five controls, strict-mode hook | — | — |
 | SL-2.3 | verify | SL-2.2 | SL-2 owned files | all SL-2 tests, with the report in a private run directory | `cd phase-loop-runtime && RUN_DIR="$(mktemp -d)" && AGY_CONFORMANCE_STRICT=1 timeout 900 .venv/bin/python -m pytest -q -p no:cacheprovider tests/test_agy_route_conformance.py --junitxml="$RUN_DIR/conformance.xml"` |
 
 ### SL-3 — Documentation & spec reconciliation (SL-docs)
@@ -243,7 +261,7 @@ SL-2 is the smaller lane and touches only tests and fixtures.
 - [ ] EC-RECBIND-1 — Proven by `tests/test_agy_catalog_data.py` and `tests/test_agy_record_v2.py`. Falsified by a malformed `data/agy_catalog.json` admitting any image through `gemini_heartbeat.admit`, or by an empty catalog passing `--contract`.
 - [ ] EC-RECBIND-2 — Proven by `tests/test_agy_qci.py`. Falsified by a verdict-changing validator mutant, including one in `panel_invoker.terminal_verdict`, passing the guard without a `QUALIFICATION_VALIDATOR` bump; or by a `__version__` bump or a catalog edit changing `seat_qci()`.
 - [ ] EC-RECBIND-3 — Proven by `tests/test_agy_record_v2.py`, `tests/test_verify_qualified_agy_route_core.py` and `uv run --locked python scripts/verify_qualified_agy_image.py --contract`. Falsified by a record whose `qci` differs from the tree's passing `--contract`, or by a PR outside the old path filter not running `--contract`.
-- [ ] EC-RECBIND-4 — Proven by `AGY_CONFORMANCE_STRICT=1 pytest tests/test_agy_route_conformance.py`. Falsified by any predicate mutant passing its operation through the production `qualify_image`.
+- [ ] EC-RECBIND-4 — Proven by `AGY_CONFORMANCE_STRICT=1 pytest tests/test_agy_route_conformance.py`. Falsified by a negative control (`neg_no_terminal_event`, `neg_no_progress_event`, `neg_unregistered_helper`) passing its operation or departing from its pinned outcome, or by a driver-enforcement control (`pos_ignores_cancel`, `pos_orphaned_child`) failing, through the production `qualify_image`.
 - [ ] EC-RECBIND-5 — Proven by `tests/test_verify_qualified_agy_route_core.py` (workflow wiring) and `tests/test_agy_record_v2.py` (non-QCI drift passes; QCI drift fails). Falsified by any of:
   - a skipped conformance run passing `--release`;
   - a report with a skipped, xfailed or missing obligation passing `--release`;

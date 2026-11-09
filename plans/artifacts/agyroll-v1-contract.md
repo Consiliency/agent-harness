@@ -179,11 +179,49 @@ R1 is approved (2026-11-08) on three conditions:
 **3.4 Route conformance suite** (hermetic, no provider).
 - **What it runs.** The production driver: `qualify_image` → worker → `run_operation` →
   validator, for `completion`, `cancel` and `owner-loss`.
-- **Stand-in.** A scripted stand-in image emits the stream-json surface implied by the
-  redacted record shape. Raw receipts are never used.
-- **Negative controls.** One scripted mutant per predicate: no terminal event, a cancel that
-  is ignored, and a child that is orphaned. Each must fail its operation.
-- **Obligations.** The six obligations are declared in `CONFORMANCE_OBLIGATIONS`.
+- **Stand-in.** A stand-in executable emits the stream-json surface implied by the redacted
+  record shape. The SL-2.1 probe used a static binary built from fixture source with one mode
+  per control. Raw receipts are never used.
+- **Amendment A1 (2026-11-08).** RECBIND's executor stopped at SL-2.1. It had run the real
+  driver under the real bwrap profile, with compiled stand-ins and nothing mocked. Results:
+  - the conforming stand-in passed all three operations, so the driver is hermetic;
+  - "no terminal event" did not pass (the outcome was `transient` at `completion`);
+  - a stand-in that handles SIGTERM, one that ignores SIGTERM/SIGINT/SIGHUP, and an orphaned
+    `setsid` child that ignores SIGTERM all **passed**.
+
+  They passed because the production driver, not the provider, enforces cancel and cleanup:
+  - the broker returns `cancelled` itself;
+  - it signals the process group with TERM then KILL, and kills pid 1;
+  - `--die-with-parent` namespace teardown kills orphans.
+
+  The coordinator ruled this a test-design correction consistent with R1's intent; the
+  owner's R1–R9 rulings are unchanged. The controls are therefore split by who enforces the
+  predicate.
+- **Negative controls** (a provider *can* trip them; each must **not** pass):
+  - `neg_no_terminal_event`: the stand-in never emits a terminal event. Measured outcome:
+    `transient` at `completion`. The test pins that outcome.
+  - `neg_no_progress_event` *(provisional)*: the stand-in answers without any progress event,
+    so cancel never lands before the answer, and `cancel` must not pass.
+  - `neg_unregistered_helper` *(provisional)*: the stand-in's child execs an executable
+    outside the registered helper policy, and the helper check must reject it (expected
+    `failed`).
+- **Measuring the provisional controls.** The two provisional controls are measured in SL-2.1
+  before they are frozen. Each runs 5 consecutive times and must give the same non-passing
+  outcome every time; the test then pins that outcome. If either control passes or flaps, the
+  stop rule applies: the lane stops and reports back for an amendment. It never weakens the
+  control.
+- **Driver-enforcement controls** (positive; each must **pass**). These prove the driver
+  enforces cancel and cleanup without trusting the provider:
+  - `pos_ignores_cancel`: the stand-in ignores SIGTERM/SIGINT/SIGHUP. `cancel` passes because
+    the broker reports `cancelled` and kills the process group with TERM then KILL.
+  - `pos_orphaned_child`: the stand-in leaves a `setsid` child that ignores SIGTERM.
+    `owner-loss` passes because namespace teardown with `--die-with-parent` kills it.
+- **Obligations.** `CONFORMANCE_OBLIGATIONS` declares **eight** ids:
+  - `op_completion`, `op_cancel` and `op_owner_loss`, run with the conforming stand-in;
+  - the three negative controls above;
+  - the two driver-enforcement controls above.
+
+  In the JUnit sense, an obligation "passes" when its test confirms the expected outcome.
 - **Strict mode** (`AGY_CONFORMANCE_STRICT=1`, which release CI sets):
   - A missing bwrap or user namespaces is a failure, not a skip.
   - `--release` reads the suite's JUnit report and requires every obligation id to be present
