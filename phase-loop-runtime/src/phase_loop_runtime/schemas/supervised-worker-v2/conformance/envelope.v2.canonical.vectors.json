@@ -1,0 +1,2088 @@
+{
+  "contract": "admitted_launch_envelope.v2",
+  "status": "provisional",
+  "note": "Canonicalization and capture vectors. numbers: serializer primitives only, IEEE-754 bit patterns and their ECMAScript Number-to-String form (rows marked RFC 8785 Appendix B are copied from the RFC); they prove serialization, not acceptance into the v2 commitment domain. domain: number tokens checked through raw parsing and through in-memory commitment, accepted with their canonical form or rejected (safe-integer rule of x-canonicalization). documents: raw JSON text (or raw_hex bytes) through the I-JSON parse boundary, with the exact canonical text and its sha256, or reject. alternates: wrong preimages whose sha256 must not match. tree_captures: a capture listing, the manifest it must yield and its sha256, or unbindable. tree_alternates: manifests a wrong walk yields; their digest fails launch_workspace_mismatch.",
+  "numbers": [
+    {
+      "id": "N-0000000000000000",
+      "bits": "0000000000000000",
+      "canonical": "0",
+      "pin": "RFC 8785 Appendix B"
+    },
+    {
+      "id": "N-8000000000000000",
+      "bits": "8000000000000000",
+      "canonical": "0",
+      "pin": "RFC 8785 Appendix B"
+    },
+    {
+      "id": "N-0000000000000001",
+      "bits": "0000000000000001",
+      "canonical": "5e-324",
+      "pin": "RFC 8785 Appendix B"
+    },
+    {
+      "id": "N-8000000000000001",
+      "bits": "8000000000000001",
+      "canonical": "-5e-324",
+      "pin": "RFC 8785 Appendix B"
+    },
+    {
+      "id": "N-7fefffffffffffff",
+      "bits": "7fefffffffffffff",
+      "canonical": "1.7976931348623157e+308",
+      "pin": "RFC 8785 Appendix B"
+    },
+    {
+      "id": "N-ffefffffffffffff",
+      "bits": "ffefffffffffffff",
+      "canonical": "-1.7976931348623157e+308",
+      "pin": "RFC 8785 Appendix B"
+    },
+    {
+      "id": "N-4340000000000000",
+      "bits": "4340000000000000",
+      "canonical": "9007199254740992",
+      "pin": "RFC 8785 Appendix B"
+    },
+    {
+      "id": "N-c340000000000000",
+      "bits": "c340000000000000",
+      "canonical": "-9007199254740992",
+      "pin": "RFC 8785 Appendix B"
+    },
+    {
+      "id": "N-4430000000000000",
+      "bits": "4430000000000000",
+      "canonical": "295147905179352830000",
+      "pin": "RFC 8785 Appendix B"
+    },
+    {
+      "id": "N-44b52d02c7e14af5",
+      "bits": "44b52d02c7e14af5",
+      "canonical": "9.999999999999997e+22",
+      "pin": "RFC 8785 Appendix B"
+    },
+    {
+      "id": "N-44b52d02c7e14af6",
+      "bits": "44b52d02c7e14af6",
+      "canonical": "1e+23",
+      "pin": "RFC 8785 Appendix B"
+    },
+    {
+      "id": "N-44b52d02c7e14af7",
+      "bits": "44b52d02c7e14af7",
+      "canonical": "1.0000000000000001e+23",
+      "pin": "RFC 8785 Appendix B"
+    },
+    {
+      "id": "N-444b1ae4d6e2ef4e",
+      "bits": "444b1ae4d6e2ef4e",
+      "canonical": "999999999999999700000",
+      "pin": "RFC 8785 Appendix B"
+    },
+    {
+      "id": "N-444b1ae4d6e2ef4f",
+      "bits": "444b1ae4d6e2ef4f",
+      "canonical": "999999999999999900000",
+      "pin": "RFC 8785 Appendix B"
+    },
+    {
+      "id": "N-444b1ae4d6e2ef50",
+      "bits": "444b1ae4d6e2ef50",
+      "canonical": "1e+21",
+      "pin": "RFC 8785 Appendix B"
+    },
+    {
+      "id": "N-3eb0c6f7a0b5ed8c",
+      "bits": "3eb0c6f7a0b5ed8c",
+      "canonical": "9.999999999999997e-7",
+      "pin": "RFC 8785 Appendix B"
+    },
+    {
+      "id": "N-3eb0c6f7a0b5ed8d",
+      "bits": "3eb0c6f7a0b5ed8d",
+      "canonical": "0.000001",
+      "pin": "RFC 8785 Appendix B"
+    },
+    {
+      "id": "N-41b3de4355555553",
+      "bits": "41b3de4355555553",
+      "canonical": "333333333.3333332",
+      "pin": "RFC 8785 Appendix B"
+    },
+    {
+      "id": "N-41b3de4355555554",
+      "bits": "41b3de4355555554",
+      "canonical": "333333333.33333325",
+      "pin": "RFC 8785 Appendix B"
+    },
+    {
+      "id": "N-41b3de4355555555",
+      "bits": "41b3de4355555555",
+      "canonical": "333333333.3333333",
+      "pin": "RFC 8785 Appendix B"
+    },
+    {
+      "id": "N-41b3de4355555556",
+      "bits": "41b3de4355555556",
+      "canonical": "333333333.3333334",
+      "pin": "RFC 8785 Appendix B"
+    },
+    {
+      "id": "N-41b3de4355555557",
+      "bits": "41b3de4355555557",
+      "canonical": "333333333.33333343",
+      "pin": "RFC 8785 Appendix B"
+    },
+    {
+      "id": "N-becbf647612f3696",
+      "bits": "becbf647612f3696",
+      "canonical": "-0.0000033333333333333333",
+      "pin": "RFC 8785 Appendix B"
+    },
+    {
+      "id": "N-43143ff3c1cb0959",
+      "bits": "43143ff3c1cb0959",
+      "canonical": "1424953923781206.2",
+      "pin": "RFC 8785 Appendix B"
+    },
+    {
+      "id": "N-3ff0000000000000",
+      "bits": "3ff0000000000000",
+      "canonical": "1",
+      "pin": "ECMAScript Number::toString"
+    },
+    {
+      "id": "N-3fe0000000000000",
+      "bits": "3fe0000000000000",
+      "canonical": "0.5",
+      "pin": "ECMAScript Number::toString"
+    },
+    {
+      "id": "N-3e7ad7f29abcaf48",
+      "bits": "3e7ad7f29abcaf48",
+      "canonical": "1e-7",
+      "pin": "ECMAScript Number::toString"
+    },
+    {
+      "id": "N-nan",
+      "bits": "7ff8000000000000",
+      "reject": true
+    },
+    {
+      "id": "N-inf",
+      "bits": "7ff0000000000000",
+      "reject": true
+    },
+    {
+      "id": "N-neg-inf",
+      "bits": "fff0000000000000",
+      "reject": true
+    }
+  ],
+  "domain": [
+    {
+      "id": "D-9007199254740991",
+      "token": "9007199254740991",
+      "accept": true,
+      "canonical": "9007199254740991"
+    },
+    {
+      "id": "D--9007199254740991",
+      "token": "-9007199254740991",
+      "accept": true,
+      "canonical": "-9007199254740991"
+    },
+    {
+      "id": "D-9007199254740991.0",
+      "token": "9007199254740991.0",
+      "accept": true,
+      "canonical": "9007199254740991"
+    },
+    {
+      "id": "D-9.007199254740991e15",
+      "token": "9.007199254740991e15",
+      "accept": true,
+      "canonical": "9007199254740991"
+    },
+    {
+      "id": "D--9.007199254740991E15",
+      "token": "-9.007199254740991E15",
+      "accept": true,
+      "canonical": "-9007199254740991"
+    },
+    {
+      "id": "D-1.0",
+      "token": "1.0",
+      "accept": true,
+      "canonical": "1"
+    },
+    {
+      "id": "D--0",
+      "token": "-0",
+      "accept": true,
+      "canonical": "0"
+    },
+    {
+      "id": "D--0.0",
+      "token": "-0.0",
+      "accept": true,
+      "canonical": "0"
+    },
+    {
+      "id": "D-0.5",
+      "token": "0.5",
+      "accept": true,
+      "canonical": "0.5"
+    },
+    {
+      "id": "D-1e-7",
+      "token": "1e-7",
+      "accept": true,
+      "canonical": "1e-7"
+    },
+    {
+      "id": "D--1.5e-7",
+      "token": "-1.5e-7",
+      "accept": true,
+      "canonical": "-1.5e-7"
+    },
+    {
+      "id": "D-4503599627370495.5",
+      "token": "4503599627370495.5",
+      "accept": true,
+      "canonical": "4503599627370495.5"
+    },
+    {
+      "id": "D-333333333.3333333",
+      "token": "333333333.3333333",
+      "accept": true,
+      "canonical": "333333333.3333333"
+    },
+    {
+      "id": "D-9007199254740992",
+      "token": "9007199254740992",
+      "accept": false
+    },
+    {
+      "id": "D--9007199254740992",
+      "token": "-9007199254740992",
+      "accept": false
+    },
+    {
+      "id": "D-9007199254740992.0",
+      "token": "9007199254740992.0",
+      "accept": false
+    },
+    {
+      "id": "D--9007199254740992.0",
+      "token": "-9007199254740992.0",
+      "accept": false
+    },
+    {
+      "id": "D-9.007199254740992e15",
+      "token": "9.007199254740992e15",
+      "accept": false
+    },
+    {
+      "id": "D--9.007199254740992e15",
+      "token": "-9.007199254740992e15",
+      "accept": false
+    },
+    {
+      "id": "D-9007199254740993",
+      "token": "9007199254740993",
+      "accept": false
+    },
+    {
+      "id": "D-9007199254740991.5",
+      "token": "9007199254740991.5",
+      "accept": false
+    },
+    {
+      "id": "D-1e21",
+      "token": "1e21",
+      "accept": false
+    },
+    {
+      "id": "D--1e21",
+      "token": "-1e21",
+      "accept": false
+    },
+    {
+      "id": "D-999999999999999900000",
+      "token": "999999999999999900000",
+      "accept": false
+    },
+    {
+      "id": "D-1.7976931348623157e308",
+      "token": "1.7976931348623157e308",
+      "accept": false
+    },
+    {
+      "id": "D-1e400",
+      "token": "1e400",
+      "accept": false
+    }
+  ],
+  "documents": [
+    {
+      "id": "J-rfc8785-sort",
+      "raw": "{\"\\u20ac\":\"Euro Sign\",\"\\r\":\"Carriage Return\",\"\\ufb33\":\"Hebrew Letter Dalet With Dagesh\",\"1\":\"One\",\"\\ud83d\\ude00\":\"Emoji: Grinning Face\",\"\\u0080\":\"Control\",\"\\u00f6\":\"Latin Small Letter O With Diaeresis\"}",
+      "canonical": "{\"\\r\":\"Carriage Return\",\"1\":\"One\",\"\":\"Control\",\"ö\":\"Latin Small Letter O With Diaeresis\",\"€\":\"Euro Sign\",\"😀\":\"Emoji: Grinning Face\",\"דּ\":\"Hebrew Letter Dalet With Dagesh\"}",
+      "sha256": "5e321556d22018a9656991a9e94f77ec175fa193e52a2429d312f8419ec8b08c",
+      "pin": "RFC 8785 section 3.2.3 sorting example, written out by hand"
+    },
+    {
+      "id": "J-utf16-keys",
+      "raw": "{\"\\uf900\":\"bmp\",\"\\ud83d\\ude00\":\"astral\",\"a\":\"ascii\"}",
+      "canonical": "{\"a\":\"ascii\",\"😀\":\"astral\",\"豈\":\"bmp\"}",
+      "sha256": "10921118479ffb2077228b69799235faedcf1ce522092829370ceb5a2b0840d2",
+      "pin": "UTF-16 order puts U+1F600 (D83D DE00) before U+F900; sha256 independently measured in round 1 as 10921118..."
+    },
+    {
+      "id": "J-integer-like-keys",
+      "raw": "{\"10\":1,\"2\":2,\"1\":3}",
+      "canonical": "{\"1\":3,\"10\":1,\"2\":2}",
+      "sha256": "5e4291a72609c36fbe21976831a8fbd154d33f0dca203f915b6fa21e965acdc9",
+      "pin": "keys are strings: '10' sorts before '2'"
+    },
+    {
+      "id": "J-escapes",
+      "raw": "{\"s\":\"quote\\\" back\\\\ nl\\n tab\\t ctl\\u0001 del\\u007f sep\\u2028 solidus\\/\"}",
+      "canonical": "{\"s\":\"quote\\\" back\\\\ nl\\n tab\\t ctl\\u0001 del sep  solidus/\"}",
+      "sha256": "515b615343bf9d4c9a73379108051c190ba6a67a921c3dd68158cdc44928a2c4",
+      "pin": "only the RFC 8785 escapes; DEL, U+2028 and '/' stay literal"
+    },
+    {
+      "id": "J-numbers",
+      "raw": "{\"one\":1.0,\"negzero\":-0,\"negzero_float\":-0.0,\"half\":0.5,\"max\":9007199254740991,\"min\":-9007199254740991,\"max_exp\":9.007199254740991E15,\"small\":1e-7,\"frac\":333333333.3333333,\"exp\":-1.5e-7,\"near\":4503599627370495.5}",
+      "canonical": "{\"exp\":-1.5e-7,\"frac\":333333333.3333333,\"half\":0.5,\"max\":9007199254740991,\"max_exp\":9007199254740991,\"min\":-9007199254740991,\"near\":4503599627370495.5,\"negzero\":0,\"negzero_float\":0,\"one\":1,\"small\":1e-7}",
+      "sha256": "a0c1c89ab9747328d9271f55532b6adef066a9e5a8afd80dc57f2891411d1595",
+      "pin": "safe-range integers at both endpoints (also in exponent spelling), fractional and exponent-boundary numbers, 1.0 and -0, in ECMAScript form"
+    },
+    {
+      "id": "J-proto-object",
+      "raw": "{\"__proto__\":{\"x\":1}}",
+      "canonical": "{\"__proto__\":{\"x\":1}}",
+      "sha256": "0fb20b06cf5847cf21cc37dd0d3602c176cc3f96ea4281167bbfe61cbe5813a3",
+      "pin": "a __proto__ member is an ordinary member; sha256 independently measured in round 2 as 0fb20b06..."
+    },
+    {
+      "id": "J-proto-null",
+      "raw": "{\"__proto__\":null,\"a\":1}",
+      "canonical": "{\"__proto__\":null,\"a\":1}",
+      "sha256": "f03cda1c5475fe0500e5c0acd9c66dc4749e4c323c28b0b0228b4c22f7599e77",
+      "pin": "__proto__ with a null value"
+    },
+    {
+      "id": "J-proto-string",
+      "raw": "{\"b\":2,\"__proto__\":\"s\"}",
+      "canonical": "{\"__proto__\":\"s\",\"b\":2}",
+      "sha256": "17753ef7c996489024048cf6a95d633affa17a4e4f6941ff0afcb2d6dee888cd",
+      "pin": "__proto__ with a string value, sorted before b"
+    },
+    {
+      "id": "J-proto-escaped",
+      "raw": "{\"\\u005f_proto__\":{\"y\":[1]}}",
+      "canonical": "{\"__proto__\":{\"y\":[1]}}",
+      "sha256": "a569716651a4d2d2223ec30307d8e4c800c7ab1cb6055f330312d3d1e0f87689",
+      "pin": "an escaped spelling of the __proto__ member name"
+    },
+    {
+      "id": "J-proto-nested-caller-context",
+      "raw": "{\"caller_context\":{\"s\":\"v\",\"__proto__\":{\"x\":1},\"n\":null}}",
+      "canonical": "{\"caller_context\":{\"__proto__\":{\"x\":1},\"n\":null,\"s\":\"v\"}}",
+      "sha256": "4ca10f2b261381e66091952b1b6866aa6b4266ed6d1e7c9109e6bc3afceabf30",
+      "pin": "__proto__ nested in caller_context"
+    },
+    {
+      "id": "J-nested-caller-context",
+      "raw": "{\"ticket\":\"t\",\"nested\":{\"\\ud83d\\ude00\":[1,{\"\\uf900\":-1.5e-7}],\"z\":[]},\"a\":{}}",
+      "canonical": "{\"a\":{},\"nested\":{\"z\":[],\"😀\":[1,{\"豈\":-1.5e-7}]},\"ticket\":\"t\"}",
+      "sha256": "d585a32ecc1f7f8c9eca5d48f8e1e4850e32a2900eeae257302e279cf589a6bb",
+      "pin": "nested opaque caller_context"
+    },
+    {
+      "id": "J-duplicate-member",
+      "reject": true,
+      "raw": "{\"a\":1,\"a\":2}"
+    },
+    {
+      "id": "J-duplicate-member-nested",
+      "reject": true,
+      "raw": "{\"x\":{\"b\":1,\"b\":1}}"
+    },
+    {
+      "id": "J-lone-surrogate-value",
+      "reject": true,
+      "raw": "{\"a\":\"\\ud800\"}"
+    },
+    {
+      "id": "J-lone-surrogate-key",
+      "reject": true,
+      "raw": "{\"\\udc00\":1}"
+    },
+    {
+      "id": "J-nan",
+      "reject": true,
+      "raw": "{\"a\":NaN}"
+    },
+    {
+      "id": "J-infinity",
+      "reject": true,
+      "raw": "{\"a\":Infinity}"
+    },
+    {
+      "id": "J-negative-infinity",
+      "reject": true,
+      "raw": "{\"a\":-Infinity}"
+    },
+    {
+      "id": "J-overflow",
+      "reject": true,
+      "raw": "{\"a\":1e400}"
+    },
+    {
+      "id": "J-inexact-integer",
+      "reject": true,
+      "raw": "{\"a\":9007199254740993}"
+    },
+    {
+      "id": "J-oversized-integer",
+      "reject": true,
+      "raw": "{\"a\":999999999999999900000}"
+    },
+    {
+      "id": "J-exponent-1e21",
+      "reject": true,
+      "raw": "{\"a\":1e21}"
+    },
+    {
+      "id": "J-max-safe-plus-one",
+      "reject": true,
+      "raw": "{\"a\":9007199254740992}"
+    },
+    {
+      "id": "J-min-safe-minus-one",
+      "reject": true,
+      "raw": "{\"a\":-9007199254740992}"
+    },
+    {
+      "id": "J-proto-duplicate",
+      "reject": true,
+      "raw": "{\"__proto__\":1,\"__proto__\":2}"
+    },
+    {
+      "id": "J-proto-duplicate-escaped",
+      "reject": true,
+      "raw": "{\"__proto__\":1,\"\\u005f_proto__\":2}"
+    },
+    {
+      "id": "J-proto-oversized-nested",
+      "reject": true,
+      "raw": "{\"caller_context\":{\"__proto__\":{\"big\":1e21}}}"
+    },
+    {
+      "id": "J-invalid-utf8",
+      "reject": true,
+      "raw_hex": "7b2261223a2262ff227d"
+    }
+  ],
+  "alternates": [
+    {
+      "id": "A-codepoint-order",
+      "of": "J-utf16-keys",
+      "preimage": "{\"a\":\"ascii\",\"豈\":\"bmp\",\"😀\":\"astral\"}",
+      "sha256": "a67e33a8d5f207d14ebee49ac747d857fe0d8804a7ecf55c1ea2ba80f581a494",
+      "why": "code-point member order (independently measured in round 1)"
+    },
+    {
+      "id": "A-ascii-escaped",
+      "of": "J-utf16-keys",
+      "preimage": "{\"a\":\"ascii\",\"\\ud83d\\ude00\":\"astral\",\"\\uf900\":\"bmp\"}",
+      "why": "non-ASCII characters escaped",
+      "sha256": "f14dc5d952587928c1b3a87643e8254368d74255fb40ff491fe09e1417e0206f"
+    },
+    {
+      "id": "A-python-floats",
+      "of": "J-numbers",
+      "preimage": "{\"exp\":-1.5e-07,\"frac\":333333333.3333333,\"half\":0.5,\"max\":9007199254740991,\"max_exp\":9007199254740991.0,\"min\":-9007199254740991,\"near\":4503599627370495.5,\"negzero\":0,\"negzero_float\":-0.0,\"one\":1.0,\"small\":1e-07}",
+      "why": "non-ECMAScript number forms (1.0, -0.0, 1e-07, 9007199254740991.0)",
+      "sha256": "a060dbcba9af12435c44c58e4b38fa1cef58c271e73dacf9284082b60d7ac4ce"
+    },
+    {
+      "id": "A-whitespace",
+      "of": "J-integer-like-keys",
+      "preimage": "{\"1\": 3, \"10\": 1, \"2\": 2}",
+      "why": "insignificant whitespace",
+      "sha256": "2f79ad6af5b760ade35eb76bb3b409dbd515c99a33bd9629f18555363e6f5119"
+    }
+  ],
+  "tree_captures": [
+    {
+      "id": "T-root-git-directory",
+      "capture": [
+        {
+          "path": ".git",
+          "type": "dir"
+        },
+        {
+          "path": ".git/HEAD",
+          "type": "file",
+          "mode": 420,
+          "content": "ref: refs/heads/main\n"
+        },
+        {
+          "path": ".git/objects",
+          "type": "dir"
+        },
+        {
+          "path": ".git/objects/pack",
+          "type": "fifo"
+        },
+        {
+          "path": "README.md",
+          "type": "file",
+          "mode": 420,
+          "content": "Example project.\n"
+        },
+        {
+          "path": "src",
+          "type": "dir"
+        },
+        {
+          "path": "src/a.txt",
+          "type": "file",
+          "mode": 420,
+          "content": "a\n"
+        },
+        {
+          "path": "src/run.sh",
+          "type": "file",
+          "mode": 493,
+          "content": "#!/bin/sh\n"
+        },
+        {
+          "path": "link",
+          "type": "symlink",
+          "target_hex": "2e2f7372632f612e747874"
+        },
+        {
+          "path": "sub",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git/config",
+          "type": "file",
+          "mode": 420,
+          "content": "[core]\n"
+        }
+      ],
+      "why": "root .git directory excluded without descending (its fifo is never reached)",
+      "manifest": [
+        [
+          "README.md",
+          "file",
+          "c5e5e5aaf7121e63dfe976e0c06d32f46f8bfd29b87f4f5a157bc8168b2a7505"
+        ],
+        [
+          "link",
+          "symlink",
+          "12fd0434f24cf21f95458b7a1562dcfe21a2f371694fad669295e10b6f3075c0"
+        ],
+        [
+          "src/a.txt",
+          "file",
+          "87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7"
+        ],
+        [
+          "src/run.sh",
+          "executable_file",
+          "a8076d3d28d21e02012b20eaf7dbf75409a6277134439025f282e368e3305abf"
+        ],
+        [
+          "sub/.git/config",
+          "file",
+          "74d92d2fc80fb8afce7245419a61659ed64df231439f1d37fe2c3449dd2c4625"
+        ]
+      ],
+      "sha256": "7ecd3594121c9b484ec7245e467c62f8d29087d621f7a844919c28b5fd1e03c4"
+    },
+    {
+      "id": "T-root-git-file",
+      "capture": [
+        {
+          "path": ".git",
+          "type": "file",
+          "mode": 420,
+          "content": "gitdir: ../worktrees/example\n"
+        },
+        {
+          "path": "README.md",
+          "type": "file",
+          "mode": 420,
+          "content": "Example project.\n"
+        },
+        {
+          "path": "src",
+          "type": "dir"
+        },
+        {
+          "path": "src/a.txt",
+          "type": "file",
+          "mode": 420,
+          "content": "a\n"
+        },
+        {
+          "path": "src/run.sh",
+          "type": "file",
+          "mode": 493,
+          "content": "#!/bin/sh\n"
+        },
+        {
+          "path": "link",
+          "type": "symlink",
+          "target_hex": "2e2f7372632f612e747874"
+        },
+        {
+          "path": "sub",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git/config",
+          "type": "file",
+          "mode": 420,
+          "content": "[core]\n"
+        }
+      ],
+      "why": "root .git file (worktree pointer) excluded",
+      "manifest": [
+        [
+          "README.md",
+          "file",
+          "c5e5e5aaf7121e63dfe976e0c06d32f46f8bfd29b87f4f5a157bc8168b2a7505"
+        ],
+        [
+          "link",
+          "symlink",
+          "12fd0434f24cf21f95458b7a1562dcfe21a2f371694fad669295e10b6f3075c0"
+        ],
+        [
+          "src/a.txt",
+          "file",
+          "87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7"
+        ],
+        [
+          "src/run.sh",
+          "executable_file",
+          "a8076d3d28d21e02012b20eaf7dbf75409a6277134439025f282e368e3305abf"
+        ],
+        [
+          "sub/.git/config",
+          "file",
+          "74d92d2fc80fb8afce7245419a61659ed64df231439f1d37fe2c3449dd2c4625"
+        ]
+      ],
+      "sha256": "7ecd3594121c9b484ec7245e467c62f8d29087d621f7a844919c28b5fd1e03c4"
+    },
+    {
+      "id": "T-root-git-symlink",
+      "capture": [
+        {
+          "path": ".git",
+          "type": "symlink",
+          "target_hex": "2e2e2f656c736577686572652f2e676974"
+        },
+        {
+          "path": "README.md",
+          "type": "file",
+          "mode": 420,
+          "content": "Example project.\n"
+        },
+        {
+          "path": "src",
+          "type": "dir"
+        },
+        {
+          "path": "src/a.txt",
+          "type": "file",
+          "mode": 420,
+          "content": "a\n"
+        },
+        {
+          "path": "src/run.sh",
+          "type": "file",
+          "mode": 493,
+          "content": "#!/bin/sh\n"
+        },
+        {
+          "path": "link",
+          "type": "symlink",
+          "target_hex": "2e2f7372632f612e747874"
+        },
+        {
+          "path": "sub",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git/config",
+          "type": "file",
+          "mode": 420,
+          "content": "[core]\n"
+        }
+      ],
+      "why": "root .git symlink excluded and not followed",
+      "manifest": [
+        [
+          "README.md",
+          "file",
+          "c5e5e5aaf7121e63dfe976e0c06d32f46f8bfd29b87f4f5a157bc8168b2a7505"
+        ],
+        [
+          "link",
+          "symlink",
+          "12fd0434f24cf21f95458b7a1562dcfe21a2f371694fad669295e10b6f3075c0"
+        ],
+        [
+          "src/a.txt",
+          "file",
+          "87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7"
+        ],
+        [
+          "src/run.sh",
+          "executable_file",
+          "a8076d3d28d21e02012b20eaf7dbf75409a6277134439025f282e368e3305abf"
+        ],
+        [
+          "sub/.git/config",
+          "file",
+          "74d92d2fc80fb8afce7245419a61659ed64df231439f1d37fe2c3449dd2c4625"
+        ]
+      ],
+      "sha256": "7ecd3594121c9b484ec7245e467c62f8d29087d621f7a844919c28b5fd1e03c4"
+    },
+    {
+      "id": "T-nested-git-removed",
+      "capture": [
+        {
+          "path": ".git",
+          "type": "dir"
+        },
+        {
+          "path": ".git/HEAD",
+          "type": "file",
+          "mode": 420,
+          "content": "ref: refs/heads/main\n"
+        },
+        {
+          "path": ".git/objects",
+          "type": "dir"
+        },
+        {
+          "path": ".git/objects/pack",
+          "type": "fifo"
+        },
+        {
+          "path": "README.md",
+          "type": "file",
+          "mode": 420,
+          "content": "Example project.\n"
+        },
+        {
+          "path": "src",
+          "type": "dir"
+        },
+        {
+          "path": "src/a.txt",
+          "type": "file",
+          "mode": 420,
+          "content": "a\n"
+        },
+        {
+          "path": "src/run.sh",
+          "type": "file",
+          "mode": 493,
+          "content": "#!/bin/sh\n"
+        },
+        {
+          "path": "link",
+          "type": "symlink",
+          "target_hex": "2e2f7372632f612e747874"
+        }
+      ],
+      "why": "without the nested sub/.git content",
+      "manifest": [
+        [
+          "README.md",
+          "file",
+          "c5e5e5aaf7121e63dfe976e0c06d32f46f8bfd29b87f4f5a157bc8168b2a7505"
+        ],
+        [
+          "link",
+          "symlink",
+          "12fd0434f24cf21f95458b7a1562dcfe21a2f371694fad669295e10b6f3075c0"
+        ],
+        [
+          "src/a.txt",
+          "file",
+          "87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7"
+        ],
+        [
+          "src/run.sh",
+          "executable_file",
+          "a8076d3d28d21e02012b20eaf7dbf75409a6277134439025f282e368e3305abf"
+        ]
+      ],
+      "sha256": "620c77d396e5fa975d50ad9c45101c5f9c246fb995910226179526a4b5ab9278"
+    },
+    {
+      "id": "T-exec-bit-cleared",
+      "capture": [
+        {
+          "path": ".git",
+          "type": "dir"
+        },
+        {
+          "path": ".git/HEAD",
+          "type": "file",
+          "mode": 420,
+          "content": "ref: refs/heads/main\n"
+        },
+        {
+          "path": ".git/objects",
+          "type": "dir"
+        },
+        {
+          "path": ".git/objects/pack",
+          "type": "fifo"
+        },
+        {
+          "path": "README.md",
+          "type": "file",
+          "mode": 420,
+          "content": "Example project.\n"
+        },
+        {
+          "path": "src",
+          "type": "dir"
+        },
+        {
+          "path": "src/a.txt",
+          "type": "file",
+          "mode": 420,
+          "content": "a\n"
+        },
+        {
+          "path": "src/run.sh",
+          "type": "file",
+          "mode": 420,
+          "content": "#!/bin/sh\n"
+        },
+        {
+          "path": "link",
+          "type": "symlink",
+          "target_hex": "2e2f7372632f612e747874"
+        },
+        {
+          "path": "sub",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git/config",
+          "type": "file",
+          "mode": 420,
+          "content": "[core]\n"
+        }
+      ],
+      "why": "execute bit cleared",
+      "manifest": [
+        [
+          "README.md",
+          "file",
+          "c5e5e5aaf7121e63dfe976e0c06d32f46f8bfd29b87f4f5a157bc8168b2a7505"
+        ],
+        [
+          "link",
+          "symlink",
+          "12fd0434f24cf21f95458b7a1562dcfe21a2f371694fad669295e10b6f3075c0"
+        ],
+        [
+          "src/a.txt",
+          "file",
+          "87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7"
+        ],
+        [
+          "src/run.sh",
+          "file",
+          "a8076d3d28d21e02012b20eaf7dbf75409a6277134439025f282e368e3305abf"
+        ],
+        [
+          "sub/.git/config",
+          "file",
+          "74d92d2fc80fb8afce7245419a61659ed64df231439f1d37fe2c3449dd2c4625"
+        ]
+      ],
+      "sha256": "27ded9fcdef3b33c66ddff26baeca673d9e462486d18798796ec4d1babc06d51"
+    },
+    {
+      "id": "T-raw-link-target",
+      "capture": [
+        {
+          "path": "bin",
+          "type": "symlink",
+          "target_hex": "fffe2e2e2f78"
+        }
+      ],
+      "why": "non-UTF-8 link target, hashed as raw bytes",
+      "manifest": [
+        [
+          "bin",
+          "symlink",
+          "87316f400127f326025147231222e9aac3819ef30b0992b694c9b30331c6616e"
+        ]
+      ],
+      "sha256": "11eeb04cf7fb53a8a94a863e120bb282caa0b967ae0958aa150cb36c16596d94"
+    },
+    {
+      "id": "T-fifo",
+      "capture": [
+        {
+          "path": "README.md",
+          "type": "file",
+          "mode": 420,
+          "content": "Example project.\n"
+        },
+        {
+          "path": "src",
+          "type": "dir"
+        },
+        {
+          "path": "src/a.txt",
+          "type": "file",
+          "mode": 420,
+          "content": "a\n"
+        },
+        {
+          "path": "src/run.sh",
+          "type": "file",
+          "mode": 493,
+          "content": "#!/bin/sh\n"
+        },
+        {
+          "path": "link",
+          "type": "symlink",
+          "target_hex": "2e2f7372632f612e747874"
+        },
+        {
+          "path": "sub",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git/config",
+          "type": "file",
+          "mode": 420,
+          "content": "[core]\n"
+        },
+        {
+          "path": "src/pipe",
+          "type": "fifo"
+        }
+      ],
+      "why": "fifo",
+      "unbindable": true
+    },
+    {
+      "id": "T-deep-implicit-directories",
+      "capture": [
+        {
+          "path": "README.md",
+          "type": "file",
+          "mode": 420,
+          "content": "Example project.\n"
+        },
+        {
+          "path": "a/b/c.txt",
+          "type": "file",
+          "mode": 420,
+          "content": "c\n"
+        }
+      ],
+      "why": "a and a/b implicit: valid",
+      "manifest": [
+        [
+          "README.md",
+          "file",
+          "c5e5e5aaf7121e63dfe976e0c06d32f46f8bfd29b87f4f5a157bc8168b2a7505"
+        ],
+        [
+          "a/b/c.txt",
+          "file",
+          "a3a5e715f0cc574a73c3f9bebb6bc24f32ffd5b67b387244c2c909da779a1478"
+        ]
+      ],
+      "sha256": "163226eff16355a070049da59cce1fd51e08be35f621f0dd29dd29e7d01b2764"
+    },
+    {
+      "id": "T-deep-symlink-ancestor",
+      "capture": [
+        {
+          "path": "README.md",
+          "type": "file",
+          "mode": 420,
+          "content": "Example project.\n"
+        },
+        {
+          "path": "a",
+          "type": "symlink",
+          "target_hex": "2e2e2f657363617065"
+        },
+        {
+          "path": "a/b/c.txt",
+          "type": "file",
+          "mode": 420,
+          "content": "c\n"
+        }
+      ],
+      "why": "a is a symlink, a/b is implicit, a/b/c.txt listed after it: non-immediate ancestor",
+      "unbindable": true
+    },
+    {
+      "id": "T-deep-symlink-ancestor-listed-after",
+      "capture": [
+        {
+          "path": "README.md",
+          "type": "file",
+          "mode": 420,
+          "content": "Example project.\n"
+        },
+        {
+          "path": "a/b/c.txt",
+          "type": "file",
+          "mode": 420,
+          "content": "c\n"
+        },
+        {
+          "path": "a",
+          "type": "symlink",
+          "target_hex": "2e2e2f657363617065"
+        }
+      ],
+      "why": "a is a symlink, a/b is implicit, a/b/c.txt listed before it: non-immediate ancestor",
+      "unbindable": true
+    },
+    {
+      "id": "T-deep-file-ancestor",
+      "capture": [
+        {
+          "path": "README.md",
+          "type": "file",
+          "mode": 420,
+          "content": "Example project.\n"
+        },
+        {
+          "path": "a",
+          "type": "file",
+          "mode": 420,
+          "content": "not a directory\n"
+        },
+        {
+          "path": "a/b/c.txt",
+          "type": "file",
+          "mode": 420,
+          "content": "c\n"
+        }
+      ],
+      "why": "a is a file, a/b is implicit, a/b/c.txt listed after it: non-immediate ancestor",
+      "unbindable": true
+    },
+    {
+      "id": "T-deep-file-ancestor-listed-after",
+      "capture": [
+        {
+          "path": "README.md",
+          "type": "file",
+          "mode": 420,
+          "content": "Example project.\n"
+        },
+        {
+          "path": "a/b/c.txt",
+          "type": "file",
+          "mode": 420,
+          "content": "c\n"
+        },
+        {
+          "path": "a",
+          "type": "file",
+          "mode": 420,
+          "content": "not a directory\n"
+        }
+      ],
+      "why": "a is a file, a/b is implicit, a/b/c.txt listed before it: non-immediate ancestor",
+      "unbindable": true
+    },
+    {
+      "id": "T-implicit-directories",
+      "capture": [
+        {
+          "path": ".git",
+          "type": "dir"
+        },
+        {
+          "path": ".git/HEAD",
+          "type": "file",
+          "mode": 420,
+          "content": "ref: refs/heads/main\n"
+        },
+        {
+          "path": ".git/objects",
+          "type": "dir"
+        },
+        {
+          "path": ".git/objects/pack",
+          "type": "fifo"
+        },
+        {
+          "path": "README.md",
+          "type": "file",
+          "mode": 420,
+          "content": "Example project.\n"
+        },
+        {
+          "path": "src/a.txt",
+          "type": "file",
+          "mode": 420,
+          "content": "a\n"
+        },
+        {
+          "path": "src/run.sh",
+          "type": "file",
+          "mode": 493,
+          "content": "#!/bin/sh\n"
+        },
+        {
+          "path": "link",
+          "type": "symlink",
+          "target_hex": "2e2f7372632f612e747874"
+        },
+        {
+          "path": "sub/.git/config",
+          "type": "file",
+          "mode": 420,
+          "content": "[core]\n"
+        }
+      ],
+      "why": "directories implicit: same digest",
+      "manifest": [
+        [
+          "README.md",
+          "file",
+          "c5e5e5aaf7121e63dfe976e0c06d32f46f8bfd29b87f4f5a157bc8168b2a7505"
+        ],
+        [
+          "link",
+          "symlink",
+          "12fd0434f24cf21f95458b7a1562dcfe21a2f371694fad669295e10b6f3075c0"
+        ],
+        [
+          "src/a.txt",
+          "file",
+          "87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7"
+        ],
+        [
+          "src/run.sh",
+          "executable_file",
+          "a8076d3d28d21e02012b20eaf7dbf75409a6277134439025f282e368e3305abf"
+        ],
+        [
+          "sub/.git/config",
+          "file",
+          "74d92d2fc80fb8afce7245419a61659ed64df231439f1d37fe2c3449dd2c4625"
+        ]
+      ],
+      "sha256": "7ecd3594121c9b484ec7245e467c62f8d29087d621f7a844919c28b5fd1e03c4"
+    },
+    {
+      "id": "T-root-git-file-with-children",
+      "capture": [
+        {
+          "path": ".git",
+          "type": "file",
+          "mode": 420,
+          "content": "gitdir: ../worktrees/example\n"
+        },
+        {
+          "path": ".git/HEAD",
+          "type": "file",
+          "mode": 420,
+          "content": "x\n"
+        },
+        {
+          "path": "README.md",
+          "type": "file",
+          "mode": 420,
+          "content": "Example project.\n"
+        },
+        {
+          "path": "src",
+          "type": "dir"
+        },
+        {
+          "path": "src/a.txt",
+          "type": "file",
+          "mode": 420,
+          "content": "a\n"
+        },
+        {
+          "path": "src/run.sh",
+          "type": "file",
+          "mode": 493,
+          "content": "#!/bin/sh\n"
+        },
+        {
+          "path": "link",
+          "type": "symlink",
+          "target_hex": "2e2f7372632f612e747874"
+        },
+        {
+          "path": "sub",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git/config",
+          "type": "file",
+          "mode": 420,
+          "content": "[core]\n"
+        }
+      ],
+      "why": "root .git file with listed children: all excluded, no ancestor conflict",
+      "manifest": [
+        [
+          "README.md",
+          "file",
+          "c5e5e5aaf7121e63dfe976e0c06d32f46f8bfd29b87f4f5a157bc8168b2a7505"
+        ],
+        [
+          "link",
+          "symlink",
+          "12fd0434f24cf21f95458b7a1562dcfe21a2f371694fad669295e10b6f3075c0"
+        ],
+        [
+          "src/a.txt",
+          "file",
+          "87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7"
+        ],
+        [
+          "src/run.sh",
+          "executable_file",
+          "a8076d3d28d21e02012b20eaf7dbf75409a6277134439025f282e368e3305abf"
+        ],
+        [
+          "sub/.git/config",
+          "file",
+          "74d92d2fc80fb8afce7245419a61659ed64df231439f1d37fe2c3449dd2c4625"
+        ]
+      ],
+      "sha256": "7ecd3594121c9b484ec7245e467c62f8d29087d621f7a844919c28b5fd1e03c4"
+    },
+    {
+      "id": "T-symlink-ancestor",
+      "capture": [
+        {
+          "path": "src",
+          "type": "symlink",
+          "target_hex": "2e2e2f657363617065"
+        },
+        {
+          "path": "README.md",
+          "type": "file",
+          "mode": 420,
+          "content": "Example project.\n"
+        },
+        {
+          "path": "src/a.txt",
+          "type": "file",
+          "mode": 420,
+          "content": "a\n"
+        },
+        {
+          "path": "src/run.sh",
+          "type": "file",
+          "mode": 493,
+          "content": "#!/bin/sh\n"
+        },
+        {
+          "path": "link",
+          "type": "symlink",
+          "target_hex": "2e2f7372632f612e747874"
+        },
+        {
+          "path": "sub",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git/config",
+          "type": "file",
+          "mode": 420,
+          "content": "[core]\n"
+        }
+      ],
+      "why": "src is a symlink listed before its descendants",
+      "unbindable": true
+    },
+    {
+      "id": "T-symlink-ancestor-listed-after",
+      "capture": [
+        {
+          "path": "README.md",
+          "type": "file",
+          "mode": 420,
+          "content": "Example project.\n"
+        },
+        {
+          "path": "src/a.txt",
+          "type": "file",
+          "mode": 420,
+          "content": "a\n"
+        },
+        {
+          "path": "src/run.sh",
+          "type": "file",
+          "mode": 493,
+          "content": "#!/bin/sh\n"
+        },
+        {
+          "path": "link",
+          "type": "symlink",
+          "target_hex": "2e2f7372632f612e747874"
+        },
+        {
+          "path": "sub",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git/config",
+          "type": "file",
+          "mode": 420,
+          "content": "[core]\n"
+        },
+        {
+          "path": "src",
+          "type": "symlink",
+          "target_hex": "2e2e2f657363617065"
+        }
+      ],
+      "why": "src is a symlink listed after its descendants",
+      "unbindable": true
+    },
+    {
+      "id": "T-file-ancestor",
+      "capture": [
+        {
+          "path": "src",
+          "type": "file",
+          "mode": 420,
+          "content": "not a directory\n"
+        },
+        {
+          "path": "README.md",
+          "type": "file",
+          "mode": 420,
+          "content": "Example project.\n"
+        },
+        {
+          "path": "src/a.txt",
+          "type": "file",
+          "mode": 420,
+          "content": "a\n"
+        },
+        {
+          "path": "src/run.sh",
+          "type": "file",
+          "mode": 493,
+          "content": "#!/bin/sh\n"
+        },
+        {
+          "path": "link",
+          "type": "symlink",
+          "target_hex": "2e2f7372632f612e747874"
+        },
+        {
+          "path": "sub",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git/config",
+          "type": "file",
+          "mode": 420,
+          "content": "[core]\n"
+        }
+      ],
+      "why": "src is a regular file listed before its descendants",
+      "unbindable": true
+    },
+    {
+      "id": "T-file-ancestor-listed-after",
+      "capture": [
+        {
+          "path": "README.md",
+          "type": "file",
+          "mode": 420,
+          "content": "Example project.\n"
+        },
+        {
+          "path": "src/a.txt",
+          "type": "file",
+          "mode": 420,
+          "content": "a\n"
+        },
+        {
+          "path": "src/run.sh",
+          "type": "file",
+          "mode": 493,
+          "content": "#!/bin/sh\n"
+        },
+        {
+          "path": "link",
+          "type": "symlink",
+          "target_hex": "2e2f7372632f612e747874"
+        },
+        {
+          "path": "sub",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git/config",
+          "type": "file",
+          "mode": 420,
+          "content": "[core]\n"
+        },
+        {
+          "path": "src",
+          "type": "file",
+          "mode": 420,
+          "content": "not a directory\n"
+        }
+      ],
+      "why": "src is a regular file listed after its descendants",
+      "unbindable": true
+    },
+    {
+      "id": "T-nested-git-symlink-ancestor",
+      "capture": [
+        {
+          "path": "README.md",
+          "type": "file",
+          "mode": 420,
+          "content": "Example project.\n"
+        },
+        {
+          "path": "src",
+          "type": "dir"
+        },
+        {
+          "path": "src/a.txt",
+          "type": "file",
+          "mode": 420,
+          "content": "a\n"
+        },
+        {
+          "path": "src/run.sh",
+          "type": "file",
+          "mode": 493,
+          "content": "#!/bin/sh\n"
+        },
+        {
+          "path": "link",
+          "type": "symlink",
+          "target_hex": "2e2f7372632f612e747874"
+        },
+        {
+          "path": "sub",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git/config",
+          "type": "file",
+          "mode": 420,
+          "content": "[core]\n"
+        },
+        {
+          "path": "sub/.git",
+          "type": "symlink",
+          "target_hex": "2e2e2f78"
+        }
+      ],
+      "why": "a nested .git is ordinary content: as a symlink it cannot be the ancestor of sub/.git/config",
+      "unbindable": true
+    },
+    {
+      "id": "T-socket",
+      "capture": [
+        {
+          "path": "README.md",
+          "type": "file",
+          "mode": 420,
+          "content": "Example project.\n"
+        },
+        {
+          "path": "src",
+          "type": "dir"
+        },
+        {
+          "path": "src/a.txt",
+          "type": "file",
+          "mode": 420,
+          "content": "a\n"
+        },
+        {
+          "path": "src/run.sh",
+          "type": "file",
+          "mode": 493,
+          "content": "#!/bin/sh\n"
+        },
+        {
+          "path": "link",
+          "type": "symlink",
+          "target_hex": "2e2f7372632f612e747874"
+        },
+        {
+          "path": "sub",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git/config",
+          "type": "file",
+          "mode": 420,
+          "content": "[core]\n"
+        },
+        {
+          "path": "src/sock",
+          "type": "socket"
+        }
+      ],
+      "why": "socket",
+      "unbindable": true
+    },
+    {
+      "id": "T-device",
+      "capture": [
+        {
+          "path": "README.md",
+          "type": "file",
+          "mode": 420,
+          "content": "Example project.\n"
+        },
+        {
+          "path": "src",
+          "type": "dir"
+        },
+        {
+          "path": "src/a.txt",
+          "type": "file",
+          "mode": 420,
+          "content": "a\n"
+        },
+        {
+          "path": "src/run.sh",
+          "type": "file",
+          "mode": 493,
+          "content": "#!/bin/sh\n"
+        },
+        {
+          "path": "link",
+          "type": "symlink",
+          "target_hex": "2e2f7372632f612e747874"
+        },
+        {
+          "path": "sub",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git/config",
+          "type": "file",
+          "mode": 420,
+          "content": "[core]\n"
+        },
+        {
+          "path": "src/dev",
+          "type": "device"
+        }
+      ],
+      "why": "device",
+      "unbindable": true
+    },
+    {
+      "id": "T-duplicate-path",
+      "capture": [
+        {
+          "path": "README.md",
+          "type": "file",
+          "mode": 420,
+          "content": "Example project.\n"
+        },
+        {
+          "path": "src",
+          "type": "dir"
+        },
+        {
+          "path": "src/a.txt",
+          "type": "file",
+          "mode": 420,
+          "content": "a\n"
+        },
+        {
+          "path": "src/run.sh",
+          "type": "file",
+          "mode": 493,
+          "content": "#!/bin/sh\n"
+        },
+        {
+          "path": "link",
+          "type": "symlink",
+          "target_hex": "2e2f7372632f612e747874"
+        },
+        {
+          "path": "sub",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git/config",
+          "type": "file",
+          "mode": 420,
+          "content": "[core]\n"
+        },
+        {
+          "path": "src/a.txt",
+          "type": "file",
+          "mode": 420,
+          "content": "b\n"
+        }
+      ],
+      "why": "duplicate path",
+      "unbindable": true
+    },
+    {
+      "id": "T-path-not-unicode",
+      "capture": [
+        {
+          "path": "README.md",
+          "type": "file",
+          "mode": 420,
+          "content": "Example project.\n"
+        },
+        {
+          "path": "src",
+          "type": "dir"
+        },
+        {
+          "path": "src/a.txt",
+          "type": "file",
+          "mode": 420,
+          "content": "a\n"
+        },
+        {
+          "path": "src/run.sh",
+          "type": "file",
+          "mode": 493,
+          "content": "#!/bin/sh\n"
+        },
+        {
+          "path": "link",
+          "type": "symlink",
+          "target_hex": "2e2f7372632f612e747874"
+        },
+        {
+          "path": "sub",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git/config",
+          "type": "file",
+          "mode": 420,
+          "content": "[core]\n"
+        },
+        {
+          "path": {
+            "hex": "ff"
+          },
+          "type": "file",
+          "mode": 420,
+          "content": "x\n"
+        }
+      ],
+      "why": "path bytes not valid UTF-8",
+      "unbindable": true
+    },
+    {
+      "id": "T-path-colon",
+      "capture": [
+        {
+          "path": "README.md",
+          "type": "file",
+          "mode": 420,
+          "content": "Example project.\n"
+        },
+        {
+          "path": "src",
+          "type": "dir"
+        },
+        {
+          "path": "src/a.txt",
+          "type": "file",
+          "mode": 420,
+          "content": "a\n"
+        },
+        {
+          "path": "src/run.sh",
+          "type": "file",
+          "mode": 493,
+          "content": "#!/bin/sh\n"
+        },
+        {
+          "path": "link",
+          "type": "symlink",
+          "target_hex": "2e2f7372632f612e747874"
+        },
+        {
+          "path": "sub",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git/config",
+          "type": "file",
+          "mode": 420,
+          "content": "[core]\n"
+        },
+        {
+          "path": "src/a:b",
+          "type": "file",
+          "mode": 420,
+          "content": "x\n"
+        }
+      ],
+      "why": "path outside the portable grammar",
+      "unbindable": true
+    },
+    {
+      "id": "T-mode-missing",
+      "capture": [
+        {
+          "path": "README.md",
+          "type": "file",
+          "mode": 420,
+          "content": "Example project.\n"
+        },
+        {
+          "path": "src",
+          "type": "dir"
+        },
+        {
+          "path": "src/a.txt",
+          "type": "file",
+          "mode": 420,
+          "content": "a\n"
+        },
+        {
+          "path": "src/run.sh",
+          "type": "file",
+          "mode": 493,
+          "content": "#!/bin/sh\n"
+        },
+        {
+          "path": "link",
+          "type": "symlink",
+          "target_hex": "2e2f7372632f612e747874"
+        },
+        {
+          "path": "sub",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git",
+          "type": "dir"
+        },
+        {
+          "path": "sub/.git/config",
+          "type": "file",
+          "mode": 420,
+          "content": "[core]\n"
+        },
+        {
+          "path": "src/b.txt",
+          "type": "file",
+          "content": "x\n"
+        }
+      ],
+      "why": "regular file without POSIX mode",
+      "unbindable": true
+    }
+  ],
+  "tree_alternates": [
+    {
+      "id": "TA-includes-git",
+      "of": "T-root-git-directory",
+      "why": "descended into the root .git",
+      "manifest": [
+        [
+          ".git/HEAD",
+          "file",
+          "28d25bf82af4c0e2b72f50959b2beb859e3e60b9630a5e8c603dad4ddb2b6e80"
+        ],
+        [
+          "README.md",
+          "file",
+          "c5e5e5aaf7121e63dfe976e0c06d32f46f8bfd29b87f4f5a157bc8168b2a7505"
+        ],
+        [
+          "link",
+          "symlink",
+          "12fd0434f24cf21f95458b7a1562dcfe21a2f371694fad669295e10b6f3075c0"
+        ],
+        [
+          "src/a.txt",
+          "file",
+          "87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7"
+        ],
+        [
+          "src/run.sh",
+          "executable_file",
+          "a8076d3d28d21e02012b20eaf7dbf75409a6277134439025f282e368e3305abf"
+        ],
+        [
+          "sub/.git/config",
+          "file",
+          "74d92d2fc80fb8afce7245419a61659ed64df231439f1d37fe2c3449dd2c4625"
+        ]
+      ],
+      "sha256": "ae5dbac1c53ddfabe1e579407db21e99d05b3a2e58f7b0c9eb37f3f64ebe92a6",
+      "expected": "launch_workspace_mismatch"
+    },
+    {
+      "id": "TA-excludes-nested-git",
+      "of": "T-root-git-directory",
+      "why": "excluded the nested sub/.git",
+      "manifest": [
+        [
+          "README.md",
+          "file",
+          "c5e5e5aaf7121e63dfe976e0c06d32f46f8bfd29b87f4f5a157bc8168b2a7505"
+        ],
+        [
+          "link",
+          "symlink",
+          "12fd0434f24cf21f95458b7a1562dcfe21a2f371694fad669295e10b6f3075c0"
+        ],
+        [
+          "src/a.txt",
+          "file",
+          "87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7"
+        ],
+        [
+          "src/run.sh",
+          "executable_file",
+          "a8076d3d28d21e02012b20eaf7dbf75409a6277134439025f282e368e3305abf"
+        ]
+      ],
+      "sha256": "620c77d396e5fa975d50ad9c45101c5f9c246fb995910226179526a4b5ab9278",
+      "expected": "launch_workspace_mismatch"
+    },
+    {
+      "id": "TA-follows-link",
+      "of": "T-root-git-directory",
+      "why": "followed the symlink",
+      "manifest": [
+        [
+          "README.md",
+          "file",
+          "c5e5e5aaf7121e63dfe976e0c06d32f46f8bfd29b87f4f5a157bc8168b2a7505"
+        ],
+        [
+          "link",
+          "file",
+          "87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7"
+        ],
+        [
+          "src/a.txt",
+          "file",
+          "87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7"
+        ],
+        [
+          "src/run.sh",
+          "executable_file",
+          "a8076d3d28d21e02012b20eaf7dbf75409a6277134439025f282e368e3305abf"
+        ],
+        [
+          "sub/.git/config",
+          "file",
+          "74d92d2fc80fb8afce7245419a61659ed64df231439f1d37fe2c3449dd2c4625"
+        ]
+      ],
+      "sha256": "35bfec93f5f511e7c2409f5d791c5548bb2921237cd8e77f7c7d9f678af2c63e",
+      "expected": "launch_workspace_mismatch"
+    },
+    {
+      "id": "TA-normalized-target",
+      "of": "T-root-git-directory",
+      "why": "hashed the normalized target text",
+      "manifest": [
+        [
+          "README.md",
+          "file",
+          "c5e5e5aaf7121e63dfe976e0c06d32f46f8bfd29b87f4f5a157bc8168b2a7505"
+        ],
+        [
+          "link",
+          "symlink",
+          "cf6cefc853be88e0057529b0357caf263bcf9ff3dbea3bb4a601daa70cf3d3ad"
+        ],
+        [
+          "src/a.txt",
+          "file",
+          "87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7"
+        ],
+        [
+          "src/run.sh",
+          "executable_file",
+          "a8076d3d28d21e02012b20eaf7dbf75409a6277134439025f282e368e3305abf"
+        ],
+        [
+          "sub/.git/config",
+          "file",
+          "74d92d2fc80fb8afce7245419a61659ed64df231439f1d37fe2c3449dd2c4625"
+        ]
+      ],
+      "sha256": "6ec078abd62c8146d0b292676a70319c50cf37f2d35148d988bf8b478dfbcd03",
+      "expected": "launch_workspace_mismatch"
+    },
+    {
+      "id": "TA-ignores-exec-bit",
+      "of": "T-root-git-directory",
+      "why": "ignored the execute bit",
+      "manifest": [
+        [
+          "README.md",
+          "file",
+          "c5e5e5aaf7121e63dfe976e0c06d32f46f8bfd29b87f4f5a157bc8168b2a7505"
+        ],
+        [
+          "link",
+          "symlink",
+          "12fd0434f24cf21f95458b7a1562dcfe21a2f371694fad669295e10b6f3075c0"
+        ],
+        [
+          "src/a.txt",
+          "file",
+          "87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7"
+        ],
+        [
+          "src/run.sh",
+          "file",
+          "a8076d3d28d21e02012b20eaf7dbf75409a6277134439025f282e368e3305abf"
+        ],
+        [
+          "sub/.git/config",
+          "file",
+          "74d92d2fc80fb8afce7245419a61659ed64df231439f1d37fe2c3449dd2c4625"
+        ]
+      ],
+      "sha256": "27ded9fcdef3b33c66ddff26baeca673d9e462486d18798796ec4d1babc06d51",
+      "expected": "launch_workspace_mismatch"
+    },
+    {
+      "id": "TA-codepoint-sorted",
+      "of": "T-root-git-directory",
+      "why": "unsorted (reverse) entries",
+      "manifest": [
+        [
+          "sub/.git/config",
+          "file",
+          "74d92d2fc80fb8afce7245419a61659ed64df231439f1d37fe2c3449dd2c4625"
+        ],
+        [
+          "src/run.sh",
+          "executable_file",
+          "a8076d3d28d21e02012b20eaf7dbf75409a6277134439025f282e368e3305abf"
+        ],
+        [
+          "src/a.txt",
+          "file",
+          "87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7"
+        ],
+        [
+          "link",
+          "symlink",
+          "12fd0434f24cf21f95458b7a1562dcfe21a2f371694fad669295e10b6f3075c0"
+        ],
+        [
+          "README.md",
+          "file",
+          "c5e5e5aaf7121e63dfe976e0c06d32f46f8bfd29b87f4f5a157bc8168b2a7505"
+        ]
+      ],
+      "sha256": "c4920ab6af26076269c63d18c30a29b8f0665e350b6b048a8fffd34db605e473",
+      "expected": "launch_workspace_mismatch"
+    }
+  ]
+}

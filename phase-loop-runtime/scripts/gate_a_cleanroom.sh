@@ -280,6 +280,18 @@ PYEOF
       /phase-loop-runtime/scripts/verify_supervised_contract_publication.py \
       /plans/artifacts/v12-SCHEMA-inputs.md \
       /plans/evidence/supervised-worker/SCHEMA.md \
+      /plans/artifacts/v12-CLOSEOUT-inputs.md \
+      /plans/artifacts/v12-CLOSEOUT-landed-binding.md \
+      /plans/artifacts/v12-v13-replan-ownership.md \
+      /plans/artifacts/v12-CLOSEOUT-binding-location.md \
+      /plans/evidence/supervised-worker/CLOSEOUT.md \
+      /plans/phase-plan-v12-CLOSEOUT.md \
+      /plans/evidence/supervised-worker/ENVELOPE.md \
+      /plans/evidence/supervised-worker/JOURNAL.md \
+      /plans/evidence/supervised-worker/WORKER.md \
+      /plans/artifacts/v12-JOURNAL-interface.md \
+      /phase-loop-runtime/scripts/verify_supervised_v2.sh \
+      /phase-loop-runtime/scripts/verify_supervised_v2_evidence.py \
       /plans/evidence/seat-qualification/claude-w0/README.md \
       /phase-loop-runtime/images/review-runner/Containerfile \
       /plans/detailed-remote-seat-placement-896-20261010.md \

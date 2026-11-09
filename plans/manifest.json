@@ -14719,6 +14719,15 @@
             }
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-11-09T17:26:31Z",
+          "by": "claude-execute-phase",
+          "metadata": {
+            "phase_alias": "CLOSEOUT",
+            "run_id": "v12-closeout-build-20261109"
+          },
+          "transition": "executing"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -14733,9 +14742,9 @@
         "type": "phase"
       },
       "slug": "v12-CLOSEOUT",
-      "status": "committed",
+      "status": "executing",
       "type": "phase",
-      "updated_at": "2026-11-09T15:03:29Z"
+      "updated_at": "2026-11-09T17:26:31Z"
     },
     {
       "acceptance_criteria_count": null,

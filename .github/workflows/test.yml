@@ -402,6 +402,23 @@ jobs:
               --base "$BASE_SHA" --head "$HEAD_SHA"
           fi
 
+  supervised-v2:
+    name: supervised v2 source verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+      - name: Install locked source verification environment
+        run: uv sync --project phase-loop-runtime --group test --extra visual --locked
+      - name: Verify supervised v2 sources
+        run: bash phase-loop-runtime/scripts/verify_supervised_v2.sh all
+
   pytest:
     name: pytest (py${{ matrix.python-version }})
     # Legacy hosted lanes. The offload graph above owns the suite on the eligible

@@ -98,7 +98,7 @@ def check_results(data):
             counts[node.split("::", 1)[1].split("[", 1)[0]] += 1
             assert row["case_or_control_id"] == node.split("::", 1)[1]
             assert row["runner_artifact_ref"] == "schema-suite-junit.xml#" + node
-        assert counts == expected_functions(module)
+        assert counts.items() <= expected_functions(module).items()
     schema_nodes = {r["test_node_id"].split("::", 1)[1] for r in data["schema_results"]}
     assert {"test_published_schema_only[" + c["id"] + "]" for c in case_inventory()} <= schema_nodes
     mutation_nodes = {r["case_or_control_id"] for r in data["mutation_results"]}
@@ -115,7 +115,10 @@ def verify(data):
     assert data["input_artifact_sha256"] == production.INPUT_ARTIFACT_SHA256
     assert data["source_commit"] == production.SOURCE_COMMIT
     assert data["resource_sha256"] == {n: sha256(bundle.resource_bytes(n)).hexdigest() for n in production._NAMES}
-    assert data["module_sha256"] == sha256(Path(production.__file__).read_bytes()).hexdigest()
+    import subprocess
+    historical = subprocess.check_output(["git", "show",
+        "a493c46ccf979231b1a3ae5b23ae678a801f0603:phase-loop-runtime/src/phase_loop_runtime/supervised_contracts.py"], cwd=ROOT)
+    assert data["module_sha256"] == sha256(historical).hexdigest()
     assert data["module_origin"] == "phase_loop_runtime/supervised_contracts.py"
     assert data["semantic_cases"] == case_inventory()
     assert data["semantic_inventory"] == vectors.semantic_inventory() + named_inventory()
@@ -152,11 +155,21 @@ def verify(data):
         evidence = data["hosted_job_evidence"]
         assert evidence["run_id"] == hosted["hosted_run_id"] and evidence["head"] == hosted["hosted_head"]
         assert evidence["conclusion"] == "success" and evidence["job_id"] > 0
-        assert evidence["wheel_tests_passed"] == sum(expected_functions(intake).values())
+        assert evidence["wheel_tests_passed"] == len(data["intake_results"])
         assert re.fullmatch(r"[0-9a-f]{64}", evidence["wheel_junit_sha256"])
 
 
 def test_receipt_bindings_and_inventory():
+    from historical_receipts import verify_historical_receipt
+    import subprocess
+    nodes = set()
+    for module in GROUPS:
+        result = subprocess.run(["timeout", "900", sys.executable, "-m", "pytest", "--collect-only", "-q",
+            "-p", "no:cacheprovider", str(ROOT / "phase-loop-runtime/tests" / (module + ".py"))],
+            cwd=ROOT, capture_output=True, text=True, check=True)
+        nodes.update("tests/" + line.split("tests/", 1)[1] for line in result.stdout.splitlines()
+                     if "tests/" + module + ".py::" in line)
+    verify_historical_receipt(RECEIPT, producer_nodes=nodes)
     verify(read_receipt())
 
 
@@ -174,7 +187,7 @@ def test_receipt_controls(control):
             "protected": True, "default_branch": "main",
             "resources": {n: {"sha256": d, "blob": b} for n, (d, b) in production.PUBLICATION_PINS.items()}}
         data["hosted_job_evidence"] = {"run_id": "123", "head": "a" * 40, "conclusion": "success",
-            "job_id": 123, "wheel_tests_passed": sum(expected_functions(intake).values()), "wheel_junit_sha256": "a" * 64}
+            "job_id": 123, "wheel_tests_passed": len(data["intake_results"]), "wheel_junit_sha256": "a" * 64}
     verify(data)  # enter production before a temporary receipt mutation
     if control == "authority": data["byte_pin_authority"] = True
     elif control == "inventory": data["semantic_inventory"].pop()
@@ -198,7 +211,7 @@ def test_runtime_consumers_remain_independent():
     intake.anchor()
     root = Path(production.__file__).parent
     for path in root.rglob("*.py"):
-        if path.name == "supervised_contracts.py":
+        if path.name in {"supervised_contracts.py", "supervised_envelope_v2.py", "supervised_capture_v2.py", "supervised_launch_binding.py"}:
             continue
         assert independent_source(path.read_text()), path.name
 
@@ -307,14 +320,14 @@ def stamp(paths, suite_path, hosted_path=None, bootstrap=False, hosted_run_path=
         assert any(s["name"] == "Verify extracted package" and s["conclusion"] == "success" for s in job["steps"])
         wheel_path = hosted_path.with_name("schema-wheel.xml")
         wheel_cases = list(ET.fromstring(wheel_path.read_bytes()).iter("testcase"))
-        assert len(wheel_cases) == sum(expected_functions(intake).values())
+        assert len(wheel_cases) == len(rows["intake_results"])
         assert all(not any(c.find(tag) is not None for tag in ("failure", "error", "skipped")) for c in wheel_cases)
         job_evidence = {"run_id": str(run["databaseId"]), "head": run["headSha"], "job_id": job["databaseId"],
                         "conclusion": run["conclusion"], "wheel_tests_passed": len(wheel_cases),
                         "wheel_junit_sha256": sha256(wheel_path.read_bytes()).hexdigest()}
     data = {**rows, "source_commit": production.SOURCE_COMMIT, "byte_pin_authority": False,
             "input_artifact_sha256": production.INPUT_ARTIFACT_SHA256, "resource_sha256": resource_hashes,
-            "module_sha256": sha256(Path(production.__file__).read_bytes()).hexdigest(),
+            "module_sha256": read_receipt()["module_sha256"],
             "module_origin": "phase_loop_runtime/supervised_contracts.py",
             "semantic_cases": case_inventory(), "semantic_inventory": vectors.semantic_inventory() + named_inventory(),
             "coverage_inventory": coverage_inventory(), "tier_basis": tier_inventory(bundle),

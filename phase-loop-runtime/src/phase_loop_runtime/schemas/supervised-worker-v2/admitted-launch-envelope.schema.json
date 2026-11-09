@@ -1,0 +1,226 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:contract:admitted_launch_envelope.v1",
+  "title": "admitted_launch_envelope.v1 (provisional)",
+  "description": "What a harness receives after admission. Harness-neutral and language-neutral. Every digest is lowercase hex SHA-256. The harness treats assignment_digest, snapshot_ref, crosswalk_ref, obligation digests and caller_context as opaque. Field types, required fields and closed enums are defined here; the semantic rules a schema cannot establish are listed under x-semantic-rules. Status: provisional until the owning contract revision completes; a change needs reconciliation with every consumer.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "envelope_digest",
+    "assignment_digest",
+    "units",
+    "workspace",
+    "enforcement",
+    "obligations",
+    "executable_dependencies",
+    "caller_context",
+    "redaction_posture"
+  ],
+  "properties": {
+    "schema": {
+      "const": "admitted_launch_envelope.v1"
+    },
+    "envelope_digest": {
+      "$ref": "#/$defs/sha256",
+      "description": "SHA-256 of the RFC 8785 (JCS) serialization of this object with envelope_digest removed."
+    },
+    "assignment_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "units": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target_unit_ids",
+        "readonly_neighbor_unit_ids",
+        "snapshot_ref",
+        "crosswalk_ref"
+      ],
+      "properties": {
+        "target_unit_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/unit_id"
+          }
+        },
+        "readonly_neighbor_unit_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/unit_id"
+          }
+        },
+        "snapshot_ref": {
+          "$ref": "#/$defs/sha256"
+        },
+        "crosswalk_ref": {
+          "$ref": "#/$defs/sha256",
+          "description": "Opaque reference to the reviewed correspondence of the subject project at the snapshot; identifies the project."
+        }
+      }
+    },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "repo_relative_locators"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "separate_clone",
+            "separate_copy",
+            "git_worktree_of_protected",
+            "in_place"
+          ]
+        },
+        "repo_relative_locators": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "enforcement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tier",
+        "required_constraints"
+      ],
+      "properties": {
+        "tier": {
+          "enum": [
+            "provider_readonly_patch_return_audit",
+            "post_write_audit_only",
+            "os_enforced"
+          ]
+        },
+        "required_constraints": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "write_scope",
+              "command_denial",
+              "network_denial"
+            ]
+          }
+        }
+      }
+    },
+    "obligations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "definition_digests"
+      ],
+      "properties": {
+        "definition_digests": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sha256"
+          }
+        }
+      }
+    },
+    "executable_dependencies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "declared",
+        "admitted_dependency_digest"
+      ],
+      "properties": {
+        "declared": {
+          "type": "boolean"
+        },
+        "admitted_dependency_digest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "caller_context": {
+      "type": "object",
+      "description": "Opaque. Echoed back byte-for-byte (JCS) in every record that carries it; never interpreted by the harness or the workbench reader."
+    },
+    "redaction_posture": {
+      "const": "digests_and_repo_relative_locators_only"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "unit_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    }
+  },
+  "x-canonicalization": "RFC 8785 (JCS). Vectors use ASCII object keys and integers only, so code-point and UTF-16 key orders coincide.",
+  "x-enforcement-tiers": {
+    "provider_readonly_patch_return_audit": {
+      "qualified": true,
+      "workspace_kinds": [
+        "separate_clone",
+        "separate_copy"
+      ],
+      "constraints": {
+        "write_scope": "checked_before_apply",
+        "command_denial": "not_enforced",
+        "network_denial": "not_enforced"
+      },
+      "limits": "The provider is asked to run read-only; that is the provider's own enforcement, not operating-system confinement. Changes return as proposal bytes that are checked before apply, followed by a post-run audit. A tool-action refusal is detection, not prevention. Network cannot be denied. A same-login process is not contained."
+    },
+    "post_write_audit_only": {
+      "qualified": true,
+      "workspace_kinds": [
+        "separate_clone",
+        "separate_copy",
+        "git_worktree_of_protected",
+        "in_place"
+      ],
+      "constraints": {
+        "write_scope": "not_enforced",
+        "command_denial": "not_enforced",
+        "network_denial": "not_enforced"
+      },
+      "limits": "Detects after the write only. Applies when the workspace is not a separate clone or copy, for example a git worktree of the protected repository, which shares its object store and refs."
+    },
+    "os_enforced": {
+      "qualified": false,
+      "workspace_kinds": [],
+      "constraints": {
+        "write_scope": "not_enforced",
+        "command_denial": "not_enforced",
+        "network_denial": "not_enforced"
+      },
+      "limits": "Reserved and unqualified. An envelope that requires it is refused."
+    }
+  },
+  "x-semantic-rules": {
+    "envelope_digest_mismatch": "envelope_digest does not equal the JCS SHA-256 of the envelope without envelope_digest.",
+    "authority_foreign": "assignment_digest or units.crosswalk_ref differs from the injected validator's independently expected values (another assignment, repository or project), even when the envelope self-verifies.",
+    "authority_baseline_stale": "units.snapshot_ref differs from the independently expected snapshot while assignment and crosswalk match, even when the envelope self-verifies.",
+    "tier_unqualified": "the tier is reserved or unqualified.",
+    "constraint_unsupported": "a required constraint maps to not_enforced under the declared tier; refused with {constraint, tier}, never silently weakened.",
+    "workspace_not_separate_copy": "the workspace kind is not permitted for the declared tier.",
+    "locator_not_repo_relative": "a locator is empty, absolute, contains a '..' segment or a backslash.",
+    "dependency_digest_required": "executable dependencies are declared without an admitted dependency digest.",
+    "raw_output_in_record": "a string outside caller_context contains a line break or control character, or exceeds 512 characters.",
+    "caller_context_interpreted": "an echoed caller_context differs from the envelope's caller_context.",
+    "refusal_zero_invocations": "every refusal above is recorded before any process starts, as state refused with worker_invocations 0."
+  }
+}
