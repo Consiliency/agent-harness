@@ -6,6 +6,21 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- agy evidence binds to the seat QCI, not file hashes (AGYROLL RECBIND,
+  agent-harness#1008 R1):
+  - The qualified agy catalog moves out of the route core into package data,
+    `phase_loop_runtime/data/agy_catalog.json` (`qualified_agy_catalog.v3`). It is loaded
+    strictly and offline; a malformed file is an empty catalog.
+  - Records become v2, bound to `agy_qualification.seat_qci()`, which equals
+    `agy_profile_digest()` at `agy_validator_v1`, so no store key changes. The 1.5.3
+    record is converted through its record commit with no live run.
+  - `verify_qualified_agy_image.py --contract` runs on every pull request. Publication
+    gates on the strict hermetic conformance suite (`tests/test_agy_route_conformance.py`)
+    plus `--release`.
+  - `--route-core`, `--source-only`, `agy_full_pin_scope.sh` and
+    `plans/evidence/qualified-provider-images.json` are removed.
+  - The upstream watch edits only the data catalog and labels its PRs `agy-qci:<seat_qci>`.
+
 ## [0.7.31] - Unreleased candidate
 
 ### Release preparation

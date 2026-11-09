@@ -24,7 +24,7 @@ subscribed host, once.
    cannot prove the listing complete (`totalCount` against distinct nodes, and the last
    page reached), it refuses with `refused_incomplete_pr_listing` and exit 2. The tick is a
    no-op (`up_to_date`) only if one of its own open PRs for that version carries the
-   current `main` route-core label AND three oids agree: the one the watch recorded when it
+   current `main` seat-QCI label (`agy-qci:<seat_qci>`) AND three oids agree: the one the watch recorded when it
    pushed the branch, GitHub's `headRefOid`, and the branch's `ls-remote` oid. The recorded
    oid lives in the watch's own operator-only state: an HMAC-bound `watch_push` entry in
    the per-user, per-host store, owner-only, no symlinks. It is never read from the PR
@@ -34,18 +34,17 @@ subscribed host, once.
 3. It fetches the release asset through the pinned provenance transport, checks the
    published archive digest, and builds a sealed memfd from the archive's single
    `antigravity` member. Nothing is installed on disk.
-4. It works in a fresh checkout of `origin/main` with the runtime constants and catalog
-   edited. From that tree it measures `--help` in the tree's own owned profile, then runs
-   the three live operations through the tree's shim. It hands the image over as
-   `--image-fd`, and the worker applies its seal check. The tree's release constant
-   satisfies the worker gate, so the record matches the tree and never depends on the
-   recency window.
-   Adding a member edits `gemini_heartbeat.py`, a route-core file that every existing
-   record pins, so the tick requalifies **every** catalog member on the prepared tree.
+4. It works in a fresh checkout of `origin/main` with only the data catalog edited
+   (`edit_catalog`: `phase_loop_runtime/data/agy_catalog.json`). From that tree it measures
+   `--help` in the tree's own owned profile, then runs the three live operations through
+   the tree's shim. It hands the image over as `--image-fd`, and the worker applies its
+   seal check. The tree's own catalog satisfies the worker gate, so each v2 record is bound
+   to the tree's seat QCI and never depends on the recency window.
+   The tick still requalifies **every** catalog member on the prepared tree.
    It re-fetches each existing member's image from that member's own release and
    refuses unless the asset and image digests equal the committed record's.
-5. It writes the redacted record, runs `verify_qualified_agy_image.py --route-core` on
-   the prepared tree, and commits. It resolves `git remote get-url --push --all origin`
+5. It writes the redacted v2 record (no signatures until ROLLJOB), runs
+   `verify_qualified_agy_image.py --contract` on the prepared tree, and commits. It resolves `git remote get-url --push --all origin`
    and refuses (`refused_push_destination_ambiguous`, exit 2, nothing pushed) unless there
    is exactly one push URL, because `git push origin` writes to every configured push URL.
    It then pushes to the remote NAME `origin`, which is exactly the list git just
@@ -84,7 +83,7 @@ subscribed host, once.
      failures and also a wrong or extra row.
 
    After a verified push it records the pushed oid locally (bound to the branch, the
-   version and the route-core base) and reads that record back (`push_record_unverified`
+   version and the seat-QCI base) and reads that record back (`push_record_unverified`
    otherwise: the branch is left as an orphan, no PR), then opens a **draft** PR whose
    body names the own older PRs it supersedes ("Supersedes (maintainer to close): #a,
    #b") and shows the pushed oid for display only. It then reads the PR back
@@ -109,10 +108,9 @@ The watch never deletes a ref, so a persistently failing `gh pr create` leaves o
 branch per tick until an operator notices the `gh` failures and removes the
 `agy-watch/*` orphans.
 
-A watch PR that is "up to date" keys on the route-core label, but its evidence pins EVERY
-package file. So when other package code lands on `main`, the PR's full source-pin check
-goes red, while the watch still considers it up to date and does nothing. To refresh it, a
-maintainer closes the PR; the next tick then opens a fresh one against current `main`.
+A watch PR that is "up to date" keys on the seat-QCI label, and its records bind to that
+same QCI. Other package code landing on `main` leaves it green. A change to the QCI changes
+`main`'s label, so the next tick no longer counts the PR as up to date and opens a fresh one.
 
 Budget about a minute of real inference per catalog member per new release.
 

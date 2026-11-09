@@ -1,21 +1,22 @@
 """Upstream agy release watch (agent-harness#1076), run from a timer on a subscribed host.
 
-It is deliberately OUTSIDE ``agy_qualification.ROUTE_CORE``: a watch-only fix never forces
-a requalification. For the newest stable release not yet pinned on ``main`` it:
+It is deliberately OUTSIDE the seat QCI (``agy_qualification.seat_qci()``): a watch-only fix
+never forces a requalification. For the newest stable release not yet pinned on ``main`` it:
 
 1. is idempotent per version: an open, same-repository PR authored by the running
-   identity, labelled for that version with the CURRENT ``main`` route-core digest, whose
-   head is still exactly the commit on its branch, makes the tick a no-op;
+   identity, labelled for that version with the CURRENT ``main`` seat QCI
+   (``agy-qci:<seat_qci>``), whose head is still exactly the commit on its branch, makes the
+   tick a no-op;
 2. builds a VerifiedImage from the provenance-checked archive member stream (no install);
-3. in a fresh checkout of current ``main`` with the constants and catalog edited, measures
+3. in a fresh checkout of current ``main`` with ONLY the data catalog edited
+   (``edit_catalog``: ``phase_loop_runtime/data/agy_catalog.json``, AGYROLL §3.1), measures
    help with THAT tree's owned profile and runs the manual qualification (the shim) from
    that tree, handing the image over as a sealed fd (``--image-fd``, the worker's seal
-   check applies). The tree's own release constant satisfies the worker gate, so the
-   record matches the tree -- what ``--route-core`` requires -- and never depends on the
-   recency window. Adding a member edits ``gemini_heartbeat.py``, which every existing
-   record pins, so EVERY catalog member is requalified on the prepared tree: each existing
-   member's image is re-fetched from its own release and must match its record's asset
-   and image digests;
+   check applies). The tree's own catalog satisfies the worker gate, so each v2 record is
+   bound to the tree's seat QCI -- what ``--contract`` requires -- and never depends on the
+   recency window. Every catalog member is still requalified on the prepared tree: each
+   existing member's image is re-fetched from its own release and must match its record's
+   asset and image digests;
 4. pushes a FRESH, unique branch ``agy-watch/<version>-<utc>-<random>`` with create-only
    semantics (``--force-with-lease=refs/heads/<name>:``, an empty expected value, to a
    fully qualified destination) and opens a DRAFT PR from it that names, but does not
@@ -24,7 +25,7 @@ a requalification. For the newest stable release not yet pinned on ``main`` it:
    edits or deletes anything that existed before the tick, and never merges
    (agent-harness#1130 r3/r4).
 
-Only the release route (Linux x64 glibc; ``qualified_provider_images.v2`` has only that
+Only the release route (Linux x64 glibc; ``qualified_agy_catalog.v3`` has only that
 route) is proposed; any other platform reports and opens nothing.
 """
 from __future__ import annotations
@@ -46,9 +47,9 @@ from . import gemini_heartbeat as gh
 
 RELEASE_ROUTE_PLATFORM = "linux-x64"
 BRANCH_PREFIX = "agy-watch/"
-MARKER = "agy-watch-base-route-core:"
-CATALOG = "plans/evidence/qualified-provider-images.json"
-HEARTBEAT = "phase-loop-runtime/src/phase_loop_runtime/gemini_heartbeat.py"
+MARKER = "agy-qci:"
+CATALOG = "phase-loop-runtime/src/phase_loop_runtime/data/agy_catalog.json"
+RECORD_SCHEMA = "agy_redacted_qualification_summary.v2"
 OPERATIONS = ("completion", "cancel", "owner-loss")
 REPO_SLUG = "Consiliency/agent-harness"
 REPO_OWNER = REPO_SLUG.split("/")[0]
@@ -272,39 +273,43 @@ def _run(runner, argv, **kwargs):
     return runner(argv, **kwargs)
 
 
-def route_core_digest(tree: Path) -> str:
-    from .agy_qualification import ROUTE_CORE
-    package = tree / "phase-loop-runtime/src/phase_loop_runtime"
-    return sha256(json.dumps({name: sha256((package / name).read_bytes()).hexdigest() for name in ROUTE_CORE},
-                             sort_keys=True).encode()).hexdigest()
+_IDENTITY_PROGRAM = ("import sys; sys.path.insert(0, sys.argv[1]); "
+                     "from phase_loop_runtime import __version__; "
+                     "from phase_loop_runtime.agy_qualification import seat_qci; "
+                     "print(seat_qci()); print(__version__)")
+
+
+def tree_identity(tree: Path, *, python: str, runner) -> tuple[str, str]:
+    """(``seat_qci()``, ``__version__``) of the prepared tree, computed by THAT tree's code."""
+    lines = _run(runner, [python, "-I", "-c", _IDENTITY_PROGRAM, str(tree / "phase-loop-runtime/src")]).stdout.split()
+    if len(lines) != 2 or not re.fullmatch(r"[0-9a-f]{64}", lines[0]):
+        raise ValueError("agy watch cannot compute the prepared tree's seat QCI")
+    return lines[0], lines[1]
 
 
 def pinned_versions(tree: Path) -> set[str]:
-    catalog = json.loads((tree / CATALOG).read_text())
-    return {member["release_version"] for route in catalog["routes"].values() for member in route["images"]}
+    return {member["release_version"] for member in _catalog_members(tree)}
 
 
-def edit_constants(tree: Path, image_sha256: str, help_sha256: str, version: str) -> None:
-    """Add (or replace) one member in the runtime literal and the catalog."""
-    path = tree / HEARTBEAT
-    text = path.read_text()
-    text = re.sub(rf'\n    # agy {re.escape(version)}\n    "[0-9a-f]{{64}}":\n        "[0-9a-f]{{64}}",', "", text)
-    entry = f'    # agy {version}\n    "{image_sha256}":\n        "{help_sha256}",\n}}\nPROFILE_ID'
-    text, count = re.subn(r"\}\nPROFILE_ID", entry, text, count=1)
-    if count != 1:
-        raise ValueError("agy watch cannot locate QUALIFIED_IMAGES")
-    path.write_text(text)
-    catalog_path = tree / CATALOG
-    catalog = json.loads(catalog_path.read_text())
-    route = catalog["routes"]["gemini_heartbeat_linux_x64"]
-    route["images"] = [m for m in route["images"] if m["release_version"] != version] + [{
+def edit_catalog(tree: Path, *, version: str, image_sha256: str, help_sha256: str, asset_sha256: str,
+                 qci: str, published_at: str) -> None:
+    """Add (or replace) one member in the data catalog, the only file a new member edits
+    (AGYROLL §3.1). A replaced member keeps its ``pinned`` flag, which only a human sets."""
+    path = tree / CATALOG
+    catalog = json.loads(path.read_text())
+    members = catalog["routes"]["linux-x64"]
+    pinned = any(m["release_version"] == version and m["pinned"] for m in members)
+    catalog["routes"]["linux-x64"] = [m for m in members if m["release_version"] != version] + [{
         "release_version": version, "image_sha256": image_sha256, "help_sha256": help_sha256,
+        "asset_sha256": asset_sha256, "qci": qci, "published_at": published_at, "pinned": pinned,
         "record": f"agy-{version}-linux-x64-qualification.json"}]
-    catalog_path.write_text(json.dumps(catalog, indent=2) + "\n")
+    text = json.dumps(catalog, indent=2) + "\n"
+    gh.parse_catalog(text)  # never write a catalog the runtime would refuse
+    path.write_text(text)
 
 
 def _catalog_members(tree: Path) -> list[dict]:
-    return list(json.loads((tree / CATALOG).read_text())["routes"]["gemini_heartbeat_linux_x64"]["images"])
+    return gh.parse_catalog((tree / CATALOG).read_text())
 
 
 def _pinned_member(tree: Path, member: dict, host, transport):
@@ -321,12 +326,13 @@ def _pinned_member(tree: Path, member: dict, host, transport):
 
 
 def summarize(tree: Path, series: Path, asset, image_sha256: str, help_sha256: str, *,
-              template_name: str | None = None) -> dict:
+              qci: str, qualified_under: str, template_name: str | None = None) -> dict:
     """The redacted record, in the shape of a committed record (see the release process's
     regeneration rule): each operation row is its receipt restricted to the template row's
-    keys. A requalified member is its own template; a new one takes the newest other."""
-    catalog = json.loads((tree / CATALOG).read_text())
-    members = catalog["routes"]["gemini_heartbeat_linux_x64"]["images"]
+    keys. A requalified member is its own template; a new one takes the newest other. The
+    record is v2 (AGYROLL §3.2): bound to the tree's seat QCI, with no source pins and, until
+    ROLLJOB, no signatures."""
+    members = _catalog_members(tree)
     if template_name is None:
         template_name = next(m["record"] for m in reversed(members) if m["release_version"] != asset.version)
     template = json.loads((tree / "plans/evidence" / template_name).read_text())
@@ -354,14 +360,18 @@ def summarize(tree: Path, series: Path, asset, image_sha256: str, help_sha256: s
         rows.append(row)
     if len(sources) != 1:
         raise ValueError("agy watch receipts disagree on source pins")
-    record = dict(template)
+    release_url = f"https://github.com/{agy_provenance.REPO}/releases/tag/{asset.version}"
+    record = {key: value for key, value in template.items() if key != "source_sha256"}
     record.update({
-        "schema": "agy_redacted_qualification_summary.v1", "release_version": asset.version,
+        "schema": RECORD_SCHEMA, "release_version": asset.version,
         "image_sha256": image_sha256, "help_sha256": help_sha256,
         "upstream_asset_name": asset.name, "upstream_asset_sha256": asset.digest,
-        "upstream_release_url": f"https://github.com/{agy_provenance.REPO}/releases/tag/{asset.version}",
-        "records": rows, "source_sha256": json.loads(sources.pop()),
+        "upstream_release_url": release_url, "records": rows,
         "validator": {"validated": 3, "operations": ["cancel", "completion", "owner-loss"], "route_qualified": True},
+        "qci": qci, "qualified_under": qualified_under,
+        "upstream": {"asset_sha256": asset.digest, "release_url": release_url,
+                     "attestation": "not_checked", "second_channel": "not_checked"},
+        "signatures": [],
     })
     return record
 
@@ -403,7 +413,7 @@ def main(*, repo=None, dry_run=False, runner=subprocess.run, host=None, transpor
         if asset.version in pinned_versions(tree):
             out(json.dumps({"agy_watch": "already_pinned", "version": asset.version}))
             return 0
-        base = route_core_digest(tree)
+        base, qualified_under = tree_identity(tree, python=python, runner=runner)
         login = _run(runner, ["gh", "api", "user", "-q", ".login"], cwd=repo).stdout.strip()
         try:
             prs = own_version_prs(open_prs(runner, repo), login, asset.version)
@@ -430,7 +440,9 @@ def main(*, repo=None, dry_run=False, runner=subprocess.run, host=None, transpor
                 images[existing_member["release_version"]] = _pinned_member(tree, existing_member, host, transport)
             env = dict(os.environ)
             new_image = images[asset.version][1]
-            edit_constants(tree, new_image.sha256, "0" * 64, asset.version)
+            new_member = {"version": asset.version, "image_sha256": new_image.sha256, "asset_sha256": asset.digest,
+                          "qci": base, "published_at": releases[0].get("published_at")}
+            edit_catalog(tree, help_sha256="0" * 64, **new_member)
             help_paths = {}
             for version_key, (member_asset, image, pinned_help) in images.items():
                 help_path = workdir / f"agy-help-{version_key}.txt"
@@ -445,7 +457,7 @@ def main(*, repo=None, dry_run=False, runner=subprocess.run, host=None, transpor
                     raise ValueError(f"agy watch: pinned member {version_key} help changed")
                 help_paths[version_key] = help_path
             help_sha256 = sha256(help_paths[asset.version].read_bytes()).hexdigest()
-            edit_constants(tree, new_image.sha256, help_sha256, asset.version)
+            edit_catalog(tree, help_sha256=help_sha256, **new_member)
             for version_key, (member_asset, image, _) in images.items():
                 series = workdir / "series" / version_key
                 series.mkdir(parents=True)
@@ -463,10 +475,11 @@ def main(*, repo=None, dry_run=False, runner=subprocess.run, host=None, transpor
                 member_help = sha256(help_paths[version_key].read_bytes()).hexdigest()
                 record_name = f"agy-{version_key}-linux-x64-qualification.json"
                 record = summarize(tree, series, member_asset, image.sha256, member_help,
+                                   qci=base, qualified_under=qualified_under,
                                    template_name=None if version_key == asset.version else record_name)
                 (tree / "plans/evidence" / record_name).write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
             _run(runner, [python, str(tree / "phase-loop-runtime/scripts/verify_qualified_agy_image.py"),
-                          "--route-core"], cwd=tree)
+                          "--contract"], cwd=tree)
         finally:
             for _, image, _ in images.values():
                 image.close()
@@ -493,7 +506,7 @@ def main(*, repo=None, dry_run=False, runner=subprocess.run, host=None, transpor
             return 2  # the branch is an orphan (documented); no PR is opened for it
         supersedes = ", ".join(f"#{pr['number']}" for pr in prs)
         body = (f"Automated upstream-watch qualification of agy {asset.version} (agent-harness#1076).\n\n"
-                f"Record produced from this branch's own tree; `verify_qualified_agy_image.py --route-core` passed.\n"
+                f"Records produced from this branch's own tree; `verify_qualified_agy_image.py --contract` passed.\n"
                 f"Never merged by the watch.\n\n"
                 + (f"Supersedes (maintainer to close): {supersedes}\n\n" if supersedes else "")
                 + f"{VERSION_LABEL} {asset.version}\n{MARKER} {base}\n"

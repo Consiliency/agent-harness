@@ -1352,10 +1352,15 @@ merge verdict.
   `verify_qualified_agy_image.py --upstream-only` passing on membership is not required.
   A newer non-member release only warns, and each host self-qualifies it on first use as
   `locally_qualified`.
-- What the cut still requires: `--source-only` on the cut tree (also enforced by
-  `publish-pypi.yml`), `--route-core`, live requalification of every listed member, and
-  `QUALIFIED_IMAGES` equal to the catalog. `--upstream-only` still fails on a shipped
-  member's vendor asset digest, URL or archive mismatch.
+- What the cut requires (RECBIND, agent-harness#1008 R1): `publish-pypi.yml` runs the
+  strict hermetic conformance suite (`AGY_CONFORMANCE_STRICT=1`, report under
+  `$RUNNER_TEMP`) and then `verify_qualified_agy_image.py --release`, before the build.
+  `--release` requires `--contract` (every member's v2 record bound to the tree's
+  `seat_qci()`), every conformance obligation passed exactly once with nothing skipped or
+  xfailed, and every member's asset by tag. A cut needs no live run unless the QCI changed,
+  in which case `--contract` names the members to requalify. `--source-only` and
+  `--route-core` are removed. `--upstream-only` still fails on a shipped member's vendor
+  asset digest, URL or archive mismatch.
 - The per-release caveats above that say `--upstream-only` and the nightly upstream job
   fail until a newer agy is qualified describe the behaviour before this change.
 

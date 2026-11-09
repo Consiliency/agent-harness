@@ -1,10 +1,13 @@
 """Linux ownership for the qualified, brokered Gemini heartbeat route."""
 from contextlib import contextmanager
 from hashlib import sha256
+from datetime import datetime
 import errno
+from importlib import resources
 import json
 import os
 from pathlib import Path
+import re
 import select
 import shutil
 import signal
@@ -14,15 +17,92 @@ import time
 from .agy_canary_evidence import AgyCanaryEvidenceError, _linux_memfd_seal_abi, _sealed_tree_fd
 
 
+# The shipped agy catalog (AGYROLL §3.1): package data, schema ``qualified_agy_catalog.v3``.
+# Each member names its own v2 qualification record under plans/evidence/, bound to the seat
+# QCI (``agy_qualification.seat_qci()``); ``verify_qualified_agy_image.py --contract`` checks
+# them on every pull request. Adding a member edits only the data file, never this module.
+CATALOG_SCHEMA = "qualified_agy_catalog.v3"
+CATALOG_ROUTE = "linux-x64"
+_CATALOG_MEMBER_KEYS = frozenset({"release_version", "image_sha256", "help_sha256", "asset_sha256",
+                                  "qci", "published_at", "pinned", "record"})
+_HEX64 = re.compile(r"[0-9a-f]{64}")
+_RELEASE = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+_RFC3339 = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\.[0-9]+)?"
+                      r"(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])")
+#: Why the last ``load_catalog`` call returned what it did: ``ok``, ``missing``,
+#: ``malformed`` or ``empty``. Anything but ``ok`` is an empty catalog (fail-closed).
+CATALOG_STATUS = "unloaded"
+
+
+def _unique_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("agy catalog repeats a key")
+        value[key] = item
+    return value
+
+
+def parse_catalog(text: str) -> list[dict]:
+    """The members of a ``qualified_agy_catalog.v3`` document, or ``ValueError``. Closed keys,
+    hex64 digests, unique images, versions and records, exactly the ``linux-x64`` route."""
+    catalog = json.loads(text, object_pairs_hook=_unique_object)
+    if not isinstance(catalog, dict) or set(catalog) != {"schema", "routes"} or catalog["schema"] != CATALOG_SCHEMA:
+        raise ValueError("agy catalog schema mismatch")
+    routes = catalog["routes"]
+    if not isinstance(routes, dict) or set(routes) != {CATALOG_ROUTE} or not isinstance(routes[CATALOG_ROUTE], list):
+        raise ValueError("agy catalog route mismatch")
+    members = routes[CATALOG_ROUTE]
+    for member in members:
+        if not isinstance(member, dict) or set(member) != _CATALOG_MEMBER_KEYS:
+            raise ValueError("agy catalog member keys mismatch")
+        if not all(isinstance(member[key], str) and _HEX64.fullmatch(member[key])
+                   for key in ("image_sha256", "help_sha256", "asset_sha256", "qci")):
+            raise ValueError("agy catalog digest malformed")
+        version = member["release_version"]
+        if not isinstance(version, str) or not _RELEASE.fullmatch(version):
+            raise ValueError("agy catalog release version malformed")
+        if not isinstance(member["published_at"], str) or not _RFC3339.fullmatch(member["published_at"]):
+            raise ValueError("agy catalog published_at malformed")
+        # a real calendar instant, not just its shape (agent-harness#1937 review B5)
+        datetime.fromisoformat(member["published_at"].replace("z", "Z"))
+        if type(member["pinned"]) is not bool:
+            raise ValueError("agy catalog pinned is not a bool")
+        if member["record"] != f"agy-{version}-linux-x64-qualification.json":
+            raise ValueError("agy catalog record name mismatch")
+    for key in ("image_sha256", "release_version", "record"):
+        if len({member[key] for member in members}) != len(members):
+            raise ValueError(f"agy catalog repeats a {key}")
+    return members
+
+
+def load_catalog(path=None) -> dict[str, str]:
+    """``image_sha256 -> help_sha256`` from the shipped catalog (or ``path``). Strict, offline,
+    and never raises: a missing or malformed file is an empty catalog, so the release fast
+    path admits nothing and every image takes local qualification or a refusal."""
+    global CATALOG_STATUS
+    try:
+        if path is None:
+            text = resources.files(__package__).joinpath("data", "agy_catalog.json").read_text(encoding="utf-8")
+        else:
+            text = Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        CATALOG_STATUS = "missing"
+        return {}
+    try:
+        members = parse_catalog(text)
+    except (ValueError, TypeError, KeyError, RecursionError):
+        CATALOG_STATUS = "malformed"
+        return {}
+    if not members:
+        CATALOG_STATUS = "empty"
+        return {}
+    CATALOG_STATUS = "ok"
+    return {member["image_sha256"]: member["help_sha256"] for member in members}
+
+
 # The closed set of qualified agy entry images: image SHA256 -> its measured `--help` SHA256.
-# Each member has its own live qualification record, listed in
-# plans/evidence/qualified-provider-images.json; verify_qualified_agy_image.py requires this
-# literal and that catalog to name exactly the same members (agent-harness#1008).
-QUALIFIED_IMAGES = {
-    # agy 1.5.3
-    "7ca212748ca0dfda718efbc39a776a104472e7e9344d4b6ea147c543684f96a3":
-        "e92946f85cec63eca61f93014ca49f53b1e84277eac7954e7fac7d8d712940fd",
-}
+QUALIFIED_IMAGES = load_catalog()
 PROFILE_ID = "agy_memfd_home_deny_all_v1"
 PRIVATE_HOME = "/dev/phase-loop-agy"
 _CAPABILITY = "gemini_heartbeat_capability_unavailable"

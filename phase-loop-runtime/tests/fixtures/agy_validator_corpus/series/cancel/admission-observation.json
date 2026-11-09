@@ -1,0 +1,70 @@
+{
+  "argv": [
+    "/dev/phase-loop-agy/agy",
+    "--model",
+    "gemini-4-argon-medium",
+    "--sandbox",
+    "--mode",
+    "plan",
+    "--disable-slash-commands",
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--print=",
+    "--print-timeout",
+    "0"
+  ],
+  "helpers": [
+    {
+      "executable_sha256": "763be5cf8d4114fc3c21341a0757c324ee5d0a23eea32a6230ec93fd0eaa209c",
+      "is_agy": true,
+      "pid": 1382522,
+      "start": "125845807"
+    },
+    {
+      "executable_sha256": "523da3e7399044be5163aee6f57a77a6bef7454376e28f0a0627920bae1b76b6",
+      "is_agy": false,
+      "pid": 1382515,
+      "start": "125845806"
+    }
+  ],
+  "image_readonly": true,
+  "image_sha256": "763be5cf8d4114fc3c21341a0757c324ee5d0a23eea32a6230ec93fd0eaa209c",
+  "init_pid": 1382515,
+  "init_start": "125845806",
+  "invocation": "b40e754dd8a746e4af54e562be042022",
+  "kill_event": null,
+  "monitoring": {
+    "admission_expires_monotonic_ns": 1258467726303216,
+    "admission_window_s": 10,
+    "authorization_expiry_scope": "admission_only",
+    "effective_policy": "heartbeat_only",
+    "invocation": "b40e754dd8a746e4af54e562be042022",
+    "last_genuine_progress_age_s": 1.1150958016514778e-05,
+    "last_progress_notice": null,
+    "model_deadline_s": null,
+    "observation_state": "progress_observed",
+    "progress_notice": null,
+    "progress_notice_count": 0,
+    "provider_terminal_state": null,
+    "requested_policy": "heartbeat_only",
+    "schema": "review_monitoring.v1",
+    "seat_position": 0,
+    "silence_deadline_s": null,
+    "stall_notice_s": 3600.0,
+    "terminal_reason": null
+  },
+  "mount_namespace_device": 5,
+  "mount_namespace_inode": 4026543210,
+  "network_rule_checks": 9,
+  "network_rules_sha256": "918e9e6800deb8ead02aaba70ee6be07990c3b324d1882ea4d9316dd7289aa7c",
+  "network_rules_verified": true,
+  "pid_namespace_device": 5,
+  "pid_namespace_inode": 4026543214,
+  "profile_sha256": "e313211ddbea31b69818a22b1186011cb678d369c11eddd3da40fe336f006755",
+  "provider_pid": 1382522,
+  "provider_start": "125845807",
+  "sandbox_network_filtered": true,
+  "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
+}

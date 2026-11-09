@@ -1,0 +1,17 @@
+{
+  "schema": "qualified_agy_catalog.v3",
+  "routes": {
+    "linux-x64": [
+      {
+        "release_version": "1.5.3",
+        "image_sha256": "7ca212748ca0dfda718efbc39a776a104472e7e9344d4b6ea147c543684f96a3",
+        "help_sha256": "e92946f85cec63eca61f93014ca49f53b1e84277eac7954e7fac7d8d712940fd",
+        "asset_sha256": "1b4850599cce73a17f94ffb422df3bf9531531b77dbddc40c1a435e0c2c16807",
+        "qci": "9124a4d288e04a365f8fa76d4669464bcaa2fc86ad208df9eb7fea80fa10469c",
+        "published_at": "2026-11-07T08:38:26Z",
+        "pinned": false,
+        "record": "agy-1.5.3-linux-x64-qualification.json"
+      }
+    ]
+  }
+}

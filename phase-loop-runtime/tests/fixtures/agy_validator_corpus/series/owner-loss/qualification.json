@@ -1,0 +1,303 @@
+{
+ "attempt_limit": 1,
+ "broker": null,
+ "help_sha256": "ed88ab1455bdc90e766796437d8a4e3b7e5c45b7b054b625d48dc722f0d84d6c",
+ "helper_sha256": {
+  "/usr/bin/bwrap": "523da3e7399044be5163aee6f57a77a6bef7454376e28f0a0627920bae1b76b6",
+  "/usr/bin/setpriv": "86965a019d37dc11d176ce8cbe9f5f5f8f37027c95e03cb4a8cad4c73d940993"
+ },
+ "image_sha256": "763be5cf8d4114fc3c21341a0757c324ee5d0a23eea32a6230ec93fd0eaa209c",
+ "invocation": "8000a8fd932a444385de3e99f8c83900",
+ "model_deadline_s": null,
+ "monitoring": {
+  "admission_expires_monotonic_ns": 1258474518545761,
+  "admission_window_s": 10,
+  "authorization_expiry_scope": "admission_only",
+  "effective_policy": "heartbeat_only",
+  "invocation": "8000a8fd932a444385de3e99f8c83900",
+  "last_genuine_progress_age_s": 1.0399147868156433e-05,
+  "last_progress_notice": null,
+  "model_deadline_s": null,
+  "observation_state": "progress_observed",
+  "progress_notice": null,
+  "progress_notice_count": 0,
+  "provider_terminal_state": null,
+  "requested_policy": "heartbeat_only",
+  "schema": "review_monitoring.v1",
+  "seat_position": 0,
+  "silence_deadline_s": null,
+  "stall_notice_s": 3600.0,
+  "terminal_reason": null
+ },
+ "observer": {
+  "argv": [
+   "/dev/phase-loop-agy/agy",
+   "--model",
+   "gemini-4-argon-medium",
+   "--sandbox",
+   "--mode",
+   "plan",
+   "--disable-slash-commands",
+   "--input-format",
+   "stream-json",
+   "--output-format",
+   "stream-json",
+   "--print=",
+   "--print-timeout",
+   "0"
+  ],
+  "credential_home_source": "scrubbed_subscription_home",
+  "credential_target_regular_after": true,
+  "credential_target_regular_before": true,
+  "fd_cleanup_observations": [
+   {
+    "fd_count": 0,
+    "pid": 1382767,
+    "start": "125845987",
+    "state": "absent"
+   },
+   {
+    "fd_count": 0,
+    "pid": 1382768,
+    "start": "125845988",
+    "state": "absent"
+   },
+   {
+    "fd_count": 0,
+    "pid": 1382769,
+    "start": "125845988",
+    "state": "absent"
+   },
+   {
+    "fd_count": 0,
+    "pid": 1382771,
+    "start": "125845988",
+    "state": "absent"
+   },
+   {
+    "fd_count": 0,
+    "pid": 1382772,
+    "start": "125845988",
+    "state": "absent"
+   },
+   {
+    "fd_count": 0,
+    "pid": 1382888,
+    "start": "125846031",
+    "state": "absent"
+   },
+   {
+    "fd_count": 0,
+    "pid": 1383018,
+    "start": "125846183",
+    "state": "absent"
+   },
+   {
+    "fd_count": 0,
+    "pid": 1383028,
+    "start": "125846188",
+    "state": "absent"
+   },
+   {
+    "fd_count": 0,
+    "pid": 1383302,
+    "start": "125846438",
+    "state": "absent"
+   },
+   {
+    "fd_count": 0,
+    "pid": 1383369,
+    "start": "125846453",
+    "state": "absent"
+   },
+   {
+    "fd_count": 0,
+    "pid": 1383371,
+    "start": "125846453",
+    "state": "absent"
+   },
+   {
+    "fd_count": 0,
+    "pid": 1383373,
+    "start": "125846453",
+    "state": "absent"
+   },
+   {
+    "fd_count": 0,
+    "pid": 1383404,
+    "start": "125846461",
+    "state": "absent"
+   },
+   {
+    "fd_count": 0,
+    "pid": 1383414,
+    "start": "125846477",
+    "state": "absent"
+   },
+   {
+    "fd_count": 0,
+    "pid": 1383418,
+    "start": "125846484",
+    "state": "absent"
+   },
+   {
+    "fd_count": 0,
+    "pid": 1383420,
+    "start": "125846485",
+    "state": "absent"
+   }
+  ],
+  "helpers": [
+   {
+    "executable_sha256": "523da3e7399044be5163aee6f57a77a6bef7454376e28f0a0627920bae1b76b6",
+    "is_agy": false,
+    "pid": 1383418,
+    "start": "125846484"
+   },
+   {
+    "executable_sha256": "763be5cf8d4114fc3c21341a0757c324ee5d0a23eea32a6230ec93fd0eaa209c",
+    "is_agy": true,
+    "pid": 1383420,
+    "start": "125846485"
+   }
+  ],
+  "home_removed": true,
+  "image_readonly": true,
+  "image_sha256": "763be5cf8d4114fc3c21341a0757c324ee5d0a23eea32a6230ec93fd0eaa209c",
+  "init_exited": true,
+  "init_pid": 1383418,
+  "init_start": "125846484",
+  "invocation": "8000a8fd932a444385de3e99f8c83900",
+  "kill_event": {
+   "pid": 1382564,
+   "signal": 9,
+   "start": "125845873",
+   "target": "invoker"
+  },
+  "live_namespace_members": [],
+  "mount_namespace_device": 5,
+  "mount_namespace_inode": 4026543209,
+  "mount_namespace_users_after": [],
+  "mount_scan_unreadable_entries": 678,
+  "network_rule_checks": 9,
+  "network_rules_sha256": "918e9e6800deb8ead02aaba70ee6be07990c3b324d1882ea4d9316dd7289aa7c",
+  "network_rules_verified": true,
+  "owned_fds_closed": true,
+  "owned_processes": [
+   {
+    "executable_sha256": "ed8b2df973b28c0fb773b9c0dc0816d3ee2b3835bb932d9153c21417bb51b362",
+    "pid": 1382767,
+    "start": "125845987"
+   },
+   {
+    "executable_sha256": "c626229526bb58ec2d0f585f3c3ae1412e6f973b4353385042d11c38d8426917",
+    "pid": 1382768,
+    "start": "125845988"
+   },
+   {
+    "executable_sha256": "ed8b2df973b28c0fb773b9c0dc0816d3ee2b3835bb932d9153c21417bb51b362",
+    "pid": 1382769,
+    "start": "125845988"
+   },
+   {
+    "executable_sha256": "ed8b2df973b28c0fb773b9c0dc0816d3ee2b3835bb932d9153c21417bb51b362",
+    "pid": 1382771,
+    "start": "125845988"
+   },
+   {
+    "executable_sha256": "ed8b2df973b28c0fb773b9c0dc0816d3ee2b3835bb932d9153c21417bb51b362",
+    "pid": 1382772,
+    "start": "125845988"
+   },
+   {
+    "executable_sha256": "ed8b2df973b28c0fb773b9c0dc0816d3ee2b3835bb932d9153c21417bb51b362",
+    "pid": 1382888,
+    "start": "125846031"
+   },
+   {
+    "executable_sha256": "3efccc187bafa75ff1e37d246270ab3e7aa559f242c7a52bf3ec2a1b5450bdbd",
+    "pid": 1383018,
+    "start": "125846183"
+   },
+   {
+    "executable_sha256": "20581c54ee53ae32e908c9b318481e5a71b72a13f850ce41722e402cb524b325",
+    "pid": 1383028,
+    "start": "125846188"
+   },
+   {
+    "executable_sha256": "3efccc187bafa75ff1e37d246270ab3e7aa559f242c7a52bf3ec2a1b5450bdbd",
+    "pid": 1383302,
+    "start": "125846438"
+   },
+   {
+    "executable_sha256": "523da3e7399044be5163aee6f57a77a6bef7454376e28f0a0627920bae1b76b6",
+    "pid": 1383369,
+    "start": "125846453"
+   },
+   {
+    "executable_sha256": "523da3e7399044be5163aee6f57a77a6bef7454376e28f0a0627920bae1b76b6",
+    "pid": 1383371,
+    "start": "125846453"
+   },
+   {
+    "executable_sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41",
+    "pid": 1383373,
+    "start": "125846453"
+   },
+   {
+    "executable_sha256": "639bce3ce5c06b605079ea56f74e3f08216ddffcfa76e11f62073aa775180082",
+    "pid": 1383404,
+    "start": "125846461"
+   },
+   {
+    "executable_sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41",
+    "pid": 1383414,
+    "start": "125846477"
+   },
+   {
+    "executable_sha256": "523da3e7399044be5163aee6f57a77a6bef7454376e28f0a0627920bae1b76b6",
+    "pid": 1383418,
+    "start": "125846484"
+   },
+   {
+    "executable_sha256": "763be5cf8d4114fc3c21341a0757c324ee5d0a23eea32a6230ec93fd0eaa209c",
+    "pid": 1383420,
+    "start": "125846485"
+   }
+  ],
+  "pid_namespace_device": 5,
+  "pid_namespace_inode": 4026543212,
+  "profile_sha256": "e313211ddbea31b69818a22b1186011cb678d369c11eddd3da40fe336f006755",
+  "provider_pid": 1383420,
+  "provider_start": "125846485",
+  "sandbox_network_filtered": true,
+  "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
+ },
+ "operation": "owner-loss",
+ "profile": {
+  "home": "/dev/phase-loop-agy",
+  "id": "agy_memfd_home_deny_all_v1",
+  "image_sha256": "763be5cf8d4114fc3c21341a0757c324ee5d0a23eea32a6230ec93fd0eaa209c",
+  "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
+ },
+ "profile_sha256": "e313211ddbea31b69818a22b1186011cb678d369c11eddd3da40fe336f006755",
+ "record_sha256": {
+  "broker": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+  "monitoring": "068f41a47836800b9054a19c50eb01bdc2152160baa9591179c78754f9cfc04c",
+  "observer": "390258c77a16cf6929d9944de250872bfb9971bf20784217f4ad900da3c47ff2",
+  "result": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+ },
+ "request": {
+  "artifact_sha256": "125bbbd021794e015483823d7231c3e9fca0715222d0617278d134f8a065a3b5",
+  "instructions_sha256": "130181f86086870b9e626ce0e0ed609034e6d0ca1a7198783402ee859f628973",
+  "provider_input_sha256": "45cddbd5ac2a23e8deb80c93685528f8d7e02df2e00a0d855c9a88978896fce3",
+  "provider_transport_sha256": "d8583c9ebc040e1b27ea41fb1701d70592b5c81776b3a295208f5c697ea9e972"
+ },
+ "result": null,
+ "schema": "gemini_heartbeat_qualification.v1",
+ "silence_deadline_s": null,
+ "source_sha256": {
+  "agy_qualification.py": "fc60a55ef2bc36a43f04fc0621292436d9d91efa04d70f9f6df845b031bd7b50"
+ },
+ "trigger": "observed qualified provider admission after independent local measurements"
+}
