@@ -48,13 +48,33 @@ jobs:
           fi
           bwrap --unshare-user --unshare-pid --ro-bind / / -- /bin/true
           unshare --net --map-root-user true
-      - name: Verify every agy qualification source pin (release only)
-        # agent-harness#1029: pull requests check only the qualified route's core files
-        # (qualified-agy-image.yml); a release must ship a tree whose EVERY package source
-        # matches the live qualification record, so this blocks publication otherwise. It runs
-        # before the build so nothing the build writes can be hashed.
-        if: github.event_name != 'pull_request'
-        run: python phase-loop-runtime/scripts/verify_qualified_agy_image.py --source-only
+      - name: Strict agy route conformance (AGYROLL §3.4)
+        # agent-harness#1008 R1: the production qualification driver runs hermetically on the
+        # stand-in images; under AGY_CONFORMANCE_STRICT=1 a missing bubblewrap or user
+        # namespace FAILS. The environment and the report live under $RUNNER_TEMP, never in
+        # the tree the build packages.
+        env:
+          AGY_CONFORMANCE_STRICT: "1"
+          PYTHONDONTWRITEBYTECODE: "1"
+          UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/agy-conformance-venv
+        run: |
+          python -m pip install uv
+          mkdir -p -m 0700 "$RUNNER_TEMP/agy-conformance"
+          cd phase-loop-runtime
+          uv sync --locked --group test --no-install-project
+          PYTHONPATH="$PWD/src:$PWD/tests" timeout 900 "$UV_PROJECT_ENVIRONMENT/bin/python" -m pytest -q \
+            -p no:cacheprovider tests/test_agy_route_conformance.py \
+            --junitxml="$RUNNER_TEMP/agy-conformance/conformance.xml"
+      - name: Verify the agy release gate (--release)
+        # Before the build: --contract, the strict conformance report above (every obligation
+        # passed exactly once, nothing skipped or xfailed) and every member's asset by tag.
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+          UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/agy-conformance-venv
+        working-directory: phase-loop-runtime
+        run: >-
+          timeout 600 "$UV_PROJECT_ENVIRONMENT/bin/python" scripts/verify_qualified_agy_image.py --release
+          --conformance-report "$RUNNER_TEMP/agy-conformance/conformance.xml"
       - name: Verify tag matches phase-loop-runtime version
         if: startsWith(github.ref, 'refs/tags/v')
         run: |

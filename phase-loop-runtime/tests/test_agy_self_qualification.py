@@ -79,6 +79,7 @@ class FakeTransport:
         self.blobs[url] = archive
         self.releases.insert(0, {
             "tag_name": version, "prerelease": prerelease, "draft": draft,
+            "published_at": "2026-11-07T08:38:26Z",
             "assets": [{"name": asset, "browser_download_url": url,
                         "digest": digest or "sha256:" + sha256(archive).hexdigest()}],
         })
@@ -743,15 +744,15 @@ def test_record_for_image_a_under_image_b_lookup_name_is_absent(world):
     assert store.get_provenance(other, host, runtime) is None
 
 
-def test_verifier_and_runtime_share_one_route_core_tuple():
-    import importlib.util
+def test_verifier_binds_records_to_the_seat_qci_not_the_route_core():
+    """RECBIND (AGYROLL §3.3): no CI gate pins route-core file hashes any more; records bind to
+    ``seat_qci()``, which the watch and the verifier read from the same tree."""
     script = Path(__file__).resolve().parents[1] / "scripts" / "verify_qualified_agy_image.py"
     if not script.is_file():
         pytest.skip("scripts/ is repository source")  # pragma: no cover - sdist layout only
-    spec = importlib.util.spec_from_file_location("verify_qualified_agy_image_rc", script)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    assert module.ROUTE_CORE is q.ROUTE_CORE
+    text = script.read_text()
+    assert "ROUTE_CORE" not in text and "--route-core" not in text.replace("``--route-core``", "")
+    assert "seat_qci" in text
     assert {"gemini_heartbeat.py", "agy_qualification.py", "agy_provenance.py"} <= set(q.ROUTE_CORE)
     assert "agy_watch.py" not in q.ROUTE_CORE
 
@@ -1390,8 +1391,13 @@ def test_legs_and_president_never_qualify(world):
 def _watch_repo(tmp_path):
     """A minimal prepared-tree layout copied from this checkout."""
     root = Path(__file__).resolve().parents[2]
-    if not (root / "plans/evidence/qualified-provider-images.json").is_file():
-        pytest.skip("qualification catalog absent from repository fixture")
+    from phase_loop_runtime import agy_watch
+    if not (root / agy_watch.CATALOG).is_file():
+        # A repository checkout always ships the data catalog: missing it there is a failure,
+        # never a skip (RECBIND). Only a layout without the repository may skip.
+        if (root / ".git").exists():
+            pytest.fail(f"the agy data catalog {agy_watch.CATALOG} is missing from this checkout")
+        pytest.skip("repository layout absent")  # pragma: no cover - sdist layout only
     tree = tmp_path / "tree"
     for rel in ("phase-loop-runtime/src/phase_loop_runtime", "phase-loop-runtime/scripts", "plans/evidence"):
         src = root / rel
@@ -1400,6 +1406,11 @@ def _watch_repo(tmp_path):
         import shutil
         shutil.copytree(src, tree / rel, ignore=shutil.ignore_patterns("__pycache__"))
     return tree
+
+
+def agy_watch_identity_program():
+    from phase_loop_runtime import agy_watch
+    return agy_watch._IDENTITY_PROGRAM
 
 
 def _page(nodes, *, total=None, has_next=False, cursor="c"):
@@ -1415,13 +1426,12 @@ def _node(number, body="", *, login="watch-bot", cross=False, owner="Consiliency
 
 
 def _current_base():
-    from phase_loop_runtime import agy_watch
-    root = Path(__file__).resolve().parents[2]
-    return agy_watch.route_core_digest(root)
+    """``main``'s watch label value: the seat QCI of the tree under test (AGYROLL §2.1)."""
+    return q.seat_qci()
 
 
 def _record(branch, oid="a" * 40, base=None, version="9.9.9"):
-    """The watch's own local push record (bound to branch, version and route-core base)."""
+    """The watch's own local push record (bound to branch, version and seat-QCI base)."""
     from phase_loop_runtime import agy_watch
     agy_watch.record_push(branch, oid, version, base or _current_base())
 
@@ -1454,6 +1464,10 @@ class _Runner:
             return ok
         if argv[:3] == ["gh", "api", "user"]:
             return SimpleNamespace(stdout=self.login + "\n", returncode=0)
+        if argv[1:4] == ["-I", "-c", agy_watch_identity_program()]:
+            # the prepared tree is a copy of this one: its seat QCI and version are ours
+            from phase_loop_runtime import __version__
+            return SimpleNamespace(stdout=f"{q.seat_qci()}\n{__version__}\n", returncode=0)
         if argv[:3] == ["gh", "api", "graphql"]:
             return SimpleNamespace(stdout="".join(json.dumps(page) for page in self.pages), returncode=0)
         if argv[:3] == ["gh", "pr", "create"]:
@@ -1558,6 +1572,8 @@ class _Runner:
                     "qualify_gemini_heartbeat.py", "verify_qualified_agy_image.py") \
                     and Path(c[1]).parent.name == "scripts":
                 continue  # the prepared tree's own shim / verifier
+            elif c and c[0] == sys.executable and c[1:4] == ["-I", "-c", agy_watch_identity_program()]:
+                continue  # the prepared tree's own seat QCI
             else:
                 bad.append(c)
         if len(real_pushes) > 1 or creates > 1:
@@ -1582,7 +1598,7 @@ def test_watch_second_tick_for_the_same_version_is_a_no_op(tmp_path, monkeypatch
     tree = _watch_repo(tmp_path)
     t = FakeTransport()
     t.add("9.9.9", b"new agy")
-    base = agy_watch.route_core_digest(tree)
+    base = _current_base()
     runner = _Runner([_page([_node(1, _label(base))])], refs={"agy-watch/9.9.9-20260101T000000Z-aaaaaaaa": "a" * 40})
     _record("agy-watch/9.9.9-20260101T000000Z-aaaaaaaa")
     out = []
@@ -1605,60 +1621,48 @@ def test_watch_never_merges_and_skips_a_pinned_version(tmp_path):
     assert not [call for call in runner.calls if call[:3] in (["gh", "pr", "merge"], ["git", "merge"])]
 
 
-def test_watch_record_passes_route_core_on_its_prepared_tree(tmp_path):
-    """The watch's tree edits put the new digest in the TREE's release constant (so the
-    tree's own worker gate admits it -- claude 5.2), and the summarized record passes
-    ``verify_qualified_agy_image.py --route-core`` against that tree."""
-    import ast
+def test_watch_record_passes_contract_on_its_prepared_tree(tmp_path):
+    """The watch's tree edit adds the new member to the TREE's data catalog -- and edits
+    nothing else (so the tree's own worker gate admits it, claude 5.2) -- and the summarized
+    v2 record passes ``verify_qualified_agy_image.py --contract`` against that tree."""
     from phase_loop_runtime import agy_watch
     tree = _watch_repo(tmp_path)
+
+    def snapshot():
+        return {path.relative_to(tree): sha256(path.read_bytes()).hexdigest()
+                for path in tree.rglob("*") if path.is_file()}
+
+    before = snapshot()
     image, help_sha = sha256(b"watch image").hexdigest(), sha256(b"watch help").hexdigest()
-    agy_watch.edit_constants(tree, image, "0" * 64, "9.9.9")
-    agy_watch.edit_constants(tree, image, help_sha, "9.9.9")  # idempotent re-edit
-    literal = next(node.value for node in ast.parse((tree / agy_watch.HEARTBEAT).read_text()).body
-                   if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "QUALIFIED_IMAGES")
-    constants = ast.literal_eval(literal)
-    assert constants[image] == help_sha and list(constants).count(image) == 1
-    catalog = json.loads((tree / agy_watch.CATALOG).read_text())
-    assert [m for m in catalog["routes"]["gemini_heartbeat_linux_x64"]["images"] if m["release_version"] == "9.9.9"]
-    # receipts shaped like the newest committed record, pinning the prepared tree
-    verifier = tree / "phase-loop-runtime/scripts/verify_qualified_agy_image.py"
-    spec_src = subprocess.run([sys.executable, "-c",
-                               "import runpy,json,sys; m=runpy.run_path(sys.argv[1]);"
-                               "print(json.dumps(m['actual_source_hashes']()))", str(verifier)],
-                              capture_output=True, text=True, check=True)
-    sources = json.loads(spec_src.stdout)
-    template_name = catalog["routes"]["gemini_heartbeat_linux_x64"]["images"][-2]["record"]
-    template = json.loads((tree / "plans/evidence" / template_name).read_text())
+    member = {"version": "9.9.9", "image_sha256": image, "asset_sha256": "1" * 64, "qci": _current_base(),
+              "published_at": "2026-11-07T08:38:26Z"}
+    agy_watch.edit_catalog(tree, help_sha256="0" * 64, **member)
+    agy_watch.edit_catalog(tree, help_sha256=help_sha, **member)  # idempotent re-edit
+    after = snapshot()
+    assert {name for name in set(before) | set(after) if before.get(name) != after.get(name)} == {
+        Path(agy_watch.CATALOG)}
+    members = agy_watch._catalog_members(tree)
+    assert [m["help_sha256"] for m in members if m["image_sha256"] == image] == [help_sha]
+    assert gh.load_catalog(tree / agy_watch.CATALOG)[image] == help_sha
+    # receipts shaped like the newest committed record
+    template = json.loads((tree / "plans/evidence" / members[-2]["record"]).read_text())
     series = tmp_path / "series"
     for row in template["records"]:
         receipt = json.loads(json.dumps(row))
-        receipt.update(image_sha256=image, help_sha256=help_sha, source_sha256=sources,
+        receipt.update(image_sha256=image, help_sha256=help_sha, source_sha256={"x.py": "0" * 64},
                        request=row["request_digests"])
         receipt["profile"] = dict(row["profile"], image_sha256=image)
         (series / row["operation"]).mkdir(parents=True)
         (series / row["operation"] / "qualification.json").write_text(json.dumps(receipt))
     asset = prov.ReleaseAsset("9.9.9", HOST.asset, "u", "1" * 64)
-    record = agy_watch.summarize(tree, series, asset, image, help_sha)
+    record = agy_watch.summarize(tree, series, asset, image, help_sha, qci=_current_base(), qualified_under="9.0.0")
+    assert record["schema"] == agy_watch.RECORD_SCHEMA and "source_sha256" not in record
+    assert record["signatures"] == [] and record["qci"] == _current_base()
     (tree / "plans/evidence/agy-9.9.9-linux-x64-qualification.json").write_text(json.dumps(record, indent=2))
-    # the older members' records pin the original tree; only the new one is under test
-    catalog["routes"]["gemini_heartbeat_linux_x64"]["images"] = [
-        m for m in catalog["routes"]["gemini_heartbeat_linux_x64"]["images"] if m["release_version"] == "9.9.9"]
-    (tree / agy_watch.CATALOG).write_text(json.dumps(catalog))
-    text = (tree / agy_watch.HEARTBEAT).read_text()
-    start = text.index("QUALIFIED_IMAGES = {")
-    end = text.index("}\nPROFILE_ID", start) + 1
-    (tree / agy_watch.HEARTBEAT).write_text(
-        text[:start] + f'QUALIFIED_IMAGES = {{\n    "{image}":\n        "{help_sha}",\n}}' + text[end:])
-    sources = json.loads(subprocess.run([sys.executable, "-c",
-                                         "import runpy,json,sys; m=runpy.run_path(sys.argv[1]);"
-                                         "print(json.dumps(m['actual_source_hashes']()))", str(verifier)],
-                                        capture_output=True, text=True, check=True).stdout)
-    record["source_sha256"] = sources
-    (tree / "plans/evidence/agy-9.9.9-linux-x64-qualification.json").write_text(json.dumps(record, indent=2))
-    result = subprocess.run([sys.executable, str(verifier), "--route-core"], cwd=tree, capture_output=True, text=True)
+    verifier = tree / "phase-loop-runtime/scripts/verify_qualified_agy_image.py"
+    result = subprocess.run([sys.executable, str(verifier), "--contract"], cwd=tree, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout)["qualified_releases"] == ["9.9.9"]
+    assert "9.9.9" in json.loads(result.stdout)["qualified_releases"]
 
 
 class _TagTransport(FakeTransport):
@@ -1679,9 +1683,8 @@ def test_release_by_tag_refuses_non_stable(flag):
 
 
 def test_watch_refetched_member_must_match_its_record(tmp_path):
-    """The watch requalifies every catalog member on the prepared tree (adding a member
-    edits a route-core file every record pins); an existing member's re-fetched image
-    must equal its committed record. Mutation: trusting the upstream bytes."""
+    """The watch requalifies every catalog member on the prepared tree; an existing member's
+    re-fetched image must equal its committed record. Mutation: trusting the upstream bytes."""
     from phase_loop_runtime import agy_watch
     tree = _watch_repo(tmp_path)
     member = agy_watch._catalog_members(tree)[-1]
@@ -2203,7 +2206,8 @@ def test_an_owned_pr_with_a_maintainer_follow_up_is_never_force_pushed(tmp_path,
     origin, oids = _bare_origin(tmp_path, [old])  # the branch head is now the maintainer's commit
     probe = tmp_path / "probe"
     probe.mkdir()
-    base = agy_watch.route_core_digest(_watch_repo(probe))
+    _watch_repo(probe)
+    base = _current_base()
     _record(old, "c" * 40)  # what the watch pushed; the maintainer's commit is now the head
     runner = _Runner([_page([_node(41, _label(base, pushed=oids[old]), head=old, oid=oids[old])])], origin=origin,
                      refs={old: oids[old]})
@@ -2228,7 +2232,8 @@ def test_up_to_date_requires_recorded_head_and_branch_to_agree(tmp_path, monkeyp
     always claims the live head here, so only the local record can say no. Mutation:
     up_to_date ignoring the record (M66), or reading the body (M71)."""
     from phase_loop_runtime import agy_watch
-    base = agy_watch.route_core_digest(_watch_repo(tmp_path))
+    _watch_repo(tmp_path)
+    base = _current_base()
     head = "agy-watch/9.9.9-20260101T000000Z-aaaaaaaa"
     if recorded is not None:
         _record(head, recorded)
@@ -2248,7 +2253,8 @@ def test_a_bot_pr_whose_head_and_body_oid_were_both_changed_is_not_up_to_date(tm
     `agy-watch-pushed-oid:` to B. Every PR-visible fact now says B; only the watch's own
     local record still says A. Mutation: trusting the editable body."""
     from phase_loop_runtime import agy_watch
-    base = agy_watch.route_core_digest(_watch_repo(tmp_path))
+    _watch_repo(tmp_path)
+    base = _current_base()
     head = "agy-watch/9.9.9-20260101T000000Z-aaaaaaaa"
     _record(head, "a" * 40)
     b = "b" * 40
@@ -2263,7 +2269,8 @@ def test_a_bot_pr_whose_head_and_body_oid_were_both_changed_is_not_up_to_date(tm
 def test_a_missing_or_tampered_push_record_is_never_up_to_date(tmp_path, monkeypatch, tamper):
     """r5: fail-safe. A missing or tampered local record gives a duplicate PR, never adoption."""
     from phase_loop_runtime import agy_watch
-    base = agy_watch.route_core_digest(_watch_repo(tmp_path))
+    _watch_repo(tmp_path)
+    base = _current_base()
     head = "agy-watch/9.9.9-20260101T000000Z-aaaaaaaa"
     _record(head, "a" * 40)
     (entry,) = q.Store().host_dir.glob("watch_push-*.json")
@@ -2286,7 +2293,8 @@ def test_a_missing_or_tampered_push_record_is_never_up_to_date(tmp_path, monkeyp
 def test_a_crlf_body_is_still_recognised(tmp_path, monkeypatch):
     """claude r4 N5: a body saved with CRLF by the web UI keeps its labels."""
     from phase_loop_runtime import agy_watch
-    base = agy_watch.route_core_digest(_watch_repo(tmp_path))
+    _watch_repo(tmp_path)
+    base = _current_base()
     head = "agy-watch/9.9.9-20260101T000000Z-aaaaaaaa"
     _record(head)
     runner = _Runner([_page([_node(3, _label(base, crlf=True), head=head)])], refs={head: "a" * 40})
@@ -2297,7 +2305,8 @@ def test_a_crlf_body_is_still_recognised(tmp_path, monkeypatch):
 def test_a_non_own_pr_with_the_current_label_never_makes_the_tick_up_to_date(tmp_path, monkeypatch, kind):
     """claude r4 N2. Mutation: evaluating up_to_date over unfiltered nodes."""
     from phase_loop_runtime import agy_watch
-    base = agy_watch.route_core_digest(_watch_repo(tmp_path))
+    _watch_repo(tmp_path)
+    base = _current_base()
     head = "agy-watch/9.9.9-20260101T000000Z-aaaaaaaa"
     node = {"other_author": _node(3, _label(base), head=head, login="mallory"),
             "fork": _node(3, _label(base), head=head, cross=True, owner="mallory"),
@@ -2333,7 +2342,8 @@ def test_a_complete_multi_page_listing_is_accepted(tmp_path):
     """250 open PRs over three pages; the only own up-to-date PR is the last one.
     Mutation: any fixed limit (e.g. keeping the first 200 nodes)."""
     from phase_loop_runtime import agy_watch
-    base = agy_watch.route_core_digest(_watch_repo(tmp_path))
+    _watch_repo(tmp_path)
+    base = _current_base()
     head = "agy-watch/9.9.9-20260101T000000Z-aaaaaaaa"
     nodes = [_node(i, login="someone", head=f"feature/{i}") for i in range(249)] + [_node(999, _label(base), head=head)]
     pages = [_page(nodes[:100], total=250, has_next=True), _page(nodes[100:200], total=250, has_next=True),
@@ -2678,7 +2688,8 @@ def test_the_push_record_binds_version_and_base(tmp_path, monkeypatch, field):
     """claude r6 N3: a body relabelled to the CURRENT base (or another version) cannot reuse
     a push recorded under the old one; the body labels are display-only too. Mutation: M79."""
     from phase_loop_runtime import agy_watch
-    base = agy_watch.route_core_digest(_watch_repo(tmp_path))
+    _watch_repo(tmp_path)
+    base = _current_base()
     head = "agy-watch/9.9.9-20260101T000000Z-aaaaaaaa"
     if field == "base":
         _record(head, "a" * 40, base="0" * 64)

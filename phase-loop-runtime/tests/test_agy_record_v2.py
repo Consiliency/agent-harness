@@ -205,3 +205,219 @@ def test_check_closure_reaches_the_real_validator_callees(converter):
                 "panel_invoker:_render_broker_inline_prompt", "advisor_board.backing:harden_subscription_model",
                 "gemini_heartbeat:PROFILE_ID"):
         assert key in table
+
+
+# ------------------------------------------------- verifier --contract / --release
+
+REPO = Path(__file__).resolve().parents[2]
+
+
+@pytest.fixture
+def verifier():
+    return _load("verify_qualified_agy_image")
+
+
+@pytest.fixture
+def evidence(verifier, tmp_path, monkeypatch):
+    """A private copy of the shipped catalog and its members' records for the verifier."""
+    from phase_loop_runtime import gemini_heartbeat as gh
+
+    catalog = Path(gh.__file__).resolve().parent / "data" / "agy_catalog.json"
+    records = tmp_path / "evidence"
+    records.mkdir()
+    for member in gh.parse_catalog(catalog.read_text()):
+        (records / member["record"]).write_bytes((REPO / "plans/evidence" / member["record"]).read_bytes())
+    (tmp_path / "agy_catalog.json").write_bytes(catalog.read_bytes())
+    monkeypatch.setattr(verifier, "CATALOG", tmp_path / "agy_catalog.json")
+    monkeypatch.setattr(verifier, "EVIDENCE", records)
+    return tmp_path
+
+
+def _edit_json(path, change):
+    value = json.loads(path.read_text())
+    change(value)
+    path.write_text(json.dumps(value))
+
+
+def _record_path(evidence):
+    return next((evidence / "evidence").glob("agy-*-linux-x64-qualification.json"))
+
+
+def test_contract_passes_on_the_shipped_evidence(verifier, evidence):
+    records = verifier.contract()
+    assert records and all(r["schema"] == "agy_redacted_qualification_summary.v2" for r in records)
+
+
+def test_contract_passes_a_drift_outside_the_qci(verifier, evidence, monkeypatch):
+    """No live run for an ordinary change: version, file hashes and the runtime set are not the QCI."""
+    import phase_loop_runtime
+    from phase_loop_runtime import agy_qualification as q
+    from phase_loop_runtime import gemini_heartbeat as gh
+
+    monkeypatch.setattr(phase_loop_runtime, "__version__", "99.0.0")
+    monkeypatch.setattr(q, "ROUTE_CORE", ("unrelated.py",))
+    monkeypatch.setattr(gh, "QUALIFIED_IMAGES", {})
+    assert verifier.contract()
+
+
+def test_contract_fails_a_qci_drift_naming_the_member(verifier, evidence, monkeypatch, capsys):
+    from phase_loop_runtime import agy_qualification as q
+
+    first, *rest = q.OPERATIONS_CONTRACT
+    monkeypatch.setattr(q, "OPERATIONS_CONTRACT", (first._replace(pass_predicate_id="mutant_v1"), *rest))
+    members = [m["release_version"] for m in json.loads((evidence / "agy_catalog.json").read_text())["routes"]["linux-x64"]]
+    with pytest.raises(verifier.RequalifyRequired) as refused:
+        verifier.contract()
+    assert refused.value.members == members
+    assert verifier.main(["--contract"]) == 1
+    assert capsys.readouterr().err.strip() == "requalify: " + ", ".join(members)
+
+
+def test_contract_fails_a_record_whose_qci_differs(verifier, evidence):
+    _edit_json(_record_path(evidence), lambda r: r.update(qci="0" * 64))
+    with pytest.raises(verifier.RequalifyRequired):
+        verifier.contract()
+
+
+@pytest.mark.parametrize("change", [
+    lambda r: r.update(source_sha256={"x.py": "0" * 64}),   # a v1 field is no longer allowed
+    lambda r: r.pop("signatures"),
+    lambda r: r.update(schema="agy_redacted_qualification_summary.v1"),
+    lambda r: r["upstream"].update(extra=True),
+    lambda r: r["upstream"].update(asset_sha256="0" * 64),
+    lambda r: r.update(image_sha256="0" * 64),
+])
+def test_contract_requires_a_closed_matching_v2_record(verifier, evidence, change):
+    _edit_json(_record_path(evidence), change)
+    with pytest.raises(ValueError):
+        verifier.contract()
+
+
+def test_contract_fails_a_member_with_no_record(verifier, evidence):
+    _record_path(evidence).unlink()
+    with pytest.raises(ValueError, match="has no record"):
+        verifier.contract()
+
+
+def test_contract_ignores_an_unlisted_record(verifier, evidence):
+    (evidence / "evidence" / "agy-0.0.1-linux-x64-qualification.json").write_text("not even json")
+    assert verifier.contract()
+
+
+@pytest.mark.parametrize("text", ['{"schema": "qualified_agy_catalog.v3", "routes": {"linux-x64": []}}',
+                                  "{malformed", ""])
+def test_contract_fails_an_empty_or_malformed_catalog(verifier, evidence, text):
+    (evidence / "agy_catalog.json").write_text(text)
+    with pytest.raises(ValueError, match="agy catalog"):
+        verifier.contract()
+    assert verifier.main(["--contract"]) == 1
+
+
+def _report(path, cases, **counts):
+    rows = []
+    for ident, outcome in cases:
+        child = {"pass": "", "skipped": '<skipped message="no bwrap"/>',
+                 "xfail": '<skipped type="pytest.xfail" message="xfail"/>',
+                 "failure": '<failure message="x"/>', "error": '<error message="x"/>'}[outcome]
+        rows.append(f'<testcase classname="tests.test_agy_route_conformance" name="test_obligation[{ident}]" '
+                    f'time="1">{child}</testcase>')
+    attributes = " ".join(f'{key}="{value}"' for key, value in {"errors": 0, "failures": 0, "skipped": 0, **counts}.items())
+    path.write_text(f'<?xml version="1.0"?><testsuites><testsuite name="pytest" {attributes}>'
+                    + "".join(rows) + "</testsuite></testsuites>")
+    return path
+
+
+@pytest.fixture
+def obligations(verifier):
+    return verifier.conformance_obligations()
+
+
+@pytest.fixture
+def releases(verifier, evidence):
+    """The vendor releases by tag, as the shipped records describe them."""
+    table = {}
+    for record in verifier.contract():
+        version = record["release_version"]
+        table[f"{verifier.RELEASES}/tags/{version}"] = {"tag_name": version, "assets": [{
+            "name": verifier.ASSET, "digest": "sha256:" + record["upstream_asset_sha256"],
+            "browser_download_url": f"https://github.com/{verifier.UPSTREAM}/releases/download/{version}/{verifier.ASSET}"}]}
+    return table
+
+
+def test_release_reads_the_suites_eight_obligations(obligations):
+    conformance = _load_suite()
+    assert obligations == conformance.CONFORMANCE_OBLIGATIONS and len(obligations) == 8
+
+
+def _load_suite():
+    spec = importlib.util.spec_from_file_location(
+        "agy_route_conformance_for_release", Path(__file__).resolve().parent / "test_agy_route_conformance.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_release_passes_a_strict_complete_report(verifier, evidence, obligations, releases, tmp_path):
+    report = _report(tmp_path / "conformance.xml", [(o, "pass") for o in obligations])
+    records, seen = verifier.release(report, fetch=releases.__getitem__)
+    assert seen == sorted(obligations) and records
+
+
+@pytest.mark.parametrize("outcome", ["skipped", "xfail", "failure", "error"])
+def test_release_fails_a_report_with_a_non_passing_obligation(verifier, evidence, obligations, releases, tmp_path, outcome):
+    cases = [(o, "pass") for o in obligations]
+    cases[0] = (cases[0][0], outcome)
+    report = _report(tmp_path / "conformance.xml", cases)
+    with pytest.raises(ValueError):
+        verifier.release(report, fetch=releases.__getitem__)
+
+
+def test_release_fails_a_skipped_run_even_by_its_counts(verifier, evidence, obligations, releases, tmp_path):
+    report = _report(tmp_path / "conformance.xml", [(o, "pass") for o in obligations], skipped=1)
+    with pytest.raises(ValueError, match="skipped"):
+        verifier.release(report, fetch=releases.__getitem__)
+
+
+@pytest.mark.parametrize("kind", ["missing", "duplicate", "unknown"])
+def test_release_fails_a_partial_or_repeated_report(verifier, evidence, obligations, releases, tmp_path, kind):
+    cases = [(o, "pass") for o in obligations]
+    if kind == "missing":
+        cases = cases[1:]
+    elif kind == "duplicate":
+        cases.append(cases[0])
+    else:
+        cases.append(("neg_invented", "pass"))
+    with pytest.raises(ValueError, match=kind if kind != "duplicate" else "repeats"):
+        verifier.release(_report(tmp_path / "conformance.xml", cases), fetch=releases.__getitem__)
+
+
+def test_release_fails_without_a_report(verifier, evidence, releases, tmp_path, capsys):
+    with pytest.raises(ValueError, match="unavailable"):
+        verifier.release(tmp_path / "absent.xml", fetch=releases.__getitem__)
+    with pytest.raises(SystemExit):
+        verifier.main(["--release"])  # --conformance-report is required
+
+
+def test_release_fails_an_asset_mismatch(verifier, evidence, obligations, releases, tmp_path):
+    for release in releases.values():
+        release["assets"][0]["digest"] = "sha256:" + "0" * 64
+    report = _report(tmp_path / "conformance.xml", [(o, "pass") for o in obligations])
+    with pytest.raises(ValueError, match="asset digest mismatch"):
+        verifier.release(report, fetch=releases.__getitem__)
+
+
+def test_release_fails_an_operations_contract_edit(verifier, evidence, obligations, releases, tmp_path, monkeypatch):
+    from phase_loop_runtime import agy_qualification as q
+
+    first, *rest = q.OPERATIONS_CONTRACT
+    monkeypatch.setattr(q, "OPERATIONS_CONTRACT", (first._replace(argv_template=first.argv_template[:-1]), *rest))
+    report = _report(tmp_path / "conformance.xml", [(o, "pass") for o in obligations])
+    with pytest.raises(verifier.RequalifyRequired):
+        verifier.release(report, fetch=releases.__getitem__)
+
+
+def test_release_refuses_a_report_with_a_dtd(verifier, evidence, obligations, releases, tmp_path):
+    report = tmp_path / "conformance.xml"
+    report.write_text('<?xml version="1.0"?><!DOCTYPE x [<!ENTITY a "b">]><testsuites/>')
+    with pytest.raises(ValueError, match="DTD"):
+        verifier.release(report, fetch=releases.__getitem__)

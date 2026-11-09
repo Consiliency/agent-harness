@@ -93,12 +93,14 @@ def world(verifier, monkeypatch, tmp_path):
                         "image_sha256": sha256(executable).hexdigest(), "source_sha256": {"x.py": "0" * 64}})
     upstream.add("2.0.0", _archive(b"#!/bin/sh\necho not a member\n"))
     upstream.latest = "2.0.0"
-    monkeypatch.setattr(verifier, "validate_records", lambda **_: records)
+    monkeypatch.setattr(verifier, "contract", lambda: records)
     monkeypatch.setattr(verifier, "urlopen", upstream.urlopen)
 
     def run(*extra):
-        monkeypatch.setattr(sys, "argv", ["verify_qualified_agy_image.py", "--upstream-only", *extra])
-        verifier.main()
+        # The mode's own function, so a refusal surfaces as its ValueError (main() turns it
+        # into exit status 1, tested below).
+        archive = Path(extra[extra.index("--archive") + 1]) if "--archive" in extra else None
+        print(json.dumps({**verifier.upstream_only(archive), "verified": True}))
 
     return upstream, archives, run
 
@@ -166,7 +168,7 @@ def test_a_shipped_member_integrity_mismatch_still_fails(world, capsys, mismatch
 def test_a_substituted_executable_inside_a_matching_archive_fails(world, verifier, monkeypatch):
     upstream, archives, run = world
     substituted = _archive(b"#!/bin/sh\necho substituted\n")
-    records = verifier.validate_records()
+    records = verifier.contract()
     newest = next(record for record in records if record["release_version"] == "1.10.0")
     newest["upstream_asset_sha256"] = sha256(substituted).hexdigest()
     upstream.add("1.10.0", substituted)
@@ -179,6 +181,15 @@ def test_the_upstream_job_step_is_blocking():
     """The step reds on a member-integrity failure. Mutation: ``continue-on-error``."""
     job = yaml.safe_load(QUALIFIED.read_text())["jobs"]["upstream"]
     (step,) = [step for step in job["steps"] if "--upstream-only" in step.get("run", "")]
-    assert step["run"] == "python phase-loop-runtime/scripts/verify_qualified_agy_image.py --upstream-only"
+    assert step["run"] == "uv run --locked python scripts/verify_qualified_agy_image.py --upstream-only"
+    assert step["working-directory"] == "phase-loop-runtime"
     assert "continue-on-error" not in step and "if" not in step
     assert "continue-on-error" not in job
+
+
+def test_main_reports_an_upstream_refusal_as_exit_status_one(world, verifier, monkeypatch, capsys):
+    upstream, archives, run = world
+    records = verifier.contract()
+    next(r for r in records if r["release_version"] == "1.10.0")["upstream_asset_sha256"] = "0" * 64
+    assert verifier.main(["--upstream-only", "--archive", str(archives["1.10.0"])]) == 1
+    assert "verify_qualified_agy_image:" in capsys.readouterr().err

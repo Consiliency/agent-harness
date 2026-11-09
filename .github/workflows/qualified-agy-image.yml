@@ -1,31 +1,14 @@
 name: qualified-agy-image
 
+# AGYROLL §3.3 (agent-harness#1008, R1): every pull request and push runs `--contract`, with
+# no path filter, because the seat QCI reads files outside any agy-specific path
+# (`panel_invoker.py` among them). The full pin (agent-harness#1032) and the route-core gate
+# (agent-harness#1029) were removed; the release gate is the strict conformance suite plus
+# `--release` in publish-pypi.yml.
 on:
   pull_request:
-    paths:
-      - 'plans/evidence/agy-*-linux-x64-qualification.json'
-      - 'plans/evidence/qualified-provider-images.json'
-      - 'phase-loop-runtime/src/phase_loop_runtime/gemini_heartbeat.py'
-      - 'phase-loop-runtime/src/phase_loop_runtime/agy_qualification.py'
-      - 'phase-loop-runtime/src/phase_loop_runtime/agy_provenance.py'
-      - 'phase-loop-runtime/scripts/qualify_gemini_heartbeat.py'
-      - 'phase-loop-runtime/scripts/verify_qualified_agy_image.py'
-      - '.github/workflows/qualified-agy-image.yml'
-      - 'RELEASE_PIN'
-      - 'phase-loop-runtime/scripts/agy_full_pin_scope.sh'
   push:
     branches: [main]
-    paths:
-      - 'plans/evidence/agy-*-linux-x64-qualification.json'
-      - 'plans/evidence/qualified-provider-images.json'
-      - 'phase-loop-runtime/src/phase_loop_runtime/gemini_heartbeat.py'
-      - 'phase-loop-runtime/src/phase_loop_runtime/agy_qualification.py'
-      - 'phase-loop-runtime/src/phase_loop_runtime/agy_provenance.py'
-      - 'phase-loop-runtime/scripts/qualify_gemini_heartbeat.py'
-      - 'phase-loop-runtime/scripts/verify_qualified_agy_image.py'
-      - '.github/workflows/qualified-agy-image.yml'
-      - 'RELEASE_PIN'
-      - 'phase-loop-runtime/scripts/agy_full_pin_scope.sh'
   schedule:
     - cron: '43 4 * * *'
   workflow_dispatch:
@@ -35,41 +18,19 @@ permissions:
 
 jobs:
   verify:
-    name: latest agy source and release asset
+    name: agy catalog contract
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      # agent-harness#1029 (maintainer ruling 2026-09-24): pull requests and pushes that
-      # touch the route check the ROUTE CORE only -- the qualification record plus the
-      # files that implement the qualified route directly -- so an ordinary runtime change
-      # no longer needs a live Gemini requalification per PR. The FULL pin set (every
-      # package source) blocks publication (publish-pypi.yml), blocks a release-cut or
-      # new-record PR, and is reported (non-blocking) nightly.
-      - name: Verify route-core qualification pins
-        run: python phase-loop-runtime/scripts/verify_qualified_agy_image.py --route-core
-      - name: Decide whether this run needs the full pin set
-        id: full
-        env:
-          EVENT: ${{ github.event_name }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: bash phase-loop-runtime/scripts/agy_full_pin_scope.sh
-      - name: Verify every qualification source pin (release cut, new record, dispatch)
-        if: steps.full.outputs.full == 'true'
-        run: python phase-loop-runtime/scripts/verify_qualified_agy_image.py --source-only
-      - name: Report full-pin drift (nightly, non-blocking)
-        # Between releases non-core drift is the expected state; the release gate
-        # carries the guarantee. Surface the drift without reddening every night.
-        if: github.event_name == 'schedule'
-        run: |
-          if ! python phase-loop-runtime/scripts/verify_qualified_agy_image.py --source-only; then
-            echo "::warning::runtime sources drifted from the agy qualification record; the next release cut must requalify"
-          fi
+      - name: Install uv
+        run: python -m pip install uv
+      - name: Verify the agy catalog contract
+        working-directory: phase-loop-runtime
+        run: uv run --locked python scripts/verify_qualified_agy_image.py --contract
 
   upstream:
     name: latest agy release asset
@@ -81,5 +42,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Install uv
+        run: python -m pip install uv
       - name: Verify latest release, archive and executable
-        run: python phase-loop-runtime/scripts/verify_qualified_agy_image.py --upstream-only
+        working-directory: phase-loop-runtime
+        run: uv run --locked python scripts/verify_qualified_agy_image.py --upstream-only
