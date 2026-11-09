@@ -86,7 +86,6 @@ def test_real_capture_mutations_refuse(v2_operator, material):
 def build_v2_attempt(operator, *, caller_context=None, secret=False):
     """Real local files and an offline provider; qualification is synthetic mechanics."""
     import copy
-    import sys
     import time
     from types import SimpleNamespace
     import rfc8785
@@ -96,7 +95,7 @@ def build_v2_attempt(operator, *, caller_context=None, secret=False):
     provider = Path(launch["executable_chain"][0]["path"]).with_name("codex")
     provider.write_text('import sys\ndata=sys.stdin.buffer.read()\nsys.stdout.buffer.write(b"")\n')
     provider.chmod(0o700)
-    interpreter = Path(sys.executable).resolve()
+    interpreter = Path("/usr/bin/python3").resolve()
     argv = [str(interpreter), str(provider)]
     template = dict(argv=argv, helpers=[dict(chain_index=0, argv_shift=1)], spawn_cwd=dict(namespace="workspace", path="."))
     Path(launch["template_path"]).write_text(json.dumps(template))
@@ -180,6 +179,21 @@ def test_v2_qualification_lifetime_is_rechecked(v2_operator, monkeypatch):
     assert recheck_launch_v2(attempt.capture, context=attempt.binding.context) == launch.Refused("launch_input_unbound")
     assert attempt.capture._closed
     launch.discard_admission(attempt.prepared)
+
+
+def test_wrapper_capture_rejects_writable_installation_ancestor(v2_operator):
+    from phase_loop_runtime.supervised_capture_v2 import _open_snapshot
+    directory = v2_operator.path.parent / "mutable-installation"
+    directory.mkdir(mode=0o700)
+    executable = directory / "interpreter"
+    executable.write_bytes(b"synthetic executable")
+    executable.chmod(0o700)
+    directory.chmod(0o770)
+    try:
+        with pytest.raises(_Refusal, match="launch_input_unbound"):
+            _open_snapshot(executable, 1024, trusted=True, executable=True)
+    finally:
+        directory.chmod(0o700)
 
 
 @pytest.mark.parametrize("mutated", [False, True], ids=["intact", "killed"])

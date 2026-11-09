@@ -557,7 +557,7 @@ def discard_admission(prepared: PreparedLaunch) -> None:
 def prepare_launch_v2(raw: bytes, *, binding, capture, attempt: AttemptBinding):
     """Admit only a public v2 record against an agreed, activated trusted binding."""
     from .supervised_capture_v2 import CapturedLaunch, recheck_launch_v2
-    from .supervised_contracts import ContractError
+    from .supervised_envelope_v2 import ContractError
     try:
         refuse_unwired_dependency_route("supervised-launch")
         _require(type(attempt) is AttemptBinding and type(capture) is CapturedLaunch
