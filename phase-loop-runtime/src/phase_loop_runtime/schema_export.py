@@ -1,30 +1,17 @@
-"""Canonical phase-loop closeout schema export (SCHEMA SL-1).
+"""Generate the declared phase-loop closeout JSON Schema and field list.
 
-The ONE canonical closeout shape is the nested :class:`PhaseLoopCloseout`
-dataclass (``models.py``). This module *derives* a declared JSON-Schema and a flat
-field-list FROM that dataclass — walking ``dataclasses.fields`` +
-``typing.get_type_hints`` and RECURSING into the nested sub-dataclasses
-(``PhaseLoopAutomation``/``Artifacts``/``Verification``/``Blocker``/``SourceBundle``/
-``SourceTruthImpact``/``SpecDeltaCloseout``). Scalar types, nested required-sets,
-nullable unions, and enums all come from the dataclass, so "single source of
-truth" is real: a dataclass change that isn't regenerated fails ``--check`` and the
-committed-artifact drift test.
+``build_schema`` walks ``models.PhaseLoopCloseout`` dataclass fields and resolved
+type hints, recursively handling nested dataclasses. Required top-level fields
+come from this module's ``CLOSEOUT_REQUIRED_NESTED_FIELDS`` (also consumed by the
+closeout diagnostic), plus ``schema``. The schema literal and terminal-status
+enum come from model constants. Nested required fields are the non-nullable
+annotations; nullable annotations allow null values.
 
-The generated artifact is committed at ``schemas/phase_loop_closeout.schema.json``
-and bundled as package-data; :func:`canonical_schema` resolves it via
-``importlib.resources`` (the post-DECOUPLE pattern, mirroring ``baml_modular``)
-so the bundled-artifact path works from a wheel-installed venv. :func:`check`
-builds the canonical schema *fresh* from the live dataclass, so a stale committed
-artifact cannot mask drift.
-
-``required`` semantics: a field is optional iff its resolved annotation is a union
-containing ``None`` AND it is not part of the closeout validator's mandatory set.
-The runtime's malformed-closeout validator (``closeout.py``) is the ground truth for
-the top-level required set; this module exposes that set as the single source the
-validator consumes, killing the duplicate hand-maintained tuple.
-
-Generation is deterministic (sorted keys, explicitly sorted lists, no volatile
-content) so the byte-stable artifact is a meaningful parity baseline.
+``canonical_schema`` reads the bundled
+``schemas/phase_loop_closeout.schema.json`` through package-resource resolution.
+``check`` generates the schema afresh and compares it with a supplied artifact.
+Sorted keys and required lists keep generation deterministic; regeneration is
+needed when the declared shape changes.
 """
 
 from __future__ import annotations

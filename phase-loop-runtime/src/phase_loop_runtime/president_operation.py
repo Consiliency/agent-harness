@@ -9,7 +9,8 @@ through -- the review operation ``public_board_review.v1``. Running a ruling thr
 review operation would hand the seat two contradictory terminal grammars (EC-HARDEN-5's
 laundering refusal), which is why this operation exists.
 
-``run_president_operation`` walks ``PRESIDENT_LADDER`` through ``invoke`` exactly as
+``run_president_operation`` uses the effective president ladder (including any invocation
+policy override) through ``invoke`` as
 ``panel_invoker.invoke_president`` does and binds the result to the authorization
 identity and to two digests:
 

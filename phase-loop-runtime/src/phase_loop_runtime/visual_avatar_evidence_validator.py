@@ -1,48 +1,19 @@
-"""Visual-avatar-evidence closeout validator (FAV, issue #91, Phase 4B).
+"""Validate declared visual renders at closeout (agent-harness#91, agent-harness#272).
 
-Closes the visible-media hole: a phase whose closeout produces avatar/browser
-media (an actual rendered avatar, camera/video capture surface, etc.) can
-today self-report ``verification_status=passed`` with nothing proving the
-rendered surface is not a black or blank frame. This validator raises a
-finding for exactly those phases.
+For a phase reporting ``verification_status=passed``, a truthy
+``visual_render_declared`` enables the evidence check. Without that declaration,
+media-path and plan-text heuristics can only produce a warn-severity advisory.
 
-Trigger contract (agent-harness#272, DECIDABLE BY CONSTRUCTION): the BLOCK
-decision reads ONLY the executor's DECLARED ``visual_render_declared`` bool
-(plus evidence validity once declared) -- nothing else. The two structural/
-NL heuristics this validator used to gate the block on directly --
-``models.avatar_media_surface_touched`` (an owned browser HTML fixture, or a
-file whose name indicates media rendering: ``getUserMedia``,
-``MediaStreamTrack``, ``getDisplayMedia``, a canvas/video/camera/session/
-track renderer, an avatar renderer) and ``models.avatar_visible_render_
-claimed`` (an explicit user-visible rendering claim in the plan text, e.g.
-"visible avatar", "renders in the browser/meeting UI", "browser call-in",
-"synthetic media"/"MediaStream target", "getUserMedia target") -- now feed
-ONLY a non-blocking advisory (``VISUAL_RENDER_UNDECLARED_SURFACE_CODE``,
-warn/info, posture-independent) via the shared
-``models.avatar_visual_evidence_advisory_applies`` predicate, when either
-fires but the phase never declared. Neither heuristic, alone or combined, can
-ever produce a block-class finding -- that closes the two known NL-parser
-edges (negation clause-scoping fail-open, Non-goals-nesting FP; see #272's
-design comment) below the block line, where they can no longer gate a merge.
+The declared path must resolve to an existing image inside the repo. Pixel stats
+are derived from the decoded image and checked for sufficient non-black coverage
+and a non-uniform range. Caller-supplied ``visual_evidence_observed`` values do not
+substitute for decoding. Video containers need an extracted image frame. A typed
+``visual_evidence_opt_out`` reason can satisfy the validator instead.
 
-When the contract is satisfied and the phase reports ``verification_status=
-passed``, it must attach a runner-owned visual artifact: an IMAGE path
-(``visual_evidence_path`` -- a screenshot/frame PNG, JPEG, GIF, BMP, or WEBP;
-see ``models.derive_visual_observation``) PLUS automated pixel observations
-(``visual_evidence_observed``, ``models.VisualEvidenceObservation``) strong
-enough to reject a black or uniform/blank frame (``non_black_pixels`` a
-meaningful fraction of the frame AND ``pixel_min != pixel_max``). Fix 4
-(agent-harness#91 round-6 CR): the decoder only handles IMAGE headers/pixel
-data -- a video CONTAINER (mp4/webm/...) is never decoded here. Decoding a
-representative frame out of a video artifact is a tracked follow-up, not
-claimed by this gate today; callers must attach an already-extracted image
-frame.
-
-Autonomy-first: ``block``-severity, so under the default
-``PHASE_LOOP_REVIEW=warn`` it is recorded and the loop continues; it blocks
-only on opt-in. The agent self-satisfies by attaching valid visual evidence or
-recording a typed opt-out reason (``visual_evidence_opt_out``) -- no human
-required.
+Missing/blank or undecodable evidence produces block-severity findings, downgraded
+under the default ``PHASE_LOOP_REVIEW=warn``. A missing optional image decoder is
+silent under warn/off and becomes a finding only under block posture. No human
+approval is required by this validator.
 """
 from __future__ import annotations
 

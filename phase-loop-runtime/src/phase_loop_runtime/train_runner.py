@@ -23,8 +23,9 @@ Safety invariants (enforced structurally, asserted in tests):
   2. **Draft-only** (P3): every ``publish_from_worktree`` call uses
      ``draft=True``.  P3 never merges.
   3. **Train state off .phase-loop/**: ledger_path is caller-supplied and must
-     pass ``_assert_not_phase_loop``; the coordinator never touches any repo's
-     ``.phase-loop/`` directory.
+     pass ``_assert_not_phase_loop``; the coordinator's train ledger stays outside repo
+     ``.phase-loop/`` directories. Per-repo execution and re-verification use
+     their own phase-loop state.
   4. **Resumable with upstream-change detection**: a partial run leaves prior
      nodes' draft PRs open and the failed node ``blocked`` in the ledger.
      Re-running re-reads both the ledger and live PR state; confirmed-open

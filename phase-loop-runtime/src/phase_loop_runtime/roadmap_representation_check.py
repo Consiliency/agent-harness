@@ -1,41 +1,16 @@
-"""Cross-representation consistency check for phase-plan roadmaps (agent-harness#375).
+"""Advisory consistency check for roadmap representations (agent-harness#375).
 
-``roadmap_lint`` validates only the STRUCTURED field (``**Depends on**``) — which is
-exactly why four rounds of review on ``phase-plans-v10.md`` each shipped a green lint
-over a document whose human-facing representations contradicted the structured graph
-(a freeze vs its criteria, a dependency vs its DAG, a count vs the list beneath it, a
-critical path vs the structured edges). A validator that cannot see the representations
-humans read is not validating the document.
+Uses ``roadmap_lint._extract_phases`` to read the structured ``**Depends on**``
+authority. Within the fenced ``## Phase Dependency DAG`` section it checks
+recognized arrows, parallel roots, serial-edge counts, and critical-path claims;
+it also checks the root-count sentence in Execution Notes.
 
-This module treats each phase's ``**Depends on**`` block as the AUTHORITY and diffs it
-against the representations a human actually reads inside the ``## Phase Dependency DAG``
-fence and the ``## Execution Notes`` root count:
+Parsing is limited to the supported text formats and known phase aliases. Claimed
+edges must exist in the authority graph; absence of an edge from a representation
+is not itself an error. The checks do not establish consistency of arbitrary
+prose or guarantee freedom from false positives. Findings are for review.
 
-  * the ASCII DAG arrows,
-  * the ``Parallel roots`` list,
-  * the ``Serial edges`` list (and its self-declared count),
-  * the ``Critical path`` chain(s),
-  * the "N phases are independent roots" sentence in Execution Notes.
-
-Design for ZERO false positives by construction (not an allowlist — an allowlist would
-blind the tool in the absorbed sub-graph, which is exactly where a future real
-inconsistency would hide):
-
-  * arrows are read ONLY inside the fenced DAG block, never from surrounding prose;
-  * an edge is emitted only when BOTH operands are known phase aliases and differ, so
-    box-drawing glyphs, comments, and continuation lines never manufacture an edge;
-  * the primary direction is "every edge a representation CLAIMS must be backed by the
-    structured field" — the reverse ("a structured edge missing from a list") is noisy
-    (continuation lines, absorbed-chain scoping) and is intentionally NOT asserted.
-
-It is ADVISORY: standalone, not wired into the fatal ``lint_roadmap_text`` gate, because
-every superseded roadmap (v1..v9, convergence-v1) also carries a DAG section that no one
-will reconcile, and ``roadmap_lint`` feeds the skill bundle and CI. Wiring it in after
-the corpus is reconciled is tracked as agent-harness#395. Output is meant to be REVIEWED,
-not auto-applied.
-
-Zero external deps (stdlib only). Reuses ``roadmap_lint._extract_phases`` for the
-authority parse so the structured graph has a single source of truth.
+This stdlib module runs standalone and is not called by ``lint_roadmap_text``.
 """
 
 from __future__ import annotations
