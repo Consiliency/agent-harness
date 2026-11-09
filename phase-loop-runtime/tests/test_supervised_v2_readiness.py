@@ -98,6 +98,19 @@ def test_metadata_json_is_strict(raw):
         evidence.strict_json(raw)
 
 
+def test_negative_assessment_retains_observed_scope(history, monkeypatch):
+    repo, _tested, stamp, _commit = history
+    receipt = repo / "invalid-receipt.md"
+    receipt.write_text('```json\n{"raw_payload":"inert-private-fixture"}\n```\n')
+    output = repo / "assessment.json"
+    monkeypatch.setattr(evidence.sys, "argv", ["evidence", "--repo", str(repo), "--receipt", str(receipt), "--output", str(output)])
+    assert evidence.main() == 0
+    result = json.loads(output.read_bytes())
+    assert result["byte_pin_authority"] is False and result["refusal"] == "evidence_invalid"
+    assert result["assessed_head"] == stamp and result["content_identity"] == evidence.content_identity(repo, stamp)
+    assert "inert-private-fixture" not in output.read_text()
+
+
 @pytest.mark.parametrize("outcome", ["failure", "error", "skipped", None])
 def test_producer_results_require_executed_passes(tmp_path, outcome):
     files = []

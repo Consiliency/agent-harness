@@ -498,6 +498,11 @@ def main():
     except (EvidenceRefused, OSError, ValueError, TypeError, KeyError, RecursionError, ET.ParseError) as error:
         result = dict(verification_status="blocked", byte_pin_authority=False, blocker_class="upstream_phase_unmet",
                       human_required=False, refusal=str(error) if isinstance(error, EvidenceRefused) else "evidence_invalid")
+        try:
+            observed = git(args.repo, "rev-parse", "HEAD").decode().strip()
+            result.update(assessed_head=observed, content_identity=content_identity(args.repo, observed))
+        except EvidenceRefused:
+            result["scope_status"] = "unverified"
     args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     return 0
 
