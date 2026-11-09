@@ -182,7 +182,7 @@ def assessment(history, monkeypatch):
     def row(node, case_id):
         return dict(test_node_id=node, case_or_control_id=case_id, resource_digests=resources,
                     production_witnesses=["phase_loop_runtime.supervised_envelope_v2.validate_v2_admission"], outcome="passed",
-                    owner="CLOSEOUT", source_pointer=node.split("::", 1)[0], host="ai", runner_artifact_sha256="c" * 64, runner_artifact_ref="results.xml", runner_run_id="offline-fixture", tested_head=tested)
+                    owner="CLOSEOUT", source_pointer=node.split("::", 1)[0], host="ai", runner_artifact_sha256="c" * 64, runner_artifact_ref="results.xml", runner_run_id="offline-fixture", runner_job_id="fixture-job", tested_head=tested)
     cases = evidence.strict_json(bundle.resource_bytes("conformance/envelope.v2.vectors.json"))["cases"]
     for case in cases:
         groups["intake_results"].append(row("tests/test_supervised_contracts.py::test_v2_published_schema_only[" + case["id"] + "]", case["id"]))
@@ -199,7 +199,7 @@ def assessment(history, monkeypatch):
     record = dict(schema="agent-harness.supervised-closeout.v2", byte_pin_authority=False, publisher_status="provisional",
         input_artifact_sha256=V2_INPUT_ARTIFACT_SHA256, tested_head=tested, content_identity=evidence.content_identity(repo, tested),
         source_hashes=hashes, runner_stamp=dict(source_tree_digest=sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest(),
-            host="ai", observed_commit=tested, run_id="offline-fixture", observed_utc="2026-11-09T00:00:00Z"), producer_results=groups, schema_obligations=["named-obligation"],
+            host="ai", observed_commit=tested, run_id="offline-fixture", job_id="fixture-job", observed_utc="2026-11-09T00:00:00Z"), producer_results=groups, schema_obligations=["named-obligation"],
         obligation_results=evidence.obligation_results(repo, groups),
         external_evidence_intake=dict(controller_case_ids=sorted(case["id"] for case in apply_cases), status="upstream_phase_unmet"),
         spec_delta_closeout=dict(schema="spec_delta_closeout.v1", decision="canonical_spec_update", redaction_posture="metadata_only"), hosted_evidence={})

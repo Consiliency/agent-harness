@@ -163,7 +163,7 @@ def _group(filename):
     return "lifecycle_results"
 
 
-def collect_producer_results(paths, *, run_id, tested_head, resources):
+def collect_producer_results(paths, *, run_id, tested_head, resources, job_id="offline-fixture"):
     groups = {group: [] for group in GROUPS}
     seen = set()
     for path in paths:
@@ -184,7 +184,7 @@ def collect_producer_results(paths, *, run_id, tested_head, resources):
             row = dict(test_node_id=node, case_or_control_id=properties.get("contract_case_id", case.attrib["name"]),
                        resource_digests=resources, production_witnesses=witnesses, outcome="passed",
                        runner_artifact_sha256=artifact_digest, runner_artifact_ref=path.name,
-                       runner_run_id=run_id, tested_head=tested_head, owner="CLOSEOUT",
+                       runner_run_id=run_id, runner_job_id=job_id, tested_head=tested_head, owner="CLOSEOUT",
                        source_pointer=node.split("::", 1)[0], host="ai")
             if "contract_diagnostics" in properties:
                 row["contract_diagnostics"] = strict_json(properties["contract_diagnostics"])
@@ -259,8 +259,9 @@ def verify_offline(repo, record):
                      "obligation_results", "external_evidence_intake", "spec_delta_closeout", "hosted_evidence"}
     require(set(record) == required_keys, "receipt_invalid")
     stamp = record["runner_stamp"]
-    require(set(stamp) == {"host", "observed_commit", "run_id", "observed_utc", "source_tree_digest"}, "runner_stamp_invalid")
+    require(set(stamp) == {"host", "observed_commit", "run_id", "job_id", "observed_utc", "source_tree_digest"}, "runner_stamp_invalid")
     require(re.fullmatch(r"[A-Za-z0-9._-]{1,100}", stamp["run_id"]) is not None
+            and re.fullmatch(r"[A-Za-z0-9._-]{1,100}", stamp["job_id"]) is not None
             and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z", stamp["observed_utc"]) is not None, "runner_identity_invalid")
     require(set(record["hosted_evidence"]) <= {"publication_run_id", "gate_a_run_id", "verifier_run_id", "pull_request"}
             and all(value is None or type(value) is int and value > 0 for value in record["hosted_evidence"].values()), "hosted_identity_invalid")
@@ -280,7 +281,7 @@ def verify_offline(repo, record):
     for group, rows in groups.items():
         for row in rows:
             expected_fields = {"test_node_id", "case_or_control_id", "resource_digests", "production_witnesses", "outcome",
-                               "runner_artifact_sha256", "runner_artifact_ref", "runner_run_id", "tested_head", "owner", "source_pointer", "host"}
+                               "runner_artifact_sha256", "runner_artifact_ref", "runner_run_id", "runner_job_id", "tested_head", "owner", "source_pointer", "host"}
             require(expected_fields <= set(row) <= expected_fields | {"contract_diagnostics", "supported_route", "auxiliary_starts", "chain_starts"}, "producer_row_invalid")
             node = row["test_node_id"]
             require(row["owner"] == "CLOSEOUT" and row["host"] == "ai" and row["source_pointer"] == node.split("::", 1)[0], "producer_identity_invalid")
@@ -292,7 +293,8 @@ def verify_offline(repo, record):
             nodes.add(node)
             require(row["resource_digests"] == resources and row["tested_head"] == record["tested_head"], "producer_identity_invalid")
             require(re.fullmatch(r"[0-9a-f]{64}", row["runner_artifact_sha256"]) is not None
-                    and row["runner_run_id"] == record["runner_stamp"]["run_id"], "producer_artifact_invalid")
+                    and row["runner_run_id"] == record["runner_stamp"]["run_id"]
+                    and row["runner_job_id"] == record["runner_stamp"]["job_id"], "producer_artifact_invalid")
     cases = strict_json(bundle.resource_bytes("conformance/envelope.v2.vectors.json"))["cases"]
     stages = strict_json(bundle.resource_bytes("admitted-launch-envelope.v2.schema.json"))["x-evaluation-order"]["stages"]
     rows = {row.get("case_or_control_id"): row for row in groups["admission_results"] if "contract_diagnostics" in row}

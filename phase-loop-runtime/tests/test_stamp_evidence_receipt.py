@@ -1,4 +1,4 @@
-"""Receipt stamping preserves observations and uses existing receipt validators."""
+"""Stamp fresh synthetic receipts while preserving their observations."""
 import copy
 import importlib.util
 import json
@@ -6,31 +6,36 @@ from hashlib import sha256
 from pathlib import Path
 
 import pytest
-import test_supervised_launch_receipt as envelope
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/stamp_evidence_receipt.py"
 pytestmark = pytest.mark.skipif(not SCRIPT.exists(), reason="repository script absent in wheel")
 
 
-def test_stamp_roundtrip_and_stale_binding(tmp_path, monkeypatch):
+def test_stamp_roundtrip_and_stale_binding(tmp_path):
     spec = importlib.util.spec_from_file_location("receipt_stamper", SCRIPT)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    record = envelope.read_receipt(envelope.RECEIPT)
-    original = copy.deepcopy(record)
-    for relative in record["source_hashes"]:
+    sources = {"fixture/producer.py": b"synthetic producer\n", "fixture/control.json": b'{"fixture":true}\n'}
+    for relative, data in sources.items():
         path = tmp_path / relative
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes((envelope.REPO / relative).read_bytes())
+        path.write_bytes(data)
+    hashes = {relative: sha256(data).hexdigest() for relative, data in sources.items()}
+    record = dict(schema="agent-harness.synthetic-stamp-test.v1", authority="synthetic_fixture_only",
+        producer_outcomes={"synthetic-control": "passed"}, byte_pin_authority=False,
+        source_hashes=hashes, runner_stamp=dict(observed_utc="2026-11-09T00:00:00Z",
+            source_tree_digest=sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()))
+    original = copy.deepcopy(record)
     receipt = tmp_path / "receipt.md"
-    receipt.write_text(envelope.RECEIPT.read_text())
+    receipt.write_text("# Synthetic stamp fixture\n\n```json\n" + json.dumps(record, indent=2) + "\n```\n")
     before = receipt.read_text()
     pinned = tmp_path / next(iter(record["source_hashes"]))
     pinned.write_bytes(pinned.read_bytes() + b"\n")
     module.stamp(receipt, repo=tmp_path)
-    monkeypatch.setattr(envelope, "REPO", tmp_path)
-    stamped = envelope.read_receipt(receipt)
-    envelope.validate_receipt(stamped)
+    stamped = json.loads(receipt.read_text().split("```json\n", 1)[1].split("\n```", 1)[0])
+    def validate_bindings():
+        assert stamped["source_hashes"] == {relative: sha256((tmp_path / relative).read_bytes()).hexdigest() for relative in sources}
+    validate_bindings()
     for key in set(original) - {"source_hashes", "runner_stamp"}:
         assert stamped[key] == original[key]
     digest = sha256(json.dumps(stamped["source_hashes"], sort_keys=True).encode()).hexdigest()
@@ -46,7 +51,7 @@ def test_stamp_roundtrip_and_stale_binding(tmp_path, monkeypatch):
     assert receipt.read_bytes() == first
     pinned.write_bytes(pinned.read_bytes() + b"changed")
     with pytest.raises(AssertionError):
-        envelope.validate_receipt(stamped)
+        validate_bindings()
     pinned.unlink()
     with pytest.raises(FileNotFoundError):
         module.stamp(receipt, repo=tmp_path)

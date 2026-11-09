@@ -409,6 +409,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
@@ -417,7 +418,13 @@ jobs:
       - name: Install locked source verification environment
         run: uv sync --project phase-loop-runtime --group test --extra visual --locked
       - name: Verify supervised v2 sources
-        run: bash phase-loop-runtime/scripts/verify_supervised_v2.sh all
+        run: bash phase-loop-runtime/scripts/verify_supervised_v2.sh all --junitxml=/tmp/supervised-v2.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: supervised-v2-producers-${{ github.run_id }}
+          path: /tmp/supervised-v2.xml
+          if-no-files-found: error
 
   pytest:
     name: pytest (py${{ matrix.python-version }})
