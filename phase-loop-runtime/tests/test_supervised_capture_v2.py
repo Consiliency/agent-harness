@@ -196,6 +196,28 @@ def test_wrapper_capture_rejects_writable_installation_ancestor(v2_operator):
         directory.chmod(0o700)
 
 
+def test_offline_interpreter_candidates_are_classified(request):
+    import os
+    import sys
+    from phase_loop_runtime.supervised_capture_v2 import _open_snapshot
+    outcomes = {}
+    for name, path in (("runner_managed", Path(sys.executable).resolve()), ("system", Path("/usr/bin/python3").resolve())):
+        try:
+            fd, _data, _identity = _open_snapshot(path, 64 * 1024 * 1024, trusted=True, executable=True)
+        except _Refusal as error:
+            trace = error.__traceback__
+            location = None
+            while trace is not None:
+                if trace.tb_frame.f_code.co_name == "_open_snapshot": location = trace.tb_lineno
+                trace = trace.tb_next
+            outcomes[name] = dict(eligible=False, refusal=str(error), guard_line=location)
+        else:
+            os.close(fd)
+            outcomes[name] = dict(eligible=True)
+    request.node.user_properties.append(("offline_interpreter_eligibility", json.dumps(outcomes, sort_keys=True)))
+    assert outcomes["system"]["eligible"]
+
+
 @pytest.mark.parametrize("mutated", [False, True], ids=["intact", "killed"])
 def test_v2_consumption_recheck_source_control(v2_operator, mutated):
     import inspect
