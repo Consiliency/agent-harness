@@ -119,7 +119,7 @@ def test_default_roots_agree():
 
 @pytest.mark.parametrize("phase", ["queued", "running", "terminal", "event"])
 @pytest.mark.parametrize("operation", ["write", "fsync"])
-def test_real_writer_fault_stops_journal_calls(worker_case, monkeypatch, phase, operation, prestart=False):
+def test_real_writer_fault_stops_journal_calls(worker_case, monkeypatch, phase, operation, prestart=False, exception=OSError):
     case = worker_case
     original_open = rs.open_writer
     original_io = getattr(os, operation)
@@ -145,7 +145,7 @@ def test_real_writer_fault_stops_journal_calls(worker_case, monkeypatch, phase, 
                             if operation == "fsync":
                                 original_io(fd, *rest)
                             failed.append(True)
-                            raise OSError("synthetic journal I/O")
+                            raise exception("synthetic journal I/O")
                         return original_io(fd, *rest)
                     with pytest.MonkeyPatch.context() as patch:
                         patch.setattr(os, operation, fault)
@@ -539,7 +539,7 @@ def test_after_audit_error_and_incomplete(worker_case, monkeypatch, incomplete=F
 WORKER_CONTROLS = {
     "consume-before-reserve": ('inputs = consume_admission(prepared)', 'inputs = prepared.view.inputs', "consumed"),
     "reservation-failure": ('if isinstance(reservation, journal.JournalRefused):', 'if False and isinstance(reservation, journal.JournalRefused):', "reservation"),
-    "reservation-before-spawn": ('reservation = journal.reserve_attempt(root, jid,', 'run_bounded_capture(CaptureRequest(identity.attempt_id, inputs.argv, Path(inputs.workspace), inputs.timeout, inputs.instruction, settings.proposal_cap, worker_child_environment(settings.environment_allow)), before_spawn=lambda: None, cancel=threading.Event())\n    reservation = journal.reserve_attempt(root, jid,', "order"),
+    "reservation-before-spawn": ('reservation = journal.reserve_attempt(root, jid,', 'run_bounded_capture(CaptureRequest(identity.attempt_id, inputs.argv, Path(inputs.workspace), inputs.timeout, inputs.instruction, settings.proposal_cap, worker_child_environment(settings.environment_allow)), before_spawn=lambda: None, cancel=threading.Event())\n        reservation = journal.reserve_attempt(root, jid,', "order"),
     "running-before-spawn": ('writer.call("state", "running", worker_invocations=1)', 'None', "order"),
     "rule-w-stop": ('if self.failed:\n            return None', 'if False and self.failed:\n            return None', "writer"),
     "evidence-event": ('writer.call("event", "attempt evidence bound", refs=', 'writer.call("event", "proposal withheld", refs=', "bindings"),
@@ -879,3 +879,51 @@ def test_missing_prespawn_identity(worker_case, monkeypatch, field):
     monkeypatch.setattr(worker, "run_bounded_capture", changed)
     result = run(case)
     assert result.refusal == field + "_changed" and result.worker_invocations == 0
+
+
+@pytest.mark.parametrize("kind", ["workspace", "target", "references", "mode", "symlink"])
+def test_state_root_refusal_has_no_attempt_effects(worker_case, kind):
+    case = worker_case
+    if kind in ("workspace", "target", "references"):
+        case.state = case.root / kind
+    elif kind == "mode":
+        case.state.mkdir(mode=0o755)
+    else:
+        actual = case.root / "actual-state"
+        actual.mkdir(mode=0o700)
+        case.state.symlink_to(actual, target_is_directory=True)
+    prior = set(case.state.iterdir())
+    result = run(case)
+    assert result.refusal == "state_root_unsafe" and result.worker_invocations == 0
+    assert set(case.state.iterdir()) == prior
+
+
+@pytest.mark.parametrize("kind", ["refusal", "exception"])
+def test_open_writer_failure_preserves_reservation(worker_case, monkeypatch, kind):
+    def unavailable(*args, **kwargs):
+        if kind == "exception":
+            raise RuntimeError("synthetic writer unavailable")
+        return rs.JournalRefused("synthetic_writer_unavailable")
+    monkeypatch.setattr(rs, "open_writer", unavailable)
+    result = run(worker_case)
+    assert result.refusal == "journal_unavailable" and not result.journal_complete and result.journal_anchor is None
+    assert not (worker_case.state / "evidence").exists() and not (worker_case.state / "launchers").exists()
+    root = rs.open_journal_root(worker_case.state / "journal", create=False)
+    assert rs.resolve_run(root, worker_case.envelope["run_id"]) == (worker_case.envelope["attempt_id"],)
+
+
+@pytest.mark.parametrize("exception", [RuntimeError, KeyboardInterrupt, SystemExit])
+def test_raised_writer_exception_stops_after_landed_append(worker_case, monkeypatch, exception):
+    test_real_writer_fault_stops_journal_calls(worker_case, monkeypatch, "running", "fsync", exception=exception)
+
+
+@pytest.mark.parametrize("exception", [RuntimeError, KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize("site", ["reserve_attempt", "open_writer"])
+def test_reservation_and_writer_exception_boundary(worker_case, monkeypatch, exception, site):
+    def unavailable(*args, **kwargs):
+        raise exception("synthetic journal boundary")
+    monkeypatch.setattr(rs, site, unavailable)
+    result = run(worker_case)
+    assert result.refusal == "journal_unavailable" and not result.journal_complete
+    assert result.worker_invocations == 0 and result.journal_anchor is None
+    assert not (worker_case.state / "evidence").exists() and not (worker_case.state / "launchers").exists()

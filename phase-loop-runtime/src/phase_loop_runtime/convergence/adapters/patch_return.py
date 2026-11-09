@@ -323,7 +323,7 @@ class _Writer:
                     self.failed = True
                 return None
             return result
-        except Exception:
+        except BaseException:
             self.failed = True
             return None
 
@@ -331,7 +331,7 @@ class _Writer:
         if not isinstance(self.writer, journal.JournalRefused):
             try:
                 self.writer.close()
-            except Exception:
+            except BaseException:
                 self.failed = True
 
 
@@ -371,14 +371,17 @@ def run_patch_return(prepared, *, config_bytes: bytes, state_root: Path,
         return refused(root.code)
     jid = journal.AttemptIdentity(identity.assignment_digest, identity.envelope_digest,
                                   identity.run_id, identity.attempt_id)
-    reservation = journal.reserve_attempt(root, jid,
-        units=journal.Units(identity.target_unit_ids, identity.readonly_neighbor_unit_ids, identity.snapshot_ref),
-        launch_digest=identity.launch_digest, caller_context_sha256=context_digest)
+    try:
+        reservation = journal.reserve_attempt(root, jid,
+            units=journal.Units(identity.target_unit_ids, identity.readonly_neighbor_unit_ids, identity.snapshot_ref),
+            launch_digest=identity.launch_digest, caller_context_sha256=context_digest)
+    except BaseException:
+        return refused("journal_unavailable", False)
     if isinstance(reservation, journal.JournalRefused):
         return refused(reservation.code)
     try:
         writer = _Writer(journal.open_writer(root, reservation))
-    except Exception:
+    except BaseException:
         return refused("journal_unavailable", False)
     writer.call("state", "queued", worker_invocations=0)
     cancel = cancel if cancel is not None else threading.Event()
