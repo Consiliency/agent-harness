@@ -50,11 +50,11 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "84ffb0b848b8d0bd73dafd2cfb27121b520f3830381cd4f05ce6e0ae07175ae6",
-      "raw_receipt_sha256": "706c1e616783aebec538a77d330643fed1188f9a9ec27cfcfca3bb439f85baec",
+      "raw_receipt_sha256": "1d6858928810ef7a55adbff20b109c6f8ad5448acd33efa52bb11379b336f5d6",
       "record_sha256": {
-        "broker": "935b556dd86b496defb9e279e95887c443f83da75b37e3d4aa475afbd4ee13ee",
-        "monitoring": "3e06239e0311aaecc1c54a58d7f0ea479eab63577e4fe130318c58164bb78ff4",
-        "observer": "9928eb298de8f19eeb48b18dad7e728e1809d9a4f1a173af53d00b7fbed5b8ec",
+        "broker": "3e51bf2e73d3a199a4261e92af089a50a3f63b551dc775648724c0a6e2842c99",
+        "monitoring": "a2f8a70bf664422b13139c4ba9517230584517e00788a4cffa57c09f22a7a3bd",
+        "observer": "73f924d6898cd6490cead79f5735174f71efec18d258903ab0193173c255ecca",
         "result": "38ccc6031e6520bae3694528da32ba0af366bb3cc8843dd7354bd3d71431c448"
       },
       "request_digests": {
@@ -111,12 +111,12 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "84ffb0b848b8d0bd73dafd2cfb27121b520f3830381cd4f05ce6e0ae07175ae6",
-      "raw_receipt_sha256": "4a6a74d63064cba67cdd2054893c69b59e2ca7043e04fb1664f0d5410cbc6ed8",
+      "raw_receipt_sha256": "27b8507693c7ccff02f007076895658642427a74bd1a61e7f5d32600b507f62a",
       "record_sha256": {
-        "broker": "e8206afc8c188cb311866773658bce97e2a420ce973f743f3fcd8e5caf79dbe7",
-        "monitoring": "f5ec7484349c60ab68f0f059e4d4e3e69fff93cde3ba91bd9f35c3cf05f9f9f4",
-        "observer": "423174161747eb05d656a57f5ddeb07a1d4f3c1ee3bef99193130404e4923fb3",
-        "result": "d0b78770cf6f49170089fd9ea627787c50d909548c3512b409a97ca599f6cd28"
+        "broker": "183cd27cee641b67d499ee9be1a4b795f4bc64b5b6c6ca461fe21a7ff286b155",
+        "monitoring": "978533bab08b7c98a86e4c7c2eef0877519e798022f1822cf14fdb30c2979042",
+        "observer": "f9b6c28410d9044eab0100ec21f35e5953f197ad5b50144794ee74ba28f61df0",
+        "result": "c9420fc31291a123447253f2da90cb561d4c6d7f9d9d3cb30fcc19ab71847ec8"
       },
       "request_digests": {
         "artifact_sha256": "125bbbd021794e015483823d7231c3e9fca0715222d0617278d134f8a065a3b5",
@@ -172,11 +172,11 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "84ffb0b848b8d0bd73dafd2cfb27121b520f3830381cd4f05ce6e0ae07175ae6",
-      "raw_receipt_sha256": "a7f6e13312bed54a5c0dee872fa34275d443def88bca9b204124d5dfe2324a48",
+      "raw_receipt_sha256": "aa02753cc3b53f283e8c39c3e3cc3ce119590333596e1838ba168bef85a93cf2",
       "record_sha256": {
         "broker": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
-        "monitoring": "5a021a962c9828aa68980fcae1e73fe04f2767d8d0b5e1b41c2751cecb7c4fdc",
-        "observer": "041bc8564fc647a8e2a666bd467d625bc92b045b0d40fdda827d3d83045707b8",
+        "monitoring": "514ef4d9d16f1f7f98f429bb015edb73c52a090913e65abaea1da96b1b476d00",
+        "observer": "f6819e1e11a015aebee4b8c3b74d1f09235540c7e86928c01f2108b64aee8e2b",
         "result": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
       },
       "request_digests": {
@@ -399,6 +399,8 @@
     "route_log.py": "7e85afc23ffdb3a3849c030647c542a7e819cb85f758b42d1b952cfd16045116",
     "route_policy/__init__.py": "4d99e706077aff6c8242c0b7b35b8988ea215f3a843a92b22a7560e8f3312ab0",
     "rule_enforcement.py": "8c6381daf2b8c8241dc1a7b634c05a0562fef56f9d1d3b5cfda4f9e1ce8dcb0e",
+    "run_status.py": "96321a8bc16b7390eda1312a238a0b430530d3b4d242441c44dc4d979ed13e37",
+    "run_status_projection.py": "914b2c242859909232dd4c22ead7ff71a7f2d93a262e879177520b318fe9381e",
     "runner.py": "68184ca11907dc96c34f1dfcea70bfd6dda59d827a2c585c066ffe0034e68bcc",
     "runtime_paths.py": "d44eee38190c8a28eb0e0967c475a1ee18062a968cd2656c5d7e1648b2911b72",
     "runtime_projection.py": "a01e299bb7c4713fee2a6f49ebb97fc745027b81206422f8efc8ad947f0150a3",
