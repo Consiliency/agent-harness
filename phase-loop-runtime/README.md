@@ -251,6 +251,27 @@ stdout contains only the redacted ledger binding. Capture requires exactly one
 resolved Gemini seat and retains the two staged review inputs using descriptor
 relative, no-follow writes. A normal board has no new output field or capture work.
 
+## Placement process boundary (`agent-harness-placement`)
+
+`agent-harness-placement --client agent-harness|agent-toolkit reserve|release|reap|version`
+is the JSON process boundary for placement reservations (v13 PLACECLI). It speaks placement
+process protocol v1, which ships as
+`src/phase_loop_runtime/contracts/placement/process-v1.schema.json`, and reads
+one request on stdin. It writes one response line on stdout and exits 0, 10, 20 or 70.
+
+`--client` alone selects the operator configuration under
+`~/.config/agent-harness/placement/`, the certificate OU and the inventory. Live routes stay
+disabled: no production OpenShell backend is registered and E2B is off.
+
+The full reference is `docs/placement-process-cli.md`. It covers:
+
+- messages and exit classes;
+- configuration and `config_sha256`;
+- provider refusal and the effective-egress digest;
+- barriers and caller-scoped reap;
+- local headroom and caps readiness;
+- the credential-proxy bridge.
+
 ## Workflow skills bundle
 
 The runtime also installs the harness-neutral workflow-skills bundle. The skill

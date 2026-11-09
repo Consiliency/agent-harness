@@ -1106,6 +1106,12 @@ def build_parser() -> argparse.ArgumentParser:
               "recorded."),
     )
     placement_sub.add_argument("placement_action", choices=("reap",))
+    # v13 PLACECLI: with --client, the same caller-scoped service `agent-harness-placement
+    # --client CLIENT reap` runs, in process, over that client's inventory only.
+    placement_sub.add_argument("--client", dest="placement_client", default=None,
+                               choices=("agent-harness", "agent-toolkit"),
+                               help=("Reap one placement client's inventory through the "
+                                     "placement service instead of the legacy lease journal."))
     # publication-mode (agent-harness#1392): the interactive execute-phase path's
     # equivalent of --closeout-mode. Read-only; prints the mode and its required action.
     publication_mode_sub = subparsers.add_parser(
@@ -2893,10 +2899,21 @@ def _print_composition_refusal(args: argparse.Namespace, code: str, detail: str,
 
 
 def _placement_command(args: argparse.Namespace) -> int:
-    """`placement reap`: run the lease journal's reaper for the configured backends."""
+    """`placement reap`: run the lease journal's reaper for the configured backends, or with
+    ``--client`` the placement service's caller-scoped reap for that client's inventory."""
     import threading
 
     from . import placement_lease, sandbox_placement, sandbox_policy
+
+    client = getattr(args, "placement_client", None)
+    if client is not None:
+        from .placement_cli import legacy_reap
+
+        try:
+            return legacy_reap(client)
+        except (OSError, sandbox_placement.LifecycleError):
+            print("placement reap: failed", file=sys.stderr)
+            return 1
 
     try:
         schemes = {root.scheme for root in sandbox_policy.candidate_roots()}

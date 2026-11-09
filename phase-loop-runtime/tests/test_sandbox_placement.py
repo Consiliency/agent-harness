@@ -2160,3 +2160,54 @@ def test_interrupt_between_worker_acquires_returns_group_permit(monkeypatch):
     assert calls._permits.acquire(blocking=False)
     assert not calls._permits.acquire(blocking=False)
     calls._permits.release()
+
+
+# ----------------------------------------------------------------------------------------
+# v13 PLACECLI: the reservation-only exit of the same walk.
+# ----------------------------------------------------------------------------------------
+
+def test_the_reservation_only_exit_stops_after_admission(tmp_path, monkeypatch):
+    import threading
+
+    from phase_loop_runtime import sandbox_placement as placement
+    from test_placement_driver import FarSide
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    backend = FarSide("rsv", None)
+    placement.register_backend("rsv", backend)
+    sealed = []
+    try:
+        root = sandbox_policy.candidate_roots([("ai", "rsv://ai.invalid:7/stage")])[0]
+        request = placement.PlacementRequest("leg", "round", "", "", 600.0,
+                                             placement.EgressNeeds(), workload="qualification")
+        decision = placement.place(
+            [root], "none", None, lambda _root: request, placement_lease.open_lease,
+            preflight=lambda: None, seal=None, driver_enabled=False,
+            cancelled=threading.Event(), reserve_only=True)
+        assert decision.outcome == "reserved" and decision.code is None
+        assert decision.trail[-1] == {"rung": "ai", "class": "admitted", "code": None}
+        held = decision.reservation
+        assert held.label == "ai" and held.backend is backend and held.lease.held
+        assert not {"commit", "execute", "wait"} & set(backend.calls) and sealed == []
+        assert held.lease.lease_id in backend.held
+        held.lease.detach()
+        with pytest.raises(ValueError):
+            placement.place([root], "none", None, lambda _root: request, placement_lease.open_lease,
+                            preflight=lambda: None, seal=None, driver_enabled=True,
+                            cancelled=threading.Event())
+    finally:
+        placement._REGISTRY.pop("rsv", None)
+        placement._BACKEND_CODES.pop("rsv", None)
+
+
+def test_pi_runner_is_a_request_workload_only_through_the_lifecycle_mapping():
+    from phase_loop_runtime import sandbox_placement as placement
+
+    with pytest.raises(ValueError):
+        placement.PlacementRequest("leg", "round", "", "", None, placement.EgressNeeds(),
+                                   workload="pi-runner")
+    mapped = placement.PlacementRequest("leg", "round", "", "", None, placement.EgressNeeds(),
+                                        workload="pi-runner", _mapping=placement._LIFECYCLE_SEAL)
+    assert mapped.workload == "pi-runner"
+    with pytest.raises(ValueError):
+        placement.ExecSpec("pi-runner", b"", None, None, 0)

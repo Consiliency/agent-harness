@@ -54,6 +54,17 @@
         "plans/evidence/supervised-worker/JOURNAL.md",
         "CHANGELOG.md"
       ]
+    },
+    {
+      "surface": "placement-process-cli",
+      "decision": "docs_updated",
+      "reason": "PLACECLI SL-3 documents the agent-harness-placement process boundary: messages, exit classes and the client flag; the operator configuration and config_sha256; provider refusal and the effective-egress digest with the v2 bare-hex spelling (P-S2); barriers, replay and caller-scoped reap; local and remote Pi policies; per-host headroom defaults; fail-closed PSI and caps readiness, including the unreadable-caps behavior; the credential-proxy bridge; and the toolkit cutover conditions.",
+      "evidence": [
+        "plans/phase-plan-v13-PLACECLI.md#sl-3--process-cli-inventories-documentation-and-evidence-reducer",
+        "docs/placement-process-cli.md",
+        "phase-loop-runtime/README.md",
+        "CHANGELOG.md"
+      ]
     }
   ]
 }

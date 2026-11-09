@@ -15018,6 +15018,58 @@
             }
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-11-09T17:58:05Z",
+          "by": "claude-execute-phase",
+          "metadata": {
+            "branch": "t3/v13-placecli",
+            "lanes": [
+              "SL-0",
+              "SL-1",
+              "SL-2",
+              "SL-3"
+            ],
+            "publication": "draft Consiliency/agent-harness#1971; coordinator merges after CLOSEOUT and an independent review",
+            "verification_host": "ai"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-11-09T18:11:12Z",
+          "by": "claude-execute-phase",
+          "metadata": {
+            "authority": "synthetic_fixture_only",
+            "branch": "t3/v13-placecli",
+            "dirty_worktree_summary": "phase-owned lifecycle metadata only; no unowned changes",
+            "hosted_ci": "pending",
+            "if_gates_produced": [
+              "IF-0-PLACECLI-1",
+              "IF-0-PLACECLI-2"
+            ],
+            "issue_dispositions": [],
+            "issue_inventory": [],
+            "merge_authority": "coordinator; merges after v12 CLOSEOUT and an independent review",
+            "runtime_input_commit": "aa96562188ab89cbe65e99000dd84eb71a37a9b0",
+            "spec_delta_closeout": {
+              "decision": "canonical_spec_update",
+              "downstream_handling": "none",
+              "evidence_paths": [
+                "plans/evidence/placement/PLACECLI.md"
+              ],
+              "redaction_posture": "metadata_only",
+              "schema": "spec_delta_closeout.v1",
+              "target_surfaces": [
+                "phase-loop-runtime/src/phase_loop_runtime/contracts/placement/process-v1.schema.json",
+                "docs/placement-process-cli.md",
+                "phase-loop-runtime/README.md"
+              ]
+            },
+            "verification_artifact_path": "plans/evidence/placement/PLACECLI.md",
+            "verification_host": "ai",
+            "verification_scope": "targeted V0-V4 serial groups on ai at the runtime input commit, plus an installed-wheel V0/V3 run; full suites and Gate A stay with hosted CI under the sprint policy"
+          },
+          "transition": "completed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -15032,9 +15084,9 @@
         "type": "phase"
       },
       "slug": "v13-PLACECLI",
-      "status": "committed",
+      "status": "completed",
       "type": "phase",
-      "updated_at": "2026-11-09T15:08:49Z"
+      "updated_at": "2026-11-09T18:11:12Z"
     },
     {
       "created_at": "2026-11-06T22:30:08Z",

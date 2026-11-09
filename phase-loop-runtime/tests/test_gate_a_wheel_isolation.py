@@ -99,6 +99,16 @@ class GateAConformEvidenceScopeTest(unittest.TestCase):
             script.index('( cd "$PKG_ROOT" && python3 -m build --wheel --outdir "$DIST" )'),
         )
 
+    def test_placement_process_schema_and_entry_ship_in_the_wheel(self):
+        # v13 PLACECLI: the packaged protocol schema rides the existing placement
+        # package-data glob, and the console entry is declared for the installed wheel.
+        pyproject = (PKG_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertIn('"contracts/placement/**"', pyproject)
+        self.assertIn('agent-harness-placement = "phase_loop_runtime.placement_cli:main"', pyproject)
+        packaged = PKG_ROOT / "src/phase_loop_runtime/contracts/placement/process-v1.schema.json"
+        self.assertTrue(packaged.is_file())
+        self.assertIn(b'"placement.version.response.v1"', packaged.read_bytes())
+
     def test_conform_evidence_scope_is_minimal_and_excludes_final_nodes(self):
         script = GATE_SCRIPT.read_text(encoding="utf-8")
 

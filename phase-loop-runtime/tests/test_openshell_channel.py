@@ -194,3 +194,22 @@ def test_stock_predial_connect_failures_are_certain(mtls_material, monkeypatch, 
             assert not state.calls
             assert '127.0.0.1' not in str(error.value)
     asyncio.run(run())
+
+
+def test_the_certificate_ou_follows_the_selected_placement_client(mtls_material):
+    # v13 PLACECLI: agent-harness seats keep OU=agent-harness; every Pi target presents
+    # OU=agent-toolkit, a separate key and inventory.
+    config = mtls_config(mtls_material)
+    config.validate(config.local_owner_id)
+    toolkit = replace(config, client_ou=oc.certificate_ou_for('agent-toolkit'),
+                      client_cert_pem=(mtls_material / 'wrong-ou.pem').read_bytes(),
+                      client_key_pem=(mtls_material / 'wrong-ou.key').read_bytes())
+    toolkit.validate(toolkit.local_owner_id)
+    for mismatched in (replace(config, client_ou='agent-toolkit'),
+                       replace(toolkit, client_ou='agent-harness'),
+                       replace(config, client_ou='operator')):
+        with pytest.raises(ot.TransportError):
+            mismatched.validate(mismatched.local_owner_id)
+    assert oc.certificate_ou_for('agent-harness') == 'agent-harness'
+    with pytest.raises(ot.TransportError):
+        oc.certificate_ou_for('someone-else')

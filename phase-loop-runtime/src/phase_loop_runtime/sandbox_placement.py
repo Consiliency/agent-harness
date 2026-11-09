@@ -48,6 +48,7 @@ import os
 from pathlib import Path
 import queue
 import re
+import secrets
 import socket
 import threading
 import time
@@ -83,11 +84,14 @@ __all__ = [
     "PlacementBackend",
     "PlacementCancelled",
     "PlacementDecision",
+    "PlacementLifecycle",
     "PlacementReceipt",
     "PlacementRequest",
     "PlacementUnavailable",
     "Prepared",
+    "RungReservation",
     "applied_rule",
+    "effective_egress",
     "backend_for_scheme",
     "is_local",
     "lifetime_at_floor",
@@ -129,6 +133,10 @@ RECEIPT_STEPS: tuple[str, ...] = ("prepared", "committed", "launched", "complete
 _ATTESTERS = frozenset({"runtime", "backend"})
 #: What a request asks a backend to run (C1, C10). Never an argv.
 _WORKLOADS = frozenset({"leg", "qualification", "implementation"})
+#: Workloads a request may carry only when the placement lifecycle maps it (v13 PLACECLI):
+#: ``pi-runner`` is reserved, never executed, by this driver.
+_LIFECYCLE_WORKLOADS = frozenset({"pi-runner"})
+_LIFECYCLE_SEAL = object()
 _LAST_RUNGS = frozenset({"local", "none"})
 
 _CAPACITY = "sandbox_placement_at_capacity"
@@ -281,9 +289,13 @@ class PlacementRequest:
     root: "sandbox_policy.SandboxRootChoice | None" = None
     owner_id: str = ""
     lease_id: str = ""
+    #: Set only by :class:`PlacementLifecycle`'s workload mapping.
+    _mapping: object = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        if self.workload not in _WORKLOADS:
+        if self.workload not in _WORKLOADS and not (
+            self.workload in _LIFECYCLE_WORKLOADS and self._mapping is _LIFECYCLE_SEAL
+        ):
             raise ValueError(f"unknown workload {self.workload!r}")
         required = frozenset(self.required_capabilities)
         if not required <= CAPABILITIES:
@@ -1035,6 +1047,20 @@ class PlacementDecision:
     #: Local slot owned by the caller on launch, or retained for unconfirmed cleanup.
     local_reservation: LocalReservation | None = field(default=None, repr=False)
     pending_local_reservation: LocalReservationPending | None = field(default=None, repr=False)
+    #: The reservation-only exit's binding (``outcome == "reserved"``): the admitted rung,
+    #: its backend and its held lease. Nothing was committed, sealed or executed.
+    reservation: "RungReservation | None" = field(default=None, repr=False)
+
+
+@dataclass(frozen=True)
+class RungReservation:
+    """What a reservation-only walk hands to its caller when a remote rung admits."""
+
+    root: object
+    label: str
+    backend: object = field(repr=False)
+    lease: object = field(repr=False)
+    request: PlacementRequest = field(repr=False)
 
 
 class _CallCancelled(Exception):
@@ -1228,8 +1254,16 @@ class LocalHeadroom:
     load_per_cpu_percent: float | None
     live_sandboxes: int | None
     observed_monotonic: float
+    #: Read only against the placement protocol's thresholds (v13 PLACECLI).
+    memory_total_bytes: int | None = None
+    io_full_avg10: float | None = None
+    memory_some_avg10: float | None = None
 
-    def admits(self, settings: sandbox_policy.PlacementDriverSettings) -> bool:
+    def admits(self, settings: "sandbox_policy.PlacementDriverSettings | object") -> bool:
+        """Against the driver settings, or against a host's effective
+        ``LocalHeadroomConfig`` when one is given."""
+        if hasattr(settings, "memory_available_bytes_minimum_floor"):
+            return self._admits_thresholds(settings)
         try:
             age = _monotonic() - self.observed_monotonic
             return (
@@ -1243,6 +1277,34 @@ class LocalHeadroom:
                 and 0 <= self.load_per_cpu_percent < settings.local_max_load_per_cpu_percent
             )
         except (TypeError, ValueError, OverflowError):
+            return False
+
+    def _admits_thresholds(self, limits: object) -> bool:
+        """One observation, no older than the maximum age, satisfies every threshold; any
+        unknown or stale dimension is at capacity (``x-placement-semantics``)."""
+        def number(value: object) -> bool:
+            return type(value) in (int, float) and math.isfinite(value)  # type: ignore[arg-type]
+
+        try:
+            age = _monotonic() - self.observed_monotonic
+            floor = max(int(limits.memory_available_bytes_minimum_floor),  # type: ignore[attr-defined]
+                        math.ceil(self.memory_total_bytes  # type: ignore[operator]
+                                  * limits.memory_available_total_ram_fraction_minimum))  # type: ignore[attr-defined]
+            return (
+                math.isfinite(age) and 0 <= age <= limits.observation_age_seconds_maximum  # type: ignore[attr-defined]
+                and type(self.memory_available_bytes) is int
+                and type(self.memory_total_bytes) is int and self.memory_total_bytes > 0
+                and self.memory_available_bytes >= floor
+                and number(self.load_per_cpu_percent) and self.load_per_cpu_percent >= 0  # type: ignore[operator]
+                and self.load_per_cpu_percent < limits.load_per_cpu_percent_maximum_exclusive  # type: ignore[attr-defined, operator]
+                and number(self.io_full_avg10) and self.io_full_avg10 >= 0  # type: ignore[operator]
+                and self.io_full_avg10 < limits.io_pressure_full_avg10_percent_maximum_exclusive  # type: ignore[attr-defined, operator]
+                and number(self.memory_some_avg10) and self.memory_some_avg10 >= 0  # type: ignore[operator]
+                and self.memory_some_avg10 < limits.memory_pressure_some_avg10_percent_maximum_exclusive  # type: ignore[attr-defined, operator]
+                and type(self.live_sandboxes) is int and self.live_sandboxes >= 0
+                and self.live_sandboxes < limits.live_sandboxes_maximum_exclusive  # type: ignore[attr-defined]
+            )
+        except (TypeError, ValueError, OverflowError, AttributeError):
             return False
 
 
@@ -1321,7 +1383,17 @@ class _Walk:
         local_capacity: Callable[[], LocalHeadroom | None] | None = None,
         local_admit: Callable[[sandbox_policy.PlacementDriverSettings, OperationBound], LocalAdmission] | None = None,
         local_release: Callable[[LocalReservation], None] | None = None,
+        *, reserve_only: bool = False, headroom: object = None, budget_s: float | None = None,
+        local_preflight: Callable[[str], str | None] | None = None,
+        honour_remote_required: bool = True, probe_timeout_s: float | None = None,
+        backend_for: Callable[[object], object] | None = None,
     ) -> None:
+        self.reserve_only = bool(reserve_only)
+        self.headroom = headroom
+        self.local_preflight = local_preflight
+        self.honour_remote_required = bool(honour_remote_required)
+        self.probe_timeout_s = probe_timeout_s
+        self.backend_for = backend_for
         self.prepared = prepared
         self.request_for = request_for
         self.open_lease = open_lease
@@ -1337,8 +1409,19 @@ class _Walk:
         self.notices: list[str] = []
         self.admit_wait_s = float(settings.admit_wait_s)
         self.budget_s = self.admit_wait_s + float(settings.transfer_allowance_s)
+        if budget_s is not None:
+            # A caller's own bound (the reserve request's deadline) only ever shortens it.
+            self.budget_s = max(0.0, min(self.budget_s, float(budget_s)))
+            self.admit_wait_s = min(self.admit_wait_s, self.budget_s)
         self.waited_s = 0.0
         self.started = _monotonic()
+
+    def _remote_required(self) -> bool:
+        return self.honour_remote_required and sandbox_policy.remote_required()
+
+    def _admits(self, reading: object) -> bool:
+        return isinstance(reading, LocalHeadroom) and reading.admits(
+            self.headroom if self.headroom is not None else self.settings)
 
     # -- the budget ---------------------------------------------------------------------
     def _budget_left(self) -> float:
@@ -1398,12 +1481,17 @@ class _Walk:
     def _local(self, label: str) -> PlacementDecision | None:
         if self.cancelled.is_set():
             self._local_cancel(label)
-        if sandbox_policy.remote_required():
+        if self._remote_required():
             return self._local_left(label, _REQUIRED_UNAVAILABLE)
         if self._budget_spent():
             return self._local_left(label, _BUDGET_SPENT)
         if any(hook is None for hook in (self.local_capacity, self.local_admit, self.local_release)):
             return self._local_left(label, _REFUSED)
+        if self.local_preflight is not None:
+            # The lifecycle's checks for this target, before any capacity probe.
+            refusal = self.local_preflight(label)
+            if refusal is not None:
+                return self._local_left(label, refusal)
         try:
             reading = self.calls.run(self.local_capacity,
                                      min(ANSWER_BOUND_S, self._budget_left()), self.cancelled)
@@ -1416,7 +1504,7 @@ class _Walk:
             self._local_cancel(label)
         if self._budget_spent():
             return self._local_left(label, _BUDGET_SPENT)
-        if not isinstance(reading, LocalHeadroom) or not reading.admits(self.settings):
+        if not self._admits(reading):
             return self._local_left(label, _CAPACITY)
 
         # Keep the adapter's cancellation separate from the caller's event:
@@ -1485,12 +1573,12 @@ class _Walk:
             return self._local_left(label, _REFUSED)
         transferred = False
         try:
-            fresh = isinstance(result.reading, LocalHeadroom) and result.reading.admits(self.settings)
+            fresh = self._admits(result.reading)
             if self.cancelled.is_set():
                 code = _CANCELLED
             elif self._budget_spent():
                 code = _BUDGET_SPENT
-            elif sandbox_policy.remote_required():
+            elif self._remote_required():
                 code = _REQUIRED_UNAVAILABLE
             elif not fresh:
                 code = _CAPACITY
@@ -1534,7 +1622,7 @@ class _Walk:
             trail = tuple(self.trail)
         if code is None and trail:
             code = trail[-1]["code"]  # type: ignore[assignment]
-        if code is None or sandbox_policy.remote_required():
+        if code is None or self._remote_required():
             code = _REQUIRED_UNAVAILABLE
         return PlacementDecision("not_run", trail, code, notices=notices)
 
@@ -1587,6 +1675,16 @@ class _Walk:
                     return self._end('not_run_release_unconfirmed' if kept else 'not_run_last_code',
                                      rung.reason)
                 return None
+            if target == "committing" and self.reserve_only:
+                # The reservation-only exit (v13 PLACECLI): stop after admission, before
+                # `commit`, `seal` and `execute`. The lease stays held; the caller owns it.
+                row = {"rung": rung.label, "class": "admitted", "code": None}
+                self.trail.append(row)
+                return PlacementDecision(
+                    "reserved", tuple(self.trail), notices=tuple(self.notices),
+                    reservation=RungReservation(rung.root, rung.label, rung.backend, rung.lease,
+                                                rung.request),  # type: ignore[arg-type]
+                )
             if target == "releasing":
                 # Entering "releasing" always fences the lease first.
                 rung.reason = code
@@ -1614,6 +1712,14 @@ class _Walk:
         failed = "local_check_failed"
         try:
             request = self.request_for(rung.root)
+        except PlacementUnavailable as exc:
+            if self.reserve_only:
+                from .placement_process_contract import placement_codes
+
+                if exc.code in placement_codes():
+                    # The lifecycle's refusal of this target, recorded before any probe.
+                    return failed, exc.code
+            return failed, _REFUSED
         except Exception:
             return failed, _REFUSED
         if not isinstance(request, PlacementRequest):
@@ -1624,7 +1730,8 @@ class _Walk:
             # The execution gate (C10), before the backend is looked up or called.
             return failed, _DRIVER_UNAVAILABLE
         try:
-            backend = backend_for_scheme(getattr(rung.root, "scheme", ""))
+            backend = (self.backend_for(rung.root) if self.backend_for is not None
+                       else backend_for_scheme(getattr(rung.root, "scheme", "")))
         except PlacementUnavailable:
             return failed, "sandbox_placement_plugin_unavailable"
         if backend is None or is_local(backend):
@@ -1665,7 +1772,9 @@ class _Walk:
             # Reachability is the driver's (C3): a backend with no endpoint is never
             # "unreachable", and nothing but this attempt is.
             host, port = rung.endpoint
-            timeout = min(sandbox_policy.probe_timeout_s(), self._budget_left())
+            probe = (self.probe_timeout_s if self.probe_timeout_s is not None
+                     else sandbox_policy.probe_timeout_s())
+            timeout = min(probe, self._budget_left())
             reached = True
             try:
                 self.calls.run(
@@ -1940,18 +2049,25 @@ def _send_execute(
 def place(
     rungs: Sequence["sandbox_policy.SandboxRootChoice"],
     last_rung: str,
-    prepared: Prepared,
+    prepared: Prepared | None,
     request_for: Callable[["sandbox_policy.SandboxRootChoice"], PlacementRequest],
     open_lease: Callable[[str | None, "sandbox_policy.SandboxRootChoice"], object],
     *,
     preflight: Callable[[], str | None],
-    seal: Callable[[PlacementRequest], "ExecSpec | None"],
+    seal: Callable[[PlacementRequest], "ExecSpec | None"] | None,
     driver_enabled: bool,
     cancelled: threading.Event,
     settings: sandbox_policy.PlacementDriverSettings | None = None,
     local_capacity: Callable[[], LocalHeadroom | None] | None = None,
     local_admit: Callable[[sandbox_policy.PlacementDriverSettings, OperationBound], LocalAdmission] | None = None,
     local_release: Callable[[LocalReservation], None] | None = None,
+    reserve_only: bool = False,
+    headroom: object = None,
+    budget_s: float | None = None,
+    local_preflight: Callable[[str], str | None] | None = None,
+    honour_remote_required: bool = True,
+    probe_timeout_s: float | None = None,
+    backend_for: Callable[[object], object] | None = None,
 ) -> PlacementDecision:
     """Decide where a candidate seat runs, and launch it there if a remote rung takes it.
 
@@ -1999,12 +2115,29 @@ def place(
     ``placement`` goes to :func:`run_placed`), ``launching_host``, or ``not_run`` with its
     code. Raises :class:`PlacementCancelled` on a cancel. Every exit carries the trail.
     The walk owns one budget of time: the admission wait plus the transfer allowance.
+
+    **Reservation-only exit** (``reserve_only=True``, v13 PLACECLI): the same walk, with no
+    ``Prepared`` stage and no ``seal``. A remote rung that admits ends the walk with outcome
+    ``reserved`` and :attr:`PlacementDecision.reservation` (its root, backend and HELD lease)
+    before ``commit``, ``seal`` or ``execute``; the caller journals and owns that lease. A
+    local rung ends ``launching_host`` with its slot, as before. ``headroom`` is the host's
+    effective local-admission thresholds, ``budget_s`` shortens the walk's budget,
+    ``local_preflight(label)`` may refuse the local rung before any capacity probe, a
+    ``request_for`` refusal with a placement code records that code, and ``backend_for(root)``
+    replaces the registry lookup. ``honour_remote_required=False`` ignores the environment
+    knob, so no variable steers a reservation.
     """
     if last_rung not in _LAST_RUNGS:
         raise ValueError(f"unknown last rung {last_rung!r}")
+    if not reserve_only and (prepared is None or seal is None):
+        raise ValueError("a launching walk needs its prepared stage and its seal step")
     settings = settings if settings is not None else sandbox_policy.placement_driver_settings()
     refusal = preflight()
-    walk = _Walk(prepared, request_for, open_lease, seal, bool(driver_enabled), cancelled, settings, local_capacity, local_admit, local_release)
+    walk = _Walk(prepared, request_for, open_lease, seal, bool(driver_enabled), cancelled, settings,  # type: ignore[arg-type]
+                 local_capacity, local_admit, local_release, reserve_only=reserve_only,
+                 headroom=headroom, budget_s=budget_s, local_preflight=local_preflight,
+                 honour_remote_required=honour_remote_required, probe_timeout_s=probe_timeout_s,
+                 backend_for=backend_for)
     try:
         if refusal is not None:
             return walk._end(walk._after_left(False, last_rung), str(refusal))
@@ -2157,3 +2290,1393 @@ def _max_lifetime(backend: object) -> float | None:
     except Exception:
         return None
     return float(limit) if limit is not None and limit > 0 else None
+
+
+# ----------------------------------------------------------------------------------------
+# The placement process lifecycle (v13 PLACECLI, IF-0-PLACECLI-2).
+#
+# One restart-safe, per-client lifecycle behind `agent-harness-placement`. The `--client`
+# flag selects one operator configuration, one certificate OU and one inventory directory;
+# every reservation, same-request response, release tombstone, cleanup entry and
+# `(client, reservation)` barrier is journaled in that inventory and nowhere else. LANEEXEC
+# extends this class rather than forking it (binding §4.2).
+# ----------------------------------------------------------------------------------------
+
+#: ``x-placement-semantics.replay_settle_allowance_ms``.
+REPLAY_SETTLE_ALLOWANCE_MS = 300_000
+#: How long a released reservation's tombstone answers a repeated release with `released`.
+TOMBSTONE_RETENTION_S = 86_400
+_JOURNAL_MAX = 1 << 20
+_PI_RUNNER_BINDINGS = {"openshell": "full-remote-pi-runner", "local": "minimal-without-app"}
+_PROVIDER_REFUSED = "sandbox_placement_provider_refused"
+_WORKLOAD_UNSUPPORTED = "sandbox_placement_workload_unsupported"
+_PREFLIGHT = "preflight"
+#: The only reservation ids this lifecycle issues; anything else was never ours.
+_ISSUED_RESERVATION = re.compile(r"rsv-[0-9a-f]{32}")
+#: ``_settle_committed`` outcomes that are not a response: the settle bound was reached
+#: under the lock, or the committed effect was removed or handed to cleanup.
+_AT_BOUND = object()
+_REMOVED = object()
+
+
+class LifecycleError(RuntimeError):
+    """An internal failure (exit class 70). ``str()`` is a closed code."""
+
+    def __init__(self, code: str = "placement_internal") -> None:
+        super().__init__(code)
+        self.code = code
+
+    def __str__(self) -> str:
+        return self.code
+
+
+def _fsync_directory(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _private_tree(path: Path) -> None:
+    """Create (0700) or accept a directory this user owns that nobody else can open."""
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    info = os.lstat(path)
+    if not os.path.isdir(path) or os.path.islink(path) or info.st_uid != os.geteuid():
+        raise LifecycleError("placement_inventory_unsafe")
+    if info.st_mode & 0o077:
+        os.chmod(path, 0o700)
+
+
+def _write_journal(path: Path, value: Mapping[str, object]) -> None:
+    """Atomically replace one journal record: temporary file, fsync, rename, directory fsync."""
+    data = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        view = memoryview(data)
+        while view:
+            view = view[os.write(fd, view):]
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    try:
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+    _fsync_directory(path.parent)
+
+
+def _read_journal(path: Path) -> dict[str, object] | None:
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return None
+    try:
+        data = os.read(fd, _JOURNAL_MAX + 1)
+    finally:
+        os.close(fd)
+    try:
+        value = json.loads(data.decode("utf-8")) if len(data) <= _JOURNAL_MAX else None
+    except (UnicodeDecodeError, ValueError):
+        value = None
+    if not isinstance(value, dict):
+        raise LifecycleError("placement_journal_corrupt")
+    return value
+
+
+def _remove_journal(path: Path) -> None:
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        return
+    _fsync_directory(path.parent)
+
+
+class _Deadline:
+    """One lifecycle operation's monotonic end: every blocking step uses what is left."""
+
+    def __init__(self, end: float) -> None:
+        self.end = end
+
+    @classmethod
+    def after(cls, seconds: float) -> "_Deadline":
+        return cls(_monotonic() + max(0.0, float(seconds)))
+
+    def left(self) -> float:
+        return max(0.0, self.end - _monotonic())
+
+    def expired(self) -> bool:
+        return _monotonic() >= self.end
+
+
+class _FileLock:
+    """``flock`` on a 0600 lock file; ``blocking=False`` reports whether it was taken.
+    With a ``deadline`` the lock is retried until that deadline, then reported not held."""
+
+    def __init__(self, path: Path, *, blocking: bool, deadline: "_Deadline | None" = None) -> None:
+        self.path, self.blocking, self.fd, self.held = path, blocking, None, False
+        self.deadline = deadline
+
+    def __enter__(self) -> bool:
+        import fcntl
+
+        if self.deadline is not None and self.deadline.expired():
+            return False
+        self.fd = os.open(self.path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        # With a deadline the kernel lock is never waited on: it is retried non-blocking.
+        nonblocking = self.deadline is not None or not self.blocking
+        while True:
+            if self.deadline is not None and self.deadline.expired():
+                return False
+            try:
+                fcntl.flock(self.fd, fcntl.LOCK_EX | (fcntl.LOCK_NB if nonblocking else 0))
+                self.held = True
+                return True
+            except BlockingIOError:
+                if self.deadline is None or self.deadline.expired():
+                    self.held = False
+                    return False
+                time.sleep(min(_POLL_S, self.deadline.left()))
+
+    def __exit__(self, *_exc: object) -> None:
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+
+
+def _iso(epoch: float) -> str:
+    from datetime import datetime, timezone
+
+    return datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _epoch(text: object) -> float | None:
+    from datetime import datetime
+
+    if not isinstance(text, str):
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+@dataclass(frozen=True)
+class _TargetPlan:
+    """One target's admission terms, decided before any probe."""
+
+    target: "sandbox_policy.PlacementTargetConfig"
+    vector: str | None
+    policy_digest: str | None
+    egress_sha256: str | None
+    refusal: str | None
+
+    @property
+    def needs_bridge(self) -> bool:
+        return self.target.kind == "openshell"
+
+
+def effective_egress(
+    providers: Sequence[str], baseline: Iterable[tuple[str, int]],
+    endpoints: Mapping[str, Sequence[tuple[str, int]]],
+) -> tuple[dict[str, object], str]:
+    """The effective egress grant and ``Reservation.egress_sha256``: exactly the policy
+    vector's baseline union every declared provider's allowlisted endpoints, provider names
+    and endpoint records sorted and de-duplicated, digested over RFC 8785 bytes. No
+    credential or credential-derived value enters it."""
+    from .placement_process_contract import canonical_bytes
+
+    rules = sorted({(str(host), int(port)) for host, port in baseline}
+                   | {(str(host), int(port)) for name in providers for host, port in endpoints[name]})
+    grant = {"providers": sorted(set(providers)),
+             "rules": [{"host": host, "port": port} for host, port in rules]}
+    return grant, "sha256:" + hashlib.sha256(canonical_bytes(grant)).hexdigest()
+
+
+class PlacementLifecycle:
+    """Reserve, release and reap for one placement client (``--client``).
+
+    Every collaborator with an effect or a host reading is injected here, with the landed
+    or production default: ``caps_loader``/``caps_readiness`` (``seat_resource_caps``),
+    ``observe`` (the host's memory, load and PSI), ``backend_for`` (the backend registry,
+    where no production OpenShell backend is registered), ``reconcile`` (the read-only
+    replay check), ``bridge`` and ``clock``. Nothing is read from the environment.
+    """
+
+    def __init__(
+        self, client: str, *,
+        state_root: Path | None = None, config_root: Path | None = None,
+        caps_loader: Callable[[], object] | None = None,
+        caps_readiness: Callable[[], str | None] | None = None,
+        observe: Callable[[], Mapping[str, object]] | None = None,
+        backend_for: Callable[[object], object] | None = None,
+        reconcile: Callable[[Mapping[str, object], float], str] | None = None,
+        bridge: object = None,
+        clock: Callable[[], float] | None = None,
+        settings: sandbox_policy.PlacementDriverSettings | None = None,
+        new_id: Callable[[], str] | None = None,
+    ) -> None:
+        from .placement_process_contract import CLIENTS
+
+        if client not in CLIENTS:
+            raise ValueError("unknown placement client")
+        self.client = client
+        self.state_root = Path(state_root) if state_root is not None else sandbox_policy.placement_state_root()
+        self.inventory = self.state_root / client
+        self.config_root = Path(config_root) if config_root is not None else sandbox_policy.placement_config_root()
+        self.caps_loader = caps_loader if caps_loader is not None else _landed_caps_loader
+        self.caps_readiness = caps_readiness if caps_readiness is not None else _landed_caps_readiness
+        self.observe = observe if observe is not None else sandbox_policy.observe_local_pressure
+        self.backend_for = backend_for if backend_for is not None else _registry_backend
+        self.reconcile = reconcile if reconcile is not None else self._default_reconcile
+        self._bridge = bridge
+        self.clock = clock if clock is not None else time.time
+        self._settings = settings
+        self.new_id = new_id if new_id is not None else (lambda: secrets.token_hex(16))
+
+    # -- configuration -------------------------------------------------------------------
+    @property
+    def bridge(self) -> object:
+        if self._bridge is None:
+            from .placement_bridge import ForwardTcpUnixBridge, default_bridge_root
+
+            # Under the inventory when the socket path fits, else the runtime directory.
+            self._bridge = ForwardTcpUnixBridge(self.state_root / "b",
+                                                fallback_root=default_bridge_root())
+        return self._bridge
+
+    @property
+    def settings(self) -> sandbox_policy.PlacementDriverSettings:
+        if self._settings is None:
+            self._settings = sandbox_policy.placement_driver_settings(env={})
+        return self._settings
+
+    def caps_state(self) -> tuple[bool, str]:
+        """``(readable, seat_caps_sha256)``; the documented sentinel when unreadable."""
+        try:
+            caps = self.caps_loader()
+            from . import seat_resource_caps
+
+            return True, seat_resource_caps.caps_sha256(caps)  # type: ignore[arg-type]
+        except Exception:
+            return False, sandbox_policy.SEAT_CAPS_UNAVAILABLE_SHA256
+
+    def config(self, seat_caps_sha256: str | None = None) -> "sandbox_policy.PlacementClientConfig":
+        if seat_caps_sha256 is None:
+            seat_caps_sha256 = self.caps_state()[1]
+        try:
+            return sandbox_policy.load_placement_client_config(
+                self.client, config_root=self.config_root, seat_caps_sha256=seat_caps_sha256)
+        except sandbox_policy.PlacementConfigError:
+            raise LifecycleError("placement_config_invalid") from None
+
+    def version_response(self) -> object:
+        from .placement_cli import version_response
+
+        return version_response(self.config())
+
+    # -- inventory -----------------------------------------------------------------------
+    def _dir(self, name: str) -> Path:
+        return self.inventory / name
+
+    def _prepare(self) -> None:
+        try:
+            _private_tree(self.state_root)
+            _private_tree(self.inventory)
+            for name in ("attempts", "reservations", "tombstones", "cleanup"):
+                _private_tree(self._dir(name))
+            _private_tree(self._slots_dir())
+        except OSError:
+            raise LifecycleError("placement_inventory_unsafe") from None
+
+    def _slots_dir(self) -> Path:
+        # Host-wide: both clients' local reservations count toward live_sandboxes.
+        return self.state_root / "local-slots"
+
+    def _ids(self, name: str) -> list[str]:
+        return [entry[:-5] for entry in sorted(os.listdir(self._dir(name)))
+                if entry.endswith(".json") and not entry.startswith(".")]
+
+    def _records(self, name: str) -> list[tuple[str, dict[str, object]]]:
+        records = []
+        for key in self._ids(name):
+            record = _read_journal(self._dir(name) / f"{key}.json")
+            if record is not None:
+                records.append((key, record))
+        return records
+
+    def _startup(self, deadline: "_Deadline | None" = None) -> None:
+        """Lifecycle start-up, within the calling operation's deadline: settle every
+        unsettled attempt at its bound, resume every unfinished cleanup transfer (settled
+        attempts included), and expire tombstones. Enumeration only selects request ids;
+        each attempt is read again under its own lock. Locks are only tried, never waited
+        for, so an attempt another process holds is left for a later start-up; scanning
+        stops when the deadline is reached."""
+        self._prepare()
+        for request_id in self._ids("attempts"):
+            if deadline is not None and deadline.expired():
+                return
+            path = self._dir("attempts") / f"{request_id}.json"
+            with _FileLock(self._dir("attempts") / f"{request_id}.lock", blocking=False) as held:
+                if not held:
+                    continue
+                record = _read_journal(path)
+                if record is None:
+                    continue
+                if not record.get("settled") and self._at_bound(record, self.clock()):
+                    self._settle_end_reached(record, None, None)
+                elif self._transfer_unfinished(record):
+                    self._resume_transfer(record, None)
+        if deadline is not None and deadline.expired():
+            return
+        now = self.clock()
+        for reservation_id, tombstone in self._records("tombstones"):
+            expires = tombstone.get("tombstone_expires")
+            if not isinstance(expires, (int, float)) or now >= expires:
+                _remove_journal(self._dir("tombstones") / f"{reservation_id}.json")
+
+    @staticmethod
+    def _settle_bound(record: Mapping[str, object]) -> float | None:
+        start, deadline = record.get("started_at"), record.get("deadline_ms")
+        if (type(start) not in (int, float) or not math.isfinite(start)  # type: ignore[arg-type]
+                or type(deadline) is not int):
+            return None
+        return float(start) + (deadline + REPLAY_SETTLE_ALLOWANCE_MS) / 1000.0  # type: ignore[operator]
+
+    def _at_bound(self, record: Mapping[str, object], now: float) -> bool:
+        bound = self._settle_bound(record)
+        return bound is None or now < float(record["started_at"]) or now >= bound  # type: ignore[arg-type]
+
+    # -- responses -----------------------------------------------------------------------
+    def _reserve_response(self, request: object, outcome: str, code: str | None,
+                          trail: Sequence[object], reservation: object = None,
+                          reason: str | None = None) -> object:
+        from .placement_process_contract import ReserveResponse, TrailEntry
+
+        entries = tuple(trail) or (TrailEntry(_PREFLIGHT, outcome, code, None),)
+        if len(entries) > 16:
+            entries = entries[:15] + entries[-1:]
+        return ReserveResponse(request.request_id, outcome, code, reason, reservation,  # type: ignore[attr-defined]
+                               entries, request.caller_context)  # type: ignore[attr-defined]
+
+    def _refusal(self, request: object, code: str) -> object:
+        from .placement_process_contract import TrailEntry
+
+        return self._reserve_response(request, "refused", code,
+                                      (TrailEntry(_PREFLIGHT, "refused", code, None),))
+
+    def _settle(self, record: dict[str, object], response: object) -> object:
+        from .placement_process_contract import encode_response, exit_class
+
+        record["settled"] = True
+        record["response"] = encode_response(response).decode("utf-8")  # type: ignore[arg-type]
+        record["exit"] = exit_class(response)  # type: ignore[arg-type]
+        _write_journal(self._dir("attempts") / f"{record['request_id']}.json", record)
+        return response
+
+    def _journal_attempt(self, record: dict[str, object]) -> None:
+        _write_journal(self._dir("attempts") / f"{record['request_id']}.json", record)
+
+    def _stored(self, record: Mapping[str, object]) -> object:
+        from .placement_process_contract import ProtocolError, decode_response, encode_response
+
+        raw = str(record.get("response", "")).encode("utf-8")
+        try:
+            response = decode_response("reserve", raw)
+        except ProtocolError:
+            raise LifecycleError("placement_journal_corrupt") from None
+        if encode_response(response) != raw:
+            raise LifecycleError("placement_journal_corrupt")
+        return response
+
+    # -- reserve -------------------------------------------------------------------------
+    def reserve(self, request: object, *, cancelled: threading.Event) -> object:
+        """``PlacementLifecycle.reserve(request, *, cancelled) -> ReserveResponse``."""
+        from .placement_process_contract import canonical_bytes
+
+        deadline = _Deadline.after(request.deadline_ms / 1000.0)  # type: ignore[attr-defined]
+        self._startup(deadline)
+        body_sha256 = hashlib.sha256(canonical_bytes(request.to_json())).hexdigest()  # type: ignore[attr-defined]
+        request_id = request.request_id  # type: ignore[attr-defined]
+        path = self._dir("attempts") / f"{request_id}.json"
+        with _FileLock(self._dir("attempts") / f"{request_id}.lock", blocking=False) as held:
+            record = _read_journal(path)
+            if record is not None and record.get("body_sha256") != body_sha256:
+                # Same request_id, different body: refused, and nothing is created.
+                return self._refusal(request, _REFUSED)
+            if record is not None and record.get("settled"):
+                return self._stored(record)
+            if not held:
+                # The original attempt is still running: nothing to reconcile yet.
+                return self._indeterminate(request, record)
+            if record is not None:
+                return self._replay(request, record, cancelled, deadline)
+            return self._reserve_new(request, body_sha256, cancelled, deadline)
+
+    def _indeterminate(self, request: object, record: Mapping[str, object] | None) -> object:
+        return self._reserve_response(request, "timeout", _TIMEOUT, self._journaled_trail(record))
+
+    def _journaled_trail(self, record: Mapping[str, object] | None) -> tuple[object, ...]:
+        from .placement_process_contract import TrailEntry
+
+        rows = (record or {}).get("trail") or []
+        return tuple(TrailEntry.from_json(row) for row in rows)  # type: ignore[union-attr]
+
+    def _targets(self, config: object, request: object) -> list[object] | str:
+        workload = request.workload  # type: ignore[attr-defined]
+        if workload == "pi-runner":
+            return list(config.targets)  # type: ignore[attr-defined]
+        name = config.seat_route.get(workload)  # type: ignore[attr-defined]
+        target = config.target(name) if name is not None else None  # type: ignore[attr-defined]
+        return [target] if target is not None else _WORKLOAD_UNSUPPORTED
+
+    def _plan(self, config: object, request: object, target: object, local_ready: bool) -> _TargetPlan:
+        kind = target.kind  # type: ignore[attr-defined]
+        providers = tuple(request.providers)  # type: ignore[attr-defined]
+        if kind == "e2b":
+            # A third-party target needs a current OD-7 clearance for every declared
+            # provider; and it stays disabled until a later account-and-spend activation.
+            refusal = (_PROVIDER_REFUSED if not set(providers) <= target.od7_providers  # type: ignore[attr-defined]
+                       else _DRIVER_UNAVAILABLE)
+            return _TargetPlan(target, None, None, None, refusal)  # type: ignore[arg-type]
+        vector = (_PI_RUNNER_BINDINGS[kind] if request.workload == "pi-runner"  # type: ignore[attr-defined]
+                  else request.policy_vector)  # type: ignore[attr-defined]
+        registry = config.providers  # type: ignore[attr-defined]
+        refusal = None
+        if any(vector not in registry[name].policy_vectors for name in providers):
+            refusal = _PROVIDER_REFUSED
+        elif kind == "openshell" and not set(providers) <= target.probe_receipt_providers:  # type: ignore[attr-defined]
+            # An owned host needs the generic egress-and-credential probe receipt.
+            refusal = _PROVIDER_REFUSED
+        elif kind == "local" and not local_ready:
+            refusal = _CAPABILITY_UNMET
+        try:
+            baseline = sandbox_policy.placement_policy_baseline(vector)
+        except sandbox_policy.PlacementConfigError:
+            raise LifecycleError("placement_config_invalid") from None
+        _grant, digest = effective_egress(
+            providers, baseline, {name: registry[name].endpoints for name in providers})
+        return _TargetPlan(target, vector, config.policy_digests[vector], digest, refusal)  # type: ignore[arg-type, attr-defined]
+
+    def _binding(self, request: object, record: Mapping[str, object], plan: _TargetPlan,
+                 config_sha256: str) -> dict[str, object]:
+        target = plan.target
+        return {
+            "schema": "placement.reservation.v1",
+            "reservation_id": record["reservation_id"],
+            "workload": request.workload,  # type: ignore[attr-defined]
+            "target": {"name": target.name, "kind": target.kind, "rank": target.rank},
+            "transport_id": target.transport_id,
+            "image_digest": request.image_digest,  # type: ignore[attr-defined]
+            "policy_vector": plan.vector,
+            "policy_digest": plan.policy_digest,
+            "providers": list(request.providers),  # type: ignore[attr-defined]
+            "egress_sha256": plan.egress_sha256,
+            "client": self.client,
+            "inventory": self.client,
+            "rank_policy": "agent_executor" if request.workload == "pi-runner" else "seats_single_target",  # type: ignore[attr-defined]
+            "lease_id": None,
+            "expires_at": None,
+            "config_sha256": config_sha256,
+            "bridge": None,
+            "ttl_s": request.ttl_s,  # type: ignore[attr-defined]
+            "root": None if target.root is None else sandbox_policy._root_text(target.root),
+        }
+
+    def _reserve_new(self, request: object, body_sha256: str, cancelled: threading.Event,
+                     deadline: "_Deadline") -> object:
+        from .placement_process_contract import CLIENT_WORKLOADS, LocalHeadroomConfig
+
+        record: dict[str, object] = {
+            "request_id": request.request_id, "body_sha256": body_sha256,  # type: ignore[attr-defined]
+            "client": self.client, "settled": False, "pending": [], "trail": [],
+            "barrier": "none", "caller_context": dict(request.caller_context),  # type: ignore[attr-defined]
+        }
+        readable, caps_sha256 = self.caps_state()
+        if not readable:
+            # Coordinator ruling 1: an unreadable caps record refuses every reservation.
+            return self._settle(record, self._refusal(request, _CAPABILITY_UNMET))
+        config = self.config(caps_sha256)
+        workload = request.workload  # type: ignore[attr-defined]
+        if workload not in CLIENT_WORKLOADS[self.client]:
+            return self._settle(record, self._refusal(request, _WORKLOAD_UNSUPPORTED))
+        for name in request.providers:  # type: ignore[attr-defined]
+            provider = config.providers.get(name)
+            if provider is None or workload not in provider.workloads:
+                return self._settle(record, self._refusal(request, _PROVIDER_REFUSED))
+        targets = self._targets(config, request)
+        if isinstance(targets, str):
+            return self._settle(record, self._refusal(request, targets))
+        if not targets:
+            return self._settle(record, self._refusal(request, _REQUIRED_UNAVAILABLE))
+        try:
+            local_ready = self.caps_readiness() is None
+        except Exception:
+            local_ready = False
+        plans = {t.name: self._plan(config, request, t, local_ready) for t in targets}  # type: ignore[attr-defined]
+        record.update({
+            "started_at": self.clock(), "deadline_ms": request.deadline_ms,  # type: ignore[attr-defined]
+            "reservation_id": "rsv-" + self.new_id(),
+        })
+        self._journal_attempt(record)
+        thresholds = LocalHeadroomConfig.from_json(config.local_headroom)
+        bindings = {name: self._binding(request, record, plan, config.config_sha256)
+                    for name, plan in plans.items() if plan.refusal is None}
+        walk = _ReserveWalk(self, request, record, plans, bindings, thresholds)
+        rungs = [self._root_for(t) for t in targets]
+        try:
+            decision = place(
+                rungs, "none", None, walk.request_for, walk.open_lease,
+                preflight=lambda: None, seal=None, driver_enabled=True, cancelled=cancelled,
+                settings=self.settings, local_capacity=walk.local_capacity,
+                local_admit=walk.local_admit, local_release=walk.local_release,
+                reserve_only=True, headroom=thresholds, budget_s=deadline.left(),
+                local_preflight=walk.local_preflight, honour_remote_required=False,
+                probe_timeout_s=min(5.0, max(0.0, deadline.left())),
+                backend_for=self.backend_for,
+            )
+        except PlacementCancelled as exc:
+            uncertain = exc.local_reservation is not None or exc.pending_local_reservation is not None or any(
+                entry.get("release_confirmed") is False for entry in exc.trail)
+            trail = self._trail(exc.trail, plans)
+            if uncertain:
+                return self._unsettled(record, request, trail, _RELEASE_UNCONFIRMED)
+            return self._settle(record, self._reserve_response(request, "refused", _REFUSED, trail))
+        return self._decided(record, request, decision, plans, bindings, cancelled, deadline)
+
+    @staticmethod
+    def _root_for(target: object) -> object:
+        root = target.root  # type: ignore[attr-defined]
+        if root is None:
+            return sandbox_policy.SandboxRootChoice(None, Path("/"), False, scheme=target.kind,  # type: ignore[attr-defined]
+                                                    name=target.name)  # type: ignore[attr-defined]
+        return root
+
+    def _trail(self, trail: Sequence[Mapping[str, object]], plans: Mapping[str, _TargetPlan]) -> tuple[object, ...]:
+        from .placement_process_contract import TrailEntry, admission_reasons, result_codes
+
+        codes, reasons = result_codes(), admission_reasons()
+        entries = []
+        for row in trail:
+            label, klass, code = str(row.get("rung", "")), row.get("class"), row.get("code")
+            plan = plans.get(label)
+            local = plan is not None and plan.target.kind == "local"
+            mapped = code if code in codes else (_CODE_INVALID if isinstance(code, str) and _BACKEND_CODE.fullmatch(code)
+                                                 and code not in PLACEMENT_CODES else _REFUSED)
+            reason = row.get("reason") if row.get("reason") in reasons else None
+            if klass == "admitted":
+                entries.append(TrailEntry(label, "admitted", None, None))
+            elif klass == "capacity":
+                entries.append(TrailEntry(label, "at_capacity", mapped,
+                                          "pressure" if local else "no_capacity"))
+            elif klass == "unreachable":
+                entries.append(TrailEntry(label, "unreachable", mapped, reason))
+            elif (klass == "refused_unconfirmed" or code == _LOCAL_RELEASE_UNCONFIRMED
+                  or row.get("release_confirmed") is False):
+                entries.append(TrailEntry(label, "timeout",
+                                          mapped if code in codes else _RELEASE_UNCONFIRMED, None))
+            elif code == _TIMEOUT:
+                # Released and confirmed absent: a certain failure with nothing held.
+                entries.append(TrailEntry(label, "unreachable", _TIMEOUT, None))
+            else:
+                entries.append(TrailEntry(label, "refused", mapped, None))
+        return tuple(entries)
+
+    def _decided(self, record: dict[str, object], request: object, decision: PlacementDecision,
+                 plans: Mapping[str, _TargetPlan], bindings: Mapping[str, dict[str, object]],
+                 cancelled: threading.Event, deadline: "_Deadline") -> object:
+        trail = self._trail(decision.trail, plans)
+        if decision.outcome == "reserved" and decision.reservation is not None:
+            held = decision.reservation
+            return self._admit(record, request, bindings[held.label], trail, cancelled, deadline,
+                               backend=held.backend, lease=held.lease)
+        if decision.outcome == "launching_host" and decision.local_reservation is not None:
+            label = next(str(row["rung"]) for row in reversed(decision.trail) if row.get("class") == "admitted")
+            return self._admit(record, request, bindings[label], trail, cancelled, deadline,
+                               slot=decision.local_reservation.token)
+        code = decision.code or _REQUIRED_UNAVAILABLE
+        if code in (_RELEASE_UNCONFIRMED, _LOCAL_RELEASE_UNCONFIRMED):
+            return self._unsettled(record, request, trail, code)
+        from .placement_process_contract import result_codes
+
+        decisive = [entry for entry in trail  # type: ignore[attr-defined]
+                    if not (plans.get(entry.target) is not None  # type: ignore[attr-defined]
+                            and plans[entry.target].target.kind == "e2b"  # type: ignore[attr-defined]
+                            and entry.code == _DRIVER_UNAVAILABLE)]  # type: ignore[attr-defined]
+        if decisive and len(decisive) < len(trail):
+            # A disabled E2B target is recorded, but the last real target decides.
+            code = decisive[-1].code or code  # type: ignore[attr-defined]
+        reason = decisive[-1].reason if decisive else None  # type: ignore[attr-defined]
+        if code in (_CAPACITY, _CAPACITY_EXHAUSTED):
+            outcome = "at_capacity"
+        elif code in (_UNREACHABLE, _TIMEOUT):
+            outcome = "unreachable"
+        else:
+            outcome = "refused"
+        if code not in result_codes():
+            code = _REFUSED
+        return self._settle(record, self._reserve_response(request, outcome, code, trail, reason=reason))
+
+    def _unsettled(self, record: dict[str, object], request: object, trail: Sequence[object],
+                   code: str) -> object:
+        """An effect may be held: arm the `(client, request)` barrier and keep the attempt
+        unsettled, so a replay reconciles it (``reserve_replay``)."""
+        record["trail"] = [entry.to_json() for entry in trail]  # type: ignore[attr-defined]
+        record["barrier"] = "armed"
+        _write_journal(self._dir("attempts") / f"{record['request_id']}.json", record)
+        return self._reserve_response(request, "timeout", code, trail)
+
+    def _reservation(self, binding: Mapping[str, object], *, lease_id: str | None,
+                     expires_epoch: float, bridge: object = None) -> object:
+        from .placement_process_contract import Reservation
+
+        value = {key: binding[key] for key in binding if key not in ("ttl_s", "root")}
+        value.update({"lease_id": lease_id, "expires_at": _iso(expires_epoch),
+                      "bridge": None if bridge is None else bridge.to_json()})  # type: ignore[attr-defined]
+        return Reservation.from_json(value)
+
+    def _admit(self, record: dict[str, object], request: object, binding: Mapping[str, object],
+               trail: Sequence[object], cancelled: threading.Event, deadline: "_Deadline", *,
+               backend: object = None, lease: object = None, slot: str | None = None) -> object:
+        """Commit one admitted rung, recoverably.
+
+        1. The commit intent is journaled in the attempt record, under its lock: the exact
+           reservation (expiry fixed now) and its complete cleanup effect, including the
+           bridge directory a bridged reservation will use. It replaces the walk's pending
+           effect, so the effect has one owner.
+        2. A bridged reservation opens its bridge within the remaining deadline, then the
+           commit is journaled again, complete, with the bridge handle.
+        3. Under the reservation's lock, cancellation and the deadline are checked again;
+           when either fired, the effects stay owned by the commit and the attempt stays
+           unsettled. Otherwise the active reservation is published and the attempt
+           settled, still under that lock. A restart between any two steps recovers the
+           commit without allocating anything."""
+        from .placement_process_contract import TrailEntry
+
+        now = self.clock()
+        expires = now + float(binding["ttl_s"])  # type: ignore[arg-type]
+        label = str(binding["target"]["name"])  # type: ignore[index]
+        lease_id = None if lease is None else str(lease.lease_id)  # type: ignore[attr-defined]
+        reservation = self._reservation(binding, lease_id=lease_id, expires_epoch=expires)
+        bridged = binding["workload"] in ("pi-runner", "leg") and binding["target"]["kind"] == "openshell"  # type: ignore[index]
+        effect: dict[str, object] = (
+            {"kind": "local", "slot": slot, "target": label, "root": None, "bridge": None}
+            if lease is None else
+            {"kind": "remote", "lease_id": lease_id, "target": label, "root": binding["root"],
+             "bridge": None})
+        if bridged:
+            directory = self.bridge.directory_for(reservation)  # type: ignore[attr-defined]
+            effect["bridge_directory"] = None if directory is None else str(directory)
+        commit: dict[str, object] = {
+            "reservation": reservation.to_json(), "effect": effect, "complete": not bridged,  # type: ignore[attr-defined]
+            "created_at": now, "trail": [entry.to_json() for entry in trail],  # type: ignore[attr-defined]
+        }
+        self._journal_commit(record, commit)
+        timeout_trail = (*trail[:-1], TrailEntry(label, "timeout", _TIMEOUT, None))
+        if bridged:
+            if cancelled.is_set() or deadline.expired():
+                return self._commit_left_held(record, request, lease, timeout_trail)
+            try:
+                handle = self._open_bridge(reservation, backend, lease, cancelled, deadline)
+            except Exception:
+                # No route, transport or bridge fallback after admission: release this rung.
+                return self._bridge_failed(record, request, commit, backend, lease, trail, deadline)
+            reservation = self._reservation(binding, lease_id=lease_id, expires_epoch=expires,
+                                            bridge=handle.descriptor)  # type: ignore[attr-defined]
+            effect = {**effect, "bridge": handle.to_json()}  # type: ignore[attr-defined]
+            commit = {**commit, "reservation": reservation.to_json(), "effect": effect,  # type: ignore[attr-defined]
+                      "complete": True}
+            self._journal_commit(record, commit)
+        rid = reservation.reservation_id  # type: ignore[attr-defined]
+        with _FileLock(self._dir("reservations") / f"{rid}.lock", blocking=False, deadline=deadline) as held:
+            if not held or cancelled.is_set() or deadline.expired():
+                return self._commit_left_held(record, request, lease, timeout_trail)
+            self._publish_reservation(commit, str(record["request_id"]))
+            if lease is not None:
+                lease.detach()  # type: ignore[attr-defined]
+            return self._settle(record, self._reserve_response(request, "admitted", None, trail, reservation))
+
+    def _journal_commit(self, record: dict[str, object], commit: Mapping[str, object]) -> None:
+        record["commit"] = dict(commit)
+        record["pending"] = []
+        self._journal_attempt(record)
+
+    def _commit_left_held(self, record: dict[str, object], request: object, lease: object,
+                          trail: Sequence[object]) -> object:
+        """Time ran out, or the caller cancelled, after admission: no admission is reported;
+        the committed effects stay owned by the attempt for replay or terminal cleanup."""
+        if lease is not None:
+            lease.detach()  # type: ignore[attr-defined]
+        return self._unsettled(record, request, trail, _TIMEOUT)
+
+    def _bridge_failed(self, record: dict[str, object], request: object, commit: Mapping[str, object],
+                       backend: object, lease: object, trail: Sequence[object],
+                       deadline: "_Deadline") -> object:
+        from .placement_process_contract import TrailEntry
+
+        effect = commit["effect"]  # type: ignore[index]
+        label = str(effect["target"])  # type: ignore[index]
+        lease.fence()  # type: ignore[attr-defined]
+        if self._cleanup(effect, deadline):  # type: ignore[arg-type]
+            lease.clear()  # type: ignore[attr-defined]
+            record.pop("commit", None)
+            trail = (*trail[:-1], TrailEntry(label, "refused", _REFUSED, None))
+            return self._settle(record, self._reserve_response(request, "refused", _REFUSED, trail))
+        lease.abandon()  # type: ignore[attr-defined]
+        trail = (*trail[:-1], TrailEntry(label, "timeout", _RELEASE_UNCONFIRMED, None))
+        return self._unsettled(record, request, trail, _RELEASE_UNCONFIRMED)
+
+    def _publish_reservation(self, commit: Mapping[str, object], request_id: str) -> None:
+        """The committed reservation becomes the active record, the effect's owner."""
+        reservation = commit["reservation"]  # type: ignore[index]
+        entry = {"reservation": reservation, "state": "active", "created_at": commit["created_at"],
+                 "effect": commit["effect"], "request_id": request_id}
+        _write_journal(self._dir("reservations") / f"{reservation['reservation_id']}.json", entry)  # type: ignore[index]
+
+
+    def _open_bridge(self, reservation: object, backend: object, lease: object,
+                     cancelled: threading.Event, deadline: "_Deadline") -> object:
+        from .placement_bridge import BridgeExposure, BridgeUnavailable, operation_deadline
+
+        exposure_of = getattr(backend, "forward_exposure", None)
+        if exposure_of is None:
+            raise BridgeUnavailable("bridge_exposure_invalid")
+        timeout_s = min(ANSWER_BOUND_S, deadline.left())
+        if timeout_s <= 0:
+            raise BridgeUnavailable("bridge_cancelled")
+        calls = _Calls(settings=self.settings)
+        try:
+            raw = calls.run(lambda: exposure_of(lease.lease_id, _bound(timeout_s, cancelled)),  # type: ignore[attr-defined]
+                            timeout_s, cancelled)
+        finally:
+            calls.close()
+        if not isinstance(raw, Mapping) or set(raw) != {"service_name", "upstream"}:
+            raise BridgeUnavailable("bridge_exposure_invalid")
+        exposure = BridgeExposure(raw["service_name"], raw["upstream"])
+        with operation_deadline(deadline.end):
+            return self.bridge.open(reservation, exposure, cancelled=cancelled)  # type: ignore[attr-defined]
+
+    def _replay(self, request: object, record: dict[str, object], cancelled: threading.Event,
+                deadline: "_Deadline") -> object:
+        """``reserve_replay`` steps 3 to 5 for an unsettled attempt of the same body.
+
+        Settlement comes only from what is already durable: a complete commit becomes the
+        admitted response with its original reservation, expiry and bridge. Besides the one
+        bounded read-only reconciliation, no target, lease, slot, bridge or exposure call is
+        made, and expiry is never recomputed. Cancellation, the remaining time and the
+        settle bound are checked again after every wait."""
+        from .placement_process_contract import TrailEntry
+
+        now = self.clock()
+        if self._at_bound(record, now):
+            return self._settle_end_reached(record, request, deadline)
+        bound = self._settle_bound(record)
+        timeout_s = max(0.0, min(deadline.left(), bound - now))  # type: ignore[operator]
+        try:
+            verdict = self.reconcile(record, timeout_s)
+        except Exception:
+            verdict = "indeterminate"
+        if self._at_bound(record, self.clock()):
+            return self._settle_end_reached(record, request, deadline)
+        if cancelled.is_set() or deadline.expired():
+            return self._indeterminate(request, record)
+        trail = self._journaled_trail(record)
+        commit = record.get("commit") if isinstance(record.get("commit"), dict) else None
+        if (verdict == "held_ready" and commit is not None and commit.get("complete")
+                and not record.get("transfer")):
+            settled = self._settle_committed(record, request, commit, cancelled, deadline)
+            if settled is _AT_BOUND:
+                return self._settle_end_reached(record, request, deadline)
+            if settled is not _REMOVED:
+                return settled
+            verdict = "nothing_held"
+        if verdict == "nothing_held":
+            effects = self._owned_effects(record)
+            transfer = record.get("transfer") or {}
+            entries = transfer.get("entries") or []  # type: ignore[union-attr]
+            label = (str(commit["effect"]["target"]) if commit is not None  # type: ignore[index]
+                     else str(effects[-1]["target"]) if effects
+                     else str(entries[-1]["effect"]["target"]) if entries else _PREFLIGHT)
+            self._plan_transfer(record)
+            self._resume_transfer(record, deadline)
+            entries_ = (*trail, TrailEntry(label, "unreachable", _TIMEOUT, None))
+            return self._settle(record, self._reserve_response(request, "unreachable", _TIMEOUT, entries_))
+        return self._indeterminate(request, record)
+
+    def _settle_committed(self, record: dict[str, object], request: object,
+                          commit: Mapping[str, object], cancelled: threading.Event,
+                          deadline: "_Deadline") -> object:
+        """Settle a complete, durable commit as admitted, under its reservation's lock (the
+        lock every consumer of that effect holds). Inside the lock, immediately before
+        publication: a tombstone, a cleanup owner or a planned transfer means the effect was
+        removed or handed on (``_REMOVED``); the settle bound reached means the terminal rule
+        applies (``_AT_BOUND``); cancellation or an exhausted deadline answers indeterminate
+        and keeps the commit. Otherwise the record is published if the interruption came
+        before publication, and the attempt settles under the same lock."""
+        from .placement_process_contract import Reservation, TrailEntry
+
+        reservation = Reservation.from_json(commit["reservation"])  # type: ignore[arg-type]
+        rid = reservation.reservation_id
+        with _FileLock(self._dir("reservations") / f"{rid}.lock", blocking=False,
+                       deadline=deadline) as held:
+            if not held or cancelled.is_set() or deadline.expired():
+                return self._indeterminate(request, record)
+            if self._at_bound(record, self.clock()):
+                return _AT_BOUND
+            if (record.get("transfer")
+                    or os.path.lexists(self._dir("tombstones") / f"{rid}.json")
+                    or os.path.lexists(self._dir("cleanup") / f"{rid}.json")):
+                return _REMOVED
+            if _read_journal(self._dir("reservations") / f"{rid}.json") is None:
+                self._publish_reservation(commit, str(record["request_id"]))
+            rows = commit.get("trail") or []
+            trail = tuple(TrailEntry.from_json(row) for row in rows)  # type: ignore[union-attr]
+            return self._settle(record, self._reserve_response(request, "admitted", None, trail, reservation))
+
+    def _owned_effects(self, record: Mapping[str, object]) -> list[dict[str, object]]:
+        """The effects this attempt still owns directly: its commit's complete effect, or
+        the walk's pending effects when no commit was journaled. Once a cleanup transfer is
+        planned, the transfer owns them and this is empty."""
+        if record.get("transfer"):
+            return []
+        commit = record.get("commit")
+        if isinstance(commit, dict):
+            return [dict(commit["effect"])]  # type: ignore[arg-type]
+        return [dict(row) for row in record.get("pending") or [] if isinstance(row, dict)]  # type: ignore[union-attr]
+
+    def _ownership(self, record: Mapping[str, object], effect: Mapping[str, object],
+                   index: int) -> tuple[str, str]:
+        """The stable ``(key, lock)`` of one effect. A committed effect is owned under its
+        reservation id and serialized on that reservation's lock, the lock every consumer
+        of the reservation takes; a pending effect is owned under its attempt and lease or
+        slot, serialized on its own cleanup lock."""
+        commit = record.get("commit")
+        if isinstance(commit, dict):
+            return str(commit["reservation"]["reservation_id"]), "reservations"  # type: ignore[index]
+        identity = effect.get("lease_id") or effect.get("slot") or str(index)
+        return f"{record['request_id']}--{identity}", "cleanup"
+
+    def _owner_lock(self, key: str, lock: str, deadline: "_Deadline | None") -> "_FileLock":
+        return _FileLock(self._dir(lock) / f"{key}.lock", blocking=False, deadline=deadline)
+
+    def _plan_transfer(self, record: dict[str, object]) -> None:
+        """Durably record, in the attempt, the hand-over of its effects to cleanup owners
+        under stable keys, before any owner is materialized. Idempotent."""
+        if record.get("transfer"):
+            return
+        entries = []
+        for index, effect in enumerate(self._owned_effects(record)):
+            key, lock = self._ownership(record, effect, index)
+            entries.append({"key": key, "lock": lock, "effect": effect, "state": "planned"})
+        record["transfer"] = {"entries": entries}
+        record["pending"] = []
+        self._journal_attempt(record)
+
+    def _transfer_unfinished(self, record: Mapping[str, object]) -> bool:
+        transfer = record.get("transfer") or {}
+        return any(entry.get("state") != "completed"  # type: ignore[union-attr]
+                   for entry in transfer.get("entries") or [])  # type: ignore[union-attr]
+
+    def _resume_transfer(self, record: dict[str, object], deadline: "_Deadline | None") -> None:
+        """Materialize or complete each entry under its owner lock, within the deadline,
+        and journal the new states; an entry whose lock is not obtained stays as it is for
+        a later start-up. A completed entry's destroyed owner is removed only after the
+        attempt journals that completion, so nothing is ever resurrected."""
+        entries = (record.get("transfer") or {}).get("entries") or []  # type: ignore[union-attr]
+        changed = False
+        for entry in entries:
+            if entry["state"] == "completed":
+                continue
+            with self._owner_lock(entry["key"], entry["lock"], deadline) as held:
+                if not held:
+                    continue
+                state = self._materialize(entry)
+            if state != entry["state"]:
+                entry["state"] = state
+                changed = True
+        if changed:
+            self._journal_attempt(record)
+        for entry in entries:
+            if entry["state"] == "completed":
+                with self._owner_lock(entry["key"], entry["lock"], deadline) as held:
+                    owner = _read_journal(self._dir("cleanup") / f"{entry['key']}.json") if held else None
+                    if owner is not None and owner.get("state") == "destroyed":
+                        _remove_journal(self._dir("cleanup") / f"{entry['key']}.json")
+
+    def _materialize(self, entry: Mapping[str, object]) -> str:
+        """Under the owner lock: give one planned effect its single cleanup owner. An
+        existing owner (owned or destroyed) is recognized, never rewritten; a committed
+        effect already destroyed by a consumer (its tombstone) completes the entry; an
+        active record of the same reservation is retired as its owner materializes."""
+        key = str(entry["key"])
+        existing = _read_journal(self._dir("cleanup") / f"{key}.json")
+        committed = entry["lock"] == "reservations"
+        if existing is not None:
+            if committed:
+                self._retire_active(key)
+            return "completed" if existing.get("state") == "destroyed" else "materialized"
+        if committed and os.path.lexists(self._dir("tombstones") / f"{key}.json"):
+            self._retire_active(key)
+            return "completed"
+        self._write_cleanup_owner(key, str(entry["lock"]), entry["effect"])  # type: ignore[arg-type]
+        if committed:
+            self._retire_active(key)
+        return "materialized"
+
+    def _write_cleanup_owner(self, key: str, lock: str, effect: Mapping[str, object]) -> None:
+        _write_journal(self._dir("cleanup") / f"{key}.json",
+                       {"key": key, "lock": lock, "state": "owned", "created_at": self.clock(),
+                        "effect": dict(effect)})
+
+    def _retire_active(self, reservation_id: str) -> None:
+        _remove_journal(self._dir("reservations") / f"{reservation_id}.json")
+
+    def _claimed_by_transfer(self, reservation_id: str, active: Mapping[str, object]) -> bool:
+        """Under the reservation lock: whether a cleanup transfer owns this reservation's
+        effect. If so the active record is not cleaned or admitted separately; it is
+        retired as the transfer's owner materializes."""
+        if os.path.lexists(self._dir("cleanup") / f"{reservation_id}.json"):
+            self._retire_active(reservation_id)
+            return True
+        request_id = active.get("request_id")
+        if not isinstance(request_id, str):
+            return False
+        attempt = _read_journal(self._dir("attempts") / f"{request_id}.json")
+        for entry in ((attempt or {}).get("transfer") or {}).get("entries") or []:  # type: ignore[union-attr]
+            if entry.get("key") == reservation_id and entry.get("state") != "completed":
+                self._materialize(entry)
+                return True
+        return False
+
+    @staticmethod
+    def _parsed_root(text: str, name: str) -> object:
+        location = sandbox_policy.parse_location(text)
+        return sandbox_policy.SandboxRootChoice(location.host, location.path, False,
+                                                scheme=location.scheme, name=name)
+
+    def _settle_end_reached(self, record: dict[str, object], request: object = None,
+                            deadline: "_Deadline | None" = None) -> object:
+        """Step 3: settle terminally at the bound and arm the barrier for this walk only.
+        The attempt's effects (the complete committed effect when there is one) are first
+        durably planned for transfer to cleanup owners, then materialized as far as the
+        deadline allows; an unfinished transfer is resumed by a later start-up."""
+        from .placement_process_contract import TrailEntry
+
+        trail = self._journaled_trail(record)
+        effects = self._owned_effects(record)
+        entries = ((record.get("transfer") or {}).get("entries") or [])  # type: ignore[union-attr]
+        if not trail:
+            label = (str(effects[-1]["target"]) if effects
+                     else str(entries[-1]["effect"]["target"]) if entries else _PREFLIGHT)
+            trail = (TrailEntry(label, "timeout", _END_REACHED, None),)
+        if request is None:
+            context = record.get("caller_context")
+            request = _RequestEcho(str(record["request_id"]),
+                                   dict(context) if isinstance(context, dict) else {})
+        self._plan_transfer(record)
+        self._resume_transfer(record, deadline)
+        record["barrier"] = "armed"
+        return self._settle(record, self._reserve_response(request, "timeout", _END_REACHED, trail))
+
+    def _default_reconcile(self, record: Mapping[str, object], timeout_s: float) -> str:
+        """One read-only check of the journaled uncertain effect. A local slot is held iff
+        its file exists; a remote lease is held iff its owner listing names it. Either is
+        ready only when the attempt's commit is complete."""
+        effects = self._owned_effects(record)
+        if not effects:
+            return "nothing_held"
+        effect = effects[-1]
+        commit = record.get("commit")
+        complete = isinstance(commit, dict) and bool(commit.get("complete"))
+        if effect.get("kind") == "local":
+            if not (self._slots_dir() / f"{effect.get('slot')}.json").exists():
+                return "nothing_held"
+            return "held_ready" if complete else "indeterminate"
+        try:
+            root = effect.get("root") or (effect.get("binding") or {}).get("root")  # type: ignore[union-attr]
+            backend = self.backend_for(self._parsed_root(str(root), str(effect["target"])))
+            if backend is None:
+                return "indeterminate"
+            from . import placement_lease
+
+            owner = placement_lease.owner_id(self.inventory)
+            calls = _Calls(settings=self.settings)
+            try:
+                owned = calls.run(lambda: [tuple(pair) for pair in backend.list_owned(owner, _bound(timeout_s))],  # type: ignore[attr-defined]
+                                  timeout_s)
+            finally:
+                calls.close()
+            listed = any(pair[1] == effect.get("lease_id") for pair in owned)  # type: ignore[union-attr]
+        except Exception:
+            return "indeterminate"
+        if not listed:
+            return "nothing_held"
+        return "held_ready" if complete else "indeterminate"
+
+    def _flags(self, entry: Mapping[str, object] | None, *, tombstone: bool = False) -> object:
+        from .placement_process_contract import LeaseFlags
+
+        if entry is None:
+            return LeaseFlags(barrier_confirmed=True)
+        expires = _epoch(entry.get("reservation", {}).get("expires_at"))  # type: ignore[union-attr]
+        expired = expires is not None and self.clock() >= expires
+        if tombstone:
+            return LeaseFlags(create_settled=True, fenced=True, destruction_observed=True,
+                              barrier_confirmed=True, expired=expired)
+        if entry.get("state") == "cleanup_pending":
+            return LeaseFlags(reserved=True, create_settled=True, fenced=True,
+                              cleanup_pending=True, expired=expired)
+        return LeaseFlags(reserved=True, create_settled=True, ready=True,
+                          barrier_confirmed=True, expired=expired)
+
+    def release(self, request: object, *, cancelled: threading.Event) -> object:
+        """``PlacementLifecycle.release(request, *, cancelled) -> ReleaseResponse``. One
+        deadline bounds start-up, the lock wait, bridge teardown, kill and owner listing."""
+        from .placement_process_contract import LeaseFlags, ReleaseResponse, canonical_bytes
+
+        deadline = _Deadline.after(request.deadline_ms / 1000.0)  # type: ignore[attr-defined]
+        self._startup(deadline)
+        supplied = request.reservation  # type: ignore[attr-defined]
+        reservation_id = supplied.reservation_id
+
+        def response(state: str, code: str | None, flags: object) -> object:
+            return ReleaseResponse(request.request_id, reservation_id, state, code, flags,  # type: ignore[attr-defined, arg-type]
+                                   request.caller_context)  # type: ignore[attr-defined]
+
+        pending_flags = LeaseFlags(reserved=True, create_settled=True, fenced=True, cleanup_pending=True)
+        if supplied.client != self.client or supplied.inventory != self.client:
+            # Another client's reservation is never looked up, let alone released.
+            return response("rejected", _REFUSED, self._flags(None))
+        if not _ISSUED_RESERVATION.fullmatch(reservation_id):
+            return response("unknown_reservation", _REFUSED, self._flags(None))
+        active_path = self._dir("reservations") / f"{reservation_id}.json"
+        tomb_path = self._dir("tombstones") / f"{reservation_id}.json"
+        if not os.path.lexists(active_path) and not os.path.lexists(tomb_path):
+            return response("unknown_reservation", _REFUSED, self._flags(None))
+        with _FileLock(self._dir("reservations") / f"{reservation_id}.lock", blocking=False,
+                       deadline=deadline) as held:
+            if not held:
+                # Another operation holds this reservation: its effect may remain.
+                return response("cleanup_pending", _RELEASE_UNCONFIRMED, pending_flags)
+            active = _read_journal(active_path)
+            tombstone = _read_journal(tomb_path) if active is None else None
+            stored = active or tombstone
+            if stored is None:
+                return response("unknown_reservation", _REFUSED, self._flags(None))
+            echo = canonical_bytes(dict(request.reservation_json))  # type: ignore[attr-defined]
+            if echo != canonical_bytes(stored["reservation"]):
+                # Rejected: nothing released, no flag changed, no barrier armed.
+                return response("rejected", _REFUSED, self._flags(stored, tombstone=active is None))
+            if active is None:
+                return response("released", None, self._flags(tombstone, tombstone=True))
+            if self._claimed_by_transfer(reservation_id, active):
+                # Its cleanup owner removes the effect; the active record is retired.
+                return response("cleanup_pending", _RELEASE_UNCONFIRMED, pending_flags)
+            if self._cleanup(active["effect"], deadline):  # type: ignore[arg-type]
+                self._tombstone(reservation_id, active)
+                return response("released", None, self._flags(active, tombstone=True))
+            active["state"] = "cleanup_pending"
+            _write_journal(active_path, active)
+            return response("cleanup_pending", _RELEASE_UNCONFIRMED, self._flags(active))
+
+    def _tombstone(self, reservation_id: str, active: Mapping[str, object]) -> None:
+        tombstone = {"reservation": active["reservation"], "state": "released",
+                     "released_at": self.clock(),
+                     "tombstone_expires": self.clock() + TOMBSTONE_RETENTION_S}
+        _write_journal(self._dir("tombstones") / f"{reservation_id}.json", tombstone)
+        _remove_journal(self._dir("reservations") / f"{reservation_id}.json")
+
+    def _cleanup(self, effect: Mapping[str, object], deadline: "_Deadline") -> bool:
+        """Remove one journaled effect within the operation's deadline: its bridge (by
+        handle, or by its known directory when the handle was never recorded), then its
+        local slot or remote lease. True only when every part is confirmed gone."""
+        from .placement_bridge import operation_deadline
+
+        confirmed = True
+        with operation_deadline(deadline.end):
+            if effect.get("bridge"):
+                from .placement_bridge import BridgeHandle
+
+                try:
+                    flags = self.bridge.close(BridgeHandle.from_json(effect["bridge"]),  # type: ignore[attr-defined, arg-type]
+                                              cancelled=threading.Event())
+                    confirmed = not flags.cleanup_pending
+                except Exception:
+                    confirmed = False
+            elif effect.get("bridge_directory"):
+                try:
+                    flags = self.bridge.reclaim(str(effect["bridge_directory"]),  # type: ignore[attr-defined]
+                                                cancelled=threading.Event())
+                    confirmed = not flags.cleanup_pending
+                except Exception:
+                    confirmed = False
+        if effect.get("kind") == "local":
+            try:
+                os.unlink(self._slots_dir() / f"{effect['slot']}.json")
+            except FileNotFoundError:
+                pass
+            except OSError:
+                return False
+            return confirmed
+        root = effect.get("root") or (effect.get("binding") or {}).get("root")  # type: ignore[union-attr]
+        try:
+            backend = self.backend_for(self._parsed_root(str(root), str(effect.get("target"))))
+        except Exception:
+            backend = None
+        if backend is None:
+            return False
+        return self._release_remote(backend, str(effect["lease_id"]), deadline) and confirmed
+
+    def _release_remote(self, backend: object, lease_id: str, deadline: "_Deadline") -> bool:
+        """Kill by lease id, then confirm the owner listing no longer names it, both within
+        what is left of the operation's deadline."""
+        from . import placement_lease
+
+        try:
+            lease = placement_lease.recover_lease(lease_id, inventory=self.inventory)
+        except (OSError, ValueError):
+            lease = _LeaseRef(lease_id, placement_lease.owner_id(self.inventory))
+        calls = _Calls(settings=self.settings)
+        try:
+            lease.fence()
+            left = min(ANSWER_BOUND_S, deadline.left())
+            if left <= 0:
+                raise PlacementUnavailable(_TIMEOUT)
+            calls.run(lambda: backend.kill(lease_id, _bound(left)), left)  # type: ignore[attr-defined]
+            lease.note_killed()
+            owner = lease.owner_id
+            left = min(ANSWER_BOUND_S, deadline.left())
+            if left <= 0:
+                raise PlacementUnavailable(_TIMEOUT)
+            owned = calls.run(lambda: [tuple(pair) for pair in backend.list_owned(owner, _bound(left))],  # type: ignore[attr-defined]
+                              left)
+            confirmed = all(pair[1] != lease_id for pair in owned)  # type: ignore[union-attr]
+        except Exception:
+            confirmed = False
+        finally:
+            calls.close()
+        if confirmed:
+            lease.clear()
+        else:
+            lease.abandon()
+        return confirmed
+
+    def reap(self, request: object, *, cancelled: threading.Event) -> object:
+        """``PlacementLifecycle.reap(request, *, cancelled) -> ReapResponse``: only the
+        selected client's inventory, eligible entries by ``created_at`` then id, all within
+        one deadline. Every consumer of a reservation's effect, its active record or its
+        cleanup owner, holds that reservation's lock; a consumed cleanup owner is kept as a
+        destroyed completion record until its attempt journals the completion."""
+        from .placement_process_contract import InventoryReapResult, ReapResponse
+
+        deadline = _Deadline.after(request.deadline_ms / 1000.0)  # type: ignore[attr-defined]
+        self._startup(deadline)
+        now = self.clock()
+        eligible: list[tuple[float, str, str]] = []
+        for reservation_id, entry in self._records("reservations"):
+            expires = _epoch(entry.get("reservation", {}).get("expires_at"))  # type: ignore[union-attr]
+            if entry.get("state") == "cleanup_pending" or (expires is not None and now >= expires):
+                eligible.append((float(entry.get("created_at", 0.0)), reservation_id, "reservations"))  # type: ignore[arg-type]
+        for entry_id, entry in self._records("cleanup"):
+            if entry.get("state", "owned") == "owned":
+                eligible.append((float(entry.get("created_at", 0.0)), entry_id, "cleanup"))  # type: ignore[arg-type]
+        eligible.sort(key=lambda item: (item[0], item[1]))
+        examined = destroyed = pending = 0
+        for _created, key, kind in eligible[: request.max_items]:  # type: ignore[attr-defined]
+            if deadline.expired() or cancelled.is_set():
+                pending += 1
+                continue
+            examined += 1
+            lock = "reservations" if kind == "reservations" else self._cleanup_lock_of(key)
+            with self._owner_lock(key, lock, deadline) as held:
+                if not held:
+                    pending += 1
+                    continue
+                outcome = (self._reap_active(key, deadline) if kind == "reservations"
+                           else self._reap_owner(key, deadline))
+            if outcome is None or outcome:
+                destroyed += 1
+            else:
+                pending += 1
+        state = "complete" if pending == 0 else "cleanup_pending"
+        result = InventoryReapResult(self.client, self.client, examined, destroyed, pending,
+                                     None if pending == 0 else _RELEASE_UNCONFIRMED)
+        return ReapResponse(request.request_id, state, result, request.caller_context)  # type: ignore[attr-defined]
+
+    def _cleanup_lock_of(self, key: str) -> str:
+        owner = _read_journal(self._dir("cleanup") / f"{key}.json") or {}
+        return "reservations" if owner.get("lock") == "reservations" else "cleanup"
+
+    def _reap_active(self, reservation_id: str, deadline: "_Deadline") -> bool | None:
+        """Under the reservation lock: consume an active record, unless a cleanup transfer
+        owns its effect, in which case the transfer's owner is consumed instead."""
+        current = _read_journal(self._dir("reservations") / f"{reservation_id}.json")
+        if current is None:
+            return None
+        if self._claimed_by_transfer(reservation_id, current):
+            return self._reap_owner(reservation_id, deadline)
+        if self._cleanup(current["effect"], deadline):  # type: ignore[arg-type]
+            self._tombstone(reservation_id, current)
+            return True
+        current["state"] = "cleanup_pending"
+        _write_journal(self._dir("reservations") / f"{reservation_id}.json", current)
+        return False
+
+    def _reap_owner(self, key: str, deadline: "_Deadline") -> bool | None:
+        """Under the owner lock: consume one cleanup owner and keep it as a destroyed
+        completion record."""
+        path = self._dir("cleanup") / f"{key}.json"
+        owner = _read_journal(path)
+        if owner is None or owner.get("state") == "destroyed":
+            return None
+        if not self._cleanup(owner["effect"], deadline):  # type: ignore[arg-type]
+            return False
+        owner["state"] = "destroyed"
+        owner["destroyed_at"] = self.clock()
+        _write_journal(path, owner)
+        return True
+
+class _RequestEcho(NamedTuple):
+    """What a response echoes of the request it answers, rebuilt from the journal."""
+
+    request_id: str
+    caller_context: Mapping[str, object]
+
+
+class _LeaseRef:
+    """A lease known only by id (its journal entry is gone): kill and list still work."""
+
+    def __init__(self, lease_id: str, owner_id: str = "") -> None:
+        self.lease_id, self.owner_id = lease_id, owner_id
+
+    def fence(self) -> None:
+        pass
+
+    def note_killed(self) -> None:
+        pass
+
+    def clear(self) -> None:
+        pass
+
+    def abandon(self) -> None:
+        pass
+
+
+class _ReserveWalk:
+    """The walk's hooks for one reserve attempt: per-target requests, journaled leases and
+    the host-wide local slot registry."""
+
+    def __init__(self, lifecycle: PlacementLifecycle, request: object, record: dict[str, object],
+                 plans: Mapping[str, _TargetPlan], bindings: Mapping[str, dict[str, object]],
+                 thresholds: object) -> None:
+        self.lifecycle, self.request, self.record = lifecycle, request, record
+        self.plans, self.bindings, self.thresholds = plans, bindings, thresholds
+        self._journal_lock = threading.Lock()
+
+    def _note_pending(self, effect: dict[str, object]) -> None:
+        with self._journal_lock:
+            pending = list(self.record.get("pending") or [])  # type: ignore[arg-type]
+            pending.append(effect)
+            self.record["pending"] = pending
+            _write_journal(self.lifecycle._dir("attempts") / f"{self.record['request_id']}.json", self.record)
+
+    def request_for(self, root: object) -> PlacementRequest:
+        plan = self.plans[getattr(root, "name", "")]
+        if plan.refusal is not None:
+            raise PlacementUnavailable(plan.refusal)
+        return PlacementRequest(
+            leg=str(self.request.request_id), round_id=str(self.record["reservation_id"]),  # type: ignore[attr-defined]
+            repo="", snapshot_sha256="", deadline_s=float(self.request.ttl_s),  # type: ignore[attr-defined]
+            egress_needs=EgressNeeds(), workload=self.request.workload,  # type: ignore[attr-defined]
+            _mapping=_LIFECYCLE_SEAL,
+        )
+
+    def open_lease(self, name: str | None, root: object) -> object:
+        from . import placement_lease
+
+        lease = placement_lease.open_lease(name, root, inventory=self.lifecycle.inventory)
+        try:
+            self._note_pending({"kind": "remote", "target": name, "lease_id": lease.lease_id,
+                                "binding": self.bindings[str(name)]})
+        except BaseException:
+            lease.clear()
+            raise
+        return lease
+
+    def local_preflight(self, label: str) -> str | None:
+        return self.plans[label].refusal
+
+    def _reading(self) -> LocalHeadroom:
+        values = self.lifecycle.observe()
+        live = len([name for name in os.listdir(self.lifecycle._slots_dir())
+                    if name.endswith(".json") and not name.startswith(".")])
+        return LocalHeadroom(
+            memory_available_bytes=values.get("memory_available_bytes"),  # type: ignore[arg-type]
+            load_per_cpu_percent=values.get("load_per_cpu_percent"),  # type: ignore[arg-type]
+            live_sandboxes=live, observed_monotonic=_monotonic(),
+            memory_total_bytes=values.get("memory_total_bytes"),  # type: ignore[arg-type]
+            io_full_avg10=values.get("io_full_avg10"),  # type: ignore[arg-type]
+            memory_some_avg10=values.get("memory_some_avg10"),  # type: ignore[arg-type]
+        )
+
+    def local_capacity(self) -> LocalHeadroom:
+        return self._reading()
+
+    def local_admit(self, _settings: object, bound: OperationBound) -> LocalAdmission:
+        """Atomically observe and reserve one host-wide live-sandbox slot, within the
+        walk's bound for this call: the slot lock is never waited on past it, and a call
+        whose bound was cancelled (it timed out) never journals or writes a slot."""
+        label = next(name for name, plan in self.plans.items()
+                     if plan.target.kind == "local" and plan.refusal is None)
+        slots = self.lifecycle._slots_dir()
+        lock = _FileLock(self.lifecycle.state_root / "local-slots.lock", blocking=False,
+                         deadline=_Deadline.after(bound.timeout_s))
+        with lock as held:
+            if not held or bound.cancelled.is_set():
+                raise PlacementUnavailable(_CAPACITY)
+            reading = self._reading()
+            if bound.cancelled.is_set() or not reading.admits(self.thresholds):
+                raise PlacementUnavailable(_CAPACITY)
+            token = self.lifecycle.new_id()
+            if bound.cancelled.is_set():
+                raise PlacementUnavailable(_CAPACITY)
+            self._note_pending({"kind": "local", "target": label, "slot": token,
+                                "binding": self.bindings[label]})
+            if bound.cancelled.is_set():
+                raise PlacementUnavailable(_CAPACITY)
+            _write_journal(slots / f"{token}.json", {
+                "client": self.lifecycle.client, "request_id": self.request.request_id,  # type: ignore[attr-defined]
+                "reservation_id": self.record["reservation_id"], "created_at": self.lifecycle.clock(),
+            })
+        return LocalAdmission(LocalReservation(token), reading)
+
+    def local_release(self, handle: LocalReservation) -> None:
+        try:
+            os.unlink(self.lifecycle._slots_dir() / f"{handle.token}.json")
+        except FileNotFoundError:
+            pass
+
+
+def _landed_caps_loader() -> object:
+    from . import seat_resource_caps
+
+    return seat_resource_caps.load_caps()
+
+
+def _landed_caps_readiness() -> str | None:
+    from . import seat_resource_caps
+
+    return seat_resource_caps.readiness_code()
+
+
+def _registry_backend(root: object) -> object:
+    """The registered backend for an OpenShell target's scheme; none is registered in
+    production, so every remote rung refuses ``sandbox_placement_backend_unregistered``."""
+    if getattr(root, "scheme", "") != "openshell":
+        return None
+    return backend_for_scheme("openshell")

@@ -6,6 +6,21 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- Placement process boundary (v13 PLACECLI): a new `agent-harness-placement --client
+  agent-harness|agent-toolkit reserve|release|reap|version` console entry. It speaks the
+  frozen placement process protocol v1, packaged as
+  `contracts/placement/process-v1.schema.json`, through a strict codec. A per-client
+  `PlacementLifecycle` adds:
+  - a reservation-only walk exit;
+  - restart-safe replay, release and caller-scoped reap;
+  - provider allowlists and an effective-egress digest;
+  - per-host local-headroom thresholds;
+  - caps readiness at reservation time;
+  - a reservation-scoped ForwardTcp-to-Unix bridge.
+
+  `phase-loop placement reap --client` reaches the same service. Live routes stay disabled.
+  See `docs/placement-process-cli.md`.
+
 - CI: honour the org-wide `CI_OFFLOAD_PAUSED` switch in the CI-offload eligibility
   job. `true` diverts runs to the existing hosted path (GitHub compares
   case-insensitively, so `TRUE` does too), and the job logs `offload paused (CI_OFFLOAD_PAUSED): <value>`. Unset or any other value

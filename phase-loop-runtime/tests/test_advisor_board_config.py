@@ -578,3 +578,33 @@ def test_governed_local_headroom_settings(tmp_path):
         '[sandbox.driver]\nlocal_max_live_sandboxes = 3\n')
     assert sandbox_policy.placement_driver_settings(repo, path=user, env={}).local_max_live_sandboxes == 3
     assert sandbox_policy.placement_driver_settings(path=user, env={}).local_max_live_sandboxes == 2
+
+
+def test_placement_headroom_defaults_are_packaged_only(tmp_path, monkeypatch):
+    # v13 PLACECLI: the published local-headroom defaults ride the packaged driver
+    # defaults; no user, repository or environment layer reaches them.
+    defaults = config.load_placement_headroom_defaults()
+    assert defaults == {
+        "memory_available_bytes_minimum_floor": 4294967296,
+        "memory_available_total_ram_fraction_minimum": 0.1,
+        "load_per_cpu_percent_maximum_exclusive": 70,
+        "io_pressure_full_avg10_percent_maximum_exclusive": 10,
+        "memory_pressure_some_avg10_percent_maximum_exclusive": 10,
+        "live_sandboxes_maximum_exclusive": 4,
+        "observation_age_seconds_maximum": 5,
+    }
+    # The driver settings loader still accepts the packaged file with the new table.
+    assert sandbox_policy.placement_driver_settings(env={}).max_live_workers > 0
+    resource = tmp_path / "fixtures" / "placement-driver.defaults.toml"
+    resource.parent.mkdir()
+    monkeypatch.setattr(config.resources, "files", lambda package: tmp_path)
+    body = "[placement.local_headroom]\n" + "".join(
+        f"{key} = {value}\n" for key, value in defaults.items())
+    for text in ("", body.replace("observation_age_seconds_maximum = 5\n", ""),
+                 body + "extra = 1\n", body.replace("= 70", '= "70"'),
+                 body + "[placement.other]\nx = 1\n"):
+        resource.write_text(text)
+        with pytest.raises(BoardConfigError):
+            config.load_placement_headroom_defaults()
+    resource.write_text(body)
+    assert config.load_placement_headroom_defaults() == defaults
