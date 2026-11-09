@@ -15218,7 +15218,7 @@
       "file": "plans/artifacts/v12-WORKER-contract.md",
       "frozen_inputs": {
         "plans/artifacts/v12-WORKER-contract.md": {
-          "sha256": "b14867271b2782c0f1d3e5e19320b707ddffada43b53edd71a3f4f82149a373e"
+          "sha256": "222c6c07695f91e7bbaf47c5ff5fbc4590b4b677d6c31a4885d67646146da523"
         }
       },
       "gate_status": "declared_not_produced",
