@@ -19,21 +19,24 @@ inside the checkout. Interpreters were uv's Python 3.12.14 and the system
 `/usr/bin/python3.14` (3.14.4), each in its own locked environment. Host load,
 available memory and memory/IO pressure were checked before each command.
 
+- Python 3.12: ran on ai (ViperJuice-AI-Server) at commit 8979a44f441776d03f8169be0cb5b50b650b6d31, /usr/bin/python3.12 (3.12.3) in a private scratch clone using that tree's locked uv venv after an -I pre-check, under ai's project admission lock with memory PSI full <= 1 and I/O PSI full < 5.
+- Python 3.14: ran on dev0 at commit 8979a44f441776d03f8169be0cb5b50b650b6d31, /usr/bin/python3.14 (3.14.4) in the locked uv venv, each run gated on at least 1 GiB of user-slice slack.
+
 | Check | Python 3.12 | Python 3.14 |
 | --- | --- | --- |
-| V0 `test_run_status.py` | 189 passed, 0 failed, 0 skipped | 189 passed, 0 failed, 0 skipped |
-| V1 `test_run_status_projection.py` | 88 passed, 0 failed, 0 skipped | 88 passed, 0 failed, 0 skipped |
+| V0 `test_run_status.py` | 190 passed, 0 failed, 0 skipped | 190 passed, 0 failed, 0 skipped |
+| V1 `test_run_status_projection.py` | 89 passed, 0 failed, 0 skipped | 89 passed, 0 failed, 0 skipped |
 | V2 `test_run_status_receipt.py` | 12 passed, 0 failed, 0 skipped | 12 passed, 0 failed, 0 skipped |
 | V3 `test_seat_reference_inventory.py` | 7 passed, 0 failed, 0 skipped | 7 passed, 0 failed, 0 skipped |
 | V4 `test_runtime_consumers_remain_independent` | 1 passed, 0 failed, 0 skipped | 1 passed, 0 failed, 0 skipped |
-| Effective suite (frontmatter `suite_command`) | 296 passed, 0 failed, 0 skipped | 296 passed, 0 failed, 0 skipped |
+| Effective suite (frontmatter `suite_command`) | 298 passed, 0 failed, 0 skipped | 298 passed, 0 failed, 0 skipped |
 
 V2 and the effective suite ran after this record's producer rows were stamped. Their rows were then added, and V2 was rerun against the final receipt.
 
 Before implementation, `--collect-only` over the V0–V2 paths selected zero nodes,
 because the files were absent. IF-0-VC-2 (`validate_verification_commands`)
 reported no finding for the V0–V4 argv or the effective suite once the V0–V2 files
-existed. The 277 producer nodes below equal a fresh
+existed. The 279 producer nodes below equal a fresh
 `--collect-only` of the two producer files. The outcomes agreed on both
 interpreters.
 
@@ -88,6 +91,9 @@ covers the repair.
   - `AttemptWindow` carries only the requested segment summary.
   - A multi-segment memory test shows that peaks for both projection APIs and
     `read_page` do not grow with the segment count.
+- The hosted Codex review at the next head raised two P2s. Revision 5 closes them:
+  - `check_projection` now checks a behind row's state as well as its digest;
+  - `open_writer` refuses limits above the readers' fixed bounds.
 
 ```json
 {
@@ -653,7 +659,7 @@ covers the repair.
  "final_tree_validated": false,
  "frozen_artifact": {
   "path": "plans/artifacts/v12-JOURNAL-interface.md",
-  "sha256": "c9100f04e8fef192b21ec0037ed5fea1b4a5ab882b56c52e7e9aab87ffd7bd05"
+  "sha256": "6aa4c3325c3ec99516dc5da8f115b77affb332a8f70d3cdf700c98405a9ba791"
  },
  "gate": "IF-0-JOURNAL-1",
  "mutation_outcomes": {
@@ -708,96 +714,100 @@ covers the repair.
   "V0": {
    "3.12": {
     "failed": 0,
-    "junit_sha256": "539b7ff39c8ad4efc4c47078e3f377e75d2554739a16a979e14bbad2f1f6ff9c",
-    "passed": 189,
-    "seconds": 4.066,
+    "junit_sha256": "5f04f364c13f47f005be8d89e9ca3ecffa94820aabe7a4eb70c273ee34d5631a",
+    "passed": 190,
+    "seconds": 9.111,
     "skipped": 0
    },
    "3.14": {
     "failed": 0,
-    "junit_sha256": "7a40b6e3699439f668ca167845294c3f2f2ce29afcaa5d693724549eff472200",
-    "passed": 189,
-    "seconds": 6.617,
+    "junit_sha256": "35a60bf0afef0d1c7b3f59f9cc085e2b233e16f40fed9d55454166bd9368c94c",
+    "passed": 190,
+    "seconds": 9.616,
     "skipped": 0
    }
   },
   "V1": {
    "3.12": {
     "failed": 0,
-    "junit_sha256": "70a61f0dbe324d3fc6645d0600e5c449be8977386ba389851971eaf65b52d5bc",
-    "passed": 88,
-    "seconds": 19.381,
+    "junit_sha256": "46dd099ad62f6127acb1dad344f5df0a735b4a016e2679ce43c4be0bac8f9ea1",
+    "passed": 89,
+    "seconds": 22.544,
     "skipped": 0
    },
    "3.14": {
     "failed": 0,
-    "junit_sha256": "deeeb920e8a4cf0a2772add2ca927eb13b197b8da76bb4c2428d523e1c681c62",
-    "passed": 88,
-    "seconds": 15.652,
+    "junit_sha256": "78f4fec78e48b0d6a4677412c82f3489c2d602534679332831ec9178573c75f1",
+    "passed": 89,
+    "seconds": 20.193,
     "skipped": 0
    }
   },
   "V2": {
    "3.12": {
     "failed": 0,
-    "junit_sha256": "beff9310ac3e4d7133a14bd093ae89838dfa54577332eb36c35561d5c32e513b",
+    "host": "ViperJuice-AI-Server",
+    "junit_sha256": "d5d03bbe52e90f342d68dced00f9d42a5d62f89b8073bcb69c4c13545a21d759",
     "passed": 12,
-    "seconds": 4.537,
+    "seconds": 8.854,
     "skipped": 0
    },
    "3.14": {
     "failed": 0,
-    "junit_sha256": "863d8d10fdbc69fd115aa1cca403f03dd30b2cfa3947a38da94b325c04376f9b",
+    "host": "dev0",
+    "junit_sha256": "5440649faa2dfaf18e38d34fd3a0adef9fea9f7d3c23269fc6400bfbad40eacc",
     "passed": 12,
-    "seconds": 4.093,
+    "seconds": 3.773,
     "skipped": 0
    }
   },
   "V3": {
    "3.12": {
     "failed": 0,
-    "junit_sha256": "82afd276080190786d56728d2dbf8ea09b8520ec2d8e98f9b6a13519eb519f9a",
+    "junit_sha256": "6124929faab66abd17b5da2749e68c1db461194b7fde3807511b56eb923e4203",
     "passed": 7,
-    "seconds": 3.178,
+    "seconds": 3.783,
     "skipped": 0
    },
    "3.14": {
     "failed": 0,
-    "junit_sha256": "a5c0157927f5e12e4473a5e360e03a3cc09de79bee87afbfddea67a285e7542a",
+    "junit_sha256": "c2be07c2b86302e370d3146ca575d0a40e0c8bfefdd9a55c2f2bb13c0cdd6197",
     "passed": 7,
-    "seconds": 2.968,
+    "seconds": 2.326,
     "skipped": 0
    }
   },
   "V4": {
    "3.12": {
     "failed": 0,
-    "junit_sha256": "66e107f3facb00bdbca5e4166a8f64e0dd104176f8bfb72278fb2553cb923d78",
+    "junit_sha256": "9c72eafd6120a6e7c70a8769b968f139c2435cba0ed360e2cae12a02812723d5",
     "passed": 1,
-    "seconds": 1.434,
+    "seconds": 3.008,
     "skipped": 0
    },
    "3.14": {
     "failed": 0,
-    "junit_sha256": "839ab07b0998c5e66e315640c4c29825fc564b94630c9d172ba75146a71e9500",
+    "junit_sha256": "3f93850237c7cbae321b0fc106ade4dd74f618864240ed06d1662c36204c5a73",
     "passed": 1,
-    "seconds": 1.601,
+    "seconds": 1.442,
     "skipped": 0
    }
   },
   "suite": {
    "3.12": {
     "failed": 0,
-    "junit_sha256": "cca53e9a8e65d7e00115b3c96c1719b9b0473b7ad7081416adbd9f7a0d674a8c",
-    "passed": 296,
-    "seconds": 29.06,
+    "host": "ViperJuice-AI-Server",
+    "junit_sha256": "cbd5208ad80b79fc7db5ec40ebf272ef135c8b5969e0907744a597ef3c828fb7",
+    "passed": 298,
+    "seconds": 64.836,
     "skipped": 0
    },
    "3.14": {
     "failed": 0,
-    "junit_sha256": "cf82ba1436678386305cb4ef074b62c010afa667e1fc6ee20a7589e5c4c7d027",
-    "passed": 296,
-    "seconds": 25.822,
+    "host": "dev0",
+    "junit_sha256": "1927873f89c795553aeeb81492e5584728b8d4dfa5f9109d20e96b107825bdb0",
+    "passed": 298,
+    "seconds": 35.005,
     "skipped": 0
    }
   }
@@ -997,6 +1007,7 @@ covers the repair.
   "tests/test_run_status.py::test_window_matches_read_attempt[V-two-attempts]",
   "tests/test_run_status.py::test_window_slices_without_retaining_history",
   "tests/test_run_status.py::test_writer_adopts_an_existing_lock_and_completes_its_barrier",
+  "tests/test_run_status.py::test_writer_at_the_reader_bounds_reads_back_cleanly",
   "tests/test_run_status.py::test_writer_fsync_order",
   "tests/test_run_status.py::test_writer_identity_minted_once",
   "tests/test_run_status.py::test_writer_ownership",
@@ -1005,6 +1016,7 @@ covers the repair.
   "tests/test_run_status.py::test_writer_poisoned_after_failed_write_or_fsync[write]",
   "tests/test_run_status.py::test_wrong_owner_refused",
   "tests/test_run_status_projection.py::test_admission_order_defeats_lexical_mtime_and_observed_at",
+  "tests/test_run_status_projection.py::test_behind_row_state_is_checked_against_the_replay",
   "tests/test_run_status_projection.py::test_bounds_match_pinned_schema",
   "tests/test_run_status_projection.py::test_cached_projection_is_stale_or_refused_never_current",
   "tests/test_run_status_projection.py::test_check_page_structure",
@@ -1276,6 +1288,7 @@ covers the repair.
   "tests/test_run_status.py::test_window_matches_read_attempt[V-two-attempts]": "passed",
   "tests/test_run_status.py::test_window_slices_without_retaining_history": "passed",
   "tests/test_run_status.py::test_writer_adopts_an_existing_lock_and_completes_its_barrier": "passed",
+  "tests/test_run_status.py::test_writer_at_the_reader_bounds_reads_back_cleanly": "passed",
   "tests/test_run_status.py::test_writer_fsync_order": "passed",
   "tests/test_run_status.py::test_writer_identity_minted_once": "passed",
   "tests/test_run_status.py::test_writer_ownership": "passed",
@@ -1284,6 +1297,7 @@ covers the repair.
   "tests/test_run_status.py::test_writer_poisoned_after_failed_write_or_fsync[write]": "passed",
   "tests/test_run_status.py::test_wrong_owner_refused": "passed",
   "tests/test_run_status_projection.py::test_admission_order_defeats_lexical_mtime_and_observed_at": "passed",
+  "tests/test_run_status_projection.py::test_behind_row_state_is_checked_against_the_replay": "passed",
   "tests/test_run_status_projection.py::test_bounds_match_pinned_schema": "passed",
   "tests/test_run_status_projection.py::test_cached_projection_is_stale_or_refused_never_current": "passed",
   "tests/test_run_status_projection.py::test_check_page_structure": "passed",
@@ -1375,37 +1389,41 @@ covers the repair.
  "producer_runs": {
   "3.12": {
    "failed": 0,
-   "junit_sha256": "cff8a97682fa23ed91aabf8b40986dc76b34d92078b34784577ce0b0615afc8e",
-   "passed": 277,
-   "seconds": 23.447,
+   "junit_sha256": "5e9e7e4924f62c61d29f99929e39d35f7a7621dba8523467206f26fe64d99b97",
+   "passed": 279,
+   "seconds": 31.655,
    "skipped": 0
   },
   "3.14": {
    "failed": 0,
-   "junit_sha256": "1ac8314641f4b80bfab0cc6ee13faa45ebe1cff1f1d1ada9bb7b3557152055fd",
-   "passed": 277,
-   "seconds": 22.269,
+   "junit_sha256": "a329445ed6e9af79521fade98084de541a0bfc10d6e83be9511d55177552e40d",
+   "passed": 279,
+   "seconds": 29.809,
    "skipped": 0
   }
  },
  "runner_stamp": {
   "approved_plan_input": "309c9e92",
-  "observed_input_base": "5a04c10bc34c1b8d9c1424c043db11e5898eae72",
-  "observed_utc": "2026-11-09T02:09:57.445129+00:00",
-  "source_tree_digest": "fd131498edfb7073c48883a23f4bb3df58ee9944d9d8545d06f1ed24119c38d3"
+  "observed_hosts": {
+   "3.12": "ai (ViperJuice-AI-Server) at commit 8979a44f441776d03f8169be0cb5b50b650b6d31, /usr/bin/python3.12 (3.12.3) in a private scratch clone using that tree's locked uv venv after an -I pre-check, under ai's project admission lock with memory PSI full <= 1 and I/O PSI full < 5",
+   "3.14": "dev0 at commit 8979a44f441776d03f8169be0cb5b50b650b6d31, /usr/bin/python3.14 (3.14.4) in the locked uv venv, each run gated on at least 1 GiB of user-slice slack"
+  },
+  "observed_input_base": "23a30561e9b2ef23933fcbb4225a1d86120a5195",
+  "observed_utc": "2026-11-09T04:22:02.421150+00:00",
+  "source_tree_digest": "496639a20336f9f2cd9a4bced7282e6cdd334efab2bf1bf33c063f1dc901b90c"
  },
  "source_hashes": {
-  "docs/supervised-run-status.md": "8f2485af4b284edc2a8fcd9b51126610b91261b4f392743f6b0fd36bade589aa",
-  "phase-loop-runtime/src/phase_loop_runtime/run_status.py": "e7722187bfa5187ea1da174472055cd94e6b35099e5ab157864ec789bbe78098",
-  "phase-loop-runtime/src/phase_loop_runtime/run_status_projection.py": "72568d1af57255552968b9e378860b89c9d5e838d206266db5423039c22fa7c1",
+  "docs/supervised-run-status.md": "1d47c384c86d86a73a617f0544376512dc8d65885acc6b6887f2389c12fc552e",
+  "phase-loop-runtime/src/phase_loop_runtime/run_status.py": "96321a8bc16b7390eda1312a238a0b430530d3b4d242441c44dc4d979ed13e37",
+  "phase-loop-runtime/src/phase_loop_runtime/run_status_projection.py": "914b2c242859909232dd4c22ead7ff71a7f2d93a262e879177520b318fe9381e",
   "phase-loop-runtime/src/phase_loop_runtime/schemas/supervised-worker-v1/conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
   "phase-loop-runtime/src/phase_loop_runtime/schemas/supervised-worker-v1/run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30",
   "phase-loop-runtime/tests/_run_status_vectors.py": "3710194953ef6d552584ce2ce9186197f63d19c2108c74e60d44ac64b6495237",
   "phase-loop-runtime/tests/data/seat_launch_references.json": "f9190444032dc91a7b089ad0c3218556b1b8a5ba4274387d39981dbe8cce8b2f",
-  "phase-loop-runtime/tests/test_run_status.py": "9e9db80dac4859bb8f256a74219544e9548ab3af1c451bb9cd65930818014e5e",
-  "phase-loop-runtime/tests/test_run_status_projection.py": "8d8f9c863f4bf8d8490da9fd753ecaaf206268d8e8c999aae37b2609e1d0763d",
+  "phase-loop-runtime/tests/test_run_status.py": "7e65d778945983569f391634fa162771113a40cf56d7ba5c19d7871f860ed022",
+  "phase-loop-runtime/tests/test_run_status_projection.py": "923348e3a7f8f877b6dfc8045642320c9c0374cef53d057d96228cae747af457",
   "phase-loop-runtime/tests/test_run_status_receipt.py": "9c4ff949fbb911e23d8950b678512f3dbbf198839567555c41053eae5a7da608",
-  "plans/artifacts/v12-JOURNAL-interface.md": "c9100f04e8fef192b21ec0037ed5fea1b4a5ab882b56c52e7e9aab87ffd7bd05"
+  "plans/artifacts/v12-JOURNAL-interface.md": "6aa4c3325c3ec99516dc5da8f115b77affb332a8f70d3cdf700c98405a9ba791"
  },
  "vector_outcomes": {
   "N04a-replaced-in-place": "passed",
