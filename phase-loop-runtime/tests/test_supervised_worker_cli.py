@@ -378,8 +378,8 @@ def test_controller_snapshot_excluded_location(v2_operator, root_kind):
     assert not operator.marker.exists()
 
 
-@pytest.mark.parametrize("change", [None, "binding-replaced", "controller-missing", "controller-timeout", "policy-slot"])
-def test_v2_cli_bootstrap_order_enters_real_worker(v2_operator, monkeypatch, change):
+@pytest.mark.parametrize("change", [None, "binding-replaced", "controller-missing", "controller-timeout", "policy-slot", "worker-exception"])
+def test_v2_cli_bootstrap_order_enters_real_worker(v2_operator, monkeypatch, capsys, change):
     import json
     from test_supervised_capture_v2 import build_v2_attempt
     from phase_loop_runtime import supervised_launch_binding as binding, supervised_launch as launch
@@ -399,6 +399,11 @@ def test_v2_cli_bootstrap_order_enters_real_worker(v2_operator, monkeypatch, cha
     if change == "controller-missing": controller_path.unlink()
     monkeypatch.setattr(binding, "MANAGED_BINDING", operator.path)
     monkeypatch.setattr(cli, "sys", SimpleNamespace(flags=SimpleNamespace(isolated=True)))
+    if change == "worker-exception":
+        def unexpected(*args, **kwargs):
+            raise RuntimeError("inert private exception fixture")
+        monkeypatch.setattr(patch_return, "run_patch_return", unexpected)
+    tokens_before = set(launch._TOKENS)
     events = []
     def wrap(owner, name, event):
         original = getattr(owner, name)
@@ -426,7 +431,11 @@ def test_v2_cli_bootstrap_order_enters_real_worker(v2_operator, monkeypatch, cha
             (patch_return, "run_patch_return", "journal-spawn")):
         wrap(owner, name, event)
     outcome = cli.main(["launch", "--envelope", str(envelope), "--result", str(result)], state_root=state)
-    if change:
+    if change == "worker-exception":
+        assert outcome == 10 and capsys.readouterr().out.strip() == "launch_invalid"
+        assert set(launch._TOKENS) == tokens_before
+        assert not state.exists()
+    elif change:
         assert outcome == 10 and not result.exists() and not state.exists()
         assert not operator.marker.exists()
         assert not {"activation", "decode", "validate", "prepare", "result", "journal-spawn"} & set(events)

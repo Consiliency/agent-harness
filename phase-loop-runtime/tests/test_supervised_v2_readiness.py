@@ -169,6 +169,21 @@ def test_latest_required_check_cannot_reuse_old_success():
         evidence.authenticate_required_checks(api, "a" * 40)
 
 
+@pytest.mark.parametrize("assessment_required", [False, True])
+def test_same_run_required_checks_stay_closed(monkeypatch, assessment_required):
+    base = f"repos/{evidence.REPOSITORY}"
+    name = "supervised v2 evidence assessment" if assessment_required else "supervised v2 source verification"
+    monkeypatch.setenv("GITHUB_RUN_ID", "3")
+    check = dict(id=1, name=name, head_sha="a" * 40, app={"slug": "github-actions"},
+        status="in_progress", conclusion=None, details_url="https://github.com/Consiliency/agent-harness/actions/runs/3/job/4")
+    api = API({base + "/branches/main/protection/required_status_checks": {"contexts": [name]},
+        base + "/rules/branches/main": [], base + "/commits/" + "a" * 40 + "/check-runs?per_page=100":
+        {"total_count": 1, "check_runs": [check]}})
+    expected = "assessment_check_self_dependency" if assessment_required else "required_check_missing"
+    with pytest.raises(evidence.EvidenceRefused, match=expected):
+        evidence.authenticate_required_checks(api, "a" * 40)
+
+
 def test_external_producer_set_remains_explicit():
     assert {row[0] for row in evidence.MISSING_PRODUCERS} == {"controller", "display", "board", "president", "publication"}
     assert all(owner and edge for _, owner, edge in evidence.MISSING_PRODUCERS)
@@ -249,19 +264,41 @@ def test_complete_offline_assessment_keeps_external_edges_blocked(assessment):
     assert result["verification_status"] == "blocked" and result["human_required"] is False
 
 
-@pytest.mark.parametrize("length", [4063, 9000])
+@pytest.mark.parametrize("length", [8192, 8193])
 def test_historical_deep_fixture_node_identity_bound(assessment, length):
     repo, record, stamp = assessment
     row = record["producer_results"]["readiness_results"][0]
-    row["test_node_id"] = "tests/test_supervised_v2_readiness.py::test_control[" + "[" * length + "]"
-    if length == 4063:
+    prefix = "tests/test_supervised_v2_readiness.py::test_control["
+    row["test_node_id"] = prefix + "[" * (length - len(prefix) - 1) + "]"
+    assert len(row["test_node_id"]) == length
+    if length == 8192:
         assert evidence.evaluate(repo, record, current_head=stamp)["offline_proof"] == "verified"
     else:
         with pytest.raises(evidence.EvidenceRefused, match="producer_node_invalid"):
             evidence.evaluate(repo, record, current_head=stamp)
 
 
-@pytest.mark.parametrize("mutation", ["authority", "head", "resource", "skipped", "missing", "witness", "secret", "obligation", "external", "shared", "stamp-payload", "hosted-payload", "obligation-proof"])
+@pytest.mark.parametrize("control", ["\x00", "\t", "\x1f", "\x7f"])
+def test_node_control_characters_refuse(assessment, control):
+    repo, record, stamp = assessment
+    record["producer_results"]["readiness_results"][0]["test_node_id"] += control
+    with pytest.raises(evidence.EvidenceRefused, match="producer_node_invalid"):
+        evidence.evaluate(repo, record, current_head=stamp)
+
+
+def test_obligation_case_removal_enters_unpatched_reducer():
+    record = evidence.read_receipt(ROOT / evidence.RECEIPT)
+    producers = record["producer_results"]
+    baseline = evidence.obligation_results(ROOT, producers)
+    selected = next(row for row in baseline if row["outcome"] == "offline_production_covered")
+    removed = set(selected["producer_nodes"])
+    reduced = {group: [row for row in rows if row["test_node_id"] not in removed] for group, rows in producers.items()}
+    changed = next(row for row in evidence.obligation_results(ROOT, reduced) if row["id"] == selected["id"])
+    assert changed["outcome"] == "family_witnessed"
+    assert changed != selected
+
+
+@pytest.mark.parametrize("mutation", ["authority", "head", "resource", "skipped", "missing", "witness", "secret", "obligation", "external", "shared", "stamp-payload", "hosted-payload", "obligation-proof", "shared-stamp"])
 def test_receipt_negative_controls_enter_production_verifier(assessment, mutation):
     repo, record, stamp = assessment
     row = record["producer_results"]["admission_results"][0]
@@ -277,15 +314,39 @@ def test_receipt_negative_controls_enter_production_verifier(assessment, mutatio
     elif mutation == "stamp-payload": record["runner_stamp"]["payload"] = "inert-fixture"
     elif mutation == "hosted-payload": record["hosted_evidence"]["payload"] = "inert-fixture"
     elif mutation == "obligation-proof": record["obligation_results"] = []
+    elif mutation == "shared-stamp": record["source_hashes"]["phase-loop-runtime/tests/test_stamp_evidence_receipt.py"] = "f" * 64
     else: record["source_hashes"]["CHANGELOG.md"] = "f" * 64
     with pytest.raises(evidence.EvidenceRefused):
         evidence.evaluate(repo, record, current_head=stamp)
 
 
+INAPPLICABLE = {"assessment_inapplicable", "source_binding_stale", "producer_nodes_missing",
+                "landing_correspondence_unavailable", "governing_content_changed"}
+
+
+def assert_receipt_applicability(repo, record, head=None):
+    head = head or evidence.git(repo, "rev-parse", "HEAD").decode().strip()
+    if evidence.content_identity(repo, head) == record["content_identity"]:
+        result = evidence.evaluate(repo, record, current_head=head)
+        assert result["byte_pin_authority"] is False and result["verification_status"] == "blocked"
+        assert result["blocker_class"] == "upstream_phase_unmet" and result["offline_proof"] == "verified"
+    else:
+        with pytest.raises(evidence.EvidenceRefused) as refused:
+            evidence.evaluate(repo, record, current_head=head)
+        assert str(refused.value) in INAPPLICABLE
+        assert record["byte_pin_authority"] is False
+
+
+def test_post_stamp_governing_change_is_inapplicable(assessment):
+    repo, record, stamp = assessment
+    assert_receipt_applicability(repo, record, stamp)
+    (repo / "source.py").write_text("value = 2\n")
+    command(repo, "add", ".")
+    command(repo, "commit", "-qm", "Later governing input")
+    assert_receipt_applicability(repo, record)
+
+
 def test_receipt_current():
     record = evidence.read_receipt(ROOT / evidence.RECEIPT)
-    result = evidence.evaluate(ROOT, record)
-    assert result["byte_pin_authority"] is False
-    assert result["verification_status"] == "blocked"
-    assert result["blocker_class"] == "upstream_phase_unmet"
-    assert result["offline_proof"] == "verified"
+    assert max(len(row["test_node_id"]) for rows in record["producer_results"].values() for row in rows) == 4063
+    assert_receipt_applicability(ROOT, record)

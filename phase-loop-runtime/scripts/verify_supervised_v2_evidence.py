@@ -61,6 +61,7 @@ SOURCE_PATHS = (
 )
 CHECK_WORKFLOWS = {
     "supervised contract publication": ".github/workflows/supervised-contract-intake.yml",
+    "supervised v2 source verification": ".github/workflows/test.yml",
     "supervised v2 evidence assessment": ".github/workflows/supervised-v2-evidence.yml",
     "suite gate": ".github/workflows/test.yml", "lint (pyflakes)": ".github/workflows/test.yml",
     "chronology retention guard": ".github/workflows/test.yml", "docs-freshness audit": ".github/workflows/docs-audit.yml",
@@ -241,6 +242,7 @@ def obligation_results(repo, producers):
             if group == "semantic_cases": vectors.add(identifier)
             matched = [row for row in rows if any(row["test_node_id"].endswith("[" + case + "]") for case in vectors)
                        and ("contract_diagnostics" in row or row["test_node_id"].startswith("tests/test_run_status"))]
+            outcome = "offline_production_covered" if matched else "family_witnessed"
             if not matched:
                 if identifier.startswith(("status:", "journal:", "named:status", "named:lifecycle", "named:identity-journal")):
                     prefixes = ("tests/test_run_status.py::", "tests/test_run_status_projection.py::")
@@ -251,7 +253,7 @@ def obligation_results(repo, producers):
                 matched = [row for row in rows if row["test_node_id"].startswith(prefixes)]
             require(matched, "obligation_proof_missing")
             result.append(dict(id=identifier, source_pointer=obligation.get("source_pointer", obligation.get("family")),
-                owner="CLOSEOUT", outcome="offline_production_covered", producer_nodes=sorted(row["test_node_id"] for row in matched)))
+                owner="CLOSEOUT", outcome=outcome, producer_nodes=sorted(row["test_node_id"] for row in matched)))
     return sorted(result, key=lambda row: row["id"])
 
 
@@ -292,7 +294,7 @@ def verify_offline(repo, record):
             require(expected_fields <= set(row) <= expected_fields | {"contract_diagnostics", "supported_route", "auxiliary_starts", "chain_starts", "unavailable_reason"}, "producer_row_invalid")
             node = row["test_node_id"]
             require(row["owner"] == "CLOSEOUT" and row["host"] == "ai" and row["source_pointer"] == node.split("::", 1)[0], "producer_identity_invalid")
-            require(type(node) is str and len(node) <= 8192 and re.fullmatch(r"tests/test_[A-Za-z0-9_]+\.py::[^\r\n]+", node) is not None,
+            require(type(node) is str and len(node) <= 8192 and re.fullmatch(r"tests/test_[A-Za-z0-9_]+\.py::[^\x00-\x1f\x7f]+", node) is not None,
                     "producer_node_invalid")
             require(all(re.fullmatch(r"[A-Za-z0-9_.<>]+", symbol) is not None for symbol in row["production_witnesses"]), "witness_invalid")
             require(re.fullmatch(r"[A-Za-z0-9_.-]+\.xml", row["runner_artifact_ref"]) is not None, "producer_artifact_invalid")
@@ -333,6 +335,8 @@ def verify_offline(repo, record):
     require(record["spec_delta_closeout"] == dict(schema="spec_delta_closeout.v1", decision="canonical_spec_update", redaction_posture="metadata_only"), "spec_closeout_invalid")
     return dict(verification_status="blocked", blocker_class="upstream_phase_unmet", human_required=False,
                 byte_pin_authority=False, offline_proof="verified", unavailable_checks=unavailable,
+                obligation_coverage={kind: sum(row["outcome"] == kind for row in record["obligation_results"])
+                    for kind in ("offline_production_covered", "family_witnessed")},
                 missing_producers=[dict(id=key, owner=owner, blocked_edge=edge)
                 for key, owner, edge in MISSING_PRODUCERS])
 
@@ -369,6 +373,7 @@ def authenticate_required_checks(api, head):
     for rule in rules:
         if rule["type"] == "required_status_checks":
             required.update(row["context"] for row in rule["parameters"]["required_status_checks"])
+    require("supervised v2 evidence assessment" not in required, "assessment_check_self_dependency")
     require(required and required <= set(CHECK_WORKFLOWS), "required_checks_unavailable")
     checks = api.json(f"repos/{REPOSITORY}/commits/{head}/check-runs?per_page=100")
     require(checks["total_count"] <= 100, "check_pagination_required")

@@ -228,7 +228,7 @@ def read_controller_snapshot(controller_root: Path, envelope_sha256: str, *, cap
 
 def _launch_v2(envelope_path: Path, result_path: Path, *, state_root=None):
     from . import supervised_launch_binding as binding
-    from .supervised_capture_v2 import capture_launch_v2
+    from .supervised_capture_v2 import CapturedLaunch, capture_launch_v2
     from hashlib import sha256
     held = read_envelope_file(envelope_path, cap=1048576)
     if isinstance(held, Refused):
@@ -258,17 +258,20 @@ def _launch_v2(envelope_path: Path, result_path: Path, *, state_root=None):
     diagnostics = active.codec.precheck_v2_admission(decoded, context=active.context, spec=active.spec, attempt=controller.attempt)
     if diagnostics:
         return Refused(diagnostics[0], diagnostics=diagnostics)
-    capture = capture_launch_v2(spec=active.spec, context=active.context, attempt=controller.attempt)
-    if isinstance(capture, Refused):
-        return capture
-    prepared = prepare_launch_v2(envelope_bytes, binding=active, capture=capture, attempt=controller.attempt)
-    if isinstance(prepared, Refused):
-        return prepared
-    descriptor = open_result_file(result_path, excluded=controller.exclusions)
-    if isinstance(descriptor, Refused):
-        discard_admission(prepared)
-        return descriptor
+    prepared = None
+    descriptor = None
+    capture = None
     try:
+        capture = capture_launch_v2(spec=active.spec, context=active.context, attempt=controller.attempt)
+        if isinstance(capture, Refused):
+            return capture
+        prepared = prepare_launch_v2(envelope_bytes, binding=active, capture=capture, attempt=controller.attempt)
+        if isinstance(prepared, Refused):
+            return prepared
+        descriptor = open_result_file(result_path, excluded=controller.exclusions)
+        if isinstance(descriptor, Refused):
+            discard_admission(prepared)
+            return descriptor
         from .convergence.adapters.patch_return import default_state_root, run_patch_return
         from .run_status_projection import v2_status_mapping
         config = dict(active.snapshots)[active.spec.config_path]
@@ -282,9 +285,18 @@ def _launch_v2(envelope_path: Path, result_path: Path, *, state_root=None):
             offset += os.write(descriptor, raw[offset:])
         os.fsync(descriptor)
         return 0 if result.state == "finished" else 10
+    except BaseException:
+        if prepared is not None:
+            discard_admission(prepared)
+        return Refused("launch_invalid")
     finally:
-        os.close(descriptor)
-        capture.close()
+        if type(descriptor) is int:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if type(capture) is CapturedLaunch:
+            capture.close()
 
 
 if __name__ == "__main__":

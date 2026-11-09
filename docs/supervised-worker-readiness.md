@@ -49,3 +49,14 @@ executables and unsupported provider routes keep their existing refusals. The
 implementation adds no provider probe, registry activation, release or merge
 authority. See [contracts](supervised-worker-contracts.md),
 [worker behavior](supervised-worker.md) and [status](supervised-run-status.md).
+
+Obligation assessment separates case-specific `offline_production_covered` rows
+from `family_witnessed` rows. The latter record related production activity and
+supply no obligation-level acceptance claim. The assessment reports counts for
+each category; EC-CLOSEOUT-1 cannot be closed by family fallback.
+
+The evidence assessment check must not itself be branch-required: that creates
+a self-dependency while it is running. The verifier returns the deterministic
+`assessment_check_self_dependency` refusal for that configuration. All other
+required checks, including source verification, must authenticate as completed
+and successful; sharing a workflow run ID grants no exception.

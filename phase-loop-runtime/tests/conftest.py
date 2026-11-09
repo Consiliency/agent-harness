@@ -1242,8 +1242,8 @@ def _supervised_path_witness(item):
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_call(item):
+    """Emit one timing summary per test when PHASE_LOOP_CONFORM_TIMING=1."""
     with _supervised_path_witness(item):
-        """Emit one timing summary per test when PHASE_LOOP_CONFORM_TIMING=1."""
         if not _conform_timing_enabled():
             yield
             return
