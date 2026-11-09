@@ -70,6 +70,11 @@ jobs:
           # nested exec containers. Use the complete hosted lanes until a
           # reviewed offload environment proves the real egress tests pass.
           OFFLOAD_SANDBOX_READY: 'false'
+          # Org-wide pause switch for CI offload to the `ai` host (cross-repo
+          # contract): the exact string `true` in the org variable
+          # CI_OFFLOAD_PAUSED diverts to the existing hosted path; unset or any
+          # other value is normal. Never a new fallback, never a failure.
+          OFFLOAD_PAUSED: ${{ vars.CI_OFFLOAD_PAUSED == 'true' }}
         run: |
           set -euo pipefail
           trusted=false
@@ -84,12 +89,14 @@ jobs:
           if [ "$EVENT_NAME" = "schedule" ] || [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             trusted=true
           fi
+          paused="${OFFLOAD_PAUSED:-false}"
+          echo "offload paused (CI_OFFLOAD_PAUSED): $paused"
           eligible=false
-          if [ "$trusted" = "true" ] && [ "$TS_AUTHKEY_SET" = "true" ] && [ "$OFFLOAD_SANDBOX_READY" = "true" ]; then
+          if [ "$trusted" = "true" ] && [ "$TS_AUTHKEY_SET" = "true" ] && [ "$OFFLOAD_SANDBOX_READY" = "true" ] && [ "$paused" != "true" ]; then
             eligible=true
           fi
           echo "eligible=$eligible" >> "$GITHUB_OUTPUT"
-          echo "trusted=$trusted sandbox_ready=$OFFLOAD_SANDBOX_READY eligible=$eligible"
+          echo "trusted=$trusted sandbox_ready=$OFFLOAD_SANDBOX_READY paused=$paused eligible=$eligible"
 
   offload:
     name: suite (offloaded to ai)

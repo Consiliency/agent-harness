@@ -477,22 +477,30 @@ def test_workflows_retain_the_node_on_main_nightly_and_release() -> None:
     ("pull_request", "refs/pull/1/merge", "owner/repo", "false", True),
 ])
 @pytest.mark.parametrize("sandbox_ready", ["false", "true"])
+@pytest.mark.parametrize("paused", [None, "false", "true", "TRUE"])
 def test_offload_requires_trust_secret_and_supported_sandbox(
-    tmp_path, event, ref, head_repo, secret, trusted, sandbox_ready,
+    tmp_path, event, ref, head_repo, secret, trusted, sandbox_ready, paused,
 ):
     jobs = yaml.safe_load(WORKFLOW_PATH.read_text())["jobs"]
     step = next(s for s in jobs["elig"]["steps"] if s.get("id") == "elig")
     assert step["env"]["OFFLOAD_SANDBOX_READY"] == "false"
+    # The org-wide pause switch: only the exact string `true` pauses offload.
+    assert step["env"]["OFFLOAD_PAUSED"] == "${{ vars.CI_OFFLOAD_PAUSED == 'true' }}"
     output = tmp_path / "outputs"
+    env = {**os.environ, "EVENT_NAME": event, "REF": ref,
+           "PR_HEAD_REPO": head_repo, "REPO": "owner/repo",
+           "TS_AUTHKEY_SET": secret, "OFFLOAD_SANDBOX_READY": sandbox_ready,
+           "GITHUB_OUTPUT": str(output)}
+    env.pop("OFFLOAD_PAUSED", None)
+    if paused is not None:
+        env["OFFLOAD_PAUSED"] = paused
     result = subprocess.run(
-        ["bash", "-c", step["run"]], capture_output=True, text=True,
-        env={**os.environ, "EVENT_NAME": event, "REF": ref,
-             "PR_HEAD_REPO": head_repo, "REPO": "owner/repo",
-             "TS_AUTHKEY_SET": secret, "OFFLOAD_SANDBOX_READY": sandbox_ready,
-             "GITHUB_OUTPUT": str(output)},
+        ["bash", "-c", step["run"]], capture_output=True, text=True, env=env,
     )
     assert result.returncode == 0, result.stderr
-    eligible = trusted and secret == "true" and sandbox_ready == "true"
+    shown = "false" if paused is None else paused
+    assert f"offload paused (CI_OFFLOAD_PAUSED): {shown}" in result.stdout
+    eligible = trusted and secret == "true" and sandbox_ready == "true" and paused != "true"
     assert output.read_text().strip() == f"eligible={str(eligible).lower()}"
     assert jobs["offload"]["if"] == "needs.elig.outputs.eligible == 'true'"
     assert jobs["pytest"]["if"] == "needs.elig.outputs.eligible != 'true'"
