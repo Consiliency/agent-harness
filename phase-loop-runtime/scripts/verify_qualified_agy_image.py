@@ -6,11 +6,15 @@ exactly one v2 record (unlisted records are ignored) that agrees with it; every 
 member's ``qci`` equals this tree's ``seat_qci()``. A QCI difference prints
 ``requalify: <members>``.
 
-``--release --conformance-report <junit.xml>`` (``publish-pypi.yml``, before the build):
-``--contract``; a STRICT conformance report from the same job, in which every id of
-``CONFORMANCE_OBLIGATIONS`` (``tests/test_agy_route_conformance.py``) passed exactly once and
-no case was skipped, xfailed, failed or errored; and every member's release asset re-verified
-by its tag.
+``--release --conformance-report <junit.xml>`` (``publish-pypi.yml``, before the build, inside
+the provisioned systemd user manager): ``--contract``; then it RUNS the strict conformance suite
+itself (``AGY_CONFORMANCE_STRICT=1``), writing its JUnit report to ``--conformance-report``, a
+path that must not exist beforehand. The run must exit 0, and the report it just wrote must
+carry this checkout's identity, with every id of ``CONFORMANCE_OBLIGATIONS``
+(``tests/test_agy_route_conformance.py``) passed exactly once and no case skipped, xfailed,
+failed or errored. A report made elsewhere is never accepted (agent-harness#1937 re-check M4).
+Finally every member's official archive is fetched by tag and its extracted executable must
+be the recorded image.
 
 ``--upstream-only`` (nightly): ``--contract``, then the newest shipped member's vendor asset
 digest, URL and archive; a newest upstream release that is not a member only warns, because
@@ -30,6 +34,9 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import os
+import time
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 import xml.etree.ElementTree as ElementTree
 
@@ -266,19 +273,52 @@ def verify_archive(record, archive):
     require(h.hexdigest() == record["image_sha256"], "executable digest mismatch")
 
 
-def download_asset(url, target):
+DOWNLOAD_ATTEMPTS = 3
+DOWNLOAD_BACKOFF_S = (1, 2)
+
+
+def download_asset(url, target, *, opener=None, sleep=None):
+    """Fetch one asset. A server error (HTTP 5xx) is retried, at most three attempts in all,
+    after 1 s and 2 s; every attempt restarts the file; exhaustion re-raises. Size and digests
+    are checked by the callers as before."""
+    opener, sleep = opener or urlopen, sleep or time.sleep  # resolved per call (tests patch urlopen)
     request = Request(url, headers={"User-Agent": "agent-harness-qualified-image-check"})
-    with urlopen(request, timeout=60) as response, Path(target).open("wb") as stream:
-        while chunk := response.read(1024 * 1024):
-            stream.write(chunk)
-            require(stream.tell() <= 128_000_000, "release asset exceeds expected size")
+    for attempt in range(DOWNLOAD_ATTEMPTS):
+        try:
+            with opener(request, timeout=60) as response, Path(target).open("wb") as stream:
+                while chunk := response.read(1024 * 1024):
+                    stream.write(chunk)
+                    require(stream.tell() <= 128_000_000, "release asset exceeds expected size")
+            return
+        except HTTPError as exc:
+            if not 500 <= exc.code < 600 or attempt == DOWNLOAD_ATTEMPTS - 1:
+                raise
+            sleep(DOWNLOAD_BACKOFF_S[attempt])
 
 
-def release(report, *, fetch=fetch_release, download=download_asset, identity=None):
-    """``--release``: the contract, a strict conformance report bound to this checkout, and
-    every member's official archive by tag, whose extracted executable must be the record's
-    and the catalog's image (agent-harness#1937 review B3)."""
+def run_conformance_suite(report, *, runner=subprocess.run, python=sys.executable):
+    """Run the strict conformance suite (AGYROLL §3.4) in a subprocess, writing its JUnit
+    report to ``report``; returns the exit status."""
+    root = REPO / "phase-loop-runtime"
+    env = {**os.environ, "AGY_CONFORMANCE_STRICT": "1", "PYTHONDONTWRITEBYTECODE": "1",
+           "PYTHONPATH": os.pathsep.join([str(root / "src"), str(root / "tests")])}
+    done = runner([python, "-m", "pytest", "-q", "-p", "no:cacheprovider", str(CONFORMANCE_SUITE),
+                   f"--junitxml={report}"], cwd=root, env=env, timeout=900)
+    return done.returncode
+
+
+def release(report, *, fetch=fetch_release, download=download_asset, identity=None,
+            run_suite=run_conformance_suite):
+    """``--release``: the contract; a strict conformance run executed HERE, whose fresh report
+    must be bound to this checkout; and every member's official archive by tag, whose
+    extracted executable must be the record's and the catalog's image (agent-harness#1937)."""
     records = contract()
+    report = Path(report)
+    require(not os.path.lexists(report),
+            f"conformance report {report} already exists: --release writes its own report and never accepts one")
+    require(report.parent.is_dir(), f"conformance report directory {report.parent} does not exist")
+    status = run_suite(report)
+    require(status == 0, f"the strict conformance run failed (exit status {status})")
     obligations = check_conformance_report(report, conformance_obligations(), identity)
     images = {member["release_version"]: member["image_sha256"] for member in catalog_members()}
     with tempfile.TemporaryDirectory(prefix="agy-release-") as scratch:
@@ -321,7 +361,9 @@ def main(argv=None):
     mode.add_argument("--contract", action="store_true", help="the catalog and its records against this tree's QCI")
     mode.add_argument("--release", action="store_true", help="--contract, a strict conformance report and every asset")
     mode.add_argument("--upstream-only", action="store_true", help="--contract and the newest shipped member's asset")
-    parser.add_argument("--conformance-report", type=Path, help="the strict conformance suite's JUnit report (--release)")
+    parser.add_argument("--conformance-report", type=Path,
+                        help="where --release writes the JUnit report of the strict conformance run it executes "
+                             "(must not exist)")
     parser.add_argument("--archive", type=Path, help="a locally downloaded official asset (--upstream-only)")
     args = parser.parse_args(argv)
     if args.release != (args.conformance_report is not None):

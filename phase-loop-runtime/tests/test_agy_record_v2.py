@@ -378,7 +378,7 @@ def _archive(executable: bytes) -> bytes:
 
 
 @pytest.fixture
-def release_io(verifier, evidence):
+def release_io(verifier, evidence, tmp_path):
     """The release gate's network, offline: each member becomes a synthetic image whose
     official archive the fake upstream serves by tag."""
     catalog_path = evidence / "agy_catalog.json"
@@ -403,8 +403,16 @@ def release_io(verifier, evidence):
         metadata[f"{verifier.RELEASES}/tags/{version}"] = {"tag_name": version, "assets": [{
             "name": verifier.ASSET, "digest": "sha256:" + asset, "browser_download_url": url}]}
     catalog_path.write_text(json.dumps(catalog))
+    def run_suite(report):
+        """The seam for the conformance run --release executes: copies the report a test staged
+        (tmp_path/staged.xml) to the path --release chose, exit 0; nothing staged, no report."""
+        staged = tmp_path / "staged.xml"
+        if staged.exists():
+            Path(report).write_bytes(staged.read_bytes())
+        return 0
+
     return {"fetch": metadata.__getitem__, "download": lambda url, target: Path(target).write_bytes(archives[url]),
-            "identity": IDENTITY, "_metadata": metadata, "_archives": archives}
+            "identity": IDENTITY, "run_suite": run_suite, "_metadata": metadata, "_archives": archives}
 
 
 def _io(release_io):
@@ -425,8 +433,8 @@ def _load_suite():
 
 
 def test_release_passes_a_strict_complete_report(verifier, evidence, obligations, release_io, tmp_path):
-    report = _report(tmp_path / "conformance.xml", [(o, "pass") for o in obligations])
-    records, seen = verifier.release(report, **_io(release_io))
+    _report(tmp_path / "staged.xml", [(o, "pass") for o in obligations])
+    records, seen = verifier.release(tmp_path / "conformance.xml", **_io(release_io))
     assert seen == sorted(obligations) and records
 
 
@@ -434,15 +442,15 @@ def test_release_passes_a_strict_complete_report(verifier, evidence, obligations
 def test_release_fails_a_report_with_a_non_passing_obligation(verifier, evidence, obligations, release_io, tmp_path, outcome):
     cases = [(o, "pass") for o in obligations]
     cases[0] = (cases[0][0], outcome)
-    report = _report(tmp_path / "conformance.xml", cases)
+    _report(tmp_path / "staged.xml", cases)
     with pytest.raises(ValueError):
-        verifier.release(report, **_io(release_io))
+        verifier.release(tmp_path / "conformance.xml", **_io(release_io))
 
 
 def test_release_fails_a_skipped_run_even_by_its_counts(verifier, evidence, obligations, release_io, tmp_path):
-    report = _report(tmp_path / "conformance.xml", [(o, "pass") for o in obligations], skipped=1)
+    _report(tmp_path / "staged.xml", [(o, "pass") for o in obligations], skipped=1)
     with pytest.raises(ValueError, match="skipped"):
-        verifier.release(report, **_io(release_io))
+        verifier.release(tmp_path / "conformance.xml", **_io(release_io))
 
 
 @pytest.mark.parametrize("kind", ["missing", "duplicate", "unknown"])
@@ -455,7 +463,7 @@ def test_release_fails_a_partial_or_repeated_report(verifier, evidence, obligati
     else:
         cases.append(("neg_invented", "pass"))
     with pytest.raises(ValueError, match=kind if kind != "duplicate" else "repeats"):
-        verifier.release(_report(tmp_path / "conformance.xml", cases), **_io(release_io))
+        (_report(tmp_path / "staged.xml", cases), verifier.release(tmp_path / "conformance.xml", **_io(release_io)))
 
 
 def test_release_fails_without_a_report(verifier, evidence, release_io, tmp_path, capsys):
@@ -468,9 +476,9 @@ def test_release_fails_without_a_report(verifier, evidence, release_io, tmp_path
 def test_release_fails_an_asset_mismatch(verifier, evidence, obligations, release_io, tmp_path):
     for release in release_io["_metadata"].values():
         release["assets"][0]["digest"] = "sha256:" + "0" * 64
-    report = _report(tmp_path / "conformance.xml", [(o, "pass") for o in obligations])
+    _report(tmp_path / "staged.xml", [(o, "pass") for o in obligations])
     with pytest.raises(ValueError, match="asset digest mismatch"):
-        verifier.release(report, **_io(release_io))
+        verifier.release(tmp_path / "conformance.xml", **_io(release_io))
 
 
 def test_release_fails_an_operations_contract_edit(verifier, evidence, obligations, release_io, tmp_path, monkeypatch):
@@ -478,16 +486,16 @@ def test_release_fails_an_operations_contract_edit(verifier, evidence, obligatio
 
     first, *rest = q.OPERATIONS_CONTRACT
     monkeypatch.setattr(q, "OPERATIONS_CONTRACT", (first._replace(argv_template=first.argv_template[:-1]), *rest))
-    report = _report(tmp_path / "conformance.xml", [(o, "pass") for o in obligations])
+    _report(tmp_path / "staged.xml", [(o, "pass") for o in obligations])
     with pytest.raises(verifier.RequalifyRequired):
-        verifier.release(report, **_io(release_io))
+        verifier.release(tmp_path / "conformance.xml", **_io(release_io))
 
 
 def test_release_refuses_a_report_with_a_dtd(verifier, evidence, obligations, release_io, tmp_path):
-    report = tmp_path / "conformance.xml"
+    report = tmp_path / "staged.xml"
     report.write_text('<?xml version="1.0"?><!DOCTYPE x [<!ENTITY a "b">]><testsuites/>')
     with pytest.raises(ValueError, match="DTD"):
-        verifier.release(report, **_io(release_io))
+        verifier.release(tmp_path / "conformance.xml", **_io(release_io))
 
 
 @pytest.mark.parametrize(("change", "match"), [
@@ -501,9 +509,9 @@ def test_release_refuses_a_report_with_a_dtd(verifier, evidence, obligations, re
 def test_release_requires_the_report_identity_of_a_strict_run_at_this_checkout(
         verifier, evidence, obligations, release_io, tmp_path, change, match):
     """Eight bare <testcase> elements are not a conformance run (agent-harness#1937 B4)."""
-    report = _report(tmp_path / "conformance.xml", [(o, "pass") for o in obligations], identity=change(IDENTITY))
+    _report(tmp_path / "staged.xml", [(o, "pass") for o in obligations], identity=change(IDENTITY))
     with pytest.raises(ValueError, match=match):
-        verifier.release(report, **_io(release_io))
+        verifier.release(tmp_path / "conformance.xml", **_io(release_io))
 
 
 def test_release_identity_is_this_checkouts_commit_and_sources(verifier):
@@ -531,6 +539,125 @@ def test_release_fails_an_executable_that_is_not_the_official_archive_member(
             row["profile"]["image_sha256"] = "a" * 64
         record_path.write_text(json.dumps(record))
     catalog_path.write_text(json.dumps(catalog))
-    report = _report(tmp_path / "conformance.xml", [(o, "pass") for o in obligations])
+    _report(tmp_path / "staged.xml", [(o, "pass") for o in obligations])
     with pytest.raises(ValueError, match="executable digest mismatch"):
-        verifier.release(report, **_io(release_io))
+        verifier.release(tmp_path / "conformance.xml", **_io(release_io))
+
+
+# ---------------------------- --release executes the conformance run (re-check M4)
+
+def _fabricated(path, verifier, obligations):
+    """Eight passing cases carrying the CURRENT, public identity of this checkout."""
+    return _report(path, [(o, "pass") for o in obligations], identity=verifier.conformance_identity())
+
+
+def test_release_never_accepts_a_report_it_did_not_run(verifier, evidence, obligations, release_io, tmp_path):
+    report = _fabricated(tmp_path / "conformance.xml", verifier, obligations)
+    ran = []
+    io = {**_io(release_io), "identity": None, "run_suite": lambda path: ran.append(path) or 0}
+    with pytest.raises(ValueError, match="already exists"):
+        verifier.release(report, **io)
+    assert ran == [], "a supplied report must not stand in for the run"
+
+
+def test_release_cli_refuses_a_fabricated_report_with_the_current_identity(verifier, evidence, obligations, tmp_path, capsys):
+    report = _fabricated(tmp_path / "conformance.xml", verifier, obligations)
+    assert verifier.main(["--release", "--conformance-report", str(report)]) == 1
+    assert "already exists" in capsys.readouterr().err
+
+
+def test_release_requires_its_own_run_to_succeed(verifier, evidence, obligations, release_io, tmp_path):
+    def failed_run(path):
+        _report(Path(path), [(o, "pass") for o in obligations])  # a perfect report, but the run failed
+        return 1
+
+    with pytest.raises(ValueError, match="exit status 1"):
+        verifier.release(tmp_path / "conformance.xml", **{**_io(release_io), "run_suite": failed_run})
+
+
+def test_release_validates_the_report_its_own_run_wrote(verifier, evidence, obligations, release_io, tmp_path):
+    """A fabricated passing report elsewhere changes nothing: the run's own report decides."""
+    _fabricated(tmp_path / "elsewhere.xml", verifier, obligations)
+    cases = [(o, "pass") for o in obligations]
+    cases[0] = (cases[0][0], "skipped")
+
+    def skipping_run(path):
+        _report(Path(path), cases)
+        return 0
+
+    with pytest.raises(ValueError, match="skipped"):
+        verifier.release(tmp_path / "conformance.xml", **{**_io(release_io), "run_suite": skipping_run})
+
+
+def test_run_conformance_suite_runs_the_strict_suite_into_the_report(verifier, tmp_path):
+    seen = {}
+
+    def runner(argv, **kwargs):
+        seen.update(argv=argv, **kwargs)
+        return subprocess.CompletedProcess(argv, 3)
+
+    report = tmp_path / "conformance.xml"
+    assert verifier.run_conformance_suite(report, runner=runner, python="/venv/bin/python") == 3
+    assert seen["argv"][:3] == ["/venv/bin/python", "-m", "pytest"]
+    assert str(verifier.CONFORMANCE_SUITE) in seen["argv"] and f"--junitxml={report}" in seen["argv"]
+    assert seen["env"]["AGY_CONFORMANCE_STRICT"] == "1"
+    assert seen["cwd"] == verifier.REPO / "phase-loop-runtime" and seen["timeout"] == 900
+
+
+# ------------------------------------------------- bounded download retry
+
+class _Response:
+    def __init__(self, data):
+        self.data = [data, b""]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, size):
+        return self.data.pop(0)
+
+
+def _opener(outcomes):
+    from urllib.error import HTTPError
+
+    calls = []
+
+    def opener(request, timeout):
+        calls.append(request.full_url)
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, int):
+            raise HTTPError(request.full_url, outcome, "error", {}, None)
+        return _Response(outcome)
+    return opener, calls
+
+
+def test_download_retries_a_server_error_and_restarts_the_file(verifier, tmp_path):
+    opener, calls = _opener([503, 504, b"official archive"])
+    slept = []
+    target = tmp_path / "asset.tar.gz"
+    target.write_bytes(b"stale partial bytes from an earlier attempt")
+    verifier.download_asset("https://example.invalid/a", target, opener=opener, sleep=slept.append)
+    assert target.read_bytes() == b"official archive" and len(calls) == 3 and slept == [1, 2]
+
+
+def test_download_exhaustion_is_never_success(verifier, tmp_path):
+    from urllib.error import HTTPError
+
+    opener, calls = _opener([504, 504, 504, b"never reached"])
+    slept = []
+    with pytest.raises(HTTPError):
+        verifier.download_asset("https://example.invalid/a", tmp_path / "asset", opener=opener, sleep=slept.append)
+    assert len(calls) == 3 and slept == [1, 2]
+
+
+def test_download_does_not_retry_a_client_error(verifier, tmp_path):
+    from urllib.error import HTTPError
+
+    opener, calls = _opener([404, b"never reached"])
+    slept = []
+    with pytest.raises(HTTPError):
+        verifier.download_asset("https://example.invalid/a", tmp_path / "asset", opener=opener, sleep=slept.append)
+    assert len(calls) == 1 and slept == []

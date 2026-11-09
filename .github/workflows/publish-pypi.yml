@@ -48,15 +48,16 @@ jobs:
           fi
           bwrap --unshare-user --unshare-pid --ro-bind / / -- /bin/true
           unshare --net --map-root-user true
-      - name: Strict agy route conformance (AGYROLL §3.4)
-        # agent-harness#1008 R1: the production qualification driver runs hermetically on the
-        # stand-in images; under AGY_CONFORMANCE_STRICT=1 a missing prerequisite FAILS. The
-        # driver launches its provider through the per-seat resource caps (agent-harness#1895),
-        # which need a systemd user manager that delegates cpu, cpuset, io, memory and pids, and
-        # a caller inside that manager (docs/seat-resource-caps.md). This ephemeral runner is
-        # given exactly that host prerequisite, and the suite runs inside its user manager, as
-        # on a seat host. Nothing about the caps is faked. The environment and the report live
-        # under $RUNNER_TEMP, never in the tree the build packages.
+      - name: agy release gate (strict conformance and --release, AGYROLL §3.3-§3.4)
+        # agent-harness#1008 R1. Before the build, `--release` runs the contract, then EXECUTES
+        # the strict conformance suite itself (AGY_CONFORMANCE_STRICT=1) and accepts only the
+        # report that run just wrote (agent-harness#1937 re-check M4), then verifies every
+        # member's official archive. The driver launches its provider through the per-seat
+        # resource caps (agent-harness#1895), which need a systemd user manager that delegates
+        # cpu, cpuset, io, memory and pids (docs/seat-resource-caps.md). This ephemeral runner
+        # is given exactly that host prerequisite, and the verifier runs inside that manager,
+        # as on a seat host. Nothing about the caps is faked. The environment and the report
+        # live under $RUNNER_TEMP, never in the tree the build packages.
         env:
           UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/agy-conformance-venv
         run: |
@@ -80,21 +81,9 @@ jobs:
           done
           cd phase-loop-runtime
           systemd-run --user --pipe --wait --collect --quiet --same-dir \
-            -E AGY_CONFORMANCE_STRICT=1 -E PYTHONDONTWRITEBYTECODE=1 \
-            -E PYTHONPATH="$PWD/src:$PWD/tests" -E PATH="$PATH" -E HOME="$HOME" \
-            -- timeout 900 "$UV_PROJECT_ENVIRONMENT/bin/python" -m pytest -q -p no:cacheprovider \
-            tests/test_agy_route_conformance.py \
-            --junitxml="$RUNNER_TEMP/agy-conformance/conformance.xml"
-      - name: Verify the agy release gate (--release)
-        # Before the build: --contract, the strict conformance report above (every obligation
-        # passed exactly once, nothing skipped or xfailed) and every member's asset by tag.
-        env:
-          PYTHONDONTWRITEBYTECODE: "1"
-          UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/agy-conformance-venv
-        working-directory: phase-loop-runtime
-        run: >-
-          timeout 600 "$UV_PROJECT_ENVIRONMENT/bin/python" scripts/verify_qualified_agy_image.py --release
-          --conformance-report "$RUNNER_TEMP/agy-conformance/conformance.xml"
+            -E PYTHONDONTWRITEBYTECODE=1 -E PATH="$PATH" -E HOME="$HOME" \
+            -- timeout 1800 "$UV_PROJECT_ENVIRONMENT/bin/python" scripts/verify_qualified_agy_image.py \
+            --release --conformance-report "$RUNNER_TEMP/agy-conformance/conformance.xml"
       - name: Verify tag matches phase-loop-runtime version
         if: startsWith(github.ref, 'refs/tags/v')
         run: |

@@ -41,27 +41,25 @@ def test_the_contract_runs_on_every_pull_request_and_push_without_a_path_filter(
     assert "if" not in workflow["jobs"]["verify"]
 
 
-def test_publication_gates_on_strict_conformance_then_release_before_the_build():
+def test_publication_gates_on_release_which_runs_strict_conformance_before_the_build():
     workflow, _ = _workflow(PUBLISH)
     steps = workflow["jobs"]["build"]["steps"]
     names = [step.get("name", "") for step in steps]
-    conformance = steps[names.index("Strict agy route conformance (AGYROLL §3.4)")]
-    release = steps[names.index("Verify the agy release gate (--release)")]
-    assert "-E AGY_CONFORMANCE_STRICT=1" in conformance["run"]
-    assert "tests/test_agy_route_conformance.py" in conformance["run"]
-    # The caps host prerequisite (agent-harness#1895) is provisioned, and the suite runs inside
-    # the user manager: real delegated caps, no bypass.
-    assert "Delegate=cpu cpuset io memory pids" in conformance["run"]
-    assert "loginctl enable-linger" in conformance["run"]
-    assert "systemd-run --user --pipe --wait" in conformance["run"]
-    assert "SEAT_CAPS" not in conformance["run"] and "readiness_code" not in conformance["run"]
-    assert f"--junitxml={REPORT}" in conformance["run"]
-    assert 'mkdir -p -m 0700 "$RUNNER_TEMP/agy-conformance"' in conformance["run"]
-    assert "--release" in release["run"] and f"--conformance-report {REPORT}" in release["run"]
-    for step in (conformance, release):
-        assert "if" not in step and "continue-on-error" not in step
-    assert names.index("Install review sandbox prerequisites") < names.index(conformance["name"]) \
-        < names.index(release["name"]) < names.index("Build sdist + wheel")
+    (gate,) = [step for step in steps if "verify_qualified_agy_image.py" in step.get("run", "")]
+    run = gate["run"]
+    # --release executes the strict suite itself and writes the report it then validates
+    # (agent-harness#1937 re-check M4); no step runs the suite or hands it a report.
+    assert f"--release --conformance-report {REPORT}" in run
+    assert not any("tests/test_agy_route_conformance.py" in step.get("run", "") for step in steps)
+    assert 'mkdir -p -m 0700 "$RUNNER_TEMP/agy-conformance"' in run
+    # The caps host prerequisite (agent-harness#1895) is provisioned, and the verifier -- and so
+    # the conformance run it executes -- runs inside the user manager: real caps, no bypass.
+    assert "Delegate=cpu cpuset io memory pids" in run and "loginctl enable-linger" in run
+    assert run.index("systemd-run --user --pipe --wait") < run.index("verify_qualified_agy_image.py")
+    assert "SEAT_CAPS" not in run and "readiness_code" not in run
+    assert "if" not in gate and "continue-on-error" not in gate
+    assert names.index("Install review sandbox prerequisites") < names.index(gate["name"]) \
+        < names.index("Build sdist + wheel")
 
 
 @pytest.mark.parametrize("path", [PUBLISH, QUALIFIED])
