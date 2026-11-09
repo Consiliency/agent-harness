@@ -2313,6 +2313,10 @@ _WORKLOAD_UNSUPPORTED = "sandbox_placement_workload_unsupported"
 _PREFLIGHT = "preflight"
 #: The only reservation ids this lifecycle issues; anything else was never ours.
 _ISSUED_RESERVATION = re.compile(r"rsv-[0-9a-f]{32}")
+#: ``_settle_committed`` outcomes that are not a response: the settle bound was reached
+#: under the lock, or the committed effect was removed or handed to cleanup.
+_AT_BOUND = object()
+_REMOVED = object()
 
 
 class LifecycleError(RuntimeError):
@@ -2421,10 +2425,14 @@ class _FileLock:
     def __enter__(self) -> bool:
         import fcntl
 
+        if self.deadline is not None and self.deadline.expired():
+            return False
         self.fd = os.open(self.path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        # With a deadline the kernel lock is never waited on: it is retried non-blocking.
+        nonblocking = self.deadline is not None or not self.blocking
         while True:
             try:
-                fcntl.flock(self.fd, fcntl.LOCK_EX | (0 if self.blocking else fcntl.LOCK_NB))
+                fcntl.flock(self.fd, fcntl.LOCK_EX | (fcntl.LOCK_NB if nonblocking else 0))
                 self.held = True
                 return True
             except BlockingIOError:
@@ -2600,22 +2608,30 @@ class PlacementLifecycle:
                 records.append((key, record))
         return records
 
-    def _startup(self) -> None:
-        """Lifecycle start-up: settle every unsettled attempt at its bound and expire
-        tombstones (``reserve_replay`` step 3). Enumeration only selects request ids; each
-        attempt is read again under its own lock, so a record another process settled in
-        the meantime is never overwritten."""
+    def _startup(self, deadline: "_Deadline | None" = None) -> None:
+        """Lifecycle start-up, within the calling operation's deadline: settle every
+        unsettled attempt at its bound, resume every unfinished cleanup transfer (settled
+        attempts included), and expire tombstones. Enumeration only selects request ids;
+        each attempt is read again under its own lock. Locks are only tried, never waited
+        for, so an attempt another process holds is left for a later start-up; scanning
+        stops when the deadline is reached."""
         self._prepare()
         for request_id in self._ids("attempts"):
+            if deadline is not None and deadline.expired():
+                return
             path = self._dir("attempts") / f"{request_id}.json"
             with _FileLock(self._dir("attempts") / f"{request_id}.lock", blocking=False) as held:
                 if not held:
                     continue
                 record = _read_journal(path)
-                if record is None or record.get("settled"):
+                if record is None:
                     continue
-                if self._at_bound(record, self.clock()):
-                    self._settle_end_reached(record)
+                if not record.get("settled") and self._at_bound(record, self.clock()):
+                    self._settle_end_reached(record, None, None)
+                elif self._transfer_unfinished(record):
+                    self._resume_transfer(record, None)
+        if deadline is not None and deadline.expired():
+            return
         now = self.clock()
         for reservation_id, tombstone in self._records("tombstones"):
             expires = tombstone.get("tombstone_expires")
@@ -2682,7 +2698,7 @@ class PlacementLifecycle:
         from .placement_process_contract import canonical_bytes
 
         deadline = _Deadline.after(request.deadline_ms / 1000.0)  # type: ignore[attr-defined]
-        self._startup()
+        self._startup(deadline)
         body_sha256 = hashlib.sha256(canonical_bytes(request.to_json())).hexdigest()  # type: ignore[attr-defined]
         request_id = request.request_id  # type: ignore[attr-defined]
         path = self._dir("attempts") / f"{request_id}.json"
@@ -2933,10 +2949,11 @@ class PlacementLifecycle:
            effect, so the effect has one owner.
         2. A bridged reservation opens its bridge within the remaining deadline, then the
            commit is journaled again, complete, with the bridge handle.
-        3. Cancellation and the deadline are checked again before publication; when either
-           fired, the effects stay owned by the commit and the attempt stays unsettled.
-        4. The active reservation is published, then the attempt is settled. A restart
-           between any two steps recovers the commit without allocating anything."""
+        3. Under the reservation's lock, cancellation and the deadline are checked again;
+           when either fired, the effects stay owned by the commit and the attempt stays
+           unsettled. Otherwise the active reservation is published and the attempt
+           settled, still under that lock. A restart between any two steps recovers the
+           commit without allocating anything."""
         from .placement_process_contract import TrailEntry
 
         now = self.clock()
@@ -2973,12 +2990,14 @@ class PlacementLifecycle:
             commit = {**commit, "reservation": reservation.to_json(), "effect": effect,  # type: ignore[attr-defined]
                       "complete": True}
             self._journal_commit(record, commit)
-        if cancelled.is_set() or deadline.expired():
-            return self._commit_left_held(record, request, lease, timeout_trail)
-        self._publish_reservation(commit, str(record["request_id"]))
-        if lease is not None:
-            lease.detach()  # type: ignore[attr-defined]
-        return self._settle(record, self._reserve_response(request, "admitted", None, trail, reservation))
+        rid = reservation.reservation_id  # type: ignore[attr-defined]
+        with _FileLock(self._dir("reservations") / f"{rid}.lock", blocking=False, deadline=deadline) as held:
+            if not held or cancelled.is_set() or deadline.expired():
+                return self._commit_left_held(record, request, lease, timeout_trail)
+            self._publish_reservation(commit, str(record["request_id"]))
+            if lease is not None:
+                lease.detach()  # type: ignore[attr-defined]
+            return self._settle(record, self._reserve_response(request, "admitted", None, trail, reservation))
 
     def _journal_commit(self, record: dict[str, object], commit: Mapping[str, object]) -> None:
         record["commit"] = dict(commit)
@@ -3045,88 +3064,192 @@ class PlacementLifecycle:
         """``reserve_replay`` steps 3 to 5 for an unsettled attempt of the same body.
 
         Settlement comes only from what is already durable: a complete commit becomes the
-        admitted response with its original reservation, expiry and bridge. No target,
-        lease, slot, bridge or exposure call is made, and expiry is never recomputed."""
+        admitted response with its original reservation, expiry and bridge. Besides the one
+        bounded read-only reconciliation, no target, lease, slot, bridge or exposure call is
+        made, and expiry is never recomputed. Cancellation, the remaining time and the
+        settle bound are checked again after every wait."""
         from .placement_process_contract import TrailEntry
 
         now = self.clock()
         if self._at_bound(record, now):
-            return self._settle_end_reached(record, request)
+            return self._settle_end_reached(record, request, deadline)
         bound = self._settle_bound(record)
         timeout_s = max(0.0, min(deadline.left(), bound - now))  # type: ignore[operator]
         try:
             verdict = self.reconcile(record, timeout_s)
         except Exception:
             verdict = "indeterminate"
+        if self._at_bound(record, self.clock()):
+            return self._settle_end_reached(record, request, deadline)
+        if cancelled.is_set() or deadline.expired():
+            return self._indeterminate(request, record)
         trail = self._journaled_trail(record)
         commit = record.get("commit") if isinstance(record.get("commit"), dict) else None
-        reservation_id = None if commit is None else str(commit["reservation"]["reservation_id"])  # type: ignore[index]
-        if verdict == "held_ready" and commit is not None and commit.get("complete"):
-            if os.path.lexists(self._dir("tombstones") / f"{reservation_id}.json"):
-                verdict = "nothing_held"          # our own cleanup already removed it
-            else:
-                return self._settle_committed(record, request, commit, deadline)
+        if (verdict == "held_ready" and commit is not None and commit.get("complete")
+                and not record.get("transfer")):
+            settled = self._settle_committed(record, request, commit, cancelled, deadline)
+            if settled is _AT_BOUND:
+                return self._settle_end_reached(record, request, deadline)
+            if settled is not _REMOVED:
+                return settled
+            verdict = "nothing_held"
         if verdict == "nothing_held":
             effects = self._owned_effects(record)
+            transfer = record.get("transfer") or {}
+            entries = transfer.get("entries") or []  # type: ignore[union-attr]
             label = (str(commit["effect"]["target"]) if commit is not None  # type: ignore[index]
-                     else str(effects[-1]["target"]) if effects else _PREFLIGHT)
-            self._hand_to_cleanup(record, effects)
-            entries = (*trail, TrailEntry(label, "unreachable", _TIMEOUT, None))
-            return self._settle(record, self._reserve_response(request, "unreachable", _TIMEOUT, entries))
-        return self._reserve_response(request, "timeout", _TIMEOUT, trail)
+                     else str(effects[-1]["target"]) if effects
+                     else str(entries[-1]["effect"]["target"]) if entries else _PREFLIGHT)
+            self._plan_transfer(record)
+            self._resume_transfer(record, deadline)
+            entries_ = (*trail, TrailEntry(label, "unreachable", _TIMEOUT, None))
+            return self._settle(record, self._reserve_response(request, "unreachable", _TIMEOUT, entries_))
+        return self._indeterminate(request, record)
 
     def _settle_committed(self, record: dict[str, object], request: object,
-                          commit: Mapping[str, object], deadline: "_Deadline") -> object:
-        """Settle a complete, durable commit as admitted: publish its reservation if the
-        interruption came before publication, otherwise reuse the published one."""
+                          commit: Mapping[str, object], cancelled: threading.Event,
+                          deadline: "_Deadline") -> object:
+        """Settle a complete, durable commit as admitted, under its reservation's lock (the
+        lock every consumer of that effect holds). Inside the lock, immediately before
+        publication: a tombstone, a cleanup owner or a planned transfer means the effect was
+        removed or handed on (``_REMOVED``); the settle bound reached means the terminal rule
+        applies (``_AT_BOUND``); cancellation or an exhausted deadline answers indeterminate
+        and keeps the commit. Otherwise the record is published if the interruption came
+        before publication, and the attempt settles under the same lock."""
         from .placement_process_contract import Reservation, TrailEntry
 
         reservation = Reservation.from_json(commit["reservation"])  # type: ignore[arg-type]
-        path = self._dir("reservations") / f"{reservation.reservation_id}.json"
-        with _FileLock(self._dir("reservations") / f"{reservation.reservation_id}.lock", blocking=False,
+        rid = reservation.reservation_id
+        with _FileLock(self._dir("reservations") / f"{rid}.lock", blocking=False,
                        deadline=deadline) as held:
-            if not held:
+            if not held or cancelled.is_set() or deadline.expired():
                 return self._indeterminate(request, record)
-            if _read_journal(path) is None:
+            if self._at_bound(record, self.clock()):
+                return _AT_BOUND
+            if (record.get("transfer")
+                    or os.path.lexists(self._dir("tombstones") / f"{rid}.json")
+                    or os.path.lexists(self._dir("cleanup") / f"{rid}.json")):
+                return _REMOVED
+            if _read_journal(self._dir("reservations") / f"{rid}.json") is None:
                 self._publish_reservation(commit, str(record["request_id"]))
-        rows = commit.get("trail") or []
-        trail = tuple(TrailEntry.from_json(row) for row in rows)  # type: ignore[union-attr]
-        return self._settle(record, self._reserve_response(request, "admitted", None, trail, reservation))
+            rows = commit.get("trail") or []
+            trail = tuple(TrailEntry.from_json(row) for row in rows)  # type: ignore[union-attr]
+            return self._settle(record, self._reserve_response(request, "admitted", None, trail, reservation))
 
     def _owned_effects(self, record: Mapping[str, object]) -> list[dict[str, object]]:
-        """The effects this unsettled attempt still owns: its commit's complete effect, or
-        the walk's pending effects when no commit was journaled."""
+        """The effects this attempt still owns directly: its commit's complete effect, or
+        the walk's pending effects when no commit was journaled. Once a cleanup transfer is
+        planned, the transfer owns them and this is empty."""
+        if record.get("transfer"):
+            return []
         commit = record.get("commit")
-        if isinstance(commit, dict) and not commit.get("retired"):
+        if isinstance(commit, dict):
             return [dict(commit["effect"])]  # type: ignore[arg-type]
         return [dict(row) for row in record.get("pending") or [] if isinstance(row, dict)]  # type: ignore[union-attr]
 
-    def _hand_to_cleanup(self, record: dict[str, object], effects: Sequence[Mapping[str, object]]) -> None:
-        """Move the attempt's effects to cleanup entries, one owner each. For a commit, the
-        complete effect is handed on once and any published active record of the same
-        reservation is retired; an effect our own reap already destroyed (its tombstone
-        exists) is not handed on again."""
-        started = record.get("started_at")
-        created = float(started) if type(started) in (int, float) and math.isfinite(started) else self.clock()  # type: ignore[arg-type]
-
-        def hand(effect: Mapping[str, object]) -> None:
-            entry_id = f"{record['request_id']}-{self.new_id()}"
-            _write_journal(self._dir("cleanup") / f"{entry_id}.json",
-                           {"created_at": created, "request_id": record["request_id"],
-                            "effect": dict(effect)})
-
+    def _ownership(self, record: Mapping[str, object], effect: Mapping[str, object],
+                   index: int) -> tuple[str, str]:
+        """The stable ``(key, lock)`` of one effect. A committed effect is owned under its
+        reservation id and serialized on that reservation's lock, the lock every consumer
+        of the reservation takes; a pending effect is owned under its attempt and lease or
+        slot, serialized on its own cleanup lock."""
         commit = record.get("commit")
-        if isinstance(commit, dict) and not commit.get("retired"):
-            reservation_id = str(commit["reservation"]["reservation_id"])  # type: ignore[index]
-            with _FileLock(self._dir("reservations") / f"{reservation_id}.lock", blocking=True):
-                if not os.path.lexists(self._dir("tombstones") / f"{reservation_id}.json"):
-                    hand(commit["effect"])  # type: ignore[arg-type]
-                _remove_journal(self._dir("reservations") / f"{reservation_id}.json")
-            commit["retired"] = True
-        else:
-            for effect in effects:
-                hand(effect)
+        if isinstance(commit, dict):
+            return str(commit["reservation"]["reservation_id"]), "reservations"  # type: ignore[index]
+        identity = effect.get("lease_id") or effect.get("slot") or str(index)
+        return f"{record['request_id']}--{identity}", "cleanup"
+
+    def _owner_lock(self, key: str, lock: str, deadline: "_Deadline | None") -> "_FileLock":
+        return _FileLock(self._dir(lock) / f"{key}.lock", blocking=False, deadline=deadline)
+
+    def _plan_transfer(self, record: dict[str, object]) -> None:
+        """Durably record, in the attempt, the hand-over of its effects to cleanup owners
+        under stable keys, before any owner is materialized. Idempotent."""
+        if record.get("transfer"):
+            return
+        entries = []
+        for index, effect in enumerate(self._owned_effects(record)):
+            key, lock = self._ownership(record, effect, index)
+            entries.append({"key": key, "lock": lock, "effect": effect, "state": "planned"})
+        record["transfer"] = {"entries": entries}
         record["pending"] = []
+        self._journal_attempt(record)
+
+    def _transfer_unfinished(self, record: Mapping[str, object]) -> bool:
+        transfer = record.get("transfer") or {}
+        return any(entry.get("state") != "completed"  # type: ignore[union-attr]
+                   for entry in transfer.get("entries") or [])  # type: ignore[union-attr]
+
+    def _resume_transfer(self, record: dict[str, object], deadline: "_Deadline | None") -> None:
+        """Materialize or complete each entry under its owner lock, within the deadline,
+        and journal the new states; an entry whose lock is not obtained stays as it is for
+        a later start-up. A completed entry's destroyed owner is removed only after the
+        attempt journals that completion, so nothing is ever resurrected."""
+        entries = (record.get("transfer") or {}).get("entries") or []  # type: ignore[union-attr]
+        changed = False
+        for entry in entries:
+            if entry["state"] == "completed":
+                continue
+            with self._owner_lock(entry["key"], entry["lock"], deadline) as held:
+                if not held:
+                    continue
+                state = self._materialize(entry)
+            if state != entry["state"]:
+                entry["state"] = state
+                changed = True
+        if changed:
+            self._journal_attempt(record)
+        for entry in entries:
+            if entry["state"] == "completed":
+                with self._owner_lock(entry["key"], entry["lock"], deadline) as held:
+                    owner = _read_journal(self._dir("cleanup") / f"{entry['key']}.json") if held else None
+                    if owner is not None and owner.get("state") == "destroyed":
+                        _remove_journal(self._dir("cleanup") / f"{entry['key']}.json")
+
+    def _materialize(self, entry: Mapping[str, object]) -> str:
+        """Under the owner lock: give one planned effect its single cleanup owner. An
+        existing owner (owned or destroyed) is recognized, never rewritten; a committed
+        effect already destroyed by a consumer (its tombstone) completes the entry; an
+        active record of the same reservation is retired as its owner materializes."""
+        key = str(entry["key"])
+        existing = _read_journal(self._dir("cleanup") / f"{key}.json")
+        committed = entry["lock"] == "reservations"
+        if existing is not None:
+            if committed:
+                self._retire_active(key)
+            return "completed" if existing.get("state") == "destroyed" else "materialized"
+        if committed and os.path.lexists(self._dir("tombstones") / f"{key}.json"):
+            self._retire_active(key)
+            return "completed"
+        self._write_cleanup_owner(key, str(entry["lock"]), entry["effect"])  # type: ignore[arg-type]
+        if committed:
+            self._retire_active(key)
+        return "materialized"
+
+    def _write_cleanup_owner(self, key: str, lock: str, effect: Mapping[str, object]) -> None:
+        _write_journal(self._dir("cleanup") / f"{key}.json",
+                       {"key": key, "lock": lock, "state": "owned", "created_at": self.clock(),
+                        "effect": dict(effect)})
+
+    def _retire_active(self, reservation_id: str) -> None:
+        _remove_journal(self._dir("reservations") / f"{reservation_id}.json")
+
+    def _claimed_by_transfer(self, reservation_id: str, active: Mapping[str, object]) -> bool:
+        """Under the reservation lock: whether a cleanup transfer owns this reservation's
+        effect. If so the active record is not cleaned or admitted separately; it is
+        retired as the transfer's owner materializes."""
+        if os.path.lexists(self._dir("cleanup") / f"{reservation_id}.json"):
+            self._retire_active(reservation_id)
+            return True
+        request_id = active.get("request_id")
+        if not isinstance(request_id, str):
+            return False
+        attempt = _read_journal(self._dir("attempts") / f"{request_id}.json")
+        for entry in ((attempt or {}).get("transfer") or {}).get("entries") or []:  # type: ignore[union-attr]
+            if entry.get("key") == reservation_id and entry.get("state") != "completed":
+                self._materialize(entry)
+                return True
+        return False
 
     @staticmethod
     def _parsed_root(text: str, name: str) -> object:
@@ -3134,22 +3257,27 @@ class PlacementLifecycle:
         return sandbox_policy.SandboxRootChoice(location.host, location.path, False,
                                                 scheme=location.scheme, name=name)
 
-    def _settle_end_reached(self, record: dict[str, object], request: object = None) -> object:
-        """Step 3: settle terminally at the bound, arm the barrier for this walk only, and
-        turn its uncertain effect (the complete committed effect when there is one) into a
-        cleanup journal entry, retiring any published record of the same reservation."""
+    def _settle_end_reached(self, record: dict[str, object], request: object = None,
+                            deadline: "_Deadline | None" = None) -> object:
+        """Step 3: settle terminally at the bound and arm the barrier for this walk only.
+        The attempt's effects (the complete committed effect when there is one) are first
+        durably planned for transfer to cleanup owners, then materialized as far as the
+        deadline allows; an unfinished transfer is resumed by a later start-up."""
         from .placement_process_contract import TrailEntry
 
         trail = self._journaled_trail(record)
         effects = self._owned_effects(record)
+        entries = ((record.get("transfer") or {}).get("entries") or [])  # type: ignore[union-attr]
         if not trail:
-            label = str(effects[-1]["target"]) if effects else _PREFLIGHT
+            label = (str(effects[-1]["target"]) if effects
+                     else str(entries[-1]["effect"]["target"]) if entries else _PREFLIGHT)
             trail = (TrailEntry(label, "timeout", _END_REACHED, None),)
         if request is None:
             context = record.get("caller_context")
             request = _RequestEcho(str(record["request_id"]),
                                    dict(context) if isinstance(context, dict) else {})
-        self._hand_to_cleanup(record, effects)
+        self._plan_transfer(record)
+        self._resume_transfer(record, deadline)
         record["barrier"] = "armed"
         return self._settle(record, self._reserve_response(request, "timeout", _END_REACHED, trail))
 
@@ -3206,11 +3334,11 @@ class PlacementLifecycle:
 
     def release(self, request: object, *, cancelled: threading.Event) -> object:
         """``PlacementLifecycle.release(request, *, cancelled) -> ReleaseResponse``. One
-        deadline bounds the lock wait, bridge teardown, kill and owner listing."""
-        from .placement_process_contract import ReleaseResponse, canonical_bytes
+        deadline bounds start-up, the lock wait, bridge teardown, kill and owner listing."""
+        from .placement_process_contract import LeaseFlags, ReleaseResponse, canonical_bytes
 
         deadline = _Deadline.after(request.deadline_ms / 1000.0)  # type: ignore[attr-defined]
-        self._startup()
+        self._startup(deadline)
         supplied = request.reservation  # type: ignore[attr-defined]
         reservation_id = supplied.reservation_id
 
@@ -3218,6 +3346,7 @@ class PlacementLifecycle:
             return ReleaseResponse(request.request_id, reservation_id, state, code, flags,  # type: ignore[attr-defined, arg-type]
                                    request.caller_context)  # type: ignore[attr-defined]
 
+        pending_flags = LeaseFlags(reserved=True, create_settled=True, fenced=True, cleanup_pending=True)
         if supplied.client != self.client or supplied.inventory != self.client:
             # Another client's reservation is never looked up, let alone released.
             return response("rejected", _REFUSED, self._flags(None))
@@ -3227,16 +3356,11 @@ class PlacementLifecycle:
         tomb_path = self._dir("tombstones") / f"{reservation_id}.json"
         if not os.path.lexists(active_path) and not os.path.lexists(tomb_path):
             return response("unknown_reservation", _REFUSED, self._flags(None))
-        lock = _FileLock(self._dir("reservations") / f"{reservation_id}.lock", blocking=False,
-                         deadline=deadline)
-        with lock as held:
+        with _FileLock(self._dir("reservations") / f"{reservation_id}.lock", blocking=False,
+                       deadline=deadline) as held:
             if not held:
                 # Another operation holds this reservation: its effect may remain.
-                from .placement_process_contract import LeaseFlags
-
-                return response("cleanup_pending", _RELEASE_UNCONFIRMED,
-                                LeaseFlags(reserved=True, create_settled=True, fenced=True,
-                                           cleanup_pending=True))
+                return response("cleanup_pending", _RELEASE_UNCONFIRMED, pending_flags)
             active = _read_journal(active_path)
             tombstone = _read_journal(tomb_path) if active is None else None
             stored = active or tombstone
@@ -3248,6 +3372,9 @@ class PlacementLifecycle:
                 return response("rejected", _REFUSED, self._flags(stored, tombstone=active is None))
             if active is None:
                 return response("released", None, self._flags(tombstone, tombstone=True))
+            if self._claimed_by_transfer(reservation_id, active):
+                # Its cleanup owner removes the effect; the active record is retired.
+                return response("cleanup_pending", _RELEASE_UNCONFIRMED, pending_flags)
             if self._cleanup(active["effect"], deadline):  # type: ignore[arg-type]
                 self._tombstone(reservation_id, active)
                 return response("released", None, self._flags(active, tombstone=True))
@@ -3340,11 +3467,13 @@ class PlacementLifecycle:
     def reap(self, request: object, *, cancelled: threading.Event) -> object:
         """``PlacementLifecycle.reap(request, *, cancelled) -> ReapResponse``: only the
         selected client's inventory, eligible entries by ``created_at`` then id, all within
-        one deadline."""
+        one deadline. Every consumer of a reservation's effect, its active record or its
+        cleanup owner, holds that reservation's lock; a consumed cleanup owner is kept as a
+        destroyed completion record until its attempt journals the completion."""
         from .placement_process_contract import InventoryReapResult, ReapResponse
 
         deadline = _Deadline.after(request.deadline_ms / 1000.0)  # type: ignore[attr-defined]
-        self._startup()
+        self._startup(deadline)
         now = self.clock()
         eligible: list[tuple[float, str, str]] = []
         for reservation_id, entry in self._records("reservations"):
@@ -3352,7 +3481,8 @@ class PlacementLifecycle:
             if entry.get("state") == "cleanup_pending" or (expires is not None and now >= expires):
                 eligible.append((float(entry.get("created_at", 0.0)), reservation_id, "reservations"))  # type: ignore[arg-type]
         for entry_id, entry in self._records("cleanup"):
-            eligible.append((float(entry.get("created_at", 0.0)), entry_id, "cleanup"))  # type: ignore[arg-type]
+            if entry.get("state", "owned") == "owned":
+                eligible.append((float(entry.get("created_at", 0.0)), entry_id, "cleanup"))  # type: ignore[arg-type]
         eligible.sort(key=lambda item: (item[0], item[1]))
         examined = destroyed = pending = 0
         for _created, key, kind in eligible[: request.max_items]:  # type: ignore[attr-defined]
@@ -3360,29 +3490,54 @@ class PlacementLifecycle:
                 pending += 1
                 continue
             examined += 1
-            with _FileLock(self._dir(kind) / f"{key}.lock", blocking=False) as held:
-                current = _read_journal(self._dir(kind) / f"{key}.json") if held else None
-                if current is None:
-                    if held:
-                        destroyed += 1
-                    else:
-                        pending += 1
-                    continue
-                if self._cleanup(current["effect"], deadline):  # type: ignore[arg-type]
-                    destroyed += 1
-                    if kind == "reservations":
-                        self._tombstone(key, current)
-                    else:
-                        _remove_journal(self._dir(kind) / f"{key}.json")
-                else:
+            lock = "reservations" if kind == "reservations" else self._cleanup_lock_of(key)
+            with self._owner_lock(key, lock, deadline) as held:
+                if not held:
                     pending += 1
-                    if kind == "reservations":
-                        current["state"] = "cleanup_pending"
-                        _write_journal(self._dir(kind) / f"{key}.json", current)
+                    continue
+                outcome = (self._reap_active(key, deadline) if kind == "reservations"
+                           else self._reap_owner(key, deadline))
+            if outcome is None or outcome:
+                destroyed += 1
+            else:
+                pending += 1
         state = "complete" if pending == 0 else "cleanup_pending"
         result = InventoryReapResult(self.client, self.client, examined, destroyed, pending,
                                      None if pending == 0 else _RELEASE_UNCONFIRMED)
         return ReapResponse(request.request_id, state, result, request.caller_context)  # type: ignore[attr-defined]
+
+    def _cleanup_lock_of(self, key: str) -> str:
+        owner = _read_journal(self._dir("cleanup") / f"{key}.json") or {}
+        return "reservations" if owner.get("lock") == "reservations" else "cleanup"
+
+    def _reap_active(self, reservation_id: str, deadline: "_Deadline") -> bool | None:
+        """Under the reservation lock: consume an active record, unless a cleanup transfer
+        owns its effect, in which case the transfer's owner is consumed instead."""
+        current = _read_journal(self._dir("reservations") / f"{reservation_id}.json")
+        if current is None:
+            return None
+        if self._claimed_by_transfer(reservation_id, current):
+            return self._reap_owner(reservation_id, deadline)
+        if self._cleanup(current["effect"], deadline):  # type: ignore[arg-type]
+            self._tombstone(reservation_id, current)
+            return True
+        current["state"] = "cleanup_pending"
+        _write_journal(self._dir("reservations") / f"{reservation_id}.json", current)
+        return False
+
+    def _reap_owner(self, key: str, deadline: "_Deadline") -> bool | None:
+        """Under the owner lock: consume one cleanup owner and keep it as a destroyed
+        completion record."""
+        path = self._dir("cleanup") / f"{key}.json"
+        owner = _read_journal(path)
+        if owner is None or owner.get("state") == "destroyed":
+            return None
+        if not self._cleanup(owner["effect"], deadline):  # type: ignore[arg-type]
+            return False
+        owner["state"] = "destroyed"
+        owner["destroyed_at"] = self.clock()
+        _write_journal(path, owner)
+        return True
 
 class _RequestEcho(NamedTuple):
     """What a response echoes of the request it answers, rebuilt from the journal."""
@@ -3471,17 +3626,27 @@ class _ReserveWalk:
         return self._reading()
 
     def local_admit(self, _settings: object, bound: OperationBound) -> LocalAdmission:
-        """Atomically observe and reserve one host-wide live-sandbox slot."""
+        """Atomically observe and reserve one host-wide live-sandbox slot, within the
+        walk's bound for this call: the slot lock is never waited on past it, and a call
+        whose bound was cancelled (it timed out) never journals or writes a slot."""
         label = next(name for name, plan in self.plans.items()
                      if plan.target.kind == "local" and plan.refusal is None)
         slots = self.lifecycle._slots_dir()
-        with _FileLock(self.lifecycle.state_root / "local-slots.lock", blocking=True):
+        lock = _FileLock(self.lifecycle.state_root / "local-slots.lock", blocking=False,
+                         deadline=_Deadline.after(bound.timeout_s))
+        with lock as held:
+            if not held or bound.cancelled.is_set():
+                raise PlacementUnavailable(_CAPACITY)
             reading = self._reading()
             if bound.cancelled.is_set() or not reading.admits(self.thresholds):
                 raise PlacementUnavailable(_CAPACITY)
             token = self.lifecycle.new_id()
+            if bound.cancelled.is_set():
+                raise PlacementUnavailable(_CAPACITY)
             self._note_pending({"kind": "local", "target": label, "slot": token,
                                 "binding": self.bindings[label]})
+            if bound.cancelled.is_set():
+                raise PlacementUnavailable(_CAPACITY)
             _write_journal(slots / f"{token}.json", {
                 "client": self.lifecycle.client, "request_id": self.request.request_id,  # type: ignore[attr-defined]
                 "reservation_id": self.record["reservation_id"], "created_at": self.lifecycle.clock(),

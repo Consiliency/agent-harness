@@ -231,8 +231,8 @@ class ForwardTcpUnixBridge:
             raise BridgeUnavailable("bridge_start_failed") from None
         ready = self._await_ready(process, cancelled)
         if not ready or not _socket_is_private(directory, socket_path):
-            self._stop(process.pid, _start_ticks(process.pid), process)
-            _remove_directory(directory)
+            if self._stop(process.pid, _start_ticks(process.pid), process):
+                _remove_directory(directory)
             raise BridgeUnavailable("bridge_cancelled" if cancelled.is_set() else "bridge_start_failed")
         with self._lock:
             self._children[process.pid] = process
@@ -263,10 +263,11 @@ class ForwardTcpUnixBridge:
         interrupt teardown: leaving a reservation is always possible."""
         with self._lock:
             process = self._children.pop(handle.pid, None)
-        self._stop(handle.pid, handle.start_ticks, process)
-        gone = _remove_directory(Path(handle.directory))
-        stopped = not _helper_alive(handle.pid, handle.start_ticks)
-        if gone and stopped:
+        stopped = self._stop(handle.pid, handle.start_ticks, process)
+        if not stopped:
+            # The helper is not confirmed gone: its socket and directory stay with it.
+            return LeaseFlags(reserved=True, fenced=True, cleanup_pending=True)
+        if _remove_directory(Path(handle.directory)):
             return LeaseFlags(fenced=True, destruction_observed=True, barrier_confirmed=True)
         return LeaseFlags(reserved=True, fenced=True, cleanup_pending=True)
 
@@ -274,49 +275,66 @@ class ForwardTcpUnixBridge:
         """Stop whatever helper serves ``directory`` and remove it, when no handle was
         recorded (an interruption between starting the helper and journaling it)."""
         directory = Path(directory)
+        stopped = True
         for pid, ticks in _helpers_serving(directory):
             with self._lock:
                 process = self._children.pop(pid, None)
-            self._stop(pid, ticks, process)
-        gone = _remove_directory(directory)
-        alive = bool(_helpers_serving(directory))
-        if gone and not alive:
+            stopped = self._stop(pid, ticks, process) and stopped
+        if not stopped or _helpers_serving(directory):
+            return LeaseFlags(reserved=True, fenced=True, cleanup_pending=True)
+        if _remove_directory(directory):
             return LeaseFlags(fenced=True, destruction_observed=True, barrier_confirmed=True)
         return LeaseFlags(reserved=True, fenced=True, cleanup_pending=True)
 
     def _stop(self, pid: int, start_ticks: int | None,
-              process: "subprocess.Popen[bytes] | None") -> None:
-        """SIGTERM, wait within the operation's remaining time, then SIGKILL."""
-        wait_s = _remaining(self.ready_timeout_s)
+              process: "subprocess.Popen[bytes] | None") -> bool:
+        """SIGTERM, wait, then SIGKILL and wait, every wait capped by what is left of the
+        operation (or ``ready_timeout_s`` without one), never a fresh allowance. Returns
+        whether the helper is confirmed stopped; an unconfirmed process stays owned (it is
+        kept in ``_children``) for a later collection."""
+        end = time.monotonic() + _remaining(self.ready_timeout_s)
+
+        def left() -> float:
+            return max(0.0, end - time.monotonic())
+
         if process is not None:
-            if process.poll() is None:
+            stopped = process.poll() is not None
+            if not stopped:
                 try:
                     process.send_signal(signal.SIGTERM)
-                    process.wait(timeout=wait_s)
+                    process.wait(timeout=left())
+                    stopped = True
                 except subprocess.TimeoutExpired:
-                    process.kill()
                     try:
-                        process.wait(timeout=1.0)
+                        process.kill()
+                        process.wait(timeout=left())
+                        stopped = True
                     except subprocess.TimeoutExpired:
-                        pass
+                        stopped = False
+                    except OSError:
+                        stopped = process.poll() is not None
                 except OSError:
-                    pass
-            return
+                    stopped = process.poll() is not None
+            if not stopped:
+                with self._lock:
+                    self._children[pid] = process
+            return stopped
         if not _helper_alive(pid, start_ticks):
-            return
+            return True
         try:
             os.kill(pid, signal.SIGTERM)
         except OSError:
-            return
-        deadline = time.monotonic() + wait_s
-        while time.monotonic() < deadline and _helper_alive(pid, start_ticks):
-            time.sleep(_POLL_S)
+            return not _helper_alive(pid, start_ticks)
+        while left() > 0 and _helper_alive(pid, start_ticks):
+            time.sleep(min(_POLL_S, left()))
         if _helper_alive(pid, start_ticks):
             try:
                 os.kill(pid, signal.SIGKILL)
             except OSError:
                 pass
-
+            while left() > 0 and _helper_alive(pid, start_ticks):
+                time.sleep(min(_POLL_S, left()))
+        return not _helper_alive(pid, start_ticks)
 
 #: The monotonic end of the caller's operation (``reserve``, ``release``, ``reap``).
 _DEADLINE: "contextvars.ContextVar[float | None]" = contextvars.ContextVar(

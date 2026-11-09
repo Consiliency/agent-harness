@@ -874,7 +874,12 @@ def test_an_interrupted_admission_at_the_bound_has_one_cleanup_owner(env, monkey
         assert env.bridge.reclaimed == [commit["effect"]["bridge_directory"]]
     else:
         assert env.bridge.closed == [commit["reservation"]["reservation_id"]]
+    # The consumed owner is kept as a completion record until the attempt journals it.
+    [entry] = _cleanup_entries(env)
+    assert json.loads(entry.read_text())["state"] == "destroyed"
+    env.lifecycle()._startup()
     assert env.reservations() == [] and _cleanup_entries(env) == []
+    assert _attempt(env)["transfer"]["entries"][0]["state"] == "completed"
 
 
 @pytest.mark.parametrize("restart", ["before-bound", "at-bound"])
@@ -892,6 +897,7 @@ def test_an_interrupted_local_admission_keeps_its_slot_binding_and_expiry(env, m
     env.clock.now = _bound_of(_attempt(env))
     reaped, code = reap(env.lifecycle())
     assert (code, reaped.inventory.destroyed) == (0, 1)
+    env.lifecycle()._startup()
     assert env.slots() == [] and env.reservations() == [] and _cleanup_entries(env) == []
 
 
@@ -905,6 +911,231 @@ def test_a_reservation_reaped_before_settlement_is_not_republished(env, monkeypa
     response, _raw, code = reserve(env.lifecycle(), ttl_s=1)
     assert code == 10 and response.outcome == "unreachable" and env.reservations() == []
     assert (env.state / "agent-toolkit" / "tombstones" / f"{rid}.json").exists()
+
+
+# -- the hand-over to cleanup: one durable, restartable owner ---------------------------------
+
+def _hold(path):
+    """Hold an flock on ``path`` from a separate descriptor, as another process would."""
+    import fcntl
+
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    return fd
+
+
+def _owners(env, rid):
+    """The logical owners of one committed effect. Its cleanup entry, once written, is the
+    owner (an active record beside it is stale and is never consumed on its own); a
+    destroyed entry owns nothing and no active record may still advertise the effect.
+    Cleanup entries are only ever named by the effect's stable key."""
+    active = any(p.stem == rid for p in env.reservations())
+    states = []
+    for entry in _cleanup_entries(env):
+        assert entry.stem == rid, "a cleanup entry under any other key duplicates the owner"
+        states.append(json.loads(entry.read_text())["state"])
+    assert len(states) <= 1
+    if states == ["destroyed"]:
+        assert not active, "an active record still advertises a removed effect"
+        return 0
+    return 1 if (states == ["owned"] or active) else 0
+
+
+def _interrupt_after(monkeypatch, name, *, when=lambda *a, **k: True):
+    original = getattr(sp.PlacementLifecycle, name)
+    fired = []
+
+    def wrapped(self, *args, **kwargs):
+        result = original(self, *args, **kwargs)
+        if not fired and when(*args, **kwargs):
+            fired.append(True)
+            raise Interrupted(name)
+        return result
+    monkeypatch.setattr(sp.PlacementLifecycle, name, wrapped)
+
+
+HANDOVER_STEPS = ["after-plan", "after-owner-write", "after-active-removal", "after-transfer-journal",
+                  "before-terminal-settlement"]
+
+
+def _arm_handover_interruption(monkeypatch, step):
+    if step == "after-plan":
+        _interrupt_after(monkeypatch, "_plan_transfer")
+    elif step == "after-owner-write":
+        _interrupt_after(monkeypatch, "_write_cleanup_owner")
+    elif step == "after-active-removal":
+        _interrupt_after(monkeypatch, "_retire_active")
+    elif step == "after-transfer-journal":
+        _interrupt_after(monkeypatch, "_resume_transfer")
+    else:
+        original = sp.PlacementLifecycle._settle
+
+        def settle(self, record, response):
+            if getattr(response, "code", None) == END:
+                raise Interrupted(step)
+            return original(self, record, response)
+        monkeypatch.setattr(sp.PlacementLifecycle, "_settle", settle)
+
+
+@pytest.mark.parametrize("step", HANDOVER_STEPS)
+def test_an_interrupted_handover_keeps_one_owner_across_reap_and_restarts(env, monkeypatch, step):
+    commit = _interrupt_reserve(env, monkeypatch, "after-publish", ttl_s=1)
+    rid = commit["reservation"]["reservation_id"]
+    env.clock.now = _bound_of(_attempt(env))
+    _arm_handover_interruption(monkeypatch, step)
+    with pytest.raises(Interrupted):
+        env.lifecycle()._startup()
+    monkeypatch.undo()
+    assert _owners(env, rid) <= 1
+    reap(env.lifecycle())                                  # a reap interleaved before the restarts
+    assert _owners(env, rid) <= 1
+    for _ in range(2):                                     # restart twice
+        env.lifecycle()._startup()
+        assert _owners(env, rid) <= 1
+    reaped, _code = reap(env.lifecycle())
+    env.lifecycle()._startup()
+    assert _owners(env, rid) == 0 and env.reservations() == [] and _cleanup_entries(env) == []
+    assert env.bridge.closed == [rid]                      # cleaned exactly once
+    assert commit["effect"]["lease_id"] not in env.coordinator.held
+    record = _attempt(env)
+    assert record["settled"] and json.loads(record["response"])["code"] == END
+    assert [entry["state"] for entry in record["transfer"]["entries"]] == ["completed"]
+    reap(env.lifecycle())
+    env.lifecycle()._startup()
+    assert _cleanup_entries(env) == [] and env.bridge.closed == [rid]   # never resurrected
+
+
+def test_a_consumer_finishes_a_planned_handover_while_the_attempt_is_still_held(env, monkeypatch):
+    commit = _interrupt_reserve(env, monkeypatch, "after-publish", ttl_s=1)
+    rid = commit["reservation"]["reservation_id"]
+    env.clock.now = _bound_of(_attempt(env))
+    _arm_handover_interruption(monkeypatch, "after-plan")
+    with pytest.raises(Interrupted):
+        env.lifecycle()._startup()
+    monkeypatch.undo()
+    fd = _hold(env.state / "agent-toolkit" / "attempts" / "req-1.lock")   # the attempt is in progress
+    try:
+        reaped, code = reap(env.lifecycle())
+        # The expired active record is planned for hand-over: it is not cleaned on its own.
+        assert (code, reaped.inventory.destroyed) == (0, 1)
+        assert env.reservations() == [] and env.bridge.closed == [rid]
+        [entry] = _cleanup_entries(env)
+        assert entry.stem == rid and json.loads(entry.read_text())["state"] == "destroyed"
+    finally:
+        os.close(fd)
+    env.lifecycle()._startup()
+    assert _cleanup_entries(env) == [] and env.bridge.closed == [rid]
+    assert _attempt(env)["transfer"]["entries"][0]["state"] == "completed"
+
+
+def test_replay_rechecks_under_the_reservation_lock_after_a_concurrent_reap(env, monkeypatch):
+    commit = _interrupt_reserve(env, monkeypatch, "after-publish", ttl_s=1)
+    rid = commit["reservation"]["reservation_id"]
+    env.clock.now = _attempt(env)["started_at"] + 10       # expired, before the settle bound
+    env.verdict = "held_ready"
+    original = sp._FileLock.__enter__
+    fired = []
+
+    def gated(self):
+        if self.path.name == f"{rid}.lock" and not fired:
+            fired.append(True)
+            assert reap(env.lifecycle())[0].inventory.destroyed == 1   # tombstones it first
+        return original(self)
+    monkeypatch.setattr(sp._FileLock, "__enter__", gated)
+    response, _raw, code = reserve(env.lifecycle(), ttl_s=1)
+    monkeypatch.undo()
+    assert fired and (code, response.outcome) == (10, "unreachable")
+    assert env.reservations() == []                        # never republished
+    assert (env.state / "agent-toolkit" / "tombstones" / f"{rid}.json").exists()
+    assert env.bridge.closed == [rid]
+
+
+# -- deadlines reach start-up, hand-over, recovery and slot locking ----------------------------
+
+@pytest.mark.parametrize("operation", ["reserve", "release", "reap"])
+def test_a_held_lock_of_an_expired_commit_never_blocks_a_public_operation(env, monkeypatch, operation):
+    other, _raw, _code = reserve(env.lifecycle(), "other")
+    commit = _interrupt_reserve(env, monkeypatch, "after-publish", ttl_s=1)
+    rid = commit["reservation"]["reservation_id"]
+    env.clock.now = _bound_of(_attempt(env))
+    fd = _hold(env.state / "agent-toolkit" / "reservations" / f"{rid}.lock")
+    try:
+        started = time.monotonic()
+        if operation == "reserve":
+            response, _raw, code = reserve(env.lifecycle(), "unrelated", deadline_ms=400)
+            assert code == 0 and response.outcome == "admitted"
+        elif operation == "release":
+            response, code = release(env.lifecycle(), other.reservation.to_json(), deadline_ms=400)
+            assert code == 0 and response.state == "released"
+        else:
+            response, code = reap(env.lifecycle(), deadline_ms=400)
+            assert code == 20 and response.inventory.pending >= 1
+        assert time.monotonic() - started < 0.4 + 0.4
+        # Ownership is kept: the hand-over is planned, the active record is untouched.
+        record = _attempt(env)
+        assert record["settled"] and record["transfer"]["entries"][0]["state"] == "planned"
+        assert (env.state / "agent-toolkit" / "reservations" / f"{rid}.json").exists()
+        assert env.bridge.closed.count(rid) == 0
+    finally:
+        os.close(fd)
+    reap(env.lifecycle())
+    env.lifecycle()._startup()
+    assert _owners(env, rid) == 0 and env.bridge.closed.count(rid) == 1
+
+
+def _replay_request(cancelled=None, deadline_ms=300):
+    request = contract.decode_request("reserve", json.dumps(reserve_body(deadline_ms=deadline_ms)).encode())
+    return request, (cancelled or threading.Event())
+
+
+@pytest.mark.parametrize("case", ["lock-held", "slow-reconciliation", "cancelled", "bound-reached"])
+def test_a_replay_that_runs_out_of_time_or_is_cancelled_publishes_nothing(env, monkeypatch, case):
+    commit = _interrupt_reserve(env, monkeypatch, "before-publish", deadline_ms=300)
+    rid = commit["reservation"]["reservation_id"]
+    env.clock.now += 5
+    request, cancelled = _replay_request()
+    fd = None
+
+    def reconcile(record, timeout_s):
+        if case == "slow-reconciliation":
+            time.sleep(timeout_s + 0.1)
+        elif case == "cancelled":
+            cancelled.set()
+        elif case == "bound-reached":
+            env.clock.now = _bound_of(record)
+        return "held_ready"
+    if case == "lock-held":
+        fd = _hold(env.state / "agent-toolkit" / "reservations" / f"{rid}.lock")
+    try:
+        started = time.monotonic()
+        response = env.lifecycle(reconcile=reconcile).reserve(request, cancelled=cancelled)
+        assert time.monotonic() - started < 0.3 + 0.4
+    finally:
+        if fd is not None:
+            os.close(fd)
+    assert response.outcome == "timeout" and response.reservation is None
+    assert env.reservations() == []                        # no admitted publication
+    record = _attempt(env)
+    if case == "bound-reached":
+        assert response.code == END and record["settled"]
+    else:
+        assert response.code == TIMEOUT and not record["settled"] and record["commit"]["complete"]
+
+
+def test_a_contended_slot_lock_is_bounded_and_never_mutates_the_attempt_late(env):
+    env.toolkit(targets=[{"name": "local", "kind": "local", "rank": 1, "transport_id": "local"}])
+    env.state.mkdir(parents=True, exist_ok=True)
+    fd = _hold(env.state / "local-slots.lock")
+    try:
+        started = time.monotonic()
+        response, _raw, code = reserve(env.lifecycle(), deadline_ms=400)
+        assert time.monotonic() - started < 0.4 + 0.6
+        assert response.reservation is None and code in (10, 20)
+    finally:
+        os.close(fd)
+    time.sleep(0.6)                                        # a timed-out worker never writes later
+    assert env.slots() == []
+    assert not [effect for effect in _attempt(env).get("pending", []) if effect["kind"] == "local"]
 
 
 # -- start-up reads each attempt again under its lock ------------------------------------------

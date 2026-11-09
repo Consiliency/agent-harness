@@ -208,9 +208,16 @@ After an interruption between steps, nothing is allocated again:
   published record of the same reservation is retired, so one owner removes the bridge,
   slot or lease.
 
-Replay never contacts a target, opens a bridge or recomputes an expiry. Start-up reads each
+Replay may perform one bounded read-only reconciliation; it never creates a target, lease or bridge or recomputes an expiry. Start-up reads each
 unsettled attempt again under its lock before settling it, so a record that another process
 settled is never overwritten.
+
+The hand-over to cleanup is itself durable and restartable. It is journaled in the attempt,
+under stable keys, before any cleanup entry is written, and any later start-up resumes it,
+even after the terminal response has been journaled. Every consumer of a reservation's effect
+holds that reservation's lock: its active record, its cleanup entry, replay and the hand-over
+itself. A consumed cleanup entry is kept as a completion record until the attempt journals the
+completion, so an effect that was removed is never handed on again.
 
 ### Deadlines
 
