@@ -1713,9 +1713,12 @@ class _Walk:
         try:
             request = self.request_for(rung.root)
         except PlacementUnavailable as exc:
-            if self.reserve_only and exc.code in PLACEMENT_CODES and exc.code != _WAITING_NOTICE:
-                # The lifecycle's refusal of this target, recorded before any probe.
-                return failed, exc.code
+            if self.reserve_only:
+                from .placement_process_contract import placement_codes
+
+                if exc.code in placement_codes():
+                    # The lifecycle's refusal of this target, recorded before any probe.
+                    return failed, exc.code
             return failed, _REFUSED
         except Exception:
             return failed, _REFUSED
