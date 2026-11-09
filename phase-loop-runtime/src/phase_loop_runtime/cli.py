@@ -427,7 +427,7 @@ def build_parser() -> argparse.ArgumentParser:
     agy_qual_sub.add_argument("--base-ref", default="origin/main", help="watch --dry-run only: the tree to prepare from")
     seat_egress_sub = subparsers.add_parser(
         "seat-egress",
-        help="The jailed Gemini seat's egress proxy: status, or install the pinned srt (agent-harness#1170)",
+        help="The jailed-seat egress proxy: status, or install the pinned srt (agent-harness#1170)",
     )
     seat_egress_sub.add_argument("action", choices=("status", "install"))
     cli_qual_sub = subparsers.add_parser(

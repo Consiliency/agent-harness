@@ -1,10 +1,10 @@
-"""The egress layer of a jailed Gemini seat (agent-harness#1170; plan agent-harness#1244,
+"""The egress layer of allowlisted jailed review seats (agent-harness#1170; plan agent-harness#1244,
 rulings S3 and S4).
 
 The seat's network namespace has no uplink. Its only way out is one loopback port, bridged
 to a proxy that runs on the host, outside the seat: the TLS-terminating proxy of srt
 (`@anthropic-ai/sandbox-runtime`, pinned below). The proxy answers only the requests on the
-pinned allowlist (`seat_egress/gemini-allowlist.json`, measured from agy's real traffic),
+profile-selected pinned allowlist (`seat_egress/<allowlist_id>-allowlist.json`),
 checks the Host the client names inside each tunnel, and holds no credential. HTTPS_PROXY in
 the seat is routing, not the boundary: a client that ignores it has no route at all.
 
