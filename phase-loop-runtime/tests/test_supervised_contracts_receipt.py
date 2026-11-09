@@ -159,8 +159,7 @@ def verify(data):
         assert re.fullmatch(r"[0-9a-f]{64}", evidence["wheel_junit_sha256"])
 
 
-def test_receipt_bindings_and_inventory():
-    from historical_receipts import verify_historical_receipt
+def current_schema_nodes():
     import subprocess
     nodes = set()
     for module in GROUPS:
@@ -169,7 +168,12 @@ def test_receipt_bindings_and_inventory():
             cwd=ROOT, capture_output=True, text=True, check=True)
         nodes.update("tests/" + line.split("tests/", 1)[1] for line in result.stdout.splitlines()
                      if "tests/" + module + ".py::" in line)
-    verify_historical_receipt(RECEIPT, producer_nodes=nodes)
+    return nodes
+
+
+def test_receipt_bindings_and_inventory():
+    from historical_receipts import verify_historical_receipt
+    verify_historical_receipt(RECEIPT, producer_nodes=current_schema_nodes())
     verify(read_receipt())
 
 
@@ -379,3 +383,23 @@ if __name__ == "__main__":
     parser.add_argument("--bootstrap", action="store_true")
     args = parser.parse_args()
     stamp(args.stamp, args.suite_artifact, args.hosted, args.bootstrap, args.hosted_run)
+
+
+@pytest.mark.parametrize("control", ["receipt-byte", "internal-digest", "producer-node", "recorded-outcome"])
+def test_historical_receipt_controls(tmp_path, control):
+    from historical_receipts import verify_historical_receipt
+    path = tmp_path / "SCHEMA.md"
+    path.write_bytes(RECEIPT.read_bytes())
+    data = read_receipt()
+    nodes = current_schema_nodes()
+    verify_historical_receipt(path, record=data, producer_nodes=nodes)
+    if control == "receipt-byte":
+        path.write_bytes(path.read_bytes() + b" ")
+    elif control == "producer-node":
+        nodes.remove(data["intake_results"][0]["test_node_id"].removeprefix("phase-loop-runtime/"))
+    elif control == "recorded-outcome":
+        data["intake_results"][0]["outcome"] = "skipped"
+    else:
+        data["module_sha256"] = "0" * 64
+    with pytest.raises(AssertionError):
+        verify_historical_receipt(path, record=data, producer_nodes=nodes)

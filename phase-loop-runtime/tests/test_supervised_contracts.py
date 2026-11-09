@@ -388,6 +388,8 @@ def test_publication_runner_offline(tmp_path, monkeypatch, condition):
         verified.append(repo)
         if condition == "seal": raise ValueError("publication_mismatch")
     monkeypatch.setattr(module, "verify_seal", verify_seal)
+    monkeypatch.setattr(module, "verify_v2_seal", lambda repo, base: None)
+    monkeypatch.setattr(module, "compare_v2_publication", lambda clone, bundle: {})
     head = "a" * 40
     reads = []
     def command(argv, **kwargs):
@@ -446,7 +448,8 @@ def test_publication_change_selection(tmp_path, monkeypatch, changed, seal_chang
         if argv[1] == "diff": return ("\0".join(changed) + "\0").encode()
         assert argv[:2] == ["git", "show"]
         seal = "changed" if seal_changed and argv[2].startswith("b") else "same"
-        return json.dumps({"plans": [{"slug": "v12-SCHEMA", "frozen_inputs": {"seal": seal}}]}).encode()
+        return json.dumps({"plans": [{"slug": slug, "frozen_inputs": {"seal": seal}}
+                                      for slug in ("v12-SCHEMA", "v12-CLOSEOUT")]}).encode()
     import subprocess
     monkeypatch.setattr(subprocess, "check_output", command)
     exec(compile(script, "workflow-selection", "exec"), {})

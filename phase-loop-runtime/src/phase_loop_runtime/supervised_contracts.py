@@ -396,7 +396,7 @@ def _load_v2_bundle():
                 raise ContractError("resource_missing") from None
             data = root.joinpath(name).read_bytes()
             expected = _V2_PROVENANCE_SHA256 if name == "harness-provenance.json" else V2_PUBLICATION_PINS[name][0]
-            if sha256(data).hexdigest() != expected:
+            if expected != sha256(data).hexdigest():
                 raise ContractError("digest_mismatch") from None
             captured[name] = data
     except OSError:
