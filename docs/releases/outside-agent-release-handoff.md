@@ -5,7 +5,32 @@ outside-agent conformance runtime. It is metadata-only: the document itself did
 not publish a package, create a tag, dispatch a workflow, edit governed-pipeline,
 or make production merge enforcement live.
 
-## 0.7.30 source preparation
+## 0.7.31 source preparation
+
+- Source base: `origin/main` after agent-harness#1931
+- Package: `phase-loop-runtime`
+- Version: `0.7.31`
+- Runtime `phase_loop_runtime.__version__`: `0.7.31`
+- Candidate release pin: `v0.7.31`
+- Unpublished wheel: `phase_loop_runtime-0.7.31-py3-none-any.whl`
+- Unpublished source archive: `phase_loop_runtime-0.7.31.tar.gz`
+- Previous release: `0.7.30`, published to PyPI on 2026-11-08.
+
+This is source preparation tracked by agent-harness#1938. The candidate artifacts are
+local outputs; no tag, publication, deployment, installation or release workflow dispatch
+is claimed. Release acceptance and publication authorization remain separate from these
+package checks.
+
+0.7.31 ships the jailed Codex review seat (SEATS CODEX SL-3, agent-harness#1916), which
+landed after v0.7.30 and which the Codex review route waits on (agent-harness#1774). The
+other merges since v0.7.30 are plan-only.
+
+The release-qualified agy stays 1.5.3, the sole built-in member. agent-harness#1916
+changed package sources, so the live qualification record
+(`plans/evidence/agy-1.5.3-linux-x64-qualification.json`) is regenerated on the exact
+release-cut commit and added on top of it as a non-source commit.
+
+## 0.7.30 source preparation (published 2026-11-08)
 
 - Source base: `origin/main` after agent-harness#1922
 - Package: `phase-loop-runtime`

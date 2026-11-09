@@ -6,6 +6,29 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+## [0.7.31] - Unreleased candidate
+
+### Release preparation
+
+- 0.7.31 is the next release after 0.7.30, which was published to PyPI on 2026-11-08.
+  It ships the jailed Codex review seat (SEATS CODEX SL-3, agent-harness#1916), which
+  the Codex review route waits on (agent-harness#1774). The entries below are the
+  complete change record on `main` since v0.7.30. Every other merge is plan-only and
+  changes no package source: the v13 toolkit repin (agent-harness#1928), the v12
+  JOURNAL and WORKER plans (agent-harness#1925, agent-harness#1926), and the agyroll
+  RECBIND plan with its amendments A1 and A2 (agent-harness#1927, agent-harness#1933,
+  agent-harness#1936), and the browser VISART plan (agent-harness#1931). agent-harness#1922 merged before the v0.7.30 tag and shipped in
+  0.7.30. Release tracking is agent-harness#1938.
+- The release-qualified agy stays 1.5.3, the sole built-in member. Its live
+  qualification record is produced on the exact release-cut commit, because the
+  release-only qualification source-pin check covers every package source file,
+  including `__version__`, and agent-harness#1916 changed `panel_invoker.py` and other
+  package sources.
+- Tagging, publication, deployment, installation and release-workflow dispatch are
+  outside this preparation.
+
+### Changes since v0.7.30
+
 - Register the Codex review-seat jail after the owner's 2026-11-08 OD-4 acceptance
   (agent-harness#1916). The jail is the boundary with the inner sandbox off; tools can
   read their seat login copy and share its proxy-only egress. Completed-command evidence
@@ -13,8 +36,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   grant and retained setfcap capability; preserve the non-brokered read-only sandbox probe.
   Jailed Codex notices reflect its confinement, canonical `max` maps to `xhigh`,
   admission measures the prepared binary, and manual qualification binds the launch projection.
+- Plans only, no package source: the v13 LANEEXEC toolkit repin for the image launcher
+  tree and staging trust (agent-harness#1928, Consiliency/agent-toolkit#85); the v12
+  JOURNAL attempt journal and projection plan (agent-harness#1925) and WORKER bounded
+  patch-return worker plan (agent-harness#1926, both agent-harness#1818); and the agyroll
+  roadmap and RECBIND plan, which admit agy by evidence rather than by literal, with
+  amendments A1 (reclassified conformance controls) and A2 (frozen measured negative
+  controls) (agent-harness#1927, agent-harness#1933, agent-harness#1936,
+  agent-harness#1008); and the advisory browser roadmap and VISART plan for review-seat UI
+  visibility (agent-harness#1931).
 
-## [0.7.30] - Unreleased candidate
+## [0.7.30] - 2026-11-08
 
 ### Release preparation
 
