@@ -61,3 +61,49 @@ def test_decoding_keeps_raw_and_public_identity_separate():
     assert decoded.raw_digest == sha256(raw).hexdigest()
     with pytest.raises(TypeError):
         decoded.value["caller_context"]["changed"] = True
+
+
+from types import SimpleNamespace
+from phase_loop_runtime.supervised_capture_v2 import CapturedLaunch, _Delivery, _commit_material
+from phase_loop_runtime.supervised_launch import AttemptBinding
+from phase_loop_runtime.supervised_envelope_v2 import validate_v2_admission
+from test_supervised_contracts_vectors import V2_CORPUS, expand_v2
+
+
+def contract_capture(value, original):
+    """Adapt fixture material to the production reducer; no semantic oracle lives here."""
+    capture = CapturedLaunch()
+    capture._closed, capture._spent = False, False
+    policy = json.loads(value["launch_material"]["environment"]["policy"])
+    environment = value["launch_material"]["process"]["worker"]["env"]
+    secrets = [environment[name] for name, kind in policy["classification"].items()
+               if isinstance(kind, dict) and "secret" in kind and name in environment]
+    capture._delivery = _Delivery({}, secrets)
+    stop = original["envelope"]["launch"]["stop"]
+    capture.commitments, capture.diagnostics, capture.credential_sources, capture.uncheckable = _commit_material(
+        value["launch_material"], timeout_seconds=stop["timeout_seconds"], deadline_action=stop["deadline_action"])
+    attempt = AttemptBinding(value["validator_context"]["expected_assignment_digest"], "run-corpus", "attempt-corpus")
+    context = SimpleNamespace(**value["validator_context"], policy_epoch="synthetic-corpus")
+    payload = value["envelope"]["caller_context"]
+    context.caller_context_suitability = dict(sha256=sha256(canonicalize_v2(payload)).hexdigest(),
+        assignment_digest=attempt.assignment_digest, run_id=attempt.run_id, attempt_id=attempt.attempt_id,
+        policy_epoch=context.policy_epoch)
+    return capture, context, attempt
+
+
+@pytest.mark.parametrize("case", [case for case in V2_CORPUS if case["kind"] == "admission"], ids=lambda case: case["id"])
+def test_published_admission_production(case):
+    value = expand_v2(case)
+    cases = {row["id"]: row for row in V2_CORPUS}
+    original = case["input"] if case["role"] == "control" else cases[case["control"]]["input"]
+    raw = json.dumps(value["envelope"], ensure_ascii=True, allow_nan=False).encode()
+    try:
+        envelope = decode_v2(raw, bundle=load_contract_bundle(version="v2"))
+    except ContractError:
+        observed = ("envelope_schema_invalid",)
+    else:
+        capture, context, attempt = contract_capture(value, original)
+        decision = validate_v2_admission(envelope, context=context, capture=capture, attempt=attempt)
+        observed = decision.diagnostics
+    expected = case["expected"]
+    assert set(observed) == set(expected), case["id"]
