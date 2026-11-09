@@ -35,14 +35,14 @@ Audit baseline: `origin/main` at `23a30561e9b2ef23933fcbb4225a1d86120a5195`. Pen
 - [x] `skills-src/claude/claude-plan-detailed/SKILL.md` — fixed; runtime `cli.py advisor-board parser; plan_manifest.py:95,327; skill_paths.py:24 — absent CLI helper, paired executor and reflection root`
 - [ ] `skills-src/claude/claude-plan-detailed/assets/review_prompt.md` — pending
 - [x] `skills-src/claude/claude-plan-detailed/references/closeout-reflection-handoff.md` — fixed; runtime `skill_paths.py:24,35 — executable shell root resolution and quoted run paths`
-- [ ] `skills-src/claude/claude-plan-phase/SKILL.md` — pending
+- [x] `skills-src/claude/claude-plan-phase/SKILL.md` — fixed; runtime `launcher.py Claude route; roadmap_lint.py alias parser; plan_manifest.py:327 — uppercase aliases, review entrypoint, active run directory, reflection root`
 - [ ] `skills-src/claude/claude-plan-phase/assets/review_prompt.md` — pending
 - [ ] `skills-src/claude/claude-plan-phase/references/closeout-reflection-handoff.md` — pending
 - [ ] `skills-src/claude/claude-plan-phase/references/interactive-workflow.md` — pending
-- [ ] `skills-src/claude/claude-plan-phase/references/lane-templates.md` — pending
-- [ ] `skills-src/claude/claude-plan-phase/references/lane-validation-checklist.md` — pending
-- [ ] `skills-src/claude/claude-plan-phase/references/model-effort-tiering.md` — pending
-- [ ] `skills-src/claude/claude-plan-phase/references/plan-document-template.md` — pending
+- [x] `skills-src/claude/claude-plan-phase/references/lane-templates.md` — fixed; runtime `source validate_plan_doc.py:166,217,246 — numeric IDs, inline disjoint ownership, absent catalog helper`
+- [x] `skills-src/claude/claude-plan-phase/references/lane-validation-checklist.md` — checked-clean; runtime `source validate_plan_doc.py checks K,L,P; plan_ir.py ownership and producer dependencies`
+- [x] `skills-src/claude/claude-plan-phase/references/model-effort-tiering.md` — fixed; runtime `planner_validation.py:54; profiles.py:164 — selector vocabulary and current model source`
+- [x] `skills-src/claude/claude-plan-phase/references/plan-document-template.md` — fixed; runtime `source validate_plan_doc.py:217,334 — numeric headings and required spec-closeout section`
 - [ ] `skills-src/claude/claude-plan-phase/scripts/validate_plan_doc.py` — pending
 - [x] `skills-src/claude/claude-run-train/SKILL.md` — checked-clean; runtime `train_runner.py` native request/leg and review-only branches, `cli.py` run-train flags
 - [x] `skills-src/claude/claude-skill-editor/SKILL.md` — fixed; runtime `skill_paths.py:24,35; reflection_corpus.py:615; nonexistent helper/table replaced and locked serial parity command`
