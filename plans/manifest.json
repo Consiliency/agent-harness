@@ -14981,7 +14981,10 @@
           "sha256": "130a894df327ddca2eebf83c8b52e068b25176320af3e0a4e15319a315ba83ea"
         },
         "plans/artifacts/v13-PLACECLI-landed-binding.md": {
-          "sha256": "9afe4c619f48426a33f609f951b3ddd9f15bceccec1fa5cb24e132221d3009f1"
+          "sha256": "64cd6c576530ac9af0fe72fa521286e0643425beb0d11045257b0b1fac45da51"
+        },
+        "plans/artifacts/v12-v13-replan-ownership.md": {
+          "sha256": "e5dbbfb45c23cbb6acb9756a23a3d86b62dd5b172b94d6a495ef436d189f3e06"
         }
       },
       "gate_status": "declared_not_produced",
@@ -15004,7 +15007,8 @@
             "replan": {
               "decision": "owner decision 2026-11-09: re-plan on the landed code keeping the roadmap goals; the superseded plan was replaced, not amended",
               "frozen_inputs_added": [
-                "plans/artifacts/v13-PLACECLI-landed-binding.md"
+                "plans/artifacts/v13-PLACECLI-landed-binding.md",
+                "plans/artifacts/v12-v13-replan-ownership.md"
               ],
               "replanned_by": "claude-plan-phase",
               "roadmap_sha256": "a5cd5f2bedbda38c99ad516113fd839dae8af6ea4482760e8efd18a5d413428d",

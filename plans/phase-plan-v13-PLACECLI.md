@@ -4,7 +4,7 @@ phase: PLACECLI
 roadmap: specs/phase-plans-v13.md
 roadmap_sha256: a5cd5f2bedbda38c99ad516113fd839dae8af6ea4482760e8efd18a5d413428d
 automation:
-  suite_command: ["bash", "-lc", "cd phase-loop-runtime && PYTHONPATH=$PWD/src:$PWD/tests timeout 900 .venv/bin/python -m pytest -q -p no:cacheprovider tests/test_placement_process_contract.py tests/test_placement_lifecycle_process.py tests/test_sandbox_placement.py tests/test_sandbox_policy.py tests/test_placement_driver.py tests/test_placement_ladder_model.py tests/test_placement_lease.py tests/test_openshell_backend.py tests/test_openshell_channel.py tests/test_openshell_journal.py tests/test_openshell_transport.py tests/test_advisor_board_config.py tests/test_placement_bridge.py tests/test_openshell_worker.py tests/test_placement_cli.py tests/test_placecli_receipt.py tests/test_agent_cli_scratch_inventory_1147.py tests/test_seat_launch_helpers_trusted.py tests/test_seat_reference_inventory.py tests/test_gate_a_wheel_isolation.py"]
+  suite_command: ["bash", "-lc", "cd phase-loop-runtime && PYTHONPATH=$PWD/src:$PWD/tests timeout 900 .venv/bin/python -m pytest -q -p no:cacheprovider tests/test_placement_process_contract.py tests/test_placement_lifecycle_process.py tests/test_sandbox_placement.py tests/test_sandbox_policy.py tests/test_placement_driver.py tests/test_placement_ladder_model.py tests/test_placement_lease.py tests/test_openshell_backend.py tests/test_openshell_channel.py tests/test_openshell_journal.py tests/test_openshell_transport.py tests/test_advisor_board_config.py tests/test_placement_bridge.py tests/test_openshell_worker.py tests/test_placement_cli.py tests/test_placecli_receipt.py tests/test_agent_cli_scratch_inventory_1147.py tests/test_seat_launch_helpers_trusted.py tests/test_seat_reference_inventory.py tests/test_gate_a_wheel_isolation.py::GateAConformEvidenceScopeTest"]
 ---
 
 # PLACECLI: Placement process boundary and lifecycle (re-plan on landed code)
@@ -134,7 +134,7 @@ SL-3 — Process CLI, inventories, documentation and evidence reducer
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-0.1 | test | — | `tests/test_placement_process_contract.py`, `tests/test_gate_a_wheel_isolation.py` | valid examples for all seven message families; path-entered negatives for every enum and conditional; required, non-empty, unique provider names and refusal of URL, hostname, model or endpoint shapes; reservation `providers` and `egress_sha256`; duplicate keys, trailing bytes, invalid UTF-8, the 64 KiB bound, non-finite or unsafe numbers, nested or oversized caller context, unknown fields; errata-1 obligation T1; packaged bytes equal the frozen artifact; installed-wheel load | `V0` |
+| SL-0.1 | test | — | `tests/test_placement_process_contract.py`, `tests/test_gate_a_wheel_isolation.py` | valid examples for all seven message families; path-entered negatives for every enum and conditional; required, non-empty, unique provider names and refusal of URL, hostname, model or endpoint shapes; reservation `providers` and `egress_sha256`; duplicate keys, trailing bytes, invalid UTF-8, the 64 KiB bound, non-finite or unsafe numbers, nested or oversized caller context, unknown fields; errata-1 obligation T1; packaged bytes equal the frozen artifact; installed-wheel load; additions to `tests/test_gate_a_wheel_isolation.py` go in `GateAConformEvidenceScopeTest`. The full cleanroom (`GateAWheelIsolationTest`) stays with hosted CI and Gate A | `V0` |
 | SL-0.2 | impl | SL-0.1 | `placement_process_contract.py`, `contracts/placement/process-v1.schema.json` | — | — |
 | SL-0.3 | verify | SL-0.2 | SL-0 owned files | all SL-0 tests | `V0`; mutating the packaged bytes while updating only a test expectation still fails |
 
@@ -147,15 +147,15 @@ records from that capture. Byte-equality checks apply only to pins without
 
 - **Scope**: Adapt the ranked Pi walk and the single-target SEATS route into one restart-safe, per-client lifecycle with fail-closed local admission.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/sandbox_placement.py`, `phase-loop-runtime/src/phase_loop_runtime/sandbox_policy.py`, `phase-loop-runtime/src/phase_loop_runtime/placement_lease.py`, `phase-loop-runtime/src/phase_loop_runtime/openshell_backend.py`, `phase-loop-runtime/src/phase_loop_runtime/openshell_channel.py`, `phase-loop-runtime/src/phase_loop_runtime/openshell_journal.py`, `phase-loop-runtime/src/phase_loop_runtime/openshell_transport.py`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/config.py`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/fixtures/placement-driver.defaults.toml`, `phase-loop-runtime/tests/test_placement_lifecycle_process.py`, `phase-loop-runtime/tests/test_sandbox_placement.py`, `phase-loop-runtime/tests/test_sandbox_policy.py`, `phase-loop-runtime/tests/test_placement_driver.py`, `phase-loop-runtime/tests/test_placement_ladder_model.py`, `phase-loop-runtime/tests/test_placement_lease.py`, `phase-loop-runtime/tests/test_openshell_backend.py`, `phase-loop-runtime/tests/test_openshell_channel.py`, `phase-loop-runtime/tests/test_openshell_journal.py`, `phase-loop-runtime/tests/test_openshell_transport.py`, `phase-loop-runtime/tests/test_advisor_board_config.py`
-- **Interfaces provided**: `PlacementLifecycle`, effective-egress resolver, whole-config `config_sha256`, caps readiness admission, workload-to-client mapping, caller-scoped reap
-- **Interfaces consumed**: `PlacementRequestMessage`, `PlacementResponseMessage`, `place` (pre-existing), `open_lease` (pre-existing), `seat_resource_caps.load_caps` (pre-existing), `seat_resource_caps.readiness_code` (pre-existing), `seat_resource_caps.caps_sha256` (pre-existing)
+- **Interfaces provided**: `PlacementLifecycle`, effective-egress resolver, whole-config `config_sha256`, caps readiness admission, workload-to-client mapping, caller-scoped reap, reservation-only walk exit
+- **Interfaces consumed**: `PlacementRequestMessage`, `PlacementResponseMessage`, `open_lease` (pre-existing), `seat_resource_caps.load_caps` (pre-existing), `seat_resource_caps.readiness_code` (pre-existing), `seat_resource_caps.caps_sha256` (pre-existing)
 - **Parallel-safe**: no
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-1.1 | test | — | SL-1 test files | `pi-runner` through `ai` capacity, an actually reserved local slot and disabled E2B on the existing walk; `leg`, `qualification` and `implementation` only through one injected SEATS target, refusing before any probe when it is missing; provider refusal at exit 10 with zero capacity, coordinator and lease calls; effective egress exactly baseline plus declared endpoints, with order, duplicate, undeclared-endpoint and mapping mutations failing; generic probe receipt on owned hosts and per-provider OD-7 on third-party targets; default and overridden headroom thresholds with every exclusive boundary, stale or unknown dimensions and missing or malformed PSI as `at_capacity`; injected caps loader raising and readiness returning `seat_resource_caps_unavailable` each refuse `sandbox_placement_capability_unmet` before a local reservation; changing thresholds, provider mappings, the caps record or the `launch` member changes `config_sha256`; local Pi on `minimal-without-app` with `bridge: null` holding a live-sandbox slot; reserve budget, lost replies, late handles, restart, errata-1 replay R1–R3, release echo mismatch returning `rejected`, repeat release; OU and inventory per workload, `(client, reservation)` barriers and caller-scoped reap | `V1` |
+| SL-1.1 | test | — | SL-1 test files | `pi-runner` through `ai` capacity, an actually reserved local slot and disabled E2B on the existing walk; `leg`, `qualification` and `implementation` only through one injected SEATS target, refusing before any probe when it is missing; provider refusal at exit 10 with zero capacity, coordinator and lease calls; effective egress exactly baseline plus declared endpoints, with order, duplicate, undeclared-endpoint and mapping mutations failing; generic probe receipt on owned hosts and per-provider OD-7 on third-party targets; default and overridden headroom thresholds with every exclusive boundary, stale or unknown dimensions and missing or malformed PSI as `at_capacity`; injected caps loader raising and readiness returning `seat_resource_caps_unavailable` each refuse `sandbox_placement_capability_unmet` before a local reservation; changing thresholds, provider mappings, the caps record or the `launch` member changes `config_sha256`; local Pi on `minimal-without-app` with `bridge: null` holding a live-sandbox slot; reserve budget, lost replies, late handles, restart, errata-1 replay R1–R3, release echo mismatch returning `rejected`, repeat release; OU and inventory per workload, `(client, reservation)` barriers and caller-scoped reap; a remote `pi-runner` or seat reservation through the walk makes zero `commit`, `seal` and `execute` calls and survives restart with its lease held; with an unreadable caps record `reserve` refuses `sandbox_placement_capability_unmet` for every target with zero effects while `release` and `reap` keep working (coordinator ruling 1) | `V1` |
 | SL-1.2 | impl | SL-1.1 | SL-1 source files | — | — |
-| SL-1.3 | verify | SL-1.2 | SL-1 owned files | all SL-1 tests | `V1`; mutations that add undeclared egress, bypass provider, OD-7, headroom or caps readiness checks, merge inventories, relabel timeout as unreachable or advance after an unconfirmed release each fail through a production path |
+| SL-1.3 | verify | SL-1.2 | SL-1 owned files | all SL-1 tests | `V1`; mutations that add undeclared egress, bypass provider, OD-7, headroom or caps readiness checks, merge inventories, relabel timeout as unreachable or advance after an unconfirmed release or reach `commit`, `seal` or `execute` from reserve each fail through a production path |
 
 SL-1.2 implements binding §3 P-S1 and §4.1–§4.2 with the protocol artifact's
 semantics. Loader and readiness callables are injected at the lifecycle
@@ -187,7 +187,7 @@ stays `pending_qualification`.
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-3.1 | test | — | `tests/test_placement_cli.py`, `tests/test_placecli_receipt.py`, inventory tests | installed console script and module path with isolated imports, controlled HOME and config and hostile selection variables; required `--client`; client/workload mismatch refused before effects; exact exit classes, one JSON line per schema-valid outcome, exit 70 with stdout absent for schema-invalid input (T2), a client pinned to pre-erratum bytes refusing on `version` (T3); empty ordinary stderr and no sentinel leakage; `version` reads empty stdin and reports the schema digest, `config_sha256` and thresholds; the legacy reaper reaches the same service with an explicit client; inventory rows for every new subprocess, file and dynamic import, helpers via `seat_uid.trusted_module_argv`; the receipt parser refuses missing or skipped-only results, stale hashes, a shared-file pin or a live-activation claim | `V3` |
+| SL-3.1 | test | — | `tests/test_placement_cli.py`, `tests/test_placecli_receipt.py`, inventory tests | installed console script and module path with isolated imports, controlled HOME and config and hostile selection variables; required `--client`; client/workload mismatch refused before effects; exact exit classes, one JSON line per schema-valid outcome, exit 70 with stdout absent for schema-invalid input (T2), a client pinned to pre-erratum bytes refusing on `version` (T3); empty ordinary stderr and no sentinel leakage; `version` reads empty stdin and reports the schema digest, `config_sha256` and thresholds; with an unreadable caps record `version` exits 0 with the sentinel caps digest in `config_sha256` and empty stderr, and `--help` names the caps state and exits 0 (coordinator ruling 1); the legacy reaper reaches the same service with an explicit client; inventory rows for every new subprocess, file and dynamic import, helpers via `seat_uid.trusted_module_argv`; the receipt parser refuses missing or skipped-only results, stale hashes, a shared-file pin or a live-activation claim | `V3` |
 | SL-3.2 | impl | SL-3.1 | `placement_cli.py`, `cli.py`, `pyproject.toml`, `uv.lock`, `tests/data/seat_launch_references.json` | — | — |
 | SL-3.3 | docs | SL-3.2 | `docs/placement-process-cli.md`, `phase-loop-runtime/README.md`, `CHANGELOG.md`, `.doc-decisions.json`, `plans/evidence/placement/PLACECLI.md`, `plans/manifest.json` | — | `V3` |
 | SL-3.4 | verify | SL-3.3 | SL-3 owned files | all SL-3 tests | `V3`, then `V4` and the effective suite |
@@ -198,7 +198,7 @@ from environment or request. SL-3.3 documents messages, exit and flag semantics,
 provider refusal and the egress-digest rule including the v2 bare-hex spelling
 (P-S2), barriers, caller-scoped reap, local and remote Pi policies, the
 credential-proxy boundary, the per-host defaults and fail-closed PSI and caps
-readiness. It states that live routes and E2B stay disabled and toolkit cutover
+readiness, including the unreadable-caps behavior of binding §3 P-S1. It states that live routes and E2B stay disabled and toolkit cutover
 waits on all three switch conditions, adds one Unreleased changelog entry,
 records actual outcomes in the evidence file and appends the lifecycle event.
 
@@ -237,6 +237,19 @@ Next phase: PLACECLI — blocked: advisor-board panel review of this re-plan.
 Next command: none until the panel and president return; then
 `claude-execute-phase plans/phase-plan-v13-PLACECLI.md` under separate execution authority.
 
+## Deferred Items
+
+Recorded, not built in this phase (coordinator ruling 4, 2026-11-09).
+
+| Item | Owner | Effect on this phase |
+| --- | --- | --- |
+| SEATS public caps APIs: an expected-digest check inside `capped_popen`, typed evidence of whether a failure came before or after its helper started, and kill/collect of a capped parent by key | SEATS/JAILCORE; new issue scheduled against v13 ACTIVATE, cross-linked to agent-harness#1963 and agent-harness#1895 | None; PLACECLI uses only `load_caps`, `caps_sha256` and `readiness_code`. |
+| Caps contract §1a tmpfs carve-out cleanup | SEATS | None; a tmpfs automatic path already makes `readiness_code()` refuse. |
+| Garbage collection of orphaned content-addressed echoes (capped and secret-free) | v12 supervised-worker follow-up; new parked issue | None. |
+| Folding the reinterpreted sentences into the next protocol versions: the PLACECLI `launch_binding` sentence, the LANEEXEC narrowings and the wheel-shipped `x-*` prose | v13 placement protocol owner; new parked issue | The `launch_binding` sentence stays non-normative on the digest spelling (P-S2). |
+| Production worker state root taken from trusted operator configuration | agent-harness#1960 | None. |
+| A sanctioned `replan` lifecycle path in `plan_manifest.update_lifecycle` (the replan events here are hand-written and append-only) | coordinator follow-up (ruling 3) | The `v13-PLACECLI` row carries one hand-written `replan` event. |
+
 ## Acceptance Criteria
 
 - [ ] EC-PLACECLI-1 — proven by V0 and V3 (`tests/test_placement_process_contract.py`, `tests/test_placement_cli.py`) against `decode_request`, the installed entry and `placement_cli.main`; falsified by a malformed or provider-unpermitted request, or a hostile environment variable, entered through the installed entry and reaching SL-1's injected capacity-effect counter.
@@ -250,7 +263,7 @@ Next command: none until the panel and president return; then
 Execution-time commands, none run by this planning change; group membership is
 binding §6. Each runs as `cd phase-loop-runtime && PYTHONPATH="$PWD/src:$PWD/tests" timeout 900 .venv/bin/python -m pytest -q -p no:cacheprovider <group files>`.
 
-- V0: `tests/test_placement_process_contract.py`
+- V0: `tests/test_placement_process_contract.py tests/test_gate_a_wheel_isolation.py::GateAConformEvidenceScopeTest`
 - V1: `tests/test_placement_lifecycle_process.py tests/test_sandbox_placement.py tests/test_sandbox_policy.py tests/test_placement_driver.py tests/test_placement_ladder_model.py tests/test_placement_lease.py tests/test_openshell_backend.py tests/test_openshell_channel.py tests/test_openshell_journal.py tests/test_openshell_transport.py tests/test_advisor_board_config.py`
 - V2: `tests/test_placement_bridge.py tests/test_openshell_worker.py`
 - V3: `tests/test_placement_cli.py tests/test_placecli_receipt.py tests/test_agent_cli_scratch_inventory_1147.py tests/test_seat_launch_helpers_trusted.py tests/test_seat_reference_inventory.py`

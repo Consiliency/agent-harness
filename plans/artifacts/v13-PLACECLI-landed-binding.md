@@ -49,7 +49,7 @@ sequencing edge only.
 | `sandbox_placement.py:1002`, `:1015` | `lifetime_sufficient`, `lifetime_at_floor` | consume |
 | `sandbox_placement.py:1021` | `PlacementDecision(outcome, trail, code=None, placement=None, ..., local_reservation=None, pending_local_reservation=None)` | extend (SL-1) to carry the reservation binding |
 | `sandbox_placement.py:1220`, `:1250`, `:1260`, `:1294` | `LocalHeadroom.admits(settings)`, `LocalReservation`, `LocalReservationPending`, `LocalAdmission` | extend (SL-1): fresh-observation thresholds from host config |
-| `sandbox_placement.py:1940` | `place(rungs, last_rung, prepared, request_for, open_lease, *, preflight, seal, driver_enabled, cancelled, settings=None, local_capacity=None, local_admit=None, local_release=None)` | consume as the one walk state machine; seats bypass ranking |
+| `sandbox_placement.py:1940` | `place(rungs, last_rung, prepared, request_for, open_lease, *, preflight, seal, driver_enabled, cancelled, settings=None, local_capacity=None, local_admit=None, local_release=None)` | extend (SL-1): `place` launches when a remote rung takes it (`seal` then `execute`, `:1824-1867`; a `None` seal releases the rung), so reserve cannot consume it unchanged (EC-PLACECLI-2). SL-1 adds a reservation-only exit to the same walk. The exit takes no `Prepared` stage, stops after admission and before `commit`, `seal` and `execute`, and journals the admitted rung's lease and binding in the `PlacementLifecycle` reservation record (§4.2). `place` keeps its behavior for existing callers. Seats bypass ranking. |
 | `sandbox_placement.py:2026` | `run_placed(placement, *, on_progress, cancelled)` | consume (LANEEXEC uses it later) |
 | `sandbox_policy.py:181`, `:474`, `:491` | `SandboxRootChoice`, `PlacementDriverSettings`, `placement_driver_settings(...)` | extend (SL-1) |
 | `advisor_board/config.py:380` | `load_placement_driver_settings(...)` reading `fixtures/placement-driver.defaults.toml` | extend (SL-1) |
@@ -59,7 +59,7 @@ sequencing edge only.
 | `openshell_backend.py:36`–`:90` | `StageBinding`, `StageAdapter`, `WorkerAdapter`, `OpenShellBackend` | consume / extend (SL-1) |
 | `openshell_channel.py:29` | `MTLSConfig(endpoint, owner_cn, local_owner_id, ca_pem, client_cert_pem, client_key_pem, receive_limit_bytes, connect_timeout_s)` | extend (SL-1): OU per client |
 | `openshell_journal.py:249`, `:325` | `ReaperAdapter`, `OpenShellCleanupBackend.kill` | consume |
-| `openshell_transport.py:131`, `:462` | `CoordinatorClient.validate_create`, `StockExecChannel` | consume |
+| `openshell_transport.py:131` (`CoordinatorClient`), `:322` (`validate_create`), `:462` (`StockExecChannel`) | `CoordinatorClient`, `CoordinatorClient.validate_create(body, binding)`, `StockExecChannel` | consume |
 | `openshell_worker.py:39`, `:71`, `:160` | `WorkerRequest`, `seal_request(...)`, `run_worker(...)` | extend (SL-2) only where the bridge needs it |
 | `cli.py:1099`, `:2895` | `phase-loop placement reap` parser and `_placement_command` | extend (SL-3): delegate in process with an explicit client |
 | `seat_resource_caps.py:21`–`:23` | `SCHEMA = "seat_resource_caps.v1"`, `CODE = "seat_resource_caps_unavailable"`, `REQUIRED_CONTROLLERS = {cpu, io, memory, pids}` | consume |
@@ -93,6 +93,19 @@ readback (sweep recommendation, adopted).**
 - **Launch time (LANEEXEC).** Per-path device readback and cap application in a
   per-reservation parent belong to LANEEXEC (its STOP L-S3). PLACECLI performs no
   per-path check and starts no workload.
+- **Unreadable caps record (coordinator ruling 1, 2026-11-09).** When `load_caps()`
+  raises `CapsUnavailable`, every verb that reserves or places fails closed:
+  `reserve` refuses `sandbox_placement_capability_unmet`, exit 10, for every
+  target and workload, with zero capacity, coordinator and lease effects.
+  `release` and `reap` act only on stored reservations and keep working, so
+  cleanup is never blocked. `version` still exits 0 with a schema-valid response
+  and empty stderr: the effective configuration carries `seat_caps_sha256` as the
+  documented sentinel `sha256(b"seat_resource_caps_unavailable")`, so
+  `config_sha256` reports the state and matches no reservable configuration.
+  `--help` prints one line naming the caps state (`seat resource caps: available`
+  or `seat resource caps: unavailable (seat_resource_caps_unavailable)`) and exits
+  0. With a readable record, a non-null `readiness_code()` refuses local
+  reservations only, as above.
 - Tests inject the loader and readiness callables at the lifecycle's construction
   site (defaults are the landed functions); they never patch module internals of
   `seat_resource_caps.py`.
@@ -136,8 +149,7 @@ PR and rebases its shared-file edits additively. Full map:
 selected client's effective operator configuration with every referenced
 artifact resolved and `seat_caps_sha256` included. PLACECLI validates and
 interprets its placement sections. A top-level `launch` member, if present,
-must be a JSON object; PLACECLI v1 includes it verbatim in the canonical bytes
-and does not interpret it. LANEEXEC validates and interprets that member
+must be a JSON object; PLACECLI v1 includes it verbatim in the canonical bytes and does not interpret it. The member carries resolved values only. Wherever it names another artifact, it also carries that artifact's sha256. LANEEXEC verifies that sha256 when it loads `launch` and refuses `sandbox_launch_input_mismatch` on a mismatch. Both phases therefore hash the same captured bytes, and a change to a referenced artifact changes `config_sha256` (LANEEXEC `x-launch-inputs.config_binding`). LANEEXEC validates and interprets that member
 (template registry, image allowlist, snapshot and seed limits, `seed_root`,
 activation values). This makes the digest LANEEXEC's
 `x-launch-inputs.config_binding` requires, without PLACECLI changing when
@@ -149,7 +161,7 @@ SL-1 journals every reservation, same-request response, release tombstone and
 `(client, reservation_id)` barrier in the selected client's inventory. LANEEXEC
 reads the stored `Reservation` by `reservation_id` for its echo comparison and
 adds its exec-claim record and release/reap hooks there. SL-1 keeps one module
-seam for that, `PlacementLifecycle`, so LANEEXEC extends rather than forks it.
+seam for that, `PlacementLifecycle`, so LANEEXEC extends rather than forks it. `PlacementLifecycle` and the reservation-only walk exit live in `sandbox_placement.py` (SL-1, then LANEEXEC SL-3), so no unowned module is created. LANEEXEC SL-3 performs every later step on a remote rung (upload, seal, execute) from the stored reservation.
 
 ### 4.3 Bridge
 
@@ -178,7 +190,7 @@ Paths are relative to `phase-loop-runtime/`. Groups run on `ai` under the
 admission lock and PSI gates, serially, `timeout 900`, no xdist, no cache
 provider; dev0 runs plan validators only.
 
-- V0: `tests/test_placement_process_contract.py`
+- V0: `tests/test_placement_process_contract.py`, `tests/test_gate_a_wheel_isolation.py::GateAConformEvidenceScopeTest`
 - V1: `tests/test_placement_lifecycle_process.py`, `tests/test_sandbox_placement.py`, `tests/test_sandbox_policy.py`, `tests/test_placement_driver.py`, `tests/test_placement_ladder_model.py`, `tests/test_placement_lease.py`, `tests/test_openshell_backend.py`, `tests/test_openshell_channel.py`, `tests/test_openshell_journal.py`, `tests/test_openshell_transport.py`, `tests/test_advisor_board_config.py`
 - V2: `tests/test_placement_bridge.py`, `tests/test_openshell_worker.py`
 - V3: `tests/test_placement_cli.py`, `tests/test_placecli_receipt.py`, `tests/test_agent_cli_scratch_inventory_1147.py`, `tests/test_seat_launch_helpers_trusted.py`, `tests/test_seat_reference_inventory.py`
