@@ -144,6 +144,11 @@ def _build(mode: str, directory: Path) -> Path:
     return _BUILT[mode]
 
 
+def _path_without_agy() -> list[str]:
+    return [entry for entry in os.environ.get("PATH", os.defpath).split(os.pathsep)
+            if entry and not os.path.exists(os.path.join(entry, "agy"))]
+
+
 def _login(home: Path) -> None:
     """A synthetic login in agy's file shape; nothing reads it but the profile's symlink."""
     expiry = datetime.now(timezone.utc) + timedelta(hours=2)
@@ -168,7 +173,15 @@ def _qualify(mode: str, base: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
     # test's own, so both the coordinator and the worker resolve this private store.
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.chdir(REPO)  # the worker's board needs a canonical repository authority
-    image = gh.VerifiedImage.from_bytes(_build(mode, base).read_bytes())
+    # As on a real first use, the image under qualification IS the `agy` on PATH. No host
+    # agy may be reachable: the run must not depend on what this machine has installed.
+    binary = _build(mode, base)
+    bindir = work / "bin"
+    bindir.mkdir()
+    shutil.copyfile(binary, bindir / "agy")
+    (bindir / "agy").chmod(0o755)
+    monkeypatch.setenv("PATH", os.pathsep.join([str(bindir), *_path_without_agy()]))
+    image = gh.VerifiedImage.from_bytes(binary.read_bytes())
     try:
         store = q.Store()
         store.create()
