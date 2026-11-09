@@ -928,3 +928,19 @@ def test_reservation_and_writer_exception_boundary(worker_case, monkeypatch, exc
     assert result.refusal == "journal_unavailable" and not result.journal_complete
     assert result.worker_invocations == 0 and result.journal_anchor is None
     assert not (worker_case.state / "evidence").exists() and not (worker_case.state / "launchers").exists()
+
+
+def test_evidence_environment_names_match_spawn(worker_case, monkeypatch):
+    from phase_loop_runtime import panel_invoker, sandbox_policy
+    original = panel_invoker.launch_owned
+    supplied = []
+    def launch(*args, **kwargs):
+        supplied.append(sorted(kwargs["env"]))
+        return original(*args, **kwargs)
+    monkeypatch.setattr(panel_invoker, "launch_owned", launch)
+    result = run(worker_case)
+    assert result.state == "finished" and result.proposal.status == "returned"
+    record = json.loads((worker_case.state / "evidence" / worker._run(result.identity) / "evidence.json").read_bytes())
+    assert supplied == [record["environment_names"]]
+    assert sandbox_policy.CHILD_SCRATCH_MARKER in record["environment_names"]
+    assert set(record["environment_names"]) <= {"TMPDIR", "CLAUDE_CODE_TMPDIR", sandbox_policy.CHILD_SCRATCH_MARKER}

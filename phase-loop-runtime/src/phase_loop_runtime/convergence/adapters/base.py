@@ -330,7 +330,7 @@ def worker_child_environment(allow: frozenset[str]) -> dict[str, str]:
     environment = _child_environment()
     return {key: value for key, value in environment.items()
             if key not in WORKER_ENV_DROP and not key.startswith(WORKER_ENV_DROP_PREFIXES)
-            and key in (allow | {"TMPDIR", "CLAUDE_CODE_TMPDIR"})}
+            and key in (allow | {"TMPDIR", "CLAUDE_CODE_TMPDIR", sandbox_policy.CHILD_SCRATCH_MARKER})}
 
 
 def _descriptor_image(path):

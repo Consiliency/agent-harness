@@ -328,7 +328,7 @@ def test_worker_capture_lifecycle(tmp_path, kind):
 def test_worker_environment_scrub(monkeypatch, name):
     monkeypatch.setenv(name, "fixture-value")
     assert name not in capture_base.worker_child_environment(frozenset({name}))
-    assert set(capture_base.worker_child_environment(frozenset())) <= {"TMPDIR", "CLAUDE_CODE_TMPDIR"}
+    assert set(capture_base.worker_child_environment(frozenset())) <= {"TMPDIR", "CLAUDE_CODE_TMPDIR", capture_base.sandbox_policy.CHILD_SCRATCH_MARKER}
 
 
 def test_worker_group_cleanup_and_escaped_pipe(tmp_path):
@@ -373,7 +373,7 @@ CAPTURE_CONTROLS = {
     "cancel-kill": ('elif cancel.is_set():', 'elif False and cancel.is_set():'),
     "group-reclaim": ('os.killpg(process.pid, signal.SIGKILL)', 'None'),
     "stdin-channel": ('request.stdin[offset:offset + 65536]', 'b""'),
-    "allowlist": ('and key in (allow | {"TMPDIR", "CLAUDE_CODE_TMPDIR"})', ''),
+    "allowlist": ('and key in (allow | {"TMPDIR", "CLAUDE_CODE_TMPDIR", sandbox_policy.CHILD_SCRATCH_MARKER})', ''),
     "before-spawn": ('if refusal is not None:', 'if False and refusal is not None:'),
 }
 for _name in sorted(capture_base.WORKER_ENV_DROP):
