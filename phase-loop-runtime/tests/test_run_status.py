@@ -972,16 +972,22 @@ def fsync_calls(monkeypatch, call):
     return result, calls
 
 
+def barrier_chain(root, run="run-1"):
+    """The complete section 5 fsync chain; every reservation performs all of it."""
+    base = os.path.realpath(root.path)
+    return [f"{base}/assignments", f"{base}/assignments/{A}", f"{base}/runs/{run}", f"{base}/runs",
+            f"{base}/attempts", f"{base}/assignments/{A}/index.jsonl", f"{base}/assignments/{A}"]
+
+
 def fsync_witness(m, tmp_path, monkeypatch):
     root = make_root(m, tmp_path)
-    base = os.path.realpath(root.path)
     result, calls = fsync_calls(monkeypatch, lambda: reserve(m, root))
     assert isinstance(result, m.Reservation)
-    assert calls == [f"{base}/assignments", f"{base}/assignments/{A}", f"{base}/runs/run-1", f"{base}/runs",
-                     f"{base}/attempts", f"{base}/assignments/{A}/index.jsonl", f"{base}/assignments/{A}"]
+    assert calls == barrier_chain(root)
+    # Adopted entries (directory, lock, run claim, index) complete every barrier again.
     result, calls = fsync_calls(monkeypatch, lambda: reserve(m, root, "attempt-2"))
     assert isinstance(result, m.Reservation)
-    assert calls == [f"{base}/attempts", f"{base}/assignments/{A}/index.jsonl"]
+    assert calls == barrier_chain(root)
 
 
 def test_reservation_fsync_order(tmp_path, monkeypatch):
@@ -1000,6 +1006,184 @@ def test_writer_fsync_order(tmp_path, monkeypatch):
     head, calls = fsync_calls(monkeypatch, lambda: opened.state("running", worker_invocations=1))
     assert calls == [f"{base}/0001.jsonl", base, f"{base}/0001.jsonl"] and head.segment_index == 1
     opened.close()
+
+
+def test_adopted_entries_complete_every_barrier(tmp_path, monkeypatch):
+    """A creator that died before its barriers left these entries; adoption fsyncs them."""
+    root = make_root(production, tmp_path)
+    assignment = root.path / "assignments" / A
+    assignment.mkdir(mode=0o700)
+    fd = os.open(assignment / "lock", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.close(fd)
+    fd = os.open(root.path / "runs/run-1", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.write(fd, (A + "\n").encode())
+    os.close(fd)
+    fd = os.open(assignment / "index.jsonl", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.close(fd)
+    result, calls = fsync_calls(monkeypatch, lambda: reserve(production, root))
+    assert isinstance(result, production.Reservation) and result.index_seq == 0
+    assert calls == barrier_chain(root)
+
+
+@pytest.mark.parametrize("position", range(7))
+def test_failed_barrier_then_recovery_completes_the_chain(tmp_path, monkeypatch, position):
+    root = make_root(production, tmp_path)
+    calls, real = [], os.fsync
+
+    def failing(fd):
+        calls.append(os.readlink(f"/proc/self/fd/{fd}"))
+        if len(calls) - 1 == position:
+            raise OSError(errno.EIO, "injected")
+        return real(fd)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "fsync", failing)
+        assert reserve(production, root) == refused(production, "journal_write_failed")
+    assert calls == barrier_chain(root)[:position + 1]
+    result, recovered = fsync_calls(monkeypatch, lambda: reserve(production, root, "attempt-2"))
+    assert isinstance(result, production.Reservation)
+    assert recovered == barrier_chain(root)
+    index = production.read_index(root, A)
+    expected = (["attempt-1"] if position >= 5 else []) + ["attempt-2"]
+    assert index.diagnostics == () and [e.identity.attempt_id for e in index.entries] == expected
+    retried = reserve(production, root)
+    if position >= 4:
+        assert retried == refused(production, "attempt_reserved")
+    else:
+        assert isinstance(retried, production.Reservation)
+
+
+KILL = (
+    "real = os.fsync\n"
+    "def spy(fd):\n"
+    "    if os.readlink(f'/proc/self/fd/{fd}').endswith(sys.argv[5]):\n"
+    "        print('barrier', flush=True); time.sleep(600)\n"
+    "    real(fd)\n"
+    "os.fsync = spy\n"
+    "root = rs.open_journal_root(Path(sys.argv[2]), create=False)\n"
+    "rs.reserve_attempt(root, rs.AttemptIdentity(sys.argv[3], sys.argv[4], 'run-1', 'attempt-1'),"
+    " units=rs.Units(('unit:target',), (), sys.argv[4]), launch_digest=sys.argv[4], caller_context_sha256=sys.argv[4])\n"
+    "print('returned', flush=True)\n")
+
+
+@pytest.mark.parametrize("barrier", ["/assignments", f"/assignments/{A}", "/runs/run-1", "/runs", "/attempts",
+                                     "/index.jsonl"])
+def test_creator_killed_before_a_barrier_is_completed_by_the_next_reservation(tmp_path, monkeypatch, barrier):
+    root = make_root(production, tmp_path)
+    process = child(KILL, root.path, A, ENVELOPE, barrier)
+    try:
+        assert process.stdout.readline().strip() == "barrier"
+        os.kill(process.pid, signal.SIGKILL)
+    finally:
+        process.wait(timeout=60)
+        process.stdout.close()
+        process.stderr.close()
+    assert process.returncode == -signal.SIGKILL
+    result, calls = fsync_calls(monkeypatch, lambda: reserve(production, root, "attempt-2"))
+    assert isinstance(result, production.Reservation)
+    assert calls == barrier_chain(root)
+    burned = barrier in ("/attempts", "/index.jsonl")
+    retried = reserve(production, root)
+    assert (retried == refused(production, "attempt_reserved")) if burned else isinstance(retried, production.Reservation)
+
+
+def test_root_creation_adopts_and_completes_barriers(tmp_path, monkeypatch):
+    base = tmp_path / "pre"
+    for path in (base, base / "journal", base / "journal/attempts", base / "journal/assignments",
+                 base / "journal/runs"):
+        path.mkdir(mode=0o700)
+    opened, calls = fsync_calls(monkeypatch, lambda: production.open_journal_root(base / "journal", create=True))
+    assert isinstance(opened, production.JournalRoot)
+    real = os.path.realpath(base)
+    assert calls[-3:] == [os.path.dirname(real), real, real + "/journal"]
+    opened, calls = fsync_calls(monkeypatch, lambda: production.open_journal_root(base / "journal", create=False))
+    assert isinstance(opened, production.JournalRoot) and calls == []
+
+
+def test_writer_adopts_an_existing_lock_and_completes_its_barrier(tmp_path, monkeypatch):
+    root = make_root(production, tmp_path)
+    reservation = reserve(production, root)
+    fd = os.open(root.path / "attempts/attempt-1/lock", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.close(fd)
+    base = os.path.realpath(root.path) + "/attempts/attempt-1"
+    opened, calls = fsync_calls(monkeypatch, lambda: production.open_writer(root, reservation))
+    assert isinstance(opened, production.AttemptWriter)
+    assert calls == [base, f"{base}/0000.jsonl", base]
+    opened.close()
+
+
+def test_quarantined_assignment_keeps_every_claim(tmp_path):
+    root, _, _ = finished_attempt(tmp_path)
+    with open(root.path / "assignments" / A / "index.jsonl", "ab") as handle:
+        handle.write(b'{"torn":')
+    assert reserve(production, root, "attempt-2") == refused(production, "index_unverifiable")
+    os.rename(root.path / "assignments" / A, root.path / "assignments" / (A + ".quarantined-20261109"))
+    assert reserve(production, root) == refused(production, "attempt_reserved")
+    assert reserve(production, root, "attempt-2", assignment=B) == refused(production, "run_assignment_mismatch")
+    fresh = reserve(production, root, "attempt-2")
+    assert isinstance(fresh, production.Reservation) and fresh.index_seq == 0
+    assert set(production.read_attempt(root, "attempt-1").diagnostics) == {"attempt_unindexed"}
+
+
+def test_unreadable_run_record_is_a_permanent_tombstone(tmp_path):
+    root = make_root(production, tmp_path)
+    record = root.path / "runs/run-1"
+    for data in (b"", b"quarantined\n"):
+        if record.exists():
+            os.unlink(record)
+        fd = os.open(record, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.write(fd, data)
+        os.close(fd)
+        before = snapshot(root.path)
+        for attempt in ("attempt-1", "attempt-2"):
+            assert reserve(production, root, attempt) == refused(production, "run_record_unreadable")
+        assert production.resolve_run(root, "run-1") == refused(production, "run_record_unreadable")
+        assert snapshot(root.path)["runs/run-1"] == before["runs/run-1"]
+        assert not (root.path / "attempts/attempt-1").exists()
+
+
+@pytest.mark.parametrize("case_id", vectors.ids("journal"))
+def test_window_matches_read_attempt(tmp_path, case_id):
+    journal = vectors.expand(case_id)["journal"]
+    root = production.open_journal_root(vectors.materialize(journal, tmp_path / "vector"), create=False)
+    digests = list(dict.fromkeys(a["segments"][0]["lines"][0]["attempt"]["assignment_digest"]
+                                 for a in journal["attempts"]))
+    for digest in digests:
+        index = production.read_index(root, digest)
+        earlier = set()
+        for entry in index.entries:
+            read = production.read_attempt(root, entry.identity.attempt_id)
+            window = production.read_attempt_window(root, index, entry, earlier_evidence=frozenset(earlier))
+            if window.evidence_digest:
+                earlier.add(window.evidence_digest)
+            assert window.diagnostics == read.diagnostics, (case_id, entry.identity.attempt_id)
+            assert (window.state, window.chain_head) == (read.state, read.chain_head)
+            if not read.diagnostics:
+                assert window.total_lines == len(read.lines) and window.lead == len(read.lines)
+                assert window.events == () and window.more_events is True
+
+
+def test_window_slices_without_retaining_history(tmp_path):
+    root, _, _ = finished_attempt(tmp_path, events=6, limits=production.JournalLimits(segment_max_lines=3))
+    index = production.read_index(root, A)
+    entry = index.entries[0]
+    lines = production.read_attempt(root, "attempt-1").lines
+    kinds = [json.loads(line)["line_kind"] for line in lines]
+    for after_seq in range(-1, len(lines)):
+        for size in (0, 1, 3, 100):
+            window = production.read_attempt_window(root, index, entry, after_seq=after_seq, max_events=size)
+            later = [(raw, kind) for raw, kind in zip(lines, kinds) if json.loads(raw)["seq"] > after_seq]
+            chosen = [raw for raw, kind in later if kind != "header"][:size]
+            assert window.events == tuple(chosen) and window.skipped == after_seq + 1
+            assert window.found_after_seq is (after_seq >= 0)
+            if chosen:
+                first, end = lines.index(chosen[0]), lines.index(chosen[-1])
+                interior = sum(1 for kind in kinds[first:end + 1] if kind == "header")
+                assert window.lead == first - (after_seq + 1) and window.tail == len(lines) - end - 1
+                assert window.skipped + window.lead + len(chosen) + interior + window.tail == len(lines)
+    assert production.read_attempt_window(root, index, entry, max_events=101).diagnostics == ("read_unbounded",)
+    other = production.read_index(root, B)
+    assert production.read_attempt_window(root, other, entry).diagnostics == ("index_unverifiable",)
 
 
 # --------------------------------------------------------------------------
@@ -1059,11 +1243,11 @@ def test_identity_and_records_are_immutable(tmp_path):
 
 CONTROLS = {
     "index_lock": ("fcntl.flock(lock_fd, fcntl.LOCK_EX)\n", "None\n"),
-    "index_fsync": ("os.fsync(index_fd)", "None"),
-    "assignment_dir_fsync": ("os.fsync(assignments_fd)", "None"),
-    "run_claim_fsync": ("os.fsync(runs_fd)", "None"),
+    "index_fsync": ("_barrier(index_fd)", "None"),
+    "assignment_dir_fsync": ("_barrier(assignments_fd)", "None"),
+    "run_claim_fsync": ("_barrier(runs_fd)", "None"),
     "attempt_excl": ('raise _Fail("attempt_reserved") from None', "pass"),
-    "run_claim": ('raise _Fail("run_assignment_mismatch")', "return"),
+    "run_claim": ("if existing != digest:", "if False:"),
     "index_chain": ('if obj["previous_entry_sha256"] != previous:', "if False:"),
     "index_torn_refusal": ('if data and not data.endswith(b"\\n"):', "if False:"),
     "component_nofollow": ("_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC",

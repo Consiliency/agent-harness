@@ -13,7 +13,6 @@ from __future__ import annotations
 import base64
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-import hashlib
 import json
 import re
 
@@ -36,6 +35,8 @@ EVIDENCE_RESULTS = ("present", "retention_dropped", "unknown")
 #: Local codes added by this module; none appears in a public record.
 LOCAL_CODES = frozenset({"page_size_invalid", "page_request_invalid", "page_invalid", "cursor_invalid",
                          "evidence_unknown", "reader_view_invalid", "runtime_state_invalid", "run_record_unknown"})
+#: Line kinds a page may return as events; headers never are.
+_EVENT_KINDS = frozenset({"event", "state", "terminal"})
 _CURSOR_KEYS = frozenset({"assignment_digest", "index_seq", "seq", "index_prefix_sha256"})
 _CURSOR_MAX = 512
 
@@ -115,21 +116,28 @@ def _units_json(units: Units) -> dict:
 # Projection
 # --------------------------------------------------------------------------
 
-def _replay(root, assignment_digest):
-    """(index diagnostics, verified (entry, read, item), unknown (entry, read)) in index order."""
+def _replay(root, assignment_digest, prefixes=None):
+    """(index diagnostics, verified (entry, window, item), unknown (entry, window)) in index order.
+
+    One index load; each attempt is read once as a zero-event window, so no
+    journal history is retained and no earlier attempt is rescanned.
+    """
     index = run_status.read_index(root, assignment_digest)
     if index.diagnostics:
         return index.diagnostics, [], []
-    verified, unknown = [], []
+    verified, unknown, earlier = [], [], set()
     for entry in index.entries:
-        read = run_status.read_attempt(root, entry.identity.attempt_id)
-        if read.diagnostics or read.state is None or read.chain_head is None:
-            unknown.append((entry, read))
+        window = run_status.read_attempt_window(root, index, entry, earlier_evidence=earlier,
+                                                prefix_at=(prefixes or {}).get(entry.identity.attempt_id))
+        if window.evidence_digest is not None:
+            earlier.add(window.evidence_digest)
+        if window.diagnostics or window.state is None or window.chain_head is None:
+            unknown.append((entry, window))
             continue
-        head = read.chain_head
-        verified.append((entry, read, {"attempt": _identity_json(entry.identity), "state": read.state,
-                                       "journal_seq": head.last_seq, "segment_index": head.segment_index,
-                                       "segment_sha256": head.segment_sha256}))
+        head = window.chain_head
+        verified.append((entry, window, {"attempt": _identity_json(entry.identity), "state": window.state,
+                                         "journal_seq": head.last_seq, "segment_index": head.segment_index,
+                                         "segment_sha256": head.segment_sha256}))
     return (), verified, unknown
 
 
@@ -138,7 +146,7 @@ def project_assignment(root, assignment_digest: str) -> ProjectionResult:
     index_diagnostics, verified, unknown = _replay(root, assignment_digest)
     if index_diagnostics:
         return ProjectionResult(None, (), tuple(index_diagnostics))
-    listed = tuple((entry.identity.attempt_id, read.diagnostics) for entry, read in unknown)
+    listed = tuple((entry.identity.attempt_id, window.diagnostics) for entry, window in unknown)
     diagnostics = tuple(sorted({code for _, codes in listed for code in codes}))
     latest_unknown = bool(unknown) and (not verified or unknown[-1][0].index_seq > verified[-1][0].index_seq)
     if latest_unknown:
@@ -155,25 +163,12 @@ def project_assignment(root, assignment_digest: str) -> ProjectionResult:
     return ProjectionResult(projection, listed, diagnostics)
 
 
-def _segments(read) -> dict[int, tuple[int, int, str, dict[int, str]]]:
-    """Per segment: (first seq, last seq, full digest, digest of each line-ending prefix)."""
-    segments, digest, current, first, prefixes = {}, None, None, None, {}
-    for raw in read.lines:
-        line = json.loads(raw)
-        if line["body"]["body_kind"] == "header":
-            current, digest, first, prefixes = line["body"]["segment_index"], hashlib.sha256(), line["seq"], {}
-        digest.update(raw + b"\n")
-        prefixes[line["seq"]] = digest.hexdigest()
-        segments[current] = (first, line["seq"], digest.hexdigest(), prefixes)
-    return segments
-
-
-def _digest_known(read, item) -> bool:
-    segment = _segments(read).get(item["segment_index"])
-    if segment is None:
-        return False
-    first, last, full, prefixes = segment
-    return first <= item["journal_seq"] <= last and item["segment_sha256"] in (full, prefixes.get(item["journal_seq"]))
+def _digest_known(window, item) -> bool:
+    """The supplied segment digest is that segment's full digest or its prefix ending at ``journal_seq``."""
+    for index, first, last, full in window.segments:
+        if index == item["segment_index"]:
+            return first <= item["journal_seq"] <= last and item["segment_sha256"] in (full, window.prefix_digest)
+    return False
 
 
 def check_projection(projection: Mapping, root) -> tuple[str, ...]:
@@ -188,17 +183,21 @@ def check_projection(projection: Mapping, root) -> tuple[str, ...]:
         return ("projection_not_from_journal",)
     if not run_status.check_structure("projection", value):
         return ("projection_not_from_journal",)
-    index_diagnostics, verified, unknown = _replay(root, value["assignment_digest"])
+    prefixes = {}
+    for supplied in value["attempts"]:
+        prefixes.setdefault(supplied["attempt"]["attempt_id"], (supplied["segment_index"], supplied["journal_seq"]))
+    index_diagnostics, verified, unknown = _replay(root, value["assignment_digest"], prefixes)
     if index_diagnostics:
         return ("projection_not_from_journal",)
-    fresh = {entry.identity.attempt_id: (position, read, item) for position, (entry, read, item) in enumerate(verified)}
+    fresh = {entry.identity.attempt_id: (position, window, item)
+             for position, (entry, window, item) in enumerate(verified)}
     codes, positions = set(), []
     for supplied in value["attempts"]:
         attempt_id = supplied["attempt"]["attempt_id"]
         if attempt_id not in fresh or fresh[attempt_id][0] in positions:
             codes.add("projection_not_from_journal")
             continue
-        position, read, current = fresh[attempt_id]
+        position, window, current = fresh[attempt_id]
         positions.append(position)
         if supplied["attempt"] != current["attempt"]:
             codes.add("projection_not_from_journal")
@@ -207,7 +206,7 @@ def check_projection(projection: Mapping, root) -> tuple[str, ...]:
         if seq > tail:
             codes.add("projection_not_from_journal")
         elif seq < tail:
-            if not _digest_known(read, supplied):
+            if not _digest_known(window, supplied):
                 codes.add("projection_not_from_journal")
             else:
                 codes.add("projection_behind_journal")
@@ -357,39 +356,44 @@ def read_page(root, request: bytes, *, evidence: EvidenceResolver) -> PageResult
         start = _decode_cursor(value["cursor"], digest, entries)
         if start is None:
             return JournalRefused("cursor_invalid")
-    stream, diagnostics = [], set()
+    # Stream the attempts once, in index order. Only the selected events (at
+    # most ``size``) are retained; every other verified line is only counted.
+    events, owners, diagnostics, earlier = [], [], set(), set()
+    before = pending = used = 0
+    closed = has_more = False
+    last = None
     for entry in entries:
-        read = run_status.read_attempt(root, entry.identity.attempt_id)
-        if read.diagnostics:
-            diagnostics.update(read.diagnostics)
+        prior = entry.index_seq < start[0]
+        after_seq = start[1] if entry.index_seq == start[0] else -1
+        if not prior and not closed and used == ATTEMPTS_PER_PAGE_MAX:
+            closed = True
+        capacity = 0 if prior or closed else size - len(events)
+        window = run_status.read_attempt_window(root, index, entry, after_seq=after_seq, max_events=capacity,
+                                                earlier_evidence=earlier, event_kinds=_EVENT_KINDS)
+        if window.evidence_digest is not None:
+            earlier.add(window.evidence_digest)
+        if window.diagnostics:
+            diagnostics.update(window.diagnostics)
             continue
-        for raw in read.lines:
-            line = json.loads(raw)
-            stream.append((entry.index_seq, line["seq"], line, entry.identity))
-    if value["cursor"] is not None:
-        attempt_seqs = {seq for index_seq, seq, _, _ in stream if index_seq == start[0]}
-        if attempt_seqs and start[1] not in attempt_seqs:
+        if entry.index_seq == start[0] and not window.found_after_seq:
             return JournalRefused("cursor_invalid")
-    events, positions, attempts = [], [], []
-    has_more = False
-    for position, (index_seq, seq, line, identity) in enumerate(stream):
-        if (index_seq, seq) <= start:
-            continue
-        if line["line_kind"] == "header":
-            continue
-        if len(events) == size:
-            has_more = True
-            break
-        if index_seq not in attempts and len(attempts) == ATTEMPTS_PER_PAGE_MAX:
-            has_more = True
-            break
-        events.append(line)
-        positions.append(position)
-        if index_seq not in attempts:
-            attempts.append(index_seq)
+        if prior or not events:
+            before += window.skipped + window.lead
+        elif not window.events:
+            pending += window.skipped + window.lead
+            has_more = has_more or window.more_events
+        if window.events:
+            selected = [json.loads(raw) for raw in window.events]
+            events.extend(selected)
+            owners.extend([entry.identity] * len(selected))
+            used += 1
+            pending = window.tail
+            last = (entry.index_seq, selected[-1]["seq"])
+            if window.more_events or len(events) == size:
+                closed = True
+                has_more = has_more or window.more_events
     dropped = 0
-    for position in positions:
-        _, _, line, identity = stream[position]
+    for line, identity in zip(events, owners):
         if line["line_kind"] != "event":
             continue
         for ref in line["body"]["refs"]:
@@ -398,17 +402,14 @@ def read_page(root, request: bytes, *, evidence: EvidenceResolver) -> PageResult
                 dropped += 1
             elif result != "present":
                 diagnostics.add("evidence_unknown")
-    before = positions[0] if positions else sum(1 for item in stream if item[:2] <= start)
-    after = len(stream) - (positions[-1] + 1 if positions else before)
     page = {"events": events, "has_more": has_more,
-            "omitted": {"before": before, "after": after, "retention_dropped": dropped}}
+            "omitted": {"before": before, "after": pending, "retention_dropped": dropped}}
     codes = check_page(value, page)
     if codes:
         return JournalRefused(codes[0])
     next_cursor = None
     if has_more:
-        index_seq, seq = stream[positions[-1]][:2]
-        next_cursor = _encode_cursor(digest, index_seq, seq, entries[index_seq].entry_sha256)
+        next_cursor = _encode_cursor(digest, last[0], last[1], entries[last[0]].entry_sha256)
     return PageResult(page, next_cursor, tuple(sorted(diagnostics)))
 
 

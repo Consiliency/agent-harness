@@ -599,6 +599,86 @@ def test_check_page_structure():
     assert production.check_page(good["request"], dict(good["page"], has_more=None)) == ("read_unbounded",)
 
 
+def synthetic_history(tmp_path, attempts, lines):
+    """A large, valid single-segment history written straight to disk (no writer fsyncs)."""
+    writer = {"harness_id": "example-harness", "harness_version": "1", "writer_instance_id": "w",
+              "owner_pid": 4242, "process_start_time": "t"}
+    journal = {"attempts": []}
+    for number in range(attempts):
+        identity = {"assignment_digest": A, "envelope_digest": ENVELOPE, "run_id": f"run-{number}",
+                    "attempt_id": f"attempt-{number:03d}"}
+        base = {"schema": "supervised_run_status.v1", "version": "1", "attempt": identity,
+                "units": {"target_unit_ids": ["unit:target"], "readonly_neighbor_unit_ids": [], "snapshot_ref": SNAPSHOT},
+                "writer": writer, "observed_at": "2026-11-09T00:00:00Z",
+                "redaction_posture": "digests_and_repo_relative_locators_only"}
+        bodies = [{"body_kind": "header", "segment_index": 0, "previous_segment_sha256": None, "previous_last_seq": None},
+                  {"body_kind": "state", "state": "queued", "worker_invocations": 0},
+                  {"body_kind": "state", "state": "running", "worker_invocations": 1}]
+        bodies += [{"body_kind": "event", "message": {"label": "untrusted_display_text", "text": "output streams digested"},
+                    "refs": [{"kind": "stdout", "sha256": sha256(f"{number}:{n}".encode()).hexdigest(), "locator": None}]}
+                   for n in range(lines - 4)]
+        bodies.append({"body_kind": "terminal", "state": "finished", "worker_invocations": 1,
+                       "termination": {"reason": "completed", "signal": None, "by": "worker"}, "refusal": None,
+                       "result_binding": {"envelope_digest": ENVELOPE, "run_id": f"run-{number}",
+                                          "attempt_id": identity["attempt_id"], "proposal_bytes_digest": None,
+                                          "evidence_envelope_digest": sha256(f"evidence:{number}".encode()).hexdigest()}})
+        journal["attempts"].append({"segments": [{"lines": [dict(base, line_kind=body["body_kind"], seq=seq, body=body)
+                                                            for seq, body in enumerate(bodies)]}]})
+    root = vector_root(tmp_path, journal, "history")
+    size = sum(path.stat().st_size for path in (root.path / "attempts").rglob("*.jsonl"))
+    return root, size
+
+
+def test_read_page_memory_is_bounded_on_a_large_history(tmp_path):
+    import gc
+    import tracemalloc
+    root, size = synthetic_history(tmp_path, 30, 300)
+    assert size > 5_000_000
+    gc.collect()
+    tracemalloc.start()
+    try:
+        first = page(production, root, size=10)
+        middle = page(production, root, size=10, cursor=recode(first.next_cursor, index_seq=15, seq=150,
+                                                               index_prefix_sha256=rs.read_index(root, A).entries[15].entry_sha256))
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert [event["seq"] for event in first.page["events"]] == list(range(1, 11))
+    assert first.page["omitted"] == {"before": 1, "after": 30 * 300 - 11, "retention_dropped": 0}
+    assert [event["seq"] for event in middle.page["events"]] == list(range(151, 161))
+    assert middle.page["omitted"] == {"before": 15 * 300 + 151, "after": 30 * 300 - (15 * 300 + 161),
+                                      "retention_dropped": 0}
+    # Retaining the decoded history would cost several times its on-disk size.
+    assert peak < 3 * 1024 * 1024 and peak < size // 2, (peak, size)
+
+
+def test_streaming_reads_load_the_index_once_and_never_rescan(tmp_path, monkeypatch):
+    root, _ = synthetic_history(tmp_path, 12, 12)
+    counts = {"index": 0, "rescan": 0}
+    load, rescan = rs._load_index, rs._terminal_evidence
+
+    def counted_load(*args):
+        counts["index"] += 1
+        return load(*args)
+
+    def counted_rescan(*args):
+        counts["rescan"] += 1
+        return rescan(*args)
+
+    monkeypatch.setattr(rs, "_load_index", counted_load)
+    monkeypatch.setattr(rs, "_terminal_evidence", counted_rescan)
+    result = page(production, root, size=100)
+    assert len(result.page["events"]) == 100 and result.page["has_more"] is True
+    assert counts == {"index": 1, "rescan": 0}
+    counts.update(index=0, rescan=0)
+    projection = production.project_assignment(root, A)
+    assert len(projection.projection["attempts"]) == 12
+    assert counts == {"index": 2, "rescan": 0}
+    counts.update(index=0, rescan=0)
+    assert production.check_projection(projection.projection, root) == ()
+    assert counts == {"index": 1, "rescan": 0}
+
+
 # --------------------------------------------------------------------------
 # Reader views
 # --------------------------------------------------------------------------
@@ -729,9 +809,10 @@ CONTROLS = {
     "owner_live": ("stale = not live", "stale = False"),
     "pid_reuse": ("if start != read.writer.process_start_time:", "if False:"),
     "page_bound": ("if size is None or size > PAGE_SIZE_MAX:", "if size is None:"),
-    "page_attempt_bound": ("if index_seq not in attempts and len(attempts) == ATTEMPTS_PER_PAGE_MAX:", "if False:"),
-    "header_not_event": ('if line["line_kind"] == "header":', "if False:"),
-    "omitted_counts": ('"omitted": {"before": before, "after": after,', '"omitted": {"before": 0, "after": 0,'),
+    "page_attempt_bound": ("if not prior and not closed and used == ATTEMPTS_PER_PAGE_MAX:", "if False:"),
+    "header_not_event": ('_EVENT_KINDS = frozenset({"event", "state", "terminal"})',
+                         '_EVENT_KINDS = frozenset({"header", "event", "state", "terminal"})'),
+    "omitted_counts": ('"omitted": {"before": before, "after": pending,', '"omitted": {"before": 0, "after": 0,'),
     "retention_count": ("dropped += 1", "pass"),
     "next_cursor": ("    if has_more:\n", "    if False:\n"),
     "cursor_binding": ('if entries[index_seq].entry_sha256 != value["index_prefix_sha256"]:', "if False:"),

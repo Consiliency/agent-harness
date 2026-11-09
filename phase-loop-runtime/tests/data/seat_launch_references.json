@@ -1,11 +1,12 @@
 [
   {"count": 1, "function": "AttemptWriter._start_segment", "module": "run_status", "primitive": "io.open", "role": "host-io"},
   {"count": 2, "function": "_append_index", "module": "run_status", "primitive": "io.open", "role": "host-io"},
-  {"count": 2, "function": "_assignment_dir", "module": "run_status", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "_assignment_dir", "module": "run_status", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_claim_attempt", "module": "run_status", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_claim_run", "module": "run_status", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_inventory", "module": "run_status", "primitive": "io.stat", "role": "host-io"},
   {"count": 2, "function": "_lock", "module": "run_status", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "_open_run", "module": "run_status", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_read_file", "module": "run_status", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_read_proc", "module": "run_status", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_subdir", "module": "run_status", "primitive": "io.open", "role": "host-io"},

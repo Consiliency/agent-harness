@@ -683,24 +683,44 @@ def _write_all(fd: int, data: bytes) -> None:
         view = view[written:]
 
 
+def _barrier(fd: int) -> None:
+    """fsync ``fd``. A failure is a write failure, never a trust failure.
+
+    Every barrier runs whether this call created the entry or adopted one left
+    by a creator that may have died, or failed, before its own barrier. The
+    barrier is idempotent, so adoption always completes the durability chain.
+    """
+    try:
+        os.fsync(fd)
+    except OSError:
+        raise _Fail("journal_write_failed") from None
+
+
 def _lock(parent_fd: int) -> int:
-    """Open (creating 0600 if absent) a verified ``lock`` file under ``parent_fd``."""
+    """Open (creating 0600 if absent) a verified ``lock`` under ``parent_fd``; its entry is made durable."""
+    created = True
     try:
         fd = os.open("lock", os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600,
                      dir_fd=parent_fd)
     except FileExistsError:
+        created = False
         try:
             fd = os.open("lock", os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, dir_fd=parent_fd)
         except OSError:
             raise _Fail("journal_path_unsafe") from None
-        return _verified(fd, False)
+    if created:
+        try:
+            os.fchmod(fd, 0o600)
+        except BaseException:
+            os.close(fd)
+            raise
+    fd = _verified(fd, False)
     try:
-        os.fchmod(fd, 0o600)
-        os.fsync(parent_fd)
+        _barrier(parent_fd)
     except BaseException:
         os.close(fd)
         raise
-    return _verified(fd, False)
+    return fd
 
 
 def _walk(text: str, *, create: bool) -> tuple[int, list[tuple[int, int]]]:
@@ -726,13 +746,20 @@ def _walk(text: str, *, create: bool) -> tuple[int, list[tuple[int, int]]]:
                 if created:
                     try:
                         os.fchmod(child, 0o700)
-                        os.fsync(fd)
                     except BaseException:
                         os.close(child)
                         raise
+            try:
+                st = os.fstat(child)
+                # Creating a root also completes the entry barrier of every
+                # component this account owns: one may be a crashed creator's.
+                if create and (created or st.st_uid == os.geteuid()):
+                    _barrier(fd)
+            except BaseException:
+                os.close(child)
+                raise
             os.close(fd)
             fd = child
-            st = os.fstat(fd)
             chain.append((st.st_dev, st.st_ino))
             if created and not _trusted(st, True):
                 raise _Fail("journal_root_unsafe")
@@ -817,7 +844,9 @@ def open_journal_root(path: Path, *, create: bool, excluded: tuple[Path, ...] = 
         fd, chain = _walk(text, create=bool(create))
     except FileNotFoundError:
         return JournalRefused("journal_missing")
-    except (OSError, _Fail):
+    except _Fail as failure:
+        return JournalRefused(failure.code)
+    except OSError:
         return JournalRefused("journal_root_unsafe")
     try:
         st = os.fstat(fd)
@@ -840,7 +869,6 @@ def open_journal_root(path: Path, *, create: bool, excluded: tuple[Path, ...] = 
                 child = os.open(name, _DIR_FLAGS, dir_fd=fd)
                 try:
                     os.fchmod(child, 0o700)
-                    os.fsync(fd)
                 except BaseException:
                     os.close(child)
                     raise
@@ -848,8 +876,12 @@ def open_journal_root(path: Path, *, create: bool, excluded: tuple[Path, ...] = 
             os.close(child)
             if not trusted:
                 return JournalRefused("journal_root_unsafe")
+        if create:
+            _barrier(fd)
         return JournalRoot(Path(text), st.st_dev, st.st_ino)
-    except (OSError, _Fail):
+    except _Fail as failure:
+        return JournalRefused(failure.code)
+    except OSError:
         return JournalRefused("journal_root_unsafe")
     finally:
         os.close(fd)
@@ -971,16 +1003,36 @@ def read_index(root: JournalRoot, assignment_digest: str) -> IndexRead:
     return IndexRead(assignment_digest, entries, head, ())
 
 
-def _read_run(runs_fd: int, run_id: str) -> str | None:
+def _open_run(runs_fd: int, run_id: str) -> int | None:
+    """A verified read-only descriptor of ``runs/<run_id>``, or None when absent."""
     try:
-        data = _read_file(runs_fd, run_id, _RUN_RECORD_BYTES, "run_record_unreadable")
+        fd = os.open(run_id, _READ_FLAGS, dir_fd=runs_fd)
     except FileNotFoundError:
         return None
+    except OSError:
+        raise _Fail("run_record_unreadable") from None
+    try:
+        return _verified(fd, False)
     except _Fail:
         raise _Fail("run_record_unreadable") from None
-    if len(data) != _RUN_RECORD_BYTES or not data.endswith(b"\n") or _HEX.fullmatch(data[:-1].decode("ascii", "replace")) is None:
+
+
+def _run_digest(fd: int) -> str:
+    data = _read_all(fd, _RUN_RECORD_BYTES)
+    if (data is None or len(data) != _RUN_RECORD_BYTES or not data.endswith(b"\n")
+            or _HEX.fullmatch(data[:-1].decode("ascii", "replace")) is None):
         raise _Fail("run_record_unreadable")
     return data[:-1].decode("ascii")
+
+
+def _read_run(runs_fd: int, run_id: str) -> str | None:
+    fd = _open_run(runs_fd, run_id)
+    if fd is None:
+        return None
+    try:
+        return _run_digest(fd)
+    finally:
+        os.close(fd)
 
 
 def resolve_run(root: JournalRoot, run_id: str) -> tuple[str, ...] | JournalRefused:
@@ -1014,44 +1066,63 @@ def resolve_run(root: JournalRoot, run_id: str) -> tuple[str, ...] | JournalRefu
 # --------------------------------------------------------------------------
 
 def _assignment_dir(assignments_fd: int, digest: str) -> int:
+    """Create or adopt ``assignments/<digest>``; its entry is fsynced on every reservation."""
+    created = True
+    try:
+        os.mkdir(digest, 0o700, dir_fd=assignments_fd)
+    except FileExistsError:
+        created = False
+    except OSError:
+        raise _Fail("journal_path_unsafe") from None
     try:
         fd = os.open(digest, _DIR_FLAGS, dir_fd=assignments_fd)
-    except FileNotFoundError:
-        try:
-            os.mkdir(digest, 0o700, dir_fd=assignments_fd)
-        except FileExistsError:
-            return _subdir(assignments_fd, digest)
-        fd = os.open(digest, _DIR_FLAGS, dir_fd=assignments_fd)
+    except OSError:
+        raise _Fail("journal_path_unsafe") from None
+    if created:
         try:
             os.fchmod(fd, 0o700)
-            os.fsync(assignments_fd)
         except BaseException:
             os.close(fd)
             raise
-    except OSError:
-        raise _Fail("journal_path_unsafe") from None
-    return _verified(fd, True)
+    fd = _verified(fd, True)
+    try:
+        _barrier(assignments_fd)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
 
 
 def _claim_run(runs_fd: int, run_id: str, digest: str) -> None:
+    """Write or adopt the run claim; the claim file and ``runs/`` are fsynced every time."""
     record = (digest + "\n").encode("ascii")
     for _ in range(3):
-        existing = _read_run(runs_fd, run_id)
-        if existing is not None:
-            if existing == digest:
-                return
-            raise _Fail("run_assignment_mismatch")
+        fd = _open_run(runs_fd, run_id)
+        if fd is None:
+            try:
+                fd = os.open(run_id, _CREATE_FLAGS, 0o600, dir_fd=runs_fd)
+            except FileExistsError:
+                continue
+            try:
+                os.fchmod(fd, 0o600)
+                _write_all(fd, record)
+            except BaseException:
+                os.close(fd)
+                raise
+        else:
+            try:
+                existing = _run_digest(fd)
+            except BaseException:
+                os.close(fd)
+                raise
+            if existing != digest:
+                os.close(fd)
+                raise _Fail("run_assignment_mismatch")
         try:
-            fd = os.open(run_id, _CREATE_FLAGS, 0o600, dir_fd=runs_fd)
-        except FileExistsError:
-            continue
-        try:
-            os.fchmod(fd, 0o600)
-            _write_all(fd, record)
-            os.fsync(fd)
+            _barrier(fd)
         finally:
             os.close(fd)
-        os.fsync(runs_fd)
+        _barrier(runs_fd)
         return
     raise _Fail("run_record_unreadable")
 
@@ -1066,7 +1137,7 @@ def _claim_attempt(attempts_fd: int, attempt_id: str) -> None:
         os.fchmod(fd, 0o700)
     finally:
         os.close(fd)
-    os.fsync(attempts_fd)
+    _barrier(attempts_fd)
 
 
 def _append_index(assignment_fd: int, line: bytes) -> None:
@@ -1084,11 +1155,11 @@ def _append_index(assignment_fd: int, line: bytes) -> None:
         if not _trusted(os.fstat(index_fd), False):
             raise _Fail("journal_path_unsafe")
         _write_all(index_fd, line)
-        os.fsync(index_fd)
+        _barrier(index_fd)
     finally:
         os.close(index_fd)
-    if created:
-        os.fsync(assignment_fd)
+    # Created now or by an earlier reservation whose directory barrier failed.
+    _barrier(assignment_fd)
 
 
 def reserve_attempt(root: JournalRoot, identity: AttemptIdentity, *, units: Units, launch_digest: str,
@@ -1462,8 +1533,19 @@ def _locate(root_fd: int, attempt_id: str, hint: str | None):
         os.close(assignments_fd)
 
 
+def _segment_evidence(data: bytes) -> str | None:
+    """The bound evidence-envelope digest named by a segment's final complete line, if any."""
+    if not data.endswith(b"\n"):
+        return None
+    line = _parse(data[:-1].rsplit(b"\n", 1)[-1])
+    if not check_structure("journal_line", line) or line["line_kind"] != "terminal":
+        return None
+    binding = line["body"]["result_binding"]
+    return None if binding is None else binding["evidence_envelope_digest"]
+
+
 def _terminal_evidence(attempts_fd: int, attempt_id: str) -> str | None:
-    """An earlier attempt's bound evidence-envelope digest, from its final line only."""
+    """An attempt's bound evidence-envelope digest, from its final line only."""
     try:
         attempt_fd = _subdir(attempts_fd, attempt_id)
     except (OSError, _Fail):
@@ -1477,13 +1559,7 @@ def _terminal_evidence(attempts_fd: int, attempt_id: str) -> str | None:
         return None
     finally:
         os.close(attempt_fd)
-    if not data.endswith(b"\n"):
-        return None
-    line = _parse(data[:-1].rsplit(b"\n", 1)[-1])
-    if not check_structure("journal_line", line) or line["line_kind"] != "terminal":
-        return None
-    binding = line["body"]["result_binding"]
-    return None if binding is None else binding["evidence_envelope_digest"]
+    return _segment_evidence(data)
 
 
 def _inventory(attempt_fd: int, limits: JournalLimits) -> tuple[dict[int, str], set[str]]:
@@ -1503,14 +1579,59 @@ def _inventory(attempt_fd: int, limits: JournalLimits) -> tuple[dict[int, str], 
     return segments, diagnostics
 
 
+class _AllLines:
+    """Retains every line (``read_attempt``)."""
+
+    def __init__(self):
+        self.lines: list[bytes] = []
+        self.total = 0
+
+    def add(self, raw: bytes, seq: int, kind: str) -> None:
+        self.total += 1
+        self.lines.append(raw)
+
+
+class _Window:
+    """Retains at most ``max_events`` selectable lines after ``after_seq``; counts the rest.
+
+    ``skipped`` counts lines at or before ``after_seq``. ``lead`` counts later
+    lines before the first selected line (all of them when none is selected).
+    ``tail`` counts lines after the last selected line. Lines between two
+    selected lines are counted in neither.
+    """
+
+    def __init__(self, after_seq: int, max_events: int, kinds: frozenset[str]):
+        self.after_seq, self.max_events, self.kinds = after_seq, max_events, kinds
+        self.total = self.skipped = self.lead = self.tail = 0
+        self.events: list[bytes] = []
+        self.more = self.found = False
+
+    def add(self, raw: bytes, seq: int, kind: str) -> None:
+        self.total += 1
+        if seq <= self.after_seq:
+            self.skipped += 1
+            self.found = self.found or seq == self.after_seq
+            return
+        selectable = kind in self.kinds
+        if selectable and len(self.events) < self.max_events:
+            self.events.append(raw)
+            self.tail = 0
+        elif not self.events:
+            self.lead += 1
+            self.more = self.more or selectable
+        else:
+            self.tail += 1
+            self.more = self.more or selectable
+
+
 class _Replay:
     """One bounded pass over an attempt's segments, applying only reader rules."""
 
-    def __init__(self, attempt_id: str):
+    def __init__(self, attempt_id: str, sink):
         self.attempt_id = attempt_id
+        self.sink = sink
         self.diagnostics: set[str] = set()
         self.reference = None
-        self.lines: list[bytes] = []
         self.expected_seq = 0
         self.state = None
         self.ran = False
@@ -1520,17 +1641,17 @@ class _Replay:
         self.broken = False
 
     def line(self, raw: bytes, *, position: int, segment: int, previous: str | None, last: int | None,
-             final_line: bool) -> None:
+             final_line: bool) -> int | None:
         diagnostics = self.diagnostics
         obj = _parse(raw)
         if obj is None:
             diagnostics.add("journal_torn_line" if final_line else "journal_malformed_line")
             self.broken = True
-            return
+            return None
         if not check_structure("journal_line", obj) or obj["line_kind"] != obj["body"]["body_kind"]:
             diagnostics.add("journal_malformed_line")
             self.broken = True
-            return
+            return None
         seq, kind, body = obj["seq"], obj["line_kind"], obj["body"]
         if seq != self.expected_seq and not self.broken:
             diagnostics.add("attempt_overwritten")
@@ -1567,7 +1688,8 @@ class _Replay:
             diagnostics.add("lifecycle_invalid")
         if kind in ("state", "terminal") and not self.broken:
             self._transition(obj, kind, body)
-        self.lines.append(raw)
+        self.sink.add(raw, seq, kind)
+        return seq
 
     def _transition(self, obj: dict, kind: str, body: dict) -> None:
         diagnostics, new = self.diagnostics, body["state"]
@@ -1602,41 +1724,41 @@ def _terminal_record(body: dict) -> TerminalRecord:
                                                    binding["evidence_envelope_digest"]))
 
 
-def _read_attempt(root_fd: int, attempt_id: str, limits: JournalLimits) -> AttemptRead:
-    try:
-        attempts_fd = _subdir(root_fd, "attempts")
-    except FileNotFoundError:
-        return _unknown(attempt_id, ("journal_missing",))
-    except _Fail as failure:
-        return _unknown(attempt_id, (failure.code,))
-    try:
-        try:
-            attempt_fd = _subdir(attempts_fd, attempt_id)
-        except FileNotFoundError:
-            return _unknown(attempt_id, ("journal_missing",))
-        except _Fail as failure:
-            return _unknown(attempt_id, (failure.code,))
-        try:
-            return _replay(root_fd, attempts_fd, attempt_fd, attempt_id, limits)
-        except _Fail as failure:
-            return _unknown(attempt_id, (failure.code,))
-        except OSError:
-            return _unknown(attempt_id, ("journal_path_unsafe",))
-        finally:
-            os.close(attempt_fd)
-    finally:
-        os.close(attempts_fd)
+class _Pass:
+    """The outcome of one replay, before it is shaped into a public record."""
+
+    def __init__(self):
+        self.diagnostics: set[str] = set()
+        self.entry: IndexEntry | None = None
+        self.state = self.terminal = self.head = self.prefix = self.evidence = None
+        self.verified = False
+        self.segments: list[tuple[int, int, int, str]] = []
+        self.evidence_known = False
 
 
-def _replay(root_fd: int, attempts_fd: int, attempt_fd: int, attempt_id: str, limits: JournalLimits) -> AttemptRead:
+def _bind(root_fd: int, attempt_id: str, hint: str | None, bound):
+    """(entry, entries or None, diagnostics). ``bound`` is a caller-held (entry, earlier digests)."""
+    if bound is None:
+        return _locate(root_fd, attempt_id, hint)
+    entry = bound[0]
+    if hint is not None and hint != entry.identity.assignment_digest:
+        return None, None, {"attempt_unindexed"}
+    return entry, None, set()
+
+
+def _replay(root_fd: int, attempts_fd: int, attempt_fd: int, attempt_id: str, limits: JournalLimits, *,
+            sink, bound=None, prefix_at=None) -> _Pass:
+    result = _Pass()
     segments, diagnostics = _inventory(attempt_fd, limits)
+    result.diagnostics = diagnostics
     if 0 not in segments:
-        entry, _, located = _locate(root_fd, attempt_id, None)
-        return _unknown(attempt_id, diagnostics | located | {"journal_missing"}, entry)
+        result.entry, _, located = _bind(root_fd, attempt_id, None, bound)
+        diagnostics |= located | {"journal_missing"}
+        return result
     indices = sorted(segments)
     if indices != list(range(len(indices))):
         diagnostics.add("attempt_overwritten")
-    replay = _Replay(attempt_id)
+    replay = _Replay(attempt_id, sink)
     previous, last, head = None, None, None
     for order, index in enumerate(indices):
         final = order == len(indices) - 1
@@ -1645,15 +1767,30 @@ def _replay(root_fd: int, attempts_fd: int, attempt_fd: int, attempt_id: str, li
         complete, tail = parts[:-1], parts[-1]
         if not data:
             replay.diagnostics.add("journal_torn_line" if final else "attempt_overwritten")
+        running = hashlib.sha256() if prefix_at is not None and prefix_at[0] == index else None
+        first_seq = last_seq = None
         for position, raw in enumerate(complete):
             replay.total += 1
-            replay.line(raw, position=position, segment=index, previous=previous, last=last,
-                        final_line=final and not tail and position == len(complete) - 1)
+            seq = replay.line(raw, position=position, segment=index, previous=previous, last=last,
+                              final_line=final and not tail and position == len(complete) - 1)
+            if seq is not None:
+                first_seq = seq if first_seq is None else first_seq
+                last_seq = seq
+            if running is not None:
+                running.update(raw + b"\n")
+                if seq is not None and seq == prefix_at[1]:
+                    result.prefix = running.hexdigest()
+        del parts, complete
         if tail:
             replay.total += 1
             replay.diagnostics.add("journal_torn_line" if final else "journal_malformed_line")
         previous, last = _sha256(data), replay.expected_seq - 1
+        result.segments.append((index, -1 if first_seq is None else first_seq, -1 if last_seq is None else last_seq,
+                                previous))
         head = ChainHead(index, previous, last)
+        if final:
+            result.evidence, result.evidence_known = _segment_evidence(data), True
+        del data
         if replay.total > limits.per_attempt_line_cap:
             replay.diagnostics.add("journal_oversize")
             break
@@ -1661,8 +1798,9 @@ def _replay(root_fd: int, attempts_fd: int, attempt_fd: int, attempt_id: str, li
     hint = None
     if replay.reference is not None:
         hint = replay.reference["attempt"]["assignment_digest"]
-    entry, entries, located = _locate(root_fd, attempt_id, hint)
+    entry, entries, located = _bind(root_fd, attempt_id, hint, bound)
     diagnostics |= located
+    result.entry = entry
     if entry is not None and replay.reference is not None:
         if (_identity_json(entry.identity) != replay.reference["attempt"]
                 or _units_json(entry.units) != replay.reference["units"]
@@ -1672,14 +1810,55 @@ def _replay(root_fd: int, attempts_fd: int, attempt_fd: int, attempt_id: str, li
             diagnostics.add("journal_foreign_writer")
         binding = replay.terminal["result_binding"] if replay.terminal is not None else None
         if binding is not None:
-            earlier = [item.identity.attempt_id for item in entries if item.index_seq < entry.index_seq]
-            if any(_terminal_evidence(attempts_fd, other) == binding["evidence_envelope_digest"] for other in earlier):
+            digest = binding["evidence_envelope_digest"]
+            if bound is not None:
+                copied = digest in bound[1]
+            else:
+                earlier = [item.identity.attempt_id for item in entries if item.index_seq < entry.index_seq]
+                copied = any(_terminal_evidence(attempts_fd, other) == digest for other in earlier)
+            if copied:
                 diagnostics.add("attempt_evidence_copied")
-    if diagnostics or replay.reference is None:
-        return _unknown(attempt_id, diagnostics, entry)
-    return AttemptRead(attempt_id, entry.identity, entry.units, entry.writer, tuple(replay.lines), replay.state,
-                       None if replay.terminal is None else _terminal_record(replay.terminal), head, (),
-                       replay.state or "unknown")
+    result.verified = not diagnostics and replay.reference is not None
+    result.state, result.terminal, result.head = replay.state, replay.terminal, head
+    return result
+
+
+def _pass(root_fd: int, attempt_id: str, limits: JournalLimits, *, sink, bound=None, prefix_at=None) -> _Pass:
+    """Open the attempt directory and replay it; failures become closed diagnostics."""
+    failed = _Pass()
+    try:
+        attempts_fd = _subdir(root_fd, "attempts")
+    except FileNotFoundError:
+        failed.diagnostics = {"journal_missing"}
+        return failed
+    except _Fail as failure:
+        failed.diagnostics = {failure.code}
+        return failed
+    try:
+        try:
+            attempt_fd = _subdir(attempts_fd, attempt_id)
+        except FileNotFoundError:
+            failed.diagnostics = {"journal_missing"}
+            return failed
+        except _Fail as failure:
+            failed.diagnostics = {failure.code}
+            return failed
+        try:
+            result = _replay(root_fd, attempts_fd, attempt_fd, attempt_id, limits, sink=sink, bound=bound,
+                             prefix_at=prefix_at)
+        except _Fail as failure:
+            failed.diagnostics = {failure.code}
+            result = failed
+        except OSError:
+            failed.diagnostics = {"journal_path_unsafe"}
+            result = failed
+        finally:
+            os.close(attempt_fd)
+        if bound is not None and not result.evidence_known:
+            result.evidence = _terminal_evidence(attempts_fd, attempt_id)
+        return result
+    finally:
+        os.close(attempts_fd)
 
 
 def read_attempt(root: JournalRoot, attempt_id: str) -> AttemptRead:
@@ -1690,10 +1869,88 @@ def read_attempt(root: JournalRoot, attempt_id: str) -> AttemptRead:
         root_fd = _root_fd(root)
     except _Fail as failure:
         return _unknown(attempt_id, (failure.code,))
+    sink = _AllLines()
     try:
-        return _read_attempt(root_fd, attempt_id, DEFAULT_LIMITS)
+        result = _pass(root_fd, attempt_id, DEFAULT_LIMITS, sink=sink)
     finally:
         os.close(root_fd)
+    if not result.verified:
+        return _unknown(attempt_id, result.diagnostics, result.entry)
+    entry = result.entry
+    return AttemptRead(attempt_id, entry.identity, entry.units, entry.writer, tuple(sink.lines), result.state,
+                       None if result.terminal is None else _terminal_record(result.terminal), result.head, (),
+                       result.state or "unknown")
+
+
+#: Line kinds a window may select by default: everything except headers.
+EVENT_KINDS = frozenset({"event", "state", "terminal"})
+WINDOW_EVENTS_MAX = 100
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptWindow:
+    """A bounded slice of one attempt, read in one pass without retaining its history."""
+
+    attempt_id: str
+    identity: AttemptIdentity | None
+    diagnostics: tuple[str, ...]
+    state: str | None
+    chain_head: ChainHead | None
+    total_lines: int
+    skipped: int
+    lead: int
+    events: tuple[bytes, ...]
+    tail: int
+    more_events: bool
+    found_after_seq: bool
+    segments: tuple[tuple[int, int, int, str], ...]
+    prefix_digest: str | None
+    evidence_digest: str | None
+
+
+def _empty_window(attempt_id: str, entry, diagnostics, evidence=None) -> AttemptWindow:
+    return AttemptWindow(attempt_id, entry.identity if isinstance(entry, IndexEntry) else None,
+                         tuple(sorted(set(diagnostics))), None, None, 0, 0, 0, (), 0, False, False, (), None, evidence)
+
+
+def read_attempt_window(root: JournalRoot, index: IndexRead, entry: IndexEntry, *, after_seq: int = -1,
+                        max_events: int = 0, earlier_evidence=frozenset(), event_kinds=EVENT_KINDS,
+                        prefix_at: tuple[int, int] | None = None) -> AttemptWindow:
+    """Verify one indexed attempt like ``read_attempt`` while retaining at most ``max_events`` lines.
+
+    ``index`` is the caller's single verified ``read_index`` result and ``entry``
+    one of its entries, so the index is not reloaded per attempt.
+    ``earlier_evidence`` is a container (only membership is tested) of the
+    ``evidence_digest`` values of the entries before ``entry``, so no earlier
+    attempt is rescanned. Diagnostics equal
+    those of ``read_attempt`` for the same attempt.
+    """
+    attempt_id = entry.identity.attempt_id if isinstance(entry, IndexEntry) else ""
+    if (not isinstance(index, IndexRead) or index.diagnostics or not isinstance(entry, IndexEntry)
+            or not 0 <= entry.index_seq < len(index.entries) or index.entries[entry.index_seq] != entry):
+        return _empty_window(attempt_id, None, ("index_unverifiable",))
+    if (type(after_seq) is not int or after_seq < -1 or type(max_events) is not int or max_events < 0
+            or not isinstance(event_kinds, frozenset)
+            or not (prefix_at is None or (isinstance(prefix_at, tuple) and len(prefix_at) == 2
+                                          and all(type(item) is int for item in prefix_at)))):
+        return _empty_window(attempt_id, entry, ("identifier_invalid",))
+    if max_events > WINDOW_EVENTS_MAX:
+        return _empty_window(attempt_id, entry, ("read_unbounded",))
+    try:
+        root_fd = _root_fd(root)
+    except _Fail as failure:
+        return _empty_window(attempt_id, entry, (failure.code,))
+    sink = _Window(after_seq, max_events, event_kinds)
+    try:
+        result = _pass(root_fd, attempt_id, DEFAULT_LIMITS, sink=sink, bound=(entry, earlier_evidence),
+                       prefix_at=prefix_at)
+    finally:
+        os.close(root_fd)
+    if not result.verified:
+        return _empty_window(attempt_id, entry, result.diagnostics, result.evidence)
+    return AttemptWindow(attempt_id, entry.identity, (), result.state, result.head, sink.total, sink.skipped,
+                         sink.lead, tuple(sink.events), sink.tail, sink.more, sink.found, tuple(result.segments),
+                         result.prefix, result.evidence)
 
 
 __all__ = [
@@ -1702,5 +1959,6 @@ __all__ = [
     "ResultBinding", "Reservation", "ChainHead", "JournalLimits", "DEFAULT_LIMITS", "JournalRoot",
     "JournalRefused", "IndexEntry", "TerminalRecord", "AttemptRead", "IndexRead", "AttemptWriter",
     "check_structure", "default_journal_root", "open_journal_root", "process_start_identity", "make_ref",
-    "reserve_attempt", "open_writer", "read_attempt", "read_index", "resolve_run",
+    "reserve_attempt", "open_writer", "read_attempt", "read_index", "resolve_run", "AttemptWindow",
+    "EVENT_KINDS", "WINDOW_EVENTS_MAX", "read_attempt_window",
 ]
