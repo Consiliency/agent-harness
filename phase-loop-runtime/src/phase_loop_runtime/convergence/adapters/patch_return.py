@@ -181,6 +181,25 @@ def evidence_resolver(state_root: Path) -> projection.EvidenceResolver:
     return resolve
 
 
+def _executable_digest(path):
+    parent = _directory_fd(path.parent)
+    try:
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+    finally:
+        os.close(parent)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid not in {0, os.geteuid()}
+                or info.st_mode & 0o022):
+            raise ValueError("executable_identity")
+        digest = sha256()
+        while chunk := os.read(fd, 65536):
+            digest.update(chunk)
+        return digest.hexdigest()
+    finally:
+        os.close(fd)
+
+
 def _settings(raw):
     config = json.loads(raw)
     cap = config.get("worker_proposal_cap", PROPOSAL_CAP_MAX)
@@ -228,6 +247,9 @@ def _audit(inputs, settings):
                     raise ValueError("gitfile_escape")
                 reader = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
                 try:
+                    opened = os.fstat(reader)
+                    if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+                        raise ValueError("audit_entry_changed")
                     h256, h1 = sha256(), sha1()
                     h1.update(b"blob " + str(info.st_size).encode() + b"\0")
                     while chunk := os.read(reader, 65536):
@@ -236,6 +258,10 @@ def _audit(inputs, settings):
                             raise ValueError("audit_byte_cap")
                         h256.update(chunk)
                         h1.update(chunk)
+                    closed = os.fstat(reader)
+                    if (closed.st_size, closed.st_mtime_ns, closed.st_ctime_ns) != (
+                            opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns):
+                        raise ValueError("audit_entry_changed")
                     content = h256.hexdigest()
                     if scope == "workspace":
                         baselines[path] = BaselineIdentity(path, h1.hexdigest(), content)
@@ -397,7 +423,7 @@ def run_patch_return(prepared, *, config_bytes: bytes, state_root: Path,
                         return SpawnRefused(reason)
                 for executable, reason in ((inputs.executable, "executable_changed"),
                                             *((item, "wrapper_changed") for item in inputs.wrappers)):
-                    if sha256(trusted_bytes(Path(executable.path))).hexdigest() != executable.digest:
+                    if _executable_digest(Path(executable.path)) != executable.digest:
                         return SpawnRefused(reason)
             except (OSError, ValueError):
                 return SpawnRefused("executable_changed")
