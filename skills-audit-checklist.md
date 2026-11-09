@@ -2,7 +2,7 @@
 
 Audit baseline: `origin/main` at `23a30561e9b2ef23933fcbb4225a1d86120a5195`. Pending entries have not yet been audited. `skills-src/` is canonical; generated outputs in `phase-loop-skills/` and the packaged bundle are reviewed through regeneration and parity checks. The hand-authored `phase-loop-skills/README.md` is audited separately. No skill source is owned by agent-harness#1934, agent-harness#1937 or agent-harness#1939.
 
-- [ ] `skills-src/claude/claude-advisor-board/SKILL.md` — pending
+- [x] `skills-src/claude/claude-advisor-board/SKILL.md` — fixed; runtime `seat_profile_codex.py:33`, `panel_invoker.py:13355` (jailed launch, single attempt), `panel_invoker.py:444` (memfd gate); issue qualification retained from prior commit
 - [ ] `skills-src/claude/claude-execute-detailed/SKILL.md` — pending
 - [ ] `skills-src/claude/claude-execute-detailed/references/pr-writing.md` — pending
 - [ ] `skills-src/claude/claude-execute-phase/SKILL.md` — pending
@@ -44,14 +44,14 @@ Audit baseline: `origin/main` at `23a30561e9b2ef23933fcbb4225a1d86120a5195`. Pen
 - [ ] `skills-src/claude/claude-plan-phase/references/model-effort-tiering.md` — pending
 - [ ] `skills-src/claude/claude-plan-phase/references/plan-document-template.md` — pending
 - [ ] `skills-src/claude/claude-plan-phase/scripts/validate_plan_doc.py` — pending
-- [ ] `skills-src/claude/claude-run-train/SKILL.md` — pending
+- [x] `skills-src/claude/claude-run-train/SKILL.md` — checked-clean; runtime `train_runner.py` native request/leg and review-only branches, `cli.py` run-train flags
 - [ ] `skills-src/claude/claude-skill-editor/SKILL.md` — pending
 - [ ] `skills-src/claude/claude-skill-editor/assets/editor_prompt.md` — pending
 - [ ] `skills-src/claude/claude-skill-improvement-planner/SKILL.md` — pending
 - [ ] `skills-src/claude/claude-skill-improvement-planner/assets/aggregator_prompt.md` — pending
 - [ ] `skills-src/claude/claude-task-contextualizer/SKILL.md` — pending
 - [ ] `skills-src/claude/claude-task-contextualizer/references/task-templates.md` — pending
-- [ ] `skills-src/codex/codex-advisor-board/SKILL.md` — pending
+- [x] `skills-src/codex/codex-advisor-board/SKILL.md` — fixed; runtime `seat_profile_codex.py:33`, `panel_invoker.py:13355` (jailed launch, single attempt), `panel_invoker.py:444` (memfd gate); issue qualification retained from prior commit
 - [x] `skills-src/codex/codex-execute-detailed/SKILL.md` — fixed; runtime `phase-loop-runtime/src/phase_loop_runtime/publishing.py:2085; plan_manifest.py:339 — removed nonexistent CLI alias`
 - [ ] `skills-src/codex/codex-execute-phase/SKILL.md` — pending
 - [ ] `skills-src/codex/codex-execute-phase/references/interactive-path.md` — pending
@@ -64,7 +64,7 @@ Audit baseline: `origin/main` at `23a30561e9b2ef23933fcbb4225a1d86120a5195`. Pen
 - [x] `skills-src/codex/codex-skill-editor/SKILL.md` — checked-clean; runtime `phase-loop-runtime/src/phase_loop_runtime/reflection_corpus.py archive; build_bundle.py DEFAULT_SOURCES; skill_paths.py:24-39`
 - [ ] `skills-src/codex/codex-skill-improvement-planner/SKILL.md` — pending
 - [ ] `skills-src/codex/codex-task-contextualizer/SKILL.md` — pending
-- [ ] `skills-src/gemini/gemini-advisor-board/SKILL.md` — pending
+- [x] `skills-src/gemini/gemini-advisor-board/SKILL.md` — fixed; runtime `seat_profile_codex.py:33`, `panel_invoker.py:13355` (jailed launch, single attempt), `panel_invoker.py:444` (memfd gate); issue qualification retained from prior commit
 - [x] `skills-src/gemini/gemini-execute-detailed/SKILL.md` — fixed; runtime `publishing.py:2085; plan_manifest.py:339; skill_paths.py:24 (reflection root and absent CLI alias)`
 - [ ] `skills-src/gemini/gemini-execute-phase/SKILL.md` — pending
 - [ ] `skills-src/gemini/gemini-execute-phase/references/interactive-path.md` — pending
@@ -78,7 +78,7 @@ Audit baseline: `origin/main` at `23a30561e9b2ef23933fcbb4225a1d86120a5195`. Pen
 - [x] `skills-src/gemini/gemini-skill-editor/SKILL.md` — checked-clean; runtime `build_bundle.py DEFAULT_SOURCES; reflection_corpus.py:615-693`
 - [x] `skills-src/gemini/gemini-skill-improvement-planner/SKILL.md` — checked-clean; runtime `reflection_corpus.py:650-675; rule_enforcement registry`
 - [ ] `skills-src/gemini/gemini-task-contextualizer/SKILL.md` — pending
-- [ ] `skills-src/opencode/opencode-advisor-board/SKILL.md` — pending
+- [x] `skills-src/opencode/opencode-advisor-board/SKILL.md` — fixed; runtime `seat_profile_codex.py:33`, `panel_invoker.py:13355` (jailed launch, single attempt), `panel_invoker.py:444` (memfd gate); issue qualification retained from prior commit
 - [x] `skills-src/opencode/opencode-execute-detailed/SKILL.md` — fixed; runtime `publishing.py:2085; plan_manifest.py:339; skill_paths.py:24 (reflection root and absent CLI alias)`
 - [ ] `skills-src/opencode/opencode-execute-phase/SKILL.md` — pending
 - [ ] `skills-src/opencode/opencode-execute-phase/references/interactive-publication.md` — pending
