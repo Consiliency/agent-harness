@@ -37,6 +37,9 @@ Three frozen artifacts carry the detail. Read all three before building:
   groups (§5) and the historical receipt seals (§6).
 - `plans/artifacts/v12-v13-replan-ownership.md`: the one ownership map for
   CLOSEOUT, PLACECLI and LANEEXEC, and the integration order.
+- `plans/artifacts/v12-CLOSEOUT-binding-location.md`: where the production CLI
+  finds its launch binding (one fixed root-owned path, no overrides), sealed by
+  the amendment row `v12-CLOSEOUT-amend-binding-location`.
 
 The manifest row seals all three. Out of scope: panel/PTY integration, projected
 dependency routes, a controller implementation, installed-tool qualification,

@@ -15612,6 +15612,43 @@
       "status": "committed",
       "type": "phase",
       "updated_at": "2026-11-09T09:23:41Z"
+    },
+    {
+      "amends": "plans/phase-plan-v12-CLOSEOUT.md",
+      "created_at": "2026-11-09T17:16:18Z",
+      "file": "plans/artifacts/v12-CLOSEOUT-binding-location.md",
+      "frozen_inputs": {
+        "plans/artifacts/v12-CLOSEOUT-binding-location.md": {
+          "sha256": "8a28de3e023357fa25755c5e1bfcd6fc68b50a09b8617d27edf3dfaf48d847e2"
+        }
+      },
+      "gate_status": "declared_not_produced",
+      "handoff_ref": null,
+      "if_gates_produced": [
+        "IF-0-CLOSEOUT-1"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2",
+        "SL-3"
+      ],
+      "lifecycle": [],
+      "owner_skill": "claude-plan-phase",
+      "phase_alias": "CLOSEOUT",
+      "planning_artifact_only": true,
+      "reflection_ref": null,
+      "review_status": "pending",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v12.md",
+        "slug": "phase-plans-v12",
+        "status": "committed",
+        "type": "phase"
+      },
+      "slug": "v12-CLOSEOUT-amend-binding-location",
+      "status": "committed",
+      "type": "phase",
+      "updated_at": "2026-11-09T17:16:18Z"
     }
   ],
   "schema_version": 1
