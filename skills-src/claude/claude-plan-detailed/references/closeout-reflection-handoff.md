@@ -10,6 +10,8 @@ Reference for `claude-plan-detailed` (linked from its `SKILL.md`, Step 8).
 ## Resolve paths
 
 
+Resolve `REPO_HASH` and `BRANCH_SLUG` from `phase_loop_runtime.discovery.repo_identity(repo_root)` (`repo_hash` and `branch_slug`). Use the active runner's `RUN_ID`, or allocate one unique ID for this manual run; `repo_identity` does not generate run IDs.
+
 ```bash
 SKILL_ROOT=$(python3 -c 'from phase_loop_runtime.skill_paths import resolve_skill_bundle_root; print(resolve_skill_bundle_root("claude"))')
 # Set these to the current run's repo hash, branch slug and unique run ID.
@@ -24,13 +26,9 @@ try:
     # Primary: the installed phase_loop_runtime.skill_paths resolver.
     from phase_loop_runtime.skill_paths import resolve_handoff_root
     print(resolve_handoff_root(repo) / skill / "latest.md")
-except Exception:
-    # Fallback: the repo-local handoff_path.py mirror, only when the runtime is not importable.
-    from importlib import util
-    spec = util.spec_from_file_location("handoff_path", repo / "shared" / "phase-loop" / "handoff_path.py")
-    mod = util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    print(mod.resolve_handoff_path(repo, skill))
+except ImportError:
+    from phase_loop_runtime.handoff_path import resolve_handoff_path
+    print(resolve_handoff_path(repo, skill))
 PYH
 )
 mkdir -p "$(dirname "$REPO_LOCAL_HANDOFF")"

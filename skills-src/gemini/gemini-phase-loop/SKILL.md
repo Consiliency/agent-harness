@@ -57,7 +57,7 @@ are the recommended manual reentry surface, but they are not required for the
 runner to launch or continue work. If the advisory bridge record reports
 `missing_root`, `missing_skill`, or `drifted`, repair the local bridge with
 `codex-phase-loop sync-skills --apply` before trusting manual Gemini reentry.
-The Gemini executor launches Antigravity `agy` with `--add-dir` and `--print`,
+The Gemini executor launches Antigravity `agy` with `--add-dir` and `-p`,
 not the retired standalone `gemini` CLI. Do not pass that retired CLI's
 `--skip-trust` flag to agy; inspect the selected launcher and its typed refusals.
 

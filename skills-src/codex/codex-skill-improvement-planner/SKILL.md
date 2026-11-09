@@ -125,7 +125,7 @@ In Default mode, write the plan only if the user asked for an artifact. Otherwis
 
 For `maintain-skills` planner-only runs, report `codex-skill-editor --improvement-plan <path> --allow-skill <codex-* skill>` only as the explicit follow-on command. Do not imply that editor execution is automatic.
 
-If writing self-improvement state, resolve handoff writes through `shared/phase-loop/handoff_path.py` and the repo-local handoff resolver; legacy harness handoff roots are read only for migration. Follow the repo/branch/run-isolated layout from `phase_loop_runtime.skill_paths` and use Codex paths only:
+If writing self-improvement state, resolve handoff writes through `phase_loop_runtime.handoff_path` and the repo-local handoff resolver; legacy harness handoff roots are read only for migration. Follow the repo/branch/run-isolated layout from `phase_loop_runtime.skill_paths` and use Codex paths only:
 
 - Reflection: `resolve_skill_bundle_root("codex")/codex-skill-improvement-planner/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
 - Handoff: `<repo>/.dev-skills/handoffs/codex-skill-improvement-planner/<run_id>.md`

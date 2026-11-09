@@ -48,7 +48,7 @@ Produces the `specs/phase-plans-v<N>.md` roadmap that `/claude-plan-phase` consu
 
 Expected helpers under `.claude/skills/_shared/` (check existence before invocation; fall back inline when absent):
 
-- `_shared/scaffold_docs_catalog.py` — scaffolds the docs catalog. On absence, create `.claude/docs-catalog.json` manually as an empty-array JSON file (`[]`).
+- Use an existing repo-maintained docs catalog when present; otherwise inspect the relevant repo documentation. Do not create an empty catalog as a substitute for an inventory.
 - `_shared/next_reflection_path.py` — legacy helper only; current closeout writes reflections to `resolve_skill_bundle_root("claude")/claude-phase-roadmap-builder/reflections/<repo_hash>/<branch_slug>/<run_id>.md`.
 - `phase-loop advisor-board` — the runtime entrypoint used with `--review-external`; no separate review helper is shipped.
 
@@ -75,7 +75,7 @@ ToolSearch(query: "select:AskUserQuestion,ExitPlanMode")
 
 ### Step 0 — Read predecessor handoff (if present)
 
-Read the repo-keyed `claude-execute-phase` handoff (`latest.md`, resolved through `phase_loop_runtime.skill_paths.resolve_handoff_root`, falling back to `resolve_handoff_path` in `shared/phase-loop/handoff_path.py`). If it exists, `Read` it in full and treat it as additional input to Step 1 — a prior `/claude-execute-phase` run may have left completed phases, decisions and gotchas. If its `from:` is not `claude-execute-phase`, its timestamp is older than 7 days, or none of its `artifact:` paths resolves under `$(git rev-parse --show-toplevel)`, ask via `AskUserQuestion` with `[use anyway, ignore, abort]`. If absent, proceed — this run is standalone. The path-resolution script is in [references/handoff-review-closeout.md](references/handoff-review-closeout.md).
+Read the repo-keyed `claude-execute-phase` handoff (`latest.md`, resolved through `phase_loop_runtime.skill_paths.resolve_handoff_root`, falling back to `resolve_handoff_path` in `phase_loop_runtime.handoff_path`). If it exists, `Read` it in full and treat it as additional input to Step 1 — a prior `/claude-execute-phase` run may have left completed phases, decisions and gotchas. If its `from:` is not `claude-execute-phase`, its timestamp is older than 7 days, or none of its `artifact:` paths resolves under `$(git rev-parse --show-toplevel)`, ask via `AskUserQuestion` with `[use anyway, ignore, abort]`. If absent, proceed — this run is standalone. The path-resolution script is in [references/handoff-review-closeout.md](references/handoff-review-closeout.md).
 
 ### Step 1 — Gather inputs
 
@@ -192,7 +192,7 @@ If neither the `phase-loop` console script nor the `phase_loop_runtime` package
 is importable (an incomplete install), do not hand off a roadmap checked only by
 eye: install the runtime from the public agent-harness
 (`scripts/install-agent-harness.sh`, or `uv tool install
-"phase-loop-runtime==0.7.30"`)
+phase-loop-runtime`)
 or report a blocker. The validator itself is always available once the runtime is
 installed — there is no "validator script missing" blocker.
 
@@ -273,7 +273,7 @@ Before final response and handoff, choose the next phase to plan from the roadma
 Stage the roadmap/plan artifacts before writing either close-out file so the deliverable is preserved in the index unless the user explicitly forbade staging. Then write BOTH files directly via the Write tool (the primary path):
 
 - FILE 1, a repo-agnostic reflection to `resolve_skill_bundle_root("claude")/claude-phase-roadmap-builder/reflections/<repo_hash>/<branch_slug>/<run_id>.md`, with `## Run context`, `## What worked`, `## What didn't` and `## Improvements to SKILL.md`. It must not name this project, codebase, filenames or domain.
-- FILE 2, the repo-specific handoff in the per-repo `latest.md` slot for this skill (`phase_loop_runtime.skill_paths.resolve_handoff_root`, falling back to `resolve_handoff_path` in `shared/phase-loop/handoff_path.py`). It opens with the consumer-validation comment and carries `from`, `timestamp`, `artifact`, `artifact_state`, `next_skill`, `next_command` and `next_phase`.
+- FILE 2, the repo-specific handoff in the per-repo `latest.md` slot for this skill (`phase_loop_runtime.skill_paths.resolve_handoff_root`, falling back to `resolve_handoff_path` in `phase_loop_runtime.handoff_path`). It opens with the consumer-validation comment and carries `from`, `timestamp`, `artifact`, `artifact_state`, `next_skill`, `next_command` and `next_phase`.
 
 Path resolution, both templates, the optional fresh-context close-out agent and the final message to the user are in [references/handoff-review-closeout.md](references/handoff-review-closeout.md).
 

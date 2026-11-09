@@ -120,7 +120,7 @@ Closeout payload shape is defined by `EmitPhaseCloseout` in `phase_loop_runtime/
 
 In Default mode, write the plan only if the user asked for an artifact. Otherwise summarize the recommendations. Do not archive reflections; that is the editor's job.
 
-If writing self-improvement state, resolve handoff writes through `shared/phase-loop/handoff_path.py` and the repo-local handoff resolver; legacy harness handoff roots are read only for migration. Follow the repo/branch/run-isolated layout from `phase_loop_runtime.skill_paths` and use Gemini paths only:
+If writing self-improvement state, resolve handoff writes through `phase_loop_runtime.handoff_path` and the repo-local handoff resolver; legacy harness handoff roots are read only for migration. Follow the repo/branch/run-isolated layout from `phase_loop_runtime.skill_paths` and use Gemini paths only:
 
 - Reflection: `resolve_skill_bundle_root("gemini")/gemini-skill-improvement-planner/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
 - Handoff: `<repo>/.dev-skills/handoffs/gemini-skill-improvement-planner/<run_id>.md`
