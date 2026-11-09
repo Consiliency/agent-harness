@@ -263,3 +263,90 @@ def test_claude_envelope_matches_codex_for_every_frozen_status(tmp_path: Path, m
             assert claude[status] == (status, "a", False)
 
     run_mapped_case("adapters.claude-binds-provider-identity", probe=probe, assertion=assertion)
+
+# WORKER fixtures are offline, and do not claim provider qualification.
+import hashlib
+import sys
+import threading
+from phase_loop_runtime.convergence.adapters import base as capture_base
+
+
+def _capture(tmp_path, source, *, cap=4096, stdin=b"", timeout=2, cancel=None, before_spawn=lambda: None):
+    request = capture_base.CaptureRequest("fixture", (sys.executable, "-I", "-c", source),
+        tmp_path, timeout, stdin, cap, capture_base.worker_child_environment(frozenset()))
+    return capture_base.run_bounded_capture(request, before_spawn=before_spawn,
+                                            cancel=cancel or threading.Event())
+
+
+@pytest.mark.parametrize("length", [0, 20, 4096, 8192])
+def test_worker_capture_full_stream_digests(tmp_path, length):
+    source = f'import os; os.write(1, bytes(range(256))*{length // 256}); os.write(2,b"e"*100000)'
+    result = _capture(tmp_path, source)
+    expected = bytes(range(256)) * (length // 256)
+    assert result.stdout == capture_base.StreamDigest(hashlib.sha256(expected).hexdigest(), len(expected))
+    assert result.stderr == capture_base.StreamDigest(hashlib.sha256(b"e" * 100000).hexdigest(), 100000)
+    assert result.streams_complete
+    assert result.proposal_overflow == (len(expected) > 4096)
+    assert result.proposal == (expected if len(expected) <= 4096 else None)
+    assert result.spawn_count == 1 and result.termination == "completed" and result.exit_code == 0
+
+
+def test_worker_instruction_pipe_and_epipe(tmp_path):
+    sentinel = b"fixture-instruction-sentinel"
+    result = _capture(tmp_path, 'import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())', stdin=sentinel)
+    assert result.proposal == sentinel and result.stdin_delivered
+    result = _capture(tmp_path, 'import os,time; os.close(0); time.sleep(.1)', stdin=b"x" * 1000000)
+    assert not result.stdin_delivered
+
+
+@pytest.mark.parametrize("kind", ["deadline", "cancel", "failed_exec", "refuse", "raise"])
+def test_worker_capture_lifecycle(tmp_path, kind):
+    cancel = threading.Event()
+    if kind == "cancel":
+        cancel.set()
+    before = lambda: capture_base.SpawnRefused("fixture")
+    if kind == "raise":
+        def before():
+            raise ValueError("fixture")
+    if kind in ("refuse", "raise"):
+        result = _capture(tmp_path, 'raise AssertionError("must not run")', before_spawn=before)
+        assert isinstance(result, capture_base.SpawnRefused)
+        return
+    if kind == "failed_exec":
+        request = capture_base.CaptureRequest("fixture", (str(tmp_path / "absent"),), tmp_path, 1, b"", 10, {})
+        result = capture_base.run_bounded_capture(request, before_spawn=lambda: None, cancel=cancel)
+        assert result.termination == "failed_to_start" and result.spawn_count == 1
+        return
+    result = _capture(tmp_path, 'import time; time.sleep(30)', timeout=.2, cancel=cancel)
+    assert result.termination == ("cancelled" if kind == "cancel" else "timed_out")
+    assert result.signal == "SIGKILL" and result.proposal == b""
+    assert result.duration_ns < 2_000_000_000
+
+
+@pytest.mark.parametrize("name", sorted(capture_base.WORKER_ENV_DROP) +
+                         ["GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GH_TOKEN", "OPENAI_API_KEY"])
+def test_worker_environment_scrub(monkeypatch, name):
+    monkeypatch.setenv(name, "fixture-value")
+    assert name not in capture_base.worker_child_environment(frozenset({name}))
+    assert set(capture_base.worker_child_environment(frozenset())) <= {"TMPDIR", "CLAUDE_CODE_TMPDIR"}
+
+
+def test_worker_group_cleanup_and_escaped_pipe(tmp_path):
+    import signal
+    import time
+    pidfile = tmp_path / "escape"
+    source = ('import os,time; pid=os.fork(); '
+              '\nif pid == 0:\n os.setsid(); '
+              f'open({str(pidfile)!r},"w").write(str(os.getpid())); time.sleep(30)'
+              '\nelse:\n time.sleep(.1)')
+    try:
+        started = time.monotonic()
+        result = _capture(tmp_path, source, timeout=.4)
+        assert result.termination == "completed" and not result.streams_complete
+        assert time.monotonic() - started < 2
+    finally:
+        if pidfile.exists():
+            try:
+                os.kill(int(pidfile.read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass

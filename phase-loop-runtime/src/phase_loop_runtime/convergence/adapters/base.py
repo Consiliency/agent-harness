@@ -30,7 +30,11 @@ reported as success.
 from __future__ import annotations
 from contextlib import ExitStack
 
+import hashlib
 import json
+import threading
+from datetime import datetime, timezone
+from typing import Callable, Mapping
 import os
 import selectors
 import signal
@@ -273,3 +277,171 @@ def _declared_status(stdout: str | None) -> ConvergenceResultStatus:
 
 def _declared_detail(stdout: str | None) -> str:
     return _DETAIL_MALFORMED if _parse_status(stdout) is None else _DETAIL_OK
+
+# Patch-return capture is deliberately separate from the convergence envelope.
+PROPOSAL_CAP_MAX = 67_108_864
+WORKER_ENV_DROP = frozenset({"SSH_AUTH_SOCK", "SSH_ASKPASS", "GIT_ASKPASS",
+    "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"})
+WORKER_ENV_DROP_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
+
+
+@dataclass(frozen=True)
+class CaptureRequest:
+    attempt_id: str
+    argv: tuple[str, ...]
+    cwd: Path
+    timeout_seconds: int
+    stdin: bytes
+    proposal_cap: int
+    environment: Mapping[str, str]
+
+
+@dataclass(frozen=True)
+class StreamDigest:
+    sha256: str
+    byte_count: int
+
+
+@dataclass(frozen=True)
+class SpawnRefused:
+    reason: str
+
+
+@dataclass(frozen=True)
+class BoundedCapture:
+    attempt_id: str
+    termination: str
+    terminated_by: str
+    signal: str | None
+    exit_code: int | None
+    stdout: StreamDigest
+    stderr: StreamDigest
+    streams_complete: bool
+    proposal: bytes | None
+    proposal_overflow: bool
+    stdin_delivered: bool
+    spawn_count: int
+    duration_ns: int | None
+    observed_start_utc: str | None
+    observed_end_utc: str | None
+
+
+def worker_child_environment(allow: frozenset[str]) -> dict[str, str]:
+    environment = _child_environment()
+    return {key: value for key, value in environment.items()
+            if key not in WORKER_ENV_DROP and not key.startswith(WORKER_ENV_DROP_PREFIXES)
+            and key in (allow | {"TMPDIR", "CLAUDE_CODE_TMPDIR"})}
+
+
+def run_bounded_capture(request: CaptureRequest, *,
+                        before_spawn: Callable[[], SpawnRefused | None],
+                        cancel: threading.Event) -> BoundedCapture | SpawnRefused:
+    if not 1 <= request.proposal_cap <= PROPOSAL_CAP_MAX or request.timeout_seconds <= 0:
+        return SpawnRefused("capture_settings_invalid")
+    from ... import panel_invoker
+    hashes = {name: hashlib.sha256() for name in ("stdout", "stderr")}
+    counts = dict.fromkeys(hashes, 0)
+    proposal = bytearray()
+    try:
+        refusal = before_spawn()
+    except Exception:
+        return SpawnRefused("before_spawn_failed")
+    if refusal is not None:
+        return refusal
+    start = time.monotonic_ns()
+    deadline = time.monotonic() + request.timeout_seconds
+    started = datetime.now(timezone.utc).isoformat()
+    try:
+        process = panel_invoker.launch_owned(
+            list(request.argv), role=panel_invoker.SeatLaunchRole.EXECUTOR_TRUSTED,
+            profile=panel_invoker.SeatProfile(env=dict(request.environment)),
+            cwd=str(request.cwd), env=dict(request.environment), bufsize=0,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+    except OSError:
+        empty = StreamDigest(hashlib.sha256(b"").hexdigest(), 0)
+        return BoundedCapture(request.attempt_id, "failed_to_start", "harness", None,
+                              None, empty, empty, True, b"", False, False, 1,
+                              time.monotonic_ns() - start, started,
+                              datetime.now(timezone.utc).isoformat())
+    termination, by, sig, code = "completed", "worker", None, None
+    delivered = not request.stdin
+    offset = 0
+    reaped = False
+    complete = False
+    selector = selectors.DefaultSelector()
+
+    def reclaim():
+        nonlocal reaped
+        if not reaped:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+            reaped = True
+
+    try:
+        for name, pipe in (("stdout", process.stdout), ("stderr", process.stderr)):
+            os.set_blocking(pipe.fileno(), False)
+            selector.register(pipe, selectors.EVENT_READ, name)
+        if request.stdin:
+            os.set_blocking(process.stdin.fileno(), False)
+            selector.register(process.stdin, selectors.EVENT_WRITE, "stdin")
+        else:
+            process.stdin.close()
+        while selector.get_map() or not reaped:
+            if not reaped:
+                exited = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                if exited is not None:
+                    code = exited.si_status if exited.si_code == os.CLD_EXITED else -exited.si_status
+                    reclaim()
+                elif cancel.is_set():
+                    termination, by, sig = "cancelled", "operator", "SIGKILL"
+                    reclaim()
+                elif time.monotonic() >= deadline:
+                    termination, by, sig = "timed_out", "harness", "SIGKILL"
+                    reclaim()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            for key, _mask in selector.select(min(remaining, 0.05)):
+                if key.data == "stdin":
+                    try:
+                        offset += os.write(key.fd, request.stdin[offset:offset + 65536])
+                    except BrokenPipeError:
+                        selector.unregister(key.fileobj)
+                        key.fileobj.close()
+                        continue
+                    except BlockingIOError:
+                        continue
+                    if offset == len(request.stdin):
+                        delivered = True
+                        selector.unregister(key.fileobj)
+                        key.fileobj.close()
+                else:
+                    try:
+                        chunk = os.read(key.fd, 65536)
+                    except BlockingIOError:
+                        continue
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    hashes[key.data].update(chunk)
+                    counts[key.data] += len(chunk)
+                    if key.data == "stdout":
+                        proposal.extend(chunk[:max(0, request.proposal_cap - len(proposal))])
+        complete = not any(key.data in hashes for key in selector.get_map().values())
+    finally:
+        reclaim()
+        selector.close()
+        for pipe in (process.stdin, process.stdout, process.stderr):
+            pipe.close()
+    overflow = counts["stdout"] > request.proposal_cap
+    return BoundedCapture(request.attempt_id, termination, by, sig, code,
+                          *(StreamDigest(hashes[name].hexdigest(), counts[name])
+                            for name in ("stdout", "stderr")),
+                          complete, None if overflow else bytes(proposal), overflow,
+                          delivered, 1, time.monotonic_ns() - start, started,
+                          datetime.now(timezone.utc).isoformat())
