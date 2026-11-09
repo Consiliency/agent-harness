@@ -22,6 +22,7 @@ registered.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -109,8 +110,13 @@ class BridgeHandle:
 
 
 def default_bridge_root() -> Path:
-    """Short enough for a Unix socket path: the user's runtime directory, by uid."""
+    """The user's runtime directory, by uid: short enough for a Unix socket path."""
     return Path("/run/user") / str(os.geteuid()) / "agent-harness-placement"
+
+
+def _directory_name(client: str, reservation_id: str) -> str:
+    """One short, stable directory name per ``(client, reservation)``."""
+    return hashlib.sha256(f"{client}/{reservation_id}".encode("utf-8")).hexdigest()[:16]
 
 
 def _private_directory(path: Path) -> None:
@@ -165,9 +171,13 @@ class ForwardTcpUnixBridge:
     consumes these two calls unchanged)."""
 
     def __init__(self, root: Path | None = None, *,
+                 fallback_root: Path | None = None,
                  spawn: Callable[[Path, str, float], "subprocess.Popen[bytes]"] | None = None,
                  ready_timeout_s: float = 10.0) -> None:
-        self.root = Path(root) if root is not None else default_bridge_root()
+        # The first root whose socket path fits a Unix socket address is used.
+        self.roots = tuple(Path(r) for r in (root, fallback_root) if r is not None) or (
+            default_bridge_root(),)
+        self.root = self.roots[0]
         self._spawn = spawn if spawn is not None else _spawn_helper
         self.ready_timeout_s = float(ready_timeout_s)
         self._children: dict[int, "subprocess.Popen[bytes]"] = {}
@@ -184,15 +194,21 @@ class ForwardTcpUnixBridge:
             raise BridgeUnavailable("bridge_not_applicable")
         if cancelled.is_set():
             raise BridgeUnavailable("bridge_cancelled")
-        self.root.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        _private_directory(self.root)
-        client_root = self.root / reservation.client
-        _private_directory(client_root)
-        directory = client_root / reservation.reservation_id
-        socket_path = directory / _SOCKET_NAME
-        if len(os.fsencode(str(socket_path))) > _SUN_PATH_MAX:
+        name = _directory_name(reservation.client, reservation.reservation_id)
+        root = next((candidate for candidate in self.roots if len(os.fsencode(str(
+            candidate / reservation.client / name / _SOCKET_NAME))) <= _SUN_PATH_MAX), None)
+        if root is None:
             raise BridgeUnavailable("bridge_path_too_long")
-        if os.path.lexists(directory):
+        try:
+            root.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        except OSError:
+            raise BridgeUnavailable("bridge_root_unsafe") from None
+        _private_directory(root)
+        client_root = root / reservation.client
+        _private_directory(client_root)
+        directory = client_root / name
+        socket_path = directory / _SOCKET_NAME
+        if _stale(directory):
             # One socket per reservation: whatever is there is stale, never reused.
             raise BridgeUnavailable("bridge_stale_socket")
         expires = _expiry_epoch(reservation.expires_at)
@@ -268,6 +284,11 @@ class ForwardTcpUnixBridge:
                 os.kill(pid, signal.SIGKILL)
             except OSError:
                 pass
+
+
+def _stale(directory: Path) -> bool:
+    """Anything already at a reservation's bridge directory, a dangling link included."""
+    return os.path.lexists(directory)
 
 
 def _expiry_epoch(expires_at: str | None) -> float:

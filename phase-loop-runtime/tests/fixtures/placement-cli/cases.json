@@ -1,0 +1,1359 @@
+{
+ "_comment": "Language-neutral request/response vectors for the agent-toolkit shim (v13 PLACECLI SL-2). Each case is one or more process calls of agent-harness-placement against the fake coordinator; 'coordinator' sets generic fake knobs before the call, '$N.reservation' substitutes the reservation returned by step N, and 'expect.response' matches dotted paths in the response line.",
+ "cases": [
+  {
+   "id": "L0-gates",
+   "live_step": "L0 gates",
+   "client": "agent-toolkit",
+   "config": {
+    "schema": "placement.client-config.v1",
+    "client": "agent-toolkit",
+    "providers": {
+     "anthropic": {
+      "endpoints": [
+       {
+        "host": "api.anthropic.com",
+        "port": 443
+       }
+      ],
+      "workloads": [
+       "pi-runner"
+      ],
+      "policy_vectors": [
+       "full-remote-pi-runner",
+       "minimal-without-app"
+      ]
+     }
+    },
+    "targets": [
+     {
+      "name": "ai",
+      "kind": "openshell",
+      "rank": 0,
+      "transport_id": "ai-openshell",
+      "root": "openshell://ai/placement",
+      "probe_receipt_providers": [
+       "anthropic"
+      ]
+     },
+     {
+      "name": "e2b",
+      "kind": "e2b",
+      "rank": 2,
+      "transport_id": "e2b",
+      "od7_providers": [
+       "anthropic"
+      ]
+     }
+    ]
+   },
+   "steps": [
+    {
+     "verb": "version",
+     "stdin": "",
+     "expect": {
+      "exit": 0,
+      "response": {
+       "schema": "placement.version.response.v1",
+       "client": "agent-toolkit",
+       "protocol_schema_sha256": "130a894df327ddca2eebf83c8b52e068b25176320af3e0a4e15319a315ba83ea"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "L1-route-identity",
+   "live_step": "L1 routing and identity",
+   "client": "agent-toolkit",
+   "config": {
+    "schema": "placement.client-config.v1",
+    "client": "agent-toolkit",
+    "providers": {
+     "anthropic": {
+      "endpoints": [
+       {
+        "host": "api.anthropic.com",
+        "port": 443
+       }
+      ],
+      "workloads": [
+       "pi-runner"
+      ],
+      "policy_vectors": [
+       "full-remote-pi-runner",
+       "minimal-without-app"
+      ]
+     }
+    },
+    "targets": [
+     {
+      "name": "ai",
+      "kind": "openshell",
+      "rank": 0,
+      "transport_id": "ai-openshell",
+      "root": "openshell://ai/placement",
+      "probe_receipt_providers": [
+       "anthropic"
+      ]
+     },
+     {
+      "name": "e2b",
+      "kind": "e2b",
+      "rank": 2,
+      "transport_id": "e2b",
+      "od7_providers": [
+       "anthropic"
+      ]
+     }
+    ]
+   },
+   "steps": [
+    {
+     "verb": "reserve",
+     "request": {
+      "schema": "placement.reserve.request.v1",
+      "request_id": "l1-seat",
+      "workload": "leg",
+      "ttl_s": 120,
+      "image_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "policy_vector": "minimal-with-app",
+      "providers": [
+       "anthropic"
+      ],
+      "deadline_ms": 4000,
+      "caller_context": {
+       "case": "l1-seat"
+      }
+     },
+     "expect": {
+      "exit": 10,
+      "response": {
+       "outcome": "refused",
+       "code": "sandbox_placement_workload_unsupported",
+       "trail.0.target": "preflight"
+      }
+     },
+     "coordinator_calls": []
+    },
+    {
+     "verb": "reserve",
+     "request": {
+      "schema": "placement.reserve.request.v1",
+      "request_id": "l1-provider",
+      "workload": "pi-runner",
+      "ttl_s": 120,
+      "image_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "policy_vector": "full-remote-pi-runner",
+      "providers": [
+       "openai"
+      ],
+      "deadline_ms": 4000,
+      "caller_context": {
+       "case": "l1-provider"
+      }
+     },
+     "expect": {
+      "exit": 10,
+      "response": {
+       "outcome": "refused",
+       "code": "sandbox_placement_provider_refused"
+      }
+     },
+     "coordinator_calls": []
+    }
+   ]
+  },
+  {
+   "id": "L2-image",
+   "live_step": "L2 image delivery",
+   "client": "agent-toolkit",
+   "config": {
+    "schema": "placement.client-config.v1",
+    "client": "agent-toolkit",
+    "providers": {
+     "anthropic": {
+      "endpoints": [
+       {
+        "host": "api.anthropic.com",
+        "port": 443
+       }
+      ],
+      "workloads": [
+       "pi-runner"
+      ],
+      "policy_vectors": [
+       "full-remote-pi-runner",
+       "minimal-without-app"
+      ]
+     }
+    },
+    "targets": [
+     {
+      "name": "ai",
+      "kind": "openshell",
+      "rank": 0,
+      "transport_id": "ai-openshell",
+      "root": "openshell://ai/placement",
+      "probe_receipt_providers": [
+       "anthropic"
+      ]
+     },
+     {
+      "name": "e2b",
+      "kind": "e2b",
+      "rank": 2,
+      "transport_id": "e2b",
+      "od7_providers": [
+       "anthropic"
+      ]
+     }
+    ]
+   },
+   "steps": [
+    {
+     "verb": "reserve",
+     "request": {
+      "schema": "placement.reserve.request.v1",
+      "request_id": "l2",
+      "workload": "pi-runner",
+      "ttl_s": 120,
+      "image_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "policy_vector": "full-remote-pi-runner",
+      "providers": [
+       "anthropic"
+      ],
+      "deadline_ms": 4000,
+      "caller_context": {
+       "case": "l2"
+      }
+     },
+     "coordinator": {
+      "admit": "ok"
+     },
+     "expect": {
+      "exit": 0,
+      "response": {
+       "outcome": "admitted",
+       "reservation.image_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+       "reservation.policy_vector": "full-remote-pi-runner"
+      }
+     }
+    },
+    {
+     "verb": "release",
+     "request": {
+      "schema": "placement.release.request.v1",
+      "request_id": "l2-release",
+      "reservation": "$0.reservation",
+      "deadline_ms": 5000,
+      "caller_context": {}
+     },
+     "expect": {
+      "exit": 0,
+      "response": {
+       "state": "released"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "L3-spikes",
+   "live_step": "L3 spikes",
+   "client": "agent-toolkit",
+   "config": {
+    "schema": "placement.client-config.v1",
+    "client": "agent-toolkit",
+    "providers": {
+     "anthropic": {
+      "endpoints": [
+       {
+        "host": "api.anthropic.com",
+        "port": 443
+       }
+      ],
+      "workloads": [
+       "pi-runner"
+      ],
+      "policy_vectors": [
+       "full-remote-pi-runner",
+       "minimal-without-app"
+      ]
+     }
+    },
+    "targets": [
+     {
+      "name": "ai",
+      "kind": "openshell",
+      "rank": 0,
+      "transport_id": "ai-openshell",
+      "root": "openshell://ai/placement",
+      "probe_receipt_providers": [
+       "anthropic"
+      ]
+     },
+     {
+      "name": "e2b",
+      "kind": "e2b",
+      "rank": 2,
+      "transport_id": "e2b",
+      "od7_providers": [
+       "anthropic"
+      ]
+     }
+    ]
+   },
+   "steps": [
+    {
+     "verb": "reserve",
+     "request": {
+      "schema": "placement.reserve.request.v1",
+      "request_id": "l3",
+      "workload": "pi-runner",
+      "ttl_s": 120,
+      "image_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "policy_vector": "full-remote-pi-runner",
+      "providers": [
+       "https://api.anthropic.com"
+      ],
+      "deadline_ms": 4000,
+      "caller_context": {
+       "case": "l3"
+      }
+     },
+     "expect": {
+      "exit": 70,
+      "stdout": "absent",
+      "stderr": "agent-harness-placement: protocol_failure schema_invalid\n"
+     },
+     "coordinator_calls": []
+    },
+    {
+     "verb": "reserve",
+     "stdin_bytes": "{\"schema\":1,\"schema\":2}",
+     "expect": {
+      "exit": 70,
+      "stdout": "absent",
+      "stderr": "agent-harness-placement: protocol_failure input_duplicate_key\n"
+     }
+    }
+   ]
+  },
+  {
+   "id": "L4-probe-shape",
+   "live_step": "L4 probe-shape qualification",
+   "client": "agent-toolkit",
+   "config": {
+    "schema": "placement.client-config.v1",
+    "client": "agent-toolkit",
+    "providers": {
+     "anthropic": {
+      "endpoints": [
+       {
+        "host": "api.anthropic.com",
+        "port": 443
+       }
+      ],
+      "workloads": [
+       "pi-runner"
+      ],
+      "policy_vectors": [
+       "full-remote-pi-runner",
+       "minimal-without-app"
+      ]
+     }
+    },
+    "targets": [
+     {
+      "name": "ai",
+      "kind": "openshell",
+      "rank": 0,
+      "transport_id": "ai-openshell",
+      "root": "openshell://ai/placement",
+      "probe_receipt_providers": []
+     },
+     {
+      "name": "e2b",
+      "kind": "e2b",
+      "rank": 2,
+      "transport_id": "e2b",
+      "od7_providers": [
+       "anthropic"
+      ]
+     }
+    ]
+   },
+   "steps": [
+    {
+     "verb": "reserve",
+     "request": {
+      "schema": "placement.reserve.request.v1",
+      "request_id": "l4",
+      "workload": "pi-runner",
+      "ttl_s": 120,
+      "image_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "policy_vector": "full-remote-pi-runner",
+      "providers": [
+       "anthropic"
+      ],
+      "deadline_ms": 4000,
+      "caller_context": {
+       "case": "l4"
+      }
+     },
+     "expect": {
+      "exit": 10,
+      "response": {
+       "outcome": "refused",
+       "trail.0.target": "ai",
+       "trail.0.code": "sandbox_placement_provider_refused",
+       "trail.1.target": "e2b",
+       "trail.1.code": "sandbox_placement_driver_unavailable"
+      }
+     },
+     "coordinator_calls": []
+    }
+   ]
+  },
+  {
+   "id": "L5-end-to-end",
+   "live_step": "L5 end to end",
+   "client": "agent-toolkit",
+   "config": {
+    "schema": "placement.client-config.v1",
+    "client": "agent-toolkit",
+    "providers": {
+     "anthropic": {
+      "endpoints": [
+       {
+        "host": "api.anthropic.com",
+        "port": 443
+       }
+      ],
+      "workloads": [
+       "pi-runner"
+      ],
+      "policy_vectors": [
+       "full-remote-pi-runner",
+       "minimal-without-app"
+      ]
+     }
+    },
+    "targets": [
+     {
+      "name": "ai",
+      "kind": "openshell",
+      "rank": 0,
+      "transport_id": "ai-openshell",
+      "root": "openshell://ai/placement",
+      "probe_receipt_providers": [
+       "anthropic"
+      ]
+     },
+     {
+      "name": "e2b",
+      "kind": "e2b",
+      "rank": 2,
+      "transport_id": "e2b",
+      "od7_providers": [
+       "anthropic"
+      ]
+     }
+    ]
+   },
+   "steps": [
+    {
+     "verb": "reserve",
+     "request": {
+      "schema": "placement.reserve.request.v1",
+      "request_id": "l5",
+      "workload": "pi-runner",
+      "ttl_s": 120,
+      "image_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "policy_vector": "full-remote-pi-runner",
+      "providers": [
+       "anthropic"
+      ],
+      "deadline_ms": 4000,
+      "caller_context": {
+       "case": "l5"
+      }
+     },
+     "coordinator": {
+      "admit": "ok"
+     },
+     "expect": {
+      "exit": 0,
+      "response": {
+       "outcome": "admitted",
+       "reservation.target.name": "ai",
+       "reservation.rank_policy": "agent_executor",
+       "reservation.client": "agent-toolkit"
+      }
+     }
+    },
+    {
+     "verb": "reserve",
+     "request": {
+      "schema": "placement.reserve.request.v1",
+      "request_id": "l5",
+      "workload": "pi-runner",
+      "ttl_s": 120,
+      "image_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "policy_vector": "full-remote-pi-runner",
+      "providers": [
+       "anthropic"
+      ],
+      "deadline_ms": 4000,
+      "caller_context": {
+       "case": "l5"
+      }
+     },
+     "expect": {
+      "exit": 0,
+      "same_as": 0
+     }
+    },
+    {
+     "verb": "release",
+     "request": {
+      "schema": "placement.release.request.v1",
+      "request_id": "l5-release",
+      "reservation": "$0.reservation",
+      "deadline_ms": 5000,
+      "caller_context": {}
+     },
+     "expect": {
+      "exit": 0,
+      "response": {
+       "state": "released",
+       "flags.barrier_confirmed": true
+      }
+     }
+    },
+    {
+     "verb": "release",
+     "request": {
+      "schema": "placement.release.request.v1",
+      "request_id": "l5-again",
+      "reservation": "$0.reservation",
+      "deadline_ms": 5000,
+      "caller_context": {}
+     },
+     "expect": {
+      "exit": 0,
+      "response": {
+       "state": "released"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "L6-credentials",
+   "live_step": "L6 credential canary",
+   "client": "agent-toolkit",
+   "config": {
+    "schema": "placement.client-config.v1",
+    "client": "agent-toolkit",
+    "providers": {
+     "anthropic": {
+      "endpoints": [
+       {
+        "host": "api.anthropic.com",
+        "port": 443
+       }
+      ],
+      "workloads": [
+       "pi-runner"
+      ],
+      "policy_vectors": [
+       "full-remote-pi-runner",
+       "minimal-without-app"
+      ]
+     }
+    },
+    "targets": [
+     {
+      "name": "ai",
+      "kind": "openshell",
+      "rank": 0,
+      "transport_id": "ai-openshell",
+      "root": "openshell://ai/placement",
+      "probe_receipt_providers": [
+       "anthropic"
+      ]
+     },
+     {
+      "name": "e2b",
+      "kind": "e2b",
+      "rank": 2,
+      "transport_id": "e2b",
+      "od7_providers": [
+       "anthropic"
+      ]
+     }
+    ]
+   },
+   "steps": [
+    {
+     "verb": "reserve",
+     "request": {
+      "schema": "placement.reserve.request.v1",
+      "request_id": "l6",
+      "workload": "pi-runner",
+      "ttl_s": 120,
+      "image_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "policy_vector": "full-remote-pi-runner",
+      "providers": [
+       "anthropic"
+      ],
+      "deadline_ms": 4000,
+      "caller_context": {
+       "case": "l6"
+      }
+     },
+     "coordinator": {
+      "admit": "ok"
+     },
+     "expect": {
+      "exit": 0,
+      "response": {
+       "reservation.bridge.kind": "forward_tcp_unix",
+       "reservation.bridge.directory_mode": "0700",
+       "reservation.bridge.socket_mode": "0600",
+       "reservation.bridge.lifetime": "reservation",
+       "reservation.bridge.service_name": "pi-link"
+      }
+     },
+     "bridge": "private_socket"
+    },
+    {
+     "verb": "release",
+     "request": {
+      "schema": "placement.release.request.v1",
+      "request_id": "l6-release",
+      "reservation": "$0.reservation",
+      "deadline_ms": 5000,
+      "caller_context": {}
+     },
+     "expect": {
+      "exit": 0,
+      "response": {
+       "state": "released"
+      }
+     },
+     "bridge": "removed"
+    }
+   ]
+  },
+  {
+   "id": "L7-capacity",
+   "live_step": "L7 shared capacity and admission",
+   "client": "agent-toolkit",
+   "config": {
+    "schema": "placement.client-config.v1",
+    "client": "agent-toolkit",
+    "providers": {
+     "anthropic": {
+      "endpoints": [
+       {
+        "host": "api.anthropic.com",
+        "port": 443
+       }
+      ],
+      "workloads": [
+       "pi-runner"
+      ],
+      "policy_vectors": [
+       "full-remote-pi-runner",
+       "minimal-without-app"
+      ]
+     }
+    },
+    "targets": [
+     {
+      "name": "ai",
+      "kind": "openshell",
+      "rank": 0,
+      "transport_id": "ai-openshell",
+      "root": "openshell://ai/placement",
+      "probe_receipt_providers": [
+       "anthropic"
+      ]
+     },
+     {
+      "name": "e2b",
+      "kind": "e2b",
+      "rank": 2,
+      "transport_id": "e2b",
+      "od7_providers": [
+       "anthropic"
+      ]
+     }
+    ]
+   },
+   "steps": [
+    {
+     "verb": "reserve",
+     "request": {
+      "schema": "placement.reserve.request.v1",
+      "request_id": "l7",
+      "workload": "pi-runner",
+      "ttl_s": 120,
+      "image_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "policy_vector": "full-remote-pi-runner",
+      "providers": [
+       "anthropic"
+      ],
+      "deadline_ms": 1500,
+      "caller_context": {
+       "case": "l7"
+      }
+     },
+     "coordinator": {
+      "admit": "at_capacity"
+     },
+     "expect": {
+      "exit": 10,
+      "response": {
+       "outcome": "at_capacity",
+       "code": "sandbox_placement_at_capacity",
+       "trail.0.reason": "no_capacity"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "L8-reaper",
+   "live_step": "L8 crash, reaper and destruction",
+   "client": "agent-toolkit",
+   "config": {
+    "schema": "placement.client-config.v1",
+    "client": "agent-toolkit",
+    "providers": {
+     "anthropic": {
+      "endpoints": [
+       {
+        "host": "api.anthropic.com",
+        "port": 443
+       }
+      ],
+      "workloads": [
+       "pi-runner"
+      ],
+      "policy_vectors": [
+       "full-remote-pi-runner",
+       "minimal-without-app"
+      ]
+     }
+    },
+    "targets": [
+     {
+      "name": "ai",
+      "kind": "openshell",
+      "rank": 0,
+      "transport_id": "ai-openshell",
+      "root": "openshell://ai/placement",
+      "probe_receipt_providers": [
+       "anthropic"
+      ]
+     },
+     {
+      "name": "e2b",
+      "kind": "e2b",
+      "rank": 2,
+      "transport_id": "e2b",
+      "od7_providers": [
+       "anthropic"
+      ]
+     }
+    ]
+   },
+   "steps": [
+    {
+     "verb": "reserve",
+     "request": {
+      "schema": "placement.reserve.request.v1",
+      "request_id": "l8",
+      "workload": "pi-runner",
+      "ttl_s": 120,
+      "image_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "policy_vector": "full-remote-pi-runner",
+      "providers": [
+       "anthropic"
+      ],
+      "deadline_ms": 4000,
+      "caller_context": {
+       "case": "l8"
+      }
+     },
+     "coordinator": {
+      "admit": "ok"
+     },
+     "expect": {
+      "exit": 0,
+      "response": {
+       "outcome": "admitted"
+      }
+     }
+    },
+    {
+     "verb": "release",
+     "request": {
+      "schema": "placement.release.request.v1",
+      "request_id": "l8-release",
+      "reservation": "$0.reservation",
+      "deadline_ms": 5000,
+      "caller_context": {}
+     },
+     "coordinator": {
+      "kill": "fail"
+     },
+     "expect": {
+      "exit": 20,
+      "response": {
+       "state": "cleanup_pending",
+       "code": "sandbox_placement_release_unconfirmed",
+       "flags.barrier_confirmed": false
+      }
+     }
+    },
+    {
+     "verb": "reap",
+     "request": {
+      "schema": "placement.reap.request.v1",
+      "request_id": "l8-reap",
+      "scope": "caller_inventory",
+      "deadline_ms": 5000,
+      "max_items": 100,
+      "caller_context": {}
+     },
+     "coordinator": {
+      "kill": "ok"
+     },
+     "expect": {
+      "exit": 0,
+      "response": {
+       "state": "complete",
+       "inventories.0.destroyed": 1,
+       "inventories.0.client": "agent-toolkit"
+      }
+     }
+    },
+    {
+     "verb": "release",
+     "request": {
+      "schema": "placement.release.request.v1",
+      "request_id": "l8-after",
+      "reservation": "$0.reservation",
+      "deadline_ms": 5000,
+      "caller_context": {}
+     },
+     "expect": {
+      "exit": 0,
+      "response": {
+       "state": "released"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "L9-soak-replay",
+   "live_step": "L9 multi-hour renewal and stream soak",
+   "client": "agent-toolkit",
+   "config": {
+    "schema": "placement.client-config.v1",
+    "client": "agent-toolkit",
+    "providers": {
+     "anthropic": {
+      "endpoints": [
+       {
+        "host": "api.anthropic.com",
+        "port": 443
+       }
+      ],
+      "workloads": [
+       "pi-runner"
+      ],
+      "policy_vectors": [
+       "full-remote-pi-runner",
+       "minimal-without-app"
+      ]
+     }
+    },
+    "targets": [
+     {
+      "name": "ai",
+      "kind": "openshell",
+      "rank": 0,
+      "transport_id": "ai-openshell",
+      "root": "openshell://ai/placement",
+      "probe_receipt_providers": [
+       "anthropic"
+      ]
+     },
+     {
+      "name": "e2b",
+      "kind": "e2b",
+      "rank": 2,
+      "transport_id": "e2b",
+      "od7_providers": [
+       "anthropic"
+      ]
+     }
+    ]
+   },
+   "steps": [
+    {
+     "verb": "reserve",
+     "request": {
+      "schema": "placement.reserve.request.v1",
+      "request_id": "l9",
+      "workload": "pi-runner",
+      "ttl_s": 120,
+      "image_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "policy_vector": "full-remote-pi-runner",
+      "providers": [
+       "anthropic"
+      ],
+      "deadline_ms": 4000,
+      "caller_context": {
+       "case": "l9"
+      }
+     },
+     "coordinator": {
+      "admit": "lost_reply",
+      "kill": "fail"
+     },
+     "expect": {
+      "exit": 20,
+      "response": {
+       "outcome": "timeout",
+       "reservation": null
+      }
+     }
+    },
+    {
+     "verb": "reserve",
+     "request": {
+      "schema": "placement.reserve.request.v1",
+      "request_id": "l9",
+      "workload": "pi-runner",
+      "ttl_s": 120,
+      "image_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "policy_vector": "full-remote-pi-runner",
+      "providers": [
+       "anthropic"
+      ],
+      "deadline_ms": 4000,
+      "caller_context": {
+       "case": "l9"
+      }
+     },
+     "coordinator": {
+      "admit": "ok",
+      "kill": "ok"
+     },
+     "expect": {
+      "exit": 20,
+      "response": {
+       "outcome": "timeout",
+       "code": "sandbox_placement_operation_timeout"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "X-unavailable",
+   "live_step": "coordinator unavailable",
+   "client": "agent-toolkit",
+   "config": {
+    "schema": "placement.client-config.v1",
+    "client": "agent-toolkit",
+    "providers": {
+     "anthropic": {
+      "endpoints": [
+       {
+        "host": "api.anthropic.com",
+        "port": 443
+       }
+      ],
+      "workloads": [
+       "pi-runner"
+      ],
+      "policy_vectors": [
+       "full-remote-pi-runner",
+       "minimal-without-app"
+      ]
+     }
+    },
+    "targets": [
+     {
+      "name": "ai",
+      "kind": "openshell",
+      "rank": 0,
+      "transport_id": "ai-openshell",
+      "root": "openshell://ai/placement",
+      "probe_receipt_providers": [
+       "anthropic"
+      ]
+     },
+     {
+      "name": "e2b",
+      "kind": "e2b",
+      "rank": 2,
+      "transport_id": "e2b",
+      "od7_providers": [
+       "anthropic"
+      ]
+     }
+    ]
+   },
+   "steps": [
+    {
+     "verb": "reserve",
+     "request": {
+      "schema": "placement.reserve.request.v1",
+      "request_id": "xu",
+      "workload": "pi-runner",
+      "ttl_s": 120,
+      "image_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "policy_vector": "full-remote-pi-runner",
+      "providers": [
+       "anthropic"
+      ],
+      "deadline_ms": 4000,
+      "caller_context": {
+       "case": "xu"
+      }
+     },
+     "coordinator": {
+      "admit": "unavailable"
+     },
+     "expect": {
+      "exit": 10,
+      "response": {
+       "outcome": "unreachable",
+       "trail.0.outcome": "unreachable",
+       "trail.0.reason": "recovering"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "X-deadline",
+   "live_step": "deadline",
+   "client": "agent-toolkit",
+   "config": {
+    "schema": "placement.client-config.v1",
+    "client": "agent-toolkit",
+    "providers": {
+     "anthropic": {
+      "endpoints": [
+       {
+        "host": "api.anthropic.com",
+        "port": 443
+       }
+      ],
+      "workloads": [
+       "pi-runner"
+      ],
+      "policy_vectors": [
+       "full-remote-pi-runner",
+       "minimal-without-app"
+      ]
+     }
+    },
+    "targets": [
+     {
+      "name": "ai",
+      "kind": "openshell",
+      "rank": 0,
+      "transport_id": "ai-openshell",
+      "root": "openshell://ai/placement",
+      "probe_receipt_providers": [
+       "anthropic"
+      ]
+     },
+     {
+      "name": "e2b",
+      "kind": "e2b",
+      "rank": 2,
+      "transport_id": "e2b",
+      "od7_providers": [
+       "anthropic"
+      ]
+     }
+    ]
+   },
+   "steps": [
+    {
+     "verb": "reserve",
+     "request": {
+      "schema": "placement.reserve.request.v1",
+      "request_id": "xd",
+      "workload": "pi-runner",
+      "ttl_s": 120,
+      "image_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "policy_vector": "full-remote-pi-runner",
+      "providers": [
+       "anthropic"
+      ],
+      "deadline_ms": 4000,
+      "caller_context": {
+       "case": "xd"
+      }
+     },
+     "coordinator": {
+      "admit": "deadline"
+     },
+     "expect": {
+      "exit": 10,
+      "response": {
+       "outcome": "refused",
+       "trail.0.code": "deadline_exceeded"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "X-lost-reply",
+   "live_step": "lost reply",
+   "client": "agent-toolkit",
+   "config": {
+    "schema": "placement.client-config.v1",
+    "client": "agent-toolkit",
+    "providers": {
+     "anthropic": {
+      "endpoints": [
+       {
+        "host": "api.anthropic.com",
+        "port": 443
+       }
+      ],
+      "workloads": [
+       "pi-runner"
+      ],
+      "policy_vectors": [
+       "full-remote-pi-runner",
+       "minimal-without-app"
+      ]
+     }
+    },
+    "targets": [
+     {
+      "name": "ai",
+      "kind": "openshell",
+      "rank": 0,
+      "transport_id": "ai-openshell",
+      "root": "openshell://ai/placement",
+      "probe_receipt_providers": [
+       "anthropic"
+      ]
+     },
+     {
+      "name": "e2b",
+      "kind": "e2b",
+      "rank": 2,
+      "transport_id": "e2b",
+      "od7_providers": [
+       "anthropic"
+      ]
+     }
+    ]
+   },
+   "steps": [
+    {
+     "verb": "reserve",
+     "request": {
+      "schema": "placement.reserve.request.v1",
+      "request_id": "xl",
+      "workload": "pi-runner",
+      "ttl_s": 120,
+      "image_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "policy_vector": "full-remote-pi-runner",
+      "providers": [
+       "anthropic"
+      ],
+      "deadline_ms": 4000,
+      "caller_context": {
+       "case": "xl"
+      }
+     },
+     "coordinator": {
+      "admit": "lost_reply",
+      "kill": "ok"
+     },
+     "expect": {
+      "exit": 10,
+      "response": {
+       "outcome": "unreachable",
+       "code": "sandbox_placement_operation_timeout"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "X-snapshot-expiry",
+   "live_step": "snapshot expiry",
+   "client": "agent-toolkit",
+   "config": {
+    "schema": "placement.client-config.v1",
+    "client": "agent-toolkit",
+    "providers": {
+     "anthropic": {
+      "endpoints": [
+       {
+        "host": "api.anthropic.com",
+        "port": 443
+       }
+      ],
+      "workloads": [
+       "pi-runner"
+      ],
+      "policy_vectors": [
+       "full-remote-pi-runner",
+       "minimal-without-app"
+      ]
+     }
+    },
+    "targets": [
+     {
+      "name": "ai",
+      "kind": "openshell",
+      "rank": 0,
+      "transport_id": "ai-openshell",
+      "root": "openshell://ai/placement",
+      "probe_receipt_providers": [
+       "anthropic"
+      ]
+     },
+     {
+      "name": "e2b",
+      "kind": "e2b",
+      "rank": 2,
+      "transport_id": "e2b",
+      "od7_providers": [
+       "anthropic"
+      ]
+     }
+    ]
+   },
+   "steps": [
+    {
+     "verb": "reserve",
+     "request": {
+      "schema": "placement.reserve.request.v1",
+      "request_id": "xs",
+      "workload": "pi-runner",
+      "ttl_s": 120,
+      "image_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "policy_vector": "full-remote-pi-runner",
+      "providers": [
+       "anthropic"
+      ],
+      "deadline_ms": 4000,
+      "caller_context": {
+       "case": "xs"
+      }
+     },
+     "coordinator": {
+      "admit": "snapshot_expired"
+     },
+     "expect": {
+      "exit": 10,
+      "response": {
+       "outcome": "refused",
+       "trail.0.code": "snapshot_expired"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "X-duplicate-binding",
+   "live_step": "duplicate binding",
+   "client": "agent-toolkit",
+   "config": {
+    "schema": "placement.client-config.v1",
+    "client": "agent-toolkit",
+    "providers": {
+     "anthropic": {
+      "endpoints": [
+       {
+        "host": "api.anthropic.com",
+        "port": 443
+       }
+      ],
+      "workloads": [
+       "pi-runner"
+      ],
+      "policy_vectors": [
+       "full-remote-pi-runner",
+       "minimal-without-app"
+      ]
+     }
+    },
+    "targets": [
+     {
+      "name": "ai",
+      "kind": "openshell",
+      "rank": 0,
+      "transport_id": "ai-openshell",
+      "root": "openshell://ai/placement",
+      "probe_receipt_providers": [
+       "anthropic"
+      ]
+     },
+     {
+      "name": "e2b",
+      "kind": "e2b",
+      "rank": 2,
+      "transport_id": "e2b",
+      "od7_providers": [
+       "anthropic"
+      ]
+     }
+    ]
+   },
+   "steps": [
+    {
+     "verb": "reserve",
+     "request": {
+      "schema": "placement.reserve.request.v1",
+      "request_id": "xb",
+      "workload": "pi-runner",
+      "ttl_s": 120,
+      "image_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "policy_vector": "full-remote-pi-runner",
+      "providers": [
+       "anthropic"
+      ],
+      "deadline_ms": 4000,
+      "caller_context": {
+       "case": "xb"
+      }
+     },
+     "coordinator": {
+      "admit": "duplicate_binding"
+     },
+     "expect": {
+      "exit": 10,
+      "response": {
+       "outcome": "refused",
+       "trail.0.code": "duplicate_binding"
+      }
+     }
+    }
+   ]
+  }
+ ]
+}

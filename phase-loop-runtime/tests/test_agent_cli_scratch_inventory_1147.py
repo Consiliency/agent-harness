@@ -256,6 +256,11 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
         NOT_AGENT, "pytest in a mutation worktree"),
     ("verification_evidence.py", "detect_changed_dependency_manifests"): (NOT_AGENT, "git"),
     ("verification_evidence.py", "_run_process"): (NOT_AGENT, "verification commands"),
+    # v13 PLACECLI: the reservation-scoped bridge helper, this package's own
+    # `placement_bridge` module through seat_uid.trusted_module_argv; it binds one Unix
+    # socket and pipes bytes, and starts nothing else.
+    ("placement_bridge.py", "_spawn_helper"): (
+        NOT_AGENT, "this package's placement_bridge helper via seat_uid.trusted_module_argv"),
 }
 
 
