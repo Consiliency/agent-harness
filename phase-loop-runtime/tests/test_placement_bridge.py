@@ -274,6 +274,169 @@ def test_the_lifecycle_opens_the_bridge_for_remote_pi_and_tears_it_down_on_relea
     assert SECRET.encode() not in journal
 
 
+# -- relay progress, expiry and bounded teardown ---------------------------------------------
+
+def _stalled_flow(handle, upstream_listener, reverse_bytes):
+    """The guest floods the requester, which never reads; the requester sends
+    ``reverse_bytes`` that the guest reads. Returns (requester socket, guest-received)."""
+    received = bytearray()
+    done = threading.Event()
+
+    def guest():
+        upstream_listener.settimeout(10)
+        link, _ = upstream_listener.accept()
+        link.setblocking(False)
+        chunk = b"x" * 65536
+        end = time.monotonic() + 15
+        while time.monotonic() < end and len(received) < reverse_bytes:
+            try:
+                link.send(chunk)                     # flood toward the stalled requester
+            except (BlockingIOError, OSError):
+                pass
+            try:
+                data = link.recv(65536)
+                if data:
+                    received.extend(data)
+            except BlockingIOError:
+                time.sleep(0.001)
+            except OSError:
+                break
+        done.set()
+        time.sleep(30)                               # keep the stream open; never closes first
+
+    threading.Thread(target=guest, daemon=True).start()
+    requester = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    requester.connect(handle.descriptor.socket_path)
+    requester.setblocking(False)
+    payload = memoryview(b"y" * reverse_bytes)
+    end = time.monotonic() + 15
+    while payload and time.monotonic() < end:
+        try:
+            payload = payload[requester.send(payload):]
+        except BlockingIOError:
+            time.sleep(0.001)
+    done.wait(15)
+    return requester, received
+
+
+def _reservation_expiring(rid, seconds):
+    from datetime import datetime, timezone
+
+    body = reservation(rid).to_json()
+    body["expires_at"] = datetime.fromtimestamp(time.time() + seconds, timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    return contract.Reservation.from_json(body)
+
+
+def test_a_stalled_peer_never_blocks_the_other_direction_or_a_graceful_stop(short_dir):
+    upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    upstream.bind(str(short_dir / "guest.sock"))
+    upstream.listen(1)
+    bridge = pb.ForwardTcpUnixBridge(short_dir / "b")
+    handle = bridge.open(reservation("bp-1"), pb.BridgeExposure("pi-link", str(short_dir / "guest.sock")),
+                         cancelled=threading.Event())
+    process = bridge._children[handle.pid]
+    requester, received = _stalled_flow(handle, upstream, 4 * 1024 * 1024)
+    try:
+        assert len(received) == 4 * 1024 * 1024          # the reverse direction kept moving
+        started = time.monotonic()
+        flags = bridge.close(handle, cancelled=threading.Event())
+        assert time.monotonic() - started < 3.0
+        assert process.returncode == 0                    # a graceful stop, never a forced kill
+        assert flags.destruction_observed and not Path(handle.directory).exists()
+    finally:
+        requester.close()
+        upstream.close()
+
+
+def test_expiry_ends_a_stalled_helper_and_removes_its_socket(short_dir):
+    upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    upstream.bind(str(short_dir / "guest.sock"))
+    upstream.listen(1)
+    bridge = pb.ForwardTcpUnixBridge(short_dir / "b")
+    handle = bridge.open(_reservation_expiring("bp-2", 4), pb.BridgeExposure("pi-link", str(short_dir / "guest.sock")),
+                         cancelled=threading.Event())
+    process = bridge._children[handle.pid]
+    requester, _received = _stalled_flow(handle, upstream, 64 * 1024)
+    try:
+        assert process.wait(timeout=12) == 0
+        assert not Path(handle.directory).exists()
+    finally:
+        requester.close()
+        upstream.close()
+        bridge.close(handle, cancelled=threading.Event())
+
+
+def test_a_helper_that_never_becomes_ready_is_bounded_by_the_operation_deadline(short_dir):
+    import subprocess
+
+    started_children = []
+
+    def silent(directory, upstream, expires):
+        child = subprocess.Popen(["/bin/sleep", "30"], stdout=subprocess.PIPE, start_new_session=True)
+        started_children.append(child)
+        return child
+
+    bridge = pb.ForwardTcpUnixBridge(short_dir / "b", spawn=silent)
+    started = time.monotonic()
+    with pb.operation_deadline(time.monotonic() + 0.5):
+        with pytest.raises(pb.BridgeUnavailable):
+            bridge.open(reservation("nr-1"), pb.BridgeExposure("pi-link", "/tmp/up"),
+                        cancelled=threading.Event())
+    assert time.monotonic() - started < 3.0
+    assert started_children[0].poll() is not None
+
+
+_STUBBORN = (
+    "import os,signal,socket,sys,time\n"
+    "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+    "d=sys.argv[1]; os.mkdir(d, 0o700)\n"
+    "os.umask(0o177); s=socket.socket(socket.AF_UNIX); s.bind(d + '/s'); s.listen(1)\n"
+    "os.write(1, b'R'); time.sleep(60)\n"
+)
+
+
+def test_teardown_of_a_stubborn_helper_is_bounded_by_the_release_deadline(tmp_path, short_dir):
+    import subprocess
+
+    from test_placement_lifecycle_process import Env, release, reserve
+
+    def stubborn(directory, upstream, expires):
+        return subprocess.Popen([sys.executable, "-I", "-c", _STUBBORN, str(directory)],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True)
+
+    env = Env(tmp_path)
+    env.toolkit()
+    bridge = pb.ForwardTcpUnixBridge(short_dir / "b", spawn=stubborn)
+    response, _raw, code = reserve(env.lifecycle(bridge=bridge))
+    assert code == 0
+    started = time.monotonic()
+    released, code = release(env.lifecycle(bridge=bridge), response.reservation.to_json(), deadline_ms=500)
+    assert time.monotonic() - started < 3.0
+    # The helper is gone, but no time was left to confirm the lease: ownership is kept.
+    assert (code, released.state) == (20, "cleanup_pending")
+    assert len(env.reservations()) == 1
+    assert not Path(response.reservation.bridge.socket_path).parent.exists()
+
+
+def test_an_interruption_after_the_bridge_started_is_reclaimed_by_its_directory(tmp_path, short_dir, monkeypatch):
+    from test_placement_lifecycle_process import Env, _attempt, _bound_of, _interrupt_reserve, reap
+
+    env = Env(tmp_path)
+    env.toolkit()
+    env.coordinator.upstream = str(short_dir / "guest.sock")
+    commit = _interrupt_reserve(env, monkeypatch, "after-bridge",
+                                lifecycle=env.lifecycle(bridge=pb.ForwardTcpUnixBridge(short_dir / "b")))
+    directory = Path(commit["effect"]["bridge_directory"])
+    assert commit["effect"]["bridge"] is None and (directory / "s").exists()
+    assert pb._helpers_serving(directory)
+    env.clock.now = _bound_of(_attempt(env))
+    reaped, code = reap(env.lifecycle(bridge=pb.ForwardTcpUnixBridge(short_dir / "b")))
+    assert (code, reaped.inventory.destroyed) == (0, 1)
+    assert not directory.exists() and not pb._helpers_serving(directory)
+    assert commit["effect"]["lease_id"] not in env.coordinator.held
+
+
 # -- the black-box corpus --------------------------------------------------------------------
 
 def test_the_corpus_covers_every_live_step_and_the_coordinator_faults():

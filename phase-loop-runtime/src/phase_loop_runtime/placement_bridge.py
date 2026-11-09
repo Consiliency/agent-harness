@@ -21,6 +21,8 @@ registered.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 from dataclasses import dataclass
 import hashlib
 import os
@@ -45,6 +47,7 @@ __all__ = [
     "BridgeUnavailable",
     "ForwardTcpUnixBridge",
     "default_bridge_root",
+    "operation_deadline",
 ]
 
 #: The closed codes a bridge failure carries.
@@ -168,7 +171,11 @@ def _spawn_helper(directory: Path, upstream: str, expires_epoch: float) -> "subp
 
 class ForwardTcpUnixBridge:
     """Opens and closes the one bridge of a reservation (LANEEXEC ``x-bridge.attach``
-    consumes these two calls unchanged)."""
+    consumes these two calls unchanged).
+
+    Every wait inside ``open``, ``close`` and ``reclaim`` is bounded by the caller's
+    operation deadline when one is in force (:func:`operation_deadline`), and by
+    ``ready_timeout_s`` otherwise."""
 
     def __init__(self, root: Path | None = None, *,
                  fallback_root: Path | None = None,
@@ -183,6 +190,15 @@ class ForwardTcpUnixBridge:
         self._children: dict[int, "subprocess.Popen[bytes]"] = {}
         self._lock = threading.Lock()
 
+    def directory_for(self, reservation: Reservation) -> Path | None:
+        """The one directory this reservation's bridge uses (``None`` when no root fits).
+        Known before the helper starts, so cleanup can find a helper whose handle was
+        never recorded."""
+        name = _directory_name(reservation.client, reservation.reservation_id)
+        root = next((candidate for candidate in self.roots if len(os.fsencode(str(
+            candidate / reservation.client / name / _SOCKET_NAME))) <= _SUN_PATH_MAX), None)
+        return None if root is None else root / reservation.client / name
+
     def open(self, reservation: Reservation, exposure: BridgeExposure, *,
              cancelled: threading.Event) -> BridgeHandle:
         if (reservation.workload not in ("pi-runner", "leg")
@@ -194,19 +210,16 @@ class ForwardTcpUnixBridge:
             raise BridgeUnavailable("bridge_not_applicable")
         if cancelled.is_set():
             raise BridgeUnavailable("bridge_cancelled")
-        name = _directory_name(reservation.client, reservation.reservation_id)
-        root = next((candidate for candidate in self.roots if len(os.fsencode(str(
-            candidate / reservation.client / name / _SOCKET_NAME))) <= _SUN_PATH_MAX), None)
-        if root is None:
+        directory = self.directory_for(reservation)
+        if directory is None:
             raise BridgeUnavailable("bridge_path_too_long")
+        client_root = directory.parent
         try:
-            root.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            client_root.parent.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         except OSError:
             raise BridgeUnavailable("bridge_root_unsafe") from None
-        _private_directory(root)
-        client_root = root / reservation.client
+        _private_directory(client_root.parent)
         _private_directory(client_root)
-        directory = client_root / name
         socket_path = directory / _SOCKET_NAME
         if _stale(directory):
             # One socket per reservation: whatever is there is stale, never reused.
@@ -231,10 +244,10 @@ class ForwardTcpUnixBridge:
         stream = process.stdout
         if stream is None:
             return False
-        deadline = time.monotonic() + self.ready_timeout_s
+        deadline = time.monotonic() + _remaining(self.ready_timeout_s)
         try:
             while time.monotonic() < deadline and not cancelled.is_set():
-                ready, _, _ = select.select([stream], [], [], _POLL_S)
+                ready, _, _ = select.select([stream], [], [], min(_POLL_S, max(0.0, deadline - time.monotonic())))
                 if ready:
                     return os.read(stream.fileno(), 1) == _READY
                 if process.poll() is not None:
@@ -257,16 +270,35 @@ class ForwardTcpUnixBridge:
             return LeaseFlags(fenced=True, destruction_observed=True, barrier_confirmed=True)
         return LeaseFlags(reserved=True, fenced=True, cleanup_pending=True)
 
+    def reclaim(self, directory: Path | str, *, cancelled: threading.Event) -> LeaseFlags:
+        """Stop whatever helper serves ``directory`` and remove it, when no handle was
+        recorded (an interruption between starting the helper and journaling it)."""
+        directory = Path(directory)
+        for pid, ticks in _helpers_serving(directory):
+            with self._lock:
+                process = self._children.pop(pid, None)
+            self._stop(pid, ticks, process)
+        gone = _remove_directory(directory)
+        alive = bool(_helpers_serving(directory))
+        if gone and not alive:
+            return LeaseFlags(fenced=True, destruction_observed=True, barrier_confirmed=True)
+        return LeaseFlags(reserved=True, fenced=True, cleanup_pending=True)
+
     def _stop(self, pid: int, start_ticks: int | None,
               process: "subprocess.Popen[bytes] | None") -> None:
+        """SIGTERM, wait within the operation's remaining time, then SIGKILL."""
+        wait_s = _remaining(self.ready_timeout_s)
         if process is not None:
             if process.poll() is None:
                 try:
                     process.send_signal(signal.SIGTERM)
-                    process.wait(timeout=self.ready_timeout_s)
+                    process.wait(timeout=wait_s)
                 except subprocess.TimeoutExpired:
                     process.kill()
-                    process.wait(timeout=self.ready_timeout_s)
+                    try:
+                        process.wait(timeout=1.0)
+                    except subprocess.TimeoutExpired:
+                        pass
                 except OSError:
                     pass
             return
@@ -276,7 +308,7 @@ class ForwardTcpUnixBridge:
             os.kill(pid, signal.SIGTERM)
         except OSError:
             return
-        deadline = time.monotonic() + self.ready_timeout_s
+        deadline = time.monotonic() + wait_s
         while time.monotonic() < deadline and _helper_alive(pid, start_ticks):
             time.sleep(_POLL_S)
         if _helper_alive(pid, start_ticks):
@@ -284,6 +316,52 @@ class ForwardTcpUnixBridge:
                 os.kill(pid, signal.SIGKILL)
             except OSError:
                 pass
+
+
+#: The monotonic end of the caller's operation (``reserve``, ``release``, ``reap``).
+_DEADLINE: "contextvars.ContextVar[float | None]" = contextvars.ContextVar(
+    "placement_bridge_deadline", default=None)
+
+
+@contextlib.contextmanager
+def operation_deadline(end_monotonic: float | None):
+    """Bound every bridge wait in this context by one operation's monotonic end."""
+    token = _DEADLINE.set(end_monotonic)
+    try:
+        yield
+    finally:
+        _DEADLINE.reset(token)
+
+
+def _remaining(limit: float) -> float:
+    end = _DEADLINE.get()
+    if end is None:
+        return limit
+    return max(0.0, min(limit, end - time.monotonic()))
+
+
+def _helpers_serving(directory: Path) -> list[tuple[int, int | None]]:
+    """This user's bridge helpers whose argv names exactly ``directory``."""
+    wanted = str(directory).encode()
+    found = []
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return found
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            argv = Path(f"/proc/{name}/cmdline").read_bytes().split(b"\0")
+            owner = os.stat(f"/proc/{name}").st_uid
+        except OSError:
+            continue
+        if (owner == os.geteuid() and b"phase_loop_runtime.placement_bridge" in argv
+                and b"serve" in argv and wanted in argv):
+            pid = int(name)
+            if _helper_alive(pid, _start_ticks(pid)):
+                found.append((pid, _start_ticks(pid)))
+    return found
 
 
 def _stale(directory: Path) -> bool:
@@ -339,31 +417,68 @@ def _remove_directory(directory: Path) -> bool:
 
 # -- the helper ----------------------------------------------------------------------------
 
+#: The most bytes buffered toward one side before reads from the other side pause.
+_BUFFER_LIMIT = 256 * 1024
+_TICK_S = 0.5
+
+
 def _pump(left: socket.socket, right: socket.socket, stop: threading.Event, end: float) -> None:
-    """Copy bytes both ways until either side closes, the helper is stopped, or the end."""
+    """Relay bytes both ways without ever blocking on one side.
+
+    Both sockets are non-blocking. Each direction has a bounded buffer: a side is read
+    only while the buffer toward its peer has room, and a peer is written only when it is
+    writable, so a peer that stops reading stalls only its own direction. A side's EOF is
+    passed on (``SHUT_WR``) once the bytes buffered ahead of it have drained. Every wait
+    is bounded by the reservation's end, and the stop flag is checked on every pass."""
+    left.setblocking(False)
+    right.setblocking(False)
     peers = {left: right, right: left}
-    open_sides = {left, right}
-    while open_sides and not stop.is_set() and time.time() < end:
+    toward = {left: bytearray(), right: bytearray()}      # bytes waiting to be written TO side
+    readable_side = {left: True, right: True}              # side has not sent EOF yet
+    eof_pending = {left: False, right: False}              # SHUT_WR owed to side once drained
+    write_shut = {left: False, right: False}
+    while not stop.is_set():
+        left_s = end - time.time()
+        if left_s <= 0:
+            return
+        for side in (left, right):
+            if eof_pending[side] and not toward[side] and not write_shut[side]:
+                try:
+                    side.shutdown(socket.SHUT_WR)
+                except OSError:
+                    pass
+                write_shut[side] = True
+        if not any(readable_side.values()) and not any(toward.values()):
+            return
+        readers = [side for side in (left, right)
+                   if readable_side[side] and len(toward[peers[side]]) < _BUFFER_LIMIT]
+        writers = [side for side in (left, right) if toward[side] and not write_shut[side]]
+        if not readers and not writers:
+            return
         try:
-            readable, _, _ = select.select(list(open_sides), [], [], 0.5)
+            ready_r, ready_w, _ = select.select(readers, writers, [], min(_TICK_S, left_s))
         except (OSError, ValueError):
             return
-        for side in readable:
+        for side in ready_r:
             try:
-                data = side.recv(_CHUNK)
+                data = side.recv(min(_CHUNK, _BUFFER_LIMIT - len(toward[peers[side]])))
+            except (BlockingIOError, InterruptedError):
+                continue
             except OSError:
                 return
             if not data:
-                try:
-                    peers[side].shutdown(socket.SHUT_WR)
-                except OSError:
-                    pass
-                open_sides.discard(side)
-                continue
+                readable_side[side] = False
+                eof_pending[peers[side]] = True
+            else:
+                toward[peers[side]] += data
+        for side in ready_w:
             try:
-                peers[side].sendall(data)
+                sent = side.send(toward[side])
+            except (BlockingIOError, InterruptedError):
+                continue
             except OSError:
                 return
+            del toward[side][:sent]
 
 
 def serve(directory: str, upstream: str, expires_epoch: float) -> int:
@@ -387,17 +502,19 @@ def serve(directory: str, upstream: str, expires_epoch: float) -> int:
         listener.listen(1)
         os.write(1, _READY)
         os.close(1)
-        while not stop.is_set() and time.time() < expires_epoch:
-            readable, _, _ = select.select([listener], [], [], 0.5)
+        while not stop.is_set():
+            remaining = expires_epoch - time.time()
+            if remaining <= 0:
+                break
+            readable, _, _ = select.select([listener], [], [], min(_TICK_S, remaining))
             if not readable:
                 continue
             client, _ = listener.accept()
             with client:
                 link = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                 try:
-                    link.settimeout(10.0)
+                    link.settimeout(max(0.01, min(10.0, expires_epoch - time.time())))
                     link.connect(upstream)
-                    link.settimeout(None)
                 except OSError:
                     link.close()
                     continue

@@ -105,7 +105,7 @@ missing client file means no providers and no targets, so every reservation refu
   refuses with `sandbox_placement_workload_unsupported` before any probe.
 - **`launch`.** An optional top-level `launch` object is included verbatim in the canonical
   bytes and is not interpreted here. LANEEXEC owns it, and it must carry the sha256 of every
-  artifact it names.
+  artifact it names. When present it must be an object; `"launch": null` refuses at load.
 - **Unknown members.** Any other unknown member refuses at load.
 
 `config_sha256` is the SHA-256 of the UTF-8 RFC 8785 serialization of the selected client's
@@ -187,6 +187,42 @@ A replay of an unsettled attempt follows erratum 1:
 
 Reap never answers for a reserve.
 
+### Durable admission and recovery
+
+An admission is committed in steps, each one durable in the attempt journal before the next
+begins:
+
+1. The exact reservation, with its expiry fixed at admission, and its complete cleanup effect
+   are journaled. For a bridged reservation, the effect includes the bridge directory it will
+   use.
+2. A bridged reservation opens its bridge, and the commit is journaled again with the bridge
+   handle.
+3. The active reservation is published, and then the attempt is settled.
+
+After an interruption between steps, nothing is allocated again:
+
+- **Before the settle bound,** a replay settles `admitted` only from a complete commit. It
+  returns the original reservation, expiry and bridge, and publishes the record if
+  publication was interrupted. A commit whose bridge was never journaled answers `timeout`.
+- **At the bound,** the attempt's complete effect becomes one cleanup entry, and any
+  published record of the same reservation is retired, so one owner removes the bridge,
+  slot or lease.
+
+Replay never contacts a target, opens a bridge or recomputes an expiry. Start-up reads each
+unsettled attempt again under its lock before settling it, so a record that another process
+settled is never overwritten.
+
+### Deadlines
+
+Each `reserve`, `release` and `reap` call has one deadline, from its `deadline_ms`. Every
+blocking step uses what is left of it: the walk, the exposure lookup, the wait for the bridge
+to become ready, the reservation lock, bridge teardown, and the kill and owner listing.
+
+- When time runs out, or the caller cancels, after admission, admission is not reported. The
+  effects stay journaled, the response is `timeout`, and replay or terminal cleanup takes
+  over.
+- A release whose lock or cleanup outlasts its deadline answers `cleanup_pending`.
+
 ## Release and reap
 
 - **Release.** `release` loads the stored reservation by `reservation_id` from the selected
@@ -257,6 +293,12 @@ The socket is a raw byte pipe of the admitted ForwardTcp stream. The requester's
 proxy (for agent-toolkit, `cred-proxy.mjs`) connects to it and keeps link framing, relay and
 credentials. A helper serves the socket for the reservation's lifetime. It is this package's
 own module, launched through `seat_uid.trusted_module_argv`, and it opens no TCP listener.
+
+The helper relays without blocking. Each direction has a bounded buffer, so a peer that stops
+reading stalls only its own direction. An end of stream is passed on once the bytes ahead of
+it have drained. Every wait is bounded by the reservation's end, so the helper stops promptly
+when it is told to and always at expiry, removing its socket and directory. If the helper's
+handle was never journaled, cleanup still finds the helper by the reservation's directory.
 
 Local reservations have `bridge: null` and use the requester-owned proxy in process.
 

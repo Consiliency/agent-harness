@@ -1467,8 +1467,9 @@ def load_placement_client_config(
         _require(workload in workloads and isinstance(target, str))
         _require(any(t.name == target for t in targets))
         seat_route[workload] = target  # type: ignore[assignment]
+    # A present ``launch`` member must be an object (binding §4.1); ``null`` is not absence.
+    _require("launch" not in document or isinstance(document["launch"], dict))
     launch = document.get("launch")
-    _require(launch is None or isinstance(launch, dict))
     policy_digests = _policy_digests()
     effective: dict[str, object] = {
         "schema": PLACEMENT_CLIENT_CONFIG_SCHEMA,
