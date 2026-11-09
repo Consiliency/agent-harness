@@ -98,7 +98,7 @@ FROZEN INTERFACE (IF-0-FAB-B-1) — C/D code against this without renegotiation:
     NOT invalidated (design §4.5 I10/I11 — explicitly PASS, not fail-opens under
     delta identity, see design §4.2): commit-topology churn with identical net
     content, and a base-tip advance `B -> B'` while the PR itself is unchanged.
-    Both fall out of the same three checks above with no special-casing — see
+    These cases pass when the merge-base and net patch digest remain unchanged — see
     the module's test suite for the worked cases.
 
 Design ambiguities resolved in this lane (stated once, not re-litigated):
@@ -109,7 +109,7 @@ Design ambiguities resolved in this lane (stated once, not re-litigated):
      every caller to pre-resolve it, `patch_digest` takes an optional
      keyword-only `repo_slug: str | None = None` and, when omitted, resolves it
      itself via `credsep.resolve_broker_repo_identity(repo)` — REUSING the
-     #250 host-qualified slug resolver (`convergence/broker/credsep.py`), never
+     agent-harness#250 host-qualified slug resolver (`convergence/broker/credsep.py`), never
      re-implementing URL parsing. `equivalent()` always resolves the LIVE slug
      itself (never accepts a caller-supplied "live slug" — that would defeat
      precondition 1) and threads the BOUND slug through to its own
@@ -157,10 +157,11 @@ merely because its emitted stream looked complete), missing/malformed
 `cat-file` responses, a non-`blob` object referenced by a non-gitlink mode
 (a crafted type-swap), and gitlink paths under the default policy all raise
 a typed `PatchDigestInvalid`
-(a `fab_provenance.ProvenanceInvalid` subclass) from `patch_digest`; `equivalent()`
-converts these (and its own base-ref/merge-base checks) into a typed
-`EQUIVALENCE_INVALIDATED` result rather than ever silently returning
-`EQUIVALENCE_EQUIVALENT` on an unrecognized state.
+(a `fab_provenance.ProvenanceInvalid` subclass) from `patch_digest`.
+`equivalent()` converts errors from its patch recompute and nonzero fetch /
+merge-base results into `EQUIVALENCE_INVALIDATED`. Execution failures and
+timeouts raised by the fetch / merge-base subprocess wrapper can propagate;
+callers must handle those exceptions as well as the typed result.
 """
 
 from __future__ import annotations

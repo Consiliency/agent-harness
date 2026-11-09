@@ -1,6 +1,6 @@
 """Extract static cross-repo interface evidence from supplied repo paths.
 
-``extract_fleet_map`` scans pin files and Git URLs, divergent same-named
+``build_fleet_map`` scans pin files and Git URLs, divergent same-named
 contract/schema literals, and hard-coded sibling host paths. The separate
 ``run_lockfile_baseline_scan`` searches dependency manifests for Git pins to
 other supplied repos; its edges have kind ``lockfile-dep``. The supported
