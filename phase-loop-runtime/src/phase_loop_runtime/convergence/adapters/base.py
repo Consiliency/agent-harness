@@ -368,7 +368,7 @@ def run_bounded_capture(request: CaptureRequest, *,
     image = _descriptor_image(request.argv[0])
     try:
         refusal = before_spawn()
-    except Exception:
+    except BaseException:
         if image is not None:
             os.close(image)
         return SpawnRefused("before_spawn_failed")
