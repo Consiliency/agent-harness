@@ -9,7 +9,7 @@
 # Emits one line per package:
 #
 #     IMPORT_OK: <pkg>
-#     IMPORT_FAIL: <pkg> — <first-line-of-error>
+#     IMPORT_FAIL: <pkg> — <last-line-of-error>
 #
 # Exit code:
 #   0 — every package imports cleanly
@@ -52,7 +52,7 @@ for pkg in "$@"; do
     if [[ $rc -eq 0 ]]; then
         echo "IMPORT_OK: ${pkg}"
     else
-        # First line of the error only.
+        # Last line of the error only.
         first_line="$(echo "$err" | tail -n 1)"
         echo "IMPORT_FAIL: ${pkg} — ${first_line}"
         any_fail=1

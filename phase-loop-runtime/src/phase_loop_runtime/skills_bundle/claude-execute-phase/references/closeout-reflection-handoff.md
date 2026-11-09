@@ -13,7 +13,7 @@ Before close-out, run `git status --short -- <plan_path> <roadmap_path>` for eve
 Determine the next step before final response and handoff:
 
 - If the current phase is incomplete or verification failed, set `Next phase: <current alias> - blocked: <blocker>` and `Next command: none - <blocker>`.
-- If another generated phase plan is ready, set `Next phase: <next alias> - execution ready` and `Next command: /claude-execute-phase <next-alias>`.
+- If another generated phase plan is ready, set `Next phase: <next alias> - execution ready` and `Next command: /claude-execute-phase <next-plan-path>`.
 - If the roadmap has an unplanned ready phase, set `Next phase: <next alias> - planning ready` and `Next command: /claude-plan-phase <next-alias>`.
 - If the roadmap needs extension, set `Next phase: none - roadmap extension needed` and `Next command: /claude-phase-roadmap-builder`.
 - If all phases are complete, set `Next phase: none - roadmap complete` and `Next command: none - roadmap complete`.
@@ -21,7 +21,9 @@ Determine the next step before final response and handoff:
 Resolve paths, with an inline fallback for the reflection helper:
 
 ```bash
-REFLECTION_PATH=resolve_skill_bundle_root("codex")/claude-execute-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md
+SKILL_ROOT=$(python3 -c 'from phase_loop_runtime.skill_paths import resolve_skill_bundle_root; print(resolve_skill_bundle_root("claude"))')
+: "${REPO_HASH:?set REPO_HASH}" "${BRANCH_SLUG:?set BRANCH_SLUG}" "${RUN_ID:?set RUN_ID}"
+REFLECTION_PATH="$SKILL_ROOT/claude-execute-phase/reflections/$REPO_HASH/$BRANCH_SLUG/$RUN_ID.md"
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 REPO_LOCAL_HANDOFF=$(python3 - <<'PYH'
 from pathlib import Path
@@ -41,7 +43,7 @@ except Exception:
 PYH
 )
 mkdir -p "$(dirname "$REPO_LOCAL_HANDOFF")"
-SKILL_MD=resolve_skill_bundle_root("codex")/claude-execute-phase/SKILL.md
+SKILL_MD="$SKILL_ROOT/claude-execute-phase/SKILL.md"
 ```
 
 **Primary path — orchestrator writes inline.** The orchestrator writes BOTH files directly via the Write tool using the schemas below. This is the default.
@@ -88,10 +90,10 @@ FILE 2 — REPO-SPECIFIC handoff → write to `<REPO_LOCAL_HANDOFF>` (per-repo s
 ---
 from: claude-execute-phase
 timestamp: <ISO>
-artifact: <phase alias that was executed, merge-commit SHAs>
+artifact: <absolute path to the executed phase plan>
 artifact_state: <staged|tracked|modified|unstaged|blocked>
 next_skill: <claude-execute-phase|claude-plan-phase|claude-phase-roadmap-builder|none>
-next_command: </claude-execute-phase next-alias|/claude-plan-phase next-alias|/claude-phase-roadmap-builder|none - reason>
+next_command: </claude-execute-phase next-plan-path|/claude-plan-phase next-alias|/claude-phase-roadmap-builder|none - reason>
 next_phase: <next alias - status|none - reason>
 ---
 

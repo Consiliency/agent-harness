@@ -33,15 +33,15 @@ every issue at once):
 
   (D) `Owned files` globs across ### SL-N sections are disjoint.
         If run inside a git repo, expand each glob via `git ls-files`
-        and check for overlap. Otherwise fall back to textual prefix
-        comparison — flag any exact glob duplication and warn about
-        unresolvable cases.
+        and check for overlap. Otherwise check exact glob duplication only; no prefix
+        overlap proof is performed without tracked-file expansion.
 
   (E) Every `impl` task row in a lane's task table has a preceding
       `test` task in the same lane.
 
-  (F) Every `Interfaces consumed` entry either appears in some upstream
-      lane's `Interfaces provided` or is tagged "(pre-existing)".
+  (F) WARN when an `Interfaces consumed` entry is absent from every lane
+      and is not tagged "(pre-existing)". The separate (O) runtime-IR
+      check validates producer dependency edges when importable.
 
   (I) `Spec Closeout Plan` declares `spec_delta_closeout.v1`, a valid decision,
       target surfaces, evidence paths, and `metadata_only` redaction.
@@ -290,7 +290,7 @@ def _split_inline_items(raw: str) -> List[str]:
 def _parse_task_table(body: str) -> List[dict]:
     """Parse the markdown task table out of a lane body.
 
-    Expected header (case-insensitive):
+    Expected header (case-sensitive tokens):
       | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
     """
     rows: List[dict] = []
@@ -1050,14 +1050,14 @@ def _authoritative_goal_coverage(resolved_roadmap: Path, path: Optional[Path], p
     ``_P_RUNTIME_UNAVAILABLE`` when phase_loop_runtime is not importable; or
     ``_P_DUPLICATE_ALIAS`` when the roadmap has >1 phase with this alias (the gate itself
     fails closed on that — check_goal_coverage returns a duplicate_phase_alias setup
-    error). Only ImportError routes to UNAVAILABLE (ah#221: never conflate a missing
+    error). Only ImportError routes to UNAVAILABLE (agent-harness#221: never conflate a missing
     dependency with a parse error — a genuine parse failure surfaces)."""
     try:
         import phase_loop_runtime  # noqa: F401 — package-presence probe ONLY
     except ImportError:
         return _P_RUNTIME_UNAVAILABLE
     # The package is present: symbol imports must FAIL LOUD on API drift (a renamed/moved
-    # runtime function), never be masked as "unavailable" (ah#221 — do not conflate a
+    # runtime function), never be masked as "unavailable" (agent-harness#221 — do not conflate a
     # missing dependency with a drifted API). An uncaught ImportError here surfaces the bug.
     from phase_loop_runtime import roadmap_lint as _rl  # type: ignore
     from phase_loop_runtime.goal_coverage import extract_plan_goal_refs  # type: ignore
@@ -1130,7 +1130,7 @@ def _check_p_goal_id_coverage(src: str, path: Optional[Path], repo_root: Optiona
     return out
 
 
-# Release/package signal (issue #18). Either the explicit release-dispatch
+# Release/package signal (issue agent-harness#18). Either the explicit release-dispatch
 # mutation in frontmatter, OR a lane owning a release artifact (manifest /
 # version file / changelog / release workflow).
 _RELEASE_ARTIFACT_RE = re.compile(
@@ -1204,7 +1204,7 @@ def _check_m_release_docs_coverage(
     lanes: List[Lane],
     lane_sections_parsed: Dict[str, dict],
 ) -> Findings:
-    """issue #18: release/package phases must own public-doc surfaces and the
+    """issue agent-harness#18: release/package phases must own public-doc surfaces and the
     docs reducer must depend on every producer lane.
 
     For phases that **explicitly** declare a release (frontmatter
@@ -1278,7 +1278,7 @@ def _sl_sort_key(sl_id: str) -> tuple:
     return (int(m.group(1)),) if m else (10**9, sl_id)
 
 
-# issue #18 F4 — post-dispatch evidence-reducer lane.
+# issue agent-harness#18 F4 — post-dispatch evidence-reducer lane.
 #
 # A release-DISPATCH phase cuts a tag / runs an external release workflow whose
 # commit SHA and workflow result are NOT KNOWABLE until *after* dispatch. Any
@@ -1338,7 +1338,7 @@ def _check_n_post_dispatch_reducer(
     lane_sections_raw: Dict[str, str],
     lane_sections_parsed: Dict[str, dict],
 ) -> Findings:
-    """issue #18 F4: a release-dispatch phase must include a post-dispatch
+    """issue agent-harness#18 F4: a release-dispatch phase must include a post-dispatch
     evidence-reducer lane.
 
     A release-dispatch phase writes evidence docs that reference a commit SHA /

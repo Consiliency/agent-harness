@@ -147,6 +147,8 @@ reflections moved to each skill's reflections/<repo_hash>/<branch_slug>/archive/
 Co-Authored-By: <actual contributing model name> <noreply@anthropic.com>"
 ```
 
+Use the actual contributing model in attribution; for example, `Claude Opus 4.8` applies only to a historical run made with that model.
+
 `git push` the feature branch unless `--no-push`. Opening and merging the PR follow the repo's own review rules.
 
 Append the plan's timestamp + path to `resolve_skill_bundle_root("claude")/claude-skill-editor/applied-plans.log` so Step 2's double-apply check has state to read.

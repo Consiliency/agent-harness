@@ -113,12 +113,12 @@ Follow-on executor for `/claude-plan-phase`. Consumes the plan doc + TaskCreate'
 
 ## Model tiers (edit on Anthropic releases)
 
-Model IDs appear only in this table. All model-routing logic in the workflow references the tier name.
+Resolve `CLAUDE_REGULAR_MODEL` from `phase_loop_runtime.capability_registry` before launching; this avoids copying a stale regular-tier ID. The legacy `claude-sonnet-5` remains an explicit accepted model, not the current regular default. All model-routing logic below references the tier name.
 
 | Tier      | Model              | Use for                                                       |
 |-----------|--------------------|---------------------------------------------------------------|
 | frontier  | claude-opus-5      | retry escalation ceiling, highest-stakes lanes                |
-| strong    | claude-sonnet-5-5  | contract-authoring (IF-freeze), schema/migration, algorithmic |
+| strong    | `CLAUDE_REGULAR_MODEL` | contract-authoring (IF-freeze), schema/migration, algorithmic |
 | fast      | claude-haiku-4-5-20251001 | mechanical wiring, small components against frozen types |
 
 This skill's retry-tier ladder is `fast → strong → frontier`. The default `run_mode` is `autonomous`: no panel and

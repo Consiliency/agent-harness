@@ -1,6 +1,6 @@
 ---
 name: task-contextualizer
-description: "Claude Code subagent briefing guide. Use before creating any Task tool call, especially for Explore or general-purpose subagents. Provides templates for task prompts that include necessary file paths, architecture context, and scope boundaries."
+description: "Claude Code subagent briefing guide. Use before creating any Agent tool call, especially for Explore or general-purpose subagents. Provides templates for task prompts that include necessary file paths, architecture context, and scope boundaries."
 ---
 
 # Task Contextualizer
@@ -9,13 +9,13 @@ description: "Claude Code subagent briefing guide. Use before creating any Task 
 
 Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, helper roots, repo-local handoff roots, and harness-specific reflection roots.
 
-For reflections, handoffs, and latest handoff pointers, follow `<harness>-config/shared/runtime-state.md`. This repo/branch/run-isolated contract supersedes any older flat closeout examples retained for historical context in this skill.
+For reflections, handoffs, and latest handoff pointers, follow `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths`. This repo/branch/run-isolated contract supersedes any older flat closeout examples retained for historical context in this skill.
 
-Subagents do not inherit parent context. Brief every Task call with specific file paths, architecture, and scope so the subagent can start work immediately instead of rediscovering the project.
+Subagents need a self-contained brief; do not assume the parent conversation supplies their context. Brief every Agent call with specific file paths, architecture, and scope so the subagent can start work immediately instead of rediscovering the project.
 
 ## Mandatory Checklist
 
-Before EVERY Task tool call, verify:
+Before EVERY Agent tool call, verify:
 
 - [ ] **File paths**: Listed the specific files the subagent needs to read or modify
 - [ ] **Architecture context**: Explained how the relevant module fits into the larger system (1-2 sentences)

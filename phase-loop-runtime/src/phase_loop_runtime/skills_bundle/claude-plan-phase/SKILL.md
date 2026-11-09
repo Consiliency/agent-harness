@@ -7,15 +7,15 @@ description: "Claude Code phase planner for a versioned roadmap phase. Produces 
 
 ## Runtime State
 
-For reflections, handoffs, and latest handoff pointers, follow `<harness>-config/shared/runtime-state.md`. This repo/branch/run-isolated contract supersedes any older flat closeout examples retained for historical context in this skill.
+For reflections, handoffs, and latest handoff pointers, follow `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths`. This repo/branch/run-isolated contract supersedes any older flat closeout examples retained for historical context in this skill.
 
-`shared/phase-loop/protocol.md` is the canonical shared contract for
+`phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`) is the canonical shared contract for
 execution-ready plan metadata, including `phase_loop_plan_version: 1`,
 `roadmap_sha256`, optional `Dispatch Hints`, and downstream roadmap-amendment
 rules.
 
 When this skill runs through the live phase-loop adapter, the child launch is a
-non-interactive `<harness> -p` session and the final response must still include a
+runtime-selected Harness session (Agent View by default; print only through its explicitly admitted route) and the final response must still include a
 shared `automation:` closeout with `verification_status`. The repo-injected
 workflow bundle remains authoritative whether the adapter delivers it inline or
 through the run-local context-file fallback.
@@ -27,7 +27,7 @@ installed bridge skills under `resolve_skill_bundle_root("claude")/`.
 ## Phase-Loop Adapter Mode
 
 When the prompt or run-local context file starts with a concrete
-`<harness>-plan-phase <roadmap> <phase>` command from `.codex/phase-loop/runs/`,
+`<harness>-plan-phase <roadmap> <phase>` command from `.phase-loop/runs/`,
 this adapter mode overrides the delegation-first interactive workflow below.
 
 - Do not read installed handoffs under `resolve_skill_bundle_root("claude")/**`; the run-local
@@ -55,7 +55,7 @@ this adapter mode overrides the delegation-first interactive workflow below.
 ## Dispatch Hints
 
 When non-default executor policy is needed, add an optional `## Dispatch Hints`
-section using the frozen vocabulary from `shared/phase-loop/protocol.md`
+section using the frozen vocabulary from `phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`)
 instead of inventing Harness-only plan metadata.
 
 When model, effort, work-unit defaults, lane-specific policy, fallback, policy
@@ -116,7 +116,7 @@ Architecture-first planner for a single phase of a multi-phase specification. Pr
 | `<phase-name-or-id>` | yes | A phase heading, short alias (`P1`–`P7`), or any fuzzy match. Ambiguous → stop and ask via `AskUserQuestion`. |
 | `--output <path>` | no | Override the default output path. Default: `plans/phase-plan-<VERSION>-<PHASE_ALIAS>.md`. `<PHASE_ALIAS>` MUST be uppercase exactly as declared in the roadmap (e.g., `FOUND`, `DESIGNFOUND`); lowercase or alternate filename variants force an extra plan-iteration roundtrip because the runner uses the uppercase alias to locate the plan artifact. |
 | `--consensus` | no | Enable multi-agent architectural consensus (2–3 Plan teammates with different framings). |
-| `--review-external` | no | After writing the plan doc, run Gemini + Codex CLIs in parallel to review it. Requires `gemini` and `codex` installed and authenticated. Produces a `_reviews.md` sibling file. |
+| `--review-external` | no | After drafting the plan, run the runtime advisor board to review it. Uses `phase-loop advisor-board` and its selected subscription CLIs; follow `<harness>-advisor-board` for native fills. Produces a `_reviews.md` sibling file. |
 
 Repos may supply a phase alias table (JSON file) via `$PLAN_PHASE_ALIASES` or fall back to the built-in `P1`–`P7` table. If the alias isn't recognized and no custom table is set, stop and ask via `AskUserQuestion` with the actual spec headings.
 
@@ -147,8 +147,8 @@ Invocation examples:
 
 The skill references these `_shared/` helpers. Each degrades gracefully if absent:
 
-- `_shared/next_reflection_path.py` — legacy helper only; current closeout writes reflections to `resolve_skill_bundle_root("codex")/<harness>-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`.
-- `_shared/review_with_cli.py` — required only for `--review-external`. No fallback; if absent, surface an `AskUserQuestion` with `[skip review this run, abort]`.
+- `_shared/next_reflection_path.py` — legacy helper only; current closeout writes reflections to `resolve_skill_bundle_root("claude")/<harness>-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`.
+- External review uses `phase-loop advisor-board <plan-path> --json`, not the absent `_shared/review_with_cli.py` helper.
 - `_shared/scaffold_docs_catalog.py` — used by `SL-docs.1`. If absent, the docs lane records "docs-catalog rescan helper unavailable; manual catalog audit" in its commit message and proceeds.
 
 ## Deferred tool preloading
@@ -182,7 +182,7 @@ The predecessor is `<harness>-phase-roadmap-builder` (first phase planned agains
 
 **Phase name**: short alias → fuzzy match → 0 matches: stop + ask → multiple matches: stop + disambiguate.
 
-**PHASE_ALIAS**: the resolved short alias in lowercase (e.g., `p1`). If none exists, use `phase-<N>`.
+**PHASE_ALIAS**: the exact uppercase alphanumeric alias declared by the roadmap heading (e.g., `P1`). Never lowercase it or invent a `phase-<N>` alias; repair a missing heading alias before planning.
 
 **Output path**: `--output` override, else `plans/phase-plan-<VERSION>-<PHASE_ALIAS>.md`.
 
@@ -260,11 +260,11 @@ Otherwise walk the Lane validation checklist by hand and note manual verificatio
 
 ### Step 7.75 — Advisor review
 
-After the plan doc is drafted in the scratch file and before `ExitPlanMode`, call `advisor()`. Expect 1–4 contract-tightening suggestions per run, typically covering: under-specified freezes, asserted-but-unverified file paths, test-outline mechanism gaps, and spec-vs-contract conflicts. Apply the findings to the scratch draft before calling `ExitPlanMode`.
+After the plan doc is drafted in the scratch file and before `ExitPlanMode`, use an advisor tool only if the active session exposes it; otherwise use the explicitly requested external board path below or record that optional advisory input was unavailable. Expect 1–4 contract-tightening suggestions per run, typically covering: under-specified freezes, asserted-but-unverified file paths, test-outline mechanism gaps, and spec-vs-contract conflicts. Apply the findings to the scratch draft before calling `ExitPlanMode`.
 
 ### Step 7.5 — External CLI review (only if `--review-external`)
 
-Run `_shared/review_with_cli.py` against the plan with this skill's `assets/review_prompt.md`, writing `plans/phase-plan-<VERSION>-<PHASE_ALIAS>_reviews.md`. The command, the empty-cache path and the message to the user are in [references/interactive-workflow.md](references/interactive-workflow.md).
+Run `phase-loop advisor-board <plan-path> --json` and follow `<harness>-advisor-board` for native-fill handling. Save the result to the `_reviews.md` sibling; unavailable or failed legs are incomplete evidence. The old two-CLI helper and frontier cache are not shipped by this runtime.
 
 ### Step 8 — ExitPlanMode
 
@@ -334,13 +334,13 @@ After `ExitPlanMode` is approved, before exiting:
 6. Rerun `git status --short -- plans/phase-plan-<VERSION>-<PHASE_ALIAS>.md` and report `Artifact state: staged|tracked|modified|unstaged|blocked`.
 7. Do not commit unless the user explicitly asked for a commit.
 
-When the generated plan is ready to execute, set `Next phase: <PHASE_ALIAS> - execution ready` and `Next command: /<harness>-execute-phase <PHASE_ALIAS>`. If execution should not start yet, set `Next phase: <PHASE_ALIAS> - blocked: <reason>` and `Next command: none - <reason>`.
+When the generated plan is ready to execute, set `Next phase: <PHASE_ALIAS> - execution ready` and `Next command: /<harness>-execute-phase <plan-doc-path>`. If execution should not start yet, set `Next phase: <PHASE_ALIAS> - blocked: <reason>` and `Next command: none - <reason>`.
 
 ## Close-out — Reflection + Handoff
 
 After artifacts are staged or confirmed tracked (staging comes first unless the user explicitly forbade it), the orchestrator writes two files with the Write tool:
 
-- FILE 1, a repo-agnostic reflection to `resolve_skill_bundle_root("codex")/<harness>-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. It is about how the skill's instructions performed, and must not name this project, codebase, filenames or domain.
+- FILE 1, a repo-agnostic reflection to `resolve_skill_bundle_root("claude")/<harness>-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. It is about how the skill's instructions performed, and must not name this project, codebase, filenames or domain.
 - FILE 2, the repo-specific handoff at the per-repo `latest.md` slot for `<harness>-plan-phase`, which overwrites any prior handoff from this skill in the same repo. Its frontmatter carries `from`, `timestamp`, `artifact`, `artifact_state`, `next_skill`, `next_command` and `next_phase`.
 
 Path resolution, both templates, the optional fresh-context close-out agent and the final message to the user are in [references/closeout-reflection-handoff.md](references/closeout-reflection-handoff.md).
@@ -374,13 +374,13 @@ Generated plans must contain machine-checkable verification commands and an effe
 
 ### Manifest write
 
-After the plan artifact and repo-local handoff path are known, perform a best-effort `plan-manifest append` through `phase_loop_runtime.plan_manifest.append_entry`. Append a `type=phase` entry with `status=committed`, `slug`, `file`, `created_at`, `owner_skill=<harness>-plan-phase`, `handoff_ref`, `roadmap_ref`, `phase_alias`, `if_gates_produced`, and `lanes`. Resolve paths with `phase_loop_runtime.skill_paths` helpers and keep the manifest write best-effort during the dual-mode window: failures are non-fatal, emit a ledger warning, and are mentioned in the mandatory reflection without changing the existing plan closeout result.
+After the plan artifact and repo-local handoff path are known, perform a best-effort Python API append through `phase_loop_runtime.plan_manifest.append_entry`. Append a `type=phase` entry with `status=committed`, `slug`, `file`, `created_at`, `updated_at`, `owner_skill=<harness>-plan-phase`, `handoff_ref`, `roadmap_ref`, `phase_alias`, `if_gates_produced`, and `lanes`. Resolve paths with `phase_loop_runtime.skill_paths` helpers and keep the manifest write best-effort during the dual-mode window: failures are non-fatal, emit a ledger warning, and are mentioned in the mandatory reflection without changing the existing plan closeout result.
 
 A legacy `plans/manifest.json` using the `schema`/`entries` layout raises `unsupported manifest schema_version: 0`; treat that exact error as the expected non-fatal case (warn, do not block or migrate in place). `phase_loop_runtime` may resolve from the installed dotfiles runtime on `PYTHONPATH` even when the target repo neither vendors nor installs it — use the importable package; a missing repo-local checkout is not a blocker.
 
 Closeout payload shape is defined by `EmitPhaseCloseout` in `phase_loop_runtime/baml_src/emit_phase_closeout.baml` (if that path is absent in the checkout, use the operator/prompt-supplied field contract or the installed `phase_loop_runtime` package — the missing vendored BAML source is not a blocker); keep skill text focused on value selection and handoff routing, not duplicated field ceremony.
 
-Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("codex")/<harness>-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
+Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("claude")/<harness>-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
 
 ## GOVLEAN Policy
 

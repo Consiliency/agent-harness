@@ -50,7 +50,7 @@ handoff roots, helper roots, and reflection roots.
 4. Validate that it contains non-empty `## Changes`, `## Verification`, and
    `## Acceptance criteria` sections.
 5. Best-effort mark the detailed plan manifest entry as `executing` through
-   `phase_loop_runtime.plan_manifest.update_lifecycle` (`plan-manifest append`)
+   `phase_loop_runtime.plan_manifest.update_lifecycle`
    after plan validation and before source edits. Use `by=<harness>-execute-detailed`
    and metadata that identifies the run and plan artifact. Manifest lifecycle
    failures emit ledger/reflection warnings only and do not abort execution
@@ -93,7 +93,7 @@ Before reporting a successful closeout, require the runner-owned verification ar
 During closeout, best-effort call `phase_loop_runtime.plan_manifest.update_lifecycle` with `completed` when verification and acceptance passed, or `failed` when verification failed, acceptance was unmet, or closeout found non-plan output. Include verification metadata, reflection metadata, dirty-path classification, and the final diagnostic in the lifecycle event. Manifest lifecycle failures are non-fatal during the dual-mode window: emit a ledger warning, record the failure in the mandatory reflection, and preserve the existing detailed executor closeout.
 
 Before final response, write a reflection for every non-trivial run. Write it to
-`resolve_skill_bundle_root("codex")/<harness>-execute-detailed/reflections/<repo_hash>/<branch_slug>/<run_id>.md`.
+`resolve_skill_bundle_root("gemini")/<harness>-execute-detailed/reflections/<repo_hash>/<branch_slug>/<run_id>.md`.
 The reflection must include `## Run context` with skill name, ISO timestamp,
 repo, branch, commit, and artifact path, followed by `## What worked`,
 `## What didn't`, and `## Improvements to SKILL.md`. Skip only when no artifact

@@ -7,7 +7,7 @@ description: "Harness-optimized roadmap planner. Use when the user wants to turn
 
 Builds a multi-phase roadmap that downstream `<harness>-plan-phase` can turn into implementation lanes. This is the Harness port of the Claude-oriented roadmap builder; do not edit or depend on the original skill at runtime.
 
-`shared/phase-loop/protocol.md` is the canonical shared contract for roadmap
+`phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`) is the canonical shared contract for roadmap
 closeout `automation:` metadata, including `next_skill`, `next_command`, and
 `verification_status`.
 
@@ -148,11 +148,11 @@ Add a machine-readable automation handoff that agrees with the human-readable ne
 
 Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("codex")/<harness>-phase-roadmap-builder/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
 
-If no phase should be planned next, set `next_skill: none`, `next_command: none`, `next_model_hint: none`, and keep `automation.status=complete` when the roadmap is complete or `automation.status=blocked` when progress needs a human decision. Blocked access or decision cases must use the frozen blocker taxonomy from `<harness>-config/shared/runtime-state.md`, include redacted `access_attempts` when relevant, and set `required_human_inputs` to non-secret requested inputs only.
+If no phase should be planned next, set `next_skill: none`, `next_command: none`, `next_model_hint: none`, and keep `automation.status=complete` when the roadmap is complete or `automation.status=blocked` when progress needs a human decision. Blocked access or decision cases must use the frozen blocker taxonomy from `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths`, include redacted `access_attempts` when relevant, and set `required_human_inputs` to non-secret requested inputs only.
 
 Manual TUI runs remain valid without the outer phase loop. When `.phase-loop/` exists, treat it as the authoritative runner state; legacy `.codex/phase-loop/` files are compatibility artifacts only and must not block or supersede canonical `.phase-loop/` state. When canonical `.phase-loop/state.json` or `tui-handoff.md` lags behind the newer `.phase-loop/events.jsonl` plus live git topology, reconcile current phase state from the ledger and `git status --short`/HEAD and cite that reconciliation; stale handoff text is not blocking. Only append a legacy `manual` source event to `.codex/phase-loop/events.jsonl` for standalone manual compatibility when no canonical `.phase-loop/` runtime exists, using the same `automation.status`, `next_skill`, `next_command`, `next_model_hint`, `next_effort_hint`, `human_required`, `blocker_class`, `blocker_summary`, `required_human_inputs`, `verification_status`, `artifact`, and `artifact_state` values.
 
-Resolve closeout writes through the `phase_loop_runtime.skill_paths` resolver as the primary source — `resolve_handoff_root(repo)` for the handoff root and `resolve_reflection_root(skill_name)` for reflection roots; fall back to the repo-local `shared/phase-loop/handoff_path.py` resolver only when `phase_loop_runtime` is not importable. Legacy harness handoff roots are read only for migration. Follow `<harness>-config/shared/runtime-state.md` and use Harness paths only:
+Resolve closeout writes through the `phase_loop_runtime.skill_paths` resolver as the primary source — `resolve_handoff_root(repo)` for the handoff root and `resolve_reflection_root(skill_name)` for reflection roots; if `phase_loop_runtime` is not importable, restore the pinned runtime before writing state. Legacy harness handoff roots are read only for migration. Follow `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths` and use Harness paths only:
 
 - Reflection: `resolve_skill_bundle_root("codex")/<harness>-phase-roadmap-builder/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
 - Handoff: `<repo>/.dev-skills/handoffs/<harness>-phase-roadmap-builder/<run_id>.md`

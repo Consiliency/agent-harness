@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# allocate_worktree_name.sh — emit a collision-impossible worktree name
+# allocate_worktree_name.sh — emit a randomized worktree name
 # for a swim-lane teammate.
 #
 # Usage:
@@ -8,12 +8,12 @@
 #     <sl-id>   Lane identifier, e.g. "sl-1" or "sl-2b".
 #
 # Emits exactly one line to stdout:
-#     lane-<sl-id>-<UTC-YYYYMMDDHHMMSS>-<4char-random>
+#     lane-<sl-id>-<UTC-YYYYMMDDTHHMMSS>-<4char-random>
 #
 # Rationale: the default `lane-<sl-id>` naming is not unique across rapid
 # consecutive dispatch of in-process teammates — two teammates spawned in
 # the same message can race on the same EnterWorktree slot. The 4-char
-# random suffix + UTC timestamp eliminates the race by construction.
+# random suffix + UTC timestamp reduces collision risk; it is not a reservation or a uniqueness guarantee.
 
 set -euo pipefail
 

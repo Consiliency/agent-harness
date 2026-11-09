@@ -32,15 +32,15 @@ every issue at once):
 
   (D) `Owned files` globs across ### SL-N sections are disjoint.
         If run inside a git repo, expand each glob via `git ls-files`
-        and check for overlap. Otherwise fall back to textual prefix
-        comparison — flag any exact glob duplication and warn about
-        unresolvable cases.
+        and check for overlap. Otherwise check exact glob duplication only; no prefix
+        overlap proof is performed without tracked-file expansion.
 
   (E) Every `impl` task row in a lane's task table has a preceding
       `test` task in the same lane.
 
-  (F) Every `Interfaces consumed` entry either appears in some upstream
-      lane's `Interfaces provided` or is tagged "(pre-existing)".
+  (F) WARN when an `Interfaces consumed` entry is absent from every lane
+      and is not tagged "(pre-existing)". The separate (O) runtime-IR
+      check validates producer dependency edges when importable.
 
 Design: zero external deps (stdlib only). Parses markdown by regex on
 stable headings produced by the claude-plan-phase template — not a full
@@ -244,7 +244,7 @@ def _split_inline_items(raw: str) -> List[str]:
 def _parse_task_table(body: str) -> List[dict]:
     """Parse the markdown task table out of a lane body.
 
-    Expected header (case-insensitive):
+    Expected header (case-sensitive tokens):
       | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
     """
     rows: List[dict] = []

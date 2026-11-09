@@ -11,7 +11,10 @@ Reference for `claude-plan-detailed` (linked from its `SKILL.md`, Step 8).
 
 
 ```bash
-REFLECTION_PATH=resolve_skill_bundle_root("codex")/claude-plan-detailed/reflections/<repo_hash>/<branch_slug>/<run_id>.md
+SKILL_ROOT=$(python3 -c 'from phase_loop_runtime.skill_paths import resolve_skill_bundle_root; print(resolve_skill_bundle_root("claude"))')
+# Set these to the current run's repo hash, branch slug and unique run ID.
+: "${REPO_HASH:?set REPO_HASH}" "${BRANCH_SLUG:?set BRANCH_SLUG}" "${RUN_ID:?set RUN_ID}"
+REFLECTION_PATH="$SKILL_ROOT/claude-plan-detailed/reflections/$REPO_HASH/$BRANCH_SLUG/$RUN_ID.md"
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 REPO_LOCAL_HANDOFF=$(python3 - <<'PYH'
 from pathlib import Path
@@ -31,7 +34,7 @@ except Exception:
 PYH
 )
 mkdir -p "$(dirname "$REPO_LOCAL_HANDOFF")"
-SKILL_MD=resolve_skill_bundle_root("codex")/claude-plan-detailed/SKILL.md
+SKILL_MD="$SKILL_ROOT/claude-plan-detailed/SKILL.md"
 ```
 
 ## Close-out agent

@@ -16,11 +16,11 @@ parsing, model policy, event writing, or execution logic.
 Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, handoff roots, helper roots, and reflection roots.
 
 - Use the installed repo command: `<harness>-phase-loop`. Non-Harness
-  control planes should use the neutral `<harness>-config/bin/phase-loop` command.
+  control planes should use the neutral `phase-loop` command.
 - Prefer the outside-TUI runner for full-roadmap execution; this TUI bridge keeps interactive `run` calls bounded and operator-driven.
 - Preserve manual TUI use of `<harness>-phase-roadmap-builder`, `<harness>-plan-phase`, and `<harness>-execute-phase`; this bridge is optional operator convenience.
 - Do not edit OpenCode skills, broaden operator docs, create cloud resources, retrieve secrets, commit, push, merge, or discard unrelated work.
-- Before reporting a human-required access blocker, inspect repo-local docs/config and safe metadata from available CLIs named in `<harness>-config/shared/runtime-state.md`. Never print secret values.
+- Before reporting a human-required access blocker, inspect repo-local docs/config and safe metadata from available CLIs named in `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths`. Never print secret values.
 - If the CLI is missing or its commands differ from this skill, stop and return to the RUNNER phase instead of guessing behavior.
 
 ## Inputs
@@ -42,7 +42,7 @@ Optional flags may be passed through when requested: `--repo`, `--roadmap`, `--p
 2. Confirm `<harness>-phase-loop --help` lists `status`, `resume`, `run`, `dry-run`, and `maintain-skills`.
 3. For commands that need a roadmap, let the CLI discover it unless the user supplied `--roadmap`; do not reimplement roadmap or phase selection in the skill text.
 4. If unrelated dirty work overlaps files the runner would modify, report `human_required=true` with `blocker_class=dirty_worktree_conflict` instead of continuing.
-5. **Branch-governance preflight (issue #83).** In pipeline-mode with branchgov on (the default), a dispatch switches to `consiliency/pipeline/<v>` cut from `origin/main`. If the roadmap is committed only on the operator's own branch (unpushed / ahead of `origin/main`), the runtime guard refuses cleanly with a `branch_sync_conflict` blocker (`human_required=true`) rather than crashing — push the roadmap to the base, or pass `--allow-branchgov` to switch anyway (it then still fails cleanly if the roadmap isn't on the base). The runtime guard is the authoritative fail-safe; see `docs/phase-loop/branchgov-preflight.md`.
+5. **Branch-governance preflight (issue agent-harness#83).** In pipeline-mode with branchgov on (the default), a dispatch switches to `consiliency/pipeline/<v>` cut from `origin/main`. If the roadmap is committed only on the operator's own branch (unpushed / ahead of `origin/main`), the runtime guard refuses cleanly with a `branch_sync_conflict` blocker (`human_required=true`) rather than crashing — push the roadmap to the base, or pass `--allow-branchgov` to switch anyway (it then still fails cleanly if the roadmap isn't on the base). The runtime guard is the authoritative fail-safe; see `docs/phase-loop/branchgov-preflight.md`.
 
 
 ## Runner Evidence Contract
@@ -216,7 +216,7 @@ reason-coded.
 
 ## Human-Required Blockers
 
-When the CLI reports or implies `human_required=true`, preserve its `blocker_class`, `blocker_summary`, `required_human_inputs`, `access_attempts`, and `automation.status` in the final response. If the blocker is access-related and the CLI did not already record safe probes, perform metadata-only probes from `<harness>-config/shared/runtime-state.md` before asking the user to act.
+When the CLI reports or implies `human_required=true`, preserve its `blocker_class`, `blocker_summary`, `required_human_inputs`, `access_attempts`, and `automation.status` in the final response. If the blocker is access-related and the CLI did not already record safe probes, perform metadata-only probes from `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths` before asking the user to act.
 
 If `.phase-loop/tui-handoff.md` exists, use its plain-language blocker
 summary and required action as the user-facing explanation, then verify exact

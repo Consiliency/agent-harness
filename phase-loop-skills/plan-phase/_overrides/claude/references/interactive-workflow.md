@@ -126,18 +126,10 @@ Applied by the main thread after `--consensus` Step 3a:
 
 ## Step 7.5 — External CLI review
 
-Run the shared review script:
-
-```bash
-python3 "$(git rev-parse --show-toplevel)/.claude/skills/_shared/review_with_cli.py" \
-  --artifact plans/phase-plan-<VERSION>-<PHASE_ALIAS>.md \
-  --prompt-file "$(git rev-parse --show-toplevel)/.claude/skills/claude-plan-phase/assets/review_prompt.md" \
-  --out plans/phase-plan-<VERSION>-<PHASE_ALIAS>_reviews.md
-```
-
-If the script reports the frontier-model cache is empty, it prints a discovery prompt to stderr. Surface to the user via `AskUserQuestion` with options `[run discovery now, skip review this run, abort]`.
-
-Tell the user: "Review written to `plans/phase-plan-<VERSION>-<PHASE_ALIAS>_reviews.md`. When Gemini and Codex flag the same concern, treat it as real; divergent comments are context, not verdicts."
+Run `phase-loop advisor-board <plan-path> --json` and follow
+`claude-advisor-board` for native-fill handling. Save the result to the
+`_reviews.md` sibling. This is the runtime-composed board; do not invoke the
+absent `_shared/review_with_cli.py` or its frontier-cache discovery path.
 
 ## Manual hand-off (when `claude-execute-phase` is unavailable)
 

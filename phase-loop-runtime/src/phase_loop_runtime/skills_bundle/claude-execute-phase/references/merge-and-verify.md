@@ -2,6 +2,12 @@
 
 Reference for `claude-execute-phase` (linked from its `SKILL.md`). Read it when a lane reports done and through final verification. Read "Browser verification" earlier, at plan intake in both modes, when any test needs a browser.
 
+Resolve the installed helper directory before running shell examples:
+
+```bash
+SKILL_DIR=$(python3 -c 'from phase_loop_runtime.skill_paths import resolve_skill_bundle_root; print(resolve_skill_bundle_root("claude") / "claude-execute-phase")')
+```
+
 ## Contents
 
 - Step 6 — Gate verification
@@ -32,7 +38,7 @@ Detects two isolation failure modes before merge: (a) teammate writes landing in
 
 Run:
 ```bash
-bash scripts/parent_tree_leakage_check.sh <lane-id> <owned-globs-file> <merge-target>
+bash "$SKILL_DIR/scripts/parent_tree_leakage_check.sh" <lane-id> <owned-globs-file> <merge-target>
 ```
 
 Verdicts (emitted on stdout; details on stderr):
@@ -60,10 +66,13 @@ Verdicts (emitted on stdout; details on stderr):
 **Cross-lane file-touch audit.** Before the destructiveness check, run:
 
 ```bash
-python scripts/audit_lane_file_touches.py <lane-sha> <plan-doc-path> <this-lane-id>
+python "$SKILL_DIR/scripts/audit_lane_file_touches.py" <lane-sha> <plan-doc-path> <this-lane-id>
 ```
 
-**Parser contract.** After matching the `**Owned files**:` heading, the parser walks subsequent deeper-indented bullets until the next sibling bullet or blank line and accumulates backticked tokens. Both inline form (`- **Owned files**: \`path/one\`, \`path/two\``) and nested-bullet form (heading followed by `  - \`path/one\``) are supported. A unit test covering both formats ships alongside the script.
+**Parser contract.** The shipped auditor reads backticked tokens on the same
+line as `- **Owned files**:` and numeric `### SL-N` sections. Nested bullets
+are not supported. Check the command's exit status first: missing input or an
+unknown lane is an error, not a verdict.
 
 Verdicts:
 
@@ -71,15 +80,18 @@ Verdicts:
 - **`PEER_INTRUSION`** → the lane touched files owned by another lane. Stderr lists peer + files. Pause on `AskUserQuestion`: merge anyway, bounce the lane, or ask the teammate to revert the peer edits.
 - **`ORPHAN_FILES`** → the lane touched files outside every lane's globs. Surface to user — likely plan or impl bug.
 
-**Pre-merge destructiveness check** — lanes that committed against a stale base can wipe peer-lane work on `--no-ff` merge. Use the three-outcome script:
+**Pre-merge destructiveness check** — inspect lane-side deletions separately from tip-to-tip differences; a stale tip difference alone does not establish the result of a three-way merge. Use the three-outcome script:
 
 ```bash
-bash scripts/pre_merge_destructiveness_check.sh <lane-sha> <merge-target> <whitelist-path>
+bash "$SKILL_DIR/scripts/pre_merge_destructiveness_check.sh" <lane-sha> <merge-target> <whitelist-path>
 ```
 
 Where `<whitelist-path>` is a file (one path per line) of deletions the lane legitimately performs per its plan section; `/dev/null` if the lane is purely additive.
 
-The script (or a sibling) also runs an ADDITION-side check mirroring the deletion check: flag commits that ADD more than N files (default ~50) or more than M lines outside the lane's owned globs. Out-of-scope adds surface as a verdict alongside deletions to catch lanes that wandered.
+The shipped helper compares deletion lists only; it does not implement an
+addition-count or added-line threshold. Use the owned-file auditor for scope.
+Validate both Git refs and the merge base before invoking the deletion helper;
+its verdict alone is not proof that a three-way merge is safe.
 
 Verdicts:
 
@@ -115,7 +127,7 @@ if [[ -n "$packages" ]]; then
 fi
 ```
 
-On non-zero exit, the merge broke package load. Unwind with `git reset --hard HEAD~`, then retry per Step 8. Second failure halts the phase.
+On non-zero exit, diagnose the import failure against the merge and base. Preserve the failed state and report it; do not reset away work. Repair within the active lane or follow explicitly authorized recovery, then re-run the same check. A second failure halts the phase.
 
 **Post-merge cleanup.** First, `cd "$(git rev-parse --show-toplevel)"` so subsequent Bash calls survive. Then `git worktree remove --force` any worktrees the lane used. `git branch -D` (not `-d`) every lane branch — salvaged work leaves branches unreachable from the merge target. If Step 6.5 returned `PARENT_ON_WRONG_BRANCH`, `git checkout <merge-target>` in the parent BEFORE removing worktrees.
 
@@ -141,7 +153,7 @@ After all lanes merged:
 1. Run every command under the plan doc's `## Verification` section against the merged tree.
 2. Run every assertion under `## Acceptance Criteria` that can be mechanically checked.
 3. **Team teardown**. Try `TeamDelete` first. If it blocks (in-process teammates ignore `shutdown_request`), fall back to filesystem cleanup: `bash scripts/team_teardown.sh phase-<alias>` (rm on `the Claude home directory/teams/<team>/` + `the Claude home directory/tasks/<team>/`).
-4. **Kill leftover background processes**. Run `ps aux | grep -E "next dev|node.*dev"` and `kill` any stragglers spawned by lane teammates.
+4. **Kill leftover background processes**. Stop only recorded process/job handles created by this run; do not identify ownership from a broad process-name match.
 5. **Clean-tree verification**. Run `git status`. After successful completion the tree must be clean (lane merges are the only changes, and they're committed). Allowlist: `.claude/worktrees/`, `.claude/claude-execute-phase-state.json`. Anything else → stop and surface.
 6. Emit final summary:
    - Lanes merged (with merge-commit SHAs)
@@ -171,7 +183,7 @@ To prune a SAFE worktree:
 
 **Permission-locked fallback (gotcha).** Worktrees whose `node_modules` (or other build output) was installed under a **different uid** — e.g. CI-offload / rootless-docker runs — are permission-locked. `git worktree remove --force` and a plain `rm -rf` will FAIL with `Permission denied`. When removal fails on permissions, fall back to `sudo rm -rf <path>` (or re-run the cleanup as the installing uid), then `git worktree prune` to drop the now-dangling administrative entry, then `git branch -D <branch>`. Do not treat a permission-denied removal as "KEEP" — it is still SAFE; it just needs the elevated path.
 
-An idempotent helper is available: `bash "$(git rev-parse --show-toplevel)/.claude/skills/claude-execute-phase/scripts/prune_merged_worktrees.sh"` (pass `--dry-run` to preview). It encodes exactly the MERGED+CLEAN criterion and the `sudo rm -rf` fallback above and is safe to re-run.
+An idempotent helper is available: `bash "$SKILL_DIR/scripts/prune_merged_worktrees.sh"` (pass `--dry-run` to preview). It applies its MERGED+CLEAN checks and confines the permission-only `sudo -n` fallback to its approved worktree base; intentional locks and other errors are preserved.
 
 
 ## Output contract
@@ -202,7 +214,7 @@ On halt:
 │   └── claude-execute-phase-state.json
 ```
 
-Both paths are auto-added to `.gitignore` in Step 2.
+The preflight checks `.gitignore` but does not edit it. Add only the run-owned operational paths when the active workflow authorizes that edit.
 
 ## Browser verification
 

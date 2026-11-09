@@ -6,8 +6,9 @@ disjoint-owned-files contract.
 Usage:
     audit_lane_file_touches.py <lane-sha> <plan-doc-path> <this-lane-id>
 
-Emits EXACTLY one token on stdout, exit 0 always (verdict is on stdout
-for the orchestrator to act on):
+Valid invocations emit one verdict token and exit 0. Usage, missing-plan,
+and missing-lane errors exit 2; Git/subprocess failures may also exit non-zero.
+The orchestrator must check exit status before interpreting stdout:
 
   CLEAN
     - Every file touched by <lane-sha> (vs its first-parent ancestor)
