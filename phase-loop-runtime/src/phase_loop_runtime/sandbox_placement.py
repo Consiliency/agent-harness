@@ -2431,6 +2431,8 @@ class _FileLock:
         # With a deadline the kernel lock is never waited on: it is retried non-blocking.
         nonblocking = self.deadline is not None or not self.blocking
         while True:
+            if self.deadline is not None and self.deadline.expired():
+                return False
             try:
                 fcntl.flock(self.fd, fcntl.LOCK_EX | (fcntl.LOCK_NB if nonblocking else 0))
                 self.held = True
