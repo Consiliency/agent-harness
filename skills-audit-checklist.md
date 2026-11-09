@@ -112,3 +112,15 @@ Cross-cutting correction: legacy dotfiles-only protocol/runtime-state paths now 
 Runtime-data observation: `build_bundle.PRESERVE_LITERALS` does not recognize the current Claude regular-tier literal, and its preservation test requires an old display name to occur in prose. Source guidance resolves `CLAUDE_REGULAR_MODEL` and labels the old attribution as historical; runtime/test registry changes are outside this docs-only slice.
 
 Ad hoc parser verification passed for all three non-Claude phase templates. The planning examples include both task bullets consumed by `plan_ir._task_set` and the task tables consumed by the shipped document validator.
+
+## Cross-review edits B1–B5
+
+Rebased onto `origin/main` at `4a4bec079f32bbac4e224987583dc4e6586bf5ac` after the APPROVE-WITH-EDITS review of `6913f247`.
+
+- B1: documented Channel as the interactive default (`default_channel`), explicit CI routing and opt-in Agent View, matching `launcher.resolve_claude_route`.
+- B2: restored `EXECUTE_MAX_PARALLEL_LANES=4` in both references; no default behavior change.
+- B3: reconciled numeric documentation lanes, optional repo catalogs, and warning-only `.gitignore` coverage.
+- B4: swept source prose and embedded snippets to the real `phase_loop_runtime.handoff_path.resolve_handoff_path` module.
+- B5: removed the release pin and uv-build claim, corrected agy `-p`, removed the dangling rebase instruction, and documented identity inputs. `discovery.repo_identity` supplies repo hash and branch slug; the run ID comes from the active runner or a unique manual-run allocation.
+- Regenerated 11 neutral skills and 48 packaged skill directories with both supported tools. Launch-spec golden regeneration produced no further changes.
+- Serial targeted checks under `timeout`: 17 passed, including bundle parity, drift and launch-spec checks. No executable behavior changes.
