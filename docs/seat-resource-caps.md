@@ -80,7 +80,7 @@ test environment is installed, run:
 PHASE_LOOP_SEAT_CAPS_PROBE=1 \
 PYTEST_ADDOPTS= \
 PYTHONPATH="$PWD/phase-loop-runtime/src:$PWD/phase-loop-runtime/tests" \
-python -m pytest -p no:cacheprovider -q \
+timeout 300 phase-loop-runtime/.venv/bin/python -m pytest -p no:cacheprovider -q \
 phase-loop-runtime/tests/test_seat_resource_caps.py -k host_probe
 ```
 
