@@ -18,13 +18,11 @@ roadmap amendment makes its v2 intake and version-window scope explicit, preserv
 the DAG/advisory status and SCHEMA v1 history. The supported worker is explicitly
 probe-free; ENVELOPE's future WORKER handoff and roadmap seal are reconciled.
 
-Work-start gate: SCHEMA implementation agent-harness#1839 must land with the
-reviewed agent-harness#1838 plan and IF-0-SCHEMA-1 receipt; a plan merge alone is
-insufficient. Also require IF-0-WORKER-1 and IF-0-JOURNAL-1. They are upstream
-interfaces, not claims about today's tree. Until then status is blocked,
-blocker_class=upstream_phase_unmet, human_required=false. Reconcile actual landed
-APIs and file ownership before execution; amend this plan if they differ. Do not
-freeze a predicted merge SHA or mutate SCHEMA's receipt to accelerate adoption.
+SCHEMA, IF-0-WORKER-1 and IF-0-JOURNAL-1 have landed. Their receipts establish
+the recorded local scope, not public-v2 or installed-provider qualification.
+The pre-build sweep is `plans/artifacts/v12-CLOSEOUT-landed-sweep.md`; its STOP
+items require coordinator decisions before execution. Preserve SCHEMA history
+and resolve the receipt and JOURNAL echo boundaries without widening lane scope.
 
 No implementation, tests, provider runs, external review dispatch, upstream edit,
 release or merge is performed by this planning PR. Execution stays sequential.
@@ -37,7 +35,8 @@ The sole new contract revision is the untagged Consiliency/consiliency-contract
 publication pinned by full commit in the artifact below. Per-file SHA-256/blob IDs,
 independent verification, corpus counts and detailed requirements are frozen in
 `plans/artifacts/v12-CLOSEOUT-inputs.md`; the manifest frozen_inputs extension
-seals that artifact. Read it in full before implementation. Publication ACK is
+seals that artifact. Its sha256 is `54abdc361af601f74e6459bbcf39787ef1bb4b9677ed8b98b275271baf9bed70`.
+Read it in full before implementation. Publication ACK is
 not runtime evidence. SCHEMA's original v1 inputs remain separately pinned.
 
 Vendor the eleven approved v2 resources, retaining all five frozen v1 payloads
@@ -293,14 +292,13 @@ panel/launcher/review_stage and dependency-routing code remain unchanged; their
 routes are not adopted. New modules are auto-discovered; no __init__ export is
 needed. No skill text/bundle is edited. If upstream WORKER/JOURNAL introduces
 additional companions or snapshots, enumerate them by amendment before work.
-The archived SCHEMA artifact/receipt retain their original input hashes. Rebase
-integration must refresh its plan's roadmap_sha256 against the final roadmap
-and validate it before execution; it is absent on this branch. ENVELOPE's plan
-seal and probe handoff are repaired here. CLOSEOUT owns a new path-keyed input
+The archived SCHEMA artifact/receipt retain their original input hashes. SCHEMA's plan is now present; its historical roadmap seal and receipt remain
+inputs, not files to rewrite during CLOSEOUT. ENVELOPE's plan seal and probe
+handoff were repaired by the original CLOSEOUT planning change. CLOSEOUT owns a new path-keyed input
 seal; historical receipt verification uses its recorded module blob.
 
-Next phase: CLOSEOUT — blocked pending landed SCHEMA and WORKER/JOURNAL gates.
-Next command: none until upstream gates are verified; then
+Next phase: CLOSEOUT — blocked pending the sweep STOP decisions.
+Next command: none until those decisions are recorded; then
 `codex-execute-phase plans/phase-plan-v12-CLOSEOUT.md` under separate execution authority.
 
 ## Spec Closeout Plan

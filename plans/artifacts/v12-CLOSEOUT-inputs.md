@@ -462,3 +462,51 @@ these tested source/wheel routes only; other install routes remain unqualified.
 - V3: `phase-loop-runtime/tests/test_supervised_v2_readiness.py`
 
 All is the deduplicated union above; the wrapper refuses unknown groups and missing files.
+
+## Landed integration baseline — 2026-11-09 factual amendment
+
+Read `v12-CLOSEOUT-landed-sweep.md` before execution. SCHEMA, JOURNAL revision 5
+and WORKER have landed; this does not discharge their deferred public-v2 work.
+The production CLI's `_production_codec()` still returns None. The local call is
+`run_patch_return(prepared, *, config_bytes: bytes, state_root: Path,
+cancel: threading.Event | None = None) -> WorkerResult` in
+`convergence/adapters/patch_return.py`. It consumes admission itself, reserves
+JOURNAL itself, and reads the local fixture's top-level run/attempt/unit fields;
+those are not public-v2 envelope fields. Its final `before_spawn` callback runs
+inside `run_bounded_capture`. Do not consume its one-use token twice.
+
+The production launcher prefix is
+`seat_uid.trusted_module_argv("phase_loop_runtime.supervised_worker_cli", "launch")`,
+including the installation-root boot. WORKER contract §6's illustrative `python
+-I -m` spelling is not the production helper launch rule (agent-harness#1132,
+agent-harness#1957, agent-harness#1960). Preserve trusted helper identity and
+update all three launch/scratch/reference inventories for any new entry.
+
+JOURNAL's `reserve_attempt(root, identity, *, units, launch_digest,
+caller_context_sha256)` takes every named keyword. `open_journal_root` requires
+`create=`; status/cancel use False. `open_writer(root, reservation, *, limits=...)`
+returns a writer or JournalRefused. `state(state, *, worker_invocations)`,
+`event(phrase, *, refs=())` and `terminal(state, *, worker_invocations, termination,
+refusal, result_binding)` return ChainHead or JournalRefused; terminal's nullable
+arguments are still required. `close()` is idempotent. `read_attempt` may return
+None identity/units/writer. `attempt_status(root, attempt_id, *, observer=...)`
+adds liveness only for verified nonterminal history. `read_page(root, request:
+bytes, *, evidence)` requires assignment_digest, page_size 1..100 and nullable
+cursor; preserve its diagnostics and nullable next_cursor. Evidence resolution
+returns present, retention_dropped or unknown. A readable terminal is not an
+acknowledged append or work acceptance: missing anchor with journal_complete=False
+retains uncertainty (agent-harness#1954). WORKER emits only the closed JOURNAL
+phrases and digest refs; the digest of caller_context is not an echo payload API.
+
+The landed WORKER and JOURNAL receipts compare their source_hashes to live
+files. ENVELOPE does too; its original historical-receipt conversion requirement
+above remains pending. WORKER and JOURNAL exclude the shared seat inventory;
+new receipts must not pin it, CHANGELOG.md or other shared frequently changed
+surfaces. Existing shared documentation pins and the transition of historical
+receipt verification require the sweep's coordinator disposition. Preserve all
+recorded outcomes and receipt bytes while that decision is pending.
+
+The agy v2 record/catalog is a separate qualification system, not a v2 worker
+qualification receipt. Its verifier has no --source-only flag; --release runs
+strict conformance itself and requires a fresh --conformance-report output path.
+No release, route activation or qualification collection is authorized here.
