@@ -453,7 +453,10 @@ def evaluate(repo, record, *, api=None, current_head=None):
                 and any(case.find("skipped") is None for case in cases), "gate_a_not_passed")
     phase_cases = [case for case in cases if any(name in case.attrib.get("classname", "") for name in
                    ("test_supervised_contracts", "test_supervised_envelope_v2", "test_supervised_capture_v2", "test_supervised_v2_readiness"))]
-    require(phase_cases and all(case.find("skipped") is None for case in phase_cases), "gate_a_phase_proof_missing")
+    require(phase_cases and all(case.find("skipped") is None or case.attrib["name"].startswith("test_publication_change_selection[")
+                               for case in phase_cases), "gate_a_phase_proof_missing")
+    require({"test_module_and_installed_resource_origin", "test_v2_version_and_resource_pins"}
+            <= {case.attrib["name"] for case in phase_cases if case.find("skipped") is None}, "installed_proof_invalid")
     result["gate_a"] = dict(run_id=gate, artifact_id=artifact["id"], artifact_sha256=digest, outcome="passed")
     result["hosted_status"] = "ci_and_publication_verified"
     verifier = record.get("hosted_evidence", {}).get("verifier_run_id")

@@ -171,6 +171,17 @@ def test_v2_discard_closes_capture_and_spends_token(v2_operator):
     assert launch.consume_admission(attempt.prepared) == Refused("token_spent")
 
 
+def test_v2_qualification_lifetime_is_rechecked(v2_operator, monkeypatch):
+    import time
+    from phase_loop_runtime import supervised_launch as launch
+    attempt = build_v2_attempt(v2_operator)
+    expires = min(record["expires_at"] for record in attempt.binding.context.qualified_routes)
+    monkeypatch.setattr(time, "time", lambda: expires + 1)
+    assert recheck_launch_v2(attempt.capture, context=attempt.binding.context) == launch.Refused("launch_input_unbound")
+    assert attempt.capture._closed
+    launch.discard_admission(attempt.prepared)
+
+
 def test_v2_secret_rotation_keeps_both_commitments(v2_operator):
     from phase_loop_runtime.supervised_launch import discard_admission
     attempt = build_v2_attempt(v2_operator, secret=True)

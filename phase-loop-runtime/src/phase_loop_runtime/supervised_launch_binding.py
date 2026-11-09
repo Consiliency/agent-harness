@@ -180,6 +180,9 @@ def load_v2_context(binding: Path, *, workspace: Path, target: Path, reference_r
                       "transport_id", "executable_chain", "template_sha256", "qualification_sha256", "grants",
                       "credential_sources", "observed_versions"}
             _require(set(record) == fields, "binding_invalid")
+            _require(type(record["record_id"]) is str and bool(record["record_id"])
+                     and type(record["issuer_id"]) is str and bool(record["issuer_id"])
+                     and all(type(record[key]) in (int, float) for key in ("valid_from", "expires_at")), "binding_invalid")
             _require(record["policy_epoch"] == document["policy_epoch"]
                      and record["record_id"] not in document["revoked_record_ids"]
                      and record["valid_from"] <= now < record["expires_at"], "binding_invalid")

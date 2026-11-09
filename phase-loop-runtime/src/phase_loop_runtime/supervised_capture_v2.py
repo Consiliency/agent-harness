@@ -437,6 +437,12 @@ def recheck_launch_v2(capture: CapturedLaunch, *, context):
     from .supervised_launch import trusted_bytes
     try:
         _require(type(capture) is CapturedLaunch and not capture._closed and context is capture.context, "launch_input_unbound")
+        import time
+        now = time.time()
+        _require(all(record["policy_epoch"] == context.policy_epoch
+                     and record["record_id"] not in context.revoked_record_ids
+                     and record["valid_from"] <= now < record["expires_at"]
+                     for record in context.qualified_routes), "launch_input_unbound")
         spec = capture.spec
         _require(classify_workspace(spec.workspace, spec.target, spec.tier) == capture.workspace_identity, "launch_input_unbound")
         _require(sha256(canonicalize_v2(_walk_tree(spec.workspace, spec.aggregate_cap))).hexdigest() == capture._tree_digest,
