@@ -335,6 +335,7 @@ def test_worker_group_cleanup_and_escaped_pipe(tmp_path):
     import signal
     import time
     pidfile = tmp_path / "escape"
+    restore = _adopt_worker_children()
     source = ('import os,time; pid=os.fork(); '
               '\nif pid == 0:\n os.setsid(); '
               f'open({str(pidfile)!r},"w").write(str(os.getpid())); time.sleep(30)'
@@ -347,6 +348,126 @@ def test_worker_group_cleanup_and_escaped_pipe(tmp_path):
     finally:
         if pidfile.exists():
             try:
-                os.kill(int(pidfile.read_text()), signal.SIGKILL)
+                pid = int(pidfile.read_text())
+                os.kill(pid, signal.SIGKILL)
+                os.waitpid(pid, 0)
             except ProcessLookupError:
                 pass
+        restore()
+
+
+def _adopt_worker_children():
+    import ctypes
+    library = ctypes.CDLL(None, use_errno=True)
+    previous = ctypes.c_int()
+    assert library.prctl(37, ctypes.byref(previous), 0, 0, 0) == 0
+    assert library.prctl(36, 1, 0, 0, 0) == 0
+    return lambda: library.prctl(36, previous.value, 0, 0, 0)
+
+
+CAPTURE_CONTROLS = {
+    "proposal-cap": ('overflow = counts["stdout"] > request.proposal_cap', 'overflow = False'),
+    "stderr-digest": ('hashes[key.data].update(chunk)', 'hashes[key.data].update(chunk if key.data == "stdout" else b"")'),
+    "deadline-arm": ('deadline = time.monotonic() + request.timeout_seconds', 'deadline = time.monotonic() + 10'),
+    "drain-deadline": ('if remaining <= 0:\n                break', 'if remaining <= 0:\n                remaining = .05'),
+    "cancel-kill": ('elif cancel.is_set():', 'elif False and cancel.is_set():'),
+    "group-reclaim": ('os.killpg(process.pid, signal.SIGKILL)', 'None'),
+    "stdin-channel": ('request.stdin[offset:offset + 65536]', 'b""'),
+    "allowlist": ('and key in (allow | {"TMPDIR", "CLAUDE_CODE_TMPDIR"})', ''),
+    "before-spawn": ('if refusal is not None:', 'if False and refusal is not None:'),
+}
+for _name in sorted(capture_base.WORKER_ENV_DROP):
+    CAPTURE_CONTROLS["drop-" + _name] = (f'"{_name}"', '"unused-fixture-name"')
+for _prefix in capture_base.WORKER_ENV_DROP_PREFIXES:
+    CAPTURE_CONTROLS["prefix-" + _prefix] = (f'"{_prefix}"', '"unused-fixture-prefix"')
+
+
+def _capture_source_copy(monkeypatch, control):
+    import types
+    source = Path(capture_base.__file__).read_text()
+    old, new = CAPTURE_CONTROLS[control]
+    assert old in source
+    module = types.ModuleType("phase_loop_runtime.convergence.adapters._capture_copy")
+    module.__package__ = capture_base.__package__
+    module.__file__ = capture_base.__file__
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    prefix, tail = source.split("# Patch-return capture", 1)
+    assert old in tail
+    exec(compile(prefix + "# Patch-return capture" + tail.replace(old, new, 1), module.__file__, "exec"), module.__dict__)
+    return module
+
+
+def _capture_control_witness(module, control, tmp_path, monkeypatch):
+    from phase_loop_runtime import panel_invoker
+    event = threading.Event()
+    source, stdin, cap, duration = 'import os; os.write(1,b"x"*200); os.write(2,b"err")', b"", 100, .15
+    before = lambda: None
+    if control in ("deadline-arm", "cancel-kill", "group-reclaim"):
+        source = 'import time; time.sleep(.3)'
+    if control == "cancel-kill":
+        event.set()
+    if control == "stdin-channel":
+        stdin = b"fixture-instructions"
+        source = 'import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())'
+    if control == "before-spawn":
+        before = lambda: module.SpawnRefused("fixture-refused")
+    pidfile = tmp_path / "escape-mutant"
+    if control == "drain-deadline":
+        source = f'import os,time; pid=os.fork()\nif pid==0:\n os.setsid(); open({str(pidfile)!r},"w").write(str(os.getpid())); time.sleep(.3); os._exit(0)\nelse:\n time.sleep(.03)'
+    environment = module.worker_child_environment(frozenset())
+    if control.startswith(("drop-", "prefix-")) or control == "allowlist":
+        name = (control[5:] if control.startswith("drop-") else
+                control[7:] + "0" if control.startswith("prefix-") else "WORKER_FIXTURE_UNLISTED")
+        monkeypatch.setattr(module, "_child_environment", lambda: {name: "fixture-value"})
+        environment = module.worker_child_environment(frozenset() if control == "allowlist" else frozenset({name}))
+        source = 'import os; os.write(1, b"present" if ' + repr(name) + ' in os.environ else b"absent")'
+    count = []
+    original = panel_invoker.launch_owned
+    def launch(*args, **kwargs):
+        count.append(1)
+        assert stdin.decode() not in " ".join(args[0]) if stdin else True
+        return original(*args, **kwargs)
+    monkeypatch.setattr(panel_invoker, "launch_owned", launch)
+    kills = []
+    original_kill = os.killpg
+    def killed(pid, sig):
+        kills.append(pid)
+        return original_kill(pid, sig)
+    monkeypatch.setattr(os, "killpg", killed)
+    result = module.run_bounded_capture(module.CaptureRequest("fixture", (sys.executable, "-I", "-c", source),
+        tmp_path, duration, stdin, cap, environment), before_spawn=before, cancel=event)
+    if control == "before-spawn":
+        assert isinstance(result, module.SpawnRefused) and not count
+    elif control.startswith(("drop-", "prefix-")) or control == "allowlist":
+        assert result.proposal == b"absent"
+    elif control == "deadline-arm":
+        assert result.termination == "timed_out"
+    elif control == "cancel-kill":
+        assert result.termination == "cancelled"
+    elif control == "group-reclaim":
+        assert kills
+    elif control == "stdin-channel":
+        assert result.stdin_delivered and result.proposal == stdin
+    elif control == "drain-deadline":
+        assert not result.streams_complete
+    else:
+        assert result.proposal_overflow and result.proposal is None
+        assert result.stderr.sha256 == hashlib.sha256(b"err").hexdigest()
+
+
+@pytest.mark.parametrize("control", sorted(CAPTURE_CONTROLS))
+@pytest.mark.parametrize("mutated", [False, True], ids=["intact", "killed"])
+def test_worker_capture_source_controls(tmp_path, monkeypatch, control, mutated):
+    module = _capture_source_copy(monkeypatch, control) if mutated else capture_base
+    restore = _adopt_worker_children()
+    try:
+        if mutated:
+            with pytest.raises(AssertionError):
+                _capture_control_witness(module, control, tmp_path, monkeypatch)
+        else:
+            _capture_control_witness(module, control, tmp_path, monkeypatch)
+    finally:
+        pidfile = tmp_path / "escape-mutant"
+        if pidfile.exists():
+            os.waitpid(int(pidfile.read_text()), 0)
+        restore()
