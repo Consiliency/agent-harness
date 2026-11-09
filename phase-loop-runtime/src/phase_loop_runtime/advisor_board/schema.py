@@ -1,9 +1,8 @@
 """Advisor Board — frozen seat/board schema + vendor projection (IF-0-ABDFREEZE-1, -4).
 
-This module is the **interface freeze** for the model-first Advisor Board. It is
-additive and behavior-neutral: it introduces no runtime path and does not touch
-`panel_invoker`. Downstream phases (ABDREG / ABDRESOLVE / ABDHOME) code against
-the typed structures frozen here so the fan-out integrates without a big-bang.
+This module defines the model-first Advisor Board types consumed by config,
+resolution and invocation, including ``panel_invoker``. Schema validation and
+vendor projection live here; provider launches live in the invoker.
 
 The seat model inverts the v4 panel: a **seat is a cognition** — `{model, effort,
 harness?, lens?, auth?}` — where the harness is a defaulted-but-overridable

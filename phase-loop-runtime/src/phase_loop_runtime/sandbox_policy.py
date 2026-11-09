@@ -1,10 +1,10 @@
 """Where a review sandbox lives, and what it may reach.
 
-A panelist runs wherever its sandbox is, so the sandbox root is a LOCATION rather than a
-directory: a bare path is local, ``host:path`` names a host the seat executes on. That
-choice removes the remote-filesystem problem instead of managing it -- no network
-filesystem, no small-file I/O over the wire, and nothing for macOS or Windows to support
-beyond the local default.
+The configured sandbox root is parsed as a location. Bare paths and
+``host:path`` selections are record-only; URL schemes select placement backends.
+The production non-local execution driver remains disabled, so a remote-looking
+root does not establish that a seat executed remotely. Local staging and scratch
+selection are independent of that recorded placement choice.
 
 Every knob here is env-overridable and defaults to a working local setup. With nothing
 configured there is no probe and no fallback decision, only a free-space check.

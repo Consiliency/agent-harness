@@ -1,53 +1,15 @@
-"""Enforce the sandbox egress policy: public internet yes, private network no.
+"""Linux network isolation for provider launches.
 
-A panelist needs the internet -- to search, read documentation, and install what a check
-requires -- so blanket denial is the wrong boundary. What must stay unreachable is
-everything *inside*: the rest of the tailnet, loopback services (the review broker among
-them), the docker bridges, and cloud metadata.
+``isolated_network`` supports two postures. The uplink posture uses a user
+namespace, iptables and slirp4netns to allow public internet while blocking
+private destinations except explicit policy allowances. The proxy-only posture
+has no uplink and bridges one loopback port to a host proxy; proxy allowlists
+are enforced by ``seat_egress_proxy``. Both require the relevant host helpers
+and namespace capabilities and refuse when enforcement cannot be established.
 
-**Enforcement is real, and unprivileged.** Inside a user namespace we hold ``NET_ADMIN``
-for that namespace, so ``iptables`` rules there are binding. ``slirp4netns`` supplies the
-uplink in userspace. Nothing needs root, a sudoers entry, or a container runtime, which
-also means it behaves the same for any operator rather than depending on how a host was
-set up.
-
-The alternative -- exporting ``HTTP_PROXY`` and filtering at a proxy -- was rejected. It is
-honoured only by programs that choose to honour it: a raw socket, or a tool that ignores
-the variables, walks straight past. That is a speed bump, and recording it as "network
-filtered" would be a fail-open in the evidence record.
-
-**WHAT THIS DOES NOT DO.** It is a network boundary, not a filesystem one. A seat can read
-the operator's on-disk credentials -- board round 7 read `~/.ssh/id_*` from inside a live
-sandbox -- and the public internet is deliberately open, so nothing here prevents
-exfiltration of anything the seat can read. Calling ``169.254.169.254`` a "credential-theft
-target" invited exactly the wrong inference: blocking the metadata vector is not blocking
-credential theft.
-
-That is a disclosed consequence of the trust model, not a hole: a panelist is trusted like
-the agent that writes the code, and that agent already reads the disk. But
-``network_filtered: true`` must never be read as "this seat could not exfiltrate". It means
-the private network -- the tailnet, loopback services, the docker bridges, cloud metadata --
-was unreachable. Filesystem confinement would need a mount-namespace jail, which this is
-not (agent-harness#895).
-
-Measured on this host before it was built:
-
-===================  ==========  ========================================
-target               result      note
-===================  ==========  ========================================
-``github.com``       ``200``     resolved BY NAME, then fetched
-``1.1.1.1``          ``301``     public internet by raw IP
-``ai:8020``          ``200``     inference router, allowlisted host+port
-``ai:6333``          BLOCKED     qdrant, ~69 GB of user data, same machine
-``169.254.169.254``  BLOCKED     cloud metadata endpoint
-===================  ==========  ========================================
-
-The first row is the one that matters, and it was missing for six board rounds. This
-table used to measure ``1.1.1.1`` alone -- a bare IP -- so it reported a reachable
-internet while NO name resolved inside the namespace: the host's resolver is the
-systemd stub at ``127.0.0.53``, which ``127.0.0.0/8`` correctly denies. A reviewer
-could reach raw addresses and nothing else, which is not the capability this policy
-claims. Measure the capability, not the mechanism.
+This module supplies the network boundary. Filesystem and credential isolation
+for jailed review seats are supplied separately by ``seat_jail`` and profiles;
+network-filtering metadata alone does not attest filesystem confinement.
 """
 
 from __future__ import annotations

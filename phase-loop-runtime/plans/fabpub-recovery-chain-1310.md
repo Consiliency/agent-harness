@@ -196,7 +196,7 @@ predecessor and is removed there. Both are disclosed in the PR.
 ## Verification
 
 From `phase-loop-runtime/`:
-`PYTHONPATH=src:tests python -m pytest -q -p no:cacheprovider tests/test_fabpub_*.py tests/test_seat_reference_inventory.py`
+`PYTHONPATH="$PWD/src:$PWD/tests" timeout 900 .venv/bin/python -m pytest -q -p no:cacheprovider tests/test_fabpub_*.py tests/test_seat_reference_inventory.py`
 plus `ruff check` on the touched files. Each mutation named in §5 is run by hand and
 must turn its test red.
 
@@ -204,7 +204,8 @@ must turn its test red.
 
 - A `no_effect_terminal_proven` row for K in a later generation refuses too. That is
   fail-closed, and this plan does not resolve whether it should instead allow.
-- Records written by the agent-harness#1296 code for the same generation lack the new
+- Resolved by agent-harness#1576: records written by the agent-harness#1296 code for the same generation lack the new
   fields, so a re-write conflicts (typed `PublishTransactionConflict`). That needs a
-  record written but no owner, an upgrade, and then a retry, which is narrow and fails
-  closed.
+  record written but no owner, an upgrade, and then a retry. Current
+  `_recovery_record_core` treats no-rotation forms as equivalent and new records
+  omit the redundant fields; see `fabpub-recovery-record-compat-1576.md`.

@@ -106,7 +106,7 @@ Mutation checks. Each was reverted after it ran.
 Run serially from `phase-loop-runtime/`, without xdist:
 
 ```
-PYTHONPATH=src:tests python -m pytest -q -p no:cacheprovider \
+PYTHONPATH="$PWD/src:$PWD/tests" timeout 900 .venv/bin/python -m pytest -q -p no:cacheprovider \
   tests/test_fabpub_*.py tests/test_train_runner.py tests/test_publishing.py \
   tests/test_convergence_broker_*.py tests/test_seat_reference_inventory.py
 ```
