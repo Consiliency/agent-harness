@@ -15106,6 +15106,12 @@
         },
         "plans/seats-jailcore-caps-contract.md": {
           "sha256": "e614d3855320fe4c8a1d8b9a335181b2c493da45510062d2f8432ee30c362445"
+        },
+        "plans/seats-remote-contract.md": {
+          "sha256": "1cea960ddd28ef5e1c4bf79083fa9f9938b2c99c2e29dbd937864944ca76d7e8"
+        },
+        "plans/artifacts/v13-LANEEXEC-landed-binding.md": {
+          "sha256": "ceff9e267e95e19ca736eff6b5b7fe15dcdde7f71cadb39a78238eab4a92eb8d"
         }
       },
       "gate_status": "declared_not_produced",
@@ -15122,7 +15128,27 @@
         "SL-5",
         "SL-6"
       ],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-11-09T15:14:18Z",
+          "by": "claude-plan-phase",
+          "metadata": {
+            "replan": {
+              "decision": "owner decision 2026-11-09: re-plan on the landed code keeping the roadmap goals; the superseded plan was replaced, not amended",
+              "frozen_inputs_added": [
+                "plans/seats-remote-contract.md",
+                "plans/artifacts/v13-LANEEXEC-landed-binding.md"
+              ],
+              "replanned_by": "claude-plan-phase",
+              "roadmap_sha256": "a5cd5f2bedbda38c99ad516113fd839dae8af6ea4482760e8efd18a5d413428d",
+              "superseded_owner_skill": "claude-plan-phase",
+              "superseded_plan_sha256": "3743c328aa2db95f078a30b4540491d80073482e8b83fb0251fe8227749693ab",
+              "sweep_input": "Consiliency/agent-harness#1963"
+            }
+          },
+          "transition": "committed"
+        }
+      ],
       "owner_skill": "claude-plan-phase",
       "phase_alias": "LANEEXEC",
       "planning_artifact_only": true,
@@ -15137,7 +15163,7 @@
       "slug": "v13-LANEEXEC",
       "status": "committed",
       "type": "phase",
-      "updated_at": "2026-11-07T02:24:52Z"
+      "updated_at": "2026-11-09T15:14:18Z"
     },
     {
       "acceptance_criteria_count": null,
