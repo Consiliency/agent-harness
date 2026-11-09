@@ -97,6 +97,19 @@ Do not run the verification commands while planning unless the user explicitly a
 
 Detailed plans must contain machine-checkable verification commands and an effective `automation.suite_command` whenever the runner will execute them. If an acceptance item depends on operational evidence that cannot be machine-checked directly, the plan must name the operational evidence artifact and the runner-stamped amendment mechanism that records it. proxy evidence requires a roadmap or plan amendment before downstream execution relies on it.
 
+## Optional external planning review (`--review-external`)
+
+When requested, follow [the external-review procedure](assets/external-review.md).
+Stage this skill's `assets/review_prompt.md` verbatim as `## Panel charter` in a
+single bundle alongside the roadmap or plan, then run:
+
+```bash
+phase-loop advisor-board "$REVIEW_BUNDLE" --advisory --json > "${ARTIFACT_PATH}_reviews.md"
+```
+
+This is non-gating pre-implementation advice. Do not combine it with
+`--landing-tier` or use it to satisfy the separate gating plan-landing review.
+
 ## Closeout
 
 Closeout payload shape is defined by `EmitPhaseCloseout` in `phase_loop_runtime/baml_src/emit_phase_closeout.baml` (if that path is absent in the checkout, use the operator/prompt-supplied field contract or the installed `phase_loop_runtime` package — the missing vendored BAML source is not a blocker); keep skill text focused on value selection and handoff routing, not duplicated field ceremony.

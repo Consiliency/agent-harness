@@ -44,10 +44,17 @@ Defense-in-depth checks (the repo-key scheme prevents the common cross-project c
 If absent, proceed — this run is standalone.
 ## Step 8.5 — External CLI review
 
-Run `phase-loop advisor-board <output-path> --json` after validation and
-follow `claude-advisor-board` for native fills. Save the result to the
-`<output-path>_reviews.md` sibling. Failed or unavailable legs are incomplete
-review evidence; the two-CLI helper and frontier cache are not shipped.
+Follow [external-review.md](../assets/external-review.md): stage `assets/review_prompt.md`
+verbatim under `## Panel charter` and the roadmap or plan under
+`## Planning artifact` in the same `REVIEW_BUNDLE`, then run:
+
+```bash
+phase-loop advisor-board "$REVIEW_BUNDLE" --advisory --json > "${ARTIFACT_PATH}_reviews.md"
+```
+
+Keep `--advisory` on native-fill emit and invoke calls as that procedure
+requires. This optional review is non-gating and cannot use `--landing-tier`;
+it does not replace the gating plan-landing review.
 
 ## Close-out — Reflection + Handoff templates
 

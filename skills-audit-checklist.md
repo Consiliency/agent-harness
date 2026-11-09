@@ -124,3 +124,17 @@ Rebased onto `origin/main` at `4a4bec079f32bbac4e224987583dc4e6586bf5ac` after t
 - B5: removed the release pin and uv-build claim, corrected agy `-p`, removed the dangling rebase instruction, and documented identity inputs. `discovery.repo_identity` supplies repo hash and branch slug; the run ID comes from the active runner or a unique manual-run allocation.
 - Regenerated 11 neutral skills and 48 packaged skill directories with both supported tools. Launch-spec golden regeneration produced no further changes.
 - Serial targeted checks under `timeout`: 17 passed, including bundle parity, drift and launch-spec checks. No executable behavior changes.
+
+## Automated review P2: optional planning review contract
+
+- Updated all 12 roadmap-builder, plan-phase and plan-detailed entry skills to use `phase-loop advisor-board "$REVIEW_BUNDLE" --advisory --json > "${ARTIFACT_PATH}_reviews.md"` for requested external feedback.
+- The shared planning-review procedure stages the exact `assets/review_prompt.md` bytes as `## Panel charter`, followed by the exact roadmap/plan bytes under `## Planning artifact`. `cli._advisor_board_command` stages `ADVISORY_CONTRACT` as the authoritative brief; the rubric stays in the bundle, not in that instruction frame.
+- Kept this optional pre-implementation advice separate from the gating plan-landing review; `--advisory` refuses `--landing-tier`. Native-fill emit and invoke retain the advisory flag and the same bundle.
+- Updated the roadmap handoff and phase-planning interactive reference commands. Shared procedures are harness-agnostic assets, preserving the existing harness-only reference layout.
+- Validation: 80 targeted tests passed serially under timeout (parity, drift, launch-spec golden and advisory CLI contract tests). Executed the exact documented bundle recipe and checked CLI parsing for all 12 packaged planner skills; rubric/document bytes preserved. Entry-doc check: 8 clean. No provider review launched and no runtime code changed.
+
+- [x] `skills-src/claude/claude-phase-roadmap-builder/assets/external-review.md` — fixed; `cli.py:_advisor_board_command`, `advisor_board/advisory_contract.py:ADVISORY_CONTRACT`; shared advisory bundle procedure.
+- [x] `skills-src/claude/claude-plan-phase/assets/external-review.md` — fixed; same runtime contract and exact bundle recipe verified.
+- [x] `skills-src/claude/claude-plan-detailed/assets/external-review.md` — fixed; same runtime contract and exact bundle recipe verified.
+
+Current source inventory: 93 files, all with dispositions; generated copies remain covered by regeneration and parity.

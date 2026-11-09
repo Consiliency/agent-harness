@@ -124,7 +124,7 @@ Architecture-first planner for a single phase of a multi-phase specification. Pr
 | `<phase-name-or-id>` | yes | A phase heading, short alias (`P1`–`P7`), or any fuzzy match. Ambiguous → stop and ask via `AskUserQuestion`. |
 | `--output <path>` | no | Override the default output path. Default: `plans/phase-plan-<VERSION>-<PHASE_ALIAS>.md`. `<PHASE_ALIAS>` MUST be uppercase exactly as declared in the roadmap (e.g., `FOUND`, `DESIGNFOUND`); lowercase or alternate filename variants force an extra plan-iteration roundtrip because the runner uses the uppercase alias to locate the plan artifact. |
 | `--consensus` | no | Enable multi-agent architectural consensus (2–3 Plan teammates with different framings). |
-| `--review-external` | no | After drafting the plan, run the runtime advisor board to review it. Uses `phase-loop advisor-board` and its selected subscription CLIs; follow `claude-advisor-board` for native fills. Produces a `_reviews.md` sibling file. |
+| `--review-external` | no | After drafting the plan, run the advisory planning review with the skill rubric as bundle charter. Uses `phase-loop advisor-board` and its selected subscription CLIs; follow `claude-advisor-board` for native fills. Produces a `_reviews.md` sibling file. |
 
 Repos may supply a phase alias table (JSON file) via `$PLAN_PHASE_ALIASES` or fall back to the built-in `P1`–`P7` table. If the alias isn't recognized and no custom table is set, stop and ask via `AskUserQuestion` with the actual spec headings.
 
@@ -156,7 +156,7 @@ Invocation examples:
 The skill references these `_shared/` helpers. Each degrades gracefully if absent:
 
 - `_shared/next_reflection_path.py` — legacy helper only; current closeout writes reflections to `resolve_skill_bundle_root("claude")/claude-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`.
-- External review uses `phase-loop advisor-board <plan-path> --json`, not the absent `_shared/review_with_cli.py` helper.
+- External review uses the advisory bundle procedure in [assets/external-review.md](assets/external-review.md), not the absent `_shared/review_with_cli.py` helper.
 - A repo-maintained docs catalog may be used when present; no `scaffold_docs_catalog.py` helper is shipped. Otherwise inspect the relevant repo docs directly.
 
 ## Deferred tool preloading
@@ -272,7 +272,17 @@ After the plan doc is drafted in the scratch file and before `ExitPlanMode`, use
 
 ### Step 7.5 — External CLI review (only if `--review-external`)
 
-Run `phase-loop advisor-board <plan-path> --json` and follow `claude-advisor-board` for native-fill handling. Save the result to the `_reviews.md` sibling; unavailable or failed legs are incomplete evidence. The old two-CLI helper and frontier cache are not shipped by this runtime.
+When requested, follow [the external-review procedure](assets/external-review.md).
+Stage this skill's `assets/review_prompt.md` verbatim as `## Panel charter` in a
+single bundle alongside the roadmap or plan, then run:
+
+```bash
+phase-loop advisor-board "$REVIEW_BUNDLE" --advisory --json > "${ARTIFACT_PATH}_reviews.md"
+```
+
+This is non-gating pre-implementation advice. Do not combine it with
+`--landing-tier` or use it to satisfy the separate gating plan-landing review.
+
 
 ### Step 8 — ExitPlanMode
 

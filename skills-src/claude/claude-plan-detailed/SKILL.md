@@ -29,7 +29,7 @@ Standalone planner for one bounded change. Not part of the `claude-phase-roadmap
 |---|---|---|
 | `<task>` | no | Free-form task description. Falls back to prior conversation context if omitted. |
 | `--output <path>` | no | Override the generated plan path. Default: `.consiliency/plans/detailed-<slug>-<YYYYMMDD-HHMM>.md` (dir auto-created). |
-| `--review-external` | no | Run the runtime advisor board after writing the plan. Requires the selected subscription CLIs and broker prerequisites. |
+| `--review-external` | no | Run the advisory planning review after writing the plan, with the skill rubric as bundle charter. Requires the selected subscription CLIs and broker prerequisites. |
 
 ## Deferred tool preloading
 
@@ -133,15 +133,17 @@ Plan Mode is not required. The artifact and handoff are the deliverables either 
 
 ### Step 5 — External CLI review (only if `--review-external`)
 
+When requested, follow [the external-review procedure](assets/external-review.md).
+Stage this skill's `assets/review_prompt.md` verbatim as `## Panel charter` in a
+single bundle alongside the roadmap or plan, then run:
+
 ```bash
-phase-loop advisor-board <plan-path> --json
+phase-loop advisor-board "$REVIEW_BUNDLE" --advisory --json > "${ARTIFACT_PATH}_reviews.md"
 ```
 
-Follow `claude-advisor-board` for native-fill handling under Claude Code and
-for the selected board's prerequisites. Save the review result to the
-`<plan-path>_reviews.md` sibling and report structured unavailable or failed
-legs as incomplete review evidence. This uses the runtime's composed board,
-not a separate two-CLI helper or frontier-model cache.
+This is non-gating pre-implementation advice. Do not combine it with
+`--landing-tier` or use it to satisfy the separate gating plan-landing review.
+
 
 ### Step 6 — Resolve the approval path (Plan Mode is optional)
 
@@ -257,7 +259,7 @@ overrides, so this never blocks a human from forcing a tier.
 
 ## Reference files
 
-- `assets/review_prompt.md` — used by `--review-external` to critique the plan via Gemini + Codex.
+- `assets/review_prompt.md` — used by `--review-external` as the charter for the optional advisory planning review.
 
 
 Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, handoff roots, helper roots, and reflection roots.

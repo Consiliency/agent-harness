@@ -193,6 +193,19 @@ Validate that the decision literal is in vocabulary, `target surfaces` and `evid
 
 Generated plans must contain machine-checkable verification commands and an effective `automation.suite_command`; phase plans must validate those commands through IF-0-VC-2 before they are handoff-ready. If an acceptance item depends on operational evidence that cannot be machine-checked directly, the plan must name the operational evidence artifact and the runner-stamped amendment mechanism that records it. proxy evidence requires a roadmap amendment before downstream plans rely on it.
 
+## Optional external planning review (`--review-external`)
+
+When requested, follow [the external-review procedure](assets/external-review.md).
+Stage this skill's `assets/review_prompt.md` verbatim as `## Panel charter` in a
+single bundle alongside the roadmap or plan, then run:
+
+```bash
+phase-loop advisor-board "$REVIEW_BUNDLE" --advisory --json > "${ARTIFACT_PATH}_reviews.md"
+```
+
+This is non-gating pre-implementation advice. Do not combine it with
+`--landing-tier` or use it to satisfy the separate gating plan-landing review.
+
 ## Closeout
 
 ### Manifest write

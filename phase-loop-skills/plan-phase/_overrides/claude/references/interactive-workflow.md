@@ -124,10 +124,17 @@ Applied by the main thread after `--consensus` Step 3a:
 
 ## Step 7.5 — External CLI review
 
-Run `phase-loop advisor-board <plan-path> --json` and follow
-`claude-advisor-board` for native-fill handling. Save the result to the
-`_reviews.md` sibling. This is the runtime-composed board; do not invoke the
-absent `_shared/review_with_cli.py` or its frontier-cache discovery path.
+Follow [external-review.md](../assets/external-review.md): stage `assets/review_prompt.md`
+verbatim under `## Panel charter` and the roadmap or plan under
+`## Planning artifact` in the same `REVIEW_BUNDLE`, then run:
+
+```bash
+phase-loop advisor-board "$REVIEW_BUNDLE" --advisory --json > "${ARTIFACT_PATH}_reviews.md"
+```
+
+Keep `--advisory` on native-fill emit and invoke calls as that procedure
+requires. This optional review is non-gating and cannot use `--landing-tier`;
+it does not replace the gating plan-landing review.
 
 ## Manual hand-off (when `claude-execute-phase` is unavailable)
 

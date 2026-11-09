@@ -42,7 +42,7 @@ Produces the `specs/phase-plans-v<N>.md` roadmap that `/claude-plan-phase` consu
 | `<spec-path>` | no | Path to an input markdown spec to fold into the roadmap. Optional; conversation context is the primary source. |
 | `--output <path>` | no | Override the default output path. Default: `specs/phase-plans-v<N>.md` at the repo root. |
 | `--append` | no | Force append mode even if the resolved output path is new (rare). |
-| `--review-external` | no | After writing the roadmap, run the runtime advisor board. Follow `claude-advisor-board` for subscription CLI prerequisites and native fills. Produces a `_reviews.md` sibling file. |
+| `--review-external` | no | After writing the roadmap, run the advisory planning review with the skill rubric as bundle charter. Follow `claude-advisor-board` for subscription CLI prerequisites and native fills. Produces a `_reviews.md` sibling file. |
 
 ## Prerequisites
 
@@ -206,7 +206,17 @@ The full contract, with the reasons, is in [references/validator-format-contract
 
 ### Step 8.5 — External CLI review (only if `--review-external`)
 
-After the roadmap is written and validated, run `phase-loop advisor-board <output-path> --json` and save the result to `<output-path>_reviews.md`. Native-fill handling and result interpretation follow `claude-advisor-board`. See [references/handoff-review-closeout.md](references/handoff-review-closeout.md).
+When requested, follow [the external-review procedure](assets/external-review.md).
+Stage this skill's `assets/review_prompt.md` verbatim as `## Panel charter` in a
+single bundle alongside the roadmap or plan, then run:
+
+```bash
+phase-loop advisor-board "$REVIEW_BUNDLE" --advisory --json > "${ARTIFACT_PATH}_reviews.md"
+```
+
+This is non-gating pre-implementation advice. Do not combine it with
+`--landing-tier` or use it to satisfy the separate gating plan-landing review.
+
 
 ### Step 9 — Write and exit
 
