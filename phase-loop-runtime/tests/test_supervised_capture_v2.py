@@ -30,8 +30,12 @@ def test_tree_alternate_is_not_the_capture(case):
     assert sha256(canonicalize_v2(_tree_manifest(source["capture"]))).hexdigest() != case["sha256"]
 
 
-from test_supervised_launch import case
-from test_supervised_launch_binding import v2_operator
+from test_supervised_launch import case as _case
+
+case = _case
+from test_supervised_launch_binding import v2_operator as _v2_operator
+
+v2_operator = _v2_operator
 from phase_loop_runtime import supervised_launch_binding as binding
 from phase_loop_runtime.supervised_capture_v2 import CapturedLaunch, capture_launch_v2, recheck_launch_v2
 from phase_loop_runtime.supervised_launch import Refused

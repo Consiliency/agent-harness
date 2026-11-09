@@ -320,7 +320,9 @@ finally:
     assert result.stdout.strip() == ("dependency_route_unwired" if bound else "task_unbound")
 
 
-from test_supervised_launch_binding import v2_operator
+from test_supervised_launch_binding import v2_operator as _v2_operator
+
+v2_operator = _v2_operator
 
 
 def _write_controller(operator, document=None, root=None):
@@ -434,4 +436,4 @@ def test_v2_cli_bootstrap_order_enters_real_worker(v2_operator, monkeypatch, cha
                                  ("locator", "controller", "full", "agreement", "activation", "decode", "prepare", "validate", "result", "journal-spawn")):
             assert events.index(before) < events.index(after), events
         record = json.loads(result.read_bytes())
-        assert record["runtime_state"] == "finished" and record["journal_acknowledged"]
+        assert record["runtime_state"] == "finished (completed)" and record["journal_acknowledged"]

@@ -1128,7 +1128,9 @@ def test_launcher_signal_handler_spans_record_lifetime(worker_case, monkeypatch)
     assert signal.getsignal(signal.SIGTERM) == original_handler
 
 
-from test_supervised_launch_binding import v2_operator
+from test_supervised_launch_binding import v2_operator as _v2_operator
+
+v2_operator = _v2_operator
 from test_supervised_capture_v2 import build_v2_attempt
 from test_supervised_contracts_vectors import V2_CORPUS, expand_v2
 
