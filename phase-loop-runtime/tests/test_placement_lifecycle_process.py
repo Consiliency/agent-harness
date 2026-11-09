@@ -17,6 +17,7 @@ import os
 from importlib import resources
 from pathlib import Path
 import threading
+import time
 
 import pytest
 import rfc8785
@@ -134,6 +135,13 @@ class Bridge:
 
     def close(self, handle, *, cancelled):
         self.closed.append(handle.reservation_id)
+        return contract.LeaseFlags(fenced=True, destruction_observed=True, barrier_confirmed=True)
+
+    def directory_for(self, reservation):
+        return Path(f"/run/fake/{reservation.reservation_id}")
+
+    def reclaim(self, directory, *, cancelled):
+        self.reclaimed = [*getattr(self, "reclaimed", []), str(directory)]
         return contract.LeaseFlags(fenced=True, destruction_observed=True, barrier_confirmed=True)
 
 
@@ -534,6 +542,7 @@ def test_config_sha256_binds_thresholds_providers_caps_and_launch(env):
     {"schema": "placement.client-config.v1", "client": "agent-toolkit", "unknown": 1},
     {"schema": "placement.client-config.v1", "client": "agent-harness"},
     {"schema": "placement.client-config.v1", "client": "agent-toolkit", "launch": []},
+    {"schema": "placement.client-config.v1", "client": "agent-toolkit", "launch": None},
     {"schema": "placement.client-config.v1", "client": "agent-toolkit",
      "providers": {"anthropic": {"endpoints": [{"host": "https://x", "port": 443}],
                                  "workloads": ["pi-runner"], "policy_vectors": ["minimal-without-app"]}}},
@@ -694,21 +703,29 @@ def test_r1_an_indeterminate_replay_journals_nothing(env):
 
 @pytest.mark.parametrize("verdict,code,outcome", [("held_ready", 0, "admitted"),
                                                   ("nothing_held", 10, "unreachable")])
-def test_r2_the_reconciling_replay_settles_and_later_replays_repeat_it(env, verdict, code, outcome):
-    _lose_the_create_reply(env)
+def test_r2_the_reconciling_replay_settles_and_later_replays_repeat_it(env, monkeypatch, verdict, code,
+                                                                       outcome):
+    if verdict == "held_ready":
+        # A complete, durable admission whose settlement was interrupted.
+        commit = _interrupt_reserve(env, monkeypatch, "after-publish")
+    else:
+        _lose_the_create_reply(env)
     env.verdict = verdict
+    calls, opened = list(env.coordinator.calls), list(env.bridge.opened)
     response, raw, exit_code = reserve(env.lifecycle())
     assert exit_code == code and response.outcome == outcome
     if verdict == "nothing_held":
         assert response.code == TIMEOUT
     else:
-        assert response.reservation.lease_id is not None and response.reservation.bridge is not None
-    reconciled, calls = env.counts["reconcile"], list(env.coordinator.calls)
+        assert response.reservation.to_json() == commit["reservation"]
+    # The settling replay itself made no exposure, bridge or create call.
+    assert env.coordinator.calls == calls and env.bridge.opened == opened
+    reconciled = env.counts["reconcile"]
     for _ in range(2):
         again = reserve(env.lifecycle())
         assert again[1] == raw and again[2] == code
     assert env.counts["reconcile"] == reconciled
-    assert [c for c in env.coordinator.calls if c not in calls] == []
+    assert env.coordinator.calls == calls and env.bridge.opened == opened
 
 
 @pytest.mark.parametrize("case", ["at-bound", "past-bound", "before-start", "unreadable-start"])
@@ -765,6 +782,226 @@ def _any_reservation():
             "providers": ["anthropic"], "egress_sha256": DIGEST, "client": "agent-toolkit",
             "inventory": "agent-toolkit", "rank_policy": "agent_executor", "lease_id": None,
             "expires_at": None, "config_sha256": "a" * 64, "bridge": None}
+
+
+# -- durable admission: interruption between the admission's journal steps -----------------
+
+class Interrupted(BaseException):
+    """A process interruption injected at one step of an admission."""
+
+
+def _interrupt_reserve(env, monkeypatch, point, *, lifecycle=None, **reserve_kwargs):
+    """Run one reserve that is interrupted at ``point``; return the attempt's commit."""
+    lifecycle = lifecycle if lifecycle is not None else env.lifecycle()
+    if point == "after-bridge":
+        bridge = lifecycle.bridge
+        original_open = bridge.open
+
+        def opened_then_interrupted(*args, **kwargs):
+            original_open(*args, **kwargs)
+            raise Interrupted(point)
+        monkeypatch.setattr(bridge, "open", opened_then_interrupted)
+    elif point == "before-publish":
+        def interrupted(self, commit, request_id):
+            raise Interrupted(point)
+        monkeypatch.setattr(sp.PlacementLifecycle, "_publish_reservation", interrupted)
+    elif point == "after-publish":
+        original_settle = sp.PlacementLifecycle._settle
+
+        def settle(self, record, response):
+            if getattr(response, "outcome", None) == "admitted":
+                raise Interrupted(point)
+            return original_settle(self, record, response)
+        monkeypatch.setattr(sp.PlacementLifecycle, "_settle", settle)
+    with pytest.raises(Interrupted):
+        reserve(lifecycle, **reserve_kwargs)
+    monkeypatch.undo()
+    record = json.loads((env.state / lifecycle.client / "attempts" / "req-1.json").read_text())
+    assert record["settled"] is False and record["pending"] == []
+    return record["commit"]
+
+
+def _attempt(env, client="agent-toolkit"):
+    return json.loads((env.state / client / "attempts" / "req-1.json").read_text())
+
+
+def _bound_of(record):
+    return record["started_at"] + (record["deadline_ms"] + sp.REPLAY_SETTLE_ALLOWANCE_MS) / 1000
+
+
+def _cleanup_entries(env, client="agent-toolkit"):
+    return sorted((env.state / client / "cleanup").glob("*.json"))
+
+
+@pytest.mark.parametrize("point", ["after-bridge", "before-publish", "after-publish"])
+def test_an_interrupted_admission_is_recovered_from_its_commit_before_the_bound(env, monkeypatch, point):
+    commit = _interrupt_reserve(env, monkeypatch, point)
+    assert commit["complete"] is (point != "after-bridge")
+    env.verdict = "held_ready"
+    calls, opened = list(env.coordinator.calls), list(env.bridge.opened)
+    env.clock.now += 30
+    response, raw, code = reserve(env.lifecycle())
+    # Recovery allocates nothing: no target, lease, exposure or bridge call.
+    assert env.coordinator.calls == calls and env.bridge.opened == opened
+    if point == "after-bridge":
+        # The bridge handle never reached the journal: not a complete reservation.
+        assert (code, response.outcome, response.reservation) == (20, "timeout", None)
+        assert env.reservations() == [] and _attempt(env)["settled"] is False
+        return
+    assert code == 0 and response.reservation.to_json() == commit["reservation"]
+    assert response.reservation.expires_at == commit["reservation"]["expires_at"]
+    [active] = env.reservations()
+    stored = json.loads(active.read_text())
+    assert stored["reservation"] == commit["reservation"] and stored["effect"] == commit["effect"]
+    assert reserve(env.lifecycle())[1] == raw
+    assert env.coordinator.calls == calls and env.bridge.opened == opened
+
+
+@pytest.mark.parametrize("point", ["after-bridge", "before-publish", "after-publish"])
+def test_an_interrupted_admission_at_the_bound_has_one_cleanup_owner(env, monkeypatch, point):
+    commit = _interrupt_reserve(env, monkeypatch, point)
+    env.clock.now = _bound_of(_attempt(env))
+    env.lifecycle()._startup()
+    record = _attempt(env)
+    assert record["settled"] is True and json.loads(record["response"])["code"] == END
+    [entry] = _cleanup_entries(env)
+    assert json.loads(entry.read_text())["effect"] == commit["effect"]
+    assert env.reservations() == []                      # no active record advertises it
+    reaped, code = reap(env.lifecycle())
+    assert (code, reaped.inventory.destroyed, reaped.inventory.pending) == (0, 1, 0)
+    assert commit["effect"]["lease_id"] not in env.coordinator.held
+    if point == "after-bridge":
+        assert env.bridge.reclaimed == [commit["effect"]["bridge_directory"]]
+    else:
+        assert env.bridge.closed == [commit["reservation"]["reservation_id"]]
+    assert env.reservations() == [] and _cleanup_entries(env) == []
+
+
+@pytest.mark.parametrize("restart", ["before-bound", "at-bound"])
+def test_an_interrupted_local_admission_keeps_its_slot_binding_and_expiry(env, monkeypatch, restart):
+    env.toolkit(targets=[{"name": "local", "kind": "local", "rank": 1, "transport_id": "local"}])
+    commit = _interrupt_reserve(env, monkeypatch, "after-publish")
+    assert len(env.slots()) == 1
+    if restart == "before-bound":
+        env.clock.now += 60
+        observed = env.counts["observe"]
+        recovered, _raw, code = reserve(env.lifecycle(reconcile=None))   # the default check
+        assert code == 0 and recovered.reservation.to_json() == commit["reservation"]
+        assert len(env.slots()) == 1 and env.counts["observe"] == observed
+        return
+    env.clock.now = _bound_of(_attempt(env))
+    reaped, code = reap(env.lifecycle())
+    assert (code, reaped.inventory.destroyed) == (0, 1)
+    assert env.slots() == [] and env.reservations() == [] and _cleanup_entries(env) == []
+
+
+def test_a_reservation_reaped_before_settlement_is_not_republished(env, monkeypatch):
+    commit = _interrupt_reserve(env, monkeypatch, "after-publish", ttl_s=1)
+    rid = commit["reservation"]["reservation_id"]
+    env.clock.now = _attempt(env)["started_at"] + 10       # expired, still before the settle bound
+    assert reap(env.lifecycle())[0].inventory.destroyed == 1
+    assert env.reservations() == []
+    env.verdict = "held_ready"
+    response, _raw, code = reserve(env.lifecycle())
+    assert code == 10 and response.outcome == "unreachable" and env.reservations() == []
+    assert (env.state / "agent-toolkit" / "tombstones" / f"{rid}.json").exists()
+
+
+# -- start-up reads each attempt again under its lock ------------------------------------------
+
+def _gate_attempt_lock(monkeypatch, hook):
+    original = sp._FileLock.__enter__
+    fired = []
+
+    def gated(self):
+        if self.path.name == "req-1.lock" and not fired:
+            fired.append(True)
+            hook()
+        return original(self)
+    monkeypatch.setattr(sp._FileLock, "__enter__", gated)
+
+
+def test_startup_never_overwrites_an_attempt_settled_after_enumeration(env, monkeypatch):
+    _lose_the_create_reply(env)
+    early = env.lifecycle(clock=lambda: NOW + 10)
+    env.verdict = "nothing_held"
+    env.clock.now = _bound_of(_attempt(env)) + 1
+    _gate_attempt_lock(monkeypatch, lambda: reserve(early))
+    env.lifecycle()._startup()
+    record = _attempt(env)
+    assert json.loads(record["response"])["outcome"] == "unreachable"
+    assert len(_cleanup_entries(env)) == 1
+
+
+def test_two_startups_settle_one_expired_attempt_once(env, monkeypatch):
+    _lose_the_create_reply(env)
+    env.clock.now = _bound_of(_attempt(env)) + 1
+    other = env.lifecycle()
+    _gate_attempt_lock(monkeypatch, other._startup)
+    env.lifecycle()._startup()
+    record = _attempt(env)
+    first = record["response"]
+    assert json.loads(first)["code"] == END and len(_cleanup_entries(env)) == 1
+    env.lifecycle()._startup()
+    assert _attempt(env)["response"] == first and len(_cleanup_entries(env)) == 1
+
+
+# -- replay never builds what admission did not durably finish ---------------------------------
+
+def test_a_held_lease_without_a_complete_commit_is_never_made_ready_on_replay(env):
+    _lose_the_create_reply(env)
+    env.verdict = "held_ready"
+    before = _effects(env)
+    for _ in range(2):
+        response, _raw, code = reserve(env.lifecycle())
+        assert (code, response.outcome, response.reservation) == (20, "timeout", None)
+    assert _effects(env) == before and "forward_exposure" not in env.coordinator.calls
+
+
+# -- one deadline per operation ----------------------------------------------------------------
+
+def test_a_slow_exposure_never_turns_into_a_late_admission(env):
+    env.coordinator.behave["forward_exposure"] = lambda lease_id, bound: time.sleep(3)
+    started = time.monotonic()
+    response, _raw, code = reserve(env.lifecycle(), deadline_ms=600)
+    assert time.monotonic() - started < 2.0
+    assert (code, response.outcome, response.reservation) == (20, "timeout", None)
+    assert env.reservations() == []
+    record = _attempt(env)
+    assert record["commit"]["complete"] is False and record["commit"]["effect"]["lease_id"] in env.coordinator.held
+
+
+def test_a_cancel_after_admission_is_never_reported_as_admitted(env, monkeypatch):
+    cancelled = threading.Event()
+    original_open = env.bridge.open
+
+    def open_then_cancel(*args, **kwargs):
+        handle = original_open(*args, **kwargs)
+        cancelled.set()
+        return handle
+    monkeypatch.setattr(env.bridge, "open", open_then_cancel)
+    request = contract.decode_request("reserve", json.dumps(reserve_body()).encode())
+    response = env.lifecycle().reserve(request, cancelled=cancelled)
+    assert response.outcome == "timeout" and response.reservation is None
+    assert env.reservations() == [] and _attempt(env)["commit"]["complete"] is True
+
+
+def test_a_contended_release_lock_is_bounded_by_the_deadline(env):
+    import fcntl
+
+    response, _raw, _code = reserve(env.lifecycle())
+    rid = response.reservation.reservation_id
+    fd = os.open(env.state / "agent-toolkit" / "reservations" / f"{rid}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    try:
+        started = time.monotonic()
+        pending, code = release(env.lifecycle(), response.reservation.to_json(), deadline_ms=300)
+        assert time.monotonic() - started < 1.5
+        assert (code, pending.state) == (20, "cleanup_pending")
+        assert len(env.reservations()) == 1 and response.reservation.lease_id in env.coordinator.held
+    finally:
+        os.close(fd)
+    assert release(env.lifecycle(), response.reservation.to_json(), "rel-2")[0].state == "released"
 
 
 # -- release ---------------------------------------------------------------------------------
@@ -968,8 +1205,8 @@ def _mutant(name):
     }[name]
 
     if name == "provider":
-        def mutated(self, request, body, cancelled):
-            return original(self, replace(request, providers=("anthropic",)), body, cancelled)
+        def mutated(self, request, body, *rest):
+            return original(self, replace(request, providers=("anthropic",)), body, *rest)
         return "_reserve_new", mutated, sp.PlacementLifecycle
     if name == "caps":
         return "caps_state", lambda self: (True, "0" * 64), sp.PlacementLifecycle
