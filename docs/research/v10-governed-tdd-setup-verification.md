@@ -1,5 +1,11 @@
 # v10 governed TDD setup verification
 
+> Historical evidence/design record. Commands, models, line anchors and test totals
+> below describe the recorded revision, not current launch instructions. Current
+> seat routing is in `docs/review-seats-readiness.md` and `panel_invoker.py`;
+> CLI selection/defaults are in `cli.py`. Run current shared-host tests serially
+> under `timeout` using the locked environment.
+
 Date: 2026-07-30
 
 ## Scope

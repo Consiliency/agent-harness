@@ -58,6 +58,7 @@ Leave whole-suite checks to hosted CI (see `AGENTS.md`).
 
   | Check | Workflow |
   |---|---|
+  | `supervised contract publication` | `supervised-contract-intake.yml` |
   | `suite gate` | `test.yml` (the aggregate of the test suite jobs) |
   | `lint (pyflakes)` | `test.yml` |
   | `chronology retention guard` | `test.yml` |

@@ -1,5 +1,11 @@
 # Advisor-Panel Roadmap v4 Verification
 
+> Historical evidence/design record. Commands, models, line anchors and test totals
+> below describe the recorded revision, not current launch instructions. Current
+> seat routing is in `docs/review-seats-readiness.md` and `panel_invoker.py`;
+> CLI selection/defaults are in `cli.py`. Run current shared-host tests serially
+> under `timeout` using the locked environment.
+
 Date: 2026-06-30
 Last refreshed: 2026-07-01
 
@@ -68,7 +74,7 @@ agent-harness runtime and harness-prefixed advisor-panel skills.
 
 ## Issue Closeout Notes
 
-Issue #36 can be updated with:
+Issue agent-harness#36 can be updated with:
 
 - Agent-harness owns `phase_loop_runtime.panel_invoker`.
 - Panel statuses and timeout policy are frozen and tested.
@@ -78,7 +84,7 @@ Issue #36 can be updated with:
   minimum-version gate, and canonical scratch `panel-claude.txt` output.
 - Full runtime suite passed.
 
-Issue #135 can be updated with:
+Dotfiles cutover follow-up (historical):
 
 - Dotfiles no longer carries standalone advisor-panel scripts or reference
   implementation files.

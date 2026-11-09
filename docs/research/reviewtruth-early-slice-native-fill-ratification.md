@@ -1,5 +1,11 @@
 # REVIEWTRUTH early slice — native claude seat fill: maintainer ratification record
 
+> Historical evidence/design record. Commands, models, line anchors and test totals
+> below describe the recorded revision, not current launch instructions. Current
+> seat routing is in `docs/review-seats-readiness.md` and `panel_invoker.py`;
+> CLI selection/defaults are in `cli.py`. Run current shared-host tests serially
+> under `timeout` using the locked environment.
+
 - record kind: disposition (EC-REVIEWTRUTH-15 form: a committed document whose commit must be an ancestor of the landing commit's first parent, cited by full SHA in the landing commit message; the landing is a two-parent merge)
 - scope: the EARLY SLICE of v10 Phase 7 REVIEWTRUTH described in `plans/detailed-native-claude-seat-fill-396-20260920-1030.md` as landed on `main` by Consiliency/agent-harness#918 (the plan PR lands BEFORE this record — required by the stated merge order, not asserted as already done; cite it by that PR, never by a branch SHA) — EC-REVIEWTRUTH-14 ("Part of"; its EC-4 clause stays with the phase)
 - issues: Consiliency/agent-harness#396 (the ruling), Consiliency/agent-harness#636 (the prose contradiction), Consiliency/agent-harness#405 (implementation tracker; stays open), Consiliency/agent-harness#906 (consumer: the train review)
