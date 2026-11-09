@@ -28,7 +28,7 @@ designated seat host; source-checkout tests do not establish host readiness.
 | --- | --- | --- | --- | --- |
 | Claude | local | candidate | open egress | 2026-12-04 UTC or CLAUDENET exit, whichever is first |
 | Gemini | jailed | candidate | none | First post-TEAMHOST row window (agent-harness#1903) |
-| Codex | local | candidate | unconfined | 2026-12-04 UTC or CODEX exit, whichever is first |
+| Codex | jailed | candidate | none | Row window or owning phase exit |
 | Grok | local | candidate | unconfined | 2026-12-04 UTC or GROK exit, whichever is first |
 | Pi | local | candidate | none | PI window required |
 | Claude remote | remote | remote-pending | none | REMOTE activation |
