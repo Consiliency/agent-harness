@@ -902,7 +902,7 @@ def test_a_reservation_reaped_before_settlement_is_not_republished(env, monkeypa
     assert reap(env.lifecycle())[0].inventory.destroyed == 1
     assert env.reservations() == []
     env.verdict = "held_ready"
-    response, _raw, code = reserve(env.lifecycle())
+    response, _raw, code = reserve(env.lifecycle(), ttl_s=1)
     assert code == 10 and response.outcome == "unreachable" and env.reservations() == []
     assert (env.state / "agent-toolkit" / "tombstones" / f"{rid}.json").exists()
 
