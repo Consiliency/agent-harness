@@ -20,9 +20,11 @@ from __future__ import annotations
 import copy
 import dataclasses
 import importlib.util
+import inspect
 import json
 import shutil
 import tempfile
+import textwrap
 from hashlib import sha256
 from pathlib import Path
 
@@ -38,12 +40,12 @@ CONVERTER = Path(__file__).resolve().parents[1] / "scripts" / "convert_agy_recor
 
 #: The verdict vector each validator literal means. A bump adds a row; it never edits one.
 VERDICT_VECTOR_SHA256 = {
-    "agy_validator_v1": "e5fe7f0b90334ac6ac7dbd041ee0d655426b99c98c203d4260f61ccf1b5d0b6e",
+    "agy_validator_v1": "41e4966fa9c43da15878509c9df968599451de99986d60cc802081cde1c270f4",
 }
 #: The validator's source-hash closure per literal (the supplement). An edit that keeps every
 #: verdict updates this pin in a reviewed change; one that changes a verdict bumps the literal.
 VALIDATOR_CLOSURE_SHA256 = {
-    "agy_validator_v1": "e482055d70f1d8d274d239e414c463a65aeb797cabc22797ca385903699fdc7d",
+    "agy_validator_v1": "6379dbc3ec93689d4802634811fc9d3539803354b2b3483fdbb1e382222b715c",
 }
 
 
@@ -149,6 +151,29 @@ def _directory_case(case, root):
     return root
 
 
+_SINGLE_PROMPT = "agy validator corpus: one sealed review prompt that fits a single chunk"
+
+
+def _protocol(kind):
+    if kind == "single":
+        return pi._broker_gemini_stream_protocol(_SINGLE_PROMPT)
+    # two chunks, so the ingestion acknowledgements are exercised
+    return pi._broker_gemini_stream_protocol("x" * (pi._BROKER_AGY_STREAM_CHUNK_MAX_BYTES + 1024))
+
+
+def _stream_text(case, protocol):
+    lines = []
+    for line in case["lines"]:
+        if line.startswith("$ACK"):
+            index, _, status = line[4:].partition(":")
+            lines.append(json.dumps({"event": "result", "result": {
+                "status": status or "SUCCESS", "conversation_id": "c1",
+                "response": protocol.acknowledgements[int(index) - 1]}}))
+        else:
+            lines.append(line)
+    return "\n".join(lines) + "\n"
+
+
 def verdict_vector(tmp_path):
     """Every corpus case through the production entry points, in corpus order."""
     tmp_path = Path(tempfile.mkdtemp(dir=tmp_path))
@@ -176,6 +201,15 @@ def verdict_vector(tmp_path):
             if case.get(name) is not None:
                 (root / f"{name}.json").write_text(json.dumps(case[name]))
         vector.append([case["id"], q._classify_failure(root, case["operation"])])
+    for case in cases["stream"]:
+        # The stream parser decides the outcome the broker records (agent-harness#1937 B1).
+        protocol = _protocol(case["protocol"])
+        try:
+            code, _text, _diagnostic, metadata = pi._broker_gemini_stream_result(_stream_text(case, protocol), protocol)
+            verdict = f"{code}:{metadata['provider_stream_outcome']}"
+        except Exception as exc:  # noqa: BLE001 - pinned like the record cases
+            verdict = "raise:" + type(exc).__name__
+        vector.append([case["id"], verdict])
     return vector
 
 
@@ -198,6 +232,8 @@ def test_the_corpus_covers_every_pass_predicate(tmp_path):
         assert sum(verdicts[name] == "reject" for name in mine) >= 3, operation
     assert {verdicts[case["id"]] for case in cases["classify"]} == {"failed", "transient"}
     assert {verdicts[case["id"]] for case in cases["directory"]} >= {"pass:true", "pass:false", "reject"}
+    stream = {verdicts[case["id"]] for case in cases["stream"]}
+    assert "0:accepted" in stream and len(stream - {"0:accepted"}) >= 5
     # each case states the verdict it was written for; the vector must agree with every one
     assert {case["id"]: case["expect"] for section in cases.values() for case in section} == verdicts
 
@@ -246,7 +282,38 @@ def _argv_render_differs(monkeypatch):
     monkeypatch.setattr(q, "render_operation_argv", lambda operation, model: real(operation, model)[:-1] + ["1"])
 
 
+def _source_mutant(monkeypatch, module, name, old, new):
+    """Recompile one function with one edit, the way a source change would land."""
+    source = textwrap.dedent(inspect.getsource(getattr(module, name)))
+    assert source.count(old) == 1, (name, old)
+    namespace = dict(module.__dict__)
+    exec(compile(source.replace(old, new), module.__file__, "exec"), namespace)  # noqa: S102
+    monkeypatch.setattr(module, name, namespace[name])
+
+
+def _stream_final_success_check_removed(monkeypatch):
+    _source_mutant(monkeypatch, pi, "_broker_gemini_stream_result",
+                   'if final.get("status") != "SUCCESS" or not isinstance(final.get("response"), str):',
+                   'if not isinstance(final.get("response"), str):')
+
+
+def _image_readonly_predicate_removed(monkeypatch):
+    _source_mutant(monkeypatch, q, "validate_records",
+                   'for key in ("image_readonly", "home_removed",', 'for key in ("home_removed",')
+
+
+def _registry_lets_gemini_run_any_model(monkeypatch):
+    from phase_loop_runtime.advisor_board import registries
+
+    monkeypatch.setattr(registries, "_MODEL_SPECS", tuple(
+        dataclasses.replace(spec, runnable_by=tuple(dict.fromkeys((*spec.runnable_by, "gemini"))))
+        for spec in registries._MODEL_SPECS))
+
+
 MUTANTS = {
+    "panel_invoker._broker_gemini_stream_result drops the final SUCCESS check": _stream_final_success_check_removed,
+    "agy_qualification.validate_records drops the image_readonly predicate": _image_readonly_predicate_removed,
+    "advisor_board.registries lets gemini run another harness's model": _registry_lets_gemini_run_any_model,
     "panel_invoker.terminal_verdict accepts a non-terminal stream": _terminal_verdict_accepts_anything,
     "panel_invoker.terminal_verdict reads the first line": _terminal_verdict_reads_the_first_line,
     "panel_invoker._render_broker_inline_prompt": _prompt_renders_differently,
@@ -283,3 +350,26 @@ def test_the_validator_closure_is_pinned():
     table = converter.validator_closure(Path(q.__file__).resolve().parent)
     assert VALIDATOR_CLOSURE_SHA256.get(q.QUALIFICATION_VALIDATOR) == converter.closure_digest(table), \
         converter.closure_digest(table)
+
+
+@pytest.mark.skipif(not CONVERTER.is_file(), reason="the converter is repository source")
+@pytest.mark.parametrize(("relative", "old", "new"), [
+    # reached only through advisor_board.backing's relative imports (agent-harness#1937 B2)
+    ("advisor_board/registries.py",
+     "return tuple(s.name for s in _HARNESS_SPECS if vendor_of_harness(s.name) == model_vendor)",
+     'return tuple(s.name for s in _HARNESS_SPECS if vendor_of_harness(s.name) == model_vendor or s.name == "gemini")'),
+    ("panel_invoker.py",
+     'if final.get("status") != "SUCCESS" or not isinstance(final.get("response"), str):',
+     'if not isinstance(final.get("response"), str):'),
+    ("agy_qualification.py", 'for key in ("image_readonly", "home_removed",', 'for key in ("home_removed",'),
+])
+def test_a_source_edit_in_the_transitive_closure_changes_its_digest(tmp_path, relative, old, new):
+    converter = _converter()
+    package = Path(q.__file__).resolve().parent
+    copy = tmp_path / "phase_loop_runtime"
+    shutil.copytree(package, copy, ignore=shutil.ignore_patterns("__pycache__"))
+    path = copy / relative
+    text = path.read_text()
+    assert text.count(old) == 1
+    path.write_text(text.replace(old, new))
+    assert converter.validator_closure(copy) != converter.validator_closure(package)

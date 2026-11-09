@@ -1,6 +1,7 @@
 """Linux ownership for the qualified, brokered Gemini heartbeat route."""
 from contextlib import contextmanager
 from hashlib import sha256
+from datetime import datetime
 import errno
 from importlib import resources
 import json
@@ -26,7 +27,8 @@ _CATALOG_MEMBER_KEYS = frozenset({"release_version", "image_sha256", "help_sha25
                                   "qci", "published_at", "pinned", "record"})
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _RELEASE = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
-_RFC3339 = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})")
+_RFC3339 = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\.[0-9]+)?"
+                      r"(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])")
 #: Why the last ``load_catalog`` call returned what it did: ``ok``, ``missing``,
 #: ``malformed`` or ``empty``. Anything but ``ok`` is an empty catalog (fail-closed).
 CATALOG_STATUS = "unloaded"
@@ -62,6 +64,8 @@ def parse_catalog(text: str) -> list[dict]:
             raise ValueError("agy catalog release version malformed")
         if not isinstance(member["published_at"], str) or not _RFC3339.fullmatch(member["published_at"]):
             raise ValueError("agy catalog published_at malformed")
+        # a real calendar instant, not just its shape (agent-harness#1937 review B5)
+        datetime.fromisoformat(member["published_at"].replace("z", "Z"))
         if type(member["pinned"]) is not bool:
             raise ValueError("agy catalog pinned is not a bool")
         if member["record"] != f"agy-{version}-linux-x64-qualification.json":
@@ -87,7 +91,7 @@ def load_catalog(path=None) -> dict[str, str]:
         return {}
     try:
         members = parse_catalog(text)
-    except (ValueError, TypeError, KeyError):
+    except (ValueError, TypeError, KeyError, RecursionError):
         CATALOG_STATUS = "malformed"
         return {}
     if not members:

@@ -173,6 +173,33 @@ def test_check_refuses_a_validator_closure_mismatch(repo, converter, module, old
     assert named in str(refused.value)
 
 
+def test_closure_resolves_relative_imports_against_the_containing_package(tmp_path, converter):
+    """``from .registries import X`` inside ``advisor/backing.py`` is ``advisor.registries``,
+    never a top-level ``registries`` (agent-harness#1937 review B2)."""
+    package = tmp_path / "phase_loop_runtime"
+    (package / "advisor").mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    (package / "advisor" / "__init__.py").write_text("")
+    (package / "agy_qualification.py").write_text(
+        "def _harden(model):\n    from .advisor.backing import harden\n    return harden(model)\n\n\n"
+        "def validate_records(record):\n    return _harden(record)\n\n\n"
+        "def validate_directory(root):\n    return None\n\n\n"
+        "def _classify_failure(root, operation):\n    return 'failed'\n")
+    (package / "advisor" / "backing.py").write_text(
+        "from .registries import runnable\nfrom . import mapping\n\n\n"
+        "def harden(model):\n    return runnable(model) and mapping.allowed(model)\n")
+    (package / "advisor" / "registries.py").write_text("SPECS = ('gemini',)\n\n\ndef runnable(model):\n    return model in SPECS\n")
+    (package / "advisor" / "mapping.py").write_text("def allowed(model):\n    return True\n")
+    (package / "registries.py").write_text("def runnable(model):\n    return True\n")  # the wrong target
+    table = converter.validator_closure(package)
+    assert {"advisor.backing:harden", "advisor.registries:runnable", "advisor.registries:SPECS",
+            "advisor.mapping:allowed"} <= set(table)
+    assert not any(key.startswith("registries:") for key in table)
+    before = converter.closure_digest(table)
+    (package / "advisor" / "registries.py").write_text("SPECS = ('gemini', 'codex')\n\n\ndef runnable(model):\n    return model in SPECS\n")
+    assert converter.closure_digest(converter.validator_closure(package)) != before
+
+
 def test_check_ignores_an_edit_outside_the_validator_closure(repo, converter):
     repo.write("unrelated.py", "def other():\n    return 4\n")
     repo.commit("outside the closure")
@@ -313,7 +340,11 @@ def test_contract_fails_an_empty_or_malformed_catalog(verifier, evidence, text):
     assert verifier.main(["--contract"]) == 1
 
 
-def _report(path, cases, **counts):
+IDENTITY = {"agy_conformance_strict": "1", "agy_conformance_commit": "c" * 40,
+            "agy_conformance_source_sha256": "d" * 64}
+
+
+def _report(path, cases, identity=IDENTITY, **counts):
     rows = []
     for ident, outcome in cases:
         child = {"pass": "", "skipped": '<skipped message="no bwrap"/>',
@@ -322,7 +353,9 @@ def _report(path, cases, **counts):
         rows.append(f'<testcase classname="tests.test_agy_route_conformance" name="test_obligation[{ident}]" '
                     f'time="1">{child}</testcase>')
     attributes = " ".join(f'{key}="{value}"' for key, value in {"errors": 0, "failures": 0, "skipped": 0, **counts}.items())
+    properties = "".join(f'<property name="{name}" value="{value}"/>' for name, value in (identity or {}).items())
     path.write_text(f'<?xml version="1.0"?><testsuites><testsuite name="pytest" {attributes}>'
+                    + (f"<properties>{properties}</properties>" if properties else "")
                     + "".join(rows) + "</testsuite></testsuites>")
     return path
 
@@ -332,16 +365,50 @@ def obligations(verifier):
     return verifier.conformance_obligations()
 
 
+def _archive(executable: bytes) -> bytes:
+    import io
+    import tarfile
+
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as bundle:
+        info = tarfile.TarInfo("antigravity")
+        info.size = len(executable)
+        bundle.addfile(info, io.BytesIO(executable))
+    return buffer.getvalue()
+
+
 @pytest.fixture
-def releases(verifier, evidence):
-    """The vendor releases by tag, as the shipped records describe them."""
-    table = {}
-    for record in verifier.contract():
-        version = record["release_version"]
-        table[f"{verifier.RELEASES}/tags/{version}"] = {"tag_name": version, "assets": [{
-            "name": verifier.ASSET, "digest": "sha256:" + record["upstream_asset_sha256"],
-            "browser_download_url": f"https://github.com/{verifier.UPSTREAM}/releases/download/{version}/{verifier.ASSET}"}]}
-    return table
+def release_io(verifier, evidence):
+    """The release gate's network, offline: each member becomes a synthetic image whose
+    official archive the fake upstream serves by tag."""
+    catalog_path = evidence / "agy_catalog.json"
+    catalog = json.loads(catalog_path.read_text())
+    archives, metadata = {}, {}
+    for member in catalog["routes"]["linux-x64"]:
+        executable = f"synthetic agy {member['release_version']}".encode()
+        archive = _archive(executable)
+        image, asset = sha256(executable).hexdigest(), sha256(archive).hexdigest()
+        member.update(image_sha256=image, asset_sha256=asset)
+        record_path = evidence / "evidence" / member["record"]
+        record = json.loads(record_path.read_text())
+        record.update(image_sha256=image, upstream_asset_sha256=asset)
+        record["upstream"]["asset_sha256"] = asset
+        for row in record["records"]:
+            row["image_sha256"] = image
+            row["profile"]["image_sha256"] = image
+        record_path.write_text(json.dumps(record))
+        version = member["release_version"]
+        url = f"https://github.com/{verifier.UPSTREAM}/releases/download/{version}/{verifier.ASSET}"
+        archives[url] = archive
+        metadata[f"{verifier.RELEASES}/tags/{version}"] = {"tag_name": version, "assets": [{
+            "name": verifier.ASSET, "digest": "sha256:" + asset, "browser_download_url": url}]}
+    catalog_path.write_text(json.dumps(catalog))
+    return {"fetch": metadata.__getitem__, "download": lambda url, target: Path(target).write_bytes(archives[url]),
+            "identity": IDENTITY, "_metadata": metadata, "_archives": archives}
+
+
+def _io(release_io):
+    return {key: value for key, value in release_io.items() if not key.startswith("_")}
 
 
 def test_release_reads_the_suites_eight_obligations(obligations):
@@ -357,29 +424,29 @@ def _load_suite():
     return module
 
 
-def test_release_passes_a_strict_complete_report(verifier, evidence, obligations, releases, tmp_path):
+def test_release_passes_a_strict_complete_report(verifier, evidence, obligations, release_io, tmp_path):
     report = _report(tmp_path / "conformance.xml", [(o, "pass") for o in obligations])
-    records, seen = verifier.release(report, fetch=releases.__getitem__)
+    records, seen = verifier.release(report, **_io(release_io))
     assert seen == sorted(obligations) and records
 
 
 @pytest.mark.parametrize("outcome", ["skipped", "xfail", "failure", "error"])
-def test_release_fails_a_report_with_a_non_passing_obligation(verifier, evidence, obligations, releases, tmp_path, outcome):
+def test_release_fails_a_report_with_a_non_passing_obligation(verifier, evidence, obligations, release_io, tmp_path, outcome):
     cases = [(o, "pass") for o in obligations]
     cases[0] = (cases[0][0], outcome)
     report = _report(tmp_path / "conformance.xml", cases)
     with pytest.raises(ValueError):
-        verifier.release(report, fetch=releases.__getitem__)
+        verifier.release(report, **_io(release_io))
 
 
-def test_release_fails_a_skipped_run_even_by_its_counts(verifier, evidence, obligations, releases, tmp_path):
+def test_release_fails_a_skipped_run_even_by_its_counts(verifier, evidence, obligations, release_io, tmp_path):
     report = _report(tmp_path / "conformance.xml", [(o, "pass") for o in obligations], skipped=1)
     with pytest.raises(ValueError, match="skipped"):
-        verifier.release(report, fetch=releases.__getitem__)
+        verifier.release(report, **_io(release_io))
 
 
 @pytest.mark.parametrize("kind", ["missing", "duplicate", "unknown"])
-def test_release_fails_a_partial_or_repeated_report(verifier, evidence, obligations, releases, tmp_path, kind):
+def test_release_fails_a_partial_or_repeated_report(verifier, evidence, obligations, release_io, tmp_path, kind):
     cases = [(o, "pass") for o in obligations]
     if kind == "missing":
         cases = cases[1:]
@@ -388,36 +455,82 @@ def test_release_fails_a_partial_or_repeated_report(verifier, evidence, obligati
     else:
         cases.append(("neg_invented", "pass"))
     with pytest.raises(ValueError, match=kind if kind != "duplicate" else "repeats"):
-        verifier.release(_report(tmp_path / "conformance.xml", cases), fetch=releases.__getitem__)
+        verifier.release(_report(tmp_path / "conformance.xml", cases), **_io(release_io))
 
 
-def test_release_fails_without_a_report(verifier, evidence, releases, tmp_path, capsys):
+def test_release_fails_without_a_report(verifier, evidence, release_io, tmp_path, capsys):
     with pytest.raises(ValueError, match="unavailable"):
-        verifier.release(tmp_path / "absent.xml", fetch=releases.__getitem__)
+        verifier.release(tmp_path / "absent.xml", **_io(release_io))
     with pytest.raises(SystemExit):
         verifier.main(["--release"])  # --conformance-report is required
 
 
-def test_release_fails_an_asset_mismatch(verifier, evidence, obligations, releases, tmp_path):
-    for release in releases.values():
+def test_release_fails_an_asset_mismatch(verifier, evidence, obligations, release_io, tmp_path):
+    for release in release_io["_metadata"].values():
         release["assets"][0]["digest"] = "sha256:" + "0" * 64
     report = _report(tmp_path / "conformance.xml", [(o, "pass") for o in obligations])
     with pytest.raises(ValueError, match="asset digest mismatch"):
-        verifier.release(report, fetch=releases.__getitem__)
+        verifier.release(report, **_io(release_io))
 
 
-def test_release_fails_an_operations_contract_edit(verifier, evidence, obligations, releases, tmp_path, monkeypatch):
+def test_release_fails_an_operations_contract_edit(verifier, evidence, obligations, release_io, tmp_path, monkeypatch):
     from phase_loop_runtime import agy_qualification as q
 
     first, *rest = q.OPERATIONS_CONTRACT
     monkeypatch.setattr(q, "OPERATIONS_CONTRACT", (first._replace(argv_template=first.argv_template[:-1]), *rest))
     report = _report(tmp_path / "conformance.xml", [(o, "pass") for o in obligations])
     with pytest.raises(verifier.RequalifyRequired):
-        verifier.release(report, fetch=releases.__getitem__)
+        verifier.release(report, **_io(release_io))
 
 
-def test_release_refuses_a_report_with_a_dtd(verifier, evidence, obligations, releases, tmp_path):
+def test_release_refuses_a_report_with_a_dtd(verifier, evidence, obligations, release_io, tmp_path):
     report = tmp_path / "conformance.xml"
     report.write_text('<?xml version="1.0"?><!DOCTYPE x [<!ENTITY a "b">]><testsuites/>')
     with pytest.raises(ValueError, match="DTD"):
-        verifier.release(report, fetch=releases.__getitem__)
+        verifier.release(report, **_io(release_io))
+
+
+@pytest.mark.parametrize(("change", "match"), [
+    (lambda identity: None, "no agy_conformance_strict"),
+    (lambda identity: {**identity, "agy_conformance_strict": "0"}, "agy_conformance_strict"),
+    (lambda identity: {**identity, "agy_conformance_commit": "e" * 40}, "agy_conformance_commit"),
+    (lambda identity: {**identity, "agy_conformance_source_sha256": "e" * 64}, "agy_conformance_source_sha256"),
+    (lambda identity: {key: value for key, value in identity.items() if key != "agy_conformance_commit"},
+     "no agy_conformance_commit"),
+])
+def test_release_requires_the_report_identity_of_a_strict_run_at_this_checkout(
+        verifier, evidence, obligations, release_io, tmp_path, change, match):
+    """Eight bare <testcase> elements are not a conformance run (agent-harness#1937 B4)."""
+    report = _report(tmp_path / "conformance.xml", [(o, "pass") for o in obligations], identity=change(IDENTITY))
+    with pytest.raises(ValueError, match=match):
+        verifier.release(report, **_io(release_io))
+
+
+def test_release_identity_is_this_checkouts_commit_and_sources(verifier):
+    identity = verifier.conformance_identity()
+    head = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True,
+                          check=True).stdout.strip()
+    assert identity == {"agy_conformance_strict": "1", "agy_conformance_commit": head,
+                        "agy_conformance_source_sha256": verifier.conformance_source_sha256()}
+    assert verifier.conformance_identity(strict=False)["agy_conformance_strict"] == "0"
+
+
+def test_release_fails_an_executable_that_is_not_the_official_archive_member(
+        verifier, evidence, obligations, release_io, tmp_path):
+    """The record and catalog name another image, the official archive is unchanged: the
+    extracted executable must be the recorded image (agent-harness#1937 B3)."""
+    catalog_path = evidence / "agy_catalog.json"
+    catalog = json.loads(catalog_path.read_text())
+    for member in catalog["routes"]["linux-x64"]:
+        member["image_sha256"] = "a" * 64
+        record_path = evidence / "evidence" / member["record"]
+        record = json.loads(record_path.read_text())
+        record["image_sha256"] = "a" * 64
+        for row in record["records"]:
+            row["image_sha256"] = "a" * 64
+            row["profile"]["image_sha256"] = "a" * 64
+        record_path.write_text(json.dumps(record))
+    catalog_path.write_text(json.dumps(catalog))
+    report = _report(tmp_path / "conformance.xml", [(o, "pass") for o in obligations])
+    with pytest.raises(ValueError, match="executable digest mismatch"):
+        verifier.release(report, **_io(release_io))

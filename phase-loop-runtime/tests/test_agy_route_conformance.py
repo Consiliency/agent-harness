@@ -238,6 +238,26 @@ def driver(conformance_base, monkeypatch):
     return lambda mode: _qualify(mode, conformance_base, monkeypatch)
 
 
+# ------------------------------------------------------------ report identity
+
+def _verifier():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "verify_qualified_agy_image_for_conformance", REPO / "phase-loop-runtime/scripts/verify_qualified_agy_image.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _report_identity(record_testsuite_property):
+    """Bind the JUnit report to this run: strict or not, the commit and the sources it proved.
+    ``--release`` refuses a report without exactly this identity (agent-harness#1937 B4)."""
+    for name, value in _verifier().conformance_identity(REPO, strict=STRICT).items():
+        record_testsuite_property(name, value)
+
+
 # --------------------------------------------------------------------- obligations
 
 @pytest.mark.parametrize("obligation", CONFORMANCE_OBLIGATIONS)

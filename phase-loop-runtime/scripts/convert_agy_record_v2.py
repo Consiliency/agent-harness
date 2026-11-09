@@ -41,8 +41,18 @@ OLD_CATALOG_REL = "plans/evidence/qualified-provider-images.json"
 DATA_CATALOG_REL = PACKAGE_REL + "/data/agy_catalog.json"
 V1 = "agy_redacted_qualification_summary.v1"
 V2 = "agy_redacted_qualification_summary.v2"
-ENTRY_POINTS = ("validate_records", "validate_directory", "_classify_failure")
-ENTRY_MODULE = "agy_qualification"
+# Every function that turns provider output or image facts into a verdict (AGYROLL §2.1;
+# agent-harness#1937 review B1): the validator entry points (which hold the recorded image
+# and isolation predicates), the helper image-identity policy, and the stream parser that
+# decides a provider stream's outcome. The driver's launch machinery (``run_operation``) is
+# proven by the strict conformance suite instead; hashing it would pull in every launch module.
+ENTRY_POINTS = (
+    ("agy_qualification", "validate_records"),
+    ("agy_qualification", "validate_directory"),
+    ("agy_qualification", "_classify_failure"),
+    ("agy_qualification", "HelperObserver"),
+    ("panel_invoker", "_broker_gemini_stream_result"),
+)
 
 
 class ConversionRefused(ValueError):
@@ -108,6 +118,9 @@ def tree_digests(src_root: Path, python: str = sys.executable) -> tuple[str, str
 class _Module:
     def __init__(self, name: str, path: Path):
         self.name, self.source = name, path.read_text()
+        # The package a relative import resolves against (agent-harness#1937 review B2): the
+        # module's own package, or the package itself for an ``__init__``.
+        self.package = name if path.name == "__init__.py" else name.rpartition(".")[0]
         self.defs: dict[str, ast.AST] = {}
         self.aliases: dict[str, str] = {}             # name -> module
         self.imported: dict[str, tuple[str, str]] = {}  # name -> (module, name)
@@ -123,16 +136,30 @@ class _Module:
             elif isinstance(node, ast.ImportFrom):
                 self._bind(node, self.aliases, self.imported)
 
+    def _base(self, node: ast.ImportFrom) -> str | None:
+        """The dotted module (relative to ``phase_loop_runtime``) an import names, or ``None``
+        for an import from outside the package."""
+        if node.level == 0:
+            module = node.module or ""
+            if module != "phase_loop_runtime" and not module.startswith("phase_loop_runtime."):
+                return None
+            return module.removeprefix("phase_loop_runtime").lstrip(".")
+        parts = self.package.split(".") if self.package else []
+        if node.level - 1 > len(parts):
+            return None
+        parts = parts[:len(parts) - (node.level - 1)]
+        return ".".join([*parts, *([node.module] if node.module else [])])
+
     def _bind(self, node: ast.ImportFrom, aliases, imported) -> None:
-        if node.level != 1:
+        base = self._base(node)
+        if base is None:
             return
-        base = node.module or ""
         for alias in node.names:
             bound = alias.asname or alias.name
-            if base:
+            if node.module:
                 imported[bound] = (base, alias.name)
             else:
-                aliases[bound] = alias.name
+                aliases[bound] = ".".join(part for part in (base, alias.name) if part)
 
     def module_returning(self, name: str) -> str | None:
         """``def _panel(): from . import panel_invoker; return panel_invoker`` -> its module."""
@@ -154,12 +181,15 @@ def validator_closure(package_dir: Path) -> dict[str, str]:
 
     def module(name: str) -> _Module | None:
         if name not in cache:
-            path = package_dir.joinpath(*name.split(".")).with_suffix(".py")
+            base = package_dir.joinpath(*name.split(".")) if name else package_dir
+            path = base.with_suffix(".py") if name else base / "__init__.py"
+            if not path.is_file():
+                path = base / "__init__.py"
             cache[name] = _Module(name, path) if path.is_file() else None
         return cache[name]
 
     table: dict[str, str] = {}
-    pending = [(ENTRY_MODULE, name) for name in ENTRY_POINTS]
+    pending = list(ENTRY_POINTS)
     while pending:
         mod_name, name = pending.pop()
         key = f"{mod_name}:{name}"

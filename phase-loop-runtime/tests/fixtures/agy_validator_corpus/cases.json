@@ -464,6 +464,135 @@
      "$delete"
     ]
    ]
+  },
+  {
+   "id": "observer_image_not_readonly",
+   "operation": "completion",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "observer",
+      "image_readonly"
+     ],
+     false
+    ]
+   ]
+  },
+  {
+   "id": "observer_init_not_exited",
+   "operation": "cancel",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "observer",
+      "init_exited"
+     ],
+     false
+    ]
+   ]
+  },
+  {
+   "id": "observer_fds_not_closed",
+   "operation": "owner-loss",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "observer",
+      "owned_fds_closed"
+     ],
+     false
+    ]
+   ]
+  },
+  {
+   "id": "observer_network_unfiltered",
+   "operation": "completion",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "observer",
+      "sandbox_network_filtered"
+     ],
+     false
+    ]
+   ]
+  },
+  {
+   "id": "observer_credential_before",
+   "operation": "cancel",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "observer",
+      "credential_target_regular_before"
+     ],
+     false
+    ]
+   ]
+  },
+  {
+   "id": "observer_image_digest",
+   "operation": "completion",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "observer",
+      "image_sha256"
+     ],
+     "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    ]
+   ]
+  },
+  {
+   "id": "profile_image_digest",
+   "operation": "owner-loss",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "profile",
+      "image_sha256"
+     ],
+     "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    ]
+   ]
+  },
+  {
+   "id": "helper_provider_not_agy",
+   "operation": "cancel",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "observer",
+      "helpers",
+      0,
+      "is_agy"
+     ],
+     false
+    ]
+   ]
+  },
+  {
+   "id": "owner_loss_foreign_model",
+   "operation": "owner-loss",
+   "expect": "raise:ValueError",
+   "set": [
+    [
+     [
+      "observer",
+      "argv",
+      2
+     ],
+     "gpt-6-astra"
+    ]
+   ]
   }
  ],
  "directory": [
@@ -636,6 +765,163 @@
     "stage": "cleanup_observation",
     "reason": "qualification observed a surviving owned process"
    }
+  }
+ ],
+ "stream": [
+  {
+   "id": "stream_accepted",
+   "protocol": "single",
+   "expect": "0:accepted",
+   "lines": [
+    "{\"event\": \"init\", \"conversation_id\": \"c1\"}",
+    "{\"event\": \"step_update\", \"conversation_id\": \"c1\", \"step_update\": {\"step_type\": \"agent_response\", \"conversation_id\": \"c1\"}}",
+    "{\"event\": \"result\", \"result\": {\"status\": \"SUCCESS\", \"conversation_id\": \"c1\", \"response\": \"Consistent.\\nAGREE\"}}"
+   ]
+  },
+  {
+   "id": "stream_final_failure",
+   "protocol": "single",
+   "expect": "1:final_result_invalid",
+   "lines": [
+    "{\"event\": \"init\", \"conversation_id\": \"c1\"}",
+    "{\"event\": \"result\", \"result\": {\"status\": \"FAILURE\", \"conversation_id\": \"c1\", \"response\": \"Consistent.\\nAGREE\"}}"
+   ]
+  },
+  {
+   "id": "stream_final_not_text",
+   "protocol": "single",
+   "expect": "1:final_result_invalid",
+   "lines": [
+    "{\"event\": \"init\", \"conversation_id\": \"c1\"}",
+    "{\"event\": \"result\", \"result\": {\"status\": \"SUCCESS\", \"conversation_id\": \"c1\", \"response\": 7}}"
+   ]
+  },
+  {
+   "id": "stream_no_result",
+   "protocol": "single",
+   "expect": "1:result_count_mismatch",
+   "lines": [
+    "{\"event\": \"init\", \"conversation_id\": \"c1\"}",
+    "{\"event\": \"step_update\", \"conversation_id\": \"c1\", \"step_update\": {\"step_type\": \"agent_response\", \"conversation_id\": \"c1\"}}"
+   ]
+  },
+  {
+   "id": "stream_two_results",
+   "protocol": "single",
+   "expect": "1:result_count_mismatch",
+   "lines": [
+    "{\"event\": \"init\", \"conversation_id\": \"c1\"}",
+    "{\"event\": \"result\", \"result\": {\"status\": \"SUCCESS\", \"conversation_id\": \"c1\", \"response\": \"Consistent.\\nAGREE\"}}",
+    "{\"event\": \"result\", \"result\": {\"status\": \"SUCCESS\", \"conversation_id\": \"c1\", \"response\": \"Consistent.\\nAGREE\"}}"
+   ]
+  },
+  {
+   "id": "stream_malformed_json",
+   "protocol": "single",
+   "expect": "1:parse_error",
+   "lines": [
+    "{not json"
+   ]
+  },
+  {
+   "id": "stream_unexpected_event",
+   "protocol": "single",
+   "expect": "1:parse_error",
+   "lines": [
+    "{\"event\": \"init\", \"conversation_id\": \"c1\"}",
+    "{\"event\": \"thinking\"}",
+    "{\"event\": \"result\", \"result\": {\"status\": \"SUCCESS\", \"conversation_id\": \"c1\", \"response\": \"Consistent.\\nAGREE\"}}"
+   ]
+  },
+  {
+   "id": "stream_tool_step",
+   "protocol": "single",
+   "expect": "1:parse_error",
+   "lines": [
+    "{\"event\": \"init\", \"conversation_id\": \"c1\"}",
+    "{\"event\": \"step_update\", \"conversation_id\": \"c1\", \"step_update\": {\"step_type\": \"tool\", \"conversation_id\": \"c1\"}}",
+    "{\"event\": \"result\", \"result\": {\"status\": \"SUCCESS\", \"conversation_id\": \"c1\", \"response\": \"Consistent.\\nAGREE\"}}"
+   ]
+  },
+  {
+   "id": "stream_subagent_step",
+   "protocol": "single",
+   "expect": "1:parse_error",
+   "lines": [
+    "{\"event\": \"init\", \"conversation_id\": \"c1\"}",
+    "{\"event\": \"step_update\", \"conversation_id\": \"c1\", \"step_update\": {\"step_type\": \"agent_response\", \"subagent_info\": {}, \"conversation_id\": \"c1\"}}",
+    "{\"event\": \"result\", \"result\": {\"status\": \"SUCCESS\", \"conversation_id\": \"c1\", \"response\": \"Consistent.\\nAGREE\"}}"
+   ]
+  },
+  {
+   "id": "stream_conversation_changed",
+   "protocol": "single",
+   "expect": "1:session_reset",
+   "lines": [
+    "{\"event\": \"init\", \"conversation_id\": \"c1\"}",
+    "{\"event\": \"result\", \"result\": {\"status\": \"SUCCESS\", \"conversation_id\": \"c2\", \"response\": \"Consistent.\\nAGREE\"}}"
+   ]
+  },
+  {
+   "id": "stream_conversation_omitted",
+   "protocol": "single",
+   "expect": "1:session_reset",
+   "lines": [
+    "{\"event\": \"init\"}",
+    "{\"event\": \"result\", \"result\": {\"status\": \"SUCCESS\", \"response\": \"x\\nAGREE\"}}"
+   ]
+  },
+  {
+   "id": "stream_truncated",
+   "protocol": "single",
+   "expect": "1:truncation_marker",
+   "lines": [
+    "{\"event\": \"init\", \"conversation_id\": \"c1\"}",
+    "{\"event\": \"result\", \"result\": {\"status\": \"SUCCESS\", \"conversation_id\": \"c1\", \"response\": \"Consistent <truncated 12 bytes>\\nAGREE\"}}"
+   ]
+  },
+  {
+   "id": "stream_chunked_accepted",
+   "protocol": "chunked",
+   "expect": "0:accepted",
+   "lines": [
+    "{\"event\": \"init\", \"conversation_id\": \"c1\"}",
+    "$ACK1",
+    "$ACK2",
+    "{\"event\": \"result\", \"result\": {\"status\": \"SUCCESS\", \"conversation_id\": \"c1\", \"response\": \"Consistent.\\nAGREE\"}}"
+   ]
+  },
+  {
+   "id": "stream_chunked_wrong_ack",
+   "protocol": "chunked",
+   "expect": "1:acknowledgement_mismatch",
+   "lines": [
+    "{\"event\": \"init\", \"conversation_id\": \"c1\"}",
+    "$ACK2",
+    "$ACK1",
+    "{\"event\": \"result\", \"result\": {\"status\": \"SUCCESS\", \"conversation_id\": \"c1\", \"response\": \"Consistent.\\nAGREE\"}}"
+   ]
+  },
+  {
+   "id": "stream_chunked_ack_failure",
+   "protocol": "chunked",
+   "expect": "1:acknowledgement_mismatch",
+   "lines": [
+    "{\"event\": \"init\", \"conversation_id\": \"c1\"}",
+    "$ACK1:FAILURE",
+    "$ACK2",
+    "{\"event\": \"result\", \"result\": {\"status\": \"SUCCESS\", \"conversation_id\": \"c1\", \"response\": \"Consistent.\\nAGREE\"}}"
+   ]
+  },
+  {
+   "id": "stream_chunked_missing_ack",
+   "protocol": "chunked",
+   "expect": "1:result_count_mismatch",
+   "lines": [
+    "{\"event\": \"init\", \"conversation_id\": \"c1\"}",
+    "$ACK1",
+    "{\"event\": \"result\", \"result\": {\"status\": \"SUCCESS\", \"conversation_id\": \"c1\", \"response\": \"Consistent.\\nAGREE\"}}"
+   ]
   }
  ]
 }

@@ -26,6 +26,7 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import re
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -38,6 +39,9 @@ PACKAGE = REPO / "phase-loop-runtime/src/phase_loop_runtime"
 CATALOG = PACKAGE / "data/agy_catalog.json"
 EVIDENCE = REPO / "plans/evidence"
 CONFORMANCE_SUITE = REPO / "phase-loop-runtime/tests/test_agy_route_conformance.py"
+CONFORMANCE_FIXTURES = REPO / "phase-loop-runtime/tests/fixtures/agy_conformance"
+# The properties a real strict run writes into its JUnit report (agent-harness#1937 review B4).
+IDENTITY_PROPERTIES = ("agy_conformance_strict", "agy_conformance_commit", "agy_conformance_source_sha256")
 ASSET = "agy_cli_linux_x64.tar.gz"
 UPSTREAM = "google-antigravity/antigravity-cli"
 RELEASES = f"https://api.github.com/repos/{UPSTREAM}/releases"
@@ -157,8 +161,31 @@ def conformance_obligations(suite=None):
     raise ValueError("the conformance suite declares no CONFORMANCE_OBLIGATIONS")
 
 
-def check_conformance_report(path, obligations):
-    """Every obligation passed exactly once; nothing in the report skipped, xfailed or errored."""
+def conformance_source_sha256(repo=None):
+    """One digest over what a conformance run proves: the package sources and data, the suite
+    and its stand-in fixtures. The suite records it; ``--release`` recomputes it."""
+    repo = Path(repo or REPO)
+    package = repo / "phase-loop-runtime/src/phase_loop_runtime"
+    files = [path for path in package.rglob("*") if path.is_file() and path.suffix in (".py", ".json")
+             and "__pycache__" not in path.parts]
+    files.append(repo / "phase-loop-runtime/tests/test_agy_route_conformance.py")
+    files += [path for path in (repo / "phase-loop-runtime/tests/fixtures/agy_conformance").rglob("*") if path.is_file()]
+    table = {str(path.relative_to(repo)): digest_file(path) for path in sorted(files)}
+    return sha256(json.dumps(table, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def conformance_identity(repo=None, *, strict=True):
+    """The identity a strict conformance run at this checkout records, and ``--release`` requires."""
+    repo = Path(repo or REPO)
+    commit = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True,
+                            check=True, timeout=30).stdout.strip()
+    return {"agy_conformance_strict": "1" if strict else "0", "agy_conformance_commit": commit,
+            "agy_conformance_source_sha256": conformance_source_sha256(repo)}
+
+
+def check_conformance_report(path, obligations, identity=None):
+    """A strict run at this commit and source (its recorded identity), every obligation passed
+    exactly once, and nothing in the report skipped, xfailed, failed or errored."""
     try:
         text = Path(path).read_text(encoding="utf-8")
     except OSError as exc:
@@ -169,7 +196,17 @@ def check_conformance_report(path, obligations):
     except ElementTree.ParseError as exc:
         raise ValueError("conformance report is not JUnit XML") from exc
     suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
-    require(suites, "conformance report has no test suite")
+    require(len(suites) == 1, "conformance report must hold exactly one test suite")
+    recorded = {}
+    for prop in suites[0].iter("property"):
+        name = prop.get("name")
+        require(name not in recorded, f"conformance report repeats property {name}")
+        recorded[name] = prop.get("value")
+    expected = identity if identity is not None else conformance_identity()
+    for key in IDENTITY_PROPERTIES:
+        require(key in recorded, f"conformance report has no {key}: not a run of the strict suite")
+        require(recorded[key] == expected[key],
+                f"conformance report {key} is {recorded[key]!r}, this checkout needs {expected[key]!r}")
     for suite in suites:
         for key in ("errors", "failures", "skipped"):
             require(suite.get(key, "0") == "0", f"conformance report has {suite.get(key)} {key}")
@@ -229,11 +266,29 @@ def verify_archive(record, archive):
     require(h.hexdigest() == record["image_sha256"], "executable digest mismatch")
 
 
-def release(report, *, fetch=fetch_release):
+def download_asset(url, target):
+    request = Request(url, headers={"User-Agent": "agent-harness-qualified-image-check"})
+    with urlopen(request, timeout=60) as response, Path(target).open("wb") as stream:
+        while chunk := response.read(1024 * 1024):
+            stream.write(chunk)
+            require(stream.tell() <= 128_000_000, "release asset exceeds expected size")
+
+
+def release(report, *, fetch=fetch_release, download=download_asset, identity=None):
+    """``--release``: the contract, a strict conformance report bound to this checkout, and
+    every member's official archive by tag, whose extracted executable must be the record's
+    and the catalog's image (agent-harness#1937 review B3)."""
     records = contract()
-    obligations = check_conformance_report(report, conformance_obligations())
-    for record in records:
-        verify_asset(record, fetch(f"{RELEASES}/tags/{record['release_version']}"))
+    obligations = check_conformance_report(report, conformance_obligations(), identity)
+    images = {member["release_version"]: member["image_sha256"] for member in catalog_members()}
+    with tempfile.TemporaryDirectory(prefix="agy-release-") as scratch:
+        for record in records:
+            version = record["release_version"]
+            asset = verify_asset(record, fetch(f"{RELEASES}/tags/{version}"))
+            archive = Path(scratch) / f"{version}-{ASSET}"
+            download(asset["browser_download_url"], archive)
+            verify_archive(record, archive)
+            require(images[version] == record["image_sha256"], f"catalog image of {version} differs from its record")
     return records, obligations
 
 
@@ -253,11 +308,7 @@ def upstream_only(archive=None, *, fetch=fetch_release):
     else:
         with tempfile.TemporaryDirectory(prefix="agy-qualification-") as scratch:
             path = Path(scratch) / ASSET
-            request = Request(asset["browser_download_url"], headers={"User-Agent": "agent-harness-qualified-image-check"})
-            with urlopen(request, timeout=60) as response, path.open("wb") as target:
-                while chunk := response.read(1024 * 1024):
-                    target.write(chunk)
-                    require(target.tell() <= 128_000_000, "release asset exceeds expected size")
+            download_asset(asset["browser_download_url"], path)
             verify_archive(record, path)
     return {"latest_release": latest["tag_name"], "latest_is_member": latest_is_member,
             "verified_member": record["release_version"], "asset_sha256": record["upstream_asset_sha256"],
