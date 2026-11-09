@@ -419,7 +419,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="First-use self-qualification of a genuine upstream agy release (agent-harness#1076)",
     )
     agy_qual_sub.add_argument("action", choices=("status", "run", "clear", "watch"))
-    agy_qual_sub.add_argument("--all", action="store_true", help="clear: every entry, not only failed ones")
+    agy_qual_sub.add_argument("--all", action="store_true", help="clear: every entry; otherwise remove failed and transient entries")
     agy_qual_sub.add_argument("--repo", help="watch: the agent-harness checkout to prepare a branch in")
     agy_qual_sub.add_argument("--dry-run", dest="watch_dry_run", action="store_true",
                               help="watch: qualify and verify, open no PR")
@@ -438,7 +438,7 @@ def build_parser() -> argparse.ArgumentParser:
     cli_qual_sub.add_argument("--harness", dest="qual_harness", required=True,
                               choices=("claude", "codex", "grok", "gemini", "opencode", "pi", "cursor-agent"))
     cli_qual_sub.add_argument("--all", dest="qual_all", action="store_true",
-                              help="clear: every entry, not only failed ones")
+                              help="clear: every entry; otherwise remove failed and transient entries")
     agy_clean_sub = subparsers.add_parser("agy-canary-clean-settings")
     agy_clean_sub.add_argument("--evidence-root", required=True)
     agy_clean_sub.add_argument("--settings-path", required=True)

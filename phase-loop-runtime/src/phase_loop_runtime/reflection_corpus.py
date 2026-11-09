@@ -647,13 +647,13 @@ def archive(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python3 -m phase_loop_runtime.reflection_corpus")
     sub = parser.add_subparsers(dest="command", required=True)
-    collect_cmd = sub.add_parser("collect", help="Enumerate, parse and filter reflections; write bundle.md, manifest.json and rule_enforcement.md.")
+    collect_cmd = sub.add_parser("collect", help="Enumerate, parse and filter reflections; with --out-dir, write bundle.md, manifest.json and rule_enforcement.md.")
     collect_cmd.add_argument("--root", action="append", type=Path, help="Skill root to scan (repeatable). Default: every harness root.")
     collect_cmd.add_argument("--out-dir", type=Path)
     collect_cmd.add_argument("--min-reflections", type=int, default=2)
     collect_cmd.add_argument("--per-branch-cap", type=int, default=DEFAULT_PER_BRANCH_CAP)
     collect_cmd.add_argument("--boilerplate-min", type=int, default=DEFAULT_BOILERPLATE_MIN)
-    archive_cmd = sub.add_parser("archive", help="Archive every path in a manifest's reflections_consumed.")
+    archive_cmd = sub.add_parser("archive", help="Archive consumed paths from a manifest, except those named with --exclude.")
     archive_cmd.add_argument("--manifest", type=Path, required=True)
     archive_cmd.add_argument(
         "--root", action="append", type=Path, default=[],

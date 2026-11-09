@@ -1,4 +1,4 @@
-"""Atomically refresh every v10 roadmap digest representation."""
+"""Check or sequentially rewrite the v10 roadmap digest constant and two sidecars."""
 
 from __future__ import annotations
 

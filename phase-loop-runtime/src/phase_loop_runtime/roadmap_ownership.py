@@ -772,7 +772,7 @@ def replay(
     ``candidate_roadmap`` scores the SAME landed changes against one hypothetical
     roadmap text instead of the historical roadmap at each commit. That answers
     "what would this proposal have flagged" -- the question a narrowing decision
-    needs (ah#688) -- without editing the roadmap. The commit sample and the diff
+    needs (agent-harness#688) -- without editing the roadmap. The commit sample and the diff
     per commit are identical to the historical run; only the ownership map differs.
     The candidate goes through ``ownership_map`` and therefore through every gate a
     real roadmap does, so a malformed proposal raises rather than scoring smaller.
@@ -1275,7 +1275,7 @@ def main(argv: List[str]) -> int:
     parser.add_argument(
         "--candidate-roadmap", type=Path, metavar="PATH", default=None,
         help="with --report: score the same landed changes against this roadmap TEXT "
-             "instead of the roadmap as it existed at each commit (ah#688)",
+             "instead of the roadmap as it existed at each commit (agent-harness#688)",
     )
     parser.add_argument(
         "--report",
