@@ -26,7 +26,7 @@ remains. Those receipts are local and fixture-scoped: the production
 `supervised_worker_cli launch` still refuses `codec_unavailable`, so every
 CLOSEOUT obligation is still open.
 
-Three frozen artifacts carry the detail. Read all three before building:
+Four frozen artifacts carry the detail. Read all four before building:
 
 - `plans/artifacts/v12-CLOSEOUT-inputs.md`, unchanged: external pins, corpus
   accounting, the seven adopted decisions, capture/apply/evidence boundaries, the
@@ -41,7 +41,7 @@ Three frozen artifacts carry the detail. Read all three before building:
   finds its launch binding (one fixed operator-owned path, no overrides), sealed by
   the amendment row `v12-CLOSEOUT-amend-binding-location`.
 
-The manifest row seals all three. Out of scope: panel/PTY integration, projected
+The CLOSEOUT manifest row seals the original three; `v12-CLOSEOUT-amend-binding-location` seals the fourth. Out of scope: panel/PTY integration, projected
 dependency routes, a controller implementation, installed-tool qualification,
 release and merge. Unsupported paths keep refusing.
 

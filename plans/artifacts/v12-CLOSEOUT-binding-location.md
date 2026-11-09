@@ -25,8 +25,13 @@ satisfy it. The binding is an operator record, not a root-managed one.
 1. `supervised_launch_binding.MANAGED_BINDING` resolves to
    `<home>/.local/state/phase-loop/supervised-launch-binding.json`, where
    `<home>` is the operator's home directory from the password database
-   (`pwd.getpwuid(os.getuid()).pw_dir`). It is the only path the production CLI
-   passes to `load_validator_binding`.
+   (`pwd.getpwuid(os.getuid()).pw_dir`). SL-1 owns `MANAGED_BINDING` in
+   `supervised_launch_binding.py`. Construct the path directly from the passwd
+   entry, without resolving symlinks before trusted reads. SL-2 owns wiring
+   `supervised_worker_cli._production_codec()` and the production launch path to
+   this location through the frozen `load_v2_binding` interface. The landed
+   `load_validator_binding` describes the existing trust checks; it is not a
+   substitute for the required public v2 loader.
 2. Nothing else can select a different binding: no argv flag, environment
    variable (`HOME`, `XDG_STATE_HOME` and `XDG_CONFIG_HOME` included),
    controller document, config file or working-directory lookup. The CLI never
@@ -40,11 +45,15 @@ satisfy it. The binding is an operator record, not a root-managed one.
    - the excluded roots are honoured.
    
    No reader is weakened.
-4. If the file is absent or fails a check, the result is the existing refusal
-   (`binding_unavailable`, or the trusted-read refusal), and nothing runs. That
-   is today's production behaviour, so the CLI keeps refusing until the operator
-   installs the record.
-5. Tests reach a binding only through the existing in-process seam (the
-   keyword-only test parameters). No test writes into the real home directory.
+4. If passwd-home lookup fails, or the binding is absent or untrusted, production
+   refuses before launch, without fallback or provisioning. Preserve code-only
+   refusal handling: the landed `load_validator_binding(None, ...)` returns
+   `binding_unavailable`, a missing concrete path returns `binding_invalid`, and
+   trusted-check failures retain their closed refusal reasons. Today the CLI stub
+   refuses `codec_unavailable`; this amendment preserves refusal until
+   installation, not that exact diagnostic.
+5. Tests use temporary operator records through in-process loader/test seams.
+   Production has no binding-path override. No test writes into the real home
+   directory.
 6. Provisioning the record on hosts is deployment work outside CLOSEOUT, and
    EC-CLOSEOUT acceptance stays as the plan states.
