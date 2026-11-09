@@ -887,7 +887,8 @@ def test_state_root_refusal_has_no_attempt_effects(worker_case, kind):
     if kind in ("workspace", "target", "references"):
         case.state = case.root / kind
     elif kind == "mode":
-        case.state.mkdir(mode=0o755)
+        case.state.mkdir(mode=0o700)
+        case.state.chmod(0o755)
     else:
         actual = case.root / "actual-state"
         actual.mkdir(mode=0o700)
