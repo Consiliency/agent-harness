@@ -361,7 +361,7 @@ def _spec_from_document(document):
                 "executable_chain", "config_path", "template_path", "qualification_path", "environment_policy_path",
                 "environment_policy_id", "non_secret_environment", "secret_sources", "timeout_seconds", "deadline_action",
                 "tier", "base_commit", "target_map"}
-    optional = {"grants", "envelope_cap", "reference_cap", "aggregate_cap", "stdin", "declared_roots", "view_roots",
+    optional = {"grants", "envelope_cap", "reference_cap", "aggregate_cap", "executable_cap", "stdin", "declared_roots", "view_roots",
                 "template_slots", "discovery_names", "action", "transport_id"}
     _require(required <= set(document) and set(document) <= required | optional, "binding_invalid")
     values = dict(document)
@@ -381,7 +381,7 @@ def _spec_from_document(document):
         values[name] = tuple((key, _path(path)) for key, path in values.get(name, {}).items())
     values["template_slots"] = tuple(values.get("template_slots", {}).items())
     values["discovery_names"] = tuple(values.get("discovery_names", ()))
-    for name in ("timeout_seconds", "envelope_cap", "reference_cap", "aggregate_cap"):
+    for name in ("timeout_seconds", "envelope_cap", "reference_cap", "aggregate_cap", "executable_cap"):
         if name in values:
             number = values[name]
             _require(type(number) in (int, float) and number == int(number) and number > 0, "binding_invalid")

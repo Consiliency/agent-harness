@@ -50,6 +50,7 @@ class TrustedLaunchSpec:
     envelope_cap: int = 1048576
     reference_cap: int = 1048576
     aggregate_cap: int = 16777216
+    executable_cap: int = 67108864
     stdin: str = "input"
     declared_roots: tuple[tuple[str, Path], ...] = ()
     view_roots: tuple[tuple[str, Path], ...] = ()
@@ -331,7 +332,7 @@ def capture_launch_v2(*, spec: TrustedLaunchSpec, context, attempt: AttemptBindi
         for _name, root in (*spec.declared_roots, *spec.view_roots):
             _require(root in spec.reference_roots, "launch_input_unbound")
         for declared, path in spec.executable_chain:
-            fd, raw, _info = _open_snapshot(path, spec.reference_cap, trusted=True, executable=True, excluded=excluded)
+            fd, raw, _info = _open_snapshot(path, spec.executable_cap, trusted=True, executable=True, excluded=excluded)
             capture._fds.append(fd)
             capture._executable_fds.append(fd)
             capture._snapshots.append((path, raw, True, True))
@@ -445,7 +446,7 @@ def recheck_launch_v2(capture: CapturedLaunch, *, context):
             if trusted and not executable:
                 raw = trusted_bytes(path, excluded=excluded)
             else:
-                fd, raw, _info = _open_snapshot(path, spec.reference_cap, trusted=trusted, executable=executable,
+                fd, raw, _info = _open_snapshot(path, spec.executable_cap if executable else spec.reference_cap, trusted=trusted, executable=executable,
                                                 excluded=excluded if trusted else ())
                 os.close(fd)
             _require(raw == expected, "launch_input_unbound")
