@@ -70,7 +70,7 @@ pruned no longer fails the activation barrier.
 The behaviour in this section and the two after it (agent-harness#1311,
 agent-harness#1312, agent-harness#1313, agent-harness#1314, agent-harness#1315,
 agent-harness#1574, agent-harness#1577, agent-harness#1578, agent-harness#1591,
-agent-harness#1633) landed on `main` after `v0.7.26` and ships in the next release. A
+agent-harness#1633) landed on `main` after `v0.7.26` and shipped in `v0.7.27`. A
 `v0.7.26` or older runtime does not have it.
 
 Two narrowings of what becomes `outcome_ambiguous_blocked`. Neither relaxes C-keep:
