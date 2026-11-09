@@ -59,10 +59,11 @@ consumes it), but its public names are still a stable contract other code
     `closeout_validators`, never reimplemented) AND
     `gate_status.equivalence_verified.result == EQUIVALENT`. Two independent
     facts ANDed; `reviewed_sha` is NEVER the live/final PR head (T16).
-  * `cross_check_seat_authenticity(...)` (§6.3/T13) and `reverify_all_material`
-    (§6.4/T14) — the two authenticity primitives `compose_gate_status` runs;
-    exposed standalone so a caller can run them independently of full gate
-    composition (e.g. a diagnostic tool).
+  * `cross_check_round_authenticity(...)` and `reverify_all_material` —
+    the authenticity and material checks used by `compose_gate_status`, along
+    with delta-seat binding and live Git validation. The older
+    `cross_check_seat_authenticity(...)` remains available as a standalone
+    seat-level diagnostic primitive.
   * `fab_gate_validator` — a `@register_closeout_validator` following the
     EXACT `verification_evidence_validator`/`visual_avatar_evidence_validator`
     pattern: `severity="block"`, `blocker_class="review_gate_block"` (non-human
@@ -105,8 +106,8 @@ Design ambiguities resolved in this lane (stated once, not re-litigated):
      over an empty seat set — a real gap for an artifact that never recorded
      any required reviewer at all. `compose_gate_status` additionally requires
      `any(seat.required for seat in artifact.seats)`; an artifact with no
-     required seats blocks with reason `"no_required_seats"`, never silently
-     passes on vacuous truth.
+     required seats cannot pass on vacuous truth. This predicate contributes
+     to the blocked status; it does not itself populate a reason string.
 
   4. **The durable `SeatOutcomeRecord` ledger location.** No existing writer
      persists individual `SeatOutcomeRecord`s to a FAB-run-scoped durable
@@ -131,7 +132,8 @@ Fail-closed discipline (this is where FAB actually decides): every ambiguous
 or unrepresentable state must prevent a pass. `compose_gate_status` returns
 `GATE_STATUS_BLOCK` for its handled validation and equivalence failures; the
 closeout validator maps propagated failures to a non-human `review_gate_block`.
-Direct callers must also handle exceptions from the primitive. Additive only: nothing in `fab_provenance.py`, `fab_canonical.py`,
+Direct callers must also handle exceptions from the primitive.
+Additive only: nothing in `fab_provenance.py`, `fab_canonical.py`,
 `fab_delta.py`, `panel_invoker.py`, or `closeout_validators.py` is modified
 beyond the minimal, additive wiring this lane strictly needs (a new optional
 `CloseoutContext.fab_gate_inputs` field and a new optional `fab_gate_inputs`

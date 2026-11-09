@@ -55,12 +55,12 @@ FROZEN INTERFACE (IF-0-FAB-B-1) — C/D code against this without renegotiation:
     caller-supplied `base_sha` as reviewed, and only after re-deriving it live.
 
   * **rc!=0 is ALWAYS invalid, never "no changes"** (design §3.2 finding 6,
-    corrects v1's `{0,1}` fail-open): every git subprocess this module runs is
-    accepted ONLY on `returncode == 0`; any nonzero code — including the classic
-    "differences present" `1` some git plumbing uses under `--exit-code` (which
-    this module never passes) — raises `PatchDigestInvalid`. An empty raw-diff
-    stream on a genuine `rc==0` (base and head are identical) is a legitimate
-    zero-record digest; a nonzero rc is NEVER interpreted as "no changes".
+    corrects v1's `{0,1}` fail-open): patch-digest computation accepts Git
+    output only on `returncode == 0`; a nonzero diff/cat-file result raises
+    `PatchDigestInvalid`. An empty raw-diff stream on a genuine `rc==0` is a
+    legitimate zero-record digest. Other APIs have distinct failure surfaces:
+    `read_file_at_revision` can return `None`, while `equivalent` returns typed
+    invalidations for nonzero fetch / merge-base results.
 
   * **Gitlinks (mode `160000`) default REJECT** (design §3.3 finding 6): a
     changed path whose NEW mode is `160000` raises `GitlinkRejected` (a
