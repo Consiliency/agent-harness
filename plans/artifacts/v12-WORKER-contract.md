@@ -524,8 +524,12 @@ line. The outcome is:
 Repeats are idempotent: they re-verify and re-signal. A pid or pgid read from
 the journal is never signalled.
 
-`PRODUCTION_LAUNCHER_COMMANDS = (("-I", "-m", "phase_loop_runtime.supervised_worker_cli",
-"launch"),)`. The CLI always passes this constant and `CANCEL_WAIT_SECONDS`.
+`PRODUCTION_LAUNCHER_COMMANDS = (tuple(seat_uid.trusted_module_argv(
+"phase_loop_runtime.supervised_worker_cli", "launch")[1:]),)`. The launcher starts
+through the trusted-installation boot (agent-harness#1132), never `-m`, so the
+argv after the interpreter is `-I -c <trusted boot> <package root>
+phase_loop_runtime.supervised_worker_cli launch`; check 6 matches that exact entry.
+The CLI always passes this constant and `CANCEL_WAIT_SECONDS`.
 Only in-process tests may pass a fixture launcher command; no CLI flag,
 environment or config can.
 
