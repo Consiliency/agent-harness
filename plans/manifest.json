@@ -15362,6 +15362,42 @@
       "status": "committed",
       "type": "phase",
       "updated_at": "2026-11-09T06:57:20Z"
+    },
+    {
+      "amends": "plans/phase-plan-v12-WORKER.md",
+      "created_at": "2026-11-09T09:23:41Z",
+      "file": "plans/artifacts/v12-WORKER-contract.md",
+      "frozen_inputs": {
+        "plans/artifacts/v12-WORKER-contract.md": {
+          "sha256": "0ffce1ac29e82df9b1677c8861f94f15d203fc0720c35e3ce7fd083ba6beb415"
+        }
+      },
+      "gate_status": "declared_not_produced",
+      "handoff_ref": null,
+      "if_gates_produced": [
+        "IF-0-WORKER-1"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2"
+      ],
+      "lifecycle": [],
+      "owner_skill": "claude-plan-phase",
+      "phase_alias": "WORKER",
+      "planning_artifact_only": true,
+      "reflection_ref": null,
+      "review_status": "pending",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v12.md",
+        "slug": "phase-plans-v12",
+        "status": "committed",
+        "type": "phase"
+      },
+      "slug": "v12-WORKER-amend-trusted-launcher",
+      "status": "committed",
+      "type": "phase",
+      "updated_at": "2026-11-09T09:23:41Z"
     }
   ],
   "schema_version": 1
