@@ -55,6 +55,8 @@ class TrustedLaunchSpec:
     view_roots: tuple[tuple[str, Path], ...] = ()
     template_slots: tuple[tuple[str, str], ...] = ()
     discovery_names: tuple[str, ...] = ()
+    action: str = "execution"
+    transport_id: str = "local"
 
     def __post_init__(self):
         object.__setattr__(self, "cwd_locator", _freeze(_plain(self.cwd_locator)))
@@ -120,7 +122,12 @@ class CapturedLaunch:
         attestation = context.caller_context_suitability
         expected = dict(sha256=sha256(canonicalize_v2(value)).hexdigest(), assignment_digest=attempt.assignment_digest,
                         run_id=attempt.run_id, attempt_id=attempt.attempt_id, policy_epoch=context.policy_epoch)
-        return all(attestation.get(key) == item for key, item in expected.items())
+        if not all(attestation.get(key) == item for key, item in expected.items()):
+            return False
+        issuer = attestation.get("issuer_id")
+        records = context.policy.get("caller_context_records", {}).get(issuer, {})
+        return (attestation.get("record_id") not in context.revoked_record_ids
+                and records.get(attestation.get("record_id")) == sha256(canonicalize_v2(attestation)).hexdigest())
 
 
 def _open_snapshot(path, cap, *, trusted=False, executable=False, excluded=()):
@@ -400,6 +407,7 @@ def capture_launch_v2(*, spec: TrustedLaunchSpec, context, attempt: AttemptBindi
         capture.commitments, capture.diagnostics, capture.credential_sources, capture.uncheckable = _commit_material(
             material, timeout_seconds=spec.timeout_seconds, deadline_action=spec.deadline_action)
         _require(not capture.diagnostics and not capture.uncheckable, "launch_input_unbound")
+        capture.commitments = _freeze({**_plain(capture.commitments), "action": spec.action, "transport_id": spec.transport_id})
         _require(not capture.contains_secret(spec.argv) and not capture.contains_secret(capture.commitments), "launch_input_unbound")
         for raw in (capture.instruction, *(row[1] for row in capture._snapshots)):
             for secret in capture._delivery.values:
@@ -407,6 +415,10 @@ def capture_launch_v2(*, spec: TrustedLaunchSpec, context, attempt: AttemptBindi
         capture.local_digest = sha256(b"agent-harness:supervised-launch:v2\0" + canonicalize_v2(dict(
             commitments=capture.commitments, assignment_digest=attempt.assignment_digest, run_id=attempt.run_id,
             attempt_id=attempt.attempt_id, workspace=str(spec.workspace), target=str(spec.target),
+            secret_sources=[(name, source, str(path)) for name, source, path in spec.secret_sources],
+            authority=dict(expected_snapshot_ref=context.expected_snapshot_ref, expected_crosswalk_ref=context.expected_crosswalk_ref,
+                           policy_epoch=context.policy_epoch, revoked_record_ids=context.revoked_record_ids,
+                           qualified_routes=context.qualified_routes),
             argv=spec.argv, cwd=str(spec.cwd), credential_sources=capture.credential_sources))).hexdigest()
         capture._sealed = True
         return capture
@@ -463,6 +475,9 @@ def _commit_material(material, *, timeout_seconds, deadline_action):
     except (ValueError, TypeError):
         pass
     applied = material["policy"].get("grants", {})
+    if any(row.get("terminal") or row.get("purpose") == "terminal"
+           for row in applied.get("descriptor_capabilities_sha256", {}).get("value", {}).get("descriptors", ())):
+        errors.add("launch_input_unbound")
     descriptor_names = {row["id"] for row in applied.get("descriptor_capabilities_sha256", {}).get("value", {}).get("descriptors", ())}
     view_names = {row["id"] for row in applied.get("filesystem_view_sha256", {}).get("value", {}).get("roots", ())}
     def digest(value):
@@ -476,6 +491,8 @@ def _commit_material(material, *, timeout_seconds, deadline_action):
         if wire is not None and ((wire["namespace"] == "declared_root" and wire.get("root") not in root_names)
                                  or (wire["namespace"] == "descriptor" and wire.get("descriptor") not in descriptor_names)):
             errors.add("launch_input_unbound")
+        if type(source["content"]) not in (str, bytes):
+            errors.add(code)
         _require(type(source["content"]) in (str, bytes), "launch_input_unbound")
         content = raw(source["content"])
         if wire is not None and wire["namespace"] == "workspace" and "workspace_state" not in unavailable:

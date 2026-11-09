@@ -204,6 +204,7 @@ def validate_v2_admission(envelope: V2Envelope, *, context, capture, attempt) ->
                    if code in capture.diagnostics or any(member not in getattr(capture, "uncheckable", ())
                        and _plain(launch.get(member)) != _plain(capture.commitments.get(member)) for member in members)]
     if ("launch_input_unbound" in capture.diagnostics
+            or any(member in capture.commitments and capture.commitments[member] != launch[member] for member in ("action", "transport_id"))
             or ("stdin" in capture.commitments and capture.commitments["stdin"] != launch["stdin"]) or not capture.suitable(value["caller_context"], context, attempt)
             or capture.contains_secret(value)):
         diagnostics.append("launch_input_unbound")

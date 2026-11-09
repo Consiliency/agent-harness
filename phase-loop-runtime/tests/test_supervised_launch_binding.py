@@ -222,6 +222,9 @@ def v2_operator(case, monkeypatch):
         expected_crosswalk_ref="c" * 64, timeout_max_seconds=60, qualified_routes=[], policy_epoch="epoch-1",
         revoked_record_ids=[], caller_context_suitability={}, policy={"issuer_records": {}, "time_basis": "system_utc"})
     context_path = write("v2-context.json", context)
+    settings = dict(case.settings, declared_roots={"refs": str(case.root / "references")},
+                    worker_audit_entry_cap=1000, worker_audit_byte_cap=1048576)
+    case.config.config_path.write_text(json.dumps(settings))
     qualification_path = root / "v2-qualification.txt"
     qualification_path.write_text("synthetic qualification only")
     environment_path = write("v2-environment.json", {"classification": {"LANG": "non_secret", "PHASE_LOOP_SCRATCH_DECIDED": "non_secret"}})

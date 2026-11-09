@@ -11,7 +11,7 @@ from phase_loop_runtime.supervised_launch import Refused
 
 
 @pytest.mark.parametrize("argv,reason", [(["launch", "--envelope", "/absent", "--result", "/absent"],
-                                        "codec_unavailable"), (["unknown"], "invalid choice")])
+                                        "envelope_file_unsafe"), (["unknown"], "invalid choice")])
 def test_isolated_cli_before_root(tmp_path, argv, reason):
     root = Path(cli.__file__).parents[1]
     for name in ("json.py", "argparse.py", "validator.py"):
@@ -105,7 +105,7 @@ def test_status_liveness_and_page(worker_case, monkeypatch, capsys):
 CLI_CONTROLS = {
     "isolated": ('if not sys.flags.isolated:', 'if False:'),
     "preflight": ('if isinstance(preflight, Refused):', 'if False:'),
-    "codec": ('if _production_codec() is None:', 'if False:'),
+    "codec": ('if isinstance(passive, Refused):', 'if False:'),
     "envelope-owner": ('or info.st_uid != os.geteuid()', ''),
     "envelope-regular": ('not stat.S_ISREG(info.st_mode) or ', ''),
     "envelope-mode": ('or info.st_mode & 0o022', ''),
@@ -145,9 +145,21 @@ def _cli_control_witness(module, control, tmp_path, monkeypatch, capsys, fixture
         effects = []
         if control == "preflight":
             monkeypatch.setattr(module, "preflight_supervised_route", lambda _: Refused("fixture_required"))
-            monkeypatch.setattr(module, "_production_codec", lambda: effects.append("codec"))
+            monkeypatch.setattr(module, "_production_codec", lambda **kwargs: effects.append("codec"))
+        if control == "codec":
+            from phase_loop_runtime import supervised_launch_binding as binding
+            from phase_loop_runtime.supervised_launch import AttemptBinding
+            monkeypatch.setattr(module, "read_envelope_file", lambda *args, **kwargs: (b"fixture", 0o600))
+            monkeypatch.setattr(binding, "read_binding_locator", lambda path: SimpleNamespace(controller_root=tmp_path))
+            snapshot = SimpleNamespace(exclusions=(tmp_path, tmp_path), document={}, attempt=AttemptBinding("a" * 64, "run", "attempt"))
+            monkeypatch.setattr(module, "read_controller_snapshot", lambda *args, **kwargs: snapshot)
+            monkeypatch.setattr(module, "_production_codec", lambda **kwargs: Refused("binding_invalid"))
+            def agreement(*args, **kwargs):
+                effects.append("agreement")
+                return Refused("binding_invalid")
+            monkeypatch.setattr(binding, "reconcile_v2_binding", agreement)
         assert module.main(argv, state_root=tmp_path) == 10
-        expected = {"isolated": "isolation_required", "preflight": "fixture_required", "codec": "codec_unavailable"}[control]
+        expected = {"isolated": "isolation_required", "preflight": "fixture_required", "codec": "binding_invalid"}[control]
         assert capsys.readouterr().out.strip() == expected and not effects
         return
     if control == "status-liveness":
@@ -306,3 +318,59 @@ finally:
         cwd=tmp_path, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == ("dependency_route_unwired" if bound else "task_unbound")
+
+
+from test_supervised_launch_binding import v2_operator
+
+
+def _write_controller(operator, document=None, root=None):
+    import json
+    root = root or Path(operator.document["controller_root"])
+    path = root / (operator.controller["h"] + ".json")
+    path.write_text(json.dumps(operator.controller if document is None else document))
+    path.chmod(0o600)
+    return path
+
+
+def test_controller_snapshot_is_held_across_path_changes(v2_operator):
+    operator = v2_operator
+    path = _write_controller(operator)
+    snapshot = cli.read_controller_snapshot(path.parent, operator.controller["h"])
+    assert isinstance(snapshot, cli.ControllerSnapshot)
+    path.write_text('{"h":"changed"}')
+    from phase_loop_runtime import supervised_launch_binding as binding
+    locator = binding.read_binding_locator(operator.path)
+    passive = binding.load_v2_binding(operator.path, **operator.roots)
+    agreed = binding.reconcile_v2_binding(locator, passive, controller=snapshot.document, attempt=snapshot.attempt)
+    assert isinstance(agreed, binding.V2Binding)
+    assert agreed.context.expected_snapshot_ref == operator.context["expected_snapshot_ref"]
+    assert agreed.context.expected_crosswalk_ref == operator.context["expected_crosswalk_ref"]
+    assert not operator.marker.exists()
+
+
+@pytest.mark.parametrize("change", ["h", "attempt", "context", "roots", "mode", "link"])
+def test_controller_snapshot_checks_precede_activation(v2_operator, change):
+    import copy
+    operator = v2_operator
+    document = copy.deepcopy(operator.controller)
+    if change == "h": document["h"] = "e" * 64
+    elif change == "attempt": document["attempt"]["assignment_digest"] = "e" * 64
+    elif change == "context": document["context"].pop("expected_snapshot_ref")
+    elif change == "roots": document["slots"].pop("reference_roots")
+    path = _write_controller(operator, document)
+    if change == "mode": path.chmod(0o644)
+    elif change == "link":
+        original = path.with_suffix(".original")
+        path.rename(original)
+        path.symlink_to(original)
+    assert cli.read_controller_snapshot(path.parent, operator.controller["h"]) == Refused("binding_invalid")
+    assert not operator.marker.exists()
+
+
+@pytest.mark.parametrize("root_kind", ["workspace", "target", "reference"])
+def test_controller_snapshot_excluded_location(v2_operator, root_kind):
+    operator = v2_operator
+    root = operator.roots["reference_roots"][0] if root_kind == "reference" else operator.roots[root_kind]
+    path = _write_controller(operator, root=root)
+    assert cli.read_controller_snapshot(path.parent, operator.controller["h"]) == Refused("binding_invalid")
+    assert not operator.marker.exists()

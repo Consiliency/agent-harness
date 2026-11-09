@@ -495,3 +495,68 @@ __all__ = [
     "PAGE_SIZE_MAX", "ATTEMPTS_PER_PAGE_MAX", "LOCAL_CODES", "project_assignment", "check_projection",
     "attempt_status", "read_page", "check_page", "build_reader_view", "check_reader_view", "proc_observer",
 ]
+
+
+# Closed translation of local refusal reasons at the v2 worker boundary.
+V2_REFUSAL_REASONS = frozenset(('absolute_path_required', 'admit_binding', 'admit_fields', 'admit_required', 'aggregate_cap', 'attempt_invalid', 'attempt_replayed', 'audit_error', 'authority_baseline_stale', 'authority_foreign', 'baseline_reference_required', 'before_spawn_failed', 'binding_callable', 'binding_fields', 'binding_invalid', 'binding_unavailable', 'caller_context_interpreted', 'caller_context_unencodable', 'cancelled_before_start', 'canonical_path_required', 'capture_settings_invalid', 'codec_changed_envelope', 'codec_exception', 'codec_invalid', 'config_changed', 'constraint_unsupported', 'constraints_unsupported', 'consume_binding', 'consume_invalid', 'dependency_digest_required', 'dependency_route_unwired', 'device_changed', 'digest_mismatch', 'duplicate_key', 'echo_unavailable', 'envelope_bytes', 'envelope_cap', 'envelope_digest_mismatch', 'envelope_fields', 'envelope_file_unsafe', 'envelope_mode_unsafe', 'envelope_schema_invalid', 'envelope_too_large', 'excluded_root_invalid', 'executable_chain_invalid', 'executable_changed', 'executable_missing', 'executable_path', 'file_cap', 'file_changed', 'file_required', 'grant_unqualified', 'inode_changed', 'invalid_limits', 'isolated_python_required', 'journal_unavailable', 'launch_argv_mismatch', 'launch_environment_mismatch', 'launch_executable_mismatch', 'launch_fields', 'launch_input_unbound', 'launch_instructions_mismatch', 'launch_invalid', 'launch_policy_mismatch', 'launch_reference_mismatch', 'launch_timeout_mismatch', 'launch_workspace_mismatch', 'launcher_record_unavailable', 'locator_not_repo_relative', 'manifest_invalid', 'nonfinite', 'not_executable', 'object_required', 'path_symlink', 'qualification_invalid', 'qualification_missing', 'raw_output_in_record', 'record_json_invalid', 'record_schema_invalid', 'reference_cap', 'reference_digest', 'reference_fields', 'reference_links', 'reference_regular', 'reference_root', 'reference_unlisted', 'refusal_zero_invocations', 'resource_json_invalid', 'resource_missing', 'resource_unlisted', 'result_path_unsafe', 'route_not_qualified', 'runtime_unsupported', 'schema_invalid', 'scratch_unavailable', 'selector_invalid', 'state_root_unsafe', 'stop_policy_unbounded', 'target_invalid', 'target_map_outside_scope', 'template_invalid', 'tier_unqualified', 'tier_unsupported', 'timeout_invalid', 'timeout_over_declared_max', 'token_invalid', 'token_spent', 'trusted_mode', 'trusted_uid', 'unsafe_path', 'untrusted_location', 'validator_exception', 'worker_settings_invalid', 'workspace_changed', 'workspace_gitconfig', 'workspace_gitdir', 'workspace_gitfile', 'workspace_invalid', 'workspace_not_separate_copy', 'workspace_root_shared', 'workspace_shared', 'workspace_source_inconsistent', 'workspace_storage', 'workspace_symlink', 'workspace_tier', 'workspace_uninspectable', 'workspace_unknown', 'wrapper_changed')) | run_status.LOCAL_CODES
+
+
+@dataclass(frozen=True, slots=True)
+class V2MappedStatus:
+    runtime_state: str
+    public_status_bytes: bytes | None
+    journal_acknowledged: bool
+    refusal: str | None
+
+
+def v2_status_mapping(result) -> V2MappedStatus:
+    """Keep unacknowledged attempts unknown; emit only pinned reader-view fields."""
+    refusal = result.refusal
+    if refusal is not None and refusal not in V2_REFUSAL_REASONS:
+        return V2MappedStatus("unknown", None, False, "binding_invalid")
+    if (result.identity is None or not result.journal_complete or result.journal_anchor is None):
+        return V2MappedStatus("unknown", None, False, refusal)
+    if result.state == "finished":
+        reason = getattr(result.termination, "reason", None)
+        runtime_state = "finished (" + str(reason) + ")"
+    elif result.state in ("queued", "running", "cancelling", "refused"):
+        runtime_state = result.state
+    else:
+        return V2MappedStatus("unknown", None, False, "runtime_state_invalid")
+    if runtime_state not in RUNTIME_STATES:
+        return V2MappedStatus("unknown", None, False, "runtime_state_invalid")
+    identity = result.identity
+    view = dict(row=dict(assignment_digest=identity.assignment_digest, snapshot_ref=identity.snapshot_ref),
+        run_record=dict(attempt=dict(assignment_digest=identity.assignment_digest, envelope_digest=identity.envelope_digest,
+                                    run_id=identity.run_id, attempt_id=identity.attempt_id),
+                        units=dict(target_unit_ids=list(identity.target_unit_ids), readonly_neighbor_unit_ids=list(identity.readonly_neighbor_unit_ids),
+                                   snapshot_ref=identity.snapshot_ref), state=result.state,
+                        termination_reason=None if result.termination is None else result.termination.reason),
+        display=dict(runtime_state=runtime_state, work_outcome=None, evidence=None))
+    if _view_codes(view):
+        return V2MappedStatus("unknown", None, False, "reader_view_invalid")
+    return V2MappedStatus(runtime_state, rfc8785.dumps(view), True, refusal)
+
+
+@dataclass(frozen=True, slots=True)
+class V2ReaderView:
+    status_bytes: bytes
+    caller_context_bytes: bytes
+
+
+def build_v2_reader_view(root, row, status, *, state_root, work_outcome=None, evidence=None):
+    """Return the schema-valid status and independently bound echo as separate bytes."""
+    from .supervised_echo import EchoRefused, read_echo
+    view = build_reader_view(row, status, work_outcome=work_outcome, evidence=evidence)
+    if isinstance(view, JournalRefused):
+        return view
+    index = run_status.read_index(root, status.identity.assignment_digest)
+    if index.diagnostics:
+        return JournalRefused("echo_unavailable")
+    entry = next((entry for entry in index.entries if entry.identity.attempt_id == status.attempt_id), None)
+    if entry is None:
+        return JournalRefused("echo_unavailable")
+    payload = read_echo(state_root, entry.caller_context_sha256)
+    if isinstance(payload, EchoRefused):
+        return JournalRefused("echo_unavailable")
+    return V2ReaderView(rfc8785.dumps(view), payload)

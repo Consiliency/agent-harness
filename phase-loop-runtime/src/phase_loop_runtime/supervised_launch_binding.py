@@ -165,7 +165,7 @@ def load_v2_context(binding: Path, *, workspace: Path, target: Path, reference_r
         maximum = document["timeout_max_seconds"]
         _require(type(maximum) in (int, float) and maximum == int(maximum) and 0 < maximum <= 3600, "binding_invalid")
         policy = document["policy"]
-        _require(set(policy) == {"issuer_records", "time_basis"} and policy["time_basis"] == "system_utc", "binding_invalid")
+        _require({"issuer_records", "time_basis"} <= set(policy) <= {"issuer_records", "time_basis", "caller_context_records"} and policy["time_basis"] == "system_utc", "binding_invalid")
         _require(isinstance(document["qualified_routes"], tuple) and isinstance(document["revoked_record_ids"], tuple)
                  and type(document["policy_epoch"]) is str and bool(document["policy_epoch"]), "binding_invalid")
         snapshots = [(binding, raw)]
@@ -358,7 +358,7 @@ def _spec_from_document(document):
                 "environment_policy_id", "non_secret_environment", "secret_sources", "timeout_seconds", "deadline_action",
                 "tier", "base_commit", "target_map"}
     optional = {"grants", "envelope_cap", "reference_cap", "aggregate_cap", "stdin", "declared_roots", "view_roots",
-                "template_slots", "discovery_names"}
+                "template_slots", "discovery_names", "action", "transport_id"}
     _require(required <= set(document) and set(document) <= required | optional, "binding_invalid")
     values = dict(document)
     for name in ("workspace", "target", "cwd", "config_path", "template_path", "qualification_path", "environment_policy_path"):

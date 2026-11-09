@@ -184,6 +184,8 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
     ("train_runner.py", "_live_post_merge_prune"): (
         NOT_AGENT, "bash running the generated post-merge git prune script"),
     # Dynamic imports: a computed module name may be any module, so each is classified.
+    ("supervised_launch_binding.py", "activate_v2_binding"): (
+        NOT_AGENT, "activates approved retained v2 implementation bytes after agreement; no agent CLI"),
     ("supervised_launch_binding.py", "_load_absolute"): (
         NOT_AGENT, "executes verified operator-owned validator/codec module bytes, not an "
                    "agent CLI; external implementation code is trusted, not sandboxed"),
@@ -265,6 +267,7 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
 LAUNCH_COUNTS: dict[tuple[str, str], int] = {
     # Both compile() and exec() of the verified binding bytes are inventoried.
     ('supervised_launch_binding.py', '_load_absolute'): 2,
+    ('supervised_launch_binding.py', 'activate_v2_binding'): 2,
     ('agy_canary_evidence.py', '_bootstrap_attest_opened'): 2,
     ('agy_canary_evidence.py', 'probe_capability'): 3,
     # The timed holder (unshare) and its slirp4netns, the rules install and the name check

@@ -530,11 +530,15 @@ class _SpawnCapability:
     def __reduce__(self):
         raise TypeError("capability_not_serializable")
 
+    @property
+    def stdin_mode(self):
+        return self._capture.spec.stdin
+
     def take(self):
         capture = self._capture
         _require(not self._taken and not capture._closed, "token_spent")
         self._taken = True
-        return dict(capture._delivery.environment), capture._spawn_cwd, capture._executable_fds[0], tuple(capture._fds)
+        return dict(capture._delivery.environment), capture._spawn_cwd, capture._executable_fds[0], tuple(fd for fd, _raw in capture._descriptor_snapshots)
 
     def close(self):
         self._capture.close()

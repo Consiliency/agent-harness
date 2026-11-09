@@ -83,11 +83,12 @@ def contract_capture(value, original):
     capture.commitments, capture.diagnostics, capture.credential_sources, capture.uncheckable = _commit_material(
         value["launch_material"], timeout_seconds=stop["timeout_seconds"], deadline_action=stop["deadline_action"])
     attempt = AttemptBinding(value["validator_context"]["expected_assignment_digest"], "run-corpus", "attempt-corpus")
-    context = SimpleNamespace(**value["validator_context"], policy_epoch="synthetic-corpus")
+    context = SimpleNamespace(**value["validator_context"], policy_epoch="synthetic-corpus", revoked_record_ids=())
     payload = value["envelope"]["caller_context"]
-    context.caller_context_suitability = dict(sha256=sha256(canonicalize_v2(payload)).hexdigest(),
+    context.caller_context_suitability = dict(issuer_id="corpus", record_id="attestation", sha256=sha256(canonicalize_v2(payload)).hexdigest(),
         assignment_digest=attempt.assignment_digest, run_id=attempt.run_id, attempt_id=attempt.attempt_id,
         policy_epoch=context.policy_epoch)
+    context.policy = {"caller_context_records": {"corpus": {"attestation": sha256(canonicalize_v2(context.caller_context_suitability)).hexdigest()}}}
     return capture, context, attempt
 
 

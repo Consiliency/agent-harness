@@ -358,36 +358,72 @@ def _descriptor_image(path):
 
 def run_bounded_capture(request: CaptureRequest, *,
                         before_spawn: Callable[[], SpawnRefused | None],
-                        cancel: threading.Event) -> BoundedCapture | SpawnRefused:
+                        cancel: threading.Event, spawn_capability=None) -> BoundedCapture | SpawnRefused:
     if not 1 <= request.proposal_cap <= PROPOSAL_CAP_MAX or request.timeout_seconds <= 0:
         return SpawnRefused("capture_settings_invalid")
     from ... import panel_invoker
     hashes = {name: hashlib.sha256() for name in ("stdout", "stderr")}
     counts = dict.fromkeys(hashes, 0)
     proposal = bytearray()
-    image = _descriptor_image(request.argv[0])
+    environment, cwd = dict(request.environment), request.cwd
+    pass_fds = ()
+    image = _descriptor_image(request.argv[0]) if spawn_capability is None else None
+    if spawn_capability is not None:
+        try:
+            environment, cwd, image, pass_fds = spawn_capability.take()
+            if panel_invoker._compose_launch_prefix(str(cwd), ()):
+                spawn_capability.close()
+                return SpawnRefused("route_not_qualified")
+        except BaseException:
+            spawn_capability.close()
+            return SpawnRefused("launch_input_unbound")
     try:
-        refusal = before_spawn()
+        refusal = before_spawn() if spawn_capability is None else None
     except BaseException:
-        if image is not None:
+        if spawn_capability is not None:
+            spawn_capability.close()
+        elif image is not None:
             os.close(image)
         return SpawnRefused("before_spawn_failed")
     if refusal is not None:
-        if image is not None:
+        if spawn_capability is not None:
+            spawn_capability.close()
+        elif image is not None:
             os.close(image)
         return refusal
     start = time.monotonic_ns()
     deadline = time.monotonic() + request.timeout_seconds
     started = datetime.now(timezone.utc).isoformat()
+    class BoundaryRefused(Exception):
+        def __init__(self, reason):
+            self.reason = reason
+    def final_boundary(command, descriptors):
+        nonlocal start, deadline, started
+        if tuple(command) != request.argv:
+            raise BoundaryRefused("launch_input_unbound")
+        refused = before_spawn()
+        if refused is not None:
+            raise BoundaryRefused(refused.reason)
+        start = time.monotonic_ns()
+        deadline = time.monotonic() + request.timeout_seconds
+        started = datetime.now(timezone.utc).isoformat()
+        return command
+    options = {}
+    if spawn_capability is not None:
+        options = dict(supervisor=final_boundary, child_scratch=sandbox_policy.CHILD_SCRATCH_FROZEN_CAPTURE)
     try:
         process = panel_invoker.launch_owned(
             list(request.argv), role=panel_invoker.SeatLaunchRole.EXECUTOR_TRUSTED,
-            profile=panel_invoker.SeatProfile(env=dict(request.environment)),
-            cwd=str(request.cwd), env=dict(request.environment), bufsize=0,
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            profile=panel_invoker.SeatProfile(env=environment),
+            cwd=str(cwd), env=environment, bufsize=0,
+            stdin=(subprocess.DEVNULL if spawn_capability is not None and spawn_capability.stdin_mode == "devnull"
+                   else subprocess.PIPE), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             start_new_session=True,
-            **({"executable": f"/proc/self/fd/{image}", "pass_fds": (image,)} if image is not None else {}),
+            **({"executable": f"/proc/self/fd/{image}", "pass_fds": tuple(sorted(set(pass_fds) | {image}))} if image is not None else {}),
+            **options,
         )
+    except BoundaryRefused as error:
+        return SpawnRefused(error.reason)
     except OSError:
         empty = StreamDigest(hashlib.sha256(b"").hexdigest(), 0)
         return BoundedCapture(request.attempt_id, "failed_to_start", "harness", None,
@@ -395,7 +431,9 @@ def run_bounded_capture(request: CaptureRequest, *,
                               time.monotonic_ns() - start, started,
                               datetime.now(timezone.utc).isoformat())
     finally:
-        if image is not None:
+        if spawn_capability is not None:
+            spawn_capability.close()
+        elif image is not None:
             os.close(image)
     termination, by, sig, code = "completed", "worker", None, None
     delivered = not request.stdin
@@ -421,7 +459,7 @@ def run_bounded_capture(request: CaptureRequest, *,
         if request.stdin:
             os.set_blocking(process.stdin.fileno(), False)
             selector.register(process.stdin, selectors.EVENT_WRITE, "stdin")
-        else:
+        elif process.stdin is not None:
             process.stdin.close()
         while selector.get_map() or not reaped:
             if not reaped:
@@ -471,7 +509,8 @@ def run_bounded_capture(request: CaptureRequest, *,
         reclaim()
         selector.close()
         for pipe in (process.stdin, process.stdout, process.stderr):
-            pipe.close()
+            if pipe is not None:
+                pipe.close()
     overflow = counts["stdout"] > request.proposal_cap
     return BoundedCapture(request.attempt_id, termination, by, sig, code,
                           *(StreamDigest(hashes[name].hexdigest(), counts[name])
