@@ -15115,6 +15115,50 @@
       "status": "committed",
       "type": "phase",
       "updated_at": "2026-11-08T15:23:52Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-11-08T18:35:31Z",
+      "file": "plans/phase-plan-v1-browser-VISART.md",
+      "frozen_inputs": {
+        "plans/artifacts/browser-v1-contract.md": {
+          "sha256": "57aca5ee2a0c5b0389d80010fb0a7135c2b0de8a2569dc705e204726f127042a"
+        },
+        "plans/artifacts/browser-v1-observation.schema.json": {
+          "sha256": "169c05daaa03788bdfe10fb3efa4a3fe31d3a58bbe1767826645ced4e3ec9a1d"
+        }
+      },
+      "gate_status": "declared_not_produced",
+      "handoff_ref": null,
+      "if_gates_produced": [
+        "IF-0-VISART-1",
+        "IF-0-VISART-2",
+        "IF-0-VISART-3"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2",
+        "SL-3",
+        "SL-4"
+      ],
+      "lifecycle": [],
+      "owner_skill": "claude-plan-phase",
+      "phase_alias": "VISART",
+      "planning_artifact_only": true,
+      "reflection_ref": null,
+      "review_status": "pending",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-browser-v1.md",
+        "slug": "phase-plans-browser-v1",
+        "status": "committed",
+        "type": "phase"
+      },
+      "slug": "v1-browser-VISART",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-11-09T01:45:26Z"
     }
   ],
   "schema_version": 1

@@ -5,6 +5,10 @@
       "status": "advisory"
     },
     {
+      "path": "specs/phase-plans-browser-v1.md",
+      "status": "advisory"
+    },
+    {
       "path": "specs/phase-plans-convergence-v1.md",
       "status": "superseded"
     },

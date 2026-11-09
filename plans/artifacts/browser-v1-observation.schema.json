@@ -1,0 +1,500 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Consiliency/agent-harness/plans/artifacts/browser-v1-observation.schema.json",
+  "title": "browser_observation.v1 manifest (observation.json)",
+  "description": "Frozen planning artifact for specs/phase-plans-browser-v1.md (IF-0-VISART-1). File rules, caps and refusal codes are in plans/artifacts/browser-v1-contract.md sections 2, 3 and 7.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "observation_id",
+    "created_at",
+    "producer",
+    "host",
+    "target",
+    "egress_allowlist_sha256",
+    "captures",
+    "console",
+    "video",
+    "journal",
+    "index"
+  ],
+  "properties": {
+    "schema": {
+      "const": "browser_observation.v1"
+    },
+    "observation_id": {
+      "type": "string",
+      "pattern": "^obs-[0-9a-f]{16}$"
+    },
+    "created_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "tool",
+        "tool_version",
+        "profile"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "executor",
+            "broker"
+          ]
+        },
+        "tool": {
+          "enum": [
+            "claude_in_chrome",
+            "playwright_pmcp",
+            "t3_preview",
+            "browser_broker"
+          ]
+        },
+        "tool_version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$"
+        },
+        "profile": {
+          "enum": [
+            "incognito",
+            "ephemeral",
+            null
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "executor"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "tool": {
+                "enum": [
+                  "claude_in_chrome",
+                  "playwright_pmcp",
+                  "t3_preview"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "broker"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "tool": {
+                "const": "browser_broker"
+              },
+              "profile": {
+                "const": "ephemeral"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "tool": {
+                "const": "t3_preview"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "profile": {
+                "const": "incognito"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "host": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "url",
+        "bundle_sha256",
+        "source_commit",
+        "policy_sha256"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "preview_url",
+            "static_bundle",
+            "build_and_serve",
+            null
+          ]
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 2048,
+          "pattern": "^https?://[A-Za-z0-9._~:/?#\\[\\]@!$&'()*+,;=%-]+$"
+        },
+        "bundle_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "source_commit": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "policy_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "static_bundle"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "bundle_sha256": {
+                "type": "string"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "bundle_sha256": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "egress_allowlist_sha256": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "captures": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "index",
+          "url",
+          "viewport",
+          "color_scheme",
+          "screenshot",
+          "a11y"
+        ],
+        "properties": {
+          "index": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 32
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 2048,
+            "pattern": "^https?://[A-Za-z0-9._~:/?#\\[\\]@!$&'()*+,;=%-]+$"
+          },
+          "viewport": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "required": [
+              "width",
+              "height"
+            ],
+            "properties": {
+              "width": {
+                "type": "integer",
+                "minimum": 200,
+                "maximum": 3840
+              },
+              "height": {
+                "type": "integer",
+                "minimum": 200,
+                "maximum": 2160
+              }
+            }
+          },
+          "color_scheme": {
+            "enum": [
+              "light",
+              "dark",
+              null
+            ]
+          },
+          "screenshot": {
+            "$ref": "#/$defs/file",
+            "properties": {
+              "path": {
+                "pattern": "^shots/[0-9]{2}(-[a-z0-9]{1,16}){0,3}\\.(png|jpg|webp)$"
+              },
+              "media_type": {
+                "enum": [
+                  "image/png",
+                  "image/jpeg",
+                  "image/webp"
+                ]
+              }
+            }
+          },
+          "a11y": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/file",
+                "properties": {
+                  "path": {
+                    "pattern": "^a11y/[0-9]{2}\\.yaml$"
+                  },
+                  "media_type": {
+                    "const": "application/yaml"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "console": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "file",
+            "error_count",
+            "warning_count",
+            "failed_request_count"
+          ],
+          "properties": {
+            "file": {
+              "$ref": "#/$defs/file",
+              "properties": {
+                "path": {
+                  "const": "console.json"
+                },
+                "media_type": {
+                  "const": "application/json"
+                }
+              }
+            },
+            "error_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "warning_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "failed_request_count": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      ]
+    },
+    "video": {
+      "type": "array",
+      "maxItems": 4,
+      "items": {
+        "$ref": "#/$defs/file",
+        "properties": {
+          "path": {
+            "pattern": "^video/[0-9]{2}\\.(webm|mp4)$"
+          },
+          "media_type": {
+            "enum": [
+              "video/webm",
+              "video/mp4"
+            ]
+          }
+        }
+      }
+    },
+    "journal": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/file",
+          "properties": {
+            "path": {
+              "const": "journal.jsonl"
+            },
+            "media_type": {
+              "const": "application/x-ndjson"
+            }
+          }
+        }
+      ]
+    },
+    "index": {
+      "$ref": "#/$defs/file",
+      "properties": {
+        "path": {
+          "const": "index.html"
+        },
+        "media_type": {
+          "const": "text/html"
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "producer": {
+            "properties": {
+              "kind": {
+                "const": "broker"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "egress_allowlist_sha256": {
+            "type": "string"
+          },
+          "journal": {
+            "type": "object"
+          },
+          "target": {
+            "properties": {
+              "mode": {
+                "type": "string"
+              },
+              "policy_sha256": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "producer": {
+            "properties": {
+              "kind": {
+                "const": "executor"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "egress_allowlist_sha256": {
+            "type": "null"
+          },
+          "journal": {
+            "type": "null"
+          },
+          "target": {
+            "properties": {
+              "mode": {
+                "type": "null"
+              },
+              "policy_sha256": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "bytes",
+        "media_type"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "media_type": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}
