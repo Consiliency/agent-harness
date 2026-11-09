@@ -16,6 +16,9 @@ controller owns acceptance. Public reconciliation, installed-tool qualification,
 registry activation and CLOSEOUT codec wiring remain pending. Openshell patch
 return stays closed pending its remote audit/evidence contract.
 
+Following agent-harness#1955, shared, frequently changed files are not pinned;
+`test_seat_reference_inventory.py` enforces classification on every PR.
+
 ```json
 {
   "authority": "synthetic_fixture_only",
@@ -1463,14 +1466,12 @@ return stays closed pending its remote audit/evidence contract.
   },
   "slow_nodes_over_300_seconds": [],
   "source_hashes": {
-    "CHANGELOG.md": "b68abe48d2984c3444a60c8910e2f37a3b98abc3cdcd1ecf80f2b61014374d48",
     "docs/supervised-worker.md": "f6d39f5df70f58f57994b7758f3e7eb61496eace645eb03edd43e2c7a342e9e7",
     "phase-loop-runtime/scripts/stamp_evidence_receipt.py": "f8a14d7b1ab0a2bc965091c9a2227f2e81e06ca2e1e271a21187ea48788f1383",
     "phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/base.py": "439de09d34441019500d5e3460c9cb9c2f72cbb25d7eb4049d98b00a38a434fe",
     "phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/codex.py": "bb88040e0de74b948c859c92b64227e70c0bc60f6095795df2134ebecae30fdd",
     "phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/patch_return.py": "3b8b6c11e9b364c4820f6ee9b36cb5f6f06098ecfde306511ba4582e4b8eb4ed",
     "phase-loop-runtime/src/phase_loop_runtime/supervised_worker_cli.py": "54a5661a2f5086a220d785b11c307e11a9d3dc5daf481b434f08aa1ba5ac294e",
-    "phase-loop-runtime/tests/data/seat_launch_references.json": "ee1690e2729bc71528b374eb58f220dff6cace8d2fd530ecf83b1744ae438faf",
     "phase-loop-runtime/tests/fixtures/supervised_worker_local/launcher.py": "5e8983f2c2a797543423fe08d648a38dd7495f3b87bb821e2ad8c0ef4da3e6ca",
     "phase-loop-runtime/tests/fixtures/supervised_worker_local/provider.py": "6b9cc5a093655cdc0b9bbb5bc7861b7935dfda918c0d9d0c3fd435dbfe4f42dc",
     "phase-loop-runtime/tests/test_convergence_adapters.py": "adab50f018cc857aee6ada5bfa01ae4a28a93087a5de7faedf5d5ab4b2e8370c",

@@ -57,6 +57,7 @@ def validate_receipt(record, *, inventory=True):
     assert not record["public_conformance"] and not record["installed_provider_qualified"]
     assert PENDING <= set(record["pending"])
     hashes = record["source_hashes"]
+    assert {"CHANGELOG.md", "phase-loop-runtime/tests/data/seat_launch_references.json"}.isdisjoint(hashes)
     for relative, digest in hashes.items():
         assert sha256((REPO / relative).read_bytes()).hexdigest() == digest, relative
     assert len(hashes) >= 12

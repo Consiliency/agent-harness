@@ -18,7 +18,7 @@ from typing import Literal
 import rfc8785
 
 from ... import output_retention as retention
-from ... import seat_uid
+from ... import sandbox_policy, seat_uid
 from ... import run_status as journal
 from ... import run_status_projection as projection
 from ...supervised_launch import Refused, consume_admission, classify_workspace, trusted_bytes
@@ -232,6 +232,9 @@ def _audit(inputs, settings):
             count += 1
             if count > settings.audit_entry_cap:
                 raise ValueError("audit_entry_cap")
+            if scope == "target" and ((path == ".git" and not stat.S_ISDIR(info.st_mode)) or
+                    (stat.S_ISLNK(info.st_mode) and path.startswith((".git/HEAD", ".git/packed-refs", ".git/refs")))):
+                raise ValueError("gitfile_escape")
             mode = stat.S_IMODE(info.st_mode)
             if stat.S_ISLNK(info.st_mode):
                 kind, content = "symlink", os.readlink(name, dir_fd=fd)
@@ -306,6 +309,8 @@ def _paths(proposal):
             found = True
         elif line.startswith(("--- ", "+++ ")):
             check(line[4:])
+        elif line.startswith(("rename from ", "rename to ", "copy from ", "copy to ")):
+            check("a/" + line.split(" ", 2)[2], True)
     if not found:
         raise ValueError("proposal_header_missing")
     return paths
@@ -407,13 +412,16 @@ def run_patch_return(prepared, *, config_bytes: bytes, state_root: Path,
                           process_start_time=journal.process_start_identity(os.getpid()), exe_realpath=exe,
                           exe_sha256=sha256(Path(exe).read_bytes()).hexdigest(),
                           cmdline_sha256=sha256(cmdline).hexdigest(), nonce=reservation.writer.writer_instance_id)
+            if threading.current_thread() is threading.main_thread():
+                previous = signal.signal(signal.SIGTERM, lambda *_args: cancel.set())
             _write(record_path, _bytes(record))
             lock_fd = os.open(record_path, os.O_RDWR | os.O_NOFOLLOW)
             fcntl.lockf(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            if threading.current_thread() is threading.main_thread():
-                previous = signal.signal(signal.SIGTERM, lambda *_args: cancel.set())
-            before, baselines = _audit(inputs, settings)
         except (OSError, ValueError):
+            return healthy_refusal("launcher_record_unavailable")
+        try:
+            before, baselines = _audit(inputs, settings)
+        except (OSError, ValueError, RecursionError):
             return healthy_refusal("audit_error")
 
         def before_spawn():
@@ -452,9 +460,13 @@ def run_patch_return(prepared, *, config_bytes: bytes, state_root: Path,
         exec_binding = "descriptor" if image is not None else "path_recheck"
         if image is not None:
             os.close(image)
+        try:
+            environment = worker_child_environment(settings.environment_allow)
+        except sandbox_policy.SandboxSpaceError:
+            return healthy_refusal("scratch_unavailable")
         captured = run_bounded_capture(CaptureRequest(identity.attempt_id, inputs.argv,
             Path(inputs.workspace), inputs.timeout, inputs.instruction, settings.proposal_cap,
-            worker_child_environment(settings.environment_allow)), before_spawn=before_spawn, cancel=CancelObserver())
+            environment), before_spawn=before_spawn, cancel=CancelObserver())
         if isinstance(captured, SpawnRefused):
             if writer.failed:
                 return refused("journal_unavailable", False)
@@ -472,7 +484,7 @@ def run_patch_return(prepared, *, config_bytes: bytes, state_root: Path,
                         unexplained += 1
                     else:
                         writes += 1
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError):
             audit_error = True
         data = captured.proposal or b""
         paths = []
@@ -513,7 +525,7 @@ def run_patch_return(prepared, *, config_bytes: bytes, state_root: Path,
                 config_digest=inputs.config_digest, template_digest=inputs.template_digest,
                 qualification_digest=inputs.qualification_digest, workspace_kind=inputs.workspace_class,
                 device=inputs.root_device, inode=inputs.root_inode, tier=inputs.tier,
-                environment_names=sorted(worker_child_environment(settings.environment_allow)), exec_binding=exec_binding,
+                environment_names=sorted(environment), exec_binding=exec_binding,
                 termination=asdict(termination), exit_code=captured.exit_code, worker_invocations=captured.spawn_count,
                 stdout=asdict(captured.stdout), stderr=asdict(captured.stderr), streams_complete=captured.streams_complete,
                 duration_ns=captured.duration_ns, stdin_delivered=captured.stdin_delivered, proposal=asdict(proposal),
@@ -531,7 +543,10 @@ def run_patch_return(prepared, *, config_bytes: bytes, state_root: Path,
             _write(state_root / "evidence-ledger" / (run + ".json"), _bytes(refs))
             digest = refs["evidence_envelope"]
         except (OSError, ValueError):
-            (run_root / "proposal.bin").unlink(missing_ok=True)
+            try:
+                (run_root / "proposal.bin").unlink(missing_ok=True)
+            except OSError:
+                pass
             proposal = ProposalReturn("withheld_evidence_error", None, captured.stdout.byte_count, (), None)
         binding = None
         if digest:
@@ -550,17 +565,20 @@ def run_patch_return(prepared, *, config_bytes: bytes, state_root: Path,
         writer.close()
         try:
             for retired in retention.prune(evidence_root, days=settings.retention_days, apply=True):
-                _write(state_root / "evidence-ledger" / (retired + ".retired"), b"")
+                try:
+                    _write(state_root / "evidence-ledger" / (retired + ".retired"), b"")
+                except (OSError, ValueError):
+                    continue
         except (OSError, ValueError):
             pass
         return WorkerResult(identity, "finished", termination, None, captured.spawn_count,
                             proposal, digest, anchor, not writer.failed)
     finally:
         writer.close()
-        if previous is not None:
-            signal.signal(signal.SIGTERM, previous)
         if lock_fd is not None:
             os.close(lock_fd)
+        if previous is not None:
+            signal.signal(signal.SIGTERM, previous)
 
 
 def cancel_attempt(*, state_root: Path, run_id: str | None = None, attempt_id: str | None = None,

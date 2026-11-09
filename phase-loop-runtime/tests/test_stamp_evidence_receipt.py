@@ -2,6 +2,7 @@
 import copy
 import importlib.util
 import json
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -22,7 +23,8 @@ def test_stamp_roundtrip_and_stale_binding(tmp_path, monkeypatch):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes((envelope.REPO / relative).read_bytes())
     receipt = tmp_path / "receipt.md"
-    receipt.write_text("```json\n" + json.dumps(record, indent=2) + "\n```\n")
+    receipt.write_text(envelope.RECEIPT.read_text())
+    before = receipt.read_text()
     pinned = tmp_path / next(iter(record["source_hashes"]))
     pinned.write_bytes(pinned.read_bytes() + b"\n")
     module.stamp(receipt, repo=tmp_path)
@@ -31,7 +33,14 @@ def test_stamp_roundtrip_and_stale_binding(tmp_path, monkeypatch):
     envelope.validate_receipt(stamped)
     for key in set(original) - {"source_hashes", "runner_stamp"}:
         assert stamped[key] == original[key]
-    assert stamped["runner_stamp"]["observed_utc"] == original["runner_stamp"]["observed_utc"]
+    digest = sha256(json.dumps(stamped["source_hashes"], sort_keys=True).encode()).hexdigest()
+    assert stamped["runner_stamp"] == {**original["runner_stamp"], "source_tree_digest": digest}
+    hash_keys = set(original["source_hashes"]) | {"source_tree_digest"}
+    def without_hash_lines(text):
+        return [line for line in text.splitlines(keepends=True)
+                if not any(line.lstrip().startswith(json.dumps(key) + ": ") for key in hash_keys)]
+    assert set(stamped["source_hashes"]) == set(original["source_hashes"])
+    assert without_hash_lines(receipt.read_text()) == without_hash_lines(before)
     first = receipt.read_bytes()
     module.stamp(receipt, repo=tmp_path)
     assert receipt.read_bytes() == first

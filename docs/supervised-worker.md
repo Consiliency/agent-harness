@@ -198,7 +198,8 @@ controller owns grants, spans, application and acceptance.
 
 The audit covers workspace and target trees and target refs without executing
 git or reading git configuration. Walks use directory descriptors and no-follow
-opens, with entry and byte caps. A target gitfile pointing elsewhere refuses.
+opens, with entry and byte caps. A target gitfile or symlinked `.git` refuses, as do symlinks under its
+`HEAD`, `packed-refs` and `refs` paths.
 The audit promise is **tree and refs**: `.git/objects/**` is excluded in both
 trees, so object additions, modifications and deletions are outside that promise.
 Workspace writes are detection-only under `post_write_audit_only`; under

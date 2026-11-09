@@ -369,7 +369,7 @@ CAPTURE_CONTROLS = {
     "proposal-cap": ('overflow = counts["stdout"] > request.proposal_cap', 'overflow = False'),
     "stderr-digest": ('hashes[key.data].update(chunk)', 'hashes[key.data].update(chunk if key.data == "stdout" else b"")'),
     "deadline-arm": ('deadline = time.monotonic() + request.timeout_seconds', 'deadline = time.monotonic() + 10'),
-    "drain-deadline": ('if remaining <= 0:\n                break', 'if remaining <= 0:\n                remaining = .05'),
+    "drain-deadline": ('if remaining <= 0:\n                if not reaped:\n                    termination, by, sig = "timed_out", "harness", "SIGKILL"\n                break', 'if remaining <= 0:\n                remaining = .05'),
     "cancel-kill": ('elif cancel.is_set():', 'elif False and cancel.is_set():'),
     "group-reclaim": ('os.killpg(process.pid, signal.SIGKILL)', 'None'),
     "stdin-channel": ('request.stdin[offset:offset + 65536]', 'b""'),
@@ -549,3 +549,25 @@ def test_worker_before_spawn_exception_never_launches(tmp_path, monkeypatch, exc
         raise exception("synthetic callback")
     result = _capture(tmp_path, "pass", before_spawn=before)
     assert isinstance(result, capture_base.SpawnRefused) and launches == []
+
+
+def test_worker_deadline_between_clock_reads(tmp_path, monkeypatch):
+    from phase_loop_runtime import panel_invoker
+    original = panel_invoker.launch_owned
+    spawned = []
+    def launch(*args, **kwargs):
+        result = original(*args, **kwargs)
+        spawned.append(1)
+        return result
+    monkeypatch.setattr(panel_invoker, "launch_owned", launch)
+    ticks = []
+    real_clock = time.monotonic
+    initial = real_clock()
+    def clock():
+        if not spawned:
+            return initial
+        ticks.append(1)
+        return initial if len(ticks) == 1 else initial + 10
+    monkeypatch.setattr(time, "monotonic", clock)
+    result = _capture(tmp_path, "import time; time.sleep(5)", timeout=1)
+    assert result.termination == "timed_out" and result.terminated_by == "harness" and result.signal == "SIGKILL"

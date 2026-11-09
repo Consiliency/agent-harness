@@ -411,7 +411,7 @@ def run_bounded_capture(request: CaptureRequest, *,
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            process.wait()
+            process.wait(timeout=1)
             reaped = True
 
     try:
@@ -437,6 +437,8 @@ def run_bounded_capture(request: CaptureRequest, *,
                     reclaim()
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                if not reaped:
+                    termination, by, sig = "timed_out", "harness", "SIGKILL"
                 break
             for key, _mask in selector.select(min(remaining, 0.05)):
                 if key.data == "stdin":

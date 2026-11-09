@@ -199,6 +199,8 @@ def test_evidence_operation_failure_null_binding(worker_case, monkeypatch, opera
     root = rs.open_journal_root(case.state / "journal", create=False)
     read = rs.read_attempt(root, case.envelope["attempt_id"])
     assert read.terminal.result_binding is None
+    assert not any(json.loads(line)["body"]["refs"] for line in read.lines
+                   if json.loads(line)["line_kind"] == "event")
     assert read.terminal.termination.reason == "completed"
     assert not (case.state / "evidence" / worker._run(result.identity) / "proposal.bin").exists()
 
@@ -227,13 +229,15 @@ def test_audit_scopes(worker_case, monkeypatch, tier, scope):
     assert result.proposal.status == ("withheld_unexplained_change" if changed_scope else "returned")
 
 
-@pytest.mark.parametrize("kind", ["fifo", "gitfile", "entries", "bytes"])
+@pytest.mark.parametrize("kind", ["fifo", "gitfile", "gitlink", "entries", "bytes"])
 def test_before_audit_refusal(worker_case, kind):
     case = worker_case
     if kind == "fifo":
         os.mkfifo(case.root / "workspace/fifo")
     elif kind == "gitfile":
         (case.root / "target/.git").write_text("gitdir: /elsewhere")
+    elif kind == "gitlink":
+        (case.root / "target/.git").symlink_to(case.root / "references", target_is_directory=True)
     else:
         (case.root / "workspace/second").write_text("fixture")
         case.settings["worker_audit_entry_cap" if kind == "entries" else "worker_audit_byte_cap"] = 1
@@ -473,7 +477,7 @@ def test_reservation_and_running_precede_spawn(worker_case, monkeypatch):
 
 def test_evidence_events_and_bindings(worker_case):
     case = worker_case
-    result = run(case)
+    result = run(case, "stderr")
     assert result.state == "finished" and result.journal_complete
     root = rs.open_journal_root(case.state / "journal", create=False)
     read = rs.read_attempt(root, case.envelope["attempt_id"])
@@ -488,7 +492,7 @@ def test_evidence_events_and_bindings(worker_case):
     assert record["config_digest"] == sha256(case.config.config_path.read_bytes()).hexdigest()
     assert record["template_digest"] == sha256(case.config.template_path.read_bytes()).hexdigest()
     assert record["executable"]["sha256"] == sha256(case.executable.read_bytes()).hexdigest()
-    assert record["argv"] == [str(case.executable), "patch"]
+    assert record["argv"] == [str(case.executable), "stderr"]
     assert record["streams_complete"] and record["stdin_delivered"]
     assert record["workspace_kind"] == "separate" and record["tier"] == "post_write_audit_only"
     assert record["device"] == (case.root / "workspace").stat().st_dev
@@ -944,3 +948,181 @@ def test_evidence_environment_names_match_spawn(worker_case, monkeypatch):
     assert supplied == [record["environment_names"]]
     assert sandbox_policy.CHILD_SCRATCH_MARKER in record["environment_names"]
     assert set(record["environment_names"]) <= {"TMPDIR", "CLAUDE_CODE_TMPDIR", sandbox_policy.CHILD_SCRATCH_MARKER}
+
+
+def _deep_workspace(root):
+    import sys
+    paths = []
+    for _ in range(sys.getrecursionlimit() + 20):
+        root = root / "d"
+        root.mkdir()
+        paths.append(root)
+    return paths
+
+
+@pytest.mark.parametrize("stage", ["before", "after"])
+def test_audit_depth_has_a_terminal_result(worker_case, monkeypatch, stage):
+    case = worker_case
+    paths = []
+    original = worker.run_bounded_capture
+    def captured(*args, **kwargs):
+        result = original(*args, **kwargs)
+        paths.extend(_deep_workspace(case.root / "workspace"))
+        return result
+    try:
+        if stage == "before":
+            paths.extend(_deep_workspace(case.root / "workspace"))
+        else:
+            monkeypatch.setattr(worker, "run_bounded_capture", captured)
+        result = run(case)
+        root = rs.open_journal_root(case.state / "journal", create=False)
+        read = rs.read_attempt(root, case.envelope["attempt_id"])
+        if stage == "before":
+            assert result.refusal == "audit_error" and result.worker_invocations == 0
+            assert read.state == "refused" and not (case.state / "evidence").exists()
+        else:
+            assert result.state == read.state == "finished"
+            assert result.proposal.status == "withheld_audit_error"
+            assert result.termination.reason == "completed" and result.journal_complete
+    finally:
+        for path in reversed(paths):
+            path.rmdir()
+
+
+def test_evidence_root_file_has_a_terminal_result(worker_case):
+    case = worker_case
+    case.state.mkdir(mode=0o700)
+    (case.state / "evidence").write_bytes(b"synthetic occupied path")
+    result = run(case)
+    assert result.state == "finished" and result.proposal.status == "withheld_evidence_error"
+    assert result.proposal.proposal_bytes_digest is None and result.proposal.locator is None
+    assert result.evidence_envelope_digest is None and result.journal_complete
+    root = rs.open_journal_root(case.state / "journal", create=False)
+    read = rs.read_attempt(root, case.envelope["attempt_id"])
+    assert read.state == "finished" and read.terminal.result_binding is None
+    assert not any(json.loads(line)["body"]["refs"] for line in read.lines
+                   if json.loads(line)["line_kind"] == "event")
+
+
+def test_scratch_refusal_is_journalled(worker_case, monkeypatch):
+    def unavailable(_allow):
+        raise worker.sandbox_policy.SandboxSpaceError("synthetic scratch unavailable")
+    monkeypatch.setattr(worker, "worker_child_environment", unavailable)
+    result = run(worker_case)
+    assert result.refusal == "scratch_unavailable" and result.worker_invocations == 0
+    assert result.journal_complete and result.journal_anchor
+    root = rs.open_journal_root(worker_case.state / "journal", create=False)
+    assert rs.read_attempt(root, worker_case.envelope["attempt_id"]).terminal.refusal.reason == "scratch_unavailable"
+    assert not (worker_case.state / "evidence").exists()
+
+
+def test_environment_is_built_once_for_capture_and_evidence(worker_case, monkeypatch):
+    original = worker.worker_child_environment
+    calls = []
+    def environment(allow):
+        calls.append(1)
+        mapping = original(allow)
+        mapping[f"WORKER_FIXTURE_ENV_{len(calls)}"] = "synthetic"
+        return mapping
+    monkeypatch.setattr(worker, "worker_child_environment", environment)
+    result = run(worker_case)
+    assert result.state == "finished" and calls == [1]
+    evidence = json.loads((worker_case.state / "evidence" / worker._run(result.identity) / "evidence.json").read_bytes())
+    assert "WORKER_FIXTURE_ENV_1" in evidence["environment_names"]
+
+
+@pytest.mark.parametrize("relative", ["HEAD", "packed-refs", "refs", "refs/branch"])
+def test_target_ref_links_refuse_before_capture(worker_case, relative):
+    case = worker_case
+    path = case.root / "target/.git" / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.symlink_to(case.root / "references")
+    result = run(case)
+    assert result.refusal == "audit_error" and result.worker_invocations == 0
+    assert not (case.state / "evidence").exists()
+
+
+@pytest.mark.parametrize("header", ["rename from", "rename to", "copy from", "copy to"])
+@pytest.mark.parametrize("path", [".git/config", "../outside", "/absolute"])
+def test_extended_proposal_paths_are_normalized(worker_case, header, path):
+    proposal = f"diff --git a/file b/file\n{header} {path}\n".encode()
+    worker_case.executable.write_text("#!/usr/bin/python3\nimport os\nos.write(1," + repr(proposal) + ")\n")
+    result = run(worker_case)
+    assert result.proposal.status == "withheld_malformed" and result.proposal.proposal_bytes_digest is None
+
+
+def test_extended_proposal_paths_supply_baselines(worker_case):
+    proposal = b"diff --git a/file b/file\nrename from old\nrename to new\ncopy from source\ncopy to dest\n"
+    worker_case.executable.write_text("#!/usr/bin/python3\nimport os\nos.write(1," + repr(proposal) + ")\n")
+    result = run(worker_case)
+    assert result.proposal.status == "returned"
+    assert [row.path for row in result.proposal.baselines] == ["file", "old", "new", "source", "dest"]
+
+
+@pytest.mark.parametrize("error", [OSError, ValueError])
+def test_retirement_marks_continue_after_one_failure(worker_case, monkeypatch, error):
+    case = worker_case
+    first = run(case)
+    case.envelope["attempt_id"] += "-second"
+    run(case)
+    registry = case.state / "evidence" / worker.retention.REGISTRY / (worker._run(first.identity) + ".json")
+    completed = json.loads(registry.read_bytes())["completed_at"]
+    original_prune, original_write = worker.retention.prune, worker._write
+    attempted = []
+    def prune(root, **kwargs):
+        return original_prune(root, **kwargs, now=completed + 100 * 86400)
+    def write(path, data):
+        if path.suffix == ".retired":
+            attempted.append(path)
+            if len(attempted) == 1:
+                raise error("synthetic retirement mark")
+        return original_write(path, data)
+    monkeypatch.setattr(worker.retention, "prune", prune)
+    monkeypatch.setattr(worker, "_write", write)
+    case.envelope["attempt_id"] += "-third"
+    result = run(case)
+    assert result.state == "finished" and len(attempted) >= 2
+    assert not attempted[0].exists() and all(path.exists() for path in attempted[1:])
+
+
+@pytest.mark.parametrize("site", ["record", "lock"])
+def test_launcher_record_refusal_reason(worker_case, monkeypatch, site):
+    if site == "record":
+        original = worker._write
+        def write(path, data):
+            if path.parent.name == "launchers":
+                raise OSError("synthetic launcher record")
+            return original(path, data)
+        monkeypatch.setattr(worker, "_write", write)
+    else:
+        def lock(*args):
+            raise OSError("synthetic launcher lock")
+        monkeypatch.setattr(worker.fcntl, "lockf", lock)
+    result = run(worker_case)
+    assert result.refusal == "launcher_record_unavailable" and result.worker_invocations == 0
+    root = rs.open_journal_root(worker_case.state / "journal", create=False)
+    read = rs.read_attempt(root, worker_case.envelope["attempt_id"])
+    assert read.state == "refused" and read.terminal.refusal.reason == "launcher_record_unavailable"
+
+
+def test_launcher_signal_handler_spans_record_lifetime(worker_case, monkeypatch):
+    import signal
+    original_handler = signal.getsignal(signal.SIGTERM)
+    original_write, original_close = worker._write, os.close
+    closed = []
+    def write(path, data):
+        if path.parent.name == "launchers":
+            handler = signal.getsignal(signal.SIGTERM)
+            assert handler != original_handler and callable(handler)
+            handler(signal.SIGTERM, None)
+        return original_write(path, data)
+    def close(fd):
+        if "/launchers/" in os.readlink(f"/proc/self/fd/{fd}"):
+            closed.append(signal.getsignal(signal.SIGTERM))
+        return original_close(fd)
+    monkeypatch.setattr(worker, "_write", write)
+    monkeypatch.setattr(os, "close", close)
+    result = run(worker_case)
+    assert result.refusal == "cancelled_before_start" and closed
+    assert all(handler != original_handler for handler in closed)
+    assert signal.getsignal(signal.SIGTERM) == original_handler
