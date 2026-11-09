@@ -51,8 +51,8 @@ never against submitter or provider payloads. This runner is CI
 and release evidence for the pinned contract and vector manifest; it is not run
 for every live governed-pipeline submission.
 
-OACORE only produces shared conformance facts. OAMOCK can later wrap those facts
-with advisory labeling. OAREAL attaches the governed-pipeline runtime surface
+OACORE only produces shared conformance facts. The advisory preflight wraps those facts
+with advisory labeling. The real validator attaches the governed-pipeline runtime surface
 without changing the shared core or reusing advisory authority.
 
 ## Advisory Preflight

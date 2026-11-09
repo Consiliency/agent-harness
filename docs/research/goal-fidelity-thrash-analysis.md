@@ -4,7 +4,7 @@
 **Date:** 2026-07-13
 **Motivating case:** a downstream repo's browser-driven two-avatar staging proof ("DUALPROOF") that a `codex exec` executor thrashed on for ~3 days — fix-one-bug / fail-the-next-stage, ~6 cycles, no convergence.
 **Question investigated:** *Did a "goal" mechanism — the Codex-native goal feature, or a harness-synthesized objective that drifted from the authored roadmap — cause the thrash?*
-**Verdict:** **No.** All three framings of the "goals interfere" hypothesis are disconfirmed as the cause. The thrash was **infrastructure failure + scrubbed diagnostics**. Chasing it surfaced two genuine, *distinct*, *latent* framework gaps — filed as **#209** (diagnostics) and **#211** (acceptance-coverage fidelity) — neither of which fired as the cause here.
+**Verdict:** **No.** All three framings of the "goals interfere" hypothesis are disconfirmed as the cause. The thrash was **infrastructure failure + scrubbed diagnostics**. Chasing it surfaced two genuine, *distinct*, *latent* framework gaps — filed as **agent-harness#209** (diagnostics) and **agent-harness#211** (acceptance-coverage fidelity) — neither of which fired as the cause here.
 
 This document is the consolidated evidence behind both issues so they share one source of truth.
 
@@ -12,18 +12,18 @@ This document is the consolidated evidence behind both issues so they share one 
 > The investigation, the DUALPROOF evidence, and the three disconfirmations (§1) all still
 > stand: they are claims about what happened, and they remain accurate.
 >
-> **§2's load-bearing finding no longer describes the runtime.** When this was written, no
+> **§3's load-bearing finding no longer describes the runtime.** When this was written, no
 > runtime gate loaded the roadmap exit-criteria, so a faithful copy and a loosened
 > paraphrase were indistinguishable to every gate. That gap has since been CLOSED by the
-> goal-ID coverage mechanism filed as #211 and shipped:
+> goal-ID coverage mechanism filed as agent-harness#211 and shipped:
 > `goal_coverage.check_goal_coverage` loads the anchored roadmap and plan, and
 > `runner._execute_goal_coverage_preflight` / `runner._goal_coverage_closeout_outcome`
 > enforce and re-check `EC-<ALIAS>-<N>` coverage at preflight AND closeout.
 >
-> Read §2's "there is no comparison" as **the 2026-07-13 state that motivated #211**, not as
-> current behavior. Residual scope after #211: coverage is checked for declared EC-IDs;
+> Read §3's "there is no comparison" as **the 2026-07-13 state that motivated agent-harness#211**, not as
+> current behavior. Residual scope after agent-harness#211: coverage is checked for declared EC-IDs;
 > criteria ADEQUACY (does the EC-ID actually capture the goal?) is still not machine-checked
-> — see #246 for the fail-closed enforce-mode work.
+> — see agent-harness#246 for the fail-closed enforce-mode work.
 
 ---
 
@@ -41,7 +41,7 @@ The operator's intuition — "the harness seems to define its own goals and that
 
 ### H3 — This is the same class as the known literal-drift audit
 
-**Disconfirmed — wrong axis.** `phase-loop-drift-audit.py` audits closeout **enum literals** (`blocker_class`, `verification_status`) against frozen allowlists — a **syntactic** check. Acceptance-coverage drift is a **semantic** axis that audit does not touch. (The #211 fix is proposed as a *sibling* static audit, not an extension of the literal audit's mechanism.)
+**Disconfirmed — wrong axis.** `phase-loop-drift-audit.py` audits closeout **enum literals** (`blocker_class`, `verification_status`) against frozen allowlists — a **syntactic** check. Acceptance-coverage drift is a **semantic** axis that audit does not touch. (The agent-harness#211 fix is proposed as a *sibling* static audit, not an extension of the literal audit's mechanism.)
 
 ---
 
@@ -53,7 +53,7 @@ Two compounding, mundane causes — no goal mechanism involved:
 
 2. **Scrubbed diagnostics (the blindfold):** the failure that wedged the task was swallowed by a bare `catch {}` and re-emitted as a generic `browser_launch_failed`. Reports were metadata-only, each run a ~4-minute all-or-nothing infra chain. The agent could see *that* a run failed but never *which layer* failed — signaling/chat/data-channel succeeded (and masqueraded as media-OK) while the media layer (decoded video + non-silent audio, which acceptance actually requires) never published. Every adjacent plumbing fix advanced exactly one stage, so the next blind run failed one stage later — the fix-N/fail-N+1 signature.
 
-**Had raw failure diagnostics been preserved, this was a one-run localization instead of three blind days.** That is precisely the #209 gap.
+**Had raw failure diagnostics been preserved, this was a one-run localization instead of three blind days.** That is precisely the agent-harness#209 gap.
 
 ---
 
@@ -75,18 +75,18 @@ There is exactly **one** synthesis hop in the loop, and it is by design:
 
 The clean mental model that separates the two issues:
 
-- **Direction A — FALSE-GREEN** (a looser paraphrase reads as pass): the planner drops "non-silent audio" → "audio track present"; the executor produces **authentic** evidence for the *weaker* target; honest pass; roadmap criterion silently unmet. Not caught by authenticity checks (evidence is real) or by diagnostics (nothing failed). **Structurally possible; NOT observed in DUALPROOF.** → **#211**.
+- **Direction A — FALSE-GREEN** (a looser paraphrase reads as pass): the planner drops "non-silent audio" → "audio track present"; the executor produces **authentic** evidence for the *weaker* target; honest pass; roadmap criterion silently unmet. Not caught by authenticity checks (evidence is real) or by diagnostics (nothing failed). **Structurally possible; NOT observed in DUALPROOF.** → **agent-harness#211**.
 
-- **Direction B — NEVER-SATISFIED / almost-passing** (the target is correct-and-strict; the agent just can't localize *which layer* failed): what DUALPROOF actually was. Upper-layer success masquerades as progress; scrubbed diagnostics prevent localization. → **#209**.
+- **Direction B — NEVER-SATISFIED / almost-passing** (the target is correct-and-strict; the agent just can't localize *which layer* failed): what DUALPROOF actually was. Upper-layer success masquerades as progress; scrubbed diagnostics prevent localization. → **agent-harness#209**.
 
-DUALPROOF = **Direction B**. The target-fidelity gap (Direction A / #211) is real but **latent** — it did not fire here.
+DUALPROOF = **Direction B**. The target-fidelity gap (Direction A / agent-harness#211) is real but **latent** — it did not fire here.
 
 ---
 
 ## 5. Recommended fixes (both filed)
 
-- **#209 — Preserve raw failure diagnostics on verification failure.** Localize the failing stage in a multi-stage proof rather than gating only the terminal artifact. Add a typed `failure_kind` (timeout vs. fault) and surface the raw, bounded error at the swallow points. This is the fix that would have prevented *this* thrash.
+- **agent-harness#209 — Preserve raw failure diagnostics on verification failure.** Localize the failing stage in a multi-stage proof rather than gating only the terminal artifact. Add a typed `failure_kind` (timeout vs. fault) and surface the raw, bounded error at the swallow points. This is the fix that would have prevented *this* thrash.
 
-- **#211 — Static acceptance-coverage audit.** Compare a plan's acceptance/verification against the roadmap exit-criteria of the phase it is anchored to (`roadmap` + `roadmap_sha256` already identify the source section) and flag dropped / weakened / renamed criteria. Static, no runtime truth, no executor cooperation. A sibling to the existing literal-drift audit, on the semantic axis it doesn't cover. Guards Direction A.
+- **agent-harness#211 — Static acceptance-coverage audit.** Compare a plan's acceptance/verification against the roadmap exit-criteria of the phase it is anchored to (`roadmap` + `roadmap_sha256` already identify the source section) and flag dropped / weakened / renamed criteria. Static, no runtime truth, no executor cooperation. A sibling to the existing literal-drift audit, on the semantic axis it doesn't cover. Guards Direction A.
 
-**Net ledger:** codex-native-goal = clean **no**; synthesized-goal-drift = real but **latent** (#211); the DUALPROOF thrash itself = **blind diagnosis** (#209). No third issue needed — #209 + #211 cover both directions.
+**Net ledger:** codex-native-goal = clean **no**; synthesized-goal-drift = real but **latent** (agent-harness#211); the DUALPROOF thrash itself = **blind diagnosis** (agent-harness#209). No third issue needed — agent-harness#209 + agent-harness#211 cover both directions.

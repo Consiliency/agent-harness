@@ -1,5 +1,10 @@
 # agent-harness codebase review — 2026-09-01
 
+> Historical review at the revision below. Findings, versions, metrics and recipes
+> describe that tree, not current implementation or an active work queue. Current
+> host policy requires serial tests under `timeout`; the old parallelism proposal
+> below is superseded. Use `CONTRIBUTING.md` for current validation.
+
 Full-codebase review of `Consiliency/agent-harness` at `d96f85a` (`phase-loop-runtime`
 0.7.14). Every finding below was verified against the tree by reading the code; each
 carries a `file:line` anchor (paths are relative to

@@ -1,5 +1,11 @@
 # model-routing-v2 — Integration Design: Threading the Governed Pre-Merge Loop into the Live Executor Fix-Apply Cycle
 
+> Historical evidence/design record. Commands, models, line anchors and test totals
+> below describe the recorded revision, not current launch instructions. Current
+> seat routing is in `docs/review-seats-readiness.md` and `panel_invoker.py`;
+> CLI selection/defaults are in `cli.py`. Run current shared-host tests serially
+> under `timeout` using the locked environment.
+
 > Research note produced from a deep read of the live runner. It is the design basis for the
 > model-routing-v2 roadmap. All `file:line` anchors are against
 > `phase-loop-runtime/src/phase_loop_runtime/runner.py` (on the `feat/model-routing-v1` branch)
@@ -143,7 +149,7 @@ Net: `_default_spawn(leg, artifact)` is a dispatcher — `codex`/`gemini` use pe
 
 ## 5. Risks & invariants
 
-1. **Cross-phase dirty start-gate (`runner.py:922`, called `1505`).** It scans the last 50 events for a prior in-flight phase holding a dirty-path lien on the current tree (`runner.py:937-977`) and refuses dispatch (`runner.py:1506`). The governed fix round re-dispatches `repair`, which **writes to the worktree between rounds**. Invariant a v2 change must not break: the fix-round re-dispatch must leave the tree owned by the *current* phase (it already is — repair operates on the same phase's owned paths). Do **not** let an aborted fix round leave dirty paths attributed to a now-inactive phase, or the next phase's start-gate refuses with no recovery path (the issue-#1 failure mode the `_INACTIVE_DIRTY_OWNER_STATUSES` filter at `runner.py:953` prevents). Keep the governed loop *inside* the same phase's dispatch iteration so ownership stays coherent.
+1. **Cross-phase dirty start-gate (`runner.py:922`, called `1505`).** It scans the last 50 events for a prior in-flight phase holding a dirty-path lien on the current tree (`runner.py:937-977`) and refuses dispatch (`runner.py:1506`). The governed fix round re-dispatches `repair`, which **writes to the worktree between rounds**. Invariant a v2 change must not break: the fix-round re-dispatch must leave the tree owned by the *current* phase (it already is — repair operates on the same phase's owned paths). Do **not** let an aborted fix round leave dirty paths attributed to a now-inactive phase, or the next phase's start-gate refuses with no recovery path (the issue-agent-harness#1 failure mode the `_INACTIVE_DIRTY_OWNER_STATUSES` filter at `runner.py:953` prevents). Keep the governed loop *inside* the same phase's dispatch iteration so ownership stays coherent.
 
 2. **Autonomous no-op must stay zero-cost.** Two layers already guarantee no panel spawn in autonomous (`governed_review.py:125` short-circuits before pool selection; `governed_premerge.py:130` returns `ran=False`). v2 must add a **third, outer guard at the caller**: `if run_mode == "governed":` around both hook sites (§3) so that in autonomous mode the runner does **not even compute the diff** or call `available_panel_legs()`. The default path stays byte-identical to today.
 

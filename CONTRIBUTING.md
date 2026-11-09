@@ -24,6 +24,9 @@ below don't repeat it.
 Requirements: Python 3.12 or newer for the runtime (`requires-python = ">=3.12"`), plus
 [`uv`](https://docs.astral.sh/uv/).
 
+On shared hosts, use only named test files, serially without `-n`, under `timeout`.
+Leave whole-suite checks to hosted CI (see `AGENTS.md`).
+
 - `make check` runs the checks your change can affect against `origin/main`. That covers
   ruff with CI's pinned version and config, plus the tests your diff can reach. They run
   in a clean environment with a throwaway HOME and only the system PATH, which is how
@@ -35,7 +38,7 @@ Requirements: Python 3.12 or newer for the runtime (`requires-python = ">=3.12"`
   ```sh
   uv sync --project phase-loop-runtime --group test --extra visual --locked
   PYTHONPATH="$PWD/phase-loop-runtime/src:$PWD/phase-loop-runtime/tests" \
-    phase-loop-runtime/.venv/bin/python -m pytest -q phase-loop-runtime/tests/test_entry_doc_check.py
+    timeout 300 phase-loop-runtime/.venv/bin/python -m pytest -q phase-loop-runtime/tests/test_entry_doc_check.py
   ```
 
   Use an absolute `PYTHONPATH`. A test that starts a child Python from another directory
@@ -43,8 +46,8 @@ Requirements: Python 3.12 or newer for the runtime (`requires-python = ">=3.12"`
 - Docs checks, as CI runs them:
 
   ```sh
-  python -m phase_loop_runtime.entry_doc_check --repo .
-  python -m phase_loop_runtime.cli docs-audit --repo . --base origin/main --json
+  timeout 120 phase-loop-runtime/.venv/bin/python -m phase_loop_runtime.entry_doc_check --repo .
+  timeout 120 phase-loop-runtime/.venv/bin/python -m phase_loop_runtime.cli docs-audit --repo . --base origin/main --json
   ```
 
 ## Pull requests
@@ -55,6 +58,7 @@ Requirements: Python 3.12 or newer for the runtime (`requires-python = ">=3.12"`
 
   | Check | Workflow |
   |---|---|
+  | `supervised contract publication` | `supervised-contract-intake.yml` |
   | `suite gate` | `test.yml` (the aggregate of the test suite jobs) |
   | `lint (pyflakes)` | `test.yml` |
   | `chronology retention guard` | `test.yml` |

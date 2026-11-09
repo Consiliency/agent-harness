@@ -1,3 +1,7 @@
+> Historical, superseded proposal fragment. See `review-seat-sandbox.md` for
+> the stale-input warning and `specs/phase-plans-seats-v1.md` for its successor.
+> The unchecked criteria below are not current implementation status.
+
 ### Phase 14 — Review-Seat Executor Core (SBXEXEC)
 
 **Objective**

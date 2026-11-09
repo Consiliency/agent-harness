@@ -5,6 +5,11 @@
 This is a record, not a work queue. Nothing in the runtime, CI or phase discovery reads this file. In the
 words of the register it absorbs (Consiliency/agent-harness#361): "Do not schedule from this register directly."
 
+The `current-main check` fields below are historical observations at their named
+commits, not continuously refreshed claims. Verbatim findings and comments retain
+their original references and commands; they are evidence, not run instructions.
+Current shared-host checks run serially, under `timeout`, in the locked environment.
+
 ## How findings enter
 
 1. **Filing is unchanged.** Filing is governed by the maintainer-ratified design on
@@ -794,6 +799,9 @@ https://github.com/Consiliency/agent-harness/pull/846#issuecomment-5672494503
 
 <!-- row:R-025 -->
 ### R-025 — FABPUB: deferred board findings from agent-harness#1552 (stale routing client wording and handoff)
+
+Audit update (2026-11-09): Ask 1 wording corrected in the rotation runbook: refusal is for requests starting after the flip; in-flight reads remain possible.
+
 - **source:** Consiliency/agent-harness#1573
 - **origin:** FABPUB, advisor-board ruling on agent-harness#1552 (fixes agent-harness#1315), merge authorized at `9f0fbc18`
 - **original ruling:** "FINDING F008: DEFERRED — four non-blocking suggestions: S1 double pointer read affects the message only (ruled above); S2 dead `gen0` reassignment in the test is harmless; S3 a comment on the refuse-until-close behaviour would help readers; S4 the "restart after rotation" SDK handoff is Lane C work and should be tracked there. None names a broken acceptance, contract or test." — president
@@ -997,6 +1005,9 @@ Ask 3, an end-to-end test of retry after rotation, is still open.
 
 <!-- row:R-027 -->
 ### R-027 — FABPUB: deferred board findings from agent-harness#1550 (mixed-version recovery-record conflict; chain-walk docs)
+
+Audit update (2026-11-09): Runbook asks 3b and 4 corrected: the newest re-attestation governs, and repeated chain authentication can be quadratic. Runtime docstring/test follow-ups remain separate.
+
 - **source:** Consiliency/agent-harness#1576
 - **origin:** FABPUB, advisor-board ruling on agent-harness#1550 (fixes agent-harness#1310), merge authorized at `b9a0e75d`
 - **original ruling:** "FINDING F022: DEFERRED — S2 doc/test precision; docstring "(None)" is inaccurate (carry check raises RecoveryChainSuperseded first), outcome unchanged; a real-rotation observed_landed test is a welcome follow-up." — president; SA-F5: "O(A^2) receipt loads on the recovery path only, acceptable"
@@ -1130,6 +1141,9 @@ Comment by ViperJuice at 2026-10-14T06:54:08Z:
 
 <!-- row:R-028 -->
 ### R-028 — FABPUB: deferred board findings from agent-harness#1551 (post-section gap, NFS doc, restore edge cases)
+
+Audit update (2026-11-09): Ask 2 and fork-liveness wording corrected in the pre-admission guide; ordinary-exception restore exclusions are now explicit.
+
 - **source:** Consiliency/agent-harness#1578
 - **origin:** FABPUB, advisor-board ruling on agent-harness#1551 (agent-harness#1314, agent-harness#1313, agent-harness#1311), merge authorized at `d2b363d5`
 - **original ruling:** "None names an acceptance item, declared contract or existing test it breaks." — president, F012; F001: "SA-F4 DEFERRED — `KeyboardInterrupt` in `admit_next` skips the restore, identical on main (unsealed owner, promoted on retry, 0 provider calls), fail-closed"
@@ -1269,6 +1283,9 @@ Comment by ViperJuice at 2026-10-14T08:19:12Z:
 
 <!-- row:R-029 -->
 ### R-029 — FABPUB: deferred board findings from agent-harness#1593 (guard edge cases, lease-refusal handoff, doc precision)
+
+Audit update (2026-11-09): Doc heading now names the pre-entry preparation boundary; original refusal evidence remains necessary to judge no effect.
+
 - **source:** Consiliency/agent-harness#1594
 - **origin:** FABPUB, advisor-board rulings on agent-harness#1593 (fixes agent-harness#1577), round 2 authorized the merge at `d9b0d6f7`
 - **original ruling:** "SA-F4 DEFERRED — owner removed after record_intent has no production path, fail-closed, 0 calls, strand main-identical; typed raise / _replay shape as follow-up" — president, round 1; round 2: "FINDING F016: DEFERRED — non-blocking wording"

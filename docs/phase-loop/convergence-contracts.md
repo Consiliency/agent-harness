@@ -2,7 +2,9 @@
 
 The convergence-v1 FREEZE/BROKER/INTEG framing is historical input absorbed by
 `specs/phase-plans-v10.md`. FREEZE published the typed contracts and BROKER
-introduced the sole credential-capable mutation epoch; current work follows V10.
+introduced the sole credential-capable mutation epoch. This page describes those
+implemented contracts; it is not an index of current roadmaps. See
+`specs/roadmap-status.json` for current roadmap selection and supersession.
 
 ## Authority and invalidation
 

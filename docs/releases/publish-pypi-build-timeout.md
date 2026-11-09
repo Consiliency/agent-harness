@@ -34,7 +34,7 @@ in under half that.
 - `test.yml` `pytest` and `clean-room` were left at **100**: at the time both were
   skipped on pull requests, so the sampled runs carried no timing for them, and any
   tighter number would have been a guess. Since then `pytest` runs on pull requests
-  (its py3.10 lane), because the offload path is disabled in `test.yml`
+  (currently its py3.12 lane), because the offload path is disabled in `test.yml`
   (`OFFLOAD_SANDBOX_READY: 'false'`), and
   `clean-room` runs only on push, schedule, dispatch and tags (agent-harness#1029) with
   a stopgap of **150** (agent-harness#1297).
@@ -64,7 +64,7 @@ against a sample of tag runs, and record the sample here.
 **A tag cut before this change cannot be rescued by it.** A tag run executes the
 workflow file at the tagged commit, and a `workflow_dispatch` from a branch makes
 the publish job's `startsWith(github.ref, 'refs/tags/v')` condition false. The
-only path to PyPI for such a version is to re-point the tag at a head that carries
+existing tag-triggered workflow path to PyPI for such a version is to re-point the tag at a head that carries
 this file (maintainer-gated); the version number is unchanged when nothing was
 published, and the release record is completed against the run that publishes.
 

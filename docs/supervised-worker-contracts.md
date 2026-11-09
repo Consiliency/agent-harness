@@ -52,8 +52,8 @@ branch ancestry, compares actual vendor bytes/blobs and sealed inputs, and runs
 intake tests with an extracted wheel ahead of the checkout. Ordinary tests never
 fetch the network. Hosted run/job/head and result artifact identities belong in
 the receipt; a failed hosted comparison blocks intake completion and landing.
-The owner will add the check to branch protection after merge; this change does
-not modify repository settings.
+The check is required by the current `main` branch protection. The workflow
+itself does not modify repository settings.
 
 ## Authority and coverage
 
