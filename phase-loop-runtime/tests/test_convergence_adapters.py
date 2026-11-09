@@ -507,3 +507,45 @@ def test_worker_preserves_convergence_devnull_stdin(tmp_path, monkeypatch):
     script = _install(tmp_path / "bin", "codex", _emit({"status": "completed"}), monkeypatch)
     assert run_codex_adapter(_request((str(script),), tmp_path)).status.value == "completed"
     assert observed == [subprocess.DEVNULL]
+
+
+@pytest.mark.parametrize("kind,expected,detail", [
+    ("cwd", "blocked", capture_base._DETAIL_BAD_CWD),
+    ("exec", "failed", capture_base._DETAIL_SPAWN_FAILED),
+    ("scratch", "failed", capture_base._DETAIL_NO_SCRATCH),
+    ("cleanup", "degraded", capture_base._DETAIL_CLEANUP),
+])
+def test_worker_preserves_convergence_refusal_details(tmp_path, monkeypatch, kind, expected, detail):
+    script = _install(tmp_path / "bin", "codex", _emit({"status": "completed"}), monkeypatch)
+    if kind == "scratch":
+        def unavailable():
+            raise capture_base.sandbox_policy.SandboxSpaceError("synthetic scratch unavailable")
+        monkeypatch.setattr(capture_base, "_child_environment", unavailable)
+    if kind == "cleanup":
+        def unavailable(*args):
+            raise PermissionError("synthetic cleanup unavailable")
+        monkeypatch.setattr(os, "killpg", unavailable)
+    result = run_codex_adapter(_request((str(tmp_path / "codex") if kind == "exec" else str(script),),
+                                       tmp_path / "missing" if kind == "cwd" else tmp_path))
+    assert result.status.value == expected and result.detail == detail
+
+
+@pytest.mark.parametrize("size,expected", [(65536, "completed"), (65537, "blocked")])
+def test_worker_preserves_convergence_exact_cap(tmp_path, monkeypatch, size, expected):
+    script = _install(tmp_path / "bin", "codex",
+        f"{sys.executable} -I -c 'import os; data=b\"{{\\\"status\\\":\\\"completed\\\"}}\"; os.write(1,data+b\" \"*({size}-len(data)))'", monkeypatch)
+    assert run_codex_adapter(_request((str(script),), tmp_path)).status.value == expected
+
+
+@pytest.mark.parametrize("exception", [ValueError, KeyboardInterrupt, SystemExit])
+def test_worker_before_spawn_exception_never_launches(tmp_path, monkeypatch, exception):
+    from phase_loop_runtime import panel_invoker
+    launches = []
+    def launch(*args, **kwargs):
+        launches.append(1)
+        raise AssertionError("spawn after refused callback")
+    monkeypatch.setattr(panel_invoker, "launch_owned", launch)
+    def before():
+        raise exception("synthetic callback")
+    result = _capture(tmp_path, "pass", before_spawn=before)
+    assert isinstance(result, capture_base.SpawnRefused) and launches == []
