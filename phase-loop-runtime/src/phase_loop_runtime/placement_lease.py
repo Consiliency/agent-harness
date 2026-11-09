@@ -55,12 +55,13 @@ def _fsync(fd: int) -> None:
     os.fsync(fd)
 
 
-def _state_dir() -> Path:
-    return seat_jail.state_home() / "phase-loop"
+def _state_dir(inventory: Path | None = None) -> Path:
+    """The legacy per-user journal, or a placement client's own inventory directory."""
+    return Path(inventory) if inventory is not None else seat_jail.state_home() / "phase-loop"
 
 
-def _lease_dir() -> Path:
-    return _state_dir() / _LEASE_DIRNAME
+def _lease_dir(inventory: Path | None = None) -> Path:
+    return _state_dir(inventory) / _LEASE_DIRNAME
 
 
 def _private_dir(path: Path) -> int:
@@ -103,13 +104,14 @@ def _read_owner(path: Path) -> str | None:
     return text
 
 
-def owner_id() -> str:
+def owner_id(inventory: Path | None = None) -> str:
     """This user's placement owner id: random, created once, kept 0600 under the state home.
 
     A backend tags what it creates with it and lists by it. It names no user and no host,
     and it lives beside the lease journal, so an id and its leases are always found
-    together."""
-    path = _state_dir() / _OWNER_FILENAME
+    together. A placement client's ``inventory`` has its own owner id, so one client's
+    listing never names the other's leases."""
+    path = _state_dir(inventory) / _OWNER_FILENAME
     cached = _OWNER.get(path)
     if cached is not None:
         return cached
@@ -434,6 +436,12 @@ class Lease:
             # this copy; the lock lasts until the last copy is closed.
             os.close(fd)
 
+    def detach(self) -> None:
+        """Hand a reserved rung's lease to a durable owner record (the placement lifecycle's
+        reservation journal): keep the entry unmarked and give the lock up. The owner record,
+        not the lock, then keeps it from every caller-scoped reap."""
+        self._unlock()
+
     def abandon(self) -> None:
         """Leave a rung without a confirmed release: mark the entry, KEEP it, and give the
         lock up at once so that any reaper, this process's own included, may act on it. An
@@ -501,17 +509,18 @@ class Lease:
         return stop.set
 
 
-def open_lease(backend_name: str | None, root: object) -> Lease:
+def open_lease(backend_name: str | None, root: object, *, inventory: Path | None = None) -> Lease:
     """Allocate a lease for one rung and make its entry durable.
 
     The entry is written and locked under a pending name, fsynced, renamed into place, and
     its directory fsynced, all before this returns -- so before ``admit``. From the moment
-    the entry has its name, its lock is held by this process."""
+    the entry has its name, its lock is held by this process. ``inventory`` selects a
+    placement client's own journal; the default is the legacy per-user journal."""
     import fcntl  # POSIX-only; imported lazily so the package imports elsewhere
 
-    owner = owner_id()
+    owner = owner_id(inventory)
     lease_id = secrets.token_hex(16)
-    directory = _lease_dir()
+    directory = _lease_dir(inventory)
     dir_fd = _private_dir(directory)
     pending, final = f".{lease_id}.pending", f"{lease_id}.json"
     try:
@@ -551,13 +560,13 @@ def open_lease(backend_name: str | None, root: object) -> Lease:
                  newly_opened=True)
 
 
-def recover_lease(lease_id: str) -> Lease:
+def recover_lease(lease_id: str, *, inventory: Path | None = None) -> Lease:
     """Lock an existing entry for observation/cancellation only, even without markers."""
     import fcntl
 
     if not _ID.fullmatch(lease_id):
         raise ValueError("invalid lease id")
-    path = _lease_dir() / f"{lease_id}.json"
+    path = _lease_dir(inventory) / f"{lease_id}.json"
     fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -567,7 +576,7 @@ def recover_lease(lease_id: str) -> Lease:
         entry = _read_entry(fd)
         if not _valid_entry(entry, lease_id):
             raise ValueError("invalid lease journal")
-        return Lease(lease_id=lease_id, owner=owner_id(), path=path, fd=fd, entry=entry)
+        return Lease(lease_id=lease_id, owner=owner_id(inventory), path=path, fd=fd, entry=entry)
     except BaseException:
         os.close(fd)
         raise
@@ -576,7 +585,7 @@ def recover_lease(lease_id: str) -> Lease:
 def reap(
     backends: Callable[[str], object],
     bound: "sandbox_placement.OperationBound",
-    *, on_refusal=None,
+    *, on_refusal=None, inventory: Path | None = None,
 ) -> dict[str, tuple[str, ...]]:
     """Kill what dead or abandoned leases left behind, driven by the journal.
 
@@ -588,11 +597,12 @@ def reap(
     nothing is listed for it. Anything else, an entry that cannot be opened included, is
     kept for the next run. Liveness is never decided by a pid or an age.
 
-    Returns the lease ids ``cleared`` and ``kept``.
+    Returns the lease ids ``cleared`` and ``kept``. ``inventory`` confines the run to one
+    placement client's journal; nothing outside it is listed or touched.
     """
     import fcntl
 
-    directory = _lease_dir()
+    directory = _lease_dir(inventory)
     cleared: list[str] = []
     kept: list[str] = []
     free: list[tuple[str, int, Path, dict[str, object] | None]] = []
@@ -668,7 +678,7 @@ def reap(
                         on_refusal(refusal.code)
                     kept.extend(lease_id for lease_id, _fd, _path, _entry in group)
                     continue
-            done = _reap_backend(backend, group, bound)
+            done = _reap_backend(backend, group, bound, inventory)
             cleared.extend(done)
             kept.extend(lease_id for lease_id, _fd, _path, _entry in group if lease_id not in done)
     finally:
@@ -679,12 +689,12 @@ def reap(
 
 def _reap_backend(
     backend: object, group: list[tuple[str, int, Path, dict[str, object]]],
-    bound: "sandbox_placement.OperationBound",
+    bound: "sandbox_placement.OperationBound", inventory: Path | None = None,
 ) -> set[str]:
     """One backend: kill this journal's free entries by lease id, list, confirm, clear.
     Returns the lease ids cleared."""
     calls = sandbox_placement._Calls()
-    owner = owner_id()
+    owner = owner_id(inventory)
 
     def listed() -> set[str] | None:
         try:

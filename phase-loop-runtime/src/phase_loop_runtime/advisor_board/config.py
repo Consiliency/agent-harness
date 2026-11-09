@@ -387,7 +387,7 @@ def load_placement_driver_settings(
     try:
         resource = resources.files(__package__).joinpath("fixtures/placement-driver.defaults.toml")
         defaults = tomllib.loads(resource.read_text(encoding="utf-8"))
-        _reject_unknown(defaults, frozenset({"sandbox"}), "driver defaults")
+        _reject_unknown(defaults, frozenset({"sandbox", "placement"}), "driver defaults")
         _parse_sandbox(defaults, "driver defaults", repository=True)
         values = _parse_driver(defaults.get("sandbox", {}).get("driver", {}))
         if set(values) != _KNOWN_DRIVER_KEYS:
@@ -422,6 +422,41 @@ def load_placement_driver_settings(
         return values
     except (ValueError, TypeError, OSError):
         raise SandboxConfigError("sandbox_config_invalid") from None
+
+
+_PLACEMENT_HEADROOM_KEYS = frozenset({
+    "memory_available_bytes_minimum_floor",
+    "memory_available_total_ram_fraction_minimum",
+    "load_per_cpu_percent_maximum_exclusive",
+    "io_pressure_full_avg10_percent_maximum_exclusive",
+    "memory_pressure_some_avg10_percent_maximum_exclusive",
+    "live_sandboxes_maximum_exclusive",
+    "observation_age_seconds_maximum",
+})
+
+
+def load_placement_headroom_defaults() -> dict[str, Any]:
+    """The placement protocol's published local-headroom defaults, from the packaged
+    driver defaults only (``[placement.local_headroom]``). No user, repository or
+    environment layer applies: a host overrides them in its placement host configuration.
+    Raises ``BoardConfigError`` when the table is missing, incomplete or malformed."""
+    try:
+        resource = resources.files(__package__).joinpath("fixtures/placement-driver.defaults.toml")
+        defaults = tomllib.loads(resource.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise BoardConfigError("unreadable driver defaults") from None
+    _reject_unknown(defaults, frozenset({"sandbox", "placement"}), "driver defaults")
+    placement = defaults.get("placement")
+    if not isinstance(placement, dict):
+        raise BoardConfigError("driver defaults have no [placement] table")
+    _reject_unknown(placement, frozenset({"local_headroom"}), "driver defaults [placement]")
+    table = placement.get("local_headroom")
+    if not isinstance(table, dict) or set(table) != _PLACEMENT_HEADROOM_KEYS:
+        raise BoardConfigError("incomplete placement local-headroom defaults")
+    for key, value in table.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise BoardConfigError(f"placement local-headroom default {key} is not a number")
+    return dict(table)
 
 
 def load_president_ladder(

@@ -6,3 +6,15 @@ local_min_memory_bytes = 1073741824
 local_max_load_per_cpu_percent = 100
 local_max_live_sandboxes = 4
 capacity_max_age_s = 5
+
+# The placement process protocol's published local-headroom defaults
+# (x-local-headroom-defaults). A host overrides any of them in its placement host
+# configuration; the effective values are bound by config_sha256 and reported by version.
+[placement.local_headroom]
+memory_available_bytes_minimum_floor = 4294967296
+memory_available_total_ram_fraction_minimum = 0.1
+load_per_cpu_percent_maximum_exclusive = 70
+io_pressure_full_avg10_percent_maximum_exclusive = 10
+memory_pressure_some_avg10_percent_maximum_exclusive = 10
+live_sandboxes_maximum_exclusive = 4
+observation_age_seconds_maximum = 5

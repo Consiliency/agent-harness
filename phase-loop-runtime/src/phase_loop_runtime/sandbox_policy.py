@@ -72,6 +72,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutureTimeout
 from dataclasses import dataclass
+import hashlib
 from ipaddress import ip_address
 import os
 from pathlib import Path
@@ -1165,3 +1166,399 @@ class EgressPolicy:
 
 def egress_allowlist() -> EgressPolicy:
     return EgressPolicy()
+
+
+# ----------------------------------------------------------------------------------------
+# Placement process configuration (v13 PLACECLI). The client flag selects exactly one
+# operator-owned file under the account's home; no environment variable selects or
+# overrides a client, a configuration, a certificate or an inventory.
+# ----------------------------------------------------------------------------------------
+
+PLACEMENT_CLIENT_CONFIG_SCHEMA = "placement.client-config.v1"
+PLACEMENT_HOST_CONFIG_SCHEMA = "placement.host-config.v1"
+#: ``sha256(b"seat_resource_caps_unavailable")``: the documented ``seat_caps_sha256``
+#: sentinel when the caps record cannot be read; it matches no reservable configuration.
+SEAT_CAPS_UNAVAILABLE_SHA256 = hashlib.sha256(b"seat_resource_caps_unavailable").hexdigest()
+_PLACEMENT_CONFIG_MAX = 65536
+_PLACEMENT_CLIENTS = ("agent-harness", "agent-toolkit")
+_PLACEMENT_WORKLOADS = {
+    "agent-harness": frozenset({"leg", "qualification", "implementation"}),
+    "agent-toolkit": frozenset({"pi-runner"}),
+}
+_PLACEMENT_POLICY_VECTORS = ("minimal-with-app", "minimal-without-app", "full-remote-pi-runner")
+_PLACEMENT_TARGET_ORDER = {"openshell": 0, "local": 1, "e2b": 2}
+_PROVIDER_NAME = re.compile(r"[a-z][a-z0-9_-]{0,63}")
+_OPAQUE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}")
+_ENDPOINT_HOST = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?")
+_CLIENT_KEYS = frozenset({"schema", "client", "providers", "targets", "seat_route", "launch"})
+_HOST_KEYS = frozenset({"schema", "local_headroom"})
+_PROVIDER_KEYS = frozenset({"endpoints", "workloads", "policy_vectors"})
+_TARGET_KEYS = frozenset({"name", "kind", "rank", "transport_id", "root",
+                          "probe_receipt_providers", "od7_providers"})
+_MAX_TARGETS = 8
+_MAX_PROVIDERS = 64
+
+
+class PlacementConfigError(ValueError):
+    """The selected placement configuration is unusable. ``str()`` is a closed code."""
+
+    def __init__(self, code: str = "placement_config_invalid") -> None:
+        super().__init__(code)
+        self.code = code
+
+    def __str__(self) -> str:
+        return self.code
+
+
+@dataclass(frozen=True)
+class PlacementProvider:
+    name: str
+    endpoints: tuple[tuple[str, int], ...]
+    workloads: frozenset[str]
+    policy_vectors: frozenset[str]
+
+
+@dataclass(frozen=True)
+class PlacementTargetConfig:
+    name: str
+    kind: str
+    rank: int
+    transport_id: str
+    #: The parsed root of a remote target (``openshell://host/path``); ``None`` otherwise.
+    root: SandboxRootChoice | None
+    #: Providers the generic egress-and-credential probe cleared on this owned host.
+    probe_receipt_providers: frozenset[str]
+    #: Providers with a current OD-7 clearance for this third-party target.
+    od7_providers: frozenset[str]
+
+
+@dataclass(frozen=True)
+class PlacementClientConfig:
+    """One client's effective operator configuration and its ``config_sha256``."""
+
+    client: str
+    local_headroom: Mapping[str, object]
+    providers: Mapping[str, PlacementProvider]
+    targets: tuple[PlacementTargetConfig, ...]
+    seat_route: Mapping[str, str]
+    launch: Mapping[str, object] | None
+    policy_digests: Mapping[str, str]
+    seat_caps_sha256: str
+    canonical: bytes
+    config_sha256: str
+
+    def target(self, name: str) -> PlacementTargetConfig | None:
+        return next((target for target in self.targets if target.name == name), None)
+
+
+def account_home() -> Path:
+    """The account's home directory, which holds the operator placement configuration and
+    the per-client inventories. ``XDG_*`` and placement-named variables are not read."""
+    return Path(os.path.expanduser("~"))
+
+
+def placement_config_root() -> Path:
+    return account_home() / ".config" / "agent-harness" / "placement"
+
+
+def placement_state_root() -> Path:
+    return account_home() / ".local" / "state" / "agent-harness" / "placement"
+
+
+def _read_operator_file(path: Path) -> bytes | None:
+    """A regular file owned by this user and writable by nobody else, or ``None`` if absent."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise PlacementConfigError() from None
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                or info.st_mode & 0o022 or info.st_size > _PLACEMENT_CONFIG_MAX):
+            raise PlacementConfigError()
+        data = os.read(fd, _PLACEMENT_CONFIG_MAX + 1)
+    except PlacementConfigError:
+        raise
+    except OSError:
+        raise PlacementConfigError() from None
+    finally:
+        os.close(fd)
+    if len(data) > _PLACEMENT_CONFIG_MAX:
+        raise PlacementConfigError()
+    return data
+
+
+def _strict_config_object(raw: bytes) -> dict[str, object]:
+    from .placement_process_contract import ProtocolError, load_strict_object
+
+    try:
+        return load_strict_object(raw)
+    except ProtocolError:
+        raise PlacementConfigError() from None
+
+
+def _require(condition: bool) -> None:
+    if not condition:
+        raise PlacementConfigError()
+
+
+def _names(value: object, *, allowed: frozenset[str] | None = None, pattern=_PROVIDER_NAME) -> frozenset[str]:
+    _require(isinstance(value, list) and all(isinstance(item, str) for item in value))
+    names = frozenset(value)  # type: ignore[arg-type]
+    _require(len(names) == len(value))  # type: ignore[arg-type]
+    _require(all(pattern.fullmatch(name) for name in names))
+    if allowed is not None:
+        _require(names <= allowed)
+    return names
+
+
+def _endpoint(value: object) -> tuple[str, int]:
+    _require(isinstance(value, dict) and set(value) == {"host", "port"})
+    host, port = value["host"], value["port"]  # type: ignore[index]
+    _require(isinstance(host, str) and bool(_ENDPOINT_HOST.fullmatch(host)))
+    _require(all(label and len(label) <= 63 for label in host.split(".")))
+    _require(type(port) is int and 0 < port < 65536)
+    return host.lower(), port
+
+
+def placement_headroom_defaults() -> dict[str, object]:
+    from .advisor_board.config import BoardConfigError, load_placement_headroom_defaults
+
+    try:
+        return load_placement_headroom_defaults()
+    except BoardConfigError:
+        raise PlacementConfigError() from None
+
+
+def _effective_headroom(host: dict[str, object] | None) -> dict[str, object]:
+    from .placement_process_contract import LocalHeadroomConfig, ProtocolError
+
+    values = placement_headroom_defaults()
+    if host is not None:
+        _require(set(host) <= _HOST_KEYS and host.get("schema") == PLACEMENT_HOST_CONFIG_SCHEMA)
+        overrides = host.get("local_headroom", {})
+        _require(isinstance(overrides, dict) and set(overrides) <= set(values))
+        values.update(overrides)  # type: ignore[arg-type]
+    try:
+        return LocalHeadroomConfig.from_json(values).to_json()
+    except ProtocolError:
+        raise PlacementConfigError() from None
+
+
+def _policy_digests() -> dict[str, str]:
+    """The accepted policy names and their recorded digests (status may stay pending)."""
+    from importlib import resources
+
+    try:
+        raw = resources.files(__package__).joinpath(
+            "contracts/placement/vectors/policies.json").read_bytes()
+        document = _strict_config_object(raw)
+        valid = document["valid"]
+        digests = {row["name"]: row["policy_digest"] for row in valid}  # type: ignore[index, union-attr]
+    except (OSError, KeyError, TypeError, ValueError):
+        raise PlacementConfigError() from None
+    _require(all(name in digests for name in _PLACEMENT_POLICY_VECTORS))
+    return {name: digests[name] for name in _PLACEMENT_POLICY_VECTORS}
+
+
+def placement_policy_baseline(name: str) -> tuple[tuple[str, int], ...]:
+    """The egress baseline a named policy vector grants: every ``host``/``port`` endpoint in
+    its ``network_policies``. An unknown shape refuses rather than being guessed at."""
+    from importlib import resources
+
+    try:
+        raw = resources.files(__package__).joinpath(
+            "contracts/placement/vectors/policies.json").read_bytes()
+        document = _strict_config_object(raw)
+        rows = [row for row in document["valid"] if row["name"] == name]  # type: ignore[index, union-attr]
+    except (OSError, KeyError, TypeError, ValueError):
+        raise PlacementConfigError() from None
+    _require(len(rows) == 1)
+    policies = rows[0]["policy"].get("network_policies", {})  # type: ignore[union-attr]
+    _require(isinstance(policies, dict))
+    endpoints: set[tuple[str, int]] = set()
+    for rule in policies.values():  # type: ignore[union-attr]
+        _require(isinstance(rule, dict) and isinstance(rule.get("endpoints", []), list))
+        for endpoint in rule.get("endpoints", []):  # type: ignore[union-attr]
+            _require(isinstance(endpoint, dict) and {"host", "port"} <= set(endpoint))
+            endpoints.add(_endpoint({"host": endpoint["host"], "port": endpoint["port"]}))
+    return tuple(sorted(endpoints))
+
+
+def _parse_target(value: object) -> PlacementTargetConfig:
+    _require(isinstance(value, dict) and {"name", "kind", "rank", "transport_id"} <= set(value)
+             and set(value) <= _TARGET_KEYS)
+    name, kind, rank = value["name"], value["kind"], value["rank"]  # type: ignore[index]
+    transport = value["transport_id"]  # type: ignore[index]
+    _require(isinstance(name, str) and bool(_OPAQUE_ID.fullmatch(name)))
+    _require(kind in _PLACEMENT_TARGET_ORDER)
+    _require(type(rank) is int and 0 <= rank <= 255)
+    _require(isinstance(transport, str) and bool(_OPAQUE_ID.fullmatch(transport)))
+    root: SandboxRootChoice | None = None
+    if kind == "openshell":
+        text = value.get("root")  # type: ignore[union-attr]
+        _require(isinstance(text, str))
+        location = parse_location(text)  # type: ignore[arg-type]
+        _require(location.scheme == "openshell" and location.url and location.refusal is None
+                 and bool(location.host))
+        root = SandboxRootChoice(location.host, location.path, False, scheme="openshell", name=name)
+    else:
+        _require("root" not in value)  # type: ignore[operator]
+    if kind == "local":
+        root = SandboxRootChoice(None, Path("/"), False, scheme="local", name=name)
+    probe = _names(value.get("probe_receipt_providers", []))  # type: ignore[union-attr]
+    od7 = _names(value.get("od7_providers", []))  # type: ignore[union-attr]
+    return PlacementTargetConfig(name, kind, rank, transport, root, probe, od7)  # type: ignore[arg-type]
+
+
+def load_placement_client_config(
+    client: str, *, config_root: Path | None = None, seat_caps_sha256: str,
+) -> PlacementClientConfig:
+    """Load the selected client's operator configuration (absent file: no providers and no
+    targets, so every reservation refuses) and the host's thresholds, resolve every
+    referenced artifact, and bind the whole effective value with ``config_sha256``: the
+    SHA-256 of its RFC 8785 serialization, ``seat_caps_sha256`` and an uninterpreted
+    top-level ``launch`` object included. Any other unknown member refuses."""
+    from .placement_process_contract import canonical_bytes
+
+    _require(client in _PLACEMENT_CLIENTS)
+    _require(isinstance(seat_caps_sha256, str) and bool(re.fullmatch(r"[0-9a-f]{64}", seat_caps_sha256)))
+    root = config_root if config_root is not None else placement_config_root()
+    host_raw = _read_operator_file(root / "host.json")
+    host = _strict_config_object(host_raw) if host_raw is not None else None
+    headroom = _effective_headroom(host)
+    raw = _read_operator_file(root / f"{client}.json")
+    document = (_strict_config_object(raw) if raw is not None
+                else {"schema": PLACEMENT_CLIENT_CONFIG_SCHEMA, "client": client})
+    _require(set(document) <= _CLIENT_KEYS)
+    _require(document.get("schema") == PLACEMENT_CLIENT_CONFIG_SCHEMA and document.get("client") == client)
+    workloads = _PLACEMENT_WORKLOADS[client]
+    providers_raw = document.get("providers", {})
+    _require(isinstance(providers_raw, dict) and len(providers_raw) <= _MAX_PROVIDERS)
+    providers: dict[str, PlacementProvider] = {}
+    for name, body in sorted(providers_raw.items()):  # type: ignore[union-attr]
+        _require(isinstance(name, str) and bool(_PROVIDER_NAME.fullmatch(name)))
+        _require(isinstance(body, dict) and set(body) == _PROVIDER_KEYS)
+        endpoints_raw = body["endpoints"]
+        _require(isinstance(endpoints_raw, list) and 0 < len(endpoints_raw) <= 16)
+        endpoints = tuple(sorted({_endpoint(item) for item in endpoints_raw}))
+        _require(len(endpoints) == len(endpoints_raw))
+        providers[name] = PlacementProvider(
+            name, endpoints, _names(body["workloads"], allowed=workloads, pattern=re.compile(r"[a-z-]+")),
+            _names(body["policy_vectors"], allowed=frozenset(_PLACEMENT_POLICY_VECTORS),
+                   pattern=re.compile(r"[a-z-]+")),
+        )
+    targets_raw = document.get("targets", [])
+    _require(isinstance(targets_raw, list) and len(targets_raw) <= _MAX_TARGETS)
+    targets = tuple(sorted((_parse_target(item) for item in targets_raw), key=lambda t: t.rank))
+    _require(len({t.name for t in targets}) == len(targets) == len({t.rank for t in targets}))
+    seat_route_raw = document.get("seat_route", {})
+    _require(isinstance(seat_route_raw, dict))
+    if client == "agent-toolkit":
+        # pi-runner walks the agent and executor order: ai, then local, then E2B.
+        _require(not seat_route_raw)
+        kinds = [_PLACEMENT_TARGET_ORDER[t.kind] for t in targets]
+        _require(kinds == sorted(kinds) and len({t.kind for t in targets if t.kind != "openshell"})
+                 == len([t for t in targets if t.kind != "openshell"]))
+    seat_route: dict[str, str] = {}
+    for workload, target in sorted(seat_route_raw.items()):  # type: ignore[union-attr]
+        _require(workload in workloads and isinstance(target, str))
+        _require(any(t.name == target for t in targets))
+        seat_route[workload] = target  # type: ignore[assignment]
+    launch = document.get("launch")
+    _require(launch is None or isinstance(launch, dict))
+    policy_digests = _policy_digests()
+    effective: dict[str, object] = {
+        "schema": PLACEMENT_CLIENT_CONFIG_SCHEMA,
+        "client": client,
+        "local_headroom": headroom,
+        "providers": {name: {"endpoints": [{"host": h, "port": p} for h, p in provider.endpoints],
+                             "workloads": sorted(provider.workloads),
+                             "policy_vectors": sorted(provider.policy_vectors)}
+                      for name, provider in providers.items()},
+        "targets": [{"name": t.name, "kind": t.kind, "rank": t.rank, "transport_id": t.transport_id,
+                     "root": None if t.kind != "openshell" else _root_text(t.root),
+                     "probe_receipt_providers": sorted(t.probe_receipt_providers),
+                     "od7_providers": sorted(t.od7_providers)} for t in targets],
+        "seat_route": seat_route,
+        "policy_vectors": policy_digests,
+        "seat_caps_sha256": seat_caps_sha256,
+    }
+    if launch is not None:
+        effective["launch"] = launch
+    try:
+        canonical = canonical_bytes(effective)
+    except (TypeError, ValueError, OverflowError):
+        raise PlacementConfigError() from None
+    return PlacementClientConfig(
+        client, headroom, providers, targets, seat_route,
+        None if launch is None else dict(launch), policy_digests, seat_caps_sha256, canonical,  # type: ignore[arg-type]
+        hashlib.sha256(canonical).hexdigest(),
+    )
+
+
+def _root_text(root: SandboxRootChoice | None) -> str | None:
+    if root is None:
+        return None
+    return f"{root.scheme}://{root.host or ''}{root.path.as_posix()}"
+
+
+# -- local headroom observation ------------------------------------------------------------
+
+_PROC_MEMINFO = Path("/proc/meminfo")
+_PROC_LOADAVG = Path("/proc/loadavg")
+_PRESSURE_IO = Path("/proc/pressure/io")
+_PRESSURE_MEMORY = Path("/proc/pressure/memory")
+
+
+def _meminfo_bytes(text: str, key: str) -> int | None:
+    for line in text.splitlines():
+        name, sep, rest = line.partition(":")
+        if sep and name == key:
+            fields = rest.split()
+            if len(fields) == 2 and fields[1] == "kB" and fields[0].isdigit():
+                return int(fields[0]) * 1024
+            return None
+    return None
+
+
+def _pressure_avg10(path: Path, line_kind: str) -> float | None:
+    """``avg10`` of the ``some`` or ``full`` line of a PSI file; ``None`` when the file or
+    the line is missing, unreadable or malformed."""
+    try:
+        text = path.read_text(encoding="ascii")
+    except (OSError, UnicodeDecodeError):
+        return None
+    for line in text.splitlines():
+        fields = line.split()
+        if fields and fields[0] == line_kind:
+            values = dict(field.partition("=")[::2] for field in fields[1:])
+            try:
+                value = float(values["avg10"])
+            except (KeyError, ValueError):
+                return None
+            return value if value == value and 0 <= value <= 100 else None
+    return None
+
+
+def observe_local_pressure() -> dict[str, float | int | None]:
+    """One reading of the host's memory, load and pressure; any unreadable part is ``None``."""
+    try:
+        meminfo = _PROC_MEMINFO.read_text(encoding="ascii")
+    except (OSError, UnicodeDecodeError):
+        meminfo = ""
+    try:
+        load = float(_PROC_LOADAVG.read_text(encoding="ascii").split()[0])
+        cpus = os.sysconf("SC_NPROCESSORS_ONLN")
+        load_percent = 100.0 * load / cpus if cpus and cpus > 0 else None
+    except (OSError, UnicodeDecodeError, ValueError, IndexError):
+        load_percent = None
+    return {
+        "memory_available_bytes": _meminfo_bytes(meminfo, "MemAvailable"),
+        "memory_total_bytes": _meminfo_bytes(meminfo, "MemTotal"),
+        "load_per_cpu_percent": load_percent,
+        "io_full_avg10": _pressure_avg10(_PRESSURE_IO, "full"),
+        "memory_some_avg10": _pressure_avg10(_PRESSURE_MEMORY, "some"),
+    }
