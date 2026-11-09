@@ -63,6 +63,9 @@ SL-2 — <lane name>
 - **Interfaces provided**: `FooContract`, `POST /api/bar`
 - **Interfaces consumed**: (none)
 - **Tasks**:
+- test: `pnpm test path/one/__tests__/foo.test.ts`
+- impl: <implementation work>
+- verify: `pnpm test path/one`
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|

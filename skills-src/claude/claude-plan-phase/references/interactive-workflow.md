@@ -4,6 +4,12 @@ Reference for `claude-plan-phase` (linked from its `SKILL.md`). Phase-loop
 adapter mode does not use any of this: it forbids handoff reads, teammates,
 `TaskCreate`, `ExitPlanMode`, `advisor()` and `AskUserQuestion`.
 
+Resolve the shipped validator before running its examples:
+
+```bash
+PLAN_VALIDATOR=$(python3 -c 'from phase_loop_runtime.skill_paths import resolve_skill_bundle_root; print(resolve_skill_bundle_root("claude") / "claude-plan-phase" / "scripts" / "validate_plan_doc.py")')
+```
+
 ## Contents
 
 - Step 0 — Predecessor handoff paths and checks
@@ -133,7 +139,7 @@ absent `_shared/review_with_cli.py` or its frontier-cache discovery path.
 
 ## Manual hand-off (when `claude-execute-phase` is unavailable)
 
-Run `python scripts/validate_plan_doc.py <plan-doc-path>` first. Then execute each lane in one of two ways:
+Run `python3 "$PLAN_VALIDATOR" <plan-doc-path>` first. Then execute each lane in one of two ways:
 
 - (a) **Standalone** — `Agent(isolation: "worktree", name: "<SL-ID>", subagent_type: "general-purpose")` without `team_name`. The `isolation` kwarg is honored in this form; loses team coordination.
 - (b) **Teamed** — `TeamCreate` + `Agent(team_name=…, name="<SL-ID>", subagent_type="general-purpose")`, and the teammate's first tool call is `EnterWorktree` (load via `ToolSearch(query="select:EnterWorktree")`). Worktree via tool, team coordination preserved.

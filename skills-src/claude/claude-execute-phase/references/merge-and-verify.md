@@ -123,7 +123,7 @@ packages="$(git diff --name-only HEAD~..HEAD \
     | sed 's|/__init__\.py$||; s|/|.|g' \
     | sort -u)"
 if [[ -n "$packages" ]]; then
-    bash scripts/post_merge_import_smoke.sh $packages
+    bash "$SKILL_DIR/scripts/post_merge_import_smoke.sh" $packages
 fi
 ```
 
@@ -152,7 +152,7 @@ After all lanes merged:
 
 1. Run every command under the plan doc's `## Verification` section against the merged tree.
 2. Run every assertion under `## Acceptance Criteria` that can be mechanically checked.
-3. **Team teardown**. Try `TeamDelete` first. If it blocks (in-process teammates ignore `shutdown_request`), fall back to filesystem cleanup: `bash scripts/team_teardown.sh phase-<alias>` (rm on `the Claude home directory/teams/<team>/` + `the Claude home directory/tasks/<team>/`).
+3. **Team teardown**. Try `TeamDelete` first. If it blocks (in-process teammates ignore `shutdown_request`), fall back to filesystem cleanup: `bash "$SKILL_DIR/scripts/team_teardown.sh" phase-<alias>` (rm on `the Claude home directory/teams/<team>/` + `the Claude home directory/tasks/<team>/`).
 4. **Kill leftover background processes**. Stop only recorded process/job handles created by this run; do not identify ownership from a broad process-name match.
 5. **Clean-tree verification**. Run `git status`. After successful completion the tree must be clean (lane merges are the only changes, and they're committed). Allowlist: `.claude/worktrees/`, `.claude/claude-execute-phase-state.json`. Anything else → stop and surface.
 6. Emit final summary:

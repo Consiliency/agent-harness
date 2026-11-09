@@ -116,11 +116,15 @@ SL-0 — <name>
 - **Interfaces provided**: <symbols or none>
 - **Interfaces consumed**: <symbols or none>
 - **Parallel-safe**: yes|no|mixed
+- test: <failing or contract test command>
+- impl: <implementation work>
+- verify: <verification command>
+
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-0-T1 | test | (none) | `<test-path>` | `<test-name>` | `<command>` |
-| SL-0-T2 | impl | SL-0-T1 | `<source-path>` | (none) | `<command>` |
-| SL-0-T3 | verify | SL-0-T2 | `<test-path>` | `<test-name>` | `<command>` |
+| SL-0.1 | test | (none) | `<test-path>` | `<test-name>` | `<command>` |
+| SL-0.2 | impl | SL-0.1 | `<source-path>` | (none) | `<command>` |
+| SL-0.3 | verify | SL-0.2 | `<test-path>` | `<test-name>` | `<command>` |
 
 ## Verification
 

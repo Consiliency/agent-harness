@@ -5,6 +5,12 @@ description: "Claude Code phase planner for a versioned roadmap phase. Produces 
 
 # claude-plan-phase
 
+Resolve the shipped validator before running its examples:
+
+```bash
+PLAN_VALIDATOR=$(python3 -c 'from phase_loop_runtime.skill_paths import resolve_skill_bundle_root; print(resolve_skill_bundle_root("claude") / "claude-plan-phase" / "scripts" / "validate_plan_doc.py")')
+```
+
 ## Runtime State
 
 For reflections, handoffs, and latest handoff pointers, follow `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths`. This repo/branch/run-isolated contract supersedes any older flat closeout examples retained for historical context in this skill.
@@ -249,11 +255,11 @@ Then validate the scratch draft with
 `validate_plan_dispatch_hints`. If it returns findings, stop without writing
 the project-path artifact and emit the validation_failed closeout described in
 `## Planner Literal Validation`. If `scripts/validate_plan_doc.py` exists
-(shell test `[ -f scripts/validate_plan_doc.py ]`), run it against the scratch
+(shell test `[ -f "$PLAN_VALIDATOR" ]`), run it against the scratch
 file and fix any errors before `ExitPlanMode`:
 
 ```
-python scripts/validate_plan_doc.py <scratch-file-path>
+python3 "$PLAN_VALIDATOR" <scratch-file-path>
 ```
 
 Otherwise walk the Lane validation checklist by hand and note manual verification in the post-approval closeout or Execution Notes. The validator checks required headings, disjoint file ownership, DAG acyclicity, grep-assertion-paired-with-tests, and eager-reexport risks.
@@ -305,7 +311,7 @@ The reference adds inline concrete `Owned files`, a `test` before every `impl`, 
 - **Name every teammate.** Set `name:` on every `Agent` call so you can re-address via `SendMessage` without losing context or paying to restart.
 - **Task list as source of truth for the lane DAG.** Step 6's per-lane `TaskCreate` is how the plan becomes actionable; each lane task is addressable by ID for `claude-execute-phase`.
 - **Hand-off to `claude-execute-phase`.** After `ExitPlanMode` approval, invoke `/claude-execute-phase <plan-doc-path>`. See that skill for the full execution contract (team creation, worktree isolation, merge policy). Do NOT pass `isolation: "worktree"` alongside `team_name` — the harness drops `isolation` in that combination.
-- **Manual hand-off (when `claude-execute-phase` is unavailable).** Validate the plan with `python scripts/validate_plan_doc.py <plan-doc-path>`, then run each lane standalone or teamed as described in [references/interactive-workflow.md](references/interactive-workflow.md).
+- **Manual hand-off (when `claude-execute-phase` is unavailable).** Validate the plan with `python3 "$PLAN_VALIDATOR" <plan-doc-path>`, then run each lane standalone or teamed as described in [references/interactive-workflow.md](references/interactive-workflow.md).
 
 ## Output contract
 
@@ -328,7 +334,7 @@ After `ExitPlanMode` is approved, before exiting:
    - `roadmap_sha256: <sha256 of that roadmap file>`
 2. Run `validate_plan_dispatch_hints` before copying or staging the project-path
    artifact; stop with the validation_failed closeout if it returns findings.
-3. Run `python scripts/validate_plan_doc.py plans/phase-plan-<VERSION>-<PHASE_ALIAS>.md` when the script is present; fix any frontmatter/path/hash failures before continuing.
+3. Run `python3 "$PLAN_VALIDATOR" plans/phase-plan-<VERSION>-<PHASE_ALIAS>.md` when the script is present; fix any frontmatter/path/hash failures before continuing.
 4. Run `git status --short -- plans/phase-plan-<VERSION>-<PHASE_ALIAS>.md` and include the `_reviews.md` sibling if `--review-external` produced one.
 5. If the plan or review artifact is untracked or modified and the user did not explicitly forbid staging, run `git add plans/phase-plan-<VERSION>-<PHASE_ALIAS>.md` plus the review sibling if present.
 6. Rerun `git status --short -- plans/phase-plan-<VERSION>-<PHASE_ALIAS>.md` and report `Artifact state: staged|tracked|modified|unstaged|blocked`.

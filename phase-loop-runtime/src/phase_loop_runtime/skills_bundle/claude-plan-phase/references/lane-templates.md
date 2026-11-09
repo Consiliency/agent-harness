@@ -45,6 +45,8 @@ execution. A docs catalog is optional repo infrastructure, not a shipped helper.
 - **Interfaces consumed**: `<producer-interface>`
 - **Parallel-safe**: no
 
+- verify: `<configured-doc-check>`
+
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
 | SL-9.1 | docs | — | `<exact-doc-path>` | — | `<configured-doc-check>` |
