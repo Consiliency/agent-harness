@@ -416,17 +416,20 @@ def run_patch_return(prepared, *, config_bytes: bytes, state_root: Path,
                 return SpawnRefused("cancelled_before_start")
             try:
                 observed = classify_workspace(Path(inputs.workspace), Path(inputs.target), inputs.tier)
-                for actual, expected, reason in zip(observed,
-                        (inputs.workspace_class, inputs.root_device, inputs.root_inode),
-                        ("workspace_changed", "device_changed", "inode_changed")):
-                    if actual != expected:
-                        return SpawnRefused(reason)
-                for executable, reason in ((inputs.executable, "executable_changed"),
-                                            *((item, "wrapper_changed") for item in inputs.wrappers)):
+            except Exception:
+                return SpawnRefused("workspace_changed")
+            for actual, expected, reason in zip(observed,
+                    (inputs.workspace_class, inputs.root_device, inputs.root_inode),
+                    ("workspace_changed", "device_changed", "inode_changed")):
+                if actual != expected:
+                    return SpawnRefused(reason)
+            for executable, reason in ((inputs.executable, "executable_changed"),
+                                        *((item, "wrapper_changed") for item in inputs.wrappers)):
+                try:
                     if _executable_digest(Path(executable.path)) != executable.digest:
                         return SpawnRefused(reason)
-            except (OSError, ValueError):
-                return SpawnRefused("executable_changed")
+                except (OSError, ValueError):
+                    return SpawnRefused(reason)
             writer.call("state", "running", worker_invocations=1)
             return SpawnRefused("journal_unavailable") if writer.failed else None
 

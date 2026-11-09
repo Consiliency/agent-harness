@@ -861,3 +861,21 @@ def test_torn_running_append_is_unknown(worker_case, monkeypatch):
     root = rs.open_journal_root(worker_case.state / "journal", create=False)
     observed = projection.attempt_status(root, worker_case.envelope["attempt_id"])
     assert observed.display == "unknown" and "journal_torn_line" in observed.diagnostics
+
+
+@pytest.mark.parametrize("field", ["workspace", "executable", "wrapper"])
+def test_missing_prespawn_identity(worker_case, monkeypatch, field):
+    case = worker_case
+    if field == "wrapper":
+        case.wrapper.write_bytes(b"#!/bin/sh\nexec \"$@\"\n")
+        case.envelope["launch_inputs"]["wrappers"] = [str(case.wrapper)]
+    original = worker.run_bounded_capture
+    def changed(request, *, before_spawn, cancel):
+        if field == "workspace":
+            (case.root / "workspace").rename(case.root / "workspace-old")
+        else:
+            (case.executable if field == "executable" else case.wrapper).unlink()
+        return original(request, before_spawn=before_spawn, cancel=cancel)
+    monkeypatch.setattr(worker, "run_bounded_capture", changed)
+    result = run(case)
+    assert result.refusal == field + "_changed" and result.worker_invocations == 0
