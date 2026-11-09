@@ -19,8 +19,7 @@ On a shared host, agents must not run:
 On a shared host, agents may run:
 
 - named test files or `-k` selectors for the code they changed;
-- serially, without `-n` (pytest-xdist is not in the locked environment), and with
-  `-p no:cacheprovider`;
+- with `-n 0`, or `-n 2` at most, and `-p no:cacheprovider`;
 - with a time limit per command, such as `timeout 900 uv run pytest ...`;
 - mutation checks one test file at a time;
 - one test command at a time, after checking host load first (`uptime`, `free -g`,
