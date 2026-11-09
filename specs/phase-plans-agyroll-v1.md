@@ -99,7 +99,7 @@ red when breached.
 
 | Input | Pin |
 | --- | --- |
-| AGYROLL contract | `plans/artifacts/agyroll-v1-contract.md`, sha256 `f73feded14786c7fd692c2e6f17c660b8e3d5918744596415ac623b517439117` |
+| AGYROLL contract | `plans/artifacts/agyroll-v1-contract.md`, sha256 `60fd406574d87f512a94a373fa22cddc56f9c455147a2ec8ad0c5f398ca39102` |
 | TEAMHOST contract §5 (agy key, `requalify_once` call sites) | `plans/seats-teamhost-contract.md`, sha256 `3ca3d3a57346acca8bf4e16e50304f00e3e2e19bc5bcd20b1831b4f837c3b1b1`. **REQUAL amends §5.** The amendment adds the runner and canary preflight call sites, and names `seat_qci()` as the `qualified` key. Its value equals `agy_profile_digest()` at `agy_validator_v1`, so no entry drops, and §5 stays correct after a validator bump. The repin lands in REQUAL's docs lane. |
 | Q10 and (G) promotion rules | `.consiliency/plans/detailed-lkg-cli-qualification-1602-20261014-0359.md` §(G) and the Q10 ruling |
 | Upstream provenance surface | the GitHub releases API for `google-antigravity/antigravity-cli`: per-asset `digest`; the attestations endpoint returned 404 on 2026-11-08 |
@@ -245,7 +245,7 @@ records, so later phases land without hand live runs (goal d).
 - [ ] EC-RECBIND-1 — `gemini_heartbeat.QUALIFIED_IMAGES` loads from `phase_loop_runtime/data/agy_catalog.json` (AGYROLL §3.1); a missing or malformed file gives an empty runtime catalog, and the release fast path admits nothing; the verifier fails on a malformed or empty catalog.
 - [ ] EC-RECBIND-2 — `seat_qci()` equals `agy_profile_digest()` at `agy_validator_v1`; a `__version__` bump or a catalog edit leaves it unchanged; the semantic validator guard (AGYROLL §2.1, transitive) turns red on a verdict-changing mutant without a literal bump.
 - [ ] EC-RECBIND-3 — Every member has one v2 record whose `qci` equals the tree's; `--contract` runs on every PR and fails naming the member when they differ.
-- [ ] EC-RECBIND-4 — The conformance suite passes on the production driver: each provider-trippable negative control (no terminal event, no progress event, unregistered helper) does not pass, and each driver-enforcement control (ignores cancel, orphaned child) passes (AGYROLL §3.4, amendment A1).
+- [ ] EC-RECBIND-4 — The conformance suite passes on the production driver: each provider-trippable negative control (no terminal event, unregistered helper, tool step) does not pass with its pinned outcome, and each driver-enforcement control (ignores cancel, orphaned child) passes (AGYROLL §3.4, amendments A1 and A2).
 - [ ] EC-RECBIND-5 — `publish-pypi.yml` gates on a strict conformance run plus `--release`; a tree differing only outside the QCI passes with no live run; a QCI change fails; a skipped, xfailed or partial conformance run fails `--release`.
 - [ ] EC-RECBIND-6 — v1 records convert without a live run through their record commit (AGYROLL §3.5), or the stop task fires.
 
