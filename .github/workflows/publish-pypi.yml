@@ -50,20 +50,40 @@ jobs:
           unshare --net --map-root-user true
       - name: Strict agy route conformance (AGYROLL §3.4)
         # agent-harness#1008 R1: the production qualification driver runs hermetically on the
-        # stand-in images; under AGY_CONFORMANCE_STRICT=1 a missing bubblewrap or user
-        # namespace FAILS. The environment and the report live under $RUNNER_TEMP, never in
-        # the tree the build packages.
+        # stand-in images; under AGY_CONFORMANCE_STRICT=1 a missing prerequisite FAILS. The
+        # driver launches its provider through the per-seat resource caps (agent-harness#1895),
+        # which need a systemd user manager that delegates cpu, cpuset, io, memory and pids, and
+        # a caller inside that manager (docs/seat-resource-caps.md). This ephemeral runner is
+        # given exactly that host prerequisite, and the suite runs inside its user manager, as
+        # on a seat host. Nothing about the caps is faked. The environment and the report live
+        # under $RUNNER_TEMP, never in the tree the build packages.
         env:
-          AGY_CONFORMANCE_STRICT: "1"
-          PYTHONDONTWRITEBYTECODE: "1"
           UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/agy-conformance-venv
         run: |
           python -m pip install uv
           mkdir -p -m 0700 "$RUNNER_TEMP/agy-conformance"
+          (cd phase-loop-runtime && PYTHONDONTWRITEBYTECODE=1 uv sync --locked --group test --no-install-project)
+          uid="$(id -u)"
+          sudo mkdir -p /etc/systemd/system/user@.service.d
+          printf '[Service]\nDelegate=cpu cpuset io memory pids\n' \
+            | sudo tee /etc/systemd/system/user@.service.d/delegate.conf >/dev/null
+          sudo systemctl daemon-reload
+          sudo loginctl enable-linger "$(id -un)"
+          # A manager started before the drop-in keeps its old controller mask: restart it.
+          sudo systemctl restart "user@$uid.service"
+          export XDG_RUNTIME_DIR="/run/user/$uid"
+          for _ in $(seq 60); do [ -S "$XDG_RUNTIME_DIR/bus" ] && break; sleep 1; done
+          controllers="/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/cgroup.controllers"
+          for controller in cpu io memory pids; do
+            grep -qw "$controller" "$controllers" \
+              || { echo "::error::user manager does not delegate $controller"; exit 1; }
+          done
           cd phase-loop-runtime
-          uv sync --locked --group test --no-install-project
-          PYTHONPATH="$PWD/src:$PWD/tests" timeout 900 "$UV_PROJECT_ENVIRONMENT/bin/python" -m pytest -q \
-            -p no:cacheprovider tests/test_agy_route_conformance.py \
+          systemd-run --user --pipe --wait --collect --quiet --same-dir \
+            -E AGY_CONFORMANCE_STRICT=1 -E PYTHONDONTWRITEBYTECODE=1 \
+            -E PYTHONPATH="$PWD/src:$PWD/tests" -E PATH="$PATH" -E HOME="$HOME" \
+            -- timeout 900 "$UV_PROJECT_ENVIRONMENT/bin/python" -m pytest -q -p no:cacheprovider \
+            tests/test_agy_route_conformance.py \
             --junitxml="$RUNNER_TEMP/agy-conformance/conformance.xml"
       - name: Verify the agy release gate (--release)
         # Before the build: --contract, the strict conformance report above (every obligation

@@ -37,6 +37,7 @@ import pytest
 from phase_loop_runtime import agy_provenance
 from phase_loop_runtime import agy_qualification as q
 from phase_loop_runtime import gemini_heartbeat as gh
+from phase_loop_runtime import seat_resource_caps
 
 #: The eight conformance obligations (AGYROLL §3.4, amendments A1 and A2). ``--release``
 #: (``scripts/verify_qualified_agy_image.py``) requires each id passed exactly once.
@@ -53,6 +54,10 @@ CONFORMANCE_OBLIGATIONS = (
 
 STRICT_ENV = "AGY_CONFORMANCE_STRICT"
 STRICT = os.environ.get(STRICT_ENV) == "1"
+# The REAL per-seat caps readiness (agent-harness#1895), captured at import: the suite's
+# autouse fixture replaces it in this process, but the qualification worker is a separate
+# process that launches its provider through the real capped boundary.
+CAPS_READINESS = seat_resource_caps.readiness_code
 
 REPO = Path(__file__).resolve().parents[2]
 STANDIN_SOURCE = Path(__file__).resolve().parent / "fixtures" / "agy_conformance" / "standin.c"
@@ -92,9 +97,20 @@ TOKEN = ".gemini/antigravity-cli/antigravity-oauth-token"
 
 # ------------------------------------------------------------------ prerequisites
 
+def _caps_placement_gap(proc_cgroup: str, uid: int) -> str | None:
+    """The capped launch moves its caller into a scope of the user manager; the kernel allows
+    that only from inside the same manager (docs/seat-resource-caps.md)."""
+    manager = f"/user.slice/user-{uid}.slice/user@{uid}.service/"
+    paths = [line.split("::", 1)[1] for line in proc_cgroup.splitlines() if line.startswith("0::")]
+    if len(paths) != 1 or not paths[0].startswith(manager):
+        return (f"this process is not inside the systemd user manager ({manager}); run the suite under "
+                "it, for example with `systemd-run --user --pipe --wait`")
+    return None
+
+
 def prerequisite_gap(*, bwrap: str = BWRAP, setpriv: str = SETPRIV, helper: str = HELPER,
-                     which=shutil.which, run=subprocess.run,
-                     machine_id=q.read_machine_id) -> str | None:
+                     which=shutil.which, run=subprocess.run, machine_id=q.read_machine_id,
+                     caps_readiness=None, proc_cgroup=None, uid=None) -> str | None:
     """The first missing prerequisite of a hermetic driver run, or ``None``."""
     if not sys.platform.startswith("linux"):
         return "the agy heartbeat route is Linux-only"
@@ -112,7 +128,14 @@ def prerequisite_gap(*, bwrap: str = BWRAP, setpriv: str = SETPRIV, helper: str 
         return "a C compiler (cc) is missing for the stand-in image"
     if machine_id() is None:
         return "/etc/machine-id is missing or malformed (the qualification store needs it)"
-    return None
+    code = (caps_readiness or CAPS_READINESS)()
+    if code is not None:
+        return f"per-seat resource caps are unavailable ({code}; docs/seat-resource-caps.md)"
+    try:
+        placement = Path("/proc/self/cgroup").read_text() if proc_cgroup is None else proc_cgroup
+    except OSError:
+        return "the cgroup placement of this process is unreadable"
+    return _caps_placement_gap(placement, os.getuid() if uid is None else uid)
 
 
 def require_prerequisites(gap: str | None, *, strict: bool) -> None:
@@ -316,7 +339,9 @@ def test_strict_mode_fails_on_missing_user_namespaces(tmp_path):
 def _host_without(**missing):
     present = sys.executable  # an executable that exists everywhere this suite runs
     facts = {"bwrap": present, "setpriv": present, "helper": present, "which": lambda name: present,
-             "run": lambda *a, **k: subprocess.CompletedProcess(a, 0, b"", b""), "machine_id": lambda: "0" * 32}
+             "run": lambda *a, **k: subprocess.CompletedProcess(a, 0, b"", b""), "machine_id": lambda: "0" * 32,
+             "caps_readiness": lambda: None, "uid": 1000,
+             "proc_cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-x.service\n"}
     return prerequisite_gap(**{**facts, **missing})
 
 
@@ -329,6 +354,9 @@ def test_a_complete_host_has_no_gap():
     ({"machine_id": lambda: None}, "machine-id"),
     ({"setpriv": "/nonexistent/setpriv"}, "setpriv"),
     ({"helper": "/nonexistent/sleep"}, "helper executable"),
+    ({"caps_readiness": lambda: "seat_resource_caps_unavailable"}, "per-seat resource caps"),
+    ({"proc_cgroup": "0::/user.slice/user-1000.slice/session-7.scope\n"}, "systemd user manager"),
+    ({"proc_cgroup": "0::/system.slice/actions.runner.service\n"}, "systemd user manager"),
 ])
 def test_strict_mode_fails_on_every_other_gap(missing, named):
     gap = _host_without(**missing)

@@ -47,8 +47,14 @@ def test_publication_gates_on_strict_conformance_then_release_before_the_build()
     names = [step.get("name", "") for step in steps]
     conformance = steps[names.index("Strict agy route conformance (AGYROLL §3.4)")]
     release = steps[names.index("Verify the agy release gate (--release)")]
-    assert conformance["env"]["AGY_CONFORMANCE_STRICT"] == "1"
+    assert "-E AGY_CONFORMANCE_STRICT=1" in conformance["run"]
     assert "tests/test_agy_route_conformance.py" in conformance["run"]
+    # The caps host prerequisite (agent-harness#1895) is provisioned, and the suite runs inside
+    # the user manager: real delegated caps, no bypass.
+    assert "Delegate=cpu cpuset io memory pids" in conformance["run"]
+    assert "loginctl enable-linger" in conformance["run"]
+    assert "systemd-run --user --pipe --wait" in conformance["run"]
+    assert "SEAT_CAPS" not in conformance["run"] and "readiness_code" not in conformance["run"]
     assert f"--junitxml={REPORT}" in conformance["run"]
     assert 'mkdir -p -m 0700 "$RUNNER_TEMP/agy-conformance"' in conformance["run"]
     assert "--release" in release["run"] and f"--conformance-report {REPORT}" in release["run"]
