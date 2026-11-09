@@ -25,20 +25,20 @@ Audit baseline: `origin/main` at `23a30561e9b2ef23933fcbb4225a1d86120a5195`. Pen
 - [ ] `skills-src/claude/claude-execute-phase/scripts/validate_plan_doc.py` — pending
 - [ ] `skills-src/claude/claude-execute-phase/scripts/verify_harness.sh` — pending
 - [x] `skills-src/claude/claude-phase-loop/SKILL.md` — fixed; runtime `cli.py:324,3340`, `runner.py:710`, `launcher.py:944`, `capability_registry.py:116`; qualified issue and corrected launcher/path claims
-- [ ] `skills-src/claude/claude-phase-roadmap-builder/SKILL.md` — pending
-- [ ] `skills-src/claude/claude-phase-roadmap-builder/assets/review_prompt.md` — pending
-- [ ] `skills-src/claude/claude-phase-roadmap-builder/references/handoff-review-closeout.md` — pending
-- [ ] `skills-src/claude/claude-phase-roadmap-builder/references/parallelization-heuristics.md` — pending
-- [ ] `skills-src/claude/claude-phase-roadmap-builder/references/roadmap-template.md` — pending
-- [ ] `skills-src/claude/claude-phase-roadmap-builder/references/validator-format-contract.md` — pending
-- [ ] `skills-src/claude/claude-phase-roadmap-builder/scripts/validate_roadmap.py` — pending
+- [x] `skills-src/claude/claude-phase-roadmap-builder/SKILL.md` — fixed; runtime `roadmap_lint.py:70,402; cli.py advisor-board; skill_paths.py:24; absent helper and published install pin`
+- [x] `skills-src/claude/claude-phase-roadmap-builder/assets/review_prompt.md` — fixed; runtime `roadmap_lint.py dependency graph; corrected concurrency condition`
+- [x] `skills-src/claude/claude-phase-roadmap-builder/references/handoff-review-closeout.md` — fixed; runtime `skill_paths.py:24,35; cli.py advisor-board; executable paths and absent helper`
+- [x] `skills-src/claude/claude-phase-roadmap-builder/references/parallelization-heuristics.md` — fixed; runtime `roadmap_lint.py:402; runner.py phase selection; lane hint versus minimum count`
+- [x] `skills-src/claude/claude-phase-roadmap-builder/references/roadmap-template.md` — fixed; runtime `roadmap_lint.py alias parser; discovery.py plan filenames; executor takes plan path`
+- [x] `skills-src/claude/claude-phase-roadmap-builder/references/validator-format-contract.md` — checked-clean; runtime `roadmap_lint.py:70,195,229,402`
+- [x] `skills-src/claude/claude-phase-roadmap-builder/scripts/validate_roadmap.py` — checked-clean; runtime `roadmap_lint.py:1186 main(argv) accepts full argv; thin import shim`
 - [x] `skills-src/claude/claude-plan-detailed/SKILL.md` — fixed; runtime `cli.py advisor-board parser; plan_manifest.py:95,327; skill_paths.py:24 — absent CLI helper, paired executor and reflection root`
-- [ ] `skills-src/claude/claude-plan-detailed/assets/review_prompt.md` — pending
+- [x] `skills-src/claude/claude-plan-detailed/assets/review_prompt.md` — checked-clean; runtime `bounded-plan section and publishing.py plan context contract`
 - [x] `skills-src/claude/claude-plan-detailed/references/closeout-reflection-handoff.md` — fixed; runtime `skill_paths.py:24,35 — executable shell root resolution and quoted run paths`
 - [x] `skills-src/claude/claude-plan-phase/SKILL.md` — fixed; runtime `launcher.py Claude route; roadmap_lint.py alias parser; plan_manifest.py:327 — uppercase aliases, review entrypoint, active run directory, reflection root`
-- [ ] `skills-src/claude/claude-plan-phase/assets/review_prompt.md` — pending
-- [ ] `skills-src/claude/claude-plan-phase/references/closeout-reflection-handoff.md` — pending
-- [ ] `skills-src/claude/claude-plan-phase/references/interactive-workflow.md` — pending
+- [x] `skills-src/claude/claude-plan-phase/assets/review_prompt.md` — fixed; runtime `plan_ir.py ownership; planner contract headings and authorized fanout`
+- [x] `skills-src/claude/claude-plan-phase/references/closeout-reflection-handoff.md` — fixed; runtime `skill_paths.py:24,35; executable shell paths and executor plan-path argument`
+- [x] `skills-src/claude/claude-plan-phase/references/interactive-workflow.md` — fixed; runtime `cli.py advisor-board and skill_paths.py handoff roots; absent two-CLI helper`
 - [x] `skills-src/claude/claude-plan-phase/references/lane-templates.md` — fixed; runtime `source validate_plan_doc.py:166,217,246 — numeric IDs, inline disjoint ownership, absent catalog helper`
 - [x] `skills-src/claude/claude-plan-phase/references/lane-validation-checklist.md` — checked-clean; runtime `source validate_plan_doc.py checks K,L,P; plan_ir.py ownership and producer dependencies`
 - [x] `skills-src/claude/claude-plan-phase/references/model-effort-tiering.md` — fixed; runtime `planner_validation.py:54; profiles.py:164 — selector vocabulary and current model source`

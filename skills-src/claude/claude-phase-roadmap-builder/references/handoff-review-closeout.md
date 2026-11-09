@@ -48,18 +48,11 @@ Defense-in-depth checks (the repo-key scheme prevents the common cross-project c
 If absent, proceed — this run is standalone.
 ## Step 8.5 — External CLI review
 
-Requires `_shared/review_with_cli.py` (see Prerequisites). After the roadmap is written and validated, run:
+Run `phase-loop advisor-board <output-path> --json` after validation and
+follow `claude-advisor-board` for native fills. Save the result to the
+`<output-path>_reviews.md` sibling. Failed or unavailable legs are incomplete
+review evidence; the two-CLI helper and frontier cache are not shipped.
 
-```bash
-python3 "$(git rev-parse --show-toplevel)/.claude/skills/_shared/review_with_cli.py" \
-  --artifact <output-path> \
-  --prompt-file "$(git rev-parse --show-toplevel)/.claude/skills/claude-phase-roadmap-builder/assets/review_prompt.md" \
-  --out <output-path>_reviews.md
-```
-
-If the frontier-model cache is empty, the script prints the discovery prompt to stderr. Surface to the user via `AskUserQuestion` with options `[run discovery now, skip review this run, abort]`.
-
-Tell the user: "Review written to `<output-path>_reviews.md`. Agreements between Gemini and Codex are real signal; divergences are context."
 ## Close-out — Reflection + Handoff templates
 
 Stage the roadmap/plan artifacts before writing either close-out file so the deliverable is preserved in the index unless the user explicitly forbade staging.
@@ -67,7 +60,9 @@ Stage the roadmap/plan artifacts before writing either close-out file so the del
 After artifacts are staged or confirmed tracked, resolve paths:
 
 ```bash
-REFLECTION_PATH=resolve_skill_bundle_root("codex")/claude-phase-roadmap-builder/reflections/<repo_hash>/<branch_slug>/<run_id>.md
+SKILL_ROOT=$(python3 -c 'from phase_loop_runtime.skill_paths import resolve_skill_bundle_root; print(resolve_skill_bundle_root("claude"))')
+: "${REPO_HASH:?set REPO_HASH}" "${BRANCH_SLUG:?set BRANCH_SLUG}" "${RUN_ID:?set RUN_ID}"
+REFLECTION_PATH="$SKILL_ROOT/claude-phase-roadmap-builder/reflections/$REPO_HASH/$BRANCH_SLUG/$RUN_ID.md"
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 REPO_LOCAL_HANDOFF=$(python3 - <<'PYH'
 from pathlib import Path
@@ -87,7 +82,7 @@ except Exception:
 PYH
 )
 mkdir -p "$(dirname "$REPO_LOCAL_HANDOFF")"
-SKILL_MD=resolve_skill_bundle_root("codex")/claude-phase-roadmap-builder/SKILL.md
+SKILL_MD="$SKILL_ROOT/claude-phase-roadmap-builder/SKILL.md"
 ```
 
 Write BOTH files directly via the Write tool — this is the primary path.
@@ -162,7 +157,7 @@ next_phase: <ALIAS - phase name|none - reason>
 - <best-effort forecast of which files/paths the next skill will touch>
 ```
 
-Optionally delegate to a spawned frontier-tier Agent instead when independent review with a fresh context window is desired (e.g., after complex runs). Resolve the model via the `claude-execute-phase` Model tiers table:
+Optionally delegate to a spawned frontier-tier Agent instead when independent review with a fresh context window is desired (e.g., after complex runs). Resolve the model from the active executor/model policy:
 
 ```
 Agent(

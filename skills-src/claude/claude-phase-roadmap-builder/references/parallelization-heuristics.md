@@ -68,7 +68,7 @@ P6A — Dep hygiene           parallel after P1
 P6B — Docs alignment        parallel after P4
 ```
 
-Sibling phases with distinct aliases let `/claude-execute-phase` schedule them concurrently instead of serially.
+Distinct aliases identify independent phases. Concurrent execution still needs explicit authorization and disjoint ownership; a normal runtime loop selects one phase at a time.
 
 **Test**: if `Phase N` lists `Depends on: P3` and `Phase N+1` also lists `Depends on: P3`, and neither lists the other, they are siblings. Mark them as `NA` / `NB` aliases, not `N` / `N+1`.
 
@@ -80,7 +80,7 @@ A single-lane phase is a code smell. Investigate:
 - Is the work too coarse? → Split the file-ownership further until ≥2 disjoint lanes emerge.
 - Is it a pure interface-freeze phase (Phase 0 / Phase 1 preamble)? → This is the exception. Mark `Scope notes` with "preamble / interface-only phase — single lane justified".
 
-The validator enforces this rule but allows the preamble escape hatch via explicit `Scope notes` marking.
+The validator checks for a lane-count or partition hint, not a minimum of two lanes; an explicit justified `Single lane` hint also passes.
 
 ## Rule 6 — Parallelism hints in Scope notes
 
