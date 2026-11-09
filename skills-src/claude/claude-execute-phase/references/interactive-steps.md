@@ -2,6 +2,12 @@
 
 Reference for `claude-execute-phase` (linked from its `SKILL.md`). Read it at the start of an interactive run, before Step 3.
 
+Resolve the installed helper directory before running shell examples:
+
+```bash
+SKILL_DIR=$(python3 -c 'from phase_loop_runtime.skill_paths import resolve_skill_bundle_root; print(resolve_skill_bundle_root("claude") / "claude-execute-phase")')
+```
+
 ## Contents
 
 - Environment variables
@@ -25,15 +31,15 @@ Plan-location variables are inherited from `claude-plan-phase` so the two skills
 | `PLAN_PHASE_ALIASES` | Built-in alias table | Path to alias-map JSON. |
 | `PLAN_DOC` | `plans/phase-plan-<VERSION>-<PHASE_ALIAS>.md` | Override the resolved plan-doc path directly. |
 | `EXECUTE_MERGE_TARGET` | Current branch at invocation | Branch lanes merge into. |
-| `EXECUTE_WORKTREE_ROOT` | `.worktrees/` (inside repo; auto-gitignored) | Root dir for per-lane worktrees. |
-| `EXECUTE_MAX_PARALLEL_LANES` | `4` | Max concurrent lane dispatches per wave; parallelism-maximizing default. Lower to `2` when stale-base churn becomes problematic on phases with many interdependent lanes. |
+| `EXECUTE_WORKTREE_ROOT` | `.worktrees/` (inside repo; ignore coverage is checked, not added automatically) | Root dir for per-lane worktrees. |
+| `EXECUTE_MAX_PARALLEL_LANES` | `4` | Max concurrent lane dispatches per wave. Parallel execution still requires authorization, machine-verified disjoint ownership and scheduler-owned worktrees. Check shared-host capacity and cap inner test workers separately. |
 
 ## Expected helpers
 
 Helpers under `resolve_skill_bundle_root("claude")/_shared/` may be absent on some hosts. Each helper degrades as listed:
 
-- `_shared/next_reflection_path.py` — legacy helper only; current closeout writes reflections to `resolve_skill_bundle_root("codex")/claude-execute-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`.
-- `_shared/review_with_cli.py` — used only with `--review-external`; no fallback (required for that flag).
+- `_shared/next_reflection_path.py` — legacy helper only; current closeout writes reflections to `resolve_skill_bundle_root("claude")/claude-execute-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`.
+- Review uses the runtime `phase-loop advisor-board` entrypoint; no `_shared/review_with_cli.py` is shipped.
 
 ## Deferred tool preloading
 
@@ -76,13 +82,9 @@ try:
     # Primary: the installed phase_loop_runtime.skill_paths resolver.
     from phase_loop_runtime.skill_paths import resolve_handoff_root
     print(resolve_handoff_root(repo) / skill / "latest.md")
-except Exception:
-    # Fallback: the repo-local handoff_path.py mirror, only when the runtime is not importable.
-    from importlib import util
-    spec = util.spec_from_file_location("handoff_path", repo / "shared" / "phase-loop" / "handoff_path.py")
-    mod = util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    print(mod.resolve_handoff_path(repo, skill))
+except ImportError:
+    from phase_loop_runtime.handoff_path import resolve_handoff_path
+    print(resolve_handoff_path(repo, skill))
 PYH
 )"
 ```
@@ -117,7 +119,7 @@ Build the lane graph. Topologically sort it; reject on cycle with a clear error.
 
 ## Step 2 — Preflight
 
-- **Run `scripts/verify_harness.sh <merge-target>`.** Enforces the hard gates: git + git-worktree available, inside a work tree, merge-target branch exists locally, working tree clean (allowlist: `.claude/worktrees/`, `.claude/claude-execute-phase-state.json`), `.gitignore` covers worktree paths. **Non-zero exit blocks dispatch.** On dirty-tree failure, invoke `AskUserQuestion` with `[commit the changes as a chore, stash for the duration of the phase, abort /claude-execute-phase]` and take the user's answer. No override.
+- **Run `scripts/verify_harness.sh <merge-target>`.** Enforces the hard gates: git + git-worktree available, inside a work tree, merge-target branch exists locally, working tree clean (allowlist: `.claude/worktrees/`, `.claude/claude-execute-phase-state.json`). Missing `.gitignore` worktree coverage is a warning only; the helper does not edit it. **Non-zero exit from a hard-gate failure blocks dispatch.** On dirty-tree failure, invoke `AskUserQuestion` with `[commit the changes as a chore, stash for the duration of the phase, abort /claude-execute-phase]` and take the user's answer. No override.
 - Record merge target = current branch (or `$EXECUTE_MERGE_TARGET`).
 - Apply the merge-target safety gate in `SKILL.md` (Step 2) before any lane dispatch or merge.
 - Sanity check: every symbol appearing in any lane's `Interfaces consumed` must either be produced by an upstream lane's `Interfaces provided` OR be pre-existing (skip unknown symbols with a warning, don't hard-fail).
@@ -126,7 +128,7 @@ Build the lane graph. Topologically sort it; reject on cycle with a clear error.
 
 ## Step 2.5 — Baseline-capture
 
-Run the plan's full regression command once at phase start against the pre-phase tip. Cache the failing-test list to `.claude/claude-execute-phase-state.json#baseline_fails`. Step 9 diffs against this cached list rather than reconstructing it.
+Run admitted verification against the pre-phase tip under the repo's shared-compute rules. On shared hosts use a named narrow serial check under `timeout`; leave whole-suite gates to hosted CI. Cache the failing-test list to `.claude/claude-execute-phase-state.json#baseline_fails`. Step 9 diffs against this cached list rather than reconstructing it.
 
 Before hypothesizing test pollution on a post-merge failure, run the failing test in isolation (fresh process) to distinguish a direct regression from fixture pollution.
 
@@ -135,14 +137,13 @@ Before hypothesizing test pollution on a post-merge failure, run the failing tes
 Prune stale worktrees in `.claude/worktrees/` at phase start. Skip on `--resume`.
 
 ```bash
-bash "$(git rev-parse --show-toplevel)/.claude/skills/claude-execute-phase/scripts/sweep_stale_worktrees.sh"
+bash "$SKILL_DIR/scripts/sweep_stale_worktrees.sh"
 # Pass --dry-run to preview decisions without removing anything.
 ```
 
-For each worktree marked `PRUNE`:
-
-1. `git worktree unlock <path>` (succeeds silently if unlocked).
-2. `git worktree remove -f -f <path>` — double-force bypasses both the lock and the unmerged-changes check (safe since the ancestor check already confirmed incorporation).
-3. `git branch -D <branch>` **only** if the branch name matches an auto-named pattern (`worktree-*`, `phase/*/sl-*`). Leave human-named branches (`skills/*`, `feature/*`, `fix/*`) intact even when their work is on the merge target — the user may still want the reference.
+The helper removes only clean incorporated worktrees and preserves intentional
+locks. Do not add `unlock` or double-force removal after the helper: a lock or
+failed removal is a reason to keep the tree and report it. It deletes only the
+auto-named branch patterns encoded by the helper; human-named branches remain.
 
 Worktrees marked `KEEP` are left alone; log a one-line warning per worktree.

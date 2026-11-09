@@ -6,13 +6,13 @@
 #     pre_merge_destructiveness_check.sh <lane-sha> <merge-target> <whitelist-path>
 #
 #     <lane-sha>          Commit SHA produced by the lane.
-#     <merge-target>      Branch the lane will be merged into (typically main).
+#     <merge-target>      Non-protected feature branch the lane will be merged into.
 #     <whitelist-path>    File with one path per line listing destructive
 #                         changes the plan EXPECTS for this lane. Supports
 #                         shell-glob patterns. Use /dev/null if the lane
 #                         is purely additive.
 #
-# Behavior: emits EXACTLY one token on stdout, exit 0 always (verdict is
+# Behavior: valid invocations emit one token and exit 0; usage errors exit 2 (verdict is
 # on stdout for the orchestrator to act on).
 #
 #   SAFE
@@ -22,8 +22,8 @@
 #   STALE_BASE_DETECTED
 #     - The lane's diff-against-target shows deletions of files that
 #       WEREN'T in the lane's ancestor; i.e. peer lanes merged additions
-#       between the lane's base and target, and `git merge --no-ff` would
-#       revert them. Orchestrator should salvage (cherry-pick the lane's
+#       between the lane's base and target, in the tip-to-tip diff. This does not by itself prove a three-way merge
+#       would delete them. Orchestrator should salvage (cherry-pick the lane's
 #       owned paths) rather than retry.
 #
 #   CONFLICT
@@ -31,8 +31,7 @@
 #       above. Orchestrator should surface to the teammate for manual
 #       resolution.
 #
-# Rationale: Step 7's MANDATORY pre-merge check. A lane that committed
-# against a stale base can wipe peer-lane work on `--no-ff` merge; the
+# Rationale: Step 7's MANDATORY pre-merge check. A stale branch needs review before integration; the
 # naive `git diff main..lane` can't distinguish that from a parallel-
 # branch false positive. Extracting the 3-part diff (naive + ancestor +
 # whitelist) into a script makes the verdict deterministic.

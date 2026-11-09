@@ -30,12 +30,23 @@ When a president is required, the availability ladder is Fable (the Anthropic se
 
 ## Three Ways To Feed Material
 
-There are THREE DISTINCT ways to give the panel material. The #114 fix names them accurately: `artifact_ref` and `brief_ref` are Read-file-and-stage conveniences, while `context_refs` is the true by-reference mode.
+There are THREE DISTINCT ways to give the panel material. The agent-harness#114 fix names them accurately: `artifact_ref` and `brief_ref` are Read-file-and-stage conveniences, while `context_refs` is the true by-reference mode.
 
 - **Inline** (`artifact="..."`) — small material passed as a string, written verbatim into `review-bundle.md`. A large inline artifact logs a steering warning.
 - **Read-file-and-stage** (`artifact_ref="path/to/bundle.md"`, or a list) — the runtime READS the local file(s) off disk and stages their bytes into `review-bundle.md` (a single path verbatim; multiple paths under per-file headers). This keeps YOUR context lean, but the file CONTENTS still land in the staged bundle every leg reads. Use it when you WANT the legs to read the material verbatim. `artifact_ref` wins over `artifact` if both are given.
 - `brief_ref="path/to/brief.md"` — a Read-file-and-stage path for a large review brief; staged as `review-instructions.md`. Omit it to use the built-in review/advisory brief.
-- **TRUE by-reference** (`context_refs=["path/to/large.pdf", ...]`, #114) — the runtime stages ONLY a path + metadata manifest (path, size, sha256, MIME/extension, and PDF page count when cheap) plus an instruction telling each leg to OPEN the files with its own local tools. Raw file contents are not read into the bundle or prompt by this runtime path. Use it for LARGE or PRIVATE local material when the selected provider/backing can access the same local file path. A missing/unreadable path fails CLOSED naming the path, unless you pass `context_refs_soft_warn=True` (logs a warning and emits an `UNREADABLE` manifest entry). Pathnames and hashes can disclose sensitive metadata, and a leg may disclose file contents after it intentionally inspects a referenced file unless an output policy forbids disclosure.
+- **TRUE by-reference** (`context_refs=["path/to/large.pdf", ...]`, agent-harness#114) — the runtime stages ONLY a path + metadata manifest (path, size, sha256, MIME/extension, and PDF page count when cheap) plus an instruction telling each leg to OPEN the files with its own local tools. Raw file contents are not read into the bundle or prompt by this runtime path. Use it for LARGE or PRIVATE local material when the selected provider/backing can access the same local file path. A missing/unreadable path fails CLOSED naming the path, unless you pass `context_refs_soft_warn=True` (logs a warning and emits an `UNREADABLE` manifest entry). Pathnames and hashes can disclose sensitive metadata, and a leg may disclose file contents after it intentionally inspects a referenced file unless an output policy forbids disclosure.
+
+## Review-seat isolation
+
+Brokered Codex reviews use the registered jail profile (OD-4,
+agent-harness#1916), with `--sandbox danger-full-access` inside that boundary.
+The parent validates CLI shape and subscription credentials before delivery,
+and requires evidence of a completed turn and a successful command before
+counting the leg. There is no unconfined review-seat fallback. The seat mode
+line and typed refusal are authoritative; do not bypass a refusal by launching
+a CLI yourself. See `seat_profile_codex.py`, `seat_codex_evidence.py`, and
+`panel_invoker._exec_jailed_codex_leg` in the runtime.
 
 ## Bounding A Slow Leg
 
@@ -44,9 +55,9 @@ There are THREE DISTINCT ways to give the panel material. The #114 fix names the
 `timeouts_by_leg` still imposes a hard backstop. Do not substitute giant
 timeouts, bypass the broker, or silently replace reviewers.
 
-Heartbeat-only supports brokered subscription `claude` TUI, `codex` and `grok`
+Heartbeat-only supports brokered subscription `claude` TUI (and print), `codex` and `grok`
 on Linux. The gemini/agy route requires the qualified executable digest and sealed
-memfd/pidfd support in the running Python/kernel. It uses the CLI's literal
+memfd/pidfd support in the running Python/kernel. Check `hasattr(os, 'memfd_create')` in the active interpreter; the capability requires that support even on Linux. It uses the CLI's literal
 `--print-timeout 0`, one attempt and a private namespace-owned HOME. See
 `docs/advisor-board-capabilities-card.md` for the measured image and limitations.
 API/gateway, capture, research, native host fill and legacy `invoke_panel` remain
@@ -59,6 +70,11 @@ native failure/completion, and owner loss still end an operation and require
 cleanup. Admission remains finite and single-use.
 
 **The following timeout/retry instructions describe bounded mode only.**
+The retry algebra below describes the legacy non-jailed print/TUI paths.
+The current jailed `codex` path launches once through `_exec_jailed_codex_leg`;
+it does not perform that soft-empty retry. Do not use the legacy retry budget
+to predict a jailed leg's attempt count. Timeout and liveness results are still
+failures, never successful review evidence.
 
 Legs fan out concurrently, so panel wall-clock ≈ max(leg), not sum. Each leg's default
 timeout is INPUT-SCALED (~600s floor + ~12s/KB) and then raised to a ~1800s backstop.

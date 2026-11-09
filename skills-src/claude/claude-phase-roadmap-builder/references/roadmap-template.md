@@ -23,7 +23,7 @@ After the template: Notes on filling in the template.
 ```markdown
 # <Project Name> — Phase Plan v<N>
 
-> How to use this document: save to `specs/phase-plans-v<N>.md`, then run `/claude-plan-phase <ALIAS>` to produce the lane-level plan for each phase (→ `plans/phase-plan-v<N>-<alias>.md`), then `/claude-execute-phase <alias>` to build it.
+> How to use this document: save to `specs/phase-plans-v<N>.md`, then run `/claude-plan-phase <ALIAS>` to produce the lane-level plan for each phase (→ `plans/phase-plan-v<N>-<alias>.md`), then `/claude-execute-phase <plan-doc-path>` to build it.
 
 ---
 
@@ -172,8 +172,8 @@ These gates are the narrowest contracts that unblock downstream phases. `/claude
 
 ## Execution Notes
 
-- **Planning**: `/claude-plan-phase <ALIAS>` for each phase. Phases with no shared DAG ancestor can be planned concurrently (e.g., `<alias-x>` and `<alias-y>`).
-- **Execution**: `/claude-execute-phase <alias>` after each plan is approved. Same cross-phase parallelism applies.
+- **Planning**: `/claude-plan-phase <ALIAS>` for each phase. Phases with no dependency path between them in the DAG can be planned concurrently (e.g., `<alias-x>` and `<alias-y>`).
+- **Execution**: `/claude-execute-phase <plan-doc-path>` after each plan is approved. Same cross-phase parallelism applies.
 - **Critical path**: <longest DAG path, e.g., `P1 → P2A → P2B → P3 → P4 → P5`> — wall-clock minimum without speedups.
 - **Parallel branches**: <e.g., `P6A` can start after P1 merge; `P6B` after P4 merge; both finish before final verification>.
 - **Single-writer files across phases**: <list any file that multiple phases might want to touch; name the owning phase for each to prevent cross-phase serialization>.
@@ -208,4 +208,4 @@ These gates are the narrowest contracts that unblock downstream phases. `/claude
 - `## Non-Goals` is the scope-creep filter. Be specific: "no new transport layer" > "keep it simple".
 - In the DAG, one node per phase. Use `│ ▼` for serial edges and the `parallel after <X>` label for concurrent branches.
 - Every `IF-0-<ALIAS>-<N>` gate listed in `## Top Interface-Freeze Gates` must also appear in its owning phase's `**Produces**` block, and vice versa. Keep them in sync.
-- Phase aliases are case-insensitive when consumed (`P1` = `p1`), but write them uppercase in the spec and lowercase in filenames (`phase-plan-v1-p1.md`).
+- Preserve the uppercase roadmap alias in plan frontmatter and filenames (`phase-plan-v1-P1.md`); do not lowercase it.

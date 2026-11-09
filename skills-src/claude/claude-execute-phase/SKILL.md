@@ -7,14 +7,16 @@ description: "Claude Code executor for a claude-plan-phase lane plan. Uses TeamC
 
 ## Runtime State
 
-For reflections, handoffs, and latest handoff pointers, follow `claude-config/shared/runtime-state.md`. This repo/branch/run-isolated contract supersedes any older flat closeout examples retained for historical context in this skill.
+For reflections, handoffs, and latest handoff pointers, follow `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths`. This repo/branch/run-isolated contract supersedes any older flat closeout examples retained for historical context in this skill.
 
-`shared/phase-loop/protocol.md` is the canonical shared contract for the
+`phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`) is the canonical shared contract for the
 `automation:` object, `verification_status`, frozen blocker taxonomy,
 manual event import, and downstream roadmap-amendment handling.
 
 When launched by the live phase-loop adapter, this skill runs through
-non-interactive `claude -p`; its final reply must still emit the shared
+the runtime-selected Claude route (Channel by default outside CI, with route `claude_channel` and reason
+`default_channel`; CI requires an explicit route, and Agent View is used only
+when explicitly selected); its final reply must still emit the shared
 `automation:` closeout or the parent runner will reduce the turn to
 `repeated_verification_failure` rather than silent success. The repo-injected
 workflow bundle remains authoritative whether the adapter delivers it inline or
@@ -31,7 +33,7 @@ stale after a roadmap amendment.
 ## Runner-Owned Lane Work Units
 
 Injected HARNESSLANE runs may include a `HarnessLaneAssignment` from
-`shared/phase-loop/protocol.md`. Treat that assignment as the work-unit
+`phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`). Treat that assignment as the work-unit
 contract: execute only the selected `lane_id`, write only the listed
 `owned_files`, treat `consumed_interfaces` as read-only, and emit one shared
 `automation:` closeout for that work unit. Installed-skill drift is
@@ -46,7 +48,7 @@ non-human blocker instead of silently downgrading.
 ## Phase-Loop Adapter Mode
 
 When the prompt or run-local context file starts with a concrete
-`claude-execute-phase <plan>` command from `.codex/phase-loop/runs/`, this
+`claude-execute-phase <plan>` command from `.phase-loop/runs/`, this
 adapter mode overrides the orchestrator-only interactive workflow below.
 
 - Do not read installed handoffs under `resolve_skill_bundle_root("claude")/**`; the run-local
@@ -113,12 +115,12 @@ Follow-on executor for `/claude-plan-phase`. Consumes the plan doc + TaskCreate'
 
 ## Model tiers (edit on Anthropic releases)
 
-Model IDs appear only in this table. All model-routing logic in the workflow references the tier name.
+Resolve `CLAUDE_REGULAR_MODEL` from `phase_loop_runtime.capability_registry` before launching; this avoids copying a stale regular-tier ID. The legacy `claude-sonnet-5` remains an explicit accepted model, not the current regular default. All model-routing logic below references the tier name.
 
 | Tier      | Model              | Use for                                                       |
 |-----------|--------------------|---------------------------------------------------------------|
 | frontier  | claude-opus-5      | retry escalation ceiling, highest-stakes lanes                |
-| strong    | claude-sonnet-5    | contract-authoring (IF-freeze), schema/migration, algorithmic |
+| strong    | `CLAUDE_REGULAR_MODEL` | contract-authoring (IF-freeze), schema/migration, algorithmic |
 | fast      | claude-haiku-4-5-20251001 | mechanical wiring, small components against frozen types |
 
 This skill's retry-tier ladder is `fast → strong → frontier`. The default `run_mode` is `autonomous`: no panel and
@@ -199,14 +201,14 @@ In the closeout, handoff, and final response — and in any PR/issue body or com
 
 ### Manifest lifecycle
 
-After plan validation and before lane execution, perform a best-effort `plan-manifest append` lifecycle update through `phase_loop_runtime.plan_manifest.update_lifecycle` to mark the matching `type=phase` entry `executing` with run metadata. During closeout, update the same entry to `completed` or `failed` with verification metadata, reflection metadata, produced-gate metadata, `if_gates_produced`, and dirty-worktree summary fields as available.
+After plan validation and before lane execution, perform a best-effort Python lifecycle update through `phase_loop_runtime.plan_manifest.update_lifecycle` to mark the matching `type=phase` entry `executing` with run metadata. During closeout, update the same entry to `completed` or `failed` with verification metadata, reflection metadata, produced-gate metadata, `if_gates_produced`, and dirty-worktree summary fields as available.
 A `completed` phase update must also include explicit `issue_inventory` and matching `issue_dispositions` arrays, including explicit empty arrays when no issues were enrolled.
 `if_gates_produced` must list only the IF gates the active phase produces per its own plan; never carry a prior phase's gate forward into this phase's closeout.
 Manifest lifecycle failures are non-fatal during the dual-mode window: emit a ledger warning, mention the warning in the mandatory reflection, and preserve the existing phase closeout JSON, verification, and dirty-worktree behavior.
 
 Closeout payload shape is defined by `EmitPhaseCloseout` in `phase_loop_runtime/baml_src/emit_phase_closeout.baml` (if that path is absent in the checkout, use the operator/prompt-supplied field contract or the installed `phase_loop_runtime` package — the missing vendored BAML source is not a blocker); keep skill text focused on value selection and handoff routing, not duplicated field ceremony.
 
-Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("codex")/claude-execute-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
+Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("claude")/claude-execute-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
 
 
 ## Publication mode

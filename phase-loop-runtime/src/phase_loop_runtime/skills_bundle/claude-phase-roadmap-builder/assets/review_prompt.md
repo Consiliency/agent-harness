@@ -1,10 +1,10 @@
-Review the following multi-phase roadmap document produced by `/claude-phase-roadmap-builder`. The roadmap describes a sequence of phases that `/claude-plan-phase` will decompose into swim lanes; the goal of the roadmap format is to maximize end-to-end parallel execution time.
+Review the following multi-phase roadmap document produced by `/claude-phase-roadmap-builder`. The roadmap describes a sequence of phases that `/claude-plan-phase` will decompose into swim lanes; the goal of the roadmap format is to minimize end-to-end execution time through safe parallel work.
 
 Assess, concretely:
 
 1. **Phase-count justification** — is any phase actually two or more independent bodies of work that could have been sibling lanes within a single phase? A new phase is only justified when downstream work genuinely cannot proceed until an upstream contract is finalized. Flag phases whose `**Depends on**` is vacuous or whose subtrees are independent.
 
-2. **Cross-phase parallelism in the DAG** — does the `## Phase Dependency DAG` call out every sibling-pair opportunity (the `P6A || P6B parallel after P1` pattern)? Any two phases with no shared ancestor in the DAG should be labeled parallel. Flag missed opportunities.
+2. **Cross-phase parallelism in the DAG** — does the `## Phase Dependency DAG` call out every sibling-pair opportunity (the `P6A || P6B parallel after P1` pattern)? Any two phases with no dependency path between them in the DAG should be labeled parallel. Flag missed opportunities.
 
 3. **Freeze narrowness** — each `**Produces**` entry should name a concrete, narrow symbol / endpoint / schema / migration, not a broad surface. Flag any produces line that reads "the full X module" or "the API of Y" instead of a specific symbol.
 

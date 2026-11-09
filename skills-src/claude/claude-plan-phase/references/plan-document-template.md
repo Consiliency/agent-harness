@@ -35,6 +35,14 @@ roadmap_sha256: <sha256 of that roadmap file>
 <Omit entirely if the phase only touches this repo.>
 - [ ] IF-XR-<N> — <interface that must be frozen across repo boundaries>
 
+## Spec Closeout Plan
+- schema: `spec_delta_closeout.v1`
+- decision: `no_spec_delta`
+- target surfaces: `<paths>`
+- evidence paths: `<metadata-only-artifact>`
+- redaction posture: `metadata_only`
+- downstream handling: `none`
+
 ## Lane Index & Dependencies
 
 SL-1 — <lane name>
@@ -55,6 +63,9 @@ SL-2 — <lane name>
 - **Interfaces provided**: `FooContract`, `POST /api/bar`
 - **Interfaces consumed**: (none)
 - **Tasks**:
+- test: `pnpm test path/one/__tests__/foo.test.ts`
+- impl: <implementation work>
+- verify: `pnpm test path/one`
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
@@ -65,7 +76,7 @@ SL-2 — <lane name>
 ### SL-2 — <lane name>
 …
 
-### SL-docs — Documentation & spec reconciliation
+### SL-9 — Documentation & spec reconciliation
 
 (See the docs-sweep lane template in `references/lane-templates.md` for the full lane spec. Copy it verbatim and set `Depends on:` to list every other SL-N in this phase.)
 
@@ -99,7 +110,9 @@ SL-2 — <lane name>
 
 Defaults only — if the spec already uses its own identifiers (e.g., `P1-SL-AUTH-01`), adopt those verbatim.
 
-Any non-numeric lane alias (e.g., `SL-docs`) must still appear in the machine-readable `## Lane Index & Dependencies` block as `SL-<N>` for compatibility with downstream audit/validator tooling that expects `SL-\d+`. Its `Depends on:` line must be on its own line (not inlined with prose that could regex-match as a dependency). The alias (e.g., `SL-docs`) remains valid as the author-facing lane heading in `## Lanes`.
+All lane headings and index entries use numeric `SL-N` IDs. Put labels such
+as “docs” in the descriptive name after the dash. The validator's lane-section
+parser matches `SL-\d+`; a descriptive alias in `### SL-docs` is not parsed.
 
 ## Task types & dependency rules
 
@@ -108,4 +121,4 @@ Any non-numeric lane alias (e.g., `SL-docs`) must still appear in the machine-re
 | `test` | Write failing tests that pin down the lane's contracts. | Must precede any `impl` task in the same lane. |
 | `impl` | Write the code that makes the preceding tests pass. | Must depend on exactly one `test` task in the same lane. |
 | `verify` | Run the full lane test suite + any integration checks. | Last task in the lane. Depends on the last `impl` task. |
-| `docs` | Update cross-cutting documentation and the docs catalog. | Lives in the terminal `SL-docs` lane. Depends on every other lane's final `verify` task. |
+| `docs` | Update cross-cutting documentation and the docs catalog. | Lives in the terminal `SL-9` lane. Depends on every other lane's final `verify` task. |

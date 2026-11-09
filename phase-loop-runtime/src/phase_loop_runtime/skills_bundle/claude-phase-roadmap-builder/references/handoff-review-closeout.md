@@ -27,13 +27,9 @@ try:
     # Primary: the installed phase_loop_runtime.skill_paths resolver.
     from phase_loop_runtime.skill_paths import resolve_handoff_root
     print(resolve_handoff_root(repo) / skill / "latest.md")
-except Exception:
-    # Fallback: the repo-local handoff_path.py mirror, only when the runtime is not importable.
-    from importlib import util
-    spec = util.spec_from_file_location("handoff_path", repo / "shared" / "phase-loop" / "handoff_path.py")
-    mod = util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    print(mod.resolve_handoff_path(repo, skill))
+except ImportError:
+    from phase_loop_runtime.handoff_path import resolve_handoff_path
+    print(resolve_handoff_path(repo, skill))
 PYH
 )"
 ```
@@ -48,26 +44,30 @@ Defense-in-depth checks (the repo-key scheme prevents the common cross-project c
 If absent, proceed — this run is standalone.
 ## Step 8.5 — External CLI review
 
-Requires `_shared/review_with_cli.py` (see Prerequisites). After the roadmap is written and validated, run:
+Follow [external-review.md](../assets/external-review.md): stage `assets/review_prompt.md`
+verbatim under `## Panel charter` and the roadmap or plan under
+`## Planning artifact` in the same `REVIEW_BUNDLE`, then run:
 
 ```bash
-python3 "$(git rev-parse --show-toplevel)/.claude/skills/_shared/review_with_cli.py" \
-  --artifact <output-path> \
-  --prompt-file "$(git rev-parse --show-toplevel)/.claude/skills/claude-phase-roadmap-builder/assets/review_prompt.md" \
-  --out <output-path>_reviews.md
+phase-loop advisor-board "$REVIEW_BUNDLE" --advisory --json > "${ARTIFACT_PATH}_reviews.md"
 ```
 
-If the frontier-model cache is empty, the script prints the discovery prompt to stderr. Surface to the user via `AskUserQuestion` with options `[run discovery now, skip review this run, abort]`.
+Keep `--advisory` on native-fill emit and invoke calls as that procedure
+requires. This optional review is non-gating and cannot use `--landing-tier`;
+it does not replace the gating plan-landing review.
 
-Tell the user: "Review written to `<output-path>_reviews.md`. Agreements between Gemini and Codex are real signal; divergences are context."
 ## Close-out — Reflection + Handoff templates
 
 Stage the roadmap/plan artifacts before writing either close-out file so the deliverable is preserved in the index unless the user explicitly forbade staging.
 
 After artifacts are staged or confirmed tracked, resolve paths:
 
+Resolve `REPO_HASH` and `BRANCH_SLUG` from `phase_loop_runtime.discovery.repo_identity(repo_root)` (`repo_hash` and `branch_slug`). Use the active runner's `RUN_ID`, or allocate one unique ID for this manual run; `repo_identity` does not generate run IDs.
+
 ```bash
-REFLECTION_PATH=resolve_skill_bundle_root("codex")/claude-phase-roadmap-builder/reflections/<repo_hash>/<branch_slug>/<run_id>.md
+SKILL_ROOT=$(python3 -c 'from phase_loop_runtime.skill_paths import resolve_skill_bundle_root; print(resolve_skill_bundle_root("claude"))')
+: "${REPO_HASH:?set REPO_HASH}" "${BRANCH_SLUG:?set BRANCH_SLUG}" "${RUN_ID:?set RUN_ID}"
+REFLECTION_PATH="$SKILL_ROOT/claude-phase-roadmap-builder/reflections/$REPO_HASH/$BRANCH_SLUG/$RUN_ID.md"
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 REPO_LOCAL_HANDOFF=$(python3 - <<'PYH'
 from pathlib import Path
@@ -77,17 +77,13 @@ try:
     # Primary: the installed phase_loop_runtime.skill_paths resolver.
     from phase_loop_runtime.skill_paths import resolve_handoff_root
     print(resolve_handoff_root(repo) / skill / "latest.md")
-except Exception:
-    # Fallback: the repo-local handoff_path.py mirror, only when the runtime is not importable.
-    from importlib import util
-    spec = util.spec_from_file_location("handoff_path", repo / "shared" / "phase-loop" / "handoff_path.py")
-    mod = util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    print(mod.resolve_handoff_path(repo, skill))
+except ImportError:
+    from phase_loop_runtime.handoff_path import resolve_handoff_path
+    print(resolve_handoff_path(repo, skill))
 PYH
 )
 mkdir -p "$(dirname "$REPO_LOCAL_HANDOFF")"
-SKILL_MD=resolve_skill_bundle_root("codex")/claude-phase-roadmap-builder/SKILL.md
+SKILL_MD="$SKILL_ROOT/claude-phase-roadmap-builder/SKILL.md"
 ```
 
 Write BOTH files directly via the Write tool — this is the primary path.
@@ -162,7 +158,7 @@ next_phase: <ALIAS - phase name|none - reason>
 - <best-effort forecast of which files/paths the next skill will touch>
 ```
 
-Optionally delegate to a spawned frontier-tier Agent instead when independent review with a fresh context window is desired (e.g., after complex runs). Resolve the model via the `claude-execute-phase` Model tiers table:
+Optionally delegate to a spawned frontier-tier Agent instead when independent review with a fresh context window is desired (e.g., after complex runs). Resolve the model from the active executor/model policy:
 
 ```
 Agent(

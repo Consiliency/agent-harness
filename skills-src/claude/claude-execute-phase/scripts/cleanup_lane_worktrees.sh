@@ -9,6 +9,10 @@
 #                         short name, not refs/heads/…). Defaults to
 #                         'worktree-*' so the common case works with no arg.
 #
+# Precondition: the caller has already verified that every matched lane is
+# finished and merged. This helper does not perform an ancestry or PR-merge check.
+# Use a run-specific pattern; the default is not a merge-status filter.
+#
 # Behavior:
 #   - Enumerates every worktree via `git worktree list --porcelain`.
 #   - Skips the orchestrator's own worktree (identified by matching the

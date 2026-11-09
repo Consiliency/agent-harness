@@ -36,11 +36,11 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
 - Output path: default `plans/phase-plan-<VERSION>-<PHASE_ALIAS>.md`.
 - `<PHASE_ALIAS>` MUST be uppercase exactly as declared in the roadmap (e.g., `FOUND`, `DESIGNFOUND`), not lowercase. The runner uses the uppercase alias to locate the plan artifact; lowercase or alternate filename variants force an extra plan-iteration roundtrip.
 
-If no roadmap path is explicit, first check the current repo and branch handoff from `<harness>-phase-roadmap-builder` using `<harness>-config/shared/runtime-state.md`: read the repo-local handoff resolver target `.dev-skills/handoffs/<harness>-phase-roadmap-builder/latest.md`, validate `from`, `repo`, `repo_root`, `branch`, `branch_slug`, `commit`, and `artifact`, then use the artifact only if it exists under the current repo root. Ignore missing or mismatched handoffs unless the user explicitly asks to reuse cross-branch state.
+If no roadmap path is explicit, first check the current repo and branch handoff from `<harness>-phase-roadmap-builder` using `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths`: read the repo-local handoff resolver target `.dev-skills/handoffs/<harness>-phase-roadmap-builder/latest.md`, validate `from`, `repo`, `repo_root`, `branch`, `branch_slug`, `commit`, and `artifact`, then use the artifact only if it exists under the current repo root. Ignore missing or mismatched handoffs unless the user explicitly asks to reuse cross-branch state.
 
 ## Shared Protocol
 
-Execution-ready plans must follow `shared/phase-loop/protocol.md`, including
+Execution-ready plans must follow `phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`), including
 `phase_loop_plan_version: 1`, `phase`, `roadmap`, `roadmap_sha256`, and any
 optional `Dispatch Hints` markdown section. When a live Harness executor will
 consume the plan, keep installed-skill parity advisory and preserve the shared
@@ -85,7 +85,7 @@ roadmap_sha256: <sha256 of roadmap file bytes at planning time>
 ```
 
 When non-default executor policy is needed, add an optional `## Dispatch Hints`
-section using the frozen vocabulary from `shared/phase-loop/protocol.md`.
+section using the frozen vocabulary from `phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`).
 When model, effort, work-unit defaults, lane-specific policy, fallback, policy
 source, or override reason must also be frozen, use optional `## Execution
 Policy`; precedence is CLI/operator override, phase-plan policy, roadmap
@@ -105,7 +105,7 @@ Use these headings:
 ## Lane Index & Dependencies
 SL-0 — <name>
   Depends on: (none)
-  Blocks: SL-1
+  Blocks: (none)
   Parallel-safe: no
 
 ## Lanes
@@ -116,10 +116,15 @@ SL-0 — <name>
 - **Interfaces provided**: <symbols or none>
 - **Interfaces consumed**: <symbols or none>
 - **Parallel-safe**: yes|no|mixed
-- **Tasks**:
-  - test: <failing or contract test>
-  - impl: <implementation work>
-  - verify: <commands>
+- test: <failing or contract test command>
+- impl: <implementation work>
+- verify: <verification command>
+
+| Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
+|---|---|---|---|---|---|
+| SL-0.1 | test | (none) | `<test-path>` | `<test-name>` | `<command>` |
+| SL-0.2 | impl | SL-0.1 | `<source-path>` | (none) | `<command>` |
+| SL-0.3 | verify | SL-0.2 | `<test-path>` | `<test-name>` | `<command>` |
 
 ## Verification
 
@@ -188,11 +193,24 @@ Validate that the decision literal is in vocabulary, `target surfaces` and `evid
 
 Generated plans must contain machine-checkable verification commands and an effective `automation.suite_command`; phase plans must validate those commands through IF-0-VC-2 before they are handoff-ready. If an acceptance item depends on operational evidence that cannot be machine-checked directly, the plan must name the operational evidence artifact and the runner-stamped amendment mechanism that records it. proxy evidence requires a roadmap amendment before downstream plans rely on it.
 
+## Optional external planning review (`--review-external`)
+
+When requested, follow [the external-review procedure](assets/external-review.md).
+Stage this skill's `assets/review_prompt.md` verbatim as `## Panel charter` in a
+single bundle alongside the roadmap or plan, then run:
+
+```bash
+phase-loop advisor-board "$REVIEW_BUNDLE" --advisory --json > "${ARTIFACT_PATH}_reviews.md"
+```
+
+This is non-gating pre-implementation advice. Do not combine it with
+`--landing-tier` or use it to satisfy the separate gating plan-landing review.
+
 ## Closeout
 
 ### Manifest write
 
-After the plan artifact and repo-local handoff path are known, perform a best-effort `plan-manifest append` through `phase_loop_runtime.plan_manifest.append_entry`. Append a `type=phase` entry with `status=committed`, `slug`, `file`, `created_at`, `owner_skill=<harness>-plan-phase`, `handoff_ref`, `roadmap_ref`, `phase_alias`, `if_gates_produced`, and `lanes`.
+After the plan artifact and repo-local handoff path are known, perform a best-effort Python API append through `phase_loop_runtime.plan_manifest.append_entry`. Append a `type=phase` entry with `status=committed`, `slug`, `file`, `created_at`, `updated_at`, `owner_skill=<harness>-plan-phase`, `handoff_ref`, `roadmap_ref`, `phase_alias`, `if_gates_produced`, and `lanes`.
 Resolve paths with `phase_loop_runtime.skill_paths` helpers and keep the manifest write best-effort during the dual-mode window: failures are non-fatal, emit a ledger warning, and are mentioned in the mandatory reflection without changing the existing plan closeout result.
 A legacy `plans/manifest.json` using the `schema`/`entries` layout raises `unsupported manifest schema_version: 0`; treat that exact error as the expected non-fatal case (warn, do not block or migrate in place).
 `phase_loop_runtime` may resolve from the installed dotfiles runtime on `PYTHONPATH` even when the target repo neither vendors nor installs it — use the importable package; a missing repo-local checkout is not a blocker.
@@ -210,11 +228,11 @@ When the generated plan is ready to execute, report `Next phase: <alias> - execu
 
 Add a machine-readable automation handoff that agrees with the human-readable next step fields. Closeout payload shape is defined by `EmitPhaseCloseout` in `phase_loop_runtime/baml_src/emit_phase_closeout.baml` (if that path is absent in the checkout, use the operator/prompt-supplied field contract or the installed `phase_loop_runtime` package — the missing vendored BAML source is not a blocker); keep skill text focused on value selection and handoff routing, not duplicated field ceremony.
 
-Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("codex")/<harness>-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
+Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("gemini")/<harness>-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
 
-Resolve closeout writes through the `phase_loop_runtime.skill_paths` resolver as the primary source — `resolve_handoff_root(repo)` for the handoff root and `resolve_reflection_root(skill_name)` for reflection roots; fall back to the repo-local `shared/phase-loop/handoff_path.py` resolver only when `phase_loop_runtime` is not importable. Legacy harness handoff roots are read only for migration. Follow `<harness>-config/shared/runtime-state.md` and use Harness paths only:
+Resolve closeout writes through the `phase_loop_runtime.skill_paths` resolver as the primary source — `resolve_handoff_root(repo)` for the handoff root and `resolve_reflection_root(skill_name)` for reflection roots; if `phase_loop_runtime` is not importable, restore the pinned runtime before writing state. Legacy harness handoff roots are read only for migration. Follow `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths` and use Harness paths only:
 
-- Reflection: `resolve_skill_bundle_root("codex")/<harness>-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
+- Reflection: `resolve_skill_bundle_root("gemini")/<harness>-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
 - Handoff: `<repo>/.dev-skills/handoffs/<harness>-plan-phase/<run_id>.md`
 - Latest handoff pointer: `<repo>/.dev-skills/handoffs/<harness>-plan-phase/latest.md`
 

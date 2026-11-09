@@ -7,7 +7,7 @@
 # Behavior:
 #   - Removes ~/.claude/teams/<team-name>/ and ~/.claude/tasks/<team-name>/.
 #   - Idempotent (no-op if dirs don't exist).
-#   - Never fails (exit 0 always).
+#   - Valid invocations exit 0 even if removal fails; usage errors exit 2.
 #
 # Rationale: in-process teammates ignore `shutdown_request`, so `TeamDelete`
 # blocks on active members. After the phase has verified green, removing

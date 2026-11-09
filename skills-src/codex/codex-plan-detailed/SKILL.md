@@ -13,7 +13,7 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
 
 - In Plan Mode, inspect only and return a `<proposed_plan>`.
 - In Default mode, write a plan artifact only if the user asked for one.
-- When invoked outside Plan Mode for a planning request, still produce the plan and handoff artifacts, but do not begin implementation; tell the user Plan Mode was not active.
+- Outside Plan Mode, produce the plan text without beginning implementation; write plan and handoff artifacts only when the user requested an artifact.
 - In planning-only runs, do not execute tests, builds, formatters, generators, or other verification commands. List the commands in the plan instead. Run verification only when the user explicitly asks for validation or execution.
 - Research first. Do not propose changes to files you have not located.
 - Skip reconnaissance you do not need: if the context required to plan is already in the current session — the relevant files have been read, the architecture was just discussed, or the caller supplied the file map — do not spawn Explore/reconnaissance subagents or re-run discovery to re-gather it; plan directly from what you already have. Keep reconnaissance proportional to the change: a one- or two-file bounded change needs targeted reads, not a full parallel Explore fan-out.
@@ -97,6 +97,19 @@ Do not run the verification commands while planning unless the user explicitly a
 
 Detailed plans must contain machine-checkable verification commands and an effective `automation.suite_command` whenever the runner will execute them. If an acceptance item depends on operational evidence that cannot be machine-checked directly, the plan must name the operational evidence artifact and the runner-stamped amendment mechanism that records it. proxy evidence requires a roadmap or plan amendment before downstream execution relies on it.
 
+## Optional external planning review (`--review-external`)
+
+When requested, follow [the external-review procedure](assets/external-review.md).
+Stage this skill's `assets/review_prompt.md` verbatim as `## Panel charter` in a
+single bundle alongside the roadmap or plan, then run:
+
+```bash
+phase-loop advisor-board "$REVIEW_BUNDLE" --advisory --json > "${ARTIFACT_PATH}_reviews.md"
+```
+
+This is non-gating pre-implementation advice. Do not combine it with
+`--landing-tier` or use it to satisfy the separate gating plan-landing review.
+
 ## Closeout
 
 Closeout payload shape is defined by `EmitPhaseCloseout` in `phase_loop_runtime/baml_src/emit_phase_closeout.baml` (if that path is absent in the checkout, use the operator/prompt-supplied field contract or the installed `phase_loop_runtime` package — the missing vendored BAML source is not a blocker); keep skill text focused on value selection and handoff routing, not duplicated field ceremony.
@@ -105,13 +118,13 @@ If writing an artifact, use `apply_patch`, report the path, and do not commit un
 
 ### Manifest write
 
-After the plan artifact path and repo-local handoff path are known, best-effort append a `type=detailed` entry to `plans/manifest.json` through `phase_loop_runtime.plan_manifest.append_entry` (`plan-manifest append`). `append_entry(repo, entry)` takes a typed `phase_loop_runtime.plan_manifest.DotfilesPlanEntry` constructed with keyword fields (`slug`, `file`, `type`, `status`, `created_at`, `updated_at`, `owner_skill`, …), NOT a plain dict — passing a dict fails. Use `phase_loop_runtime.skill_paths` resolver helpers for any reflection or handoff paths needed by the metadata. The manifest entry must record `status=committed`, `slug`, `file`, `created_at`, `updated_at`, `owner_skill=codex-plan-detailed`, `task_summary`, `acceptance_criteria_count`, and the handoff path metadata (`handoff_path` / `handoff_ref`). Include a committed lifecycle event with `by=codex-plan-detailed` when the helper contract requires lifecycle provenance.
+After the plan artifact path and repo-local handoff path are known, best-effort append a `type=detailed` entry to `plans/manifest.json` through `phase_loop_runtime.plan_manifest.append_entry`. `append_entry(repo, entry)` takes a typed `phase_loop_runtime.plan_manifest.DotfilesPlanEntry` constructed with keyword fields (`slug`, `file`, `type`, `status`, `created_at`, `updated_at`, `owner_skill`, …), NOT a plain dict — passing a dict fails. Use `phase_loop_runtime.skill_paths` resolver helpers for any reflection or handoff paths needed by the metadata. The manifest entry must record `status=committed`, `slug`, `file`, `created_at`, `updated_at`, `owner_skill=codex-plan-detailed`, `task_summary`, `acceptance_criteria_count`, and the handoff path metadata (`handoff_ref`). Include a committed lifecycle event with `by=codex-plan-detailed` when the helper contract requires lifecycle provenance.
 
 Manifest write failures are non-fatal during the dual-mode window: emit a ledger warning, add the failure to the mandatory reflection, and preserve the existing closeout, handoff, and final response behavior.
 
 Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("codex")/codex-plan-detailed/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
 
-Resolve closeout writes through the `phase_loop_runtime.skill_paths` resolver as the primary source — `resolve_handoff_root(repo)` for the handoff root and `resolve_reflection_root(skill_name)` for reflection roots; fall back to the repo-local `shared/phase-loop/handoff_path.py` resolver only when `phase_loop_runtime` is not importable. Legacy harness handoff roots are read only for migration. Follow `codex-config/shared/runtime-state.md` and use Codex paths only:
+Resolve closeout writes through the `phase_loop_runtime.skill_paths` resolver as the primary source — `resolve_handoff_root(repo)` for the handoff root and `resolve_reflection_root(skill_name)` for reflection roots; if `phase_loop_runtime` is not importable, restore the pinned runtime before writing state. Legacy harness handoff roots are read only for migration. Follow `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths` and use Codex paths only:
 
 - Reflection: `resolve_skill_bundle_root("codex")/codex-plan-detailed/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
 - Handoff: `<repo>/.dev-skills/handoffs/codex-plan-detailed/<run_id>.md`

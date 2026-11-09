@@ -49,7 +49,7 @@ handoff roots, helper roots, and reflection roots.
 4. Validate that it contains non-empty `## Changes`, `## Verification`, and
    `## Acceptance criteria` sections.
 5. Best-effort mark the detailed plan manifest entry as `executing` through
-   `phase_loop_runtime.plan_manifest.update_lifecycle` (`plan-manifest append`)
+   `phase_loop_runtime.plan_manifest.update_lifecycle`
    after plan validation and before source edits. Use `by=<harness>-execute-detailed`
    and metadata that identifies the run and plan artifact. Manifest lifecycle
    failures emit ledger/reflection warnings only and do not abort execution

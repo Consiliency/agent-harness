@@ -23,7 +23,7 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
 ## Runner-Owned Lane Work Units
 
 Injected HARNESSLANE runs may include a `HarnessLaneAssignment` from
-`shared/phase-loop/protocol.md`. Treat that assignment as the work-unit
+`phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`). Treat that assignment as the work-unit
 contract: execute only the selected `lane_id`, write only the listed
 `owned_files`, treat `consumed_interfaces` as read-only, and emit one shared
 `automation:` closeout for that work unit. Installed-skill drift is
@@ -42,7 +42,7 @@ non-human blocker instead of silently downgrading.
 - `--dry-run`: parse and print the lane schedule without editing.
 - `--parallel`: allowed only when the user explicitly requests parallel worker execution.
 
-If no plan path is explicit, first check the current repo and branch handoff from `<harness>-plan-phase` using `<harness>-config/shared/runtime-state.md`: read the repo-local handoff resolver target `.dev-skills/handoffs/<harness>-plan-phase/latest.md`, validate `from`, `repo`, `repo_root`, `branch`, `branch_slug`, `commit`, and `artifact`, then use the artifact only if it exists under the current repo root. Ignore missing or mismatched handoffs unless the user explicitly asks to reuse cross-branch state.
+If no plan path is explicit, first check the current repo and branch handoff from `<harness>-plan-phase` using `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths`: read the repo-local handoff resolver target `.dev-skills/handoffs/<harness>-plan-phase/latest.md`, validate `from`, `repo`, `repo_root`, `branch`, `branch_slug`, `commit`, and `artifact`, then use the artifact only if it exists under the current repo root. Ignore missing or mismatched handoffs unless the user explicitly asks to reuse cross-branch state.
 
 ## Preflight
 
@@ -57,7 +57,7 @@ If no plan path is explicit, first check the current repo and branch handoff fro
    - task lists;
    - verification commands;
    - optional `Dispatch Hints` from the roadmap or plan using the frozen
-     vocabulary from `shared/phase-loop/protocol.md`.
+     vocabulary from `phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`).
 6. Validate producer dependencies:
    - any lane that consumes another lane's findings, interfaces, or artifacts must list that producer lane in `Depends on`;
    - any lane that writes a synthesized artifact must be downstream of every producer lane it summarizes;
@@ -79,7 +79,7 @@ If no plan path is explicit, first check the current repo and branch handoff fro
    - read the owned files and related tests;
    - write or update tests first when practical;
    - implement only lane-scoped changes;
-   - run lane verification (normalize any phase-plan pytest `-k` selector whose prose terms contain spaces — e.g. `remote connect` becomes `'remote and connect'` — or quote it; a bare spaced `-k` term is an executor-side normalization, not a plan blocker);
+   - run lane verification (normalize any phase-plan pytest `-k` selector whose prose terms contain spaces — e.g. `remote connect` becomes `'remote and connect'` — and quote the boolean expression; quoting prose alone is not a valid pytest expression. A bare spaced `-k` term is an executor-side normalization, not a plan blocker);
    - run any phase-level checks that cover touched files.
 3. After each lane:
    - inspect `git diff -- <owned files>`;
@@ -97,7 +97,7 @@ If no plan path is explicit, first check the current repo and branch handoff fro
 
 ## Optional Worker Fanout
 
-Use worker subagents only when the user explicitly authorizes parallel agent work and the DAG-ready lanes are disjoint.
+Use worker subagents only when the user explicitly authorizes parallel agent work and the DAG-ready lanes have machine-verified disjoint ownership and scheduler-owned worktree assignments.
 
 For every worker brief:
 
@@ -116,7 +116,7 @@ The main thread remains responsible for integrating results, reviewing diffs, ru
 - Ownership violation: stop and revise the plan before continuing.
 - Missing dependency or unclear interface: stop and route back through planning.
 - Verification command unavailable: report the missing tool and run the closest available static check only if it is meaningful.
-- Use only the frozen blocker taxonomy from `shared/phase-loop/protocol.md`,
+- Use only the frozen blocker taxonomy from `phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`),
   including `missing_secret`, `dirty_worktree_conflict`,
   `branch_sync_conflict`, and `repeated_verification_failure`.
 
@@ -134,7 +134,7 @@ Before final closeout, choose exactly one `spec_delta_closeout.v1` decision: `no
 
 ### Manifest lifecycle
 
-After plan validation and before lane execution, perform a best-effort `plan-manifest append` lifecycle update through `phase_loop_runtime.plan_manifest.update_lifecycle` to mark the matching `type=phase` entry `executing` with run metadata.
+After plan validation and before lane execution, perform a best-effort Python lifecycle update through `phase_loop_runtime.plan_manifest.update_lifecycle` to mark the matching `type=phase` entry `executing` with run metadata.
 During closeout, update the same entry to `completed` or `failed` with verification metadata, reflection metadata, produced-gate metadata, `if_gates_produced`, and dirty-worktree summary fields as available.
 A `completed` phase update must also include explicit `issue_inventory` and matching `issue_dispositions` arrays, including explicit empty arrays when no issues were enrolled.
 `if_gates_produced` must list only the IF gates the active phase produces per its own plan; never carry a prior phase's gate forward into this phase's closeout.
@@ -152,7 +152,7 @@ Determine the next step before final response and handoff:
 
 Add a machine-readable `automation:` handoff with `verification_status` that agrees with the human-readable next step fields, and use the phrase `manual event` when standalone compatibility event import applies. Closeout payload shape is defined by `EmitPhaseCloseout` in `phase_loop_runtime/baml_src/emit_phase_closeout.baml` (if that path is absent in the checkout, use the operator/prompt-supplied field contract or the installed `phase_loop_runtime` package — the missing vendored BAML source is not a blocker); keep skill text focused on value selection and handoff routing, not duplicated field ceremony.
 
-Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("codex")/<harness>-execute-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
+Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("opencode")/<harness>-execute-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
 
 Report:
 
@@ -166,9 +166,9 @@ Report:
 
 In every report, handoff, and closeout above — and in any PR/issue body or commit message this run writes — reference issues and PRs as `repo#N` (or `owner/repo#N`), never a bare `#N`; the fleet is multi-repo, so a lone number is ambiguous.
 
-Resolve closeout writes through the `phase_loop_runtime.skill_paths` resolver as the primary source — `resolve_handoff_root(repo)` for the handoff root and `resolve_reflection_root(skill_name)` for reflection roots; fall back to the repo-local `shared/phase-loop/handoff_path.py` resolver only when `phase_loop_runtime` is not importable. Legacy harness handoff roots are read only for migration. Follow `<harness>-config/shared/runtime-state.md` and use OpenCode paths only:
+Resolve closeout writes through the `phase_loop_runtime.skill_paths` resolver as the primary source — `resolve_handoff_root(repo)` for the handoff root and `resolve_reflection_root(skill_name)` for reflection roots; if `phase_loop_runtime` is not importable, restore the pinned runtime before writing state. Legacy harness handoff roots are read only for migration. Follow `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths` and use OpenCode paths only:
 
-- Reflection: `resolve_skill_bundle_root("codex")/<harness>-execute-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
+- Reflection: `resolve_skill_bundle_root("opencode")/<harness>-execute-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
 - Handoff: `<repo>/.dev-skills/handoffs/<harness>-execute-phase/<run_id>.md`
 - Latest handoff pointer: `<repo>/.dev-skills/handoffs/<harness>-execute-phase/latest.md`
 

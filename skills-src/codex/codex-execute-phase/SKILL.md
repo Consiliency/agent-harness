@@ -30,7 +30,7 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
 ## Runner-Owned Lane Work Units
 
 Injected HARNESSLANE runs may include a `HarnessLaneAssignment` from
-`shared/phase-loop/protocol.md`. Treat that assignment as the work-unit
+`phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`). Treat that assignment as the work-unit
 contract: execute only the selected `lane_id`, write only the listed
 `owned_files`, treat `consumed_interfaces` as read-only, and emit one shared
 `automation:` closeout for that work unit. Installed-skill drift is
@@ -99,7 +99,7 @@ If no plan path is explicit, read [references/interactive-path.md](references/in
    - for Pipeline-aware lanes, keep writes inside both the phase-plan owned files and source-bundle-authorized Pipeline outputs;
    - do not edit consumed-interface artifacts unless they are also owned by
      the active lane;
-   - run lane verification (normalize any phase-plan pytest `-k` selector whose prose terms contain spaces — e.g. `remote connect` becomes `'remote and connect'` — or quote it; a bare spaced `-k` term is an executor-side normalization, not a plan blocker);
+   - run lane verification (normalize any phase-plan pytest `-k` selector whose prose terms contain spaces — e.g. `remote connect` becomes `'remote and connect'` — and quote the boolean expression; quoting prose alone is not a valid pytest expression. A bare spaced `-k` term is an executor-side normalization, not a plan blocker);
    - run any phase-level checks that cover touched files.
 3. After each lane:
    - inspect `git diff -- <owned files>`;
@@ -126,10 +126,10 @@ Before briefing workers, read [references/worker-fanout.md](references/worker-fa
 - Ownership violation: stop and revise the plan before continuing.
 - Missing dependency, malformed lane dependency, or unclear interface: stop and route back to `codex-plan-phase` with `human_required=false` unless a true product or human decision is missing.
 - Verification command unavailable: report the missing tool and run the closest available static check only if it is meaningful.
-- True human-required blockers must use the frozen blocker taxonomy from `codex-config/shared/runtime-state.md`: `missing_secret`, `account_or_billing_setup`, `admin_approval`, `destructive_operation`, `ambiguous_roadmap_selection`, `product_decision_missing`, `dirty_worktree_conflict`, `branch_sync_conflict`, `stalled_child_observation`, `repeated_verification_failure`, or `unretryable_external_outage`.
+- True human-required blockers must use the frozen blocker taxonomy from `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths`: `missing_secret`, `account_or_billing_setup`, `admin_approval`, `destructive_operation`, `ambiguous_roadmap_selection`, `product_decision_missing`, `dirty_worktree_conflict`, `branch_sync_conflict`, `stalled_child_observation`, `repeated_verification_failure`, or `unretryable_external_outage`.
 - If the same verification remains failing after one local diagnosis and repair attempt, set `blocker_class=repeated_verification_failure`. If unrelated user work overlaps required lane files, set `blocker_class=dirty_worktree_conflict`.
 - If a release plan with `phase_loop_mutation: release_dispatch` discovers that release-affecting files must be edited before dispatch, do not call the external release command. Stop with `automation.status=blocked`, `human_required=true`, `blocker_class=dirty_worktree_conflict`, and a summary telling the operator to complete/commit the prepare work first.
-- If a phase is ready to report `complete`, verify that `git status --short` is clean for the target repo. If the repo is dirty only because of phase-owned output and required verification passed, do not report it as a human blocker; report `blocked`, `human_required=false`, `blocker_class=dirty_worktree_conflict`, and state that a loop repair turn can commit, isolate, or convert the state to a true human blocker. Use `human_required=true` only when pre-existing unrelated dirty paths overlap the required work, the repo is on the wrong branch/ref, or a true human/product/access decision is needed.
+- If a phase is ready to report `complete`, verify that `git status --short` is clean for the target repo. If the repo is dirty only because of phase-owned output and required verification passed, do not report it as a human blocker; report `terminal_status=awaiting_phase_closeout` and preserve the required verification evidence so the runner can apply its selected closeout policy. Use `human_required=true` only when pre-existing unrelated dirty paths overlap the required work, the repo is on the wrong branch/ref, or a true human/product/access decision is needed.
 
 
 ## Runner Verification Evidence
@@ -151,7 +151,7 @@ Before final closeout, choose exactly one `spec_delta_closeout.v1` decision: `no
 
 ### Manifest lifecycle
 
-After plan validation and before lane execution, perform a best-effort `plan-manifest append` lifecycle update through `phase_loop_runtime.plan_manifest.update_lifecycle` to mark the matching `type=phase` entry `executing` with run metadata. During closeout, update the same entry to `completed` or `failed` with verification metadata, reflection metadata, produced-gate metadata, `if_gates_produced`, and dirty-worktree summary fields as available. A `completed` phase update must also include explicit `issue_inventory` and matching `issue_dispositions` arrays, including explicit empty arrays when no issues were enrolled. `if_gates_produced` must list only the IF gates the active phase produces per its own plan; never carry a prior phase's gate forward into this phase's closeout.
+After plan validation and before lane execution, perform a best-effort Python lifecycle update through `phase_loop_runtime.plan_manifest.update_lifecycle` to mark the matching `type=phase` entry `executing` with run metadata. During closeout, update the same entry to `completed` or `failed` with verification metadata, reflection metadata, produced-gate metadata, `if_gates_produced`, and dirty-worktree summary fields as available. A `completed` phase update must also include explicit `issue_inventory` and matching `issue_dispositions` arrays, including explicit empty arrays when no issues were enrolled. `if_gates_produced` must list only the IF gates the active phase produces per its own plan; never carry a prior phase's gate forward into this phase's closeout.
 Manifest lifecycle failures are non-fatal during the dual-mode window: emit a ledger warning, mention the warning in the mandatory reflection, and preserve the existing phase closeout JSON, verification, and dirty-worktree behavior.
 
 Before final closeout, run `git status --short -- <plan_path> <roadmap_path>` for every consumed or updated planning artifact. If any planning artifact is untracked or modified and the user did not explicitly forbid staging, run `git add <path>` for each artifact. Rerun status and report `Artifact state: staged|tracked|modified|unstaged|blocked` for each artifact. Do not commit unless requested. Repo-local handoff files are operational state: do not `git add` an ignored handoff alongside the plan artifact unless the plan's owned-files/allowlist explicitly includes the handoff directory; leave ignored handoffs ignored and exclude them from artifact-state reporting.
@@ -197,7 +197,7 @@ Report:
 
 In every report, handoff, and closeout above — and in any PR/issue body or commit message this run writes — reference issues and PRs as `repo#N` (or `owner/repo#N`), never a bare `#N`; the fleet is multi-repo, so a lone number is ambiguous.
 
-Resolve closeout writes through the `phase_loop_runtime.skill_paths` resolver as the primary source — `resolve_handoff_root(repo)` for the handoff root and `resolve_reflection_root(skill_name)` for reflection roots; fall back to the repo-local `shared/phase-loop/handoff_path.py` resolver only when `phase_loop_runtime` is not importable. Legacy harness handoff roots are read only for migration. Follow `codex-config/shared/runtime-state.md` and use Codex paths only:
+Resolve closeout writes through the `phase_loop_runtime.skill_paths` resolver as the primary source — `resolve_handoff_root(repo)` for the handoff root and `resolve_reflection_root(skill_name)` for reflection roots; if `phase_loop_runtime` is not importable, restore the pinned runtime before writing state. Legacy harness handoff roots are read only for migration. Follow `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths` and use Codex paths only:
 
 - Reflection: `resolve_skill_bundle_root("codex")/codex-execute-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
 - Handoff: `<repo>/.dev-skills/handoffs/codex-execute-phase/<run_id>.md`

@@ -7,9 +7,9 @@ description: "Claude Code roadmap planner. Produces or extends a multi-phase roa
 
 ## Runtime State
 
-For reflections, handoffs, and latest handoff pointers, follow `claude-config/shared/runtime-state.md`. This repo/branch/run-isolated contract supersedes any older flat closeout examples retained for historical context in this skill.
+For reflections, handoffs, and latest handoff pointers, follow `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths`. This repo/branch/run-isolated contract supersedes any older flat closeout examples retained for historical context in this skill.
 
-`shared/phase-loop/protocol.md` is the canonical shared contract for
+`phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`) is the canonical shared contract for
 `automation:`, `next_skill`, `next_command`, `verification_status`, and
 downstream roadmap-amendment semantics. Claude-specific closeout text must
 agree with that shared protocol.
@@ -42,15 +42,15 @@ Produces the `specs/phase-plans-v<N>.md` roadmap that `/claude-plan-phase` consu
 | `<spec-path>` | no | Path to an input markdown spec to fold into the roadmap. Optional; conversation context is the primary source. |
 | `--output <path>` | no | Override the default output path. Default: `specs/phase-plans-v<N>.md` at the repo root. |
 | `--append` | no | Force append mode even if the resolved output path is new (rare). |
-| `--review-external` | no | After writing the roadmap, run Gemini + Codex CLIs in parallel to review it. Requires `gemini` and `codex` installed and authenticated. Produces a `_reviews.md` sibling file. |
+| `--review-external` | no | After writing the roadmap, run the advisory planning review with the skill rubric as bundle charter. Follow `claude-advisor-board` for subscription CLI prerequisites and native fills. Produces a `_reviews.md` sibling file. |
 
 ## Prerequisites
 
 Expected helpers under `.claude/skills/_shared/` (check existence before invocation; fall back inline when absent):
 
-- `_shared/scaffold_docs_catalog.py` — scaffolds the docs catalog. On absence, create `.claude/docs-catalog.json` manually as an empty-array JSON file (`[]`).
-- `_shared/next_reflection_path.py` — legacy helper only; current closeout writes reflections to `resolve_skill_bundle_root("codex")/claude-phase-roadmap-builder/reflections/<repo_hash>/<branch_slug>/<run_id>.md`.
-- `_shared/review_with_cli.py` — used only with `--review-external`; required for that flag.
+- Use an existing repo-maintained docs catalog when present; otherwise inspect the relevant repo documentation. Do not create an empty catalog as a substitute for an inventory.
+- `_shared/next_reflection_path.py` — legacy helper only; current closeout writes reflections to `resolve_skill_bundle_root("claude")/claude-phase-roadmap-builder/reflections/<repo_hash>/<branch_slug>/<run_id>.md`.
+- `phase-loop advisor-board` — the runtime entrypoint used with `--review-external`; no separate review helper is shipped.
 
 ## Mode detection
 
@@ -75,7 +75,7 @@ ToolSearch(query: "select:AskUserQuestion,ExitPlanMode")
 
 ### Step 0 — Read predecessor handoff (if present)
 
-Read the repo-keyed `claude-execute-phase` handoff (`latest.md`, resolved through `phase_loop_runtime.skill_paths.resolve_handoff_root`, falling back to `resolve_handoff_path` in `shared/phase-loop/handoff_path.py`). If it exists, `Read` it in full and treat it as additional input to Step 1 — a prior `/claude-execute-phase` run may have left completed phases, decisions and gotchas. If its `from:` is not `claude-execute-phase`, its timestamp is older than 7 days, or none of its `artifact:` paths resolves under `$(git rev-parse --show-toplevel)`, ask via `AskUserQuestion` with `[use anyway, ignore, abort]`. If absent, proceed — this run is standalone. The path-resolution script is in [references/handoff-review-closeout.md](references/handoff-review-closeout.md).
+Read the repo-keyed `claude-execute-phase` handoff (`latest.md`, resolved through `phase_loop_runtime.skill_paths.resolve_handoff_root`, falling back to `resolve_handoff_path` in `phase_loop_runtime.handoff_path`). If it exists, `Read` it in full and treat it as additional input to Step 1 — a prior `/claude-execute-phase` run may have left completed phases, decisions and gotchas. If its `from:` is not `claude-execute-phase`, its timestamp is older than 7 days, or none of its `artifact:` paths resolves under `$(git rev-parse --show-toplevel)`, ask via `AskUserQuestion` with `[use anyway, ignore, abort]`. If absent, proceed — this run is standalone. The path-resolution script is in [references/handoff-review-closeout.md](references/handoff-review-closeout.md).
 
 ### Step 1 — Gather inputs
 
@@ -88,21 +88,12 @@ Sources (permissive but bounded):
 
 Do not grep the repo for additional material. If context is insufficient, stop and ask the user via `AskUserQuestion` — a thin roadmap is worse than one more question.
 
-### Step 1a — Ensure docs catalog exists
+### Step 1a — Inspect existing docs inventory
 
-Check for the helper before invoking:
-
-```bash
-HELPER="$(git rev-parse --show-toplevel)/.claude/skills/_shared/scaffold_docs_catalog.py"
-if [ -f "$HELPER" ]; then
-  python3 "$HELPER"
-else
-  CATALOG="$(git rev-parse --show-toplevel)/.claude/docs-catalog.json"
-  [ -f "$CATALOG" ] || echo '[]' > "$CATALOG"
-fi
-```
-
-Scaffolds `.claude/docs-catalog.json` if absent; no-op if already present. On helper absence, seed the catalog manually as an empty-array JSON file. The catalog drives the `SL-docs` lane that `claude-plan-phase` constructs for every phase. Existence matters more than content at this stage — the catalog will be refreshed (`--rescan`) by each `SL-docs` lane as the roadmap executes.
+Use a repo-maintained docs catalog when present; otherwise inspect the named
+repo documentation. The runtime does not ship `_shared/scaffold_docs_catalog.py`.
+Do not manufacture an empty catalog and treat it as an authoritative inventory.
+The downstream docs reducer owns exact disjoint paths and uses the repo's checks.
 
 ### Step 2 — Synthesize top-of-document sections
 
@@ -124,7 +115,7 @@ Apply the heuristics in `references/parallelization-heuristics.md` in order:
 4. **Split fat phases into parallel sibling phases** when they contain independent subtrees (the `P6A || P6B` pattern).
 5. **Every phase decomposes into ≥2 lanes** unless it is a preamble / interface-freeze-only phase (Phase 1 / P0 are the common exceptions). Single-lane phases are a code smell — merge or split.
 6. **Each phase's `Scope notes` lists explicit parallelism hints**: suggested lane count, candidate disjoint-file partitions, and any single-writer files that would serialize lanes if ignored.
-7. **Identify cross-phase parallelism.** Phases with no shared ancestor in the DAG can run concurrently. Call these out in the DAG.
+7. **Identify cross-phase parallelism.** Phases with no dependency path between them in the DAG can run concurrently. Call these out in the DAG.
 8. **Day-1 intra-phase freeze publication.** When one lane's output shape can be published before its implementation lands, declare the shape as an intra-phase freeze so sibling lanes start against the contract rather than waiting.
 9. **Soft upper bound on lanes per phase.** When a phase would contain more than 6–8 lanes AND the lanes partition into independent subtrees sharing no intra-phase freeze, split into sibling phases. When the lanes share intra-phase freezes, keep them in one phase regardless of count.
 
@@ -201,7 +192,7 @@ If neither the `phase-loop` console script nor the `phase_loop_runtime` package
 is importable (an incomplete install), do not hand off a roadmap checked only by
 eye: install the runtime from the public agent-harness
 (`scripts/install-agent-harness.sh`, or `uv tool install
-"git+https://github.com/Consiliency/agent-harness@v0.1.6#subdirectory=phase-loop-runtime"`)
+phase-loop-runtime`)
 or report a blocker. The validator itself is always available once the runtime is
 installed — there is no "validator script missing" blocker.
 
@@ -215,7 +206,17 @@ The full contract, with the reasons, is in [references/validator-format-contract
 
 ### Step 8.5 — External CLI review (only if `--review-external`)
 
-Requires `_shared/review_with_cli.py` (see Prerequisites). After the roadmap is written and validated, run it with this skill's `assets/review_prompt.md`, writing `<output-path>_reviews.md`. The command, the empty-cache path and the message to the user are in [references/handoff-review-closeout.md](references/handoff-review-closeout.md).
+When requested, follow [the external-review procedure](assets/external-review.md).
+Stage this skill's `assets/review_prompt.md` verbatim as `## Panel charter` in a
+single bundle alongside the roadmap or plan, then run:
+
+```bash
+phase-loop advisor-board "$REVIEW_BUNDLE" --advisory --json > "${ARTIFACT_PATH}_reviews.md"
+```
+
+This is non-gating pre-implementation advice. Do not combine it with
+`--landing-tier` or use it to satisfy the separate gating plan-landing review.
+
 
 ### Step 9 — Write and exit
 
@@ -264,7 +265,7 @@ The output file must match `references/roadmap-template.md` structurally. `claud
 
 ## Hand-off
 
-After approval, invoke `/claude-plan-phase <ALIAS>` per phase. Phases with no shared ancestor in the DAG can be planned and executed in parallel — note which ones in the hand-off message. The wall-clock critical path is the longest DAG path through the roadmap.
+After approval, invoke `/claude-plan-phase <ALIAS>` per phase. Phases with no dependency path between them in the DAG can be planned and executed in parallel — note which ones in the hand-off message. The wall-clock critical path is the longest DAG path through the roadmap.
 
 ## Close-out — Stage artifact (preservation guarantee)
 
@@ -281,8 +282,8 @@ Before final response and handoff, choose the next phase to plan from the roadma
 
 Stage the roadmap/plan artifacts before writing either close-out file so the deliverable is preserved in the index unless the user explicitly forbade staging. Then write BOTH files directly via the Write tool (the primary path):
 
-- FILE 1, a repo-agnostic reflection to `resolve_skill_bundle_root("codex")/claude-phase-roadmap-builder/reflections/<repo_hash>/<branch_slug>/<run_id>.md`, with `## Run context`, `## What worked`, `## What didn't` and `## Improvements to SKILL.md`. It must not name this project, codebase, filenames or domain.
-- FILE 2, the repo-specific handoff in the per-repo `latest.md` slot for this skill (`phase_loop_runtime.skill_paths.resolve_handoff_root`, falling back to `resolve_handoff_path` in `shared/phase-loop/handoff_path.py`). It opens with the consumer-validation comment and carries `from`, `timestamp`, `artifact`, `artifact_state`, `next_skill`, `next_command` and `next_phase`.
+- FILE 1, a repo-agnostic reflection to `resolve_skill_bundle_root("claude")/claude-phase-roadmap-builder/reflections/<repo_hash>/<branch_slug>/<run_id>.md`, with `## Run context`, `## What worked`, `## What didn't` and `## Improvements to SKILL.md`. It must not name this project, codebase, filenames or domain.
+- FILE 2, the repo-specific handoff in the per-repo `latest.md` slot for this skill (`phase_loop_runtime.skill_paths.resolve_handoff_root`, falling back to `resolve_handoff_path` in `phase_loop_runtime.handoff_path`). It opens with the consumer-validation comment and carries `from`, `timestamp`, `artifact`, `artifact_state`, `next_skill`, `next_command` and `next_phase`.
 
 Path resolution, both templates, the optional fresh-context close-out agent and the final message to the user are in [references/handoff-review-closeout.md](references/handoff-review-closeout.md).
 
@@ -310,7 +311,7 @@ Roadmap phases must set the expectation that downstream plans include machine-ch
 
 Closeout payload shape is defined by `EmitPhaseCloseout` in `phase_loop_runtime/baml_src/emit_phase_closeout.baml` (if that path is absent in the checkout, use the operator/prompt-supplied field contract or the installed `phase_loop_runtime` package — the missing vendored BAML source is not a blocker); keep skill text focused on value selection and handoff routing, not duplicated field ceremony.
 
-Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("codex")/claude-phase-roadmap-builder/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
+Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("claude")/claude-phase-roadmap-builder/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
 
 ## GOVLEAN Policy
 

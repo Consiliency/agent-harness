@@ -29,7 +29,7 @@ Name target files under `skills-src/` only; generated and installed copies are n
 
 ## When NOT to use
 
-- User wants to edit a skill directly — they want `/claude-skill-editor` (once it exists) or manual edits.
+- User wants to edit a skill directly — they want `/claude-skill-editor` or manual edits.
 - No reflections exist yet — the skill will exit with a user-facing message.
 
 ## Inputs
@@ -45,7 +45,7 @@ Name target files under `skills-src/` only; generated and installed copies are n
 
 ### Step 1 — Collect the corpus
 
-Do not hand-glob. Run the collector, which scans every harness skill root (reflections from all harnesses land under `~/.codex/skills/` and `~/.claude/skills/`), excludes `archive/`, and applies the capture quality filter:
+Do not hand-glob. Run the collector, which scans every harness skill root (the roots resolved for Codex, Claude, Gemini and OpenCode), excludes `archive/`, and applies the capture quality filter:
 
 ```bash
 python3 -m phase_loop_runtime.reflection_corpus collect --out-dir <dir> --min-reflections <N>
@@ -82,7 +82,7 @@ Each bundle entry carries its manifest id (`R0001`), skill and timestamp, and th
 
 ### Step 4 — Aggregate via frontier-tier Agent
 
-Resolve the `frontier` tier from `claude-execute-phase`'s Model tiers table. Spawn one Agent:
+Use the active runtime executor/model policy for the frontier model; verify any copied tier table against `phase_loop_runtime.capability_registry` and `profiles` before use. Spawn one Agent:
 
 ```
 Agent(
@@ -113,22 +113,33 @@ The aggregator prompt (in `assets/aggregator_prompt.md`) instructs the Agent to:
 Resolve the next plan path:
 
 ```bash
-N=$(ls resolve_skill_bundle_root("claude")/claude-skill-improvement-planner/plans/ 2>/dev/null | grep -c '^plan-v')
-PLAN_PATH=resolve_skill_bundle_root("claude")/claude-skill-improvement-planner/plans/plan-v$((N+1))-$(date -u +%Y%m%dT%H%M%SZ).md
+PLAN_PATH=$(python3 - <<'PYPLAN'
+from datetime import datetime, timezone
+from phase_loop_runtime.skill_paths import resolve_skill_bundle_root
+root = resolve_skill_bundle_root("claude") / "claude-skill-improvement-planner" / "plans"
+root.mkdir(parents=True, exist_ok=True)
+versions = [int(p.name.split("-", 2)[1][1:]) for p in root.glob("plan-v[0-9]*-*.md") if p.name.split("-", 2)[1][1:].isdigit()]
+print(root / f"plan-v{max(versions, default=0) + 1}-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}.md")
+PYPLAN
+)
 ```
 
 Write the plan using the template in `## Plan file format` below. Copy the manifest's `reflections_consumed` into the frontmatter and record `corpus_manifest:` — this is how the downstream claude-skill-editor knows what to archive.
 
 ### Step 6 — Close-out (standard artifact-producing pattern)
 
-No cleanup commit needed (plans/ is gitignored; no other files changed). Verify `git status` clean with the allowlist `plans/` and exit.
+The default plan is operational state under the installed skill root, outside this checkout. Compare starting and ending `git status`; preserve unrelated dirty files. If `--output` targets the repo, classify that artifact explicitly rather than assuming `plans/` is ignored.
 
 Resolve close-out paths:
 
+Resolve `REPO_HASH` and `BRANCH_SLUG` from `phase_loop_runtime.discovery.repo_identity(repo_root)` (`repo_hash` and `branch_slug`). Use the active runner's `RUN_ID`, or allocate one unique ID for this manual run; `repo_identity` does not generate run IDs.
+
 ```bash
-REFLECTION_PATH=$(python3 resolve_skill_bundle_root("claude")/_shared/next_reflection_path.py claude-skill-improvement-planner)
-REPO_LOCAL_HANDOFF=<repo>/.dev-skills/handoffs/claude-skill-improvement-planner/latest.md
-SKILL_MD=resolve_skill_bundle_root("claude")/claude-skill-improvement-planner/SKILL.md
+SKILL_ROOT=$(python3 -c 'from phase_loop_runtime.skill_paths import resolve_skill_bundle_root; print(resolve_skill_bundle_root("claude"))')
+: "${REPO_HASH:?set REPO_HASH}" "${BRANCH_SLUG:?set BRANCH_SLUG}" "${RUN_ID:?set RUN_ID}"
+REFLECTION_PATH="$SKILL_ROOT/claude-skill-improvement-planner/reflections/$REPO_HASH/$BRANCH_SLUG/$RUN_ID.md"
+REPO_LOCAL_HANDOFF=$(python3 -c 'from pathlib import Path; from phase_loop_runtime.skill_paths import resolve_handoff_root; print(resolve_handoff_root(Path.cwd()) / "claude-skill-improvement-planner" / "latest.md")')
+SKILL_MD="$SKILL_ROOT/claude-skill-improvement-planner/SKILL.md"
 ```
 
 Spawn ONE close-out agent on the `frontier` tier. It writes both files directly via the Write tool:

@@ -9,7 +9,7 @@ Builds a multi-phase roadmap that downstream `opencode-plan-phase` can turn into
 
 ## Shared Protocol
 
-Follow `shared/phase-loop/protocol.md` for the shared closeout contract.
+Follow `phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`) for the shared closeout contract.
 Roadmap-builder closeout must emit `automation:` metadata that agrees with the
 human-readable `Next phase`, `next_skill`, `next_command`, and
 `verification_status` fields.
@@ -137,6 +137,19 @@ Every roadmap phase must declare its expected `spec_delta_closeout.v1` policy. A
 
 Roadmap phases must set the expectation that downstream plans include machine-checkable verification commands and an effective `automation.suite_command`. If a phase depends on operational evidence that cannot be machine-checked directly, name the operational evidence artifact and the runner-stamped amendment mechanism that records it. proxy evidence requires a roadmap amendment before any downstream plan treats it as a gate verdict.
 
+## Optional external planning review (`--review-external`)
+
+When requested, follow [the external-review procedure](assets/external-review.md).
+Stage this skill's `assets/review_prompt.md` verbatim as `## Panel charter` in a
+single bundle alongside the roadmap or plan, then run:
+
+```bash
+phase-loop advisor-board "$REVIEW_BUNDLE" --advisory --json > "${ARTIFACT_PATH}_reviews.md"
+```
+
+This is non-gating pre-implementation advice. Do not combine it with
+`--landing-tier` or use it to satisfy the separate gating plan-landing review.
+
 ## Closeout
 
 In Default mode, write the roadmap with the active session's file-editing tool, then run `git status --short -- <artifact>`. If the artifact is untracked or modified and the user did not explicitly forbid staging, run `git add <artifact>` and include the `_reviews.md` sibling if one was produced. Rerun `git status --short -- <artifact>` and report `Artifact state: staged|tracked|modified|unstaged|blocked`. Do not commit unless the user asked for a commit.
@@ -149,11 +162,11 @@ If a roadmap edit changes downstream scope, amend the nearest downstream phase
 that is not already executing and treat any older downstream phase plan or
 handoff as stale until it is regenerated.
 
-Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("codex")/opencode-phase-roadmap-builder/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
+Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("opencode")/opencode-phase-roadmap-builder/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
 
-Resolve closeout writes through the `phase_loop_runtime.skill_paths` resolver as the primary source — `resolve_handoff_root(repo)` for the handoff root and `resolve_reflection_root(skill_name)` for reflection roots; fall back to the repo-local `shared/phase-loop/handoff_path.py` resolver only when `phase_loop_runtime` is not importable. Legacy harness handoff roots are read only for migration. Follow `opencode-config/shared/runtime-state.md` and use OpenCode paths only:
+Resolve closeout writes through the `phase_loop_runtime.skill_paths` resolver as the primary source — `resolve_handoff_root(repo)` for the handoff root and `resolve_reflection_root(skill_name)` for reflection roots; if `phase_loop_runtime` is not importable, restore the pinned runtime before writing state. Legacy harness handoff roots are read only for migration. Follow `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths` and use OpenCode paths only:
 
-- Reflection: `resolve_skill_bundle_root("codex")/opencode-phase-roadmap-builder/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
+- Reflection: `resolve_skill_bundle_root("opencode")/opencode-phase-roadmap-builder/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
 - Handoff: `<repo>/.dev-skills/handoffs/opencode-phase-roadmap-builder/<run_id>.md`
 - Latest handoff pointer: `<repo>/.dev-skills/handoffs/opencode-phase-roadmap-builder/latest.md`
 

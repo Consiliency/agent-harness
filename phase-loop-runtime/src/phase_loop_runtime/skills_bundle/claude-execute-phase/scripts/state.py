@@ -8,6 +8,7 @@ Usage:
     state.py set-lane <lane-id> <field>=<value> [<field>=<value> ...]
     state.py transition <lane-id> <from-status> <to-status>
     state.py set-gate <gate-id> <status>
+    state.py set-phase <running|complete|halted>
     state.py delete
 
 State file path (env-overridable, default is $PWD/.claude/claude-execute-phase-state.json):
@@ -36,9 +37,9 @@ Schema:
     }
 
 Design notes:
-- `transition` is atomic — it fails if the current status doesn't match <from>.
-  This is the state-machine contract the orchestrator relies on to avoid
-  double-running a lane through a wave.
+- `transition` checks the loaded status against <from>, but does not lock the
+  read-modify-write transaction. Serialize all writers in the orchestrator;
+  this helper alone does not prevent concurrent lane dispatch.
 - `set-lane` is a permissive write; use it to add commit_sha / branch /
   worktree_path after dispatch-and-return; do NOT use it for status changes
   (use `transition` for those).

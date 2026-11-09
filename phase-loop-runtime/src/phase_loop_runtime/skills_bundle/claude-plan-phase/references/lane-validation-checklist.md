@@ -24,4 +24,4 @@ Before writing the plan doc, verify:
 - [ ] **Expected add/add conflicts declared** — if SL-0 preamble stubs a file that a lane replaces, add it under Execution Notes' "Expected add/add conflicts" block.
 - [ ] **SL-0 re-exports use `__getattr__` lazy form** — declared under Execution Notes' "SL-0 re-exports" block.
 - [ ] **Plan doc passes `validate_plan_doc.py`** — run the validator and confirm zero errors before calling `ExitPlanMode`. The validator catches structural issues (missing headings, duplicate lane IDs, malformed task tables) that manual review misses.
-- [ ] **Terminal `SL-docs` lane present** — every phase plan must include the docs-sweep lane from the docs-sweep template in `references/lane-templates.md`. `Depends on:` lists every other lane in the phase. No opt-out; a phase with no doc changes still runs the lane and records that.
+- [ ] **Terminal numeric documentation lane present** — every phase plan must include the docs-sweep lane from the docs-sweep template in `references/lane-templates.md`. `Depends on:` lists every other lane in the phase. No opt-out; a phase with no doc changes still runs the lane and records that.

@@ -17,11 +17,12 @@
 #                          "main"). Used by the new PARENT_ON_WRONG_BRANCH
 #                          probe.
 #
-# Behavior: emits EXACTLY one token on stdout, exit 0 always.
+# Behavior: valid invocations emit one token on stdout and exit 0; usage errors exit 2.
 #
 #   CLEAN
 #     - Working tree has no uncommitted changes AND the parent is on the
-#       merge-target branch. No leakage.
+#       merge-target branch, or branch discovery yields no name (detached/unknown).
+#       CLEAN is not proof of branch identity; callers must validate that separately.
 #
 #   LEAKAGE_DETECTED
 #     - Working tree has dirty files AND at least one matches the lane's

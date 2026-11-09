@@ -54,6 +54,14 @@ def test_final_response_schema_excludes_interim_without_changing_lifecycle(tmp_p
 
 def test_golden_delta_is_only_final_schema_exclusion():
     golden = json.loads((Path(__file__).parent / "data/launchspec_golden/launchspec_golden.json").read_text())
+    # The tenth permitted delta (agent-harness#1943): accuracy corrections to
+    # injected skill text. Bind the two current strings exactly, then restore
+    # their prior bytes; all older snapshots and the final digest stay frozen.
+    pre_1943 = json.loads((Path(__file__).parent / "data/launchspec_golden/pre_1943_skill_accuracy_audit.json").read_text())
+    for change in pre_1943["command_strings"]:
+        argv = golden[change["case"]]["command"]
+        assert argv[change["index"]] == change["current"]
+        argv[change["index"]] = change["pre_1943"]
     # The ninth permitted delta (agent-harness#1358): the Codex execute-phase split
     # changes only two injected instruction strings. Preserve the earlier records.
     pre_1358 = json.loads((Path(__file__).parent / "data/launchspec_golden/pre_1358_codex_execute_split.json").read_text())

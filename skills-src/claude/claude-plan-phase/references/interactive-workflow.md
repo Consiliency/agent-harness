@@ -4,6 +4,12 @@ Reference for `claude-plan-phase` (linked from its `SKILL.md`). Phase-loop
 adapter mode does not use any of this: it forbids handoff reads, teammates,
 `TaskCreate`, `ExitPlanMode`, `advisor()` and `AskUserQuestion`.
 
+Resolve the shipped validator before running its examples:
+
+```bash
+PLAN_VALIDATOR=$(python3 -c 'from phase_loop_runtime.skill_paths import resolve_skill_bundle_root; print(resolve_skill_bundle_root("claude") / "claude-plan-phase" / "scripts" / "validate_plan_doc.py")')
+```
+
 ## Contents
 
 - Step 0 — Predecessor handoff paths and checks
@@ -32,13 +38,9 @@ try:
     # Primary: the installed phase_loop_runtime.skill_paths resolver.
     from phase_loop_runtime.skill_paths import resolve_handoff_root
     print(resolve_handoff_root(repo) / skill / "latest.md")
-except Exception:
-    # Fallback: the repo-local handoff_path.py mirror, only when the runtime is not importable.
-    from importlib import util
-    spec = util.spec_from_file_location("handoff_path", repo / "shared" / "phase-loop" / "handoff_path.py")
-    mod = util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    print(mod.resolve_handoff_path(repo, skill))
+except ImportError:
+    from phase_loop_runtime.handoff_path import resolve_handoff_path
+    print(resolve_handoff_path(repo, skill))
 PYH
 )"
 EXECUTE_HANDOFF="$(python3 - <<'PYH'
@@ -49,13 +51,9 @@ try:
     # Primary: the installed phase_loop_runtime.skill_paths resolver.
     from phase_loop_runtime.skill_paths import resolve_handoff_root
     print(resolve_handoff_root(repo) / skill / "latest.md")
-except Exception:
-    # Fallback: the repo-local handoff_path.py mirror, only when the runtime is not importable.
-    from importlib import util
-    spec = util.spec_from_file_location("handoff_path", repo / "shared" / "phase-loop" / "handoff_path.py")
-    mod = util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    print(mod.resolve_handoff_path(repo, skill))
+except ImportError:
+    from phase_loop_runtime.handoff_path import resolve_handoff_path
+    print(resolve_handoff_path(repo, skill))
 PYH
 )"
 ```
@@ -126,22 +124,21 @@ Applied by the main thread after `--consensus` Step 3a:
 
 ## Step 7.5 — External CLI review
 
-Run the shared review script:
+Follow [external-review.md](../assets/external-review.md): stage `assets/review_prompt.md`
+verbatim under `## Panel charter` and the roadmap or plan under
+`## Planning artifact` in the same `REVIEW_BUNDLE`, then run:
 
 ```bash
-python3 "$(git rev-parse --show-toplevel)/.claude/skills/_shared/review_with_cli.py" \
-  --artifact plans/phase-plan-<VERSION>-<PHASE_ALIAS>.md \
-  --prompt-file "$(git rev-parse --show-toplevel)/.claude/skills/claude-plan-phase/assets/review_prompt.md" \
-  --out plans/phase-plan-<VERSION>-<PHASE_ALIAS>_reviews.md
+phase-loop advisor-board "$REVIEW_BUNDLE" --advisory --json > "${ARTIFACT_PATH}_reviews.md"
 ```
 
-If the script reports the frontier-model cache is empty, it prints a discovery prompt to stderr. Surface to the user via `AskUserQuestion` with options `[run discovery now, skip review this run, abort]`.
-
-Tell the user: "Review written to `plans/phase-plan-<VERSION>-<PHASE_ALIAS>_reviews.md`. When Gemini and Codex flag the same concern, treat it as real; divergent comments are context, not verdicts."
+Keep `--advisory` on native-fill emit and invoke calls as that procedure
+requires. This optional review is non-gating and cannot use `--landing-tier`;
+it does not replace the gating plan-landing review.
 
 ## Manual hand-off (when `claude-execute-phase` is unavailable)
 
-Run `python scripts/validate_plan_doc.py <plan-doc-path>` first. Then execute each lane in one of two ways:
+Run `python3 "$PLAN_VALIDATOR" <plan-doc-path>` first. Then execute each lane in one of two ways:
 
 - (a) **Standalone** — `Agent(isolation: "worktree", name: "<SL-ID>", subagent_type: "general-purpose")` without `team_name`. The `isolation` kwarg is honored in this form; loses team coordination.
 - (b) **Teamed** — `TeamCreate` + `Agent(team_name=…, name="<SL-ID>", subagent_type="general-purpose")`, and the teammate's first tool call is `EnterWorktree` (load via `ToolSearch(query="select:EnterWorktree")`). Worktree via tool, team coordination preserved.

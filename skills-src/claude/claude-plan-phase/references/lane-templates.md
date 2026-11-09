@@ -6,7 +6,7 @@ adapter runs read this file too: it is not preloaded with the skill.
 ## Contents
 
 - Preamble lane archetype (SL-0)
-- Docs-sweep lane template (SL-docs)
+- Docs-sweep lane template (numeric SL-N)
 
 ## Preamble lane archetype
 
@@ -30,33 +30,31 @@ Downstream lanes depend on `SL-0` and consume its frozen interfaces; they must n
 
 ## Docs-sweep lane template
 
-Every phase plan must include this as the final lane. Copy verbatim into the `## Lanes` section, adjust `Depends on:` to list every other `SL-N` in the phase, and edit the `Scope notes` if the phase has atypical docs impact.
+Every phase plan includes a terminal docs reducer. Use a free numeric ID
+(`SL-9` below is an example), list it in the lane index, and set its dependencies
+to every producer lane. Replace every placeholder with the exact paths and
+interfaces needed by this phase. Owned paths must be a single inline bullet and
+must not overlap an implementation lane; move shared docs ownership here before
+execution. A docs catalog is optional repo infrastructure, not a shipped helper.
 
 ```markdown
-### SL-docs — Documentation & spec reconciliation
-
-- **Scope**: Refresh the docs catalog, update cross-cutting documentation touched or invalidated by this phase's impl lanes, and append any post-execution amendments to phase specs whose interface freezes turned out wrong.
-- **Owned files** (read `.claude/docs-catalog.json` for the authoritative list; a minimum set is below, but the catalog is canonical):
-  - Root: `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, `MIGRATION.md`, `ARCHITECTURE.md`, `DESIGN.md`, `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`
-  - Agent indexes: `llm.txt`, `llms.txt`, `llms-full.txt`
-  - Service manifests: `services.json`, `openapi.yaml`/`.yml`/`.json`
-  - `docs/**`, `rfcs/**`, `adrs/**`
-  - `.claude/docs-catalog.json` (this lane maintains it)
-  - The current phase's section of `specs/phase-plans-v<N>.md` (append-only amendments)
-  - Any prior `plans/phase-plan-v<N>-<alias>.md` or prior spec phase sections whose contracts this phase invalidated (prior-phase amendments allowed)
+### SL-9 — Documentation & spec reconciliation
+- **Scope**: Update the documentation affected by this phase, or record why no change is needed.
+- **Owned files**: `<exact-doc-path>`, `<other-disjoint-doc-path>`
 - **Interfaces provided**: (none)
-- **Interfaces consumed**: (none)
-- **Parallel-safe**: no (terminal)
-- **Depends on**: every other `SL-N` in this phase
+- **Interfaces consumed**: `<producer-interface>`
+- **Parallel-safe**: no
 
-**Tasks**:
+- verify: `<configured-doc-check>`
 
-| Task ID | Type | Depends on | Files in scope | Action |
-|---|---|---|---|---|
-| SL-docs.1 | docs | — | `.claude/docs-catalog.json` | Rescan: `python3 "$(git rev-parse --show-toplevel)/.claude/skills/_shared/scaffold_docs_catalog.py" --rescan`. Picks up any new doc files created by impl lanes; preserves `touched_by_phases` history. |
-| SL-docs.2 | docs | SL-docs.1 | per catalog | For each file in the catalog, decide: does this phase's work change it? If yes, update the file and append the current phase alias to its `touched_by_phases`. If no, leave it. Record in commit message any files intentionally skipped. |
-| SL-docs.3 | docs | SL-docs.2 | `specs/phase-plans-v<N>.md`, prior plans | Append `### Post-execution amendments` subsections to any phase section (current or prior) whose interface freeze was empirically wrong this run. Named freeze IDs + dated correction. |
-| SL-docs.4 | verify | SL-docs.3 | — | Run any repo doc linters (`markdownlint`, `vale`, `prettier --check`, Mermaid/PlantUML render check). If none configured, no-op. |
+| Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
+|---|---|---|---|---|---|
+| SL-9.1 | docs | — | `<exact-doc-path>` | — | `<configured-doc-check>` |
+| SL-9.2 | verify | SL-9.1 | `<exact-doc-path>` | — | `<configured-doc-check>` |
 ```
 
-No opt-out. A phase with nothing to change still runs `SL-docs` and records that explicitly in its commit message — the audit trail.
+Use repo-configured doc checks. Do not invoke an absent
+`_shared/scaffold_docs_catalog.py`. Record any necessary roadmap amendment by
+its affected gate/goal ID, preserving already executing phase scope.
+
+No opt-out. A phase with nothing to change still runs the docs reducer and records that explicitly in its commit message — the audit trail.

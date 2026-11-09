@@ -1,6 +1,6 @@
 # Worker fanout (gemini-execute-phase)
 
-Use worker subagents only when the user explicitly authorizes parallel agent work and the DAG-ready lanes are disjoint.
+Use worker subagents only when the user explicitly authorizes parallel agent work and the DAG-ready lanes have machine-verified disjoint ownership and scheduler-owned worktree assignments.
 
 For every worker brief:
 

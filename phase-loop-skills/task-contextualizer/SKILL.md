@@ -90,7 +90,7 @@ For copy-ready variants, read `references/task-templates.md`.
 
 ## Runtime State
 
-This skill normally writes no reflection or handoff. If a future workflow adds self-improvement state, follow `<harness>-config/shared/runtime-state.md` and use Harness paths only:
+This skill normally writes no reflection or handoff. If a future workflow adds self-improvement state, follow `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths` and use Harness paths only:
 
 - Reflection: `resolve_skill_bundle_root("codex")/<harness>-task-contextualizer/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
 - Handoff: `resolve_handoff_root(repo)/<harness>-task-contextualizer/<run_id>.md`

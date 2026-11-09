@@ -5,17 +5,25 @@ description: "Claude Code phase planner for a versioned roadmap phase. Produces 
 
 # claude-plan-phase
 
+Resolve the shipped validator before running its examples:
+
+```bash
+PLAN_VALIDATOR=$(python3 -c 'from phase_loop_runtime.skill_paths import resolve_skill_bundle_root; print(resolve_skill_bundle_root("claude") / "claude-plan-phase" / "scripts" / "validate_plan_doc.py")')
+```
+
 ## Runtime State
 
-For reflections, handoffs, and latest handoff pointers, follow `claude-config/shared/runtime-state.md`. This repo/branch/run-isolated contract supersedes any older flat closeout examples retained for historical context in this skill.
+For reflections, handoffs, and latest handoff pointers, follow `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths`. This repo/branch/run-isolated contract supersedes any older flat closeout examples retained for historical context in this skill.
 
-`shared/phase-loop/protocol.md` is the canonical shared contract for
+`phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`) is the canonical shared contract for
 execution-ready plan metadata, including `phase_loop_plan_version: 1`,
 `roadmap_sha256`, optional `Dispatch Hints`, and downstream roadmap-amendment
 rules.
 
 When this skill runs through the live phase-loop adapter, the child launch is a
-non-interactive `claude -p` session and the final response must still include a
+runtime-selected Claude session (Channel by default outside CI, with route `claude_channel` and reason
+`default_channel`; CI requires an explicit route, and Agent View is used only
+when explicitly selected) and the final response must still include a
 shared `automation:` closeout with `verification_status`. The repo-injected
 workflow bundle remains authoritative whether the adapter delivers it inline or
 through the run-local context-file fallback.
@@ -27,7 +35,7 @@ installed bridge skills under `resolve_skill_bundle_root("claude")/`.
 ## Phase-Loop Adapter Mode
 
 When the prompt or run-local context file starts with a concrete
-`claude-plan-phase <roadmap> <phase>` command from `.codex/phase-loop/runs/`,
+`claude-plan-phase <roadmap> <phase>` command from `.phase-loop/runs/`,
 this adapter mode overrides the delegation-first interactive workflow below.
 
 - Do not read installed handoffs under `resolve_skill_bundle_root("claude")/**`; the run-local
@@ -55,7 +63,7 @@ this adapter mode overrides the delegation-first interactive workflow below.
 ## Dispatch Hints
 
 When non-default executor policy is needed, add an optional `## Dispatch Hints`
-section using the frozen vocabulary from `shared/phase-loop/protocol.md`
+section using the frozen vocabulary from `phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`)
 instead of inventing Claude-only plan metadata.
 
 When model, effort, work-unit defaults, lane-specific policy, fallback, policy
@@ -116,7 +124,7 @@ Architecture-first planner for a single phase of a multi-phase specification. Pr
 | `<phase-name-or-id>` | yes | A phase heading, short alias (`P1`–`P7`), or any fuzzy match. Ambiguous → stop and ask via `AskUserQuestion`. |
 | `--output <path>` | no | Override the default output path. Default: `plans/phase-plan-<VERSION>-<PHASE_ALIAS>.md`. `<PHASE_ALIAS>` MUST be uppercase exactly as declared in the roadmap (e.g., `FOUND`, `DESIGNFOUND`); lowercase or alternate filename variants force an extra plan-iteration roundtrip because the runner uses the uppercase alias to locate the plan artifact. |
 | `--consensus` | no | Enable multi-agent architectural consensus (2–3 Plan teammates with different framings). |
-| `--review-external` | no | After writing the plan doc, run Gemini + Codex CLIs in parallel to review it. Requires `gemini` and `codex` installed and authenticated. Produces a `_reviews.md` sibling file. |
+| `--review-external` | no | After drafting the plan, run the advisory planning review with the skill rubric as bundle charter. Uses `phase-loop advisor-board` and its selected subscription CLIs; follow `claude-advisor-board` for native fills. Produces a `_reviews.md` sibling file. |
 
 Repos may supply a phase alias table (JSON file) via `$PLAN_PHASE_ALIASES` or fall back to the built-in `P1`–`P7` table. If the alias isn't recognized and no custom table is set, stop and ask via `AskUserQuestion` with the actual spec headings.
 
@@ -147,9 +155,9 @@ Invocation examples:
 
 The skill references these `_shared/` helpers. Each degrades gracefully if absent:
 
-- `_shared/next_reflection_path.py` — legacy helper only; current closeout writes reflections to `resolve_skill_bundle_root("codex")/claude-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`.
-- `_shared/review_with_cli.py` — required only for `--review-external`. No fallback; if absent, surface an `AskUserQuestion` with `[skip review this run, abort]`.
-- `_shared/scaffold_docs_catalog.py` — used by `SL-docs.1`. If absent, the docs lane records "docs-catalog rescan helper unavailable; manual catalog audit" in its commit message and proceeds.
+- `_shared/next_reflection_path.py` — legacy helper only; current closeout writes reflections to `resolve_skill_bundle_root("claude")/claude-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`.
+- External review uses the advisory bundle procedure in [assets/external-review.md](assets/external-review.md), not the absent `_shared/review_with_cli.py` helper.
+- A repo-maintained docs catalog may be used when present; no `scaffold_docs_catalog.py` helper is shipped. Otherwise inspect the relevant repo docs directly.
 
 ## Deferred tool preloading
 
@@ -165,7 +173,7 @@ The main thread is an orchestrator only: brief specialists, synthesize output, e
 
 ### Step 0 — Read predecessor handoff (if present)
 
-The predecessor is `claude-phase-roadmap-builder` (first phase planned against a new roadmap) or `claude-execute-phase` (the next phase after one finished executing). Resolve both repo-keyed `latest.md` handoff paths (`phase_loop_runtime.skill_paths.resolve_handoff_root`, falling back to `resolve_handoff_path` in `shared/phase-loop/handoff_path.py`), use the one with the newer `timestamp:`, or proceed standalone if neither exists. Before trusting it, check that `from:` matches the predecessor, the timestamp is under 7 days old and every `artifact:` path resolves under `$(git rev-parse --show-toplevel)`; on any failure ask via `AskUserQuestion` with `[use anyway, ignore, abort]`. Fold its "Open items" and "Repo-specific gotchas" into the Step 2 briefs. The path-resolution script is in [references/interactive-workflow.md](references/interactive-workflow.md).
+The predecessor is `claude-phase-roadmap-builder` (first phase planned against a new roadmap) or `claude-execute-phase` (the next phase after one finished executing). Resolve both repo-keyed `latest.md` handoff paths (`phase_loop_runtime.skill_paths.resolve_handoff_root`, falling back to `resolve_handoff_path` in `phase_loop_runtime.handoff_path`), use the one with the newer `timestamp:`, or proceed standalone if neither exists. Before trusting it, check that `from:` matches the predecessor, the timestamp is under 7 days old and every `artifact:` path resolves under `$(git rev-parse --show-toplevel)`; on any failure ask via `AskUserQuestion` with `[use anyway, ignore, abort]`. Fold its "Open items" and "Repo-specific gotchas" into the Step 2 briefs. The path-resolution script is in [references/interactive-workflow.md](references/interactive-workflow.md).
 
 ### Step 1 — Resolve spec path, phase, and PHASE_ID
 
@@ -182,7 +190,7 @@ The predecessor is `claude-phase-roadmap-builder` (first phase planned against a
 
 **Phase name**: short alias → fuzzy match → 0 matches: stop + ask → multiple matches: stop + disambiguate.
 
-**PHASE_ALIAS**: the resolved short alias in lowercase (e.g., `p1`). If none exists, use `phase-<N>`.
+**PHASE_ALIAS**: the exact uppercase alphanumeric alias declared by the roadmap heading (e.g., `P1`). Never lowercase it or invent a `phase-<N>` alias; repair a missing heading alias before planning.
 
 **Output path**: `--output` override, else `plans/phase-plan-<VERSION>-<PHASE_ALIAS>.md`.
 
@@ -228,7 +236,7 @@ For each lane, author an ordered task list:
 
 Tasks are identified `<SL-ID>.<N>`.
 
-**Every phase must include a terminal `SL-docs` lane** after the impl/verify lanes. Copy it from the docs-sweep template in [references/lane-templates.md](references/lane-templates.md). No opt-out — force a conscious doc decision every phase, even if the lane ends up recording "no cross-cutting changes needed."
+**Every phase must include a terminal documentation lane with a free numeric `SL-N` ID** after the impl/verify lanes. Copy it from the docs-sweep template in [references/lane-templates.md](references/lane-templates.md). No opt-out — force a conscious doc decision every phase, even if the lane ends up recording "no cross-cutting changes needed."
 
 ### Step 6 — Emit per-lane tasks via TaskCreate
 
@@ -249,22 +257,32 @@ Then validate the scratch draft with
 `validate_plan_dispatch_hints`. If it returns findings, stop without writing
 the project-path artifact and emit the validation_failed closeout described in
 `## Planner Literal Validation`. If `scripts/validate_plan_doc.py` exists
-(shell test `[ -f scripts/validate_plan_doc.py ]`), run it against the scratch
+(shell test `[ -f "$PLAN_VALIDATOR" ]`), run it against the scratch
 file and fix any errors before `ExitPlanMode`:
 
 ```
-python scripts/validate_plan_doc.py <scratch-file-path>
+python3 "$PLAN_VALIDATOR" <scratch-file-path>
 ```
 
 Otherwise walk the Lane validation checklist by hand and note manual verification in the post-approval closeout or Execution Notes. The validator checks required headings, disjoint file ownership, DAG acyclicity, grep-assertion-paired-with-tests, and eager-reexport risks.
 
 ### Step 7.75 — Advisor review
 
-After the plan doc is drafted in the scratch file and before `ExitPlanMode`, call `advisor()`. Expect 1–4 contract-tightening suggestions per run, typically covering: under-specified freezes, asserted-but-unverified file paths, test-outline mechanism gaps, and spec-vs-contract conflicts. Apply the findings to the scratch draft before calling `ExitPlanMode`.
+After the plan doc is drafted in the scratch file and before `ExitPlanMode`, use an advisor tool only if the active session exposes it; otherwise use the explicitly requested external board path below or record that optional advisory input was unavailable. Expect 1–4 contract-tightening suggestions per run, typically covering: under-specified freezes, asserted-but-unverified file paths, test-outline mechanism gaps, and spec-vs-contract conflicts. Apply the findings to the scratch draft before calling `ExitPlanMode`.
 
 ### Step 7.5 — External CLI review (only if `--review-external`)
 
-Run `_shared/review_with_cli.py` against the plan with this skill's `assets/review_prompt.md`, writing `plans/phase-plan-<VERSION>-<PHASE_ALIAS>_reviews.md`. The command, the empty-cache path and the message to the user are in [references/interactive-workflow.md](references/interactive-workflow.md).
+When requested, follow [the external-review procedure](assets/external-review.md).
+Stage this skill's `assets/review_prompt.md` verbatim as `## Panel charter` in a
+single bundle alongside the roadmap or plan, then run:
+
+```bash
+phase-loop advisor-board "$REVIEW_BUNDLE" --advisory --json > "${ARTIFACT_PATH}_reviews.md"
+```
+
+This is non-gating pre-implementation advice. Do not combine it with
+`--landing-tier` or use it to satisfy the separate gating plan-landing review.
+
 
 ### Step 8 — ExitPlanMode
 
@@ -286,7 +304,7 @@ Then `# <PHASE_ID>: <Phase Name>` and these headings in order: `## Context`, `##
 
 - Each lane's `Owned files` is a single-line inline bullet of comma-separated backticked globs, never nested sub-bullets.
 - Each `## Acceptance Criteria` item is `- [ ] EC-<ALIAS>-<N> — proven by <command / test>, falsified by <assertion / negative control>`, and the falsifier must target a production construction site with path-entered control.
-- The docs-sweep `SL-docs` lane comes from [references/lane-templates.md](references/lane-templates.md); non-numeric lane aliases still appear as `SL-<N>` in the Lane Index.
+- The docs reducer comes from [references/lane-templates.md](references/lane-templates.md); use its numeric `SL-N` ID in both the lane heading and Lane Index.
 
 ## Lane validation checklist
 
@@ -296,7 +314,7 @@ Walk the full checklist in [references/lane-validation-checklist.md](references/
 - [ ] **DAG has no cycles** — a topological sort of `Depends on:` succeeds.
 - [ ] **Synthesis lanes are explicit reducers** — any lane that writes a docs summary, truth table, readiness matrix, release summary, or other synthesized artifact lists every producer lane under `Depends on` and every consumed finding under `Interfaces consumed`. Mark these lanes `Parallel-safe: no`.
 
-The reference adds inline concrete `Owned files`, a `test` before every `impl`, testable acceptance items that reference their roadmap `EC-<ALIAS>-<N>` ID as plain text and name their proving command, grep-only checks paired with a test, a browser step for UI changes, stale-base `Interfaces consumed`, and the terminal `SL-docs` lane.
+The reference adds inline concrete `Owned files`, a `test` before every `impl`, testable acceptance items that reference their roadmap `EC-<ALIAS>-<N>` ID as plain text and name their proving command, grep-only checks paired with a test, a browser step for UI changes, stale-base `Interfaces consumed`, and the terminal numeric documentation lane.
 
 ## Teamwork & delegation posture
 
@@ -305,7 +323,7 @@ The reference adds inline concrete `Owned files`, a `test` before every `impl`, 
 - **Name every teammate.** Set `name:` on every `Agent` call so you can re-address via `SendMessage` without losing context or paying to restart.
 - **Task list as source of truth for the lane DAG.** Step 6's per-lane `TaskCreate` is how the plan becomes actionable; each lane task is addressable by ID for `claude-execute-phase`.
 - **Hand-off to `claude-execute-phase`.** After `ExitPlanMode` approval, invoke `/claude-execute-phase <plan-doc-path>`. See that skill for the full execution contract (team creation, worktree isolation, merge policy). Do NOT pass `isolation: "worktree"` alongside `team_name` — the harness drops `isolation` in that combination.
-- **Manual hand-off (when `claude-execute-phase` is unavailable).** Validate the plan with `python scripts/validate_plan_doc.py <plan-doc-path>`, then run each lane standalone or teamed as described in [references/interactive-workflow.md](references/interactive-workflow.md).
+- **Manual hand-off (when `claude-execute-phase` is unavailable).** Validate the plan with `python3 "$PLAN_VALIDATOR" <plan-doc-path>`, then run each lane standalone or teamed as described in [references/interactive-workflow.md](references/interactive-workflow.md).
 
 ## Output contract
 
@@ -328,19 +346,19 @@ After `ExitPlanMode` is approved, before exiting:
    - `roadmap_sha256: <sha256 of that roadmap file>`
 2. Run `validate_plan_dispatch_hints` before copying or staging the project-path
    artifact; stop with the validation_failed closeout if it returns findings.
-3. Run `python scripts/validate_plan_doc.py plans/phase-plan-<VERSION>-<PHASE_ALIAS>.md` when the script is present; fix any frontmatter/path/hash failures before continuing.
+3. Run `python3 "$PLAN_VALIDATOR" plans/phase-plan-<VERSION>-<PHASE_ALIAS>.md` when the script is present; fix any frontmatter/path/hash failures before continuing.
 4. Run `git status --short -- plans/phase-plan-<VERSION>-<PHASE_ALIAS>.md` and include the `_reviews.md` sibling if `--review-external` produced one.
 5. If the plan or review artifact is untracked or modified and the user did not explicitly forbid staging, run `git add plans/phase-plan-<VERSION>-<PHASE_ALIAS>.md` plus the review sibling if present.
 6. Rerun `git status --short -- plans/phase-plan-<VERSION>-<PHASE_ALIAS>.md` and report `Artifact state: staged|tracked|modified|unstaged|blocked`.
 7. Do not commit unless the user explicitly asked for a commit.
 
-When the generated plan is ready to execute, set `Next phase: <PHASE_ALIAS> - execution ready` and `Next command: /claude-execute-phase <PHASE_ALIAS>`. If execution should not start yet, set `Next phase: <PHASE_ALIAS> - blocked: <reason>` and `Next command: none - <reason>`.
+When the generated plan is ready to execute, set `Next phase: <PHASE_ALIAS> - execution ready` and `Next command: /claude-execute-phase <plan-doc-path>`. If execution should not start yet, set `Next phase: <PHASE_ALIAS> - blocked: <reason>` and `Next command: none - <reason>`.
 
 ## Close-out — Reflection + Handoff
 
 After artifacts are staged or confirmed tracked (staging comes first unless the user explicitly forbade it), the orchestrator writes two files with the Write tool:
 
-- FILE 1, a repo-agnostic reflection to `resolve_skill_bundle_root("codex")/claude-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. It is about how the skill's instructions performed, and must not name this project, codebase, filenames or domain.
+- FILE 1, a repo-agnostic reflection to `resolve_skill_bundle_root("claude")/claude-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. It is about how the skill's instructions performed, and must not name this project, codebase, filenames or domain.
 - FILE 2, the repo-specific handoff at the per-repo `latest.md` slot for `claude-plan-phase`, which overwrites any prior handoff from this skill in the same repo. Its frontmatter carries `from`, `timestamp`, `artifact`, `artifact_state`, `next_skill`, `next_command` and `next_phase`.
 
 Path resolution, both templates, the optional fresh-context close-out agent and the final message to the user are in [references/closeout-reflection-handoff.md](references/closeout-reflection-handoff.md).
@@ -374,13 +392,13 @@ Generated plans must contain machine-checkable verification commands and an effe
 
 ### Manifest write
 
-After the plan artifact and repo-local handoff path are known, perform a best-effort `plan-manifest append` through `phase_loop_runtime.plan_manifest.append_entry`. Append a `type=phase` entry with `status=committed`, `slug`, `file`, `created_at`, `owner_skill=claude-plan-phase`, `handoff_ref`, `roadmap_ref`, `phase_alias`, `if_gates_produced`, and `lanes`. Resolve paths with `phase_loop_runtime.skill_paths` helpers and keep the manifest write best-effort during the dual-mode window: failures are non-fatal, emit a ledger warning, and are mentioned in the mandatory reflection without changing the existing plan closeout result.
+After the plan artifact and repo-local handoff path are known, perform a best-effort Python API append through `phase_loop_runtime.plan_manifest.append_entry`. Append a `type=phase` entry with `status=committed`, `slug`, `file`, `created_at`, `updated_at`, `owner_skill=claude-plan-phase`, `handoff_ref`, `roadmap_ref`, `phase_alias`, `if_gates_produced`, and `lanes`. Resolve paths with `phase_loop_runtime.skill_paths` helpers and keep the manifest write best-effort during the dual-mode window: failures are non-fatal, emit a ledger warning, and are mentioned in the mandatory reflection without changing the existing plan closeout result.
 
 A legacy `plans/manifest.json` using the `schema`/`entries` layout raises `unsupported manifest schema_version: 0`; treat that exact error as the expected non-fatal case (warn, do not block or migrate in place). `phase_loop_runtime` may resolve from the installed dotfiles runtime on `PYTHONPATH` even when the target repo neither vendors nor installs it — use the importable package; a missing repo-local checkout is not a blocker.
 
 Closeout payload shape is defined by `EmitPhaseCloseout` in `phase_loop_runtime/baml_src/emit_phase_closeout.baml` (if that path is absent in the checkout, use the operator/prompt-supplied field contract or the installed `phase_loop_runtime` package — the missing vendored BAML source is not a blocker); keep skill text focused on value selection and handoff routing, not duplicated field ceremony.
 
-Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("codex")/claude-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
+Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("claude")/claude-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
 
 ## GOVLEAN Policy
 

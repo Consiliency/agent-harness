@@ -15,7 +15,7 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
 
 - Use the repo-local phase-loop CLI or wrapper documented by the repo; do not invent a second runner.
 - Preserve manual Harness use of `<harness>-phase-roadmap-builder`, `<harness>-plan-phase`, and `<harness>-execute-phase`.
-- Inspect `shared/phase-loop/protocol.md` and `<harness>-config/shared/runtime-state.md` before describing artifact or blocker semantics.
+- Inspect `phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`) and `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths` before describing artifact or blocker semantics.
 - Before reporting a human-required access blocker, inspect repo-local docs/config and safe metadata from available CLIs. Never print secret values.
 
 ## Inputs
@@ -45,7 +45,7 @@ machine state is needed.
 ## What This Bridge Must Cover
 
 - bounded `run`, `dry-run`, `resume`, `status`, and `monitor` flows
-- manual event import expectations from `shared/phase-loop/protocol.md`
+- manual event import expectations from `phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`)
 - injected-skill metadata and installed-skill drift guidance from the shared loop state
 - downstream roadmap amendments that invalidate older downstream phase plans or handoffs
 
@@ -57,9 +57,9 @@ are the recommended manual reentry surface, but they are not required for the
 runner to launch or continue work. If the advisory bridge record reports
 `missing_root`, `missing_skill`, or `drifted`, repair the local bridge with
 `codex-phase-loop sync-skills --apply` before trusting manual Harness reentry.
-Headless disposable Harness runs may need a
-trusted-workspace bypass such as `--skip-trust`; treat missing trust as launch
-posture metadata, not as installed-skill failure.
+The Harness executor launches Antigravity `agy` with `--add-dir` and `-p`,
+not the retired standalone `gemini` CLI. Do not pass that retired CLI's
+`--skip-trust` flag to agy; inspect the selected launcher and its typed refusals.
 
 Use the shared loop state to reason about:
 
@@ -77,7 +77,7 @@ planner and treat older downstream plans as stale.
 
 ## Branch-governance preflight
 
-Issue #83: in pipeline-mode with branchgov on (the default), a dispatch switches
+Issue agent-harness#83: in pipeline-mode with branchgov on (the default), a dispatch switches
 to `consiliency/pipeline/<v>` cut from `origin/main`. If the roadmap is committed
 only on the operator's own branch (unpushed / ahead of `origin/main`), the
 runtime guard refuses cleanly with a `branch_sync_conflict` blocker rather than
@@ -106,6 +106,5 @@ Phase-loop handoffs and terminal closeouts must preserve one `spec_delta_closeou
 - `<harness>-phase-loop dry-run`: use `phase-loop dry-run --max-phases <N>`.
 - `<harness>-phase-loop sync-skills`: use `phase-loop sync-skills --check`, and use `--apply` only when the operator explicitly wants bridge repair.
 
-Harness CLI is live-supported through the shared runner contract. Preserve the
-Harness trust posture as observed launch metadata, and do not treat missing
-trust bypasses as installed-skill failure.
+The Harness executor uses Antigravity `agy` through the shared runner contract.
+Preserve its selected model, effort and launch posture in metadata.

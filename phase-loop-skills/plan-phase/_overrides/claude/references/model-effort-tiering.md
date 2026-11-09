@@ -5,8 +5,7 @@ adapter runs read this file too: it is not preloaded with the skill.
 
 ## Model & Effort Tiering (right-size per lane, don't default to the ceiling)
 
-The runtime resolves one planning model per executor (`codex` → `gpt-6-astra`,
-`claude` → `claude-opus-5`), so **reasoning effort is the primary cost dial.**
+The runtime resolves one planning model per executor (read the current model IDs from `phase_loop_runtime.profiles`), so **reasoning effort is the primary cost dial.**
 The normalized effort ladder, cheapest first, is:
 
 `minimal` < `low` < `medium` < `high` < `xhigh` < `max`
@@ -24,11 +23,11 @@ lacks; use it:
   refactors, security-sensitive logic, or ambiguous specs justify `high`/`xhigh`;
   record *why* in the rule's `reason=`.
 - Express the choice in an `## Execution Policy` section the runtime parses
-  (selector = `default`, an action, or a lane alias):
+  (selector = `work-unit defaults`, an action, or a numeric lane ID):
 
 ```
 ## Execution Policy
-- default: effort=low, reason=most lanes are mechanical this phase
+- work-unit defaults: effort=low, reason=most lanes are mechanical this phase
 - execute: effort=medium
 - SL-3: effort=high, reason=constant-time comparison is subtly wrong-prone
 - SL-7: effort=minimal, reason=docs sweep only
@@ -37,9 +36,8 @@ lacks; use it:
 Two hard syntax rules the parser enforces (a malformed line fails the whole
 section, not just that line):
 
-- **Lane selectors are the numeric lane id** (`SL-3`, `P2A` → use `lane <name>:`
-  for non-numeric names). `SL-DOCS`-style names are rejected; write `SL-7` or
-  `lane SL-DOCS: …`.
+- **Lane selectors are the numeric lane id** (`SL-3`). Use numeric `SL-N` selectors; descriptive names belong after the lane heading
+  separator. `validate_plan_dispatch_hints` rejects custom action selectors.
 - **No commas inside a `reason=` value** — the comma separates assignments, so
   `reason=docs sweep, no logic` breaks parsing. Keep reasons comma-free.
 

@@ -16,8 +16,12 @@ not write `~/.claude/**` reflection or handoff files.
 
 After artifacts are staged or confirmed tracked, resolve paths. Treat `_shared/next_reflection_path.py` as optional-if-present: check existence, use it when available, otherwise fall back to an inline date-based filename.
 
+Resolve `REPO_HASH` and `BRANCH_SLUG` from `phase_loop_runtime.discovery.repo_identity(repo_root)` (`repo_hash` and `branch_slug`). Use the active runner's `RUN_ID`, or allocate one unique ID for this manual run; `repo_identity` does not generate run IDs.
+
 ```bash
-REFLECTION_PATH=resolve_skill_bundle_root("codex")/claude-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md
+SKILL_ROOT=$(python3 -c 'from phase_loop_runtime.skill_paths import resolve_skill_bundle_root; print(resolve_skill_bundle_root("claude"))')
+: "${REPO_HASH:?set REPO_HASH}" "${BRANCH_SLUG:?set BRANCH_SLUG}" "${RUN_ID:?set RUN_ID}"
+REFLECTION_PATH="$SKILL_ROOT/claude-plan-phase/reflections/$REPO_HASH/$BRANCH_SLUG/$RUN_ID.md"
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 REPO_LOCAL_HANDOFF=$(python3 - <<'PYH'
 from pathlib import Path
@@ -27,17 +31,13 @@ try:
     # Primary: the installed phase_loop_runtime.skill_paths resolver.
     from phase_loop_runtime.skill_paths import resolve_handoff_root
     print(resolve_handoff_root(repo) / skill / "latest.md")
-except Exception:
-    # Fallback: the repo-local handoff_path.py mirror, only when the runtime is not importable.
-    from importlib import util
-    spec = util.spec_from_file_location("handoff_path", repo / "shared" / "phase-loop" / "handoff_path.py")
-    mod = util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    print(mod.resolve_handoff_path(repo, skill))
+except ImportError:
+    from phase_loop_runtime.handoff_path import resolve_handoff_path
+    print(resolve_handoff_path(repo, skill))
 PYH
 )
 mkdir -p "$(dirname "$REPO_LOCAL_HANDOFF")"
-SKILL_MD=resolve_skill_bundle_root("codex")/claude-plan-phase/SKILL.md
+SKILL_MD="$SKILL_ROOT/claude-plan-phase/SKILL.md"
 ```
 
 Primary path: the orchestrator writes BOTH files directly with the Write tool. Before writing either file, ensure the plan doc has been staged in the preceding Close-out "Stage artifact" section unless the user explicitly forbade staging.
@@ -89,7 +89,7 @@ timestamp: <ISO>
 artifact: <absolute path to plan doc + reviews if any>
 artifact_state: <staged|tracked|modified|unstaged|blocked>
 next_skill: <claude-execute-phase|none>
-next_command: </claude-execute-phase PHASE_ALIAS|none - reason>
+next_command: </claude-execute-phase <plan-doc-path>|none - reason>
 next_phase: <PHASE_ALIAS - execution ready|PHASE_ALIAS - blocked: reason>
 ---
 
@@ -139,4 +139,4 @@ After the files are written, print to the user:
 > Reflection saved to `<REFLECTION_PATH>`.
 > Handoff written to `<REPO_LOCAL_HANDOFF>`.
 >
-> Recommended next step: run `/clear` to reset your context window, then invoke `/claude-execute-phase <alias>`. The next skill reads the handoff automatically.
+> Recommended next step: run `/clear` to reset your context window, then invoke `/claude-execute-phase <plan-doc-path>`. The next skill reads the handoff automatically.
