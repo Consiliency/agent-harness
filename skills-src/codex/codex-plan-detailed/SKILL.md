@@ -13,7 +13,7 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
 
 - In Plan Mode, inspect only and return a `<proposed_plan>`.
 - In Default mode, write a plan artifact only if the user asked for one.
-- When invoked outside Plan Mode for a planning request, still produce the plan and handoff artifacts, but do not begin implementation; tell the user Plan Mode was not active.
+- Outside Plan Mode, produce the plan text without beginning implementation; write plan and handoff artifacts only when the user requested an artifact.
 - In planning-only runs, do not execute tests, builds, formatters, generators, or other verification commands. List the commands in the plan instead. Run verification only when the user explicitly asks for validation or execution.
 - Research first. Do not propose changes to files you have not located.
 - Skip reconnaissance you do not need: if the context required to plan is already in the current session — the relevant files have been read, the architecture was just discussed, or the caller supplied the file map — do not spawn Explore/reconnaissance subagents or re-run discovery to re-gather it; plan directly from what you already have. Keep reconnaissance proportional to the change: a one- or two-file bounded change needs targeted reads, not a full parallel Explore fan-out.
@@ -105,7 +105,7 @@ If writing an artifact, use `apply_patch`, report the path, and do not commit un
 
 ### Manifest write
 
-After the plan artifact path and repo-local handoff path are known, best-effort append a `type=detailed` entry to `plans/manifest.json` through `phase_loop_runtime.plan_manifest.append_entry` (`plan-manifest append`). `append_entry(repo, entry)` takes a typed `phase_loop_runtime.plan_manifest.DotfilesPlanEntry` constructed with keyword fields (`slug`, `file`, `type`, `status`, `created_at`, `updated_at`, `owner_skill`, …), NOT a plain dict — passing a dict fails. Use `phase_loop_runtime.skill_paths` resolver helpers for any reflection or handoff paths needed by the metadata. The manifest entry must record `status=committed`, `slug`, `file`, `created_at`, `updated_at`, `owner_skill=codex-plan-detailed`, `task_summary`, `acceptance_criteria_count`, and the handoff path metadata (`handoff_path` / `handoff_ref`). Include a committed lifecycle event with `by=codex-plan-detailed` when the helper contract requires lifecycle provenance.
+After the plan artifact path and repo-local handoff path are known, best-effort append a `type=detailed` entry to `plans/manifest.json` through `phase_loop_runtime.plan_manifest.append_entry`. `append_entry(repo, entry)` takes a typed `phase_loop_runtime.plan_manifest.DotfilesPlanEntry` constructed with keyword fields (`slug`, `file`, `type`, `status`, `created_at`, `updated_at`, `owner_skill`, …), NOT a plain dict — passing a dict fails. Use `phase_loop_runtime.skill_paths` resolver helpers for any reflection or handoff paths needed by the metadata. The manifest entry must record `status=committed`, `slug`, `file`, `created_at`, `updated_at`, `owner_skill=codex-plan-detailed`, `task_summary`, `acceptance_criteria_count`, and the handoff path metadata (`handoff_ref`). Include a committed lifecycle event with `by=codex-plan-detailed` when the helper contract requires lifecycle provenance.
 
 Manifest write failures are non-fatal during the dual-mode window: emit a ledger warning, add the failure to the mandatory reflection, and preserve the existing closeout, handoff, and final response behavior.
 

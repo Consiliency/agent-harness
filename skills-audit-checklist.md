@@ -1,6 +1,6 @@
 # Skill source audit
 
-Pending entries have not yet been audited. Generated outputs are reviewed through regeneration and parity checks.
+Audit baseline: `origin/main` at `23a30561e9b2ef23933fcbb4225a1d86120a5195`. Pending entries have not yet been audited. `skills-src/` is canonical; generated outputs in `phase-loop-skills/` and the packaged bundle are reviewed through regeneration and parity checks. The hand-authored `phase-loop-skills/README.md` is audited separately. No skill source is owned by agent-harness#1934, agent-harness#1937 or agent-harness#1939.
 
 - [ ] `skills-src/claude/claude-advisor-board/SKILL.md` — pending
 - [ ] `skills-src/claude/claude-execute-detailed/SKILL.md` — pending
@@ -52,16 +52,16 @@ Pending entries have not yet been audited. Generated outputs are reviewed throug
 - [ ] `skills-src/claude/claude-task-contextualizer/SKILL.md` — pending
 - [ ] `skills-src/claude/claude-task-contextualizer/references/task-templates.md` — pending
 - [ ] `skills-src/codex/codex-advisor-board/SKILL.md` — pending
-- [ ] `skills-src/codex/codex-execute-detailed/SKILL.md` — pending
+- [x] `skills-src/codex/codex-execute-detailed/SKILL.md` — fixed; runtime `phase-loop-runtime/src/phase_loop_runtime/publishing.py:2085; plan_manifest.py:339 — removed nonexistent CLI alias`
 - [ ] `skills-src/codex/codex-execute-phase/SKILL.md` — pending
 - [ ] `skills-src/codex/codex-execute-phase/references/interactive-path.md` — pending
 - [ ] `skills-src/codex/codex-execute-phase/references/worker-fanout.md` — pending
 - [ ] `skills-src/codex/codex-phase-loop/SKILL.md` — pending
 - [ ] `skills-src/codex/codex-phase-roadmap-builder/SKILL.md` — pending
-- [ ] `skills-src/codex/codex-plan-detailed/SKILL.md` — pending
+- [x] `skills-src/codex/codex-plan-detailed/SKILL.md` — fixed; runtime `phase-loop-runtime/src/phase_loop_runtime/plan_manifest.py:95,327; skill_paths.py:24-39 — removed nonexistent CLI alias, corrected handoff field and artifact-write contradiction`
 - [ ] `skills-src/codex/codex-plan-phase/SKILL.md` — pending
-- [ ] `skills-src/codex/codex-run-train/SKILL.md` — pending
-- [ ] `skills-src/codex/codex-skill-editor/SKILL.md` — pending
+- [x] `skills-src/codex/codex-run-train/SKILL.md` — checked-clean; runtime `phase-loop-runtime/src/phase_loop_runtime/train_runner.py:340-380,3030; cli.py run-train parser`
+- [x] `skills-src/codex/codex-skill-editor/SKILL.md` — checked-clean; runtime `phase-loop-runtime/src/phase_loop_runtime/reflection_corpus.py archive; build_bundle.py DEFAULT_SOURCES; skill_paths.py:24-39`
 - [ ] `skills-src/codex/codex-skill-improvement-planner/SKILL.md` — pending
 - [ ] `skills-src/codex/codex-task-contextualizer/SKILL.md` — pending
 - [ ] `skills-src/gemini/gemini-advisor-board/SKILL.md` — pending
@@ -91,3 +91,6 @@ Pending entries have not yet been audited. Generated outputs are reviewed throug
 - [ ] `skills-src/opencode/opencode-skill-editor/SKILL.md` — pending
 - [ ] `skills-src/opencode/opencode-skill-improvement-planner/SKILL.md` — pending
 - [ ] `skills-src/opencode/opencode-task-contextualizer/SKILL.md` — pending
+
+- [ ] `skills-src/claude/claude-skill-editor/applied-plans.log` — pending
+- [ ] `phase-loop-skills/README.md` — pending
