@@ -16,8 +16,10 @@ Two behaviors, both **mode-branched** and **non-human terminal**:
    non-human ``review_gate_block`` + halt, surfaced in the run-end summary. In
    ``autonomous`` mode the loop does NOT run and never spawns a panel.
 
-These are pure, runner-importable functions with a mockable panel seam; nothing
-here adds ``human_required`` and the autonomous path is a literal no-op.
+The functions expose a mockable panel seam and use non-human blockers. When a
+``fab_promotion_check`` is supplied, its live equivalence check can refuse either
+mode immediately before an otherwise-mergeable result. Autonomous mode skips
+panel review but still performs this optional check.
 """
 from __future__ import annotations
 

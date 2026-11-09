@@ -1,16 +1,14 @@
-"""CS-2.1 SA — the one-way SANITIZED export bridge (enforcement → Portal).
+"""Fleet-metric aggregate export helpers (enforcement → Portal).
 
-This is the PUSH side of the ``.phase-loop`` wall. Enforcement computes the
-ledger-faithful aggregate series (``fleet_metrics.derive_fleet_metric_series``)
-and pushes ONLY sanitized aggregates + timestamps to Portal's control-plane
-ingest. Portal never reaches back into ``.phase-loop`` — the direction is
-strictly enforcement → Portal.
+``build_sanitized_export`` derives velocity, burn-down, and broken-promise-duration
+series from the local fleet-metrics ledger. ``assert_sanitized`` checks permitted
+keys and leaf types, fixed labels, timestamp syntax, repo-slug syntax, and a list
+of forbidden substrings. It does not detect arbitrary secrets encoded as numbers
+or otherwise matching permitted shapes.
 
-Sanitization is PROVABLE, not incidental: :func:`build_sanitized_export` runs
-every payload through :func:`assert_sanitized`, which fails closed if any leaf
-value looks like a filesystem path, a ``.phase-loop`` / ``events.jsonl``
-reference, a secret, or a raw session payload. The named metrics only ever carry
-numbers, ISO-8601 timestamps, and a fixed set of enum labels.
+``push_export`` rechecks the payload and sends an HTTP POST to the supplied URL
+with the supplied ingest key and timeout. These helpers provide an outbound path;
+they do not establish the behavior of a deployed Portal service.
 """
 
 from __future__ import annotations

@@ -1,14 +1,12 @@
 """Visual-evidence closeout validator (rigor-v1 P6).
 
-When a phase changes UI/visual surfaces but attaches no visual evidence
-(screenshot path + observed outcome), raise a finding. Autonomy-first:
-``block``-severity, so under the default ``PHASE_LOOP_REVIEW=warn`` it is
-recorded and the loop continues; it blocks only on opt-in. The agent
-self-satisfies by capturing a screenshot (claude-in-chrome / Playwright-via-PMCP)
-and recording its path — no human eyeball is required to pass.
+When ``ui_change_detected`` matches changed paths, raise a finding unless the
+terminal summary has a truthy ``visual_evidence_path`` or ``visual_evidence``.
+The validator does not open the referenced evidence or require an observed-outcome
+field. Executors may also record ``visual_evidence_observed`` for reviewers.
 
-The executor records ``visual_evidence_path`` (and optionally
-``visual_evidence_observed``) in the terminal summary.
+Findings have ``block`` severity. The default ``PHASE_LOOP_REVIEW=warn`` records
+them without stopping the loop; opting into block mode enforces them.
 """
 from __future__ import annotations
 

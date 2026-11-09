@@ -9,7 +9,7 @@ the fuzzy audit's false-positive / fail-open failure modes.
 
 Scope (honest): guarantees COMPLETENESS (no goal silently forgotten). It does NOT
 verify ADEQUACY (that the referenced evidence actually discharges the goal) — that
-stays with code review + evidence authenticity (#91). It makes weak evidence
+stays with code review + evidence authenticity (agent-harness#91). It makes weak evidence
 human-reviewable at the reference point rather than hidden in a paraphrase.
 
 Opt-in per phase: a phase with no EC-IDs is ``not_applicable`` (legacy, no gate).

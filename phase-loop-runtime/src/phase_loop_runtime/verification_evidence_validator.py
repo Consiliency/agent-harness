@@ -1,14 +1,12 @@
 """Verification-evidence closeout validator (rigor-v1 P5).
 
-Closes the generic-phase hole: today only `RG` phases or plans opting in via
-`IF-0-RG-1`/`--verification-log` require an evidence artifact, so any other phase
-can self-report `verification_status=passed` with nothing backing it. This
-validator raises a finding for those generic phases too.
+For generic phases reporting ``verification_status=passed``, require an artifact
+reference or a typed ``verification_evidence_opt_out`` reason. RG and plans
+mentioning ``IF-0-RG-1`` or ``--verification-log`` are left to the existing gate.
+This validator checks for a reference; it does not validate artifact contents.
 
-Autonomy-first: ``block``-severity, so under the default ``PHASE_LOOP_REVIEW=warn``
-it is recorded and the loop continues; it blocks only on opt-in. The agent
-self-satisfies by attaching a verification artifact or recording a typed opt-out
-reason (``verification_evidence_opt_out``) — no human required.
+Findings have ``block`` severity. The default ``PHASE_LOOP_REVIEW=warn`` records
+them without stopping the loop; opting into block mode enforces them.
 """
 from __future__ import annotations
 
