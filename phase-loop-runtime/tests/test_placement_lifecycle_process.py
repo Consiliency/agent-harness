@@ -781,6 +781,13 @@ def test_release_echo_mismatch_is_rejected_and_the_lease_stays_held(env):
     assert response.reservation.lease_id in env.coordinator.held and len(env.reservations()) == 1
 
 
+@pytest.mark.parametrize("reservation_id", ["rsv-unknown", "x" * 256, "rsv-" + "0" * 32])
+def test_an_id_this_lifecycle_never_issued_is_unknown(env, reservation_id):
+    response, code = release(env.lifecycle(), {**_any_reservation(), "reservation_id": reservation_id})
+    assert code == 10 and response.state == "unknown_reservation"
+    assert list((env.state / "agent-toolkit" / "reservations").iterdir()) == []
+
+
 def test_a_cross_client_release_is_rejected_without_lookup(env):
     response, _raw, _code = reserve(env.lifecycle())
     rejected, code = release(env.lifecycle("agent-harness"), response.reservation.to_json())

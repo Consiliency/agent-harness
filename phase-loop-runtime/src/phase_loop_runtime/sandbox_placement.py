@@ -2311,6 +2311,8 @@ _PI_RUNNER_BINDINGS = {"openshell": "full-remote-pi-runner", "local": "minimal-w
 _PROVIDER_REFUSED = "sandbox_placement_provider_refused"
 _WORKLOAD_UNSUPPORTED = "sandbox_placement_workload_unsupported"
 _PREFLIGHT = "preflight"
+#: The only reservation ids this lifecycle issues; anything else was never ours.
+_ISSUED_RESERVATION = re.compile(r"rsv-[0-9a-f]{32}")
 
 
 class LifecycleError(RuntimeError):
@@ -3094,8 +3096,12 @@ class PlacementLifecycle:
         if supplied.client != self.client or supplied.inventory != self.client:
             # Another client's reservation is never looked up, let alone released.
             return response("rejected", _REFUSED, self._flags(None))
+        if not _ISSUED_RESERVATION.fullmatch(reservation_id):
+            return response("unknown_reservation", _REFUSED, self._flags(None))
         active_path = self._dir("reservations") / f"{reservation_id}.json"
         tomb_path = self._dir("tombstones") / f"{reservation_id}.json"
+        if not os.path.lexists(active_path) and not os.path.lexists(tomb_path):
+            return response("unknown_reservation", _REFUSED, self._flags(None))
         with _FileLock(self._dir("reservations") / f"{reservation_id}.lock", blocking=True):
             active = _read_journal(active_path)
             tombstone = _read_journal(tomb_path) if active is None else None
