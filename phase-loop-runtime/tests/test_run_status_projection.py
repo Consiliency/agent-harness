@@ -403,7 +403,9 @@ def test_pid_reuse_and_observer_failures_are_stale(tmp_path):
     assert production.attempt_status(root, "attempt-1").display == "cancelling"
     me = rs.process_start_identity(os.getpid())
     assert production.proc_observer(os.getpid()) == (True, me)
-    other = rs.process_start_identity(os.getppid())
+    # A reused pid has a later start tick; another live process may share ours.
+    prefix, ticks = me.rsplit(":", 1)
+    other = f"{prefix}:{int(ticks) + 1}"
 
     def boom(pid):
         raise RuntimeError("observer failure")
