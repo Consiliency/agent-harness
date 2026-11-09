@@ -11,8 +11,8 @@ to move detail into one of those and point at it, not to delete it. Rationale:
 `base_words + per_lane_words × lanes`, where `lanes` is the number of `SL-N` stanzas in
 `## Lane Index & Dependencies`. Words are counted like `wc -w`, excluding YAML frontmatter.
 
-The built-in default is **2000 + 500 per lane**. Across this repository's 39 phase plans it
-flags five: the four 13k–21k-word plans and EXECFIND. A flat cap flagged healthy seven-lane
+The built-in default is **2000 + 500 per lane**. In the original 39-plan measurement it
+flagged five: the four 13k–21k-word plans and EXECFIND. A flat cap flagged healthy seven-lane
 plans as well.
 
 ## Configuration: `.phase-loop-planning.toml`
