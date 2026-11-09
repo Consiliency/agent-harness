@@ -8,6 +8,9 @@ still discharges authoritative acceptance, and hosted CI, Gate A and independent
 review are pending. Source hashes bind the implementation snapshot without
 predicting its eventual commit.
 
+The shared inventory is no longer pinned because `test_seat_reference_inventory.py`
+enforces site classification on every PR (owner decision, 2026-11-09).
+
 ## Observed verification
 
 The commands are the plan's V0–V4 and the frontmatter suite, run from the
@@ -1410,7 +1413,7 @@ covers the repair.
   },
   "observed_input_base": "23a30561e9b2ef23933fcbb4225a1d86120a5195",
   "observed_utc": "2026-11-09T04:22:02.421150+00:00",
-  "source_tree_digest": "496639a20336f9f2cd9a4bced7282e6cdd334efab2bf1bf33c063f1dc901b90c"
+  "source_tree_digest": "f85860bf0fa5d65785eb276975a96c57b707ff6b45ee156743108e50ab4c1825"
  },
  "source_hashes": {
   "docs/supervised-run-status.md": "1d47c384c86d86a73a617f0544376512dc8d65885acc6b6887f2389c12fc552e",
@@ -1419,10 +1422,9 @@ covers the repair.
   "phase-loop-runtime/src/phase_loop_runtime/schemas/supervised-worker-v1/conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
   "phase-loop-runtime/src/phase_loop_runtime/schemas/supervised-worker-v1/run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30",
   "phase-loop-runtime/tests/_run_status_vectors.py": "3710194953ef6d552584ce2ce9186197f63d19c2108c74e60d44ac64b6495237",
-  "phase-loop-runtime/tests/data/seat_launch_references.json": "f9190444032dc91a7b089ad0c3218556b1b8a5ba4274387d39981dbe8cce8b2f",
   "phase-loop-runtime/tests/test_run_status.py": "7e65d778945983569f391634fa162771113a40cf56d7ba5c19d7871f860ed022",
   "phase-loop-runtime/tests/test_run_status_projection.py": "923348e3a7f8f877b6dfc8045642320c9c0374cef53d057d96228cae747af457",
-  "phase-loop-runtime/tests/test_run_status_receipt.py": "9c4ff949fbb911e23d8950b678512f3dbbf198839567555c41053eae5a7da608",
+  "phase-loop-runtime/tests/test_run_status_receipt.py": "2aeb56891bf2d8cf12ebe117bc9fc6c724bfb2002750a90e96dc110b48fdcad0",
   "plans/artifacts/v12-JOURNAL-interface.md": "6aa4c3325c3ec99516dc5da8f115b77affb332a8f70d3cdf700c98405a9ba791"
  },
  "vector_outcomes": {
