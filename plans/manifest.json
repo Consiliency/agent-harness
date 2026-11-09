@@ -15522,6 +15522,46 @@
       "status": "committed",
       "type": "phase",
       "updated_at": "2026-11-09T09:23:41Z"
+    },
+    {
+      "amends": "plans/phase-plan-v13-PLACECLI.md",
+      "created_at": "2026-11-09T12:03:09Z",
+      "execution_status": "blocked_pending_sweep_decisions",
+      "file": "plans/artifacts/v13-PLACECLI-contract-v1.schema.json",
+      "frozen_inputs": {
+        "plans/artifacts/v13-PLACECLI-contract-v1.schema.json": {
+          "sha256": "dbd74a1c33130b3ac1690508828eb3fff5939ad0bdcd517c0be21defebcf7708"
+        }
+      },
+      "gate_status": "declared_not_produced",
+      "handoff_ref": null,
+      "if_gates_produced": [
+        "IF-0-PLACECLI-1",
+        "IF-0-PLACECLI-2"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2",
+        "SL-3"
+      ],
+      "lifecycle": [],
+      "owner_skill": "claude-plan-phase",
+      "phase_alias": "PLACECLI",
+      "planning_artifact_only": true,
+      "reflection_ref": null,
+      "review_status": "pending",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v13.md",
+        "slug": "phase-plans-v13",
+        "status": "committed",
+        "type": "phase"
+      },
+      "slug": "v13-PLACECLI-amend-landed-sweep",
+      "status": "committed",
+      "sweep_report": "plans/artifacts/v13-PLACECLI-landed-sweep.md",
+      "type": "phase",
+      "updated_at": "2026-11-09T12:03:09Z"
     }
   ],
   "schema_version": 1

@@ -16,7 +16,7 @@ implements the process boundary that agent-toolkit can consume without importing
 agent-harness Python. The frozen input is
 `plans/artifacts/v13-PLACECLI-contract-v1.schema.json` with erratum
 PLACECLI-v1-errata-1 (its `x-errata` member), sha256
-`130a894df327ddca2eebf83c8b52e068b25176320af3e0a4e15319a315ba83ea`.
+`dbd74a1c33130b3ac1690508828eb3fff5939ad0bdcd517c0be21defebcf7708`.
 The artifact fixes the stable console entry, required client/config flag,
 version response, exact message shapes, code vocabularies, target-bound policy
 and provider names, reservation egress digest, two isolated identities/inventories,
@@ -25,12 +25,11 @@ lifecycle semantics. It is read-only during
 execution; a needed contract change routes back through a roadmap/artifact
 amendment.
 
-Implementation has a non-human work-start gate: v12 IF-0-WORKER-1 and
-IF-0-JOURNAL-1 must be implemented and landed, and their final APIs must be
-reconciled with this plan. Until then PLACECLI is planned but blocked with
-`blocker_class=upstream_phase_unmet`, `human_required=false`. This is not a live
-activation gate and does not prevent black-box fixture preparation in a later
-authorized execution; the phase still lands as one coherent disabled feature.
+v12 IF-0-WORKER-1 and IF-0-JOURNAL-1 have landed with local receipts.
+`plans/artifacts/v13-PLACECLI-landed-sweep.md` records the consumed boundaries
+and the remaining STOP decisions; landing alone does not authorize public-v2
+launch or live activation. Execution waits for those decisions; the phase
+still lands as one coherent disabled feature.
 
 The process boundary is `agent-harness-placement --client
 agent-toolkit|agent-harness reserve|release|reap|version`. The flag is required,
@@ -242,8 +241,8 @@ source changes in this phase. If landed v12
 worker adds a shared CLI registry or companion snapshots, reconcile and amend the
 complete ownership list before execution.
 
-This phase is PLACECLI. Execution is blocked pending landed v12 IF-0-WORKER-1 and
-IF-0-JOURNAL-1. Next command: none until those upstream gates are verified; then
+This phase is PLACECLI. Execution is blocked pending the sweep STOP decisions.
+Next command: none until those decisions are recorded; then
 `codex-execute-phase plans/phase-plan-v13-PLACECLI.md` under separate execution
 authority. The following roadmap phase is LANEEXEC; this PR does not plan it.
 
