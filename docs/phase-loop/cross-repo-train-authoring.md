@@ -349,7 +349,8 @@ Cycles are rejected at parse time.
 
 ## Converged coordinator behavior
 
-The phase-loop command recovers the coordinator event log before every
+When `run_train` receives a `CoordinatorRuntime`, it recovers the coordinator
+event log before every
 dispatch, resume, publish, review, merge, release, or package action and
 compares it with exact Git, GitHub, provider, and registry authority. A
 missing probe, unsupported/mixed version, stale attempt or fence, invalid
