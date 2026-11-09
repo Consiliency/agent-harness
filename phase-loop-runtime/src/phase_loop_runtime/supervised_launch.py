@@ -165,6 +165,13 @@ def _executable_bytes(path: Path, *, excluded: tuple[Path, ...] = ()) -> bytes:
     return _read_file(path, cap=1024 * 1024, trusted=True, excluded=excluded, operator_owned=False, single_link=True)
 
 
+@dataclass(frozen=True, slots=True)
+class AttemptBinding:
+    assignment_digest: str
+    run_id: str
+    attempt_id: str
+
+
 @dataclass(frozen=True)
 class LaunchConfig:
     """Explicit paths to operator-owned config and closed argv template."""

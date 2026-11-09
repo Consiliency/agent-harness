@@ -197,3 +197,131 @@ def test_managed_binding_uses_password_database(tmp_path, monkeypatch):
         assert not binding.MANAGED_BINDING.exists()
     importlib.reload(binding)
     assert binding.MANAGED_BINDING == original
+
+
+@pytest.fixture
+def v2_operator(case, monkeypatch):
+    from types import SimpleNamespace
+    from phase_loop_runtime.supervised_contracts import V2_INPUT_ARTIFACT_SHA256
+    from phase_loop_runtime.supervised_launch import AttemptBinding
+    root = case.root / "operator"
+    def write(name, value):
+        path = root / name
+        path.write_text(json.dumps(value))
+        path.chmod(0o600)
+        return path
+    marker = root / "activation-marker"
+    codec = root / "public_codec.py"
+    codec.write_text('from pathlib import Path\nPath(' + repr(str(marker)) + ').write_text("activated")\n'
+                     'from phase_loop_runtime.supervised_envelope_v2 import *\n')
+    validator = root / "public_validator.py"
+    validator.write_text('from phase_loop_runtime.supervised_launch import Admit\n'
+                         'def validate(view): return Admit(view.launch_digest, "attempt-1")\n')
+    authority = "a" * 64
+    context = dict(expected_assignment_digest=authority, expected_snapshot_ref="b" * 64,
+        expected_crosswalk_ref="c" * 64, timeout_max_seconds=60, qualified_routes=[], policy_epoch="epoch-1",
+        revoked_record_ids=[], caller_context_suitability={}, policy={"issuer_records": {}, "time_basis": "system_utc"})
+    context_path = write("v2-context.json", context)
+    spec = {"slots": {"workspace": "root", "target": "root", "reference": "root"},
+            "launch": {"workspace": {"slot": "workspace"}, "target": {"slot": "target"},
+                       "reference_roots": [{"slot": "reference"}]}}
+    spec_path = write("v2-spec.json", spec)
+    controllers = root / "controllers"
+    controllers.mkdir(mode=0o700)
+    document = dict(schema="agent-harness.supervised-launch-binding.v2", controller_root=str(controllers),
+        context=str(context_path), spec=str(spec_path), input_seal=V2_INPUT_ARTIFACT_SHA256,
+        context_slots=["expected_assignment_digest", "expected_snapshot_ref", "expected_crosswalk_ref"],
+        implementations={kind: {"path": str(path), "sha256": binding.sha256(path.read_bytes())}
+                         for kind, path in (("codec", codec), ("validator", validator))})
+    path = write("v2-binding.json", document)
+    roots = dict(workspace=case.root / "workspace", target=case.root / "target",
+                 reference_roots=(case.root / "references",))
+    controller_context = {key: value for key, value in context.items() if key != "policy"}
+    controller = dict(h="d" * 64, attempt=dict(assignment_digest=authority, run_id="run-1", attempt_id="attempt-1"),
+                      context=controller_context, slots={"workspace": str(roots["workspace"]), "target": str(roots["target"]),
+                                                        "reference": str(roots["reference_roots"][0])})
+    monkeypatch.setattr(binding, "sys", SimpleNamespace(flags=SimpleNamespace(isolated=True), modules=sys.modules))
+    return SimpleNamespace(path=path, document=document, context=context, context_path=context_path,
+                           spec_path=spec_path, marker=marker, roots=roots, codec=codec,
+                           controller=controller, attempt=AttemptBinding(authority, "run-1", "attempt-1"), write=write)
+
+
+def test_v2_passive_agreement_activation_from_held_bytes(v2_operator):
+    operator = v2_operator
+    locator = binding.read_binding_locator(operator.path)
+    passive = binding.load_v2_binding(operator.path, **operator.roots)
+    assert isinstance(passive, binding.V2Binding)
+    assert passive.binding_bytes == locator.binding_bytes and not operator.marker.exists()
+    operator.codec.write_text('raise RuntimeError("path reread")')
+    agreed = binding.reconcile_v2_binding(locator, passive, controller=operator.controller, attempt=operator.attempt)
+    assert isinstance(agreed, binding.V2Binding) and not operator.marker.exists()
+    activated = binding.activate_v2_binding(agreed)
+    assert isinstance(activated, binding.V2Binding) and operator.marker.read_text() == "activated"
+    assert activated.codec.PUBLIC_CODEC == "admitted_launch_envelope.v2"
+
+
+@pytest.mark.parametrize("category", ["binding", "context", "spec", "codec", "validator"])
+@pytest.mark.parametrize("root_kind", ["workspace", "target", "reference"])
+def test_v2_full_load_exclusions(v2_operator, category, root_kind):
+    operator = v2_operator
+    directory = operator.roots["reference_roots"][0] if root_kind == "reference" else operator.roots[root_kind]
+    document = dict(operator.document)
+    if category == "binding":
+        path = directory / "binding.json"
+        path.write_bytes(operator.path.read_bytes())
+    else:
+        field = operator.document[category] if category in ("context", "spec") else operator.document["implementations"][category]["path"]
+        selected = directory / Path(field).name
+        selected.write_bytes(Path(field).read_bytes())
+        selected.chmod(0o600)
+        if category in ("context", "spec"):
+            document[category] = str(selected)
+        else:
+            document["implementations"] = {**document["implementations"], category: {**document["implementations"][category], "path": str(selected)}}
+        path = operator.write("changed-binding.json", document)
+    assert binding.load_v2_binding(path, **operator.roots) == binding.Refused("untrusted_location")
+    assert not operator.marker.exists()
+
+
+@pytest.mark.parametrize("change", ["bytes", "root", "implementation"])
+def test_v2_locator_disagreement_precedes_activation(v2_operator, change):
+    operator = v2_operator
+    locator = binding.read_binding_locator(operator.path)
+    document = dict(operator.document)
+    if change == "root":
+        document["controller_root"] += "-replacement"
+    elif change == "implementation":
+        replacement = operator.path.parent / "replacement.py"
+        replacement.write_text('raise RuntimeError("must remain passive")')
+        document["implementations"] = {**document["implementations"], "codec": {"path": str(replacement), "sha256": binding.sha256(replacement.read_bytes())}}
+    operator.path.write_text(json.dumps(document) + " ")
+    passive = binding.load_v2_binding(operator.path, **operator.roots)
+    assert isinstance(passive, binding.V2Binding)
+    assert binding.reconcile_v2_binding(locator, passive, controller=operator.controller, attempt=operator.attempt) == binding.Refused("binding_invalid")
+    assert binding.activate_v2_binding(passive) == binding.Refused("binding_invalid")
+    assert not operator.marker.exists()
+
+
+@pytest.mark.parametrize("change", ["assignment", "missing-context", "epoch", "slot", "roots", "missing-slot"])
+def test_v2_controller_agreement_closed(v2_operator, change):
+    import copy
+    operator = v2_operator
+    locator = binding.read_binding_locator(operator.path)
+    passive = binding.load_v2_binding(operator.path, **operator.roots)
+    document = copy.deepcopy(operator.controller)
+    if change == "assignment": document["context"]["expected_assignment_digest"] = "e" * 64
+    elif change == "missing-context": document["context"].pop("expected_crosswalk_ref")
+    elif change == "epoch": document["context"]["policy_epoch"] = "epoch-2"
+    elif change == "slot": document["slots"]["unexpected"] = "value"
+    elif change == "roots": document["slots"]["workspace"] = str(operator.roots["target"])
+    else: document["slots"].pop("reference")
+    assert binding.reconcile_v2_binding(locator, passive, controller=document, attempt=operator.attempt) == binding.Refused("binding_invalid")
+    assert not operator.marker.exists()
+
+
+def test_managed_binding_missing_passwd_has_no_fallback(monkeypatch):
+    def missing(uid):
+        raise KeyError(uid)
+    monkeypatch.setattr(binding.pwd, "getpwuid", missing)
+    assert binding._managed_binding() is None
+    assert binding.read_binding_locator(None) == binding.Refused("binding_unavailable")
