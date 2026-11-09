@@ -3128,6 +3128,7 @@ class PlacementLifecycle:
                 hand(effect)
         record["pending"] = []
 
+    @staticmethod
     def _parsed_root(text: str, name: str) -> object:
         location = sandbox_policy.parse_location(text)
         return sandbox_policy.SandboxRootChoice(location.host, location.path, False,
