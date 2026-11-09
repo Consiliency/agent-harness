@@ -18,7 +18,7 @@ after a reservation. agent-toolkit#54 already reserves through PLACECLI, but it
 cannot run a remote Pi end to end until these launch inputs exist.
 
 **Frozen artifact.** `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`,
-sha256 `bd0e6694e6df9e4ae0bc640c138645adf6b49e8f56aa3f5af7488107062676f3`,
+sha256 `a9ae6355056b373c5746ef50920f6a4dab4981b7d55f59d4176c240cdd22f40c`,
 holds IF-0-LANEEXEC-1. It covers:
 
 - the process entry `agent-harness-launch --client … prepare|launch|status|cancel|version`
@@ -313,9 +313,12 @@ diagnostics or evidence.
 Work-start gates (non-human, `blocker_class=upstream_phase_unmet`):
 
 - PLACECLI implemented, including errata-1;
-- EXT-WORKER (v12 IF-0-WORKER-1 and IF-0-JOURNAL-1);
-- IF-0-JAILCORE-4 (`seat_resource_caps.py`) landed, including the caps contract §1a
-  carve-out and its §7 (j) tests.
+- EXT-WORKER has landed (v12 IF-0-WORKER-1 and IF-0-JOURNAL-1), with
+  local fixture scope; public-v2 admission and lifecycle adaptation remain
+  unresolved as recorded in `plans/artifacts/v13-LANEEXEC-landed-sweep.md`;
+- IF-0-JAILCORE-4 base caps have landed; the caps contract §1a tmpfs
+  carve-out still refuses in `seat_resource_caps.py`, so that prerequisite
+  and its §7 (j) acceptance remain unmet.
 
 EXT-LAUNCHSITE and EXT-OPENSH are activation prerequisites; their offline
 controls run here.
