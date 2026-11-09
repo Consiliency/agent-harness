@@ -1,10 +1,12 @@
 {
   "aarch64": {
     "claude": "7b6b8613ffb5d9475d72b69adc98338da9d164f14e2d1d5d8ccb061cd6dbf5e6",
+    "codex": "de148170ec3cc855ea8fd6f4c5e9349aef9ef7fcd5d691d47b64d323eda640e7",
     "gemini": "317e6e6419b857a8d5d0caa542338cd5a959c3e8d8855d74e158f465f571495a"
   },
   "x86_64": {
     "claude": "91ce53149412560377a29c01d9ef74af09d00769982cee7240f36e50caa3d543",
+    "codex": "2baabd1cfafc3654ac4f86e0c74d36086e783ca8f08a94abde59944ff17521a6",
     "gemini": "62fc4258995145850bd2bab41642093b2c3dffd647063d7d660587ea74ab33b2"
   }
 }
