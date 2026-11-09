@@ -333,6 +333,29 @@ def worker_child_environment(allow: frozenset[str]) -> dict[str, str]:
             and key in (allow | {"TMPDIR", "CLAUDE_CODE_TMPDIR"})}
 
 
+def _descriptor_image(path):
+    """Hold a no-follow ELF image when descriptor execution is available."""
+    if not Path("/proc/self/fd").is_dir() or not Path(path).is_absolute():
+        return None
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        parts = Path(path).parts[1:]
+        for index, part in enumerate(parts):
+            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+            if index < len(parts) - 1:
+                flags |= os.O_DIRECTORY
+            child = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        if os.read(fd, 4) != b"\x7fELF":
+            os.close(fd)
+            return None
+        return fd
+    except OSError:
+        os.close(fd)
+        return None
+
+
 def run_bounded_capture(request: CaptureRequest, *,
                         before_spawn: Callable[[], SpawnRefused | None],
                         cancel: threading.Event) -> BoundedCapture | SpawnRefused:
@@ -342,11 +365,16 @@ def run_bounded_capture(request: CaptureRequest, *,
     hashes = {name: hashlib.sha256() for name in ("stdout", "stderr")}
     counts = dict.fromkeys(hashes, 0)
     proposal = bytearray()
+    image = _descriptor_image(request.argv[0])
     try:
         refusal = before_spawn()
     except Exception:
+        if image is not None:
+            os.close(image)
         return SpawnRefused("before_spawn_failed")
     if refusal is not None:
+        if image is not None:
+            os.close(image)
         return refusal
     start = time.monotonic_ns()
     deadline = time.monotonic() + request.timeout_seconds
@@ -358,6 +386,7 @@ def run_bounded_capture(request: CaptureRequest, *,
             cwd=str(request.cwd), env=dict(request.environment), bufsize=0,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             start_new_session=True,
+            **({"executable": f"/proc/self/fd/{image}", "pass_fds": (image,)} if image is not None else {}),
         )
     except OSError:
         empty = StreamDigest(hashlib.sha256(b"").hexdigest(), 0)
@@ -365,6 +394,9 @@ def run_bounded_capture(request: CaptureRequest, *,
                               None, empty, empty, True, b"", False, False, 1,
                               time.monotonic_ns() - start, started,
                               datetime.now(timezone.utc).isoformat())
+    finally:
+        if image is not None:
+            os.close(image)
     termination, by, sig, code = "completed", "worker", None, None
     delivered = not request.stdin
     offset = 0

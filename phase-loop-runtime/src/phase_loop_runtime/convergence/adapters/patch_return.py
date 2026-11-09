@@ -22,7 +22,7 @@ from ... import run_status as journal
 from ... import run_status_projection as projection
 from ...supervised_launch import Refused, consume_admission, classify_workspace, trusted_bytes
 from .base import (PROPOSAL_CAP_MAX, CaptureRequest, SpawnRefused,
-                   run_bounded_capture, worker_child_environment)
+                   run_bounded_capture, worker_child_environment, _descriptor_image)
 
 CANCEL_WAIT_SECONDS = 10
 PRODUCTION_LAUNCHER_COMMANDS = (("-I", "-m", "phase_loop_runtime.supervised_worker_cli", "launch"),)
@@ -303,7 +303,10 @@ class _Writer:
 
     def close(self):
         if not isinstance(self.writer, journal.JournalRefused):
-            self.writer.close()
+            try:
+                self.writer.close()
+            except Exception:
+                self.failed = True
 
 
 def run_patch_return(prepared, *, config_bytes: bytes, state_root: Path,
@@ -347,7 +350,10 @@ def run_patch_return(prepared, *, config_bytes: bytes, state_root: Path,
         launch_digest=identity.launch_digest, caller_context_sha256=context_digest)
     if isinstance(reservation, journal.JournalRefused):
         return refused(reservation.code)
-    writer = _Writer(journal.open_writer(root, reservation))
+    try:
+        writer = _Writer(journal.open_writer(root, reservation))
+    except Exception:
+        return refused("journal_unavailable", False)
     writer.call("state", "queued", worker_invocations=0)
     cancel = cancel if cancel is not None else threading.Event()
     lock_fd = None
@@ -408,6 +414,10 @@ def run_patch_return(prepared, *, config_bytes: bytes, state_root: Path,
                         writer.call("event", "cancellation requested")
                     return True
                 return False
+        image = _descriptor_image(inputs.argv[0])
+        exec_binding = "descriptor" if image is not None else "path_recheck"
+        if image is not None:
+            os.close(image)
         captured = run_bounded_capture(CaptureRequest(identity.attempt_id, inputs.argv,
             Path(inputs.workspace), inputs.timeout, inputs.instruction, settings.proposal_cap,
             worker_child_environment(settings.environment_allow)), before_spawn=before_spawn, cancel=CancelObserver())
@@ -469,7 +479,7 @@ def run_patch_return(prepared, *, config_bytes: bytes, state_root: Path,
                 config_digest=inputs.config_digest, template_digest=inputs.template_digest,
                 qualification_digest=inputs.qualification_digest, workspace_kind=inputs.workspace_class,
                 device=inputs.root_device, inode=inputs.root_inode, tier=inputs.tier,
-                environment_names=sorted(worker_child_environment(settings.environment_allow)), exec_binding="path_recheck",
+                environment_names=sorted(worker_child_environment(settings.environment_allow)), exec_binding=exec_binding,
                 termination=asdict(termination), exit_code=captured.exit_code, worker_invocations=captured.spawn_count,
                 stdout=asdict(captured.stdout), stderr=asdict(captured.stderr), streams_complete=captured.streams_complete,
                 duration_ns=captured.duration_ns, stdin_delivered=captured.stdin_delivered, proposal=asdict(proposal),
