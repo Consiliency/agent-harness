@@ -378,7 +378,7 @@ def test_controller_snapshot_excluded_location(v2_operator, root_kind):
     assert not operator.marker.exists()
 
 
-@pytest.mark.parametrize("change", [None, "binding-replaced", "controller-missing", "controller-timeout", "policy-slot", "worker-exception"])
+@pytest.mark.parametrize("change", [None, "binding-replaced", "controller-missing", "controller-timeout", "policy-slot", "worker-exception", "worker-exception-after-consume"])
 def test_v2_cli_bootstrap_order_enters_real_worker(v2_operator, monkeypatch, capsys, change):
     import json
     from test_supervised_capture_v2 import build_v2_attempt
@@ -399,11 +399,14 @@ def test_v2_cli_bootstrap_order_enters_real_worker(v2_operator, monkeypatch, cap
     if change == "controller-missing": controller_path.unlink()
     monkeypatch.setattr(binding, "MANAGED_BINDING", operator.path)
     monkeypatch.setattr(cli, "sys", SimpleNamespace(flags=SimpleNamespace(isolated=True)))
-    if change == "worker-exception":
+    if change in {"worker-exception", "worker-exception-after-consume"}:
         def unexpected(*args, **kwargs):
+            if change == "worker-exception-after-consume":
+                assert isinstance(launch.consume_admission(args[0]), launch.LaunchInputs)
             raise RuntimeError("inert private exception fixture")
         monkeypatch.setattr(patch_return, "run_patch_return", unexpected)
     tokens_before = set(launch._TOKENS)
+    opened_descriptors = []
     events = []
     def wrap(owner, name, event):
         original = getattr(owner, name)
@@ -412,6 +415,8 @@ def test_v2_cli_bootstrap_order_enters_real_worker(v2_operator, monkeypatch, cap
             if event in {"envelope", "locator", "controller", "full", "agreement"}:
                 assert not operator.marker.exists() and not result.exists() and not state.exists()
             value = original(*args, **kwargs)
+            if event == "result" and type(value) is int:
+                opened_descriptors.append(value)
             if event == "locator" and change == "binding-replaced":
                 operator.path.write_bytes(operator.path.read_bytes() + b" ")
             if event == "activation" and isinstance(value, binding.V2Binding):
@@ -431,9 +436,14 @@ def test_v2_cli_bootstrap_order_enters_real_worker(v2_operator, monkeypatch, cap
             (patch_return, "run_patch_return", "journal-spawn")):
         wrap(owner, name, event)
     outcome = cli.main(["launch", "--envelope", str(envelope), "--result", str(result)], state_root=state)
-    if change == "worker-exception":
+    if change in {"worker-exception", "worker-exception-after-consume"}:
         assert outcome == 10 and capsys.readouterr().out.strip() == "launch_invalid"
         assert set(launch._TOKENS) == tokens_before
+        assert opened_descriptors
+        with pytest.raises(OSError): os.fstat(opened_descriptors[0])
+        if change == "worker-exception-after-consume":
+            identity = operator.attempt
+            assert (identity.assignment_digest, identity.run_id, identity.attempt_id) in launch._CONSUMED
         assert not state.exists()
     elif change:
         assert outcome == 10 and not result.exists() and not state.exists()
