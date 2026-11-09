@@ -2,8 +2,9 @@
 
 The reconciler reads Git facts through ``git_discipline`` and classifies them
 against the contract's pipeline-ref registry. Without a .consiliency manifest
-it returns a skipped/no-consent result. With consent, it emits canonical JSON
-under ``spec-render/git-grounded/`` and hashes the exact body bytes with SHA-256.
+it returns a skipped/no-consent result. With consent, its default local output is
+``.phase-loop/observability/git-grounded-projection.json``; ``spec-render/git-grounded/``
+is the Portal destination namespace. It hashes the exact JSON body bytes with SHA-256.
 
 ``build_projection_index_entry`` targets the frozen Portal adapter contract:
 ``raw-sha256``, the ``proj-code-sbom`` kind and ``text/markdown`` content type.

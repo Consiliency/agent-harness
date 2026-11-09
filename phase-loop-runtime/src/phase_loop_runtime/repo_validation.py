@@ -7,6 +7,12 @@
 ``package.json`` script named ``agent:<target>``. It does not infer a contract
 from generic test commands. See ``docs/repo-validation-contract.md``.
 
+This is the behavioural twin of dotfiles' ``scripts/agent-validation``: for the
+same repo and target it must make the same dispatch decision and preserve the
+same exit-code contract. The intentional refinement is JSON reading: the Python
+stdlib needs no Node reader, so exit 21 for a package contract means the selected
+package-manager runner is missing, rather than Node being absent just for parsing.
+
 The stdlib resolver reads JSON directly and chooses the package manager using
 lockfile precedence, then available-runner fallback. Missing contracts return
 exit 20; missing selected runners return 21. ``run_plan`` maps a nonzero command

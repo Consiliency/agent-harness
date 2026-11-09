@@ -95,7 +95,7 @@ Design ambiguities resolved in this lane (stated once, not re-litigated):
      re-verify always comes from the trusted run store, never from the
      leaner output record.
 
-  2. **"No unresolved block finding remains" (§8) is evaluated against
+  2. **"No unresolved block finding remains" (§8)** is evaluated against
      `artifact.findings`'s current top-level `status` and the finding-flow
      audit trail ACROSS ALL delta rounds. `_unresolved_block_findings` folds each
      round's reopen/resolve decisions in order; a later unresolved reopen can
@@ -1629,12 +1629,12 @@ def _unresolved_block_findings(
     findings: Sequence[Finding],
     delta_chain: Sequence[DeltaReviewRecord],
 ) -> tuple[str, ...]:
-    """design ambiguity #2 (module docstring), generalized across the WHOLE
+    """Fold unresolved block findings across the WHOLE
     chain (agent-harness#191 CR, Lane D finding 2 — "unresolved-finding
     evaluation consults only the final round"): a `severity=="block"` finding
     starts from its top-level `status` (`clean` == provisionally resolved —
     `Finding.status` is never mutated by a later round's carry-forward
-    decision, per module docstring ambiguity #2), then folds EVERY
+    decision; see the module's finding-flow contract), then folds EVERY
     `delta_chain` round's `resolved_finding_ids`/`reopened_finding_ids` IN
     ORDER: a round that reopens id `f` without ALSO resolving `f` in that SAME
     round marks `f` unresolved from that point forward; a LATER round
@@ -1709,12 +1709,11 @@ def compose_gate_status(
     T16). `equivalence_verified` is a SEPARATE, independently-recomputed proof
     (never read from any client-supplied field).
 
-    NEVER raises for an in-scope fail-closed condition (mirrors
-    `fab_canonical.equivalent()`'s posture) EXCEPT `ProvenanceNotFound`, which
-    propagates deliberately: "no provenance recorded for this run_id" is a
-    different fact than "a recorded provenance is broken", and only the
-    caller (e.g. `fab_gate_validator`) can tell "not applicable, stay inert"
-    from "should block" apart.
+    Provenance validation errors inside the composition block become a blocked
+    status. Loading the artifact happens before that block: `ProvenanceNotFound`
+    and other load errors can propagate. Exceptions from the live equivalence
+    call can also propagate. Direct callers must handle those exceptions;
+    `fab_gate_validator` maps them to block findings for a scoped run.
 
     `status == GATE_STATUS_PASS` iff ALL of: EVERY round in the delta chain
     (not just the final one — F2) is itself resolved/pass-eligible and the

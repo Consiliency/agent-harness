@@ -204,8 +204,8 @@ must turn its test red.
 
 - A `no_effect_terminal_proven` row for K in a later generation refuses too. That is
   fail-closed, and this plan does not resolve whether it should instead allow.
-- Resolved by agent-harness#1576: records written by the agent-harness#1296 code for the same generation lack the new
-  fields, so a re-write conflicts (typed `PublishTransactionConflict`). That needs a
-  record written but no owner, an upgrade, and then a retry. Current
+- Resolved by agent-harness#1576: records written by the agent-harness#1296 code for the same generation lacked the new
+  fields, so a re-write conflicted (typed `PublishTransactionConflict`). The case
+  required a record written but no owner, an upgrade, and then a retry. Current
   `_recovery_record_core` treats no-rotation forms as equivalent and new records
   omit the redundant fields; see `fabpub-recovery-record-compat-1576.md`.

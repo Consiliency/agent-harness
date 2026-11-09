@@ -5,7 +5,9 @@ type hints, recursively handling nested dataclasses. Required top-level fields
 come from this module's ``CLOSEOUT_REQUIRED_NESTED_FIELDS`` (also consumed by the
 closeout diagnostic), plus ``schema``. The schema literal and terminal-status
 enum come from model constants. Nested required fields are the non-nullable
-annotations; nullable annotations allow null values.
+annotations. Nullable annotations are not universally emitted as null-allowed:
+mandatory top-level fields remain non-null, and a null union is added to an
+optional field only when its generated schema has a string-valued ``type``.
 
 ``canonical_schema`` reads the bundled
 ``schemas/phase_loop_closeout.schema.json`` through package-resource resolution.

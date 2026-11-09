@@ -7,8 +7,9 @@ host's jail qualification itself, once, before launching. It is the same procedu
 ``phase-loop seat-sandbox qualify``, and on a pass it records the pass in the per-host
 store. This folds in agent-harness#1186's first-use self-check (option C).
 
-- **Serialized per qualification key:** the run is serialized by an exclusive lock in the per-user state
-  directory. Concurrent seats or boards wait for it, then re-read the store.
+- **One run per host (per-user state dir):** an exclusive host-level lock
+  serializes qualification runs across keys. Concurrent seats or boards wait
+  for it, then re-read the store.
 - **On a failure** (the falsifiers failed, or the run could not happen): the seat is
   degraded and not run with ``seat_jail_qualification_failed`` and a typed reason (plan
   amendment A3b: never a sealed substitute). The rest of the board runs.

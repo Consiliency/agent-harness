@@ -11,6 +11,8 @@ an optional call instead warns and yields an empty launch prefix.
 This module supplies the network boundary. Filesystem and credential isolation
 for jailed review seats are supplied separately by ``seat_jail`` and profiles;
 network-filtering metadata alone does not attest filesystem confinement.
+The uplink posture leaves the public internet open, so ``network_filtered: true``
+does not mean the seat could not exfiltrate.
 """
 
 from __future__ import annotations

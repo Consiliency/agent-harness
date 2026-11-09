@@ -780,7 +780,7 @@ def equivalent(
     shaped this way. Checks, IN ORDER, each fail-closed:
 
       1. **Repo identity** (§4 precondition 1): the LIVE repo's origin resolves
-         (via the SAME #250 `resolve_broker_repo_identity` Lane A/broker use)
+         (via the SAME agent-harness#250 `resolve_broker_repo_identity` Lane A/broker use)
          to `binding.repo_slug`.
       2. **Base ref identity + freshness** (§4.3): `live_base_ref_name ==
          binding.base_ref_name` (a retarget is a DIFFERENT ref identity, I1);
@@ -797,9 +797,11 @@ def equivalent(
 
     Every git call carries `--no-replace-objects` + `GIT_NO_REPLACE_OBJECTS=1`
     (via `_run_git`/`patch_digest`'s own calls); any `rc != 0` at any stage
-    invalidates. NEVER raises for an in-scope fail-closed condition — always
-    returns a typed `EquivalenceResult`; only a genuine programming-error
-    exception (not one of this module's/Lane A's typed exceptions) propagates."""
+    invalidates. Repo-identity resolution failures, nonzero fetch / merge-base
+    results, and typed patch-recompute failures return an invalidated
+    `EquivalenceResult`. Execution failures and timeouts raised by `_run_git`
+    during fetch / merge-base can propagate; callers must handle exceptions as
+    well as the typed result."""
     repo = Path(repo)
 
     try:
