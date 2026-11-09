@@ -7,6 +7,18 @@ reviewed plan amendment and a reseal. Roadmap EC IDs remain the only acceptance
 authority. This file restates no EC text. Revision 2 applies the 2026-11-08
 advisor-board edits on agent-harness#1925 and the owner rulings recorded in the plan.
 
+Revision 3 applies the 2026-11-09 independent review of agent-harness#1934 and its
+ruling. Every change is additive or clarifying and stays inside JOURNAL's own
+artifact. The changes are:
+
+- durability barriers complete on adopted entries (sections 2, 5 and 6);
+- run records become permanent tombstones in quarantine (section 5);
+- `read_page` streams with bounded memory (section 8);
+- the projection is nullable when the latest attempt is unknown (section 8);
+- the exported records, checker, window reader and local codes are listed (sections 7 and 10).
+
+WORKER's J1–J6 names and signatures are unchanged.
+
 ## 1. Inputs and validation boundary
 
 Recorded 2026-11-08 by hashing the vendored files and fetching the same paths
@@ -81,8 +93,12 @@ enter a public record, and the admission index uses its own schema name.
 
   With `create=True` it creates, in order, each missing component below an
   existing verified parent and then `attempts/`, `assignments/` and `runs/`. Each
-  is created with `mkdir` 0700 and an explicit `fchmod` (umask has no effect),
-  then the new directory's parent is fsynced before the call returns.
+  is created with `mkdir` 0700 and an explicit `fchmod` (umask has no effect).
+  Before the call returns, it fsyncs the parent of every component this account
+  owns, whether that component was created now or adopted. It then fsyncs the
+  root after its three subdirectories exist. An fsync failure refuses
+  `journal_write_failed`. With `create=False` an absent root refuses
+  `journal_missing`, and nothing is fsynced.
 - Every later open is `dir_fd`-relative with `O_NOFOLLOW` at each component.
   `fstat` must show `st_uid == geteuid()`. Directories need exact mode 0700.
   Files need exact mode 0600, `S_ISREG` and `st_nlink == 1`. A violation is
@@ -165,12 +181,21 @@ An index entry is one JCS line + LF:
 `reserve_attempt` runs these steps in order. Every file it creates gets an
 explicit `fchmod` and is verified (section 2).
 
+**Barrier rule (revision 3).** Every fsync below is a barrier that runs on every
+reservation. It runs whether this call created the entry or adopted one left by a
+creator that died, or whose fsync failed, before reaching it. Barriers are
+idempotent, so a reservation never acknowledges an entry whose durability chain
+is incomplete. An fsync failure refuses `journal_write_failed`. On every
+reservation the chain is: `assignments/`, the assignment directory, `runs/<run_id>`,
+`runs/`, `attempts/`, `index.jsonl`, then the assignment directory again.
+
 0. Validate identifiers and digests, then mint the writer identity (section 4).
    `liveness_unsupported` refuses here. There are no effects yet.
-1. If `assignments/<digest>` is absent, `mkdir` it 0700, `fchmod` it and fsync
-   `assignments/`. Then open it verified.
-2. Open `lock` with `O_CREAT|O_NOFOLLOW` 0600. If the file was created, fsync the
-   assignment directory. Take `LOCK_EX`. Steps 3–7 run under this lock.
+1. If `assignments/<digest>` is absent, `mkdir` it 0700 and `fchmod` it. Open it
+   verified, then fsync `assignments/`.
+2. Open `lock` with `O_CREAT|O_EXCL|O_NOFOLLOW` 0600, or open the existing one.
+   Verify it and fsync the assignment directory. Take `LOCK_EX`. Steps 3–7 run
+   under this lock.
 3. Read and verify the whole index: chain digests, gapless `index_seq`,
    schema/version, a per-entry assignment digest equal to the directory key, no
    torn tail, size within limits. Any defect refuses `index_unverifiable`. The
@@ -178,17 +203,17 @@ explicit `fchmod` and is verified (section 2).
 4. An `attempt_id` already in the index refuses `attempt_reserved`.
 5. **Run claim.**
    - If `runs/<run_id>` exists, read it verified and bounded. Exactly
-     `<assignment_digest>\n` for this assignment proceeds. Another digest refuses
+     `<assignment_digest>\n` for this assignment is adopted. Another digest refuses
      `run_assignment_mismatch`. An empty, short, malformed or unsafe record
      refuses `run_record_unreadable`.
-   - If it is absent, create it with `O_CREAT|O_EXCL|O_NOFOLLOW` 0600, write the
-     record fully, fsync the file, then fsync `runs/`. EEXIST falls back to the
-     existing-record check.
+   - If it is absent, create it with `O_CREAT|O_EXCL|O_NOFOLLOW` 0600 and write the
+     record fully. EEXIST falls back to the existing-record check.
+   - Created or adopted, fsync the claim file, then fsync `runs/`.
 6. `mkdir attempts/<attempt_id>` with O_EXCL and 0700, `fchmod` it and fsync
    `attempts/`. EEXIST refuses `attempt_reserved`. This covers ids used by
    another assignment and ids from a reservation that crashed before step 7.
 7. Append the entry with `O_APPEND` and a full-write loop, then fsync the index
-   file. If the file was created, also fsync the assignment directory.
+   file and then the assignment directory.
 8. Release the lock and return `Reservation(identity, units, index_seq,
    entry_sha256, writer)`.
 
@@ -203,11 +228,23 @@ explicit `fchmod` and is verified (section 2).
   report it `attempt_unindexed` (display `unknown`).
 - A torn index tail makes the assignment `index_unverifiable` for readers and
   reservations alike.
+- A creator killed before a barrier, or whose fsync failed, leaves entries that
+  the next reservation adopts. That reservation completes every barrier before it
+  acknowledges.
 
-**Recovery (owner ruling).** v12 recovery is manual operator quarantine. Rename
-the affected assignment directory or run record aside within the root and keep
-its bytes. Every attempt and run id it held stays claimed through `attempts/` and
-`runs/`. A sealed recovery record is deferred to a later phase.
+**Recovery (owner ruling, clarified in revision 3).** v12 recovery is manual
+operator quarantine, and quarantine never releases a claim.
+
+- *Torn index.* Rename the affected assignment directory aside within
+  `assignments/`, under a name that is not 64-hex, and keep its bytes. Every
+  attempt id it held stays claimed through `attempts/`, and every run id through
+  `runs/`.
+- *Run records.* These are never renamed, moved or deleted. An empty, short,
+  malformed or unsafe record stays at its key as a permanent tombstone, and that
+  run id refuses `run_record_unreadable` from then on. The caller uses a new run
+  id. To keep forensic bytes, copy them elsewhere; never move the original.
+
+A sealed recovery record is deferred to a later phase.
 
 `caller_context` enters only as `caller_context_sha256`: the SHA-256 of the
 RFC 8785 bytes of the exact admitted value, computed by the caller. JOURNAL checks
@@ -225,7 +262,8 @@ only that it is 64-hex and never receives the value.
 ## 6. Writer
 
 `open_writer` takes `LOCK_EX | LOCK_NB` on `attempts/<attempt_id>/lock`. It
-creates the lock with `O_CREAT|O_EXCL` 0600 and fsyncs the attempt directory. A
+creates the lock with `O_CREAT|O_EXCL` 0600, or adopts an existing one. In both
+cases it fsyncs the attempt directory (the section 5 barrier rule). A
 busy lock refuses `journal_writer_busy`. Any existing segment refuses
 `journal_exists`, so a writer is never resumed. It creates `0000.jsonl` with
 O_EXCL and writes the header.
@@ -312,7 +350,22 @@ These checks produce `attempt_provenance_mismatch`:
 An index-entry writer that differs from the header writer is
 `journal_foreign_writer`. `attempt_evidence_copied` compares evidence-envelope
 digests across the attempts of one assignment, in index order. Any diagnostic
-sets display `unknown`. Readers never repair or truncate.
+sets display `unknown`. Readers never repair or truncate. After an unparseable or
+structurally invalid line, a reader stops seq and lifecycle continuity checks for
+the rest of that attempt, which is already unknown, so diagnostic sets stay exact.
+
+Further local codes (revision 3):
+
+- `journal_write_failed`: an append, rotation or barrier I/O failure.
+- `writer_closed`: an append after `close()`.
+- `limits_invalid`: `JournalLimits` out of range.
+- `ref_invalid`: a ref not built by `make_ref`, or more than 16 refs.
+- `page_request_invalid` and `page_invalid`: structurally invalid page inputs.
+- `reader_view_invalid`: a structurally invalid reader view.
+- `runtime_state_invalid`: a `runtime_state` outside section 9.
+- `run_record_unknown`: a reader view for an attempt with no verified state.
+
+`journal_missing` also covers an absent root opened with `create=False`.
 
 **Undetectable truncation (disclosed).** A reader cannot detect deletion of the
 final segment, or removal of whole trailing lines at a line boundary from the
@@ -335,7 +388,10 @@ section 10's `run_status` API.
   `journal_seq`, `segment_index` and `segment_sha256`.
 - Unknown attempts are listed separately with their diagnostics.
 - The latest attempt is the last index entry. If that attempt is unknown, the
-  latest is unknown; there is no fallback to an earlier attempt.
+  latest is unknown; there is no fallback to an earlier attempt. In that case
+  (revision 3) `project_assignment` returns `ProjectionResult(None,
+  unknown_attempts, diagnostics)`, where `unknown_attempts` lists the unknown
+  attempt. Every projection it does return passes `check_projection`.
 - `projection.state` is the replayed journal state, not a liveness claim.
 - `check_projection(projection, root)` compares a supplied (possibly cached)
   projection with a fresh replay. It returns `projection_behind_journal`
@@ -376,6 +432,14 @@ section 10's `run_status` API.
   `unknown` adds the local diagnostic `evidence_unknown`.
 - Unknown attempts contribute no lines and are listed in the result's
   diagnostics.
+- **Bounded memory (revision 3).** `read_page` loads the index once and reads
+  each attempt once, in index order, through `read_attempt_window`. It retains
+  only the selected events (at most `page_size`) and counts every other verified
+  line. Each attempt's evidence-envelope digest is carried forward to the later
+  attempts' copy check, so no earlier attempt is rescanned. Peak memory is
+  bounded by the index, one segment (`read_segment_max_bytes`) and the page, not
+  by the assignment's history. `project_assignment` and `check_projection` use the
+  same zero-event windows.
 - `PageResult(page, next_cursor, diagnostics)`: `next_cursor` is the
   continuation cursor when `has_more` is true, and `None` otherwise. The public
   `page` has no cursor member.
@@ -439,6 +503,15 @@ ChainHead(segment_index, segment_sha256, last_seq)
 JournalLimits(...section 6...); DEFAULT_LIMITS; JournalRoot; JournalRefused(code)
 AttemptRead(attempt_id, identity, units, writer, lines, state, terminal, chain_head, diagnostics, display)
 IndexRead(assignment_digest, entries, head_sha256, diagnostics)
+# revision 3 additions (all additive):
+IndexEntry(index_seq, entry_sha256, previous_entry_sha256, identity, units, writer, launch_digest, caller_context_sha256)
+TerminalRecord(state, worker_invocations, termination, refusal, result_binding)   # AttemptRead.terminal
+STRUCTURE; check_structure(definition: str, value) -> bool                          # closed structural checker
+HARNESS_ID; EVENT_PHRASES; REF_KINDS; PUBLIC_CODES; LOCAL_CODES; EVENT_KINDS; WINDOW_EVENTS_MAX (= 100)
+AttemptWindow(attempt_id, identity, diagnostics, state, chain_head, total_lines, skipped, lead, events, tail,
+              more_events, found_after_seq, segments, prefix_digest, evidence_digest)
+read_attempt_window(root, index: IndexRead, entry: IndexEntry, *, after_seq=-1, max_events=0,
+                    earlier_evidence=frozenset(), event_kinds=EVENT_KINDS, prefix_at=None) -> AttemptWindow
 default_journal_root() -> Path
 open_journal_root(path: Path, *, create: bool, excluded: tuple[Path, ...] = ()) -> JournalRoot | JournalRefused
 process_start_identity(pid: int) -> str | None
@@ -456,9 +529,11 @@ resolve_run(root, run_id) -> tuple[str, ...] | JournalRefused        # () when t
 # run_status_projection.py (SL-1)
 ProcessObserver = Callable[[int], tuple[bool, str | None]]
 EvidenceResolver = Callable[[AttemptIdentity, Ref], str]
-ProjectionResult(projection, unknown_attempts, diagnostics)
-AttemptStatus(attempt_id, state, display, termination, refusal, result_binding, chain_head, diagnostics)
+ProjectionResult(projection: Mapping | None, unknown_attempts, diagnostics)       # None: latest unknown or index defect
+AttemptStatus(attempt_id, state, display, termination, refusal, result_binding, chain_head, diagnostics,
+              identity=None, units=None)                                            # revision 3: trailing, defaulted
 PageResult(page, next_cursor: str | None, diagnostics)
+RUNTIME_STATES; PAGE_SIZE_MAX (= 100); ATTEMPTS_PER_PAGE_MAX (= 20); LOCAL_CODES      # revision 3 additions
 project_assignment(root, assignment_digest) -> ProjectionResult
 check_projection(projection: Mapping, root) -> tuple[str, ...]
 attempt_status(root, attempt_id, *, observer: ProcessObserver = proc_observer) -> AttemptStatus

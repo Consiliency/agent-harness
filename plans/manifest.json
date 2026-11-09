@@ -15009,7 +15009,7 @@
       "file": "plans/phase-plan-v12-JOURNAL.md",
       "frozen_inputs": {
         "plans/artifacts/v12-JOURNAL-interface.md": {
-          "sha256": "2c9b07ab1ef62a93303b3dabee9c3a131f326ca2d8b74d67fcf7764437ec966e"
+          "sha256": "57b0ec37b26ff9f68d8581037dc89fd6cedd67dc3bdf864085a74b4fcff9c2f0"
         }
       },
       "gate_status": "declared_not_produced",
