@@ -4,7 +4,7 @@ phase: LANEEXEC
 roadmap: specs/phase-plans-v13.md
 roadmap_sha256: a5cd5f2bedbda38c99ad516113fd839dae8af6ea4482760e8efd18a5d413428d
 automation:
-  suite_command: ["bash", "-lc", "cd phase-loop-runtime && PYTHONPATH=$PWD/src:$PWD/tests timeout 900 .venv/bin/python -m pytest -q -p no:cacheprovider tests/test_launch_process_contract.py tests/test_gate_a_wheel_isolation.py tests/test_launch_snapshot.py tests/test_launch_return.py tests/test_launch_service.py tests/test_launch_local_caps.py tests/test_launch_lifetime.py tests/test_launch_release_reap.py tests/test_sandbox_placement.py tests/test_placement_lease.py tests/test_openshell_backend.py tests/test_phase_loop_lane_placement.py tests/test_phase_loop_lane_harnesses.py tests/test_launch_cli.py tests/test_agent_cli_scratch_inventory_1147.py tests/test_seat_launch_helpers_trusted.py tests/test_seat_reference_inventory.py tests/test_laneexec_receipt.py"]
+  suite_command: ["bash", "-lc", "cd phase-loop-runtime && PYTHONPATH=$PWD/src:$PWD/tests timeout 900 .venv/bin/python -m pytest -q -p no:cacheprovider tests/test_launch_process_contract.py tests/test_gate_a_wheel_isolation.py::GateAConformEvidenceScopeTest tests/test_launch_snapshot.py tests/test_launch_return.py tests/test_launch_service.py tests/test_launch_local_caps.py tests/test_launch_lifetime.py tests/test_launch_release_reap.py tests/test_sandbox_placement.py tests/test_placement_lease.py tests/test_openshell_backend.py tests/test_phase_loop_lane_placement.py tests/test_phase_loop_lane_harnesses.py tests/test_launch_cli.py tests/test_agent_cli_scratch_inventory_1147.py tests/test_seat_launch_helpers_trusted.py tests/test_seat_reference_inventory.py tests/test_laneexec_receipt.py"]
 ---
 
 # LANEEXEC: Generic placement launch service (re-plan on landed code)
@@ -48,10 +48,10 @@ and EXT-OPENSH remain activation prerequisites whose offline controls run here.
 
 | Item | Decision |
 | --- | --- |
-| L-S1 | Depend on CLOSEOUT: pre-claim `prepare_launch_v2` in process, then one `supervised_worker_cli launch --envelope --attempt --result` chain root that re-admits authoritatively. No admission code here. Adopted. |
+| L-S1 | Depend on CLOSEOUT: pre-claim `prepare_launch_v2` in process, disposed through `discard_admission`, then one `supervised_worker_cli launch --envelope --result` chain root that reads the CLOSEOUT §4.2 controller document and re-admits authoritatively. No admission code here. Adopted. |
 | L-S2 | The JOURNAL reservation stays worker-owned. The claim is one durable write in the placement journal; every rollback precedes the first chain process, so no permanent reservation is ever orphaned and the prepared `attempt_id` stays valid. |
-| L-S3 | Block-backed route: local attempt directories live under `staging_root()` and must share its filesystem; tmpfs refuses `capability_unmet`; no carve-out and no caps API change. Deviates from the sweep (keep blocked) to remove an unowned prerequisite. |
-| L-S4 | A total mapping onto the existing wire states; zero-signal cancels return `cancel_pending`, never success. Adopted. |
+| L-S3 | Block-backed route: local attempt directories live under the client's LaneExec state directory and share `staging_root()`'s filesystem; tmpfs refuses `capability_unmet`; no carve-out and no caps API change; `capped_popen` failures keep the claim; the missing SEATS caps APIs gate activation. Deviates from the sweep (keep blocked) to remove the tmpfs prerequisite. |
+| L-S4 | A total mapping onto the existing wire states, with LaneExec's own terminal record first; every failure after the first chain process is `finished`/`failed_to_start`; zero-signal cancels return `cancel_pending`, never success. Adopted. |
 | L-S5 | `patch` reuses WORKER's fail-closed withholding; `result` and `none` are specified separately; no private WORKER helper is used. Adopted. |
 | L-S6 | Zero-effect assertions scoped by stage. Adopted. |
 | L-S7 | Per-action route mapping defined; no qualification record shipped; local review seats never launch through LaneExec. Adopted. |
@@ -145,7 +145,7 @@ patch-return and run-status evidence (SL-2); the reducer (SL-6).
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-0.1 | test | — | `tests/test_launch_process_contract.py`, `tests/test_gate_a_wheel_isolation.py` | obligation C1 and the schema cases of C10 and C11 as the wire artifact lists them; both crossed Pi policy/target pairs decode and are left to SL-3's binding refusal; `patch` with `pi-runner` refused; packaged bytes equal the artifact; Reservation resolves through the PLACECLI `$id`; installed-wheel load | `V0` |
+| SL-0.1 | test | — | `tests/test_launch_process_contract.py`, `tests/test_gate_a_wheel_isolation.py` | obligation C1 and the schema cases of C10 and C11 as the wire artifact lists them; both crossed Pi policy/target pairs decode and are left to SL-3's binding refusal; `patch` with `pi-runner` refused; packaged bytes equal the artifact; Reservation resolves through the PLACECLI `$id`; installed-wheel load; additions to `tests/test_gate_a_wheel_isolation.py` go in `GateAConformEvidenceScopeTest` | `V0` |
 | SL-0.2 | impl | SL-0.1 | `launch_process_contract.py`, `contracts/placement/launch-v1.schema.json` | — | — |
 | SL-0.3 | verify | SL-0.2 | SL-0 owned files | all SL-0 tests | `V0`; mutating the packaged bytes while updating only a test expectation still fails |
 
@@ -182,19 +182,19 @@ patch-return and run-status evidence (SL-2); the reducer (SL-6).
 - **Scope**: The one `LaunchService`: admission order, pre-claim v2 admission, exec claim, the CLOSEOUT controller hand-off and chain root, local and openshell route entries, the capped parent, the detached supervisor with lease liveness, bridge attach, status/cancel and release/reap hooks.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/launch_service.py`, `phase-loop-runtime/src/phase_loop_runtime/launch_routes.py`, `phase-loop-runtime/src/phase_loop_runtime/sandbox_placement.py`, `phase-loop-runtime/src/phase_loop_runtime/placement_lease.py`, `phase-loop-runtime/src/phase_loop_runtime/openshell_backend.py`, `phase-loop-runtime/tests/test_launch_service.py`, `phase-loop-runtime/tests/test_launch_local_caps.py`, `phase-loop-runtime/tests/test_launch_lifetime.py`, `phase-loop-runtime/tests/test_launch_release_reap.py`, `phase-loop-runtime/tests/test_sandbox_placement.py`, `phase-loop-runtime/tests/test_placement_lease.py`, `phase-loop-runtime/tests/test_openshell_backend.py`
 - **Interfaces provided**: `build_launch_service`, `LaunchService`, release/reap attempt hooks in `PlacementLifecycle`
-- **Interfaces consumed**: records (SL-0), `build_snapshot`, `build_seed` (SL-1), `collect_return`, `map_status`, `map_cancel` (SL-2), `PlacementLifecycle`, `ForwardTcpUnixBridge` (PLACECLI), `prepare_launch_v2`, `AttemptBinding` (CLOSEOUT), `supervised_worker_cli launch --envelope --attempt --result` (CLOSEOUT), `seat_resource_caps.capped_popen` (pre-existing), `seat_resource_caps.load_caps` (pre-existing), `seat_resource_caps.readiness_code` (pre-existing), `seat_uid.trusted_module_argv` (pre-existing), `sandbox_policy.staging_root` (pre-existing), `cancel_attempt` (pre-existing)
+- **Interfaces consumed**: records (SL-0), `build_snapshot`, `build_seed` (SL-1), `collect_return`, `map_status`, `map_cancel` (SL-2), `PlacementLifecycle`, `ForwardTcpUnixBridge` (PLACECLI), `load_v2_binding`, `capture_launch_v2`, `prepare_launch_v2`, `discard_admission`, `AttemptBinding`, the §4.2 controller document and `supervised_worker_cli launch --envelope --result` (CLOSEOUT), `seat_resource_caps.capped_popen` (pre-existing), `seat_resource_caps.load_caps` (pre-existing), `seat_resource_caps.readiness_code` (pre-existing), `seat_uid.trusted_module_argv` (pre-existing), `sandbox_policy.staging_root` (pre-existing), `cancel_attempt` (pre-existing)
 - **Parallel-safe**: no
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-3.1 | test | — | SL-3 test files | obligations C2 and C4–C7, C10 and C11 through `build_launch_service` with a fake coordinator, fake cgroupfs/sysfs and fake `systemd-run`: stage-scoped zero-effect counters (L-S6); the bare-hex egress grant; pre-claim `prepare_launch_v2` refusal with no claim; claim order with a crash injected between each step, rollback only before the first chain process and relaunch of the prepared `attempt_id` under a new request_id, claims kept after it (L-S2); the chain root argv built by `trusted_module_argv` and started through `capped_popen` with key `laneexec:<client>:<reservation_id>`; the controller document under `controller_root` only; local attempt directories on another filesystem than `staging_root()` or on tmpfs refusing `capability_unmet` before the claim (L-S3); caps readback mismatch as `finished`/`failed_to_start`; lifetime renewal, fencing and `ttl_s` floor as frozen; bridge loss, cancel through the verified owner, release then `cleanup_pending`, reap of a dead supervisor in its own inventory; `route_disabled` under shipped defaults, `toolkit_interim` for local `pi-runner`, local `leg`/`qualification` always `route_disabled` (L-S7); crossed Pi pairs and template selection as frozen | `V3` |
+| SL-3.1 | test | — | SL-3 test files | obligations C2 and C4–C7, C10 and C11 through `build_launch_service` with a fake coordinator and `capped_popen`, `load_caps` and `readiness_code` injected at `build_launch_service` (defaults are the landed functions; `seat_resource_caps` internals are never patched): stage-scoped zero-effect counters (L-S6); the bare-hex egress grant; pre-claim `prepare_launch_v2` refusal with no claim; claim order with a crash injected between each step, rollback only before the first chain process and relaunch of the prepared `attempt_id` under a new request_id, claims kept after it (L-S2); the chain root argv built by `trusted_module_argv` and started through `capped_popen` with key `laneexec:<client>:<reservation_id>`; the controller document at its envelope-digest path under `controller_root` only; the `PreparedLaunch` discarded on every path; local attempt directories outside the client's LaneExec state directory, on another filesystem than `staging_root()` or on tmpfs refusing `capability_unmet` before the claim; a caps digest change before chain start rolling back; any `capped_popen` exception keeping the claim as `finished`/`failed_to_start` (L-S3); an inner WORKER refusal after chain start reported `finished`/`failed_to_start` by launch and by `status` after restart (L-S4); a `launch` referent changed without its path refusing `sandbox_launch_input_mismatch`; lifetime renewal, fencing and `ttl_s` floor as frozen; bridge loss, cancel through the verified owner, release then `cleanup_pending`, reap of a dead supervisor in its own inventory reporting its capped parent `cleanup_pending`; with an unreadable caps record `prepare` and `launch` refusing `capability_unmet` for every target while `status` and `cancel` keep working (coordinator ruling 1); `route_disabled` under shipped defaults, `toolkit_interim` for local `pi-runner`, local `leg`/`qualification` always `route_disabled` (L-S7); crossed Pi pairs and template selection as frozen | `V3` |
 | SL-3.2 | impl | SL-3.1 | SL-3 source files | — | — |
 | SL-3.3 | verify | SL-3.2 | SL-3 owned files | all SL-3 tests | `V3`; mutations that drop the capped parent, skip the claim write, launch after `pre_exec` refuses, roll back after the first chain process, reach a coordinator under shipped defaults, swallow a renewal failure or accept a tmpfs attempt path each fail through a production path |
 
 ### SL-4 — Phase-loop lane placement site
 
 - **Scope**: Wire writable `lane_execute` units through `lane_launch.place_lane`, disabled by default, with the executor resolved before reserve.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/lane_launch.py`, `phase-loop-runtime/src/phase_loop_runtime/runner.py`, `phase-loop-runtime/src/phase_loop_runtime/capability_registry.py`, `phase-loop-runtime/tests/test_phase_loop_lane_placement.py`, `phase-loop-runtime/tests/test_phase_loop_lane_harnesses.py`
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/lane_launch.py`, `phase-loop-runtime/src/phase_loop_runtime/runner.py`, `phase-loop-runtime/tests/test_phase_loop_lane_placement.py`, `phase-loop-runtime/tests/test_phase_loop_lane_harnesses.py`
 - **Interfaces provided**: `lane_launch.place_lane`, `LaneLaunchOutcome`
 - **Interfaces consumed**: `LaunchService` (SL-3), `PlacementLifecycle` (PLACECLI), `default_executor_for_work_unit` (pre-existing), `launch_harness_lane_work_unit` (pre-existing)
 - **Parallel-safe**: yes
@@ -202,7 +202,7 @@ patch-return and run-status evidence (SL-2); the reducer (SL-6).
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
 | SL-4.1 | test | — | SL-4 test files | obligation C9 through `launch_harness_lane_work_unit`: disabled placement leaves the existing launch and argv byte-identical; enabled, a Pi lane selects the toolkit shim's endpoint and never reserves `pi-runner` itself, other executors reserve `agent-harness`/`implementation`; reducer, review, verify and closeout units never reach the site; an executor or provider change after reserve refuses; a typed refusal releases without fallback | `V4` |
-| SL-4.2 | impl | SL-4.1 | `lane_launch.py`, `runner.py`, `capability_registry.py` | — | — |
+| SL-4.2 | impl | SL-4.1 | `lane_launch.py`, `runner.py` | — | — |
 | SL-4.3 | verify | SL-4.2 | SL-4 owned files | all SL-4 tests | `V4` |
 
 ### SL-5 — Launch process CLI and launch inventories
@@ -215,7 +215,7 @@ patch-return and run-status evidence (SL-2); the reducer (SL-6).
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-5.1 | test | — | SL-5 test files | installed entry and module path with isolated imports, controlled HOME and config and hostile selection variables; required `--client`; exit classes (70 for schema-invalid input with stdout absent; `prepare` 0, 10 and 20); one JSON line; no sentinel leakage; `version` reports both protocol digests, `config_sha256`, `seat_caps_sha256`, `local_pi_runner_launcher`, `seed_root`, effective seed limits and templates; inventory rows for the supervisor and chain-root launches, both through `seat_uid.trusted_module_argv`, never `-m` | `V5` |
+| SL-5.1 | test | — | SL-5 test files | installed entry and module path with isolated imports, controlled HOME and config and hostile selection variables; required `--client`; exit classes (70 for schema-invalid input with stdout absent; `prepare` 0, 10 and 20); one JSON line; no sentinel leakage; with an unreadable caps record `version` exits 0 with the sentinel `seat_caps_sha256` and empty stderr and `--help` names the caps state (coordinator ruling 1); `version` reports both protocol digests, `config_sha256`, `seat_caps_sha256`, `local_pi_runner_launcher`, `seed_root`, effective seed limits and templates; inventory rows for the supervisor and chain-root launches, both through `seat_uid.trusted_module_argv`, never `-m` | `V5` |
 | SL-5.2 | impl | SL-5.1 | `launch_cli.py`, `pyproject.toml`, `uv.lock`, `tests/data/seat_launch_references.json` | — | — |
 | SL-5.3 | verify | SL-5.2 | SL-5 owned files | all SL-5 tests | `V5` |
 
@@ -249,13 +249,14 @@ patch-return and run-status evidence (SL-2); the reducer (SL-6).
   `openshell_backend.py` after PLACECLI; SL-0 and SL-5 extend files PLACECLI and
   CLOSEOUT also edited, additively.
 - **Single-writer files**: `pyproject.toml`, `uv.lock` and the four inventory
-  files (SL-5); `runner.py` and `capability_registry.py` (SL-4);
+  files (SL-5); `runner.py` (SL-4; `capability_registry.py` is consumed unchanged, coordinator ruling 2);
   `plans/manifest.json`, `CHANGELOG.md`, `.doc-decisions.json` and
   `.claude/docs-catalog.json` (SL-6); `test_gate_a_wheel_isolation.py` (SL-0).
   `uv.lock` stays byte-identical.
-- **No CLOSEOUT file is edited**: if the CLOSEOUT hand-off (`--attempt`,
-  `prepare_launch_v2`, the status mapping) is insufficient, the lane stops and
+- **No CLOSEOUT file is edited**: if the CLOSEOUT hand-off (the §4.2 controller document,
+  `prepare_launch_v2`, `discard_admission`, the status mapping) is insufficient, the lane stops and
   reports the sentence to change.
+- **Activation prerequisites recorded, not built**: the three SEATS caps APIs of binding §3 L-S3; no local LaneExec route is enabled before they land.
 - **Known destructive changes**: none. Every lane is additive.
 - **Expected add/add conflicts**: none.
 - **SL-0 re-exports**: none; nothing is exported from the package root.
@@ -277,6 +278,19 @@ the CLOSEOUT and PLACECLI work-start gates.
 Next command: none until those clear; then
 `claude-execute-phase plans/phase-plan-v13-LANEEXEC.md` under separate execution authority.
 
+## Deferred Items
+
+Recorded, not built in this phase (coordinator ruling 4, 2026-11-09).
+
+| Item | Owner | Effect on this phase |
+| --- | --- | --- |
+| SEATS public caps APIs: an expected-digest check inside `capped_popen`, typed evidence of whether a failure came before or after its helper started, and kill/collect of a capped parent by key | SEATS/JAILCORE; new issue scheduled against v13 ACTIVATE, cross-linked to agent-harness#1963 and agent-harness#1895 | Activation prerequisite: no local LaneExec route is enabled before they land (binding §3 L-S3). |
+| Caps contract §1a tmpfs carve-out cleanup | SEATS | tmpfs attempt paths refuse until it lands; adopting it needs no wire change. |
+| Garbage collection of orphaned content-addressed echoes (capped and secret-free) | v12 supervised-worker follow-up; new parked issue | None; LANEEXEC writes no echo. |
+| Folding the reinterpreted sentences into the next protocol versions: the PLACECLI `launch_binding` sentence, the LANEEXEC narrowings and the wheel-shipped `x-*` prose | v13 placement protocol owner; new parked issue | The narrowings at wire lines 471, 482, 519, 525, 529 and 540 and the L-S8 reading stay in the binding artifact. |
+| Production worker state root taken from trusted operator configuration | agent-harness#1960 | None; the CLI's state root is CLOSEOUT's. |
+| A sanctioned `replan` lifecycle path in `plan_manifest.update_lifecycle` (the replan events here are hand-written and append-only) | coordinator follow-up (ruling 3) | The `v13-LANEEXEC` row carries one hand-written `replan` event. |
+
 ## Acceptance Criteria
 
 - [ ] EC-LANEEXEC-1 — proven by V3, V4 and V5 (`tests/test_launch_service.py`, `tests/test_phase_loop_lane_placement.py`, `tests/test_launch_cli.py`) through `build_launch_service`, `place_lane` and the installed entry for every `x-client-routes` row; falsified by a reducer or review unit reaching `place_lane`, a provider or executor change after reserve, or a second launch for one reservation reaching the launch-chain counter, each entered through the production construction site.
@@ -290,7 +304,7 @@ Next command: none until those clear; then
 Execution-time commands, none run by this planning change; membership is
 binding §5. Each group runs as `cd phase-loop-runtime && PYTHONPATH="$PWD/src:$PWD/tests" timeout 900 .venv/bin/python -m pytest -q -p no:cacheprovider <group files>`.
 
-- V0: `tests/test_launch_process_contract.py tests/test_gate_a_wheel_isolation.py`
+- V0: `tests/test_launch_process_contract.py tests/test_gate_a_wheel_isolation.py::GateAConformEvidenceScopeTest`
 - V1: `tests/test_launch_snapshot.py`
 - V2: `tests/test_launch_return.py`
 - V3: `tests/test_launch_service.py tests/test_launch_local_caps.py tests/test_launch_lifetime.py tests/test_launch_release_reap.py tests/test_sandbox_placement.py tests/test_placement_lease.py tests/test_openshell_backend.py`

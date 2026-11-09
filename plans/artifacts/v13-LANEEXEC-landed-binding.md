@@ -40,9 +40,7 @@ five goals, EC-LANEEXEC-1 to EC-LANEEXEC-5, remain open.
 
 Work-start gates (non-human, `blocker_class=upstream_phase_unmet`):
 
-1. CLOSEOUT SL-1 and SL-2 merged on main: `prepare_launch_v2`, `AttemptBinding`,
-   `supervised_worker_cli launch --envelope --attempt --result`, the
-   `WorkerResult`-to-v2 status mapping and the echo sidecar (CLOSEOUT binding
+1. CLOSEOUT SL-1 and SL-2 merged on main: `prepare_launch_v2`, `discard_admission`, `AttemptBinding`, the §4.2 controller document for `supervised_worker_cli launch --envelope --result`, the `WorkerResult`-to-public-status mapping and the echo sidecar (CLOSEOUT binding
    §3–§4). CLOSEOUT acceptance (EC-CLOSEOUT-1) is not a gate.
 2. PLACECLI merged on main, including errata-1 and its `PlacementLifecycle`,
    `ForwardTcpUnixBridge` and whole-config `config_sha256` (PLACECLI binding §4).
@@ -59,9 +57,9 @@ tmpfs carve-out and its §7 (j) tests (STOP L-S3 removes the dependency); the
 | Landed site | Shape | Use |
 | --- | --- | --- |
 | `supervised_launch.py:366` | `prepare_launch(envelope_bytes, *, validator, decoder, config)` (fixture seam) | do not use; LANEEXEC uses CLOSEOUT's `prepare_launch_v2` |
-| `supervised_launch.py:462` | `consume_admission(prepared)`; one-use token is process-local (`:231`) | never called by LANEEXEC; the CLI consumes in its own process |
+| `supervised_launch.py:462` | `consume_admission(prepared)`; one-use token is process-local (`_TOKENS`, `:247`); LaneExec disposes through `discard_admission` | never called by LANEEXEC; the CLI consumes in its own process |
 | `supervised_worker_cli.py:19`, `:72`, `:100` | production codec, `main`, `launch` gate | consume after CLOSEOUT; LANEEXEC never edits the CLI |
-| `convergence/adapters/patch_return.py:29` | `PRODUCTION_LAUNCHER_COMMANDS` via `trusted_module_argv` | consume as the chain-root argv form |
+| `convergence/adapters/patch_return.py:29` | `PRODUCTION_LAUNCHER_COMMANDS` via `trusted_module_argv` | not the chain-root argv: it is the cancel command-line matcher (`trusted_module_argv(...)[1:]`); the chain root is built with `seat_uid.trusted_module_argv` (L-S1) |
 | `patch_return.py:65`, `:80` | `ProposalReturn(status, proposal_bytes_digest, byte_length, baselines, locator)`, `WorkerResult(..., proposal, evidence_envelope_digest, journal_anchor, journal_complete)` | consume (L-S5) |
 | `patch_return.py:92` | `CancelOutcome = cancelled \| already_terminal \| cancel_pending \| unknown_attempt \| owner_unverified \| owner_not_live` | consume (L-S4) |
 | `patch_return.py:162` | `evidence_resolver(state_root)` | consume |
@@ -75,16 +73,16 @@ tmpfs carve-out and its §7 (j) tests (STOP L-S3 removes the dependency); the
 | `seat_resource_caps.py:247` | `_automatic_paths()` = `staging_root()` and the child scratch dir (private) | consume indirectly; not called (L-S3) |
 | `seat_resource_caps.py:327`–`:339` | `_device_plan` refuses any anonymous filesystem, tmpfs included ("carve-out cleanup is not wired") | consume; no carve-out is used (L-S3) |
 | `seat_resource_caps.py:350`, `:365` | `io_devices(caps)`, `readiness_code()` | consume |
-| `seat_resource_caps.py:559` | `capped_popen(command, *, seat_key, **popen_kwargs)` — one capped parent per key, child-side readback | consume with key `laneexec:<client>:<reservation_id>` |
-| `sandbox_policy.py:806` | `staging_root()` | consume as the root of LaneExec's local attempt directories (L-S3) |
+| `seat_resource_caps.py:559` | `capped_popen(command, *, seat_key, **popen_kwargs)` — one capped parent per key, child-side readback | consume with key `laneexec:<client>:<reservation_id>`, called only by the detached supervisor; any exception keeps the claim (L-S3) |
+| `sandbox_policy.py:806` | `staging_root()` | consume as the device witness for local attempt directories, never their location (L-S3) |
 | `seat_uid.py:490` | `trusted_module_argv(module, *args)` | consume for every helper launch |
 | `openshell_artifacts.py:72`, `:159`, `:445` | `Bound(end, cancelled)`, `safe_path(path)`, `check_binary_literals(patch, limits, bound)` | consume |
 | `openshell_worker.py:398` | `landlock_manifest(rules, uid=10001, gid=10001)` | consume |
-| `capability_registry.py:772` | `default_executor_for_work_unit(work_unit_kind, *, scheduler_assigned=False)` | consume before reserve |
+| `capability_registry.py:772` | `default_executor_for_work_unit(work_unit_kind, *, scheduler_assigned=False)` | consume before reserve; the file is unchanged and owned by no lane (coordinator ruling 2) |
 | `runner.py:5969` | `launch_harness_lane_work_unit(...)` | extend (SL-4): the disabled-by-default placement site |
 | `panel_invoker.py:4440` | `_NONLOCAL_EXECUTION_DRIVER = False` | do not touch |
 | `panel_invoker.py:13354` | jailed Codex seat route | do not touch (L-S7) |
-| `sandbox_placement.py`, `placement_lease.py`, `openshell_backend.py` | as left by PLACECLI (`PlacementLifecycle`, reservation journal) | extend (SL-3) after PLACECLI merges |
+| `sandbox_placement.py`, `placement_lease.py`, `openshell_backend.py` | as left by PLACECLI (`PlacementLifecycle`, reservation journal) | extend (SL-3) after PLACECLI merges and the reservation-only walk exit (PLACECLI binding §2, §4.2); SL-3 performs every later step on a remote rung |
 | `tests/data/seat_launch_references.json:13` | landed rows plus CLOSEOUT and PLACECLI rows | extend (SL-5) by union |
 
 ## 3. STOP decisions
@@ -96,21 +94,8 @@ recommendation, adopted).** The wire sentence at artifact line 493 ("admits it
 through the v12 admission seam (supervised_launch.prepare_launch …)") binds to
 CLOSEOUT's production seam:
 
-- **Pre-claim check.** In order position "envelope admission" (artifact line
-  252), LaunchService calls CLOSEOUT's `prepare_launch_v2` in process on the
-  captured envelope bytes. A refusal is `refused`, code
-  `sandbox_launch_admission_refused`, with the pinned diagnostic and no claim.
-  The in-process `PreparedLaunch` is discarded unconsumed.
-- **Authoritative admission.** After the claim LaunchService writes the
-  per-attempt controller document (CLOSEOUT binding §4.2: `AttemptBinding` plus
-  per-attempt `ValidatorContext` fields) into the operator-configured
-  `controller_root`, and starts exactly one chain root:
-  `seat_uid.trusted_module_argv("phase_loop_runtime.supervised_worker_cli",
-  "launch", "--envelope", …, "--attempt", …, "--result", …)`, through
-  `capped_popen` for a local target. The CLI re-admits the same bytes, consumes
-  once and reserves the JOURNAL attempt. A CLI refusal there is a failure after
-  the first chain process: `finished`, termination `failed_to_start`, claim kept
-  (artifact line 525).
+- **Pre-claim check.** In the order position "envelope admission" (artifact line 252), LaunchService calls CLOSEOUT's `load_v2_binding`, `capture_launch_v2` and `prepare_launch_v2` in process on the captured envelope bytes. A refusal is `refused`, code `sandbox_launch_admission_refused`, with the pinned diagnostic and no claim. The `PreparedLaunch` is never consumed here; it is disposed through CLOSEOUT's `discard_admission` in a `finally`.
+- **Authoritative admission.** After the claim, the supervisor writes the per-attempt controller document at the path CLOSEOUT binding §4.2 derives from the envelope bytes. It then starts exactly one chain root, `seat_uid.trusted_module_argv("phase_loop_runtime.supervised_worker_cli", "launch", "--envelope", …, "--result", …)`, through `capped_popen` for a local target (L-S3). The CLI re-admits the same bytes, consumes once and reserves the JOURNAL attempt. A CLI refusal there, or an inner WORKER refusal after it, is a failure after the first chain process: `finished`, termination `failed_to_start`, claim kept (artifact line 525; L-S4).
 - **Status mapping.** LANEEXEC consumes CLOSEOUT's `WorkerResult`-to-v2 mapping
   (CLOSEOUT binding §4.3) and maps v2 states to the wire only through §3 L-S4.
 
@@ -143,31 +128,18 @@ attempt_id through the v12 journal") is bound to:
 
 ### L-S3 — local caps paths and the tmpfs carve-out
 
-**Chosen: revise LANEEXEC to the supported block-backed route (sweep option 2).**
-This deviates from the sweep recommendation (keep the prerequisite blocked and
-assign caps API and cleanup work). Reason: the block-backed route meets
-EC-LANEEXEC-2 and EC-LANEEXEC-3 with the landed public API, needs no change to
-`seat_resource_caps.py` or the caps contract, and removes a cross-roadmap
-prerequisite that has no owner or date.
-
-- LaneExec allocates each local attempt's execution tree, home, out and scratch
-  directories under `sandbox_policy.staging_root()`, in a 0700 per-client,
-  per-reservation directory. These are the `x-argv-templates.slots` host paths;
-  the wire reports them as before.
-- At "prepared-path verification" (artifact line 252, pre-claim) each directory
-  must be on the same filesystem (`st_dev`) as `staging_root()`, which is one of
-  the landed automatic paths that `io_devices(load_caps())` plans. A tmpfs, any
-  anonymous filesystem, or a different mount refuses
-  `sandbox_placement_capability_unmet` with zero invocations and no claim.
-- The caps contract §1a carve-out is not used in v1. The wire sentence at
-  artifact line 529 ("including the caps contract §1a tmpfs carve-out") is read
-  as "excluding" until SEATS ships the carve-out; adopting it later needs no
-  LANEEXEC wire change.
-- The capped parent is the landed `capped_popen` parent for key
-  `laneexec:<client>:<reservation_id>` (artifact line 531). LaneExec starts
-  exactly one chain root through it, so every attempt process descends from that
-  parent; LaneExec adds no `seat_resource_caps` API and calls none of its private
-  functions.
+**Chosen: revise LANEEXEC to the supported block-backed route (sweep option 2).** This deviates from the sweep, which recommended keeping LANEEXEC blocked. Reason: the route meets EC-LANEEXEC-2 and EC-LANEEXEC-3 with the landed public API and removes the IF-0-JAILCORE-4 §1a carve-out prerequisite from implementation. Three caps API gaps remain. They are bound conservatively below, and they gate activation of a local route, not this phase.
+- **Location.** Each local attempt's execution tree, home, out and scratch directories live under the selected client's LaneExec state directory (artifact lines 471 and 482), in a 0700 per-reservation directory whose ancestors meet line 482's ownership rule. These are the `x-argv-templates.slots` host paths.
+- **Device rule.** At prepared-path verification (artifact line 252, pre-claim), each directory must have the same `st_dev` as `sandbox_policy.staging_root()`, the landed automatic path whose whole device `io_devices(load_caps())` plans. `staging_root()` is a device witness only; it never chooses a location. A tmpfs, any anonymous filesystem, or another device refuses with `sandbox_placement_capability_unmet`, zero invocations and no claim.
+- **No carve-out in v1.** Artifact line 529's "including the caps contract §1a tmpfs carve-out" is read as "excluding" until SEATS ships the carve-out; adopting it later needs no wire change. `readiness_code()` still checks both landed automatic paths (`seat_resource_caps.py:247`, `:365`), so a host whose staging root or child scratch directory is tmpfs refuses at the readiness steps.
+- **Chain-start re-check.** After the claim and immediately before `capped_popen`, the supervisor repeats `readiness_code()`, the device rule, and a comparison of `caps_sha256(load_caps())` against the reservation's `seat_caps_sha256`. A failure is artifact line 519's chain-start caps re-check: nothing has started, the claim rolls back, and the code is `sandbox_placement_capability_unmet`.
+- **`capped_popen` failures.** Any exception from `capped_popen` keeps the claim and yields `finished`, termination `failed_to_start`, code `sandbox_placement_capability_unmet` (artifact lines 519, "rollback is never inferred", and 533). The landed API raises one refusal for failures both before and after its helper starts (`seat_resource_caps.py:636-670`).
+- **Capped parent.** The detached supervisor calls `capped_popen` with key `laneexec:<client>:<reservation_id>` (artifact line 531); the short-lived `agent-harness-launch` process never does. The supervisor waits on the returned process for the attempt's life, so the landed in-process collection (`:655-659`) stops the parent. Reaping a dead supervisor's attempt relies on parent-death SIGKILL (artifact line 540) and reports the capped parent as `cleanup_pending`. LaneExec never reconstructs a private unit or cgroup name.
+- LaneExec adds no `seat_resource_caps` API and calls none of its private functions. **ACTIVATE prerequisites** (SEATS-owned, not built here):
+  - an expected-digest check inside `capped_popen`, which reloads caps at `:569`;
+  - typed evidence of whether a failure came before or after the helper started;
+  - kill/collect of a capped parent by key. `__all__` (`:673-677`) exports neither.
+- **Unreadable caps record (coordinator ruling 1, 2026-11-09).** When `load_caps()` raises `CapsUnavailable`, every verb that places or launches fails closed: `prepare` and `launch` refuse `sandbox_placement_capability_unmet`, exit 10, for every target, with zero invocations and no claim. `status` and `cancel` act on existing records and keep working. `version` still exits 0 with a schema-valid response and empty stderr: `seat_caps_sha256` is the documented sentinel `sha256(b"seat_resource_caps_unavailable")`, also carried into `config_sha256` (PLACECLI binding §3 P-S1). `--help` prints one line naming the caps state and exits 0.
 
 ### L-S4 — status and cancel mapping
 
@@ -175,21 +147,19 @@ prerequisite that has no owner or date.
 new wire value (sweep recommendation, adopted).** Zero-signal outcomes are never
 reported as a successful cancellation.
 
-| Local observation | Wire result |
+| Local observation (first matching row) | Wire result |
 | --- | --- |
 | No launch record for the id in the `--client` inventory | status / cancel `unknown_attempt`, exit 10 |
-| JOURNAL display `queued`, `running`, `cancelling` | status the same state |
-| JOURNAL `finished (reason)` with anchor and `journal_complete` | status `finished` with the terminal LaunchResponse |
-| JOURNAL terminal `refused` | status `refused` |
-| `unknown`, `stale_unknown`, null identity, missing anchor with `journal_complete=False` (agent-harness#1954 posture), or a held claim with no JOURNAL attempt and no live supervisor | status `uncertain` |
+| The LaneExec launch record holds a terminal LaunchResponse | status that response |
+| No LaneExec terminal; JOURNAL display `queued`, `running` or `cancelling` | status the same state |
+| No LaneExec terminal; a JOURNAL terminal of any kind, `unknown`, `stale_unknown`, null identity, or a held claim with no JOURNAL attempt | status `uncertain` |
 | `cancel_attempt` → `cancelled` / `already_terminal` | cancel the same, exit 0 |
 | → `cancel_pending` | cancel `cancel_pending`, exit 20 |
 | → `unknown_attempt` with no LaneExec claim | cancel `unknown_attempt`, exit 10 |
 | → `unknown_attempt` while LaneExec holds a claim, `owner_unverified`, `owner_not_live` | cancel `cancel_pending`, exit 20; no signal is sent; the local outcome is journaled in the LaneExec launch record and evidence |
 
 Status exit classes are those of the wire artifact's `x-cli` for a returned
-status record. A following `status` distinguishes the cases: a signalled cancel shows
-`cancelling`, a zero-signal one `uncertain`. The pure mapping functions live in
+status record. LaneExec writes its terminal before it returns. Before the first chain process, that terminal is a pre-claim refusal or a claim rollback (`refused`). After it, the terminal is built from `WorkerResult` through CLOSEOUT §4.3. Every refusal at or after the first chain process is `finished`, termination `failed_to_start`, claim kept (artifact line 525). That includes the CLI's own refusal and an inner WORKER terminal `refused` written after `reserve_attempt` (`patch_return.py:397-399`). A result CLOSEOUT maps to `unknown` is recorded as `uncertain`. Readable JOURNAL bytes alone never establish acknowledgement. A following `status` reports what this table yields. It does not promise to tell a signalled cancel from a zero-signal one, because the two can race. The pure mapping functions live in
 `launch_return.py` (SL-2) and are tested as closed tables.
 
 ### L-S5 — return for non-completed attempts
@@ -237,15 +207,15 @@ the sweep recommended.
 The route key for a qualification record is CLOSEOUT's complete public route key
 (tier `provider_readonly_patch_return_audit`, action, transport, ordered
 executable chain, template and qualification digests). LaneExec ships no record.
-Tests construct records only at the trusted-file seam in a temporary
-`controller_root`, never in shipped configuration. A local review seat never
+Tests construct records only at the trusted-file seam of a temporary operator
+configuration, never in shipped configuration or a controller document. A local review seat never
 launches through LaneExec, so the jailed seat path and its profiles stay the only
 local seat route; LaneExec never calls `seat_jail` or the jailed Codex route.
 
 ### L-S8 — the PLACECLI byte pin (same item as PLACECLI P-S2)
 
 **Chosen: no repin.** Both v13 wire artifacts keep their bytes. The envelope
-grant is derived by this artifact's field rule at line 509 (bare 64 hex after the
+grant is derived by the field rule at `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json` line 509 (bare 64 hex after the
 `sha256:` prefix), which already governs; the PLACECLI `launch_binding` sentence
 is non-normative on that spelling (PLACECLI binding §3 P-S2). This deviates from
 the sweep (hold until an input revision is approved) for the reason recorded
@@ -268,7 +238,7 @@ Paths are relative to `phase-loop-runtime/`. Groups run on `ai` under the
 admission lock and PSI gates, serially, `timeout 900`, no xdist, no cache
 provider; dev0 runs plan validators only.
 
-- V0: `tests/test_launch_process_contract.py`, `tests/test_gate_a_wheel_isolation.py`
+- V0: `tests/test_launch_process_contract.py`, `tests/test_gate_a_wheel_isolation.py::GateAConformEvidenceScopeTest`
 - V1: `tests/test_launch_snapshot.py`
 - V2: `tests/test_launch_return.py`
 - V3: `tests/test_launch_service.py`, `tests/test_launch_local_caps.py`, `tests/test_launch_lifetime.py`, `tests/test_launch_release_reap.py`, `tests/test_sandbox_placement.py`, `tests/test_placement_lease.py`, `tests/test_openshell_backend.py`
