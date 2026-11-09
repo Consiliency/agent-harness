@@ -22,18 +22,18 @@ available memory and memory/IO pressure were checked before each command.
 | Check | Python 3.12 | Python 3.14 |
 | --- | --- | --- |
 | V0 `test_run_status.py` | 189 passed, 0 failed, 0 skipped | 189 passed, 0 failed, 0 skipped |
-| V1 `test_run_status_projection.py` | 87 passed, 0 failed, 0 skipped | 87 passed, 0 failed, 0 skipped |
+| V1 `test_run_status_projection.py` | 88 passed, 0 failed, 0 skipped | 88 passed, 0 failed, 0 skipped |
 | V2 `test_run_status_receipt.py` | 12 passed, 0 failed, 0 skipped | 12 passed, 0 failed, 0 skipped |
 | V3 `test_seat_reference_inventory.py` | 7 passed, 0 failed, 0 skipped | 7 passed, 0 failed, 0 skipped |
 | V4 `test_runtime_consumers_remain_independent` | 1 passed, 0 failed, 0 skipped | 1 passed, 0 failed, 0 skipped |
-| Effective suite (frontmatter `suite_command`) | 295 passed, 0 failed, 0 skipped | 295 passed, 0 failed, 0 skipped |
+| Effective suite (frontmatter `suite_command`) | 296 passed, 0 failed, 0 skipped | 296 passed, 0 failed, 0 skipped |
 
 V2 and the effective suite ran after this record's producer rows were stamped. Their rows were then added, and V2 was rerun against the final receipt.
 
 Before implementation, `--collect-only` over the V0–V2 paths selected zero nodes,
 because the files were absent. IF-0-VC-2 (`validate_verification_commands`)
 reported no finding for the V0–V4 argv or the effective suite once the V0–V2 files
-existed. The 276 producer nodes below equal a fresh
+existed. The 277 producer nodes below equal a fresh
 `--collect-only` of the two producer files. The outcomes agreed on both
 interpreters.
 
@@ -79,6 +79,15 @@ covers the repair.
   It lists `AttemptStatus.identity`/`units`, the nullable projection, the added
   records, checker, window reader and local codes, and the quarantine wording.
   WORKER's J1–J6 names and signatures are unchanged.
+- A re-check of that repair returned BLOCK on two bounded-read gaps. Revision 4
+  closes them:
+  - `project_assignment` and `check_projection` each make one replay, with one
+    index load and one window per attempt. Each attempt keeps only its head row
+    and one digest verdict.
+  - `project_assignment` validates against that replay.
+  - `AttemptWindow` carries only the requested segment summary.
+  - A multi-segment memory test shows that peaks for both projection APIs and
+    `read_page` do not grow with the segment count.
 
 ```json
 {
@@ -644,7 +653,7 @@ covers the repair.
  "final_tree_validated": false,
  "frozen_artifact": {
   "path": "plans/artifacts/v12-JOURNAL-interface.md",
-  "sha256": "57b0ec37b26ff9f68d8581037dc89fd6cedd67dc3bdf864085a74b4fcff9c2f0"
+  "sha256": "c9100f04e8fef192b21ec0037ed5fea1b4a5ab882b56c52e7e9aab87ffd7bd05"
  },
  "gate": "IF-0-JOURNAL-1",
  "mutation_outcomes": {
@@ -699,96 +708,96 @@ covers the repair.
   "V0": {
    "3.12": {
     "failed": 0,
-    "junit_sha256": "0a5dc470e2629cf8f7143b3b01bfaa469797cc7c66c97549060a6b166ea56a16",
+    "junit_sha256": "539b7ff39c8ad4efc4c47078e3f377e75d2554739a16a979e14bbad2f1f6ff9c",
     "passed": 189,
-    "seconds": 8.152,
+    "seconds": 4.066,
     "skipped": 0
    },
    "3.14": {
     "failed": 0,
-    "junit_sha256": "8c2501d435a50bba9c1ce581eec5ad42b1c72e59095ef855f785580df573b90e",
+    "junit_sha256": "7a40b6e3699439f668ca167845294c3f2f2ce29afcaa5d693724549eff472200",
     "passed": 189,
-    "seconds": 4.237,
+    "seconds": 6.617,
     "skipped": 0
    }
   },
   "V1": {
    "3.12": {
     "failed": 0,
-    "junit_sha256": "c19f4e6355ccc9774cc31e06f6867dfdb2281e8f9765521482aecdafa987e0e0",
-    "passed": 87,
-    "seconds": 9.054,
+    "junit_sha256": "70a61f0dbe324d3fc6645d0600e5c449be8977386ba389851971eaf65b52d5bc",
+    "passed": 88,
+    "seconds": 19.381,
     "skipped": 0
    },
    "3.14": {
     "failed": 0,
-    "junit_sha256": "1cf80106e6fb51806e70878b3fc5c5cb26ff1c4aef20cafe0749192c2363e34d",
-    "passed": 87,
-    "seconds": 10.224,
+    "junit_sha256": "deeeb920e8a4cf0a2772add2ca927eb13b197b8da76bb4c2428d523e1c681c62",
+    "passed": 88,
+    "seconds": 15.652,
     "skipped": 0
    }
   },
   "V2": {
    "3.12": {
     "failed": 0,
-    "junit_sha256": "ed8a3b4dd5fe0c60956256b6efb1cc7059a4a80beb97ef31c2a88449c0f2969d",
+    "junit_sha256": "beff9310ac3e4d7133a14bd093ae89838dfa54577332eb36c35561d5c32e513b",
     "passed": 12,
-    "seconds": 3.966,
+    "seconds": 4.537,
     "skipped": 0
    },
    "3.14": {
     "failed": 0,
-    "junit_sha256": "584a0790e0e933094f8957a850f700ff1423a3839aa73b91254f8bcabb9c43e5",
+    "junit_sha256": "863d8d10fdbc69fd115aa1cca403f03dd30b2cfa3947a38da94b325c04376f9b",
     "passed": 12,
-    "seconds": 3.763,
+    "seconds": 4.093,
     "skipped": 0
    }
   },
   "V3": {
    "3.12": {
     "failed": 0,
-    "junit_sha256": "17aa30cfaa083d660302348c3d8bf58d8ef5d28957f7e8262466d7b92e87b90e",
+    "junit_sha256": "82afd276080190786d56728d2dbf8ea09b8520ec2d8e98f9b6a13519eb519f9a",
     "passed": 7,
-    "seconds": 2.987,
+    "seconds": 3.178,
     "skipped": 0
    },
    "3.14": {
     "failed": 0,
-    "junit_sha256": "551078f035c956ac946ba8f5cf4012f6adf02d84ae0a04288b4b91d72ff6a60b",
+    "junit_sha256": "a5c0157927f5e12e4473a5e360e03a3cc09de79bee87afbfddea67a285e7542a",
     "passed": 7,
-    "seconds": 3.125,
+    "seconds": 2.968,
     "skipped": 0
    }
   },
   "V4": {
    "3.12": {
     "failed": 0,
-    "junit_sha256": "ad0e817fd263ed3e1f4f4d3564030975c4059e5b10d737804b0d755895ddeb16",
+    "junit_sha256": "66e107f3facb00bdbca5e4166a8f64e0dd104176f8bfb72278fb2553cb923d78",
     "passed": 1,
-    "seconds": 1.824,
+    "seconds": 1.434,
     "skipped": 0
    },
    "3.14": {
     "failed": 0,
-    "junit_sha256": "95ad67f5d0c3e4b704fe518a66e42d4ca9e3b68f71c48fc0de63613a4cc5db6f",
+    "junit_sha256": "839ab07b0998c5e66e315640c4c29825fc564b94630c9d172ba75146a71e9500",
     "passed": 1,
-    "seconds": 1.716,
+    "seconds": 1.601,
     "skipped": 0
    }
   },
   "suite": {
    "3.12": {
     "failed": 0,
-    "junit_sha256": "6473f56947e271d92b6db657b9b57532db4e08b12a4971f779592ba1c7072bae",
-    "passed": 295,
-    "seconds": 21.111,
+    "junit_sha256": "cca53e9a8e65d7e00115b3c96c1719b9b0473b7ad7081416adbd9f7a0d674a8c",
+    "passed": 296,
+    "seconds": 29.06,
     "skipped": 0
    },
    "3.14": {
     "failed": 0,
-    "junit_sha256": "f5b1be2edb666c9ce3c1be95d7fc0c022cb84e8f3307c0f2112f12e96cf9b764",
-    "passed": 295,
-    "seconds": 18.501,
+    "junit_sha256": "cf82ba1436678386305cb4ef074b62c010afa667e1fc6ee20a7589e5c4c7d027",
+    "passed": 296,
+    "seconds": 25.822,
     "skipped": 0
    }
   }
@@ -1044,6 +1053,7 @@ covers the repair.
   "tests/test_run_status_projection.py::test_production_control_witness[retention_count]",
   "tests/test_run_status_projection.py::test_production_control_witness[row_join]",
   "tests/test_run_status_projection.py::test_production_control_witness[runtime_phrase_set]",
+  "tests/test_run_status_projection.py::test_projection_and_page_memory_do_not_grow_with_segment_count",
   "tests/test_run_status_projection.py::test_projection_attempt_order_must_follow_index",
   "tests/test_run_status_projection.py::test_projection_vector[N16-attempt-missing]",
   "tests/test_run_status_projection.py::test_projection_vector[N16-projection-behind]",
@@ -1322,6 +1332,7 @@ covers the repair.
   "tests/test_run_status_projection.py::test_production_control_witness[retention_count]": "passed",
   "tests/test_run_status_projection.py::test_production_control_witness[row_join]": "passed",
   "tests/test_run_status_projection.py::test_production_control_witness[runtime_phrase_set]": "passed",
+  "tests/test_run_status_projection.py::test_projection_and_page_memory_do_not_grow_with_segment_count": "passed",
   "tests/test_run_status_projection.py::test_projection_attempt_order_must_follow_index": "passed",
   "tests/test_run_status_projection.py::test_projection_vector[N16-attempt-missing]": "passed",
   "tests/test_run_status_projection.py::test_projection_vector[N16-projection-behind]": "passed",
@@ -1364,37 +1375,37 @@ covers the repair.
  "producer_runs": {
   "3.12": {
    "failed": 0,
-   "junit_sha256": "83c5531d788c813f7fa05a9dc40b76147053acfcdf0e137bc53e38eac974cd6a",
-   "passed": 276,
-   "seconds": 17.206,
+   "junit_sha256": "cff8a97682fa23ed91aabf8b40986dc76b34d92078b34784577ce0b0615afc8e",
+   "passed": 277,
+   "seconds": 23.447,
    "skipped": 0
   },
   "3.14": {
    "failed": 0,
-   "junit_sha256": "f2204d584f95f06ad0ac5b1f908910cd377599784d501415d81173f32bad110a",
-   "passed": 276,
-   "seconds": 14.461,
+   "junit_sha256": "1ac8314641f4b80bfab0cc6ee13faa45ebe1cff1f1d1ada9bb7b3557152055fd",
+   "passed": 277,
+   "seconds": 22.269,
    "skipped": 0
   }
  },
  "runner_stamp": {
   "approved_plan_input": "309c9e92",
-  "observed_input_base": "0e6e06fbd71f3bb50d7ae94154be1f03c9b7c8d9",
-  "observed_utc": "2026-11-09T01:29:52.283303+00:00",
-  "source_tree_digest": "10e752c4ca36bd2da807766e08083ec09607c496bed6d456c5e775b34ae2c773"
+  "observed_input_base": "5a04c10bc34c1b8d9c1424c043db11e5898eae72",
+  "observed_utc": "2026-11-09T02:09:57.445129+00:00",
+  "source_tree_digest": "fd131498edfb7073c48883a23f4bb3df58ee9944d9d8545d06f1ed24119c38d3"
  },
  "source_hashes": {
-  "docs/supervised-run-status.md": "0c808f467fcf130dcc6c1d54554efd4ec3805a942b7229dc403fd6aca5ffd57b",
-  "phase-loop-runtime/src/phase_loop_runtime/run_status.py": "dbe6971e92cf29fcf6a92296acaad8e2034c29d2ad060645773de5fcf13e07e6",
-  "phase-loop-runtime/src/phase_loop_runtime/run_status_projection.py": "70183bac14bc6f7c2809b79066f138cf40fa2eb2e44deabffb79a03f844f7935",
+  "docs/supervised-run-status.md": "8f2485af4b284edc2a8fcd9b51126610b91261b4f392743f6b0fd36bade589aa",
+  "phase-loop-runtime/src/phase_loop_runtime/run_status.py": "e7722187bfa5187ea1da174472055cd94e6b35099e5ab157864ec789bbe78098",
+  "phase-loop-runtime/src/phase_loop_runtime/run_status_projection.py": "72568d1af57255552968b9e378860b89c9d5e838d206266db5423039c22fa7c1",
   "phase-loop-runtime/src/phase_loop_runtime/schemas/supervised-worker-v1/conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
   "phase-loop-runtime/src/phase_loop_runtime/schemas/supervised-worker-v1/run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30",
   "phase-loop-runtime/tests/_run_status_vectors.py": "3710194953ef6d552584ce2ce9186197f63d19c2108c74e60d44ac64b6495237",
   "phase-loop-runtime/tests/data/seat_launch_references.json": "f9190444032dc91a7b089ad0c3218556b1b8a5ba4274387d39981dbe8cce8b2f",
   "phase-loop-runtime/tests/test_run_status.py": "9e9db80dac4859bb8f256a74219544e9548ab3af1c451bb9cd65930818014e5e",
-  "phase-loop-runtime/tests/test_run_status_projection.py": "297a657ee4dbea31d45cdabf3f3f58858f91463408ec534e3127f76a44be76d6",
+  "phase-loop-runtime/tests/test_run_status_projection.py": "8d8f9c863f4bf8d8490da9fd753ecaaf206268d8e8c999aae37b2609e1d0763d",
   "phase-loop-runtime/tests/test_run_status_receipt.py": "9c4ff949fbb911e23d8950b678512f3dbbf198839567555c41053eae5a7da608",
-  "plans/artifacts/v12-JOURNAL-interface.md": "57b0ec37b26ff9f68d8581037dc89fd6cedd67dc3bdf864085a74b4fcff9c2f0"
+  "plans/artifacts/v12-JOURNAL-interface.md": "c9100f04e8fef192b21ec0037ed5fea1b4a5ab882b56c52e7e9aab87ffd7bd05"
  },
  "vector_outcomes": {
   "N04a-replaced-in-place": "passed",

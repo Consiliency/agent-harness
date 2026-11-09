@@ -45,7 +45,7 @@ produced record. Runtime modules never import the contract-intake module.
 | `AttemptWriter.state` / `.event` / `.terminal` / `.close` | appends returning `ChainHead(segment_index, segment_sha256, last_seq)` |
 | `read_attempt(root, attempt_id)` | one bounded, read-only replay of one attempt (`AttemptRead`) |
 | `read_index(root, assignment_digest)` | the verified admission index (`IndexRead` of `IndexEntry`) |
-| `read_attempt_window(root, index, entry, *, after_seq=-1, max_events=0, earlier_evidence=frozenset(), event_kinds=EVENT_KINDS, prefix_at=None)` | the same verification as `read_attempt`, retaining at most `max_events` (≤ 100) lines (`AttemptWindow`) |
+| `read_attempt_window(root, index, entry, *, after_seq=-1, max_events=0, earlier_evidence=frozenset(), event_kinds=EVENT_KINDS, prefix_at=None)` | the same verification as `read_attempt`, retaining at most `max_events` (≤ 100) lines and only the requested segment's summary (`AttemptWindow`) |
 | `resolve_run(root, run_id)` | the attempt ids of a run, in index order; `()` for an absent run |
 | `process_start_identity(pid)` | `linux-proc:<boot_id>:<starttime>` for a live process, else `None` |
 | `make_ref(kind, data, locator)` | a digest-only `Ref`; `data` is hashed and dropped |
@@ -323,6 +323,12 @@ filesystem primitive of its own; every read goes through `run_status`.
   so no earlier attempt is rescanned. Peak memory is bounded by the index, one
   segment (`read_segment_max_bytes`) and the page, not by the assignment's
   history.
+- **One replay per projection call.** `project_assignment` and `check_projection`
+  each make exactly one index load and one window per attempt. Per attempt they
+  keep only the head-derived projection row and, when checking a supplied row,
+  one digest verdict computed from the requested segment in-stream. No segment
+  list or line outlives its attempt. `project_assignment` validates its result
+  against that same replay instead of reading the journal again.
 - **Pages.** The request must be a structurally valid `page_request`
   (`page_request_invalid`). A null `page_size` or one above 100 refuses
   `read_unbounded`, and one below 1 refuses `page_size_invalid`. Events are
