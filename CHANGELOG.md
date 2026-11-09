@@ -56,11 +56,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 ### Known issues
 
 - The jailed Codex seat's prompt describes general network access, but its egress is
-  limited to the two allowlisted provider endpoints. Containment is unaffected.
+  limited to the two allowlisted provider endpoints. Containment is unaffected
+  (agent-harness#1949).
 - A jailed Codex seat timeout or cancellation is reported as
-  `codex_seat_tools_unavailable`.
+  `codex_seat_tools_unavailable` (agent-harness#1950).
 - A heartbeat-only Codex leg is not bounded by the 2100 s token margin
-  (`CODEX_LOGIN_MIN_S`).
+  (`CODEX_LOGIN_MIN_S`; agent-harness#1951).
 
 ## [0.7.30] - 2026-11-08
 
