@@ -1033,6 +1033,9 @@ def _installed_wheel_fixture(
             b'{"timestamp":{"secs_since_epoch":1,"nanos_since_epoch":0},'
             b'"commit":null,"tags":null,"env":{},"directories":{}}'
         ),
+        environment_root / "bin" / "agent-harness-placement": evidence._uv_console_script_bytes(
+            interpreter=interpreter, target="phase_loop_runtime.placement_cli:main"
+        ),
         environment_root / "bin" / "phase-loop": evidence._uv_console_script_bytes(
             interpreter=interpreter, target="phase_loop_runtime.cli:main"
         ),
