@@ -9,7 +9,7 @@ row is a ``gap`` (a mechanism could exist; ``tracking`` names the issue) or a
 
 ``check_registry`` refuses a row whose quoted text no longer appears in every
 shipped harness copy of its skill, whose enforcer symbol no longer exists, or
-whose negative-control test is gone. That keeps the table from silently claiming
+whose negative-control test is gone (when ``tests_root`` is supplied). That keeps the table from silently claiming
 enforcement that rotted away. It does not prove the enforcer covers the whole
 rule; the negative-control test is the evidence for that, and it runs in CI.
 """

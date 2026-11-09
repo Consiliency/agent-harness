@@ -9,8 +9,8 @@ plugin is loaded -- either via the ``phase_loop_runtime.skill_sources`` entry-po
 group (declared in pyproject, live in a real install) or via the explicit
 ``PHASE_LOOP_SKILL_SOURCE_PLUGINS`` opt-in used in source-mode runs and tests.
 
-The neutral generated bundle is the shared-canonical artifact (it moves to
-agent-harness); these 4 source roots that produce the ``_overrides/`` are the
+The neutral generated bundle is the shared-canonical artifact in
+agent-harness; these 4 source roots that produce the ``_overrides/`` are the
 dotfiles-OVERLAY and stay in dotfiles, contributed through this seam.
 
 This module is the dotfiles *profile* counterpart to ``dotfiles_profile_plugin``:

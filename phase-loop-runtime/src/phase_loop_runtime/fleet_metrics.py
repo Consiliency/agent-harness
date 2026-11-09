@@ -8,8 +8,7 @@ ledger:
   * Events are appended to a SEPARATE sibling ledger,
     ``.phase-loop/fleet-metrics.jsonl`` — ``events.jsonl`` is never touched, so
     its bytes, digests, and reconcile/fold semantics are provably unaffected.
-  * Every append is a single ``os.write`` on an ``O_APPEND`` fd (mirrors
-    ``events._append_jsonl`` and ``train_ledger.append_record``).
+  * Every append is a single ``os.write`` on an ``O_APPEND`` fd.
   * Derivation is pure (no I/O) so the velocity/burn_down/promise-broken-duration
     series are unit-testable without a runner or a database.
 

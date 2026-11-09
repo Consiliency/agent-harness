@@ -5,9 +5,9 @@ Populates the frozen ``CompatibilityMatrix`` interface (registries.py:101-115):
 
 * ``is_valid(model, harness) -> (ok, AuthAvailability)`` — ``ok`` is whether the
   pairing is *expressible at all* (an ``openai``-family model on the ``claude``
-  lane is not); ``AuthAvailability`` reports which credential lanes are actually
-  usable so a valid-but-unauthed seat degrades (skip-with-warning) rather than
-  blocking. ``is_valid`` is TOTAL — it never raises, returning ``(False, …)`` with
+  lane is not); ``AuthAvailability`` reports configuration-level availability: a subscription
+  CLI on PATH or a known vendor key in the environment. It is not proof of a
+  valid login; production admission and authentication checks run separately. ``is_valid`` is TOTAL — it never raises, returning ``(False, …)`` with
   a ``detail`` for an unknown/incompatible pairing.
 * ``default_lane(model)`` — the harness a bare ``model`` seat resolves onto,
   delegated to the model registry.

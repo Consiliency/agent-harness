@@ -26,7 +26,7 @@ low-stakes copyedit / an aggressive-but-cheap ideation seat — where it is the 
 tool.
 
 Every preset seat uses only REGISTERED, VALID ``(model, harness)`` pairs on the
-built-3 + ``opencode`` lanes (no ``pi`` / ``cursor`` / unregistered-model seats),
+built-in vendor lanes (including ``grok``) (no ``pi`` / ``cursor`` / unregistered-model seats),
 so the presets pass their OWN config-time validation — ``config.load_boards()``
 self-validates every preset (``tests/test_advisor_board_config.py``). Adding a
 preset seat on an unregistered model or an incompatible lane would turn the suite

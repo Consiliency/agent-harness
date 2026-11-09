@@ -1,4 +1,5 @@
-"""Provider-completion contracts frozen before broker enforcement is introduced."""
+"""Provider-completion contracts consumed by broker enforcement.
+"""
 
 from __future__ import annotations
 

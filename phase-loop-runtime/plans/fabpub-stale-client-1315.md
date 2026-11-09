@@ -31,7 +31,8 @@ operator to restart broker processes.
 
 - `_service_for` calls `_stores_for` on every request, before it looks in the
   service cache.
-- On a cache hit, `_stores_for` raises `WriterGenerationBlocked` when the cached
+- On a cache hit, `_stores_for` raises `RoutingClientGenerationRetired` (a
+  `WriterGenerationBlocked`) when the cached
   evidence root is not `snapshot.store_root`. The message names the retired
   generation, the ACTIVE generation and the restart.
 

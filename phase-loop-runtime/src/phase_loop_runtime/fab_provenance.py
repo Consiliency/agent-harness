@@ -21,10 +21,10 @@ implement:
     chain that binds it are defined here);
   * gate wiring into `governed_premerge`/closeout (design §8 composition — Lane D).
 
-Fields that a later lane computes (e.g. `candidate.patch_digest`,
-`DeltaReviewRecord.resulting_head_digest`, `equivalence`) are typed/serialized here
-but left `None`/absent until that lane populates them — Lane A only freezes their
-TYPE and serialization slot.
+Values computed by other modules (e.g. `candidate.patch_digest`,
+`DeltaReviewRecord.resulting_head_digest`, `equivalence`) have typed serialization
+slots here. Their callers supply them; this module does not perform the Git
+equivalence calculation or review-gate decision.
 
 FROZEN INTERFACE (IF-0-FAB-A-1) — B/C/D code against this without renegotiation:
   * Schema strings: `SCHEMA_REVIEW_PROVENANCE = "fab.review-provenance.v2"`,
@@ -33,7 +33,7 @@ FROZEN INTERFACE (IF-0-FAB-A-1) — B/C/D code against this without renegotiatio
   * `artifact_digest` canonicalization: SHA-256 over the artifact's JSON payload
     (sorted keys, tight separators — see `verification_evidence._canonical_artifact_digest`,
     REUSED here, not reimplemented) with `artifact_digest` itself the ONLY
-    self-excluded field (mirrors #243's `log_sha256` posture).
+    self-excluded field (mirrors agent-harness#243's `log_sha256` posture).
   * Hash-chain formula (design §5.1/§6.2): the candidate round digest
     `C0 = H(policy || review_scope || material_digests || findings || base_binding || None)`
     and each delta round `Ci = H(policy_i || review_scope_i || material_digests_i ||

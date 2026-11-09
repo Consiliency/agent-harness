@@ -1,4 +1,5 @@
-"""Behavior-neutral coordination contracts shared by future runtime and broker phases."""
+"""Coordination contracts shared by the convergence runtime and broker.
+"""
 
 from __future__ import annotations
 

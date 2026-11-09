@@ -1,10 +1,8 @@
 """Advisor Board — frozen contracts (Phase 1 ABDFREEZE).
 
-Interface-only preamble for the model-first, multi-harness Advisor Board
-(specs/phase-plans-v5.md). This package ships the typed contracts + importable
-stubs + shared canonical fixtures the parallel fan-out (ABDREG / ABDRESOLVE /
-ABDHOME) codes against. It is ADDITIVE and behavior-neutral: nothing here touches
-the running ``panel_invoker`` path.
+The model-first, multi-harness Advisor Board package provides seat and board
+schemas, registries, config loading, resolution, provider backing, research and
+observability used by ``panel_invoker.invoke_board``.
 
 Frozen gates (see ``CONTRACTS.md``):
 * IF-0-ABDFREEZE-1 — seat/board schema, config location, per-harness model/effort
@@ -14,16 +12,15 @@ Frozen gates (see ``CONTRACTS.md``):
   canonical fixtures (``registries`` + ``fixtures``).
 * IF-0-ABDFREEZE-3 — provider-backing selector + auth-enforcement (active env
   scrubbing) contract (``backing``).
-* IF-0-ABDFREEZE-4 — back-compat: the ``default`` board reproduces today's 3-leg
-  behavior (``fixtures.DEFAULT_BOARD`` + the golden-test scaffold).
+* IF-0-ABDFREEZE-4 — back-compat: the legacy three-leg fixture preserves explicit panel
+  compatibility; ``fixtures.DEFAULT_BOARD`` defines the four-vendor default (``fixtures.DEFAULT_BOARD`` + the golden-test scaffold).
 * IF-0-ABDFREEZE-5 — internal advisor-board event envelope + best-effort
-  forwarding (``events``); its concrete sink mapping lands in ABDOBS.
+  forwarding (``events``); its concrete sink mapping is in ``observability``.
 
 ABDOBS (Phase 6) then adds ``observability``: the envelope → omniagent-plus
 state-ledger (``state_ledger_record.v0.1`` / ``runtime_event.v0.1``) mapping, an
 :class:`~observability.AsyncForwardingSink` for off-thread best-effort dispatch,
-and the ``LedgerWriter`` cross-language transport seam. This is the one place the
-package touches ``panel_invoker`` — an OPT-IN ``sink=`` on ``invoke_board``;
+and the ``LedgerWriter`` cross-language transport seam. Forwarding is opt-in through ``sink=`` on ``invoke_board``;
 ``sink=None`` stays byte-neutral.
 """
 

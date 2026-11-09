@@ -1,35 +1,28 @@
-"""FAB (Consiliency/agent-harness#191) activation — piece 2 PRODUCER.
+"""FAB review-provenance producer (agent-harness#191).
 
-The producer is the atomic, flag-gated transaction that turns a PASSING governed
-pre-merge review into a harness-authenticated `ReviewProvenanceArtifact` — but
-ONLY when it can do so HONESTLY. It is invoked from the phase closeout (behind
-`PHASE_LOOP_FAB`, byte-neutral when off) in two phases:
+The runner controls activation through ``PHASE_LOOP_FAB``. The candidate-round
+transaction runs in this order:
 
-  1. `capture_review_at_invocation` (pre-commit, at review): freeze the
-     epoch-scoped EXPECTED-seat manifest (the resolved invocation set), snapshot
-     the reviewed bundle bytes into the run store, and persist a durable
-     `SeatOutcomeRecord` per panel leg (real verdict + status + digests + a
-     unique `seat_instance_id`) via `fab_gate.append_seat_outcome`. These durable
-     records are the trust anchor; the artifact built later is verified AGAINST
-     them, never trusted on its own (the anti-tautology property — the seats are
-     captured from the REAL panel at invocation, not synthesized from the review
-     return value).
-  2. `finalize_and_gate` (post-commit): run the enforced HONESTY GATE
-     (single-reviewed-commit-covers-PR, post-hook `commit^`/tree verify,
-     non-empty, and the COMPLETE-REVIEW-REPRESENTATION predicate over the
-     reviewed diff), then — only if it holds — build the artifact from the
-     DURABLE records, `write_provenance`, `finalize_review_round` (bind the
-     harness-issued round identity to the reviewed head + material), and run a
-     DEDICATED HARD `compose_gate_status` that BLOCKS on non-pass regardless of
-     `PHASE_LOOP_REVIEW` (never routed through the warn-downgradable closeout
-     validator registry). Any honesty-gate failure ⇒ NO provenance ⇒ the closeout
-     falls back to the existing non-FAB path; any hard-gate non-pass ⇒ the
-     closeout BLOCKS.
+1. At review invocation, ``capture_review_at_invocation`` records the expected-seat
+   manifest, snapshots the exact reviewed bundle, and persists durable seat
+   outcomes with their verdicts, digests, and seat instance identities.
+2. After commit hooks, ``finalize_and_gate`` enforces the honesty gate: the
+   closeout path set is non-empty; ``commit^ == reviewed_base``; the committed
+   tree equals the reviewed tree; the freshly resolved PR merge-base equals
+   ``reviewed_base`` (one reviewed commit covers the PR); and the reviewed and
+   committed diff representations are complete and bound to the same bytes.
+3. Only after those checks does it build candidate provenance FROM durable seat
+   records, never from the review's return value (the anti-tautology invariant).
+   It writes provenance, finalizes the review round, and runs the hard composed
+   gate. An honesty refusal leaves provenance unproduced and closeout falls back
+   to the existing non-FAB path. A hard-gate non-pass blocks closeout regardless
+   of ``PHASE_LOOP_REVIEW``. A pass fsyncs the authenticating run-store records
+   before the caller advances the branch ref.
 
-Scope: piece 2 records the CANDIDATE round only (`delta_chain=()`). The
-consumer delta-review shortcut, the durable coordinator admission record, and
-committed-range re-review are piece 3 (Consiliency/agent-harness#191 follow-up),
-NOT built here.
+Delta reviews are also supported: ``capture_delta_review_at_invocation`` records
+a committed-range review, and ``build_and_finalize_delta_round`` binds its durable
+outcomes to a ``DeltaReviewRecord`` for the candidate's delta chain. Epoch-scoping
+helpers retain the rounds relevant to a reused run identity.
 """
 
 from __future__ import annotations

@@ -1,16 +1,13 @@
-"""Pipeline-independent docs-freshness audit (docs-freshness v4 P1, Layer A).
+"""Pipeline-independent, change-coupled documentation audit.
 
-`phase-loop docs-audit --base <ref>` runs on a git diff ALONE — no `.phase-loop/`
-state — so it is immune to the three #18 evasion paths (under-scoped docs lane,
-direct-`Agent()` pipeline bypass, absent runtime helper). It classifies the changed
-paths against the canonical `docs_surfaces` taxonomy and enforces the per-surface,
-relevance-bound decision contract, emitting a `docs_freshness: passed|skipped|blocked`
-report and a non-zero exit when a public surface changed without a satisfying decision.
+phase-loop docs-audit classifies changed paths against docs_surfaces and checks
+that public/release surfaces carry the required documentation change or decision.
+It needs no .phase-loop state. The report is passed, skipped or blocked; a blocked
+report returns nonzero. CI can use the same command as an independent backstop.
 
-This is the only *non-bypassable* control; the in-pipeline `docs_freshness` closeout
-gate (shipped in v0.1.6) is the advisory early-feedback / content-token layer. This
-backstop adds the piece that gate structurally cannot catch: the *silent-absence* case
-— a release surface changed in the diff but its required doc was never updated.
+This enforces the diff/decision contract, not the truth of every sentence in the
+documents. docs_freshness separately scans release-facing content for known stale
+or placeholder tokens under its own posture control.
 """
 from __future__ import annotations
 

@@ -1,34 +1,15 @@
-"""Staged review trees for board seats, and the digest that attests them.
+"""Staged review trees, source identity, manifests and bounded falsifier execution.
 
-Until now the staged review dir held only ``review-bundle.md`` and
-``review-instructions.md``, so a seat could not open the code under review and every
-fact it might need had to be inlined into the bundle -- the pressure behind 200-340 KiB
-bundles against the 512 KiB transport cap (agent-harness#848).
+For a Git source, ``stage_review_tree`` makes an independent shallow clone
+(default ``CLONE_DEPTH`` = 50), records the source commit and overlays the selected
+working-tree changes. It avoids shared object alternates and refuses escaping
+symlinks. Non-Git sources use a contained copy. Cleanup removes the private stage.
 
-**Scope, stated plainly.** This module materializes and attests a staged tree. It does
-NOT yet deliver that tree to a brokered seat. The ``bwrap --unshare-all --clearenv``
-child in ``advisor_board/backing.py`` is a fixed parent-generated posture probe, not a
-seat: the seats run in the PARENT via ``_parent_infer``/``_exec_leg``, where brokered
-codex is launched with ``--cd <out_dir>`` and brokered gemini drops ``--add-dir``
-entirely. Neither argv, nor the broker prompt, nor ``review-instructions.md`` names this
-tree. Wiring that delivery changes the attested provider argv and is deliberately not
-done here (ah#890 board round 1, fable seat).
-
-Two rules shape this module:
-
-* **A stage is a copy, never the live tree.** It excludes ``.git`` entirely, so no
-  live gitdir and no shared object alternates can be reached through it, and it
-  refuses any symlink that leaves the source tree. A seat's write can only ever
-  land on the copy.
-* **What the seat read is attested.** :func:`review_tree_manifest_sha256` binds the
-  path set AND the bytes, so a tree swapped between authorization and launch fails
-  closed instead of being reviewed silently.
-
-This module deliberately imports nothing from ``advisor_board`` or ``launcher``:
-``launcher`` already imports ``advisor_board``, so a helper either of them could
-import must sit below both. ``launcher._stage_review_tree`` implements the same
-selection for the product-loop review action; converging the two is tracked
-separately, because ``launcher.py`` belongs to an executing phase lane.
+``review_tree_manifest_sha256`` binds selected paths and bytes for authorization
+revalidation; it does not prove which files a reviewer actually read. Launch and
+jail code in ``panel_invoker`` controls delivery of that staged tree to seats.
+Falsifier helpers independently revalidate the staged source and run bounded checks.
+This module does not import ``advisor_board`` or ``launcher``.
 """
 
 from __future__ import annotations

@@ -1,21 +1,15 @@
-"""Multi-machine reflection collection (Slice 1).
+"""Collect reflection files into a machine-namespaced store.
 
-Reflections are written locally by skills at close-out (see
-``claude-config/shared/runtime-state.md``) and never leave the machine — they
-are gitignored and live in ``~/.<harness>/skills/<skill>/reflections/``. This
-module provides the *collection half*: redact each reflection (so it is safe to
-pool across machines, including off-tailnet collaborators) and copy it under a
-machine-namespaced path into a shared store directory.
+``iter_reflection_files`` searches installed skill roots and repo-local harness
+roots, skipping archives and duplicate skill/path pairs. ``export_reflections``
+writes redacted copies under the caller's output directory; ``main`` provides
+the standalone collector CLI.
 
-Two pure, testable building blocks:
-
-* :func:`machine_id` — a stable, non-secret per-machine identifier.
-* :func:`redact_reflection_text` — deterministically strips repo/branch/commit/
-  path identity from a reflection so the pooled copy is repo-agnostic.
-
-and the orchestrator :func:`export_reflections`, invoked by
-``scripts/reflections-sync``. The git transport and run-id dedup ledger are
-intentionally deferred to Slice 2 (a ``phase-loop reflections sync`` subcommand).
+``machine_id`` uses an override, persisted random identifier, or hostname hash.
+``redact_reflection_text`` hashes recognized identity fields and replaces matching
+project and home paths. Bare repo/branch names in free text can remain, so this is
+pattern-based redaction rather than a guarantee that arbitrary content is safe
+to share. This module copies files locally; it does not implement Git transport.
 """
 
 from __future__ import annotations

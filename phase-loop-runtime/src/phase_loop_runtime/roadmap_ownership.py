@@ -1275,7 +1275,7 @@ def main(argv: List[str]) -> int:
     parser.add_argument(
         "--candidate-roadmap", type=Path, metavar="PATH", default=None,
         help="with --report: score the same landed changes against this roadmap TEXT "
-             "instead of the roadmap as it existed at each commit (ah#688)",
+             "instead of the roadmap as it existed at each commit (agent-harness#688)",
     )
     parser.add_argument(
         "--report",

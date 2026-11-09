@@ -8,8 +8,9 @@ provider as n, with no capabilities.
 
 Host prerequisite, run once per host by the maintainer as root and NEVER by this runtime:
 ``apt install uidmap`` and ``usermod --add-subuids <range> --add-subgids <range>
-<operator>``. Without it :func:`seat_uid_available` is False and the seat takes the sealed
-route with ``seat_sandbox_unavailable_seat_uid``.
+<operator>``. Without it :func:`seat_uid_available` is False and the local jail is unavailable with
+``seat_sandbox_unavailable_seat_uid``. ``seat_route`` decides whether an admitted
+later rung is possible or the seat degrades; this does not authorize a sealed fallback.
 
 The in-H helpers (``handoff``, ``read``, ``scan``, ``teardown``) run as H-root through
 ``python -m phase_loop_runtime.seat_uid <verb> ...``.

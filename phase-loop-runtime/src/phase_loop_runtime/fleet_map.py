@@ -1,34 +1,15 @@
-"""CS-0.7 realized-edge / fleet-map v0 extractor.
+"""Extract static cross-repo interface evidence from supplied repo paths.
 
-Extracts the **realized** cross-repo interface graph from a set of repo paths —
-deliberately NOT a package-lockfile dependency scan. The Consiliency
-standardization roadmap's verified premise is that between the core repos
-there are ~zero package-level deps; the real cross-repo edges are git+ref
-pins, copied-literal (vendored) contract/schema drift, and hard-coded
-host-path references in source. A lockfile-only scan renders those edges
-invisible (see `run_lockfile_baseline_scan`, and
-`test_lockfile_baseline_scan_is_empty_over_the_same_fixture_tree` in
-tests/test_fleet_map.py, which proves the point over a fixture tree that
-also carries ordinary, unrelated third-party manifest deps).
+``build_fleet_map`` scans pin files and Git URLs, divergent same-named
+contract/schema literals, and hard-coded sibling host paths. The separate
+``run_lockfile_baseline_scan`` searches dependency manifests for Git pins to
+other supplied repos; its edges have kind ``lockfile-dep``. The supported
+``EDGE_KINDS`` are ``pin``, ``copied-literal``, ``host-path``, and ``lockfile-dep``.
 
-Three edge kinds (`EDGE_KINDS`):
-  - pin: a `*/tools/agent-harness.pin.json` / `*greenfield-contract.lock.json`
-    file, or a `git+<scheme>://...#subdirectory=...`-style ref inside a
-    dotfiles/bootstrap.sh-style script.
-  - copied-literal: a same-named contract/schema file vendored into two or
-    more repos whose contents hash-diverge (drift).
-  - host-path: a hard-coded sibling path like `/home/<user>/code/<repo>/...`
-    found in source.
-
-Every edge carries a `maturity_label` (`MATURITY_LABELS`) grading how strong
-the evidence is: `presence-only` (the artifact exists but the target repo
-could not be confirmed among the scanned repos), `hash-checked` (a content
-hash comparison produced the finding), or `realized-edge-observed` (the
-target repo is one of the scanned repos, so the edge is concretely
-resolved).
-
-This module is v0: no network calls, no git remote resolution — everything is
-static file inspection over the repo paths the caller supplies.
+Each edge carries a ``maturity_label``: ``presence-only`` for unresolved targets,
+``hash-checked`` for compared content, or ``realized-edge-observed`` for a target
+resolved among the supplied repos. This is static file inspection without network
+calls or Git remote resolution; it is not proof of deployed integration.
 """
 from __future__ import annotations
 

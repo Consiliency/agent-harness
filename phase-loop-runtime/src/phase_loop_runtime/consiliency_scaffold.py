@@ -21,7 +21,8 @@ Design constraints (roadmap CS-0.5):
   archetype's ``document-index``), the scaffolder never invents content: it
   references the file if the repo already has it at the conventional path,
   and otherwise only *declares* the manifest entry, leaving the gap for a
-  human -- the CS-0.6 presence gate reports that gap as a WARN finding.
+  human -- the CS-0.6 presence gate reports that gap (warn by default,
+  blocked under the opt-in hard mode).
 * **Vendored schemas only.** All shapes come from ``consiliency_contract``
   (the published shared contract package); nothing here re-implements or
   copies schema literals.

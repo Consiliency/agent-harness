@@ -10,8 +10,9 @@ lease, never by a pid, an age or whether a reference was recorded.
 * A lease whose lock is HELD is live. No reaper touches it, this process's own included.
 * A lease whose lock is FREE is the reaper's: its owner died, or gave it up at once
   (:meth:`Lease.abandon`) because a release could not be confirmed.
-* An entry is cleared only when a kill by that lease id was acknowledged and the backend
-  lists nothing for it.
+* The reaper clears an entry only when a kill by that lease id was acknowledged
+  and the backend lists nothing for it. The owning placement walk can also clear
+  entries for rungs left before remote effects or after confirmed release.
 
 An entry records the lease id, the backend name, the sanitized root, the ``sandbox_ref``
 once known, ``created_at``, ``confirmed_killed_at`` and whether it was abandoned. It never

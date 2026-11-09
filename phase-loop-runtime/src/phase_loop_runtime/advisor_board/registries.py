@@ -1,12 +1,8 @@
-"""Registry interfaces + (model x harness) matrix API — INTERFACES ONLY
-(IF-0-ABDFREEZE-2).
+"""Advisor-board registry protocols, records, stubs and populated defaults.
 
-This freezes the *return types* and the *method surface* that ABDREG populates
-and that ABDRESOLVE / ABDHOME import. It ships importable Protocols, the frozen
-record + result types, and ``NotImplemented``-raising stubs — **no six-harness
-data** (that is ABDREG). Keeping the return types concrete here (rather than bare
-tuples) is what lets ABDREG's matrix and ABDRESOLVE's validation compile against
-the same shapes without divergence.
+The frozen Protocols and result types are shared by config validation, resolution
+and launch. ``DefaultHarnessRegistry`` and ``DefaultModelRegistry`` provide the
+built-in harness and model data; stub implementations remain for interface tests.
 """
 from __future__ import annotations
 

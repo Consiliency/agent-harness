@@ -6,13 +6,12 @@ the observability contract's two load-bearing rules:
 * **launcher != observability-plane**: a natively-launched leg stays natively
   launched and *emits* an ``AdvisorBoardEvent`` into a forwarded stream; it is
   never relaunched through the gateway for observability's sake.
-* **forwarding is async/best-effort and can NEVER delay or fail the native
-  leg**: ``best_effort_forward`` swallows every sink error and (by contract)
-  hands the event to the sink off the leg's critical path.
+* **forwarding is best-effort**: ``best_effort_forward`` calls ``sink.emit``
+  synchronously and swallows sink exceptions. Use ``observability.AsyncForwardingSink``
+  to keep sink I/O off the leg's critical path.
 
-The MAPPING from this envelope to a concrete sink (an Omnigent v0.4.0 ingestion
-endpoint, or omniagent-plus's own ui-read-model / state-ledger) is deferred to
-ABDOBS — do NOT freeze against a guessed upstream schema.
+``observability`` maps this envelope to omniagent-plus's state-ledger shapes;
+Omnigent v0.4.0 has no ingestion endpoint for externally launched sessions.
 """
 from __future__ import annotations
 

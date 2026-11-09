@@ -9,7 +9,7 @@ all three live in `BrokerService._owner_and_admission_under_one_lock` and
 ## Context
 
 `_fresh_publish` writes a durable `AdapterStartOwnership` and allocates an
-admission inside ONE `admissions.lock` acquisition (ah#789). agent-harness#1298
+admission inside ONE `admissions.lock` acquisition (agent-harness#789). agent-harness#1298
 moved the transaction-state precondition ahead of the owner write. Everything
 `admit_next` refuses still runs AFTER the owner write, and a later attempt
 promotes any unsealed owner without a known terminal to permanent
@@ -38,7 +38,7 @@ Refusals reachable in `LinearizableAdmissionStore.admit_next` (callable branch,
 epoch, which needs the high-water mark and the authenticated partition floor, so
 hoisting means re-implementing `admit_next` in `verbs.py`; the copy would drift
 from the store (and from test stores that wrap `admit_next`). Restoring under the
-same acquisition keeps ah#789 intact: no writer of any version can observe the
+same acquisition keeps agent-harness#789 intact: no writer of any version can observe the
 owner between write and admission or between write and restore, because both
 happen inside the one `admissions.lock` hold.
 
@@ -67,7 +67,7 @@ its writer runs, and after the writer exits it is promoted exactly as today.
 
 `AdapterStartOwnership` has no pid or lease, and adding fields is ruled out:
 older runtimes build it with `AdapterStartOwnership(**json)` and would crash on an
-unknown key (the ah#789 mixed-version requirement).
+unknown key (the agent-harness#789 mixed-version requirement).
 
 **Choice: (i) an advisory `flock` held by the live writer, on the owner file's own
 inode.** No new file and no schema change.
@@ -76,7 +76,7 @@ inode.** No new file and no schema change.
   `admissions.lock`, open `adapter-start-owner.json` (`O_RDWR|O_NOFOLLOW|O_CLOEXEC`)
   and take `LOCK_EX|LOCK_NB`. The descriptor is returned to `_fresh_publish`,
   which closes it in a `finally` around everything up to the terminal. It is
-  also closed on the #1314 restore path. A refused acquisition means another
+  also closed on the agent-harness#1314 restore path. A refused acquisition means another
   holder of a just-written inode, which cannot happen under the lock; it refuses
   typed and retryable after restoring.
 - Probe: `_block_unsealed_owner` already decides under `admissions.lock`. After it
@@ -156,7 +156,7 @@ Reuses the 789-compat `_routed` fixture where possible (`pytestmark` skip on
 From `phase-loop-runtime/`:
 
 ```
-PYTHONPATH=src:tests python -m pytest -q -p no:cacheprovider \
+PYTHONPATH="$PWD/src:$PWD/tests" timeout 900 .venv/bin/python -m pytest -q -p no:cacheprovider \
   tests/test_fabpub_owner_section_1314_1313_1311.py \
   tests/test_fabpub_sealed_head_recovery_1296.py \
   tests/test_fabpub_*.py tests/test_convergence_broker_*.py \

@@ -55,12 +55,12 @@ FROZEN INTERFACE (IF-0-FAB-B-1) — C/D code against this without renegotiation:
     caller-supplied `base_sha` as reviewed, and only after re-deriving it live.
 
   * **rc!=0 is ALWAYS invalid, never "no changes"** (design §3.2 finding 6,
-    corrects v1's `{0,1}` fail-open): every git subprocess this module runs is
-    accepted ONLY on `returncode == 0`; any nonzero code — including the classic
-    "differences present" `1` some git plumbing uses under `--exit-code` (which
-    this module never passes) — raises `PatchDigestInvalid`. An empty raw-diff
-    stream on a genuine `rc==0` (base and head are identical) is a legitimate
-    zero-record digest; a nonzero rc is NEVER interpreted as "no changes".
+    corrects v1's `{0,1}` fail-open): patch-digest computation accepts Git
+    output only on `returncode == 0`; a nonzero diff/cat-file result raises
+    `PatchDigestInvalid`. An empty raw-diff stream on a genuine `rc==0` is a
+    legitimate zero-record digest. Other APIs have distinct failure surfaces:
+    `read_file_at_revision` can return `None`, while `equivalent` returns typed
+    invalidations for nonzero fetch / merge-base results.
 
   * **Gitlinks (mode `160000`) default REJECT** (design §3.3 finding 6): a
     changed path whose NEW mode is `160000` raises `GitlinkRejected` (a
@@ -98,7 +98,7 @@ FROZEN INTERFACE (IF-0-FAB-B-1) — C/D code against this without renegotiation:
     NOT invalidated (design §4.5 I10/I11 — explicitly PASS, not fail-opens under
     delta identity, see design §4.2): commit-topology churn with identical net
     content, and a base-tip advance `B -> B'` while the PR itself is unchanged.
-    Both fall out of the same three checks above with no special-casing — see
+    These cases pass when the merge-base and net patch digest remain unchanged — see
     the module's test suite for the worked cases.
 
 Design ambiguities resolved in this lane (stated once, not re-litigated):
@@ -109,7 +109,7 @@ Design ambiguities resolved in this lane (stated once, not re-litigated):
      every caller to pre-resolve it, `patch_digest` takes an optional
      keyword-only `repo_slug: str | None = None` and, when omitted, resolves it
      itself via `credsep.resolve_broker_repo_identity(repo)` — REUSING the
-     #250 host-qualified slug resolver (`convergence/broker/credsep.py`), never
+     agent-harness#250 host-qualified slug resolver (`convergence/broker/credsep.py`), never
      re-implementing URL parsing. `equivalent()` always resolves the LIVE slug
      itself (never accepts a caller-supplied "live slug" — that would defeat
      precondition 1) and threads the BOUND slug through to its own
@@ -157,10 +157,11 @@ merely because its emitted stream looked complete), missing/malformed
 `cat-file` responses, a non-`blob` object referenced by a non-gitlink mode
 (a crafted type-swap), and gitlink paths under the default policy all raise
 a typed `PatchDigestInvalid`
-(a `fab_provenance.ProvenanceInvalid` subclass) from `patch_digest`; `equivalent()`
-converts these (and its own base-ref/merge-base checks) into a typed
-`EQUIVALENCE_INVALIDATED` result rather than ever silently returning
-`EQUIVALENCE_EQUIVALENT` on an unrecognized state.
+(a `fab_provenance.ProvenanceInvalid` subclass) from `patch_digest`.
+`equivalent()` converts errors from its patch recompute and nonzero fetch /
+merge-base results into `EQUIVALENCE_INVALIDATED`. Execution failures and
+timeouts raised by the fetch / merge-base subprocess wrapper can propagate;
+callers must handle those exceptions as well as the typed result.
 """
 
 from __future__ import annotations
@@ -779,7 +780,7 @@ def equivalent(
     shaped this way. Checks, IN ORDER, each fail-closed:
 
       1. **Repo identity** (§4 precondition 1): the LIVE repo's origin resolves
-         (via the SAME #250 `resolve_broker_repo_identity` Lane A/broker use)
+         (via the SAME agent-harness#250 `resolve_broker_repo_identity` Lane A/broker use)
          to `binding.repo_slug`.
       2. **Base ref identity + freshness** (§4.3): `live_base_ref_name ==
          binding.base_ref_name` (a retarget is a DIFFERENT ref identity, I1);
@@ -796,9 +797,11 @@ def equivalent(
 
     Every git call carries `--no-replace-objects` + `GIT_NO_REPLACE_OBJECTS=1`
     (via `_run_git`/`patch_digest`'s own calls); any `rc != 0` at any stage
-    invalidates. NEVER raises for an in-scope fail-closed condition — always
-    returns a typed `EquivalenceResult`; only a genuine programming-error
-    exception (not one of this module's/Lane A's typed exceptions) propagates."""
+    invalidates. Repo-identity resolution failures, nonzero fetch / merge-base
+    results, and typed patch-recompute failures return an invalidated
+    `EquivalenceResult`. Execution failures and timeouts raised by `_run_git`
+    during fetch / merge-base can propagate; callers must handle exceptions as
+    well as the typed result."""
     repo = Path(repo)
 
     try:

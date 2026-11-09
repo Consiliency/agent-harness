@@ -1,4 +1,5 @@
-"""Codex phase loop runner."""
+"""Harness-neutral phase-loop orchestration runtime and CLI.
+"""
 
 __all__ = [
     "__version__",

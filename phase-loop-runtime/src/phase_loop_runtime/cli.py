@@ -325,7 +325,7 @@ def _branchgov_parent_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=argparse.SUPPRESS,
         help=(
-            "Issue #83 opt-in: switch to the convention branch even when it would orphan a "
+            "agent-harness#83 opt-in: switch to the convention branch even when it would orphan a "
             "locally-committed roadmap (exports PHASE_LOOP_BRANCHGOV_ENABLE=true). Without it, "
             "the runtime refuses cleanly (branch_sync_conflict) rather than crashing."
         ),
@@ -419,7 +419,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="First-use self-qualification of a genuine upstream agy release (agent-harness#1076)",
     )
     agy_qual_sub.add_argument("action", choices=("status", "run", "clear", "watch"))
-    agy_qual_sub.add_argument("--all", action="store_true", help="clear: every entry, not only failed ones")
+    agy_qual_sub.add_argument("--all", action="store_true", help="clear: every entry; otherwise remove failed and transient entries")
     agy_qual_sub.add_argument("--repo", help="watch: the agent-harness checkout to prepare a branch in")
     agy_qual_sub.add_argument("--dry-run", dest="watch_dry_run", action="store_true",
                               help="watch: qualify and verify, open no PR")
@@ -427,7 +427,7 @@ def build_parser() -> argparse.ArgumentParser:
     agy_qual_sub.add_argument("--base-ref", default="origin/main", help="watch --dry-run only: the tree to prepare from")
     seat_egress_sub = subparsers.add_parser(
         "seat-egress",
-        help="The jailed Gemini seat's egress proxy: status, or install the pinned srt (agent-harness#1170)",
+        help="The jailed-seat egress proxy: status, or install the pinned srt (agent-harness#1170)",
     )
     seat_egress_sub.add_argument("action", choices=("status", "install"))
     cli_qual_sub = subparsers.add_parser(
@@ -438,7 +438,7 @@ def build_parser() -> argparse.ArgumentParser:
     cli_qual_sub.add_argument("--harness", dest="qual_harness", required=True,
                               choices=("claude", "codex", "grok", "gemini", "opencode", "pi", "cursor-agent"))
     cli_qual_sub.add_argument("--all", dest="qual_all", action="store_true",
-                              help="clear: every entry, not only failed ones")
+                              help="clear: every entry; otherwise remove failed and transient entries")
     agy_clean_sub = subparsers.add_parser("agy-canary-clean-settings")
     agy_clean_sub.add_argument("--evidence-root", required=True)
     agy_clean_sub.add_argument("--settings-path", required=True)
@@ -752,7 +752,7 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument(
                 "--closeout-artifact",
                 help=(
-                    "ah#90 artifact-backed recovery: adopt a TRACKED, COMMITTED closeout markdown as "
+                    "agent-harness#90 artifact-backed recovery: adopt a TRACKED, COMMITTED closeout markdown as "
                     "recovery evidence (provenance=tracked_closeout_artifact) instead of a runner-owned "
                     "verification.json. Requires --closeout-commit and --repair-summary; the artifact "
                     "must exist at that commit. Recovery evidence, NOT a fresh runner pass. Mutually "
@@ -762,20 +762,20 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument(
                 "--visual-evidence-path",
                 help=(
-                    "FAV (issue #91): path to a runner-owned screenshot/frame IMAGE artifact (PNG, "
+                    "FAV (agent-harness#91): path to a runner-owned screenshot/frame IMAGE artifact (PNG, "
                     "JPEG, GIF, BMP, or WEBP -- NOT a video container; the gate decodes image pixel "
                     "data only, decoding a frame out of a video is a tracked follow-up) for a phase "
-                    "whose plan claims a visible avatar/browser-media rendering deliverable. Required "
+                    "whose executor persisted visual_render_declared=true. Required "
                     "to promote such a phase to complete under the opt-in-to-block posture; the gate "
                     "DECODES this artifact and derives non_black_pixels/pixel_min/pixel_max/"
                     "total_pixels from its actual pixels (round-3/round-6 CR) -- ignored for phases "
-                    "that don't match the FAV detection contract."
+                    "without that declaration. A typed --visual-evidence-opt-out also satisfies the gate."
                 ),
             )
             sub.add_argument(
                 "--visual-evidence-observed",
                 help=(
-                    "FAV (issue #91): accepted for backward compatibility, but NOT authoritative -- "
+                    "FAV (agent-harness#91): accepted for backward compatibility, but NOT authoritative -- "
                     "pixel stats are DERIVED from decoding --visual-evidence-path (round-3 CR), so a "
                     "self-reported value here can never override a failing derived result."
                 ),
@@ -783,7 +783,7 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument(
                 "--visual-evidence-opt-out",
                 choices=VISUAL_EVIDENCE_OPT_OUT_REASONS,
-                help="FAV (issue #91): typed reason to decline visual evidence for a matching phase.",
+                help="FAV (agent-harness#91): typed reason to decline visual evidence for a matching phase.",
             )
             sub.add_argument("--reason", help="Required with --to-status planned. Recorded on manual_recovery.")
             sub.add_argument("--allow-dirty", action="store_true", help="Override the refuse-if-dirty guard. Not recommended.")
@@ -3863,7 +3863,7 @@ def _reconcile_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, a
 
     verification_evidence = None
     if closeout_artifact:
-        # ah#90 artifact-backed recovery: adopt a TRACKED, COMMITTED closeout markdown as recovery
+        # agent-harness#90 artifact-backed recovery: adopt a TRACKED, COMMITTED closeout markdown as recovery
         # evidence (provenance=tracked_closeout_artifact), NOT a fresh runner verification pass.
         # RG hard-requires a runner-owned verification.json (IF-0-RG-1); a prose closeout must never
         # satisfy it — keep RG fail-closed to the runner-verification path.
@@ -4003,7 +4003,7 @@ def _reconcile_command(*, repo: Path, roadmap: Path, args: argparse.Namespace, a
     if recovery_mode:
         manual_repair["recovery_mode"] = True
     if visual_fields:
-        # FAV (issue #91): fold the visual-evidence audit fields (path + pixel
+        # FAV (agent-harness#91): fold the visual-evidence audit fields (path + pixel
         # observations, or the missing/blank shortfall, or a typed opt-out) into
         # the manual_repair record so the promotion is auditable either way.
         manual_repair.update(visual_fields)

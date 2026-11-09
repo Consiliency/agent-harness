@@ -1,60 +1,16 @@
-"""Git-grounded, digest-bound observability projection (issue #152, brick 1).
+"""Git-grounded, digest-bound observability projection (agent-harness#152).
 
-The EMISSION side of a liberty-preserving observability substrate: a reconciler
-that turns RAW GIT REALITY into a DIGEST-BOUND projection so that ANY producer
--- a human by hand, this harness, an arbitrary agent, the pipeline -- is
-observable and governed against the same contract SoT WITHOUT being gated into
-a specific tool.
+The reconciler reads Git facts through ``git_discipline`` and classifies them
+against the contract's pipeline-ref registry. Without a .consiliency manifest
+it returns a skipped/no-consent result. With consent, its default local output is
+``.phase-loop/observability/git-grounded-projection.json``; ``spec-render/git-grounded/``
+is the Portal destination namespace. It hashes the exact JSON body bytes with SHA-256.
 
-Two invariants make this producer-agnostic and liberty-preserving:
-
-1. **Producer-agnostic git reality.** The reconciler reads raw git through the
-   existing pure/injectable readers -- ``git_discipline.gather_repo_ref_facts``
-   (branches / dirty paths via ``for-each-ref`` / ``status``) and
-   ``gather_pipeline_ref_states`` (leased / merged via ``branch --merged``) --
-   and classifies it against the CONTRACT SoT ref-class registry
-   (``pipeline_ref_classes``) with ``evaluate_git_discipline`` /
-   ``self_heal_partition``. Nothing here cares which tool produced the change;
-   it reconciles ANY change in the repo, not tool-specific artifacts.
-
-2. **Consent, not coercion.** The reconciler honors the existing
-   ``.consiliency/manifest.json`` consent gate. An opted-in repo emits a
-   projection; an un-adopted repo is a clean no-op (``status: "skipped"``,
-   ``reason: "no-consent"``). Same gate ``reconcile_git_discipline`` already
-   rides, so the liberty model (opt-in, any tool) is enforced identically.
-
-The output is a DIGEST-BOUND projection: a canonical-JSON body describing the
-git-grounded reconciled state, plus a ``sha256`` over the EXACT bytes written to
-disk. The digest is the trust anchor. It is derived byte-for-byte the way the
-Consiliency Portal's projection-index verify path re-derives a ``raw-sha256``
-body digest (``sha256`` over the raw ``body_path`` file bytes -- no domain
-prefix, no re-canonicalization at read time), so the same body the portal reads
-re-verifies at render time. A tampered body fails the bind and never renders.
-
-PORTAL CONTRACT NOTES (honest findings, issue #152). The portal's verify
-*mechanism* accepts this digest-bound git-grounded body TODAY via the
-``raw-sha256`` body-digest domain -- no portal or contract change is required to
-re-verify it. Two schema/shape misfits remain, surfaced rather than forced:
-
-1. **No git-grounded ``kind``.** The ``projections.index.v1`` schema ``kind`` is
-   closed to ``proj-code-sbom | proj-code-api | proj-S-certified`` (no
-   git-grounded value) and ``body_content_type`` is ``text/markdown |
-   text/html`` (no ``application/json``). :func:`build_projection_index_entry`
-   emits a portal-ingestable entry using the ``proj-code-sbom`` slot but records
-   ``kind_is_misnomer`` / ``git_grounded_kind`` provenance so the misfit is
-   visible. Closing it honestly is an ADDITIVE contract change (a git-grounded
-   ``kind`` + optional ``application/json`` content type).
-
-2. **``spec-render/`` vendored-path constraint vs the ``.phase-loop/`` runtime
-   boundary.** The portal's ``isSafeVendoredPath`` requires ``body_path`` to
-   start with ``spec-render/``, but the runtime's native observability surface
-   is ``.phase-loop/**``. Because ``body_path`` MUST resolve to the exact bytes
-   ``body_digest`` binds (else the portal reads the wrong/missing file and fails
-   closed), the reconciler writes the portal-facing body under ``spec-render/``
-   -- the path the portal actually reads -- rather than misnaming a
-   ``.phase-loop/`` file the portal cannot load. A future portal change that
-   accepts a runtime-native ``.phase-loop/`` body would let the two surfaces
-   converge; this module does not force it.
+``build_projection_index_entry`` targets the frozen Portal adapter contract:
+``raw-sha256``, the ``proj-code-sbom`` kind and ``text/markdown`` content type.
+The body remains JSON; ``kind_is_misnomer`` and ``git_grounded_kind`` make that
+compatibility mapping explicit. This module neither signs the projection nor
+proves that a separately deployed Portal accepts or renders it.
 """
 from __future__ import annotations
 

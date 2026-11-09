@@ -16,7 +16,8 @@ Two hazards this module is built around:
   phase-loop that was under Claude Code". So the runner stamps an OUTBOUND
   sentinel (``PHASE_LOOP_CHILD=1``, see :func:`child_executor_env`) on every child
   it spawns, and :func:`detect_run_from_harness` treats the presence of that
-  sentinel as authoritative: markers are only adopted when the sentinel is ABSENT.
+  sentinel value ``1`` as authoritative: it refuses marker adoption when the
+  sentinel equals ``1`` (after stripping whitespace).
 
 * **Non-vacuous verification.** A signature map where every harness is
   "unknown/degrade" is useless. Each entry carries a ``verification`` status;

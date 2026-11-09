@@ -5,7 +5,7 @@ Loads ``$XDG_CONFIG_HOME/agent-harness/advisor-boards.toml`` (the FROZEN locatio
 ``fixtures/advisor-boards.example.toml``) and layers user boards on top of the
 built-in ``presets``. Contract:
 
-* The four built-in presets are always present (base layer); a user ``[[boards]]``
+* The nine built-in presets are always present (base layer); a user ``[[boards]]``
   with the same ``name`` overrides its preset.
 * ``allow_api_key_fallback`` defaults ``False`` — a board with an ``api_key`` seat
   and no opt-in is rejected by the ``Board`` schema (never-silent-key).

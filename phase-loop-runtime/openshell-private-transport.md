@@ -94,12 +94,11 @@ mkdir -p "$TMPDIR"
 uv sync --project phase-loop-runtime --group test --extra visual --locked --python 3.12
 uv pip install --python phase-loop-runtime/.venv/bin/python 'grpcio==1.78.0'
 export PYTHONPATH="$PWD/phase-loop-runtime/src:$PWD/phase-loop-runtime/tests"
-phase-loop-runtime/.venv/bin/python -m pytest -q \
+timeout 900 phase-loop-runtime/.venv/bin/python -m pytest -q -p no:cacheprovider \
   phase-loop-runtime/tests/test_openshell*.py \
   phase-loop-runtime/tests/test_placement_contract.py \
   phase-loop-runtime/tests/test_seat_reference_inventory.py \
   phase-loop-runtime/tests/test_seat_launch_helpers_trusted.py
-LOCAL_CHECK_PYTHON="$PWD/phase-loop-runtime/.venv/bin/python" make check
 ```
 
 No private checkout, generated-SDK environment variable or qualification plugin is

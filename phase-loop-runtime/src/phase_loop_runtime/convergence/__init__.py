@@ -1,4 +1,7 @@
-"""Frozen convergence contracts only; runtime and broker behavior are intentionally absent."""
+"""Convergence contracts, event recovery, dispatch and reconciliation exports.
+
+Credential-capable broker implementations live in the ``broker`` subpackage.
+"""
 
 from phase_loop_runtime.convergence.contracts import (
     AdmissionRequest,

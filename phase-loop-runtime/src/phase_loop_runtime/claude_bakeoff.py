@@ -19,9 +19,12 @@ set. :func:`evidence_digest` is what an OD-3b section cites.
   with the owner's meter readings, runs the block's arm, and once per native block runs the
   capture twin. A security-class outcome stops the arm, and its records carry only
   ``withheld_private``;
-* ``control-brief`` / ``ingest-control`` -- the T3 Code SDK-route control block.
+* ``control-brief`` -- print the T3 Code SDK-route control block's brief.
+  Its response is parsed through the Python ``ingest_control`` API; there is
+  no ``ingest-control`` CLI subcommand.
 
-Nothing here runs a provider by itself; the kit drives ``phase-loop advisor-board``.
+Importing this module runs no provider. The owner-run kit invokes the board
+and transport helpers for its measurement blocks.
 """
 
 from __future__ import annotations

@@ -177,15 +177,17 @@ FROZEN INTERFACE (IF-0-FAB-C-1) — D codes against this without renegotiation:
   * **Carry-forward/escalation decision rule (design §5.3/§5.4, the
     authoritative disposition table):**
 
-    | Manifest disposition at `base_sha`        | Escalation                                    |
-    |--------------------------------------------|------------------------------------------------|
-    | ANY changed path is ABNORMAL (`_normalize_path_for_matching` returns `None` — a `..` that would escape the repo root) | `required=True`, `trigger="abnormal-delta-path"` (checked FIRST, before manifest-path/disposition/glob evaluation) |
-    | absent (git show fails for ANY reason)      | `required=True`, `trigger="no-boundary-manifest"` |
-    | present but malformed (TOML/shape error)    | `required=True`, `trigger="malformed-boundary-manifest"` |
-    | present, well-formed, delta touches the manifest PATH itself (compared on NORMALIZED form) | `required=True`, `trigger="boundary-manifest-modified"` (checked BEFORE glob evaluation, regardless of manifest disposition) |
-    | present, well-formed, a NORMALIZED changed path matches a glob | `required=True`, `trigger="<section name>"` |
-    | present, well-formed, no glob match, manual trigger supplied | `required=True`, `trigger="reviewer:<seat_key>"` |
-    | present, well-formed, no match, no manual trigger | `required=False`, `trigger=None` |
+    The checks run in this order:
+
+    1. A valid typed manual trigger forces escalation (an invalid one raises).
+    2. An abnormal changed path forces ``abnormal-delta-path`` escalation.
+    3. A normalized change to the manifest path forces
+       ``boundary-manifest-modified``, regardless of manifest disposition.
+    4. A missing or malformed base manifest forces ``no-boundary-manifest`` or
+       ``malformed-boundary-manifest`` escalation.
+    5. A matching protected glob forces escalation, with the first section name
+       in sorted order as its trigger.
+    6. Otherwise no escalation is required.
 
     A `required=True` round is whole-patch: `carry_forward()` is SUPPRESSED
     (every `status=="clean"` finding is reopened, none carried) and
@@ -203,12 +205,10 @@ FROZEN INTERFACE (IF-0-FAB-C-1) — D codes against this without renegotiation:
     disjointness can never be asserted).
 
     **Path normalization (round-6, Consiliency/agent-harness#191 — the
-    MATCHING-layer fix for the confirmed evasion).** `_translate_glob_to_regex`
-    no longer rejects a `.`/`..`/empty glob COMPONENT (round-3's
-    path-legality validation is REMOVED — see that function's docstring):
-    the fix instead normalizes the PATH side of every match, so a glob and a
-    path agree on what "the same location" means regardless of how a hostile
-    tree spelled the path. `_normalize_path_for_matching` splits a changed
+    MATCHING-layer fix for the confirmed evasion, with round-8 glob rules).**
+    Globs drop empty and `.` components but reject every `..` component.
+    Changed paths use a separate normalization that resolves `..`.
+    `_normalize_path_for_matching` splits a changed
     path (or a `path_scope` entry) on `/`, drops `.` and empty segments, and
     resolves `..` by popping the previous segment — the exact normalization
     `git checkout` would apply on disk. A path that pops `..` past the repo
@@ -285,10 +285,10 @@ Design ambiguities resolved in this lane (stated once, not re-litigated):
      the exact `T5` shape) rather than deciding `status` itself.
 
 Fail-closed discipline (this is a security trust root, same posture as Lanes
-A/B): a missing manifest, a malformed manifest, a malformed glob, a broken
-delta-chain link, an uncorroborated resolved-finding claim, and a boundary-
-escalated round recording `delta-only` scope all raise a typed exception
-(a `fab_provenance.ProvenanceInvalid` subclass) rather than silently passing.
+A/B): a missing manifest, malformed manifest, or malformed glob forces
+whole-patch escalation. Broken delta-chain links, uncorroborated resolved-finding
+claims, and boundary-escalated rounds recording `delta-only` scope raise typed
+`fab_provenance.ProvenanceInvalid` subclasses rather than silently passing.
 Additive only: nothing in `fab_provenance.py`, `fab_canonical.py`, or
 `convergence/broker/credsep.py` is modified by this module — their helpers
 are imported and reused, never re-implemented.

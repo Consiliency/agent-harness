@@ -1,8 +1,9 @@
 """One shared redaction pipeline: credential shapes plus known identity values, span-union.
 
-Every place that removes credential values from text uses `redact_text`, so the same input
-gives the same output everywhere. That covers review-leg details, PTY tails, private leg logs,
-run-metadata stderr excerpts and hotfix reasons.
+``redact_text`` supplies shared redaction for review-leg details, PTY tails,
+private leg logs, run-metadata excerpts and hotfix reasons. Its result depends on
+the input and the selected context/known-identity values. It is pattern-based
+redaction, not a guarantee that arbitrary secret encodings are recognized.
 
 The pipeline:
   1. Normalize without destroying separation. Every control character and every character of

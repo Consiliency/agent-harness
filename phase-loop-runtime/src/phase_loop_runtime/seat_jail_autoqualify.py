@@ -1,17 +1,19 @@
 """First-use jail qualification (agent-harness#1132, plan amendment A2).
 
-When a Claude seat would take the jailed route and no EC-EXECFIND-2 pass is recorded for
-this host, this jail's profile digest and the falsifier-run layout, the harness runs the
+When a registered seat would take the jailed route and no EC-EXECFIND-2 pass is recorded for
+this host and its qualification key (including profile, runtime projection and
+falsifier layout bindings), the harness runs the
 host's jail qualification itself, once, before launching. It is the same procedure as
 ``phase-loop seat-sandbox qualify``, and on a pass it records the pass in the per-host
 store. This folds in agent-harness#1186's first-use self-check (option C).
 
-- **One run per host:** the run is serialized by an exclusive lock in the per-user state
-  directory. Concurrent seats or boards wait for it, then re-read the store.
+- **One run per host (per-user state dir):** an exclusive host-level lock
+  serializes qualification runs across keys. Concurrent seats or boards wait
+  for it, then re-read the store.
 - **On a failure** (the falsifiers failed, or the run could not happen): the seat is
   degraded and not run with ``seat_jail_qualification_failed`` and a typed reason (plan
   amendment A3b: never a sealed substitute). The rest of the board runs.
-- **The failure cache:** a failure is cached for this host, digest and layout only, and is
+- **The failure cache:** a failure is cached for the resolved qualification digest and is
   retried after ``RETRY_ENV`` seconds or as soon as the digest or layout changes.
 """
 

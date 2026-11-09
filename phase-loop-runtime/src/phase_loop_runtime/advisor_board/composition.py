@@ -1,35 +1,16 @@
-"""Availability-aware board composition — the 4-vendor default review panel.
+"""Availability- and authentication-aware review-board composition.
 
-The ``code-review`` board's IDEAL shape is one seat per frontier vendor, each at
-its MAX thinking and each carrying a DISTINCT review lens:
+The default target is four seats, with a floor of three. The primary vendor order
+is Grok, Claude, Codex, Gemini, using ``_VENDOR_SEAT`` models and efforts (high
+for the first three, medium for Gemini). Gemini's model may be overridden by the
+caller or resolved from the configured default.
 
-    grok    grok-4.7         max   lens=adversarial
-    claude  claude-opus-5-5  max   lens=correctness
-    codex   gpt-6-astra      max   lens=red-team
-    gemini  gemini-4-argon   medium lens=alternative-approach
-
-The load-bearing behavior is the **availability-aware fallback**: a panel must
-NEVER collapse to one or two reviewers just because one or two vendors are down.
-``compose_review_board`` detects the available vendors (via the advisor-board's
-canonical PATH probe — ``registries.DEFAULT_HARNESS_REGISTRY.is_available``, the
-SAME probe the matrix uses, so it is registration-driven and covers grok) and
-composes a board of ``target`` independent seats (default 4, HARD FLOOR 3):
-
-* one vendor-pure seat per available vendor first (its primary lens, max thinking);
-* then BACKFILL the remaining seats onto the available vendors, round-robin, each
-  with a DIFFERENT lens drawn from the lens cycle — so two available providers
-  still yield a full 4-seat board, and ONE available provider yields 4
-  distinct-lens seats on that provider.
-
-With at least one vendor up the board ALWAYS reaches ``target`` (the lens cycle is
-longer than the floor), so the floor is a structural safety net, never a cliff.
-Seats are emitted in a deterministic order (fixed vendor order, then round-robin
-backfill) so the composed board is snapshot-stable. No two seats ever share the
-same ``(vendor, model, lens)`` — lens-uniqueness per vendor guarantees it.
-
-Backfill stays on the vendor's own HOMEBREW lane (same model, same lane, next
-lens) — never a breadth/omnigent lane that would skip-with-warning without a
-gateway, which would defeat the point of keeping the reviewer count up.
+Production probes require review-composition authorization and check both PATH
+availability and subscription authentication. Excluded vendors have typed reasons
+and replacement-seat metadata. Remaining vendors receive distinct-lens backfill
+in round-robin order. No available authenticated vendor yields an empty board;
+backfill stops if the finite lens cycle is exhausted. Static injected probes can
+build snapshots without live admission.
 """
 from __future__ import annotations
 

@@ -1,16 +1,14 @@
-"""Git-derived worktree freshness index (CS-0.10a).
+"""Git-derived worktree branch freshness index (CS-0.10a).
 
-Answers "where is the freshest working copy of a path, and who's touching it" by
-reading `git worktree list` and diffing each worktree's branch against the base
-ref (default: `origin/<default-branch>`, falling back to `origin/main`). Purely
-git-derived and READ-ONLY: it never writes repo state, never mutates the working
-tree, and holds no persistent index of its own — every call re-derives the answer
-from `git` at invocation time, so it can't drift from reality the way a cached
-index could.
+Reads ``git worktree list`` and compares named worktree branches with the base
+ref (default: ``origin/<default-branch>``, falling back to ``origin/main``).
+It reads Git state without maintaining a persistent index or changing files.
+Uncommitted worktree edits and detached worktree changes are not indexed.
 
-If a repo has no worktrees beyond the primary one, or none of them touch the
-queried path, the answer collapses to the `origin/main` baseline entry alone —
-there is nothing else to report.
+With an explicit path, holders include its last commit at the base, when present,
+and commits on named worktree branches whose diff touches that path. Without a
+path, only paths changed relative to the base are listed; no divergence yields
+an empty paths tuple. Commit ancestry determines whether the base is behind.
 """
 from __future__ import annotations
 

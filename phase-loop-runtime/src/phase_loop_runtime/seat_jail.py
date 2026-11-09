@@ -1,8 +1,9 @@
 """Per-seat filesystem jail for tooled review seats (agent-harness#1132).
 
 A jailed seat runs its provider CLI with its full tool set, because the jail -- not the
-CLI's own permission settings -- is the boundary. Outside a jail nothing changes: a seat
-that is not jailed keeps the sealed inline route byte-for-byte.
+CLI's own permission settings -- is the boundary. ``seat_route`` resolves the launch
+route and any named exception or refusal; a failed jail check does not by itself
+authorize a sealed substitute.
 
 This module owns the pieces that do not need a live seat:
 

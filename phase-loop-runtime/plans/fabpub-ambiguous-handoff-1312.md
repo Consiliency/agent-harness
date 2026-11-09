@@ -56,11 +56,11 @@ changing verbs.py (Lane A's file), and they need the same operator action.
 - `provider_call_in_flight`: `execute` never replays it; it reaches `_fresh_publish`,
   whose unsealed-owner resolution either records the ambiguity (next retry: covered
   here) or raises `PermissionError`.
-- `epoch_blocked` with a *different* key blocking the partition, and the
-  unsealed-owner refusal: both surface as untyped `PermissionError` through the
-  exception branch (`repair_fabpub_authority`). A rotation is also the remedy there,
-  but telling them apart needs either message matching or a typed exception in
-  verbs.py (Lane A). Out of scope; reported as a follow-up.
+- Follow-up now implemented: `PartitionEpochBlocked` carries the blocking keys,
+  and `UnsealedOwnerBlocksPartition` carries the owner identity.
+  `publishing._typed_refusal_handoffs` chooses the rotation handoff by type; see
+  `fabpub-typed-handoffs.md` (agent-harness#1573). An unrelated untyped
+  `PermissionError` still reports `repair_fabpub_authority`.
 
 ## Vocabulary
 
@@ -91,4 +91,8 @@ publishing.py, tests, CHANGELOG and docs/fabpub-pre-admission-ambiguity.md.
 - A `rejected_before_start` blocked result keeps `repair_publication_precheck_and_retry`.
 - Each new check is shown to fail when its code is removed.
 
-Run from phase-loop-runtime/: test_publishing.py, every test_fabpub_* file and the new file.
+For a focused shared-host check, from `phase-loop-runtime/`:
+
+```sh
+PYTHONPATH="$PWD/src:$PWD/tests" timeout 900 .venv/bin/python -m pytest -q -p no:cacheprovider tests/test_fabpub_ambiguous_handoff_1312.py
+```

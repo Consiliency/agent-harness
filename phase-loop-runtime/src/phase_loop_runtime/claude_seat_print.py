@@ -27,7 +27,9 @@ reads every frame as it arrives and admits exactly one result:
   ``claude_seat_token_in_output``.
 
 Observations (:mod:`claude_print_observations`) are bounded and metadata-only, and never
-change admission. The selection is experimental and unqualified (§4a item 6).
+change admission. ``ADMITTED`` is true with the recorded §4a ``ACTIVATION`` citation from
+agent-harness#1775. Transport selection remains explicit; the shipped jailed
+Claude default is ``tui`` in ``claude_seat_transport``.
 
 ``panel_invoker`` helpers are late-bound through the package facade (PANELSPLIT-compatible)
 and none is changed. This module never imports the Agent SDK.

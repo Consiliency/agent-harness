@@ -46,24 +46,24 @@ consumes it), but its public names are still a stable contract other code
 (train_runner, the broker, CI wiring) links against:
 
   * `compose_gate_status(...)` — composes `fab_provenance.GateStatus`
-    (`fab.gate-status.v2`). NEVER raises for an in-scope fail-closed condition
-    (mirrors `fab_canonical.equivalent()`'s posture) EXCEPT
-    `fab_provenance.ProvenanceNotFound`, which propagates deliberately — "no
-    provenance recorded for this run_id" is categorically different from "a
-    recorded provenance is broken/tampered", and it is deliberately this
-    low-level primitive's caller, not `compose_gate_status` itself, that
-    decides what a missing provenance means for a GIVEN `run_id` (see
-    `fab_gate_validator`'s F3 branch table — once a `run_id` is present, it
-    resolves this to BLOCK, never "not applicable").
+    (`fab.gate-status.v2`). It authenticates durable per-epoch round records and
+    seat outcomes before evaluating chain resolution, re-verifies material and
+    Git bindings, then recomputes live equivalence. Provenance validation errors
+    inside the composition block become a blocked status. Errors loading the
+    artifact (including `ProvenanceNotFound`) and exceptions from the live
+    equivalence call can propagate. The closeout validator catches failures and
+    returns a block finding for a scoped run.
+
   * `verdict_binds_to_equivalent(finding, gate_status)` — design §8 finding 5:
-    `verdict_binds_to(finding, gate_status.reviewed_sha)` (#88, REUSED from
+    `verdict_binds_to(finding, gate_status.reviewed_sha)` (agent-harness#88, REUSED from
     `closeout_validators`, never reimplemented) AND
     `gate_status.equivalence_verified.result == EQUIVALENT`. Two independent
     facts ANDed; `reviewed_sha` is NEVER the live/final PR head (T16).
-  * `cross_check_seat_authenticity(...)` (§6.3/T13) and `reverify_all_material`
-    (§6.4/T14) — the two authenticity primitives `compose_gate_status` runs;
-    exposed standalone so a caller can run them independently of full gate
-    composition (e.g. a diagnostic tool).
+  * `cross_check_round_authenticity(...)` and `reverify_all_material` —
+    the authenticity and material checks used by `compose_gate_status`, along
+    with delta-seat binding and live Git validation. The older
+    `cross_check_seat_authenticity(...)` remains available as a standalone
+    seat-level diagnostic primitive.
   * `fab_gate_validator` — a `@register_closeout_validator` following the
     EXACT `verification_evidence_validator`/`visual_avatar_evidence_validator`
     pattern: `severity="block"`, `blocker_class="review_gate_block"` (non-human
@@ -95,27 +95,19 @@ Design ambiguities resolved in this lane (stated once, not re-litigated):
      re-verify always comes from the trusted run store, never from the
      leaner output record.
 
-  2. **"No unresolved block finding remains" (§8) is evaluated against
-     `artifact.findings`'s current top-level `status`, cross-checked against
-     the FINAL delta round's own `reopened_finding_ids`/`resolved_finding_ids`
-     audit trail** — not `status` alone. Findings live once at the artifact's
-     top level (Lane A resolved-ambiguity #3); nothing in Lanes A-C mutates
-     `Finding.status` when a later round's carry-forward decision reopens a
-     previously-clean finding (`fab_delta.carry_forward` returns
-     `reopened_finding_ids`, it does not rewrite `Finding.status`). A finding
-     the final round's carry-forward reopened, but whose id is NOT ALSO in
-     that same round's `resolved_finding_ids`, is therefore UNRESOLVED
-     regardless of what `Finding.status` says — the reopen audit trail always
-     wins over a possibly-stale top-level status (fail-closed: a stale
-     "clean" snapshot can never mask a live reopen).
+  2. **"No unresolved block finding remains" (§8)** is evaluated against
+     `artifact.findings`'s current top-level `status` and the finding-flow
+     audit trail ACROSS ALL delta rounds. `_unresolved_block_findings` folds each
+     round's reopen/resolve decisions in order; a later unresolved reopen can
+     invalidate an earlier clean status.
 
   3. **A provenance artifact with ZERO required seats cannot PASS.** Design
      §8's "every required seat has a non-DISAGREE verdict" is vacuously true
      over an empty seat set — a real gap for an artifact that never recorded
      any required reviewer at all. `compose_gate_status` additionally requires
      `any(seat.required for seat in artifact.seats)`; an artifact with no
-     required seats blocks with reason `"no_required_seats"`, never silently
-     passes on vacuous truth.
+     required seats cannot pass on vacuous truth. This predicate contributes
+     to the blocked status; it does not itself populate a reason string.
 
   4. **The durable `SeatOutcomeRecord` ledger location.** No existing writer
      persists individual `SeatOutcomeRecord`s to a FAB-run-scoped durable
@@ -131,24 +123,17 @@ Design ambiguities resolved in this lane (stated once, not re-litigated):
      duplicate-key-rejecting JSON parse discipline (`fab_provenance.
      _strict_object_pairs_hook`, reused) for the read side.
 
-  5. **The closeout validator's `live_base_ref_name` may fall back to the
-     artifact's own bound name when no live-PR host context is available.**
-     A bare phase closeout (no GitHub PR object in scope) cannot always supply
-     a real live base ref independently resolved from host state; when the
-     caller has none, falling back to the bound name makes the retarget check
-     (I1) trivially satisfied but still exercises the stronger fresh-fetch
-     merge-base + live content-drift checks. The FULL security backstop
-     against retarget always has real live-PR host context and lives at
-     `governed_premerge`'s promotion-time re-assertion (§4.4) — see that
-     module's docstring. This is a documented, deliberate scope split, not an
-     oversight.
+  5. **The closeout validator requires live PR inputs for a scoped run.**
+     Once `fab_gate_inputs` contains a run id, missing `repo_root`,
+     `live_base_ref_name`, or `live_head_sha` produces a block finding. It does
+     not substitute the artifact's recorded base-ref name for a missing live one.
 
 Fail-closed discipline (this is where FAB actually decides): every ambiguous
-or unrepresentable state — unreadable/tampered provenance, a broken hash
-chain, an unresolved delta-chain tail, a seat with no matching durable record,
-a mutated material snapshot, a malformed base-ref identity — resolves to
-`GATE_STATUS_BLOCK` (surfaced as a non-human `review_gate_block`), never a
-silent pass. Additive only: nothing in `fab_provenance.py`, `fab_canonical.py`,
+or unrepresentable state must prevent a pass. `compose_gate_status` returns
+`GATE_STATUS_BLOCK` for its handled validation and equivalence failures; the
+closeout validator maps propagated failures to a non-human `review_gate_block`.
+Direct callers must also handle exceptions from the primitive.
+Additive only: nothing in `fab_provenance.py`, `fab_canonical.py`,
 `fab_delta.py`, `panel_invoker.py`, or `closeout_validators.py` is modified
 beyond the minimal, additive wiring this lane strictly needs (a new optional
 `CloseoutContext.fab_gate_inputs` field and a new optional `fab_gate_inputs`
@@ -1644,12 +1629,12 @@ def _unresolved_block_findings(
     findings: Sequence[Finding],
     delta_chain: Sequence[DeltaReviewRecord],
 ) -> tuple[str, ...]:
-    """design ambiguity #2 (module docstring), generalized across the WHOLE
+    """Fold unresolved block findings across the WHOLE
     chain (agent-harness#191 CR, Lane D finding 2 — "unresolved-finding
     evaluation consults only the final round"): a `severity=="block"` finding
     starts from its top-level `status` (`clean` == provisionally resolved —
     `Finding.status` is never mutated by a later round's carry-forward
-    decision, per module docstring ambiguity #2), then folds EVERY
+    decision; see the module's finding-flow contract), then folds EVERY
     `delta_chain` round's `resolved_finding_ids`/`reopened_finding_ids` IN
     ORDER: a round that reopens id `f` without ALSO resolving `f` in that SAME
     round marks `f` unresolved from that point forward; a LATER round
@@ -1724,12 +1709,11 @@ def compose_gate_status(
     T16). `equivalence_verified` is a SEPARATE, independently-recomputed proof
     (never read from any client-supplied field).
 
-    NEVER raises for an in-scope fail-closed condition (mirrors
-    `fab_canonical.equivalent()`'s posture) EXCEPT `ProvenanceNotFound`, which
-    propagates deliberately: "no provenance recorded for this run_id" is a
-    different fact than "a recorded provenance is broken", and only the
-    caller (e.g. `fab_gate_validator`) can tell "not applicable, stay inert"
-    from "should block" apart.
+    Provenance validation errors inside the composition block become a blocked
+    status. Loading the artifact happens before that block: `ProvenanceNotFound`
+    and other load errors can propagate. Exceptions from the live equivalence
+    call can also propagate. Direct callers must handle those exceptions;
+    `fab_gate_validator` maps them to block findings for a scoped run.
 
     `status == GATE_STATUS_PASS` iff ALL of: EVERY round in the delta chain
     (not just the final one — F2) is itself resolved/pass-eligible and the

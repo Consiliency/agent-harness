@@ -1,44 +1,18 @@
-"""Parameterized ratification policy — the typed shape UNATTEND + GPGATE consume.
+"""Typed per-gate ratification policies and a pure evaluator.
 
-**IF-0-POLICY-1 (interface freeze).** This module is the frozen contract for
-REVIEWGOV W3: a STRICT typed per-gate ratification policy plus a PURE evaluator.
-The freeze IS the import surface — consumers depend on exactly these names::
+The public contract includes ``RatificationPolicy``, ``RatificationDecision``,
+``BoardFacts``, ``DEFAULT_RATIFICATION_POLICIES``, ``GATES``, ``board_facts_from``,
+and ``evaluate_ratification``. Policies set vendor and lens floors, consensus
+mode (unanimous or majority), and shortfall handling (escalate or proceed_degraded).
 
-    from phase_loop_runtime.ratification_policy import (
-        RatificationPolicy, RatificationDecision, BoardFacts,
-        DEFAULT_RATIFICATION_POLICIES, GATES,
-        board_facts_from, evaluate_ratification,
-    )
+``board_facts_from`` projects distinct vendors and lenses from the composed board;
+the caller supplies agreeing and usable-reviewer counts. ``evaluate_ratification``
+caps the vendor count at the usable-reviewer count, checks the floors and consensus,
+and returns a decision without launching seats or doing I/O. These aggregate facts
+do not identify which vendor supplied each usable verdict.
 
-A ``RatificationPolicy`` states, per gate, how independent a review board must be
-before its verdict *ratifies* a promotion:
-
-* ``required_vendors``       — minimum DISTINCT vendor families that must have
-                               produced a usable review (cross-vendor independence).
-* ``required_lens_coverage`` — minimum DISTINCT review lenses across the board.
-* ``required_consensus``     — the agreement MODE among the usable reviewers
-                               (``unanimous`` | ``majority``). The quorum COUNT is
-                               ``required_vendors`` — W4's "N-vendor consensus
-                               quorum"; this dial is only its strictness.
-* ``on_shortfall``           — what to do when the achieved board falls short of
-                               any requirement: ``escalate`` (a NON-human,
-                               agent-recoverable ``review_gate_block`` — never a
-                               ``human_required`` stall) or ``proceed_degraded``
-                               (proceed and write a durable audit record).
-
-Autonomy-first (extends, never replaces — see
-``[[phase-loop-autonomy-first-guardrails]]`` and Assumption #5): ``escalate``
-NEVER sets ``human_required``. It is the same non-human ``review_gate_block`` the
-governed gate already emits; ``proceed_degraded`` is the dial that lets a
-1-subscription operator ratify on a degraded board with a paper trail (W4's
-"``on_shortfall`` handles 1-subscription users").
-
-The evaluator is PURE: it takes the ACHIEVED board facts (distinct vendors, lens
-coverage, and the agree/reviewing counts) and returns a decision — no CLI spawn,
-no IO, no board composition. The wiring that feeds it (compose the availability-
-aware board, project ``board_independence``/lens coverage) lives in
-:func:`board_facts_from`, which IMPORTS the frozen
-``advisor_board.composition``/``schema`` surfaces (never edits them).
+Escalation produces a non-human review-gate hold. Proceeding degraded requests a
+durable audit record from the caller; the evaluator itself does not write it.
 """
 from __future__ import annotations
 

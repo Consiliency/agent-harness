@@ -1,17 +1,13 @@
-"""Governed pre-merge review bundle (model-routing-v2 P1, IF-0-P1-1).
+"""Render governed review bundles from a supplied diff and closeout evidence.
 
-The artifact the panel reviews at the pre-merge gate is a *review bundle*, not a
-bare diff: the EXACT staged diff the closeout is about to commit, plus the plan's
-``## Acceptance Criteria``, the verification-command results, and a one-paragraph
-closeout summary. The panel needs the change *and* the spec to judge it against.
+``render_governed_bundle`` combines the diff with plan acceptance criteria,
+verification results, and a closeout summary, without writing an artifact into
+the repo. The caller supplies and binds the reviewed diff.
 
-The gate fires INSIDE ``_perform_phase_closeout`` — after ``git add`` stages the
-owned paths and before the commit is finalized — and passes the staged-index diff
-(``git diff --cached``) in here. So "what the panel reviews" == "what gets
-committed" by construction: no separately-discovered path set to diverge from
-closeout, no untracked-file synthesis, and the renderer never writes a file into
-the repo (advisor-panel reconciliation — the prior independent path discovery and
-in-repo staging were the divergence + worktree-dirtying defects).
+The runner uses ``staged_index_diff`` during phase closeout after staging the
+owned paths. FAB delta review can instead use ``committed_range_diff`` with
+validated resolved SHAs. Both helpers return textual sentinels when rendering
+is unavailable; downstream review admission must reject incomplete evidence.
 """
 from __future__ import annotations
 

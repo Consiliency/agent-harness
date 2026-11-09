@@ -1,34 +1,23 @@
-"""Harness-neutral repo-validation resolver (the ``phase-loop repo-validate`` core).
+"""Resolve and run explicit repo validation contracts.
 
-This is agent-harness's neutral home for the *local-first agentic validation
-contract*: a single command surface (``fast``/``gate``/``full``/``fix``/
-``affected``/``doctor``) that coding agents run locally, in worktrees, and in CI
-before opening PRs, with GitHub staying the authoritative merge gate. See
-``docs/repo-validation-contract.md`` for the full spec.
+``phase-loop repo-validate`` supports ``fast``, ``gate``, ``full``, ``fix``,
+``affected``, and ``doctor``. Resolution prefers a Justfile contract: an
+``agent::<target>`` recipe in a declared agent module, or a flat
+``agent:<target>`` recipe in the root Justfile. Otherwise it looks for a
+``package.json`` script named ``agent:<target>``. It does not infer a contract
+from generic test commands. See ``docs/repo-validation-contract.md``.
 
-The resolver only ever runs a repo's *explicit* contract:
+This is the behavioural twin of dotfiles' ``scripts/agent-validation``: for the
+same repo and target it must make the same dispatch decision and preserve the
+same exit-code contract. The intentional refinement is JSON reading: the Python
+stdlib needs no Node reader, so exit 21 for a package contract means the selected
+package-manager runner is missing, rather than Node being absent just for parsing.
 
-  1. ``just agent::<target>`` when a ``Justfile``/``justfile`` declares
-     ``mod agent`` and the repo ships an ``agent.just`` module recipe.
-  2. a ``package.json`` script named ``agent:<target>``.
-
-It NEVER guesses that ``npm test``, ``pytest``, or ``make test`` is the gate.
-Unmigrated repos fail closed (exit 20) so agents do not invent CI.
-
-BEHAVIORAL IDENTITY: this resolver is the Python twin of the dotfiles
-``scripts/agent-validation`` bash wrapper and MUST make the same dispatch
-decision and return the same exit code for the same repo, so the local (bash)
-and neutral (Python) surfaces never drift. The one intentional refinement: the
-bash wrapper shells out to ``node`` merely to *read* ``package.json`` and maps a
-missing ``node`` to exit 21. The neutral runtime parses ``package.json`` with the
-Python stdlib, so exit 21 for a package contract means only what the contract
-says it means -- the package-manager *runner* (npm/pnpm/yarn/bun) is missing --
-not that a JSON reader is absent. That is closer to the contract's definition of
-21, not a divergence from its exit-code set.
-
-The module is deliberately dependency-light (stdlib only) and splits pure
-discovery/planning (``resolve``) from the subprocess (``run_plan``) so the
-exit-code mapping is testable without a live ``just``/``npm`` on PATH.
+The stdlib resolver reads JSON directly and chooses the package manager using
+lockfile precedence, then available-runner fallback. Missing contracts return
+exit 20; missing selected runners return 21. ``run_plan`` maps a nonzero command
+exit to 30. Discovery and execution are separate APIs for testing without a live
+Just or package-manager subprocess.
 """
 
 from __future__ import annotations
