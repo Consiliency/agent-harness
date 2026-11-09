@@ -15106,6 +15106,21 @@
         },
         "plans/seats-jailcore-caps-contract.md": {
           "sha256": "e614d3855320fe4c8a1d8b9a335181b2c493da45510062d2f8432ee30c362445"
+        },
+        "plans/seats-remote-contract.md": {
+          "sha256": "1cea960ddd28ef5e1c4bf79083fa9f9938b2c99c2e29dbd937864944ca76d7e8"
+        },
+        "plans/artifacts/v13-LANEEXEC-landed-binding.md": {
+          "sha256": "baeada03794236f7f2ca5b2cc1e4a129bb085b6854607cbe43bbd572490ef188"
+        },
+        "plans/artifacts/v12-v13-replan-ownership.md": {
+          "sha256": "e5dbbfb45c23cbb6acb9756a23a3d86b62dd5b172b94d6a495ef436d189f3e06"
+        },
+        "plans/artifacts/v12-CLOSEOUT-landed-binding.md": {
+          "sha256": "a1512267d669241054c4080aef896046f1c4225848582242301d95b5aab6a2b8"
+        },
+        "plans/artifacts/v13-PLACECLI-landed-binding.md": {
+          "sha256": "64cd6c576530ac9af0fe72fa521286e0643425beb0d11045257b0b1fac45da51"
         }
       },
       "gate_status": "declared_not_produced",
@@ -15122,7 +15137,30 @@
         "SL-5",
         "SL-6"
       ],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-11-09T15:14:18Z",
+          "by": "claude-plan-phase",
+          "metadata": {
+            "replan": {
+              "decision": "owner decision 2026-11-09: re-plan on the landed code keeping the roadmap goals; the superseded plan was replaced, not amended",
+              "frozen_inputs_added": [
+                "plans/seats-remote-contract.md",
+                "plans/artifacts/v13-LANEEXEC-landed-binding.md",
+                "plans/artifacts/v12-v13-replan-ownership.md",
+                "plans/artifacts/v12-CLOSEOUT-landed-binding.md",
+                "plans/artifacts/v13-PLACECLI-landed-binding.md"
+              ],
+              "replanned_by": "claude-plan-phase",
+              "roadmap_sha256": "a5cd5f2bedbda38c99ad516113fd839dae8af6ea4482760e8efd18a5d413428d",
+              "superseded_owner_skill": "claude-plan-phase",
+              "superseded_plan_sha256": "3743c328aa2db95f078a30b4540491d80073482e8b83fb0251fe8227749693ab",
+              "sweep_input": "Consiliency/agent-harness#1963"
+            }
+          },
+          "transition": "committed"
+        }
+      ],
       "owner_skill": "claude-plan-phase",
       "phase_alias": "LANEEXEC",
       "planning_artifact_only": true,
@@ -15137,7 +15175,7 @@
       "slug": "v13-LANEEXEC",
       "status": "committed",
       "type": "phase",
-      "updated_at": "2026-11-07T02:24:52Z"
+      "updated_at": "2026-11-09T15:14:18Z"
     },
     {
       "acceptance_criteria_count": null,
