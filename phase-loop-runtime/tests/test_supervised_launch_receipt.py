@@ -89,6 +89,19 @@ def test_receipt_observed_producer_results():
     assert record["producer_outcomes"]
 
 
+@pytest.mark.parametrize("live_state", ["missing", "different"])
+def test_historical_validation_is_independent_of_live_sources(tmp_path, monkeypatch, live_state):
+    record = read_receipt(RECEIPT)
+    current_producer_nodes()
+    if live_state == "different":
+        for relative in record["source_hashes"]:
+            path = tmp_path / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"unrelated synthetic live source\n")
+    monkeypatch.setattr(__import__(__name__, fromlist=["REPO"]), "REPO", tmp_path)
+    validate_receipt(record)
+
+
 @pytest.mark.parametrize("control", ["stale_binding", "missing_results", "false_authority", "failed_result", "false_readiness"])
 def test_receipt_mutations_after_production_entry(case, tmp_path, control):
     result = prepare(case)

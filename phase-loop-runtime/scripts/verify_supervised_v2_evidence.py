@@ -21,7 +21,8 @@ GROUPS = ("intake_results", "admission_results", "lifecycle_results", "readiness
 SHARED = frozenset({"CHANGELOG.md", "plans/manifest.json", "phase-loop-runtime/pyproject.toml", "phase-loop-runtime/uv.lock",
                    "phase-loop-runtime/tests/data/seat_launch_references.json", "phase-loop-runtime/tests/test_gate_a_wheel_isolation.py",
                    "phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py", "phase-loop-runtime/tests/test_seat_launch_helpers_trusted.py",
-                   "phase-loop-runtime/tests/test_seat_reference_inventory.py"})
+                   "phase-loop-runtime/tests/test_seat_reference_inventory.py",
+                   "phase-loop-runtime/tests/test_stamp_evidence_receipt.py"})
 SOURCE_PATHS = (
     "phase-loop-runtime/src/phase_loop_runtime/supervised_contracts.py",
     "phase-loop-runtime/src/phase_loop_runtime/supervised_envelope_v2.py",
@@ -53,7 +54,6 @@ SOURCE_PATHS = (
     "phase-loop-runtime/tests/test_supervised_worker_cli.py",
     "phase-loop-runtime/tests/test_supervised_worker_receipt.py",
     "phase-loop-runtime/tests/test_run_status_receipt.py",
-    "phase-loop-runtime/tests/test_stamp_evidence_receipt.py",
     "plans/artifacts/v12-CLOSEOUT-inputs.md",
     "plans/artifacts/v12-CLOSEOUT-landed-binding.md",
     "plans/artifacts/v12-CLOSEOUT-binding-location.md",
