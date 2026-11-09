@@ -231,6 +231,10 @@ def load_v2_binding(path: Path, *, workspace: Path, target: Path, reference_root
         for member in ("config_path", "template_path", "qualification_path", "environment_policy_path"):
             referenced = _path(spec["launch"][member])
             snapshots.append((referenced, _private_snapshot(referenced, excluded=exclusions)))
+        for grant in spec["launch"].get("grants", {}).values():
+            if grant["canonical_form"] == "raw_bytes":
+                referenced = _path(grant["path"])
+                snapshots.append((referenced, _private_snapshot(referenced, excluded=exclusions)))
         _require(set(document["implementations"]) == {"codec", "validator"}, "binding_invalid")
         for kind in ("codec", "validator"):
             selected = document["implementations"][kind]
@@ -332,7 +336,7 @@ def activate_v2_binding(binding: V2Binding):
             handles[kind] = module
         codec, validator = handles["codec"], handles["validator"]
         _require(getattr(codec, "PUBLIC_CODEC", None) == "admitted_launch_envelope.v2"
-                 and all(callable(getattr(codec, name, None)) for name in ("decode_v2", "validate_v2_admission", "canonicalize_v2"))
+                 and all(callable(getattr(codec, name, None)) for name in ("decode_v2", "validate_v2_admission", "canonicalize_v2", "precheck_v2_admission"))
                  and callable(getattr(validator, "validate", None)), "binding_invalid")
         return replace(binding, codec=codec, validator=validator.validate)
     except BaseException as error:

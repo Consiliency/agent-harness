@@ -28,6 +28,7 @@ def sha256(data: bytes) -> str:
 @dataclass(frozen=True)
 class Refused:
     reason: str
+    diagnostics: tuple[str, ...] = field(default=(), repr=False, compare=False)
 
 
 class _Refusal(Exception):
@@ -538,7 +539,7 @@ class _SpawnCapability:
         capture = self._capture
         _require(not self._taken and not capture._closed, "token_spent")
         self._taken = True
-        return dict(capture._delivery.environment), capture._spawn_cwd, capture._executable_fds[0], tuple(fd for fd, _raw in capture._descriptor_snapshots)
+        return dict(capture._delivery.environment), capture._spawn_cwd, capture._executable_fds[0], tuple(original for original, _held, _raw in capture._descriptor_snapshots)
 
     def close(self):
         self._capture.close()
@@ -564,12 +565,13 @@ def prepare_launch_v2(raw: bytes, *, binding, capture, attempt: AttemptBinding):
                  "launch_input_unbound")
         _require(binding.agreement is not None and binding.agreement[0] == attempt
                  and binding.codec is not None and binding.validator is not None, "binding_unavailable")
+        _require(binding.agreement[1] == sha256(raw), "binding_invalid")
         _require(len(raw) <= capture.spec.envelope_cap, "envelope_cap")
         envelope = binding.codec.decode_v2(raw, bundle=binding.bundle)
         decision = binding.codec.validate_v2_admission(envelope, context=binding.context, capture=capture, attempt=attempt)
         if not decision.admitted:
             capture.close()
-            return Refused(decision.diagnostics[0])
+            return Refused(decision.diagnostics[0], diagnostics=decision.diagnostics)
         _require(not envelope.value["executable_dependencies"]["declared"], "dependency_route_unwired")
         tier = envelope.value["enforcement"]["tier"]
         _require(tier == capture.spec.tier, "launch_input_unbound")
@@ -584,19 +586,23 @@ def prepare_launch_v2(raw: bytes, *, binding, capture, attempt: AttemptBinding):
         inputs = LaunchInputs(capture.instruction, sha256(capture.instruction), baseline[0], sha256(baseline[0]),
             capture.spec.argv, identities[-1], identities[:-1], str(capture.spec.workspace), str(capture.spec.target),
             kind, device, inode, tier, tuple(envelope.value["enforcement"]["required_constraints"]),
-            capture.spec.timeout_seconds, policy["config_sha256"], policy["template_sha256"], policy["qualification_sha256"], capability)
+            capture.spec.timeout_seconds, policy["config_sha256"], policy["template_sha256"], policy["qualification_sha256"])
         view = EnvelopeView(envelope.value, envelope.public_digest, envelope.raw_digest, capture.local_digest, inputs)
         verdict = binding.validator(view)
         _require(type(verdict) is Admit, "admit_required")
         _require(verdict == Admit(view.launch_digest, attempt.attempt_id), "admit_binding")
         _require(recheck_launch_v2(capture, context=binding.context) is None, "launch_input_unbound")
         prepared = PreparedLaunch(view, verdict, attempt_binding=attempt, _capture=capture, diagnostics=decision.diagnostics)
+        from dataclasses import replace
+        admitted_inputs = replace(inputs, spawn_capability=capability)
         with _LOCK:
             _TOKENS[prepared._token] = _Admission(id(prepared), view.launch_digest, attempt.attempt_id, envelope.raw_digest,
-                                                 inputs, (attempt.assignment_digest, attempt.run_id, attempt.attempt_id))
+                                                 admitted_inputs, (attempt.assignment_digest, attempt.run_id, attempt.attempt_id))
         return prepared
     except BaseException as error:
         if type(capture) is CapturedLaunch:
             capture.close()
-        return Refused(error.code if isinstance(error, ContractError) else str(error) if isinstance(error, _Refusal)
-                       else "binding_invalid")
+        code = ("envelope_schema_invalid" if isinstance(error, ContractError) and error.code in
+                ("record_json_invalid", "record_schema_invalid") else error.code if isinstance(error, ContractError)
+                else str(error) if isinstance(error, _Refusal) else "binding_invalid")
+        return Refused(code, diagnostics=(code,))

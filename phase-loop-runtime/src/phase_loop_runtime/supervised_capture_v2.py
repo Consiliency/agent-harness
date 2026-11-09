@@ -296,11 +296,13 @@ def capture_launch_v2(*, spec: TrustedLaunchSpec, context, attempt: AttemptBindi
                 raw = source.inline
             elif source.descriptor is not None:
                 _require(source.wire["namespace"] == "descriptor" and source.path is None, "launch_input_unbound")
+                import fcntl
+                _require(fcntl.fcntl(source.descriptor, fcntl.F_GETFL) & os.O_ACCMODE == os.O_RDONLY, "launch_input_unbound")
                 fd = os.dup(source.descriptor)
                 capture._fds.append(fd)
                 _require(stat.S_ISREG(os.fstat(fd).st_mode), "launch_input_unbound")
                 raw = os.pread(fd, spec.reference_cap + 1, 0)
-                capture._descriptor_snapshots.append((fd, raw))
+                capture._descriptor_snapshots.append((source.descriptor, fd, raw))
             else:
                 _require(source.path is not None and _relative(source.wire["path"]), "launch_input_unbound")
                 if source.wire["namespace"] == "workspace":
@@ -377,7 +379,8 @@ def capture_launch_v2(*, spec: TrustedLaunchSpec, context, attempt: AttemptBindi
         for name, form, value in spec.grants:
             _require(name not in grants and form in ("raw_bytes", "rfc8785"), "launch_input_unbound")
             if form == "raw_bytes":
-                raw = trusted_bytes(value, excluded=excluded)
+                raw = dict(context.snapshots).get(value)
+                _require(type(raw) is bytes, "launch_input_unbound")
                 capture._snapshots.append((value, raw, True, False))
                 grants[name] = dict(canonical_form=form, text=raw)
             else:
@@ -446,8 +449,12 @@ def recheck_launch_v2(capture: CapturedLaunch, *, context):
                                                 excluded=excluded if trusted else ())
                 os.close(fd)
             _require(raw == expected, "launch_input_unbound")
-        for fd, expected in capture._descriptor_snapshots:
-            _require(os.pread(fd, spec.reference_cap + 1, 0) == expected, "launch_input_unbound")
+        for original, fd, expected in capture._descriptor_snapshots:
+            original_info, held_info = os.fstat(original), os.fstat(fd)
+            _require((original_info.st_dev, original_info.st_ino, original_info.st_mode) ==
+                     (held_info.st_dev, held_info.st_ino, held_info.st_mode)
+                     and os.pread(fd, spec.reference_cap + 1, 0) == expected
+                     and os.pread(original, spec.reference_cap + 1, 0) == expected, "launch_input_unbound")
         for path, existed in capture._discoveries:
             _require((path.exists() or path.is_symlink()) == existed, "launch_input_unbound")
         for _name, _source, path in spec.secret_sources:

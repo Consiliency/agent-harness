@@ -1126,3 +1126,62 @@ def test_launcher_signal_handler_spans_record_lifetime(worker_case, monkeypatch)
     assert result.refusal == "cancelled_before_start" and closed
     assert all(handler != original_handler for handler in closed)
     assert signal.getsignal(signal.SIGTERM) == original_handler
+
+
+from test_supervised_launch_binding import v2_operator
+from test_supervised_capture_v2 import build_v2_attempt
+from test_supervised_contracts_vectors import V2_CORPUS, expand_v2
+
+
+def run_v2_attempt(attempt):
+    state = attempt.operator.path.parent / "worker-state"
+    config = dict(attempt.binding.snapshots)[attempt.binding.spec.config_path]
+    return worker.run_patch_return(attempt.prepared, config_bytes=config, state_root=state), state
+
+
+@pytest.mark.parametrize("case_record", [row for row in V2_CORPUS if row["kind"] == "echo"], ids=lambda row: row["id"])
+def test_v2_published_echo_at_real_writer_and_reader(v2_operator, case_record):
+    import rfc8785
+    value = expand_v2(case_record)
+    payload = value["envelope"]["caller_context"]
+    attempt = build_v2_attempt(v2_operator, caller_context=payload)
+    assert attempt.prepared.view.inputs.spawn_capability is None
+    result, state = run_v2_attempt(attempt)
+    assert result.state == "finished" and result.journal_complete, result
+    assert result.identity.run_id == v2_operator.attempt.run_id and result.identity.attempt_id == v2_operator.attempt.attempt_id
+    root = rs.open_journal_root(state / "journal", create=False)
+    status = projection.attempt_status(root, result.identity.attempt_id)
+    view = projection.build_v2_reader_view(root,
+        dict(assignment_digest=result.identity.assignment_digest, snapshot_ref=result.identity.snapshot_ref), status, state_root=state)
+    assert isinstance(view, projection.V2ReaderView), view
+    expected = rfc8785.dumps(payload)
+    assert view.caller_context_bytes == expected
+    from phase_loop_runtime.supervised_contracts import load_contract_bundle, validate_record
+    validate_record(load_contract_bundle(version="v2"), "supervised_run_status.v1", view.status_bytes, definition="reader_view")
+    if case_record["expected"]:
+        assert view.caller_context_bytes != rfc8785.dumps(value["echoed_caller_context"])
+    else:
+        assert view.caller_context_bytes == rfc8785.dumps(value["echoed_caller_context"])
+    (state / "echo" / result.identity.caller_context_sha256).write_bytes(b"altered")
+    assert projection.build_v2_reader_view(root,
+        dict(assignment_digest=result.identity.assignment_digest, snapshot_ref=result.identity.snapshot_ref), status,
+        state_root=state) == rs.JournalRefused("echo_unavailable")
+
+
+def test_v2_worker_recheck_refuses_before_spawn(v2_operator, monkeypatch):
+    attempt = build_v2_attempt(v2_operator)
+    path = attempt.binding.spec.references[0][1].path
+    path.write_bytes(path.read_bytes() + b"changed")
+    def forbidden(*args, **kwargs):
+        raise AssertionError("unexpected spawn")
+    monkeypatch.setattr(worker, "run_bounded_capture", forbidden)
+    result, state = run_v2_attempt(attempt)
+    assert result.state == "refused" and result.worker_invocations == 0
+    assert not (state / "journal").exists()
+    assert attempt.capture._closed
+
+
+def test_v2_public_status_is_unknown_without_acknowledged_anchor():
+    result = worker.WorkerResult(None, "refused", None, "binding_invalid", 0, None, None, None, False)
+    mapped = projection.v2_status_mapping(result)
+    assert mapped.runtime_state == "unknown" and mapped.public_status_bytes is None and not mapped.journal_acknowledged

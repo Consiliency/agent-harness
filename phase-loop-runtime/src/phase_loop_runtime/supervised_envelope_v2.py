@@ -115,7 +115,7 @@ def _route_key(envelope):
                 template_sha256=policy["template_sha256"], qualification_sha256=policy["qualification_sha256"])
 
 
-def validate_v2_admission(envelope: V2Envelope, *, context, capture, attempt) -> V2Decision:
+def _evaluate_v2_admission(envelope: V2Envelope, *, context, capture, attempt, prefix_only=False) -> V2Decision:
     """Evaluate the pinned reporting stages over independently held commitments."""
     if type(envelope) is not V2Envelope:
         return V2Decision(False, ("envelope_schema_invalid",))
@@ -190,6 +190,8 @@ def validate_v2_admission(envelope: V2Envelope, *, context, capture, attempt) ->
         diagnostics.append("timeout_over_declared_max")
     if diagnostics:
         return V2Decision(False, tuple(diagnostics))
+    if prefix_only:
+        return V2Decision(True, ())
     groups = (
         ("launch_instructions_mismatch", ("instructions",)),
         ("launch_reference_mismatch", ("references",)),
@@ -209,3 +211,15 @@ def validate_v2_admission(envelope: V2Envelope, *, context, capture, attempt) ->
             or capture.contains_secret(value)):
         diagnostics.append("launch_input_unbound")
     return V2Decision(not diagnostics, tuple(diagnostics))
+
+
+
+def validate_v2_admission(envelope: V2Envelope, *, context, capture, attempt) -> V2Decision:
+    return _evaluate_v2_admission(envelope, context=context, capture=capture, attempt=attempt)
+
+
+def precheck_v2_admission(envelope: V2Envelope, *, context, spec, attempt) -> tuple[str, ...]:
+    """Report early stages before I/O capture; this produces no admission or token."""
+    from types import SimpleNamespace
+    capture = SimpleNamespace(credential_sources=tuple(source for _name, source, _path in spec.secret_sources))
+    return _evaluate_v2_admission(envelope, context=context, capture=capture, attempt=attempt, prefix_only=True).diagnostics

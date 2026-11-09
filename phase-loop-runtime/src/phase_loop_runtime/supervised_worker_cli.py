@@ -243,9 +243,12 @@ def _launch_v2(envelope_path: Path, result_path: Path, *, state_root=None):
         return active
     # Only the retained envelope bytes and reconciled hand-off reach the codec.
     try:
-        active.codec.decode_v2(envelope_bytes, bundle=active.bundle)
+        decoded = active.codec.decode_v2(envelope_bytes, bundle=active.bundle)
     except ValueError:
         return Refused("envelope_schema_invalid")
+    diagnostics = active.codec.precheck_v2_admission(decoded, context=active.context, spec=active.spec, attempt=controller.attempt)
+    if diagnostics:
+        return Refused(diagnostics[0], diagnostics=diagnostics)
     capture = capture_launch_v2(spec=active.spec, context=active.context, attempt=controller.attempt)
     if isinstance(capture, Refused):
         return capture
