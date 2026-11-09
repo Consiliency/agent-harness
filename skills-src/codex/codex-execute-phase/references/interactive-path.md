@@ -4,7 +4,7 @@ Read the relevant section only when its trigger in `SKILL.md` applies. The entry
 
 ## Reuse a planning handoff
 
-If no plan path is explicit, first check the current repo and branch handoff from `codex-plan-phase` using `codex-config/shared/runtime-state.md`: read the repo-local handoff resolver target `.dev-skills/handoffs/codex-plan-phase/latest.md`, validate `from`, `repo`, `repo_root`, `branch`, `branch_slug`, `commit`, and `artifact`, then use the artifact only if it exists under the current repo root. Ignore missing or mismatched handoffs unless the user explicitly asks to reuse cross-branch state.
+If no plan path is explicit, first check the current repo and branch handoff from `codex-plan-phase` using `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths`: read the repo-local handoff resolver target `.dev-skills/handoffs/codex-plan-phase/latest.md`, validate `from`, `repo`, `repo_root`, `branch`, `branch_slug`, `commit`, and `artifact`, then use the artifact only if it exists under the current repo root. Ignore missing or mismatched handoffs unless the user explicitly asks to reuse cross-branch state.
 
 ## Interactive publication
 

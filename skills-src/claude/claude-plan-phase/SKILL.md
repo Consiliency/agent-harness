@@ -7,9 +7,9 @@ description: "Claude Code phase planner for a versioned roadmap phase. Produces 
 
 ## Runtime State
 
-For reflections, handoffs, and latest handoff pointers, follow `claude-config/shared/runtime-state.md`. This repo/branch/run-isolated contract supersedes any older flat closeout examples retained for historical context in this skill.
+For reflections, handoffs, and latest handoff pointers, follow `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths`. This repo/branch/run-isolated contract supersedes any older flat closeout examples retained for historical context in this skill.
 
-`shared/phase-loop/protocol.md` is the canonical shared contract for
+`phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`) is the canonical shared contract for
 execution-ready plan metadata, including `phase_loop_plan_version: 1`,
 `roadmap_sha256`, optional `Dispatch Hints`, and downstream roadmap-amendment
 rules.
@@ -55,7 +55,7 @@ this adapter mode overrides the delegation-first interactive workflow below.
 ## Dispatch Hints
 
 When non-default executor policy is needed, add an optional `## Dispatch Hints`
-section using the frozen vocabulary from `shared/phase-loop/protocol.md`
+section using the frozen vocabulary from `phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`)
 instead of inventing Claude-only plan metadata.
 
 When model, effort, work-unit defaults, lane-specific policy, fallback, policy

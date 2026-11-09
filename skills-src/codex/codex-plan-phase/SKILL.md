@@ -35,7 +35,7 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
 - Output path: default `plans/phase-plan-<VERSION>-<PHASE_ALIAS>.md`.
 - `<PHASE_ALIAS>` MUST be uppercase exactly as declared in the roadmap (e.g., `FOUND`, `DESIGNFOUND`), not lowercase. The runner uses the uppercase alias to locate the plan artifact; lowercase or alternate filename variants force an extra plan-iteration roundtrip.
 
-If no roadmap path is explicit, first check the current repo and branch handoff from `codex-phase-roadmap-builder` using `codex-config/shared/runtime-state.md`: read the repo-local handoff resolver target `.dev-skills/handoffs/codex-phase-roadmap-builder/latest.md`, validate `from`, `repo`, `repo_root`, `branch`, `branch_slug`, `commit`, and `artifact`, then use the artifact only if it exists under the current repo root. Ignore missing or mismatched handoffs unless the user explicitly asks to reuse cross-branch state.
+If no roadmap path is explicit, first check the current repo and branch handoff from `codex-phase-roadmap-builder` using `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths`: read the repo-local handoff resolver target `.dev-skills/handoffs/codex-phase-roadmap-builder/latest.md`, validate `from`, `repo`, `repo_root`, `branch`, `branch_slug`, `commit`, and `artifact`, then use the artifact only if it exists under the current repo root. Ignore missing or mismatched handoffs unless the user explicitly asks to reuse cross-branch state.
 
 ## Workflow
 
@@ -107,7 +107,7 @@ shape that omits it.
 Pipeline-aware metadata is additive. When planning from a Pipeline source bundle
 or explicit pipeline-required run context, keep the existing
 `phase_loop_plan_version: 1` fields unchanged and add only the optional
-Pipeline frontmatter from `shared/phase-loop/protocol.md`:
+Pipeline frontmatter from `phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`):
 `source_bundle`, `source_bundle_sha256`, `pipeline_phase_id`, and
 `pipeline_mode`. Copy those fields only from validated bundle context or explicit pipeline-required run context. For standalone phase-loop plans, leave
 those fields out and preserve the existing v1 frontmatter shape.
@@ -236,7 +236,7 @@ runner can parse it consistently:
 
 Action-grouped subsections such as `### Default` or `### Review` are also
 allowed, but the key names and action names must stay in the frozen protocol
-surface from `shared/phase-loop/protocol.md`.
+surface from `phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`).
 
 When model, effort, work-unit defaults, lane-specific policy, fallback,
 policy source, or override reason also need to be frozen, add optional
@@ -303,11 +303,11 @@ Add a machine-readable automation handoff that agrees with the human-readable ne
 
 Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("codex")/codex-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
 
-If the plan is unstaged, untracked, malformed, missing required lane interfaces, or otherwise unsafe to start autonomously, set `automation.status=blocked` or `unknown` as appropriate, `next_skill: none`, `next_command: none`, and record the actual `artifact_state`. Human-required blockers must use the frozen blocker taxonomy from `codex-config/shared/runtime-state.md`; repairable planning gaps that Codex can resolve locally should keep `human_required=false` and name the missing plan contract in `blocker_summary`. Blocked access cases must include redacted `access_attempts` and non-secret `required_human_inputs`.
+If the plan is unstaged, untracked, malformed, missing required lane interfaces, or otherwise unsafe to start autonomously, set `automation.status=blocked` or `unknown` as appropriate, `next_skill: none`, `next_command: none`, and record the actual `artifact_state`. Human-required blockers must use the frozen blocker taxonomy from `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths`; repairable planning gaps that Codex can resolve locally should keep `human_required=false` and name the missing plan contract in `blocker_summary`. Blocked access cases must include redacted `access_attempts` and non-secret `required_human_inputs`.
 
 Manual TUI runs remain valid without the outer phase loop. When `.phase-loop/` exists, treat it as the authoritative runner state; legacy `.codex/phase-loop/` files are compatibility artifacts only and must not block or supersede canonical `.phase-loop/` state. When canonical `.phase-loop/state.json` or `tui-handoff.md` lags behind the newer `.phase-loop/events.jsonl` plus live git topology, reconcile current phase state from the ledger and `git status --short`/HEAD and cite that reconciliation; stale handoff text is not blocking. Only append a legacy `manual` source event to `.codex/phase-loop/events.jsonl` for standalone manual compatibility when no canonical `.phase-loop/` runtime exists, using the same `automation.status`, `next_skill`, `next_command`, `next_model_hint`, `next_effort_hint`, `human_required`, `blocker_class`, `blocker_summary`, `required_human_inputs`, `verification_status`, `artifact`, and `artifact_state` values.
 
-Resolve closeout writes through the `phase_loop_runtime.skill_paths` resolver as the primary source — `resolve_handoff_root(repo)` for the handoff root and `resolve_reflection_root(skill_name)` for reflection roots; fall back to the repo-local `shared/phase-loop/handoff_path.py` resolver only when `phase_loop_runtime` is not importable. Legacy harness handoff roots are read only for migration. Follow `codex-config/shared/runtime-state.md` and use Codex paths only:
+Resolve closeout writes through the `phase_loop_runtime.skill_paths` resolver as the primary source — `resolve_handoff_root(repo)` for the handoff root and `resolve_reflection_root(skill_name)` for reflection roots; if `phase_loop_runtime` is not importable, restore the pinned runtime before writing state. Legacy harness handoff roots are read only for migration. Follow `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths` and use Codex paths only:
 
 - Reflection: `resolve_skill_bundle_root("codex")/codex-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
 - Handoff: `<repo>/.dev-skills/handoffs/codex-plan-phase/<run_id>.md`

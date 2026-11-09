@@ -7,9 +7,9 @@ description: "Claude Code roadmap planner. Produces or extends a multi-phase roa
 
 ## Runtime State
 
-For reflections, handoffs, and latest handoff pointers, follow `claude-config/shared/runtime-state.md`. This repo/branch/run-isolated contract supersedes any older flat closeout examples retained for historical context in this skill.
+For reflections, handoffs, and latest handoff pointers, follow `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths`. This repo/branch/run-isolated contract supersedes any older flat closeout examples retained for historical context in this skill.
 
-`shared/phase-loop/protocol.md` is the canonical shared contract for
+`phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`) is the canonical shared contract for
 `automation:`, `next_skill`, `next_command`, `verification_status`, and
 downstream roadmap-amendment semantics. Claude-specific closeout text must
 agree with that shared protocol.

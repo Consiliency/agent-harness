@@ -9,7 +9,7 @@ Builds a multi-phase roadmap that downstream `opencode-plan-phase` can turn into
 
 ## Shared Protocol
 
-Follow `shared/phase-loop/protocol.md` for the shared closeout contract.
+Follow `phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`) for the shared closeout contract.
 Roadmap-builder closeout must emit `automation:` metadata that agrees with the
 human-readable `Next phase`, `next_skill`, `next_command`, and
 `verification_status` fields.
@@ -151,7 +151,7 @@ handoff as stale until it is regenerated.
 
 Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("opencode")/opencode-phase-roadmap-builder/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
 
-Resolve closeout writes through the `phase_loop_runtime.skill_paths` resolver as the primary source — `resolve_handoff_root(repo)` for the handoff root and `resolve_reflection_root(skill_name)` for reflection roots; fall back to the repo-local `shared/phase-loop/handoff_path.py` resolver only when `phase_loop_runtime` is not importable. Legacy harness handoff roots are read only for migration. Follow `opencode-config/shared/runtime-state.md` and use OpenCode paths only:
+Resolve closeout writes through the `phase_loop_runtime.skill_paths` resolver as the primary source — `resolve_handoff_root(repo)` for the handoff root and `resolve_reflection_root(skill_name)` for reflection roots; if `phase_loop_runtime` is not importable, restore the pinned runtime before writing state. Legacy harness handoff roots are read only for migration. Follow `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths` and use OpenCode paths only:
 
 - Reflection: `resolve_skill_bundle_root("opencode")/opencode-phase-roadmap-builder/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
 - Handoff: `<repo>/.dev-skills/handoffs/opencode-phase-roadmap-builder/<run_id>.md`

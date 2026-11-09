@@ -111,7 +111,7 @@ Manifest write failures are non-fatal during the dual-mode window: emit a ledger
 
 Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("codex")/codex-plan-detailed/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
 
-Resolve closeout writes through the `phase_loop_runtime.skill_paths` resolver as the primary source — `resolve_handoff_root(repo)` for the handoff root and `resolve_reflection_root(skill_name)` for reflection roots; fall back to the repo-local `shared/phase-loop/handoff_path.py` resolver only when `phase_loop_runtime` is not importable. Legacy harness handoff roots are read only for migration. Follow `codex-config/shared/runtime-state.md` and use Codex paths only:
+Resolve closeout writes through the `phase_loop_runtime.skill_paths` resolver as the primary source — `resolve_handoff_root(repo)` for the handoff root and `resolve_reflection_root(skill_name)` for reflection roots; if `phase_loop_runtime` is not importable, restore the pinned runtime before writing state. Legacy harness handoff roots are read only for migration. Follow `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths` and use Codex paths only:
 
 - Reflection: `resolve_skill_bundle_root("codex")/codex-plan-detailed/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
 - Handoff: `<repo>/.dev-skills/handoffs/codex-plan-detailed/<run_id>.md`

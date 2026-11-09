@@ -20,7 +20,7 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
 - Prefer the outside-TUI runner for full-roadmap execution; this TUI bridge keeps interactive `run` calls bounded and operator-driven.
 - Preserve manual TUI use of `codex-phase-roadmap-builder`, `codex-plan-phase`, and `codex-execute-phase`; this bridge is optional operator convenience.
 - Do not edit OpenCode skills, broaden operator docs, create cloud resources, retrieve secrets, commit, push, merge, or discard unrelated work.
-- Before reporting a human-required access blocker, inspect repo-local docs/config and safe metadata from available CLIs named in `codex-config/shared/runtime-state.md`. Never print secret values.
+- Before reporting a human-required access blocker, inspect repo-local docs/config and safe metadata from available CLIs named in `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths`. Never print secret values.
 - If the CLI is missing or its commands differ from this skill, stop and return to the RUNNER phase instead of guessing behavior.
 
 ## Inputs
@@ -216,7 +216,7 @@ reason-coded.
 
 ## Human-Required Blockers
 
-When the CLI reports or implies `human_required=true`, preserve its `blocker_class`, `blocker_summary`, `required_human_inputs`, `access_attempts`, and `automation.status` in the final response. If the blocker is access-related and the CLI did not already record safe probes, perform metadata-only probes from `codex-config/shared/runtime-state.md` before asking the user to act.
+When the CLI reports or implies `human_required=true`, preserve its `blocker_class`, `blocker_summary`, `required_human_inputs`, `access_attempts`, and `automation.status` in the final response. If the blocker is access-related and the CLI did not already record safe probes, perform metadata-only probes from `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths` before asking the user to act.
 
 If `.phase-loop/tui-handoff.md` exists, use its plain-language blocker
 summary and required action as the user-facing explanation, then verify exact

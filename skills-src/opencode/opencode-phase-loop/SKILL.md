@@ -15,7 +15,7 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
 
 - Use the repo-local phase-loop CLI or wrapper documented by the repo; do not invent a second runner.
 - Preserve manual OpenCode use of `opencode-phase-roadmap-builder`, `opencode-plan-phase`, and `opencode-execute-phase`.
-- Inspect `shared/phase-loop/protocol.md` and `opencode-config/shared/runtime-state.md` before describing artifact or blocker semantics.
+- Inspect `phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`) and `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths` before describing artifact or blocker semantics.
 - Before reporting a human-required access blocker, inspect repo-local docs/config and safe metadata from available CLIs. Never print secret values.
 
 ## Inputs
@@ -45,7 +45,7 @@ machine state is needed.
 ## What This Bridge Must Cover
 
 - bounded `run`, `dry-run`, `resume`, `status`, and `monitor` flows
-- manual event import expectations from `shared/phase-loop/protocol.md`
+- manual event import expectations from `phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`)
 - injected-skill metadata and installed-skill drift guidance from the shared loop state
 - downstream roadmap amendments that invalidate older downstream phase plans or handoffs
 

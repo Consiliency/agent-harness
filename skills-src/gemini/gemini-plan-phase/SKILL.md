@@ -36,11 +36,11 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
 - Output path: default `plans/phase-plan-<VERSION>-<PHASE_ALIAS>.md`.
 - `<PHASE_ALIAS>` MUST be uppercase exactly as declared in the roadmap (e.g., `FOUND`, `DESIGNFOUND`), not lowercase. The runner uses the uppercase alias to locate the plan artifact; lowercase or alternate filename variants force an extra plan-iteration roundtrip.
 
-If no roadmap path is explicit, first check the current repo and branch handoff from `gemini-phase-roadmap-builder` using `gemini-config/shared/runtime-state.md`: read the repo-local handoff resolver target `.dev-skills/handoffs/gemini-phase-roadmap-builder/latest.md`, validate `from`, `repo`, `repo_root`, `branch`, `branch_slug`, `commit`, and `artifact`, then use the artifact only if it exists under the current repo root. Ignore missing or mismatched handoffs unless the user explicitly asks to reuse cross-branch state.
+If no roadmap path is explicit, first check the current repo and branch handoff from `gemini-phase-roadmap-builder` using `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths`: read the repo-local handoff resolver target `.dev-skills/handoffs/gemini-phase-roadmap-builder/latest.md`, validate `from`, `repo`, `repo_root`, `branch`, `branch_slug`, `commit`, and `artifact`, then use the artifact only if it exists under the current repo root. Ignore missing or mismatched handoffs unless the user explicitly asks to reuse cross-branch state.
 
 ## Shared Protocol
 
-Execution-ready plans must follow `shared/phase-loop/protocol.md`, including
+Execution-ready plans must follow `phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`), including
 `phase_loop_plan_version: 1`, `phase`, `roadmap`, `roadmap_sha256`, and any
 optional `Dispatch Hints` markdown section. When a live Gemini executor will
 consume the plan, keep installed-skill parity advisory and preserve the shared
@@ -85,7 +85,7 @@ roadmap_sha256: <sha256 of roadmap file bytes at planning time>
 ```
 
 When non-default executor policy is needed, add an optional `## Dispatch Hints`
-section using the frozen vocabulary from `shared/phase-loop/protocol.md`.
+section using the frozen vocabulary from `phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`).
 When model, effort, work-unit defaults, lane-specific policy, fallback, policy
 source, or override reason must also be frozen, use optional `## Execution
 Policy`; precedence is CLI/operator override, phase-plan policy, roadmap
@@ -213,7 +213,7 @@ Add a machine-readable automation handoff that agrees with the human-readable ne
 
 Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("gemini")/gemini-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
 
-Resolve closeout writes through the `phase_loop_runtime.skill_paths` resolver as the primary source — `resolve_handoff_root(repo)` for the handoff root and `resolve_reflection_root(skill_name)` for reflection roots; fall back to the repo-local `shared/phase-loop/handoff_path.py` resolver only when `phase_loop_runtime` is not importable. Legacy harness handoff roots are read only for migration. Follow `gemini-config/shared/runtime-state.md` and use Gemini paths only:
+Resolve closeout writes through the `phase_loop_runtime.skill_paths` resolver as the primary source — `resolve_handoff_root(repo)` for the handoff root and `resolve_reflection_root(skill_name)` for reflection roots; if `phase_loop_runtime` is not importable, restore the pinned runtime before writing state. Legacy harness handoff roots are read only for migration. Follow `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths` and use Gemini paths only:
 
 - Reflection: `resolve_skill_bundle_root("gemini")/gemini-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
 - Handoff: `<repo>/.dev-skills/handoffs/gemini-plan-phase/<run_id>.md`

@@ -23,7 +23,7 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
 ## Runner-Owned Lane Work Units
 
 Injected HARNESSLANE runs may include a `HarnessLaneAssignment` from
-`shared/phase-loop/protocol.md`. Treat that assignment as the work-unit
+`phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`). Treat that assignment as the work-unit
 contract: execute only the selected `lane_id`, write only the listed
 `owned_files`, treat `consumed_interfaces` as read-only, and emit one shared
 `automation:` closeout for that work unit. Installed-skill drift is
@@ -42,7 +42,7 @@ non-human blocker instead of silently downgrading.
 - `--dry-run`: parse and print the lane schedule without editing.
 - `--parallel`: allowed only when the user explicitly requests parallel worker execution.
 
-If no plan path is explicit, first check the current repo and branch handoff from `opencode-plan-phase` using `opencode-config/shared/runtime-state.md`: read the repo-local handoff resolver target `.dev-skills/handoffs/opencode-plan-phase/latest.md`, validate `from`, `repo`, `repo_root`, `branch`, `branch_slug`, `commit`, and `artifact`, then use the artifact only if it exists under the current repo root. Ignore missing or mismatched handoffs unless the user explicitly asks to reuse cross-branch state.
+If no plan path is explicit, first check the current repo and branch handoff from `opencode-plan-phase` using `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths`: read the repo-local handoff resolver target `.dev-skills/handoffs/opencode-plan-phase/latest.md`, validate `from`, `repo`, `repo_root`, `branch`, `branch_slug`, `commit`, and `artifact`, then use the artifact only if it exists under the current repo root. Ignore missing or mismatched handoffs unless the user explicitly asks to reuse cross-branch state.
 
 ## Preflight
 
@@ -57,7 +57,7 @@ If no plan path is explicit, first check the current repo and branch handoff fro
    - task lists;
    - verification commands;
    - optional `Dispatch Hints` from the roadmap or plan using the frozen
-     vocabulary from `shared/phase-loop/protocol.md`.
+     vocabulary from `phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`).
 6. Validate producer dependencies:
    - any lane that consumes another lane's findings, interfaces, or artifacts must list that producer lane in `Depends on`;
    - any lane that writes a synthesized artifact must be downstream of every producer lane it summarizes;
@@ -116,7 +116,7 @@ The main thread remains responsible for integrating results, reviewing diffs, ru
 - Ownership violation: stop and revise the plan before continuing.
 - Missing dependency or unclear interface: stop and route back through planning.
 - Verification command unavailable: report the missing tool and run the closest available static check only if it is meaningful.
-- Use only the frozen blocker taxonomy from `shared/phase-loop/protocol.md`,
+- Use only the frozen blocker taxonomy from `phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`),
   including `missing_secret`, `dirty_worktree_conflict`,
   `branch_sync_conflict`, and `repeated_verification_failure`.
 
@@ -166,7 +166,7 @@ Report:
 
 In every report, handoff, and closeout above — and in any PR/issue body or commit message this run writes — reference issues and PRs as `repo#N` (or `owner/repo#N`), never a bare `#N`; the fleet is multi-repo, so a lone number is ambiguous.
 
-Resolve closeout writes through the `phase_loop_runtime.skill_paths` resolver as the primary source — `resolve_handoff_root(repo)` for the handoff root and `resolve_reflection_root(skill_name)` for reflection roots; fall back to the repo-local `shared/phase-loop/handoff_path.py` resolver only when `phase_loop_runtime` is not importable. Legacy harness handoff roots are read only for migration. Follow `opencode-config/shared/runtime-state.md` and use OpenCode paths only:
+Resolve closeout writes through the `phase_loop_runtime.skill_paths` resolver as the primary source — `resolve_handoff_root(repo)` for the handoff root and `resolve_reflection_root(skill_name)` for reflection roots; if `phase_loop_runtime` is not importable, restore the pinned runtime before writing state. Legacy harness handoff roots are read only for migration. Follow `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths` and use OpenCode paths only:
 
 - Reflection: `resolve_skill_bundle_root("opencode")/opencode-execute-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
 - Handoff: `<repo>/.dev-skills/handoffs/opencode-execute-phase/<run_id>.md`

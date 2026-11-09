@@ -9,7 +9,7 @@ description: "Claude Code subagent briefing guide. Use before creating any Agent
 
 Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, helper roots, repo-local handoff roots, and harness-specific reflection roots.
 
-For reflections, handoffs, and latest handoff pointers, follow `claude-config/shared/runtime-state.md`. This repo/branch/run-isolated contract supersedes any older flat closeout examples retained for historical context in this skill.
+For reflections, handoffs, and latest handoff pointers, follow `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths`. This repo/branch/run-isolated contract supersedes any older flat closeout examples retained for historical context in this skill.
 
 Subagents need a self-contained brief; do not assume the parent conversation supplies their context. Brief every Agent call with specific file paths, architecture, and scope so the subagent can start work immediately instead of rediscovering the project.
 

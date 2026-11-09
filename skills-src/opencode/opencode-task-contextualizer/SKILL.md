@@ -86,7 +86,7 @@ For copy-ready variants, read `references/task-templates.md`.
 
 ## Runtime State
 
-This skill normally writes no reflection or handoff. If a future workflow adds self-improvement state, follow `opencode-config/shared/runtime-state.md` and use OpenCode paths only:
+This skill normally writes no reflection or handoff. If a future workflow adds self-improvement state, follow `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths` and use OpenCode paths only:
 
 - Reflection: `resolve_skill_bundle_root("opencode")/opencode-task-contextualizer/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
 - Handoff: `resolve_handoff_root(repo)/opencode-task-contextualizer/<run_id>.md`

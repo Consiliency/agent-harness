@@ -7,7 +7,7 @@ description: "Claude Code detailed planner for one bounded change. Researches th
 
 ## Runtime State
 
-For reflections, handoffs, and latest handoff pointers, follow `claude-config/shared/runtime-state.md`. This repo/branch/run-isolated contract supersedes any older flat closeout examples retained for historical context in this skill.
+For reflections, handoffs, and latest handoff pointers, follow `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths`. This repo/branch/run-isolated contract supersedes any older flat closeout examples retained for historical context in this skill.
 
 Standalone planner for one bounded change. Not part of the `claude-phase-roadmap-builder` → `claude-plan-phase` → `claude-execute-phase` loop. Used **by exception, outside the pipeline**, when a change is single-concern and the pipeline's roadmap/phase/lane overhead costs more than the change deserves.
 

@@ -30,7 +30,7 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
 ## Runner-Owned Lane Work Units
 
 Injected HARNESSLANE runs may include a `HarnessLaneAssignment` from
-`shared/phase-loop/protocol.md`. Treat that assignment as the work-unit
+`phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`). Treat that assignment as the work-unit
 contract: execute only the selected `lane_id`, write only the listed
 `owned_files`, treat `consumed_interfaces` as read-only, and emit one shared
 `automation:` closeout for that work unit. Installed-skill drift is
@@ -126,7 +126,7 @@ Before briefing workers, read [references/worker-fanout.md](references/worker-fa
 - Ownership violation: stop and revise the plan before continuing.
 - Missing dependency, malformed lane dependency, or unclear interface: stop and route back to `codex-plan-phase` with `human_required=false` unless a true product or human decision is missing.
 - Verification command unavailable: report the missing tool and run the closest available static check only if it is meaningful.
-- True human-required blockers must use the frozen blocker taxonomy from `codex-config/shared/runtime-state.md`: `missing_secret`, `account_or_billing_setup`, `admin_approval`, `destructive_operation`, `ambiguous_roadmap_selection`, `product_decision_missing`, `dirty_worktree_conflict`, `branch_sync_conflict`, `stalled_child_observation`, `repeated_verification_failure`, or `unretryable_external_outage`.
+- True human-required blockers must use the frozen blocker taxonomy from `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths`: `missing_secret`, `account_or_billing_setup`, `admin_approval`, `destructive_operation`, `ambiguous_roadmap_selection`, `product_decision_missing`, `dirty_worktree_conflict`, `branch_sync_conflict`, `stalled_child_observation`, `repeated_verification_failure`, or `unretryable_external_outage`.
 - If the same verification remains failing after one local diagnosis and repair attempt, set `blocker_class=repeated_verification_failure`. If unrelated user work overlaps required lane files, set `blocker_class=dirty_worktree_conflict`.
 - If a release plan with `phase_loop_mutation: release_dispatch` discovers that release-affecting files must be edited before dispatch, do not call the external release command. Stop with `automation.status=blocked`, `human_required=true`, `blocker_class=dirty_worktree_conflict`, and a summary telling the operator to complete/commit the prepare work first.
 - If a phase is ready to report `complete`, verify that `git status --short` is clean for the target repo. If the repo is dirty only because of phase-owned output and required verification passed, do not report it as a human blocker; report `terminal_status=awaiting_phase_closeout` and preserve the required verification evidence so the runner can apply its selected closeout policy. Use `human_required=true` only when pre-existing unrelated dirty paths overlap the required work, the repo is on the wrong branch/ref, or a true human/product/access decision is needed.
@@ -197,7 +197,7 @@ Report:
 
 In every report, handoff, and closeout above — and in any PR/issue body or commit message this run writes — reference issues and PRs as `repo#N` (or `owner/repo#N`), never a bare `#N`; the fleet is multi-repo, so a lone number is ambiguous.
 
-Resolve closeout writes through the `phase_loop_runtime.skill_paths` resolver as the primary source — `resolve_handoff_root(repo)` for the handoff root and `resolve_reflection_root(skill_name)` for reflection roots; fall back to the repo-local `shared/phase-loop/handoff_path.py` resolver only when `phase_loop_runtime` is not importable. Legacy harness handoff roots are read only for migration. Follow `codex-config/shared/runtime-state.md` and use Codex paths only:
+Resolve closeout writes through the `phase_loop_runtime.skill_paths` resolver as the primary source — `resolve_handoff_root(repo)` for the handoff root and `resolve_reflection_root(skill_name)` for reflection roots; if `phase_loop_runtime` is not importable, restore the pinned runtime before writing state. Legacy harness handoff roots are read only for migration. Follow `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths` and use Codex paths only:
 
 - Reflection: `resolve_skill_bundle_root("codex")/codex-execute-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
 - Handoff: `<repo>/.dev-skills/handoffs/codex-execute-phase/<run_id>.md`

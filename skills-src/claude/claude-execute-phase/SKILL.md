@@ -7,9 +7,9 @@ description: "Claude Code executor for a claude-plan-phase lane plan. Uses TeamC
 
 ## Runtime State
 
-For reflections, handoffs, and latest handoff pointers, follow `claude-config/shared/runtime-state.md`. This repo/branch/run-isolated contract supersedes any older flat closeout examples retained for historical context in this skill.
+For reflections, handoffs, and latest handoff pointers, follow `phase_loop_runtime.models` and `phase_loop_runtime.skill_paths`. This repo/branch/run-isolated contract supersedes any older flat closeout examples retained for historical context in this skill.
 
-`shared/phase-loop/protocol.md` is the canonical shared contract for the
+`phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`) is the canonical shared contract for the
 `automation:` object, `verification_status`, frozen blocker taxonomy,
 manual event import, and downstream roadmap-amendment handling.
 
@@ -31,7 +31,7 @@ stale after a roadmap amendment.
 ## Runner-Owned Lane Work Units
 
 Injected HARNESSLANE runs may include a `HarnessLaneAssignment` from
-`shared/phase-loop/protocol.md`. Treat that assignment as the work-unit
+`phase-loop-runtime/protocol/protocol.md` (installed copy: `phase_loop_runtime/_contract_docs/phase-loop/protocol.md`). Treat that assignment as the work-unit
 contract: execute only the selected `lane_id`, write only the listed
 `owned_files`, treat `consumed_interfaces` as read-only, and emit one shared
 `automation:` closeout for that work unit. Installed-skill drift is

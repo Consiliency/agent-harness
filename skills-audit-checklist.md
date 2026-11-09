@@ -6,11 +6,11 @@ Audit baseline: `origin/main` at `23a30561e9b2ef23933fcbb4225a1d86120a5195`. Pen
 - [x] `skills-src/claude/claude-execute-detailed/SKILL.md` — fixed; runtime `publishing.py:2085; plan_manifest.py:339; skill_paths.py:24 — reflection root and absent manifest CLI`
 - [x] `skills-src/claude/claude-execute-detailed/references/pr-writing.md` — checked-clean; runtime `publishing.py:2085 pr_body and commit_message; publication_mode.py`
 - [x] `skills-src/claude/claude-execute-phase/SKILL.md` — fixed; runtime `plan_manifest.py:339`, `runner.py:11669`, `launcher.py`, `capability_registry.py:30-35`, `discovery.py:1432`, `git_ops.py:126`; API, closeout, route and root corrections
-- [ ] `skills-src/claude/claude-execute-phase/references/closeout-reflection-handoff.md` — pending
-- [ ] `skills-src/claude/claude-execute-phase/references/interactive-path.md` — pending
-- [ ] `skills-src/claude/claude-execute-phase/references/interactive-steps.md` — pending
-- [ ] `skills-src/claude/claude-execute-phase/references/lane-dispatch.md` — pending
-- [ ] `skills-src/claude/claude-execute-phase/references/merge-and-verify.md` — pending
+- [x] `skills-src/claude/claude-execute-phase/references/closeout-reflection-handoff.md` — fixed; runtime `skill_paths.py:24,35; executor plan-path argument and artifact containment`
+- [x] `skills-src/claude/claude-execute-phase/references/interactive-path.md` — checked-clean; runtime `publication_mode.py configuration, refusal and CLI output`
+- [x] `skills-src/claude/claude-execute-phase/references/interactive-steps.md` — fixed; runtime `source sweep_stale_worktrees.sh and verify_harness.sh; lock preservation, installed root and serial baseline`
+- [x] `skills-src/claude/claude-execute-phase/references/lane-dispatch.md` — fixed; runtime `plan_ir.py; profiles.py; source allocator; machine verification and actual merge target`
+- [x] `skills-src/claude/claude-execute-phase/references/merge-and-verify.md` — fixed; runtime `source audit_lane_file_touches.py and pre_merge_destructiveness_check.sh; inline parser, deletion-only check and installed helper paths`
 - [x] `skills-src/claude/claude-execute-phase/scripts/allocate_worktree_name.sh` — fixed; bundled executable data inspected against its command parser and implementation; documentation/comments only, no behavior edits
 - [x] `skills-src/claude/claude-execute-phase/scripts/audit_lane_file_touches.py` — fixed; bundled executable data inspected against its command parser and implementation; documentation/comments only, no behavior edits
 - [x] `skills-src/claude/claude-execute-phase/scripts/cleanup_lane_worktrees.sh` — fixed; bundled executable data inspected against its command parser and implementation; documentation/comments only, no behavior edits
@@ -22,7 +22,7 @@ Audit baseline: `origin/main` at `23a30561e9b2ef23933fcbb4225a1d86120a5195`. Pen
 - [x] `skills-src/claude/claude-execute-phase/scripts/state.py` — fixed; bundled executable data inspected against its command parser and implementation; documentation/comments only, no behavior edits
 - [x] `skills-src/claude/claude-execute-phase/scripts/sweep_stale_worktrees.sh` — checked-clean; bundled executable data inspected against its command parser and implementation; documentation/comments only, no behavior edits
 - [x] `skills-src/claude/claude-execute-phase/scripts/team_teardown.sh` — fixed; bundled executable data inspected against its command parser and implementation; documentation/comments only, no behavior edits
-- [ ] `skills-src/claude/claude-execute-phase/scripts/validate_plan_doc.py` — pending
+- [x] `skills-src/claude/claude-execute-phase/scripts/validate_plan_doc.py` — fixed; runtime `own parser and (F)/(O) behavior; exact-duplicate fallback, case-sensitive task header`
 - [x] `skills-src/claude/claude-execute-phase/scripts/verify_harness.sh` — checked-clean; bundled executable data inspected against its command parser and implementation; documentation/comments only, no behavior edits
 - [x] `skills-src/claude/claude-phase-loop/SKILL.md` — fixed; runtime `cli.py:324,3340`, `runner.py:710`, `launcher.py:944`, `capability_registry.py:116`; qualified issue and corrected launcher/path claims
 - [x] `skills-src/claude/claude-phase-roadmap-builder/SKILL.md` — fixed; runtime `roadmap_lint.py:70,402; cli.py advisor-board; skill_paths.py:24; absent helper and published install pin`
@@ -43,7 +43,7 @@ Audit baseline: `origin/main` at `23a30561e9b2ef23933fcbb4225a1d86120a5195`. Pen
 - [x] `skills-src/claude/claude-plan-phase/references/lane-validation-checklist.md` — checked-clean; runtime `source validate_plan_doc.py checks K,L,P; plan_ir.py ownership and producer dependencies`
 - [x] `skills-src/claude/claude-plan-phase/references/model-effort-tiering.md` — fixed; runtime `planner_validation.py:54; profiles.py:164 — selector vocabulary and current model source`
 - [x] `skills-src/claude/claude-plan-phase/references/plan-document-template.md` — fixed; runtime `source validate_plan_doc.py:217,334 — numeric headings and required spec-closeout section`
-- [ ] `skills-src/claude/claude-plan-phase/scripts/validate_plan_doc.py` — pending
+- [x] `skills-src/claude/claude-plan-phase/scripts/validate_plan_doc.py` — fixed; runtime `plan_ir.py, goal_coverage.py, plan_pin_lint.py; full source plus shared-function comparison with execution validator; corrected docs and issue refs`
 - [x] `skills-src/claude/claude-run-train/SKILL.md` — checked-clean; runtime `train_runner.py` native request/leg and review-only branches, `cli.py` run-train flags
 - [x] `skills-src/claude/claude-skill-editor/SKILL.md` — fixed; runtime `skill_paths.py:24,35; reflection_corpus.py:615; nonexistent helper/table replaced and locked serial parity command`
 - [x] `skills-src/claude/claude-skill-editor/assets/editor_prompt.md` — checked-clean; runtime `build_bundle.py DEFAULT_SOURCES; scoped editor response contract`
@@ -94,3 +94,5 @@ Audit baseline: `origin/main` at `23a30561e9b2ef23933fcbb4225a1d86120a5195`. Pen
 
 - [x] `skills-src/claude/claude-skill-editor/applied-plans.log` — checked-clean; runtime `historical application record; not a command or current runtime claim`
 - [x] `phase-loop-skills/README.md` — checked-clean; runtime `skill_install.py install_skills; skill_paths.py HARNESS_DEFAULT_SKILL_ROOTS; cli.py install parser`
+
+Cross-cutting correction: legacy dotfiles-only protocol/runtime-state paths now point to the repo protocol (and installed package copy) and current `models` / `skill_paths` modules.

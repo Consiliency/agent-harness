@@ -54,7 +54,7 @@ State per lane: `pending | running | verify-ok | merged | failed`. State per gat
 
 Repeat until all lanes are `merged` or halt is triggered:
 
-1. **Find ready lanes** — `pending` lanes whose upstream lanes are all `merged` AND all consumed `IF-0-*` gates are `closed`. Synthesized artifact writer lanes are ready only after every producer lane named in `Interfaces consumed` is merged. Cap the dispatch batch at `EXECUTE_MAX_PARALLEL_LANES` (default 4). Slice the eligible set to the first N (lower SL-ID first) and queue the rest.
+1. **Find ready lanes** — `pending` lanes whose upstream lanes are all `merged` AND all consumed `IF-0-*` gates are `closed`. Synthesized artifact writer lanes are ready only after every producer lane named in `Interfaces consumed` is merged. Cap the dispatch batch at `EXECUTE_MAX_PARALLEL_LANES` (default 1; explicit parallel authorization required). Slice the eligible set to the first N (lower SL-ID first) and queue the rest.
 
 2. **Allocate worktree names**. For each ready lane, run `scripts/allocate_worktree_name.sh <sl-id>`. Substitute the emitted name (e.g., `lane-sl-1-20260418T144536-nxz5`) into both `Agent(name=…)` and the briefed `EnterWorktree(name=…)`. Bare `lane-<sl-id>` names collide under rapid dispatch.
 
@@ -70,7 +70,7 @@ Repeat until all lanes are `merged` or halt is triggered:
    - The lane's test → impl → verify task list. The lane's verify command must include regression files listed in the plan's `## Verification` section that reference this lane's owned files, not only the lane's new tests. Each lane must enumerate tests that mock or stub any existing public function the lane's scope adds a call to, and include those tests in verify.
    - Thinking-level guidance matching the lane's profile.
    - **Browser setup**, when the lane's tests need a browser: the obligations from [Browser verification](merge-and-verify.md#browser-verification), including adding a missing Playwright config in the lane rather than deferring the test.
-   - **Stale-base discipline**: AFTER `EnterWorktree` returns and BEFORE any code change, run `git rebase main` (or `git merge main --no-ff -m "merge: incorporate prior-lane foundation"`). Verify with `git merge-base --is-ancestor <TIP_SHA> HEAD && echo OK || echo STALE`. Repeat the rebase immediately before your final commit. On conflicts, STOP and report — do not resolve silently. Never `git reset --hard` or `git checkout HEAD~N -- …` in a stale worktree; this destroys peer-lane work on `--no-ff` merge.
+   - **Stale-base discipline**: AFTER `EnterWorktree` returns and BEFORE any code change, incorporate the actual non-protected merge target supplied by the orchestrator, or its recorded `<TIP_SHA>`, under the active workflow's git authority. Do not substitute local `main`. Verify with `git merge-base --is-ancestor <TIP_SHA> HEAD && echo OK || echo STALE`. Repeat the rebase immediately before your final commit. On conflicts, STOP and report — do not resolve silently. Never `git reset --hard` or `git checkout HEAD~N -- …` in a stale worktree; this destroys peer-lane work on `--no-ff` merge.
    - **Staging discipline**: Forbid `git add -A` and `git add .`. Stage with explicit pathspecs drawn from the lane's `Owned files`.
    - **No self-merge**: DO NOT run `git merge` or `git push` against the merge-target branch yourself; the orchestrator owns merges.
    - **Structured-reply instruction**: "When done, reply with JSON `{lane, verify_exit_code, failed_tasks, pre_existing_failures, tsc_error_delta, notes, commit_sha, branch, worktree_path}`. `failed_tasks` lists failures attributable to this lane; `pre_existing_failures` lists failures reproducible on the base SHA (capture the base-SHA reproduction command as evidence). When the lane's verify chain runs whole-repo type-checking, populate `tsc_error_delta` (errors-after minus errors-before); accept `tsc_error_delta <= 0` as a pass even if raw exit code is non-zero. `branch` and `worktree_path` come from `EnterWorktree`'s return value."
@@ -148,7 +148,7 @@ non-human `review_gate_block` with `mergeable=False` — the loop ending never
 releases the merge. The agent applies the review-round rules from the
 advisor-board skill to what that loop returns: let every seat finish before
 fixing, fix once per round, and treat a finding as blocking only when it cites
-what it breaks under that skill's rule 3 (the citation classes are defined
+what it breaks under that skill's blocking-findings rule (the citation classes are defined
 there, not here). At the cap, descope by removing the scope that carries the
 blocker and leaving its goal unclaimed; a blocker that cannot be removed with
 its scope halts the phase for the operator — never merge with a blocker
