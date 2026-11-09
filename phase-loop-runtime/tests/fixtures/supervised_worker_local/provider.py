@@ -5,7 +5,15 @@ import sys
 import time
 
 mode = sys.argv[-1]
-if mode == "wait":
+if mode == "escape":
+    pid = os.fork()
+    if pid == 0:
+        os.setsid()
+        open("escape.pid", "w").write(str(os.getpid()))
+        time.sleep(30)
+        os._exit(0)
+    time.sleep(.1)
+elif mode == "wait":
     time.sleep(30)
 elif mode == "write":
     open("fixture-write", "w").write("synthetic")

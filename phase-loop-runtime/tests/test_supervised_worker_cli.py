@@ -1,5 +1,4 @@
 """Isolated WORKER CLI fixture checks; no production state is accessed."""
-import json
 import os
 from pathlib import Path
 import subprocess
@@ -61,3 +60,40 @@ def test_status_missing_root_in_process(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(cli, "sys", SimpleNamespace(flags=SimpleNamespace(isolated=1)))
     assert cli.main(["status", "--attempt", "fixture"], state_root=tmp_path / "absent") == 10
     assert "journal_missing" in capsys.readouterr().out
+
+
+from test_supervised_worker import case as _case, worker_case as _worker_case
+case = _case
+worker_case = _worker_case
+
+
+def test_cli_cancel_retains_production_commands(worker_case, monkeypatch, capsys):
+    from test_supervised_worker import _start_launcher, _finish_launcher, _await_state
+    from phase_loop_runtime.convergence.adapters import patch_return as worker
+    fixture = worker_case
+    fixture.config.template_path.write_text('["{executable}", "wait"]')
+    process, _ = _start_launcher(fixture)
+    try:
+        _await_state(fixture, "running")
+        sent = []
+        monkeypatch.setattr(cli, "sys", SimpleNamespace(flags=SimpleNamespace(isolated=1)))
+        monkeypatch.setattr(worker.signal, "pidfd_send_signal", lambda *args: sent.append(args))
+        assert cli.main(["cancel", "--attempt", fixture.envelope["attempt_id"]], state_root=fixture.state) == 0
+        assert capsys.readouterr().out.strip() == "owner_unverified"
+        assert sent == [] and process.poll() is None
+    finally:
+        process.terminate()
+        _finish_launcher(process)
+
+
+def test_status_liveness_and_page(worker_case, monkeypatch, capsys):
+    import json
+    from test_supervised_worker import run
+    fixture = worker_case
+    result = run(fixture)
+    assert result.state == "finished"
+    monkeypatch.setattr(cli, "sys", SimpleNamespace(flags=SimpleNamespace(isolated=1)))
+    assert cli.main(["status", "--run", fixture.envelope["run_id"], "--page"], state_root=fixture.state) == 0
+    record = json.loads(capsys.readouterr().out)
+    assert record["attempt"]["state"] == "finished" and record["page"] is not None
+    assert record["page_diagnostics"] == []
