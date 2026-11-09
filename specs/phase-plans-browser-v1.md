@@ -87,7 +87,7 @@ seat can choose or raise it.
 
 | Input | Pin |
 | --- | --- |
-| BROWSER v1 contract | `plans/artifacts/browser-v1-contract.md`, sha256 `4e5ca7d066bd64cff483293cc24e9f247b8534c5e1ba2bb54c90fd44b058ca4e` |
+| BROWSER v1 contract | `plans/artifacts/browser-v1-contract.md`, sha256 `57aca5ee2a0c5b0389d80010fb0a7135c2b0de8a2569dc705e204726f127042a` |
 | `browser_observation.v1` schema | `plans/artifacts/browser-v1-observation.schema.json`, sha256 `169c05daaa03788bdfe10fb3efa4a3fe31d3a58bbe1767826645ced4e3ec9a1d` |
 | Research report (operator-held, not published) | `sandbox-browser-visibility-20261108/report.md`, sha256 `d6d0494f74d5df2c8dadc478fb5b5d60cacc2be6f0ff1794b8e97a99c8193fb3`. The contract restates every fact a phase relies on. |
 | v13 placement contract | `plans/artifacts/v13-PLACECLI-contract-v1.schema.json`, as pinned by `specs/phase-plans-v13.md` |
@@ -242,10 +242,10 @@ Open questions (not blocking any phase):
   and teardown.
 - IF-0-VISRENDER-2 — Review-target egress allowlist kind and digest, with
   connect-to-checked-address, redirect recheck and non-proxied-UDP rules.
-- IF-0-VISRENDER-3 — Filtering shim: observe tool allowlist, argument rules, journal line
-  and refusal codes.
-- IF-0-VISRENDER-4 — Render list, frozen replay step vocabulary and result, and the
-  board-to-staging handoff of broker observations.
+- IF-0-VISRENDER-3 — Filtering shim: observe tool allowlist, the board-facing replay
+  execution path, argument rules, journal line and refusal codes.
+- IF-0-VISRENDER-4 — Render list, frozen replay script (`replay_sha256` binding, step
+  vocabulary and result), and the board-to-staging handoff of broker observations.
 - IF-0-VISRENDER-5 — Operator target policy (`browser_target_policy.v1`): location,
   closed fields, default, `policy_sha256`, the `preview_url` and `static_bundle` modes, and
   the `build_and_serve` refusal (contract §8.6).
@@ -350,10 +350,10 @@ with no seat channel and no jail change.
 - [ ] EC-VISRENDER-2 — Playwright MCP runs headless and isolated from `/opt/consiliency/browsers`, with pipe CDP, an ephemeral profile, downloads denied and no TCP listener. A writable or non-root-owned browser tree refuses.
 - [ ] EC-VISRENDER-3 — All browser traffic crosses a broker-side proxy with a review-target allowlist kind. The proxy connects only to the address it just checked and rechecks every redirect hop. It denies private ranges, loopback, NAT64, 6to4 and the host's own addresses, and non-proxied UDP (QUIC, WebRTC) is disabled. Each observation records `egress_allowlist_sha256`.
 - [ ] EC-VISRENDER-4 — The board renders a render list (URLs × viewports × colour schemes) authored before seat launch, writes broker observations and stages them through IF-0-VISART-2 to every route.
-- [ ] EC-VISRENDER-5 — Frozen replay runs steps authored by the plan or the executor before seat launch, from the contract §8.2 vocabulary, with no script execution, and returns pass/fail plus a broker observation. A step list arriving after composition refuses.
+- [ ] EC-VISRENDER-5 — Frozen replay in VISRENDER is board-driven only. Before any seat launches, the board submits one replay script authored by the plan or the executor, from the contract §8.2 vocabulary, and bound by `replay_sha256`. The shim's board-facing replay execution path (contract §8.3) runs its steps in order, with no script execution, and returns pass/fail plus a broker observation, with `replay_sha256` in the journal and the board result. A script arriving after composition, or differing from its bound digest, refuses.
 - [ ] EC-VISRENDER-6 — The broker runs under `seat_resource_caps` limits. After completion, crash or timeout, no broker or browser process, socket or profile directory remains.
 - [ ] EC-VISRENDER-7 — Operational evidence: one board run on the review-seat host stages a broker observation of a preview URL to every local route, recorded as runner-stamped evidence.
-- [ ] EC-VISRENDER-8 — The shim exposes exactly the contract §8.3 allowed tools to the board driver. Every denied tool, flag and target refuses with a closed code before reaching Playwright MCP, and each call writes one journal line.
+- [ ] EC-VISRENDER-8 — The shim exposes exactly the contract §8.3 observation tools to the board driver. It accepts input actions only as the next step of the bound replay script on the board-facing replay execution path, and that path is never on a seat socket. Each of these refuses with a closed code before reaching Playwright MCP: a free-standing input tool call; an input action that is not the next bound step (`browser_input_not_in_replay`); and every denied tool, flag and target. Each call writes one journal line.
 - [ ] EC-VISRENDER-9 — The target mode comes only from the operator target policy of contract §8.6. An absent policy yields `preview_url`, and an unsafe or malformed one is ignored with the default applied and the board result saying so. Every broker observation and the board result record `target.mode` and `target.policy_sha256`. `build_and_serve` refuses `browser_target_mode_unavailable`.
 - [ ] EC-VISRENDER-10 — Under `preview_url`, only URLs whose origins match the policy's preview origins and the egress allowlist render. Loopback, private ranges and tailnet addresses are denied after resolution in every mode.
 - [ ] EC-VISRENDER-11 — Under `static_bundle`, the board takes an executor-built directory before seat launch, validates it (regular single-link files, no symlinks, caps) and serves a read-only copy at a synthetic origin inside the broker sandbox, with no other code running. The observation records `target.bundle_sha256`.
@@ -366,6 +366,8 @@ with no seat channel and no jail change.
   target policy and static-bundle serving; render and replay driver; board integration and
   staging.
 - Single-writer: `panel_invoker.py` and `cli.py` (integration lane).
+- VISRENDER's replay is board-driven only. The review-profile `replay` tier arrives with
+  VISBROKER, so VISRENDER needs no tier.
 - Plannable after VISART's plan freezes IF-0-VISART-2.
 
 **Non-goals**
@@ -393,8 +395,8 @@ Seat channels, a review-profile `browser` field, input driven by a seat, remote 
 
 - IF-0-VISRENDER-1 — Broker launch posture, caps and teardown.
 - IF-0-VISRENDER-2 — Review-target egress allowlist kind and digest.
-- IF-0-VISRENDER-3 — Filtering shim tool allowlist, journal line and refusal codes.
-- IF-0-VISRENDER-4 — Render list, frozen replay vocabulary and result, and staging handoff.
+- IF-0-VISRENDER-3 — Filtering shim tool allowlist, board-facing replay execution path, journal line and refusal codes.
+- IF-0-VISRENDER-4 — Render list, bound replay script and result, and staging handoff.
 - IF-0-VISRENDER-5 — Operator target policy, `preview_url` and `static_bundle` modes, and the `build_and_serve` refusal.
 
 **Spec closeout policy**
@@ -418,7 +420,7 @@ that follows the seat-channel rule, under review-profile policy.
 - [ ] EC-VISBROKER-6 — Seat sessions run under `seat_resource_caps` limits. After seat exit, crash or timeout, no session process, socket or profile directory remains.
 - [ ] EC-VISBROKER-7 — Operational evidence: one jailed and one sandbox-profile seat each record a seat-driven observation of a preview URL, as runner-stamped evidence.
 - [ ] EC-VISBROKER-8 — Review profiles carry `browser: none|observe|replay|interactive`, defaulting to `none`. `browser_automation` is true only when a channel is attached, and unknown values refuse.
-- [ ] EC-VISBROKER-9 — `replay` lets a seat re-run only frozen steps authored before launch. A seat-authored step is handled as `interactive`.
+- [ ] EC-VISBROKER-9 — `replay` lets a seat re-run only a bound replay script authored before launch, named by its `replay_sha256`, through the contract §8.3 replay execution path. The seat cannot add, edit or reorder steps, and a seat-authored step is handled as `interactive`.
 - [ ] EC-VISBROKER-10 — `interactive` refuses `browser_policy_tier_unavailable` (OR-7) until VISINTERACT lands.
 - [ ] EC-VISBROKER-11 — Each seat session gets its own browser process. Contexts are shared only among seats of one review, and a cross-review share refuses.
 - [ ] EC-VISBROKER-12 — No seat-facing tool or argument names a target mode or a tier. The session's origin set and tier are fixed from operator policy and the review profile before the seat launches. A seat request outside them refuses.

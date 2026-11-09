@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: VISART
 roadmap: specs/phase-plans-browser-v1.md
-roadmap_sha256: 6e3444c54ef27a380048f8033a82f183dddafbff150dc664307a0e5db43c6383
+roadmap_sha256: 5a00a00b258f3390774acdc8ac85b1b8607786524df54182d14cf6e6c3d956cd
 automation:
   suite_command: ["timeout", "900", "env", "PYTEST_ADDOPTS=", "python3", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_browser_observation_contract.py", "phase-loop-runtime/tests/test_seat_visual_staging.py", "phase-loop-runtime/tests/test_seat_uid_visual_handoff.py", "phase-loop-runtime/tests/test_seat_visual_rehash_in_h.py", "phase-loop-runtime/tests/test_seat_visual_profile_neutrality.py", "phase-loop-runtime/tests/test_seat_route_contract.py", "phase-loop-runtime/tests/test_seat_jail.py", "phase-loop-runtime/tests/test_seat_sandbox_permissions.py", "phase-loop-runtime/tests/test_board_visual_delivery.py", "phase-loop-runtime/tests/test_cli_observation.py", "phase-loop-runtime/tests/test_native_fill_visual.py", "phase-loop-runtime/tests/test_seat_notices.py", "phase-loop-runtime/tests/test_advisor_board_golden.py", "phase-loop-runtime/tests/test_broker_staged_tree_delivery.py", "phase-loop-runtime/tests/test_review_stage_binding.py", "phase-loop-runtime/tests/test_sandbox_egress.py", "phase-loop-runtime/tests/test_panel_native_fill_183.py", "phase-loop-runtime/tests/test_native_fill_refusal_cause.py", "phase-loop-runtime/tests/test_execute_skill_visual_capture.py", "phase-loop-runtime/tests/test_skills_bundle_drift.py", "phase-loop-runtime/tests/test_launchspec_golden.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
 ---

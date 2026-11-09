@@ -433,6 +433,9 @@ Sandbox-profile seats keep `SeatProfile.broker_socket` for their broker channel.
 - **Replay steps.** The step vocabulary is navigate, click, type, press and select, by
   `aria-ref` or by role and name, plus wait, assert and screenshot. There is no script
   execution and no seat in the loop.
+- **Replay in VISRENDER is board-driven only.** Steps run through the board-facing replay
+  execution path of 8.3, as a frozen script bound by `replay_sha256`. No review-profile
+  tier is involved. The seat-facing `replay` tier arrives with VISBROKER.
 - **Output.** Broker observations (section 2), staged to every route through section 4.
 - **Posture.**
   - a dedicated broker uid, in its own bwrap with no operator home and no credentials;
@@ -460,17 +463,45 @@ Sandbox-profile seats keep `SeatProfile.broker_socket` for their broker channel.
 ### 8.3 Seat-driven observe channel (VISBROKER)
 
 - **Shim.** A filtering shim speaks stdio MCP to Playwright MCP.
-- **Allowed tools.**
+- **Allowed observation tools.**
   - `browser_navigate`, with the URL checked against the session's origin list by the
     shim and again by the proxy;
   - `browser_snapshot`, `browser_take_screenshot`, `browser_resize` and
     `browser_wait_for`;
   - `browser_console_messages` and `browser_network_requests`.
   Verbs and `aria-ref` locators stay aligned with Playwright's aria-snapshot engine.
+- **Board-facing replay execution (VISRENDER).** This is the only path on which the shim
+  accepts input actions.
+  - **The script.** The board submits one frozen replay script before any seat launches.
+    The plan or the executor authors it, from the 8.2 vocabulary.
+  - **Binding.** It is bound by `replay_sha256`, the sha256 of its RFC 8785 canonical
+    JSON. The digest is recorded in the journal and the board result.
+  - **Mapping.** Each step maps to one tool:
+    - navigate → `browser_navigate`;
+    - click → `browser_click`;
+    - type → `browser_type`;
+    - press → `browser_press_key`;
+    - select → `browser_select_option`;
+    - wait → `browser_wait_for`;
+    - assert → `browser_snapshot`;
+    - screenshot → `browser_take_screenshot`.
+  - **Step matching.** The shim runs an input action only when it is the next step of
+    the bound script, with the same tool and the same arguments. Anything else refuses
+    `browser_input_not_in_replay`.
+  - **Changed or late scripts.** A script that differs from its bound digest, or arrives
+    after composition, refuses.
+  - **Board only.** The path exists only on the board driver's own connection, never on
+    a seat socket.
+  - **Free-standing input calls stay refused** (OR-7). A seat-authored step counts as
+    `interactive` and refuses `browser_policy_tier_unavailable`.
+  - **No script execution.** `browser_evaluate` and `browser_run_code` stay denied during
+    replay.
 - **Denied.**
   - `browser_evaluate`, `browser_run_code`, `browser_file_upload`, `browser_install`, and
     tab creation;
-  - every input tool, until a tier allows it;
+  - every free-standing input tool call: input actions run only as steps of a bound
+    replay script on the board-facing path above, and seat-facing input waits for
+    VISINTERACT;
   - the flags `--caps vision|pdf|devtools`, `--allow-unrestricted-file-access` and
     `--cdp-endpoint`;
   - any `file:`, `data:`, `javascript:` or `chrome:` target;
@@ -483,8 +514,9 @@ Sandbox-profile seats keep `SeatProfile.broker_socket` for their broker channel.
 - **Profile and sessions.**
   - The review-profile field `browser: none|observe|replay|interactive` defaults to
     `none` and maps to `browser_automation`.
-  - `replay` lets a seat re-run frozen steps authored before launch. A seat-authored
-    step counts as `interactive`.
+  - `replay` lets a seat re-run a bound replay script, named by its `replay_sha256`,
+    through the replay execution path. The seat cannot add, edit or reorder steps. A
+    seat-authored step counts as `interactive`.
   - `interactive` refuses `browser_policy_tier_unavailable` until VISINTERACT (8.8).
   - Each seat session gets one browser process.
   - No seat-facing tool or argument names a target mode or a tier. The session's origin
