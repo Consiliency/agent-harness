@@ -1,8 +1,4 @@
-"""Repo-local handoff path resolver (HANDOFFS phase).
-
-Mirrors `shared/phase-loop/handoff_path.py` so the resolver travels with
-the installed package. NEUTRALIZE will consolidate this into the broader
-`skill_paths` module.
+"""Resolve a skill's latest handoff under a repository's .dev-skills/handoffs.
 """
 
 from __future__ import annotations

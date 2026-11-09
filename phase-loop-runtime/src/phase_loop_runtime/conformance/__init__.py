@@ -13,6 +13,9 @@ TIERS.
       ``consiliency_contract`` loader the SHAPE gates use; versioned with the
       contract; degrades to a neutral ``skipped`` verdict when the schema is
       absent. It is NOT authority / provenance / signing -- that stays gp.
+    * PROJECTION tier -- Git-grounded bodies and digest-bound index entries.
+    * OUTSIDE-AGENT tier -- pinned contract intake, advisory evidence and
+      governed-pipeline validation verdicts. Intake verdicts confer no merge authority.
 """
 from __future__ import annotations
 
