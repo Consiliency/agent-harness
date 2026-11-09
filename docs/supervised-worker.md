@@ -250,7 +250,9 @@ path-based execution records `exec_binding: "path_recheck"`, with a residual
 check-to-exec window despite the immediate identity recheck.
 
 The isolated `supervised_worker_cli` module has `launch`, `status` and `cancel`
-verbs. Each performs supervised-route preflight first. Production launch remains
+verbs. Launch it through `seat_uid.trusted_module_argv` so it resolves from the
+trusted installation. Native cancel matches the same exact trusted-boot argv
+prefix after the interpreter. Each performs supervised-route preflight first. Production launch remains
 `codec_unavailable` until CLOSEOUT wires the production codec. Envelope and
 result file helpers are frozen for that wiring, and status reads only JOURNAL's
 closed display phrases, liveness and bounded pages. There is no new console

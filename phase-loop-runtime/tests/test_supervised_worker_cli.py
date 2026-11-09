@@ -6,7 +6,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
-from phase_loop_runtime import supervised_worker_cli as cli
+from phase_loop_runtime import seat_uid, supervised_worker_cli as cli
 from phase_loop_runtime.supervised_launch import Refused
 
 
@@ -16,11 +16,13 @@ def test_isolated_cli_before_root(tmp_path, argv, reason):
     root = Path(cli.__file__).parents[1]
     for name in ("json.py", "argparse.py", "validator.py"):
         (tmp_path / name).write_text('raise RuntimeError("shadow loaded")')
-    result = subprocess.run([sys.executable, "-I", "-c",
-        'import sys; from pathlib import Path; root=Path(sys.argv.pop(1)); sys.path.insert(0,str(root)); '
-        'import phase_loop_runtime; assert Path(phase_loop_runtime.__file__).resolve().is_relative_to(root.resolve()); '
-        'from phase_loop_runtime.supervised_worker_cli import main; raise SystemExit(main())',
-        str(root), *argv], cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    precheck = subprocess.run([sys.executable, "-I", "-c",
+        'import sys; from pathlib import Path; root=Path(sys.argv[1]); sys.path.insert(0,str(root)); '
+        'import phase_loop_runtime; assert Path(phase_loop_runtime.__file__).resolve().is_relative_to(root.resolve())',
+        str(root)], cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    assert precheck.returncode == 0, precheck.stderr
+    command = seat_uid.trusted_module_argv("phase_loop_runtime.supervised_worker_cli", *argv)
+    result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30)
     assert result.returncode in (2, 10)
     assert reason in result.stdout + result.stderr
     assert "shadow loaded" not in result.stderr
@@ -253,3 +255,51 @@ def test_status_follows_next_cursor(worker_case, monkeypatch, capsys):
     assert cli.main(argv + ["--cursor", first["next_cursor"]], state_root=fixture.state) == 0
     second = json.loads(capsys.readouterr().out)
     assert first["page"]["events"][0]["seq"] < second["page"]["events"][0]["seq"]
+
+
+def test_production_launcher_matches_trusted_boot():
+    from phase_loop_runtime.convergence.adapters.patch_return import PRODUCTION_LAUNCHER_COMMANDS
+    command = seat_uid.trusted_module_argv("phase_loop_runtime.supervised_worker_cli", "launch")
+    assert PRODUCTION_LAUNCHER_COMMANDS == (tuple(command[1:]),)
+    assert command[1:3] == ["-I", "-c"]
+
+
+@pytest.mark.parametrize("bound", [False, True])
+@pytest.mark.parametrize("verb", ["launch", "cancel"])
+def test_required_session_child_refuses_before_effects(tmp_path, bound, verb):
+    source = Path(cli.__file__).parents[1]
+    tests = Path(__file__).parent
+    code = '''import sys
+from pathlib import Path
+source, tests, verb, bound = sys.argv[1:]
+sys.path[:0] = [source, tests]
+import phase_loop_runtime
+assert Path(phase_loop_runtime.__file__).resolve().is_relative_to(Path(source).resolve())
+from test_executable_dependency_startup import FakeDependency, register_session
+from phase_loop_runtime import supervised_worker_cli as cli
+session = register_session(FakeDependency())
+lease = session.acquire_task("synthetic-cli") if bound == "True" else None
+calls = []
+def unexpected(*args, **kwargs):
+    calls.append(1)
+    raise AssertionError("unexpected CLI effect")
+cli._production_codec = unexpected
+cli.read_envelope_file = unexpected
+cli.open_result_file = unexpected
+args = (["launch", "--envelope", "/absent", "--result", "/absent"] if verb == "launch" else ["cancel", "--attempt", "fixture"])
+try:
+    if lease:
+        with lease.bind_current():
+            result = cli.main(args)
+    else:
+        result = cli.main(args)
+    assert result == 10 and not calls
+finally:
+    if lease:
+        lease.release()
+    session.close()
+'''
+    result = subprocess.run([sys.executable, "-I", "-c", code, str(source), str(tests), verb, str(bound)],
+        cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == ("dependency_route_unwired" if bound else "task_unbound")

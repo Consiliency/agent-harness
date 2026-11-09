@@ -18,6 +18,7 @@ from typing import Literal
 import rfc8785
 
 from ... import output_retention as retention
+from ... import seat_uid
 from ... import run_status as journal
 from ... import run_status_projection as projection
 from ...supervised_launch import Refused, consume_admission, classify_workspace, trusted_bytes
@@ -25,7 +26,8 @@ from .base import (PROPOSAL_CAP_MAX, CaptureRequest, SpawnRefused,
                    run_bounded_capture, worker_child_environment, _descriptor_image)
 
 CANCEL_WAIT_SECONDS = 10
-PRODUCTION_LAUNCHER_COMMANDS = (("-I", "-m", "phase_loop_runtime.supervised_worker_cli", "launch"),)
+PRODUCTION_LAUNCHER_COMMANDS = (tuple(seat_uid.trusted_module_argv(
+    "phase_loop_runtime.supervised_worker_cli", "launch")[1:]),)
 
 
 @dataclass(frozen=True)
