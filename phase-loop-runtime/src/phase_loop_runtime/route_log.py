@@ -3,8 +3,9 @@
 A metadata-only record of *why* a dispatch resolved to a given model/effort, so a
 human auditing a run can answer "what tier ran this, at what effort, and why".
 Built from a `ModelSelection` (which carries only routing provenance — model,
-effort, source, override_reason, model_class), so the record is redaction-safe by
-construction: it never touches artifact bodies, prompts, or credentials.
+effort, source, override_reason, model_class). It does not read artifact bodies
+or prompts. Caller-supplied reason strings are copied verbatim; this helper
+does not sanitize or redact them.
 """
 from __future__ import annotations
 

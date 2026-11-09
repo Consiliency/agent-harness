@@ -1,6 +1,6 @@
 """Unregistered coordinator and stock exec clients.
 
-Inject the pinned generated protobuf module and an authenticated grpc.aio stub.
+Inject stock-compatible protobuf bindings and an authenticated grpc.aio stub.
 This module creates no channel, reads no settings and grants no capabilities.
 Fresh handles require a previously fsynced lease; recovered handles are observe/
 kill only. The in-memory attempt bits are not a durable journal or server fence.

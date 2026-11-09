@@ -1,4 +1,4 @@
-"""Namespaced standalone route preflight, before envelope I/O or imports."""
+"""Namespaced standalone route preflight, before envelope I/O or operator binding imports."""
 from .executable_dependency import ExecutableDependencyError
 from .executable_dependency_startup import refuse_unwired_dependency_route
 from .supervised_launch import Refused
