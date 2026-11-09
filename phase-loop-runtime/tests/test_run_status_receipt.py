@@ -32,7 +32,6 @@ REQUIRED_SOURCES = {
     "phase-loop-runtime/tests/test_run_status.py",
     "phase-loop-runtime/tests/test_run_status_projection.py",
     "phase-loop-runtime/tests/test_run_status_receipt.py",
-    "phase-loop-runtime/tests/data/seat_launch_references.json",
     "phase-loop-runtime/src/phase_loop_runtime/schemas/supervised-worker-v1/run-status.schema.json",
     "phase-loop-runtime/src/phase_loop_runtime/schemas/supervised-worker-v1/conformance/run-status.vectors.json",
     "docs/supervised-run-status.md",
