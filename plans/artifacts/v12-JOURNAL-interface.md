@@ -19,6 +19,17 @@ artifact. The changes are:
 
 WORKER's J1–J6 names and signatures are unchanged.
 
+Revision 4 applies the 2026-11-09 re-check of agent-harness#1934. It narrows the
+bounded-read wording to match the code.
+
+- Projection replays retain only each attempt's head-derived row and one digest
+  verdict.
+- `project_assignment` validates against its own single replay.
+- `AttemptWindow.segments` becomes `segment`, the single requested segment
+  summary.
+
+WORKER's J1–J6 are still unchanged.
+
 ## 1. Inputs and validation boundary
 
 Recorded 2026-11-08 by hashing the vendored files and fetching the same paths
@@ -438,8 +449,22 @@ section 10's `run_status` API.
   line. Each attempt's evidence-envelope digest is carried forward to the later
   attempts' copy check, so no earlier attempt is rescanned. Peak memory is
   bounded by the index, one segment (`read_segment_max_bytes`) and the page, not
-  by the assignment's history. `project_assignment` and `check_projection` use the
-  same zero-event windows.
+  by the assignment's history.
+- **Projection replays (revision 4).** `project_assignment` and `check_projection`
+  each make exactly one replay: one index load and one zero-event window per
+  attempt, in index order.
+  - Per verified attempt, a replay keeps only the head-derived projection row
+    and, for `check_projection`, one boolean. That boolean records whether the
+    supplied row's segment digest is the requested segment's full digest or its
+    prefix digest at the row's `journal_seq`. It is computed inside the streaming
+    pass from that one segment.
+  - Per unknown attempt, a replay keeps `(index_seq, attempt_id, diagnostics)`.
+  - No window, segment list or journal line outlives its attempt. Retained
+    metadata grows with the number of attempts, as the index does, never with the
+    number of segments or lines.
+  - `project_assignment` validates the projection it builds by comparing it with
+    that same replay result, the comparison `check_projection` applies. It never
+    loads the index or reads an attempt a second time.
 - `PageResult(page, next_cursor, diagnostics)`: `next_cursor` is the
   continuation cursor when `has_more` is true, and `None` otherwise. The public
   `page` has no cursor member.
@@ -509,7 +534,8 @@ TerminalRecord(state, worker_invocations, termination, refusal, result_binding) 
 STRUCTURE; check_structure(definition: str, value) -> bool                          # closed structural checker
 HARNESS_ID; EVENT_PHRASES; REF_KINDS; PUBLIC_CODES; LOCAL_CODES; EVENT_KINDS; WINDOW_EVENTS_MAX (= 100)
 AttemptWindow(attempt_id, identity, diagnostics, state, chain_head, total_lines, skipped, lead, events, tail,
-              more_events, found_after_seq, segments, prefix_digest, evidence_digest)
+              more_events, found_after_seq, segment, prefix_digest, evidence_digest)
+# revision 4: segment = (index, first_seq, last_seq, sha256) of the segment named by prefix_at, else None
 read_attempt_window(root, index: IndexRead, entry: IndexEntry, *, after_seq=-1, max_events=0,
                     earlier_evidence=frozenset(), event_kinds=EVENT_KINDS, prefix_at=None) -> AttemptWindow
 default_journal_root() -> Path
