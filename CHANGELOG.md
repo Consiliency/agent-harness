@@ -6,6 +6,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- Add a pinned native all-advisor workload source recipe with offline payload
+  export and ELF closure checks, plus subscription integration prerequisites.
+  Image publication and remote execution remain separate qualification steps.
+
 - CI: honour the org-wide `CI_OFFLOAD_PAUSED` switch in the CI-offload eligibility
   job. `true` diverts runs to the existing hosted path (GitHub compares
   case-insensitively, so `TRUE` does too), and the job logs `offload paused (CI_OFFLOAD_PAUSED): <value>`. Unset or any other value
