@@ -11,7 +11,7 @@ swap and I/O and stall every other user's work. This happened on 2026-11-04.
 
 On a shared host, agents must not run:
 
-- `scripts/local_check.py --full`, because it starts `pytest -n auto`;
+- `scripts/local_check.py --full`, because it selects the whole suite (and `-n auto` when xdist is installed);
 - pytest with `-n`;
 - `make check` or any other whole-suite run;
 - several test runs in parallel from one task.

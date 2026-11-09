@@ -2,8 +2,10 @@
 
 codex runs each command inside its own bubblewrap sandbox. Where that sandbox cannot start
 in the seat's view, the seat can run nothing, yet the CLI still exits 0 with a verdict.
-Before a codex seat runs, the runtime therefore launches codex's sandbox once with the
-command ``true`` (``panel_invoker._codex_command_sandbox_cannot_start``). This module holds
+On the non-brokered route, outside capture-enabled launches, the runtime probes
+codex's sandbox with ``true`` (``panel_invoker._codex_command_sandbox_cannot_start``).
+Jailed review seats instead use the CLI-shape gate and a parent-held completed-command
+record. This module holds
 what that probe needs: the leg detail / notice code for a sandbox that cannot start, and
 the test for a launcher's own fatal diagnostic in the probe's output.
 

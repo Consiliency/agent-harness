@@ -1,27 +1,14 @@
-"""Provider-backing selector + auth-enforcement contract (IF-0-ABDFREEZE-3).
+"""Provider-backing selection, environment scrubbing and review authorization.
 
-Two orthogonal per-seat axes, frozen here:
+Seats declare a ``homebrew`` or ``omnigent`` backing and a ``subscription`` or
+``api_key`` auth lane. The schema requires board opt-in for API-key fallback.
+``resolve_seat_env`` removes other vendors' key variables; subscription seats
+remove all known vendor key variables and blocked subscription selectors.
 
-* **backing** (``homebrew | omnigent``) — the transport. Selected per seat;
-  ``homebrew`` is the default and keeps the built-3 + native host leg.
-* **auth** (``subscription | api_key``) — the credential lane. Subscription is
-  the default; api-key is reachable only behind ``Board.allow_api_key_fallback``.
-
-**No-silent-key is enforced by ACTIVE environment scrubbing**, freezing the
-existing ``_subscription_env`` pattern (panel_invoker.py:226-230,348-353) into a
-per-seat, vendor-keyed contract:
-
-* a **subscription** seat scrubs EVERY vendor API-key var from the subprocess env
-  / gateway payload (identical to ``_subscription_env`` today); and
-* an **api-key fallback** seat scrubs everything, then injects ONLY the seat
-  vendor's key var(s) — never another vendor's, never silently.
-
-``VENDOR_API_KEY_VARS`` is the flat ``panel_invoker._API_KEY_VARS`` tuple
-re-expressed keyed by vendor family, so "inject only the seat vendor's key" is
-expressible. The union of its values equals the current flat tuple (asserted in
-``tests/test_advisor_board_backcompat.py``), so scrubbing stays byte-equivalent.
-The reference env functions below are pure and importable; ABDHOME wires them
-into the real launch/gateway env (this module changes no running path).
+Production review operations also require HARDEN isolation authorization. Its
+supported subscription routes are declared in ``HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES``;
+schema-valid seats alone do not authorize probes or provider launch. This module
+prepares and revalidates that authority for the live panel paths.
 """
 from __future__ import annotations
 

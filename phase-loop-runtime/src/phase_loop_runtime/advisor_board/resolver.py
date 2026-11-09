@@ -1,23 +1,12 @@
-"""Board resolution — name -> seats, settable default, ad-hoc seats (ABDRESOLVE lane 1).
+"""Board resolution from a name, default or ad-hoc seat specification.
 
-Turns a board *reference* into a concrete ``Board`` of seats:
+``BoardResolver`` resolves named boards and ``model:effort[:harness]`` seats
+against an injectable catalog and compatibility matrix. The matrix supplies the
+default lane when the harness is omitted. Live callers supply the catalog from
+``config.load_boards``; the constructor's ``STANDIN_BOARDS`` default is a static
+fixture-backed catalog, including an all-vendors-up code-review snapshot.
 
-* a **name** (``"default"``, ``"code-review"``, ...) -> the named board from the
-  catalog;
-* **nothing** -> the settable *default* board (bare ``advisor-board``);
-* an **ad-hoc** ``--seats model:effort[:harness]`` spec -> a synthesized board.
-
-Coded against the frozen registry/matrix interface (``registries``); the harness
-lane for a bare ``model:effort`` seat is resolved via
-``CompatibilityMatrix.default_lane``. Until ABDREG ships the config loader +
-presets, the catalog defaults to a **stand-in** built from the shared canonical
-fixtures (``STANDIN_BOARDS``) so ABDRESOLVE resolves ``default`` and
-``code-review`` without depending on ABDREG's live output (integration at
-ABDVERIFY). A caller (or ABDREG) injects the real catalog + matrix.
-
-``advisor-panel`` remains a working alias of the default board
-(``BOARD_ALIASES``) so the historical name keeps resolving after the
-advisor-panel -> advisor-board rename.
+``advisor-panel`` and ``panel`` are aliases for the board named ``default``.
 """
 from __future__ import annotations
 

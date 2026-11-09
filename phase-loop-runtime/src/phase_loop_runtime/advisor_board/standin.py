@@ -1,18 +1,10 @@
-"""Fixture-backed stand-in registries + matrix (ABDRESOLVE / ABDHOME test support).
+"""Fixture-backed registries and matrix for advisor-board tests and stand-ins.
 
-ABDREG (Phase 2) populates the *real* six-harness registry, model registry, and
-``(model x harness)`` compatibility matrix behind the frozen Protocols in
-``registries``. Until then, ABDRESOLVE codes against those Protocols using a
-stand-in built **from the shared canonical fixtures** (``fixtures.py``) — the
-ABDFREEZE anti-divergence keystone. Because the stand-in is derived from the same
-``CANONICAL_VALID_PAIRS`` / ``CANONICAL_INVALID_PAIRS`` / ``DEFAULT_SEATS`` that
-ABDREG populates from, the resolver/validation logic verified here integrates with
-ABDREG's real data at ABDVERIFY without a mock-vs-real cliff.
-
-This module is deliberately thin and additive: it introduces no running path and
-is imported only by the resolver's default catalog and by tests. ABDREG replaces
-these with populated implementations; ABDRESOLVE never depends on ABDREG's live
-output (integration is at ABDVERIFY).
+These thin implementations derive from the shared canonical fixtures. Production
+registry data lives in ``registries.DefaultHarnessRegistry`` and
+``registries.DefaultModelRegistry``; the live config loader uses the populated
+matrix. The resolver retains a static stand-in catalog for callers that do not
+supply a config-loaded catalog.
 """
 from __future__ import annotations
 

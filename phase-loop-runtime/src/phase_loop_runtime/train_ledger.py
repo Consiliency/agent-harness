@@ -4,17 +4,14 @@ Records per-node status transitions for a cross-repo release train.  State
 lives **entirely outside any repo's ``.phase-loop/``** — it is coordinator-
 owned.
 
-Durability model (self-consistent):
-  - Each append is a single ``os.write(fd, encoded)`` on a file opened with
-    ``O_APPEND``.  The OS guarantees atomicity for writes ≤ PIPE_BUF on
-    local filesystems (typically 4 KiB); our records are far smaller.
-  - The resume reader is **tolerant**: if the final line of the file is
-    malformed (e.g. the coordinator crashed mid-write), that trailing line is
-    **silently dropped** — it is not yet committed state.  A malformed line
-    at any position OTHER than the last fails loud (unexpected corruption).
-  - No temp-rename.  ``events.py:read_events`` does a bare ``json.loads`` and
-    crashes on a truncated final line — this reader is **net-new**, not a
-    mirror of that function.
+Append and recovery model:
+  - Appends use ``O_APPEND`` and ``_write_all`` retries partial writes. This is
+    not a concurrent-writer transaction or a PIPE_BUF atomicity guarantee.
+  - ``durable=True`` fsyncs the appended record; the default is fsync-free.
+  - Before appending, a trailing fragment without a final newline is truncated
+    and the repair is fsynced, so a new record cannot fuse with a torn tail.
+  - The resume reader drops a malformed final line and raises on malformed
+    interior lines. It folds valid records last-wins per node.
 
 Record shape (one JSON object per line)::
 
