@@ -46,7 +46,7 @@ release and merge. Unsupported paths keep refusing.
 
 | Item | Decision |
 | --- | --- |
-| C-S1 | The echo is a separate artifact bound by the digest JOURNAL already reserves, written before `reserve_attempt` and emitted byte-exact. The JOURNAL record schema, phrases and parser stay unchanged. Sweep recommendation adopted. |
+| C-S1 | The echo is a separate content-addressed artifact in SL-2's `supervised_echo.py`, outside the journal root. It is bound by the digest the JOURNAL index entry already reserves, written after admission and before `reserve_attempt`, and emitted byte-exact by the v2 reader view. `run_status.py`, its record schema, `REF_KINDS`, phrases and parser stay unchanged. Sweep recommendation adopted. |
 | C-S2 | Historical receipts keep their bytes and outcomes and are verified historically (seal, internal digest, controls still present). CLOSEOUT evidence is published separately and pins no shared file. Adopted. |
 | C-S3 | SL-2 owns the launch inventories, the worker fixtures and `_run_status_vectors.py`. The stamp tool is used unchanged, never owned. Adopted. |
 | C-S4 | Acceptance stays blocked until external producer evidence exists; implementation lanes still land. Adopted. |
@@ -64,9 +64,10 @@ release and merge. Unsupported paths keep refusing.
 
 Plan-level freezes consumed downstream (no new roadmap gate): the inputs
 artifact's "Frozen local interfaces" table; `AttemptBinding` carried in
-`PreparedLaunch` (binding §4.1); `supervised_worker_cli launch --envelope
---attempt --result` (§4.2); the total `WorkerResult` to v2 status mapping
-(§4.3); and `run_status.write_echo` / `read_echo` (§3 C-S1). LANEEXEC's work-start
+`PreparedLaunch`, and `discard_admission` (binding §2, §4.1); the §4.2 controller
+document for `supervised_worker_cli launch --envelope --result`; the total
+`WorkerResult` to v2 status mapping (§4.3); and `supervised_echo.write_echo` /
+`supervised_echo.read_echo` (§3 C-S1). LANEEXEC's work-start
 gate names these. Concrete record fields come only from the pinned schemas;
 exceptions translate to closed codes, and no payload, path or secret enters a
 diagnostic.
@@ -114,7 +115,7 @@ SL-3 — Documentation, evidence verifier and readiness reducer
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-0.1 | test | — | `tests/test_supervised_contracts*.py`, `tests/test_gate_a_wheel_isolation.py`, `tests/test_ci_*.py` | v1/v2 selector and `selector_invalid`; every pinned resource and version declaration, including drift, missing bytes, unlisted references and stale seals; all 255 schema expectations labelled schema-only; corpus extraction and the binary64 domain; installed-wheel resources; the wrapper's groups (binding §5); historical helper controls in which a changed receipt byte, a wrong internal digest, a removed producer node and a removed mutation control each fail; the SCHEMA receipt test converted to the helper | `V0` |
+| SL-0.1 | test | — | `tests/test_supervised_contracts*.py`, `tests/test_gate_a_wheel_isolation.py`, `tests/test_ci_*.py` | v1/v2 selector and `selector_invalid`; every pinned resource and version declaration, including drift, missing bytes, unlisted references and stale seals; all 255 schema expectations labelled schema-only; corpus extraction and the binary64 domain; installed-wheel resource assertions placed in `GateAConformEvidenceScopeTest`, the only class V0 runs; the wrapper's groups (binding §5); historical helper controls in which a changed receipt byte, a wrong internal digest, a removed producer node (except a node retired in binding §6) and a removed mutation control each fail; the SCHEMA receipt test converted to the helper | `V0` |
 | SL-0.2 | impl | SL-0.1 | SL-0 owned files | — | — |
 | SL-0.3 | verify | SL-0.2 | SL-0 owned files | all SL-0 tests | `V0` |
 
@@ -128,13 +129,13 @@ C-S2 with the §6 seals.
 
 - **Scope**: Reconcile ENVELOPE through a distinct v2 production adapter, immutable launch capture and an `AttemptBinding` held outside the envelope.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/supervised_envelope_v2.py`, `phase-loop-runtime/src/phase_loop_runtime/supervised_capture_v2.py`, `phase-loop-runtime/src/phase_loop_runtime/supervised_launch.py`, `phase-loop-runtime/src/phase_loop_runtime/supervised_launch_binding.py`, `phase-loop-runtime/tests/test_supervised_envelope_v2.py`, `phase-loop-runtime/tests/test_supervised_capture_v2.py`, `phase-loop-runtime/tests/test_supervised_launch*.py`, `phase-loop-runtime/tests/fixtures/supervised_launch_local/**`
-- **Interfaces provided**: `parse_v2`, `canonicalize_v2`, `decode_v2`, `validate_v2_admission`, `capture_launch_v2`, `recheck_launch_v2`, `load_v2_context`, `load_v2_binding`, `prepare_launch_v2`, `consume_admission`, `AttemptBinding`, `admission_results`
+- **Interfaces provided**: `parse_v2`, `canonicalize_v2`, `decode_v2`, `validate_v2_admission`, `capture_launch_v2`, `recheck_launch_v2`, `load_v2_context`, `load_v2_binding`, `prepare_launch_v2`, `consume_admission`, `discard_admission`, `AttemptBinding`, `admission_results`
 - **Interfaces consumed**: `load_contract_bundle`, `validate_record`, `ContractBundle`, `historical_receipts.verify_historical_receipt`, `intake_results`, `prepare_launch` (pre-existing), `trusted_bytes` (pre-existing)
 - **Parallel-safe**: no
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-1.1 | test | — | SL-1 test files | ENVELOPE receipt test converted to the historical helper before any SL-1 source edit; the published admission and canonical corpora through production APIs with exact first-stage diagnostics and effects; raw and in-memory domains, UTF-16 ordering, negative zero and `__proto__`; whole-envelope secret safety and same-source rotation of both digests; trusted context, suitability, record validity, revocation and duplicates; capture ancestry, links, modes, descriptors, cwd, environment and grant rechecks; `AttemptBinding` mismatch refuses; each guard has a production-entry witness and a source-copy bypass that turns it red | `V1` |
+| SL-1.1 | test | — | SL-1 test files | ENVELOPE receipt test converted to the historical helper before any SL-1 source edit; the published admission and canonical corpora through production APIs with exact first-stage diagnostics and effects; raw and in-memory domains, UTF-16 ordering, negative zero and `__proto__`; whole-envelope secret safety and same-source rotation of both digests; trusted context, suitability, record validity, revocation and duplicates; capture ancestry, links, modes, descriptors, cwd, environment and grant rechecks; `AttemptBinding` mismatch refuses; each guard has a production-entry witness and a source-copy bypass that turns it red; `discard_admission` removes the token and closes descriptors, a discarded admission cannot be consumed, and repeated prepare/discard leaves the registry empty | `V1` |
 | SL-1.2 | impl | SL-1.1 | SL-1 owned files | — | — |
 | SL-1.3 | verify | SL-1.2 | SL-1 owned files | all SL-1 tests | `V1` |
 
@@ -145,14 +146,14 @@ reaches it. A null or missing public codec refuses before effects.
 ### SL-2 — Worker, journal and production CLI reconciliation
 
 - **Scope**: Wire the production CLI to the v2 binding, bind worker identity and echo outside the envelope, and map local results to v2 status.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/supervised_worker_cli.py`, `phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/base.py`, `phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/codex.py`, `phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/patch_return.py`, `phase-loop-runtime/src/phase_loop_runtime/run_status.py`, `phase-loop-runtime/src/phase_loop_runtime/run_status_projection.py`, `phase-loop-runtime/tests/test_supervised_worker*.py`, `phase-loop-runtime/tests/test_run_status*.py`, `phase-loop-runtime/tests/_run_status_vectors.py`, `phase-loop-runtime/tests/test_convergence_adapters.py`, `phase-loop-runtime/tests/test_executable_dependency_startup.py`, `phase-loop-runtime/tests/fixtures/supervised_worker_local/**`, `phase-loop-runtime/tests/data/seat_launch_references.json`, `phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py`, `phase-loop-runtime/tests/test_seat_launch_helpers_trusted.py`, `phase-loop-runtime/tests/test_seat_reference_inventory.py`
-- **Interfaces provided**: `run_status.write_echo`, `run_status.read_echo`, `supervised_worker_cli launch --envelope --attempt --result`, `v2_status_mapping`, `lifecycle_results`, `external_evidence_intake`
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/supervised_worker_cli.py`, `phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/base.py`, `phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/patch_return.py`, `phase-loop-runtime/src/phase_loop_runtime/supervised_echo.py`, `phase-loop-runtime/src/phase_loop_runtime/run_status_projection.py`, `phase-loop-runtime/tests/test_supervised_worker*.py`, `phase-loop-runtime/tests/test_run_status*.py`, `phase-loop-runtime/tests/_run_status_vectors.py`, `phase-loop-runtime/tests/test_convergence_adapters.py`, `phase-loop-runtime/tests/test_executable_dependency_startup.py`, `phase-loop-runtime/tests/fixtures/supervised_worker_local/**`, `phase-loop-runtime/tests/data/seat_launch_references.json`, `phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py`, `phase-loop-runtime/tests/test_seat_launch_helpers_trusted.py`, `phase-loop-runtime/tests/test_seat_reference_inventory.py`
+- **Interfaces provided**: `supervised_echo.write_echo`, `supervised_echo.read_echo`, `supervised_worker_cli launch --envelope --result` with the §4.2 controller document, `v2_status_mapping`, `lifecycle_results`, `external_evidence_intake`
 - **Interfaces consumed**: `load_v2_binding`, `capture_launch_v2`, `prepare_launch_v2`, `consume_admission`, `recheck_launch_v2`, `canonicalize_v2`, `AttemptBinding`, `admission_results`, `historical_receipts.verify_historical_receipt`, `run_patch_return` (pre-existing), `reserve_attempt` (pre-existing), `output_retention.mark` (pre-existing)
 - **Parallel-safe**: no
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-2.1 | test | — | SL-2 test files, `tests/_run_status_vectors.py`, `tests/fixtures/supervised_worker_local/**`, inventory files | JOURNAL and WORKER receipt tests converted to the historical helper before any SL-2 source edit; the actual CLI, adapter and journal paths with offline subprocesses and injected providers: zero chain starts on refusal, no probes, one chain deadline, helper `failed_to_start`, exact one-shot stdin or DEVNULL, replay across processes and restarts; identity taken from `AttemptBinding`, never envelope top-level fields; the `--attempt` file outside `controller_root`, foreign-owned, group-writable or symlinked refuses `binding_invalid` with no effect; all six `kind=echo` cases byte-exact through the real writer and reader, and a missing or altered sidecar refuses `echo_unavailable`; the closed `WorkerResult`-to-v2 table, including `journal_complete=False` as uncertain; the inventory rows for every new launch site or dynamic import; each guard bypassed in a temporary source copy turns a production assertion red | `V2` |
+| SL-2.1 | test | — | SL-2 test files, `tests/_run_status_vectors.py`, `tests/fixtures/supervised_worker_local/**`, inventory files | JOURNAL and WORKER receipt tests converted to the historical helper before any SL-2 source edit; the actual CLI, adapter and journal paths with offline subprocesses and injected providers: zero chain starts on refusal, no probes, one chain deadline, helper `failed_to_start`, exact one-shot stdin or DEVNULL, replay across processes and restarts; identity taken from `AttemptBinding`, never envelope top-level fields; a controller document that is missing, names another envelope digest, lies outside `controller_root`, is foreign-owned, not private or symlinked refuses `binding_invalid` with no effect; the landed `launch --envelope --result` argv is unchanged; all six `kind=echo` cases byte-exact through the real writer and reader, and a missing or altered sidecar refuses `echo_unavailable`; the closed `WorkerResult`-to-v2 table, including `journal_complete=False` as `unknown`; the inventory rows for every new launch site or dynamic import; each guard bypassed in a temporary source copy turns a production assertion red | `V2` |
 | SL-2.2 | impl | SL-2.1 | SL-2 owned files | — | — |
 | SL-2.3 | verify | SL-2.2 | SL-2 owned files | all SL-2 tests | `V2` |
 
@@ -222,6 +223,19 @@ and appends the closeout lifecycle event.
 Next phase: CLOSEOUT — blocked: advisor-board panel review of this re-plan.
 Next command: none until the panel and president return; then
 `claude-execute-phase plans/phase-plan-v12-CLOSEOUT.md` under separate execution authority.
+
+## Deferred Items
+
+Recorded, not built in this phase (coordinator ruling 4, 2026-11-09).
+
+| Item | Owner | Effect on this phase |
+| --- | --- | --- |
+| SEATS public caps APIs: an expected-digest check inside `capped_popen`, typed evidence of whether a failure came before or after its helper started, and kill/collect of a capped parent by key | SEATS/JAILCORE; new issue scheduled against v13 ACTIVATE, cross-linked to agent-harness#1963 and agent-harness#1895 | None; CLOSEOUT never calls `capped_popen`. |
+| Caps contract §1a tmpfs carve-out cleanup | SEATS | None. |
+| Garbage collection of orphaned content-addressed echoes (capped and secret-free) | v12 supervised-worker follow-up; new parked issue | SL-2 creates echo files and deletes none (binding §3 C-S1). |
+| Folding the reinterpreted sentences into the next protocol versions: the PLACECLI `launch_binding` sentence, the LANEEXEC narrowings and the wheel-shipped `x-*` prose | v13 placement protocol owner; new parked issue | None; CLOSEOUT changes no v13 artifact. |
+| Production worker state root taken from trusted operator configuration | agent-harness#1960 | SL-2 keeps the landed default state root; the CLI is not repointed here. |
+| A sanctioned `replan` lifecycle path in `plan_manifest.update_lifecycle` (the replan events here are hand-written and append-only) | coordinator follow-up (ruling 3) | The `v12-CLOSEOUT` row carries one hand-written `replan` event. |
 
 ## Acceptance Criteria
 

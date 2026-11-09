@@ -30,9 +30,8 @@ is adopted unchanged.
   CLOSEOUT/PLACECLI shared file is additive (rows, globs, console scripts), so
   the order costs PLACECLI a rebase, not a redesign.
 - **Shared-file rule.** For the files in the shared table, the later phase keeps
-  main's text verbatim and adds its own entries next to it, as
-  `/home/viperjuice/workspace/reviews/agent-harness-exec/DELEGATE-RULES.md`
-  step 6 already requires for `CHANGELOG.md`, `plans/manifest.json` and
+  main's text verbatim and adds its own entries next to it, as the coordinator's
+  delegate rules already require for `CHANGELOG.md`, `plans/manifest.json` and
   `tests/data` inventories. Any other conflict in a shared file is a STOP for the
   coordinator, not a lane decision.
 
@@ -71,7 +70,7 @@ by these phases.
 
 - **SL-0**: `phase-loop-runtime/src/phase_loop_runtime/supervised_contracts.py`, `phase-loop-runtime/src/phase_loop_runtime/schemas/supervised-worker-v2/**`, `phase-loop-runtime/pyproject.toml`, `phase-loop-runtime/uv.lock`, `phase-loop-runtime/MANIFEST.in`, `phase-loop-runtime/tests/conftest.py`, `phase-loop-runtime/tests/test_supervised_contracts*.py`, `phase-loop-runtime/tests/historical_receipts.py`, `phase-loop-runtime/scripts/verify_supervised_contract_publication.py`, `phase-loop-runtime/scripts/verify_supervised_v2.sh`, `phase-loop-runtime/scripts/gate_a_cleanroom.sh`, `phase-loop-runtime/tests/test_gate_a_wheel_isolation.py`, `phase-loop-runtime/tests/test_ci_chronology_scope.py`, `phase-loop-runtime/tests/test_ci_offload_lock.py`, `.github/workflows/supervised-contract-intake.yml`, `.github/workflows/test.yml`, `.gitleaks.toml`
 - **SL-1**: `phase-loop-runtime/src/phase_loop_runtime/supervised_envelope_v2.py`, `phase-loop-runtime/src/phase_loop_runtime/supervised_capture_v2.py`, `phase-loop-runtime/src/phase_loop_runtime/supervised_launch.py`, `phase-loop-runtime/src/phase_loop_runtime/supervised_launch_binding.py`, `phase-loop-runtime/tests/test_supervised_envelope_v2.py`, `phase-loop-runtime/tests/test_supervised_capture_v2.py`, `phase-loop-runtime/tests/test_supervised_launch*.py`, `phase-loop-runtime/tests/fixtures/supervised_launch_local/**`
-- **SL-2**: `phase-loop-runtime/src/phase_loop_runtime/supervised_worker_cli.py`, `phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/base.py`, `phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/codex.py`, `phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/patch_return.py`, `phase-loop-runtime/src/phase_loop_runtime/run_status.py`, `phase-loop-runtime/src/phase_loop_runtime/run_status_projection.py`, `phase-loop-runtime/tests/test_supervised_worker*.py`, `phase-loop-runtime/tests/test_run_status*.py`, `phase-loop-runtime/tests/_run_status_vectors.py`, `phase-loop-runtime/tests/test_convergence_adapters.py`, `phase-loop-runtime/tests/test_executable_dependency_startup.py`, `phase-loop-runtime/tests/fixtures/supervised_worker_local/**`, `phase-loop-runtime/tests/data/seat_launch_references.json`, `phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py`, `phase-loop-runtime/tests/test_seat_launch_helpers_trusted.py`, `phase-loop-runtime/tests/test_seat_reference_inventory.py`
+- **SL-2**: `phase-loop-runtime/src/phase_loop_runtime/supervised_worker_cli.py`, `phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/base.py`, `phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/patch_return.py`, `phase-loop-runtime/src/phase_loop_runtime/supervised_echo.py`, `phase-loop-runtime/src/phase_loop_runtime/run_status_projection.py`, `phase-loop-runtime/tests/test_supervised_worker*.py`, `phase-loop-runtime/tests/test_run_status*.py`, `phase-loop-runtime/tests/_run_status_vectors.py`, `phase-loop-runtime/tests/test_convergence_adapters.py`, `phase-loop-runtime/tests/test_executable_dependency_startup.py`, `phase-loop-runtime/tests/fixtures/supervised_worker_local/**`, `phase-loop-runtime/tests/data/seat_launch_references.json`, `phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py`, `phase-loop-runtime/tests/test_seat_launch_helpers_trusted.py`, `phase-loop-runtime/tests/test_seat_reference_inventory.py`
 - **SL-3**: `docs/supervised-worker-contracts.md`, `docs/supervised-worker.md`, `docs/supervised-run-status.md`, `docs/supervised-worker-readiness.md`, `plans/evidence/supervised-worker/CLOSEOUT.md`, `phase-loop-runtime/tests/test_supervised_v2_readiness.py`, `phase-loop-runtime/scripts/verify_supervised_v2_evidence.py`, `.github/workflows/supervised-v2-evidence.yml`, `CHANGELOG.md`, `plans/manifest.json`
 
 ### v13 PLACECLI
@@ -87,9 +86,16 @@ by these phases.
 - **SL-1**: `phase-loop-runtime/src/phase_loop_runtime/launch_snapshot.py`, `phase-loop-runtime/tests/test_launch_snapshot.py`, `phase-loop-runtime/tests/fixtures/launch-snapshot/**`
 - **SL-2**: `phase-loop-runtime/src/phase_loop_runtime/launch_return.py`, `phase-loop-runtime/tests/test_launch_return.py`
 - **SL-3**: `phase-loop-runtime/src/phase_loop_runtime/launch_service.py`, `phase-loop-runtime/src/phase_loop_runtime/launch_routes.py`, `phase-loop-runtime/src/phase_loop_runtime/sandbox_placement.py`, `phase-loop-runtime/src/phase_loop_runtime/placement_lease.py`, `phase-loop-runtime/src/phase_loop_runtime/openshell_backend.py`, `phase-loop-runtime/tests/test_launch_service.py`, `phase-loop-runtime/tests/test_launch_local_caps.py`, `phase-loop-runtime/tests/test_launch_lifetime.py`, `phase-loop-runtime/tests/test_launch_release_reap.py`, `phase-loop-runtime/tests/test_sandbox_placement.py`, `phase-loop-runtime/tests/test_placement_lease.py`, `phase-loop-runtime/tests/test_openshell_backend.py`
-- **SL-4**: `phase-loop-runtime/src/phase_loop_runtime/lane_launch.py`, `phase-loop-runtime/src/phase_loop_runtime/runner.py`, `phase-loop-runtime/src/phase_loop_runtime/capability_registry.py`, `phase-loop-runtime/tests/test_phase_loop_lane_placement.py`, `phase-loop-runtime/tests/test_phase_loop_lane_harnesses.py`
+- **SL-4**: `phase-loop-runtime/src/phase_loop_runtime/lane_launch.py`, `phase-loop-runtime/src/phase_loop_runtime/runner.py`, `phase-loop-runtime/tests/test_phase_loop_lane_placement.py`, `phase-loop-runtime/tests/test_phase_loop_lane_harnesses.py`
 - **SL-5**: `phase-loop-runtime/pyproject.toml`, `phase-loop-runtime/uv.lock`, `phase-loop-runtime/src/phase_loop_runtime/launch_cli.py`, `phase-loop-runtime/tests/test_launch_cli.py`, `phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py`, `phase-loop-runtime/tests/test_seat_launch_helpers_trusted.py`, `phase-loop-runtime/tests/test_seat_reference_inventory.py`, `phase-loop-runtime/tests/data/seat_launch_references.json`
 - **SL-6**: `docs/placement-launch-service.md`, `docs/placement-process-cli.md`, `phase-loop-runtime/README.md`, `plans/evidence/placement/LANEEXEC.md`, `phase-loop-runtime/tests/test_laneexec_receipt.py`, `CHANGELOG.md`, `.doc-decisions.json`, `.claude/docs-catalog.json`, `plans/manifest.json`
+
+Ownership resolutions (coordinator ruling 2, 2026-11-09): CLOSEOUT SL-2 owns
+`convergence/adapters/base.py` because it extends `run_bounded_capture` with the
+v2 spawn capability; `convergence/adapters/codex.py` is consumed unchanged
+(CLOSEOUT binding §2) and owned by no lane; LANEEXEC's `capability_registry.py`
+is consumed unchanged (`default_executor_for_work_unit` is only called) and owned
+by no lane.
 
 ## Regression inputs no lane of the three may edit
 

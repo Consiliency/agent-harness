@@ -61,14 +61,14 @@ touch it: **consume** (call unchanged), **extend** (the owning lane edits it) or
 | `supervised_contracts.py:278` | `validate_record(bundle, family, record: bytes, *, definition=None) -> None` | extend (SL-0): v2 family only with a v2 bundle |
 | `supervised_launch.py:29` | `Refused(reason)` | consume |
 | `supervised_launch.py:160` | `trusted_bytes(path, *, excluded=())` | consume for trusted-file reads |
-| `supervised_launch.py:169`–`:231` | `LaunchConfig`, `LaunchInputs`, `EnvelopeCapture`, `EnvelopeView`, `Admit`, `PreparedLaunch` (process-local one-use `_token`) | extend (SL-1): `PreparedLaunch` gains the immutable `AttemptBinding`; token stays process-local |
+| `supervised_launch.py:169`–`:231` | `LaunchConfig`, `LaunchInputs`, `EnvelopeCapture`, `EnvelopeView`, `Admit`, `PreparedLaunch` (process-local one-use `_token`) | extend (SL-1): `PreparedLaunch` gains the immutable `AttemptBinding`; token stays process-local; SL-1 adds `discard_admission(prepared: PreparedLaunch) -> None`. It is idempotent: it removes the token from the process registry (`_TOKENS`, `:247`) and closes the held capture through its refusal/cancel path (inputs artifact, CapturedLaunch lifetime) without consuming it. A discarded `PreparedLaunch` refuses at `consume_admission`. |
 | `supervised_launch.py:268` | `classify_workspace(workspace, target, tier)` | consume |
 | `supervised_launch.py:366` | `prepare_launch(envelope_bytes, *, validator, decoder, config)` | keep as the offline fixture seam only; production never calls it |
 | `supervised_launch.py:462` | `consume_admission(prepared) -> LaunchInputs \| Refused` | extend (SL-1): same signature, v2 recheck and spend-once |
 | `supervised_launch_binding.py:24` | `_load_absolute(path, data) -> ModuleType` (module load from verified bytes) | consume; any new call site is an inventory row (C-S3) |
 | `supervised_launch_binding.py:33` | `load_validator_binding(path, *, workspace, target)` | extend (SL-1) with `load_v2_binding` / `load_v2_context` |
 | `supervised_worker_cli.py:19` | `_production_codec()` returns `None` | extend (SL-2): returns the installed v2 binding's codec |
-| `supervised_worker_cli.py:72` | `main(argv=None, *, state_root=None)`; verbs `launch --envelope --result`, `status`, `cancel` | extend (SL-2): `launch` gains `--attempt` (§5.2); `status`/`cancel` unchanged |
+| `supervised_worker_cli.py:72` | `main(argv=None, *, state_root=None)`; verbs `launch --envelope --result`, `status`, `cancel` | extend (SL-2): verbs unchanged; `launch` reads the §4.2 controller document; `status`/`cancel` unchanged |
 | `supervised_worker_cli.py:97` | refuses `isolation_required` unless `sys.flags.isolated` | consume |
 | `patch_return.py:29` | `PRODUCTION_LAUNCHER_COMMANDS` from `seat_uid.trusted_module_argv("phase_loop_runtime.supervised_worker_cli", "launch")` | consume; the production launcher prefix (agent-harness#1132, agent-harness#1957) |
 | `patch_return.py:34`–`:92` | `WorkerSettings`, `WorkerAttemptIdentity`, `BaselineIdentity`, `ProposalReturn`, `JournalAnchor`, `WorkerResult`, `CancelOutcome` | consume; `WorkerAttemptIdentity` is now filled from `AttemptBinding` |
@@ -80,14 +80,15 @@ touch it: **consume** (call unchanged), **extend** (the owning lane edits it) or
 | `patch_return.py:427` | `before_spawn` callback inside `run_bounded_capture` | extend (SL-2): `recheck_launch_v2` runs here, at the true spawn boundary |
 | `patch_return.py:492` | non-completed termination → `withheld_incomplete` | consume |
 | `patch_return.py:584` | `cancel_attempt(*, state_root, run_id=None, attempt_id=None, wait_seconds, launcher_commands)` | consume |
-| `convergence/adapters/base.py:289`, `:306`, `:329`, `:359` | `CaptureRequest`, `SpawnRefused`, `worker_child_environment`, `run_bounded_capture(request, *, before_spawn, cancel)` | consume; refusal before chain, helper failure after start is finished/failed_to_start |
+| `convergence/adapters/base.py:289`, `:306`, `:329`, `:359` | `CaptureRequest`, `SpawnRefused`, `worker_child_environment`, `run_bounded_capture(request, *, before_spawn, cancel)` | extend (SL-2): `run_bounded_capture` gains a keyword-only parameter for the opaque spawn capability `consume_admission` returns (the held executable descriptor and the separate secret-delivery object of the inputs artifact's CapturedLaunch), so the final spawn owner applies them; `CaptureRequest` stays secret-free; the v2 path takes its environment from the capture, not `worker_child_environment`; refusal before chain and helper failure after start (finished/failed_to_start) are unchanged |
+| `convergence/adapters/codex.py:17` | `run_codex_patch_return(prepared, *, config_bytes, state_root, cancel=None)` reads only `prepared.view.inputs.executable.path` and delegates to `run_patch_return` | consume unchanged: SL-1 keeps the `LaunchInputs` shape and the `consume_admission` signature, so no lane owns this file (coordinator ruling 2026-11-09) |
 | `run_status.py:118`–`:181` | `AttemptIdentity`, `Units`, `WriterIdentity`, `Ref`, `Termination`, `TerminalRefusal`, `ResultBinding`, `Reservation`, `ChainHead` | consume; record schema unchanged |
 | `run_status.py:337` | `_STATES = queued, running, cancelling, finished, refused` | consume |
 | `run_status.py:825` | `open_journal_root(path, *, create, excluded=())` | consume |
 | `run_status.py:913` | `make_ref(kind, data, locator)` | consume |
 | `run_status.py:1165` | `reserve_attempt(root, identity, *, units, launch_digest, caller_context_sha256)` | consume |
 | `run_status.py:1229`, `:1338` | `AttemptWriter.state/event/terminal/close`; `event(phrase, *, refs=())` accepts closed phrases only | consume; no new phrase, no payload in a message |
-| `run_status.py:1296` | complete line readable although its fsync failed (agent-harness#1954) | consume; no reader marker is added here |
+| `run_status.py:1296` | `_append`: a complete line is written before its fsync (`:1312-1317`) and stays readable if the fsync fails (agent-harness#1954) | consume; no reader marker is added here |
 | `run_status.py:1415`, `:1872` | `open_writer`, `read_attempt` (nullable identity/units/writer) | consume |
 | `run_status_projection.py:32` | display states incl. `finished (reason)` | consume |
 | `run_status_projection.py:87` | strict integer domain for journal values | consume; echo bytes never pass through it (C-S1) |
@@ -113,30 +114,14 @@ is the default; a deviation says why.
 
 ### C-S1 — caller_context echo at the JOURNAL writer
 
-**Chosen: an independently bound echo artifact (sweep option 2), integrated by
-the JOURNAL module.** The sweep's recommendation is adopted. The JOURNAL record
-schema, its phrases and its strict parser stay unchanged, and no echo enters
-`event.message`.
+**Chosen: an independently bound echo artifact (sweep option 2), stored outside the JOURNAL.** The JOURNAL record schema, `REF_KINDS`, phrases and strict parser stay unchanged; `run_status.py` is not edited; no echo enters `event.message` or an event ref (`plans/artifacts/v12-JOURNAL-interface.md` CLOSEOUT bullet: "compared by exact bytes, not through the journal writer").
 
-- SL-2 adds `run_status.write_echo(root, payload: bytes) -> Ref | JournalRefused`
-  and `run_status.read_echo(root, sha256: str) -> bytes | JournalRefused`. The
-  payload is the exact RFC 8785 bytes of `caller_context` produced by SL-1's
-  `canonicalize_v2`. It is stored content-addressed under the journal root with
-  the journal's existing private-file rules, written and fsynced before
-  `reserve_attempt`, so the committed `caller_context_sha256` always names bytes
-  that were durable first.
-- Readers resolve the echo through the reservation's digest and verify the
-  SHA-256 over the exact bytes before use. The v2 reader view emits those bytes
-  verbatim, never a re-serialized value, so fractional numbers, number spelling
-  and `__proto__` members survive. A missing or mismatched sidecar is a closed
-  diagnostic (`echo_unavailable`) and the projection refuses that record rather
-  than fabricating an echo.
-- The six `kind=echo` cases (including `S3-jcs-proto-echo-dropped` and
-  `S2-jcs-echo-number-changed`) run through `run_patch_return` and the real
-  writer/reader, comparing bytes.
+- SL-2 adds `supervised_echo.py`: `write_echo(state_root, payload: bytes) -> str | EchoRefused` (returns the lowercase 64-hex SHA-256 of `payload`) and `read_echo(state_root, sha256: str) -> bytes | EchoRefused`. The payload is SL-1's `canonicalize_v2(caller_context)`. SL-2 reserves `caller_context_sha256 = sha256(payload)`, replacing the `rfc8785.dumps(_plain(...))` digest at `patch_return.py:360`.
+- Storage: `<state_root>/echo/<sha256>`, a 0700 directory beside `<state_root>/journal`, never inside the journal root. It is written after `consume_admission` succeeds and before `reserve_attempt`: a temporary file in that directory, fsynced, linked to its final name without replacing, then a directory fsync. An existing file with equal bytes is adopted; unequal bytes refuse `echo_unavailable`. The payload is capped at the admitted envelope byte cap. CLOSEOUT deletes no echo file, and `output_retention` does not visit them.
+- Readers take `caller_context_sha256` from `read_index(root, assignment_digest)` (`run_status.py:988`; `Reservation` has no such field), call `read_echo`, and verify the SHA-256 over the exact bytes. Only the v2 reader view resolves echoes, through its own byte encoder and never `json.dumps` of the projection mapping. v1 projections and existing journals read unchanged. The admitted JCS bytes are emitted verbatim; nothing is serialized a second time. A missing or mismatched file is `echo_unavailable`, and the v2 view refuses that record.
+- The six `kind=echo` cases (including `S3-jcs-proto-echo-dropped` and `S2-jcs-echo-number-changed`) run through `run_patch_return` and the real writer and reader, comparing bytes. Failure injection covers: a crash between publication and reservation; a refused reservation that leaves an orphan; two concurrent writers of equal bytes.
 
-Reason: the reservation already commits the digest, so a sidecar adds the bytes
-without touching the closed record schema JOURNAL's receipt and tests freeze.
+Reason: the index entry already commits the digest, so a sidecar outside the journal adds the bytes without touching the closed record schema or the journal-root layout (`run_status.py:862-878`) that JOURNAL's receipt and tests freeze.
 
 ### C-S2 — historical receipts versus live files
 
@@ -148,8 +133,7 @@ adopted).**
   check: a historical receipt's file bytes equal the seal in §6; its
   `runner_stamp.source_tree_digest` equals the SHA-256 of its own sorted
   `source_hashes`; every producer node and mutation control it records still
-  exists in the current tree (subset, not equality); and its recorded outcomes
-  are unchanged. Live-file equality is not part of the historical check.
+  exists in the current tree (subset, not equality), except the exact node IDs retired in §6; and its recorded outcomes are unchanged. Each check applies only to fields that receipt records: SCHEMA has no `source_hashes` or `runner_stamp`, so it is checked by seal and recorded outcomes; JOURNAL and WORKER record different node and control fields. Live-file equality is not part of the historical check.
 - Each lane converts the receipt test whose sources it is about to edit, in the
   same lane, before its own edits: SL-0 the SCHEMA receipt test (whose
   historical-module and signature rules the inputs artifact already freezes; the
@@ -220,32 +204,17 @@ offline tests only.
 
 ### 4.2 Controller hand-off to the production CLI
 
-The CLI must learn the controller's `AttemptBinding` and per-attempt
-`ValidatorContext` without the envelope or a flag supplying authority. SL-2
-freezes this:
+The CLI must learn the controller's `AttemptBinding` and per-attempt `ValidatorContext` without the envelope or a CLI flag supplying them (inputs artifact, "Trusted context": "Envelope bytes, caller_context and launch CLI flags cannot supply or override it"). The verbs stay exactly those of WORKER contract §6 and `specs/phase-plans-v12.md`: `supervised_worker_cli launch --envelope <file> --result <file>`. No flag is added.
 
-```text
-supervised_worker_cli launch --envelope <file> --attempt <file> --result <file>
-```
+The controller writes one per-attempt document at `<controller_root>/<h>.json`. `controller_root` is named by the trusted V2Binding operator configuration, and `h` is the lowercase hex SHA-256 of the exact envelope file bytes. The document is written once with `O_EXCL`; an existing document with equal bytes is reused, and unequal bytes refuse. The CLI computes `h` from the one envelope snapshot it already reads and opens only that path.
 
-`--attempt` names a controller-written per-attempt document holding the
-`AttemptBinding` and the per-attempt `ValidatorContext` fields. The flag only
-locates the file: it must sit inside the `controller_root` named by the trusted
-V2Binding operator configuration, be a no-follow regular file owned by the
-operator uid with private mode, be byte-capped, and lie outside the workspace,
-target and reference roots. Any check failing refuses `binding_invalid` before
-any effect. The envelope still cannot select or override it. This is the seam
-LANEEXEC's launch service uses (LANEEXEC STOP L-S1).
+The document holds `h`, the `AttemptBinding`, the per-attempt `ValidatorContext` fields, and values for the per-attempt slots that the V2Binding `TrustedLaunchSpec` declares (local roots and argv slots). It cannot add or change any other `TrustedLaunchSpec` member, operator policy, issuer, epoch or revocation trust root, or codec selection.
+
+It is read once through the landed single-descriptor read at `supervised_worker_cli.py:23-49` (`O_NOFOLLOW`, `fstat`, `st_uid == geteuid()`, byte cap, one read). That read additionally requires `mode & 0o077 == 0`, component-wise no-follow ancestors under `controller_root`, and a location outside the workspace, target and reference roots. A missing document, a mismatched `h` or any failed check refuses `binding_invalid` before any effect. This is the seam LANEEXEC's launch service uses (LANEEXEC STOP L-S1).
 
 ### 4.3 Local result to public status mapping
 
-SL-2 freezes one total mapping from `WorkerResult` (state, termination, refusal,
-proposal status, `journal_complete`, anchor) and `attempt_status` display states
-to the schema-valid v2 run-status records, as a closed table in its tests. Every
-local refusal code maps to a schema-valid refusal record, never free text. A
-missing anchor with `journal_complete=False` maps to an uncertain record and is
-never reported as acknowledged (agent-harness#1954 posture). LANEEXEC consumes
-this mapping and adds none of its own.
+SL-2 freezes one total mapping from `WorkerResult` (state, termination, refusal, proposal status, `journal_complete`, anchor) and `attempt_status` display states to public status records valid against the pinned `run-status.schema.json` (`supervised_run_status.v1`; both intakes carry the same run-status bytes). It is a closed table in SL-2's tests. `runtime_state` values come only from `run_status_projection.RUNTIME_STATES` (`run_status_projection.py:32`); no JOURNAL state, display state or schema member is added. Every local refusal code maps to a schema-valid refusal record, never free text. A missing anchor with `journal_complete=False` maps to `unknown` and is never reported as acknowledged (agent-harness#1954 posture). LANEEXEC consumes this mapping, adds none of its own, and renders `unknown` as its wire `uncertain`.
 
 ### 4.4 Trusted launcher and the WORKER contract §6 note
 
@@ -302,3 +271,9 @@ These are pins of committed bytes at the baseline, consumed by
 | `plans/evidence/supervised-worker/ENVELOPE.md` | `b65f0f6ec562c344da46d1c153c471db8955f45bed84b129cfe3e737e9b00b46` |
 | `plans/evidence/supervised-worker/JOURNAL.md` | `a65626471966ef4fb412ac7063a3a9da8da6ca0d3f375e402418827a57768ae3` |
 | `plans/evidence/supervised-worker/WORKER.md` | `978bbecfd4fedca8689a34b146396d9799a91b84d095069e536e5521650f7a26` |
+
+**Retired historical nodes.** These are exempt from the subset check by exact ID only. Any other missing node fails, and a further retirement is a STOP.
+
+| Receipt | Node | Lane | Reason |
+| --- | --- | --- | --- |
+| `plans/evidence/supervised-worker/WORKER.md` | `tests/test_supervised_worker_cli.py::test_isolated_cli_before_root[argv0-codec_unavailable]` | SL-2 | SL-2 wires the production codec, so `codec_unavailable` is no longer the isolated-CLI outcome. |
