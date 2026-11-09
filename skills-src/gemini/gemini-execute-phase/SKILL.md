@@ -74,7 +74,7 @@ Interactive only: before execution read [references/interactive-path.md](referen
    - read the owned files and related tests;
    - write or update tests first when practical;
    - implement only lane-scoped changes;
-   - run lane verification (normalize any phase-plan pytest `-k` selector whose prose terms contain spaces — e.g. `remote connect` becomes `'remote and connect'` — or quote it; a bare spaced `-k` term is an executor-side normalization, not a plan blocker);
+   - run lane verification (normalize any phase-plan pytest `-k` selector whose prose terms contain spaces — e.g. `remote connect` becomes `'remote and connect'` — and quote the boolean expression; quoting prose alone is not a valid pytest expression. A bare spaced `-k` term is an executor-side normalization, not a plan blocker);
    - run any phase-level checks that cover touched files.
 3. After each lane:
    - inspect `git diff -- <owned files>`;
@@ -94,7 +94,7 @@ Interactive only: before execution read [references/interactive-path.md](referen
 
 ## Optional Worker Fanout
 
-Use worker subagents only when the user explicitly authorizes parallel agent work and the DAG-ready lanes are disjoint; brief them as [references/worker-fanout.md](references/worker-fanout.md) says. The main thread still integrates, reviews and verifies.
+Use worker subagents only when the user explicitly authorizes parallel agent work and the DAG-ready lanes have machine-verified disjoint ownership and scheduler-owned worktree assignments; brief them as [references/worker-fanout.md](references/worker-fanout.md) says. The main thread still integrates, reviews and verifies.
 
 ## Failure Policy
 
@@ -122,7 +122,7 @@ Before final closeout, choose exactly one `spec_delta_closeout.v1` decision: `no
 
 ### Manifest lifecycle
 
-After plan validation and before lane execution, perform a best-effort `plan-manifest append` lifecycle update through `phase_loop_runtime.plan_manifest.update_lifecycle` to mark the matching `type=phase` entry `executing` with run metadata. During closeout, update the same entry to `completed` or `failed` with verification metadata, reflection metadata, produced-gate metadata, `if_gates_produced`, and dirty-worktree summary fields as available.
+After plan validation and before lane execution, perform a best-effort Python lifecycle update through `phase_loop_runtime.plan_manifest.update_lifecycle` to mark the matching `type=phase` entry `executing` with run metadata. During closeout, update the same entry to `completed` or `failed` with verification metadata, reflection metadata, produced-gate metadata, `if_gates_produced`, and dirty-worktree summary fields as available.
 A `completed` phase update must also include explicit `issue_inventory` and matching `issue_dispositions` arrays, including explicit empty arrays when no issues were enrolled. `if_gates_produced` must list only the IF gates the active phase produces per its own plan; never carry a prior phase's gate forward into this phase's closeout.
 Manifest lifecycle failures are non-fatal during the dual-mode window: emit a ledger warning, mention the warning in the mandatory reflection, and preserve the existing phase closeout JSON, verification, active-session file-editing tool language, and dirty-worktree behavior.
 
@@ -149,7 +149,7 @@ Determine the next step before final response and handoff:
 
 Add a machine-readable `automation:` handoff with `verification_status` that agrees with the human-readable next step fields. Closeout payload shape is defined by `EmitPhaseCloseout` in `phase_loop_runtime/baml_src/emit_phase_closeout.baml` (if that path is absent in the checkout, use the operator/prompt-supplied field contract or the installed `phase_loop_runtime` package — the missing vendored BAML source is not a blocker); keep skill text focused on value selection and handoff routing, not duplicated field ceremony.
 
-Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("codex")/gemini-execute-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
+Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("gemini")/gemini-execute-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
 
 Report:
 
@@ -165,7 +165,7 @@ In every report, handoff, and closeout above — and in any PR/issue body or com
 
 Resolve closeout writes through the `phase_loop_runtime.skill_paths` resolver as the primary source — `resolve_handoff_root(repo)` for the handoff root and `resolve_reflection_root(skill_name)` for reflection roots; fall back to the repo-local `shared/phase-loop/handoff_path.py` resolver only when `phase_loop_runtime` is not importable. Legacy harness handoff roots are read only for migration. Follow `gemini-config/shared/runtime-state.md` and use Gemini paths only:
 
-- Reflection: `resolve_skill_bundle_root("codex")/gemini-execute-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
+- Reflection: `resolve_skill_bundle_root("gemini")/gemini-execute-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
 - Handoff: `<repo>/.dev-skills/handoffs/gemini-execute-phase/<run_id>.md`
 - Latest handoff pointer: `<repo>/.dev-skills/handoffs/gemini-execute-phase/latest.md`
 

@@ -5,7 +5,7 @@ Audit baseline: `origin/main` at `23a30561e9b2ef23933fcbb4225a1d86120a5195`. Pen
 - [x] `skills-src/claude/claude-advisor-board/SKILL.md` — fixed; runtime `seat_profile_codex.py:33`, `panel_invoker.py:13355` (jailed launch, single attempt), `panel_invoker.py:444` (memfd gate); issue qualification retained from prior commit
 - [x] `skills-src/claude/claude-execute-detailed/SKILL.md` — fixed; runtime `publishing.py:2085; plan_manifest.py:339; skill_paths.py:24 — reflection root and absent manifest CLI`
 - [x] `skills-src/claude/claude-execute-detailed/references/pr-writing.md` — checked-clean; runtime `publishing.py:2085 pr_body and commit_message; publication_mode.py`
-- [ ] `skills-src/claude/claude-execute-phase/SKILL.md` — pending
+- [x] `skills-src/claude/claude-execute-phase/SKILL.md` — fixed; runtime `plan_manifest.py:339`, `runner.py:11669`, `launcher.py`, `capability_registry.py:30-35`, `discovery.py:1432`, `git_ops.py:126`; API, closeout, route and root corrections
 - [ ] `skills-src/claude/claude-execute-phase/references/closeout-reflection-handoff.md` — pending
 - [ ] `skills-src/claude/claude-execute-phase/references/interactive-path.md` — pending
 - [ ] `skills-src/claude/claude-execute-phase/references/interactive-steps.md` — pending
@@ -53,23 +53,23 @@ Audit baseline: `origin/main` at `23a30561e9b2ef23933fcbb4225a1d86120a5195`. Pen
 - [x] `skills-src/claude/claude-task-contextualizer/references/task-templates.md` — checked-clean; generic briefing templates consistent with entrypoint
 - [x] `skills-src/codex/codex-advisor-board/SKILL.md` — fixed; runtime `seat_profile_codex.py:33`, `panel_invoker.py:13355` (jailed launch, single attempt), `panel_invoker.py:444` (memfd gate); issue qualification retained from prior commit
 - [x] `skills-src/codex/codex-execute-detailed/SKILL.md` — fixed; runtime `phase-loop-runtime/src/phase_loop_runtime/publishing.py:2085; plan_manifest.py:339 — removed nonexistent CLI alias`
-- [ ] `skills-src/codex/codex-execute-phase/SKILL.md` — pending
-- [ ] `skills-src/codex/codex-execute-phase/references/interactive-path.md` — pending
-- [ ] `skills-src/codex/codex-execute-phase/references/worker-fanout.md` — pending
+- [x] `skills-src/codex/codex-execute-phase/SKILL.md` — fixed; runtime `plan_manifest.py:339`, `runner.py:11669`, `launcher.py`, `capability_registry.py:30-35`, `discovery.py:1432`, `git_ops.py:126`; API, closeout, route and root corrections
+- [x] `skills-src/codex/codex-execute-phase/references/interactive-path.md` — checked-clean; runtime `publication_mode.py`, `skill_paths.py`, `reflection_corpus.py`; command/flag and ownership contracts
+- [x] `skills-src/codex/codex-execute-phase/references/worker-fanout.md` — checked-clean; runtime `publication_mode.py`, `skill_paths.py`, `reflection_corpus.py`; command/flag and ownership contracts
 - [x] `skills-src/codex/codex-phase-loop/SKILL.md` — fixed; runtime `cli.py:324,3340`, `runner.py:710`, `launcher.py:944`, `capability_registry.py:116`; qualified issue and corrected launcher/path claims
 - [x] `skills-src/codex/codex-phase-roadmap-builder/SKILL.md` — checked-clean; runtime `roadmap_lint.py phase/goal/IF parsing; skill_paths.py:24 (correct harness root)`
 - [x] `skills-src/codex/codex-plan-detailed/SKILL.md` — fixed; runtime `phase-loop-runtime/src/phase_loop_runtime/plan_manifest.py:95,327; skill_paths.py:24-39 — removed nonexistent CLI alias, corrected handoff field and artifact-write contradiction`
 - [x] `skills-src/codex/codex-plan-phase/SKILL.md` — fixed; runtime `plan_manifest.py:95,327; planner_validation.py:54; source validate_plan_doc.py:166-320 (lane index/task table and required headings)`
 - [x] `skills-src/codex/codex-run-train/SKILL.md` — checked-clean; runtime `phase-loop-runtime/src/phase_loop_runtime/train_runner.py:340-380,3030; cli.py run-train parser`
 - [x] `skills-src/codex/codex-skill-editor/SKILL.md` — checked-clean; runtime `phase-loop-runtime/src/phase_loop_runtime/reflection_corpus.py archive; build_bundle.py DEFAULT_SOURCES; skill_paths.py:24-39`
-- [ ] `skills-src/codex/codex-skill-improvement-planner/SKILL.md` — pending
+- [x] `skills-src/codex/codex-skill-improvement-planner/SKILL.md` — checked-clean; runtime `publication_mode.py`, `skill_paths.py`, `reflection_corpus.py`; command/flag and ownership contracts
 - [x] `skills-src/codex/codex-task-contextualizer/SKILL.md` — checked-clean; runtime `models.py HarnessLaneAssignment; skill_paths.py:24-39`
 - [x] `skills-src/gemini/gemini-advisor-board/SKILL.md` — fixed; runtime `seat_profile_codex.py:33`, `panel_invoker.py:13355` (jailed launch, single attempt), `panel_invoker.py:444` (memfd gate); issue qualification retained from prior commit
 - [x] `skills-src/gemini/gemini-execute-detailed/SKILL.md` — fixed; runtime `publishing.py:2085; plan_manifest.py:339; skill_paths.py:24 (reflection root and absent CLI alias)`
-- [ ] `skills-src/gemini/gemini-execute-phase/SKILL.md` — pending
-- [ ] `skills-src/gemini/gemini-execute-phase/references/interactive-path.md` — pending
-- [ ] `skills-src/gemini/gemini-execute-phase/references/worker-fanout.md` — pending
-- [ ] `skills-src/gemini/gemini-execute-phase/references/worktree-pruning.md` — pending
+- [x] `skills-src/gemini/gemini-execute-phase/SKILL.md` — fixed; runtime `plan_manifest.py:339`, `runner.py:11669`, `launcher.py`, `capability_registry.py:30-35`, `discovery.py:1432`, `git_ops.py:126`; API, closeout, route and root corrections
+- [x] `skills-src/gemini/gemini-execute-phase/references/interactive-path.md` — checked-clean; runtime `publication_mode.py`, `skill_paths.py`, `reflection_corpus.py`; command/flag and ownership contracts
+- [x] `skills-src/gemini/gemini-execute-phase/references/worker-fanout.md` — fixed; runtime `plan_ir.py` and runner lane assignments; explicit machine verification before fanout
+- [x] `skills-src/gemini/gemini-execute-phase/references/worktree-pruning.md` — checked-clean; runtime `publication_mode.py`, `skill_paths.py`, `reflection_corpus.py`; command/flag and ownership contracts
 - [x] `skills-src/gemini/gemini-phase-loop/SKILL.md` — fixed; runtime `cli.py:324,3340`, `runner.py:710`, `launcher.py:944`, `capability_registry.py:116`; qualified issue and corrected launcher/path claims
 - [x] `skills-src/gemini/gemini-phase-roadmap-builder/SKILL.md` — fixed; runtime `roadmap_lint.py phase/goal/IF parsing; skill_paths.py:24 (correct harness root)`
 - [x] `skills-src/gemini/gemini-plan-detailed/SKILL.md` — fixed; runtime `plan_manifest.py:95,327 and skill_paths.py:24 (artifact rule, typed handoff field, reflection root, absent CLI alias)`
@@ -80,9 +80,9 @@ Audit baseline: `origin/main` at `23a30561e9b2ef23933fcbb4225a1d86120a5195`. Pen
 - [x] `skills-src/gemini/gemini-task-contextualizer/SKILL.md` — checked-clean; runtime `skill_paths.py:24-39`; briefing workflow and harness role names
 - [x] `skills-src/opencode/opencode-advisor-board/SKILL.md` — fixed; runtime `seat_profile_codex.py:33`, `panel_invoker.py:13355` (jailed launch, single attempt), `panel_invoker.py:444` (memfd gate); issue qualification retained from prior commit
 - [x] `skills-src/opencode/opencode-execute-detailed/SKILL.md` — fixed; runtime `publishing.py:2085; plan_manifest.py:339; skill_paths.py:24 (reflection root and absent CLI alias)`
-- [ ] `skills-src/opencode/opencode-execute-phase/SKILL.md` — pending
-- [ ] `skills-src/opencode/opencode-execute-phase/references/interactive-publication.md` — pending
-- [ ] `skills-src/opencode/opencode-execute-phase/references/worktree-pruning.md` — pending
+- [x] `skills-src/opencode/opencode-execute-phase/SKILL.md` — fixed; runtime `plan_manifest.py:339`, `runner.py:11669`, `launcher.py`, `capability_registry.py:30-35`, `discovery.py:1432`, `git_ops.py:126`; API, closeout, route and root corrections
+- [x] `skills-src/opencode/opencode-execute-phase/references/interactive-publication.md` — checked-clean; runtime `publication_mode.py`, `skill_paths.py`, `reflection_corpus.py`; command/flag and ownership contracts
+- [x] `skills-src/opencode/opencode-execute-phase/references/worktree-pruning.md` — checked-clean; runtime `publication_mode.py`, `skill_paths.py`, `reflection_corpus.py`; command/flag and ownership contracts
 - [x] `skills-src/opencode/opencode-phase-loop/SKILL.md` — fixed; runtime `cli.py:324,3340`, `runner.py:710`, `launcher.py:944`, `capability_registry.py:116`; qualified issue and corrected launcher/path claims
 - [x] `skills-src/opencode/opencode-phase-roadmap-builder/SKILL.md` — fixed; runtime `roadmap_lint.py phase/goal/IF parsing; skill_paths.py:24 (correct harness root)`
 - [x] `skills-src/opencode/opencode-plan-detailed/SKILL.md` — fixed; runtime `plan_manifest.py:95,327 and skill_paths.py:24 (artifact rule, typed handoff field, reflection root, absent CLI alias)`

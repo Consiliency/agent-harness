@@ -82,7 +82,7 @@ Each bundle entry carries its manifest id (`R0001`), skill and timestamp, and th
 
 ### Step 4 — Aggregate via frontier-tier Agent
 
-Use the active runtime executor/model policy for the frontier model; `claude-execute-phase` does not publish a Model tiers table. Spawn one Agent:
+Use the active runtime executor/model policy for the frontier model; verify any copied tier table against `phase_loop_runtime.capability_registry` and `profiles` before use. Spawn one Agent:
 
 ```
 Agent(

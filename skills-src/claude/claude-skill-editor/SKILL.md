@@ -78,7 +78,7 @@ On `--dry-run`, skip to Step 7 (print the worklist and exit).
 
 ### Step 3 — Apply recommendations (per-recommendation frontier-tier Agent)
 
-For each recommendation, spawn an Agent to apply it. Use the active runtime executor/model policy for `<frontier>`; `claude-execute-phase` does not publish a Model tiers table.
+For each recommendation, spawn an Agent to apply it. Use the active runtime executor/model policy for `<frontier>`; verify any copied tier table against `phase_loop_runtime.capability_registry` and `profiles` before use.
 
 ```
 Agent(
