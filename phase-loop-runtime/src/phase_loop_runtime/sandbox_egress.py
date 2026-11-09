@@ -8,9 +8,10 @@ are enforced by ``seat_egress_proxy``. Both require the relevant host helpers
 and namespace capabilities. Missing enforcement refuses when ``required`` is true;
 an optional call instead warns and yields an empty launch prefix.
 
-This module supplies the network boundary. Filesystem and credential isolation
-for jailed review seats are supplied separately by ``seat_jail`` and profiles;
-network-filtering metadata alone does not attest filesystem confinement.
+This module supplies the network boundary, not a filesystem one. Filesystem and
+credential isolation for jailed review seats are supplied separately by
+``seat_jail`` and profiles; network-filtering metadata alone does not attest
+filesystem confinement.
 The uplink posture leaves the public internet open, so ``network_filtered: true``
 does not mean the seat could not exfiltrate.
 """
