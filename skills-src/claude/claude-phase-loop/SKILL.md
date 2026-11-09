@@ -78,7 +78,7 @@ planner and treat older downstream plans as stale.
 
 ## Branch-governance preflight
 
-Issue #83: in pipeline-mode with branchgov on (the default), a dispatch switches
+Issue agent-harness#83: in pipeline-mode with branchgov on (the default), a dispatch switches
 to `consiliency/pipeline/<v>` cut from `origin/main`. If the roadmap is committed
 only on the operator's own branch (unpushed / ahead of `origin/main`), the
 runtime guard refuses cleanly with a `branch_sync_conflict` blocker rather than
