@@ -12,14 +12,14 @@ swap and I/O and stall every other user's work. This happened on 2026-11-04.
 On a shared host, agents must not run:
 
 - `scripts/local_check.py --full`, because it starts `pytest -n auto`;
-- `pytest -n auto`, or any `-n` above 2;
+- pytest with `-n`;
 - `make check` or any other whole-suite run;
 - several test runs in parallel from one task.
 
 On a shared host, agents may run:
 
 - named test files or `-k` selectors for the code they changed;
-- with `-n 0`, or `-n 2` at most, and `-p no:cacheprovider`;
+- serially, without `-n`, and with `-p no:cacheprovider`;
 - with a time limit per command, such as `timeout 900 uv run pytest ...`;
 - mutation checks one test file at a time;
 - one test command at a time, after checking host load first (`uptime`, `free -g`,
