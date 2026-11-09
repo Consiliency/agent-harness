@@ -1595,7 +1595,7 @@ def test_watch_opens_nothing_on_a_platform_it_cannot_propose(tmp_path):
 
 def test_watch_second_tick_for_the_same_version_is_a_no_op(tmp_path, monkeypatch):
     from phase_loop_runtime import agy_watch
-    tree = _watch_repo(tmp_path)
+    _watch_repo(tmp_path)
     t = FakeTransport()
     t.add("9.9.9", b"new agy")
     base = _current_base()
@@ -2201,7 +2201,6 @@ def test_an_owned_pr_with_a_maintainer_follow_up_is_never_force_pushed(tmp_path,
     recorded pushed oid exposes it: not up to date, a fresh branch and PR are made, the old
     PR is named as superseded but never touched, and its branch keeps the maintainer's
     commit. Mutation: up_to_date comparing only the two live reads."""
-    from phase_loop_runtime import agy_watch
     old = "agy-watch/9.9.9-20250101T000000Z-0000aaaa"
     origin, oids = _bare_origin(tmp_path, [old])  # the branch head is now the maintainer's commit
     probe = tmp_path / "probe"
@@ -2292,7 +2291,6 @@ def test_a_missing_or_tampered_push_record_is_never_up_to_date(tmp_path, monkeyp
 
 def test_a_crlf_body_is_still_recognised(tmp_path, monkeypatch):
     """claude r4 N5: a body saved with CRLF by the web UI keeps its labels."""
-    from phase_loop_runtime import agy_watch
     _watch_repo(tmp_path)
     base = _current_base()
     head = "agy-watch/9.9.9-20260101T000000Z-aaaaaaaa"
@@ -2341,7 +2339,6 @@ def test_an_incomplete_pr_listing_refuses(tmp_path, pages):
 def test_a_complete_multi_page_listing_is_accepted(tmp_path):
     """250 open PRs over three pages; the only own up-to-date PR is the last one.
     Mutation: any fixed limit (e.g. keeping the first 200 nodes)."""
-    from phase_loop_runtime import agy_watch
     _watch_repo(tmp_path)
     base = _current_base()
     head = "agy-watch/9.9.9-20260101T000000Z-aaaaaaaa"

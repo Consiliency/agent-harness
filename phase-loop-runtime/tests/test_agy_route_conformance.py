@@ -185,8 +185,25 @@ def _qualify(mode: str, base: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
         image.close()
     receipts = {path.parent.name: json.loads(path.read_text()) for path in series.glob("*/qualification.json")}
     failures = {path.parent.name: json.loads(path.read_text()) for path in series.glob("*/failure.json")}
-    _RUNS[mode] = {"outcome": outcome, "receipts": receipts, "failures": failures}
+    _RUNS[mode] = {"outcome": outcome, "receipts": receipts, "failures": failures,
+                   "diagnostics": _diagnostics(series)}
     return _RUNS[mode]
+
+
+def _diagnostics(series: Path) -> dict:
+    """What each operation's worker saw, for a failure message: the leg's terminal result and
+    the tail of its log. Synthetic run only (stand-in image, synthetic login)."""
+    found = {}
+    for operation in sorted(path.name for path in series.iterdir() if path.is_dir()):
+        root = series / operation
+        terminal = json.loads((root / "terminal.json").read_text()) if (root / "terminal.json").is_file() else None
+        log = (root / "worker.log").read_text(errors="replace") if (root / "worker.log").is_file() else ""
+        found[operation] = {
+            "result": terminal and terminal.get("result"),
+            "terminal_reason": terminal and (terminal.get("monitoring") or {}).get("terminal_reason"),
+            "worker_log_tail": log.splitlines()[-12:],
+        }
+    return found
 
 
 @pytest.fixture(scope="session")
@@ -207,7 +224,8 @@ def test_obligation(obligation, driver):
     mode, expected = EXPECTED[obligation]
     run = driver(mode)
     assert run["outcome"] == expected, (obligation, run["outcome"], {
-        name: {key: failure.get(key) for key in ("stage", "reason")} for name, failure in run["failures"].items()})
+        name: {key: failure.get(key) for key in ("stage", "reason")} for name, failure in run["failures"].items()},
+        run["diagnostics"])
     receipts, failures = run["receipts"], run["failures"]
     if obligation == "op_completion":
         record = receipts["completion"]
@@ -236,6 +254,13 @@ def test_obligation(obligation, driver):
         failure = failures["completion"]
         assert failure["rejected_image"]
         assert failure["reason"] == "qualification helper executable is outside the registered identity policy"
+    elif obligation in ("neg_no_terminal_event", "neg_tool_step"):
+        # Not vacuous: the provider ran and its record was built and REJECTED. A driver that
+        # never observed the provider also ends `transient` at `completion`, so the pinned
+        # outcome alone could pass without the control being exercised.
+        failure = failures["completion"]
+        assert (failure["stage"], failure["reason"]) == ("validation", "gemini qualification record rejected"), (
+            failure.get("stage"), failure.get("reason"), run["diagnostics"])
     if obligation.startswith("neg_"):
         assert not receipts.get(expected["operation"]), "a negative control left a passing receipt"
 
