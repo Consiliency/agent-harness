@@ -58,43 +58,26 @@ satisfy it. The binding is an operator record, not a root-managed one.
 6. Provisioning the record on hosts is deployment work outside CLOSEOUT, and
    EC-CLOSEOUT acceptance stays as the plan states.
 
-## Bootstrap order (coordinator, 2026-11-09, after the build's second STOP)
+## Bootstrap order
 
-The frozen `load_v2_binding(path, *, workspace, target, reference_roots)`
-(`v12-CLOSEOUT-inputs.md:300-301`) needs the exclusion roots before it reads the
-binding. Those roots come from the per-attempt controller document, and binding
-§4.2 locates that document under the binding's `controller_root`. The CLI breaks
-this cycle with a two-pass bootstrap. The frozen signatures stay unchanged, and
-no exclusion is relaxed.
+The frozen `load_v2_binding(path, *, workspace, target, reference_roots)` needs the exclusion roots before reading the binding. Those roots come from the per-attempt controller document located by the binding's `controller_root` (landed-binding §4.2). Bootstrap therefore uses a locator snapshot followed by a passive full load and an agreement barrier. The public signatures remain unchanged. The existing eager `load_validator_binding` remains an offline seam and is not called by this production bootstrap.
 
-1. Run route preflight, then read the envelope once, as WORKER requires. Compute
-   `h`, the SHA-256 of the exact envelope bytes.
-2. **Locator read.** Read `MANAGED_BINDING` once through `trusted_bytes` with no
-   excluded roots (all other checks unchanged). Parse it, and take **only**
-   `controller_root` from it. Nothing else in these bytes is used: no reference is
-   read, no code is executed or decoded, and nothing is journalled or spawned.
-   Keep the bytes for step 5.
-3. Read `<controller_root>/<h>.json` through the binding §4.2 single-descriptor
-   read and checks, and take `workspace`, `target` and the local roots from it.
-   That read also requires the document's own location to lie outside those
-   roots; it is checked once they are known, and refuses `binding_invalid`
-   otherwise.
-4. **Full load.** Call `load_v2_binding(MANAGED_BINDING, workspace=...,
-   target=..., reference_roots=...)` with the complete exclusions. It re-reads the
-   binding and every referenced file under them. A binding or reference inside
-   any excluded root refuses `untrusted_location`.
-5. **Swap check.** The binding bytes from step 2 must equal the bytes that step 4
-   read. Otherwise refuse `binding_invalid`. The `controller_root` used in step 3
-   must equal the one in the fully loaded binding.
-6. Nothing from the binding is executed, no admission is prepared, and nothing is
-   spawned or journalled until step 4 and step 5 succeed. Any refusal in steps
-   1–5 happens before any effect.
+1. Run route preflight and the existing isolation check before binding or envelope intake. Read the envelope once as WORKER requires and compute `h`, the SHA-256 of those exact bytes. Retain that snapshot for subsequent decoding and admission.
+2. Read `MANAGED_BINDING` once through unchanged `trusted_bytes`, with no excluded roots solely for this locator read. Strictly parse data and validate `controller_root` as an absolute canonical path without resolving symlinks. Use only that field; do not read references, import or execute binding-selected code, invoke a decoder, prepare admission, create a result file, journal or spawn. Retain the exact locator bytes.
+3. Read `<controller_root>/<h>.json` once with the single-descriptor checks in landed-binding §4.2 and the unchanged trusted-file checks of the location decision. Retain its bounded raw bytes, immutable parsed document and checked location identities. Require `h`, the complete `AttemptBinding`, all required `ValidatorContext` fields from the inputs artifact, and the declared per-attempt slot values; missing, malformed or mismatched fields refuse `binding_invalid`. In particular retain `expected_assignment_digest`, `expected_snapshot_ref` and `expected_crosswalk_ref`, without deriving them from the envelope. Require `AttemptBinding.assignment_digest == expected_assignment_digest`. Extract the complete workspace, target and reference-root exclusions. Check the held document location against those roots without rereading the document; a failed controller check, including an excluded controller location, refuses `binding_invalid`.
+4. Call `load_v2_binding(MANAGED_BINDING, workspace=..., target=..., reference_roots=...)` with those exclusions. This v2 loader is passive: it reads and verifies the binding and every referenced configuration, context, implementation and resource under the complete exclusions, and calls `load_v2_context` as frozen. It neither imports nor executes binding-selected modules nor invokes their codec or validator. Its `V2Binding` retains immutable exact `binding_bytes`, parsed `controller_root`, the verified implementation/resource byte snapshots and approved digests/seal, context and spec. Codec/validator handles defer module execution to a separate post-agreement activation in the owning module. No ambient state or lazy path reread supplies these snapshots. A binding or reference inside an excluded root refuses `untrusted_location`; existing trusted-read refusal reasons remain closed and unchanged. The eager fixture loader is not a substitute for this passive v2 implementation.
+5. Compare the locator bytes literally with `V2Binding.binding_bytes` and compare the controller root used for step 3 with the loaded root; disagreement refuses `binding_invalid`. Reconcile the held controller document against the held operator context/spec: accept only the per-attempt context fields and local-root/argv slots allowed by §4.2 and the operator declarations, leaving operator policy, issuer, epoch, revocation authority and codec selection fixed. Require the complete effective exclusion roots to agree with the roots used at step 4; no omitted or substituted root is accepted. Bind the effective immutable context/spec and AttemptBinding to that same controller snapshot, never a reread. Missing, inconsistent or undeclared hand-off values refuse `binding_invalid`. Preserve subsequent public admission's foreign-assignment, snapshot and crosswalk diagnostics and their pinned evaluation order.
+6. Only after all preceding checks succeed may a separate activation execute the already verified held implementation bytes and resolve callable symbols. It preserves the approved implementation set and isolated import checks; it never reopens the selected module paths. Activation errors use the closed binding refusal mapping. Only then may decoding, capture/admission, result creation, journal work or spawn begin through their existing gates. All refusals in steps 1–5 occur before any of those effects. Snapshot lifetimes extend through comparison and activation; later consumers use the same held values.
 
-SL-1 owns the locator read and the swap check in `supervised_launch_binding.py`.
-SL-2 owns calling them in this order from `supervised_worker_cli`. The tests for
-SL-1 and SL-2 cover:
-- a binding placed under the workspace, the target and a reference root, each of
-  which refuses at step 4;
-- a binding swapped between steps 2 and 4, which refuses at step 5;
-- a controller document inside an excluded root, which refuses at step 3;
-- no execution before step 4.
+SL-1 owns passive loading, immutable byte retention, the locator/agreement helpers and post-agreement activation in `supervised_launch_binding.py`. SL-2 owns the single controller snapshot, its complete hand-off validation and calling these operations in order from `supervised_worker_cli`. Additive internal helpers and immutable result fields implement this sequence without changing any frozen public input signature or introducing a production selector.
+
+SL-1/SL-2 tests use temporary operator records and cover:
+- bindings and each referenced-input category in workspace, target and reference roots, refusing `untrusted_location` during full load;
+- a binding replaced between locator and full load, including a replacement that selects a different controller root or implementation, refusing `binding_invalid` before any selected module top-level execution;
+- a controller document inside any excluded root, refusing `binding_invalid` before execution;
+- absent/malformed controller fields, wrong `h`, assignment inconsistency, disallowed slot/policy changes and incomplete effective roots, refusing `binding_invalid`;
+- retained expected snapshot/crosswalk context reaching admission, with existing pinned mismatch diagnostics;
+- a controller pathname changed after its read, proving that only the held validated snapshot supplies context, slots and identity;
+- an event-order witness covering module top-level execution, codec invocation, validator invocation, result creation, admission preparation, journal and spawn: none occurs before successful full load, literal byte agreement and controller reconciliation;
+- equal locator/full-load bytes proceeding to activation from the held approved module bytes, without a third binding read or a module-path reread;
+- missing binding/passwd-home and trusted-read failures retaining the location decision's closed refusal behavior and tested public-status mapping.
