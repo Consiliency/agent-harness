@@ -1,7 +1,8 @@
 # v12 WORKER frozen contract (IF-0-WORKER-1)
 
-Planning input for `plans/phase-plan-v12-WORKER.md`, sealed by that plan's
-`plans/manifest.json` `frozen_inputs` entry. It is read-only during execution; a
+Planning input for `plans/phase-plan-v12-WORKER.md`, sealed by the
+`frozen_inputs` digest of the newest `plans/manifest.json` row that names this
+file (the plan names that row). It is read-only during execution; a
 needed change is an artifact amendment with a new seal, never a lane decision.
 
 Everything here is a harness-local Python/CLI surface. It is not a public wire
@@ -234,7 +235,7 @@ Steps 1–2 have no attempt-scoped effects on refusal.
      `default_state_root()` this path equals `default_journal_root()`; a test
      asserts that equality.
 3. `reserve_attempt(root, AttemptIdentity(...), units=Units(...),
-   launch_digest, caller_context_sha256)`. A `JournalRefused` (duplicate,
+   launch_digest=..., caller_context_sha256=...)`. A `JournalRefused` (duplicate,
    terminal, crash-reserved or unavailable) refuses with zero invocations and
    no further effects. Then `open_writer(root, reservation)` in the same
    launcher process (JOURNAL refuses `writer_identity_mismatch` elsewhere) and
@@ -276,8 +277,9 @@ Steps 1–2 have no attempt-scoped effects on refusal.
       `workspace audit failed; proposal withheld`; for every other `withheld_*`
       status, the phrase `proposal withheld`. Neither carries refs, and
       `absent` emits no withholding phrase;
-    - `writer.terminal("finished", worker_invocations, termination,
-      refusal=None, result_binding=ResultBinding(...))`, except that
+    - `writer.terminal("finished", worker_invocations=worker_invocations,
+      termination=termination, refusal=None,
+      result_binding=ResultBinding(...))`, except that
       `withheld_evidence_error` passes `result_binding=None`; `finished` records
       process termination only, and a null binding must never authorize a
       valid result;
