@@ -6,8 +6,49 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-- Add the supervised attempt journal for v12 JOURNAL (agent-harness#1818). This is an
-  internal API with no CLI. `phase_loop_runtime.run_status` reserves attempts
+## [0.7.31] - Unreleased candidate
+
+### Release preparation
+
+- 0.7.31 is the next release after 0.7.30, which was published to PyPI on 2026-11-08.
+  It ships the jailed Codex review seat (SEATS CODEX SL-3, agent-harness#1916), which
+  the Codex review route waits on (agent-harness#1774), and, by owner decision on
+  2026-11-09, the v12 JOURNAL supervised attempt journal (agent-harness#1934), which
+  adds package source (`run_status.py`, `run_status_projection.py`). The entries below
+  are the complete change record on `main` since v0.7.30. Every other merge is
+  plan-only and changes no package source: the v13 toolkit repin (agent-harness#1928),
+  the v12 JOURNAL and WORKER plans (agent-harness#1925, agent-harness#1926), the agyroll
+  RECBIND plan with its amendments A1 and A2 (agent-harness#1927, agent-harness#1933,
+  agent-harness#1936), and the browser VISART plan (agent-harness#1931).
+  agent-harness#1922 merged before the v0.7.30 tag and shipped in 0.7.30. Release
+  tracking is agent-harness#1938.
+- The release-qualified agy stays 1.5.3, the sole built-in member. Its live
+  qualification record is produced on the exact release-cut commit, because the
+  release-only qualification source-pin check covers every package source file,
+  including `__version__`, and agent-harness#1916 and agent-harness#1934 changed or
+  added package sources.
+- Tagging, publication, deployment, installation and release-workflow dispatch are
+  outside this preparation.
+
+### Changes since v0.7.30
+
+- Register the Codex review-seat jail after the owner's 2026-11-08 OD-4 acceptance
+  (agent-harness#1916). The jail is the boundary with the inner sandbox off; tools can
+  read their seat login copy and share its proxy-only egress. Completed-command evidence
+  gates review counting. Remove the review-seat owner fallback, staged workspace-write
+  grant and retained setfcap capability; preserve the non-brokered read-only sandbox probe.
+  Jailed Codex notices reflect its confinement, canonical `max` maps to `xhigh`,
+  admission measures the prepared binary, and manual qualification binds the launch projection.
+- Every jailed seat (agent-harness#1916): seat-jail qualification now classifies curl
+  exit 7 with an observed CONNECT 403 as `proxy_connect_refused`, as it already did exit
+  56. curl 8.20.0 (also backported to Ubuntu's 8.18.0) uses exit 7 for a readable
+  rejected CONNECT where older clients use 56; an ordinary exit 7 without the observed
+  CONNECT 403 is still unavailable. The seat's copy of the egress CA certificate is
+  forced to mode 0444 (`_write_egress_ca`, `fchmod`), so a launcher running under umask
+  077 still leaves it readable by the dropped seat uid through its read-only bind.
+- Add the supervised attempt journal for v12 JOURNAL (agent-harness#1934,
+  agent-harness#1818). This is an internal API with no CLI.
+  `phase_loop_runtime.run_status` reserves attempts
   durably under a per-assignment admission index, writes one locked, chained,
   fsynced journal per attempt under a fixed per-user root, and reads it back
   read-only with the pinned `supervised_run_status.v1` diagnostics.
@@ -16,15 +57,27 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   Every reservation completes its fsync barriers, including on adopted entries.
   The writer is Linux-only. Run status is never a work outcome. See
   `docs/supervised-run-status.md` and `plans/evidence/supervised-worker/JOURNAL.md`.
-- Register the Codex review-seat jail after the owner's 2026-11-08 OD-4 acceptance
-  (agent-harness#1916). The jail is the boundary with the inner sandbox off; tools can
-  read their seat login copy and share its proxy-only egress. Completed-command evidence
-  gates review counting. Remove the review-seat owner fallback, staged workspace-write
-  grant and retained setfcap capability; preserve the non-brokered read-only sandbox probe.
-  Jailed Codex notices reflect its confinement, canonical `max` maps to `xhigh`,
-  admission measures the prepared binary, and manual qualification binds the launch projection.
+- Plans only, no package source: the v13 LANEEXEC toolkit repin for the image launcher
+  tree and staging trust (agent-harness#1928, Consiliency/agent-toolkit#85); the v12
+  JOURNAL attempt journal and projection plan (agent-harness#1925) and WORKER bounded
+  patch-return worker plan (agent-harness#1926, both agent-harness#1818); and the agyroll
+  roadmap and RECBIND plan, which admit agy by evidence rather than by literal, with
+  amendments A1 (reclassified conformance controls) and A2 (frozen measured negative
+  controls) (agent-harness#1927, agent-harness#1933, agent-harness#1936,
+  agent-harness#1008); and the advisory browser roadmap and VISART plan for review-seat UI
+  visibility (agent-harness#1931).
 
-## [0.7.30] - Unreleased candidate
+### Known issues
+
+- The jailed Codex seat's prompt describes general network access, but its egress is
+  limited to the two allowlisted provider endpoints. Containment is unaffected
+  (agent-harness#1949).
+- A jailed Codex seat timeout or cancellation is reported as
+  `codex_seat_tools_unavailable` (agent-harness#1950).
+- A heartbeat-only Codex leg is not bounded by the 2100 s token margin
+  (`CODEX_LOGIN_MIN_S`; agent-harness#1951).
+
+## [0.7.30] - 2026-11-08
 
 ### Release preparation
 
