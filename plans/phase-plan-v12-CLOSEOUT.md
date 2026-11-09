@@ -7,52 +7,50 @@ automation:
   suite_command: ["bash", "phase-loop-runtime/scripts/verify_supervised_v2.sh", "all"]
 ---
 
-# CLOSEOUT: Adopt published admitted launch envelope v2
+# CLOSEOUT: Adopt published admitted launch envelope v2 (re-plan on landed code)
 
 ## Context
 
-Follow-up for agent-harness#1818 after ENVELOPE (agent-harness#1828). CLOSEOUT
-already owns fixture-to-public consumer code/tests/docs and codec reconciliation;
-its existing EC-CLOSEOUT goals govern this plan. No new phase is needed. The
-roadmap amendment makes its v2 intake and version-window scope explicit, preserves
-the DAG/advisory status and SCHEMA v1 history. The supported worker is explicitly
-probe-free; ENVELOPE's future WORKER handoff and roadmap seal are reconciled.
+Owner decision 2026-11-09: CLOSEOUT is re-planned on the landed code and keeps
+its roadmap goals, EC-CLOSEOUT-1 and EC-CLOSEOUT-2. This plan replaces the
+previous CLOSEOUT plan, which is replaced rather than amended. The supersession
+is an appended `replan` lifecycle event on the existing `plans/manifest.json`
+row `v12-CLOSEOUT`, which records the superseded plan's hash and keeps every
+earlier field and seal.
 
-Work-start gate: SCHEMA implementation agent-harness#1839 must land with the
-reviewed agent-harness#1838 plan and IF-0-SCHEMA-1 receipt; a plan merge alone is
-insufficient. Also require IF-0-WORKER-1 and IF-0-JOURNAL-1. They are upstream
-interfaces, not claims about today's tree. Until then status is blocked,
-blocker_class=upstream_phase_unmet, human_required=false. Reconcile actual landed
-APIs and file ownership before execution; amend this plan if they differ. Do not
-freeze a predicted merge SHA or mutate SCHEMA's receipt to accelerate adoption.
+Since that plan was written, SCHEMA, JOURNAL (agent-harness#1934,
+agent-harness#1955), WORKER (agent-harness#1956, with the trusted launcher
+agent-harness#1957 and `stamp_evidence_receipt.py`), the docs audit and release
+0.7.31 (agent-harness#1916, agent-harness#1895) have landed. No work-start gate
+remains. Those receipts are local and fixture-scoped: the production
+`supervised_worker_cli launch` still refuses `codec_unavailable`, so every
+CLOSEOUT obligation is still open.
 
-No implementation, tests, provider runs, external review dispatch, upstream edit,
-release or merge is performed by this planning PR. Execution stays sequential.
-Panel/PTY integration, projected dependency routes, controller implementation and
-installed-tool qualification are outside scope. Existing unsupported paths refuse.
+Three frozen artifacts carry the detail. Read all three before building:
 
-## External Inputs
+- `plans/artifacts/v12-CLOSEOUT-inputs.md`, unchanged: external pins, corpus
+  accounting, the seven adopted decisions, capture/apply/evidence boundaries, the
+  frozen local interfaces, trusted context and hosted verification.
+- `plans/artifacts/v12-CLOSEOUT-landed-binding.md`: what is still owed (§1),
+  the landed-interface table with every touchpoint at `file:line` (§2), the
+  STOP decisions (§3), the bindings the landed code forces (§4), the verification
+  groups (§5) and the historical receipt seals (§6).
+- `plans/artifacts/v12-v13-replan-ownership.md`: the one ownership map for
+  CLOSEOUT, PLACECLI and LANEEXEC, and the integration order.
 
-The sole new contract revision is the untagged Consiliency/consiliency-contract
-publication pinned by full commit in the artifact below. Per-file SHA-256/blob IDs,
-independent verification, corpus counts and detailed requirements are frozen in
-`plans/artifacts/v12-CLOSEOUT-inputs.md`; the manifest frozen_inputs extension
-seals that artifact. Read it in full before implementation. Publication ACK is
-not runtime evidence. SCHEMA's original v1 inputs remain separately pinned.
+The manifest row seals all three. Out of scope: panel/PTY integration, projected
+dependency routes, a controller implementation, installed-tool qualification,
+release and merge. Unsupported paths keep refusing.
 
-Vendor the eleven approved v2 resources, retaining all five frozen v1 payloads
-and the extended manifest; upstream provenance is hash-inventoried only. Preserve
-the separate v1 bundle. Vendor the three pinned version declaration files too.
-Enforce >=0.7.0,<0.8.0 against those hash-verified declarations, with exact agreement,
-not installed package metadata. Refuse version/hash/source drift. No new pip/uv
-contract-package install, dependency-bound/lock change, URL/source override or
-registry release is planned. The existing consiliency-contract>=0.6.5,<0.7
-registry-reader dependency stays unchanged and never supplies v2 bytes or version.
+**STOP decisions** (each recorded with its reason in the binding artifact §3):
 
-The seven adopted decisions and capture/apply/evidence rules in the artifact are
-mandatory. External controller/display reconciliation receipts are required input
-evidence, not fabricated here. Their absence blocks acceptance, not the initial
-consumer implementation lanes after upstream gates land.
+| Item | Decision |
+| --- | --- |
+| C-S1 | The echo is a separate content-addressed artifact in SL-2's `supervised_echo.py`, outside the journal root. It is bound by the digest the JOURNAL index entry already reserves, written after admission and before `reserve_attempt`, and emitted byte-exact by the v2 reader view. `run_status.py`, its record schema, `REF_KINDS`, phrases and parser stay unchanged. Sweep recommendation adopted. |
+| C-S2 | Historical receipts keep their bytes and outcomes and are verified historically (seal, internal digest, controls still present). CLOSEOUT evidence is published separately and pins no shared file. Adopted. |
+| C-S3 | SL-2 owns the launch inventories, the worker fixtures and `_run_status_vectors.py`. The stamp tool is used unchanged, never owned. Adopted. |
+| C-S4 | Acceptance stays blocked until external producer evidence exists; implementation lanes still land. Adopted. |
+| X-S1 | Serial integration CLOSEOUT → PLACECLI → LANEEXEC with additive shared files. Adopted; the map is in the ownership artifact. |
 
 ## Interface Freeze Gates
 
@@ -60,248 +58,19 @@ consumer implementation lanes after upstream gates land.
   v2 input inventory, production results, external reconciliation and observed
   review/check identities; `docs/supervised-worker-readiness.md` separates offline,
   on-main, installed, external and live authority. Only its validated v2 receipt
-  may assess byte_pin_authority, never authorize runtime launch. This provisional
-  publication keeps it false; a separately reviewed non-provisional pin and
-  authenticated evidence publisher bindings are prerequisites for any future true.
-  SCHEMA's historical receipt and both bundle provenance flags remain false.
+  may assess `byte_pin_authority`, never authorize runtime launch. At this
+  provisional publication it stays false, as do both bundle provenance flags and
+  SCHEMA's historical receipt.
 
-The artifact's Frozen local interfaces, Trusted context, Corpus parsing and
-Hosted verification sections freeze exact signatures, immutable types, lifetime,
-closed diagnostics and evidence protocols for all lanes. load_contract_bundle(*,
-version="v1") accepts only v1/v2 (selector_invalid otherwise). v1 remains default;
-validate_record adds the v2 family without semantic evaluation. Corpus-container
-extraction preserves negative fixture tokens separately from strict record intake.
-
-SL-1 provides the public codec and capture APIs, load_v2_context and
-prepare_launch_v2; legacy injection remains test-only. The production binding
-always selects verified v2 implementation bytes, never an envelope-selected path.
-Independent trusted context carries expected authority, complete route records
-and caller-context suitability; missing/invalid inputs refuse. CapturedLaunch
-owns one-attempt snapshots/descriptors, with secret delivery held separately
-outside both digests, validator views, repr and evidence. consume_admission
-retains its signature and returns the same secret-free inputs after full recheck.
-
-Result evidence groups are intake_results, admission_results, lifecycle_results,
-external_evidence_intake and readiness_results. Each has case/control IDs, resource
-digest, production path witness, outcome and runner artifact digest/run identity.
-The reducer checks completeness against verified schemas/corpora and SCHEMA's
-named obligations, including zero-vector obligations; it never infers success
-from collection or schema pass alone.
-
-## Lane Index & Dependencies
-
-SL-0 — Versioned intake and package preamble
-  Depends on: (none)
-  Blocks: SL-1, SL-2, SL-3
-  Parallel-safe: no
-
-SL-1 — Public codec, capture and admission
-  Depends on: SL-0
-  Blocks: SL-2, SL-3
-  Parallel-safe: no
-
-SL-2 — Worker and journal reconciliation
-  Depends on: SL-0, SL-1
-  Blocks: SL-3
-  Parallel-safe: no
-
-SL-3 — Documentation and readiness reducer
-  Depends on: SL-0, SL-1, SL-2
-  Blocks: (none)
-  Parallel-safe: no
-
-## Lanes
-
-### SL-0 — Versioned intake and package preamble
-
-- **Scope**: Extend the landed SCHEMA loader with separately pinned v2 resources and exact-commit vendored provenance.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/supervised_contracts.py`, `phase-loop-runtime/src/phase_loop_runtime/schemas/supervised-worker-v2/**`, `phase-loop-runtime/pyproject.toml`, `phase-loop-runtime/uv.lock`, `phase-loop-runtime/MANIFEST.in`, `phase-loop-runtime/tests/conftest.py`, `phase-loop-runtime/tests/test_supervised_contracts*.py`, `phase-loop-runtime/scripts/verify_supervised_contract_publication.py`, `.github/workflows/supervised-contract-intake.yml`, `.github/workflows/test.yml`, `phase-loop-runtime/scripts/gate_a_cleanroom.sh`, `phase-loop-runtime/scripts/verify_supervised_v2.sh`, `phase-loop-runtime/tests/test_gate_a_wheel_isolation.py`, `phase-loop-runtime/tests/test_ci_chronology_scope.py`, `phase-loop-runtime/tests/test_ci_offload_lock.py`, `.gitleaks.toml`
-- **Interfaces provided**: `load_contract_bundle`, `validate_record`, `ContractBundle`, `ContractError`, `intake_results`
-- **Interfaces consumed**: `IF-0-SCHEMA-1` (upstream), `jsonschema` (pre-existing), frozen input inventory
-- **Parallel-safe**: no
-- **Tasks**:
-  - test: Extend production loader/selector/resource and receipt controls for both
-    versions; preserve v1 regressions without treating the old receipt as v2.
-    Verify all 255 schema expectations and complete canonical/apply/status
-    inventory, correctly labelled schema-only. Missing bytes, changed manifest,
-    altered metadata/pin table, unlisted references and stale artifact seals
-    fail. Require the base-ref input-amendment policy and full publication proof
-    defined in the artifact. Cover vendored-version bounds/agreement, corpus
-    extraction, every schema pattern, binary64 domain and installed resources.
-    Gate A must receive mandatory inputs without skip; test its sparse allowlist
-    and wheel provenance, plus source-wrapper environment and CI path selection.
-  - impl: Fresh-fetch protected main and prove ancestry/hash/blob identity from
-    expected pins. Extend package-data/MANIFEST and hosted path detection for the
-    explicit artifact detector set and both manifest seals. Preserve read-once
-    buffers, offline references and sanitized errors. Add vendored declaration
-    checks, not package installs. Extend Gate A sparse inputs and test.yml for
-    in-environment byte/version proof. Implement the source-pinned V0–V3 wrapper.
-    Update SCHEMA historical-module, exact-import-allowlist and signature tests
-    as frozen in the artifact, retaining original receipt/provenance bytes.
-    uv.lock is owned as a companion guard only: its bytes remain unchanged;
-    pyproject edits are package-data only, with no dependency change.
-    Any inert corpus exception must name an exact path and exact gitleaks rule.
-  - verify: V0; hosted publication comparison and installed wheel/source-byte
-    proof. Store observed artifacts in intake_results, never prefilled verdicts.
-
-### SL-1 — Public codec, capture and admission
-
-- **Scope**: Reconcile ENVELOPE through a distinct v2 production adapter and immutable launch capture.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/supervised_envelope_v2.py`, `phase-loop-runtime/src/phase_loop_runtime/supervised_capture_v2.py`, `phase-loop-runtime/src/phase_loop_runtime/supervised_launch.py`, `phase-loop-runtime/src/phase_loop_runtime/supervised_launch_binding.py`, `phase-loop-runtime/tests/test_supervised_envelope_v2.py`, `phase-loop-runtime/tests/test_supervised_capture_v2.py`, `phase-loop-runtime/tests/test_supervised_launch*.py`, `phase-loop-runtime/tests/fixtures/supervised_launch_local/**`
-- **Interfaces provided**: `parse_v2`, `canonicalize_v2`, `decode_v2`, `validate_v2_admission`, `capture_launch_v2`, `recheck_launch_v2`, `load_v2_context`, `load_v2_binding`, `prepare_launch_v2`, `consume_admission`, `admission_results`
-- **Interfaces consumed**: `load_contract_bundle`, `validate_record`, `ContractBundle`, `intake_results`, ENVELOPE typed Admit/local identity trust checks (pre-existing)
-- **Parallel-safe**: no
-- **Tasks**:
-  - test: Run published admission and canonical corpora through production APIs,
-    checking exact first-stage diagnostics/effects, raw and in-memory domain
-    boundaries, UTF-16 ordering, negative zero, __proto__, whole-envelope secret
-    safety at every normative location and same-source rotation of both public
-    and local digests. Exercise trusted-file authority/snapshot, suitability,
-    record validity/revocation/duplicates and production v2-only entry controls,
-    including missing inputs and secret-free views/errors/repr. Exercise capture
-    ancestors, raw links, mode bits, external-root and descriptor capture,
-    independent cwd and discovered config, mutable env/reference/grant rechecks,
-    duplicate qualification and credential-source coverage. Each guard has a
-    production-entry witness and source-copy bypass that turns a passing assertion
-    red; do not mutate a test-side oracle to manufacture proof.
-  - impl: Implement the frozen artifact's seven decisions, source/cwd mappings,
-    redacted classified environment and effective grant forms. Keep local trust,
-    ownership and dependency preflight; no public path/FD/attempt fields. Both
-    tiers require exactly one held matching route record; unsupported constraints,
-    os_enforced, interactive stdin and unwired dependencies stay refused. Preserve
-    caller_context only after trusted suitability and generic checks. Record
-    contract and supported-route results separately for every control; provider
-    write_scope needs authenticated apply evidence, and dependency routes remain
-    closed. Bind final outer argv and
-    declared helper transformations, not an earlier command. Extend consume-time
-    recheck to all committed material. Never replace JCS with Python sort_keys or
-    the old review-tree hash. Null/missing public codec refuses before effects.
-  - verify: V1 and existing ENVELOPE controls; emit admission_results with input
-    digests and guard witnesses. Synthetic qualification proves mechanics only.
-
-### SL-2 — Worker and journal reconciliation
-
-- **Scope**: Apply admitted v2 inputs at the shared worker boundary and reconcile runtime status/evidence.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/supervised_worker_cli.py`, `phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/base.py`, `phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/codex.py`, `phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/patch_return.py`, `phase-loop-runtime/src/phase_loop_runtime/run_status.py`, `phase-loop-runtime/src/phase_loop_runtime/run_status_projection.py`, `phase-loop-runtime/tests/test_supervised_worker*.py`, `phase-loop-runtime/tests/test_run_status*.py`, `phase-loop-runtime/tests/test_convergence_adapters.py`, `phase-loop-runtime/tests/test_executable_dependency_startup.py`
-- **Interfaces provided**: `lifecycle_results`, `external_evidence_intake`
-- **Interfaces consumed**: `load_v2_binding`, `capture_launch_v2`, `prepare_launch_v2`, `consume_admission`, `recheck_launch_v2`, `admission_results`, `IF-0-WORKER-1` (upstream), `IF-0-JOURNAL-1` (upstream), `output_retention.mark/prune` (pre-existing)
-- **Parallel-safe**: no
-- **Tasks**:
-  - test: Enter actual CLI/adapter/journal paths using offline subprocesses and
-    injected providers. Assert zero auxiliary/chain/worker starts on refusal,
-    no worker-path probes at any time, one chain deadline, helper failed_to_start, exact one-shot stdin,
-    empty DEVNULL, replay across processes/restarts and reservation failure.
-    Reconcile v1 status and v2 journal cases, copied evidence, equal proposals
-    with distinct attempts, baseline identities, crosswalk, cancellation,
-    retention and bounded projections. Own all six echo cases at the actual
-    JOURNAL writer, with exact JCS numeric and __proto__ preservation. Preserve
-    convergence caller regressions.
-    Bypass each recheck/reservation/lifecycle/evidence guard in separate temporary
-    source copies and require a failing production assertion.
-  - impl: Consume/recheck immutable capture immediately at the final spawn
-    boundary with no ambient inputs. Consume held qualification, never run
-    probes, and never restart the monotonic timer. Preserve durable attempt reservation,
-    native cancellation and explicit descendant limits. Bind actual stream,
-    process, proposal, baseline and run/attempt evidence. External controller
-    apply outcomes, including rejected proposals, remain finished work outcomes;
-    provider write_scope applies even with empty constraints. Obtain independent
-    production controller evidence for all 13 apply cases without implementing
-    controller checks here; missing evidence remains blocked. Reconcile the full
-    SCHEMA obligation union, never treating opaque echo as identity authority.
-  - verify: V2, installed isolated CLI tests and external evidence validation;
-    preserve unsupported-route diagnostics and emit lifecycle_results. No live
-    provider qualification or operational route expansion occurs.
-
-### SL-3 — Documentation and readiness reducer
-
-- **Scope**: Reconcile every producer into a truthful v2 authority and readiness report.
-- **Owned files**: `docs/supervised-worker-contracts.md`, `docs/supervised-worker.md`, `docs/supervised-run-status.md`, `docs/supervised-worker-readiness.md`, `plans/evidence/supervised-worker/CLOSEOUT.md`, `phase-loop-runtime/tests/test_supervised_v2_readiness.py`, `phase-loop-runtime/scripts/verify_supervised_v2_evidence.py`, `.github/workflows/supervised-v2-evidence.yml`, `CHANGELOG.md`
-- **Interfaces provided**: `IF-0-CLOSEOUT-1`, `readiness_results`
-- **Interfaces consumed**: `intake_results`, `admission_results`, `lifecycle_results`, `external_evidence_intake`
-- **Parallel-safe**: no
-- **Tasks**:
-  - test: Compare every required corpus/rule/obligation to actual production
-    outcomes and runner artifacts. Reject missing/skipped-only results, changed
-    resource identities, stale review heads, missing external proofs, secret
-    content and an unjustified true receipt. Test authenticated evidence lookup,
-    exact content-identity/exclusion rules, ancestry and stamp-only delta,
-    post-landing applicability and governing-content change invalidation through
-    the verifier. Offline V3 cannot establish hosted evidence authenticity.
-  - impl: Implement the hosted network verifier and artifact evidence protocol.
-    Resolve the live required checks plus full-path publication (contract=true),
-    Gate A, board, separate president and external producer evidence through
-    authenticated sources. Record provisional publisher status and keep authority
-    false; future true requires a reviewed successor pin and publisher-binding
-    amendment as well as every semantic/identity/lifecycle/evidence obligation.
-    Apply the exact content identity and post-landing validity rules; provenance
-    metadata remains false and runtime admission never consumes this boolean.
-    Preserve SCHEMA's historical receipt. Document
-    separate offline, on-main, installed qualification, external and live-use
-    status; missing on-main/live evidence stays explicit with owner/blocked edge.
-    Record corrections to stale v2/caller_context/corpus assumptions. Add an
-    Unreleased changelog entry; no release or merge claim follows.
-  - verify: V3, the effective suite, required CI, dispatched Gate A and the
-    roadmap's T3 cross-vendor correctness/red-team/adversarial board plus separate
-    president on the observed reviewed content. Any unresolved finding blocks
-    closeout. These are future execution gates, not dispatches in this task.
-
-## Verification
-
-Future commands only. The owner prohibits test suites on this shared host;
-run them on hosted CI or an explicitly authorized isolated executor. Check uptime
-before allowed local metadata validators. Use locked Python 3.12+ and absolute
-source/test PYTHONPATH per CONTRIBUTING.md through the explicitly owned
-verify_supervised_v2.sh runner, whose environment/provenance contract is frozen
-in the artifact. It performs no installs. No make check or parallel local suites.
-
-- V0: `bash phase-loop-runtime/scripts/verify_supervised_v2.sh V0`
-- V1: `bash phase-loop-runtime/scripts/verify_supervised_v2.sh V1`
-- V2: `bash phase-loop-runtime/scripts/verify_supervised_v2.sh V2`
-- V3: `bash phase-loop-runtime/scripts/verify_supervised_v2.sh V3`
-
-Validate V0–V3 and automation.suite_command using
-verification_evidence.validate_verification_commands (IF-0-VC-2). Missing owned
-future files are pre-implementation findings; repeat after upstream landing and
-file creation, requiring zero findings before execution verification. Collect
-all newly created parameterized nodes; require actual outcomes, not collection
-alone, and prohibit exit-5/skipped-only success. Report multiple failures and
-flag proof cost over roughly five minutes per node.
-
-The artifact enumerates each wrapper group; all is their deduplicated union.
-Hosted publication proves exact upstream/vendored wheel bytes. Require the live
-protected-main check set plus full-path supervised contract publication, Gate A
-and the authenticated evidence assessment. Authorized maintainer dispatches
-`gh workflow run test.yml --ref <reviewed-branch> -f chronology=false` and records
-Gate A's actual tested head, run/job and artifacts. Board/president and external
-consumer receipts use the same observed content; never pin predicted hashes.
-The hosted verifier resolves their identities; proxy evidence requires roadmap amendment.
-Validator check (N) recognizes package/changelog ownership as release-shaped;
-this phase dispatches only verification, not a tag or release. SL-3 records
-post-verification evidence, so no separate release-dispatch reducer is applicable.
-
-## Acceptance Criteria
-
-- [ ] EC-CLOSEOUT-1 — proven by V0–V3, the effective suite and `plans/evidence/supervised-worker/CLOSEOUT.md` runner-stamped CI/Gate A/board/separate-president/consumer artifacts; falsified by path-entered guard bypass, missing corpus/obligation outcomes, stale or absent external evidence.
-- [ ] EC-CLOSEOUT-2 — proven by V3 against the production results and `docs/supervised-worker-readiness.md`; falsified by path-entered receipt mutation claiming unobserved qualification, a stale head or unsupported authority.
-
-## Execution Notes
-
-All lane paths are disjoint; reducers explicitly consume every producer. No
-subagents or writer fanout are authorized. output_retention.py and its test stay
-unchanged regression inputs; integration call sites belong to SL-2. Existing
-panel/launcher/review_stage and dependency-routing code remain unchanged; their
-routes are not adopted. New modules are auto-discovered; no __init__ export is
-needed. No skill text/bundle is edited. If upstream WORKER/JOURNAL introduces
-additional companions or snapshots, enumerate them by amendment before work.
-The archived SCHEMA artifact/receipt retain their original input hashes. Rebase
-integration must refresh its plan's roadmap_sha256 against the final roadmap
-and validate it before execution; it is absent on this branch. ENVELOPE's plan
-seal and probe handoff are repaired here. CLOSEOUT owns a new path-keyed input
-seal; historical receipt verification uses its recorded module blob.
-
-Next phase: CLOSEOUT — blocked pending landed SCHEMA and WORKER/JOURNAL gates.
-Next command: none until upstream gates are verified; then
-`codex-execute-phase plans/phase-plan-v12-CLOSEOUT.md` under separate execution authority.
+Plan-level freezes consumed downstream (no new roadmap gate): the inputs
+artifact's "Frozen local interfaces" table; `AttemptBinding` carried in
+`PreparedLaunch`, and `discard_admission` (binding §2, §4.1); the §4.2 controller
+document for `supervised_worker_cli launch --envelope --result`; the total
+`WorkerResult` to v2 status mapping (§4.3); and `supervised_echo.write_echo` /
+`supervised_echo.read_echo` (§3 C-S1). LANEEXEC's work-start
+gate names these. Concrete record fields come only from the pinned schemas;
+exceptions translate to closed codes, and no payload, path or secret enters a
+diagnostic.
 
 ## Spec Closeout Plan
 
@@ -311,3 +80,189 @@ Next command: none until upstream gates are verified; then
 - evidence paths: `plans/evidence/supervised-worker/CLOSEOUT.md`
 - redaction posture: `metadata_only`
 - downstream handling: `none`
+
+## Lane Index & Dependencies
+
+SL-0 — Versioned intake, package preamble and historical receipts
+  Depends on: (none)
+  Blocks: SL-1, SL-2, SL-3
+  Parallel-safe: no
+
+SL-1 — Public codec, capture and admission
+  Depends on: SL-0
+  Blocks: SL-2, SL-3
+  Parallel-safe: no
+
+SL-2 — Worker, journal and production CLI reconciliation
+  Depends on: SL-0, SL-1
+  Blocks: SL-3
+  Parallel-safe: no
+
+SL-3 — Documentation, evidence verifier and readiness reducer
+  Depends on: SL-0, SL-1, SL-2
+  Blocks: (none)
+  Parallel-safe: no
+
+## Lanes
+
+### SL-0 — Versioned intake, package preamble and historical receipts
+
+- **Scope**: Vendor the pinned v2 resources behind a versioned loader, add the V0–V3 wrapper and Gate A inputs, and introduce historical receipt verification.
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/supervised_contracts.py`, `phase-loop-runtime/src/phase_loop_runtime/schemas/supervised-worker-v2/**`, `phase-loop-runtime/pyproject.toml`, `phase-loop-runtime/uv.lock`, `phase-loop-runtime/MANIFEST.in`, `phase-loop-runtime/tests/conftest.py`, `phase-loop-runtime/tests/test_supervised_contracts*.py`, `phase-loop-runtime/tests/historical_receipts.py`, `phase-loop-runtime/scripts/verify_supervised_contract_publication.py`, `phase-loop-runtime/scripts/verify_supervised_v2.sh`, `phase-loop-runtime/scripts/gate_a_cleanroom.sh`, `phase-loop-runtime/tests/test_gate_a_wheel_isolation.py`, `phase-loop-runtime/tests/test_ci_chronology_scope.py`, `phase-loop-runtime/tests/test_ci_offload_lock.py`, `.github/workflows/supervised-contract-intake.yml`, `.github/workflows/test.yml`, `.gitleaks.toml`
+- **Interfaces provided**: `load_contract_bundle`, `validate_record`, `ContractBundle`, `ContractError`, `historical_receipts.verify_historical_receipt`, `intake_results`
+- **Interfaces consumed**: `IF-0-SCHEMA-1` (pre-existing), `jsonschema` (pre-existing), `plans/artifacts/v12-CLOSEOUT-inputs.md`, `plans/artifacts/v12-CLOSEOUT-landed-binding.md`
+- **Parallel-safe**: no
+
+| Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
+|---|---|---|---|---|---|
+| SL-0.1 | test | — | `tests/test_supervised_contracts*.py`, `tests/test_gate_a_wheel_isolation.py`, `tests/test_ci_*.py` | v1/v2 selector and `selector_invalid`; every pinned resource and version declaration, including drift, missing bytes, unlisted references and stale seals; all 255 schema expectations labelled schema-only; corpus extraction and the binary64 domain; installed-wheel resource assertions placed in `GateAConformEvidenceScopeTest`, the only class V0 runs; the wrapper's groups (binding §5); historical helper controls in which a changed receipt byte, a wrong internal digest, a removed producer node (except a node retired in binding §6) and a removed mutation control each fail; the SCHEMA receipt test converted to the helper | `V0` |
+| SL-0.2 | impl | SL-0.1 | SL-0 owned files | — | — |
+| SL-0.3 | verify | SL-0.2 | SL-0 owned files | all SL-0 tests | `V0` |
+
+SL-0.2 vendors from the exact pinned commit after a fresh-fetch ancestry and
+hash/blob proof, extends package data, `MANIFEST.in`, Gate A sparse inputs and
+`test.yml`, and writes the source-pinned wrapper. `uv.lock` bytes stay unchanged;
+no dependency or bound changes. `historical_receipts.py` implements binding §3
+C-S2 with the §6 seals.
+
+### SL-1 — Public codec, capture and admission
+
+- **Scope**: Reconcile ENVELOPE through a distinct v2 production adapter, immutable launch capture and an `AttemptBinding` held outside the envelope.
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/supervised_envelope_v2.py`, `phase-loop-runtime/src/phase_loop_runtime/supervised_capture_v2.py`, `phase-loop-runtime/src/phase_loop_runtime/supervised_launch.py`, `phase-loop-runtime/src/phase_loop_runtime/supervised_launch_binding.py`, `phase-loop-runtime/tests/test_supervised_envelope_v2.py`, `phase-loop-runtime/tests/test_supervised_capture_v2.py`, `phase-loop-runtime/tests/test_supervised_launch*.py`, `phase-loop-runtime/tests/fixtures/supervised_launch_local/**`
+- **Interfaces provided**: `parse_v2`, `canonicalize_v2`, `decode_v2`, `validate_v2_admission`, `capture_launch_v2`, `recheck_launch_v2`, `load_v2_context`, `load_v2_binding`, `prepare_launch_v2`, `consume_admission`, `discard_admission`, `AttemptBinding`, `admission_results`
+- **Interfaces consumed**: `load_contract_bundle`, `validate_record`, `ContractBundle`, `historical_receipts.verify_historical_receipt`, `intake_results`, `prepare_launch` (pre-existing), `trusted_bytes` (pre-existing)
+- **Parallel-safe**: no
+
+| Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
+|---|---|---|---|---|---|
+| SL-1.1 | test | — | SL-1 test files | ENVELOPE receipt test converted to the historical helper before any SL-1 source edit; the published admission and canonical corpora through production APIs with exact first-stage diagnostics and effects; raw and in-memory domains, UTF-16 ordering, negative zero and `__proto__`; whole-envelope secret safety and same-source rotation of both digests; trusted context, suitability, record validity, revocation and duplicates; capture ancestry, links, modes, descriptors, cwd, environment and grant rechecks; `AttemptBinding` mismatch refuses; each guard has a production-entry witness and a source-copy bypass that turns it red; `discard_admission` removes the token and closes descriptors, a discarded admission cannot be consumed, and repeated prepare/discard leaves the registry empty | `V1` |
+| SL-1.2 | impl | SL-1.1 | SL-1 owned files | — | — |
+| SL-1.3 | verify | SL-1.2 | SL-1 owned files | all SL-1 tests | `V1` |
+
+SL-1.2 implements the inputs artifact's seven decisions and frozen local
+interfaces. `prepare_launch` stays the offline fixture seam; production never
+reaches it. A null or missing public codec refuses before effects.
+
+### SL-2 — Worker, journal and production CLI reconciliation
+
+- **Scope**: Wire the production CLI to the v2 binding, bind worker identity and echo outside the envelope, and map local results to v2 status.
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/supervised_worker_cli.py`, `phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/base.py`, `phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/patch_return.py`, `phase-loop-runtime/src/phase_loop_runtime/supervised_echo.py`, `phase-loop-runtime/src/phase_loop_runtime/run_status_projection.py`, `phase-loop-runtime/tests/test_supervised_worker*.py`, `phase-loop-runtime/tests/test_run_status*.py`, `phase-loop-runtime/tests/_run_status_vectors.py`, `phase-loop-runtime/tests/test_convergence_adapters.py`, `phase-loop-runtime/tests/test_executable_dependency_startup.py`, `phase-loop-runtime/tests/fixtures/supervised_worker_local/**`, `phase-loop-runtime/tests/data/seat_launch_references.json`, `phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py`, `phase-loop-runtime/tests/test_seat_launch_helpers_trusted.py`, `phase-loop-runtime/tests/test_seat_reference_inventory.py`
+- **Interfaces provided**: `supervised_echo.write_echo`, `supervised_echo.read_echo`, `supervised_worker_cli launch --envelope --result` with the §4.2 controller document, `v2_status_mapping`, `lifecycle_results`, `external_evidence_intake`
+- **Interfaces consumed**: `load_v2_binding`, `capture_launch_v2`, `prepare_launch_v2`, `consume_admission`, `recheck_launch_v2`, `canonicalize_v2`, `AttemptBinding`, `admission_results`, `historical_receipts.verify_historical_receipt`, `run_patch_return` (pre-existing), `reserve_attempt` (pre-existing), `output_retention.mark` (pre-existing)
+- **Parallel-safe**: no
+
+| Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
+|---|---|---|---|---|---|
+| SL-2.1 | test | — | SL-2 test files, `tests/_run_status_vectors.py`, `tests/fixtures/supervised_worker_local/**`, inventory files | JOURNAL and WORKER receipt tests converted to the historical helper before any SL-2 source edit; the actual CLI, adapter and journal paths with offline subprocesses and injected providers: zero chain starts on refusal, no probes, one chain deadline, helper `failed_to_start`, exact one-shot stdin or DEVNULL, replay across processes and restarts; identity taken from `AttemptBinding`, never envelope top-level fields; a controller document that is missing, names another envelope digest, lies outside `controller_root`, is foreign-owned, not private or symlinked refuses `binding_invalid` with no effect; the landed `launch --envelope --result` argv is unchanged; all six `kind=echo` cases byte-exact through the real writer and reader, and a missing or altered sidecar refuses `echo_unavailable`; the closed `WorkerResult`-to-v2 table, including `journal_complete=False` as `unknown`; the inventory rows for every new launch site or dynamic import; each guard bypassed in a temporary source copy turns a production assertion red | `V2` |
+| SL-2.2 | impl | SL-2.1 | SL-2 owned files | — | — |
+| SL-2.3 | verify | SL-2.2 | SL-2 owned files | all SL-2 tests | `V2` |
+
+SL-2.2 follows binding §3 C-S1 and §4.1–§4.3. It runs `recheck_launch_v2` inside
+the landed `before_spawn` callback, keeps the reservation worker-owned and
+permanent, consumes held qualification without probes and never restarts the
+monotonic timer. External controller apply outcomes stay finished work outcomes;
+the 13 apply cases need independently supplied evidence, which stays blocked if
+absent (C-S4).
+
+### SL-3 — Documentation, evidence verifier and readiness reducer
+
+- **Scope**: Reconcile every producer into the CLOSEOUT receipt, the hosted evidence verifier and a truthful readiness report.
+- **Owned files**: `docs/supervised-worker-contracts.md`, `docs/supervised-worker.md`, `docs/supervised-run-status.md`, `docs/supervised-worker-readiness.md`, `plans/evidence/supervised-worker/CLOSEOUT.md`, `phase-loop-runtime/tests/test_supervised_v2_readiness.py`, `phase-loop-runtime/scripts/verify_supervised_v2_evidence.py`, `.github/workflows/supervised-v2-evidence.yml`, `CHANGELOG.md`, `plans/manifest.json`
+- **Interfaces provided**: `IF-0-CLOSEOUT-1`, `readiness_results`
+- **Interfaces consumed**: `intake_results`, `admission_results`, `lifecycle_results`, `external_evidence_intake`, `v2_status_mapping`, `stamp_evidence_receipt.stamp` (pre-existing)
+- **Parallel-safe**: no
+
+| Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
+|---|---|---|---|---|---|
+| SL-3.1 | test | — | `tests/test_supervised_v2_readiness.py` | every corpus, rule and obligation compared with production outcomes and runner artifacts; missing or skipped-only results, changed resource identities, stale review heads, missing external proof, secret content, a shared-file pin in the CLOSEOUT receipt and an unjustified true authority each refuse; content identity, ancestry, stamp-only delta and post-landing applicability through the verifier | `V3` |
+| SL-3.2 | impl | SL-3.1 | `scripts/verify_supervised_v2_evidence.py`, `.github/workflows/supervised-v2-evidence.yml`, `plans/evidence/supervised-worker/CLOSEOUT.md` | — | — |
+| SL-3.3 | docs | SL-3.2 | SL-3 docs, `CHANGELOG.md`, `plans/manifest.json` | — | `V3` |
+| SL-3.4 | verify | SL-3.3 | SL-3 owned files | all SL-3 tests | `V3`, then the effective suite |
+
+SL-3.2 implements the authenticated evidence protocol of the inputs artifact and
+stamps only CLOSEOUT's receipt. SL-3.3 documents offline, on-main, installed,
+external and live status separately, keeps every missing item explicit with its
+owner and blocked edge, records the WORKER contract §6 trusted-boot note
+(binding §4.4, agent-harness#1960 item 6), adds one Unreleased changelog entry
+and appends the closeout lifecycle event.
+
+## Execution Policy
+
+- execute: effort=high, reason=public codec capture and journal boundaries need path-entered mutation controls
+- SL-3: effort=medium, reason=documentation and evidence reducer over finished producers
+
+## Execution Notes
+
+- **Sequencing**: lanes run in order SL-0 → SL-1 → SL-2 → SL-3. No subagents or
+  writer fanout are authorized.
+- **Cross-phase order**: CLOSEOUT merges before PLACECLI and LANEEXEC
+  (`plans/artifacts/v12-v13-replan-ownership.md`). PLACECLI may build
+  concurrently and rebases onto this landing.
+- **Single-writer files**: within this phase, every shared file in the ownership
+  map has the single owner shown there: SL-0 for `pyproject.toml`, `uv.lock` and
+  `test_gate_a_wheel_isolation.py`; SL-2 for the four inventory files; SL-3 for
+  `CHANGELOG.md` and `plans/manifest.json`.
+- **Known destructive changes**: none. No file is deleted. Receipt-test
+  conversions replace live-equality assertions; no recorded receipt byte or
+  outcome changes.
+- **Expected add/add conflicts**: none.
+- **SL-0 re-exports**: none. New modules are imported by path; no `__init__`
+  export is added.
+- **Receipts**: CLOSEOUT's receipt follows binding §3 C-S2 and the ownership
+  map's receipt rule (agent-harness#1955).
+- **Shared host**: dev0 runs plan validators only. Test groups run on `ai`
+  under the admission lock and PSI gates, serially, with `timeout 900`, no
+  xdist and no cache provider. No full suite runs locally.
+- **Stale-base guidance** (copy verbatim): Lane teammates working in isolated worktrees do not see sibling-lane merges automatically. If a lane finds its worktree base is pre-<first upstream dependency's merge>, it MUST stop and report rather than committing — the orchestrator will re-spawn or rebase. Silent `git reset --hard` or `git checkout HEAD~N -- …` in a stale worktree produces commits that destroy peer-lane work on `--no-ff` merge.
+- **Validator (N)**: package and changelog ownership read as release-shaped.
+  This phase dispatches no tag or release; SL-3 records post-verification
+  evidence, so no release-dispatch reducer applies.
+- **STOP rule**: an unclear interface or ownership gap stops the lane and
+  reports the exact plan or artifact sentence to change.
+
+Next phase: CLOSEOUT — blocked: advisor-board panel review of this re-plan.
+Next command: none until the panel and president return; then
+`claude-execute-phase plans/phase-plan-v12-CLOSEOUT.md` under separate execution authority.
+
+## Deferred Items
+
+Recorded, not built in this phase (coordinator ruling 4, 2026-11-09).
+
+| Item | Owner | Effect on this phase |
+| --- | --- | --- |
+| SEATS public caps APIs: an expected-digest check inside `capped_popen`, typed evidence of whether a failure came before or after its helper started, and kill/collect of a capped parent by key | SEATS/JAILCORE; new issue scheduled against v13 ACTIVATE, cross-linked to agent-harness#1963 and agent-harness#1895 | None; CLOSEOUT never calls `capped_popen`. |
+| Caps contract §1a tmpfs carve-out cleanup | SEATS | None. |
+| Garbage collection of orphaned content-addressed echoes (capped and secret-free) | v12 supervised-worker follow-up; new parked issue | SL-2 creates echo files and deletes none (binding §3 C-S1). |
+| Folding the reinterpreted sentences into the next protocol versions: the PLACECLI `launch_binding` sentence, the LANEEXEC narrowings and the wheel-shipped `x-*` prose | v13 placement protocol owner; new parked issue | None; CLOSEOUT changes no v13 artifact. |
+| Production worker state root taken from trusted operator configuration | agent-harness#1960 | SL-2 keeps the landed default state root; the CLI is not repointed here. |
+| A sanctioned `replan` lifecycle path in `plan_manifest.update_lifecycle` (the replan events here are hand-written and append-only) | coordinator follow-up (ruling 3) | The `v12-CLOSEOUT` row carries one hand-written `replan` event. |
+
+## Acceptance Criteria
+
+- [ ] EC-CLOSEOUT-1 — proven by `bash phase-loop-runtime/scripts/verify_supervised_v2.sh all` (V0–V3) on `ai` and by `plans/evidence/supervised-worker/CLOSEOUT.md` carrying runner-stamped CI, Gate A, board, separate-president and external-producer artifacts that `verify_supervised_v2_evidence.py` authenticates; falsified by a path-entered guard bypass in a temporary source copy of `supervised_launch.py`, `patch_return.py` or `run_status.py`, a missing corpus or obligation outcome, or stale or absent external evidence.
+- [ ] EC-CLOSEOUT-2 — proven by V3 (`tests/test_supervised_v2_readiness.py`) against the production results and `docs/supervised-worker-readiness.md`; falsified by a receipt mutation that claims unobserved qualification, a stale head or unsupported authority, entered through the production verifier path.
+
+## Verification
+
+Future execution commands; none runs in this planning change. Paths in groups
+are relative to `phase-loop-runtime/`; membership is binding §5.
+
+- V0: `bash phase-loop-runtime/scripts/verify_supervised_v2.sh V0`
+- V1: `bash phase-loop-runtime/scripts/verify_supervised_v2.sh V1`
+- V2: `bash phase-loop-runtime/scripts/verify_supervised_v2.sh V2`
+- V3: `bash phase-loop-runtime/scripts/verify_supervised_v2.sh V3`
+
+Validate V0–V3 and `automation.suite_command` with
+`verification_evidence.validate_verification_commands` (IF-0-VC-2) at execution
+preflight; missing owned future files are pre-implementation findings. Require
+actual outcomes, not collection, refuse exit-5 or skipped-only success, report
+multiple failures and flag any node over roughly five minutes.
+
+Acceptance also needs the live protected-main required checks, full-path
+supervised contract publication (`contract=true`), a Gate A run on the observed
+reviewed head, and the T3 cross-vendor board plus separate president on the
+same content. The builder never dispatches Gate A: under the 2026-11-06 sprint
+policy the coordinator dispatches
+`gh workflow run test.yml --ref <reviewed-branch> -f chronology=false` and the
+verifier records the tested head, run and artifacts. Proxy evidence requires a
+roadmap amendment.

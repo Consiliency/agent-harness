@@ -14681,6 +14681,12 @@
       "frozen_inputs": {
         "plans/artifacts/v12-CLOSEOUT-inputs.md": {
           "sha256": "b6fd84dc91b91236e72f4359ef7f0673c3a851ed2366d7ffdfc99ad10466e330"
+        },
+        "plans/artifacts/v12-CLOSEOUT-landed-binding.md": {
+          "sha256": "a1512267d669241054c4080aef896046f1c4225848582242301d95b5aab6a2b8"
+        },
+        "plans/artifacts/v12-v13-replan-ownership.md": {
+          "sha256": "e5dbbfb45c23cbb6acb9756a23a3d86b62dd5b172b94d6a495ef436d189f3e06"
         }
       },
       "gate_status": "declared_not_produced",
@@ -14694,7 +14700,27 @@
         "SL-2",
         "SL-3"
       ],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-11-09T15:03:29Z",
+          "by": "claude-plan-phase",
+          "metadata": {
+            "replan": {
+              "decision": "owner decision 2026-11-09: re-plan on the landed code keeping the roadmap goals; the superseded plan was replaced, not amended",
+              "frozen_inputs_added": [
+                "plans/artifacts/v12-CLOSEOUT-landed-binding.md",
+                "plans/artifacts/v12-v13-replan-ownership.md"
+              ],
+              "replanned_by": "claude-plan-phase",
+              "roadmap_sha256": "98a5bc1994698c65a5a460872a4871a02bdd4b15ee7f0d3230891b6712640ac5",
+              "superseded_owner_skill": "codex-plan-phase",
+              "superseded_plan_sha256": "b148bf79c9767fc9da9b8f543a39093c78fda2df8923bbae632c9190fdc668bc",
+              "sweep_input": "Consiliency/agent-harness#1961"
+            }
+          },
+          "transition": "committed"
+        }
+      ],
       "owner_skill": "codex-plan-phase",
       "phase_alias": "CLOSEOUT",
       "planning_artifact_only": true,
@@ -14709,7 +14735,7 @@
       "slug": "v12-CLOSEOUT",
       "status": "committed",
       "type": "phase",
-      "updated_at": "2026-11-05T06:49:20.443482+00:00"
+      "updated_at": "2026-11-09T15:03:29Z"
     },
     {
       "acceptance_criteria_count": null,
