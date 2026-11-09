@@ -55,7 +55,7 @@ a CLI yourself. See `seat_profile_codex.py`, `seat_codex_evidence.py`, and
 `timeouts_by_leg` still imposes a hard backstop. Do not substitute giant
 timeouts, bypass the broker, or silently replace reviewers.
 
-Heartbeat-only supports brokered subscription `claude` (print or TUI), `codex` and `grok`
+Heartbeat-only supports brokered subscription `claude` TUI (and print), `codex` and `grok`
 on Linux. The gemini/agy route requires the qualified executable digest and sealed
 memfd/pidfd support in the running Python/kernel. Check `hasattr(os, 'memfd_create')` in the active interpreter; the capability requires that support even on Linux. It uses the CLI's literal
 `--print-timeout 0`, one attempt and a private namespace-owned HOME. See
@@ -71,7 +71,7 @@ cleanup. Admission remains finite and single-use.
 
 **The following timeout/retry instructions describe bounded mode only.**
 The retry algebra below describes the legacy non-jailed print/TUI paths.
-The current jailed Codex path launches once through `_exec_jailed_codex_leg`;
+The current jailed `codex` path launches once through `_exec_jailed_codex_leg`;
 it does not perform that soft-empty retry. Do not use the legacy retry budget
 to predict a jailed leg's attempt count. Timeout and liveness results are still
 failures, never successful review evidence.

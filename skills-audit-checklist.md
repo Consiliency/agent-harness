@@ -138,3 +138,10 @@ Rebased onto `origin/main` at `4a4bec079f32bbac4e224987583dc4e6586bf5ac` after t
 - [x] `skills-src/claude/claude-plan-detailed/assets/external-review.md` — fixed; same runtime contract and exact bundle recipe verified.
 
 Current source inventory: 93 files, all with dispositions; generated copies remain covered by regeneration and parity.
+
+## Hosted pytest regressions from run 42571685651
+
+- Restored the literal policy contract `` `claude` TUI `` while retaining print support and the accuracy corrections. Changed “jailed Codex path” to the concrete `` jailed `codex` path `` so neutralization cannot turn it into “jailed Harness path.” All 16 source/generated/package sections are now byte-identical.
+- Traced the executor golden mismatch to the audit's intentional injected-text corrections: protocol paths and runtime-state/resolver references (commit `35d77224`), plus pytest selector, awaiting-closeout and manifest API guidance (commit `661d89fd`). The trailing “child launch.” phrase itself was unchanged; the test compares the complete string.
+- Kept those accuracy fixes. Added `pre_1943_skill_accuracy_audit.json` and the next exact two-string restoration step in the existing historical golden test. The active launch-spec golden already contains the correct current text; older fixtures, all other argv/model/schema fields, and the final historical digest remain frozen.
+- Expanded the targeted set with `test_skill_liveness_contract.py` and `test_executor_exited_without_closeout_785.py`. All six targeted files ran serially under `timeout`: **201 passed**. Both supported generators completed; all 16 liveness sections matched byte-for-byte.
