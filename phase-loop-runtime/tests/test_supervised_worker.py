@@ -1246,3 +1246,33 @@ def test_v2_status_mapping_closed_table_through_real_result(v2_operator):
                     replace(result, identity=None), replace(result, refusal="unlisted-local-code")):
         mapped = projection.v2_status_mapping(changed)
         assert mapped.runtime_state == "unknown" and not mapped.journal_acknowledged and mapped.public_status_bytes is None
+
+
+@pytest.mark.parametrize("mutated", [False, True], ids=["intact", "killed"])
+def test_v2_final_recheck_source_control(v2_operator, monkeypatch, mutated):
+    import sys
+    import types
+    attempt = build_v2_attempt(v2_operator)
+    selected = worker
+    if mutated:
+        source = Path(worker.__file__).read_text()
+        old = "check = recheck_launch_v2(prepared._capture, context=prepared._capture.context)"
+        assert source.count(old) == 1
+        selected = types.ModuleType("phase_loop_runtime.convergence.adapters._v2_worker_control")
+        selected.__package__, selected.__file__ = worker.__package__, worker.__file__
+        monkeypatch.setitem(sys.modules, selected.__name__, selected)
+        exec(compile(source.replace(old, "check = None"), selected.__file__, "exec"), selected.__dict__)
+    reference = attempt.binding.spec.references[0][1].path
+    original = selected.run_bounded_capture
+    def late_change(*args, **kwargs):
+        reference.write_bytes(reference.read_bytes() + b"changed-after-consumption")
+        return original(*args, **kwargs)
+    monkeypatch.setattr(selected, "run_bounded_capture", late_change)
+    config = dict(attempt.binding.snapshots)[attempt.binding.spec.config_path]
+    result = selected.run_patch_return(attempt.prepared, config_bytes=config, state_root=attempt.operator.path.parent / "worker-state")
+    def assertion():
+        assert result.state == "refused" and result.worker_invocations == 0 and result.refusal == "launch_input_unbound"
+    if mutated:
+        with pytest.raises(AssertionError): assertion()
+    else:
+        assertion()

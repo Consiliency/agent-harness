@@ -182,6 +182,33 @@ def test_v2_qualification_lifetime_is_rechecked(v2_operator, monkeypatch):
     launch.discard_admission(attempt.prepared)
 
 
+@pytest.mark.parametrize("mutated", [False, True], ids=["intact", "killed"])
+def test_v2_consumption_recheck_source_control(v2_operator, mutated):
+    import inspect
+    from phase_loop_runtime import supervised_launch as launch
+    attempt = build_v2_attempt(v2_operator)
+    reference = attempt.binding.spec.references[0][1].path
+    reference.write_bytes(reference.read_bytes() + b"changed")
+    function = launch.consume_admission
+    if mutated:
+        source = inspect.getsource(function)
+        old = "refusal = recheck_launch_v2(capture, context=capture.context)"
+        assert source.count(old) == 1
+        namespace = dict(vars(launch))
+        exec(compile(source.replace(old, "refusal = None"), "<v2-consume-control>", "exec"), namespace)
+        function = namespace["consume_admission"]
+    result = function(attempt.prepared)
+    def assertion():
+        assert isinstance(result, Refused) and result.reason == "launch_input_unbound"
+    try:
+        if mutated:
+            with pytest.raises(AssertionError): assertion()
+        else:
+            assertion()
+    finally:
+        launch.discard_admission(attempt.prepared)
+
+
 def test_v2_secret_rotation_keeps_both_commitments(v2_operator):
     from phase_loop_runtime.supervised_launch import discard_admission
     attempt = build_v2_attempt(v2_operator, secret=True)
