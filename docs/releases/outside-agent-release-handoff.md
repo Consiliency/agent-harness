@@ -7,7 +7,7 @@ or make production merge enforcement live.
 
 ## 0.7.31 source preparation
 
-- Source base: `origin/main` after agent-harness#1931
+- Source base: `origin/main` after agent-harness#1934
 - Package: `phase-loop-runtime`
 - Version: `0.7.31`
 - Runtime `phase_loop_runtime.__version__`: `0.7.31`
@@ -22,11 +22,13 @@ is claimed. Release acceptance and publication authorization remain separate fro
 package checks.
 
 0.7.31 ships the jailed Codex review seat (SEATS CODEX SL-3, agent-harness#1916), which
-landed after v0.7.30 and which the Codex review route waits on (agent-harness#1774). The
+landed after v0.7.30 and which the Codex review route waits on (agent-harness#1774). By
+owner decision on 2026-11-09 it also ships the v12 JOURNAL supervised attempt journal
+(agent-harness#1934), which adds `run_status.py` and `run_status_projection.py`. The
 other merges since v0.7.30 are plan-only.
 
-The release-qualified agy stays 1.5.3, the sole built-in member. agent-harness#1916
-changed package sources, so the live qualification record
+The release-qualified agy stays 1.5.3, the sole built-in member. agent-harness#1916 and
+agent-harness#1934 changed or added package sources, so the live qualification record
 (`plans/evidence/agy-1.5.3-linux-x64-qualification.json`) is regenerated on the exact
 release-cut commit and added on top of it as a non-source commit.
 

@@ -6,35 +6,27 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-- Add the supervised attempt journal for v12 JOURNAL (agent-harness#1818). This is an
-  internal API with no CLI. `phase_loop_runtime.run_status` reserves attempts
-  durably under a per-assignment admission index, writes one locked, chained,
-  fsynced journal per attempt under a fixed per-user root, and reads it back
-  read-only with the pinned `supervised_run_status.v1` diagnostics.
-  `phase_loop_runtime.run_status_projection` derives replay-only projections,
-  owner liveness, memory-bounded streaming pages with cursors, and reader views.
-  Every reservation completes its fsync barriers, including on adopted entries.
-  The writer is Linux-only. Run status is never a work outcome. See
-  `docs/supervised-run-status.md` and `plans/evidence/supervised-worker/JOURNAL.md`.
-
 ## [0.7.31] - Unreleased candidate
 
 ### Release preparation
 
 - 0.7.31 is the next release after 0.7.30, which was published to PyPI on 2026-11-08.
   It ships the jailed Codex review seat (SEATS CODEX SL-3, agent-harness#1916), which
-  the Codex review route waits on (agent-harness#1774). The entries below are the
-  complete change record on `main` since v0.7.30. Every other merge is plan-only and
-  changes no package source: the v13 toolkit repin (agent-harness#1928), the v12
-  JOURNAL and WORKER plans (agent-harness#1925, agent-harness#1926), and the agyroll
+  the Codex review route waits on (agent-harness#1774), and, by owner decision on
+  2026-11-09, the v12 JOURNAL supervised attempt journal (agent-harness#1934), which
+  adds package source (`run_status.py`, `run_status_projection.py`). The entries below
+  are the complete change record on `main` since v0.7.30. Every other merge is
+  plan-only and changes no package source: the v13 toolkit repin (agent-harness#1928),
+  the v12 JOURNAL and WORKER plans (agent-harness#1925, agent-harness#1926), the agyroll
   RECBIND plan with its amendments A1 and A2 (agent-harness#1927, agent-harness#1933,
-  agent-harness#1936), and the browser VISART plan (agent-harness#1931). agent-harness#1922 merged before the v0.7.30 tag and shipped in
-  0.7.30. Release tracking is agent-harness#1938.
+  agent-harness#1936), and the browser VISART plan (agent-harness#1931).
+  agent-harness#1922 merged before the v0.7.30 tag and shipped in 0.7.30. Release
+  tracking is agent-harness#1938.
 - The release-qualified agy stays 1.5.3, the sole built-in member. Its live
   qualification record is produced on the exact release-cut commit, because the
   release-only qualification source-pin check covers every package source file,
-  including `__version__`, and agent-harness#1916 changed `panel_invoker.py` and other
-  package sources.
+  including `__version__`, and agent-harness#1916 and agent-harness#1934 changed or
+  added package sources.
 - Tagging, publication, deployment, installation and release-workflow dispatch are
   outside this preparation.
 
@@ -54,6 +46,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   CONNECT 403 is still unavailable. The seat's copy of the egress CA certificate is
   forced to mode 0444 (`_write_egress_ca`, `fchmod`), so a launcher running under umask
   077 still leaves it readable by the dropped seat uid through its read-only bind.
+- Add the supervised attempt journal for v12 JOURNAL (agent-harness#1934,
+  agent-harness#1818). This is an internal API with no CLI.
+  `phase_loop_runtime.run_status` reserves attempts
+  durably under a per-assignment admission index, writes one locked, chained,
+  fsynced journal per attempt under a fixed per-user root, and reads it back
+  read-only with the pinned `supervised_run_status.v1` diagnostics.
+  `phase_loop_runtime.run_status_projection` derives replay-only projections,
+  owner liveness, memory-bounded streaming pages with cursors, and reader views.
+  Every reservation completes its fsync barriers, including on adopted entries.
+  The writer is Linux-only. Run status is never a work outcome. See
+  `docs/supervised-run-status.md` and `plans/evidence/supervised-worker/JOURNAL.md`.
 - Plans only, no package source: the v13 LANEEXEC toolkit repin for the image launcher
   tree and staging trust (agent-harness#1928, Consiliency/agent-toolkit#85); the v12
   JOURNAL attempt journal and projection plan (agent-harness#1925) and WORKER bounded
