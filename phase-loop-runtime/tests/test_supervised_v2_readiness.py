@@ -358,6 +358,8 @@ def test_offline_squash_correspondence_remains_unverified(assessment):
     landing = subprocess.check_output(["git", "-C", str(repo), "commit-tree", tree, "-m", "Squash landing"]).decode().strip()
     command(repo, "reset", "--hard", landing)
     assert evidence.content_identity(repo, landing) == record["content_identity"]
+    with pytest.raises(evidence.EvidenceRefused, match="landing_correspondence_unavailable"):
+        evidence.evaluate(repo, record, current_head=landing)
     assert_receipt_applicability(repo, record, landing)
 
 
