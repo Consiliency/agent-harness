@@ -1,0 +1,12 @@
+{
+ "expected_help_sha256": "ed88ab1455bdc90e766796437d8a4e3b7e5c45b7b054b625d48dc722f0d84d6c",
+ "expected_helper_sha256": {
+  "/usr/bin/bwrap": "523da3e7399044be5163aee6f57a77a6bef7454376e28f0a0627920bae1b76b6",
+  "/usr/bin/setpriv": "86965a019d37dc11d176ce8cbe9f5f5f8f37027c95e03cb4a8cad4c73d940993"
+ },
+ "expected_image_sha256": "763be5cf8d4114fc3c21341a0757c324ee5d0a23eea32a6230ec93fd0eaa209c",
+ "expected_profile_sha256": "e313211ddbea31b69818a22b1186011cb678d369c11eddd3da40fe336f006755",
+ "expected_source_sha256": {
+  "agy_qualification.py": "fc60a55ef2bc36a43f04fc0621292436d9d91efa04d70f9f6df845b031bd7b50"
+ }
+}

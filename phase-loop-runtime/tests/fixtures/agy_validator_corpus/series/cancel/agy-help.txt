@@ -1,0 +1,4 @@
+Usage: agy [flags]
+  --model <model>
+  --input-format stream-json
+  --output-format stream-json

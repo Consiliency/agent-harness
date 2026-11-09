@@ -180,6 +180,8 @@ phase_loop_runtime = [
     "data/claude_sdk/*.json",
     "data/claude_sdk/*.txt",
     "data/claude_sdk/worker/*.py",
+    # The shipped agy catalog (AGYROLL §3.1), read only through importlib.resources.
+    "data/agy_catalog.json",
 ]
 
 # TESTDECOUPLE SL-0: the dotfiles_integration marker. Integration-bucket tests

@@ -1,0 +1,641 @@
+{
+ "records": [
+  {
+   "id": "completion_conforming",
+   "operation": "completion",
+   "expect": "pass",
+   "set": []
+  },
+  {
+   "id": "completion_verdict_markup",
+   "operation": "completion",
+   "expect": "pass",
+   "set": [
+    [
+     [
+      "result",
+      "text"
+     ],
+     "Consistent.\n**VERDICT: PARTIALLY AGREE**"
+    ]
+   ]
+  },
+  {
+   "id": "completion_disagree",
+   "operation": "completion",
+   "expect": "pass",
+   "set": [
+    [
+     [
+      "result",
+      "text"
+     ],
+     "Inconsistent.\nDISAGREE"
+    ]
+   ]
+  },
+  {
+   "id": "completion_no_verdict",
+   "operation": "completion",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "result",
+      "text"
+     ],
+     "The requirements are consistent."
+    ]
+   ]
+  },
+  {
+   "id": "completion_verdict_not_last",
+   "operation": "completion",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "result",
+      "text"
+     ],
+     "AGREE\nfurther thoughts follow"
+    ]
+   ]
+  },
+  {
+   "id": "completion_empty_text",
+   "operation": "completion",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "result",
+      "text"
+     ],
+     ""
+    ]
+   ]
+  },
+  {
+   "id": "completion_status_not_ok",
+   "operation": "completion",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "result",
+      "status"
+     ],
+     "UNAVAILABLE"
+    ]
+   ]
+  },
+  {
+   "id": "completion_stream_not_accepted",
+   "operation": "completion",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "broker",
+      "provider_stream_outcome"
+     ],
+     "parse_error"
+    ]
+   ]
+  },
+  {
+   "id": "completion_acks_unverified",
+   "operation": "completion",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "broker",
+      "provider_stream_acknowledgements_verified"
+     ],
+     false
+    ]
+   ]
+  },
+  {
+   "id": "completion_truncated",
+   "operation": "completion",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "broker",
+      "provider_stream_final_no_truncation"
+     ],
+     false
+    ]
+   ]
+  },
+  {
+   "id": "completion_terminal_reason",
+   "operation": "completion",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "monitoring",
+      "terminal_reason"
+     ],
+     "user_cancel"
+    ]
+   ]
+  },
+  {
+   "id": "completion_response_digest",
+   "operation": "completion",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "broker",
+      "provider_response_sha256"
+     ],
+     "0000000000000000000000000000000000000000000000000000000000000000"
+    ]
+   ]
+  },
+  {
+   "id": "cancel_conforming",
+   "operation": "cancel",
+   "expect": "pass",
+   "set": []
+  },
+  {
+   "id": "cancel_answered",
+   "operation": "cancel",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "result"
+     ],
+     {
+      "status": "OK",
+      "text": "Consistent.\nAGREE",
+      "detail": null
+     }
+    ]
+   ]
+  },
+  {
+   "id": "cancel_not_requested",
+   "operation": "cancel",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "broker",
+      "provider_cancel_requested"
+     ],
+     false
+    ]
+   ]
+  },
+  {
+   "id": "cancel_terminal_completed",
+   "operation": "cancel",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "monitoring",
+      "terminal_reason"
+     ],
+     "completed"
+    ]
+   ]
+  },
+  {
+   "id": "cancel_response_status",
+   "operation": "cancel",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "broker",
+      "provider_response_status"
+     ],
+     "OK"
+    ]
+   ]
+  },
+  {
+   "id": "owner_loss_conforming",
+   "operation": "owner-loss",
+   "expect": "pass",
+   "set": []
+  },
+  {
+   "id": "owner_loss_broker_present",
+   "operation": "owner-loss",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "broker"
+     ],
+     {}
+    ]
+   ]
+  },
+  {
+   "id": "owner_loss_wrong_signal",
+   "operation": "owner-loss",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "observer",
+      "kill_event",
+      "signal"
+     ],
+     15
+    ]
+   ]
+  },
+  {
+   "id": "owner_loss_wrong_target",
+   "operation": "owner-loss",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "observer",
+      "kill_event",
+      "target"
+     ],
+     "provider"
+    ]
+   ]
+  },
+  {
+   "id": "owner_loss_terminal_reason",
+   "operation": "owner-loss",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "monitoring",
+      "terminal_reason"
+     ],
+     "user_cancel"
+    ]
+   ]
+  },
+  {
+   "id": "shared_live_member",
+   "operation": "completion",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "observer",
+      "live_namespace_members"
+     ],
+     [
+      {
+       "pid": 7,
+       "start": "1"
+      }
+     ]
+    ]
+   ]
+  },
+  {
+   "id": "shared_home_not_removed",
+   "operation": "cancel",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "observer",
+      "home_removed"
+     ],
+     false
+    ]
+   ]
+  },
+  {
+   "id": "shared_fd_open",
+   "operation": "owner-loss",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "observer",
+      "fd_cleanup_observations",
+      0,
+      "state"
+     ],
+     "open"
+    ]
+   ]
+  },
+  {
+   "id": "shared_unregistered_helper",
+   "operation": "completion",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "observer",
+      "helpers",
+      0,
+      "executable_sha256"
+     ],
+     "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    ]
+   ]
+  },
+  {
+   "id": "shared_argv",
+   "operation": "cancel",
+   "expect": "raise:ValueError",
+   "set": [
+    [
+     [
+      "observer",
+      "argv",
+      2
+     ],
+     "gemini-other"
+    ]
+   ]
+  },
+  {
+   "id": "shared_profile_home",
+   "operation": "completion",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "profile",
+      "home"
+     ],
+     "/tmp/agy-home"
+    ]
+   ]
+  },
+  {
+   "id": "shared_record_digest",
+   "operation": "completion",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "record_sha256",
+      "result"
+     ],
+     "0000000000000000000000000000000000000000000000000000000000000000"
+    ]
+   ],
+   "rehash": false
+  },
+  {
+   "id": "shared_schema",
+   "operation": "owner-loss",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "schema"
+     ],
+     "gemini_heartbeat_qualification.v0"
+    ]
+   ]
+  },
+  {
+   "id": "shared_credential_after",
+   "operation": "cancel",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "observer",
+      "credential_target_regular_after"
+     ],
+     false
+    ]
+   ]
+  },
+  {
+   "id": "shared_network_rules",
+   "operation": "completion",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "observer",
+      "network_rules_verified"
+     ],
+     false
+    ]
+   ]
+  },
+  {
+   "id": "shared_model_deadline",
+   "operation": "owner-loss",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "monitoring",
+      "model_deadline_s"
+     ],
+     60
+    ]
+   ]
+  },
+  {
+   "id": "shared_incomplete",
+   "operation": "completion",
+   "expect": "reject",
+   "set": [
+    [
+     [
+      "observer"
+     ],
+     "$delete"
+    ]
+   ]
+  }
+ ],
+ "directory": [
+  {
+   "id": "series_conforming",
+   "expect": "pass:true"
+  },
+  {
+   "id": "series_two_operations",
+   "expect": "pass:false",
+   "drop": [
+    "owner-loss"
+   ]
+  },
+  {
+   "id": "series_brief_changed",
+   "expect": "reject",
+   "append": {
+    "cancel/brief.md": "extra\n"
+   }
+  },
+  {
+   "id": "series_artifact_changed",
+   "expect": "reject",
+   "append": {
+    "completion/artifact.md": "extra\n"
+   }
+  },
+  {
+   "id": "series_terminal_changed",
+   "expect": "reject",
+   "json": {
+    "completion/terminal.json": [
+     [
+      [
+       "result",
+       "text"
+      ],
+      "x\nAGREE"
+     ]
+    ]
+   }
+  },
+  {
+   "id": "series_attempt_limit",
+   "expect": "reject",
+   "json": {
+    "cancel/preregistration.json": [
+     [
+      [
+       "attempt_limit"
+      ],
+      2
+     ]
+    ]
+   }
+  },
+  {
+   "id": "series_retained_failure",
+   "expect": "reject",
+   "append": {
+    "owner-loss/failure.json": "{}"
+   }
+  },
+  {
+   "id": "series_help_changed",
+   "expect": "reject",
+   "append": {
+    "completion/agy-help.txt": "x"
+   }
+  }
+ ],
+ "classify": [
+  {
+   "id": "classify_never_observed",
+   "operation": "completion",
+   "expect": "transient",
+   "failure": null
+  },
+  {
+   "id": "classify_rejected_image",
+   "operation": "completion",
+   "expect": "failed",
+   "failure": {
+    "stage": "helper_observation",
+    "reason": "x",
+    "rejected_image": {
+     "pid": 1
+    }
+   }
+  },
+  {
+   "id": "classify_ended_before_admission",
+   "operation": "cancel",
+   "expect": "transient",
+   "failure": {
+    "stage": "terminal_observation",
+    "reason": "qualification ended before complete admission observation"
+   }
+  },
+  {
+   "id": "classify_local_failure",
+   "operation": "owner-loss",
+   "expect": "transient",
+   "failure": {
+    "stage": "launch",
+    "reason": "qualification local failure"
+   }
+  },
+  {
+   "id": "classify_cancelled",
+   "operation": "cancel",
+   "expect": "transient",
+   "failure": {
+    "stage": "helper_observation",
+    "reason": "review_operation_cancelled"
+   }
+  },
+  {
+   "id": "classify_completion_answered_but_rejected",
+   "operation": "completion",
+   "expect": "failed",
+   "failure": {
+    "stage": "validation",
+    "reason": "gemini qualification record rejected"
+   },
+   "terminal": {
+    "result": {
+     "status": "OK"
+    }
+   }
+  },
+  {
+   "id": "classify_completion_unanswered",
+   "operation": "completion",
+   "expect": "transient",
+   "failure": {
+    "stage": "validation",
+    "reason": "gemini qualification record rejected"
+   },
+   "terminal": {
+    "result": {
+     "status": "UNAVAILABLE"
+    }
+   }
+  },
+  {
+   "id": "classify_completion_no_terminal",
+   "operation": "completion",
+   "expect": "transient",
+   "failure": {
+    "stage": "validation",
+    "reason": "gemini qualification record rejected"
+   }
+  },
+  {
+   "id": "classify_cancel_validation",
+   "operation": "cancel",
+   "expect": "failed",
+   "failure": {
+    "stage": "validation",
+    "reason": "gemini qualification record rejected"
+   }
+  },
+  {
+   "id": "classify_surviving_process",
+   "operation": "owner-loss",
+   "expect": "failed",
+   "failure": {
+    "stage": "cleanup_observation",
+    "reason": "qualification observed a surviving owned process"
+   }
+  }
+ ]
+}

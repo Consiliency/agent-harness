@@ -39,8 +39,8 @@ from . import agy_provenance
 from . import gemini_heartbeat as gh
 
 # The files an installed wheel runs the qualified route from (agent-harness#1076 D2).
-# The local record key and the CI ``--route-core`` gate hash exactly these files;
-# ``verify_qualified_agy_image.py`` imports this tuple. The upstream watch
+# ``runtime_identity`` reports their digests. Since RECBIND no CI gate pins them: catalog
+# records bind to ``seat_qci()`` instead (AGYROLL §2.1, §3.3). The upstream watch
 # (``agy_watch.py``) is deliberately outside it.
 ROUTE_CORE = ("gemini_heartbeat.py", "agy_qualification.py", "agy_provenance.py")
 
@@ -807,6 +807,22 @@ def agy_profile_digest() -> str:
         "operations": [operation._asdict() for operation in OPERATIONS_CONTRACT],
     }
     return sha256(_canonical(document)).hexdigest()
+
+
+# What "passed" means (AGYROLL §2.1). Bump it whenever a verdict of the validator entry points
+# (``validate_records``, ``validate_directory``, ``_classify_failure``) or anything they reach,
+# transitively -- ``panel_invoker.terminal_verdict`` and its prompt and stream helpers
+# included -- can change. tests/test_agy_qci.py pins the verdict vector per value.
+QUALIFICATION_VALIDATOR = "agy_validator_v1"
+
+
+def seat_qci() -> str:
+    """The seat qualification contract identity. Equal to ``agy_profile_digest()`` at
+    ``agy_validator_v1``, so binding records to it changes no store key (TEAMHOST §5)."""
+    if QUALIFICATION_VALIDATOR == "agy_validator_v1":
+        return agy_profile_digest()
+    return sha256(_canonical({"agy_profile_digest": agy_profile_digest(),
+                              "validator": QUALIFICATION_VALIDATOR})).hexdigest()
 
 
 def qualification_key(image_sha256: str, help_sha256: str, host: str) -> dict[str, str]:

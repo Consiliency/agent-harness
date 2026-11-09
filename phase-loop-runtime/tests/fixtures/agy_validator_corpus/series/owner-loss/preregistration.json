@@ -1,0 +1,29 @@
+{
+ "attempt_limit": 1,
+ "help_sha256": "ed88ab1455bdc90e766796437d8a4e3b7e5c45b7b054b625d48dc722f0d84d6c",
+ "helper_sha256": {
+  "/usr/bin/bwrap": "523da3e7399044be5163aee6f57a77a6bef7454376e28f0a0627920bae1b76b6",
+  "/usr/bin/setpriv": "86965a019d37dc11d176ce8cbe9f5f5f8f37027c95e03cb4a8cad4c73d940993"
+ },
+ "image_sha256": "763be5cf8d4114fc3c21341a0757c324ee5d0a23eea32a6230ec93fd0eaa209c",
+ "model_deadline_s": null,
+ "operation": "owner-loss",
+ "profile": {
+  "home": "/dev/phase-loop-agy",
+  "id": "agy_memfd_home_deny_all_v1",
+  "image_sha256": "763be5cf8d4114fc3c21341a0757c324ee5d0a23eea32a6230ec93fd0eaa209c",
+  "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
+ },
+ "profile_sha256": "e313211ddbea31b69818a22b1186011cb678d369c11eddd3da40fe336f006755",
+ "request": {
+  "artifact_sha256": "125bbbd021794e015483823d7231c3e9fca0715222d0617278d134f8a065a3b5",
+  "instructions_sha256": "130181f86086870b9e626ce0e0ed609034e6d0ca1a7198783402ee859f628973",
+  "provider_input_sha256": "45cddbd5ac2a23e8deb80c93685528f8d7e02df2e00a0d855c9a88978896fce3",
+  "provider_transport_sha256": "d8583c9ebc040e1b27ea41fb1701d70592b5c81776b3a295208f5c697ea9e972"
+ },
+ "silence_deadline_s": null,
+ "source_sha256": {
+  "agy_qualification.py": "fc60a55ef2bc36a43f04fc0621292436d9d91efa04d70f9f6df845b031bd7b50"
+ },
+ "trigger": "observed qualified provider admission after independent local measurements"
+}
