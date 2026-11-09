@@ -249,6 +249,18 @@ def test_complete_offline_assessment_keeps_external_edges_blocked(assessment):
     assert result["verification_status"] == "blocked" and result["human_required"] is False
 
 
+@pytest.mark.parametrize("length", [4063, 9000])
+def test_historical_deep_fixture_node_identity_bound(assessment, length):
+    repo, record, stamp = assessment
+    row = record["producer_results"]["readiness_results"][0]
+    row["test_node_id"] = "tests/test_supervised_v2_readiness.py::test_control[" + "[" * length + "]"
+    if length == 4063:
+        assert evidence.evaluate(repo, record, current_head=stamp)["offline_proof"] == "verified"
+    else:
+        with pytest.raises(evidence.EvidenceRefused, match="producer_node_invalid"):
+            evidence.evaluate(repo, record, current_head=stamp)
+
+
 @pytest.mark.parametrize("mutation", ["authority", "head", "resource", "skipped", "missing", "witness", "secret", "obligation", "external", "shared", "stamp-payload", "hosted-payload", "obligation-proof"])
 def test_receipt_negative_controls_enter_production_verifier(assessment, mutation):
     repo, record, stamp = assessment

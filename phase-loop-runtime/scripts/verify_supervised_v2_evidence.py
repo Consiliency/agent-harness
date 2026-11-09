@@ -292,7 +292,7 @@ def verify_offline(repo, record):
             require(expected_fields <= set(row) <= expected_fields | {"contract_diagnostics", "supported_route", "auxiliary_starts", "chain_starts", "unavailable_reason"}, "producer_row_invalid")
             node = row["test_node_id"]
             require(row["owner"] == "CLOSEOUT" and row["host"] == "ai" and row["source_pointer"] == node.split("::", 1)[0], "producer_identity_invalid")
-            require(type(node) is str and len(node) <= 2048 and re.fullmatch(r"tests/test_[A-Za-z0-9_]+\.py::[^\r\n]+", node) is not None,
+            require(type(node) is str and len(node) <= 8192 and re.fullmatch(r"tests/test_[A-Za-z0-9_]+\.py::[^\r\n]+", node) is not None,
                     "producer_node_invalid")
             require(all(re.fullmatch(r"[A-Za-z0-9_.<>]+", symbol) is not None for symbol in row["production_witnesses"]), "witness_invalid")
             require(re.fullmatch(r"[A-Za-z0-9_.-]+\.xml", row["runner_artifact_ref"]) is not None, "producer_artifact_invalid")
