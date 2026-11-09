@@ -540,7 +540,8 @@ provider health. No reviewer is dropped or substituted by policy preflight.
 | CLI default four-vendor board | Existing behavior | Preserves four vendors; refuses before auth if Gemini capability is missing or changed |
 
 The Gemini extension (agent-harness#905) admits only a closed set of qualified
-`agy` Linux x64 entry images, `gemini_heartbeat.QUALIFIED_IMAGES`:
+`agy` Linux x64 entry images, `gemini_heartbeat.QUALIFIED_IMAGES`, loaded from the shipped
+package data `phase_loop_runtime/data/agy_catalog.json`:
 1.5.3 (SHA256 `7ca212748ca0dfda718efbc39a776a104472e7e9344d4b6ea147c543684f96a3`).
 A host on an older release self-qualifies it only while it is among the newest four stable
 upstream releases (`agy_provenance.RECENCY_WINDOW`). Today that excludes every retired
@@ -562,20 +563,18 @@ anything, then runs the same three live operations, and records the result in a 
 per-host, HMAC-bound store. Such a seat is `locally_qualified` and counts at every tier.
 A user config `[agy] self_qualification = false` restores the hard refusal. See
 CONTRACTS.md "First-use self-qualification".
-Each member has its own redacted qualification record with exact source hashes,
-`plans/evidence/agy-<release>-linux-x64-qualification.json`; the records are
-not a second admission source.
-`plans/evidence/qualified-provider-images.json` lists every member (image digest,
-help digest, release and record), and the verifier refuses unless that list and
-the runtime set name exactly the same members and every member's record checks.
-The `qualified-agy-image` CI check compares every record's hashes of the route's core
-files (`agy_qualification.ROUTE_CORE`: `gemini_heartbeat.py`, `agy_qualification.py`,
-`agy_provenance.py`) with the checkout on
-pull requests and pushes that touch them or the evidence. The full source-hash set
-blocks publication, a release-cut pull request and a pull request that changes the
-evidence, and is reported without blocking nightly (agent-harness#1029), so a release
-still needs a qualification series on its exact tree. Nightly and manual runs also
-verify that the latest official release is a set member, and its archive and extracted executable.
+Each member has its own redacted record v2,
+`plans/evidence/agy-<release>-linux-x64-qualification.json`, bound to the seat QCI
+(`agy_qualification.seat_qci()`) rather than to source hashes; the records are not a
+second admission source. The `qualified-agy-image` CI check runs
+`verify_qualified_agy_image.py --contract` on every pull request and push, with no path
+filter: the catalog parses strictly and is not empty, every member has one agreeing v2
+record, and every record's QCI equals the tree's, or it fails with
+`requalify: <members>`. Publication is gated by the strict hermetic conformance suite (no
+skip can pass) plus `--release` (AGYROLL §3.3, §3.4), so a release needs no live run while
+the QCI is unchanged. The per-PR route-core gate (agent-harness#1029) and the full source
+pin (agent-harness#1032) are removed. Nightly and manual runs also check the newest
+upstream release (advisory) and the newest member's archive and extracted executable.
 
 Rejected, empty and native-failed streams retain fixed diagnostics and remain
 non-votes. The qualification driver records distinct completion, cancellation

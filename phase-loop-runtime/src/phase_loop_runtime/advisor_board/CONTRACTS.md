@@ -1308,16 +1308,24 @@ review text and the exception in detail; sandbox facts describe actual enforceme
 ### Qualified Gemini extension (agent-harness#905)
 
 The Linux x64 subscription `agy` entry image must match one member of the closed
-set `gemini_heartbeat.QUALIFIED_IMAGES`: 1.5.3 SHA256
-`7ca212748ca0dfda718efbc39a776a104472e7e9344d4b6ea147c543684f96a3`. A host on an
+set `gemini_heartbeat.QUALIFIED_IMAGES`, loaded from the shipped package data
+`phase_loop_runtime/data/agy_catalog.json` (`qualified_agy_catalog.v3`, AGYROLL §3.1;
+1.5.3 SHA256 `7ca212748ca0dfda718efbc39a776a104472e7e9344d4b6ea147c543684f96a3` today).
+The loader is strict and offline: a missing or malformed file is an empty catalog, so the
+release fast path admits nothing. A host on an
 older release self-qualifies it only while it is among the newest four stable upstream
 releases (`agy_provenance.RECENCY_WINDOW`). Today that excludes every retired release,
 so such a host refuses with `gemini_heartbeat_provenance_unverified` until agy is updated.
 Self-qualification covers review seats only. Executor and canary paths
 (`trusted_command`, `admitted_command`, and canary admission) admit catalog images only,
 as they have since agent-harness#1333. Each member carries its measured help digest and
-has its own qualification record; the evidence catalog and the runtime set must name
-exactly the same members.
+has its own record v2 (`agy_redacted_qualification_summary.v2`,
+`plans/evidence/agy-<release>-linux-x64-qualification.json`), bound to the seat QCI
+`agy_qualification.seat_qci()` instead of source-file hashes (AGYROLL §3.2).
+`verify_qualified_agy_image.py --contract` runs on every pull request and push and fails
+naming any member whose QCI differs (`requalify: <members>`). The release gate is the
+strict hermetic conformance suite (`AGY_CONFORMANCE_STRICT=1`, where a skip can never
+pass) plus `--release` in `publish-pypi.yml` (AGYROLL §3.3, §3.4).
 The running Python/kernel must support sealed memfds, pidfds and pidfd signaling;
 Python version alone is not a capability check. Unknown images or missing
 capabilities refuse before availability/auth effects. Required bwrap mount/gate
@@ -1430,7 +1438,7 @@ A non-release `agy` image is admitted only by verifying it, never by trusting it
   live key. The qualification entries (`provenance`, `qualified`, `failed`, `member_cache`,
   `transient`) bind the image digest, platform and runtime identity, plus the asset name,
   profile id or help digest as the type requires. The watch's `watch_push` entry binds the
-  branch, the version and the route-core base.
+  branch, the version and the base (the prepared tree's seat QCI).
   Without a readable machine-id, self-qualification refuses; the release path is unaffected.
 - **Lock.** One `flock` per host namespace; waiters are cancellable and heartbeat (the board
   preflight writes a content-free `agy-qualification.json` progress record into the
@@ -1438,7 +1446,8 @@ A non-release `agy` image is admitted only by verifying it, never by trusting it
   store after acquiring. Qualification happens once per key per user per host.
 - **Runtime identity (D2).** `__version__` plus the digests of the installed
   `agy_qualification.ROUTE_CORE` files (`gemini_heartbeat.py`, `agy_qualification.py`,
-  `agy_provenance.py`), the same tuple `verify_qualified_agy_image.py --route-core` checks.
+  `agy_provenance.py`). No CI gate pins these files since RECBIND; records bind to
+  `seat_qci()` instead.
 - **Counting (D1).** At `governed_review`'s gate (the rule itself is
   `agy_qualification.counts_toward_landing`), a usable heartbeat Gemini leg is a vote at every
   tier only if its recorded class is `release_qualified` or `locally_qualified`. A
