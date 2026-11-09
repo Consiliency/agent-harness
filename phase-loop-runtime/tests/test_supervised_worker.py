@@ -1218,3 +1218,29 @@ def test_v2_echo_publication_lifetime(tmp_path, monkeypatch, stage):
         if stage == "conflict": (tmp_path / "echo" / digest).write_bytes(b"different")
         assert echo.write_echo(tmp_path, payload) == (echo.EchoRefused() if stage == "conflict" else digest)
         assert (tmp_path / "echo" / digest).read_bytes() == (b"different" if stage == "conflict" else payload)
+
+
+def test_v2_status_mapping_closed_table_through_real_result(v2_operator):
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from phase_loop_runtime.supervised_contracts import load_contract_bundle, validate_record
+    attempt = build_v2_attempt(v2_operator)
+    result, _state = run_v2_attempt(attempt)
+    assert result.state == "finished"
+    bundle = load_contract_bundle(version="v2")
+    for code in sorted(projection.V2_REFUSAL_REASONS):
+        mapped = projection.v2_status_mapping(replace(result, state="refused", termination=None, refusal=code))
+        assert mapped.runtime_state == "refused" and mapped.refusal == code and mapped.journal_acknowledged
+        validate_record(bundle, "supervised_run_status.v1", mapped.public_status_bytes, definition="reader_view")
+    for runtime in projection.RUNTIME_STATES:
+        if runtime in {"unknown", "stale_unknown"}: continue
+        state = "finished" if runtime.startswith("finished (") else runtime
+        reason = runtime[len("finished ("):-1] if state == "finished" else None
+        mapped = projection.v2_status_mapping(replace(result, state=state, refusal=None,
+            termination=SimpleNamespace(reason=reason) if reason else None))
+        assert mapped.runtime_state == runtime and mapped.journal_acknowledged
+        validate_record(bundle, "supervised_run_status.v1", mapped.public_status_bytes, definition="reader_view")
+    for changed in (replace(result, journal_complete=False), replace(result, journal_anchor=None),
+                    replace(result, identity=None), replace(result, refusal="unlisted-local-code")):
+        mapped = projection.v2_status_mapping(changed)
+        assert mapped.runtime_state == "unknown" and not mapped.journal_acknowledged and mapped.public_status_bytes is None

@@ -344,3 +344,54 @@ def test_managed_binding_missing_passwd_has_no_fallback(monkeypatch):
     monkeypatch.setattr(binding.pwd, "getpwuid", missing)
     assert binding._managed_binding() is None
     assert binding.read_binding_locator(None) == binding.Refused("binding_unavailable")
+
+
+@pytest.mark.parametrize("category", ["config_path", "template_path", "qualification_path", "environment_policy_path", "grant", "record", "evidence", "resource"])
+@pytest.mark.parametrize("root_kind", ["workspace", "target", "reference"])
+def test_v2_every_referenced_category_uses_complete_exclusions(v2_operator, category, root_kind):
+    operator = v2_operator
+    roots = dict(operator.roots)
+    directory = roots["reference_roots"][0] if root_kind == "reference" else roots[root_kind]
+    spec = json.loads(operator.spec_path.read_bytes())
+    if category == "resource":
+        directory = Path(binding.__file__).parent / "schemas/supervised-worker-v2"
+        if root_kind == "reference": roots["reference_roots"] = (directory,)
+        else: roots[root_kind] = directory
+    elif category in {"record", "evidence"}:
+        from test_supervised_capture_v2 import build_v2_attempt
+        from phase_loop_runtime.supervised_launch import discard_admission
+        fixture = build_v2_attempt(operator)
+        discard_admission(fixture.prepared)
+        operator.marker.unlink()
+        context = json.loads(operator.context_path.read_bytes())
+        locator = context["qualified_routes"][0]
+        record_path = Path(locator["path"])
+        if category == "record":
+            selected = directory / "route-record.json"
+            selected.write_bytes(record_path.read_bytes())
+            selected.chmod(0o600)
+            locator["path"] = str(selected)
+        else:
+            record = json.loads(record_path.read_bytes())
+            selected = directory / "qualification-evidence"
+            selected.write_bytes(Path(record["evidence"][0]["path"]).read_bytes())
+            selected.chmod(0o600)
+            record["evidence"][0]["path"] = str(selected)
+            record_path.write_text(json.dumps(record))
+            locator["sha256"] = binding.sha256(record_path.read_bytes())
+            context["policy"]["issuer_records"][record["issuer_id"]][record["record_id"]] = locator["sha256"]
+        operator.context_path.write_text(json.dumps(context))
+    elif category == "grant":
+        selected = directory / "grant.json"
+        selected.write_bytes(b"{}")
+        selected.chmod(0o600)
+        spec["launch"]["grants"] = {"filesystem_view_sha256": dict(canonical_form="raw_bytes", path=str(selected))}
+        operator.spec_path.write_text(json.dumps(spec))
+    else:
+        selected = directory / (category + ".json")
+        selected.write_bytes(Path(spec["launch"][category]).read_bytes())
+        selected.chmod(0o600)
+        spec["launch"][category] = str(selected)
+        operator.spec_path.write_text(json.dumps(spec))
+    assert binding.load_v2_binding(operator.path, **roots) == binding.Refused("untrusted_location")
+    assert not operator.marker.exists()

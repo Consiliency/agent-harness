@@ -189,6 +189,8 @@ def collect_producer_results(paths, *, run_id, tested_head, resources):
             if "contract_diagnostics" in properties:
                 row["contract_diagnostics"] = strict_json(properties["contract_diagnostics"])
                 row["supported_route"] = properties["supported_route"]
+                row["auxiliary_starts"] = properties["auxiliary_starts"]
+                row["chain_starts"] = properties["chain_starts"]
             groups[_group(filename)].append(row)
     require(all(groups.values()), "producer_group_missing")
     return groups
@@ -220,6 +222,32 @@ def _schema_obligations(repo):
     return sorted({row["id"] for group in ("coverage_inventory", "semantic_inventory", "semantic_cases") for row in schema[group]})
 
 
+def obligation_results(repo, producers):
+    """Link the historical inventory to executed production families and cases."""
+    schema = read_receipt(repo / "plans/evidence/supervised-worker/SCHEMA.md")
+    rows = [row for group in producers.values() for row in group if row["production_witnesses"]]
+    result = []
+    for group in ("coverage_inventory", "semantic_inventory", "semantic_cases"):
+        for obligation in schema[group]:
+            identifier = obligation["id"]
+            vectors = set(obligation.get("vector_ids", ()))
+            if group == "semantic_cases": vectors.add(identifier)
+            matched = [row for row in rows if any(row["test_node_id"].endswith("[" + case + "]") for case in vectors)
+                       and ("contract_diagnostics" in row or row["test_node_id"].startswith("tests/test_run_status"))]
+            if not matched:
+                if identifier.startswith(("status:", "journal:", "named:status", "named:lifecycle", "named:identity-journal")):
+                    prefixes = ("tests/test_run_status.py::", "tests/test_run_status_projection.py::")
+                elif identifier in {"named:evidence-producer-binding", "named:proposal-attempt-independence", "named:identity-public-replay", "named:identity-units"}:
+                    prefixes = ("tests/test_supervised_worker.py::",)
+                else:
+                    prefixes = ("tests/test_supervised_capture_v2.py::", "tests/test_supervised_envelope_v2.py::")
+                matched = [row for row in rows if row["test_node_id"].startswith(prefixes)]
+            require(matched, "obligation_proof_missing")
+            result.append(dict(id=identifier, source_pointer=obligation.get("source_pointer", obligation.get("family")),
+                owner="CLOSEOUT", outcome="offline_production_covered", producer_nodes=sorted(row["test_node_id"] for row in matched)))
+    return sorted(result, key=lambda row: row["id"])
+
+
 def verify_offline(repo, record):
     from phase_loop_runtime.supervised_contracts import V2_INPUT_ARTIFACT_SHA256, load_contract_bundle
     bundle = load_contract_bundle(version="v2")
@@ -228,7 +256,7 @@ def verify_offline(repo, record):
     require(record["input_artifact_sha256"] == V2_INPUT_ARTIFACT_SHA256, "input_seal_invalid")
     required_keys = {"schema", "byte_pin_authority", "publisher_status", "input_artifact_sha256", "tested_head",
                      "content_identity", "source_hashes", "runner_stamp", "producer_results", "schema_obligations",
-                     "external_evidence_intake", "spec_delta_closeout", "hosted_evidence"}
+                     "obligation_results", "external_evidence_intake", "spec_delta_closeout", "hosted_evidence"}
     require(set(record) == required_keys, "receipt_invalid")
     hashes = record["source_hashes"]
     require(set(hashes) == set(SOURCE_PATHS), "source_inventory_invalid")
@@ -247,7 +275,7 @@ def verify_offline(repo, record):
         for row in rows:
             expected_fields = {"test_node_id", "case_or_control_id", "resource_digests", "production_witnesses", "outcome",
                                "runner_artifact_sha256", "runner_artifact_ref", "runner_run_id", "tested_head", "owner", "source_pointer", "host"}
-            require(expected_fields <= set(row) <= expected_fields | {"contract_diagnostics", "supported_route"}, "producer_row_invalid")
+            require(expected_fields <= set(row) <= expected_fields | {"contract_diagnostics", "supported_route", "auxiliary_starts", "chain_starts"}, "producer_row_invalid")
             node = row["test_node_id"]
             require(row["owner"] == "CLOSEOUT" and row["host"] == "ai" and row["source_pointer"] == node.split("::", 1)[0], "producer_identity_invalid")
             require(type(node) is str and len(node) <= 2048 and re.fullmatch(r"tests/test_[A-Za-z0-9_]+\.py::[^\r\n]+", node) is not None,
@@ -260,18 +288,22 @@ def verify_offline(repo, record):
             require(re.fullmatch(r"[0-9a-f]{64}", row["runner_artifact_sha256"]) is not None
                     and row["runner_run_id"] == record["runner_stamp"]["run_id"], "producer_artifact_invalid")
     cases = strict_json(bundle.resource_bytes("conformance/envelope.v2.vectors.json"))["cases"]
+    stages = strict_json(bundle.resource_bytes("admitted-launch-envelope.v2.schema.json"))["x-evaluation-order"]["stages"]
     rows = {row.get("case_or_control_id"): row for row in groups["admission_results"] if "contract_diagnostics" in row}
     for case in cases:
         if case["kind"] == "admission":
             require(case["id"] in rows, "admission_case_missing")
             row = rows[case["id"]]
-            require(set(row["contract_diagnostics"]) == set(case["expected"]) and row["production_witnesses"], "admission_proof_invalid")
+            ordered = next(([code for code in stage if code in case["expected"]] for stage in stages if set(case["expected"]) <= set(stage)), [])
+            require(row["contract_diagnostics"] == ordered and row["production_witnesses"], "admission_proof_invalid")
+            require(row["auxiliary_starts"] == "0" and row["chain_starts"] == "0", "admission_effect_invalid")
             require(row["supported_route"] == "contract_only", "route_claim_invalid")
         else:
             require(any(node.endswith("::test_v2_published_echo_at_real_writer_and_reader[" + case["id"] + "]") for node in nodes), "echo_case_missing")
         require(any(node.endswith("::test_v2_published_schema_only[" + case["id"] + "]") for node in nodes), "schema_case_missing")
     require(_current_producer_nodes(str(repo), record["tested_head"]) <= nodes, "producer_nodes_missing")
     require(record["schema_obligations"] == _schema_obligations(repo), "obligation_inventory_invalid")
+    require(record["obligation_results"] == obligation_results(repo, groups), "obligation_proof_invalid")
     apply_cases = strict_json(bundle.resource_bytes("conformance/envelope.v2.apply.vectors.json"))["applications"]
     external = record["external_evidence_intake"]
     require(external["controller_case_ids"] == sorted(case["id"] for case in apply_cases)

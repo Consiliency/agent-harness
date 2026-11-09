@@ -2,9 +2,11 @@
 from copy import deepcopy
 from hashlib import sha256
 import importlib.util
+from io import BytesIO
 import json
 from pathlib import Path
 import subprocess
+import zipfile
 
 import pytest
 
@@ -136,6 +138,35 @@ def test_external_producer_set_remains_explicit():
     assert all(owner and edge for _, owner, edge in evidence.MISSING_PRODUCERS)
 
 
+@pytest.mark.parametrize("change", [None, "noop", "head", "resource", "digest", "skipped"])
+def test_publication_requires_full_api_bound_installed_proof(change):
+    from phase_loop_runtime.supervised_contracts import V2_PUBLICATION_PINS
+    head, run_id = "a" * 40, 3
+    base = f"repos/{evidence.REPOSITORY}"
+    publication = dict(contract=True, hosted_head=head, hosted_run_id=str(run_id),
+        v2_resources={name: dict(sha256=pin[0], blob=pin[1]) for name, pin in V2_PUBLICATION_PINS.items()})
+    if change == "noop": publication["contract"] = False
+    if change == "head": publication["hosted_head"] = "b" * 40
+    if change == "resource": publication["v2_resources"] = {}
+    payload = BytesIO()
+    with zipfile.ZipFile(payload, "w") as archive:
+        archive.writestr("schema-publication.json", json.dumps(publication))
+        archive.writestr("schema-wheel.xml", '<testsuite><testcase classname="test_supervised_contracts" name="test_installed">'
+                         + ('<skipped/>' if change == "skipped" else '') + '</testcase></testsuite>')
+    raw = payload.getvalue()
+    digest = sha256(raw).hexdigest() if change != "digest" else "f" * 64
+    api = API({base + "/actions/runs/3": dict(repository={"full_name": evidence.REPOSITORY},
+        path=".github/workflows/supervised-contract-intake.yml", head_sha=head, status="completed", conclusion="success"),
+        base + "/actions/runs/3/artifacts?per_page=100": dict(total_count=1, artifacts=[dict(id=4,
+            name="schema-publication-3", expired=False, size_in_bytes=len(raw), digest="sha256:" + digest)]),
+        base + "/actions/artifacts/4/zip": raw})
+    if change:
+        with pytest.raises(evidence.EvidenceRefused): evidence.authenticate_publication(api, run_id, head)
+    else:
+        result = evidence.authenticate_publication(api, run_id, head)
+        assert result["artifact_sha256"] == digest and result["contract"] is True
+
+
 @pytest.fixture
 def assessment(history, monkeypatch):
     from phase_loop_runtime.supervised_contracts import load_contract_bundle, V2_INPUT_ARTIFACT_SHA256
@@ -145,6 +176,7 @@ def assessment(history, monkeypatch):
     hashes = {"source.py": sha256((repo / "source.py").read_bytes()).hexdigest()}
     monkeypatch.setattr(evidence, "SOURCE_PATHS", tuple(hashes))
     monkeypatch.setattr(evidence, "_schema_obligations", lambda _: ["named-obligation"])
+    monkeypatch.setattr(evidence, "obligation_results", lambda *_: [{"id": "named-obligation", "outcome": "offline_production_covered"}])
     monkeypatch.setattr(evidence, "_current_producer_nodes", lambda *_: frozenset())
     groups = {name: [] for name in evidence.GROUPS}
     def row(node, case_id):
@@ -156,7 +188,9 @@ def assessment(history, monkeypatch):
         groups["intake_results"].append(row("tests/test_supervised_contracts.py::test_v2_published_schema_only[" + case["id"] + "]", case["id"]))
         if case["kind"] == "admission":
             item = row("tests/test_supervised_envelope_v2.py::test_admission[" + case["id"] + "]", case["id"])
-            item.update(contract_diagnostics=case["expected"], supported_route="contract_only")
+            stages = evidence.strict_json(bundle.resource_bytes("admitted-launch-envelope.v2.schema.json"))["x-evaluation-order"]["stages"]
+            ordered = next(([code for code in stage if code in case["expected"]] for stage in stages if set(case["expected"]) <= set(stage)), [])
+            item.update(contract_diagnostics=ordered, supported_route="contract_only", auxiliary_starts="0", chain_starts="0")
             groups["admission_results"].append(item)
         else:
             groups["lifecycle_results"].append(row("tests/test_supervised_worker.py::test_v2_published_echo_at_real_writer_and_reader[" + case["id"] + "]", case["id"]))
@@ -166,6 +200,7 @@ def assessment(history, monkeypatch):
         input_artifact_sha256=V2_INPUT_ARTIFACT_SHA256, tested_head=tested, content_identity=evidence.content_identity(repo, tested),
         source_hashes=hashes, runner_stamp=dict(source_tree_digest=sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest(),
             host="ai", observed_commit=tested, run_id="offline-fixture"), producer_results=groups, schema_obligations=["named-obligation"],
+        obligation_results=evidence.obligation_results(repo, groups),
         external_evidence_intake=dict(controller_case_ids=sorted(case["id"] for case in apply_cases), status="upstream_phase_unmet"),
         spec_delta_closeout=dict(schema="spec_delta_closeout.v1", decision="canonical_spec_update", redaction_posture="metadata_only"), hosted_evidence={})
     return repo, record, stamp
