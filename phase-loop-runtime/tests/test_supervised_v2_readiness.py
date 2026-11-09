@@ -321,13 +321,18 @@ def test_receipt_negative_controls_enter_production_verifier(assessment, mutatio
 
 
 INAPPLICABLE = {"assessment_inapplicable", "source_binding_stale", "producer_nodes_missing",
-                "landing_correspondence_unavailable", "governing_content_changed"}
+                "landing_correspondence_unavailable", "governing_content_changed", "git_identity_unavailable"}
 
 
 def assert_receipt_applicability(repo, record, head=None):
     head = head or evidence.git(repo, "rev-parse", "HEAD").decode().strip()
     if evidence.content_identity(repo, head) == record["content_identity"]:
-        result = evidence.evaluate(repo, record, current_head=head)
+        try:
+            result = evidence.evaluate(repo, record, current_head=head)
+        except evidence.EvidenceRefused as refused:
+            assert str(refused) in {"landing_correspondence_unavailable", "git_identity_unavailable"}
+            assert record["byte_pin_authority"] is False
+            return
         assert result["byte_pin_authority"] is False and result["verification_status"] == "blocked"
         assert result["blocker_class"] == "upstream_phase_unmet" and result["offline_proof"] == "verified"
     else:
@@ -344,6 +349,16 @@ def test_post_stamp_governing_change_is_inapplicable(assessment):
     command(repo, "add", ".")
     command(repo, "commit", "-qm", "Later governing input")
     assert_receipt_applicability(repo, record)
+
+
+
+def test_offline_squash_correspondence_remains_unverified(assessment):
+    repo, record, stamp = assessment
+    tree = command(repo, "rev-parse", stamp + "^{tree}")
+    landing = subprocess.check_output(["git", "-C", str(repo), "commit-tree", tree, "-m", "Squash landing"]).decode().strip()
+    command(repo, "reset", "--hard", landing)
+    assert evidence.content_identity(repo, landing) == record["content_identity"]
+    assert_receipt_applicability(repo, record, landing)
 
 
 def test_receipt_current():
