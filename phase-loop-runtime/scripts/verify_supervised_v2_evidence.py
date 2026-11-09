@@ -94,7 +94,7 @@ def strict_json(raw):
         raise EvidenceRefused("evidence_invalid")
     try:
         return json.loads(raw, object_pairs_hook=pairs, parse_constant=invalid)
-    except (ValueError, TypeError, UnicodeError):
+    except (ValueError, TypeError, UnicodeError, RecursionError):
         raise EvidenceRefused("evidence_invalid") from None
 
 
@@ -258,6 +258,12 @@ def verify_offline(repo, record):
                      "content_identity", "source_hashes", "runner_stamp", "producer_results", "schema_obligations",
                      "obligation_results", "external_evidence_intake", "spec_delta_closeout", "hosted_evidence"}
     require(set(record) == required_keys, "receipt_invalid")
+    stamp = record["runner_stamp"]
+    require(set(stamp) == {"host", "observed_commit", "run_id", "observed_utc", "source_tree_digest"}, "runner_stamp_invalid")
+    require(re.fullmatch(r"[A-Za-z0-9._-]{1,100}", stamp["run_id"]) is not None
+            and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z", stamp["observed_utc"]) is not None, "runner_identity_invalid")
+    require(set(record["hosted_evidence"]) <= {"publication_run_id", "gate_a_run_id", "verifier_run_id", "pull_request"}
+            and all(value is None or type(value) is int and value > 0 for value in record["hosted_evidence"].values()), "hosted_identity_invalid")
     hashes = record["source_hashes"]
     require(set(hashes) == set(SOURCE_PATHS), "source_inventory_invalid")
     for path, digest in hashes.items():
@@ -281,7 +287,7 @@ def verify_offline(repo, record):
             require(type(node) is str and len(node) <= 2048 and re.fullmatch(r"tests/test_[A-Za-z0-9_]+\.py::[^\r\n]+", node) is not None,
                     "producer_node_invalid")
             require(all(re.fullmatch(r"[A-Za-z0-9_.<>]+", symbol) is not None for symbol in row["production_witnesses"]), "witness_invalid")
-            require(Path(row["runner_artifact_ref"]).name == row["runner_artifact_ref"], "producer_artifact_invalid")
+            require(re.fullmatch(r"[A-Za-z0-9_.-]+\.xml", row["runner_artifact_ref"]) is not None, "producer_artifact_invalid")
             require(node not in nodes and row["outcome"] == "passed", "producer_not_passed")
             nodes.add(node)
             require(row["resource_digests"] == resources and row["tested_head"] == record["tested_head"], "producer_identity_invalid")
@@ -306,7 +312,7 @@ def verify_offline(repo, record):
     require(record["obligation_results"] == obligation_results(repo, groups), "obligation_proof_invalid")
     apply_cases = strict_json(bundle.resource_bytes("conformance/envelope.v2.apply.vectors.json"))["applications"]
     external = record["external_evidence_intake"]
-    require(external["controller_case_ids"] == sorted(case["id"] for case in apply_cases)
+    require(set(external) == {"controller_case_ids", "status"} and external["controller_case_ids"] == sorted(case["id"] for case in apply_cases)
             and len(external["controller_case_ids"]) == 13 and external["status"] == "upstream_phase_unmet", "external_intake_invalid")
     require(record["spec_delta_closeout"] == dict(schema="spec_delta_closeout.v1", decision="canonical_spec_update", redaction_posture="metadata_only"), "spec_closeout_invalid")
     return dict(verification_status="blocked", blocker_class="upstream_phase_unmet", human_required=False,
@@ -463,7 +469,7 @@ def main():
     args = parser.parse_args()
     try:
         result = evaluate(args.repo, read_receipt(args.receipt or args.repo / RECEIPT), api=GitHubEvidence() if args.authenticate else None)
-    except (EvidenceRefused, OSError, ValueError, TypeError, KeyError) as error:
+    except (EvidenceRefused, OSError, ValueError, TypeError, KeyError, RecursionError, ET.ParseError) as error:
         result = dict(verification_status="blocked", byte_pin_authority=False, blocker_class="upstream_phase_unmet",
                       human_required=False, refusal=str(error) if isinstance(error, EvidenceRefused) else "evidence_invalid")
     args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")

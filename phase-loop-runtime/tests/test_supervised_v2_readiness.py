@@ -199,7 +199,7 @@ def assessment(history, monkeypatch):
     record = dict(schema="agent-harness.supervised-closeout.v2", byte_pin_authority=False, publisher_status="provisional",
         input_artifact_sha256=V2_INPUT_ARTIFACT_SHA256, tested_head=tested, content_identity=evidence.content_identity(repo, tested),
         source_hashes=hashes, runner_stamp=dict(source_tree_digest=sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest(),
-            host="ai", observed_commit=tested, run_id="offline-fixture"), producer_results=groups, schema_obligations=["named-obligation"],
+            host="ai", observed_commit=tested, run_id="offline-fixture", observed_utc="2026-11-09T00:00:00Z"), producer_results=groups, schema_obligations=["named-obligation"],
         obligation_results=evidence.obligation_results(repo, groups),
         external_evidence_intake=dict(controller_case_ids=sorted(case["id"] for case in apply_cases), status="upstream_phase_unmet"),
         spec_delta_closeout=dict(schema="spec_delta_closeout.v1", decision="canonical_spec_update", redaction_posture="metadata_only"), hosted_evidence={})
@@ -213,7 +213,7 @@ def test_complete_offline_assessment_keeps_external_edges_blocked(assessment):
     assert result["verification_status"] == "blocked" and result["human_required"] is False
 
 
-@pytest.mark.parametrize("mutation", ["authority", "head", "resource", "skipped", "missing", "witness", "secret", "obligation", "external", "shared"])
+@pytest.mark.parametrize("mutation", ["authority", "head", "resource", "skipped", "missing", "witness", "secret", "obligation", "external", "shared", "stamp-payload", "hosted-payload", "obligation-proof"])
 def test_receipt_negative_controls_enter_production_verifier(assessment, mutation):
     repo, record, stamp = assessment
     row = record["producer_results"]["admission_results"][0]
@@ -226,6 +226,9 @@ def test_receipt_negative_controls_enter_production_verifier(assessment, mutatio
     elif mutation == "secret": row["raw_stream"] = "inert-fixture"
     elif mutation == "obligation": record["schema_obligations"] = []
     elif mutation == "external": record["external_evidence_intake"]["status"] = "passed"
+    elif mutation == "stamp-payload": record["runner_stamp"]["payload"] = "inert-fixture"
+    elif mutation == "hosted-payload": record["hosted_evidence"]["payload"] = "inert-fixture"
+    elif mutation == "obligation-proof": record["obligation_results"] = []
     else: record["source_hashes"]["CHANGELOG.md"] = "f" * 64
     with pytest.raises(evidence.EvidenceRefused):
         evidence.evaluate(repo, record, current_head=stamp)
