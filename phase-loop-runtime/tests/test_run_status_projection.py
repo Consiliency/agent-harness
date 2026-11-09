@@ -654,8 +654,8 @@ def test_read_page_memory_is_bounded_on_a_large_history(tmp_path):
 
 def test_streaming_reads_load_the_index_once_and_never_rescan(tmp_path, monkeypatch):
     root, _ = synthetic_history(tmp_path, 12, 12)
-    counts = {"index": 0, "rescan": 0}
-    load, rescan = rs._load_index, rs._terminal_evidence
+    counts = {"index": 0, "rescan": 0, "windows": []}
+    load, rescan, window = rs._load_index, rs._terminal_evidence, rs.read_attempt_window
 
     def counted_load(*args):
         counts["index"] += 1
@@ -665,18 +665,105 @@ def test_streaming_reads_load_the_index_once_and_never_rescan(tmp_path, monkeypa
         counts["rescan"] += 1
         return rescan(*args)
 
+    def counted_window(root, index, entry, **kwargs):
+        counts["windows"].append(entry.identity.attempt_id)
+        return window(root, index, entry, **kwargs)
+
     monkeypatch.setattr(rs, "_load_index", counted_load)
     monkeypatch.setattr(rs, "_terminal_evidence", counted_rescan)
+    monkeypatch.setattr(rs, "read_attempt_window", counted_window)
+    every = [f"attempt-{number:03d}" for number in range(12)]
+
+    def observed():
+        seen = dict(counts, windows=list(counts["windows"]))
+        counts.update(index=0, rescan=0, windows=[])
+        return seen
+
     result = page(production, root, size=100)
     assert len(result.page["events"]) == 100 and result.page["has_more"] is True
-    assert counts == {"index": 1, "rescan": 0}
-    counts.update(index=0, rescan=0)
+    assert observed() == {"index": 1, "rescan": 0, "windows": every}
     projection = production.project_assignment(root, A)
     assert len(projection.projection["attempts"]) == 12
-    assert counts == {"index": 2, "rescan": 0}
-    counts.update(index=0, rescan=0)
+    assert observed() == {"index": 1, "rescan": 0, "windows": every}
     assert production.check_projection(projection.projection, root) == ()
-    assert counts == {"index": 1, "rescan": 0}
+    assert observed() == {"index": 1, "rescan": 0, "windows": every}
+
+
+def rotated_history(tmp_path, attempts, events, per_segment=4):
+    """A valid multi-segment history (rotation every ``per_segment`` lines), written straight to disk."""
+    writer = {"harness_id": "example-harness", "harness_version": "1", "writer_instance_id": "w",
+              "owner_pid": 4242, "process_start_time": "t"}
+    journal = {"attempts": []}
+    for number in range(attempts):
+        identity = {"assignment_digest": A, "envelope_digest": ENVELOPE, "run_id": f"run-{number}",
+                    "attempt_id": f"attempt-{number:03d}"}
+        base = {"schema": "supervised_run_status.v1", "version": "1", "attempt": identity,
+                "units": {"target_unit_ids": ["unit:target"], "readonly_neighbor_unit_ids": [], "snapshot_ref": SNAPSHOT},
+                "writer": writer, "observed_at": "2026-11-09T00:00:00Z",
+                "redaction_posture": "digests_and_repo_relative_locators_only"}
+        bodies = [{"body_kind": "state", "state": "queued", "worker_invocations": 0},
+                  {"body_kind": "state", "state": "running", "worker_invocations": 1}]
+        bodies += [{"body_kind": "event", "message": {"label": "untrusted_display_text", "text": "output streams digested"},
+                    "refs": [{"kind": "stdout", "sha256": sha256(f"{number}:{n}".encode()).hexdigest(), "locator": None}]}
+                   for n in range(events)]
+        bodies.append({"body_kind": "terminal", "state": "finished", "worker_invocations": 1,
+                       "termination": {"reason": "completed", "signal": None, "by": "worker"}, "refusal": None,
+                       "result_binding": {"envelope_digest": ENVELOPE, "run_id": f"run-{number}",
+                                          "attempt_id": identity["attempt_id"], "proposal_bytes_digest": None,
+                                          "evidence_envelope_digest": sha256(f"evidence:{number}".encode()).hexdigest()}})
+        segments, seq, previous, last = [], 0, None, None
+        for start in range(0, len(bodies), per_segment - 1):
+            header = {"body_kind": "header", "segment_index": len(segments), "previous_segment_sha256": previous,
+                      "previous_last_seq": last}
+            lines = []
+            for body in [header, *bodies[start:start + per_segment - 1]]:
+                lines.append(dict(base, line_kind=body["body_kind"], seq=seq, body=body))
+                seq += 1
+            segment = {"lines": lines}
+            segments.append(segment)
+            previous, last = sha256(vectors.segment_bytes(segment)).hexdigest(), seq - 1
+        journal["attempts"].append({"segments": segments})
+    root = vector_root(tmp_path, journal, "history")
+    files = list((root.path / "attempts").rglob("*.jsonl"))
+    return root, sum(path.stat().st_size for path in files), len(files)
+
+
+def measured(call):
+    import gc
+    import tracemalloc
+    gc.collect()
+    tracemalloc.start()
+    try:
+        result = call()
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    return result, peak
+
+
+def test_projection_and_page_memory_do_not_grow_with_segment_count(tmp_path):
+    peaks = {}
+    for name, events in (("small", 30), ("large", 330)):
+        (tmp_path / name).mkdir(mode=0o700)
+        root, size, segments = rotated_history(tmp_path / name, 8, events)
+        result, project_peak = measured(lambda: production.project_assignment(root, A))
+        assert result.diagnostics == () and len(result.projection["attempts"]) == 8
+        # A behind row naming its tail segment's digest exercises the digest comparison.
+        cached = json.loads(json.dumps(result.projection))
+        cached["attempts"][0]["journal_seq"] -= 1
+        codes, check_peak = measured(lambda: production.check_projection(cached, root))
+        assert codes == ("projection_behind_journal",)
+        current, current_peak = measured(lambda: production.check_projection(result.projection, root))
+        assert current == ()
+        listing, page_peak = measured(lambda: page(production, root, size=10))
+        assert len(listing.page["events"]) == 10
+        peaks[name] = {"segments": segments, "size": size,
+                       "peaks": (project_peak, check_peak, current_peak, page_peak)}
+    small, large = peaks["small"], peaks["large"]
+    assert large["segments"] >= 8 * small["segments"] and large["size"] > 2_000_000
+    for before, after in zip(small["peaks"], large["peaks"]):
+        # Retaining per-segment metadata or lines would grow with the segment count.
+        assert after < before + 64 * 1024 and after < 1024 * 1024, peaks
 
 
 # --------------------------------------------------------------------------

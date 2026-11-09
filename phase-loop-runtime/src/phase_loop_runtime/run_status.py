@@ -1732,7 +1732,8 @@ class _Pass:
         self.entry: IndexEntry | None = None
         self.state = self.terminal = self.head = self.prefix = self.evidence = None
         self.verified = False
-        self.segments: list[tuple[int, int, int, str]] = []
+        #: Only the segment named by ``prefix_at``; never a history-wide list.
+        self.segment: tuple[int, int, int, str] | None = None
         self.evidence_known = False
 
 
@@ -1785,8 +1786,9 @@ def _replay(root_fd: int, attempts_fd: int, attempt_fd: int, attempt_id: str, li
             replay.total += 1
             replay.diagnostics.add("journal_torn_line" if final else "journal_malformed_line")
         previous, last = _sha256(data), replay.expected_seq - 1
-        result.segments.append((index, -1 if first_seq is None else first_seq, -1 if last_seq is None else last_seq,
-                                previous))
+        if prefix_at is not None and index == prefix_at[0]:
+            result.segment = (index, -1 if first_seq is None else first_seq, -1 if last_seq is None else last_seq,
+                              previous)
         head = ChainHead(index, previous, last)
         if final:
             result.evidence, result.evidence_known = _segment_evidence(data), True
@@ -1903,14 +1905,15 @@ class AttemptWindow:
     tail: int
     more_events: bool
     found_after_seq: bool
-    segments: tuple[tuple[int, int, int, str], ...]
+    #: (index, first_seq, last_seq, sha256) of the segment named by ``prefix_at``, when requested.
+    segment: tuple[int, int, int, str] | None
     prefix_digest: str | None
     evidence_digest: str | None
 
 
 def _empty_window(attempt_id: str, entry, diagnostics, evidence=None) -> AttemptWindow:
     return AttemptWindow(attempt_id, entry.identity if isinstance(entry, IndexEntry) else None,
-                         tuple(sorted(set(diagnostics))), None, None, 0, 0, 0, (), 0, False, False, (), None, evidence)
+                         tuple(sorted(set(diagnostics))), None, None, 0, 0, 0, (), 0, False, False, None, None, evidence)
 
 
 def read_attempt_window(root: JournalRoot, index: IndexRead, entry: IndexEntry, *, after_seq: int = -1,
@@ -1949,7 +1952,7 @@ def read_attempt_window(root: JournalRoot, index: IndexRead, entry: IndexEntry, 
     if not result.verified:
         return _empty_window(attempt_id, entry, result.diagnostics, result.evidence)
     return AttemptWindow(attempt_id, entry.identity, (), result.state, result.head, sink.total, sink.skipped,
-                         sink.lead, tuple(sink.events), sink.tail, sink.more, sink.found, tuple(result.segments),
+                         sink.lead, tuple(sink.events), sink.tail, sink.more, sink.found, result.segment,
                          result.prefix, result.evidence)
 
 

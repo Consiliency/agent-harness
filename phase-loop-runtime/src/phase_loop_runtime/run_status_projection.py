@@ -116,63 +116,109 @@ def _units_json(units: Units) -> dict:
 # Projection
 # --------------------------------------------------------------------------
 
-def _replay(root, assignment_digest, prefixes=None):
-    """(index diagnostics, verified (entry, window, item), unknown (entry, window)) in index order.
+def _replay(root, assignment_digest, supplied=None):
+    """One replay: (index diagnostics, verified, unknown), in index order.
 
-    One index load; each attempt is read once as a zero-event window, so no
-    journal history is retained and no earlier attempt is rescanned.
+    Each verified attempt keeps only ``(index_seq, item, known)``. ``item`` is its
+    head-derived projection row. ``known`` is the verdict for the supplied row's
+    segment digest, compared inside the streaming pass, or None when none was
+    supplied. Unknown attempts keep ``(index_seq, attempt_id, diagnostics)``. No
+    window, segment list or journal line outlives its attempt. There is one index
+    load and one window per attempt, and no earlier attempt is rescanned.
     """
     index = run_status.read_index(root, assignment_digest)
     if index.diagnostics:
         return index.diagnostics, [], []
     verified, unknown, earlier = [], [], set()
     for entry in index.entries:
-        window = run_status.read_attempt_window(root, index, entry, earlier_evidence=earlier,
-                                                prefix_at=(prefixes or {}).get(entry.identity.attempt_id))
+        attempt_id = entry.identity.attempt_id
+        row = (supplied or {}).get(attempt_id)
+        prefix = None if row is None else (row["segment_index"], row["journal_seq"])
+        window = run_status.read_attempt_window(root, index, entry, earlier_evidence=earlier, prefix_at=prefix)
         if window.evidence_digest is not None:
             earlier.add(window.evidence_digest)
         if window.diagnostics or window.state is None or window.chain_head is None:
-            unknown.append((entry, window))
+            unknown.append((entry.index_seq, attempt_id, window.diagnostics))
             continue
         head = window.chain_head
-        verified.append((entry, window, {"attempt": _identity_json(entry.identity), "state": window.state,
-                                         "journal_seq": head.last_seq, "segment_index": head.segment_index,
-                                         "segment_sha256": head.segment_sha256}))
+        item = {"attempt": _identity_json(entry.identity), "state": window.state, "journal_seq": head.last_seq,
+                "segment_index": head.segment_index, "segment_sha256": head.segment_sha256}
+        verified.append((entry.index_seq, item, None if row is None else _digest_known(window, row)))
     return (), verified, unknown
 
 
+def _digest_known(window, row) -> bool:
+    """The supplied segment digest is that segment's full digest or its prefix ending at ``journal_seq``."""
+    summary = window.segment
+    if summary is None or summary[0] != row["segment_index"]:
+        return False
+    _, first, last, full = summary
+    return first <= row["journal_seq"] <= last and row["segment_sha256"] in (full, window.prefix_digest)
+
+
+def _compare(value: dict, replayed) -> tuple[str, ...]:
+    """Compare a structurally valid projection with one replay result."""
+    index_diagnostics, verified, unknown = replayed
+    if index_diagnostics:
+        return ("projection_not_from_journal",)
+    fresh = {item["attempt"]["attempt_id"]: (position, item, known)
+             for position, (_, item, known) in enumerate(verified)}
+    codes, positions = set(), []
+    for supplied in value["attempts"]:
+        attempt_id = supplied["attempt"]["attempt_id"]
+        if attempt_id not in fresh or fresh[attempt_id][0] in positions:
+            codes.add("projection_not_from_journal")
+            continue
+        position, current, known = fresh[attempt_id]
+        positions.append(position)
+        if supplied["attempt"] != current["attempt"]:
+            codes.add("projection_not_from_journal")
+            continue
+        seq, tail = supplied["journal_seq"], current["journal_seq"]
+        if seq > tail:
+            codes.add("projection_not_from_journal")
+        elif seq < tail:
+            if not known:
+                codes.add("projection_not_from_journal")
+            else:
+                codes.add("projection_behind_journal")
+        elif any(supplied[key] != current[key] for key in ("state", "segment_index", "segment_sha256")):
+            codes.add("projection_not_from_journal")
+    if positions != sorted(positions):
+        codes.add("projection_not_from_journal")
+    if len(set(positions)) < len(verified):
+        codes.add("projection_behind_journal")
+    if unknown and (not verified or unknown[-1][0] > verified[-1][0]):
+        codes.add("projection_behind_journal")
+    return tuple(sorted(codes))
+
+
 def project_assignment(root, assignment_digest: str) -> ProjectionResult:
-    """Replay the assignment from its index and journals; nothing is cached."""
-    index_diagnostics, verified, unknown = _replay(root, assignment_digest)
+    """Replay the assignment once from its index and journals; nothing is cached."""
+    replayed = _replay(root, assignment_digest)
+    index_diagnostics, verified, unknown = replayed
     if index_diagnostics:
         return ProjectionResult(None, (), tuple(index_diagnostics))
-    listed = tuple((entry.identity.attempt_id, window.diagnostics) for entry, window in unknown)
+    listed = tuple((attempt_id, codes) for _, attempt_id, codes in unknown)
     diagnostics = tuple(sorted({code for _, codes in listed for code in codes}))
-    latest_unknown = bool(unknown) and (not verified or unknown[-1][0].index_seq > verified[-1][0].index_seq)
+    latest_unknown = bool(unknown) and (not verified or unknown[-1][0] > verified[-1][0])
     if latest_unknown:
         # The latest attempt is the last index entry; when it is unknown the
         # latest is unknown, and no earlier attempt stands in for it.
         return ProjectionResult(None, listed, diagnostics)
     projection = {"schema": PROJECTION_SCHEMA, "assignment_digest": assignment_digest,
-                  "attempts": [item for _, _, item in verified]}
-    # A live writer may append between the two replays, which only makes the
-    # check report behind; anything not derivable from the journal is refused.
+                  "attempts": [item for _, item, _ in verified]}
+    # The semantic check runs against the same replay, so the result is
+    # validated without a second index load or a second read of any attempt.
+    # The latest-unknown case is refused above; this guards derivability.
     if (not run_status.check_structure("projection", projection)
-            or "projection_not_from_journal" in check_projection(projection, root)):
+            or "projection_not_from_journal" in _compare(projection, replayed)):
         return ProjectionResult(None, listed, tuple(sorted({*diagnostics, "projection_not_from_journal"})))
     return ProjectionResult(projection, listed, diagnostics)
 
 
-def _digest_known(window, item) -> bool:
-    """The supplied segment digest is that segment's full digest or its prefix ending at ``journal_seq``."""
-    for index, first, last, full in window.segments:
-        if index == item["segment_index"]:
-            return first <= item["journal_seq"] <= last and item["segment_sha256"] in (full, window.prefix_digest)
-    return False
-
-
 def check_projection(projection: Mapping, root) -> tuple[str, ...]:
-    """Compare a supplied (possibly cached) projection with a fresh replay.
+    """Compare a supplied (possibly cached) projection with one fresh replay.
 
     ``()`` means current; ``projection_behind_journal`` is shown stale;
     ``projection_not_from_journal`` is refused.
@@ -183,42 +229,10 @@ def check_projection(projection: Mapping, root) -> tuple[str, ...]:
         return ("projection_not_from_journal",)
     if not run_status.check_structure("projection", value):
         return ("projection_not_from_journal",)
-    prefixes = {}
-    for supplied in value["attempts"]:
-        prefixes.setdefault(supplied["attempt"]["attempt_id"], (supplied["segment_index"], supplied["journal_seq"]))
-    index_diagnostics, verified, unknown = _replay(root, value["assignment_digest"], prefixes)
-    if index_diagnostics:
-        return ("projection_not_from_journal",)
-    fresh = {entry.identity.attempt_id: (position, window, item)
-             for position, (entry, window, item) in enumerate(verified)}
-    codes, positions = set(), []
-    for supplied in value["attempts"]:
-        attempt_id = supplied["attempt"]["attempt_id"]
-        if attempt_id not in fresh or fresh[attempt_id][0] in positions:
-            codes.add("projection_not_from_journal")
-            continue
-        position, window, current = fresh[attempt_id]
-        positions.append(position)
-        if supplied["attempt"] != current["attempt"]:
-            codes.add("projection_not_from_journal")
-            continue
-        seq, tail = supplied["journal_seq"], current["journal_seq"]
-        if seq > tail:
-            codes.add("projection_not_from_journal")
-        elif seq < tail:
-            if not _digest_known(window, supplied):
-                codes.add("projection_not_from_journal")
-            else:
-                codes.add("projection_behind_journal")
-        elif any(supplied[key] != current[key] for key in ("state", "segment_index", "segment_sha256")):
-            codes.add("projection_not_from_journal")
-    if positions != sorted(positions):
-        codes.add("projection_not_from_journal")
-    if len(set(positions)) < len(verified):
-        codes.add("projection_behind_journal")
-    if unknown and (not verified or unknown[-1][0].index_seq > verified[-1][0].index_seq):
-        codes.add("projection_behind_journal")
-    return tuple(sorted(codes))
+    supplied = {}
+    for row in value["attempts"]:
+        supplied.setdefault(row["attempt"]["attempt_id"], row)
+    return _compare(value, _replay(root, value["assignment_digest"], supplied))
 
 
 # --------------------------------------------------------------------------
