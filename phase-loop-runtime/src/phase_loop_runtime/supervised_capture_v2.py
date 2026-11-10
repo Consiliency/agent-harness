@@ -243,6 +243,21 @@ def _walk_tree(root, cap, *, with_entries=False):
     return (manifest, entries) if with_entries else manifest
 
 
+def _helper_environment(helper, classification):
+    """Validate supported public environment transforms before applying them."""
+    _require(type(helper) is dict and type(classification) is dict, "launch_input_unbound")
+    maps = []
+    for operation in ("env_consumed", "env_set"):
+        values = helper.get(operation, {})
+        _require(type(values) is dict, "launch_input_unbound")
+        for name, value in values.items():
+            _require(type(name) is str and name and "=" not in name and "\x00" not in name
+                     and type(value) is str and "\x00" not in value
+                     and classification.get(name) == "non_secret", "launch_input_unbound")
+        maps.append(values)
+    return maps
+
+
 def capture_launch_v2(*, spec: TrustedLaunchSpec, context, attempt: AttemptBinding):
     """Snapshot declared material without launching helpers or consulting ambient env."""
     from .supervised_launch import trusted_bytes
@@ -271,7 +286,9 @@ def capture_launch_v2(*, spec: TrustedLaunchSpec, context, attempt: AttemptBindi
         _require(len(environment) == len(spec.non_secret_environment), "launch_input_unbound")
         secret_names, credential_sources = [], []
         policy = json.loads(documents["environment"])
+        _require(type(policy) is dict, "launch_input_unbound")
         classification = policy["classification"]
+        _require(type(classification) is dict, "launch_input_unbound")
         _require(all(classification.get(name) == "non_secret" for name in environment), "launch_input_unbound")
         for name, source, path in spec.secret_sources:
             _require(name not in environment and classification.get(name) == {"secret": source}, "launch_input_unbound")
@@ -360,12 +377,13 @@ def capture_launch_v2(*, spec: TrustedLaunchSpec, context, attempt: AttemptBindi
         worker_argv, worker_environment, worker_cwd = list(spec.argv), dict(environment), spawn_locator
         _require(len(template.get("helpers", ())) == len(chain) - 1, "launch_input_unbound")
         for index, helper in enumerate(template.get("helpers", ())):
+            consumed, assigned = _helper_environment(helper, classification)
             _require(helper["chain_index"] == index and type(helper["argv_shift"]) is int
                      and 0 < helper["argv_shift"] < len(worker_argv), "launch_input_unbound")
             worker_argv = worker_argv[helper["argv_shift"]:]
-            for name, value in helper.get("env_consumed", {}).items():
+            for name, value in consumed.items():
                 _require(worker_environment.pop(name, None) == value, "launch_input_unbound")
-            worker_environment.update(helper.get("env_set", {}))
+            worker_environment.update(assigned)
             worker_cwd = helper.get("cwd", worker_cwd)
         _require(local_cwd(worker_cwd) == spec.cwd and _plain(worker_cwd) == _plain(spec.cwd_locator), "launch_input_unbound")
         _require(spec.stdin in ("input", "devnull") and spec.deadline_action == "terminate_process_group", "launch_input_unbound")
@@ -426,9 +444,11 @@ def capture_launch_v2(*, spec: TrustedLaunchSpec, context, attempt: AttemptBindi
             argv=spec.argv, cwd=str(spec.cwd), credential_sources=capture.credential_sources))).hexdigest()
         capture._sealed = True
         return capture
-    except (OSError, ValueError, TypeError, KeyError, UnicodeError, RecursionError, _Refusal) as error:
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, UnicodeError, RecursionError, _Refusal) as error:
         reason = str(error) if isinstance(error, _Refusal) else "launch_input_unbound"
-    capture.close()
+    finally:
+        if not getattr(capture, "_sealed", False):
+            capture.close()
     return Refused(reason)
 
 

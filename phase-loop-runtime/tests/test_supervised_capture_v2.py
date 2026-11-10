@@ -259,3 +259,91 @@ def test_v2_secret_rotation_keeps_both_commitments(v2_operator):
     assert second.local_digest == local and second.commitments == public
     assert "fixture-private-value" not in repr(second)
     second.close()
+
+
+@pytest.fixture
+def capture_operator(v2_operator, monkeypatch):
+    # Retain real trusted-byte checks using private fixture copies; the source
+    # checkout's group-writable ancestors are not an installed trust root.
+    root = v2_operator.path.parent / "fixture-package"
+    for name, data in load_contract_bundle(version="v2")._captured:
+        destination = root / "schemas/supervised-worker-v2" / name
+        destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        destination.write_bytes(data)
+        destination.chmod(0o600)
+    monkeypatch.setattr(binding, "__file__", str(root / "supervised_launch_binding.py"))
+    return v2_operator
+
+
+@pytest.mark.parametrize("operation", ["env_set", "env_consumed"])
+def test_helper_environment_classification_refusal(capture_operator, operation):
+    from phase_loop_runtime.supervised_launch import discard_admission
+    attempt = build_v2_attempt(capture_operator, secret=True)
+    discard_admission(attempt.prepared)
+    path = attempt.binding.spec.template_path
+    template = json.loads(path.read_bytes())
+    template["helpers"][0][operation] = {"DEMO_SECRET": "fixture-replacement-value"}
+    path.write_text(json.dumps(template))
+    agreed = agreed_operator(capture_operator)
+    assert capture_launch_v2(spec=agreed.spec, context=agreed.context,
+                             attempt=capture_operator.attempt) == Refused("launch_input_unbound")
+
+
+@pytest.mark.parametrize("operation,value", [("env_set", [["X", "Y"]]), ("env_consumed", []),
+                                              ("env_set", {"X": None})])
+def test_helper_environment_shape_refusal(operation, value):
+    from phase_loop_runtime.supervised_capture_v2 import _helper_environment
+    with pytest.raises(_Refusal, match="^launch_input_unbound$"):
+        _helper_environment({operation: value}, {"X": "non_secret"})
+
+
+def test_helper_public_consume_then_set(capture_operator):
+    from phase_loop_runtime.supervised_launch import discard_admission
+    attempt = build_v2_attempt(capture_operator)
+    discard_admission(attempt.prepared)
+    spec = attempt.binding.spec
+    path = spec.template_path
+    template = json.loads(path.read_bytes())
+    template["helpers"][0].update(env_consumed={"PHASE_LOOP_SCRATCH_DECIDED": "frozen_capture"},
+                                  env_set={"PHASE_LOOP_SCRATCH_DECIDED": "frozen_capture"})
+    path.write_text(json.dumps(template))
+    agreed = agreed_operator(capture_operator)
+    capture = capture_launch_v2(spec=agreed.spec, context=agreed.context, attempt=capture_operator.attempt)
+    assert isinstance(capture, CapturedLaunch)
+    assert not capture._closed
+    capture.close()
+
+
+@pytest.mark.parametrize("error_type", [AttributeError, RuntimeError, KeyboardInterrupt, SystemExit])
+def test_unsuccessful_capture_closes_resources(capture_operator, monkeypatch, error_type):
+    import os
+    from phase_loop_runtime import supervised_capture_v2 as module
+    from phase_loop_runtime.supervised_launch import discard_admission
+    attempt = build_v2_attempt(capture_operator, secret=True)
+    discard_admission(attempt.prepared)
+    agreed = agreed_operator(capture_operator)
+    seen = []
+    original_close = CapturedLaunch.close
+
+    def record_close(capture):
+        seen.append((capture, tuple(capture._fds), bool(capture._delivery.values)))
+        original_close(capture)
+
+    def fail(*args, **kwargs):
+        raise error_type("fixture failure")
+
+    monkeypatch.setattr(CapturedLaunch, "close", record_close)
+    monkeypatch.setattr(module, "_walk_tree", fail)
+    if error_type is AttributeError:
+        assert capture_launch_v2(spec=agreed.spec, context=agreed.context,
+                                 attempt=capture_operator.attempt) == Refused("launch_input_unbound")
+    else:
+        with pytest.raises(error_type, match="fixture failure"):
+            capture_launch_v2(spec=agreed.spec, context=agreed.context, attempt=capture_operator.attempt)
+    assert len(seen) == 1
+    capture, descriptors, had_delivery = seen[0]
+    assert descriptors and had_delivery
+    assert capture._closed and not capture._delivery.values and not capture._delivery.environment
+    for fd in descriptors:
+        with pytest.raises(OSError):
+            os.fstat(fd)
