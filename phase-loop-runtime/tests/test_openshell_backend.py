@@ -371,14 +371,36 @@ def test_stage_binding_fields_must_be_plain_strings(pipeline, field):
 
 @pytest.mark.parametrize('wrapped', [False, True])
 @pytest.mark.parametrize('failure', ['lost', 'corrupt', 'native_bad', 'native_refuse'])
-def test_untrusted_or_lost_result_refused_no_replay(pipeline, failure, wrapped):
+def test_untrusted_or_lost_result_refused_no_replay(pipeline, failure, wrapped, monkeypatch):
     backend, endpoint, _, worker, place, leases, *_ = pipeline
     endpoint.worker_envelope = wrapped
     setattr(worker if failure == 'native_refuse' else endpoint, failure, True)
-    decision = place()
+    # This tests rejection, not elapsed time: synthetic worker/git work must finish
+    # before the fixed end. Dedicated fixed-end/dispatch-bound tests retain their bounds.
+    monkeypatch.setattr(sp, 'ANSWER_BOUND_S', 5)
+    failures = []
+    real_wait = backend.wait
+
+    def observe_wait(*args):
+        try:
+            return real_wait(*args)
+        except (Refused, TransportError) as exc:
+            failures.append(str(exc))
+            raise
+
+    monkeypatch.setattr(backend, 'wait', observe_wait)
+    decision = place(deadline=60)
     assert decision.outcome == 'placed', decision
     with pytest.raises(sp.PlacementUnavailable, match='lost_after_launch'):
         run(decision.placement)
+    # An incidental driver timeout also maps to lost_after_launch; it must not
+    # substitute for the rejection this case injected.
+    assert failures == [{
+        'lost': 'sandbox_placement_operation_timeout',
+        'corrupt': 'artifact_mismatch',
+        'native_bad': 'witness_truncated',
+        'native_refuse': 'trusted_native_validation_refused',
+    }[failure]]
     assert endpoint.calls.count('exec') == 1
     assert not backend._quarantine.exists()
     assert not leases[0].path.exists()
