@@ -33,6 +33,13 @@ _SCHEMAS = MappingProxyType({
     "admitted_launch_envelope.v1": "admitted-launch-envelope.schema.json",
     "supervised_run_status.v1": "run-status.schema.json",
 })
+V2_SOURCE_COMMIT = "2b91ef85bfdc76239ae52806b3318513951543ab"
+V2_INPUT_ARTIFACT_SHA256 = "b6fd84dc91b91236e72f4359ef7f0673c3a851ed2366d7ffdfc99ad10466e330"
+V2_PUBLICATION_PINS = MappingProxyType({'admitted-launch-envelope.schema.json': ('0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d', '1abe40abbb1178295af86b3c6d64f9bffe5a0099'), 'admitted-launch-envelope.v2.schema.json': ('6d6b2f89c55d160c2c132c29b3aa330a0a91c40ab017707040478a60b469194f', '79d3d0f4bd3af1417e06e0f2255fa3f4e7749770'), 'conformance/README.md': ('2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca', '9051f4fcfa7bb91b896f3efe60b6a3b238545a75'), 'conformance/README.v2.md': ('c6ab5d9da4707adf5dad9602b483b201a2dfe89f638ecba84129e0c477d72637', '3409e2b7f9a8582af3796a82e1c15b7cb2c17fdb'), 'conformance/SHA256SUMS': ('48904c259e4a1c24d3e841f56b6c2a84ce2cff32014cf573b3e41b34fac1f1fc', '9bbcd0b8bc6449377b94debfe0568bfe6d685e07'), 'conformance/envelope.v2.apply.vectors.json': ('57e0fd4d2e88c75bb8dfbab94448431ca3c752f6444febf1bd492323b044c078', '24a46480c3d7384e929233e9713d923bc6e0809f'), 'conformance/envelope.v2.canonical.vectors.json': ('f7f11c7667d12b0c876102781fdd5773074f5301f152a6d18be509894bc0e8f8', '8111d2e6f75f6bdb68c48d2963f3c4649596cbe8'), 'conformance/envelope.v2.vectors.json': ('e742d2774d410c2508405eaffed84575b992483da68c07f28591097d6ec5bc2f', '2028d84f0b5be0d0c4dd6e8ec06ab377d2dd3c0b'), 'conformance/envelope.vectors.json': ('876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f', '4fcb908f0ed89f2206efc2fbf4c5a6c7bdbd7e56'), 'conformance/run-status.vectors.json': ('5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730', '4a156e4fbf56526d483f729c78b2e94eb6f48f93'), 'provenance.json': ('f4b306fd7608c123d751225d02591e94654255fc688b5f84b777d2e896cf46f7', '46bbff61b179b294ce2c481ccfc58a62c666e9b5'), 'run-status.schema.json': ('5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30', '8af75b390c1b6dcb5478ac16daec3bd38cb060d1'), 'version/core/schemas/version-skew-protocol.schema.json': ('d77624c1975e896309c88a57b6e3690b3b24ab438873d0fb6873dd4924dd1c8f', 'b6f23cd9107b85f8db20804e0f9cc0d48613f930'), 'version/pyproject.toml.pinned': ('0aee475b360d5c17673000c53fefd742ed88e4d6d4194bf9d77155e568ab5153', 'b0ae3eae3ed89c9629a203efe71bdfb895042e36'), 'version/package.json.pinned': ('bd85b4e580d430983368749852a0e6e82e783e4464e7a0ed24996c4306e1e81c', '04fc4ecc713ad2841c88a38e0409ff50ea602b51')})
+_V2_NAMES = (*tuple(n for n in V2_PUBLICATION_PINS if n != "provenance.json"), "harness-provenance.json")
+_V2_PROVENANCE_SHA256 = '771bcb9c6dd2cb1421f007a74f96c6ee8fd2309731cd75b6c35516c5e93f4cda'
+_V2_SCHEMAS = MappingProxyType({**_SCHEMAS, "admitted_launch_envelope.v2": "admitted-launch-envelope.v2.schema.json"})
+
 _DEFINITIONS = ("journal_line", "projection", "page_request", "page", "reader_view")
 _CODES = frozenset(("resource_missing", "digest_mismatch", "manifest_invalid",
     "resource_unlisted", "reference_unlisted", "resource_json_invalid", "schema_invalid",
@@ -53,7 +60,7 @@ class ContractBundle:
     _captured: tuple[tuple[str, bytes], ...]
 
     def resource_bytes(self, name: str) -> bytes:
-        if not isinstance(name, str) or name not in _NAMES:
+        if not isinstance(name, str) or name not in dict(self._captured):
             raise ContractError("resource_unlisted") from None
         for key, data in self._captured:
             if key == name:
@@ -131,8 +138,8 @@ def _runtime():
         if isinstance(instance, str):
             # The pinned vocabulary uses only this pattern. Python's $ also
             # accepts a final LF; ECMA-262 without multiline requires the end.
-            if expression == "^[0-9a-f]{64}$":
-                expression = r"^[0-9a-f]{64}\Z"
+            if expression.endswith("$"):
+                expression = expression[:-1] + r"\Z"
             if re.search(expression, instance) is None:
                 yield ValidationError("record_schema_invalid")
 
@@ -164,11 +171,12 @@ def _schema_runtime(captured):
 def _cached_schema_runtime(buffers):
     captured = dict(buffers)
     validator, Registry, Resource, specification = _runtime()
-    schemas = {n: _strict_json(captured[n], "resource_json_invalid", n) for n in _SCHEMAS.values()}
+    families = _V2_SCHEMAS if "admitted-launch-envelope.v2.schema.json" in captured else _SCHEMAS
+    schemas = {n: _strict_json(captured[n], "resource_json_invalid", n) for n in families.values()}
     if any(not isinstance(schema, dict) for schema in schemas.values()):
         raise ContractError("schema_invalid") from None
     ids = {s.get("$id"): s for s in schemas.values()}
-    if set(ids) != {"urn:contract:" + family for family in _SCHEMAS}:
+    if set(ids) != {"urn:contract:" + family for family in families}:
         raise ContractError("schema_invalid") from None
     for name, schema in schemas.items():
         for node in _walk(schema):
@@ -199,7 +207,11 @@ def _cached_schema_runtime(buffers):
     return validator, registry, schemas
 
 
-def load_contract_bundle() -> ContractBundle:
+def load_contract_bundle(*, version: str = "v1") -> ContractBundle:
+    if type(version) is not str or version not in ("v1", "v2"):
+        raise ContractError("selector_invalid") from None
+    if version == "v2":
+        return _load_v2_bundle()
     captured = {}
     root = resources.files("phase_loop_runtime").joinpath("schemas", "supervised-worker-v1")
     observed = set()
@@ -276,22 +288,28 @@ def load_contract_bundle() -> ContractBundle:
 
 
 def validate_record(bundle: ContractBundle, family: str, record: bytes, *, definition=None) -> None:
-    if not isinstance(family, str) or family not in _SCHEMAS:
+    captured = getattr(bundle, "_captured", None) if type(bundle) is ContractBundle else None
+    v2 = type(captured) is tuple and any(row[0] == "admitted-launch-envelope.v2.schema.json" for row in captured if type(row) is tuple and len(row) == 2)
+    names = _V2_NAMES if v2 else _NAMES
+    pins = V2_PUBLICATION_PINS if v2 else PUBLICATION_PINS
+    provenance_digest = _V2_PROVENANCE_SHA256 if v2 else _PROVENANCE_SHA256
+    families = _V2_SCHEMAS if v2 else _SCHEMAS
+    if not isinstance(family, str) or family not in families:
         raise ContractError("selector_invalid") from None
-    if (family == "admitted_launch_envelope.v1" and definition is not None) or (
+    if (family.startswith("admitted_launch_envelope.") and definition is not None) or (
             family == "supervised_run_status.v1" and definition is not None
             and (not isinstance(definition, str) or definition not in _DEFINITIONS)):
         raise ContractError("selector_invalid") from None
     captured = getattr(bundle, "_captured", None) if type(bundle) is ContractBundle else None
-    if (type(captured) is not tuple or len(captured) != len(_NAMES)
+    if (type(captured) is not tuple or len(captured) != len(names)
             or any(type(row) is not tuple or len(row) != 2 or row[0] != name
                    or type(row[1]) is not bytes
-                   or sha256(row[1]).hexdigest() != (_PROVENANCE_SHA256 if name == "harness-provenance.json" else PUBLICATION_PINS[name][0])
-                   for name, row in zip(_NAMES, captured))):
+                   or sha256(row[1]).hexdigest() != (provenance_digest if name == "harness-provenance.json" else pins[name][0])
+                   for name, row in zip(names, captured))):
         raise ContractError("manifest_invalid") from None
-    instance = _strict_json(record, "record_json_invalid")
+    instance = _v2_json(record) if v2 and family == "admitted_launch_envelope.v2" else _strict_json(record, "record_json_invalid")
     validator, registry, schemas = _schema_runtime(dict(bundle._captured))
-    name = _SCHEMAS[family]
+    name = families[family]
     schema = schemas[name]
     if family == "supervised_run_status.v1":
         schema = {"$ref": schema["$id"] + "#/$defs/" + (definition or "journal_line")}
@@ -302,3 +320,172 @@ def validate_record(bundle: ContractBundle, family: str, record: bytes, *, defin
         failed = True
     if failed:
         raise ContractError("record_schema_invalid", name) from None
+
+
+def _v2_json(raw: bytes):
+    """Validate both original numeric tokens and their binary64 representation."""
+    import math
+
+    def number(token):
+        value = Decimal(token)
+        rounded = float(value)
+        if (not math.isfinite(rounded)
+                or (value == value.to_integral_value() and abs(value) > 9007199254740991)
+                or (rounded.is_integer() and abs(rounded) > 9007199254740991)):
+            raise ValueError()
+        return rounded
+
+    def pairs(rows):
+        result = {}
+        for key, value in rows:
+            if key in result:
+                raise ValueError()
+            result[key] = value
+        return result
+
+    def constant(_):
+        raise ValueError()
+
+    def strings(value):
+        if isinstance(value, str):
+            value.encode("utf-8")
+        elif isinstance(value, dict):
+            for key, child in value.items():
+                strings(key)
+                strings(child)
+        elif isinstance(value, list):
+            for child in value:
+                strings(child)
+
+    failed = False
+    try:
+        if type(raw) is not bytes:
+            raise ValueError()
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=pairs,
+                           parse_int=number, parse_float=number, parse_constant=constant)
+        strings(value)
+    except (ValueError, TypeError, UnicodeError, OverflowError, InvalidOperation, RecursionError):
+        failed = True
+    if failed:
+        raise ContractError("record_json_invalid") from None
+    return value
+
+
+def _load_v2_bundle():
+    import tomllib
+
+    root = resources.files("phase_loop_runtime").joinpath("schemas", "supervised-worker-v2")
+    captured = {}
+    observed = set()
+
+    def inventory(directory, prefix=""):
+        for child in directory.iterdir():
+            name = prefix + child.name
+            if child.is_dir() and any(n.startswith(name + "/") for n in _V2_NAMES):
+                inventory(child, name + "/")
+            elif child.is_file() and name in _V2_NAMES:
+                observed.add(name)
+            else:
+                raise ContractError("resource_unlisted") from None
+
+    failed = False
+    try:
+        inventory(root)
+        for name in _V2_NAMES:
+            if name not in observed:
+                raise ContractError("resource_missing") from None
+            data = root.joinpath(name).read_bytes()
+            expected = _V2_PROVENANCE_SHA256 if name == "harness-provenance.json" else V2_PUBLICATION_PINS[name][0]
+            if expected != sha256(data).hexdigest():
+                raise ContractError("digest_mismatch") from None
+            captured[name] = data
+    except OSError:
+        failed = True
+    if failed:
+        raise ContractError("resource_missing") from None
+    provenance = _strict_json(captured["harness-provenance.json"], "resource_json_invalid")
+    expected_resources = {n: {"sha256": d, "blob": b} for n, (d, b) in V2_PUBLICATION_PINS.items()
+                          if n != "provenance.json"}
+    if (provenance.get("byte_pin_authority") is not False
+            or provenance.get("publisher_status") != "provisional"
+            or provenance.get("commit") != V2_SOURCE_COMMIT
+            or provenance.get("input_artifact_sha256") != V2_INPUT_ARTIFACT_SHA256
+            or provenance.get("upstream_resources") != expected_resources
+            or provenance.get("excluded_metadata") != {"provenance.json": dict(zip(("sha256", "blob"), V2_PUBLICATION_PINS["provenance.json"]))}
+            or provenance.get("source_repository") != "https://github.com/Consiliency/consiliency-contract"
+            or provenance.get("root") != "core/supervised-run/"):
+        raise ContractError("manifest_invalid") from None
+    failed = False
+    try:
+        declarations = (
+            tomllib.loads(captured["version/pyproject.toml.pinned"].decode())["project"]["version"],
+            _strict_json(captured["version/package.json.pinned"], "manifest_invalid")["version"],
+        )
+        skew = _strict_json(captured["version/core/schemas/version-skew-protocol.schema.json"], "manifest_invalid")
+        properties = skew["properties"]
+        ranges = properties["compatible_ranges"]["properties"]
+        if (declarations != ("0.7.0", "0.7.0")
+                or properties["contract_version"]["const"] != "0.7.0"
+                or any(ranges[name]["const"] != ">=0.7.0 <0.8.0" for name in ("contract", "package"))):
+            raise ValueError()
+    except (ValueError, KeyError, TypeError, UnicodeError):
+        failed = True
+    if failed:
+        raise ContractError("manifest_invalid") from None
+    manifest = captured["conformance/SHA256SUMS"].decode("ascii")
+    expected = {("../" + n if not n.startswith("conformance/") else n.removeprefix("conformance/")): d
+                for n, (d, _) in V2_PUBLICATION_PINS.items()
+                if not n.startswith("version/") and n not in ("provenance.json", "conformance/SHA256SUMS")}
+    entries = {}
+    for line in manifest.splitlines():
+        match = re.fullmatch(r"([0-9a-f]{64})  (.+)", line)
+        if match is None or match[2] in entries:
+            raise ContractError("manifest_invalid") from None
+        entries[match[2]] = match[1]
+    if entries != expected:
+        raise ContractError("manifest_invalid") from None
+    _schema_runtime(captured)
+    bundle = object.__new__(ContractBundle)
+    object.__setattr__(bundle, "_captured", tuple(captured.items()))
+    return bundle
+
+
+@dataclass(frozen=True)
+class _CorpusNumber:
+    token: str
+
+
+def _corpus_value(raw: bytes):
+    """Private corpus containers retain deliberately invalid record tokens."""
+    def pairs(rows):
+        result = {}
+        for key, value in rows:
+            if key in result:
+                raise ValueError()
+            result[key] = value
+        return result
+
+    def constant(_):
+        raise ValueError()
+
+    failed = False
+    try:
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=pairs,
+                           parse_int=_CorpusNumber, parse_float=_CorpusNumber, parse_constant=constant)
+    except (ValueError, UnicodeError, TypeError, RecursionError):
+        failed = True
+    if failed:
+        raise ContractError("resource_json_invalid") from None
+    return value
+
+
+def _corpus_bytes(value):
+    """Reconstruct raw case bytes without normalizing number or string domains."""
+    if type(value) is _CorpusNumber:
+        return value.token.encode("ascii")
+    if isinstance(value, dict):
+        return b"{" + b",".join(json.dumps(k, ensure_ascii=True).encode("ascii") + b":" + _corpus_bytes(v)
+                                 for k, v in value.items()) + b"}"
+    if isinstance(value, list):
+        return b"[" + b",".join(_corpus_bytes(v) for v in value) + b"]"
+    return json.dumps(value, ensure_ascii=True, allow_nan=False, separators=(",", ":")).encode("ascii")

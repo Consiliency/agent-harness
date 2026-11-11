@@ -1126,3 +1126,153 @@ def test_launcher_signal_handler_spans_record_lifetime(worker_case, monkeypatch)
     assert result.refusal == "cancelled_before_start" and closed
     assert all(handler != original_handler for handler in closed)
     assert signal.getsignal(signal.SIGTERM) == original_handler
+
+
+from test_supervised_launch_binding import v2_operator as _v2_operator
+
+v2_operator = _v2_operator
+from test_supervised_capture_v2 import build_v2_attempt
+from test_supervised_contracts_vectors import V2_CORPUS, expand_v2
+
+
+def run_v2_attempt(attempt):
+    state = attempt.operator.path.parent / "worker-state"
+    config = dict(attempt.binding.snapshots)[attempt.binding.spec.config_path]
+    return worker.run_patch_return(attempt.prepared, config_bytes=config, state_root=state), state
+
+
+@pytest.mark.parametrize("case_record", [row for row in V2_CORPUS if row["kind"] == "echo"], ids=lambda row: row["id"])
+def test_v2_published_echo_at_real_writer_and_reader(v2_operator, case_record):
+    import rfc8785
+    value = expand_v2(case_record)
+    payload = value["envelope"]["caller_context"]
+    attempt = build_v2_attempt(v2_operator, caller_context=payload)
+    assert attempt.prepared.view.inputs.spawn_capability is None
+    result, state = run_v2_attempt(attempt)
+    assert result.state == "finished" and result.journal_complete, result
+    assert result.identity.run_id == v2_operator.attempt.run_id and result.identity.attempt_id == v2_operator.attempt.attempt_id
+    root = rs.open_journal_root(state / "journal", create=False)
+    status = projection.attempt_status(root, result.identity.attempt_id)
+    view = projection.build_v2_reader_view(root,
+        dict(assignment_digest=result.identity.assignment_digest, snapshot_ref=result.identity.snapshot_ref), status, state_root=state)
+    assert isinstance(view, projection.V2ReaderView), view
+    expected = rfc8785.dumps(payload)
+    assert view.caller_context_bytes == expected
+    from phase_loop_runtime.supervised_contracts import load_contract_bundle, validate_record
+    validate_record(load_contract_bundle(version="v2"), "supervised_run_status.v1", view.status_bytes, definition="reader_view")
+    if case_record["expected"]:
+        assert view.caller_context_bytes != rfc8785.dumps(value["echoed_caller_context"])
+    else:
+        assert view.caller_context_bytes == rfc8785.dumps(value["echoed_caller_context"])
+    (state / "echo" / result.identity.caller_context_sha256).write_bytes(b"altered")
+    assert projection.build_v2_reader_view(root,
+        dict(assignment_digest=result.identity.assignment_digest, snapshot_ref=result.identity.snapshot_ref), status,
+        state_root=state) == rs.JournalRefused("echo_unavailable")
+
+
+def test_v2_worker_recheck_refuses_before_spawn(v2_operator, monkeypatch):
+    attempt = build_v2_attempt(v2_operator)
+    path = attempt.binding.spec.references[0][1].path
+    path.write_bytes(path.read_bytes() + b"changed")
+    def forbidden(*args, **kwargs):
+        raise AssertionError("unexpected spawn")
+    monkeypatch.setattr(worker, "run_bounded_capture", forbidden)
+    result, state = run_v2_attempt(attempt)
+    assert result.state == "refused" and result.worker_invocations == 0
+    assert not (state / "journal").exists()
+    assert attempt.capture._closed
+
+
+def test_v2_public_status_is_unknown_without_acknowledged_anchor():
+    result = worker.WorkerResult(None, "refused", None, "binding_invalid", 0, None, None, None, False)
+    mapped = projection.v2_status_mapping(result)
+    assert mapped.runtime_state == "unknown" and mapped.public_status_bytes is None and not mapped.journal_acknowledged
+
+
+@pytest.mark.parametrize("stage", ["before-link", "after-link", "equal", "concurrent", "conflict"])
+def test_v2_echo_publication_lifetime(tmp_path, monkeypatch, stage):
+    from phase_loop_runtime import supervised_echo as echo
+    tmp_path.chmod(0o700)
+    payload = b'{"fixture":"opaque"}'
+    digest = sha256(payload).hexdigest()
+    if stage in {"before-link", "after-link"}:
+        original = echo.os.fsync
+        calls = []
+        def sync(fd):
+            calls.append(fd)
+            if len(calls) == (1 if stage == "before-link" else 2):
+                raise OSError()
+            return original(fd)
+        monkeypatch.setattr(echo.os, "fsync", sync)
+        assert echo.write_echo(tmp_path, payload) == echo.EchoRefused()
+        assert not list((tmp_path / "echo").glob(".echo-*"))
+        if stage == "after-link": assert echo.read_echo(tmp_path, digest) == payload
+        else: assert echo.read_echo(tmp_path, digest) == echo.EchoRefused()
+    elif stage == "concurrent":
+        results = []
+        threads = [threading.Thread(target=lambda: results.append(echo.write_echo(tmp_path, payload))) for _ in range(2)]
+        for thread in threads: thread.start()
+        for thread in threads: thread.join(timeout=10)
+        assert all(not thread.is_alive() for thread in threads) and results == [digest, digest]
+        assert echo.read_echo(tmp_path, digest) == payload
+    else:
+        assert echo.write_echo(tmp_path, payload) == digest
+        if stage == "conflict": (tmp_path / "echo" / digest).write_bytes(b"different")
+        assert echo.write_echo(tmp_path, payload) == (echo.EchoRefused() if stage == "conflict" else digest)
+        assert (tmp_path / "echo" / digest).read_bytes() == (b"different" if stage == "conflict" else payload)
+
+
+def test_v2_status_mapping_closed_table_through_real_result(v2_operator):
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from phase_loop_runtime.supervised_contracts import load_contract_bundle, validate_record
+    attempt = build_v2_attempt(v2_operator)
+    result, _state = run_v2_attempt(attempt)
+    assert result.state == "finished"
+    bundle = load_contract_bundle(version="v2")
+    for code in sorted(projection.V2_REFUSAL_REASONS):
+        mapped = projection.v2_status_mapping(replace(result, state="refused", termination=None, refusal=code))
+        assert mapped.runtime_state == "refused" and mapped.refusal == code and mapped.journal_acknowledged
+        validate_record(bundle, "supervised_run_status.v1", mapped.public_status_bytes, definition="reader_view")
+    for runtime in projection.RUNTIME_STATES:
+        if runtime in {"unknown", "stale_unknown"}: continue
+        state = "finished" if runtime.startswith("finished (") else runtime
+        reason = runtime[len("finished ("):-1] if state == "finished" else None
+        mapped = projection.v2_status_mapping(replace(result, state=state, refusal=None,
+            termination=SimpleNamespace(reason=reason) if reason else None))
+        assert mapped.runtime_state == runtime and mapped.journal_acknowledged
+        validate_record(bundle, "supervised_run_status.v1", mapped.public_status_bytes, definition="reader_view")
+    for changed in (replace(result, journal_complete=False), replace(result, journal_anchor=None),
+                    replace(result, identity=None), replace(result, refusal="unlisted-local-code")):
+        mapped = projection.v2_status_mapping(changed)
+        assert mapped.runtime_state == "unknown" and not mapped.journal_acknowledged and mapped.public_status_bytes is None
+
+
+@pytest.mark.parametrize("mutated", [False, True], ids=["intact", "killed"])
+def test_v2_final_recheck_source_control(v2_operator, monkeypatch, mutated):
+    import sys
+    import types
+    attempt = build_v2_attempt(v2_operator)
+    selected = worker
+    if mutated:
+        source = Path(worker.__file__).read_text()
+        old = "check = recheck_launch_v2(prepared._capture, context=prepared._capture.context)"
+        assert source.count(old) == 1
+        selected = types.ModuleType("phase_loop_runtime.convergence.adapters._v2_worker_control")
+        selected.__package__, selected.__file__ = worker.__package__, worker.__file__
+        monkeypatch.setitem(sys.modules, selected.__name__, selected)
+        exec(compile(source.replace(old, "check = None"), selected.__file__, "exec"), selected.__dict__)
+    reference = attempt.binding.spec.references[0][1].path
+    original = selected.run_bounded_capture
+    def late_change(*args, **kwargs):
+        reference.write_bytes(reference.read_bytes() + b"changed-after-consumption")
+        return original(*args, **kwargs)
+    monkeypatch.setattr(selected, "run_bounded_capture", late_change)
+    config = dict(attempt.binding.snapshots)[attempt.binding.spec.config_path]
+    result = selected.run_patch_return(attempt.prepared, config_bytes=config, state_root=attempt.operator.path.parent / "worker-state")
+    def assertion():
+        assert result.state == "refused" and result.worker_invocations == 0 and result.refusal == "launch_input_unbound"
+    if mutated:
+        with pytest.raises(AssertionError): assertion()
+    else:
+        assertion()

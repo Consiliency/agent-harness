@@ -1214,26 +1214,52 @@ def _conform_timing_install(recorder: "_ConformTimingRecorder"):
     return restore
 
 
-@pytest.hookimpl(hookwrapper=True)
-def pytest_runtest_call(item):
-    """Emit one timing summary per test when PHASE_LOOP_CONFORM_TIMING=1."""
-    if not _conform_timing_enabled():
+@contextlib.contextmanager
+def _supervised_path_witness(item):
+    if os.environ.get("PHASE_LOOP_SUPERVISED_EVIDENCE") != "1":
         yield
         return
-    _conform_repo_scale_cached()  # resolve before wrapping, never charged
-    recorder = _ConformTimingRecorder(item.nodeid)
-    restore = _conform_timing_install(recorder)
+    calls = set()
+    previous = sys.getprofile()
+    def profile(frame, event, arg):
+        if event == "call":
+            module = frame.f_globals.get("__name__", "")
+            if module.startswith("phase_loop_runtime."):
+                calls.add(module + "." + frame.f_code.co_qualname)
+            elif module.startswith("_supervised_v2_codec_"):
+                calls.add("verified_v2_codec." + frame.f_code.co_qualname)
+            elif module.startswith("_supervised_v2_validator_"):
+                calls.add("verified_v2_validator." + frame.f_code.co_qualname)
+        if previous is not None:
+            previous(frame, event, arg)
+    sys.setprofile(profile)
     try:
         yield
     finally:
-        restore()
-        total = time.perf_counter() - recorder.started
-        recorder.reported = True
-        if recorder.events or total >= 1.0:
-            report = recorder.report(total)
-            print(report, flush=True)
-            print(report, file=sys.stderr, flush=True)
+        sys.setprofile(previous)
+        item.user_properties.append(("production_witnesses", json.dumps(sorted(calls))))
 
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_call(item):
+    """Emit one timing summary per test when PHASE_LOOP_CONFORM_TIMING=1."""
+    with _supervised_path_witness(item):
+        if not _conform_timing_enabled():
+            yield
+            return
+        _conform_repo_scale_cached()  # resolve before wrapping, never charged
+        recorder = _ConformTimingRecorder(item.nodeid)
+        restore = _conform_timing_install(recorder)
+        try:
+            yield
+        finally:
+            restore()
+            total = time.perf_counter() - recorder.started
+            recorder.reported = True
+            if recorder.events or total >= 1.0:
+                report = recorder.report(total)
+                print(report, flush=True)
+                print(report, file=sys.stderr, flush=True)
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_teardown(item, nextitem):

@@ -41,6 +41,15 @@ jobs:
               "phase-loop-runtime/tests/test_supervised_contracts.py",
               "plans/artifacts/v12-SCHEMA-inputs.md",
               ".github/workflows/supervised-contract-intake.yml",
+              ".github/workflows/test.yml", ".github/workflows/supervised-v2-evidence.yml",
+              ".gitleaks.toml", "phase-loop-runtime/uv.lock",
+              "plans/artifacts/v12-CLOSEOUT-inputs.md", "plans/artifacts/v12-CLOSEOUT-landed-binding.md",
+              "plans/artifacts/v12-v13-replan-ownership.md", "plans/artifacts/v12-CLOSEOUT-binding-location.md",
+              "phase-loop-runtime/src/phase_loop_runtime/supervised_envelope_v2.py",
+              "phase-loop-runtime/src/phase_loop_runtime/supervised_capture_v2.py",
+              "phase-loop-runtime/scripts/gate_a_cleanroom.sh",
+              "phase-loop-runtime/scripts/verify_supervised_v2.sh",
+              "phase-loop-runtime/scripts/verify_supervised_v2_evidence.py",
           }
           resource_root = "phase-loop-runtime/src/phase_loop_runtime/schemas/supervised-worker-v1/"
           base, head = os.environ["BASE_SHA"], os.environ["HEAD_SHA"]
@@ -49,11 +58,12 @@ jobs:
               changed = set(subprocess.check_output([
                   "git", "diff", "--no-renames", "--name-only", "-z", base, head,
               ]).decode().rstrip("\0").split("\0"))
-              required = bool(paths & changed) or any(p.startswith(resource_root) for p in changed)
+              required = bool(paths & changed) or any(p.startswith((resource_root, resource_root.replace("-v1/", "-v2/"))) for p in changed)
               if "plans/manifest.json" in changed:
                   def seal(ref):
                       data = json.loads(subprocess.check_output(["git", "show", ref + ":plans/manifest.json"]))
-                      return next(r for r in data["plans"] if r["slug"] == "v12-SCHEMA")["frozen_inputs"]
+                      return {slug: next(r for r in data["plans"] if r["slug"] == slug)["frozen_inputs"]
+                              for slug in ("v12-SCHEMA", "v12-CLOSEOUT")}
                   required = required or seal(base) != seal(head)
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               output.write("contract=" + str(required).lower() + "\n")
@@ -72,6 +82,7 @@ jobs:
         if: steps.changes.outputs.contract == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          SCHEMA_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           SCHEMA_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           PYTHONPATH: ${{ github.workspace }}/phase-loop-runtime/src
         run: >-

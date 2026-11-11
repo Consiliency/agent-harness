@@ -83,9 +83,9 @@ def captured_assertion(module):
 CONTROLS = {
     "digest": ("if sha256(data).hexdigest() != expected:", "if False:", digest_assertion),
     "validation": ("failed = next(validator(schema, registry=registry).iter_errors(instance), None) is not None", "failed = False", validation_assertion),
-    "pattern": ('expression = r"^[0-9a-f]{64}\\Z"', 'expression = r"^[0-9a-f]{64}$"', pattern_assertion),
+    "pattern": ('expression = expression[:-1] + r"\\Z"', 'expression = expression', pattern_assertion),
     "selector": ('and (not isinstance(definition, str) or definition not in _DEFINITIONS)', 'and False', selector_assertion),
-    "allowlist": ('if not isinstance(name, str) or name not in _NAMES:', 'if False:', allowlist_assertion),
+    "allowlist": ('if not isinstance(name, str) or name not in dict(self._captured):', 'if False:', allowlist_assertion),
     "captured-buffer": ('parsed = {n: _strict_json(b,', 'captured = {n: root.joinpath(n).read_bytes() for n in _NAMES}\n    parsed = {n: _strict_json(b,', captured_assertion),
 }
 

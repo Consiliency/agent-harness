@@ -1,0 +1,880 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:contract:admitted_launch_envelope.v2",
+  "title": "admitted_launch_envelope.v2 (provisional)",
+  "description": "What a harness receives after admission, and everything that determines the launch. Harness-neutral and language-neutral. Every digest is lowercase hex SHA-256; every locator is repository-relative or a declared name, never a host path. v2 keeps every v1 field with its v1 meaning and adds the required launch block, which binds by digest each input that determines what process starts and what it is given: instruction and reference bytes, the final argument vector, the executable and wrapper chain, the materialized workspace, the effective environment, the trusted policy and qualification evidence, the action, route and stdin delivery, the stopping policy and any conditional grants. A v1 envelope is not a v2 envelope; v1 stays frozen and both may be read side by side, selected by the schema field. Field types, required fields and closed enums are defined here; the semantic rules a schema cannot establish are under x-semantic-rules, evaluated in the stages of x-evaluation-order. Status: provisional until the owning contract revision completes; a change needs reconciliation with every consumer.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "envelope_digest",
+    "assignment_digest",
+    "units",
+    "workspace",
+    "enforcement",
+    "launch",
+    "obligations",
+    "executable_dependencies",
+    "caller_context",
+    "redaction_posture"
+  ],
+  "properties": {
+    "schema": {
+      "const": "admitted_launch_envelope.v2"
+    },
+    "envelope_digest": {
+      "$ref": "#/$defs/sha256",
+      "description": "SHA-256 of the RFC 8785 (JCS) serialization, encoded as UTF-8, of this object with envelope_digest removed. Unchanged from v1."
+    },
+    "assignment_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "units": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target_unit_ids",
+        "readonly_neighbor_unit_ids",
+        "snapshot_ref",
+        "crosswalk_ref"
+      ],
+      "properties": {
+        "target_unit_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/unit_id"
+          }
+        },
+        "readonly_neighbor_unit_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/unit_id"
+          }
+        },
+        "snapshot_ref": {
+          "$ref": "#/$defs/sha256"
+        },
+        "crosswalk_ref": {
+          "$ref": "#/$defs/sha256",
+          "description": "Opaque reference to the reviewed correspondence of the subject project at the snapshot; identifies the project."
+        }
+      }
+    },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "repo_relative_locators"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "separate_clone",
+            "separate_copy",
+            "git_worktree_of_protected",
+            "in_place"
+          ]
+        },
+        "repo_relative_locators": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The write scope in the protected repository. Unchanged from v1."
+        }
+      }
+    },
+    "enforcement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tier",
+        "required_constraints"
+      ],
+      "properties": {
+        "tier": {
+          "enum": [
+            "provider_readonly_patch_return_audit",
+            "post_write_audit_only",
+            "os_enforced"
+          ]
+        },
+        "required_constraints": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "write_scope",
+              "write_prevention",
+              "command_denial",
+              "network_denial"
+            ]
+          },
+          "description": "Constraints the admitted run must have. write_prevention is new in v2; see x-constraint-semantics."
+        }
+      }
+    },
+    "launch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "transport_id",
+        "stdin",
+        "instructions",
+        "references",
+        "argv",
+        "executable_chain",
+        "workspace_state",
+        "environment",
+        "trusted_policy",
+        "stop"
+      ],
+      "properties": {
+        "action": {
+          "enum": [
+            "execution",
+            "review"
+          ],
+          "description": "What the worker is launched to do. The same argument vector can take a different route, isolation or deadline depending on the action, so it is bound and never inferred from argv."
+        },
+        "transport_id": {
+          "$ref": "#/$defs/identifier",
+          "description": "Identifier of the route the harness selected to start the worker, as named in its trusted policy. Bound so that no fallback route is taken after admission."
+        },
+        "stdin": {
+          "enum": [
+            "input",
+            "devnull"
+          ],
+          "description": "input: the worker's standard input is a pipe carrying exactly the instruction bytes in one write at start, then end of file. devnull: the worker's standard input is empty. Interactive terminal delivery is not representable in v2 (x-not-bound.interactive_terminal); no transport label or grant can stand in for either mode."
+        },
+        "instructions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sha256",
+            "byte_length",
+            "source"
+          ],
+          "properties": {
+            "sha256": {
+              "$ref": "#/$defs/sha256",
+              "description": "SHA-256 of the exact instruction bytes as delivered, never of re-serialized text."
+            },
+            "byte_length": {
+              "$ref": "#/$defs/byte_length"
+            },
+            "source": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/source_locator"
+                }
+              ],
+              "description": "The captured source of the instruction bytes, or null only for genuinely inline instructions: the bytes are the whole stdin input or exactly one worker argument."
+            }
+          }
+        },
+        "references": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reference"
+          },
+          "description": "Ordered list of every other byte sequence the route consumes: exactly one baseline, plus each consumed context and configuration file (prompt context, output schemas, tool settings, files discovered from the working directory). A file name in argv does not bind its contents; its bytes must be listed here. A source may be outside the workspace, under a declared root or behind a descriptor; it is never copied into the workspace to fit."
+        },
+        "argv": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "canonical_form",
+            "sha256",
+            "element_count"
+          ],
+          "properties": {
+            "canonical_form": {
+              "const": "rfc8785_array_of_strings"
+            },
+            "sha256": {
+              "$ref": "#/$defs/sha256",
+              "description": "SHA-256 of the UTF-8 RFC 8785 serialization of the final ordered argument vector passed to the operating system to start the outermost entry of executable_chain; see x-digest-forms.rfc8785_array_of_strings and x-process-boundary."
+            },
+            "element_count": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "executable_chain": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/chain_entry"
+          },
+          "description": "Every wrapper in invocation order (outermost first), then the executable, last. Each entry binds its own file; one wrapper's digest never stands in for another entry."
+        },
+        "workspace_state": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "base_commit",
+            "content_form",
+            "content_sha256",
+            "cwd",
+            "target_map"
+          ],
+          "properties": {
+            "base_commit": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Full commit id the workspace was materialized from, or null for a copy that has no commit. A commit alone never binds the workspace; content_sha256 does."
+            },
+            "content_form": {
+              "const": "rfc8785_tree_manifest"
+            },
+            "content_sha256": {
+              "$ref": "#/$defs/sha256",
+              "description": "Digest of the materialized source tree at launch, including every overlay on top of base_commit (staged, unstaged and untracked files); see x-digest-forms.rfc8785_tree_manifest. Its definition does not depend on cwd."
+            },
+            "cwd": {
+              "$ref": "#/$defs/cwd_locator",
+              "description": "The effective working directory of the worker after every declared transformation (x-process-boundary). A view_root cwd needs a bound filesystem_view grant that declares the root; content_sha256 stays the digest of the source tree, wherever the cwd is."
+            },
+            "target_map": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/target_mapping"
+              },
+              "description": "Ordered mapping from workspace locators to the protected-repository locators a returned change may target."
+            }
+          }
+        },
+        "environment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "canonical_form",
+            "map_sha256",
+            "policy"
+          ],
+          "properties": {
+            "canonical_form": {
+              "const": "rfc8785_redacted_environment"
+            },
+            "map_sha256": {
+              "$ref": "#/$defs/sha256",
+              "description": "SHA-256 of the UTF-8 RFC 8785 serialization of the redacted environment object of x-environment-commitment: the non-secret name-to-value map plus the sorted names of the secret variables present. No secret value, and no digest of one, enters it."
+            },
+            "policy": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "sha256"
+              ],
+              "properties": {
+                "id": {
+                  "$ref": "#/$defs/identifier"
+                },
+                "sha256": {
+                  "$ref": "#/$defs/sha256",
+                  "description": "Raw-byte SHA-256 of the environment policy: how the effective worker environment is built (inherited, scrubbed, scratch-relocated or constructed) and the trusted classification of every variable as non-secret or as secret with its credential source. A policy name alone never binds values."
+                }
+              }
+            }
+          },
+          "description": "The effective environment of the worker after every declared transformation (x-process-boundary), committed without secret values (x-environment-commitment)."
+        },
+        "trusted_policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "config_sha256",
+            "template_sha256",
+            "qualification_sha256"
+          ],
+          "properties": {
+            "config_sha256": {
+              "$ref": "#/$defs/sha256",
+              "description": "Raw-byte SHA-256 of the trusted harness configuration consumed for this launch (bounds, roots, timeout maximum, stopping thresholds such as heartbeat and quiet intervals)."
+            },
+            "template_sha256": {
+              "$ref": "#/$defs/sha256",
+              "description": "Raw-byte SHA-256 of the closed argument template the final argv was produced from."
+            },
+            "qualification_sha256": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/sha256"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Raw-byte SHA-256 of the qualification evidence this route was admitted against, or null when there is none. Null is never written as an empty string. See x-route-qualification: under every defined tier, null is refused with route_not_qualified."
+            }
+          }
+        },
+        "stop": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "timeout_seconds",
+            "deadline_action"
+          ],
+          "properties": {
+            "timeout_seconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3600,
+              "description": "Wall-clock bound in whole seconds from process start. The schema caps it at 3600; the trusted configuration may declare a lower maximum (timeout_over_declared_max)."
+            },
+            "deadline_action": {
+              "enum": [
+                "terminate_process_group",
+                "not_armed"
+              ],
+              "description": "terminate_process_group: at the deadline the harness terminates the worker's process group and records termination {reason: timed_out, by: harness}. not_armed: no wall-clock deadline is armed and stopping follows the policy bound by trusted_policy.config_sha256; allowed for action review only."
+            }
+          }
+        },
+        "grants": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "filesystem_view_sha256": {
+              "$ref": "#/$defs/grant_commitment"
+            },
+            "descriptor_capabilities_sha256": {
+              "$ref": "#/$defs/grant_commitment"
+            },
+            "dependency_projection_sha256": {
+              "$ref": "#/$defs/grant_commitment"
+            },
+            "supervisor_identity_sha256": {
+              "$ref": "#/$defs/grant_commitment"
+            },
+            "egress_policy_sha256": {
+              "$ref": "#/$defs/grant_commitment"
+            }
+          },
+          "minProperties": 1,
+          "description": "Optional. Present only when the route applies these grants. Each value commits to the exact effective grant for this run, in an explicit canonical_form (x-digest-forms.grant_digest). A grant is a bound launch input, not evidence of enforcement: it never changes the tier's constraint mapping. A grant the tier does not list, or that the single matching qualification record does not cover with the same form and digest, is refused with grant_unqualified. See x-grant-coverage."
+        }
+      }
+    },
+    "obligations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "definition_digests"
+      ],
+      "properties": {
+        "definition_digests": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sha256"
+          }
+        }
+      }
+    },
+    "executable_dependencies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "declared",
+        "admitted_dependency_digest"
+      ],
+      "properties": {
+        "declared": {
+          "type": "boolean"
+        },
+        "admitted_dependency_digest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "caller_context": {
+      "type": "object",
+      "description": "Opaque. Echoed back byte-for-byte (JCS) in every record that carries it; never interpreted by the harness or the workbench reader, and never a source of any launch input. Opaque means no application interpretation, dispatch, policy selection, launch-input derivation or alternate identity semantics; it does not exempt its bytes from JSON validity, canonicalization or the envelope-wide secret-safety rule, and that generic validation is not interpretation. It is one public, non-secret payload: its producer must not supply secret values or secret-derived digests (x-environment-commitment.no_secret_values_anywhere)."
+    },
+    "redaction_posture": {
+      "const": "digests_and_repo_relative_locators_only"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "unit_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "byte_length": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "sha256",
+        "byte_length",
+        "source"
+      ],
+      "properties": {
+        "role": {
+          "enum": [
+            "baseline",
+            "context",
+            "config"
+          ]
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "SHA-256 of the exact bytes."
+        },
+        "byte_length": {
+          "$ref": "#/$defs/byte_length"
+        },
+        "source": {
+          "$ref": "#/$defs/source_locator"
+        }
+      }
+    },
+    "chain_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "locator_kind",
+        "locator",
+        "sha256"
+      ],
+      "properties": {
+        "role": {
+          "enum": [
+            "wrapper",
+            "executable"
+          ]
+        },
+        "locator_kind": {
+          "enum": [
+            "repo_relative",
+            "declared"
+          ],
+          "description": "repo_relative: a locator in the workspace. declared: a name the trusted configuration resolves through its own configured search paths; the host path is never published."
+        },
+        "locator": {
+          "type": "string"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "SHA-256 of the raw bytes of the resolved file. A script's digest does not cover its interpreter or package closure; those are bound by executable_dependencies and the dependency_projection grant."
+        }
+      }
+    },
+    "target_mapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workspace_locator",
+        "protected_locator"
+      ],
+      "properties": {
+        "workspace_locator": {
+          "type": "string"
+        },
+        "protected_locator": {
+          "type": "string"
+        }
+      }
+    },
+    "relative_path": {
+      "type": "string",
+      "description": "A portable relative path; see x-locator-grammar. Lexical violations are locator_not_repo_relative."
+    },
+    "workspace_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "namespace",
+        "path"
+      ],
+      "properties": {
+        "namespace": {
+          "const": "workspace"
+        },
+        "path": {
+          "$ref": "#/$defs/relative_path"
+        }
+      }
+    },
+    "declared_root_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "namespace",
+        "root",
+        "path"
+      ],
+      "properties": {
+        "namespace": {
+          "const": "declared_root"
+        },
+        "root": {
+          "$ref": "#/$defs/identifier",
+          "description": "A root the trusted configuration declares; its physical location stays local."
+        },
+        "path": {
+          "$ref": "#/$defs/relative_path"
+        }
+      }
+    },
+    "descriptor_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "namespace",
+        "descriptor"
+      ],
+      "properties": {
+        "namespace": {
+          "const": "descriptor"
+        },
+        "descriptor": {
+          "$ref": "#/$defs/identifier",
+          "description": "An opaque descriptor identity resolved by the bound descriptor_capabilities grant."
+        }
+      }
+    },
+    "source_locator": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/workspace_source"
+        },
+        {
+          "$ref": "#/$defs/declared_root_source"
+        },
+        {
+          "$ref": "#/$defs/descriptor_source"
+        }
+      ],
+      "description": "Where the bytes are read from, by logical identity only; see x-launch-semantics.source_resolution."
+    },
+    "workspace_cwd": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "namespace",
+        "path"
+      ],
+      "properties": {
+        "namespace": {
+          "const": "workspace"
+        },
+        "path": {
+          "$ref": "#/$defs/relative_path",
+          "description": "Relative to the source tree root; exactly '.' is the root."
+        }
+      }
+    },
+    "view_root_cwd": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "namespace",
+        "root",
+        "path"
+      ],
+      "properties": {
+        "namespace": {
+          "const": "view_root"
+        },
+        "root": {
+          "$ref": "#/$defs/identifier",
+          "description": "A root declared by the bound filesystem_view grant."
+        },
+        "path": {
+          "$ref": "#/$defs/relative_path",
+          "description": "Relative to that root; exactly '.' is the root."
+        }
+      }
+    },
+    "cwd_locator": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/workspace_cwd"
+        },
+        {
+          "$ref": "#/$defs/view_root_cwd"
+        }
+      ]
+    },
+    "grant_commitment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "canonical_form",
+        "sha256"
+      ],
+      "properties": {
+        "canonical_form": {
+          "enum": [
+            "raw_bytes",
+            "rfc8785"
+          ],
+          "description": "raw_bytes: SHA-256 of the exact grant document bytes loaded. rfc8785: SHA-256 of the UTF-8 RFC 8785 serialization of the in-memory grant structure, ordered lists kept in order."
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    }
+  },
+  "x-canonicalization": "RFC 8785 (JCS), encoded as UTF-8: object members sorted by the UTF-16 code units of their names; strings with only the RFC 8785 escapes (quotation mark, reverse solidus, \\b \\f \\n \\r \\t, other controls as lowercase \\u00xx); numbers in ECMAScript Number-to-String form. Every value that enters a commitment must first pass the v2 input boundary, checked on the raw input before parsing loses evidence and again on in-memory values before commitment: valid UTF-8; no duplicate object member names (every valid member name, __proto__ included, is an ordinary member); no lone surrogate in any string or name. Parse JSON numbers as finite IEEE-754 binary64 values using round-to-nearest, ties-to-even. An integer-valued number MUST lie in the inclusive range -9007199254740991 through 9007199254740991. Apply this restriction to the numeric value regardless of token spelling, including decimal-point and exponent forms, and to in-memory values before commitment; a host arbitrary-precision integer is range-checked before conversion. Reject an out-of-range integer; never round, stringify or coerce it into admission. Non-integral finite binary64 numbers remain supported and use RFC 8785 serialization; negative zero serializes as 0. This is a deliberately narrower v2 admission profile, not a claim that RFC 8785 disallows larger doubles; large opaque identifiers can be strings. Input outside the boundary is never coerced: a launch input is refused with launch_input_unbound, and an envelope that cannot be serialized cannot verify its envelope_digest.",
+  "x-digest-forms": {
+    "envelope_digest": "SHA-256 of the UTF-8 RFC 8785 serialization of the envelope with envelope_digest removed.",
+    "raw_bytes": "instructions.sha256, references[].sha256, executable_chain[].sha256, environment.policy.sha256 and every trusted_policy digest are SHA-256 of the exact bytes the harness reads and uses, never of a re-parsed or re-serialized form; byte_length is the number of those bytes. Grants state their own form (grant_digest).",
+    "rfc8785_array_of_strings": "The final ordered argument vector passed to the operating system to start the outermost entry of executable_chain, after every rewrite (materialized paths, inserted output paths, prompt moved to stdin), element 0 included: a JSON array of strings, serialized by RFC 8785 and encoded as UTF-8, then hashed. Never a shell command string, a pre-rewrite template or an unordered set. An element that is not a string, contains NUL or is not valid Unicode cannot be bound: launch_input_unbound. element_count is the array length. A digest of any other serialization (whitespace, ASCII-escaped characters, another order) does not match.",
+    "rfc8785_tree_manifest": "Capture walks the source tree root without following any symlink. The root-level path '.git' and everything under it are excluded without descending into or following it, whether it is a directory, a file or a symlink; a nested '.git' (for example sub/.git) is ordinary content. Directories are not entries. Every other object yields one [path, kind, sha256] entry: path is relative to the root, '/'-separated and must satisfy x-locator-grammar; kind is 'executable_file' for a regular file whose POSIX mode has any of 0o111 set, 'file' for any other regular file, or 'symlink'; sha256 is of the raw file bytes, or of the exact raw link-target bytes for a symlink, which are never dereferenced, normalized or re-encoded. Entries are sorted by the UTF-8 bytes of path; the digest is SHA-256 of the UTF-8 RFC 8785 serialization of that array. Capture is refused with launch_input_unbound when an object is of any other type (fifo, socket, device), a path is not valid Unicode or not grammatical, two objects have the same path, or a regular file's mode is unavailable (a platform without reliable POSIX mode metadata refuses rather than inventing one). The capture listing must be structurally consistent: no represented file, symlink or other non-directory object may be a proper path-segment ancestor of another listed path, whatever the listing order (directories may be implicit). Such a listing is refused with launch_input_unbound. Capture and workspace joins never traverse a symlink ancestor, even when its target would stay inside the root. The root '.git' exclusion applies first.",
+    "environment_map": "SHA-256 of the UTF-8 RFC 8785 serialization of the redacted environment object of x-environment-commitment, built from the effective worker environment and the classification in the bound environment policy.",
+    "grant_digest": "Each grant states its canonical_form. raw_bytes: SHA-256 of the exact bytes of the grant document the harness loads and applies. rfc8785: SHA-256 of the UTF-8 RFC 8785 serialization of the in-memory grant structure the harness applies, ordered lists (egress rules, mounts) kept in order. The digest is compared with the same captured object that is applied; the form is never guessed. Run-specific resources (output directories, mounts, descriptors) are named by logical identity, purpose and access; their host paths, socket paths and descriptor numbers stay local."
+  },
+  "x-launch-semantics": {
+    "capture_once": "Every launch digest is computed from one captured object (bytes, array, map, tree, grant), and that same object is what the harness starts the worker with. A digest that is not compared with the object actually used binds nothing.",
+    "recheck_before_start": "Admission and launch may be separated in time. Immediately before the process starts, the harness recomputes every launch digest from what it is about to use; any difference is refused under the launch-material stage of x-evaluation-order with worker_invocations 0.",
+    "stdin": "With stdin input, the instruction bytes are written once, at start, to a pipe that is then closed; with devnull, nothing. No terminal, no delayed or repeated write, no prompt response and no framing bytes.",
+    "stop": "terminate_process_group is measured on a monotonic clock from process start. Stopping thresholds such as heartbeat and quiet intervals are part of the trusted configuration bound by config_sha256, never an ambient default.",
+    "caller_context": "No launch input is ever taken from caller_context.",
+    "no_fallback": "After admission the harness never selects another route, transport, executable, environment, policy or deadline than the bound one; a needed change means a new envelope and a new admission.",
+    "source_resolution": "workspace sources are paths in the captured source tree: the tree must hold exactly one regular-file or executable-file entry at that path, with the same digest, and the bytes delivered or read are that captured object. declared_root sources resolve through roots declared in the trusted configuration bound by config_sha256. descriptor sources resolve through the bound descriptor_capabilities grant, which must list the descriptor. Resolved bytes are captured, hashed and rechecked before start; a root, descriptor or source that cannot be resolved, or that escapes its root, is launch_input_unbound. Sources are never copied into the workspace to satisfy the schema.",
+    "executable_chain": "A repo_relative chain entry must be the single regular-file or executable-file entry at that path in the captured source tree, with the same digest as the entry. A declared entry resolves through the trusted configuration's search paths.",
+    "cwd": "The working directory is resolved and rechecked locally before start, including symlink escape. A view_root cwd needs the bound filesystem_view grant, which declares the root. A directory identity does not bind files the worker discovers from it: every file a route discovers from its working directory must be bound as a reference, or the launch is unbound.",
+    "inline_instructions": "A null instruction source is valid only when the instruction bytes are the whole stdin input or exactly one worker argument.",
+    "caller_context_content": "caller_context is validated generically like every other envelope value (JSON validity, canonicalization, secret safety) and otherwise left uninterpreted; a secret-free payload is echoed unchanged, and rotating an authorized credential with the same payload leaves the envelope unchanged."
+  },
+  "x-not-bound": {
+    "credential_bytes": "Secret values are deliberately outside every public commitment, and so is any digest of them (x-environment-commitment). What is bound is each secret variable's presence, destination and authorized credential source. A credential delivered by descriptor is bound by the descriptor_capabilities grant.",
+    "admitting_implementation": "The identity of the admitting validator or codec is not part of the envelope; it is the harness's own trusted implementation.",
+    "attempt_identity": "Run and attempt ids are not in the envelope; supervised_run_status binds them to envelope_digest in its result binding.",
+    "interactive_terminal": "Interactive terminal delivery (a pseudo-terminal, prompt responses, paste framing, input sent after the worker has produced output) is not representable in v2. Routes that need it are out of scope and refused; no transport label or descriptor grant can make stdin input or devnull describe it."
+  },
+  "x-enforcement-tiers": {
+    "provider_readonly_patch_return_audit": {
+      "status": "defined",
+      "qualification": "required",
+      "workspace_kinds": [
+        "separate_clone",
+        "separate_copy"
+      ],
+      "constraints": {
+        "write_scope": "checked_before_apply",
+        "write_prevention": "not_enforced",
+        "command_denial": "not_enforced",
+        "network_denial": "not_enforced"
+      },
+      "grant_kinds": [
+        "filesystem_view_sha256",
+        "descriptor_capabilities_sha256",
+        "dependency_projection_sha256",
+        "supervisor_identity_sha256",
+        "egress_policy_sha256"
+      ],
+      "semantics": "The worker runs in a separate clone or copy, asked by its provider's own mode to run read-only. Its changes return as proposal bytes, which always pass the write_scope apply check before anything reaches the protected repository, even when required_constraints is empty, followed by a post-run audit of the separate workspace.",
+      "limits": "Read-only is the provider's own enforcement, not operating-system confinement. During the run nothing prevents writes, commands or network use by the worker or by a same-login process; a tool-action refusal is detection, not prevention. The tier says what a qualified route provides; it does not qualify any installed tool."
+    },
+    "post_write_audit_only": {
+      "status": "defined",
+      "qualification": "required",
+      "workspace_kinds": [
+        "separate_clone",
+        "separate_copy",
+        "git_worktree_of_protected",
+        "in_place"
+      ],
+      "constraints": {
+        "write_scope": "not_enforced",
+        "write_prevention": "not_enforced",
+        "command_denial": "not_enforced",
+        "network_denial": "not_enforced"
+      },
+      "grant_kinds": [
+        "filesystem_view_sha256",
+        "descriptor_capabilities_sha256",
+        "dependency_projection_sha256",
+        "supervisor_identity_sha256",
+        "egress_policy_sha256"
+      ],
+      "semantics": "Writes are detected by an audit after they happen. Applies when the workspace is not a separate clone or copy, for example a git worktree of the protected repository, which shares its object store and refs.",
+      "limits": "Detects after the write only; prevents nothing. The tier says what a qualified route provides; it does not qualify any installed tool."
+    },
+    "os_enforced": {
+      "status": "reserved",
+      "qualification": "not_admissible",
+      "workspace_kinds": [],
+      "constraints": {
+        "write_scope": "not_enforced",
+        "write_prevention": "not_enforced",
+        "command_denial": "not_enforced",
+        "network_denial": "not_enforced"
+      },
+      "grant_kinds": [],
+      "semantics": "Reserved. No semantics are defined yet.",
+      "limits": "An envelope that names it is refused with tier_unqualified, whatever qualification evidence it carries."
+    }
+  },
+  "x-constraint-semantics": {
+    "write_scope": "No change outside workspace.repo_relative_locators reaches the protected repository. Where a tier maps write_scope to checked_before_apply, the check is part of the tier and runs whether or not required_constraints lists write_scope: that list adds demands, it never disables a tier guarantee. After the worker finishes, the checker must: take the worker's changes only as the returned proposal bytes, never by reading or copying the separate workspace into the protected repository; verify the proposal-bytes digest recorded for the attempt; attribute every entry of the proposal to a path; map each touched path (both sides of a rename or copy) through launch.workspace_state.target_map and require it inside workspace.repo_relative_locators; refuse any added or changed symlink, submodule entry or file mode; and apply all of it or none of it against the protected state bound at launch, refusing a stale base. Rejection is a work outcome (x-apply-outcomes), not a run state: the attempt has already run, so its journal follows running -> finished with a valid termination and result binding, and no proposal byte is applied. A post-launch refused terminal is refused_after_launch under supervised_run_status. Write prevention during the run is the separate write_prevention constraint.",
+    "write_prevention": "During the run the worker cannot write outside the scope anywhere, in the workspace or on the host. No defined tier provides it, so requiring it is refused with constraint_unsupported.",
+    "command_denial": "The worker cannot run commands outside an allowed set during the run.",
+    "network_denial": "The worker cannot open network connections during the run. An egress_policy grant binds the policy applied; it does not make network_denial enforced under any defined tier."
+  },
+  "x-route-qualification": {
+    "rule": "A tier describes semantics and limits. It is not evidence that an installed tool honours them. Admission under a defined tier needs qualification evidence for the specific route, and unqualified means refused: there is no fallback tier and no warn-only admission.",
+    "route_key": "A route is: enforcement.tier, launch.action, launch.transport_id, the ordered launch.executable_chain (locator_kind, locator and sha256 of each entry), launch.trusted_policy.template_sha256 and launch.trusted_policy.qualification_sha256.",
+    "records": "The validator holds its qualification records itself, independently of the envelope, as it holds the expected authority values. The envelope only names the evidence it was admitted against. A record also lists, per grant kind, the {canonical_form, sha256} its evidence covers, and the credential sources it authorizes.",
+    "matching": "Admission needs exactly one held record that matches every part of the route key. Zero matches, or two or more (byte-identical duplicates included), is route_not_qualified, decided before any grant check; records are never selected by order, merged or searched for a covering one. qualification_sha256 null is route_not_qualified. Any change to a part (another build of any chain entry, another wrapper, template, action, transport or tier) needs its own evidence; evidence never carries over.",
+    "evidence": "For its route, the evidence must show that each constraint the tier maps to checked_before_apply is honoured, that each grant it covers is applied as bound, and that the tier's stated limits hold. Its format is outside this contract; here it is an opaque raw-byte digest.",
+    "reserved_tiers": "A reserved tier is refused with tier_unqualified, whatever evidence is named.",
+    "probes": "Qualification probes are trusted auxiliary work done before admission. They are not worker invocations and not part of the launch chain, and they never mutate captured material without a recapture and recheck. A worker started under the name of a probe is a launch, and is refused if not admitted."
+  },
+  "x-evaluation-order": {
+    "rule": "Diagnostics are evaluated stage by stage, in this order. Within a stage every applicable diagnostic is reported; the first stage that reports any diagnostic ends evaluation, so later stages are not evaluated. Vectors expect exactly the diagnostics of that first reporting stage.",
+    "stages": [
+      [
+        "envelope_schema_invalid"
+      ],
+      [
+        "envelope_digest_mismatch"
+      ],
+      [
+        "authority_foreign",
+        "authority_baseline_stale"
+      ],
+      [
+        "locator_not_repo_relative",
+        "raw_output_in_record",
+        "dependency_digest_required",
+        "workspace_source_inconsistent",
+        "executable_chain_invalid",
+        "baseline_reference_required",
+        "target_map_outside_scope"
+      ],
+      [
+        "tier_unqualified"
+      ],
+      [
+        "route_not_qualified"
+      ],
+      [
+        "constraint_unsupported",
+        "workspace_not_separate_copy",
+        "grant_unqualified",
+        "stop_policy_unbounded",
+        "timeout_over_declared_max"
+      ],
+      [
+        "launch_instructions_mismatch",
+        "launch_reference_mismatch",
+        "launch_argv_mismatch",
+        "launch_executable_mismatch",
+        "launch_workspace_mismatch",
+        "launch_environment_mismatch",
+        "launch_policy_mismatch",
+        "launch_timeout_mismatch",
+        "launch_input_unbound"
+      ]
+    ]
+  },
+  "x-semantic-rules": {
+    "envelope_schema_invalid": "the envelope does not validate against this schema.",
+    "envelope_digest_mismatch": "envelope_digest does not equal the SHA-256 of the UTF-8 RFC 8785 serialization of the envelope without envelope_digest (x-canonicalization).",
+    "authority_foreign": "assignment_digest or units.crosswalk_ref differs from the injected validator's independently expected values (another assignment, repository or project), even when the envelope self-verifies.",
+    "authority_baseline_stale": "units.snapshot_ref differs from the independently expected snapshot while assignment and crosswalk match, even when the envelope self-verifies.",
+    "locator_not_repo_relative": "a locator violates x-locator-grammar: workspace.repo_relative_locators, every workspace and declared_root source path, every repo_relative executable_chain locator, both locators of each target_map entry, and every cwd path (which may also be exactly '.').",
+    "raw_output_in_record": "a string outside caller_context contains a line break or control character, or exceeds 512 characters.",
+    "dependency_digest_required": "executable dependencies are declared without an admitted dependency digest.",
+    "workspace_source_inconsistent": "workspace.kind is separate_clone or git_worktree_of_protected and launch.workspace_state.base_commit is null.",
+    "executable_chain_invalid": "the last launch.executable_chain entry is not the executable, an earlier entry is not a wrapper, or a declared locator does not match the identifier pattern of $defs.identifier.",
+    "baseline_reference_required": "launch.references does not contain exactly one entry with role baseline.",
+    "target_map_outside_scope": "a launch.workspace_state.target_map protected_locator is neither equal to nor under an entry of workspace.repo_relative_locators.",
+    "tier_unqualified": "the tier is reserved (x-enforcement-tiers status reserved).",
+    "route_not_qualified": "launch.trusted_policy.qualification_sha256 is null, or the validator does not hold exactly one qualification record matching every part of the route key in x-route-qualification (zero or several matches).",
+    "constraint_unsupported": "a required constraint maps to not_enforced under the declared tier; refused with {constraint, tier}, never silently weakened. A grant never changes this mapping.",
+    "workspace_not_separate_copy": "the workspace kind is not permitted for the declared tier.",
+    "grant_unqualified": "against the single matching qualification record: a launch.grants member the tier's grant_kinds do not list or that the record does not cover with the same canonical_form and sha256; a dependency_projection grant while executable_dependencies.declared is false; a descriptor source without a descriptor_capabilities grant or a view_root cwd without a filesystem_view grant; or a secret environment variable whose credential source, as classified by the bound environment policy, the record does not authorize.",
+    "stop_policy_unbounded": "launch.action is execution and launch.stop.deadline_action is not_armed.",
+    "timeout_over_declared_max": "launch.stop.timeout_seconds exceeds the timeout maximum declared by the validator's trusted configuration.",
+    "launch_instructions_mismatch": "the instruction bytes captured and about to be delivered do not have launch.instructions.sha256, or their UTF-8 byte count is not launch.instructions.byte_length; a workspace source is not the single file entry at that path in the captured tree with the same digest; with stdin input the single start write is not exactly those bytes; or a null source is not genuinely inline (neither the stdin input nor exactly one worker argument).",
+    "launch_reference_mismatch": "the captured reference bytes differ from launch.references in order, role, source, digest or length, a reference is missing or added, or a workspace source is not the single file entry at that path in the captured tree with the same digest.",
+    "launch_argv_mismatch": "the SHA-256 of the UTF-8 RFC 8785 serialization of the argument vector about to start the outermost chain entry differs from launch.argv.sha256, its length differs from element_count, or the worker argv differs from the one derived from it by the declared transformations.",
+    "launch_executable_mismatch": "the resolved file of any chain entry about to be run differs from launch.executable_chain in order, role, locator or raw-byte digest, an entry is missing or added, or a repo_relative entry is not the single file entry at that path in the captured tree with the same digest.",
+    "launch_workspace_mismatch": "the workspace about to be used differs from launch.workspace_state: another base commit, a tree-manifest digest other than content_sha256, another target map, or an effective worker cwd other than the bound one (including one that differs from the cwd derived by the declared transformations).",
+    "launch_environment_mismatch": "the redacted environment object built from the effective worker environment and the bound classification does not have map_sha256, the policy is not launch.environment.policy by id and raw-byte digest, or the worker environment differs from the one derived by the declared transformations.",
+    "launch_policy_mismatch": "the configuration, template or qualification bytes about to be used do not have the digests in launch.trusted_policy, an applied grant does not have its launch.grants digest in its stated canonical_form, or a grant is applied that launch.grants does not list.",
+    "launch_timeout_mismatch": "the deadline about to be armed differs from launch.stop: another timeout_seconds under terminate_process_group, any deadline under not_armed, a deadline that does not start at the first launch-chain process, or one restarted at a helper.",
+    "launch_input_unbound": "the harness would give the launch an input the launch block does not bind, or one the digest forms cannot represent: any stdin other than the bound mode (a terminal, a delayed or repeated write, bytes under devnull), a grant claiming an interactive terminal; a value taken from caller_context; an argument that is not a string, contains NUL or is not valid Unicode; an environment name or value that is not a valid string, a variable the policy does not classify, or a secret value or secret-derived digest found anywhere in committed material, the envelope and its caller_context included; a source tree that cannot be captured (unsupported entry, duplicate or ungrammatical path, missing mode, a non-directory ancestor of a listed path); a declared root, descriptor or source that cannot be resolved or escapes its root; a discovered working-directory file that is not a bound reference; a spawn environment or working directory not required by the declared transformations; or a qualification probe that mutated captured material or was itself the worker.",
+    "caller_context_interpreted": "an echoed caller_context differs from the envelope's caller_context.",
+    "refusal_zero_invocations": "every admission refusal above is recorded with zero launch-chain processes started and zero worker invocations, as state refused with worker_invocations 0 and refusal.reason equal to the first diagnostic of the first reporting stage of x-evaluation-order, in the listed order. Qualification probes are not counted (x-route-qualification.probes); a worker is never relabelled a probe."
+  },
+  "x-locator-grammar": {
+    "relative_path": "One or more '/'-separated segments. Every segment is non-empty and is neither '.' nor '..'. No ':' (no drive or scheme spelling), no backslash, no NUL or other control character, no leading or trailing '/', no repeated '/'. Invalid input is refused, never normalized.",
+    "cwd_path": "A cwd path is either exactly '.' (the root) or a relative_path.",
+    "applies_to": "workspace.repo_relative_locators, every workspace and declared_root source path, repo_relative executable_chain locators, both locators of each target_map entry, cwd paths, and source-tree capture paths.",
+    "identifiers": "Declared roots, descriptors, view roots, transports, policies and credential sources use the identifier grammar of $defs.identifier.",
+    "resolution": "A grammatical locator that resolves, through a symlink or otherwise, outside its root is refused at launch with launch_input_unbound."
+  },
+  "x-environment-commitment": {
+    "object": "The redacted environment object is {\"non_secret\": {name: value, ...}, \"secret_names\": [name, ...]}, closed. non_secret holds every non-secret variable of the effective worker environment; secret_names lists, sorted by UTF-16 code units and without duplicates, the secret variables actually present. The two have no name in common, and their union is exactly the effective environment.",
+    "classification": "The bound environment policy classifies every variable explicitly and in trust: non_secret, or secret with the identifier of its credential source. It is not a heuristic name scan. A present variable the policy does not classify fails closed: launch_input_unbound.",
+    "authorization": "Each secret variable present must come from a credential source the single matching qualification record authorizes; otherwise grant_unqualified. Its presence, delivery destination (the variable name) and authorization are bound; its value is not, and neither is any digest of it.",
+    "no_secret_values_anywhere": "No secret value, and no digest derived from one, may enter any commitment: not the envelope itself (every decoded member name and value, caller_context included, nested values and arrays included), not argv, references, instructions, policy, template, configuration or grant documents, nor a non-secret value. A known classified secret value or a value derived from it found there makes the launch unbindable: launch_input_unbound. caller_context is scanned as generic content, without assigning meanings to its fields, and is never redacted, dropped or rewritten to pass; if trusted policy cannot establish that the opaque payload is suitable for public commitment, the launch is refused. Matching known secrets is a regression mechanism, not a proof that arbitrary encodings or derivations are detectable: the trusted classification obligation still covers every derived form, not only one SHA-256 spelling. A value that contains a credential, such as a URL with a token, is secret as a whole; any non-secret routing part that determines the launch is bound separately (a non-secret variable or the egress grant).",
+    "values": "Names are non-empty and contain neither '=' nor NUL; names and values are strings of valid Unicode without NUL. Anything else is unbindable: launch_input_unbound. Hashing a JSON number does not make it an environment value.",
+    "unrepresentable": "If a route needs a particular secret value identity to be bound, that route is not representable in v2 and is refused. Credentials may also be delivered by descriptor, bound by the descriptor_capabilities grant.",
+    "confidentiality": "map_sha256 is an unsalted, unkeyed SHA-256 of deterministic, guessable non-secret content. It is a commitment, not confidentiality protection: anyone who can guess the non-secret values can confirm them. No salt or key is added."
+  },
+  "x-grant-coverage": "A qualification record covers a grant only by the same canonical_form and sha256 as the exact effective grant of this run. A record for a template or profile with placeholders does not cover a concrete per-run expansion; per-run evidence (for example a per-run attestation the validator holds) may. Coverage never comes from merging several records: exactly one record matches the route key (x-route-qualification), and only it is consulted.",
+  "x-apply-outcomes": {
+    "$comment": "Work outcomes of the write_scope apply check, outside supervised_run_status. Checked in this order; the first that applies is the outcome, and no protected byte changes.",
+    "proposal_digest_mismatch": "the returned proposal bytes do not have the digest recorded for the attempt.",
+    "proposal_unattributable": "an entry of the proposal cannot be attributed to a path and operation.",
+    "proposal_entry_unsupported": "an entry adds or changes a symlink, a submodule entry or a file mode.",
+    "proposal_out_of_scope": "a touched path, on either side of a rename or copy, has no target_map entry or maps outside workspace.repo_relative_locators.",
+    "proposal_stale": "an entry's base does not match the protected state bound at launch.",
+    "proposal_applied": "every check passed and the whole proposal was applied atomically."
+  },
+  "x-process-boundary": {
+    "launch_chain": "The launch chain is the processes started for this launch: the outermost executable_chain entry and every helper or wrapper it starts, down to the worker, the last entry.",
+    "argv": "launch.argv binds the argument vector passed to the operating system to start the outermost entry.",
+    "environment_and_cwd": "launch.environment and launch.workspace_state.cwd bind the effective worker environment and working directory, after every declared transformation.",
+    "transformations": "Every helper's argument consumption, environment additions and removals, and working-directory change are declared in the trusted template bound by template_sha256, in executable_chain order; supervisor and view grants bind the rest. The spawn environment and working directory are exactly what the declared transformations need: nothing ambient. The effective worker argv, environment and cwd are the verified result of applying those transformations; if that result cannot be derived and checked, the route is unbound.",
+    "deadline": "Under terminate_process_group the deadline starts when the first process of the launch chain starts, and the same monotonic expiry carries through every helper to the worker; it is never restarted.",
+    "zero_launch": "Every admission refusal happens with zero launch-chain processes started and zero worker invocations. A failure after the chain has started (for example a helper transformation failing before the worker) prevents the worker from starting and ends the already-started chain on the runtime lifecycle (running -> finished, termination failed_to_start), never as a refusal."
+  }
+}
