@@ -5,7 +5,7 @@ description: "Harness-optimized phase planner. Use when a roadmap phase from a v
 
 # Harness Plan Phase
 
-Plans one roadmap phase for Harness execution. It converts a phase section into interface gates and implementation lanes that can be executed by the main Harness agent or, when explicitly requested, by Harness `worker` subagents.
+Plans one roadmap phase for Harness execution. It converts a phase section into interface gates and implementation lanes that can be executed by the main Harness agent, by the runner (which runs ready lanes with machine-verified disjoint ownership concurrently in isolated worktrees by default), or, when explicitly requested, by Harness `worker` subagents.
 
 ## Core Rules
 

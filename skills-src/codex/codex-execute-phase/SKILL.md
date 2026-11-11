@@ -5,7 +5,7 @@ description: "Codex-optimized executor for a `codex-plan-phase` lane plan. Use w
 
 # Codex Execute Phase
 
-Executes a phase plan produced by `codex-plan-phase`. The default executor is the main Codex thread. Worker subagents are optional and only used when the user explicitly asks for subagents, delegation, or parallel execution. Write-capable parallel execution also requires machine-verified disjoint lanes and scheduler-owned worktree assignments; prose lane labels are not sufficient.
+Executes a phase plan produced by `codex-plan-phase`. The default executor is the main Codex thread; under the runner, verified disjoint lanes run concurrently by default. In a direct session, worker subagents are optional and only used when the user explicitly asks for subagents, delegation, or parallel execution. Write-capable parallel execution also requires machine-verified disjoint lanes and scheduler-owned worktree assignments; prose lane labels are not sufficient.
 
 ## Core Rules
 
@@ -46,7 +46,7 @@ externalized as a typed `DelegationRequest`.
 
 - Plan path: default latest `plans/phase-plan-*.md`.
 - `--dry-run`: parse and print the lane schedule without editing.
-- `--parallel`: allowed only when the user explicitly requests parallel worker execution.
+- `--parallel`: accepted for compatibility; it has no effect (see Lane Concurrency).
 
 If no plan path is explicit, read [references/interactive-path.md](references/interactive-path.md) for safe reuse of the `codex-plan-phase` handoff.
 
@@ -115,11 +115,14 @@ If no plan path is explicit, read [references/interactive-path.md](references/in
   - treat any older downstream phase plan or handoff as stale after a roadmap amendment and route the next step back through `codex-plan-phase` for the newly selected downstream phase;
    - summarize changed files, tests run, and any residual risks.
 
-## Optional Worker Fanout
+## Lane Concurrency
 
-Use worker subagents only when the user explicitly authorizes parallel agent work and the DAG-ready lanes are disjoint.
+Under the runner (`phase-loop run`), after its ordinary execute gates, ready lanes with machine-verified disjoint ownership run concurrently in isolated worktrees by default: at most four, lowered to fit a provisional 2 GiB per-lane memory budget (policy, not measured usage). Ownership, executor-pin, worktree or capacity problems fall back to serial with a recorded reason before launch. After a child starts, failures block with `lane_recovery_required`; nothing relaunches automatically.
 
-Before briefing workers, read [references/worker-fanout.md](references/worker-fanout.md). The main thread remains responsible for integration, diff review, final verification, and conflicts.
+- Serial runner execution: `--lane-scheduler off`, `PHASE_LOOP_LANE_SCHEDULER=off` or `--max-parallel-lanes 1`; `serialized` is record-only. Unreadable capacity records `capacity_unknown` and authorizes no heavy work.
+- A lane child executes only its assignment and never publishes or closes the phase; the parent verifies the combined tree and closes out.
+- A direct session runs lanes serially or hands the phase to the runner; no direct-session command executes a lane wave. Worker subagents also need explicit user authorization and scheduler-owned worktree assignments, which no direct-session command provides. Brief them as [references/worker-fanout.md](references/worker-fanout.md) says. The main thread owns integration, diff review, final verification and conflicts.
+- Lane concurrency adds no test capacity: heavy verification stays one admitted run. Adaptive admission is not implemented.
 
 ## Failure Policy
 

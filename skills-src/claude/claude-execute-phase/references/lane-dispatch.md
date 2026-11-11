@@ -54,7 +54,7 @@ State per lane: `pending | running | verify-ok | merged | failed`. State per gat
 
 Repeat until all lanes are `merged` or halt is triggered:
 
-1. **Find ready lanes** — `pending` lanes whose upstream lanes are all `merged` AND all consumed `IF-0-*` gates are `closed`. Synthesized artifact writer lanes are ready only after every producer lane named in `Interfaces consumed` is merged. Cap the dispatch batch at `EXECUTE_MAX_PARALLEL_LANES` (default 4; explicit parallel authorization required). Slice the eligible set to the first N (lower SL-ID first) and queue the rest.
+1. **Find ready lanes** — `pending` lanes whose upstream lanes are all `merged` AND all consumed `IF-0-*` gates are `closed`. Synthesized artifact writer lanes are ready only after every producer lane named in `Interfaces consumed` is merged. Cap the dispatch batch at `EXECUTE_MAX_PARALLEL_LANES` (default 4; explicit parallel authorization required), or at one lane under `--serial`. Slice the eligible set to the first N (lower SL-ID first) and queue the rest.
 
 2. **Allocate worktree names**. For each ready lane, run `scripts/allocate_worktree_name.sh <sl-id>`. Substitute the emitted name (e.g., `lane-sl-1-20260418T144536-nxz5`) into both `Agent(name=…)` and the briefed `EnterWorktree(name=…)`. Bare `lane-<sl-id>` names collide under rapid dispatch.
 
@@ -104,7 +104,7 @@ pending ──► running ──► verify-ok ──► merged
 
 ## Parallelism contract
 
-- All lanes whose dependencies are satisfied at the same time MUST be dispatched in the same message (parallel `Agent` tool calls), up to `EXECUTE_MAX_PARALLEL_LANES`.
+- All lanes whose dependencies are satisfied at the same time MUST be dispatched in the same message (parallel `Agent` tool calls), up to `EXECUTE_MAX_PARALLEL_LANES`. `--serial` sets the batch size to one; the ceiling stays 4 otherwise.
 - Lanes must not share files. The plan's lane-validation checklist guarantees disjoint ownership; claude-execute-phase trusts the plan and does not re-verify file-glob intersections.
 - Shared generated files (e.g., barrel index files, generated types) are called out in the plan's `## Execution Notes`; only the lane that lists them under `Owned files` may modify them.
 

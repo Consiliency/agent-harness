@@ -16,6 +16,11 @@ carrying exit-criterion ID. Detailed plans state the outcome served, and advisor
 boards pass the outcome line to every seat. These prompts do not add required
 roadmap lint headings or change runtime enforcement.
 
+Execute-phase guidance routes verified concurrent lanes through the runner
+(see [lane scheduling](lane-scheduler.md)) and keeps its serial controls. Direct
+sessions execute serially or hand the phase to the runner; no skill names a
+direct-session lane-wave command. This wording changes no runtime behavior.
+
 The authored skill *sources* live in this repository at:
 
 ```

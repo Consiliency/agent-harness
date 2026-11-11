@@ -6,6 +6,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- Execute-phase and plan-phase skills in all four trees describe the runner's
+  verified concurrent lane default (ceiling four, provisional 2 GiB per-lane memory
+  clamp) and its serial controls. `--parallel` is an accepted no-op; direct sessions
+  run lanes serially or hand the phase to the runner, with no direct lane-wave
+  command. Claude `--serial` dispatches one lane per wave; its ceiling stays four.
+  Adaptive capacity admission remains tracked in agent-harness#1979.
+
 - Enforce shared automation closeouts for Pi execution, and preserve typed BAML
   worker outages during concurrent lane prompt preparation (agent-harness#1978).
 

@@ -5,7 +5,7 @@ description: "Codex-optimized phase planner. Use when a roadmap phase from a ver
 
 # Codex Plan Phase
 
-Plans one roadmap phase for Codex execution. It converts a phase section into interface gates and implementation lanes that can be executed by the main Codex agent or, when explicitly requested, by Codex `worker` subagents.
+Plans one roadmap phase for Codex execution. It converts a phase section into interface gates and implementation lanes that can be executed by the main Codex agent, by the runner (which runs ready lanes with machine-verified disjoint ownership concurrently in isolated worktrees by default), or, when explicitly requested, by Codex `worker` subagents.
 
 ## Core Rules
 

@@ -5,7 +5,7 @@ description: "Gemini-optimized phase planner. Use when a roadmap phase from a ve
 
 # Gemini Plan Phase
 
-Plans one roadmap phase for Gemini execution. It converts a phase section into interface gates and implementation lanes that can be executed by the main Gemini agent or, when explicitly requested, by Gemini `worker` subagents.
+Plans one roadmap phase for Gemini execution. It converts a phase section into interface gates and implementation lanes that can be executed by the main Gemini agent, by the runner (which runs ready lanes with machine-verified disjoint ownership concurrently in isolated worktrees by default), or, when explicitly requested, by Gemini `worker` subagents.
 
 ## Core Rules
 
