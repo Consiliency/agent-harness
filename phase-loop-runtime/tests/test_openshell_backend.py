@@ -376,6 +376,7 @@ def test_untrusted_or_lost_result_refused_no_replay(pipeline, failure, wrapped):
     endpoint.worker_envelope = wrapped
     setattr(worker if failure == 'native_refuse' else endpoint, failure, True)
     decision = place()
+    assert decision.outcome == 'placed', decision
     with pytest.raises(sp.PlacementUnavailable, match='lost_after_launch'):
         run(decision.placement)
     assert endpoint.calls.count('exec') == 1

@@ -46,6 +46,7 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
    - Append mode reads existing aliases, phase numbers, dependencies, and interface gates, then appends only new phases.
 3. Write top-level context:
    - `Context`
+   - `First Working Outcome`: the outcome line, the observation proving it, the carrying `EC-<ALIAS>-<N>`, and what deliberately remains rough in the first slice. For security, performance or technical-debt work, name that property as the outcome.
    - `Architecture North Star` when structural
    - `Assumptions`
    - `Non-Goals`
@@ -88,6 +89,10 @@ Use this shape so `opencode-plan-phase` can parse it:
 # Phase roadmap v<N>
 
 ## Context
+
+## First Working Outcome
+
+<Outcome line; observation proving it; carrying EC-<ALIAS>-<N>; what deliberately remains rough in the first slice. For security, performance or technical-debt work, name that property as the outcome.>
 
 ## Architecture North Star
 

@@ -276,6 +276,9 @@ PYEOF
       '/skills-src/*/*-skill-editor/' \
       /phase-loop-runtime/scripts/verify_harden_evidence.py \
       /phase-loop-runtime/scripts/qualify_gemini_heartbeat.py \
+      /phase-loop-runtime/scripts/convert_agy_record_v2.py \
+      /phase-loop-runtime/scripts/verify_qualified_agy_image.py \
+      '/plans/evidence/agy-*-qualification.json' \
       /phase-loop-runtime/scripts/emit_placement_contract.py \
       /phase-loop-runtime/scripts/verify_supervised_contract_publication.py \
       /plans/artifacts/v12-SCHEMA-inputs.md \

@@ -6,6 +6,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- Gate A retains agy qualification helpers and catalog records in its sparse
+  test checkout, while continuing to import the runtime from the installed wheel.
+
+- Workflow skills carry the first working outcome into roadmaps, detailed plans and advisor reviews.
+
 - CI: honour the org-wide `CI_OFFLOAD_PAUSED` switch in the CI-offload eligibility
   job. `true` diverts runs to the existing hosted path (GitHub compares
   case-insensitively, so `TRUE` does too), and the job logs `offload paused (CI_OFFLOAD_PAUSED): <value>`. Unset or any other value
