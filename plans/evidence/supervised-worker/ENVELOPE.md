@@ -148,6 +148,16 @@ that observed input. The committed `stamp_evidence_receipt.py` refreshes the
 integrated WORKER doc binding and derived tree digest; producer outcomes,
 authority, acceptance fields and final-tree claims remain unchanged.
 
+## Parallel-lane CLI metadata revalidation
+
+For agent-harness#1978, input `7e32725bcc7efb714cbed537c61c41f81dad5943`
+adds the `--max-parallel-lanes` option to executable dependency parsing.
+The four named producer files were revalidated serially: 252 passed, no skips.
+The existing stamp tool refreshed only that source binding and the derived tree
+digest; the eight receipt checks then passed. Historical producer outcomes and
+stamps remain historical, and no final-tree or installed qualification is claimed.
+Test startup reported `ContractFloorUnverified`.
+
 ## Runner-stamped producer record
 
 ```json
@@ -164,13 +174,13 @@ authority, acceptance fields and final-tree claims remain unchanged.
     "observed_utc": "2026-11-05T06:15:55.801107+00:00",
     "observed_input_head": "00c6c1e95960839e6a6299e14bbf8d54cb9707e0",
     "approved_plan_input_head": "c1aac3c19b711f9688bddc2bda11128d928b3ad9",
-    "source_tree_digest": "0d4bc8005d742713a64247269d13b9916ed0c62a2171e09ab90e272cb2a66a9d"
+    "source_tree_digest": "c139f959d8deb896b857136d7cb847985f92d36233ba66b8cc6a58045253c0de"
   },
   "source_hashes": {
     "phase-loop-runtime/src/phase_loop_runtime/supervised_launch.py": "9c339674bef0b52bd6520d1e6d72bcee5157d5d80b4ba21f9baa425d4cfb0a22",
     "phase-loop-runtime/src/phase_loop_runtime/supervised_launch_binding.py": "d7f00ad8dcb5b979c6129c5836209497ee8e89ad20e3bfaed7bbe55b63b88958",
     "phase-loop-runtime/src/phase_loop_runtime/supervised_dependency.py": "7f465aee2193256b0816cfce7dad614d07af3f9e429f5f285c9e904157301713",
-    "phase-loop-runtime/src/phase_loop_runtime/executable_dependency_startup.py": "9ca6943121027230e5db682999da826ccf2389f2169728c7221aa796b0cc8a65",
+    "phase-loop-runtime/src/phase_loop_runtime/executable_dependency_startup.py": "d5c30229bf1fcce6c48c69b6a63d6ece4d137c527c55f953f9fdc3e1c2e271ec",
     "phase-loop-runtime/tests/test_supervised_launch.py": "75589c45c697c747407260c54a0ce9179cb32c458ea32937b3b1806c2acc1522",
     "phase-loop-runtime/tests/test_supervised_launch_mutations.py": "f91b77785ed63a31798ce8ba509bc712efa5c489d59532d53266d2db30337125",
     "phase-loop-runtime/tests/test_supervised_launch_binding.py": "c126cc082b541ba2bfcfce92b6df8e56a83ae990510fdbb4199d190b94b717a9",
