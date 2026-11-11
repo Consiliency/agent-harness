@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[3]
 from phase_loop_runtime.launcher import LaunchResult, build_launch_request, build_launch_spec, extract_executor_output_text
 from phase_loop_runtime.profiles import resolve_profile_for_executor
@@ -49,11 +51,12 @@ class PhaseLoopPiExecutorTest(unittest.TestCase):
             ), patch(
                 "phase_loop_runtime.runner.launch_with_spec",
                 return_value=LaunchResult(command=["pi-agent-watch"], returncode=0, output=output, executor="pi"),
-            ):
+            ) as fake_launch:
                 snapshot, results = run_loop(repo, roadmap, phase="RUNNER", executor="pi")
+                self.assertEqual(fake_launch.call_args.args[0].executor, "pi")
 
             self.assertEqual(len(results), 1)
-            self.assertIn(snapshot.phases["RUNNER"], {"planned", "complete"})
+            self.assertEqual(snapshot.phases["RUNNER"], "complete")
 
     def test_pi_output_reduction_handles_result_and_message_payloads(self):
         selection = resolve_profile_for_executor(action="execute", executor="pi")
@@ -107,6 +110,33 @@ class PhaseLoopPiExecutorTest(unittest.TestCase):
                     work_unit_kind="lane_execute",
                 ),
             )
+
+
+@pytest.mark.parametrize("automation", [
+    "",
+    "automation:\n  status: blocked\n  verification_status: blocked\n"
+    "  human_required: false\n  blocker_class: repeated_verification_failure\n"
+    "  blocker_summary: fixture refusal\n",
+])
+def test_pi_missing_or_blocked_closeout_cannot_complete(tmp_path, automation):
+    from phase_loop_test_utils import commit_fixture_paths
+
+    repo = make_repo(tmp_path)
+    roadmap = repo / "specs/phase-plans-v1.md"
+    plan = write_phase_plan(repo, "RUNNER", roadmap)
+    commit_fixture_paths(repo, "pi closeout fixture", plan)
+    with (
+        patch("phase_loop_runtime.runner.run_auth_preflight",
+              return_value=type("Preflight", (), {"ok": True, "metadata": {}})()),
+        patch("phase_loop_runtime.runner.launch_with_spec",
+              return_value=LaunchResult(command=["pi-agent-watch"], returncode=0,
+                                        output=json.dumps({"result": automation}), executor="pi")) as launch,
+    ):
+        snapshot, results = run_loop(repo, roadmap, phase="RUNNER", executor="pi")
+    assert launch.call_args.args[0].executor == "pi"
+    assert len(results) == 1
+    assert snapshot.phases["RUNNER"] == "blocked"
+    assert snapshot.blocker_class == "repeated_verification_failure"
 
 
 if __name__ == "__main__":

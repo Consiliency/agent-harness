@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import re
 from pathlib import Path
@@ -110,6 +111,11 @@ def phase_loop_runs_dir(repo: Path) -> Path:
 
 
 def lane_worktree_root(repo: Path, *, workspace_mount: Path | None = None) -> Path:
+    if workspace_mount is None:
+        if root := os.environ.get("WORKTREE_ROOT"):
+            return Path(root).expanduser()
+        if Path("/etc/consiliency/team-host").exists():
+            return Path.home() / "workspace" / "worktrees"
     mount = workspace_mount or Path("/mnt/workspace")
     if mount.exists():
         return mount / "worktrees"

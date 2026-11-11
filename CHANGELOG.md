@@ -6,6 +6,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- Enforce shared automation closeouts for Pi execution, and preserve typed BAML
+  worker outages during concurrent lane prompt preparation (agent-harness#1978).
+
+- Execute verified disjoint lane waves in isolated worktrees at the ordinary
+  execute boundary, with a default ceiling of four, explicit serial switches,
+  journaled transport and combined-tree verification. Memory budgeting uses
+  a configurable provisional 2 GiB per-lane policy; cache credit is deferred.
+
 - Gate A retains agy qualification helpers and catalog records in its sparse
   test checkout, while continuing to import the runtime from the installed wheel.
 

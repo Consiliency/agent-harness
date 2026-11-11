@@ -1287,7 +1287,9 @@ def run_loop(
     rotate_executors: str | None = None,
     rotation_mode: str = "phase",
     rotation_on_policy_pin: str = "skip",
-    lane_scheduler_mode: str = "off",
+    lane_scheduler_mode: str = "concurrent",
+    max_parallel_lanes: int = 4,
+    lane_memory_budget_bytes: int | None = None,
     source_bundle_path: str | Path | None = None,
     pipeline_mode: str | None = None,
     output_path: str | Path | None = None,
@@ -1376,6 +1378,10 @@ def run_loop(
     # requested with an empty reason" ("") and emit operator_override_missing_reason for
     # the latter. The CLI rejects an empty reason pre-run_loop; this preserves the
     # distinction for programmatic callers.
+    if not isinstance(max_parallel_lanes, int) or max_parallel_lanes < 1:
+        raise ValueError("max_parallel_lanes must be a positive integer")
+    if lane_memory_budget_bytes is not None and (not isinstance(lane_memory_budget_bytes, int) or lane_memory_budget_bytes < 1):
+        raise ValueError("lane_memory_budget_bytes must be a positive integer")
     require_literal(lane_scheduler_mode, ("off", "serialized", "concurrent"), "lane scheduler mode")
     try:
         rotation_state = RotationState.from_csv(
@@ -1656,6 +1662,19 @@ def run_loop(
     with dispatch_lock_context, loop_context:
         def _prepare_phase_launch() -> "tuple[_DispatchOutcome | None, _DispatchPrep | None]":
             nonlocal blocker, current, executor, phase_aliases, selection, snapshot, wave_index
+            from .lane_wave_executor import lane_recovery_blocker
+            if recovery_details := lane_recovery_blocker(repo, alias):
+                recovery = {"human_required": False, "blocker_class": "contract_bug",
+                            "blocker_summary": "lane_recovery_required", "required_human_inputs": ()}
+                classifications[alias] = "blocked"
+                append_event(repo, LoopEvent(
+                    timestamp=utc_now(), repo=str(repo), roadmap=str(roadmap), phase=alias,
+                    action=action, status="blocked", model=selection.model,
+                    reasoning_effort=selection.effort, source=selection.source,
+                    blocker=recovery, metadata={"lane_scheduler": {"reason": "lane_recovery_required", **recovery_details}},
+                    **event_provenance(roadmap, alias),
+                ))
+                return (_DispatchOutcome("break", None), None)
             # #145: the fresh, injected operator-approval metadata for a release-dispatch
             # launch (None for non-release or when the gate fail-closed above).
             resolved_operator_approval: dict[str, object] | None = None
@@ -1973,7 +1992,7 @@ def run_loop(
                 return (_DispatchOutcome("break", None), None)
             if (
                 not dry_run
-                and (lane_scheduler_mode != "off" or work_unit_mode)
+                and work_unit_mode
                 and status in {"planned", "executed"}
                 and plan is not None
             ):
@@ -2024,20 +2043,6 @@ def run_loop(
                         ),
                     )
                     return (_DispatchOutcome("break", None), None)
-            if lane_scheduler_mode != "off" and status in {"planned", "executed"} and plan is not None:
-                decision = _launch_ready_lane_wave(
-                    repo=repo,
-                    roadmap=roadmap,
-                    plan=plan,
-                    phase=alias,
-                    mode=lane_scheduler_mode,
-                    action=action,
-                    selection=selection,
-                    dry_run=dry_run,
-                )
-                classifications[alias] = decision["phase_status"]
-                append_event(repo, decision["event"])
-                return (_DispatchOutcome("break", None), None)
             if work_unit_mode and status in {"planned", "executed"} and plan is not None:
                 execution_diagnostic = pipeline_execution_plan_diagnostic(repo, plan, phase=alias, roadmap=roadmap)
                 if execution_diagnostic is not None:
@@ -2585,12 +2590,6 @@ def run_loop(
                         phase=alias,
                         roadmap=roadmap,
                     )
-            if launch_action == "execute":
-                prompt_profile = "execute"
-            elif launch_action == "repair":
-                prompt_profile = "repair"
-            else:
-                prompt_profile = "plan"
             plan_hints_doc = parse_dispatch_hints_doc(plan, kind="plan") if plan is not None else ({}, ())
             roadmap_hints_doc = parse_dispatch_hints_doc(roadmap, kind="roadmap")
             plan_dispatch_hints = (
@@ -2704,19 +2703,24 @@ def run_loop(
             roadmap_policy_dispatch_hints = execution_policy_dispatch_hints(roadmap_execution_policy)
             effective_plan_dispatch_hints = plan_policy_dispatch_hints or plan_dispatch_hints
             effective_roadmap_dispatch_hints = roadmap_policy_dispatch_hints or roadmap_dispatch_hints
+            from .lane_wave_executor import resumed_lane_executor
+            lane_resume_executor = (
+                resumed_lane_executor(repo, plan, alias)
+                if launch_action == "execute" and plan is not None else None
+            )
             rotation_preferred_executor = None
             rotation_policy_pin = bool(
                 (plan_policy_dispatch_hints and plan_policy_dispatch_hints.preferred_executors)
                 or (roadmap_policy_dispatch_hints and roadmap_policy_dispatch_hints.preferred_executors)
             )
-            if rotation_state is not None and rotation_state.mode == "phase" and executor is None:
+            if rotation_state is not None and rotation_state.mode == "phase" and executor is None and lane_resume_executor is None:
                 if rotation_policy_pin:
                     rotation_state.consume_policy_pin()
                 else:
                     rotation_preferred_executor = rotation_state.current()
             operator_dispatch_hints = _operator_dispatch_hints(
                 action=launch_action,
-                executor=executor or rotation_preferred_executor,
+                executor=executor or lane_resume_executor or rotation_preferred_executor,
                 allowed_executors=allowed_executors,
                 fallback_executors=fallback_executors,
                 disabled_executors=disabled_executors,
@@ -4752,6 +4756,154 @@ def run_loop(
             outcome, prep = _prepare_phase_launch()
             if outcome is not None:
                 return outcome
+            from .lane_wave_executor import execute_lane_waves, lane_recovery_blocker
+            from .lane_capacity import memory_capacity
+
+            if prep.launch_action == "execute" and prep.plan is not None:
+                def lane_event(lane_id, metadata):
+                    append_event(repo, LoopEvent(
+                        timestamp=utc_now(), repo=str(repo), roadmap=str(roadmap),
+                        phase=alias, action=action, status="executing",
+                        model=prep.selection.model, reasoning_effort=prep.selection.effort,
+                        source=prep.selection.source,
+                        selected_executor=prep.dispatch_decision.selected_executor,
+                        metadata={"lane_scheduler": {"lane_id": lane_id, **metadata}},
+                        **event_provenance(roadmap, alias),
+                    ))
+
+                if recovery_details := lane_recovery_blocker(repo, alias):
+                    lane_status, lane_reason, lane_metadata = "blocked", "lane_recovery_required", recovery_details
+                elif lane_scheduler_mode == "serialized":
+                    decision = _launch_ready_lane_wave(
+                        repo=repo, roadmap=roadmap, plan=prep.plan, phase=alias,
+                        mode="serialized", action=action, selection=prep.selection, dry_run=dry_run,
+                    )
+                    classifications[alias] = decision["phase_status"]
+                    append_event(repo, decision["event"])
+                    return _DispatchOutcome("break", None)
+                elif lane_scheduler_mode == "concurrent" and max_parallel_lanes > 1:
+                    capacity = memory_capacity(max_parallel_lanes, lane_memory_budget_bytes)
+
+                    def prepare_lane(handle, assignment):
+                        prompt = build_prompt(
+                            "execute", roadmap=roadmap, phase=alias, plan=prep.plan,
+                            harness_target=prep.request.executor,
+                            injection_mode_override="context_file" if prep.request.executor == "command" else None,
+                            harness_lane_assignment=assignment,
+                        )
+                        restrictions = "\nExecute only your assigned lane. Leave output dirty. Do not commit, push, publish, or perform phase closeout. Do not launch heavy/full suites; use only narrow capped lane checks under host headroom rules. The parent owns combined verification and heavy-run admission. Return the shared automation closeout for this lane only."
+                        prompt = replace(prompt, body=prompt.body + restrictions,
+                                         context_body=prompt.render_context() + restrictions)
+                        request = build_launch_request(
+                            executor=prep.request.executor, action="execute", repo=handle.worktree_path,
+                            roadmap=roadmap, phase=alias, plan=prep.plan, model_selection=prep.selection,
+                            prompt_bundle=prompt, harness_lane_assignment=assignment,
+                            command_adapter=prep.request.command_adapter,
+                            dispatch_decision=prep.dispatch_decision,
+                            json_output=prep.request.json_output, bypass_approvals=prep.request.bypass_approvals,
+                            launch_timeout_seconds=prep.request.launch_timeout_seconds,
+                            claude_execution_mode=prep.request.claude_execution_mode,
+                        )
+                        lane_spec = build_launch_spec(request)
+                        _launcher_module.refuse_unwired_executor_spec(lane_spec, dry_run=dry_run)
+                        return lane_spec
+
+                    if capacity.effective < 2:
+                        lane_status, lane_reason, lane_metadata = "serial", "capacity", {}
+                    else:
+                        lane_result = execute_lane_waves(
+                            repo=repo, roadmap=roadmap, plan=prep.plan, phase=alias,
+                            executor=prep.request.executor, max_workers=capacity.effective,
+                            prepare=prepare_lane, trusted_closeout=_trusted_concurrent_worker_closeout,
+                            event=lambda lane_id, metadata: lane_event(lane_id, {**metadata, "capacity": capacity.to_json()}),
+                            dry_run=dry_run, caller_run_id=caller_run_id,
+                        )
+                        lane_status, lane_reason, lane_metadata = lane_result.status, lane_result.reason, lane_result.metadata
+                    lane_metadata = {**lane_metadata, "capacity": capacity.to_json()}
+                else:
+                    lane_status, lane_reason, lane_metadata = "serial", "off", {}
+                if lane_status != "serial":
+                    verification = None
+                    if lane_status == "complete":
+                        verification = _run_execute_verification(
+                            repo=repo, roadmap=roadmap, plan=prep.plan,
+                            artifacts=prep.artifacts, phase_alias=alias,
+                        )
+                        merge_launch_metadata(prep.artifacts.get("metadata"), {"runner_verification": verification})
+                        if _runner_verification_fails_closed(verification):
+                            lane_status, lane_reason = "blocked", "integrated_verification_failed"
+                    status = "blocked" if lane_status == "blocked" else (
+                        "planned" if lane_status == "preview" else "awaiting_phase_closeout"
+                    )
+                    blocker = ({"human_required": False, "blocker_class": "contract_bug",
+                                "blocker_summary": lane_reason, "required_human_inputs": ()}
+                               if status == "blocked" else None)
+                    if lane_reason == "integrated_verification_failed":
+                        blocker = {"human_required": False, "blocker_class": "repeated_verification_failure",
+                                   "blocker_summary": verification.get("blocker_summary") or lane_reason,
+                                   "required_human_inputs": ()}
+                    dirty_metadata = {}
+                    gate_automation = {}
+                    if lane_status == "complete":
+                        # Nonempty automation invokes every ordinary closeout gate;
+                        # lane trust alone is not aggregate gate evidence.
+                        gate_automation = {"automation_status": "complete"}
+                        gates = _closeout_gate_recheck(repo, roadmap, prep.plan, gate_automation, "complete", blocker)
+                        blocker = gates.event_blocker
+                        if blocker is not None:
+                            status = "blocked"
+                        completion_dirty_paths = _dirty_paths(repo)
+                        if completion_dirty_paths:
+                            dirty_summary = _classify_dirty_paths(
+                                repo, roadmap, prep.plan, prep.pre_launch_dirty_paths,
+                                completion_dirty_paths, current_phase=alias,
+                                emit_runtime_relaxation_event=True,
+                            )
+                            boundary = _pipeline_boundary_blocker(
+                                repo, roadmap, prep.plan, prep.execution_source_bundle_context,
+                                completion_dirty_paths,
+                            )
+                            if boundary is not None:
+                                blocker, status = boundary, "blocked"
+                                dirty_summary["pipeline_write_boundary"] = boundary
+                            elif blocker is None:
+                                status, blocker = _dirty_outcome(
+                                    dirty_summary,
+                                    blocked_summary="Phase reported complete but left dirty paths that are not closeout-safe.",
+                                )
+                            dirty_metadata = {"completion_dirty_worktree": {
+                                "reason": "complete_status_with_dirty_worktree", "terminal_status": "complete",
+                                "dirty_paths": completion_dirty_paths, **dirty_summary,
+                            }}
+                    terminal = build_terminal_summary(
+                        terminal_status="complete" if status == "awaiting_phase_closeout" else status,
+                        terminal_blocker=blocker,
+                        verification_status=("passed" if verification.get("ok") else "not_run") if verification else "not_run",
+                        next_action="Inspect lane evidence; phase closeout remains subject to ordinary authority.",
+                    )
+                    _persist_terminal_summary(prep.artifacts, terminal)
+                    classifications[alias] = status
+                    append_event(repo, LoopEvent(
+                        timestamp=utc_now(), repo=str(repo), roadmap=str(roadmap), phase=alias,
+                        action=action, status=status, model=prep.selection.model,
+                        reasoning_effort=prep.selection.effort, source=prep.selection.source,
+                        selected_executor=prep.dispatch_decision.selected_executor, blocker=blocker,
+                        metadata={"lane_scheduler": {"reason": lane_reason, **lane_metadata},
+                                  "runner_verification": verification, "terminal_summary": terminal,
+                                  "child_automation": gate_automation, **dirty_metadata},
+                        **event_provenance(roadmap, alias),
+                    ))
+                    if status == "awaiting_phase_closeout" and closeout_mode != "manual":
+                        status, closeout_event = _perform_phase_closeout(
+                            repo, roadmap, alias, reconcile(repo, roadmap), prep.selection,
+                            action=action, closeout_mode=closeout_mode,
+                            allow_unowned_reason=allow_unowned_reason, run_mode=run_mode,
+                        )
+                        classifications[alias] = status
+                        append_event(repo, closeout_event)
+                    return _DispatchOutcome("break", status)
+                if lane_reason != "off":
+                    lane_event(None, {"reason": lane_reason, **lane_metadata})
             result = launch_with_spec(
                 prep.spec,
                 dry_run=dry_run,
@@ -5677,14 +5829,12 @@ def _launch_ready_lane_wave(
     metadata["lane_scheduler"]["decision"] = decision.to_json()
     if decision.status == "ready" and decision.ready_wave is not None:
         launched: list[dict[str, object]] = []
-        lane_by_id = {lane.lane_id: lane for lane in ir.lanes}
         assignment_by_lane = {assignment.lane_id: assignment for assignment in decision.ready_wave.assignments}
         stopped = False
         for lane_id in decision.ready_wave.lane_ids:
             if stop_requested(repo):
                 stopped = True
                 break
-            lane = lane_by_id[lane_id]
             kind = decision.ready_wave.work_unit_kinds[lane_id]
             lane_executor = default_executor_for_work_unit(kind, scheduler_assigned=True)
             assignment = assignment_by_lane.get(lane_id)
@@ -5694,6 +5844,9 @@ def _launch_ready_lane_wave(
                 lane_id=lane_id,
                 attempt=_next_work_unit_attempt(work_units, phase.upper(), kind, lane_id),
             )
+            if dry_run:
+                launched.append({"identity": identity.to_json(), "status": "preview"})
+                continue
             state = launch_work_unit_attempt(
                 repo,
                 roadmap,
@@ -10888,7 +11041,7 @@ def _plain_yaml_value(value: str) -> object:
 
 
 def _requires_shared_automation_closeout(result: LaunchResult, spec) -> bool:
-    if spec.executor not in {"codex", "claude", "gemini", "grok", "opencode", "command"}:
+    if spec.executor not in {"codex", "claude", "gemini", "grok", "opencode", "pi", "command"}:
         return False
     return result.executor == spec.executor
 

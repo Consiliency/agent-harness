@@ -24,9 +24,9 @@ and lane/work-unit paths funnel through the SAME preflight helper, and the
 direct and delegated paths funnel through the SAME closeout helper.
 
 Deliberately UNMARKED (no ``dotfiles_integration``): every scenario here
-returns from its dispatch branch BEFORE ``build_prompt`` resolves a skill
-bundle (the preflight gates fire ahead of it; most closeout scenarios patch
-``build_prompt``/``launch_with_spec``/``launch_delegated_child`` directly), so
+either stops at a preflight gate or supplies an explicit prompt fixture
+(the dry-run and closeout scenarios patch ``build_prompt``; closeout
+scenarios also patch ``launch_with_spec``/``launch_delegated_child``), so
 none of it depends on a dotfiles fleet tree.
 
 Post-merge codex CR follow-up (still #245): the original
@@ -225,9 +225,17 @@ class DispatchPreflightGateParityTest(unittest.TestCase):
             repo = make_repo(Path(td))
             roadmap, _plan = self._wave_roadmap_and_plan(repo)
 
-            snapshot, results = run_loop(
-                repo, roadmap, phase="WAVESCHED", dry_run=True, lane_scheduler_mode="serialized",
-            )
+            with (
+                patch("phase_loop_runtime.runner.build_prompt",
+                      return_value=PromptBundle("fake", "fixture", "context_file")),
+                patch("phase_loop_runtime.runner._execute_dispatch_preflight_gates") as preflight,
+                patch("phase_loop_runtime.runner.launch_with_spec") as launch,
+            ):
+                snapshot, results = run_loop(
+                    repo, roadmap, phase="WAVESCHED", dry_run=True, lane_scheduler_mode="serialized",
+                )
+            preflight.assert_not_called()
+            launch.assert_not_called()
 
             self.assertEqual(results, [])
             self.assertNotEqual(snapshot.phases["WAVESCHED"], "blocked")

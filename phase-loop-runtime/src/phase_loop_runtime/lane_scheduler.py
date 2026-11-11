@@ -83,7 +83,10 @@ def select_ready_lane_wave(
         )
     selected = ready[:1] if mode == "serialized" else _concurrent_ready_lanes(ready)
     diagnostics = (
-        validate_concurrent_lane_ownership(selected, assignments=assignments, expected_base_sha=expected_base_sha)
+        validate_concurrent_lane_ownership(
+            selected, assignments=assignments, expected_base_sha=expected_base_sha,
+            require_assignments=bool(assignments),
+        )
         if mode == "concurrent"
         else ()
     )
@@ -126,11 +129,12 @@ def validate_concurrent_lane_ownership(
     *,
     assignments: tuple[LaneWorktreeAssignment, ...] = (),
     expected_base_sha: str | None = None,
+    require_assignments: bool = True,
 ) -> tuple[LaneIRDiagnostic, ...]:
     diagnostics: list[LaneIRDiagnostic] = []
     writers = [lane for lane in lanes if not lane.read_only]
     assignment_by_lane = {assignment.lane_id: assignment for assignment in assignments}
-    if len(writers) > 1:
+    if require_assignments:
         for lane in writers:
             assignment = assignment_by_lane.get(lane.lane_id)
             if assignment is None or assignment.isolation_mode != "git_worktree":
@@ -142,7 +146,7 @@ def validate_concurrent_lane_ownership(
                         details={"lane_id": lane.lane_id},
                     )
                 )
-            elif expected_base_sha and assignment.base_sha and assignment.base_sha != expected_base_sha:
+            elif expected_base_sha and assignment.base_sha != expected_base_sha:
                 diagnostics.append(
                     LaneIRDiagnostic(
                         kind="stale_worktree_assignment",
@@ -329,6 +333,8 @@ def _patterns_overlap_any(left_patterns: tuple[str, ...], right_patterns: tuple[
 
 def _patterns_overlap(left: str, right: str) -> bool:
     if left == right:
+        return True
+    if (_has_glob(left) and not _pattern_prefix(left)) or (_has_glob(right) and not _pattern_prefix(right)):
         return True
     left_has_glob = _has_glob(left)
     right_has_glob = _has_glob(right)

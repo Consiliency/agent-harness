@@ -83,7 +83,7 @@ class PhaseLoopLaneSchedulerTest(unittest.TestCase):
             self.assertEqual(decision.ready_wave.lane_ids, ("SL-0",))
             self.assertEqual(decision.ready_wave.mode, "serialized")
 
-    def test_concurrent_mode_requires_isolated_worktrees_for_multiple_writers(self):
+    def test_candidate_selection_precedes_worktree_validation(self):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))
             plan = write_phase_plan(repo, "WAVESCHED", repo / "specs" / "phase-plans-v1.md", body=_fanout_body())
@@ -93,8 +93,8 @@ class PhaseLoopLaneSchedulerTest(unittest.TestCase):
             assignments = worktree_assignments_for_wave(repo, ir.lanes[:2], branch="main", mode="concurrent")
             ready = select_ready_lane_wave(ir, mode="concurrent", assignments=assignments)
 
-            self.assertEqual(blocked.status, "blocked")
-            self.assertEqual(blocked.diagnostics[0].kind, "unsafe_concurrent_lane")
+            self.assertEqual(blocked.status, "ready")
+            self.assertEqual(validate_concurrent_lane_ownership(ir.lanes[:2])[0].kind, "unsafe_concurrent_lane")
             self.assertEqual(ready.status, "ready")
             self.assertEqual(ready.ready_wave.lane_ids, ("SL-0", "SL-1"))
             self.assertEqual(ready.ready_wave.assignments[0].isolation_mode, "git_worktree")

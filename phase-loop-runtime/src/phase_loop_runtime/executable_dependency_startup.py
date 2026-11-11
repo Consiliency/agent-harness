@@ -167,6 +167,7 @@ _CLI_GLOBAL_VALUE_OPTIONS = frozenset({
     "--fallback-executor",
     "--heartbeat-interval-seconds",
     "--lane-scheduler",
+    "--max-parallel-lanes",
     "--max-phases",
     "--model",
     "--model-profile",
