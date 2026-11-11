@@ -54,6 +54,14 @@ def test_final_response_schema_excludes_interim_without_changing_lifecycle(tmp_p
 
 def test_golden_delta_is_only_final_schema_exclusion():
     golden = json.loads((Path(__file__).parent / "data/launchspec_golden/launchspec_golden.json").read_text())
+    # The twelfth permitted delta (follows agent-harness#1978): runner lane-concurrency
+    # skill wording changes only the two injected command strings. Bind exact bytes,
+    # then restore the prior strings; every older snapshot stays unchanged.
+    pre_lanes = json.loads((Path(__file__).parent / "data/launchspec_golden/pre_lane_concurrency_skills.json").read_text())
+    for change in pre_lanes["command_strings"]:
+        argv = golden[change["case"]]["command"]
+        assert argv[change["index"]] == change["current"]
+        argv[change["index"]] = change["pre_lane_concurrency"]
     # The eleventh permitted delta (agent-harness#1975): outcome-aware skill
     # guidance changes only the two injected command strings. Bind exact bytes
     # before restoring the prior golden; historical snapshots stay unchanged.

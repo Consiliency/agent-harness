@@ -1,6 +1,6 @@
 # Codex execute-phase worker briefs
 
-Use only after explicit user authorization and verification that the DAG-ready lanes are disjoint and have scheduler-owned worktree assignments. This procedure does not authorize peer harness launches; retain the entrypoint's typed `DelegationRequest` boundary.
+Use only after explicit user authorization and verification that the DAG-ready lanes are disjoint and have scheduler-owned worktree assignments. No direct-session command provides those assignments; without them, execute serially or hand the phase to the runner. This procedure does not authorize peer harness launches; retain the entrypoint's typed `DelegationRequest` boundary.
 
 For every worker brief:
 

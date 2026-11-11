@@ -45,6 +45,18 @@ verify, and closeout prompts are distinct from implementation prompts. If the
 selected policy is unsupported by the active harness, stop with a typed
 non-human blocker instead of silently downgrading.
 
+Under the runner (`phase-loop run`), lane concurrency belongs to the runner:
+after its ordinary execute gates it runs ready lanes with machine-verified
+disjoint ownership in isolated worktrees, at most four at once, lowered to fit
+a provisional 2 GiB per-lane memory budget (a policy allowance, not measured
+usage), with reason-coded serial fallback before launch. `--lane-scheduler off`,
+`PHASE_LOOP_LANE_SCHEDULER=off` or `--max-parallel-lanes 1` select serial runner
+execution. A lane child executes only its assignment; the parent verifies the
+combined tree and closes out. This skill's own teammate dispatch, its
+`EXECUTE_MAX_PARALLEL_LANES` ceiling and `--serial` apply only to direct
+sessions; no direct-session command executes a runner lane wave. Heavy
+verification remains one admitted run regardless of lane count.
+
 ## Phase-Loop Adapter Mode
 
 When the prompt or run-local context file starts with a concrete
@@ -134,6 +146,7 @@ governed runs read it before each panel round. Never merge with a blocker waived
 |---|---|---|
 | `<plan-path>` | no | Path to plan doc. Default: auto-detected via env vars + filename convention. |
 | `--dry-run` | no | Parse + validate, print the dispatch schedule with per-lane model assignments, do not spawn teammates. |
+| `--serial` | no | Dispatch one ready lane per wave (batch size one). `EXECUTE_MAX_PARALLEL_LANES` keeps its default of 4 for runs without this flag. |
 | `--resume` | no | Continue a partially executed plan: skip lanes already merged (their merge commit is on the target branch and their produced gates are closed). |
 
 Both modes: if a test needs a browser (Playwright, `claude-in-chrome`), read [browser setup](references/merge-and-verify.md#browser-verification) at plan intake, before implementation or lane dispatch; brief affected lanes on it.
