@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from .baml_modular import BamlWorkerError
 from .discovery import _owned_pattern_matches
 from .lane_scheduler import select_ready_lane_wave, validate_concurrent_lane_ownership, worktree_assignments_for_wave
 from .models import HarnessLaneAssignment
@@ -202,6 +203,10 @@ def execute_lane_waves(
                         "worktree": str(handle.worktree_path), "branch": handle.temp_branch,
                         "artifacts": {k: str(v) for k, v in artifacts.items()},
                     }
+            except BamlWorkerError:
+                # Prompt evaluation failed, not worktree preparation. Preserve the
+                # typed outage; the finally below reclaims this unlaunched wave.
+                raise
             except Exception:
                 # No child in this wave has started. Do not expose exception text
                 # (which can contain host paths) in portable decision metadata.
@@ -246,6 +251,8 @@ def execute_lane_waves(
                 _write_journal(journal_path, journal)
                 completed.append(lane.lane_id)
                 transferred.add(lane.lane_id)
+        except BamlWorkerError:
+            raise
         except Exception:
             # Running/intent records deliberately survive both launch and apply errors.
             return LaneExecutionResult("blocked", "lane_recovery_required", journal)

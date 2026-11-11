@@ -11041,7 +11041,7 @@ def _plain_yaml_value(value: str) -> object:
 
 
 def _requires_shared_automation_closeout(result: LaunchResult, spec) -> bool:
-    if spec.executor not in {"codex", "claude", "gemini", "grok", "opencode", "command"}:
+    if spec.executor not in {"codex", "claude", "gemini", "grok", "opencode", "pi", "command"}:
         return False
     return result.executor == spec.executor
 

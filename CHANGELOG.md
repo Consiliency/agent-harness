@@ -6,6 +6,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- Enforce shared automation closeouts for Pi execution, and preserve typed BAML
+  worker outages during concurrent lane prompt preparation (agent-harness#1978).
+
 - Execute verified disjoint lane waves in isolated worktrees at the ordinary
   execute boundary, with a default ceiling of four, explicit serial switches,
   journaled transport and combined-tree verification. Memory budgeting uses

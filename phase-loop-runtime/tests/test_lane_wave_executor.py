@@ -1,3 +1,5 @@
+import hashlib
+import json
 import subprocess
 import threading
 from pathlib import Path
@@ -109,6 +111,31 @@ def test_preparation_failure_reclaims_before_pool(repository, monkeypatch):
     result = invoke(repository, prepare=prepare, pool=lambda *a, **k: pytest.fail('must not launch'))
     assert (result.status, result.reason) == ('serial', 'worktree_unavailable')
     assert len(git(repository, 'worktree', 'list', '--porcelain').split('worktree ')) == 2
+
+
+@pytest.mark.parametrize('after_completed_wave', [False, True])
+def test_prompt_worker_outage_propagates_and_reclaims_unlaunched_wave(repository, monkeypatch, after_completed_wave):
+    from phase_loop_runtime.baml_modular import BamlWorkerError
+
+    setup_ir(repository, monkeypatch, count=3, dependent=True)
+    if after_completed_wave:
+        head = git(repository, 'rev-parse', 'HEAD')
+        lanes._write_journal(repository / '.phase-loop/lane-attempts/prior.json', {
+            'phase': 'P', 'executor': 'command', 'attempt': 'prior', 'head': head,
+            'plan_identity': hashlib.sha256((repository / 'plan.md').read_bytes()).hexdigest(),
+            'lanes': {f'SL-{i}': {'status': 'complete', 'paths': []} for i in range(2)},
+        })
+    fault = BamlWorkerError('died', rc=-9)
+    def prepare(*args):
+        raise fault
+    with pytest.raises(BamlWorkerError) as raised:
+        invoke(repository, prepare=prepare, pool=lambda *a, **k: pytest.fail('must not launch'))
+    assert raised.value is fault
+    assert len(git(repository, 'worktree', 'list', '--porcelain').split('worktree ')) == 2
+    assert not lanes.lane_recovery_blocker(repository, 'P')
+    if after_completed_wave:
+        journal = json.loads((repository / '.phase-loop/lane-attempts/prior.json').read_text())
+        assert all(record['status'] == 'complete' for record in journal['lanes'].values())
 
 
 def test_preview_does_not_write_lane_state(repository, monkeypatch):
