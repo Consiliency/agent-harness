@@ -9,6 +9,11 @@ Plans one roadmap phase for OpenCode execution. It converts a phase section into
 
 ## Core Rules
 
+A first working slice that fits one lane does not need a lane plan; route it to
+`<harness>-plan-detailed`. If an active phase contract requires lane artifacts,
+reconcile it through the existing amendment route first; do not silently skip
+required artifacts or ownership checks.
+
 Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, handoff roots, helper roots, and reflection roots.
 
 - In Plan Mode, do not write repo artifacts; return a complete `<proposed_plan>`.

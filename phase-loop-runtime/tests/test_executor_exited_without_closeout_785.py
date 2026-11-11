@@ -54,6 +54,14 @@ def test_final_response_schema_excludes_interim_without_changing_lifecycle(tmp_p
 
 def test_golden_delta_is_only_final_schema_exclusion():
     golden = json.loads((Path(__file__).parent / "data/launchspec_golden/launchspec_golden.json").read_text())
+    # The eleventh permitted delta (agent-harness#1975): outcome-aware skill
+    # guidance changes only the two injected command strings. Bind exact bytes
+    # before restoring the prior golden; historical snapshots stay unchanged.
+    pre_1975 = json.loads((Path(__file__).parent / "data/launchspec_golden/pre_1975_outcome_execution.json").read_text())
+    for change in pre_1975["command_strings"]:
+        argv = golden[change["case"]]["command"]
+        assert argv[change["index"]] == change["current"]
+        argv[change["index"]] = change["pre_1975"]
     # The tenth permitted delta (agent-harness#1943): accuracy corrections to
     # injected skill text. Bind the two current strings exactly, then restore
     # their prior bytes; all older snapshots and the final digest stay frozen.

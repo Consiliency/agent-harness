@@ -7,6 +7,10 @@ cutover (decision **A — agent-harness owns the skill sources**).
 
 ## Canonical source location
 
+Execution guidance records observed outcomes and bounded detailed-plan deviations.
+It preserves phase ownership, required checks and publication admission. Newly
+discovered prerequisites carry their source; optional work is recorded for later.
+
 Roadmap templates capture a First Working Outcome with observable evidence and a
 carrying exit-criterion ID. Detailed plans state the outcome served, and advisor
 boards pass the outcome line to every seat. These prompts do not add required

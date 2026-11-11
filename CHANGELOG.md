@@ -9,6 +9,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Gate A retains agy qualification helpers and catalog records in its sparse
   test checkout, while continuing to import the runtime from the installed wheel.
 
+- Execution skills observe intended outcomes, record bounded detailed-plan
+  deviations and distinguish required prerequisites from deferred work. Single-lane
+  first slices use the detailed planner while preserving active phase contracts.
+
 - Workflow skills carry the first working outcome into roadmaps, detailed plans and advisor reviews.
 
 - CI: honour the org-wide `CI_OFFLOAD_PAUSED` switch in the CI-offload eligibility

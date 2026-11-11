@@ -107,6 +107,8 @@ Synthesize into a concrete change list. Follow these rules rigorously — they'r
 
 **Scope discipline.** No features beyond what was requested. No refactors of surrounding code unless broken or directly blocking. No speculative error handling, type annotations, or comments on unchanged code.
 
+The plan leaves no decision open that changes what the user gets. Details found during implementation are recorded as bounded deviations.
+
 **Bounded-plan threshold.** If the plan would touch more than ~8 source files or require more than ~3 conceptually distinct changes, recommend splitting it into multiple bounded plans instead of producing one oversized detailed plan.
 
 **line-number-fabrication guard.** do not fabricate line numbers. Cite `module.py:NNN` only when that exact line was read in this session or captured in the Explore transcript; otherwise hedge the citation with "around line NNN" or tell the implementer to search for the relevant symbol.

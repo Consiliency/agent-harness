@@ -162,6 +162,8 @@ This gate precedes Step 7's auto-merge, which would otherwise mutate `main` dire
 
 ### Step 9.5 — After the reflection and handoff are written
 
+For the phase's outcome criterion: Observe the named outcome on the real target within existing authorization and required checks. This grants no new access, deployment, credential or network authority. Report the state reached and what was seen; if observation is unavailable here, say why and who can observe it. Tests alone do not establish the outcome. Include the observation and prerequisite dispositions in the final report.
+
 Write the reflection and handoff per [references/closeout-reflection-handoff.md](references/closeout-reflection-handoff.md).
 After both files are written, **in the interactive TUI path only** (a human is
 driving), print to the user:
@@ -187,6 +189,8 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
 
 
 ## Runner Verification Evidence
+
+Report newly discovered prerequisites with their source: an owner instruction, standing rule, reproduced defect, or concrete harm and its cheapest existing control. Otherwise record them as LATER in the closeout and continue authorized work. At the existing one-repair bound, retain the stop and explain whether the failed check protects the outcome or a blocking requirement. Evidence is not waived: rerun the check or follow the required plan-amendment route before changing its verdict.
 
 Before reporting a successful closeout, require the runner-owned verification artifact. The closeout must name `verification_artifact_path`, quote the artifact summary line, and must not report `verification_status=passed` unless that artifact exists and supports the executed work. Treat dependency-manifest install refresh and the full suite before closeout as runner-enforced expectations, not optional narrative checks. A blocked gate may be re-verdicted only by rerunning the originally specified runner check; proxy evidence requires a roadmap or plan amendment before the verdict changes. A prior run's terminal-summary is authoritative for reconcile-or-skip only when that closeout was accepted; a rejected or blocked prior closeout — regardless of any self-reported `complete`/`passed` — must not be reconciled against. On a re-run, re-do and re-verify the phase work from scratch rather than skipping on a stale summary.
 
