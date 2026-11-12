@@ -54,7 +54,7 @@ import json
 import sys
 import consiliency_spec_ingest as ingest
 
-result = ingest.evaluate({\"nodes\": []}, {\"nodes\": [], \"revision\": \"specpkgmin-empty\"}, {\"entries\": []}, config={})
+result = ingest.evaluate({\"spec_graph_version\": \"1\", \"nodes\": [], \"edges\": []}, {\"nodes\": [], \"revision\": \"specpkgmin-empty\"}, {\"entries\": []}, config={})
 try:
     ingest.ingest_repo(\".\", graph_id=\"specpkgmin\")
 except ingest.CapabilityUnavailable as error:
