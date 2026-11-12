@@ -6,6 +6,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+## [0.7.32] - Unreleased candidate
+
 - Create a GitHub Release with the verified wheel, sdist and checksums after
   successful PyPI trusted publication, keeping both publication surfaces aligned.
 
@@ -61,7 +63,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
     `plans/evidence/qualified-provider-images.json` are removed.
   - The upstream watch edits only the data catalog and labels its PRs `agy-qci:<seat_qci>`.
 
-## [0.7.31] - Unreleased candidate
+## [0.7.31] - 2026-11-09
 
 ### Release preparation
 
