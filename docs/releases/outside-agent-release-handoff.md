@@ -8,6 +8,8 @@ or make production merge enforcement live.
 ## 0.7.32 skills release preparation
 
 Candidate only: no tag, package publication or installation is claimed here.
+Expected artifacts: `phase_loop_runtime-0.7.32-py3-none-any.whl` and
+`phase_loop_runtime-0.7.32.tar.gz`. These names describe the candidate, not published artifacts.
 The candidate is based on merged main plus the publication-record fix in
 agent-harness#1981. It carries the outcome-focused skill refinements from
 agent-harness#1974 and agent-harness#1975, parallel runtime from
