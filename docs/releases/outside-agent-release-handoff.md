@@ -5,6 +5,27 @@ outside-agent conformance runtime. It is metadata-only: the document itself did
 not publish a package, create a tag, dispatch a workflow, edit governed-pipeline,
 or make production merge enforcement live.
 
+## 0.7.32 skills release preparation
+
+Candidate only: no tag, package publication or installation is claimed here.
+Expected artifacts: `phase_loop_runtime-0.7.32-py3-none-any.whl` and
+`phase_loop_runtime-0.7.32.tar.gz`. These names describe the candidate, not published artifacts.
+The candidate is based on merged main plus the publication-record fix in
+agent-harness#1981. It carries the outcome-focused skill refinements from
+agent-harness#1974 and agent-harness#1975, parallel runtime from
+agent-harness#1978 and matching skill wording from agent-harness#1980.
+Other main changes are recorded in the 0.7.32 changelog section.
+
+The offline vendor-access prototype remains on its separate local branch and is
+not part of this candidate. This release does not lift sandbox activation holds.
+The previously published 0.7.31 package remains unchanged.
+
+Before publication: required candidate checks, standalone-wheel Gate A and the
+current strict hermetic agy release gate must pass. The retained agy 1.5.3 record
+is QCI-bound; use the current verifier, not the retired source-hash workflow.
+After publication, verify registry artifacts, GitHub Release assets and installed
+skill contents separately. Do not infer installation from a merged PR.
+
 ## 0.7.31 source preparation
 
 - Source base: `origin/main` after agent-harness#1934
