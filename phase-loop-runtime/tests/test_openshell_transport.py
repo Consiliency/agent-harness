@@ -17,6 +17,7 @@ def bound(seconds=1):
 
 
 from copy import deepcopy
+from dataclasses import replace
 import json
 from pathlib import Path
 from _openshell_channel_server import json_coordinator, mtls_material as mtls_material
@@ -113,11 +114,16 @@ def test_coordinator_faults_keep_cleanup_and_poison_dispatch(mtls_material, faul
 def test_coordinator_closed_errors(mtls_material, vector):
     async def scenario():
         lease = wire('reserved')['lease_id']
-        async with json_coordinator(mtls_material, [(503, vector['value'])]) as (config, _):
+        async with json_coordinator(mtls_material, [(503, vector['value'])]) as (config, calls):
+            # This tests response mapping, not subsecond TLS scheduling. Keep a
+            # bounded budget with headroom for loaded hosted runners; dedicated
+            # deadline tests below retain their short explicit allowances.
+            config = replace(config, connect_timeout_s=5)
             with pytest.raises(ot.CoordinatorError) as error:
-                await coordinator(config).reserve(lease, wire('reserve-leg-min-ttl'), ot.CallerAllowance(bound()))
+                await coordinator(config).reserve(lease, wire('reserve-leg-min-ttl'), ot.CallerAllowance(bound(10)))
             assert error.value.code == vector['value']['code']
             assert error.value.reason == vector['value']['reason']
+            assert len(calls) == 1
     run(scenario())
 
 
