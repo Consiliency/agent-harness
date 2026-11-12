@@ -6,6 +6,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- Create a GitHub Release with the verified wheel, sdist and checksums after
+  successful PyPI trusted publication, keeping both publication surfaces aligned.
+
 - Execute-phase and plan-phase skills in all four trees describe the runner's
   verified concurrent lane default (ceiling four, provisional 2 GiB per-lane memory
   clamp) and its serial controls. `--parallel` is an accepted no-op; direct sessions
