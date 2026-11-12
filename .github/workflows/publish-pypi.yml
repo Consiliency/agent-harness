@@ -271,8 +271,28 @@ jobs:
         shell: bash
         run: |
           # A failed release-record job can be rerun without republishing to PyPI.
-          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "GitHub Release already exists for $GITHUB_REF_NAME"
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --json isDraft > release/existing.json; then
+            recovery="Inspect $GITHUB_REF_NAME: restore missing or mismatched assets from this run's phase-loop-runtime-dist artifact, publish the draft if appropriate, then rerun only this failed job. Do not republish to PyPI."
+            if ! jq -e '.isDraft == false' release/existing.json >/dev/null; then
+              echo "::error::Existing release is still a draft. $recovery"
+              exit 1
+            fi
+            verification_dir="$(mktemp -d)"
+            trap 'rm -rf "$verification_dir"' EXIT
+            for artifact in dist/* release/SHA256SUMS; do
+              name="$(basename "$artifact")"
+              if ! gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+                  --pattern "$name" --dir "$verification_dir"; then
+                echo "::error::Cannot verify existing asset $name. $recovery"
+                exit 1
+              fi
+              if ! cmp --silent "$artifact" "$verification_dir/$name"; then
+                echo "::error::Existing asset $name differs from the verified publication artifact. $recovery"
+                exit 1
+              fi
+            done
+            echo "Published GitHub Release and every expected asset verified for $GITHUB_REF_NAME"
             exit 0
           fi
           version="${GITHUB_REF_NAME#v}"
