@@ -1362,5 +1362,13 @@
   {"count": 1, "function": "BrokerService._block_unsealed_owner", "module": "convergence/broker/verbs", "primitive": "io.read_bytes", "role": "host-io"},
   {"count": 1, "function": "BrokerService._provider_entry_guard", "module": "convergence/broker/verbs", "primitive": "io.read_bytes", "role": "host-io"},
   {"count": 1, "function": "append_adapter_start_owner.append", "module": "convergence/broker/verbs", "primitive": "io.read_bytes", "role": "host-io"},
-  {"count": 1, "function": "validate_adapter_start_owner", "module": "convergence/broker/verbs", "primitive": "io.read_bytes", "role": "host-io"}
+  {"count": 1, "function": "validate_adapter_start_owner", "module": "convergence/broker/verbs", "primitive": "io.read_bytes", "role": "host-io"},
+  {"count": 1, "function": "_load_record", "module": "vendor_access_pending", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "record_pending", "module": "vendor_access_pending", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "recover_pending_link", "module": "vendor_access_pending", "primitive": "io.open", "role": "host-io"},
+  {"count": 2, "function": "recover_pending_link", "module": "vendor_access_pending", "primitive": "io.stat", "role": "host-io"},
+  {"count": 1, "function": "load_publication", "module": "vendor_access_publication_journal", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "load_publication", "module": "vendor_access_publication_journal", "primitive": "io.stat", "role": "host-io"},
+  {"count": 1, "function": "transition_publication", "module": "vendor_access_publication_journal", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "private_directory_writer", "module": "vendor_access_writer", "primitive": "io.open", "role": "host-io"}
 ]
