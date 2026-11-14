@@ -6,7 +6,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-## [0.7.32] - Unreleased candidate
+## [0.7.33] - Unreleased candidate
+
+- Supersede the unpublished 0.7.32 candidate, preserving its failed release tag.
+- Normalize the user-manager connection environment for parent resource-slice
+  management and isolate the TUI backstop test clock (agent-harness#1984).
+
+### Carried from the unpublished 0.7.32 candidate
 
 - Create a GitHub Release with the verified wheel, sdist and checksums after
   successful PyPI trusted publication, keeping both publication surfaces aligned.

@@ -5,7 +5,37 @@ outside-agent conformance runtime. It is metadata-only: the document itself did
 not publish a package, create a tag, dispatch a workflow, edit governed-pipeline,
 or make production merge enforcement live.
 
-## 0.7.32 skills release preparation
+## 0.7.33 release recovery preparation
+
+Expected, unpublished artifacts: `phase_loop_runtime-0.7.33-py3-none-any.whl`
+and `phase_loop_runtime-0.7.33.tar.gz`.
+
+Candidate only: no tag, publication or installation is claimed. This candidate
+carries the skills work described below and the resource-management connection
+correction merged in agent-harness#1984. Its automatic main verification remains
+pending at preparation time (run `43568786985`, pinned base
+`d1dbe511ea67dfc028b92cddd548faeaa549cd96`); that run does not validate this
+version-bumped candidate. Source acceptance does not establish publication
+readiness or native panel qualification.
+
+The v0.7.32 tag remains bound to its original source. Its publication attempt
+failed before upload or publication; do not retarget it or treat that attempt as
+published. The replacement candidate uses version 0.7.33. Required candidate
+checks, standalone-wheel Gate A and strict hermetic agy release validation remain
+release gates. Verify final registry and GitHub artifact hashes before reporting
+publication, and managed account installation separately afterward.
+
+The temporary all-Codex panel exception covered agent-harness#1984 only and grants
+no new-release authority. The preparation review is not release acceptance.
+Candidate checks, pre-merge Gate A, strict hermetic agy validation, governed
+acceptance and bounded publication authority remain outstanding. Recording these
+gates does not authorize dispatch. Recovery history also includes the test-only
+fixture correction in agent-harness#1983; no additional runtime claim is made.
+
+## Historical 0.7.32 skills release preparation (superseded)
+
+This section preserves the failed candidate's original identities. Its carried
+scope is now listed under the 0.7.33 changelog; this is not current preparation.
 
 Candidate only: no tag, package publication or installation is claimed here.
 Expected artifacts: `phase_loop_runtime-0.7.32-py3-none-any.whl` and
@@ -14,7 +44,7 @@ The candidate is based on merged main plus the publication-record fix in
 agent-harness#1981. It carries the outcome-focused skill refinements from
 agent-harness#1974 and agent-harness#1975, parallel runtime from
 agent-harness#1978 and matching skill wording from agent-harness#1980.
-Other main changes are recorded in the 0.7.32 changelog section.
+Other carried main changes are recorded in the 0.7.33 changelog section.
 
 The offline vendor-access prototype remains on its separate local branch and is
 not part of this candidate. This release does not lift sandbox activation holds.
