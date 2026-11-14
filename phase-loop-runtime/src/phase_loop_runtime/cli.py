@@ -231,6 +231,7 @@ def _add_common_subparser_args(sub: argparse.ArgumentParser, *, name: str) -> No
     sub.add_argument("--quiet-warning-seconds", type=int, default=_S)
     sub.add_argument("--quiet-blocker-seconds", type=int, default=_S)
     sub.add_argument("--no-heartbeat", action="store_true", default=_S)
+    sub.add_argument("--max-parallel-lanes", type=_positive_lane_count, default=_S)
     sub.add_argument("--work-unit-mode", action="store_true", default=_S)
     sub.add_argument("--source-bundle", default=_S)
     sub.add_argument("--pipeline-mode", choices=("standalone", "pipeline_optional", "pipeline_required"), default=_S)
@@ -240,6 +241,32 @@ def _add_common_subparser_args(sub: argparse.ArgumentParser, *, name: str) -> No
         dest="lane_scheduler_mode",
         default=_S,
     )
+
+
+def _positive_lane_count(value: str) -> int:
+    try:
+        count = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("lane ceiling must be an integer") from exc
+    if count < 1:
+        raise argparse.ArgumentTypeError("lane ceiling must be positive")
+    return count
+
+
+def _resolve_lane_options(args, environ):
+    mode = args.lane_scheduler_mode if args.lane_scheduler_mode is not None else environ.get("PHASE_LOOP_LANE_SCHEDULER", "concurrent")
+    if mode not in LANE_SCHEDULER_MODES:
+        raise ValueError("invalid PHASE_LOOP_LANE_SCHEDULER")
+    ceiling = _positive_lane_count(str(args.max_parallel_lanes if args.max_parallel_lanes is not None else environ.get("PHASE_LOOP_MAX_PARALLEL_LANES", "4")))
+    budget = environ.get("PHASE_LOOP_LANE_MEMORY_BUDGET_BYTES")
+    if budget is not None:
+        try:
+            budget = int(budget)
+            if budget < 1:
+                raise ValueError("nonpositive budget")
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError("lane memory budget must be a positive integer in bytes") from exc
+    return mode, ceiling, budget
 
 
 def _profile_command_registrars():
@@ -400,6 +427,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rotate-executors")
     parser.add_argument("--rotation-mode", choices=("phase", "work_unit"), default="phase")
     parser.add_argument("--rotation-on-policy-pin", choices=("skip", "fallback-next"), default="skip")
+    parser.add_argument("--max-parallel-lanes", type=_positive_lane_count)
     parser.add_argument("--lane-scheduler", choices=LANE_SCHEDULER_MODES, dest="lane_scheduler_mode")
     parser.add_argument("--source-bundle")
     parser.add_argument("--pipeline-mode", choices=("standalone", "pipeline_optional", "pipeline_required"), default="standalone")
@@ -1987,6 +2015,10 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
     # is autonomous (no panel, byte-identical to today).
     run_mode = "governed" if bool(getattr(args, "governed", False)) else resolve_run_mode()
 
+    try:
+        lane_mode, lane_ceiling, lane_budget = _resolve_lane_options(args, os.environ)
+    except (ValueError, argparse.ArgumentTypeError) as exc:
+        parser.error(str(exc))
     snapshot, results = run_loop(
         repo=repo,
         roadmap=roadmap,
@@ -2023,7 +2055,9 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
         rotate_executors=getattr(args, "rotate_executors", None),
         rotation_mode=getattr(args, "rotation_mode", None) or "phase",
         rotation_on_policy_pin=getattr(args, "rotation_on_policy_pin", None) or "skip",
-        lane_scheduler_mode=args.lane_scheduler_mode or "off",
+        lane_scheduler_mode=lane_mode,
+        max_parallel_lanes=lane_ceiling,
+        lane_memory_budget_bytes=lane_budget,
         source_bundle_path=effective_source_bundle,
         pipeline_mode=getattr(args, "pipeline_mode", None),
         output_path=effective_output_path,

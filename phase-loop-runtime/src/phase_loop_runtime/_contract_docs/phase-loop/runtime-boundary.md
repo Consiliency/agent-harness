@@ -169,12 +169,17 @@ route, model, effort, and fallback reason. Greenfield authority refs and
 governed-pipeline scheduling data remain external inputs, not dotfiles-owned
 runtime authority.
 
-`--lane-scheduler concurrent` launches scheduler-approved ready waves only
-when every writer is `parallel_safe`, writable ownership is disjoint, reducer
-lanes are excluded, and each writer has a `git_worktree` assignment at the
-current base SHA. `--lane-scheduler serialized` and the default coarse phase
-path remain compatibility modes and may run on the main worktree without
-assignment metadata.
+Lane scheduling defaults to `concurrent`, with a ceiling of four. Real lane
+execution enters only after ordinary execute dispatch, policy and authentication
+gates. Ready parallel-safe writers require disjoint ownership and validated
+creator-returned worktree assignments. Dependent waves use a snapshot of HEAD
+plus accepted prior output. `--lane-scheduler off` and
+`--max-parallel-lanes 1` select coarse execution; `serialized` remains
+record-only. Uncertain running/transport state blocks even with an off switch.
+Only trusted lane completion permits transport; combined phase verification
+precedes ordinary governed closeout. The configurable default memory budget is
+a provisional 2 GiB per lane; cache credit is deferred. No measured
+child-consumption claim is made.
 
 Closeout metadata may report lane identity, wave identity, worktree identity,
 verification status, changed paths, source-truth impact categories, advisory

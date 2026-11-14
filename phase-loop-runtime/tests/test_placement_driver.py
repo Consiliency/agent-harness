@@ -619,18 +619,20 @@ def test_a_backend_call_that_never_returns_ends_within_its_bound(far, hang, monk
 @pytest.mark.parametrize("method", ["admit", "commit", "kill", "list_owned"])
 def test_a_cancel_during_a_hung_call_returns_within_the_bound(far, hang, monkeypatch, method):
     monkeypatch.setattr(sp, "ANSWER_BOUND_S", 0.5)
-    far.behave[method] = hang
+    cancelled = threading.Event()
+
+    def cancel_then_hang(*args):
+        # Cancel only once the selected call is in flight, after lease acquisition.
+        cancelled.set()
+        return hang(*args)
+
+    far.behave[method] = cancel_then_hang
     if method in ("kill", "list_owned"):
         far.behave["commit"] = raises(NOT_ENROLLED)
-    cancelled = threading.Event()
-    timer = threading.Timer(0.2, cancelled.set)
-    timer.start()
     started = time.monotonic()
-    try:
-        with pytest.raises(sp.PlacementCancelled) as caught:
-            walk(rungs("drv"), cancelled=cancelled)
-    finally:
-        timer.cancel()
+    with pytest.raises(sp.PlacementCancelled) as caught:
+        walk(rungs("drv"), cancelled=cancelled)
+    assert method in far.calls
     assert time.monotonic() - started < 5.0
     record = dict(caught.value.trail[-1])
     assert record["class"] == "cancelled" and record["release_needed"] is True

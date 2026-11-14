@@ -45,7 +45,8 @@ while [ "$_candidate" != "/" ]; do
 done
 unset _candidate
 
-WORK="$(mktemp -d)"
+# Installed trusted resources must not inherit a writable ancestor such as /tmp.
+WORK="$(python3 "$PKG_ROOT/scripts/gate_a_workspace.py" "${HOME:?HOME required}" "$REPO_ROOT" "$DOTFILES_ROOT")"
 trap 'rm -rf "$WORK"' EXIT
 
 # Gate A's per-node evidence. It must live OUTSIDE $WORK: the EXIT trap above wipes
@@ -276,6 +277,10 @@ PYEOF
       '/skills-src/*/*-skill-editor/' \
       /phase-loop-runtime/scripts/verify_harden_evidence.py \
       /phase-loop-runtime/scripts/qualify_gemini_heartbeat.py \
+      /phase-loop-runtime/scripts/gate_a_workspace.py \
+      /phase-loop-runtime/scripts/convert_agy_record_v2.py \
+      /phase-loop-runtime/scripts/verify_qualified_agy_image.py \
+      '/plans/evidence/agy-*-qualification.json' \
       /phase-loop-runtime/scripts/emit_placement_contract.py \
       /phase-loop-runtime/scripts/verify_supervised_contract_publication.py \
       /plans/artifacts/v12-SCHEMA-inputs.md \

@@ -23,12 +23,12 @@ git clone https://github.com/Consiliency/agent-harness
 agent-harness/install-agent-harness.sh --harness claude
 ```
 
-To install just this runtime package directly (0.7.31 is an unpublished candidate;
+To install just this runtime package directly (0.7.32 is an unpublished candidate;
 the exact pin below becomes available only after publication):
 
 ```sh
 pip install phase-loop-runtime              # latest compatible release
-pip install phase-loop-runtime==0.7.31      # candidate pin; unavailable before publication
+pip install phase-loop-runtime==0.7.32      # candidate pin; unavailable before publication
 ```
 
 To pin a specific tag from source instead, substitute a tag from

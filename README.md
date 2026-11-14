@@ -285,3 +285,7 @@ backward-compatible) so sequential merges are safe. See
 Apache-2.0 (see `LICENSE` / `NOTICE`).
 
 For local evidence and review storage, see [scratch cleanup and output retention](docs/phase-loop/output-retention.md).
+
+Lane execution defaults to bounded, isolated ready waves (ceiling four), with
+explicit serial switches. See [lane scheduling](docs/phase-loop/lane-scheduler.md)
+for fallback, recovery, and the provisional 2 GiB memory policy.

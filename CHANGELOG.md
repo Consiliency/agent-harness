@@ -6,6 +6,35 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+## [0.7.32] - Unreleased candidate
+
+- Create a GitHub Release with the verified wheel, sdist and checksums after
+  successful PyPI trusted publication, keeping both publication surfaces aligned.
+
+- Execute-phase and plan-phase skills in all four trees describe the runner's
+  verified concurrent lane default (ceiling four, provisional 2 GiB per-lane memory
+  clamp) and its serial controls. `--parallel` is an accepted no-op; direct sessions
+  run lanes serially or hand the phase to the runner, with no direct lane-wave
+  command. Claude `--serial` dispatches one lane per wave; its ceiling stays four.
+  Adaptive capacity admission remains tracked in agent-harness#1979.
+
+- Enforce shared automation closeouts for Pi execution, and preserve typed BAML
+  worker outages during concurrent lane prompt preparation (agent-harness#1978).
+
+- Execute verified disjoint lane waves in isolated worktrees at the ordinary
+  execute boundary, with a default ceiling of four, explicit serial switches,
+  journaled transport and combined-tree verification. Memory budgeting uses
+  a configurable provisional 2 GiB per-lane policy; cache credit is deferred.
+
+- Gate A retains agy qualification helpers and catalog records in its sparse
+  test checkout, while continuing to import the runtime from the installed wheel.
+
+- Execution skills observe intended outcomes, record bounded detailed-plan
+  deviations and distinguish required prerequisites from deferred work. Single-lane
+  first slices use the detailed planner while preserving active phase contracts.
+
+- Workflow skills carry the first working outcome into roadmaps, detailed plans and advisor reviews.
+
 - CI: honour the org-wide `CI_OFFLOAD_PAUSED` switch in the CI-offload eligibility
   job. `true` diverts runs to the existing hosted path (GitHub compares
   case-insensitively, so `TRUE` does too), and the job logs `offload paused (CI_OFFLOAD_PAUSED): <value>`. Unset or any other value
@@ -39,7 +68,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
     `plans/evidence/qualified-provider-images.json` are removed.
   - The upstream watch edits only the data catalog and labels its PRs `agy-qci:<seat_qci>`.
 
-## [0.7.31] - Unreleased candidate
+## [0.7.31] - 2026-11-09
 
 ### Release preparation
 

@@ -5,9 +5,14 @@ description: "OpenCode-optimized phase planner. Use when a roadmap phase from a 
 
 # OpenCode Plan Phase
 
-Plans one roadmap phase for OpenCode execution. It converts a phase section into interface gates and implementation lanes that can be executed by the main OpenCode agent or, when explicitly requested, by OpenCode `worker` subagents.
+Plans one roadmap phase for OpenCode execution. It converts a phase section into interface gates and implementation lanes that can be executed by the main OpenCode agent, by the runner (which runs ready lanes with machine-verified disjoint ownership concurrently in isolated worktrees by default), or, when explicitly requested, by OpenCode `worker` subagents.
 
 ## Core Rules
+
+A first working slice that fits one lane does not need a lane plan; route it to
+`<harness>-plan-detailed`. If an active phase contract requires lane artifacts,
+reconcile it through the existing amendment route first; do not silently skip
+required artifacts or ownership checks.
 
 Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, handoff roots, helper roots, and reflection roots.
 

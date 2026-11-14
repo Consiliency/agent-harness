@@ -538,7 +538,6 @@ def test_capped_popen_real_helper_pid_fd_env_and_one_parent(monkeypatch, tmp_pat
 def test_capped_popen_reaps_runner_that_never_attests(
     monkeypatch, tmp_path, isolated, behavior,
 ):
-    pid_file = tmp_path / "runner.pid"
     action = {
         "fail": "raise SystemExit(9)",
         "hang": "time.sleep(60)",
@@ -546,14 +545,24 @@ def test_capped_popen_reaps_runner_that_never_attests(
     }[behavior]
     runner = f"""\
         #!/usr/bin/python3
-        import os, pathlib, time
-        pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()))
+        import time
         {action}
     """
     _root, _proc, _configured, stopped = _install_fake_cap_host(
         monkeypatch, tmp_path, isolated, runner_body=runner,
     )
-    monkeypatch.setattr(caps, "_ATTEST_TIMEOUT_S", 0.05)
+    # Only the hung runner needs the short timeout. Exit cases must reach their
+    # explicit exit, rather than be terminated during interpreter startup.
+    monkeypatch.setattr(caps, "_ATTEST_TIMEOUT_S", 0.05 if behavior == "hang" else 5)
+    processes = []
+    real_popen = subprocess.Popen
+
+    def record_popen(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(caps.subprocess, "Popen", record_popen)
     target = tmp_path / "target-ran"
     with pytest.raises(seat_jail.SeatSandboxRefused) as refused:
         caps.capped_popen(
@@ -562,7 +571,13 @@ def test_capped_popen_reaps_runner_that_never_attests(
         )
     assert refused.value.code == caps.CODE
     assert not target.exists()
-    pid = int(pid_file.read_text())
+    (process,) = processes
+    # Popen supplies the PID even if timeout kills the runner before Python starts.
+    # Check the stored status before polling so this test cannot reap it itself.
+    assert process.returncode is not None
+    if behavior != "hang":
+        assert process.returncode == (9 if behavior == "fail" else 0)
+    pid = process.pid
     deadline = time.monotonic() + 5
     while Path(f"/proc/{pid}").exists() and time.monotonic() < deadline:
         time.sleep(0.01)
@@ -1489,3 +1504,33 @@ def test_jailed_launch_without_a_seat_key_refuses_and_never_starts(monkeypatch, 
     assert refused.value.code == caps.CODE
     time.sleep(0.2)
     assert not marker.exists()
+
+
+@pytest.mark.parametrize("runtime", [None, "/run/custom-seat-user"])
+@pytest.mark.parametrize("returncode", [0, 1])
+def test_systemctl_connects_from_clean_environment(monkeypatch, runtime, returncode):
+    environment = {"HOME": "/isolated/home", "PATH": "/usr/bin:/bin"}
+    if runtime is not None:
+        environment.update(XDG_RUNTIME_DIR=runtime,
+                           DBUS_SESSION_BUS_ADDRESS="unix:path=/wrong/bus")
+    monkeypatch.setattr(caps.os, "environ", environment)
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=returncode)
+
+    monkeypatch.setattr(caps.subprocess, "run", run)
+    before = dict(environment)
+    if returncode:
+        with pytest.raises(caps.CapsUnavailable):
+            caps._systemctl("start", "phase-loop-seat-test.slice")
+    else:
+        caps._systemctl("start", "phase-loop-seat-test.slice")
+    assert environment == before  # management settings never mutate caller env
+    command, kwargs = calls[0]
+    expected = runtime or f"/run/user/{os.getuid()}"
+    assert command == [str(caps._SYSTEMCTL), "--user", "start", "phase-loop-seat-test.slice"]
+    assert kwargs["env"] == {**before, "XDG_RUNTIME_DIR": expected,
+                             "DBUS_SESSION_BUS_ADDRESS": f"unix:path={expected}/bus"}
+    assert kwargs["timeout"] == 15.0

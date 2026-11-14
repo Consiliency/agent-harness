@@ -21,6 +21,7 @@ import json
 import logging
 import shutil
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -220,7 +221,13 @@ def test_stalled_tui_does_not_retry_past_original_backstop(tmp_path, monkeypatch
         or (1, "", "claude_tui_stalled", "tail"),
     )
     clock = iter((100.0, 700.0))
-    monkeypatch.setattr(pi.time, "monotonic", lambda: next(clock))
+    # Other users of Python's shared time module must not consume this clock.
+    monkeypatch.setattr(
+        pi, "time", SimpleNamespace(**{**vars(time), "monotonic": lambda: next(clock)})
+    )
+    # Exercise unrelated clock reads before the leg consumes its two timestamps.
+    for _ in range(3):
+        time.monotonic()
 
     status, text = pi._exec_claude_tui_leg(
         review_dir, out_dir, 600, "bundle", env={}, backstop_s=600

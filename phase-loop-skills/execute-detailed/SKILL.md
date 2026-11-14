@@ -21,7 +21,7 @@ handoff roots, helper roots, and reflection roots.
   artifact path resolves under the current repo root.
 - Preserve user work. Never revert changes you did not make.
 - Use `apply_patch` for manual edits.
-- Keep implementation bounded to the detailed plan's `## Changes` section.
+- Keep implementation bounded to the intended outcome and acceptance criteria; record permitted deviations under Workflow step 6.
 - Treat ignored, private, raw-data, credential, and evidence-source files as
   read-protected unless the detailed plan explicitly allowlists the exact path
   or glob for read access.
@@ -54,15 +54,22 @@ handoff roots, helper roots, and reflection roots.
    and metadata that identifies the run and plan artifact. Manifest lifecycle
    failures emit ledger/reflection warnings only and do not abort execution
    during the dual-mode window.
-6. **Establish the safe working tree BEFORE editing** (unless a runner owns closeout — see step 2 / the Git safety invariant): resolve a fresh base ref (`origin/<default-branch>` after fetch, or an explicit merge target; never a stale local `main`) and select the working tree — reuse the current branch only if it is clean, non-protected, AND owned by this run; otherwise (`main`/a protected branch, a shared/foreign branch, or a dirty primary checkout) create a worktree+branch off the base: `git worktree add <path> -b <branch> <base>` under `/mnt/workspace/worktrees/<project>-<branch-slug>` if `/mnt/workspace` exists, else a repo sibling `../<project>-<branch-slug>`. Do ALL editing, the `git status` snapshots, the dirty-path classification, and verification in that tree — never on `main`/protected/dirty/shared. Then apply the `## Changes` section in declared order. Use `apply_patch` for
-   manual edits. If implementation requires a file or behavior not named by the
-   plan, stop and report `dirty worktree from non-plan output`.
+6. **Establish the safe working tree BEFORE editing** (unless a runner owns closeout — see step 2 / the Git safety invariant): resolve a fresh base ref (`origin/<default-branch>` after fetch, or an explicit merge target; never a stale local `main`) and select the working tree — reuse the current branch only if it is clean, non-protected, AND owned by this run; otherwise (`main`/a protected branch, a shared/foreign branch, or a dirty primary checkout) create a worktree+branch off the base: `git worktree add <path> -b <branch> <base>` under `/mnt/workspace/worktrees/<project>-<branch-slug>` if `/mnt/workspace` exists, else a repo sibling `../<project>-<branch-slug>`. Do ALL editing, the `git status` snapshots, the dirty-path classification, and verification in that tree — never on `main`/protected/dirty/shared. Then apply the `## Changes` section in declared order. Use `apply_patch` for manual edits.
+   If satisfying acceptance criteria needs an unnamed file or behavior, proceed
+   only within existing authority on paths that are not protected, ignored,
+   private or owned by another run. Record the path, reason and acceptance
+   criterion in the closeout and verification evidence as a bounded deviation;
+   include it in caller-owned publication paths before admission. Stop if it
+   changes the intended outcome or crosses a write boundary. Runner-owned lane
+   scopes remain binding. Never rewrite an admitted publication transaction;
+   use the supported scope-correction route when applicable.
 7. Run every command in `## Verification` unless unsafe, unavailable, or blocked
    by missing credentials. Report each command with pass/fail status.
 8. Compare the final state against each item in `## Acceptance criteria` and
    report satisfied or unmet status.
+   If the plan names an outcome served, observe it on the real target within existing authorization and required checks. This grants no new access, deployment, credential or network authority. Report the state reached and what was seen; if observation is unavailable here, say why and who can observe it. Tests alone do not establish the outcome.
 9. Run `git status --short --untracked-files=all` and classify every dirty path
-   as plan-owned, pre-existing unrelated, or non-plan output.
+   as plan-owned (including recorded permitted deviations), pre-existing unrelated, or non-plan output.
 10. If the diff touches a user-visible public surface (CLI flags, exported
     symbols, config/openapi schema, contract docs, `README.md`, `CHANGELOG.md`),
     record a `doc_delta_decision` in the closeout: `docs_updated`,
@@ -78,6 +85,8 @@ handoff roots, helper roots, and reflection roots.
 
 ## Failure Diagnostics
 
+Report newly discovered prerequisites with their source: an owner instruction, standing rule, reproduced defect, or concrete harm and its cheapest existing control. Otherwise record them as LATER in the closeout and continue authorized work. At the existing one-repair bound, retain the stop and explain whether the failed check protects the outcome or a blocking requirement. Evidence is not waived: rerun the check or follow the required plan-amendment route before changing its verdict.
+
 - `verification failed`: a command from `## Verification` failed after one local
   diagnosis and repair attempt, or the failure is outside the detailed plan's
   scope.
@@ -85,7 +94,7 @@ handoff roots, helper roots, and reflection roots.
   satisfied, or the detailed plan lacks `## Changes`, `## Verification`, or
   `## Acceptance criteria`.
 - `dirty worktree from non-plan output`: closeout finds a dirty path that was
-  not pre-existing and is not produced by the detailed plan's declared changes.
+  not pre-existing and is not produced by the detailed plan's declared changes or recorded permitted deviations.
 - `publication blocked`: a publication precheck failed (no remote / no push auth / no `gh` /
   branch-name collision / push rejected / unresolved base ref), or publishing would otherwise
   require committing to `main`/a protected branch or a branch this run does not own. Verified
@@ -97,6 +106,9 @@ handoff roots, helper roots, and reflection roots.
 Before reporting a successful closeout, require the runner-owned verification artifact. The closeout must name `verification_artifact_path`, quote the artifact summary line, and must not report `verification_status=passed` unless that artifact exists and supports the executed work. Treat dependency-manifest install refresh and the full suite before closeout as runner-enforced expectations, not optional narrative checks. A blocked gate may be re-verdicted only by rerunning the originally specified runner check; proxy evidence requires a roadmap or plan amendment before the verdict changes.
 
 ## Closeout
+
+Report the outcome served, observed state and target (or observation limitation
+and responsible observer), recorded deviations and prerequisite dispositions.
 
 ### Manifest lifecycle
 
@@ -140,7 +152,7 @@ Call `phase_loop_runtime.publishing.publish_human_invoked_from_worktree(repo,
 owned_paths, plan_path=<plan>, verification_artifact_path=<artifact>, draft=<intent>,
 pr_body=<body>, commit_message=<subject>)`
 (IF-0-P1-1 — the supported human publication adapter), supplying the worktree root, the
-plan's owned paths, the exact detailed plan and verification artifact, and the draft/ready
+plan's owned paths plus recorded permitted deviations, the exact detailed plan and verification artifact, and the draft/ready
 intent:
 - `draft=True` when dependencies remain or verification was partial/skipped;
 - `draft=False` when verification is complete (skipped or partial verification never opens

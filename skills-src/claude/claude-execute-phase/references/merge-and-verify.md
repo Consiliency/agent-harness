@@ -144,9 +144,12 @@ On second failure:
 
 - Cancel all still-running lane Agents via their task IDs.
 - Emit a diagnostic report naming the failing lane, the failing task, the last ~30 log lines, and which lanes were merged vs pending.
+- State whether the failed check protects the outcome or a blocking requirement; retain the stop and required evidence.
 - Persist state to `.claude/claude-execute-phase-state.json` and exit cleanly. User can fix and re-run with `--resume`.
 
 ## Step 9 — Final verification, cleanup, and summary
+
+For the phase's outcome criterion: Observe the named outcome on the real target within existing authorization and required checks. This grants no new access, deployment, credential or network authority. Report the state reached and what was seen; if observation is unavailable here, say why and who can observe it. Tests alone do not establish the outcome.
 
 After all lanes merged:
 

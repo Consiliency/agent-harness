@@ -32,7 +32,7 @@ Plan-location variables are inherited from `claude-plan-phase` so the two skills
 | `PLAN_DOC` | `plans/phase-plan-<VERSION>-<PHASE_ALIAS>.md` | Override the resolved plan-doc path directly. |
 | `EXECUTE_MERGE_TARGET` | Current branch at invocation | Branch lanes merge into. |
 | `EXECUTE_WORKTREE_ROOT` | `.worktrees/` (inside repo; ignore coverage is checked, not added automatically) | Root dir for per-lane worktrees. |
-| `EXECUTE_MAX_PARALLEL_LANES` | `4` | Max concurrent lane dispatches per wave. Parallel execution still requires authorization, machine-verified disjoint ownership and scheduler-owned worktrees. Check shared-host capacity and cap inner test workers separately. |
+| `EXECUTE_MAX_PARALLEL_LANES` | `4` | Max concurrent lane dispatches per wave; `--serial` dispatches one lane per wave. Runner lane waves use `--max-parallel-lanes` / `PHASE_LOOP_MAX_PARALLEL_LANES` instead. Parallel execution still requires authorization, machine-verified disjoint ownership and scheduler-owned worktrees. Check shared-host capacity and cap inner test workers separately. |
 
 ## Expected helpers
 

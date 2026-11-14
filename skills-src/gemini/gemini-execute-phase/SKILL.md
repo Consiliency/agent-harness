@@ -5,7 +5,7 @@ description: "Gemini-optimized executor for a `gemini-plan-phase` lane plan. Use
 
 # Gemini Execute Phase
 
-Executes a phase plan produced by `gemini-plan-phase`. The default executor is the main Gemini thread. Worker subagents are optional and only used when the user explicitly asks for subagents, delegation, or parallel execution.
+Executes a phase plan produced by `gemini-plan-phase`. The default executor is the main Gemini thread; under the runner, verified disjoint lanes run concurrently by default. In a direct session, worker subagents are optional and only used when the user explicitly asks for subagents, delegation, or parallel execution.
 
 ## Core Rules
 
@@ -42,7 +42,7 @@ non-human blocker instead of silently downgrading.
 
 - Plan path: default latest `plans/phase-plan-*.md`.
 - `--dry-run`: parse and print the lane schedule without editing.
-- `--parallel`: allowed only when the user explicitly requests parallel worker execution.
+- `--parallel`: accepted for compatibility; it has no effect (see Lane Concurrency).
 
 Interactive only: before execution read [references/interactive-path.md](references/interactive-path.md) for handoff reuse (no explicit plan), first-commit drafts and per-push/PR publication-mode checks.
 
@@ -83,6 +83,7 @@ Interactive only: before execution read [references/interactive-path.md](referen
    - for any phase-owned generated path under an ignored parent, confirm the plan/source bundle explicitly allows it to be preserved or force-staged;
    - record completed gates.
 4. After all lanes:
+   - Observe the named outcome on the real target within existing authorization and required checks. This grants no new access, deployment, credential or network authority. Report the state reached and what was seen; if observation is unavailable here, say why and who can observe it. Tests alone do not establish the outcome.
    - run the full phase verification commands;
    - if execution discoveries change downstream work, amend the nearest
      downstream roadmap phase that is not already executing;
@@ -92,11 +93,18 @@ Interactive only: before execution read [references/interactive-path.md](referen
      closeout;
    - summarize changed files, tests run, and any residual risks.
 
-## Optional Worker Fanout
+## Lane Concurrency
 
-Use worker subagents only when the user explicitly authorizes parallel agent work and the DAG-ready lanes have machine-verified disjoint ownership and scheduler-owned worktree assignments; brief them as [references/worker-fanout.md](references/worker-fanout.md) says. The main thread still integrates, reviews and verifies.
+Under the runner (`phase-loop run`), after its ordinary execute gates, ready lanes with machine-verified disjoint ownership run concurrently in isolated worktrees by default: at most four, lowered to fit a provisional 2 GiB per-lane memory budget (policy, not measured usage). Ownership, executor-pin, worktree or capacity problems fall back to serial with a recorded reason before launch. After a child starts, failures block with `lane_recovery_required`; nothing relaunches automatically.
+
+- Serial runner execution: `--lane-scheduler off`, `PHASE_LOOP_LANE_SCHEDULER=off` or `--max-parallel-lanes 1`; `serialized` is record-only. Unreadable capacity records `capacity_unknown` and authorizes no heavy work.
+- A lane child executes only its assignment and never publishes or closes the phase; the parent verifies the combined tree and closes out.
+- A direct session runs lanes serially or hands the phase to the runner; no direct-session command executes a lane wave. Worker subagents also need explicit user authorization and scheduler-owned worktree assignments, which no direct-session command provides. Brief them as [references/worker-fanout.md](references/worker-fanout.md) says. The main thread owns integration, diff review, final verification and conflicts.
+- Lane concurrency adds no test capacity: heavy verification stays one admitted run. Adaptive admission is not implemented.
 
 ## Failure Policy
+
+Report newly discovered prerequisites with their source: an owner instruction, standing rule, reproduced defect, or concrete harm and its cheapest existing control. Otherwise record them as LATER in the closeout and continue authorized work. At the existing one-repair bound, retain the stop and explain whether the failed check protects the outcome or a blocking requirement. Evidence is not waived: rerun the check or follow the required plan-amendment route before changing its verdict.
 
 - Test failure in a lane: diagnose once, fix within the lane if the cause is local, otherwise stop and report.
 - Ownership violation: stop and revise the plan before continuing.
@@ -152,6 +160,8 @@ Add a machine-readable `automation:` handoff with `verification_status` that agr
 Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("gemini")/gemini-execute-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
 
 Report:
+
+- outcome criterion, state reached, observed target or limitation and responsible observer;
 
 - lanes completed;
 - files changed;

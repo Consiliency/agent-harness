@@ -107,6 +107,8 @@ Fill these sections before touching phase decomposition:
 
 ### Step 3 — Decompose into phases (parallelization-maximizing)
 
+Write `## First Working Outcome` after `## Context`: the outcome line, the observation proving it, the carrying `EC-<ALIAS>-<N>`, and what deliberately remains rough in the first slice. For security, performance or technical-debt work, name that property as the outcome.
+
 Apply the heuristics in `references/parallelization-heuristics.md` in order:
 
 1. **Phases are serial checkpoints; lanes within a phase are parallel.** Minimize total wall time by minimizing phase count and maximizing lanes per phase.

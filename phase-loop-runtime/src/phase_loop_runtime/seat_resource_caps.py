@@ -454,9 +454,14 @@ def _unit_key(seat_key: str) -> str:
 
 
 def _systemctl(*args: str, timeout: float = 15.0) -> None:
+    # Parent-slice management needs the same user-manager connection as the
+    # later systemd-run launch, including when the caller uses a clean env.
+    runtime = _runtime_dir()
+    manager_env = {**os.environ, "XDG_RUNTIME_DIR": str(runtime),
+                   "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime / 'bus'}"}
     result = subprocess.run([str(_SYSTEMCTL), "--user", *args], stdin=subprocess.DEVNULL,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                            timeout=timeout, check=False)
+                            timeout=timeout, check=False, env=manager_env)
     if result.returncode:
         _refuse("the capped parent could not be configured")
 
