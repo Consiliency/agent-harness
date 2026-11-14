@@ -1504,3 +1504,33 @@ def test_jailed_launch_without_a_seat_key_refuses_and_never_starts(monkeypatch, 
     assert refused.value.code == caps.CODE
     time.sleep(0.2)
     assert not marker.exists()
+
+
+@pytest.mark.parametrize("runtime", [None, "/run/custom-seat-user"])
+@pytest.mark.parametrize("returncode", [0, 1])
+def test_systemctl_connects_from_clean_environment(monkeypatch, runtime, returncode):
+    environment = {"HOME": "/isolated/home", "PATH": "/usr/bin:/bin"}
+    if runtime is not None:
+        environment.update(XDG_RUNTIME_DIR=runtime,
+                           DBUS_SESSION_BUS_ADDRESS="unix:path=/wrong/bus")
+    monkeypatch.setattr(caps.os, "environ", environment)
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=returncode)
+
+    monkeypatch.setattr(caps.subprocess, "run", run)
+    before = dict(environment)
+    if returncode:
+        with pytest.raises(caps.CapsUnavailable):
+            caps._systemctl("start", "phase-loop-seat-test.slice")
+    else:
+        caps._systemctl("start", "phase-loop-seat-test.slice")
+    assert environment == before  # management settings never mutate caller env
+    command, kwargs = calls[0]
+    expected = runtime or f"/run/user/{os.getuid()}"
+    assert command == [str(caps._SYSTEMCTL), "--user", "start", "phase-loop-seat-test.slice"]
+    assert kwargs["env"] == {**before, "XDG_RUNTIME_DIR": expected,
+                             "DBUS_SESSION_BUS_ADDRESS": f"unix:path={expected}/bus"}
+    assert kwargs["timeout"] == 15.0
