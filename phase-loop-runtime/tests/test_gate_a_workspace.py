@@ -58,6 +58,15 @@ class WorkspaceTests(unittest.TestCase):
             workspace.create_workspace(self.base, (self.base,))
         self.assertEqual(list(self.base.iterdir()), [])
 
+    def test_double_slash_checkout_alias_refused_before_creation(self):
+        alias = Path("/" + str(self.base))
+        self.assertEqual(alias.anchor, "//")
+        with patch.object(workspace.tempfile, "mkdtemp") as create:
+            with self.assertRaises(ValueError):
+                workspace.create_workspace(alias, (self.base,))
+            create.assert_not_called()
+        self.assertEqual(list(self.base.iterdir()), [])
+
     def test_relative_home_refused(self):
         with self.assertRaises(ValueError):
             workspace.create_workspace(Path("relative"), ())

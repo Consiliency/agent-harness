@@ -10,7 +10,7 @@ import tempfile
 
 
 def validate_directory(path: Path, *, owner: int) -> None:
-    if not path.is_absolute() or ".." in path.parts or str(path) != os.path.normpath(str(path)):
+    if path.anchor != "/" or ".." in path.parts or str(path) != os.path.normpath(str(path)):
         raise ValueError("workspace path must be absolute and canonical")
     # Inspect the supplied spelling; resolving first would hide symlink ancestors.
     for component in reversed((path, *path.parents)):
