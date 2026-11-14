@@ -1,0 +1,72 @@
+{
+  "byte_pin_authority": false,
+  "commit": "2b91ef85bfdc76239ae52806b3318513951543ab",
+  "excluded_metadata": {
+    "provenance.json": {
+      "blob": "46bbff61b179b294ce2c481ccfc58a62c666e9b5",
+      "sha256": "f4b306fd7608c123d751225d02591e94654255fc688b5f84b777d2e896cf46f7"
+    }
+  },
+  "input_artifact_sha256": "b6fd84dc91b91236e72f4359ef7f0673c3a851ed2366d7ffdfc99ad10466e330",
+  "publisher_status": "provisional",
+  "root": "core/supervised-run/",
+  "source_repository": "https://github.com/Consiliency/consiliency-contract",
+  "upstream_resources": {
+    "admitted-launch-envelope.schema.json": {
+      "blob": "1abe40abbb1178295af86b3c6d64f9bffe5a0099",
+      "sha256": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d"
+    },
+    "admitted-launch-envelope.v2.schema.json": {
+      "blob": "79d3d0f4bd3af1417e06e0f2255fa3f4e7749770",
+      "sha256": "6d6b2f89c55d160c2c132c29b3aa330a0a91c40ab017707040478a60b469194f"
+    },
+    "conformance/README.md": {
+      "blob": "9051f4fcfa7bb91b896f3efe60b6a3b238545a75",
+      "sha256": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca"
+    },
+    "conformance/README.v2.md": {
+      "blob": "3409e2b7f9a8582af3796a82e1c15b7cb2c17fdb",
+      "sha256": "c6ab5d9da4707adf5dad9602b483b201a2dfe89f638ecba84129e0c477d72637"
+    },
+    "conformance/SHA256SUMS": {
+      "blob": "9bbcd0b8bc6449377b94debfe0568bfe6d685e07",
+      "sha256": "48904c259e4a1c24d3e841f56b6c2a84ce2cff32014cf573b3e41b34fac1f1fc"
+    },
+    "conformance/envelope.v2.apply.vectors.json": {
+      "blob": "24a46480c3d7384e929233e9713d923bc6e0809f",
+      "sha256": "57e0fd4d2e88c75bb8dfbab94448431ca3c752f6444febf1bd492323b044c078"
+    },
+    "conformance/envelope.v2.canonical.vectors.json": {
+      "blob": "8111d2e6f75f6bdb68c48d2963f3c4649596cbe8",
+      "sha256": "f7f11c7667d12b0c876102781fdd5773074f5301f152a6d18be509894bc0e8f8"
+    },
+    "conformance/envelope.v2.vectors.json": {
+      "blob": "2028d84f0b5be0d0c4dd6e8ec06ab377d2dd3c0b",
+      "sha256": "e742d2774d410c2508405eaffed84575b992483da68c07f28591097d6ec5bc2f"
+    },
+    "conformance/envelope.vectors.json": {
+      "blob": "4fcb908f0ed89f2206efc2fbf4c5a6c7bdbd7e56",
+      "sha256": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f"
+    },
+    "conformance/run-status.vectors.json": {
+      "blob": "4a156e4fbf56526d483f729c78b2e94eb6f48f93",
+      "sha256": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730"
+    },
+    "run-status.schema.json": {
+      "blob": "8af75b390c1b6dcb5478ac16daec3bd38cb060d1",
+      "sha256": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+    },
+    "version/core/schemas/version-skew-protocol.schema.json": {
+      "blob": "b6f23cd9107b85f8db20804e0f9cc0d48613f930",
+      "sha256": "d77624c1975e896309c88a57b6e3690b3b24ab438873d0fb6873dd4924dd1c8f"
+    },
+    "version/package.json.pinned": {
+      "blob": "04fc4ecc713ad2841c88a38e0409ff50ea602b51",
+      "sha256": "bd85b4e580d430983368749852a0e6e82e783e4464e7a0ed24996c4306e1e81c"
+    },
+    "version/pyproject.toml.pinned": {
+      "blob": "b0ae3eae3ed89c9629a203efe71bdfb895042e36",
+      "sha256": "0aee475b360d5c17673000c53fefd742ed88e4d6d4194bf9d77155e568ab5153"
+    }
+  }
+}

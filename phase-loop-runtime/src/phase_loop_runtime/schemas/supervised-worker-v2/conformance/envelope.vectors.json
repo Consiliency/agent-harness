@@ -1,0 +1,557 @@
+{
+  "contract": "admitted_launch_envelope.v1",
+  "status": "provisional",
+  "note": "Golden valid and negative conformance vectors. Each negative is a JSON Patch (RFC 6902 add/remove/replace) applied to its paired valid control; when rehash is true, envelope_digest is recomputed afterwards, so the authority self-verifies. Expected diagnostics are exact sets.",
+  "cases": [
+    {
+      "id": "E-admitted",
+      "kind": "admission",
+      "role": "control",
+      "input": {
+        "envelope": {
+          "schema": "admitted_launch_envelope.v1",
+          "envelope_digest": "f2d174dec3b15f8d812f1c366e3d6a4788a1f5ca51054ae692aee252ed09bbf5",
+          "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+          "units": {
+            "target_unit_ids": [
+              "unit:target"
+            ],
+            "readonly_neighbor_unit_ids": [
+              "unit:neighbor"
+            ],
+            "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44",
+            "crosswalk_ref": "265f36f6c47cbcc46a314f2910feaa7704023198b384f3468b9cf3515efdf66d"
+          },
+          "workspace": {
+            "kind": "separate_clone",
+            "repo_relative_locators": [
+              "src/module/target.ts"
+            ]
+          },
+          "enforcement": {
+            "tier": "provider_readonly_patch_return_audit",
+            "required_constraints": [
+              "write_scope"
+            ]
+          },
+          "obligations": {
+            "definition_digests": [
+              "7327e7658f4b4a5b072b5e9543e5e5139abf685bd64fc85c1e99768ae3b93d98"
+            ]
+          },
+          "executable_dependencies": {
+            "declared": false,
+            "admitted_dependency_digest": null
+          },
+          "caller_context": {
+            "ticket": "opaque-123",
+            "nested": {
+              "k": [
+                1,
+                2
+              ]
+            }
+          },
+          "redaction_posture": "digests_and_repo_relative_locators_only"
+        },
+        "validator_context": {
+          "expected_assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+          "expected_snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44",
+          "expected_crosswalk_ref": "265f36f6c47cbcc46a314f2910feaa7704023198b384f3468b9cf3515efdf66d"
+        }
+      },
+      "expected": [],
+      "expected_effect": {
+        "attempt": {
+          "state": "queued",
+          "worker_invocations": 0
+        }
+      }
+    },
+    {
+      "id": "E-post-write-honest",
+      "kind": "admission",
+      "role": "control",
+      "input": {
+        "envelope": {
+          "schema": "admitted_launch_envelope.v1",
+          "envelope_digest": "a71e2e2b982cabc11cb067818a142c11c37b0a61a552bc39a65e6466bf3da1f8",
+          "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+          "units": {
+            "target_unit_ids": [
+              "unit:target"
+            ],
+            "readonly_neighbor_unit_ids": [
+              "unit:neighbor"
+            ],
+            "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44",
+            "crosswalk_ref": "265f36f6c47cbcc46a314f2910feaa7704023198b384f3468b9cf3515efdf66d"
+          },
+          "workspace": {
+            "kind": "git_worktree_of_protected",
+            "repo_relative_locators": [
+              "src/module/target.ts"
+            ]
+          },
+          "enforcement": {
+            "tier": "post_write_audit_only",
+            "required_constraints": []
+          },
+          "obligations": {
+            "definition_digests": [
+              "7327e7658f4b4a5b072b5e9543e5e5139abf685bd64fc85c1e99768ae3b93d98"
+            ]
+          },
+          "executable_dependencies": {
+            "declared": false,
+            "admitted_dependency_digest": null
+          },
+          "caller_context": {
+            "ticket": "opaque-123",
+            "nested": {
+              "k": [
+                1,
+                2
+              ]
+            }
+          },
+          "redaction_posture": "digests_and_repo_relative_locators_only"
+        },
+        "validator_context": {
+          "expected_assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+          "expected_snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44",
+          "expected_crosswalk_ref": "265f36f6c47cbcc46a314f2910feaa7704023198b384f3468b9cf3515efdf66d"
+        }
+      },
+      "expected": [],
+      "expected_effect": {
+        "attempt": {
+          "state": "queued",
+          "worker_invocations": 0
+        }
+      }
+    },
+    {
+      "id": "E-dependency-declared",
+      "kind": "admission",
+      "role": "control",
+      "input": {
+        "envelope": {
+          "schema": "admitted_launch_envelope.v1",
+          "envelope_digest": "6378b08d6a7a9fbc302a45b87c55bee0864505de54dee868bc7ccc6fd4421759",
+          "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+          "units": {
+            "target_unit_ids": [
+              "unit:target"
+            ],
+            "readonly_neighbor_unit_ids": [
+              "unit:neighbor"
+            ],
+            "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44",
+            "crosswalk_ref": "265f36f6c47cbcc46a314f2910feaa7704023198b384f3468b9cf3515efdf66d"
+          },
+          "workspace": {
+            "kind": "separate_clone",
+            "repo_relative_locators": [
+              "src/module/target.ts"
+            ]
+          },
+          "enforcement": {
+            "tier": "provider_readonly_patch_return_audit",
+            "required_constraints": [
+              "write_scope"
+            ]
+          },
+          "obligations": {
+            "definition_digests": [
+              "7327e7658f4b4a5b072b5e9543e5e5139abf685bd64fc85c1e99768ae3b93d98"
+            ]
+          },
+          "executable_dependencies": {
+            "declared": true,
+            "admitted_dependency_digest": "4394ff3564177ae0998d98e16e065024a77daef6c5d6d6edcd94cd70d97bb2b6"
+          },
+          "caller_context": {
+            "ticket": "opaque-123",
+            "nested": {
+              "k": [
+                1,
+                2
+              ]
+            }
+          },
+          "redaction_posture": "digests_and_repo_relative_locators_only"
+        },
+        "validator_context": {
+          "expected_assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+          "expected_snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44",
+          "expected_crosswalk_ref": "265f36f6c47cbcc46a314f2910feaa7704023198b384f3468b9cf3515efdf66d"
+        }
+      },
+      "expected": [],
+      "expected_effect": {
+        "attempt": {
+          "state": "queued",
+          "worker_invocations": 0
+        }
+      }
+    },
+    {
+      "id": "RC16-stale-rehashed",
+      "kind": "admission",
+      "role": "negative",
+      "control": "E-admitted",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/envelope/units/snapshot_ref",
+          "value": "0b2a09cd78659f97e9ed5a76f1863d0b48858ae9e9f1c2cb2f8c66fd5e217257"
+        }
+      ],
+      "expected": [
+        "authority_baseline_stale"
+      ],
+      "rehash": true,
+      "expected_effect": {
+        "attempt": {
+          "state": "refused",
+          "worker_invocations": 0
+        }
+      }
+    },
+    {
+      "id": "RC17-foreign-assignment-rehashed",
+      "kind": "admission",
+      "role": "negative",
+      "control": "E-admitted",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/envelope/assignment_digest",
+          "value": "86149a7c91d471964f27fbe7201cefe4264463e61268eb86e7b3df2cfc6bce3e"
+        }
+      ],
+      "expected": [
+        "authority_foreign"
+      ],
+      "rehash": true,
+      "expected_effect": {
+        "attempt": {
+          "state": "refused",
+          "worker_invocations": 0
+        }
+      }
+    },
+    {
+      "id": "RC17-foreign-project-rehashed",
+      "kind": "admission",
+      "role": "negative",
+      "control": "E-admitted",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/envelope/units/crosswalk_ref",
+          "value": "324656e25bb2ce845b335cde1d2cde65d84ac92fa1620f5a32dc20baa3a900a9"
+        },
+        {
+          "op": "replace",
+          "path": "/envelope/units/snapshot_ref",
+          "value": "050b2a137faa4e7dfdcf73f2d06f05c52149374f8a7d4fc7ef1b9161dc190518"
+        }
+      ],
+      "expected": [
+        "authority_foreign"
+      ],
+      "rehash": true,
+      "expected_effect": {
+        "attempt": {
+          "state": "refused",
+          "worker_invocations": 0
+        }
+      }
+    },
+    {
+      "id": "S-digest-not-rehashed",
+      "kind": "admission",
+      "role": "negative",
+      "control": "E-admitted",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/envelope/obligations/definition_digests/0",
+          "value": "4d1e953c0703027bee047c3adb79e5f5414c2e9b4e8cec82b62f2eedaa78d66e"
+        }
+      ],
+      "expected": [
+        "envelope_digest_mismatch"
+      ],
+      "expected_effect": {
+        "attempt": {
+          "state": "refused",
+          "worker_invocations": 0
+        }
+      }
+    },
+    {
+      "id": "N21-network-required",
+      "kind": "admission",
+      "role": "negative",
+      "control": "E-admitted",
+      "patch": [
+        {
+          "op": "add",
+          "path": "/envelope/enforcement/required_constraints/-",
+          "value": "network_denial"
+        }
+      ],
+      "expected": [
+        "constraint_unsupported"
+      ],
+      "rehash": true,
+      "expected_effect": {
+        "attempt": {
+          "state": "refused",
+          "worker_invocations": 0,
+          "refusal": {
+            "reason": "constraint_unsupported",
+            "constraint": "network_denial",
+            "tier": "provider_readonly_patch_return_audit"
+          }
+        }
+      }
+    },
+    {
+      "id": "N21-command-required",
+      "kind": "admission",
+      "role": "negative",
+      "control": "E-admitted",
+      "patch": [
+        {
+          "op": "add",
+          "path": "/envelope/enforcement/required_constraints/-",
+          "value": "command_denial"
+        }
+      ],
+      "expected": [
+        "constraint_unsupported"
+      ],
+      "rehash": true,
+      "expected_effect": {
+        "attempt": {
+          "state": "refused",
+          "worker_invocations": 0,
+          "refusal": {
+            "reason": "constraint_unsupported",
+            "constraint": "command_denial",
+            "tier": "provider_readonly_patch_return_audit"
+          }
+        }
+      }
+    },
+    {
+      "id": "N21-worktree-under-patch-return",
+      "kind": "admission",
+      "role": "negative",
+      "control": "E-admitted",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/envelope/workspace/kind",
+          "value": "git_worktree_of_protected"
+        }
+      ],
+      "expected": [
+        "workspace_not_separate_copy"
+      ],
+      "rehash": true,
+      "expected_effect": {
+        "attempt": {
+          "state": "refused",
+          "worker_invocations": 0
+        }
+      }
+    },
+    {
+      "id": "S-os-enforced-unqualified",
+      "kind": "admission",
+      "role": "negative",
+      "control": "E-admitted",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/envelope/enforcement/tier",
+          "value": "os_enforced"
+        }
+      ],
+      "expected": [
+        "tier_unqualified"
+      ],
+      "rehash": true,
+      "expected_effect": {
+        "attempt": {
+          "state": "refused",
+          "worker_invocations": 0
+        }
+      }
+    },
+    {
+      "id": "S-dependency-without-digest",
+      "kind": "admission",
+      "role": "negative",
+      "control": "E-dependency-declared",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/envelope/executable_dependencies/admitted_dependency_digest",
+          "value": null
+        }
+      ],
+      "expected": [
+        "dependency_digest_required"
+      ],
+      "rehash": true,
+      "expected_effect": {
+        "attempt": {
+          "state": "refused",
+          "worker_invocations": 0
+        }
+      }
+    },
+    {
+      "id": "S-envelope-absolute-locator",
+      "kind": "admission",
+      "role": "negative",
+      "control": "E-admitted",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/envelope/workspace/repo_relative_locators/0",
+          "value": "/x"
+        }
+      ],
+      "expected": [
+        "locator_not_repo_relative"
+      ],
+      "rehash": true,
+      "expected_effect": {
+        "attempt": {
+          "state": "refused",
+          "worker_invocations": 0
+        }
+      }
+    },
+    {
+      "id": "S-envelope-raw-output",
+      "kind": "admission",
+      "role": "negative",
+      "control": "E-admitted",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/envelope/workspace/repo_relative_locators/0",
+          "value": "src/module/target.ts\nTraceback (most recent call last)"
+        }
+      ],
+      "expected": [
+        "raw_output_in_record"
+      ],
+      "rehash": true,
+      "expected_effect": {
+        "attempt": {
+          "state": "refused",
+          "worker_invocations": 0
+        }
+      }
+    },
+    {
+      "id": "E-echo",
+      "kind": "echo",
+      "role": "control",
+      "input": {
+        "envelope": {
+          "schema": "admitted_launch_envelope.v1",
+          "envelope_digest": "f2d174dec3b15f8d812f1c366e3d6a4788a1f5ca51054ae692aee252ed09bbf5",
+          "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+          "units": {
+            "target_unit_ids": [
+              "unit:target"
+            ],
+            "readonly_neighbor_unit_ids": [
+              "unit:neighbor"
+            ],
+            "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44",
+            "crosswalk_ref": "265f36f6c47cbcc46a314f2910feaa7704023198b384f3468b9cf3515efdf66d"
+          },
+          "workspace": {
+            "kind": "separate_clone",
+            "repo_relative_locators": [
+              "src/module/target.ts"
+            ]
+          },
+          "enforcement": {
+            "tier": "provider_readonly_patch_return_audit",
+            "required_constraints": [
+              "write_scope"
+            ]
+          },
+          "obligations": {
+            "definition_digests": [
+              "7327e7658f4b4a5b072b5e9543e5e5139abf685bd64fc85c1e99768ae3b93d98"
+            ]
+          },
+          "executable_dependencies": {
+            "declared": false,
+            "admitted_dependency_digest": null
+          },
+          "caller_context": {
+            "ticket": "opaque-123",
+            "nested": {
+              "k": [
+                1,
+                2
+              ]
+            }
+          },
+          "redaction_posture": "digests_and_repo_relative_locators_only"
+        },
+        "validator_context": {
+          "expected_assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+          "expected_snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44",
+          "expected_crosswalk_ref": "265f36f6c47cbcc46a314f2910feaa7704023198b384f3468b9cf3515efdf66d"
+        },
+        "echoed_caller_context": {
+          "ticket": "opaque-123",
+          "nested": {
+            "k": [
+              1,
+              2
+            ]
+          }
+        }
+      },
+      "expected": []
+    },
+    {
+      "id": "S-caller-context-interpreted",
+      "kind": "echo",
+      "role": "negative",
+      "control": "E-echo",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/echoed_caller_context/nested",
+          "value": {
+            "k": [
+              1,
+              2
+            ],
+            "parsed_by_harness": true
+          }
+        }
+      ],
+      "expected": [
+        "caller_context_interpreted"
+      ]
+    }
+  ]
+}

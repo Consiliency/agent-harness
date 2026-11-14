@@ -164,6 +164,7 @@ phase_loop_runtime = [
     "schemas/*.json",
     "schemas/supervised-worker-v1/*.json",
     "schemas/supervised-worker-v1/conformance/*",
+    "schemas/supervised-worker-v2/**",
     "_contract_docs/**",
     "_test_fixtures/**",
     "skills_bundle/**",

@@ -14719,6 +14719,55 @@
             }
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-11-09T17:26:31Z",
+          "by": "claude-execute-phase",
+          "metadata": {
+            "phase_alias": "CLOSEOUT",
+            "run_id": "v12-closeout-build-20261109"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-11-09T19:26:38Z",
+          "by": "claude-execute-phase",
+          "metadata": {
+            "blocked_edges": [
+              "controller_apply_producer",
+              "display_producer",
+              "board_publisher_binding",
+              "separate_president_publisher_binding",
+              "non_provisional_successor_input"
+            ],
+            "blocker_class": "upstream_phase_unmet",
+            "dirty_worktree_summary": "phase-owned changes only; governing evidence is stamped after producer verification",
+            "gate_status": "declared_not_produced",
+            "human_required": false,
+            "if_gates_produced": [],
+            "implementation_status": "implemented_pending_final_evidence",
+            "issue_dispositions": [],
+            "issue_inventory": [],
+            "ownership_exception": {
+              "authority": "coordinator ruling 2026-11-09",
+              "file": "phase-loop-runtime/tests/test_stamp_evidence_receipt.py",
+              "owner": "SL-0",
+              "scope": "fresh synthetic stamp fixture; historical receipts, validators and stamp tool preserved"
+            },
+            "phase_alias": "CLOSEOUT",
+            "reflection_metadata": {
+              "required": true,
+              "skill": "claude-execute-phase"
+            },
+            "spec_delta_closeout": {
+              "decision": "canonical_spec_update",
+              "redaction_posture": "metadata_only",
+              "schema": "spec_delta_closeout.v1"
+            },
+            "verification_artifact_ref": "plans/evidence/supervised-worker/CLOSEOUT.md",
+            "verification_status": "blocked"
+          },
+          "transition": "failed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -14733,9 +14782,9 @@
         "type": "phase"
       },
       "slug": "v12-CLOSEOUT",
-      "status": "committed",
+      "status": "failed",
       "type": "phase",
-      "updated_at": "2026-11-09T15:03:29Z"
+      "updated_at": "2026-11-09T19:26:38Z"
     },
     {
       "acceptance_criteria_count": null,

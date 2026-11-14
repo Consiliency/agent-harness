@@ -1,11 +1,38 @@
-# Supervised worker: local admission seam
+# Supervised worker
 
-ENVELOPE implements the local fixture freeze for agent-harness#1818 and
-agent-harness#1819. It provides no public CLI, provider integration, installed-tool
-qualification, contract conformance, sandbox or live-use authority. The acceptance
-criteria and closed capability matrix are in
-[`specs/phase-plans-v12.md`](../specs/phase-plans-v12.md); observed offline evidence
-is in [the ENVELOPE receipt](../plans/evidence/supervised-worker/ENVELOPE.md).
+CLOSEOUT adds the public v2 codec, captured launch material and production
+binding bootstrap to the bounded local worker. The operator must provision the
+fixed passwd-home binding record and independent qualification inputs described
+in [contracts](supervised-worker-contracts.md). Missing inputs refuse before
+launch. This implementation does not qualify an installed provider or authorize
+live use; see [readiness](supervised-worker-readiness.md).
+
+The module CLI retains `launch --envelope PATH --result PATH`, `status` and
+`cancel`. There is no launch `--attempt` flag or binding selector. The trusted
+controller document is located by the SHA-256 of the held envelope bytes and
+supplies assignment/run/attempt identity. Envelope opaque context supplies none
+of that identity. The result file contains local runtime state, append
+acknowledgement and a schema-valid public status when one can be supported.
+
+V2 capture and admission are separate operations. `capture_launch_v2` holds the
+trusted effective argv, roots, configuration, qualification and environment
+sources. `prepare_launch_v2` returns a single-use prepared admission or a closed
+refusal; `discard_admission` closes an unused admission. Consumption and the last
+spawn callback recheck that material. One launch-chain deadline applies across
+helpers; the supported worker starts no qualification probes.
+
+The worker stores caller-context RFC 8785 bytes in `echo/<bare-hex-sha256>`,
+outside the journal and retention roots. Journal identity records that digest.
+The reader returns the verified exact sidecar bytes separately from the public
+status bytes. Missing or changed sidecars refuse `echo_unavailable`; equal bytes
+can reuse an existing sidecar. CLOSEOUT deletes no orphan sidecars.
+
+## Historical local fixture boundary
+
+The ENVELOPE interface below remains available for offline fixtures. Its
+[historical receipt](../plans/evidence/supervised-worker/ENVELOPE.md) records that
+phase's evidence. The v2 production boundary is described above and in
+[contracts](supervised-worker-contracts.md).
 
 ## Frozen Python boundary
 
@@ -253,10 +280,9 @@ check-to-exec window despite the immediate identity recheck.
 The isolated `supervised_worker_cli` module has `launch`, `status` and `cancel`
 verbs. Launch it through `seat_uid.trusted_module_argv` so it resolves from the
 trusted installation. Native cancel matches the same exact trusted-boot argv
-prefix after the interpreter. Each performs supervised-route preflight first. Production launch remains
-`codec_unavailable` until CLOSEOUT wires the production codec. Envelope and
-result file helpers are frozen for that wiring, and status reads only JOURNAL's
-closed display phrases, liveness and bounded pages. There is no new console
+prefix after the interpreter. Each performs supervised-route preflight first.
+Production launch uses the v2 held-input bootstrap. Status reads JOURNAL's closed
+display phrases, liveness and bounded pages. There is no new console
 script, registry activation, installed-provider qualification or public contract
 claim. WORKER's evidence remains synthetic; CLOSEOUT owns public reconciliation
-and all deferred SCHEMA rows.
+and the explicit unresolved external-producer edges.

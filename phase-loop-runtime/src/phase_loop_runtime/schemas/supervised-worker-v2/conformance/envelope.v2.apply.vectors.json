@@ -1,0 +1,1938 @@
+{
+  "contract": "admitted_launch_envelope.v2",
+  "status": "provisional",
+  "note": "write_scope apply-check and runtime-journal vectors. applications: a proposal against the bound scope and target map, with the x-apply-outcomes outcome and the protected state afterwards (unchanged unless applied). journals: supervised_run_status.v1 journals (lines valid against the frozen journal_line schema) and the diagnostics its frozen rules give; a rejected proposal or a helper failure after start is running -> finished, never refused.",
+  "applications": [
+    {
+      "id": "A2-apply-in-scope-empty-constraints",
+      "role": "control",
+      "envelope": {
+        "tier": "provider_readonly_patch_return_audit",
+        "required_constraints": [],
+        "repo_relative_locators": [
+          "src/module"
+        ],
+        "target_map": [
+          {
+            "workspace_locator": "src/module/target.ts",
+            "protected_locator": "src/module/target.ts"
+          },
+          {
+            "workspace_locator": "src/module/new.ts",
+            "protected_locator": "src/module/new.ts"
+          },
+          {
+            "workspace_locator": "src/module/old.ts",
+            "protected_locator": "src/module/old.ts"
+          },
+          {
+            "workspace_locator": "docs/notes.md",
+            "protected_locator": "docs/notes.md"
+          }
+        ]
+      },
+      "protected_before": {
+        "src/module/target.ts": "6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8",
+        "src/module/old.ts": "01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee",
+        "docs/notes.md": "444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda"
+      },
+      "proposal": {
+        "text": "[{\"base_sha256\": \"6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8\", \"kind\": \"file\", \"mode_change\": false, \"new_sha256\": \"f01189d9fd0c06559d0d481fe7a07ea4a329b4d2a5febf6af85ec7813721df4b\", \"op\": \"modify\", \"path\": \"src/module/target.ts\"}, {\"base_sha256\": null, \"kind\": \"file\", \"mode_change\": false, \"new_sha256\": \"e22445c7c5ef7b19b64996dfd7c78b39a0f9436fb265185ae056d4f7b93f51a2\", \"op\": \"add\", \"path\": \"src/module/new.ts\"}]\n",
+        "recorded_sha256": "f72a39da197dd40aa4ad5203a23aa8678b75811a4098b7e8fb0cba9166f317ef",
+        "entries": [
+          {
+            "op": "modify",
+            "path": "src/module/target.ts",
+            "kind": "file",
+            "mode_change": false,
+            "base_sha256": "6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8",
+            "new_sha256": "f01189d9fd0c06559d0d481fe7a07ea4a329b4d2a5febf6af85ec7813721df4b"
+          },
+          {
+            "op": "add",
+            "path": "src/module/new.ts",
+            "kind": "file",
+            "mode_change": false,
+            "base_sha256": null,
+            "new_sha256": "e22445c7c5ef7b19b64996dfd7c78b39a0f9436fb265185ae056d4f7b93f51a2"
+          }
+        ]
+      },
+      "expected": {
+        "outcome": "proposal_applied",
+        "applied": true,
+        "protected_after": {
+          "src/module/target.ts": "f01189d9fd0c06559d0d481fe7a07ea4a329b4d2a5febf6af85ec7813721df4b",
+          "src/module/old.ts": "01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee",
+          "docs/notes.md": "444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda",
+          "src/module/new.ts": "e22445c7c5ef7b19b64996dfd7c78b39a0f9436fb265185ae056d4f7b93f51a2"
+        }
+      },
+      "finding": "V2-TIER-01",
+      "note": "required_constraints is empty; the provider tier's write_scope apply check still runs and passes."
+    },
+    {
+      "id": "A2-out-of-scope",
+      "role": "negative",
+      "envelope": {
+        "tier": "provider_readonly_patch_return_audit",
+        "required_constraints": [],
+        "repo_relative_locators": [
+          "src/module"
+        ],
+        "target_map": [
+          {
+            "workspace_locator": "src/module/target.ts",
+            "protected_locator": "src/module/target.ts"
+          },
+          {
+            "workspace_locator": "src/module/new.ts",
+            "protected_locator": "src/module/new.ts"
+          },
+          {
+            "workspace_locator": "src/module/old.ts",
+            "protected_locator": "src/module/old.ts"
+          },
+          {
+            "workspace_locator": "docs/notes.md",
+            "protected_locator": "docs/notes.md"
+          }
+        ]
+      },
+      "protected_before": {
+        "src/module/target.ts": "6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8",
+        "src/module/old.ts": "01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee",
+        "docs/notes.md": "444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda"
+      },
+      "proposal": {
+        "text": "[{\"base_sha256\": \"6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8\", \"kind\": \"file\", \"mode_change\": false, \"new_sha256\": \"f01189d9fd0c06559d0d481fe7a07ea4a329b4d2a5febf6af85ec7813721df4b\", \"op\": \"modify\", \"path\": \"src/other.ts\"}]\n",
+        "recorded_sha256": "4c71948c4d9a9ae68fc5d51349f11dc3298fa82fed72b5787917b89a7b733660",
+        "entries": [
+          {
+            "op": "modify",
+            "path": "src/other.ts",
+            "kind": "file",
+            "mode_change": false,
+            "base_sha256": "6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8",
+            "new_sha256": "f01189d9fd0c06559d0d481fe7a07ea4a329b4d2a5febf6af85ec7813721df4b"
+          }
+        ]
+      },
+      "expected": {
+        "outcome": "proposal_out_of_scope",
+        "applied": false,
+        "protected_after": {
+          "src/module/target.ts": "6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8",
+          "src/module/old.ts": "01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee",
+          "docs/notes.md": "444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda"
+        }
+      },
+      "finding": "V2-TIER-01"
+    },
+    {
+      "id": "A2-mapped-outside-scope",
+      "role": "negative",
+      "envelope": {
+        "tier": "provider_readonly_patch_return_audit",
+        "required_constraints": [],
+        "repo_relative_locators": [
+          "src/module"
+        ],
+        "target_map": [
+          {
+            "workspace_locator": "src/module/target.ts",
+            "protected_locator": "src/module/target.ts"
+          },
+          {
+            "workspace_locator": "src/module/new.ts",
+            "protected_locator": "src/module/new.ts"
+          },
+          {
+            "workspace_locator": "src/module/old.ts",
+            "protected_locator": "src/module/old.ts"
+          },
+          {
+            "workspace_locator": "docs/notes.md",
+            "protected_locator": "docs/notes.md"
+          }
+        ]
+      },
+      "protected_before": {
+        "src/module/target.ts": "6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8",
+        "src/module/old.ts": "01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee",
+        "docs/notes.md": "444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda"
+      },
+      "proposal": {
+        "text": "[{\"base_sha256\": \"444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda\", \"kind\": \"file\", \"mode_change\": false, \"new_sha256\": \"f01189d9fd0c06559d0d481fe7a07ea4a329b4d2a5febf6af85ec7813721df4b\", \"op\": \"modify\", \"path\": \"docs/notes.md\"}]\n",
+        "recorded_sha256": "20f7f4c0fb7434ead8d9d8afb62df1055825250d3b0dccc3fbcef6a56c222db9",
+        "entries": [
+          {
+            "op": "modify",
+            "path": "docs/notes.md",
+            "kind": "file",
+            "mode_change": false,
+            "base_sha256": "444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda",
+            "new_sha256": "f01189d9fd0c06559d0d481fe7a07ea4a329b4d2a5febf6af85ec7813721df4b"
+          }
+        ]
+      },
+      "expected": {
+        "outcome": "proposal_out_of_scope",
+        "applied": false,
+        "protected_after": {
+          "src/module/target.ts": "6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8",
+          "src/module/old.ts": "01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee",
+          "docs/notes.md": "444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda"
+        }
+      },
+      "finding": "V2-TIER-01",
+      "note": "docs/notes.md has a target_map entry but maps outside workspace.repo_relative_locators."
+    },
+    {
+      "id": "A2-rename-source-outside",
+      "role": "negative",
+      "envelope": {
+        "tier": "provider_readonly_patch_return_audit",
+        "required_constraints": [],
+        "repo_relative_locators": [
+          "src/module"
+        ],
+        "target_map": [
+          {
+            "workspace_locator": "src/module/target.ts",
+            "protected_locator": "src/module/target.ts"
+          },
+          {
+            "workspace_locator": "src/module/new.ts",
+            "protected_locator": "src/module/new.ts"
+          },
+          {
+            "workspace_locator": "src/module/old.ts",
+            "protected_locator": "src/module/old.ts"
+          },
+          {
+            "workspace_locator": "docs/notes.md",
+            "protected_locator": "docs/notes.md"
+          }
+        ]
+      },
+      "protected_before": {
+        "src/module/target.ts": "6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8",
+        "src/module/old.ts": "01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee",
+        "docs/notes.md": "444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda"
+      },
+      "proposal": {
+        "text": "[{\"base_sha256\": \"73cb3858a687a8494ca3323053016282f3dad39d42cf62ca4e79dda2aac7d9ac\", \"from\": \"src/other.ts\", \"kind\": \"file\", \"mode_change\": false, \"new_sha256\": \"73cb3858a687a8494ca3323053016282f3dad39d42cf62ca4e79dda2aac7d9ac\", \"op\": \"rename\", \"path\": \"src/module/new.ts\"}]\n",
+        "recorded_sha256": "5f08493a9142a21182d750263c42ea921bb5befc9d9d6b4cc84007d5698ed2c8",
+        "entries": [
+          {
+            "op": "rename",
+            "from": "src/other.ts",
+            "path": "src/module/new.ts",
+            "kind": "file",
+            "mode_change": false,
+            "base_sha256": "73cb3858a687a8494ca3323053016282f3dad39d42cf62ca4e79dda2aac7d9ac",
+            "new_sha256": "73cb3858a687a8494ca3323053016282f3dad39d42cf62ca4e79dda2aac7d9ac"
+          }
+        ]
+      },
+      "expected": {
+        "outcome": "proposal_out_of_scope",
+        "applied": false,
+        "protected_after": {
+          "src/module/target.ts": "6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8",
+          "src/module/old.ts": "01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee",
+          "docs/notes.md": "444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda"
+        }
+      },
+      "finding": "V2-TIER-01"
+    },
+    {
+      "id": "A2-rename-destination-outside",
+      "role": "negative",
+      "envelope": {
+        "tier": "provider_readonly_patch_return_audit",
+        "required_constraints": [],
+        "repo_relative_locators": [
+          "src/module"
+        ],
+        "target_map": [
+          {
+            "workspace_locator": "src/module/target.ts",
+            "protected_locator": "src/module/target.ts"
+          },
+          {
+            "workspace_locator": "src/module/new.ts",
+            "protected_locator": "src/module/new.ts"
+          },
+          {
+            "workspace_locator": "src/module/old.ts",
+            "protected_locator": "src/module/old.ts"
+          },
+          {
+            "workspace_locator": "docs/notes.md",
+            "protected_locator": "docs/notes.md"
+          }
+        ]
+      },
+      "protected_before": {
+        "src/module/target.ts": "6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8",
+        "src/module/old.ts": "01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee",
+        "docs/notes.md": "444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda"
+      },
+      "proposal": {
+        "text": "[{\"base_sha256\": \"01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee\", \"from\": \"src/module/old.ts\", \"kind\": \"file\", \"mode_change\": false, \"new_sha256\": \"01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee\", \"op\": \"rename\", \"path\": \"src/other.ts\"}]\n",
+        "recorded_sha256": "3fa6193a61b24728463356b511504fe9b21c8cf9bc02921bb6dcd6f49fba73f1",
+        "entries": [
+          {
+            "op": "rename",
+            "from": "src/module/old.ts",
+            "path": "src/other.ts",
+            "kind": "file",
+            "mode_change": false,
+            "base_sha256": "01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee",
+            "new_sha256": "01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee"
+          }
+        ]
+      },
+      "expected": {
+        "outcome": "proposal_out_of_scope",
+        "applied": false,
+        "protected_after": {
+          "src/module/target.ts": "6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8",
+          "src/module/old.ts": "01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee",
+          "docs/notes.md": "444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda"
+        }
+      },
+      "finding": "V2-TIER-01"
+    },
+    {
+      "id": "A2-copy-source-outside",
+      "role": "negative",
+      "envelope": {
+        "tier": "provider_readonly_patch_return_audit",
+        "required_constraints": [],
+        "repo_relative_locators": [
+          "src/module"
+        ],
+        "target_map": [
+          {
+            "workspace_locator": "src/module/target.ts",
+            "protected_locator": "src/module/target.ts"
+          },
+          {
+            "workspace_locator": "src/module/new.ts",
+            "protected_locator": "src/module/new.ts"
+          },
+          {
+            "workspace_locator": "src/module/old.ts",
+            "protected_locator": "src/module/old.ts"
+          },
+          {
+            "workspace_locator": "docs/notes.md",
+            "protected_locator": "docs/notes.md"
+          }
+        ]
+      },
+      "protected_before": {
+        "src/module/target.ts": "6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8",
+        "src/module/old.ts": "01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee",
+        "docs/notes.md": "444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda"
+      },
+      "proposal": {
+        "text": "[{\"base_sha256\": \"444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda\", \"from\": \"docs/notes.md\", \"kind\": \"file\", \"mode_change\": false, \"new_sha256\": \"444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda\", \"op\": \"copy\", \"path\": \"src/module/new.ts\"}]\n",
+        "recorded_sha256": "16a8ddba58a2625af0c87dd13bbac13eac85353931582e06d8a18cc262b847ef",
+        "entries": [
+          {
+            "op": "copy",
+            "from": "docs/notes.md",
+            "path": "src/module/new.ts",
+            "kind": "file",
+            "mode_change": false,
+            "base_sha256": "444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda",
+            "new_sha256": "444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda"
+          }
+        ]
+      },
+      "expected": {
+        "outcome": "proposal_out_of_scope",
+        "applied": false,
+        "protected_after": {
+          "src/module/target.ts": "6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8",
+          "src/module/old.ts": "01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee",
+          "docs/notes.md": "444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda"
+        }
+      },
+      "finding": "V2-TIER-01"
+    },
+    {
+      "id": "A2-proposal-digest-changed",
+      "role": "negative",
+      "envelope": {
+        "tier": "provider_readonly_patch_return_audit",
+        "required_constraints": [],
+        "repo_relative_locators": [
+          "src/module"
+        ],
+        "target_map": [
+          {
+            "workspace_locator": "src/module/target.ts",
+            "protected_locator": "src/module/target.ts"
+          },
+          {
+            "workspace_locator": "src/module/new.ts",
+            "protected_locator": "src/module/new.ts"
+          },
+          {
+            "workspace_locator": "src/module/old.ts",
+            "protected_locator": "src/module/old.ts"
+          },
+          {
+            "workspace_locator": "docs/notes.md",
+            "protected_locator": "docs/notes.md"
+          }
+        ]
+      },
+      "protected_before": {
+        "src/module/target.ts": "6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8",
+        "src/module/old.ts": "01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee",
+        "docs/notes.md": "444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda"
+      },
+      "proposal": {
+        "text": "[{\"base_sha256\": \"6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8\", \"kind\": \"file\", \"mode_change\": false, \"new_sha256\": \"f01189d9fd0c06559d0d481fe7a07ea4a329b4d2a5febf6af85ec7813721df4b\", \"op\": \"modify\", \"path\": \"src/module/target.ts\"}]\n",
+        "recorded_sha256": "37c14aa8cfc336ea49db9e89da860271fb417dce7d17dec0b7e6114e2984059a",
+        "entries": [
+          {
+            "op": "modify",
+            "path": "src/module/target.ts",
+            "kind": "file",
+            "mode_change": false,
+            "base_sha256": "6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8",
+            "new_sha256": "f01189d9fd0c06559d0d481fe7a07ea4a329b4d2a5febf6af85ec7813721df4b"
+          }
+        ]
+      },
+      "expected": {
+        "outcome": "proposal_digest_mismatch",
+        "applied": false,
+        "protected_after": {
+          "src/module/target.ts": "6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8",
+          "src/module/old.ts": "01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee",
+          "docs/notes.md": "444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda"
+        }
+      },
+      "finding": "V2-TIER-01"
+    },
+    {
+      "id": "A2-symlink-entry",
+      "role": "negative",
+      "envelope": {
+        "tier": "provider_readonly_patch_return_audit",
+        "required_constraints": [],
+        "repo_relative_locators": [
+          "src/module"
+        ],
+        "target_map": [
+          {
+            "workspace_locator": "src/module/target.ts",
+            "protected_locator": "src/module/target.ts"
+          },
+          {
+            "workspace_locator": "src/module/new.ts",
+            "protected_locator": "src/module/new.ts"
+          },
+          {
+            "workspace_locator": "src/module/old.ts",
+            "protected_locator": "src/module/old.ts"
+          },
+          {
+            "workspace_locator": "docs/notes.md",
+            "protected_locator": "docs/notes.md"
+          }
+        ]
+      },
+      "protected_before": {
+        "src/module/target.ts": "6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8",
+        "src/module/old.ts": "01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee",
+        "docs/notes.md": "444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda"
+      },
+      "proposal": {
+        "text": "[{\"base_sha256\": null, \"kind\": \"symlink\", \"mode_change\": false, \"new_sha256\": \"e22445c7c5ef7b19b64996dfd7c78b39a0f9436fb265185ae056d4f7b93f51a2\", \"op\": \"add\", \"path\": \"src/module/new.ts\"}]\n",
+        "recorded_sha256": "e10bee0c3027c7197884926daa2da59f48f7d8260cc0318f11dfee4d977f5fa0",
+        "entries": [
+          {
+            "op": "add",
+            "path": "src/module/new.ts",
+            "kind": "symlink",
+            "mode_change": false,
+            "base_sha256": null,
+            "new_sha256": "e22445c7c5ef7b19b64996dfd7c78b39a0f9436fb265185ae056d4f7b93f51a2"
+          }
+        ]
+      },
+      "expected": {
+        "outcome": "proposal_entry_unsupported",
+        "applied": false,
+        "protected_after": {
+          "src/module/target.ts": "6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8",
+          "src/module/old.ts": "01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee",
+          "docs/notes.md": "444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda"
+        }
+      },
+      "finding": "V2-TIER-01"
+    },
+    {
+      "id": "A2-submodule-entry",
+      "role": "negative",
+      "envelope": {
+        "tier": "provider_readonly_patch_return_audit",
+        "required_constraints": [],
+        "repo_relative_locators": [
+          "src/module"
+        ],
+        "target_map": [
+          {
+            "workspace_locator": "src/module/target.ts",
+            "protected_locator": "src/module/target.ts"
+          },
+          {
+            "workspace_locator": "src/module/new.ts",
+            "protected_locator": "src/module/new.ts"
+          },
+          {
+            "workspace_locator": "src/module/old.ts",
+            "protected_locator": "src/module/old.ts"
+          },
+          {
+            "workspace_locator": "docs/notes.md",
+            "protected_locator": "docs/notes.md"
+          }
+        ]
+      },
+      "protected_before": {
+        "src/module/target.ts": "6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8",
+        "src/module/old.ts": "01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee",
+        "docs/notes.md": "444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda"
+      },
+      "proposal": {
+        "text": "[{\"base_sha256\": null, \"kind\": \"submodule\", \"mode_change\": false, \"new_sha256\": \"e22445c7c5ef7b19b64996dfd7c78b39a0f9436fb265185ae056d4f7b93f51a2\", \"op\": \"add\", \"path\": \"src/module/new.ts\"}]\n",
+        "recorded_sha256": "3cf5508829c3637539caf9496730c340abe4c8fe71e15c79e3279456f02615c3",
+        "entries": [
+          {
+            "op": "add",
+            "path": "src/module/new.ts",
+            "kind": "submodule",
+            "mode_change": false,
+            "base_sha256": null,
+            "new_sha256": "e22445c7c5ef7b19b64996dfd7c78b39a0f9436fb265185ae056d4f7b93f51a2"
+          }
+        ]
+      },
+      "expected": {
+        "outcome": "proposal_entry_unsupported",
+        "applied": false,
+        "protected_after": {
+          "src/module/target.ts": "6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8",
+          "src/module/old.ts": "01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee",
+          "docs/notes.md": "444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda"
+        }
+      },
+      "finding": "V2-TIER-01"
+    },
+    {
+      "id": "A2-mode-change",
+      "role": "negative",
+      "envelope": {
+        "tier": "provider_readonly_patch_return_audit",
+        "required_constraints": [],
+        "repo_relative_locators": [
+          "src/module"
+        ],
+        "target_map": [
+          {
+            "workspace_locator": "src/module/target.ts",
+            "protected_locator": "src/module/target.ts"
+          },
+          {
+            "workspace_locator": "src/module/new.ts",
+            "protected_locator": "src/module/new.ts"
+          },
+          {
+            "workspace_locator": "src/module/old.ts",
+            "protected_locator": "src/module/old.ts"
+          },
+          {
+            "workspace_locator": "docs/notes.md",
+            "protected_locator": "docs/notes.md"
+          }
+        ]
+      },
+      "protected_before": {
+        "src/module/target.ts": "6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8",
+        "src/module/old.ts": "01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee",
+        "docs/notes.md": "444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda"
+      },
+      "proposal": {
+        "text": "[{\"base_sha256\": \"6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8\", \"kind\": \"file\", \"mode_change\": true, \"new_sha256\": \"f01189d9fd0c06559d0d481fe7a07ea4a329b4d2a5febf6af85ec7813721df4b\", \"op\": \"modify\", \"path\": \"src/module/target.ts\"}]\n",
+        "recorded_sha256": "fe637f679d930f077a9d698392de74693ec6537c73377adeff2b75c536065caa",
+        "entries": [
+          {
+            "op": "modify",
+            "path": "src/module/target.ts",
+            "kind": "file",
+            "mode_change": true,
+            "base_sha256": "6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8",
+            "new_sha256": "f01189d9fd0c06559d0d481fe7a07ea4a329b4d2a5febf6af85ec7813721df4b"
+          }
+        ]
+      },
+      "expected": {
+        "outcome": "proposal_entry_unsupported",
+        "applied": false,
+        "protected_after": {
+          "src/module/target.ts": "6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8",
+          "src/module/old.ts": "01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee",
+          "docs/notes.md": "444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda"
+        }
+      },
+      "finding": "V2-TIER-01"
+    },
+    {
+      "id": "A2-stale-base",
+      "role": "negative",
+      "envelope": {
+        "tier": "provider_readonly_patch_return_audit",
+        "required_constraints": [],
+        "repo_relative_locators": [
+          "src/module"
+        ],
+        "target_map": [
+          {
+            "workspace_locator": "src/module/target.ts",
+            "protected_locator": "src/module/target.ts"
+          },
+          {
+            "workspace_locator": "src/module/new.ts",
+            "protected_locator": "src/module/new.ts"
+          },
+          {
+            "workspace_locator": "src/module/old.ts",
+            "protected_locator": "src/module/old.ts"
+          },
+          {
+            "workspace_locator": "docs/notes.md",
+            "protected_locator": "docs/notes.md"
+          }
+        ]
+      },
+      "protected_before": {
+        "src/module/target.ts": "6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8",
+        "src/module/old.ts": "01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee",
+        "docs/notes.md": "444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda"
+      },
+      "proposal": {
+        "text": "[{\"base_sha256\": \"a55aec66d61192b7d1c380db4f3708739ba76d0eed007998cd3150c4a045176d\", \"kind\": \"file\", \"mode_change\": false, \"new_sha256\": \"f01189d9fd0c06559d0d481fe7a07ea4a329b4d2a5febf6af85ec7813721df4b\", \"op\": \"modify\", \"path\": \"src/module/target.ts\"}]\n",
+        "recorded_sha256": "938eb0ad1501d6076d981cddd41fd0c5a102c277c83d6f9accb7230d336a8d8b",
+        "entries": [
+          {
+            "op": "modify",
+            "path": "src/module/target.ts",
+            "kind": "file",
+            "mode_change": false,
+            "base_sha256": "a55aec66d61192b7d1c380db4f3708739ba76d0eed007998cd3150c4a045176d",
+            "new_sha256": "f01189d9fd0c06559d0d481fe7a07ea4a329b4d2a5febf6af85ec7813721df4b"
+          }
+        ]
+      },
+      "expected": {
+        "outcome": "proposal_stale",
+        "applied": false,
+        "protected_after": {
+          "src/module/target.ts": "6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8",
+          "src/module/old.ts": "01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee",
+          "docs/notes.md": "444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda"
+        }
+      },
+      "finding": "V2-TIER-01"
+    },
+    {
+      "id": "A2-unattributable",
+      "role": "negative",
+      "envelope": {
+        "tier": "provider_readonly_patch_return_audit",
+        "required_constraints": [],
+        "repo_relative_locators": [
+          "src/module"
+        ],
+        "target_map": [
+          {
+            "workspace_locator": "src/module/target.ts",
+            "protected_locator": "src/module/target.ts"
+          },
+          {
+            "workspace_locator": "src/module/new.ts",
+            "protected_locator": "src/module/new.ts"
+          },
+          {
+            "workspace_locator": "src/module/old.ts",
+            "protected_locator": "src/module/old.ts"
+          },
+          {
+            "workspace_locator": "docs/notes.md",
+            "protected_locator": "docs/notes.md"
+          }
+        ]
+      },
+      "protected_before": {
+        "src/module/target.ts": "6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8",
+        "src/module/old.ts": "01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee",
+        "docs/notes.md": "444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda"
+      },
+      "proposal": {
+        "text": "[{\"base_sha256\": \"6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8\", \"kind\": \"file\", \"mode_change\": false, \"new_sha256\": \"f01189d9fd0c06559d0d481fe7a07ea4a329b4d2a5febf6af85ec7813721df4b\", \"op\": \"modify\"}]\n",
+        "recorded_sha256": "a6bcbcf6b685328da30a733020c658ca8b8176fa69b5763cf473f28601a72905",
+        "entries": [
+          {
+            "op": "modify",
+            "kind": "file",
+            "mode_change": false,
+            "base_sha256": "6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8",
+            "new_sha256": "f01189d9fd0c06559d0d481fe7a07ea4a329b4d2a5febf6af85ec7813721df4b"
+          }
+        ]
+      },
+      "expected": {
+        "outcome": "proposal_unattributable",
+        "applied": false,
+        "protected_after": {
+          "src/module/target.ts": "6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8",
+          "src/module/old.ts": "01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee",
+          "docs/notes.md": "444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda"
+        }
+      },
+      "finding": "V2-TIER-01"
+    },
+    {
+      "id": "A2-no-partial-apply",
+      "role": "negative",
+      "envelope": {
+        "tier": "provider_readonly_patch_return_audit",
+        "required_constraints": [],
+        "repo_relative_locators": [
+          "src/module"
+        ],
+        "target_map": [
+          {
+            "workspace_locator": "src/module/target.ts",
+            "protected_locator": "src/module/target.ts"
+          },
+          {
+            "workspace_locator": "src/module/new.ts",
+            "protected_locator": "src/module/new.ts"
+          },
+          {
+            "workspace_locator": "src/module/old.ts",
+            "protected_locator": "src/module/old.ts"
+          },
+          {
+            "workspace_locator": "docs/notes.md",
+            "protected_locator": "docs/notes.md"
+          }
+        ]
+      },
+      "protected_before": {
+        "src/module/target.ts": "6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8",
+        "src/module/old.ts": "01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee",
+        "docs/notes.md": "444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda"
+      },
+      "proposal": {
+        "text": "[{\"base_sha256\": \"6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8\", \"kind\": \"file\", \"mode_change\": false, \"new_sha256\": \"f01189d9fd0c06559d0d481fe7a07ea4a329b4d2a5febf6af85ec7813721df4b\", \"op\": \"modify\", \"path\": \"src/module/target.ts\"}, {\"base_sha256\": null, \"kind\": \"file\", \"mode_change\": false, \"new_sha256\": \"e22445c7c5ef7b19b64996dfd7c78b39a0f9436fb265185ae056d4f7b93f51a2\", \"op\": \"add\", \"path\": \"src/other/new.ts\"}]\n",
+        "recorded_sha256": "5e87fcbc1dcf729c528bfa100e26994830661746d94c5c21b66f77b66d43a072",
+        "entries": [
+          {
+            "op": "modify",
+            "path": "src/module/target.ts",
+            "kind": "file",
+            "mode_change": false,
+            "base_sha256": "6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8",
+            "new_sha256": "f01189d9fd0c06559d0d481fe7a07ea4a329b4d2a5febf6af85ec7813721df4b"
+          },
+          {
+            "op": "add",
+            "path": "src/other/new.ts",
+            "kind": "file",
+            "mode_change": false,
+            "base_sha256": null,
+            "new_sha256": "e22445c7c5ef7b19b64996dfd7c78b39a0f9436fb265185ae056d4f7b93f51a2"
+          }
+        ]
+      },
+      "expected": {
+        "outcome": "proposal_out_of_scope",
+        "applied": false,
+        "protected_after": {
+          "src/module/target.ts": "6d5bcb9e072f969628728ccb231393349fddbdca6c41a4698e3da98e5d9dcaa8",
+          "src/module/old.ts": "01d09d19c2139a46aebfb577780d123d7396e97201bc7ead210a2ebff8239dee",
+          "docs/notes.md": "444e0fffbd825e9610ff5b199485707a0c895339ae80c15cc8a8aee41b106fda"
+        }
+      },
+      "finding": "V2-TIER-01",
+      "note": "One valid and one out-of-scope entry: nothing is applied."
+    }
+  ],
+  "journals": [
+    {
+      "id": "J2-proposal-applied-finished",
+      "role": "control",
+      "journal": {
+        "attempts": [
+          {
+            "segments": [
+              {
+                "lines": [
+                  {
+                    "schema": "supervised_run_status.v1",
+                    "version": "1",
+                    "line_kind": "header",
+                    "seq": 0,
+                    "attempt": {
+                      "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                      "envelope_digest": "9b49c9dc857d7755bb443f89ea8d1d98f760b2fff72af05940efbef98f38ef42",
+                      "run_id": "run-1",
+                      "attempt_id": "attempt-1"
+                    },
+                    "units": {
+                      "target_unit_ids": [
+                        "unit:target"
+                      ],
+                      "readonly_neighbor_unit_ids": [
+                        "unit:neighbor"
+                      ],
+                      "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                    },
+                    "writer": {
+                      "harness_id": "example-harness",
+                      "harness_version": "1.0.0",
+                      "writer_instance_id": "writer-1",
+                      "owner_pid": 4242,
+                      "process_start_time": "2026-11-04T10:00:00Z"
+                    },
+                    "observed_at": "2026-11-04T10:00:00Z",
+                    "redaction_posture": "digests_and_repo_relative_locators_only",
+                    "body": {
+                      "segment_index": 0,
+                      "previous_segment_sha256": null,
+                      "previous_last_seq": null,
+                      "body_kind": "header"
+                    }
+                  },
+                  {
+                    "schema": "supervised_run_status.v1",
+                    "version": "1",
+                    "line_kind": "state",
+                    "seq": 1,
+                    "attempt": {
+                      "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                      "envelope_digest": "9b49c9dc857d7755bb443f89ea8d1d98f760b2fff72af05940efbef98f38ef42",
+                      "run_id": "run-1",
+                      "attempt_id": "attempt-1"
+                    },
+                    "units": {
+                      "target_unit_ids": [
+                        "unit:target"
+                      ],
+                      "readonly_neighbor_unit_ids": [
+                        "unit:neighbor"
+                      ],
+                      "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                    },
+                    "writer": {
+                      "harness_id": "example-harness",
+                      "harness_version": "1.0.0",
+                      "writer_instance_id": "writer-1",
+                      "owner_pid": 4242,
+                      "process_start_time": "2026-11-04T10:00:00Z"
+                    },
+                    "observed_at": "2026-11-04T10:01:00Z",
+                    "redaction_posture": "digests_and_repo_relative_locators_only",
+                    "body": {
+                      "state": "queued",
+                      "worker_invocations": 0,
+                      "body_kind": "state"
+                    }
+                  },
+                  {
+                    "schema": "supervised_run_status.v1",
+                    "version": "1",
+                    "line_kind": "state",
+                    "seq": 2,
+                    "attempt": {
+                      "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                      "envelope_digest": "9b49c9dc857d7755bb443f89ea8d1d98f760b2fff72af05940efbef98f38ef42",
+                      "run_id": "run-1",
+                      "attempt_id": "attempt-1"
+                    },
+                    "units": {
+                      "target_unit_ids": [
+                        "unit:target"
+                      ],
+                      "readonly_neighbor_unit_ids": [
+                        "unit:neighbor"
+                      ],
+                      "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                    },
+                    "writer": {
+                      "harness_id": "example-harness",
+                      "harness_version": "1.0.0",
+                      "writer_instance_id": "writer-1",
+                      "owner_pid": 4242,
+                      "process_start_time": "2026-11-04T10:00:00Z"
+                    },
+                    "observed_at": "2026-11-04T10:02:00Z",
+                    "redaction_posture": "digests_and_repo_relative_locators_only",
+                    "body": {
+                      "state": "running",
+                      "worker_invocations": 1,
+                      "body_kind": "state"
+                    }
+                  },
+                  {
+                    "schema": "supervised_run_status.v1",
+                    "version": "1",
+                    "line_kind": "terminal",
+                    "seq": 3,
+                    "attempt": {
+                      "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                      "envelope_digest": "9b49c9dc857d7755bb443f89ea8d1d98f760b2fff72af05940efbef98f38ef42",
+                      "run_id": "run-1",
+                      "attempt_id": "attempt-1"
+                    },
+                    "units": {
+                      "target_unit_ids": [
+                        "unit:target"
+                      ],
+                      "readonly_neighbor_unit_ids": [
+                        "unit:neighbor"
+                      ],
+                      "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                    },
+                    "writer": {
+                      "harness_id": "example-harness",
+                      "harness_version": "1.0.0",
+                      "writer_instance_id": "writer-1",
+                      "owner_pid": 4242,
+                      "process_start_time": "2026-11-04T10:00:00Z"
+                    },
+                    "observed_at": "2026-11-04T10:03:00Z",
+                    "redaction_posture": "digests_and_repo_relative_locators_only",
+                    "body": {
+                      "state": "finished",
+                      "worker_invocations": 1,
+                      "termination": {
+                        "reason": "completed",
+                        "signal": null,
+                        "by": "worker"
+                      },
+                      "refusal": null,
+                      "result_binding": {
+                        "envelope_digest": "9b49c9dc857d7755bb443f89ea8d1d98f760b2fff72af05940efbef98f38ef42",
+                        "run_id": "run-1",
+                        "attempt_id": "attempt-1",
+                        "proposal_bytes_digest": "f72a39da197dd40aa4ad5203a23aa8678b75811a4098b7e8fb0cba9166f317ef",
+                        "evidence_envelope_digest": "5d967f45abe0bc64524b4feaea1be7e6fb3863400102fa1ee60e05840982d5cb"
+                      },
+                      "body_kind": "terminal"
+                    }
+                  }
+                ],
+                "final_newline": true
+              }
+            ]
+          }
+        ]
+      },
+      "expected": [],
+      "finding": "V2-TIER-01",
+      "note": "Admission with empty required_constraints, then running -> finished; the proposal is applied (A2-apply-in-scope-empty-constraints)."
+    },
+    {
+      "id": "J2-proposal-rejected-finished",
+      "role": "control",
+      "journal": {
+        "attempts": [
+          {
+            "segments": [
+              {
+                "lines": [
+                  {
+                    "schema": "supervised_run_status.v1",
+                    "version": "1",
+                    "line_kind": "header",
+                    "seq": 0,
+                    "attempt": {
+                      "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                      "envelope_digest": "9b49c9dc857d7755bb443f89ea8d1d98f760b2fff72af05940efbef98f38ef42",
+                      "run_id": "run-1",
+                      "attempt_id": "attempt-1"
+                    },
+                    "units": {
+                      "target_unit_ids": [
+                        "unit:target"
+                      ],
+                      "readonly_neighbor_unit_ids": [
+                        "unit:neighbor"
+                      ],
+                      "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                    },
+                    "writer": {
+                      "harness_id": "example-harness",
+                      "harness_version": "1.0.0",
+                      "writer_instance_id": "writer-1",
+                      "owner_pid": 4242,
+                      "process_start_time": "2026-11-04T10:00:00Z"
+                    },
+                    "observed_at": "2026-11-04T10:00:00Z",
+                    "redaction_posture": "digests_and_repo_relative_locators_only",
+                    "body": {
+                      "segment_index": 0,
+                      "previous_segment_sha256": null,
+                      "previous_last_seq": null,
+                      "body_kind": "header"
+                    }
+                  },
+                  {
+                    "schema": "supervised_run_status.v1",
+                    "version": "1",
+                    "line_kind": "state",
+                    "seq": 1,
+                    "attempt": {
+                      "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                      "envelope_digest": "9b49c9dc857d7755bb443f89ea8d1d98f760b2fff72af05940efbef98f38ef42",
+                      "run_id": "run-1",
+                      "attempt_id": "attempt-1"
+                    },
+                    "units": {
+                      "target_unit_ids": [
+                        "unit:target"
+                      ],
+                      "readonly_neighbor_unit_ids": [
+                        "unit:neighbor"
+                      ],
+                      "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                    },
+                    "writer": {
+                      "harness_id": "example-harness",
+                      "harness_version": "1.0.0",
+                      "writer_instance_id": "writer-1",
+                      "owner_pid": 4242,
+                      "process_start_time": "2026-11-04T10:00:00Z"
+                    },
+                    "observed_at": "2026-11-04T10:01:00Z",
+                    "redaction_posture": "digests_and_repo_relative_locators_only",
+                    "body": {
+                      "state": "queued",
+                      "worker_invocations": 0,
+                      "body_kind": "state"
+                    }
+                  },
+                  {
+                    "schema": "supervised_run_status.v1",
+                    "version": "1",
+                    "line_kind": "state",
+                    "seq": 2,
+                    "attempt": {
+                      "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                      "envelope_digest": "9b49c9dc857d7755bb443f89ea8d1d98f760b2fff72af05940efbef98f38ef42",
+                      "run_id": "run-1",
+                      "attempt_id": "attempt-1"
+                    },
+                    "units": {
+                      "target_unit_ids": [
+                        "unit:target"
+                      ],
+                      "readonly_neighbor_unit_ids": [
+                        "unit:neighbor"
+                      ],
+                      "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                    },
+                    "writer": {
+                      "harness_id": "example-harness",
+                      "harness_version": "1.0.0",
+                      "writer_instance_id": "writer-1",
+                      "owner_pid": 4242,
+                      "process_start_time": "2026-11-04T10:00:00Z"
+                    },
+                    "observed_at": "2026-11-04T10:02:00Z",
+                    "redaction_posture": "digests_and_repo_relative_locators_only",
+                    "body": {
+                      "state": "running",
+                      "worker_invocations": 1,
+                      "body_kind": "state"
+                    }
+                  },
+                  {
+                    "schema": "supervised_run_status.v1",
+                    "version": "1",
+                    "line_kind": "terminal",
+                    "seq": 3,
+                    "attempt": {
+                      "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                      "envelope_digest": "9b49c9dc857d7755bb443f89ea8d1d98f760b2fff72af05940efbef98f38ef42",
+                      "run_id": "run-1",
+                      "attempt_id": "attempt-1"
+                    },
+                    "units": {
+                      "target_unit_ids": [
+                        "unit:target"
+                      ],
+                      "readonly_neighbor_unit_ids": [
+                        "unit:neighbor"
+                      ],
+                      "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                    },
+                    "writer": {
+                      "harness_id": "example-harness",
+                      "harness_version": "1.0.0",
+                      "writer_instance_id": "writer-1",
+                      "owner_pid": 4242,
+                      "process_start_time": "2026-11-04T10:00:00Z"
+                    },
+                    "observed_at": "2026-11-04T10:03:00Z",
+                    "redaction_posture": "digests_and_repo_relative_locators_only",
+                    "body": {
+                      "state": "finished",
+                      "worker_invocations": 1,
+                      "termination": {
+                        "reason": "completed",
+                        "signal": null,
+                        "by": "worker"
+                      },
+                      "refusal": null,
+                      "result_binding": {
+                        "envelope_digest": "9b49c9dc857d7755bb443f89ea8d1d98f760b2fff72af05940efbef98f38ef42",
+                        "run_id": "run-1",
+                        "attempt_id": "attempt-1",
+                        "proposal_bytes_digest": "f72a39da197dd40aa4ad5203a23aa8678b75811a4098b7e8fb0cba9166f317ef",
+                        "evidence_envelope_digest": "5d967f45abe0bc64524b4feaea1be7e6fb3863400102fa1ee60e05840982d5cb"
+                      },
+                      "body_kind": "terminal"
+                    }
+                  }
+                ],
+                "final_newline": true
+              }
+            ]
+          }
+        ]
+      },
+      "expected": [],
+      "finding": "V2-TIER-01",
+      "note": "The same runtime lifecycle when the apply check rejects the proposal: rejection is a work outcome, the journal is unchanged."
+    },
+    {
+      "id": "J2-rejection-recorded-as-refused",
+      "role": "negative",
+      "journal": {
+        "attempts": [
+          {
+            "segments": [
+              {
+                "lines": [
+                  {
+                    "schema": "supervised_run_status.v1",
+                    "version": "1",
+                    "line_kind": "header",
+                    "seq": 0,
+                    "attempt": {
+                      "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                      "envelope_digest": "9b49c9dc857d7755bb443f89ea8d1d98f760b2fff72af05940efbef98f38ef42",
+                      "run_id": "run-1",
+                      "attempt_id": "attempt-1"
+                    },
+                    "units": {
+                      "target_unit_ids": [
+                        "unit:target"
+                      ],
+                      "readonly_neighbor_unit_ids": [
+                        "unit:neighbor"
+                      ],
+                      "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                    },
+                    "writer": {
+                      "harness_id": "example-harness",
+                      "harness_version": "1.0.0",
+                      "writer_instance_id": "writer-1",
+                      "owner_pid": 4242,
+                      "process_start_time": "2026-11-04T10:00:00Z"
+                    },
+                    "observed_at": "2026-11-04T10:00:00Z",
+                    "redaction_posture": "digests_and_repo_relative_locators_only",
+                    "body": {
+                      "segment_index": 0,
+                      "previous_segment_sha256": null,
+                      "previous_last_seq": null,
+                      "body_kind": "header"
+                    }
+                  },
+                  {
+                    "schema": "supervised_run_status.v1",
+                    "version": "1",
+                    "line_kind": "state",
+                    "seq": 1,
+                    "attempt": {
+                      "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                      "envelope_digest": "9b49c9dc857d7755bb443f89ea8d1d98f760b2fff72af05940efbef98f38ef42",
+                      "run_id": "run-1",
+                      "attempt_id": "attempt-1"
+                    },
+                    "units": {
+                      "target_unit_ids": [
+                        "unit:target"
+                      ],
+                      "readonly_neighbor_unit_ids": [
+                        "unit:neighbor"
+                      ],
+                      "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                    },
+                    "writer": {
+                      "harness_id": "example-harness",
+                      "harness_version": "1.0.0",
+                      "writer_instance_id": "writer-1",
+                      "owner_pid": 4242,
+                      "process_start_time": "2026-11-04T10:00:00Z"
+                    },
+                    "observed_at": "2026-11-04T10:01:00Z",
+                    "redaction_posture": "digests_and_repo_relative_locators_only",
+                    "body": {
+                      "state": "queued",
+                      "worker_invocations": 0,
+                      "body_kind": "state"
+                    }
+                  },
+                  {
+                    "schema": "supervised_run_status.v1",
+                    "version": "1",
+                    "line_kind": "state",
+                    "seq": 2,
+                    "attempt": {
+                      "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                      "envelope_digest": "9b49c9dc857d7755bb443f89ea8d1d98f760b2fff72af05940efbef98f38ef42",
+                      "run_id": "run-1",
+                      "attempt_id": "attempt-1"
+                    },
+                    "units": {
+                      "target_unit_ids": [
+                        "unit:target"
+                      ],
+                      "readonly_neighbor_unit_ids": [
+                        "unit:neighbor"
+                      ],
+                      "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                    },
+                    "writer": {
+                      "harness_id": "example-harness",
+                      "harness_version": "1.0.0",
+                      "writer_instance_id": "writer-1",
+                      "owner_pid": 4242,
+                      "process_start_time": "2026-11-04T10:00:00Z"
+                    },
+                    "observed_at": "2026-11-04T10:02:00Z",
+                    "redaction_posture": "digests_and_repo_relative_locators_only",
+                    "body": {
+                      "state": "running",
+                      "worker_invocations": 1,
+                      "body_kind": "state"
+                    }
+                  },
+                  {
+                    "schema": "supervised_run_status.v1",
+                    "version": "1",
+                    "line_kind": "terminal",
+                    "seq": 3,
+                    "attempt": {
+                      "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                      "envelope_digest": "9b49c9dc857d7755bb443f89ea8d1d98f760b2fff72af05940efbef98f38ef42",
+                      "run_id": "run-1",
+                      "attempt_id": "attempt-1"
+                    },
+                    "units": {
+                      "target_unit_ids": [
+                        "unit:target"
+                      ],
+                      "readonly_neighbor_unit_ids": [
+                        "unit:neighbor"
+                      ],
+                      "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                    },
+                    "writer": {
+                      "harness_id": "example-harness",
+                      "harness_version": "1.0.0",
+                      "writer_instance_id": "writer-1",
+                      "owner_pid": 4242,
+                      "process_start_time": "2026-11-04T10:00:00Z"
+                    },
+                    "observed_at": "2026-11-04T10:03:00Z",
+                    "redaction_posture": "digests_and_repo_relative_locators_only",
+                    "body": {
+                      "state": "refused",
+                      "worker_invocations": 1,
+                      "termination": null,
+                      "refusal": {
+                        "reason": "proposal_out_of_scope",
+                        "constraint": "write_scope",
+                        "tier": "provider_readonly_patch_return_audit"
+                      },
+                      "result_binding": null,
+                      "body_kind": "terminal"
+                    }
+                  }
+                ],
+                "final_newline": true
+              }
+            ]
+          }
+        ]
+      },
+      "expected": [
+        "refused_after_launch"
+      ],
+      "finding": "V2-TIER-01"
+    },
+    {
+      "id": "J2-helper-failure-finished",
+      "role": "control",
+      "journal": {
+        "attempts": [
+          {
+            "segments": [
+              {
+                "lines": [
+                  {
+                    "schema": "supervised_run_status.v1",
+                    "version": "1",
+                    "line_kind": "header",
+                    "seq": 0,
+                    "attempt": {
+                      "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                      "envelope_digest": "9b49c9dc857d7755bb443f89ea8d1d98f760b2fff72af05940efbef98f38ef42",
+                      "run_id": "run-1",
+                      "attempt_id": "attempt-1"
+                    },
+                    "units": {
+                      "target_unit_ids": [
+                        "unit:target"
+                      ],
+                      "readonly_neighbor_unit_ids": [
+                        "unit:neighbor"
+                      ],
+                      "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                    },
+                    "writer": {
+                      "harness_id": "example-harness",
+                      "harness_version": "1.0.0",
+                      "writer_instance_id": "writer-1",
+                      "owner_pid": 4242,
+                      "process_start_time": "2026-11-04T10:00:00Z"
+                    },
+                    "observed_at": "2026-11-04T10:00:00Z",
+                    "redaction_posture": "digests_and_repo_relative_locators_only",
+                    "body": {
+                      "segment_index": 0,
+                      "previous_segment_sha256": null,
+                      "previous_last_seq": null,
+                      "body_kind": "header"
+                    }
+                  },
+                  {
+                    "schema": "supervised_run_status.v1",
+                    "version": "1",
+                    "line_kind": "state",
+                    "seq": 1,
+                    "attempt": {
+                      "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                      "envelope_digest": "9b49c9dc857d7755bb443f89ea8d1d98f760b2fff72af05940efbef98f38ef42",
+                      "run_id": "run-1",
+                      "attempt_id": "attempt-1"
+                    },
+                    "units": {
+                      "target_unit_ids": [
+                        "unit:target"
+                      ],
+                      "readonly_neighbor_unit_ids": [
+                        "unit:neighbor"
+                      ],
+                      "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                    },
+                    "writer": {
+                      "harness_id": "example-harness",
+                      "harness_version": "1.0.0",
+                      "writer_instance_id": "writer-1",
+                      "owner_pid": 4242,
+                      "process_start_time": "2026-11-04T10:00:00Z"
+                    },
+                    "observed_at": "2026-11-04T10:01:00Z",
+                    "redaction_posture": "digests_and_repo_relative_locators_only",
+                    "body": {
+                      "state": "queued",
+                      "worker_invocations": 0,
+                      "body_kind": "state"
+                    }
+                  },
+                  {
+                    "schema": "supervised_run_status.v1",
+                    "version": "1",
+                    "line_kind": "state",
+                    "seq": 2,
+                    "attempt": {
+                      "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                      "envelope_digest": "9b49c9dc857d7755bb443f89ea8d1d98f760b2fff72af05940efbef98f38ef42",
+                      "run_id": "run-1",
+                      "attempt_id": "attempt-1"
+                    },
+                    "units": {
+                      "target_unit_ids": [
+                        "unit:target"
+                      ],
+                      "readonly_neighbor_unit_ids": [
+                        "unit:neighbor"
+                      ],
+                      "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                    },
+                    "writer": {
+                      "harness_id": "example-harness",
+                      "harness_version": "1.0.0",
+                      "writer_instance_id": "writer-1",
+                      "owner_pid": 4242,
+                      "process_start_time": "2026-11-04T10:00:00Z"
+                    },
+                    "observed_at": "2026-11-04T10:02:00Z",
+                    "redaction_posture": "digests_and_repo_relative_locators_only",
+                    "body": {
+                      "state": "running",
+                      "worker_invocations": 0,
+                      "body_kind": "state"
+                    }
+                  },
+                  {
+                    "schema": "supervised_run_status.v1",
+                    "version": "1",
+                    "line_kind": "terminal",
+                    "seq": 3,
+                    "attempt": {
+                      "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                      "envelope_digest": "9b49c9dc857d7755bb443f89ea8d1d98f760b2fff72af05940efbef98f38ef42",
+                      "run_id": "run-1",
+                      "attempt_id": "attempt-1"
+                    },
+                    "units": {
+                      "target_unit_ids": [
+                        "unit:target"
+                      ],
+                      "readonly_neighbor_unit_ids": [
+                        "unit:neighbor"
+                      ],
+                      "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                    },
+                    "writer": {
+                      "harness_id": "example-harness",
+                      "harness_version": "1.0.0",
+                      "writer_instance_id": "writer-1",
+                      "owner_pid": 4242,
+                      "process_start_time": "2026-11-04T10:00:00Z"
+                    },
+                    "observed_at": "2026-11-04T10:03:00Z",
+                    "redaction_posture": "digests_and_repo_relative_locators_only",
+                    "body": {
+                      "state": "finished",
+                      "worker_invocations": 0,
+                      "termination": {
+                        "reason": "failed_to_start",
+                        "signal": null,
+                        "by": "harness"
+                      },
+                      "refusal": null,
+                      "result_binding": null,
+                      "body_kind": "terminal"
+                    }
+                  }
+                ],
+                "final_newline": true
+              }
+            ]
+          }
+        ]
+      },
+      "expected": [],
+      "finding": "S3",
+      "note": "A helper transformation fails after the launch chain started: the worker never starts; running -> finished, failed_to_start."
+    },
+    {
+      "id": "J2-helper-failure-as-refused",
+      "role": "negative",
+      "journal": {
+        "attempts": [
+          {
+            "segments": [
+              {
+                "lines": [
+                  {
+                    "schema": "supervised_run_status.v1",
+                    "version": "1",
+                    "line_kind": "header",
+                    "seq": 0,
+                    "attempt": {
+                      "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                      "envelope_digest": "9b49c9dc857d7755bb443f89ea8d1d98f760b2fff72af05940efbef98f38ef42",
+                      "run_id": "run-1",
+                      "attempt_id": "attempt-1"
+                    },
+                    "units": {
+                      "target_unit_ids": [
+                        "unit:target"
+                      ],
+                      "readonly_neighbor_unit_ids": [
+                        "unit:neighbor"
+                      ],
+                      "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                    },
+                    "writer": {
+                      "harness_id": "example-harness",
+                      "harness_version": "1.0.0",
+                      "writer_instance_id": "writer-1",
+                      "owner_pid": 4242,
+                      "process_start_time": "2026-11-04T10:00:00Z"
+                    },
+                    "observed_at": "2026-11-04T10:00:00Z",
+                    "redaction_posture": "digests_and_repo_relative_locators_only",
+                    "body": {
+                      "segment_index": 0,
+                      "previous_segment_sha256": null,
+                      "previous_last_seq": null,
+                      "body_kind": "header"
+                    }
+                  },
+                  {
+                    "schema": "supervised_run_status.v1",
+                    "version": "1",
+                    "line_kind": "state",
+                    "seq": 1,
+                    "attempt": {
+                      "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                      "envelope_digest": "9b49c9dc857d7755bb443f89ea8d1d98f760b2fff72af05940efbef98f38ef42",
+                      "run_id": "run-1",
+                      "attempt_id": "attempt-1"
+                    },
+                    "units": {
+                      "target_unit_ids": [
+                        "unit:target"
+                      ],
+                      "readonly_neighbor_unit_ids": [
+                        "unit:neighbor"
+                      ],
+                      "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                    },
+                    "writer": {
+                      "harness_id": "example-harness",
+                      "harness_version": "1.0.0",
+                      "writer_instance_id": "writer-1",
+                      "owner_pid": 4242,
+                      "process_start_time": "2026-11-04T10:00:00Z"
+                    },
+                    "observed_at": "2026-11-04T10:01:00Z",
+                    "redaction_posture": "digests_and_repo_relative_locators_only",
+                    "body": {
+                      "state": "queued",
+                      "worker_invocations": 0,
+                      "body_kind": "state"
+                    }
+                  },
+                  {
+                    "schema": "supervised_run_status.v1",
+                    "version": "1",
+                    "line_kind": "state",
+                    "seq": 2,
+                    "attempt": {
+                      "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                      "envelope_digest": "9b49c9dc857d7755bb443f89ea8d1d98f760b2fff72af05940efbef98f38ef42",
+                      "run_id": "run-1",
+                      "attempt_id": "attempt-1"
+                    },
+                    "units": {
+                      "target_unit_ids": [
+                        "unit:target"
+                      ],
+                      "readonly_neighbor_unit_ids": [
+                        "unit:neighbor"
+                      ],
+                      "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                    },
+                    "writer": {
+                      "harness_id": "example-harness",
+                      "harness_version": "1.0.0",
+                      "writer_instance_id": "writer-1",
+                      "owner_pid": 4242,
+                      "process_start_time": "2026-11-04T10:00:00Z"
+                    },
+                    "observed_at": "2026-11-04T10:02:00Z",
+                    "redaction_posture": "digests_and_repo_relative_locators_only",
+                    "body": {
+                      "state": "running",
+                      "worker_invocations": 0,
+                      "body_kind": "state"
+                    }
+                  },
+                  {
+                    "schema": "supervised_run_status.v1",
+                    "version": "1",
+                    "line_kind": "terminal",
+                    "seq": 3,
+                    "attempt": {
+                      "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                      "envelope_digest": "9b49c9dc857d7755bb443f89ea8d1d98f760b2fff72af05940efbef98f38ef42",
+                      "run_id": "run-1",
+                      "attempt_id": "attempt-1"
+                    },
+                    "units": {
+                      "target_unit_ids": [
+                        "unit:target"
+                      ],
+                      "readonly_neighbor_unit_ids": [
+                        "unit:neighbor"
+                      ],
+                      "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                    },
+                    "writer": {
+                      "harness_id": "example-harness",
+                      "harness_version": "1.0.0",
+                      "writer_instance_id": "writer-1",
+                      "owner_pid": 4242,
+                      "process_start_time": "2026-11-04T10:00:00Z"
+                    },
+                    "observed_at": "2026-11-04T10:03:00Z",
+                    "redaction_posture": "digests_and_repo_relative_locators_only",
+                    "body": {
+                      "state": "refused",
+                      "worker_invocations": 0,
+                      "termination": null,
+                      "refusal": {
+                        "reason": "launch_input_unbound",
+                        "constraint": null,
+                        "tier": "provider_readonly_patch_return_audit"
+                      },
+                      "result_binding": null,
+                      "body_kind": "terminal"
+                    }
+                  }
+                ],
+                "final_newline": true
+              }
+            ]
+          }
+        ]
+      },
+      "expected": [
+        "refused_after_launch"
+      ],
+      "finding": "S3"
+    },
+    {
+      "id": "J2-refused-after-running-without-refusal",
+      "role": "negative",
+      "journal": {
+        "attempts": [
+          {
+            "segments": [
+              {
+                "lines": [
+                  {
+                    "schema": "supervised_run_status.v1",
+                    "version": "1",
+                    "line_kind": "header",
+                    "seq": 0,
+                    "attempt": {
+                      "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                      "envelope_digest": "9b49c9dc857d7755bb443f89ea8d1d98f760b2fff72af05940efbef98f38ef42",
+                      "run_id": "run-1",
+                      "attempt_id": "attempt-1"
+                    },
+                    "units": {
+                      "target_unit_ids": [
+                        "unit:target"
+                      ],
+                      "readonly_neighbor_unit_ids": [
+                        "unit:neighbor"
+                      ],
+                      "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                    },
+                    "writer": {
+                      "harness_id": "example-harness",
+                      "harness_version": "1.0.0",
+                      "writer_instance_id": "writer-1",
+                      "owner_pid": 4242,
+                      "process_start_time": "2026-11-04T10:00:00Z"
+                    },
+                    "observed_at": "2026-11-04T10:00:00Z",
+                    "redaction_posture": "digests_and_repo_relative_locators_only",
+                    "body": {
+                      "segment_index": 0,
+                      "previous_segment_sha256": null,
+                      "previous_last_seq": null,
+                      "body_kind": "header"
+                    }
+                  },
+                  {
+                    "schema": "supervised_run_status.v1",
+                    "version": "1",
+                    "line_kind": "state",
+                    "seq": 1,
+                    "attempt": {
+                      "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                      "envelope_digest": "9b49c9dc857d7755bb443f89ea8d1d98f760b2fff72af05940efbef98f38ef42",
+                      "run_id": "run-1",
+                      "attempt_id": "attempt-1"
+                    },
+                    "units": {
+                      "target_unit_ids": [
+                        "unit:target"
+                      ],
+                      "readonly_neighbor_unit_ids": [
+                        "unit:neighbor"
+                      ],
+                      "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                    },
+                    "writer": {
+                      "harness_id": "example-harness",
+                      "harness_version": "1.0.0",
+                      "writer_instance_id": "writer-1",
+                      "owner_pid": 4242,
+                      "process_start_time": "2026-11-04T10:00:00Z"
+                    },
+                    "observed_at": "2026-11-04T10:01:00Z",
+                    "redaction_posture": "digests_and_repo_relative_locators_only",
+                    "body": {
+                      "state": "queued",
+                      "worker_invocations": 0,
+                      "body_kind": "state"
+                    }
+                  },
+                  {
+                    "schema": "supervised_run_status.v1",
+                    "version": "1",
+                    "line_kind": "state",
+                    "seq": 2,
+                    "attempt": {
+                      "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                      "envelope_digest": "9b49c9dc857d7755bb443f89ea8d1d98f760b2fff72af05940efbef98f38ef42",
+                      "run_id": "run-1",
+                      "attempt_id": "attempt-1"
+                    },
+                    "units": {
+                      "target_unit_ids": [
+                        "unit:target"
+                      ],
+                      "readonly_neighbor_unit_ids": [
+                        "unit:neighbor"
+                      ],
+                      "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                    },
+                    "writer": {
+                      "harness_id": "example-harness",
+                      "harness_version": "1.0.0",
+                      "writer_instance_id": "writer-1",
+                      "owner_pid": 4242,
+                      "process_start_time": "2026-11-04T10:00:00Z"
+                    },
+                    "observed_at": "2026-11-04T10:02:00Z",
+                    "redaction_posture": "digests_and_repo_relative_locators_only",
+                    "body": {
+                      "state": "running",
+                      "worker_invocations": 1,
+                      "body_kind": "state"
+                    }
+                  },
+                  {
+                    "schema": "supervised_run_status.v1",
+                    "version": "1",
+                    "line_kind": "terminal",
+                    "seq": 3,
+                    "attempt": {
+                      "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                      "envelope_digest": "9b49c9dc857d7755bb443f89ea8d1d98f760b2fff72af05940efbef98f38ef42",
+                      "run_id": "run-1",
+                      "attempt_id": "attempt-1"
+                    },
+                    "units": {
+                      "target_unit_ids": [
+                        "unit:target"
+                      ],
+                      "readonly_neighbor_unit_ids": [
+                        "unit:neighbor"
+                      ],
+                      "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                    },
+                    "writer": {
+                      "harness_id": "example-harness",
+                      "harness_version": "1.0.0",
+                      "writer_instance_id": "writer-1",
+                      "owner_pid": 4242,
+                      "process_start_time": "2026-11-04T10:00:00Z"
+                    },
+                    "observed_at": "2026-11-04T10:03:00Z",
+                    "redaction_posture": "digests_and_repo_relative_locators_only",
+                    "body": {
+                      "state": "refused",
+                      "worker_invocations": 1,
+                      "termination": null,
+                      "refusal": null,
+                      "result_binding": null,
+                      "body_kind": "terminal"
+                    }
+                  }
+                ],
+                "final_newline": true
+              }
+            ]
+          }
+        ]
+      },
+      "expected": [
+        "lifecycle_invalid",
+        "refused_after_launch"
+      ],
+      "finding": "V2-TIER-01"
+    },
+    {
+      "id": "J2-refused-before-launch",
+      "role": "control",
+      "journal": {
+        "attempts": [
+          {
+            "segments": [
+              {
+                "lines": [
+                  {
+                    "schema": "supervised_run_status.v1",
+                    "version": "1",
+                    "line_kind": "header",
+                    "seq": 0,
+                    "attempt": {
+                      "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                      "envelope_digest": "9b49c9dc857d7755bb443f89ea8d1d98f760b2fff72af05940efbef98f38ef42",
+                      "run_id": "run-1",
+                      "attempt_id": "attempt-1"
+                    },
+                    "units": {
+                      "target_unit_ids": [
+                        "unit:target"
+                      ],
+                      "readonly_neighbor_unit_ids": [
+                        "unit:neighbor"
+                      ],
+                      "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                    },
+                    "writer": {
+                      "harness_id": "example-harness",
+                      "harness_version": "1.0.0",
+                      "writer_instance_id": "writer-1",
+                      "owner_pid": 4242,
+                      "process_start_time": "2026-11-04T10:00:00Z"
+                    },
+                    "observed_at": "2026-11-04T10:00:00Z",
+                    "redaction_posture": "digests_and_repo_relative_locators_only",
+                    "body": {
+                      "segment_index": 0,
+                      "previous_segment_sha256": null,
+                      "previous_last_seq": null,
+                      "body_kind": "header"
+                    }
+                  },
+                  {
+                    "schema": "supervised_run_status.v1",
+                    "version": "1",
+                    "line_kind": "state",
+                    "seq": 1,
+                    "attempt": {
+                      "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                      "envelope_digest": "9b49c9dc857d7755bb443f89ea8d1d98f760b2fff72af05940efbef98f38ef42",
+                      "run_id": "run-1",
+                      "attempt_id": "attempt-1"
+                    },
+                    "units": {
+                      "target_unit_ids": [
+                        "unit:target"
+                      ],
+                      "readonly_neighbor_unit_ids": [
+                        "unit:neighbor"
+                      ],
+                      "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                    },
+                    "writer": {
+                      "harness_id": "example-harness",
+                      "harness_version": "1.0.0",
+                      "writer_instance_id": "writer-1",
+                      "owner_pid": 4242,
+                      "process_start_time": "2026-11-04T10:00:00Z"
+                    },
+                    "observed_at": "2026-11-04T10:01:00Z",
+                    "redaction_posture": "digests_and_repo_relative_locators_only",
+                    "body": {
+                      "state": "queued",
+                      "worker_invocations": 0,
+                      "body_kind": "state"
+                    }
+                  },
+                  {
+                    "schema": "supervised_run_status.v1",
+                    "version": "1",
+                    "line_kind": "terminal",
+                    "seq": 2,
+                    "attempt": {
+                      "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                      "envelope_digest": "9b49c9dc857d7755bb443f89ea8d1d98f760b2fff72af05940efbef98f38ef42",
+                      "run_id": "run-1",
+                      "attempt_id": "attempt-1"
+                    },
+                    "units": {
+                      "target_unit_ids": [
+                        "unit:target"
+                      ],
+                      "readonly_neighbor_unit_ids": [
+                        "unit:neighbor"
+                      ],
+                      "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                    },
+                    "writer": {
+                      "harness_id": "example-harness",
+                      "harness_version": "1.0.0",
+                      "writer_instance_id": "writer-1",
+                      "owner_pid": 4242,
+                      "process_start_time": "2026-11-04T10:00:00Z"
+                    },
+                    "observed_at": "2026-11-04T10:02:00Z",
+                    "redaction_posture": "digests_and_repo_relative_locators_only",
+                    "body": {
+                      "state": "refused",
+                      "worker_invocations": 0,
+                      "termination": null,
+                      "refusal": {
+                        "reason": "route_not_qualified",
+                        "constraint": null,
+                        "tier": "provider_readonly_patch_return_audit"
+                      },
+                      "result_binding": null,
+                      "body_kind": "terminal"
+                    }
+                  }
+                ],
+                "final_newline": true
+              }
+            ]
+          }
+        ]
+      },
+      "expected": [],
+      "finding": "S3",
+      "note": "An admission refusal: zero launch-chain processes, zero worker invocations."
+    }
+  ]
+}

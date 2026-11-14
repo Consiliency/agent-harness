@@ -347,6 +347,8 @@ def run_patch_return(prepared, *, config_bytes: bytes, state_root: Path,
     inputs = consume_admission(prepared)
     identity = None
     def refused(reason, complete=True, anchor=None):
+        if getattr(prepared, "_capture", None) is not None:
+            prepared._capture.close()
         return WorkerResult(identity, "refused", None, reason, 0, None, None, anchor, complete)
     if isinstance(inputs, Refused):
         return refused(inputs.reason)
@@ -357,12 +359,22 @@ def run_patch_return(prepared, *, config_bytes: bytes, state_root: Path,
     except (ValueError, KeyError, TypeError):
         return refused("worker_settings_invalid")
     try:
-        context_digest = sha256(rfc8785.dumps(_plain(prepared.view.envelope["caller_context"]))).hexdigest()
-        envelope = prepared.view.envelope
-        identity = WorkerAttemptIdentity(envelope["assignment_digest"], prepared.view.envelope_digest,
-            prepared.view.launch_digest, prepared.view.raw_digest, envelope["run_id"], envelope["attempt_id"],
-            tuple(envelope["target_unit_ids"]), tuple(envelope["readonly_neighbor_unit_ids"]),
-            envelope["snapshot_reference"], context_digest)
+        if prepared.attempt_binding is not None:
+            from ...supervised_envelope_v2 import canonicalize_v2
+            context_payload = canonicalize_v2(prepared.view.envelope["caller_context"])
+            context_digest = sha256(context_payload).hexdigest()
+            envelope = prepared.view.envelope
+            attempt, units = prepared.attempt_binding, envelope["units"]
+            identity = WorkerAttemptIdentity(attempt.assignment_digest, prepared.view.envelope_digest,
+                prepared.view.launch_digest, prepared.view.raw_digest, attempt.run_id, attempt.attempt_id,
+                tuple(units["target_unit_ids"]), tuple(units["readonly_neighbor_unit_ids"]), units["snapshot_ref"], context_digest)
+        else:
+            context_digest = sha256(rfc8785.dumps(_plain(prepared.view.envelope["caller_context"]))).hexdigest()
+            envelope = prepared.view.envelope
+            identity = WorkerAttemptIdentity(envelope["assignment_digest"], prepared.view.envelope_digest,
+                prepared.view.launch_digest, prepared.view.raw_digest, envelope["run_id"], envelope["attempt_id"],
+                tuple(envelope["target_unit_ids"]), tuple(envelope["readonly_neighbor_unit_ids"]),
+                envelope["snapshot_reference"], context_digest)
     except (ValueError, TypeError):
         return refused("caller_context_unencodable")
     excluded = (Path(inputs.workspace), Path(inputs.target), *settings.reference_roots)
@@ -373,6 +385,11 @@ def run_patch_return(prepared, *, config_bytes: bytes, state_root: Path,
         _private_directory(state_root)
     except (OSError, ValueError):
         return refused("state_root_unsafe")
+    if prepared.attempt_binding is not None:
+        from ...supervised_echo import EchoRefused, write_echo
+        published = write_echo(state_root, context_payload)
+        if isinstance(published, EchoRefused) or published != context_digest:
+            return refused("echo_unavailable")
     root = journal.open_journal_root(state_root / "journal", create=True, excluded=excluded)
     if isinstance(root, journal.JournalRefused):
         return refused(root.code)
@@ -425,6 +442,11 @@ def run_patch_return(prepared, *, config_bytes: bytes, state_root: Path,
             return healthy_refusal("audit_error")
 
         def before_spawn():
+            if prepared.attempt_binding is not None:
+                from ...supervised_capture_v2 import recheck_launch_v2
+                check = recheck_launch_v2(prepared._capture, context=prepared._capture.context)
+                if isinstance(check, Refused):
+                    return SpawnRefused(check.reason)
             if cancel.is_set():
                 return SpawnRefused("cancelled_before_start")
             try:
@@ -456,17 +478,25 @@ def run_patch_return(prepared, *, config_bytes: bytes, state_root: Path,
                         writer.call("event", "cancellation requested")
                     return True
                 return False
-        image = _descriptor_image(inputs.argv[0])
-        exec_binding = "descriptor" if image is not None else "path_recheck"
-        if image is not None:
-            os.close(image)
-        try:
-            environment = worker_child_environment(settings.environment_allow)
-        except sandbox_policy.SandboxSpaceError:
-            return healthy_refusal("scratch_unavailable")
-        captured = run_bounded_capture(CaptureRequest(identity.attempt_id, inputs.argv,
-            Path(inputs.workspace), inputs.timeout, inputs.instruction, settings.proposal_cap,
-            environment), before_spawn=before_spawn, cancel=CancelObserver())
+        if prepared.attempt_binding is not None:
+            exec_binding = "descriptor"
+            environment = dict(prepared._capture.spec.non_secret_environment)
+            captured = run_bounded_capture(CaptureRequest(identity.attempt_id, inputs.argv,
+                Path(inputs.workspace), inputs.timeout,
+                inputs.instruction if prepared._capture.spec.stdin == "input" else b"", settings.proposal_cap,
+                environment), before_spawn=before_spawn, cancel=CancelObserver(), spawn_capability=inputs.spawn_capability)
+        else:
+            image = _descriptor_image(inputs.argv[0])
+            exec_binding = "descriptor" if image is not None else "path_recheck"
+            if image is not None:
+                os.close(image)
+            try:
+                environment = worker_child_environment(settings.environment_allow)
+            except sandbox_policy.SandboxSpaceError:
+                return healthy_refusal("scratch_unavailable")
+            captured = run_bounded_capture(CaptureRequest(identity.attempt_id, inputs.argv,
+                Path(inputs.workspace), inputs.timeout, inputs.instruction, settings.proposal_cap,
+                environment), before_spawn=before_spawn, cancel=CancelObserver())
         if isinstance(captured, SpawnRefused):
             if writer.failed:
                 return refused("journal_unavailable", False)

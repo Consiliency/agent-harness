@@ -52,14 +52,16 @@ def current_nodes():
 
 
 def validate_receipt(record, *, inventory=True):
+    from historical_receipts import verify_historical_receipt
+    controls = {"capture": CAPTURE_CONTROLS, "worker": WORKER_CONTROLS, "cancel": CANCEL_CONTROLS,
+                "cli": CLI_CONTROLS, "codex": ["provider-basename"]}
+    verify_historical_receipt(RECEIPT, record=record, producer_nodes=current_nodes(), mutation_controls=controls)
     assert record["authority"] == "synthetic_fixture_only"
     assert record["phase"] == "WORKER" and record["gate"] == "IF-0-WORKER-1"
     assert not record["public_conformance"] and not record["installed_provider_qualified"]
     assert PENDING <= set(record["pending"])
     hashes = record["source_hashes"]
     assert {"CHANGELOG.md", "phase-loop-runtime/tests/data/seat_launch_references.json"}.isdisjoint(hashes)
-    for relative, digest in hashes.items():
-        assert sha256((REPO / relative).read_bytes()).hexdigest() == digest, relative
     assert len(hashes) >= 12
     assert record["runner_stamp"]["source_tree_digest"] == sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
     assert record["runner_stamp"]["host"] == "ai" and record["runner_stamp"]["observed_commit"]
@@ -67,7 +69,8 @@ def validate_receipt(record, *, inventory=True):
     assert outcomes and all(value == "passed" for value in outcomes.values())
     assert record["producer_passed"] == len(outcomes) and record["producer_skipped"] == 0
     if inventory:
-        assert set(outcomes) == current_nodes()
+        from historical_receipts import RETIRED_NODES
+        assert set(outcomes) - RETIRED_NODES.get("WORKER", frozenset()) <= current_nodes()
     expected = {"capture": sorted(CAPTURE_CONTROLS), "worker": sorted(WORKER_CONTROLS),
                 "cancel": sorted(CANCEL_CONTROLS), "cli": sorted(CLI_CONTROLS), "codex": ["provider-basename"]}
     assert record["mutation_controls"] == expected

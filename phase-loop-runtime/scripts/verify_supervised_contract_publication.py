@@ -52,6 +52,8 @@ def main():
     args = parser.parse_args()
     verify_seal(args.repo)
     bundle = load_contract_bundle()
+    verify_v2_seal(args.repo, os.environ.get("SCHEMA_BASE_SHA", ""))
+    v2_bundle = load_contract_bundle(version="v2")
     def command(argv, cwd=None):
         return subprocess.check_output(argv, cwd=cwd, timeout=180)
     public = json.loads(command(["gh", "api", "repos/Consiliency/consiliency-contract"]))
@@ -77,7 +79,9 @@ def main():
             upstream[name] = command(["git", "show", ref], clone)
             blobs[name] = command(["git", "rev-parse", ref], clone).decode().strip()
         compare_publication(upstream, blobs, bundle)
+        v2_resources = compare_v2_publication(clone, v2_bundle)
     result = {
+        "contract": True, "v2_resources": v2_resources,
         "source_commit": SOURCE_COMMIT, "protected": branch["protected"],
         "default_branch": "main", "default_branch_head": observed_head,
         "input_artifact_sha256": INPUT_ARTIFACT_SHA256,
@@ -86,6 +90,54 @@ def main():
         "hosted_head": os.environ.get("SCHEMA_HEAD_SHA", os.environ["GITHUB_SHA"]), "outcome": "passed",
     }
     args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+
+
+
+def verify_v2_seal(repo: Path, base: str):
+    from phase_loop_runtime.supervised_contracts import V2_INPUT_ARTIFACT_SHA256, V2_PUBLICATION_PINS
+    name = "plans/artifacts/v12-CLOSEOUT-inputs.md"
+    artifact = (repo / name).read_bytes()
+    manifest = json.loads((repo / "plans/manifest.json").read_bytes())
+    entry = next(row for row in manifest["plans"] if row["slug"] == "v12-CLOSEOUT")
+    seals = entry["frozen_inputs"]
+    for path, seal in seals.items():
+        if set(seal) != {"sha256"} or sha256((repo / path).read_bytes()).hexdigest() != seal["sha256"]:
+            raise ValueError("publication_mismatch")
+    if sha256(artifact).hexdigest() != V2_INPUT_ARTIFACT_SHA256:
+        raise ValueError("publication_mismatch")
+    if not base or re.fullmatch(r"[0-9a-f]{40}", base) is None:
+        raise ValueError("publication_mismatch")
+    original = json.loads(subprocess.check_output(["git", "show", base + ":plans/manifest.json"], cwd=repo))
+    previous = next(row for row in original["plans"] if row["slug"] == "v12-CLOSEOUT")["frozen_inputs"]
+    if seals != previous:
+        raise ValueError("publication_mismatch")
+    if subprocess.check_output(["git", "show", base + ":" + name], cwd=repo) != artifact:
+        raise ValueError("publication_mismatch")
+    inventory = {}
+    for path, digest, blob in re.findall(r"^\| `([^`]+)` \| `([0-9a-f]{64})` \| `([0-9a-f]{40})` \|$", artifact.decode(), re.M):
+        local = path.removeprefix("core/supervised-run/") if path.startswith("core/supervised-run/") else (
+            "version/" + path + (".pinned" if path in ("pyproject.toml", "package.json") else ""))
+        inventory[local] = (digest, blob)
+    if inventory != dict(V2_PUBLICATION_PINS):
+        raise ValueError("publication_mismatch")
+
+
+def compare_v2_publication(clone: Path, bundle):
+    from phase_loop_runtime.supervised_contracts import V2_PUBLICATION_PINS, V2_SOURCE_COMMIT
+    subprocess.run(["git", "merge-base", "--is-ancestor", V2_SOURCE_COMMIT, "origin/main"], cwd=clone, check=True)
+    observed = {}
+    for name, (digest, blob) in V2_PUBLICATION_PINS.items():
+        path = (name.removeprefix("version/").removesuffix(".pinned") if name.startswith("version/")
+                else "core/supervised-run/" + name)
+        ref = V2_SOURCE_COMMIT + ":" + path
+        raw = subprocess.check_output(["git", "show", ref], cwd=clone)
+        actual_blob = subprocess.check_output(["git", "rev-parse", ref], cwd=clone).decode().strip()
+        if sha256(raw).hexdigest() != digest or actual_blob != blob:
+            raise ValueError("publication_mismatch")
+        if name != "provenance.json" and bundle.resource_bytes(name) != raw:
+            raise ValueError("publication_mismatch")
+        observed[name] = {"sha256": digest, "blob": blob}
+    return observed
 
 
 if __name__ == "__main__":

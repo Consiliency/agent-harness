@@ -85,6 +85,17 @@ class GateAWheelIsolationTest(unittest.TestCase):
 
 @unittest.skipUnless(GATE_SCRIPT.is_file(), "source Gate A script unavailable")
 class GateAConformEvidenceScopeTest(unittest.TestCase):
+    def test_v2_resource_closure_and_source_preamble(self):
+        from phase_loop_runtime.supervised_contracts import load_contract_bundle
+        bundle = load_contract_bundle(version="v2")
+        self.assertIn(b'"0.7.0"', bundle.resource_bytes("version/package.json.pinned"))
+        self.assertIn(b'admitted_launch_envelope.v2', bundle.resource_bytes("admitted-launch-envelope.v2.schema.json"))
+        script = GATE_SCRIPT.read_text()
+        for path in ("plans/artifacts/v12-CLOSEOUT-inputs.md", "plans/artifacts/v12-CLOSEOUT-landed-binding.md",
+                     "plans/artifacts/v12-CLOSEOUT-binding-location.md", "plans/evidence/supervised-worker/CLOSEOUT.md",
+                     "phase-loop-runtime/scripts/verify_supervised_v2.sh"):
+            self.assertIn("/" + path, script)
+
     def test_prebuilt_release_wheel_seam_preserves_artifact_identity(self):
         script = GATE_SCRIPT.read_text(encoding="utf-8")
 

@@ -58,6 +58,8 @@ def mutant(monkeypatch, production, control):
                   "consume_wrapper": "wrapper_changed", "qualification": "qualification_invalid",
                   "typed_admit": "admit_required"}.get(control, control)
         tree = ast.parse(source)
+        tree.body = [node for node in tree.body if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                     or node.name != "prepare_launch_v2"]
         matches = [node for node in ast.walk(tree) if isinstance(node, ast.Expr)
                    and isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name)
                    and node.value.func.id == "_require" and len(node.value.args) == 2

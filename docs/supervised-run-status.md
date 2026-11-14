@@ -396,3 +396,20 @@ process start identity comes from `/proc/sys/kernel/random/boot_id` and
 running as the same login can forge a self-consistent chain, index or run record,
 and can read every journal. The per-user root, ownership and mode checks keep other
 accounts out. They do not protect against the same account.
+
+
+## V2 worker projection and echo
+
+CLOSEOUT maps worker results onto the pinned `supervised_run_status.v1`; there
+is no v2 status schema. `v2_status_mapping` returns separate local runtime state,
+public status bytes and the controller-held append acknowledgement. An incomplete
+journal returns `unknown`, no public record and no acknowledgement. A reader's
+terminal display cannot manufacture an append acknowledgement or work outcome.
+
+`build_v2_reader_view` verifies the reservation's caller-context digest against
+`echo/<bare-hex-sha256>` under the worker state root. Its immutable result keeps
+public status bytes and exact RFC 8785 caller-context bytes separate. The sidecar
+is bounded and content addressed; it is outside journal and retention storage.
+Missing or altered bytes refuse `echo_unavailable`. This changes neither the
+public status wire fields nor journal storage. See [contracts](supervised-worker-contracts.md)
+and [readiness](supervised-worker-readiness.md) for qualification and evidence.

@@ -64,31 +64,37 @@ def test_login_wait_preserves_board_context(monkeypatch, tmp_path, case):
         return
     cancelled = threading.Event()
     seen = []
+    cancellation_times = {}
+
+    def cancel_login_wait():
+        cancellation_times["set"] = time.monotonic()
+        cancelled.set()
 
     def provider(leg, artifact, **kwargs):
         seen.append(kwargs)
-        timer = threading.Timer(0.1, cancelled.set)
+        timer = threading.Timer(0.1, cancel_login_wait)
         timer.start()
         try:
             pi._await_claude_login(kwargs.get("timeout_s"), kwargs.get("review_monitor"),
                                    kwargs.get("quiescence_latch"))
             return "DEGRADED", "", "claude_seat_login_token_expiring"
         except (sc.LoginWaitCancelled, pi._ReviewOperationCancelled):
+            cancellation_times["wake"] = time.monotonic()
             return "UNAVAILABLE", "", "review_operation_cancelled"
         finally:
             timer.cancel()
             timer.join()
 
     monkeypatch.setattr(pi, "_default_spawn_via_provider", provider)
-    started = time.monotonic()
     result = invoke_sanctioned_board_control(
         board, "artifact", matrix=default_matrix(env={}, probe=lambda *a: True),
         base_env={}, cancel_event=cancelled, repo_dir=tmp_path,
         stream_dir=tmp_path / "stream")
-    elapsed = time.monotonic() - started
     assert len(seen) == 1, result
-    assert result.legs[0].detail == "review_operation_cancelled", (elapsed, result)
-    assert elapsed < 1.0, "bounded cancellation did not wake the login wait"
+    assert result.legs[0].detail == "review_operation_cancelled", result
+    # Bound cancellation latency, excluding board authorization and teardown.
+    latency = cancellation_times["wake"] - cancellation_times["set"]
+    assert latency < 1.0, "bounded cancellation did not wake the login wait"
 
 
 def _short_login(monkeypatch):

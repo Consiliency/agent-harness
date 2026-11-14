@@ -1,0 +1,40 @@
+{
+  "name": "@consiliency/contract",
+  "version": "0.7.0",
+  "description": "Consiliency cross-repo contract package: shared JSON contract data, conformance vectors, thin npm/PyPI readers, and the canonical_html.v1 public contract surface.",
+  "license": "MIT",
+  "type": "module",
+  "main": "src/index.js",
+  "types": "src/index.d.ts",
+  "files": [
+    "core",
+    "conformance",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "pack:check": "node tests/package-content.test.mjs"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Consiliency/consiliency-contract.git"
+  },
+  "homepage": "https://github.com/Consiliency/consiliency-contract#readme",
+  "bugs": {
+    "url": "https://github.com/Consiliency/consiliency-contract/issues"
+  },
+  "keywords": [
+    "consiliency",
+    "contract",
+    "standardization",
+    "canonical-html"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}

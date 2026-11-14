@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://consiliency.io/contracts/version-skew-protocol.schema.json",
+  "title": "Consiliency version skew protocol",
+  "type": "object",
+  "required": ["schema", "contract_version", "compatible_ranges", "default_behavior"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": "consiliency.version_skew_protocol.v1"},
+    "contract_version": {"const": "0.7.0"},
+    "compatible_ranges": {
+      "type": "object",
+      "required": ["contract", "package"],
+      "additionalProperties": false,
+      "properties": {
+        "contract": {"const": ">=0.7.0 <0.8.0"},
+        "package": {"const": ">=0.7.0 <0.8.0"}
+      }
+    },
+    "prerelease_policy": {"enum": ["reject-by-default"]},
+    "build_metadata_policy": {"enum": ["ignored-for-compatibility"]},
+    "default_behavior": {
+      "type": "object",
+      "required": ["phase0_severity", "auto_mutation_allowed"],
+      "additionalProperties": false,
+      "properties": {
+        "phase0_severity": {"const": "warn"},
+        "auto_mutation_allowed": {"const": false}
+      }
+    }
+  }
+}

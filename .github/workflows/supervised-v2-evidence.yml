@@ -1,0 +1,51 @@
+name: supervised-v2-evidence
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  checks: read
+  pull-requests: read
+
+jobs:
+  assessment:
+    name: supervised v2 evidence assessment
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+      - name: Install locked dependencies
+        run: uv sync --project phase-loop-runtime --group test --extra visual --locked
+      - name: Assess authenticated evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHONPATH: ${{ github.workspace }}/phase-loop-runtime/src:${{ github.workspace }}/phase-loop-runtime/tests
+          ASSESSMENT_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          ASSESSMENT_RUN: ${{ github.run_id }}
+          ASSESSMENT_JOB: assessment
+        run: |
+          timeout 900 phase-loop-runtime/.venv/bin/python phase-loop-runtime/scripts/verify_supervised_v2_evidence.py --repo . --authenticate --output supervised-v2-assessment.json
+          phase-loop-runtime/.venv/bin/python - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path('supervised-v2-assessment.json')
+          result = json.loads(path.read_bytes())
+          result['assessment_runner'] = {key: os.environ['ASSESSMENT_' + key.upper()] for key in ('head', 'run', 'job')}
+          path.write_text(json.dumps(result, sort_keys=True, indent=2) + '\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: supervised-v2-assessment-${{ github.run_id }}
+          path: supervised-v2-assessment.json
+          if-no-files-found: error

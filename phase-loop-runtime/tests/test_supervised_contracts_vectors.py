@@ -332,3 +332,62 @@ def semantic_inventory():
                 journal(child, child_path)
         journal(schema.get("x-journal-rules", {}), "/x-journal-rules")
     return rows
+
+
+V2_CORPUS = json.loads(load_contract_bundle(version="v2").resource_bytes("conformance/envelope.v2.vectors.json"))["cases"]
+
+
+def expand_v2(case):
+    cases = {row["id"]: row for row in V2_CORPUS}
+    value = deepcopy(case["input"] if case["role"] == "control" else cases[case["control"]]["input"])
+    for operation in case.get("patch", []):
+        parent_path, _, leaf = operation["path"].rpartition("/")
+        parent = pointer(value, parent_path)
+        key = leaf.replace("~1", "/").replace("~0", "~")
+        if isinstance(parent, list):
+            key = len(parent) if key == "-" else int(key)
+        before = deepcopy(parent)
+        if operation["op"] == "remove":
+            del parent[key]
+        elif isinstance(parent, list) and operation["op"] == "add":
+            parent.insert(key, deepcopy(operation["value"]))
+        else:
+            assert operation["op"] in ("add", "replace")
+            if operation["op"] == "replace":
+                assert key in parent if isinstance(parent, dict) else 0 <= key < len(parent)
+            parent[key] = deepcopy(operation["value"])
+        assert parent != before
+    if case.get("rehash"):
+        import rfc8785
+        envelope = value["envelope"]
+        envelope["envelope_digest"] = sha256(rfc8785.dumps({k: v for k, v in envelope.items()
+                                                           if k != "envelope_digest"})).hexdigest()
+    return value
+
+
+@pytest.mark.parametrize("case", V2_CORPUS, ids=[case["id"] for case in V2_CORPUS])
+def test_v2_published_schema_only(case):
+    from phase_loop_runtime import supervised_contracts as production
+    bundle = load_contract_bundle(version="v2")
+    value = expand_v2(case)
+    envelope = value["envelope"]
+    raw = encoded(envelope)
+    if case["role"] == "schema_negative":
+        with pytest.raises(ContractError) as caught:
+            validate_record(bundle, "admitted_launch_envelope.v2", raw)
+        assert caught.value.code == "record_schema_invalid"
+        validator, registry, schemas = production._schema_runtime(dict(bundle._captured))
+        errors = validator(schemas["admitted-launch-envelope.v2.schema.json"], registry=registry).iter_errors(envelope)
+        observed = {("/envelope" + "".join("/" + str(p).replace("~", "~0").replace("/", "~1")
+                                         for p in error.absolute_path), error.validator) for error in errors}
+        expected = {(row["instance_path"], row["keyword"]) for row in case["expected_schema_errors"]}
+        assert observed == expected
+    else:
+        assert validate_record(bundle, "admitted_launch_envelope.v2", raw) is None
+
+
+def test_v2_corpus_inventory():
+    from collections import Counter
+    assert len(V2_CORPUS) == 255
+    assert Counter(case["role"] for case in V2_CORPUS) == {"control": 21, "negative": 172, "schema_negative": 62}
+    assert len({case["id"] for case in V2_CORPUS}) == 255

@@ -276,7 +276,7 @@ def test_no_public_injection_surface():
     import inspect
     assert Path(production.__file__).name == "supervised_contracts.py"
     assert load_contract_bundle.__module__ == validate_record.__module__ == "phase_loop_runtime.supervised_contracts"
-    assert str(inspect.signature(load_contract_bundle)) == "() -> 'ContractBundle'"
+    assert str(inspect.signature(load_contract_bundle)) == "(*, version: 'str' = 'v1') -> 'ContractBundle'"
     assert list(inspect.signature(validate_record).parameters) == ["bundle", "family", "record", "definition"]
 
 
@@ -388,6 +388,8 @@ def test_publication_runner_offline(tmp_path, monkeypatch, condition):
         verified.append(repo)
         if condition == "seal": raise ValueError("publication_mismatch")
     monkeypatch.setattr(module, "verify_seal", verify_seal)
+    monkeypatch.setattr(module, "verify_v2_seal", lambda repo, base: None)
+    monkeypatch.setattr(module, "compare_v2_publication", lambda clone, bundle: {})
     head = "a" * 40
     reads = []
     def command(argv, **kwargs):
@@ -446,8 +448,77 @@ def test_publication_change_selection(tmp_path, monkeypatch, changed, seal_chang
         if argv[1] == "diff": return ("\0".join(changed) + "\0").encode()
         assert argv[:2] == ["git", "show"]
         seal = "changed" if seal_changed and argv[2].startswith("b") else "same"
-        return json.dumps({"plans": [{"slug": "v12-SCHEMA", "frozen_inputs": {"seal": seal}}]}).encode()
+        return json.dumps({"plans": [{"slug": slug, "frozen_inputs": {"seal": seal}}
+                                      for slug in ("v12-SCHEMA", "v12-CLOSEOUT")]}).encode()
     import subprocess
     monkeypatch.setattr(subprocess, "check_output", command)
     exec(compile(script, "workflow-selection", "exec"), {})
     assert output.read_text() == "contract=" + str(expected).lower() + "\n"
+
+
+def v2_anchor():
+    artifact = ROOT / "plans/artifacts/v12-CLOSEOUT-inputs.md"
+    manifest = json.loads(SOURCE_MANIFEST.read_bytes())
+    entry = next(row for row in manifest["plans"] if row["slug"] == "v12-CLOSEOUT")
+    for name, seal in entry["frozen_inputs"].items():
+        assert sha256((ROOT / name).read_bytes()).hexdigest() == seal["sha256"]
+    assert sha256(artifact.read_bytes()).hexdigest() == production.V2_INPUT_ARTIFACT_SHA256
+    expected = {}
+    for name, digest, blob in re.findall(r"^\| `([^`]+)` \| `([0-9a-f]{64})` \| `([0-9a-f]{40})` \|$", artifact.read_text(), re.M):
+        local = name.removeprefix("core/supervised-run/") if name.startswith("core/supervised-run/") else (
+            "version/" + name + (".pinned" if name in ("pyproject.toml", "package.json") else ""))
+        expected[local] = (digest, blob)
+    assert dict(production.V2_PUBLICATION_PINS) == expected
+    bundle = load_contract_bundle(version="v2")
+    for name, (digest, _) in expected.items():
+        if name != "provenance.json":
+            assert sha256(bundle.resource_bytes(name)).hexdigest() == digest
+    assert json.loads(bundle.resource_bytes("harness-provenance.json"))["byte_pin_authority"] is False
+    return bundle
+
+
+def test_v2_version_and_resource_pins():
+    v2_anchor()
+    assert load_contract_bundle().resource_bytes("admitted-launch-envelope.schema.json") == v2_anchor().resource_bytes("admitted-launch-envelope.schema.json")
+
+
+@pytest.mark.parametrize("selector", ["", "v0", "v3", "V2", None, 2, [], {}])
+def test_version_selector_closed(selector):
+    with pytest.raises(ContractError) as caught:
+        load_contract_bundle(version=selector)
+    assert caught.value.code == "selector_invalid"
+
+
+@pytest.mark.parametrize("raw", [b'9007199254740992', b'9007199254740991.5', b'9.007199254740992e15',
+    b'1e309', b'NaN', b'{"x":1,"\\u0078":2}', b'"\\ud800"', b'"\xff"'])
+def test_v2_raw_domain_refuses(raw):
+    v2_anchor()
+    with pytest.raises(ContractError) as caught:
+        production._v2_json(raw)
+    assert caught.value.code == "record_json_invalid"
+    assert caught.value.__context__ is None
+
+
+def test_corpus_tokens_survive_extraction():
+    raw = b'{"case":{"number":9007199254740991.5,"text":"\\ud800","__proto__":1}}'
+    value = production._corpus_value(raw)
+    assert production._corpus_bytes(value) == raw
+    with pytest.raises(ContractError):
+        production._v2_json(production._corpus_bytes(value["case"]))
+
+
+@pytest.mark.parametrize("resource", production._V2_NAMES)
+@pytest.mark.parametrize("mode", ["missing", "altered"])
+def test_v2_resource_drift(tmp_path, resource, mode):
+    module = isolated_module(tmp_path)
+    shutil.copytree(Path(production.__file__).parent / "schemas/supervised-worker-v2",
+                    tmp_path / "schemas/supervised-worker-v2")
+    module.load_contract_bundle(version="v2")
+    path = tmp_path / "schemas/supervised-worker-v2" / resource
+    if mode == "missing":
+        path.unlink()
+    else:
+        path.write_bytes(path.read_bytes() + b" ")
+    with pytest.raises(module.ContractError) as caught:
+        module.load_contract_bundle(version="v2")
+    assert caught.value.code == ("resource_missing" if mode == "missing" else "digest_mismatch")
