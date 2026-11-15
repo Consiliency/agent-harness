@@ -119,6 +119,8 @@ phase-loop-skill-eval = "phase_loop_runtime.skill_eval:console_main"
 # which `--preflight` defines as "claimed by another phase", i.e. a phantom
 # ownership block on every path (agent-harness#633).
 roadmap-ownership = "phase_loop_runtime.roadmap_ownership:console_main"
+# v13 PLACECLI: the placement process boundary (reserve | release | reap | version).
+agent-harness-placement = "phase_loop_runtime.placement_cli:main"
 
 # Entry-point plugin seams (DECOUPLE). Optional integrations register under
 # `phase_loop_runtime.profile_commands` to add domain commands and under

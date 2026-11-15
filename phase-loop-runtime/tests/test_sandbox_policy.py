@@ -446,3 +446,38 @@ def test_an_operational_failure_is_not_reported_as_a_verdict_violation():
 def test_local_headroom_limits_are_positive_integers(key, value):
     with pytest.raises(sandbox_policy.SandboxConfigError):
         sandbox_policy.PlacementDriverSettings(0, 30, 4, **{key: value})
+
+
+# -- v13 PLACECLI: the placement operator configuration -------------------------------------
+
+def test_placement_configuration_is_selected_by_client_and_home_only(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    for hostile in ("XDG_CONFIG_HOME", "XDG_STATE_HOME", "AGENT_HARNESS_PLACEMENT_CONFIG",
+                    "PHASE_LOOP_SANDBOX_ROOT"):
+        monkeypatch.setenv(hostile, str(tmp_path / "hostile"))
+    assert sandbox_policy.placement_config_root() == home / ".config/agent-harness/placement"
+    assert sandbox_policy.placement_state_root() == home / ".local/state/agent-harness/placement"
+    config = sandbox_policy.load_placement_client_config(
+        "agent-toolkit", config_root=tmp_path / "absent", seat_caps_sha256="0" * 64)
+    assert (config.providers, config.targets, config.seat_route, config.launch) == ({}, (), {}, None)
+    assert config.policy_digests["full-remote-pi-runner"].startswith("sha256:")
+    other = sandbox_policy.load_placement_client_config(
+        "agent-harness", config_root=tmp_path / "absent", seat_caps_sha256="0" * 64)
+    assert other.config_sha256 != config.config_sha256
+    with pytest.raises(sandbox_policy.PlacementConfigError):
+        sandbox_policy.load_placement_client_config("operator", config_root=tmp_path,
+                                                    seat_caps_sha256="0" * 64)
+
+
+def test_the_policy_vectors_grant_no_baseline_egress_at_this_version():
+    for name in ("minimal-with-app", "minimal-without-app", "full-remote-pi-runner"):
+        assert sandbox_policy.placement_policy_baseline(name) == ()
+    with pytest.raises(sandbox_policy.PlacementConfigError):
+        sandbox_policy.placement_policy_baseline("fork-era-network-shape")
+
+
+def test_the_caps_sentinel_is_the_documented_digest():
+    from hashlib import sha256
+
+    assert sandbox_policy.SEAT_CAPS_UNAVAILABLE_SHA256 == sha256(b"seat_resource_caps_unavailable").hexdigest()
