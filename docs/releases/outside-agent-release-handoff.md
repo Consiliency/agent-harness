@@ -5,6 +5,30 @@ outside-agent conformance runtime. It is metadata-only: the document itself did
 not publish a package, create a tag, dispatch a workflow, edit governed-pipeline,
 or make production merge enforcement live.
 
+## 0.7.34 release preparation
+
+Expected, unpublished artifacts: `phase_loop_runtime-0.7.34-py3-none-any.whl`
+and `phase_loop_runtime-0.7.34.tar.gz`.
+
+Candidate only: no tag, publication or installation is claimed. The candidate is
+based on merged main after the published 0.7.33 release. It carries the public v2
+supervised launch contracts and CLOSEOUT evidence reduction (agent-harness#1970),
+the disabled seat updater restart modules (agent-harness#1986) and the v13
+PLACECLI placement process boundary (agent-harness#1971). The 0.7.34 changelog
+section lists the scope. The published 0.7.33 package remains unchanged.
+
+Live routes stay disabled. This candidate does not lift sandbox activation holds
+or grant installed-provider qualification. Since 0.7.33 no change touches the agy
+catalog, its records or the seat QCI inputs, so the retained QCI-bound record
+stays valid. The strict hermetic agy release gate still runs its own conformance
+suite and verifies the vendor archive at publication.
+
+Before publication, required candidate checks, standalone-wheel Gate A and the
+strict hermetic agy release gate must pass, and publication authority must be
+granted. Recording these gates does not authorize dispatch. After publication,
+verify registry artifacts, GitHub Release assets and the managed installation
+separately.
+
 ## 0.7.33 release recovery preparation
 
 Expected, unpublished artifacts: `phase_loop_runtime-0.7.33-py3-none-any.whl`

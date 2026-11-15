@@ -6,7 +6,20 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-- Placement process boundary (v13 PLACECLI): a new `agent-harness-placement --client
+## [0.7.34] - Unreleased candidate
+
+- Adopt the public v2 supervised launch contracts (agent-harness#1970): held-input
+  admission, operator binding bootstrap, exact caller-context echoes and schema-bound
+  status projection, with metadata-only CLOSEOUT evidence reduction. Production selects
+  only the passwd-home operator binding and refuses before launch until its independent
+  inputs are provisioned. External producer evidence and installed-provider
+  qualification remain separate readiness gates.
+
+- Add the seat updater restart integration as disabled source modules
+  (agent-harness#1986). They are neither imported by an active code path nor
+  registered, so they have no runtime effect until a later change enables them.
+
+- Placement process boundary (v13 PLACECLI, agent-harness#1971): a new `agent-harness-placement --client
   agent-harness|agent-toolkit reserve|release|reap|version` console entry. It speaks the
   frozen placement process protocol v1, packaged as
   `contracts/placement/process-v1.schema.json`, through a strict codec. A per-client
@@ -21,7 +34,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `phase-loop placement reap --client` reaches the same service. Live routes stay disabled.
   See `docs/placement-process-cli.md`.
 
-## [0.7.33] - Unreleased candidate
+## [0.7.33] - 2026-11-14
 
 - Supersede the unpublished 0.7.32 candidate, preserving its failed release tag.
 - Normalize the user-manager connection environment for parent resource-slice
@@ -63,11 +76,6 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   untouched.
 
 ### Added
-
-- Supervised v2 held-input admission, operator binding bootstrap, exact caller-context
-  echoes and schema-bound status projection, with metadata-only CLOSEOUT evidence
-  reduction. External producer evidence and installed-provider qualification remain
-  separate readiness gates.
 
 - Local supervised WORKER capture, patch-return, attempt evidence, retention
   resolution, native cancel verification and isolated status/CLI seams. Production
