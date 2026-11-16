@@ -19,6 +19,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
     owned by the attempt until replay or terminal cleanup removes it.
   - Start-up collects completed cleanup records once their attempt has journaled the
     completion.
+  - The lock-wait cancellation tests patch a placement-module retry-pause seam instead of
+    the process-wide `time.sleep`, so other threads in a single-process suite run no longer
+    affect them. Runtime behaviour is unchanged.
 
   The PLACECLI protocol schema, vectors, CLI fixtures and receipt are unchanged. See
   `docs/placement-process-cli.md`.

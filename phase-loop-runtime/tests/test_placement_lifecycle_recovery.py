@@ -625,6 +625,23 @@ def _hold_after_completed_journal(monkeypatch, path_of):
     return held
 
 
+@pytest.fixture
+def foreign_sleeper():
+    """Another thread of the process keeps calling ``time.sleep`` throughout the test, as a
+    long-lived daemon left by an earlier test does in a single-process suite run. The
+    lock-retry patch must observe only the lock's own pauses."""
+    stop = threading.Event()
+
+    def loop():
+        while not stop.is_set():
+            time.sleep(0.001)
+    thread = threading.Thread(target=loop, name="foreign-sleeper", daemon=True)
+    thread.start()
+    yield
+    stop.set()
+    thread.join(5)
+
+
 def _sleeps_cancelling(monkeypatch, cancelled, clock=None, then=None):
     """Patch the lock retry sleep: the first call sets ``cancelled`` (then runs ``then``);
     later calls advance ``clock`` (or really sleep when there is none). Setting the event
@@ -643,7 +660,7 @@ def _sleeps_cancelling(monkeypatch, cancelled, clock=None, then=None):
             clock.now += seconds
         elif len(calls) > 1:
             real_sleep(seconds)
-    monkeypatch.setattr(sp.time, "sleep", sleep)
+    monkeypatch.setattr(sp, "_sleep", sleep)
     return calls
 
 
@@ -715,7 +732,7 @@ def test_an_uncancelled_bridge_failure_releases_the_rung_once(env):
 
 # -- agent-harness#1989 (c): cancellation ends lock waits, at every retrying site ---------------
 
-def test_a_release_lock_wait_stops_on_cancellation(env, monkeypatch):              # release
+def test_a_release_lock_wait_stops_on_cancellation(env, monkeypatch, foreign_sleeper):  # release
     response, _raw, _code = reserve(env.lifecycle())
     rid = response.reservation.reservation_id
     clock = _Monotonic(monkeypatch)
@@ -735,7 +752,7 @@ def test_a_release_lock_wait_stops_on_cancellation(env, monkeypatch):           
     assert env.bridge.closed == [rid] and _kills(env) == 1
 
 
-def test_an_admit_publish_lock_wait_stops_on_cancellation(env, monkeypatch):       # admission
+def test_an_admit_publish_lock_wait_stops_on_cancellation(env, monkeypatch, foreign_sleeper):  # admission
     original = sp.PlacementLifecycle._journal_commit
     held = []
 
@@ -763,7 +780,7 @@ def test_an_admit_publish_lock_wait_stops_on_cancellation(env, monkeypatch):    
     assert env.bridge.closed == [rid] and _kills(env) == 1 and env.coordinator.held == {}
 
 
-def test_a_settle_committed_lock_wait_stops_on_cancellation(env, monkeypatch):     # replay settle
+def test_a_settle_committed_lock_wait_stops_on_cancellation(env, monkeypatch, foreign_sleeper):  # replay settle
     commit = _interrupt_reserve(env, monkeypatch, "before-publish", deadline_ms=5000)
     rid = commit["reservation"]["reservation_id"]
     env.clock.now += 5
@@ -787,7 +804,7 @@ def test_a_settle_committed_lock_wait_stops_on_cancellation(env, monkeypatch):  
     assert env.bridge.closed == [rid] and _kills(env) == 1 and env.coordinator.held == {}
 
 
-def test_a_transfer_materialize_lock_wait_stops_on_cancellation(env, monkeypatch):  # transfer
+def test_a_transfer_materialize_lock_wait_stops_on_cancellation(env, monkeypatch, foreign_sleeper):  # transfer
     _lose_the_create_reply(env)
     [effect] = _attempt(env)["pending"]
     key = f"req-1--{effect['lease_id']}"
@@ -810,7 +827,7 @@ def test_a_transfer_materialize_lock_wait_stops_on_cancellation(env, monkeypatch
     assert _kills(env) == kills + 1 and env.coordinator.held == {}
 
 
-def test_a_transfer_removal_lock_wait_stops_on_cancellation(env, monkeypatch):     # owner removal
+def test_a_transfer_removal_lock_wait_stops_on_cancellation(env, monkeypatch, foreign_sleeper):  # owner removal
     rid = _destroyed_owner_planned(env, monkeypatch)
     monkeypatch.setattr(sp.PlacementLifecycle, "_startup", lambda self, *a, **k: None)
     held = _hold_after_completed_journal(monkeypatch, lambda record: _reservation_lock(env, rid))
@@ -830,7 +847,7 @@ def test_a_transfer_removal_lock_wait_stops_on_cancellation(env, monkeypatch):  
     assert _cleanup_entries(env) == [] and env.bridge.closed == [rid] and _kills(env) == 1
 
 
-def test_a_local_slot_lock_wait_stops_on_cancellation(env, monkeypatch):           # local slot
+def test_a_local_slot_lock_wait_stops_on_cancellation(env, monkeypatch, foreign_sleeper):  # local slot
     env.toolkit(targets=[{"name": "local", "kind": "local", "rank": 1, "transport_id": "local"}])
     env.state.mkdir(parents=True, exist_ok=True)
     original = sp._ReserveWalk.local_admit
@@ -1091,7 +1108,7 @@ def test_max_items_one_reaches_only_the_earliest_effect(env, monkeypatch):
     assert env.bridge.closed == [rid] and response.inventory.examined == 1
 
 
-def test_a_reap_owner_lock_wait_stops_on_cancellation(env, monkeypatch):           # reap
+def test_a_reap_owner_lock_wait_stops_on_cancellation(env, monkeypatch, foreign_sleeper):  # reap
     held, _raw, _code = reserve(env.lifecycle(), "held", ttl_s=1)
     rid = held.reservation.reservation_id
     env.clock.now += 100
