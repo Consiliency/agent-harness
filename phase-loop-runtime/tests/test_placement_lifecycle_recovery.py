@@ -12,6 +12,10 @@ clocks, events, lock holds and interruption hooks (no wall-clock waits decide a 
   materialization or remote cleanup call begins, durable ownership is kept, and a later
   uncancelled operation recovers.
 
+Appended for agent-harness#1989: cancellation also ends every retrying lock wait and a
+rung release after a failed bridge; start-up collects destroyed cleanup owners once their
+attempt has journaled the completion; reap visits and counts one effect once.
+
 The fixtures are the SL-1 producer's own (``test_placement_lifecycle_process``).
 """
 
@@ -20,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 
 import pytest
 
@@ -32,6 +37,7 @@ from test_placement_lifecycle_process import (
     Env,
     Interrupted,
     _any_reservation,
+    _arm_handover_interruption,
     _attempt,
     _bound_of,
     _cleanup_entries,
@@ -562,3 +568,545 @@ def test_a_reap_item_cancelled_at_its_lock_is_left_pending(env, monkeypatch):
     assert json.loads(active.read_text())["state"] == "active"
     response, code = reap(env.lifecycle())
     assert (code, response.inventory.destroyed) == (0, 1) and env.bridge.closed == [rid]
+
+
+# -- agent-harness#1989: shared set-ups ---------------------------------------------------------
+
+def _attempt_lock(env, request_id="req-1"):
+    return env.state / "agent-toolkit" / "attempts" / f"{request_id}.lock"
+
+
+def _owner_state(env, key):
+    path = env.state / "agent-toolkit" / "cleanup" / f"{key}.json"
+    return json.loads(path.read_text())["state"] if path.exists() else None
+
+
+def _destroyed_owner_planned(env, monkeypatch):
+    """Attempt req-1 unsettled at its bound with a planned transfer; a consumer destroyed the
+    owner while the attempt was held, so the entry is still ``planned`` on disk."""
+    commit = _interrupt_reserve(env, monkeypatch, "after-publish", ttl_s=1)
+    rid = commit["reservation"]["reservation_id"]
+    env.clock.now = _bound_of(_attempt(env))
+    _arm_handover_interruption(monkeypatch, "after-plan")
+    with pytest.raises(Interrupted):
+        env.lifecycle()._startup()
+    monkeypatch.undo()
+    fd = _hold(_attempt_lock(env))
+    try:
+        reap(env.lifecycle())
+    finally:
+        os.close(fd)
+    assert _states(_attempt(env)) == ["planned"] and _owner_state(env, rid) == "destroyed"
+    return rid
+
+
+def _settled_with_destroyed_owner(env, monkeypatch):
+    """Attempt req-1 settled terminally with a materialized entry; the owner is destroyed."""
+    commit = _interrupt_reserve(env, monkeypatch, "after-publish", ttl_s=1)
+    rid = commit["reservation"]["reservation_id"]
+    env.clock.now = _bound_of(_attempt(env))
+    env.lifecycle()._startup()
+    assert _attempt(env)["settled"] and _states(_attempt(env)) == ["materialized"]
+    reap(env.lifecycle())
+    assert _states(_attempt(env)) == ["materialized"] and _owner_state(env, rid) == "destroyed"
+    return rid
+
+
+def _hold_after_completed_journal(monkeypatch, path_of):
+    """Hold ``path_of(record)`` right after the first journal that records a completed entry."""
+    original = sp.PlacementLifecycle._journal_attempt
+    held = []
+
+    def journal(self, record):
+        original(self, record)
+        if not held and record.get("transfer") and "completed" in _states(record):
+            held.append(_hold(path_of(record)))
+    monkeypatch.setattr(sp.PlacementLifecycle, "_journal_attempt", journal)
+    return held
+
+
+def _sleeps_cancelling(monkeypatch, cancelled, clock=None, then=None):
+    """Patch the lock retry sleep: the first call sets ``cancelled`` (then runs ``then``);
+    later calls advance ``clock`` (or really sleep when there is none). Setting the event
+    inside the first wait, not before the operation, makes the lock wait itself observe it.
+    Returns the call list."""
+    real_sleep = time.sleep
+    calls = []
+
+    def sleep(seconds):
+        calls.append(seconds)
+        if len(calls) == 1:
+            cancelled.set()
+            if then is not None:
+                then()
+        if clock is not None:
+            clock.now += seconds
+        elif len(calls) > 1:
+            real_sleep(seconds)
+    monkeypatch.setattr(sp.time, "sleep", sleep)
+    return calls
+
+
+def _completed_with_destroyed_owner(env, monkeypatch):
+    """Attempt req-1 settled with its entry completed; the destroyed owner stayed because
+    its removal lock was refused once."""
+    rid = _destroyed_owner_planned(env, monkeypatch)
+    held = _hold_after_completed_journal(monkeypatch, lambda record: _reservation_lock(env, rid))
+    env.lifecycle()._startup()
+    monkeypatch.undo()
+    os.close(held[0])
+    record = _attempt(env)
+    assert record["settled"] and _states(record) == ["completed"] and _owner_state(env, rid) == "destroyed"
+    return rid
+
+
+def _write_malformed_attempt(env):
+    """An attempt that parses but is malformed (a commit without a reservation), well before
+    its bound, so start-up never touches it."""
+    bad = env.state / "agent-toolkit" / "attempts" / "req-bad.json"
+    bad.write_text(json.dumps({"request_id": "req-bad", "settled": False, "deadline_ms": 10 ** 12,
+                               "started_at": env.clock.now, "commit": {}}))
+    os.chmod(bad, 0o600)
+
+
+def _record_fsyncs_and_removals(monkeypatch):
+    events = []
+    real_fsync, real_remove = sp._fsync_directory, sp._remove_journal
+    monkeypatch.setattr(sp, "_fsync_directory",
+                        lambda path: events.append(("fsync", path.name)) or real_fsync(path))
+    monkeypatch.setattr(sp, "_remove_journal",
+                        lambda path: events.append(("remove", path.parent.name)) or real_remove(path))
+    return events
+
+
+# -- agent-harness#1989 (a): the caller's cancellation reaches a bridge-failure cleanup ---------
+
+def test_a_bridge_failure_after_cancellation_starts_no_remote_kill(env):
+    from phase_loop_runtime.placement_bridge import BridgeUnavailable
+
+    cancelled = threading.Event()
+
+    def open_(reservation, exposure, *, cancelled):
+        cancelled.set()
+        raise BridgeUnavailable("bridge_cancelled")
+    env.bridge.open = open_
+    response, _raw, code = _reserve(env.lifecycle(), "req-c", cancelled)
+    assert "kill" not in env.coordinator.calls, (code, response.outcome, response.code)
+    assert (response.outcome, response.code) == ("timeout", UNCONFIRMED)
+    assert getattr(env.bridge, "reclaimed", []), "the bridge reclaim still ran"
+    assert len(env.coordinator.held) == 1, "the lease stays held for replay or terminal cleanup"
+    record = _record(env, "req-c")
+    assert record["settled"] is False and record["barrier"] == "armed" and record.get("commit")
+    # A later, uncancelled start-up at the bound and a reap remove the lease exactly once.
+    env.clock.now = _bound_of(record)
+    env.lifecycle()._startup()
+    reap(env.lifecycle())
+    env.lifecycle()._startup()
+    assert _kills(env) == 1 and env.coordinator.held == {}
+    assert _record(env, "req-c")["settled"] and _cleanup_entries(env) == []
+
+
+def test_an_uncancelled_bridge_failure_releases_the_rung_once(env):
+    env.bridge.fail = True
+    response, _raw, code = reserve(env.lifecycle(), "req-u")
+    assert (response.outcome, code) == ("refused", 10)
+    assert env.coordinator.calls.count("kill") == 1 and env.coordinator.held == {}
+
+
+# -- agent-harness#1989 (c): cancellation ends lock waits, at every retrying site ---------------
+
+def test_a_release_lock_wait_stops_on_cancellation(env, monkeypatch):              # release
+    response, _raw, _code = reserve(env.lifecycle())
+    rid = response.reservation.reservation_id
+    clock = _Monotonic(monkeypatch)
+    cancelled = threading.Event()
+    sleeps = _sleeps_cancelling(monkeypatch, cancelled, clock)
+    fd = _hold(_reservation_lock(env, rid))
+    try:
+        released, _code = _release(env.lifecycle(), response.reservation.to_json(), cancelled)
+    finally:
+        os.close(fd)
+    assert released.state == "cleanup_pending"
+    assert len(sleeps) == 1, f"{len(sleeps)} lock-wait polls"
+    monkeypatch.undo()
+    assert env.bridge.closed == [] and _kills(env) == 0
+    released, code = release(env.lifecycle(), response.reservation.to_json(), "rel-2")
+    assert (code, released.state) == (0, "released")
+    assert env.bridge.closed == [rid] and _kills(env) == 1
+
+
+def test_an_admit_publish_lock_wait_stops_on_cancellation(env, monkeypatch):       # admission
+    original = sp.PlacementLifecycle._journal_commit
+    held = []
+
+    def journal_commit(self, record, commit):
+        original(self, record, commit)
+        if commit.get("complete") and not held:
+            held.append(_hold(_reservation_lock(env, commit["reservation"]["reservation_id"])))
+    monkeypatch.setattr(sp.PlacementLifecycle, "_journal_commit", journal_commit)
+    clock = _Monotonic(monkeypatch)
+    cancelled = threading.Event()
+    sleeps = _sleeps_cancelling(monkeypatch, cancelled, clock)
+    try:
+        response, _raw, _code = _reserve(env.lifecycle(), "req-1", cancelled, deadline_ms=5000)
+    finally:
+        for fd in held:
+            os.close(fd)
+    assert (response.outcome, response.code) == ("timeout", TIMEOUT)
+    assert len(sleeps) == 1, f"{len(sleeps)} lock-wait polls"
+    monkeypatch.undo()
+    rid = _attempt(env)["commit"]["reservation"]["reservation_id"]
+    assert env.reservations() == [] and _kills(env) == 0
+    env.clock.now = _bound_of(_attempt(env))
+    env.lifecycle()._startup()
+    reap(env.lifecycle())
+    assert env.bridge.closed == [rid] and _kills(env) == 1 and env.coordinator.held == {}
+
+
+def test_a_settle_committed_lock_wait_stops_on_cancellation(env, monkeypatch):     # replay settle
+    commit = _interrupt_reserve(env, monkeypatch, "before-publish", deadline_ms=5000)
+    rid = commit["reservation"]["reservation_id"]
+    env.clock.now += 5
+    env.verdict = "held_ready"
+    clock = _Monotonic(monkeypatch)
+    cancelled = threading.Event()
+    sleeps = _sleeps_cancelling(monkeypatch, cancelled, clock)
+    fd = _hold(_reservation_lock(env, rid))
+    try:
+        response, _raw, _code = _reserve(env.lifecycle(), "req-1", cancelled, deadline_ms=5000)
+    finally:
+        os.close(fd)
+    assert (response.outcome, response.code) == ("timeout", TIMEOUT)
+    assert not _attempt(env)["settled"]
+    assert len(sleeps) == 1, f"{len(sleeps)} lock-wait polls"
+    monkeypatch.undo()
+    assert env.bridge.closed == [] and _kills(env) == 0
+    env.clock.now = _bound_of(_attempt(env))
+    env.lifecycle()._startup()
+    reap(env.lifecycle())
+    assert env.bridge.closed == [rid] and _kills(env) == 1 and env.coordinator.held == {}
+
+
+def test_a_transfer_materialize_lock_wait_stops_on_cancellation(env, monkeypatch):  # transfer
+    _lose_the_create_reply(env)
+    [effect] = _attempt(env)["pending"]
+    key = f"req-1--{effect['lease_id']}"
+    env.verdict = "nothing_held"
+    clock = _Monotonic(monkeypatch)
+    cancelled = threading.Event()
+    sleeps = _sleeps_cancelling(monkeypatch, cancelled, clock)
+    fd = _hold(env.state / "agent-toolkit" / "cleanup" / f"{key}.lock")
+    try:
+        response, _raw, _code = _reserve(env.lifecycle(), "req-1", cancelled)
+    finally:
+        os.close(fd)
+    assert response.outcome == "unreachable" and _states(_attempt(env)) == ["planned"]
+    assert len(sleeps) == 1, f"{len(sleeps)} lock-wait polls"
+    monkeypatch.undo()
+    kills = _kills(env)
+    assert effect["lease_id"] in env.coordinator.held
+    env.lifecycle()._startup()
+    reap(env.lifecycle())
+    assert _kills(env) == kills + 1 and env.coordinator.held == {}
+
+
+def test_a_transfer_removal_lock_wait_stops_on_cancellation(env, monkeypatch):     # owner removal
+    rid = _destroyed_owner_planned(env, monkeypatch)
+    monkeypatch.setattr(sp.PlacementLifecycle, "_startup", lambda self, *a, **k: None)
+    held = _hold_after_completed_journal(monkeypatch, lambda record: _reservation_lock(env, rid))
+    clock = _Monotonic(monkeypatch)
+    cancelled = threading.Event()
+    sleeps = _sleeps_cancelling(monkeypatch, cancelled, clock)
+    try:
+        response, _raw, _code = _reserve(env.lifecycle(), "req-1", cancelled, ttl_s=1)  # replay at bound
+    finally:
+        for fd in held:
+            os.close(fd)
+    assert response.outcome == "timeout" and _attempt(env)["settled"]
+    assert _owner_state(env, rid) == "destroyed", "removal skipped once cancelled"
+    assert len(sleeps) == 1, f"{len(sleeps)} lock-wait polls"
+    monkeypatch.undo()
+    env.lifecycle()._startup()
+    assert _cleanup_entries(env) == [] and env.bridge.closed == [rid] and _kills(env) == 1
+
+
+def test_a_local_slot_lock_wait_stops_on_cancellation(env, monkeypatch):           # local slot
+    env.toolkit(targets=[{"name": "local", "kind": "local", "rank": 1, "transport_id": "local"}])
+    env.state.mkdir(parents=True, exist_ok=True)
+    original = sp._ReserveWalk.local_admit
+    bounds, done = [], threading.Event()
+
+    def local_admit(self, settings, bound):
+        bounds.append(bound)
+        try:
+            return original(self, settings, bound)
+        finally:
+            done.set()
+    monkeypatch.setattr(sp._ReserveWalk, "local_admit", local_admit)
+    cancelled = threading.Event()
+    # The first retry sleep cancels the caller, then waits until the walk has cancelled the
+    # call's own bound, so the next retry check sees it deterministically.
+    sleeps = _sleeps_cancelling(monkeypatch, cancelled, then=lambda: bounds[0].cancelled.wait(5))
+    fd = _hold(env.state / "local-slots.lock")
+    try:
+        response, _raw, _code = _reserve(env.lifecycle(), "req-1", cancelled, deadline_ms=2000)
+        assert done.wait(5)
+    finally:
+        os.close(fd)
+    assert response.reservation is None and env.slots() == []
+    assert len(sleeps) == 1, f"{len(sleeps)} lock-wait polls after the bound was cancelled"
+
+
+def test_a_pre_cancelled_uncontended_release_is_still_validated(env):
+    response, _raw, _code = reserve(env.lifecycle())
+    stored = response.reservation.to_json()
+    cancelled = threading.Event()
+    cancelled.set()
+    rejected, code = _release(env.lifecycle(), {**stored, "transport_id": "elsewhere"}, cancelled, "rel-m")
+    assert (code, rejected.state) == (10, "rejected")
+
+
+def test_file_lock_takes_its_first_try_even_when_already_cancelled(env):
+    env.state.mkdir(parents=True, exist_ok=True)
+    cancelled = threading.Event()
+    cancelled.set()
+    lock = sp._FileLock(env.state / "probe.lock", blocking=False, deadline=sp._Deadline.after(5),
+                        cancelled=cancelled)
+    with lock as held:
+        assert held
+
+
+# -- agent-harness#1989 P3a: completed cleanup owners are collected -----------------------------
+
+def test_a_settled_attempt_interrupted_after_its_completion_journal_keeps_no_owner(env, monkeypatch):
+    rid = _settled_with_destroyed_owner(env, monkeypatch)
+    _interrupt_after(monkeypatch, "_journal_attempt", when=lambda record: _states(record) == ["completed"])
+    with pytest.raises(Interrupted):
+        env.lifecycle()._startup()
+    monkeypatch.undo()
+    for _ in range(2):
+        env.lifecycle()._startup()
+    assert env.bridge.closed == [rid] and env.coordinator.calls.count("kill") == 1
+    assert _cleanup_entries(env) == []
+
+
+def test_a_refused_removal_lock_keeps_no_owner_after_a_later_start_up(env, monkeypatch):
+    rid = _destroyed_owner_planned(env, monkeypatch)
+    held = _hold_after_completed_journal(monkeypatch, lambda record: _reservation_lock(env, rid))
+    env.lifecycle()._startup()
+    monkeypatch.undo()
+    os.close(held[0])
+    for _ in range(2):
+        env.lifecycle()._startup()
+    assert _cleanup_entries(env) == [] and env.bridge.closed == [rid]
+    assert env.coordinator.calls.count("kill") == 1
+
+
+def test_a_malformed_attempt_keeps_tombstones_but_not_completed_owners(env, monkeypatch):
+    # A second reservation, released first: its tombstone expires later in the test.
+    other, _raw, _code = reserve(env.lifecycle(), "req-2")
+    released, _code = release(env.lifecycle(), other.reservation.to_json(), "rel-2")
+    assert released.state == "released"
+    other_rid = other.reservation.reservation_id
+    rid = _settled_with_destroyed_owner(env, monkeypatch)
+    # Complete req-1's entry and refuse its removal (and any sweep) while the lock is held.
+    held = _hold_after_completed_journal(monkeypatch, lambda record: _reservation_lock(env, rid))
+    env.lifecycle()._startup()
+    monkeypatch.undo()
+    try:
+        assert _states(_attempt(env)) == ["completed"] and _owner_state(env, rid) == "destroyed"
+        _write_malformed_attempt(env)
+    finally:
+        os.close(held[0])
+    env.clock.now += sp.TOMBSTONE_RETENTION_S + 1
+    env.lifecycle()._startup()
+    assert _tombstone(env, other_rid).exists(), "an unreadable attempt keeps every tombstone"
+    assert _cleanup_entries(env) == [], "but never another attempt's completed owner"
+    assert sorted(env.bridge.closed) == sorted([rid, other_rid]) and _kills(env) == 2
+
+
+def test_the_attempt_snapshot_is_durable_before_the_first_tombstone_prune(env, monkeypatch):
+    response, _raw, _code = reserve(env.lifecycle())
+    release(env.lifecycle(), response.reservation.to_json(), "rel-1")
+    env.clock.now += sp.TOMBSTONE_RETENTION_S + 1
+    events = _record_fsyncs_and_removals(monkeypatch)
+    env.lifecycle()._startup()
+    monkeypatch.undo()
+    assert ("remove", "tombstones") in events
+    first = events.index(("remove", "tombstones"))
+    assert ("fsync", "attempts") in events[:first], events
+    assert env.bridge.closed == [response.reservation.reservation_id] and _kills(env) == 1
+
+
+def test_the_attempt_snapshot_is_durable_before_the_first_owner_prune(env, monkeypatch):
+    rid = _completed_with_destroyed_owner(env, monkeypatch)
+    events = _record_fsyncs_and_removals(monkeypatch)
+    env.lifecycle()._startup()
+    monkeypatch.undo()
+    assert ("remove", "cleanup") in events
+    first = events.index(("remove", "cleanup"))
+    assert ("fsync", "attempts") in events[:first], events
+    assert _cleanup_entries(env) == [] and env.bridge.closed == [rid] and _kills(env) == 1
+
+
+def test_an_unfinished_entry_keeps_its_destroyed_owner(env, monkeypatch):
+    """Mutation M1 (drop the completed-evidence check) must turn this red."""
+    rid = _destroyed_owner_planned(env, monkeypatch)
+    fd = _hold(_attempt_lock(env))
+    try:
+        for _ in range(2):
+            env.lifecycle()._startup()
+        assert _owner_state(env, rid) == "destroyed", "removed before its entry completed"
+    finally:
+        os.close(fd)
+    env.lifecycle()._startup()
+    reap(env.lifecycle())
+    assert _states(_attempt(env)) == ["completed"]
+    assert env.bridge.closed == [rid] and env.coordinator.calls.count("kill") == 1
+
+
+def _completed_entry_of_an_unsettled_attempt(env, monkeypatch):
+    rid = _destroyed_owner_planned(env, monkeypatch)
+    held = _hold_after_completed_journal(monkeypatch, lambda record: _reservation_lock(env, rid))
+    _arm_handover_interruption(monkeypatch, "before-terminal-settlement")
+    with pytest.raises(Interrupted):
+        env.lifecycle()._startup()
+    monkeypatch.undo()
+    os.close(held[0])
+    record = _attempt(env)
+    assert not record["settled"] and _states(record) == ["completed"]
+    return rid
+
+
+@pytest.mark.parametrize("malformed", [False, True], ids=["alone", "beside-a-malformed-attempt"])
+def test_a_completed_entry_of_an_unsettled_attempt_keeps_its_owner(env, monkeypatch, malformed):
+    """Mutation M2 (ignore the attempt's own references) must turn this red. An unrelated
+    malformed attempt does not change the answer."""
+    rid = _completed_entry_of_an_unsettled_attempt(env, monkeypatch)
+    if malformed:
+        _write_malformed_attempt(env)
+    fd = _hold(_attempt_lock(env))
+    try:
+        for _ in range(2):
+            env.lifecycle()._startup()
+        assert _owner_state(env, rid) == "destroyed", "removed while its attempt is unsettled"
+    finally:
+        os.close(fd)
+    env.lifecycle()._startup()
+    assert _attempt(env)["settled"] and _cleanup_entries(env) == []
+    assert env.bridge.closed == [rid] and env.coordinator.calls.count("kill") == 1
+
+
+@pytest.mark.parametrize("where", ["entry-lock-outside-the-two-names", "owner-lock-differs",
+                                   "entry-and-owner-name-a-third-lock"])
+def test_a_completed_owner_is_kept_unless_entry_and_owner_name_the_same_lock(env, monkeypatch, where):
+    """Mutation M9 (trust the entry's lock without the allow-list or the owner cross-check)
+    must turn this red."""
+    rid = _completed_with_destroyed_owner(env, monkeypatch)
+    attempt_path = env.state / "agent-toolkit" / "attempts" / "req-1.json"
+    owner_path = env.state / "agent-toolkit" / "cleanup" / f"{rid}.json"
+    attempt, owner = json.loads(attempt_path.read_text()), json.loads(owner_path.read_text())
+    if where != "owner-lock-differs":
+        attempt["transfer"]["entries"][0]["lock"] = "tombstones"
+    if where == "owner-lock-differs":
+        owner["lock"] = "cleanup"
+    elif where == "entry-and-owner-name-a-third-lock":
+        owner["lock"] = "tombstones"
+    attempt_path.write_text(json.dumps(attempt))
+    owner_path.write_text(json.dumps(owner))
+    for _ in range(2):
+        env.lifecycle()._startup()
+    assert _owner_state(env, rid) == "destroyed"
+    assert env.bridge.closed == [rid] and _kills(env) == 1
+
+
+# -- agent-harness#1989 P3c: one logical effect is visited and counted once ---------------------
+
+def _dual_candidate(env, monkeypatch):
+    """After-owner-write: active record and cleanup owner of one reservation, attempt unsettled."""
+    commit = _interrupt_reserve(env, monkeypatch, "after-publish", ttl_s=1)
+    rid = commit["reservation"]["reservation_id"]
+    env.clock.now = _bound_of(_attempt(env))
+    _arm_handover_interruption(monkeypatch, "after-owner-write")
+    with pytest.raises(Interrupted):
+        env.lifecycle()._startup()
+    monkeypatch.undo()
+    return rid
+
+
+def _recovered_once(env, rid):
+    """An uncancelled start-up settles the attempt and collects the destroyed owner."""
+    env.lifecycle()._startup()
+    assert _attempt(env)["settled"] and _states(_attempt(env)) == ["completed"]
+    assert _cleanup_entries(env) == [] and env.reservations() == []
+    assert rid in env.bridge.closed and env.bridge.closed.count(rid) == 1
+
+
+def test_one_logical_effect_counts_once(env, monkeypatch):
+    rid = _dual_candidate(env, monkeypatch)
+    fd = _hold(_attempt_lock(env))
+    try:
+        response, _code = reap(env.lifecycle())
+    finally:
+        os.close(fd)
+    assert env.bridge.closed == [rid]
+    assert (response.inventory.examined, response.inventory.destroyed) == (1, 1)
+    _recovered_once(env, rid)
+    assert _kills(env) == 1
+
+
+def _dual_candidate_and_a_later_effect(env, monkeypatch):
+    rid = _dual_candidate(env, monkeypatch)
+    fd = _hold(_attempt_lock(env))
+    try:
+        env.clock.now += 10                    # the second effect sorts after the first's owner
+        later, _raw, _code = reserve(env.lifecycle(), "req-2", ttl_s=1)
+        env.clock.now += 100
+    except BaseException:
+        os.close(fd)
+        raise
+    return rid, later.reservation.reservation_id, fd
+
+
+def test_max_items_bounds_distinct_effects(env, monkeypatch):
+    """Red on the unfixed module only because req-2's created_at sorts after req-1's owner
+    entry. Mutation M4 (merge applied after the slice) must turn this red."""
+    rid, later, fd = _dual_candidate_and_a_later_effect(env, monkeypatch)
+    try:
+        response, _code = reap(env.lifecycle(), max_items=2)
+    finally:
+        os.close(fd)
+    assert sorted(env.bridge.closed) == sorted([rid, later])
+    assert (response.inventory.examined, response.inventory.destroyed) == (2, 2)
+    _recovered_once(env, rid)
+    assert _kills(env) == 2
+
+
+def test_max_items_one_reaches_only_the_earliest_effect(env, monkeypatch):
+    rid, _later, fd = _dual_candidate_and_a_later_effect(env, monkeypatch)
+    try:
+        response, _code = reap(env.lifecycle(), max_items=1)
+    finally:
+        os.close(fd)
+    assert env.bridge.closed == [rid] and response.inventory.examined == 1
+
+
+def test_a_reap_owner_lock_wait_stops_on_cancellation(env, monkeypatch):           # reap
+    held, _raw, _code = reserve(env.lifecycle(), "held", ttl_s=1)
+    rid = held.reservation.reservation_id
+    env.clock.now += 100
+    clock = _Monotonic(monkeypatch)
+    cancelled = threading.Event()
+    sleeps = _sleeps_cancelling(monkeypatch, cancelled, clock)
+    fd = _hold(_reservation_lock(env, rid))
+    try:
+        response, _code = _reap(env.lifecycle(), cancelled)
+    finally:
+        os.close(fd)
+    assert len(sleeps) == 1, f"{len(sleeps)} lock-wait polls"
+    assert (response.inventory.examined, response.inventory.pending) == (1, 1)
+    monkeypatch.undo()
+    assert env.bridge.closed == [] and _kills(env) == 0
+    response, code = reap(env.lifecycle())
+    assert (code, response.inventory.destroyed) == (0, 1)
+    assert env.bridge.closed == [rid] and _kills(env) == 1
