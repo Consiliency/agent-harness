@@ -16,6 +16,9 @@ Appended for agent-harness#1989: cancellation also ends every retrying lock wait
 rung release after a failed bridge; start-up collects destroyed cleanup owners once their
 attempt has journaled the completion; reap visits and counts one effect once.
 
+Appended for agent-harness#1996: cancellation that arrives during backend resolution, lease
+recovery or fencing starts no remote kill or listing, and the lease stays owned.
+
 The fixtures are the SL-1 producer's own (``test_placement_lifecycle_process``).
 """
 
@@ -1127,3 +1130,80 @@ def test_a_reap_owner_lock_wait_stops_on_cancellation(env, monkeypatch, foreign_
     response, code = reap(env.lifecycle())
     assert (code, response.inventory.destroyed) == (0, 1)
     assert env.bridge.closed == [rid] and _kills(env) == 1
+
+
+# -- agent-harness#1996: cancellation is checked again just before the remote kill ---------------
+
+def _assert_kept_then_recovered(env, lease_id, calls):
+    """No kill or listing began after the cancellation; the lease stays owned, recorded as
+    unconfirmed, with its active record. A later uncancelled reap removes it once."""
+    assert env.coordinator.calls[calls:] == [], env.coordinator.calls[calls:]
+    assert lease_id in env.coordinator.held
+    [entry] = env.leases()
+    assert json.loads(entry.read_text()).get("abandoned") is True
+    [active] = env.reservations()
+    kept = json.loads(active.read_text())
+    assert kept["state"] == "cleanup_pending" and kept["effect"]["lease_id"] == lease_id
+    response, code = reap(env.lifecycle())
+    assert (code, response.inventory.destroyed, response.inventory.pending) == (0, 1, 0)
+    assert _kills(env) == 1 and lease_id not in env.coordinator.held
+    assert env.leases() == [] and env.reservations() == []
+
+
+@pytest.mark.parametrize("operation", ["release", "reap"])
+def test_cancellation_during_backend_resolution_starts_no_remote_kill(env, operation):
+    response, _raw, _code = reserve(env.lifecycle(), ttl_s=1)
+    stored = response.reservation.to_json()
+    lease_id = response.reservation.lease_id
+    cancelled = threading.Event()
+    resolved = []
+
+    def backend_for(root):
+        resolved.append(root)
+        cancelled.set()                                    # the signal arrives during resolution
+        return env.backend_for(root)
+    lifecycle = env.lifecycle(backend_for=backend_for)
+    calls = len(env.coordinator.calls)
+    if operation == "release":
+        pending, code = _release(lifecycle, stored, cancelled)
+        assert (code, pending.state, pending.code) == (20, "cleanup_pending", UNCONFIRMED)
+    else:
+        env.clock.now += 100
+        pending, code = _reap(lifecycle, cancelled)
+        assert (code, pending.inventory.destroyed, pending.inventory.pending) == (20, 0, 1)
+    assert len(resolved) == 1                              # resolution was reached once, in cleanup
+    _assert_kept_then_recovered(env, lease_id, calls)
+
+
+@pytest.mark.parametrize("step", ["recover", "fence"])
+def test_cancellation_during_lease_preparation_starts_no_remote_kill(env, monkeypatch, step):
+    from phase_loop_runtime import placement_lease
+
+    response, _raw, _code = reserve(env.lifecycle())
+    stored = response.reservation.to_json()
+    lease_id = response.reservation.lease_id
+    cancelled = threading.Event()
+    seen = []
+    if step == "recover":
+        original_recover = placement_lease.recover_lease
+
+        def recover(lease, **kwargs):
+            recovered = original_recover(lease, **kwargs)
+            seen.append(lease)
+            cancelled.set()                                # the signal arrives during recovery
+            return recovered
+        monkeypatch.setattr(placement_lease, "recover_lease", recover)
+    else:
+        original_fence = placement_lease.Lease.fence
+
+        def fence(self):
+            original_fence(self)
+            seen.append(self.lease_id)
+            cancelled.set()                                # the signal arrives during fencing
+        monkeypatch.setattr(placement_lease.Lease, "fence", fence)
+    calls = len(env.coordinator.calls)
+    pending, code = _release(env.lifecycle(), stored, cancelled)
+    monkeypatch.undo()
+    assert seen == [lease_id]
+    assert (code, pending.state, pending.code) == (20, "cleanup_pending", UNCONFIRMED)
+    _assert_kept_then_recovered(env, lease_id, calls)
