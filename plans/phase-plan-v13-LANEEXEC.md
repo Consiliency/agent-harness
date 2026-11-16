@@ -26,8 +26,8 @@ CLOSEOUT and PLACECLI re-plans, not on WORKER directly.
 
 Frozen inputs, read before building:
 
-- `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`, unchanged and still
-  vendored by agent-toolkit at its digest. It carries IF-0-LANEEXEC-1: messages,
+- `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json` with erratum
+  LANEEXEC-v1-errata-1 (`x-errata`), vendored by agent-toolkit at its digest. It carries IF-0-LANEEXEC-1: messages,
   CLI, routes, templates, snapshot, seed, prepare, envelope derivation, exec,
   caps, lifetime, bridge, status/cancel, return, evidence, activation defaults
   and obligations C1–C11.
@@ -55,7 +55,7 @@ and EXT-OPENSH remain activation prerequisites whose offline controls run here.
 | L-S5 | `patch` reuses WORKER's fail-closed withholding; `result` and `none` are specified separately; no private WORKER helper is used. Adopted. |
 | L-S6 | Zero-effect assertions scoped by stage. Adopted. |
 | L-S7 | Per-action route mapping defined; no qualification record shipped; local review seats never launch through LaneExec. Adopted. |
-| L-S8 | No repin: both v13 wire artifacts keep their bytes; this artifact's existing bare-hex grant rule governs. Deviates from the sweep (hold) as in PLACECLI P-S2. |
+| L-S8 | No grant-rule repin: the PLACECLI bytes are unchanged and the LANEEXEC bytes change only by erratum LANEEXEC-v1-errata-1; this artifact's existing bare-hex grant rule governs. Deviates from the sweep (hold) as in PLACECLI P-S2. |
 
 ## Interface Freeze Gates
 
@@ -73,8 +73,9 @@ and EXT-OPENSH remain activation prerequisites whose offline controls run here.
 
 ## Cross-Repo Gates
 
-- [ ] IF-XR-1 (agent-toolkit, consumer) — unchanged wire and digest; the toolkit
-  keeps its capped bwrap launcher while `local_pi_runner_launcher` is
+- [ ] IF-XR-1 (agent-toolkit, consumer) — unchanged members and exit classes; the
+  digest moves once, by erratum LANEEXEC-v1-errata-1, and the toolkit re-vendors
+  it. The toolkit keeps its capped bwrap launcher while `local_pi_runner_launcher` is
   `toolkit_interim` and switches only under the ACTIVATE condition. It can
   observe the L-S4 cancel narrowing only.
 - [ ] IF-XR-2 (SEATS REMOTE, consumer) — `leg` and `qualification` routes,
@@ -187,7 +188,7 @@ patch-return and run-status evidence (SL-2); the reducer (SL-6).
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-3.1 | test | — | SL-3 test files | obligations C2 and C4–C7, C10 and C11 through `build_launch_service` with a fake coordinator and `capped_popen`, `load_caps` and `readiness_code` injected at `build_launch_service` (defaults are the landed functions; `seat_resource_caps` internals are never patched): stage-scoped zero-effect counters (L-S6); the bare-hex egress grant; pre-claim `prepare_launch_v2` refusal with no claim; claim order with a crash injected between each step, rollback only before the first chain process and relaunch of the prepared `attempt_id` under a new request_id, claims kept after it (L-S2); the chain root argv built by `trusted_module_argv` and started through `capped_popen` with key `laneexec:<client>:<reservation_id>`; the controller document at its envelope-digest path under `controller_root` only; the `PreparedLaunch` discarded on every path; local attempt directories outside the client's LaneExec state directory, on another filesystem than `staging_root()` or on tmpfs refusing `capability_unmet` before the claim; a caps digest change before chain start rolling back; any `capped_popen` exception keeping the claim as `finished`/`failed_to_start` (L-S3); an inner WORKER refusal after chain start reported `finished`/`failed_to_start` by launch and by `status` after restart (L-S4); a `launch` referent changed without its path refusing `sandbox_launch_input_mismatch`; lifetime renewal, fencing and `ttl_s` floor as frozen; bridge loss, cancel through the verified owner, release then `cleanup_pending`, reap of a dead supervisor in its own inventory reporting its capped parent `cleanup_pending`; with an unreadable caps record `prepare` and `launch` refusing `capability_unmet` for every target while `status` and `cancel` keep working (coordinator ruling 1); `route_disabled` under shipped defaults, `toolkit_interim` for local `pi-runner`, local `leg`/`qualification` always `route_disabled` (L-S7); crossed Pi pairs and template selection as frozen | `V3` |
+| SL-3.1 | test | — | SL-3 test files | obligations C2 and C4–C7, C10 and C11 through `build_launch_service` with a fake coordinator and `capped_popen`, `load_caps` and `readiness_code` injected at `build_launch_service` (defaults are the landed functions; `seat_resource_caps` internals are never patched): stage-scoped zero-effect counters (L-S6); the bare-hex egress grant; pre-claim `prepare_launch_v2` refusal with no claim; claim order with a crash injected between each step, rollback only before the first chain process and relaunch of the prepared `attempt_id` under a new request_id, claims kept after it (L-S2); the chain root argv built by `trusted_module_argv` and started through `capped_popen` with key `laneexec:<client>:<reservation_id>`; the controller document at its envelope-digest path under `controller_root` only; the `PreparedLaunch` discarded on every path; local attempt directories outside the client's LaneExec state directory, on another filesystem than `staging_root()` or on tmpfs refusing `capability_unmet` before the claim; a caps digest change before chain start rolling back; any `capped_popen` exception keeping the claim as `finished`/`failed_to_start` (L-S3); an inner WORKER refusal after chain start reported `finished`/`failed_to_start` by launch and by `status` after restart (L-S4); a `launch` referent changed without its path refusing `sandbox_launch_input_mismatch`; lifetime renewal, fencing and `ttl_s` floor as frozen; bridge loss, cancel through the verified owner, release then `cleanup_pending`, reap of a dead supervisor in its own inventory reporting its capped parent `cleanup_pending`; with an unreadable caps record `prepare` and `launch` refusing `capability_unmet` for every target while `status` and `cancel` keep working (coordinator ruling 1); `route_disabled` under shipped defaults, `toolkit_interim` for local `pi-runner`, local `leg`/`qualification` always `route_disabled` (L-S7); crossed Pi pairs and template selection as frozen, the local template in its LANEEXEC-v1-errata-1 form with that entry's obligations E1 and E2 | `V3` |
 | SL-3.2 | impl | SL-3.1 | SL-3 source files | — | — |
 | SL-3.3 | verify | SL-3.2 | SL-3 owned files | all SL-3 tests | `V3`; mutations that drop the capped parent, skip the claim write, launch after `pre_exec` refuses, roll back after the first chain process, reach a coordinator under shipped defaults, swallow a renewal failure or accept a tmpfs attempt path each fail through a production path |
 
@@ -215,7 +216,7 @@ patch-return and run-status evidence (SL-2); the reducer (SL-6).
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-5.1 | test | — | SL-5 test files | installed entry and module path with isolated imports, controlled HOME and config and hostile selection variables; required `--client`; exit classes (70 for schema-invalid input with stdout absent; `prepare` 0, 10 and 20); one JSON line; no sentinel leakage; with an unreadable caps record `version` exits 0 with the sentinel `seat_caps_sha256` and empty stderr and `--help` names the caps state (coordinator ruling 1); `version` reports both protocol digests, `config_sha256`, `seat_caps_sha256`, `local_pi_runner_launcher`, `seed_root`, effective seed limits and templates; inventory rows for the supervisor and chain-root launches, both through `seat_uid.trusted_module_argv`, never `-m` | `V5` |
+| SL-5.1 | test | — | SL-5 test files | installed entry and module path with isolated imports, controlled HOME and config and hostile selection variables; required `--client`; exit classes (70 for schema-invalid input with stdout absent; `prepare` 0, 10 and 20); one JSON line; no sentinel leakage; with an unreadable caps record `version` exits 0 with the sentinel `seat_caps_sha256` and empty stderr and `--help` names the caps state (coordinator ruling 1); `version` reports both protocol digests, `config_sha256`, `seat_caps_sha256`, `local_pi_runner_launcher`, `seed_root`, effective seed limits and templates, the local template's `template_sha256` being the erratum record's (LANEEXEC-v1-errata-1 E3); inventory rows for the supervisor and chain-root launches, both through `seat_uid.trusted_module_argv`, never `-m` | `V5` |
 | SL-5.2 | impl | SL-5.1 | `launch_cli.py`, `pyproject.toml`, `uv.lock`, `tests/data/seat_launch_references.json` | — | — |
 | SL-5.3 | verify | SL-5.2 | SL-5 owned files | all SL-5 tests | `V5` |
 
@@ -287,7 +288,8 @@ Recorded, not built in this phase (coordinator ruling 4, 2026-11-09).
 | SEATS public caps APIs: an expected-digest check inside `capped_popen`, typed evidence of whether a failure came before or after its helper started, and kill/collect of a capped parent by key | SEATS/JAILCORE; new issue scheduled against v13 ACTIVATE, cross-linked to agent-harness#1963 and agent-harness#1895 | Activation prerequisite: no local LaneExec route is enabled before they land (binding §3 L-S3). |
 | Caps contract §1a tmpfs carve-out cleanup | SEATS | tmpfs attempt paths refuse until it lands; adopting it needs no wire change. |
 | Garbage collection of orphaned content-addressed echoes (capped and secret-free) | v12 supervised-worker follow-up; new parked issue | None; LANEEXEC writes no echo. |
-| Folding the reinterpreted sentences into the next protocol versions: the PLACECLI `launch_binding` sentence, the LANEEXEC narrowings and the wheel-shipped `x-*` prose | v13 placement protocol owner; new parked issue | The narrowings at wire lines 471, 482, 519, 525, 529 and 540 and the L-S8 reading stay in the binding artifact. |
+| Folding the reinterpreted sentences into the next protocol versions: the PLACECLI `launch_binding` sentence, the LANEEXEC narrowings and the wheel-shipped `x-*` prose | v13 placement protocol owner; new parked issue | The narrowings of `x-snapshot.upload`, `x-seed.provisioning`, `x-exec.claim_rollback`, `x-exec.after_start`, `x-local-cgroup.automatic_paths` and `x-lifetime.supervisor_death` and the L-S8 reading stay in the binding artifact. |
+| The `/var/log` runtime check of the local template in its LANEEXEC-v1-errata-1 form: under the expanded argv, `/var/log` exists, lists empty and refuses a write, on Ubuntu 24.04 and 26.04 | v13 ACTIVATE local-launch qualification; owner-gated | None; the erratum is document-and-test only, and no local route is activated before this check is recorded. |
 | Production worker state root taken from trusted operator configuration | agent-harness#1960 | None; the CLI's state root is CLOSEOUT's. |
 | A sanctioned `replan` lifecycle path in `plan_manifest.update_lifecycle` (the replan events here are hand-written and append-only) | coordinator follow-up (ruling 3) | The `v13-LANEEXEC` row carries one hand-written `replan` event. |
 

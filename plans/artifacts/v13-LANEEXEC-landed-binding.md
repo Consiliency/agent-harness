@@ -2,13 +2,14 @@
 
 Frozen artifact for `plans/phase-plan-v13-LANEEXEC.md` (re-plan). It has no word
 cap. The wire contract stays `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`,
-byte-identical at its existing pin, which agent-toolkit vendors by digest
-(IF-XR-1). Nothing here adds, removes or renames a wire member, enum value,
-code, verb or exit class, so `protocol_schema_sha256` is unchanged and no toolkit
-repin follows.
+byte-identical at its pin except for erratum LANEEXEC-v1-errata-1 (`x-errata`: one
+template literal and the rule sentence that prescribes it), which agent-toolkit
+vendors by digest (IF-XR-1). That erratum is the one toolkit repin. Nothing here
+adds, removes or renames a wire member, enum value, code, verb or exit class, and
+this artifact makes no wire change of its own.
 
 Where this artifact binds an `x-*` semantic sentence of the wire artifact to the
-landed code, it says so with the sentence's line, and this artifact governs that
+landed code, it says so with the sentence's member path, and this artifact governs that
 sentence for execution. Each such binding narrows behavior toward fail-closed
 outcomes the wire already expresses. A future protocol version folds them in.
 
@@ -17,7 +18,7 @@ outcomes the wire already expresses. A future protocol version folds them in.
 | Input | Identity |
 | --- | --- |
 | Roadmap | `specs/phase-plans-v13.md`, sha256 `a5cd5f2bedbda38c99ad516113fd839dae8af6ea4482760e8efd18a5d413428d` |
-| LaneExec launch protocol v1 (unchanged) | `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`, sha256 `bd0e6694e6df9e4ae0bc640c138645adf6b49e8f56aa3f5af7488107062676f3` |
+| LaneExec launch protocol v1 with erratum LANEEXEC-v1-errata-1 | `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`, sha256 `da311638f2c5b92df5b1f2a917665b62c06aa10f80040bfa2504dcd78f42442a` |
 | Placement process protocol v1 (unchanged) | `plans/artifacts/v13-PLACECLI-contract-v1.schema.json`, sha256 `130a894df327ddca2eebf83c8b52e068b25176320af3e0a4e15319a315ba83ea` |
 | Caps contract | `plans/seats-jailcore-caps-contract.md`, sha256 `e614d3855320fe4c8a1d8b9a335181b2c493da45510062d2f8432ee30c362445` |
 | SEATS REMOTE contract | `plans/seats-remote-contract.md`, sha256 `1cea960ddd28ef5e1c4bf79083fa9f9938b2c99c2e29dbd937864944ca76d7e8` |
@@ -90,12 +91,12 @@ tmpfs carve-out and its §7 (j) tests (STOP L-S3 removes the dependency); the
 ### L-S1 — v2 admission seam
 
 **Chosen: depend on CLOSEOUT; LANEEXEC adds no admission code (sweep
-recommendation, adopted).** The wire sentence at artifact line 493 ("admits it
+recommendation, adopted).** The wire sentence `x-envelope-construction.rule` ("admits it
 through the v12 admission seam (supervised_launch.prepare_launch …)") binds to
 CLOSEOUT's production seam:
 
-- **Pre-claim check.** In the order position "envelope admission" (artifact line 252), LaunchService calls CLOSEOUT's `load_v2_binding`, `capture_launch_v2` and `prepare_launch_v2` in process on the captured envelope bytes. A refusal is `refused`, code `sandbox_launch_admission_refused`, with the pinned diagnostic and no claim. The `PreparedLaunch` is never consumed here; it is disposed through CLOSEOUT's `discard_admission` in a `finally`.
-- **Authoritative admission.** After the claim, the supervisor writes the per-attempt controller document at the path CLOSEOUT binding §4.2 derives from the envelope bytes. It then starts exactly one chain root, `seat_uid.trusted_module_argv("phase_loop_runtime.supervised_worker_cli", "launch", "--envelope", …, "--result", …)`, through `capped_popen` for a local target (L-S3). The CLI re-admits the same bytes, consumes once and reserves the JOURNAL attempt. A CLI refusal there, or an inner WORKER refusal after it, is a failure after the first chain process: `finished`, termination `failed_to_start`, claim kept (artifact line 525; L-S4).
+- **Pre-claim check.** In the order position "envelope admission" (`x-launch-inputs.order`), LaunchService calls CLOSEOUT's `load_v2_binding`, `capture_launch_v2` and `prepare_launch_v2` in process on the captured envelope bytes. A refusal is `refused`, code `sandbox_launch_admission_refused`, with the pinned diagnostic and no claim. The `PreparedLaunch` is never consumed here; it is disposed through CLOSEOUT's `discard_admission` in a `finally`.
+- **Authoritative admission.** After the claim, the supervisor writes the per-attempt controller document at the path CLOSEOUT binding §4.2 derives from the envelope bytes. It then starts exactly one chain root, `seat_uid.trusted_module_argv("phase_loop_runtime.supervised_worker_cli", "launch", "--envelope", …, "--result", …)`, through `capped_popen` for a local target (L-S3). The CLI re-admits the same bytes, consumes once and reserves the JOURNAL attempt. A CLI refusal there, or an inner WORKER refusal after it, is a failure after the first chain process: `finished`, termination `failed_to_start`, claim kept (`x-exec.after_start`; L-S4).
 - **Status mapping.** LANEEXEC consumes CLOSEOUT's `WorkerResult`-to-v2 mapping
   (CLOSEOUT binding §4.3) and maps v2 states to the wire only through §3 L-S4.
 
@@ -105,7 +106,7 @@ CLOSEOUT's production seam:
 durable write in the placement journal only (sweep option 2).** The sweep's
 requirement (durable ordering, partial-failure recovery and fresh-attempt
 behavior specified; two writes never called atomic) is met as follows. The wire
-sentence at artifact line 518 ("sets LeaseFlags.exec_claimed and reserves the
+sentence `x-exec.one_exec` ("sets LeaseFlags.exec_claimed and reserves the
 attempt_id through the v12 journal") is bound to:
 
 1. The claim is one compare-and-set under the reservation's journal lock that
@@ -113,10 +114,10 @@ attempt_id through the v12 journal") is bound to:
    not touch the JOURNAL.
 2. The JOURNAL attempt is reserved later, by `run_patch_return` inside the CLI,
    which is the first chain process.
-3. Every claim rollback in artifact line 519 happens before the first chain
+3. Every claim rollback in `x-exec.claim_rollback` happens before the first chain
    process, so no JOURNAL reservation can exist when a claim is rolled back. A
    new `request_id` may therefore relaunch with the prepared
-   `run_id` = `attempt_id` (artifact line 257) without colliding with a
+   `run_id` = `attempt_id` (`x-prepare.values`) without colliding with a
    permanent reservation. The prepare record and its values stay as frozen.
 4. Any failure at or after the first chain process keeps the claim. The JOURNAL
    may hold a reserved, terminal or no attempt: status reads it by `attempt_id`
@@ -129,12 +130,12 @@ attempt_id through the v12 journal") is bound to:
 ### L-S3 — local caps paths and the tmpfs carve-out
 
 **Chosen: revise LANEEXEC to the supported block-backed route (sweep option 2).** This deviates from the sweep, which recommended keeping LANEEXEC blocked. Reason: the route meets EC-LANEEXEC-2 and EC-LANEEXEC-3 with the landed public API and removes the IF-0-JAILCORE-4 §1a carve-out prerequisite from implementation. Three caps API gaps remain. They are bound conservatively below, and they gate activation of a local route, not this phase.
-- **Location.** Each local attempt's execution tree, home, out and scratch directories live under the selected client's LaneExec state directory (artifact lines 471 and 482), in a 0700 per-reservation directory whose ancestors meet line 482's ownership rule. These are the `x-argv-templates.slots` host paths.
-- **Device rule.** At prepared-path verification (artifact line 252, pre-claim), each directory must have the same `st_dev` as `sandbox_policy.staging_root()`, the landed automatic path whose whole device `io_devices(load_caps())` plans. `staging_root()` is a device witness only; it never chooses a location. A tmpfs, any anonymous filesystem, or another device refuses with `sandbox_placement_capability_unmet`, zero invocations and no claim.
-- **No carve-out in v1.** Artifact line 529's "including the caps contract §1a tmpfs carve-out" is read as "excluding" until SEATS ships the carve-out; adopting it later needs no wire change. `readiness_code()` still checks both landed automatic paths (`seat_resource_caps.py:247`, `:365`), so a host whose staging root or child scratch directory is tmpfs refuses at the readiness steps.
-- **Chain-start re-check.** After the claim and immediately before `capped_popen`, the supervisor repeats `readiness_code()`, the device rule, and a comparison of `caps_sha256(load_caps())` against the reservation's `seat_caps_sha256`. A failure is artifact line 519's chain-start caps re-check: nothing has started, the claim rolls back, and the code is `sandbox_placement_capability_unmet`.
-- **`capped_popen` failures.** Any exception from `capped_popen` keeps the claim and yields `finished`, termination `failed_to_start`, code `sandbox_placement_capability_unmet` (artifact lines 519, "rollback is never inferred", and 533). The landed API raises one refusal for failures both before and after its helper starts (`seat_resource_caps.py:636-670`).
-- **Capped parent.** The detached supervisor calls `capped_popen` with key `laneexec:<client>:<reservation_id>` (artifact line 531); the short-lived `agent-harness-launch` process never does. The supervisor waits on the returned process for the attempt's life, so the landed in-process collection (`:655-659`) stops the parent. Reaping a dead supervisor's attempt relies on parent-death SIGKILL (artifact line 540) and reports the capped parent as `cleanup_pending`. LaneExec never reconstructs a private unit or cgroup name.
+- **Location.** Each local attempt's execution tree, home, out and scratch directories live under the selected client's LaneExec state directory (`x-snapshot.upload` and `x-seed.provisioning`), in a 0700 per-reservation directory whose ancestors meet `x-seed.provisioning`'s ownership rule. These are the `x-argv-templates.slots` host paths.
+- **Device rule.** At prepared-path verification (`x-launch-inputs.order`, pre-claim), each directory must have the same `st_dev` as `sandbox_policy.staging_root()`, the landed automatic path whose whole device `io_devices(load_caps())` plans. `staging_root()` is a device witness only; it never chooses a location. A tmpfs, any anonymous filesystem, or another device refuses with `sandbox_placement_capability_unmet`, zero invocations and no claim.
+- **No carve-out in v1.** `x-local-cgroup.automatic_paths`'s "including the caps contract §1a tmpfs carve-out" is read as "excluding" until SEATS ships the carve-out; adopting it later needs no wire change. `readiness_code()` still checks both landed automatic paths (`seat_resource_caps.py:247`, `:365`), so a host whose staging root or child scratch directory is tmpfs refuses at the readiness steps.
+- **Chain-start re-check.** After the claim and immediately before `capped_popen`, the supervisor repeats `readiness_code()`, the device rule, and a comparison of `caps_sha256(load_caps())` against the reservation's `seat_caps_sha256`. A failure is `x-exec.claim_rollback`'s chain-start caps re-check: nothing has started, the claim rolls back, and the code is `sandbox_placement_capability_unmet`.
+- **`capped_popen` failures.** Any exception from `capped_popen` keeps the claim and yields `finished`, termination `failed_to_start`, code `sandbox_placement_capability_unmet` (`x-exec.claim_rollback`, "rollback is never inferred", and `x-local-cgroup.refusal`). The landed API raises one refusal for failures both before and after its helper starts (`seat_resource_caps.py:636-670`).
+- **Capped parent.** The detached supervisor calls `capped_popen` with key `laneexec:<client>:<reservation_id>` (`x-local-cgroup.parent`); the short-lived `agent-harness-launch` process never does. The supervisor waits on the returned process for the attempt's life, so the landed in-process collection (`:655-659`) stops the parent. Reaping a dead supervisor's attempt relies on parent-death SIGKILL (`x-lifetime.supervisor_death`) and reports the capped parent as `cleanup_pending`. LaneExec never reconstructs a private unit or cgroup name.
 - LaneExec adds no `seat_resource_caps` API and calls none of its private functions. **ACTIVATE prerequisites** (SEATS-owned, not built here):
   - an expected-digest check inside `capped_popen`, which reloads caps at `:569`;
   - typed evidence of whether a failure came before or after the helper started;
@@ -159,14 +160,14 @@ reported as a successful cancellation.
 | → `unknown_attempt` while LaneExec holds a claim, `owner_unverified`, `owner_not_live` | cancel `cancel_pending`, exit 20; no signal is sent; the local outcome is journaled in the LaneExec launch record and evidence |
 
 Status exit classes are those of the wire artifact's `x-cli` for a returned
-status record. LaneExec writes its terminal before it returns. Before the first chain process, that terminal is a pre-claim refusal or a claim rollback (`refused`). After it, the terminal is built from `WorkerResult` through CLOSEOUT §4.3. Every refusal at or after the first chain process is `finished`, termination `failed_to_start`, claim kept (artifact line 525). That includes the CLI's own refusal and an inner WORKER terminal `refused` written after `reserve_attempt` (`patch_return.py:397-399`). A result CLOSEOUT maps to `unknown` is recorded as `uncertain`. Readable JOURNAL bytes alone never establish acknowledgement. A following `status` reports what this table yields. It does not promise to tell a signalled cancel from a zero-signal one, because the two can race. The pure mapping functions live in
+status record. LaneExec writes its terminal before it returns. Before the first chain process, that terminal is a pre-claim refusal or a claim rollback (`refused`). After it, the terminal is built from `WorkerResult` through CLOSEOUT §4.3. Every refusal at or after the first chain process is `finished`, termination `failed_to_start`, claim kept (`x-exec.after_start`). That includes the CLI's own refusal and an inner WORKER terminal `refused` written after `reserve_attempt` (`patch_return.py:397-399`). A result CLOSEOUT maps to `unknown` is recorded as `uncertain`. Readable JOURNAL bytes alone never establish acknowledgement. A following `status` reports what this table yields. It does not promise to tell a signalled cancel from a zero-signal one, because the two can race. The pure mapping functions live in
 `launch_return.py` (SL-2) and are tested as closed tables.
 
 ### L-S5 — return for non-completed attempts
 
 **Chosen: reuse WORKER's fail-closed withholding for `patch` and specify
 `result` and `none` separately (sweep recommendation, adopted).** The wire
-sentences at artifact lines 566 and 571 bind to:
+sentences `x-return.patch` and `x-return.termination` bind to:
 
 | `result_kind` | Rule |
 | --- | --- |
@@ -183,7 +184,7 @@ issue.
 ### L-S6 — zero-effect assertions by stage
 
 **Chosen: scope the assertions by stage (sweep recommendation, adopted).** For a
-refusal at any step through `pre_exec` (artifact line 252 order), claim, upload,
+refusal at any step through `pre_exec` (`x-launch-inputs.order`), claim, upload,
 scratch-provisioning and chain-start counters are zero. Snapshot, seed-capture
 and envelope-admission counters equal one exactly when the refusal happens at or
 after that step, and zero before it. This replaces the old plan's flat "zero
@@ -214,8 +215,10 @@ local seat route; LaneExec never calls `seat_jail` or the jailed Codex route.
 
 ### L-S8 — the PLACECLI byte pin (same item as PLACECLI P-S2)
 
-**Chosen: no repin.** Both v13 wire artifacts keep their bytes. The envelope
-grant is derived by the field rule at `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json` line 509 (bare 64 hex after the
+**Chosen: no repin for the grant spelling.** The PLACECLI bytes are unchanged;
+the LANEEXEC bytes change only by erratum LANEEXEC-v1-errata-1, which does not
+touch the grant rule. The envelope grant is derived by the field rule
+`x-envelope-construction.fields["launch.grants.egress_policy_sha256"]` (bare 64 hex after the
 `sha256:` prefix), which already governs; the PLACECLI `launch_binding` sentence
 is non-normative on that spelling (PLACECLI binding §3 P-S2). This deviates from
 the sweep (hold until an input revision is approved) for the reason recorded
@@ -223,7 +226,9 @@ there.
 
 ## 4. Cross-repo consequences
 
-- agent-toolkit (IF-XR-1): wire, digests and exit classes are unchanged.
+- agent-toolkit (IF-XR-1): members, verbs and exit classes are unchanged. The
+  artifact digest and the local `template_sha256` change by erratum
+  LANEEXEC-v1-errata-1, and the toolkit re-vendors once.
   Behavioral narrowing it can observe: zero-signal cancels return
   `cancel_pending` (exit 20) where the old text could not say; non-completed
   `patch` attempts return null (not used by `pi-runner`, which takes `none`).
