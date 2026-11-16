@@ -6,6 +6,23 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Fixed
+
+- Placement lifecycle follow-ups to v13 PLACECLI (agent-harness#1989):
+  - Reap visits and counts each effect once, also when it has both an active record and a
+    cleanup entry, and `max_items` bounds distinct effects.
+  - Cancellation ends a wait for a held lock at every lifecycle lock. A cancelled release
+    whose lock is held elsewhere answers `cleanup_pending` without comparing the echo, the
+    same answer as when its deadline runs out.
+  - A reserve whose caller cancelled before a failed bridge open answers `timeout`
+    (`sandbox_placement_release_unconfirmed`) and starts no remote cleanup. The lease stays
+    owned by the attempt until replay or terminal cleanup removes it.
+  - Start-up collects completed cleanup records once their attempt has journaled the
+    completion.
+
+  The PLACECLI protocol schema, vectors, CLI fixtures and receipt are unchanged. See
+  `docs/placement-process-cli.md`.
+
 ## [0.7.34] - Unreleased candidate
 
 - Adopt the public v2 supervised launch contracts (agent-harness#1970): held-input

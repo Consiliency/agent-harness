@@ -2422,12 +2422,14 @@ def _stopped(deadline: "_Deadline | None", cancelled: threading.Event | None) ->
 class _FileLock:
     """``flock`` on a 0600 lock file; ``blocking=False`` reports whether it was taken.
     With a ``deadline`` the lock is retried until that deadline, then reported not held;
-    with ``retry=False`` as well it is tried once, and not at all once the deadline passed."""
+    with ``retry=False`` as well it is tried once, and not at all once the deadline passed.
+    A ``cancelled`` event ends the retrying the same way: the first try always happens,
+    and once the event is set a contended lock is reported not held without waiting."""
 
     def __init__(self, path: Path, *, blocking: bool, deadline: "_Deadline | None" = None,
-                 retry: bool = True) -> None:
+                 retry: bool = True, cancelled: threading.Event | None = None) -> None:
         self.path, self.blocking, self.fd, self.held = path, blocking, None, False
-        self.deadline, self.retry = deadline, retry
+        self.deadline, self.retry, self.cancelled = deadline, retry, cancelled
 
     def __enter__(self) -> bool:
         import fcntl
@@ -2445,7 +2447,8 @@ class _FileLock:
                 self.held = True
                 return True
             except BlockingIOError:
-                if not self.retry or self.deadline is None or self.deadline.expired():
+                if (not self.retry or self.deadline is None or self.deadline.expired()
+                        or (self.cancelled is not None and self.cancelled.is_set())):
                     self.held = False
                     return False
                 time.sleep(min(_POLL_S, self.deadline.left()))
@@ -2626,12 +2629,23 @@ class PlacementLifecycle:
                  cancelled: threading.Event | None = None) -> None:
         """Lifecycle start-up, within the calling operation's deadline and cancellation:
         settle every unsettled attempt at its bound, resume every unfinished cleanup
-        transfer (settled attempts included), and prune expired tombstones no recovery
-        still needs. Enumeration only selects request ids; each attempt is read again
-        under its own lock. Locks are only tried, never waited for, so an attempt another
-        process holds is left for a later start-up. The deadline and cancellation are
-        checked before each attempt and again once its lock is held; when either has
-        fired, start-up stops and leaves everything it has not begun as it was."""
+        transfer (settled attempts included), then collect the destroyed cleanup owners
+        whose attempts have journaled their completion and prune expired tombstones no
+        recovery still needs. Enumeration only selects request ids; each attempt is read
+        again under its own lock. Locks are only tried, never waited for, so an attempt or
+        file another process holds is left for a later start-up. The deadline and
+        cancellation are checked before each attempt and again once its lock is held;
+        when either has fired, start-up stops and leaves everything it has not begun as it
+        was.
+
+        The collection pass lists destroyed owners and expired tombstones first and, only
+        when either list is non-empty, reads the attempts once, without their locks (the
+        lock order is attempt, then reservation), after both listings. Settlement and
+        completion are never undone, so this snapshot can only keep a file longer than
+        needed, never remove one still referenced. The attempts directory is synced once
+        before the first removal, so every journal rename the snapshot saw is durable;
+        when that sync fails nothing is removed in this pass. Each removal re-reads its own
+        file under that file's lock; the attempts are not read again."""
         self._prepare()
         for request_id in self._ids("attempts"):
             if _stopped(deadline, cancelled):
@@ -2651,7 +2665,25 @@ class PlacementLifecycle:
                     self._resume_transfer(record, deadline, cancelled, wait=False)
         if _stopped(deadline, cancelled):
             return
-        self._prune_tombstones(deadline, cancelled)
+        destroyed = self._destroyed_owners(deadline, cancelled)
+        expired = self._expired_tombstones(deadline, cancelled)
+        if _stopped(deadline, cancelled) or not (destroyed or expired):
+            return
+        unfinished, completed = self._attempt_references(deadline, cancelled)
+        # A stopped snapshot is partial; an unreadable attempt only sets ``unfinished`` to
+        # None. Both stop conditions are permanent once true, so this tells them apart.
+        if _stopped(deadline, cancelled):
+            return
+        owners = [key for key in destroyed if key in completed]
+        tombstones = [] if unfinished is None else [rid for rid in expired if rid not in unfinished]
+        if not (owners or tombstones):
+            return
+        try:
+            _fsync_directory(self._dir("attempts"))
+        except OSError:
+            return
+        self._prune_completed_owners(owners, completed, deadline, cancelled)
+        self._prune_tombstones(tombstones, deadline, cancelled)
 
     @staticmethod
     def _tombstone_expired(tombstone: Mapping[str, object], now: float) -> bool:
@@ -2666,7 +2698,62 @@ class PlacementLifecycle:
             return None
         return tombstone
 
-    def _prune_tombstones(self, deadline: "_Deadline | None",
+    def _destroyed_owners(self, deadline: "_Deadline | None",
+                          cancelled: threading.Event | None) -> list[str]:
+        """The keys of the cleanup owners in state ``destroyed``, from the directory
+        listing. An entry that cannot be read is skipped and stays."""
+        keys = []
+        for key in self._ids("cleanup"):
+            if _stopped(deadline, cancelled):
+                return keys
+            try:
+                owner = _read_journal(self._dir("cleanup") / f"{key}.json")
+            except (LifecycleError, OSError):
+                continue
+            if owner is not None and owner.get("state") == "destroyed":
+                keys.append(key)
+        return keys
+
+    def _expired_tombstones(self, deadline: "_Deadline | None",
+                            cancelled: threading.Event | None) -> list[str]:
+        now = self.clock()
+        expired = []
+        for reservation_id in self._ids("tombstones"):
+            if _stopped(deadline, cancelled):
+                return expired
+            tombstone = _read_journal(self._dir("tombstones") / f"{reservation_id}.json")
+            if tombstone is not None and self._tombstone_expired(tombstone, now):
+                expired.append(reservation_id)
+        return expired
+
+    def _prune_completed_owners(self, keys: Sequence[str], completed: Mapping[str, str],
+                                deadline: "_Deadline | None",
+                                cancelled: threading.Event | None) -> None:
+        """Remove destroyed cleanup owners whose attempt has journaled the entry as
+        completed (``completed``, from :meth:`_attempt_references`). Once the entry reads
+        completed, no recovery reads the owner again. ``keys`` come from the ``cleanup``
+        directory listing, never from journal content. Each owner is removed only under the
+        lock its entry names, after being read again there, and only while it is still
+        destroyed and records that same lock. The deadline and cancellation are checked per
+        item; a lock not obtained leaves the owner for a later pass."""
+        for key in keys:
+            if _stopped(deadline, cancelled):
+                return
+            lock = completed[key]
+            path = self._dir("cleanup") / f"{key}.json"
+            with self._try_lock(self._dir(lock) / f"{key}.lock", deadline) as held:
+                if not held:
+                    continue
+                if _stopped(deadline, cancelled):
+                    return
+                try:
+                    owner = _read_journal(path)
+                except (LifecycleError, OSError):
+                    continue
+                if owner is not None and owner.get("state") == "destroyed" and owner.get("lock") == lock:
+                    _remove_journal(path)
+
+    def _prune_tombstones(self, reservation_ids: Sequence[str], deadline: "_Deadline | None",
                           cancelled: threading.Event | None) -> None:
         """Remove expired tombstones that no recovery can still need.
 
@@ -2675,31 +2762,14 @@ class PlacementLifecycle:
         transfer of that reservation relies on (``_materialize``). It is removed only
         under its reservation's lock, after being read again there, and only while no
         attempt that committed that reservation is unsettled and no transfer entry of it
-        is unfinished. The attempts are read without their locks (the lock order is
-        attempt, then reservation), once per pass and after the tombstones were listed:
-        a reference to a tombstoned reservation was journaled before it was destroyed,
-        and settlement and completion are never undone, so this snapshot can only keep a
-        tombstone longer than needed, never remove one still referenced. Any unreadable
-        attempt keeps every tombstone. The deadline and cancellation are checked per item;
-        a lock not obtained leaves the tombstone for a later pass."""
-        now = self.clock()
-        expired = []
-        for reservation_id in self._ids("tombstones"):
+        is unfinished (``reservation_ids`` are the expired tombstones that the start-up
+        snapshot found unreferenced; a reference to a tombstoned reservation was journaled
+        before it was destroyed). Any unreadable attempt keeps every tombstone. The
+        deadline and cancellation are checked per item; a lock not obtained leaves the
+        tombstone for a later pass."""
+        for reservation_id in reservation_ids:
             if _stopped(deadline, cancelled):
                 return
-            tombstone = _read_journal(self._dir("tombstones") / f"{reservation_id}.json")
-            if tombstone is not None and self._tombstone_expired(tombstone, now):
-                expired.append(reservation_id)
-        if not expired:
-            return
-        referenced = self._unfinished_references(deadline, cancelled)
-        if referenced is None:
-            return
-        for reservation_id in expired:
-            if _stopped(deadline, cancelled):
-                return
-            if reservation_id in referenced:
-                continue
             path = self._dir("tombstones") / f"{reservation_id}.json"
             with self._try_lock(self._dir("reservations") / f"{reservation_id}.lock", deadline) as held:
                 if not held:
@@ -2710,29 +2780,58 @@ class PlacementLifecycle:
                 if tombstone is not None and self._tombstone_expired(tombstone, self.clock()):
                     _remove_journal(path)
 
-    def _unfinished_references(self, deadline: "_Deadline | None",
-                               cancelled: threading.Event | None) -> set[str] | None:
-        """The reservation ids a recovery may still resolve: committed by an unsettled
-        attempt, or keyed by a transfer entry that is not completed. ``None`` when any
-        attempt could not be read, or the deadline or cancellation fired first."""
-        referenced: set[str] = set()
+    _OWNER_LOCKS = ("reservations", "cleanup")
+
+    def _attempt_references(self, deadline: "_Deadline | None", cancelled: threading.Event | None
+                            ) -> tuple[set[str] | None, dict[str, str]]:
+        """One lock-free read of every attempt: ``(unfinished, completed)``.
+
+        ``unfinished`` is the reservation ids a recovery may still resolve: committed by an
+        unsettled attempt, or keyed by a transfer entry that is not completed. It is
+        ``None`` when any attempt could not be read, or the deadline or cancellation fired
+        first. ``completed`` maps the key of each completed transfer entry to the lock its
+        entry names (only ``reservations`` or ``cleanup``). It is decided per attempt: an
+        attempt contributes only once it has been read in full, and never a key it still
+        references itself, such as the reservation its commit holds while it is unsettled.
+        A cleanup key belongs to the one attempt that planned it (its commit's reservation
+        id, or a key prefixed by its request id), so an unreadable attempt cannot hold a
+        reference to another attempt's completed key. A key named with two locks is left
+        out."""
+        unfinished: set[str] = set()
+        completed: dict[str, str] = {}
+        conflicting: set[str] = set()
+        readable = True
         for request_id in self._ids("attempts"):
             if _stopped(deadline, cancelled):
-                return None
+                return None, completed
             try:
                 record = _read_journal(self._dir("attempts") / f"{request_id}.json")
                 if record is None:
                     continue
+                own_unfinished: set[str] = set()
+                own_completed: dict[str, str] = {}
                 commit = record.get("commit")
                 if commit is not None and not record.get("settled"):
-                    referenced.add(str(commit["reservation"]["reservation_id"]))  # type: ignore[index]
+                    own_unfinished.add(str(commit["reservation"]["reservation_id"]))  # type: ignore[index]
                 transfer = record.get("transfer") or {}
                 for entry in transfer.get("entries") or []:  # type: ignore[union-attr]
+                    key = str(entry["key"])
                     if entry["state"] != "completed":
-                        referenced.add(str(entry["key"]))
+                        own_unfinished.add(key)
+                    elif entry.get("lock") in self._OWNER_LOCKS:
+                        own_completed[key] = str(entry["lock"])
             except (LifecycleError, OSError, KeyError, TypeError, AttributeError):
-                return None
-        return referenced
+                readable = False
+                continue
+            unfinished |= own_unfinished
+            for key, lock in own_completed.items():
+                if key in own_unfinished:
+                    continue
+                if completed.setdefault(key, lock) != lock:
+                    conflicting.add(key)
+        for key in conflicting:
+            completed.pop(key, None)
+        return (unfinished if readable else None), completed
 
     @staticmethod
     def _settle_bound(record: Mapping[str, object]) -> float | None:
@@ -3079,7 +3178,8 @@ class PlacementLifecycle:
                 handle = self._open_bridge(reservation, backend, lease, cancelled, deadline)
             except Exception:
                 # No route, transport or bridge fallback after admission: release this rung.
-                return self._bridge_failed(record, request, commit, backend, lease, trail, deadline)
+                return self._bridge_failed(record, request, commit, backend, lease, trail, deadline,
+                                           cancelled)
             reservation = self._reservation(binding, lease_id=lease_id, expires_epoch=expires,
                                             bridge=handle.descriptor)  # type: ignore[attr-defined]
             effect = {**effect, "bridge": handle.to_json()}  # type: ignore[attr-defined]
@@ -3087,7 +3187,8 @@ class PlacementLifecycle:
                       "complete": True}
             self._journal_commit(record, commit)
         rid = reservation.reservation_id  # type: ignore[attr-defined]
-        with _FileLock(self._dir("reservations") / f"{rid}.lock", blocking=False, deadline=deadline) as held:
+        with _FileLock(self._dir("reservations") / f"{rid}.lock", blocking=False, deadline=deadline,
+                       cancelled=cancelled) as held:
             if not held or cancelled.is_set() or deadline.expired():
                 return self._commit_left_held(record, request, lease, timeout_trail)
             self._publish_reservation(commit, str(record["request_id"]))
@@ -3110,13 +3211,18 @@ class PlacementLifecycle:
 
     def _bridge_failed(self, record: dict[str, object], request: object, commit: Mapping[str, object],
                        backend: object, lease: object, trail: Sequence[object],
-                       deadline: "_Deadline") -> object:
+                       deadline: "_Deadline", cancelled: threading.Event) -> object:
+        """The bridge could not be opened after admission: release this rung within the
+        caller's deadline and cancellation. Once the caller has cancelled, the bridge
+        reclaim still runs but no remote cleanup call starts; the lease reference is then
+        abandoned, the commit is kept and the attempt stays unsettled, so a replay or the
+        terminal cleanup removes the effect."""
         from .placement_process_contract import TrailEntry
 
         effect = commit["effect"]  # type: ignore[index]
         label = str(effect["target"])  # type: ignore[index]
         lease.fence()  # type: ignore[attr-defined]
-        if self._cleanup(effect, deadline):  # type: ignore[arg-type]
+        if self._cleanup(effect, deadline, cancelled):  # type: ignore[arg-type]
             lease.clear()  # type: ignore[attr-defined]
             record.pop("commit", None)
             trail = (*trail[:-1], TrailEntry(label, "refused", _REFUSED, None))
@@ -3219,7 +3325,7 @@ class PlacementLifecycle:
         reservation = Reservation.from_json(commit["reservation"])  # type: ignore[arg-type]
         rid = reservation.reservation_id
         with _FileLock(self._dir("reservations") / f"{rid}.lock", blocking=False,
-                       deadline=deadline) as held:
+                       deadline=deadline, cancelled=cancelled) as held:
             if not held or cancelled.is_set() or deadline.expired():
                 return self._indeterminate(request, record)
             if self._at_bound(record, self.clock()):
@@ -3258,9 +3364,9 @@ class PlacementLifecycle:
         return f"{record['request_id']}--{identity}", "cleanup"
 
     def _owner_lock(self, key: str, lock: str, deadline: "_Deadline | None", *,
-                    wait: bool = True) -> "_FileLock":
+                    wait: bool = True, cancelled: threading.Event | None = None) -> "_FileLock":
         return _FileLock(self._dir(lock) / f"{key}.lock", blocking=False, deadline=deadline,
-                         retry=wait)
+                         retry=wait, cancelled=cancelled)
 
     def _plan_transfer(self, record: dict[str, object]) -> None:
         """Durably record, in the attempt, the hand-over of its effects to cleanup owners
@@ -3296,7 +3402,8 @@ class PlacementLifecycle:
                 continue
             if _stopped(deadline, cancelled):
                 break
-            with self._owner_lock(entry["key"], entry["lock"], deadline, wait=wait) as held:
+            with self._owner_lock(entry["key"], entry["lock"], deadline, wait=wait,
+                                  cancelled=cancelled) as held:
                 if not held or _stopped(deadline, cancelled):
                     continue
                 state = self._materialize(entry)
@@ -3309,7 +3416,8 @@ class PlacementLifecycle:
             if entry["state"] == "completed":
                 if _stopped(deadline, cancelled):
                     return
-                with self._owner_lock(entry["key"], entry["lock"], deadline, wait=wait) as held:
+                with self._owner_lock(entry["key"], entry["lock"], deadline, wait=wait,
+                                      cancelled=cancelled) as held:
                     held = held and not _stopped(deadline, cancelled)
                     owner = _read_journal(self._dir("cleanup") / f"{entry['key']}.json") if held else None
                     if owner is not None and owner.get("state") == "destroyed":
@@ -3448,11 +3556,14 @@ class PlacementLifecycle:
     def release(self, request: object, *, cancelled: threading.Event) -> object:
         """``PlacementLifecycle.release(request, *, cancelled) -> ReleaseResponse``. One
         deadline bounds start-up, the lock wait, bridge teardown, kill and owner listing.
-        The client, id and echo are always validated. When the deadline or cancellation
-        has fired before teardown starts, nothing is torn down and the active record keeps
-        the effect (``cleanup_pending``); a teardown already started finishes only its
-        bounded part, and its outcome is recorded. An expired tombstone answers as absent
-        (``unknown_reservation``) even while recovery still keeps it."""
+        The client and id are always validated; the echo is compared once the reservation
+        lock is held. When the lock is not obtained before the deadline or cancellation,
+        the answer is ``cleanup_pending`` with no comparison, and nothing is released.
+        When the deadline or cancellation has fired before teardown starts, nothing is
+        torn down and the active record keeps the effect (``cleanup_pending``); a
+        teardown already started finishes only its bounded part, and its outcome is
+        recorded. An expired tombstone answers as absent (``unknown_reservation``) even
+        while recovery still keeps it."""
         from .placement_process_contract import LeaseFlags, ReleaseResponse, canonical_bytes
 
         deadline = _Deadline.after(request.deadline_ms / 1000.0)  # type: ignore[attr-defined]
@@ -3475,7 +3586,7 @@ class PlacementLifecycle:
         if not os.path.lexists(active_path) and self._live_tombstone(tomb_path) is None:
             return response("unknown_reservation", _REFUSED, self._flags(None))
         with _FileLock(self._dir("reservations") / f"{reservation_id}.lock", blocking=False,
-                       deadline=deadline) as held:
+                       deadline=deadline, cancelled=cancelled) as held:
             if not held:
                 # Another operation holds this reservation: its effect may remain.
                 return response("cleanup_pending", _RELEASE_UNCONFIRMED, pending_flags)
@@ -3517,7 +3628,8 @@ class PlacementLifecycle:
         local slot or remote lease. True only when every part is confirmed gone. The
         caller's event reaches the bridge, whose bounded teardown it does not interrupt;
         once it is set, no further remote cleanup call starts and the effect stays owned
-        as unconfirmed. Without an event (the walk's own rung release) nothing cancels."""
+        as unconfirmed. Every operation passes its caller's event, the walk's rung release
+        after a bridge failure included; without an event nothing cancels."""
         from .placement_bridge import operation_deadline
 
         cancelled = cancelled if cancelled is not None else threading.Event()
@@ -3601,35 +3713,46 @@ class PlacementLifecycle:
         selected client's inventory, eligible entries by ``created_at`` then id, all within
         one deadline. Every consumer of a reservation's effect, its active record or its
         cleanup owner, holds that reservation's lock; a consumed cleanup owner is kept as a
-        destroyed completion record until its attempt journals the completion. The
-        deadline and cancellation are checked before each item and again once its lock is
-        held; an item not begun stays pending, with its owner unchanged."""
+        destroyed completion record until its attempt journals the completion. An effect
+        listed both as an active record and as a cleanup owner is one item, locked once
+        and counted once, so ``max_items`` bounds distinct effects. The deadline and
+        cancellation are checked before each item and again once its lock is held,
+        including while its lock is awaited; an item not begun stays pending, with its
+        owner unchanged."""
         from .placement_process_contract import InventoryReapResult, ReapResponse
 
         deadline = _Deadline.after(request.deadline_ms / 1000.0)  # type: ignore[attr-defined]
         self._startup(deadline, cancelled)
         now = self.clock()
-        eligible: list[tuple[float, str, str]] = []
+        # One item per logical effect: ``(lock, key)`` -> [created_at, active?, owner?].
+        items: dict[tuple[str, str], list[object]] = {}
+
+        def candidate(lock: str, key: str, created: float, *, active: bool) -> None:
+            item = items.setdefault((lock, key), [created, False, False])
+            item[0] = min(item[0], created)  # type: ignore[type-var]
+            item[1 if active else 2] = True
+
         for reservation_id, entry in self._records("reservations"):
             expires = _epoch(entry.get("reservation", {}).get("expires_at"))  # type: ignore[union-attr]
             if entry.get("state") == "cleanup_pending" or (expires is not None and now >= expires):
-                eligible.append((float(entry.get("created_at", 0.0)), reservation_id, "reservations"))  # type: ignore[arg-type]
+                candidate("reservations", reservation_id, float(entry.get("created_at", 0.0)),  # type: ignore[arg-type]
+                          active=True)
         for entry_id, entry in self._records("cleanup"):
             if entry.get("state", "owned") == "owned":
-                eligible.append((float(entry.get("created_at", 0.0)), entry_id, "cleanup"))  # type: ignore[arg-type]
-        eligible.sort(key=lambda item: (item[0], item[1]))
+                lock = "reservations" if entry.get("lock") == "reservations" else "cleanup"
+                candidate(lock, entry_id, float(entry.get("created_at", 0.0)), active=False)  # type: ignore[arg-type]
+        eligible = sorted(items.items(), key=lambda item: (item[1][0], item[0][1], item[0][0]))
         examined = destroyed = pending = 0
-        for _created, key, kind in eligible[: request.max_items]:  # type: ignore[attr-defined]
+        for (lock, key), (_created, active, owned) in eligible[: request.max_items]:  # type: ignore[attr-defined]
             if deadline.expired() or cancelled.is_set():
                 pending += 1
                 continue
             examined += 1
-            lock = "reservations" if kind == "reservations" else self._cleanup_lock_of(key)
-            with self._owner_lock(key, lock, deadline) as held:
+            with self._owner_lock(key, lock, deadline, cancelled=cancelled) as held:
                 if not held or _stopped(deadline, cancelled):
                     pending += 1
                     continue
-                outcome = (self._reap_active(key, deadline, cancelled) if kind == "reservations"
+                outcome = (self._reap_active(key, deadline, cancelled, owned=bool(owned)) if active
                            else self._reap_owner(key, deadline, cancelled))
             if outcome is None or outcome:
                 destroyed += 1
@@ -3640,17 +3763,15 @@ class PlacementLifecycle:
                                      None if pending == 0 else _RELEASE_UNCONFIRMED)
         return ReapResponse(request.request_id, state, result, request.caller_context)  # type: ignore[attr-defined]
 
-    def _cleanup_lock_of(self, key: str) -> str:
-        owner = _read_journal(self._dir("cleanup") / f"{key}.json") or {}
-        return "reservations" if owner.get("lock") == "reservations" else "cleanup"
-
     def _reap_active(self, reservation_id: str, deadline: "_Deadline",
-                     cancelled: threading.Event | None = None) -> bool | None:
+                     cancelled: threading.Event | None = None, *, owned: bool = False) -> bool | None:
         """Under the reservation lock: consume an active record, unless a cleanup transfer
-        owns its effect, in which case the transfer's owner is consumed instead."""
+        owns its effect, in which case the transfer's owner is consumed instead. When the
+        same effect was also listed as a cleanup owner (``owned``) and the active record is
+        already gone, that owner is consumed under the same lock."""
         current = _read_journal(self._dir("reservations") / f"{reservation_id}.json")
         if current is None:
-            return None
+            return self._reap_owner(reservation_id, deadline, cancelled) if owned else None
         if self._claimed_by_transfer(reservation_id, current):
             return self._reap_owner(reservation_id, deadline, cancelled)
         if self._cleanup(current["effect"], deadline, cancelled):  # type: ignore[arg-type]
@@ -3769,7 +3890,7 @@ class _ReserveWalk:
                      if plan.target.kind == "local" and plan.refusal is None)
         slots = self.lifecycle._slots_dir()
         lock = _FileLock(self.lifecycle.state_root / "local-slots.lock", blocking=False,
-                         deadline=_Deadline.after(bound.timeout_s))
+                         deadline=_Deadline.after(bound.timeout_s), cancelled=bound.cancelled)
         with lock as held:
             if not held or bound.cancelled.is_set():
                 raise PlacementUnavailable(_CAPACITY)

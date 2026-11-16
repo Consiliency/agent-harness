@@ -217,7 +217,15 @@ under stable keys, before any cleanup entry is written, and any later start-up r
 even after the terminal response has been journaled. Every consumer of a reservation's effect
 holds that reservation's lock: its active record, its cleanup entry, replay and the hand-over
 itself. A consumed cleanup entry is kept as a completion record until the attempt journals the
-completion, so an effect that was removed is never handed on again.
+completion, so an effect that was removed is never handed on again. Once the completion is
+journaled, a later start-up removes that record under the same lock, after reading it again
+there.
+
+The PLACECLI receipt (`plans/evidence/placement/PLACECLI.md`) pins the CLI boundary: the
+protocol schema, its vectors, the CLI fixtures and the producer files. The lifecycle module,
+`sandbox_placement.py`, is shared with other placement work and is never pinned by the
+receipt, so the recovery behavior described in this section is attested by the hosted test
+suite and Gate A on the merge head.
 
 ### Deadlines
 
@@ -225,10 +233,17 @@ Each `reserve`, `release` and `reap` call has one deadline, from its `deadline_m
 blocking step uses what is left of it: the walk, the exposure lookup, the wait for the bridge
 to become ready, the reservation lock, bridge teardown, and the kill and owner listing.
 
+- Cancellation also ends a wait for a held lock: the lock is always tried once, and once the
+  caller cancels, a contended lock is not waited for.
 - When time runs out, or the caller cancels, after admission, admission is not reported. The
   effects stay journaled, the response is `timeout`, and replay or terminal cleanup takes
-  over.
-- A release whose lock or cleanup outlasts its deadline answers `cleanup_pending`.
+  over. This includes a bridge that fails to open after the caller cancelled: no remote
+  cleanup starts, and the lease stays owned by the attempt until replay or terminal cleanup
+  removes it.
+- A release whose lock or cleanup outlasts its deadline answers `cleanup_pending`. The client
+  and id are always checked; the echoed reservation is compared only once the reservation
+  lock is held. A release whose lock wait ends by deadline or cancellation answers
+  `cleanup_pending` with no comparison, and nothing is released.
 
 ## Release and reap
 
@@ -247,7 +262,9 @@ to become ready, the reservation lock, bridge teardown, and the kill and owner l
   - `cleanup_pending` reservations;
   - expired reservations.
 
-  An uncertain item stays pending, without a client-wide or host-wide barrier.
+  An effect listed both as a reservation and as a cleanup entry is visited and counted once,
+  and `max_items` bounds distinct effects. An uncertain item stays pending, without a
+  client-wide or host-wide barrier.
 - **Legacy reaper.** `phase-loop placement reap --client CLIENT` runs the same caller-scoped
   service in process. Without `--client` it keeps reaping the legacy lease journal.
 
