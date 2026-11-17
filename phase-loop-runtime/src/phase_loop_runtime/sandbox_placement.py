@@ -1002,6 +1002,13 @@ _MAY_HOLD = frozenset({"admitting", "committing", "sealing"})
 _monotonic = time.monotonic
 
 
+def _sleep(seconds: float) -> None:
+    """The lock-retry pause, a seam like ``_monotonic``: tests patch this name, never the
+    process-wide ``time.sleep`` that other threads also call. It looks ``time.sleep`` up at
+    call time, so a patch of ``time.sleep`` still reaches it."""
+    time.sleep(seconds)
+
+
 def _pause(cancelled: threading.Event, seconds: float) -> None:
     cancelled.wait(max(0.0, seconds))
 
@@ -2451,7 +2458,7 @@ class _FileLock:
                         or (self.cancelled is not None and self.cancelled.is_set())):
                     self.held = False
                     return False
-                time.sleep(min(_POLL_S, self.deadline.left()))
+                _sleep(min(_POLL_S, self.deadline.left()))
 
     def __exit__(self, *_exc: object) -> None:
         if self.fd is not None:
