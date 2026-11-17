@@ -6,6 +6,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+## [0.7.35] - Unreleased candidate
+
 ### Fixed
 
 - Placement lifecycle follow-ups to v13 PLACECLI (agent-harness#1989):
@@ -30,7 +32,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   The PLACECLI protocol schema, vectors, CLI fixtures and receipt are unchanged. See
   `docs/placement-process-cli.md`.
 
-## [0.7.34] - Unreleased candidate
+## [0.7.34] - 2026-11-15
 
 - Adopt the public v2 supervised launch contracts (agent-harness#1970): held-input
   admission, operator binding bootstrap, exact caller-context echoes and schema-bound

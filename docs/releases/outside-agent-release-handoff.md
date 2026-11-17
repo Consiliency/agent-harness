@@ -5,6 +5,32 @@ outside-agent conformance runtime. It is metadata-only: the document itself did
 not publish a package, create a tag, dispatch a workflow, edit governed-pipeline,
 or make production merge enforcement live.
 
+## 0.7.35 release preparation
+
+Expected, unpublished artifacts: `phase_loop_runtime-0.7.35-py3-none-any.whl`
+and `phase_loop_runtime-0.7.35.tar.gz`.
+
+Candidate only: no tag, publication or installation is claimed. The candidate is
+based on merged main after the published 0.7.34 release. It carries the PLACECLI
+placement lifecycle follow-ups (agent-harness#1989: agent-harness#1991 and the
+agent-harness#1998 test seam) and the cancellation recheck before the remote kill
+(agent-harness#1996, agent-harness#1999). The LANEEXEC-v1-errata-1 plan and
+contract change (agent-harness#1988, agent-harness#1990) ships no runtime code. The
+0.7.35 changelog section lists the scope. The published 0.7.34 package remains
+unchanged.
+
+Live routes stay disabled. This candidate does not lift sandbox activation holds
+or grant installed-provider qualification. Since 0.7.34 no change touches the agy
+catalog, its records or the seat QCI inputs, so the retained QCI-bound record
+stays valid. The strict hermetic agy release gate still runs its own conformance
+suite and verifies the vendor archive at publication.
+
+Before publication, required candidate checks, standalone-wheel Gate A and the
+strict hermetic agy release gate must pass, and publication authority must be
+granted. Recording these gates does not authorize dispatch. After publication,
+verify registry artifacts, GitHub Release assets and the managed installation
+separately.
+
 ## 0.7.34 release preparation
 
 Expected, unpublished artifacts: `phase_loop_runtime-0.7.34-py3-none-any.whl`
