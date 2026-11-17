@@ -22,6 +22,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   - The lock-wait cancellation tests patch a placement-module retry-pause seam instead of
     the process-wide `time.sleep`, so other threads in a single-process suite run no longer
     affect them. Runtime behaviour is unchanged.
+  - Cleanup checks cancellation again immediately before the remote kill
+    (agent-harness#1996). A cancellation that arrives during backend resolution, lease
+    recovery or fencing starts no kill or owner listing, and the lease stays owned as
+    unconfirmed. A kill that has already started still finishes.
 
   The PLACECLI protocol schema, vectors, CLI fixtures and receipt are unchanged. See
   `docs/placement-process-cli.md`.

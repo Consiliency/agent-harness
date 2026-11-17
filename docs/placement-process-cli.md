@@ -235,6 +235,10 @@ to become ready, the reservation lock, bridge teardown, and the kill and owner l
 
 - Cancellation also ends a wait for a held lock: the lock is always tried once, and once the
   caller cancels, a contended lock is not waited for.
+- Once the caller cancels, cleanup starts no further kill or owner listing. This holds also
+  when the signal arrives while the backend is being resolved or the lease is being recovered
+  or fenced. A kill that has already started finishes within its bound. Either way the lease
+  stays recorded as unconfirmed, and a later release or reap removes it.
 - When time runs out, or the caller cancels, after admission, admission is not reported. The
   effects stay journaled, the response is `timeout`, and replay or terminal cleanup takes
   over. This includes a bridge that fails to open after the caller cancelled: no remote

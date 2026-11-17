@@ -3681,9 +3681,10 @@ class PlacementLifecycle:
     def _release_remote(self, backend: object, lease_id: str, deadline: "_Deadline",
                         cancelled: threading.Event | None = None) -> bool:
         """Kill by lease id, then confirm the owner listing no longer names it, both within
-        what is left of the operation's deadline. A kill that has started is not
-        interrupted; once ``cancelled`` is set no listing starts, and the listing itself
-        is cancellable. Either way the lease is unconfirmed and stays recorded."""
+        what is left of the operation's deadline. ``cancelled`` is checked again after the
+        lease is recovered and fenced: once it is set, neither a kill nor a listing starts.
+        A kill that has started is not interrupted, and the listing itself is cancellable.
+        Either way the lease is unconfirmed and stays recorded."""
         from . import placement_lease
 
         try:
@@ -3693,6 +3694,9 @@ class PlacementLifecycle:
         calls = _Calls(settings=self.settings)
         try:
             lease.fence()
+            if cancelled is not None and cancelled.is_set():
+                # Cancelled before the kill was dispatched: none starts.
+                raise PlacementUnavailable(_TIMEOUT)
             left = min(ANSWER_BOUND_S, deadline.left())
             if left <= 0:
                 raise PlacementUnavailable(_TIMEOUT)
