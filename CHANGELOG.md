@@ -6,6 +6,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+## [0.7.35] - Unreleased candidate
+
+### Changed
+
+- Record LANEEXEC-v1-errata-1: the frozen `pi-runner.local.v1` contract specifies an empty
+  read-only `/var/log`, with updated plan/binding pins and contract tests
+  (agent-harness#1990). This changes no runtime implementation or activation.
+
 ### Fixed
 
 - Placement lifecycle follow-ups to v13 PLACECLI (agent-harness#1989):
@@ -30,7 +38,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   The PLACECLI protocol schema, vectors, CLI fixtures and receipt are unchanged. See
   `docs/placement-process-cli.md`.
 
-## [0.7.34] - Unreleased candidate
+## [0.7.34] - 2026-11-15
 
 - Adopt the public v2 supervised launch contracts (agent-harness#1970): held-input
   admission, operator binding bootstrap, exact caller-context echoes and schema-bound
