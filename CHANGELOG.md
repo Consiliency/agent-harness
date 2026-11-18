@@ -8,6 +8,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [0.7.35] - Unreleased candidate
 
+### Changed
+
+- Record LANEEXEC-v1-errata-1: the frozen `pi-runner.local.v1` contract specifies an empty
+  read-only `/var/log`, with updated plan/binding pins and contract tests
+  (agent-harness#1990). This changes no runtime implementation or activation.
+
 ### Fixed
 
 - Placement lifecycle follow-ups to v13 PLACECLI (agent-harness#1989):
