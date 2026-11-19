@@ -36,6 +36,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   GitHub releases API reads with the job's read-only token when `GITHUB_TOKEN` is set (also
   in the nightly `--upstream-only` check), because unauthenticated reads from shared runner
   addresses hit the rate limit. Strict conformance and runtime caps behaviour are unchanged.
+- agy self-qualification can verify the provenance of current upstream images again. The
+  `antigravity` member of upstream agy 1.5.11's linux-x64 archive is 268,841,672 bytes, so
+  the 250 MB member bound in `agy_provenance` skipped every in-window release, and
+  `phase-loop agy-qualification run` ended `gemini_heartbeat_provenance_unverified`. The
+  bound is now 512 MB, and `scripts/verify_qualified_agy_image.py` uses the same value.
+  The member is still hashed in 1 MiB chunks, and the 128 MB archive bound is unchanged.
+  The seat QCI, the validator closure, the shipped catalog and existing store entries are
+  unchanged, so nothing needs requalification.
 
 ## [0.7.36] - Unreleased candidate
 

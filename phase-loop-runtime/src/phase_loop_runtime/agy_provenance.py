@@ -42,7 +42,10 @@ MAX_REDIRECTS = 3
 RECENCY_WINDOW = 4
 MAX_LISTING_BYTES = 4_000_000
 MAX_ARCHIVE_BYTES = 128_000_000
-MAX_MEMBER_BYTES = 250_000_000
+# Upstream's native image passed 250 MB at 1.5.11 (268,841,672 bytes). The member is hashed
+# in 1 MiB chunks, so this bounds work, not memory; only ``keep_bytes`` (the upstream watch)
+# holds the member. ``scripts/verify_qualified_agy_image.py`` keeps the same bound.
+MAX_MEMBER_BYTES = 512_000_000
 MEMBER_NAME = "antigravity"
 USER_AGENT = "agent-harness-agy-provenance"
 

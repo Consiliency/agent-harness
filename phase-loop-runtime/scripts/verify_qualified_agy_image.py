@@ -51,6 +51,8 @@ CONFORMANCE_FIXTURES = REPO / "phase-loop-runtime/tests/fixtures/agy_conformance
 # The properties a real strict run writes into its JUnit report (agent-harness#1937 review B4).
 IDENTITY_PROPERTIES = ("agy_conformance_strict", "agy_conformance_commit", "agy_conformance_source_sha256")
 ASSET = "agy_cli_linux_x64.tar.gz"
+# The archive's ``antigravity`` member bound; equal to ``agy_provenance.MAX_MEMBER_BYTES``.
+MAX_MEMBER_BYTES = 512_000_000
 UPSTREAM = "google-antigravity/antigravity-cli"
 RELEASES = f"https://api.github.com/repos/{UPSTREAM}/releases"
 API = RELEASES + "/latest"
@@ -303,7 +305,7 @@ def verify_archive(record, archive):
     require(digest_file(archive) == record["upstream_asset_sha256"], "archive digest mismatch")
     with tarfile.open(archive, "r:gz") as bundle:
         member = bundle.getmember("antigravity")
-        require(member.isfile() and member.size <= 250_000_000, "archive member invalid")
+        require(member.isfile() and member.size <= MAX_MEMBER_BYTES, "archive member invalid")
         stream = bundle.extractfile(member)
         require(stream is not None, "archive member missing")
         h = sha256()
