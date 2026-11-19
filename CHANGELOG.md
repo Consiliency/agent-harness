@@ -44,6 +44,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   The member is still hashed in 1 MiB chunks, and the 128 MB archive bound is unchanged.
   The seat QCI, the validator closure, the shipped catalog and existing store entries are
   unchanged, so nothing needs requalification.
+- `phase-loop seat-window probe-tools --vendor grok` no longer crashes with
+  `AttributeError` when no executable-dependency lease is bound, which is always the case
+  for the operator CLI. The probe now resolves the grok binary on the environment it runs
+  the binary with, and the receipt it writes falls back to this process's environment.
+  Before this fix, no tool-probe receipt could be written, so every grok seat was deferred
+  with `grok_tool_surface_unverified`. The launch gate is unchanged.
 
 ## [0.7.36] - Unreleased candidate
 

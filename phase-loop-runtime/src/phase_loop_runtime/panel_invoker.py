@@ -15199,10 +15199,12 @@ def _grok_argv_digest(command):
     return sha256(json.dumps(form, separators=(",", ":")).encode()).hexdigest()
 
 
-def record_tool_probe(command, definitions, *, allowed_tools, version="unavailable"):
+def record_tool_probe(command, definitions, *, allowed_tools, version="unavailable", env=None):
     from .president_adapter import write_private_record
     try:
-        _, binary = _grok_binary_identity(command)
+        # Without a bound dependency lease the binary is found on ``env``'s PATH; the
+        # operator CLI has neither a lease nor a launch env, so it defaults to this process's.
+        _, binary = _grok_binary_identity(command, os.environ if env is None else env)
     except (OSError, ValueError, RuntimeError):
         binary = "0" * 64
     offered = definitions.get("tools") if type(definitions) is dict else None
@@ -15275,11 +15277,14 @@ def probe_grok_tools(command, *, allowed_tools, runner=None):
             child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE, **kw)
     definitions = None
     version = "unavailable"
+    env = None
     try:
-        binary, digest = _grok_binary_identity(command)
+        # The binary is resolved on the same environment it is run with.
+        env = _subscription_env()
+        binary, digest = _grok_binary_identity(command, env)
         with tempfile.TemporaryDirectory(prefix="pl-tools-definition-") as directory:
             options = dict(cwd=directory, capture_output=True, text=True, timeout=30,
-                           stdin=subprocess.DEVNULL, env=_subscription_env())
+                           stdin=subprocess.DEVNULL, env=env)
             help_result = runner([binary, "--help"], **options)
             if (help_result.returncode == 0 and not help_result.stderr
                 and "--list-tools" in help_result.stdout
@@ -15298,11 +15303,11 @@ def probe_grok_tools(command, *, allowed_tools, runner=None):
                         and not version_result.stderr and version_result.stdout.strip()):
                     definitions = json.loads(result.stdout)
                     version = version_result.stdout
-        if _grok_binary_identity(command)[1] != digest:
+        if _grok_binary_identity(command, env)[1] != digest:
             definitions = None
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
         pass
-    return record_tool_probe(command, definitions, allowed_tools=allowed_tools, version=version)
+    return record_tool_probe(command, definitions, allowed_tools=allowed_tools, version=version, env=env)
 
 
 @_retained_leg_exec

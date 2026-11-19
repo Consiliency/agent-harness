@@ -19,6 +19,7 @@ allow-list, byte for byte.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import pytest
@@ -494,3 +495,91 @@ def test_seats_firstseat_tool_surface_workflow_deny_list(tmp_path, monkeypatch):
     assert pi.record_tool_probe(command, {"tools": ["write"], "diagnostics": []},
                                 allowed_tools=set(), version="fixture-v1")["passed"]
     assert pi.grok_tool_gate(command)
+
+
+def _unleased_grok(tmp_path, monkeypatch):
+    """The operator CLI's state: no bound dependency lease, no provider search-path override,
+    and the grok binary found only on this process's PATH."""
+    from phase_loop_runtime import executable_dependency_startup as startup
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    binary_dir = tmp_path / "bin"
+    binary_dir.mkdir()
+    binary = binary_dir / "grok"
+    binary.write_bytes(b"\x7fELFfixture-unleased")
+    binary.chmod(0o700)
+    monkeypatch.setenv("PATH", f"{binary_dir}{os.pathsep}/usr/bin{os.pathsep}/bin")
+    monkeypatch.setattr(pi, "_PROVIDER_SEARCH_PATH", None)
+    monkeypatch.setattr(startup, "current_dependency_for_provider", lambda **kw: None)
+    return binary
+
+
+def _definition_runner(seen):
+    """Answers like grok: the definitions offered are exactly the ``--tools`` allow-list, or
+    one tool no deny-list removes when the form has no allow-list."""
+    def runner(argv, **options):
+        seen.append((argv[0], options["env"]["PATH"]))
+        if "--tools" in argv:
+            tools = [tool for tool in argv[argv.index("--tools") + 1].split(",") if tool]
+        else:
+            tools = ["read_file"]
+        output = ("--list-tools Print tool definitions without running a model" if argv[-1] == "--help"
+                  else "fixture-v1" if argv[-1] == "--version"
+                  else json.dumps({"tools": tools, "diagnostics": []}))
+        return subprocess.CompletedProcess(argv, 0, output, "")
+    return runner
+
+
+def test_tool_probe_resolves_grok_without_a_dependency_lease(tmp_path, monkeypatch):
+    """``seat-window probe-tools`` runs with no lease bound. The probe resolved the binary
+    with no environment and raised AttributeError, so no receipt was ever written and every
+    grok seat stayed ``grok_tool_surface_unverified``."""
+    binary = _unleased_grok(tmp_path, monkeypatch)
+    command = ["grok", "-p", "fixture", "--tools", "fixture_read"]
+    seen = []
+    receipt = pi.probe_grok_tools(command, allowed_tools={"fixture_read"},
+                                  runner=_definition_runner(seen))
+    assert receipt["passed"]
+    assert {argv0 for argv0, _ in seen} == {str(binary)}
+    assert {path for _, path in seen} == {os.environ["PATH"]}
+    # The launch gate, given the seat's environment, finds the receipt for the same binary.
+    assert pi.grok_tool_gate(command, {"PATH": str(binary.parent)})
+    binary.write_bytes(b"\x7fELFfixture-replaced")
+    assert not pi.grok_tool_gate(command, {"PATH": str(binary.parent)})
+
+
+def test_record_tool_probe_without_a_lease_or_env(tmp_path, monkeypatch):
+    binary = _unleased_grok(tmp_path, monkeypatch)
+    command = ["grok", "-p", "fixture", "--tools", "fixture_read"]
+    receipt = pi.record_tool_probe(command, {"tools": ["fixture_read"], "diagnostics": []},
+                                   allowed_tools={"fixture_read"}, version="fixture-v1")
+    assert receipt["passed"]
+    assert receipt["binary_digest"] == pi._grok_binary_identity(command, {"PATH": str(binary.parent)})[1]
+
+
+def test_tool_probe_without_grok_on_path_is_unverified(tmp_path, monkeypatch):
+    binary = _unleased_grok(tmp_path, monkeypatch)
+    binary.unlink()
+    seen = []
+    receipt = pi.probe_grok_tools(["grok", "--tools", "fixture_read"], allowed_tools={"fixture_read"},
+                                  runner=_definition_runner(seen))
+    assert not receipt["passed"] and receipt["public_code"] == "grok_tool_surface_unverified"
+    assert seen == []
+
+
+def test_seat_window_probe_tools_cli_without_a_lease(tmp_path, monkeypatch, capsys):
+    """The documented fix command for ``grok_tool_surface_unverified`` completes, and each
+    runtime form it records then passes the launch gate."""
+    from types import SimpleNamespace
+    from phase_loop_runtime import seat_window
+    binary = _unleased_grok(tmp_path, monkeypatch)
+    seen = []
+    runner = _definition_runner(seen)
+    monkeypatch.setattr(pi, "run_provider", lambda argv, **kw: runner(argv, **kw))
+    rc = seat_window.cli_main(SimpleNamespace(action="probe-tools", model=None, effort="high"))
+    result = json.loads(capsys.readouterr().out)
+    forms = pi.grok_runtime_forms(model=None, effort="high")
+    assert (rc, result["status"]) == (0, "passed")
+    assert {row["route"]: row["passed"] for row in result["routes"]} == dict.fromkeys(forms, True)
+    assert {argv0 for argv0, _ in seen} == {str(binary)}
+    for command in forms.values():
+        assert pi.grok_tool_gate(command, {"PATH": str(binary.parent)})
