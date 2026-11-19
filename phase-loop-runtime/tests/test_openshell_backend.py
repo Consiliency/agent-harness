@@ -421,11 +421,18 @@ def test_pending_or_listed_release_retains_journal(pipeline, pending):
 
 def test_delayed_output_beyond_dispatch_bound(pipeline, monkeypatch):
     backend, endpoint, _, _, place, leases, *_ = pipeline
-    monkeypatch.setattr(sp, 'ANSWER_BOUND_S', 0.15)
-    endpoint.delay = 0.35
-    decision = place()
+    # ANSWER_BOUND_S bounds every request of the walk (reserve, create, status, execute),
+    # not just the output, so it must leave a loaded runner room to answer them
+    # (agent-harness#2000: 0.15 s did not). The output is then held back for twice the
+    # bound; asyncio.sleep never returns early, so load can only widen that gap.
+    bound = 1.0
+    monkeypatch.setattr(sp, 'ANSWER_BOUND_S', bound)
+    endpoint.delay = 2 * bound
+    decision = place(deadline=15)
+    assert decision.outcome == 'placed', decision.trail
     assert not decision.placement._launch_failed
     assert run(decision.placement).exit_status == 0
+    assert time.monotonic() - decision.placement._launched_at > bound
     assert endpoint.calls.count('exec') == 1
 
 
