@@ -10,6 +10,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 - Provider cleanup now waits for kernel-confirmed completion of its contained process tree
   (agent-harness#1994).
+- The agy release gate in `publish-pypi.yml` prepares the same host on every hosted runner
+  pool (agent-harness#1993). `ci/seat-caps-host.sh` delegates the user manager's controllers
+  and mounts a private loop-backed scratch filesystem for the automatic scratch paths, so
+  the per-seat caps' I/O device plan no longer depends on a pool's storage layout. Teardown
+  and an evidence upload run on every outcome. A per-check readiness report records which
+  readiness check fails, and the new `seat-caps-gate.yml` probe also validates that the I/O
+  bandwidth caps bind on the scratch device. The pull-request job timeout is 55 minutes so
+  that cleanup and evidence outlast the gate's own bounds. Strict conformance and runtime
+  caps behaviour are unchanged.
 
 ## [0.7.36] - Unreleased candidate
 

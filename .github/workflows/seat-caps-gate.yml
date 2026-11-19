@@ -1,0 +1,136 @@
+name: seat-caps-gate
+
+# Probe for the agy release gate's host preparation (agent-harness#1993). Six shards run
+# publish-pypi.yml's gate exactly as the release build does (the mirror is test-enforced by
+# test_seat_caps_gate_workflow_mirrors_the_release_gate), so one round lands on more than
+# one hosted runner pool. Each shard also runs the I/O enforcement validation on the
+# scratch device and uploads its evidence. A shard cannot choose its pool; coverage of
+# every pool is recorded from the uploaded evidence, not assumed.
+on:
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - 'ci/seat-caps-host.sh'
+      - '.github/workflows/seat-caps-gate.yml'
+      - '.github/workflows/publish-pypi.yml'
+      - 'phase-loop-runtime/scripts/seat_caps_*.py'
+      - 'phase-loop-runtime/src/phase_loop_runtime/seat_resource_caps*.py'
+      - 'phase-loop-runtime/src/phase_loop_runtime/sandbox_policy.py'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: seat caps gate probe (shard ${{ matrix.shard }})
+    runs-on: ubuntu-24.04  # the release build's image (publish-pypi.yml)
+    # Outlasts every step bound: 5 (setup) + 40 (gate) + 10 (validation) + 3 (teardown)
+    # + 5 (upload) + 2 (summary) = 65.
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install review sandbox prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap slirp4netns iptables util-linux
+          # Only this ephemeral CI runner: unshare must be allowed to create the
+          # user/network namespaces whose enforcement the integration tests prove.
+          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          bwrap --unshare-user --unshare-pid --ro-bind / / -- /bin/true
+          unshare --net --map-root-user true
+      - name: agy release gate (strict conformance and --release, AGYROLL §3.3-§3.4)
+        # agent-harness#1008 R1. Before the build, `--release` runs the contract, then EXECUTES
+        # the strict conformance suite itself (AGY_CONFORMANCE_STRICT=1) and accepts only the
+        # report that run just wrote (agent-harness#1937 re-check M4), then verifies every
+        # member's official archive. The driver launches its provider through the per-seat
+        # resource caps (agent-harness#1895), which need a systemd user manager that delegates
+        # cpu, cpuset, io, memory and pids, and a whole block device under the automatic
+        # scratch paths (docs/seat-resource-caps.md). ci/seat-caps-host.sh gives this
+        # ephemeral runner exactly those host prerequisites: the delegation, and a private
+        # loop-backed scratch filesystem that is the same on every runner pool
+        # (agent-harness#1993). The verifier runs inside that manager, as on a seat host.
+        # Nothing about the caps is faked or relaxed. The readiness reports are diagnostics
+        # only; the verifier alone decides this step. The environment, reports and evidence
+        # live under $RUNNER_TEMP, never in the tree the build packages. Every command has
+        # its own bound, and their sum stays inside this step's timeout.
+        timeout-minutes: 40
+        env:
+          UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/agy-conformance-venv
+        run: |
+          python -m pip install uv
+          mkdir -p -m 0700 "$RUNNER_TEMP/agy-conformance"
+          (cd phase-loop-runtime && PYTHONDONTWRITEBYTECODE=1 uv sync --locked --group test --no-install-project)
+          host="$GITHUB_WORKSPACE/ci/seat-caps-host.sh"
+          py="$UV_PROJECT_ENVIRONMENT/bin/python"
+          report="$GITHUB_WORKSPACE/phase-loop-runtime/scripts/seat_caps_readiness_report.py"
+          evidence="$RUNNER_TEMP/seat-caps-evidence"
+          after_failure() {
+            "$host" context -- timeout 60 "$py" "$report" --label "host-context-after-$1-failure" \
+              --out "$evidence/host-context-after-$1-failure.jsonl"
+            exit 1
+          }
+          "$host" context -- timeout 60 "$py" "$report" --label host-context \
+            --out "$evidence/host-context.jsonl"
+          timeout -k 15 180 "$host" delegate || after_failure delegate
+          "$host" run --baseline -- timeout 60 "$py" "$report" --label baseline \
+            --out "$evidence/baseline.jsonl" || echo "::warning::the baseline readiness report did not run"
+          timeout -k 15 240 "$host" provision || after_failure provision
+          cd phase-loop-runtime
+          "$host" run -- timeout 60 "$py" "$report" --label provisioned \
+            --out "$evidence/provisioned.jsonl" || echo "::warning::the provisioned readiness report did not run"
+          majmin="$("$host" majmin)"
+          "$host" run -- timeout 60 "$py" "$report" --label provisioned-assert \
+            --out "$evidence/provisioned-assert.jsonl" --expect-device "$majmin"
+          env -u XDG_RUNTIME_DIR -u DBUS_SESSION_BUS_ADDRESS \
+            "$host" run -- timeout 1200 "$py" scripts/verify_qualified_agy_image.py \
+            --release --conformance-report "$RUNNER_TEMP/agy-conformance/conformance.xml"
+      - name: Seat caps enforcement validation
+        # Real direct I/O through the production capped launch path on the scratch device
+        # (phase-loop-runtime/scripts/seat_caps_loop_validation.py). A step starts in the
+        # workspace root, so the directory and every path here are explicit.
+        timeout-minutes: 10
+        working-directory: phase-loop-runtime
+        env:
+          UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/agy-conformance-venv
+        run: |
+          host="$GITHUB_WORKSPACE/ci/seat-caps-host.sh"
+          majmin="$("$host" majmin)"
+          "$host" run -- timeout 540 "$UV_PROJECT_ENVIRONMENT/bin/python" \
+            "$GITHUB_WORKSPACE/phase-loop-runtime/scripts/seat_caps_loop_validation.py" \
+            --majmin "$majmin" --out "$RUNNER_TEMP/seat-caps-evidence" \
+            --deadline 480 --child-timeout 120
+      - name: Seat caps scratch teardown
+        # Always: stops leftover units, unmounts without forcing, and detaches only the
+        # device this job attached. A busy or leaked scratch fails the job before the build.
+        if: always()
+        timeout-minutes: 3
+        run: '"$GITHUB_WORKSPACE/ci/seat-caps-host.sh" teardown'
+      - name: Upload seat caps evidence
+        if: always()
+        timeout-minutes: 5
+        uses: actions/upload-artifact@v4
+        with:
+          name: seat-caps-evidence-${{ matrix.shard }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/seat-caps-evidence/
+            ${{ runner.temp }}/agy-conformance/conformance.xml
+          if-no-files-found: warn
+      - name: Seat caps summary
+        if: always()
+        timeout-minutes: 2
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python \
+            "$GITHUB_WORKSPACE/phase-loop-runtime/scripts/seat_caps_readiness_report.py" \
+            --summarize "$RUNNER_TEMP/seat-caps-evidence" >>"$GITHUB_STEP_SUMMARY"
