@@ -6204,9 +6204,9 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
         unshares_pid = _owner_unshares_pid(process_owner)
         witness = (_tree_proof.BwrapLaunch() if unshares_pid and "--info-fd" not in prefix
                    else None)
-        command = [*prefix, *argv] if witness is None else [
-            *_with_bwrap_lifecycle_fds(prefix, witness.info_fd, witness.block_fd), *argv]
         try:
+            command = [*prefix, *argv] if witness is None else [
+                *_with_bwrap_lifecycle_fds(prefix, witness.info_fd, witness.block_fd), *argv]
             process = subprocess.Popen(
                 command, **(kwargs if witness is None else witness.popen_kwargs(kwargs)))
         except BaseException:
@@ -9511,9 +9511,17 @@ def _owner_unshares_pid(process_owner) -> bool:
 
 
 def _with_bwrap_lifecycle_fds(prefix: Sequence[str], info_fd: int, block_fd: int) -> list[str]:
-    """Insert ``--info-fd``/``--block-fd`` right after the owner's bwrap executable."""
+    """Insert ``--info-fd``/``--block-fd`` right after the owner's bwrap executable.
+
+    ``_compose_launch_prefix`` accepts only an owner starting with ``/usr/bin/bwrap`` and
+    splices it in once; a composed prefix without exactly that one element cannot be
+    witnessed, so the launch is refused.
+    """
     composed = list(prefix)
-    index = composed.index("/usr/bin/bwrap")
+    positions = [index for index, item in enumerate(composed) if item == "/usr/bin/bwrap"]
+    if len(positions) != 1:
+        raise _sandbox_egress.SeatIdentityUnverified("seat_owner_unavailable")
+    index = positions[0]
     composed[index + 1:index + 1] = ["--info-fd", str(info_fd), "--block-fd", str(block_fd)]
     return composed
 

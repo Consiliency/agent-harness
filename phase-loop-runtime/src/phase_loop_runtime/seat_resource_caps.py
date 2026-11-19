@@ -15,9 +15,10 @@ import select
 import stat
 import subprocess
 import threading
-from typing import Literal, Sequence
+from typing import TYPE_CHECKING, Literal, Sequence
 
-from . import provider_tree_proof as _tree_proof
+if TYPE_CHECKING:
+    from . import provider_tree_proof as _tree_proof
 
 
 SCHEMA = "seat_resource_caps.v1"
@@ -572,6 +573,7 @@ def _systemctl_kill_fallback(unit: str):
     argv = [str(_SYSTEMCTL), "--user", "kill", "--signal=SIGKILL", unit]
 
     def fallback(timeout: float) -> None:
+        from . import provider_tree_proof as _tree_proof
         _tree_proof.run_bounded(argv, timeout, env=manager_env)
 
     return fallback
@@ -584,6 +586,9 @@ def _witness_scope(pid: int, parent_unit: str, child_unit: str) -> _tree_proof.T
     path must be exactly the generated scope below the seat slice, before and after the
     descriptors are opened, and the scope must read ``populated 1``.
     """
+    # Imported here, not at module level: the jail profile digest's import graph (which
+    # loads this module) stays exactly its declared sources.
+    from . import provider_tree_proof as _tree_proof
     scope = _seat_slice_chain(parent_unit)[-1] / child_unit
     expected = "/" + scope.relative_to(_CGROUP_ROOT).as_posix()
     first = _proc_cgroup_of(pid)
@@ -744,6 +749,7 @@ def capped_popen(command, *, seat_key: str, **popen_kwargs) -> "subprocess.Popen
             suffix = f"; {detail}" if detail else ""
             _refuse(f"the child did not attest its effective caps{suffix}")
         os.close(diagnostic_read)
+        from . import provider_tree_proof as _tree_proof
         try:
             proof = _witness_scope(process.pid, parent.unit, child_unit)
             _tree_proof.attach(process, proof)

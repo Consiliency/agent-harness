@@ -195,7 +195,7 @@ def test_the_target_never_runs_before_the_gate_opens(monkeypatch, tmp_path, isol
         return real_attach(proc, proof)
 
     _patch(monkeypatch, caps, "os", write=write)
-    monkeypatch.setattr(caps._tree_proof, "attach", attach)
+    monkeypatch.setattr(tp, "attach", attach)
     result = {}
 
     def run():
@@ -1542,3 +1542,21 @@ def test_cleanup_before_the_profile_admits_leaves_the_proof_unknown(
         assert proof.adopt_init(os.pidfd_open(os.getpid())) is False
     finally:
         _reap(process)
+
+
+def test_an_owned_launch_without_its_bwrap_in_the_prefix_is_refused_and_releases_its_gate(
+        monkeypatch):
+    monkeypatch.setattr(panel, "_probes_seat", lambda *args, **kwargs: False)
+    monkeypatch.setattr(panel, "_compose_launch_prefix",
+                        lambda cwd, owner=(), retain_caps=(): ["/bin/true"])
+    started = []
+    _patch(monkeypatch, panel, "subprocess",
+           Popen=lambda *args, **kwargs: started.append(args))
+    held = set(tp._HELD_GATES)
+    baseline = _fd_count()
+    with pytest.raises(panel._sandbox_egress.SeatIdentityUnverified, match="seat_owner_unavailable"):
+        panel.launch_provider(["profile-command"],
+                              process_owner=["/usr/bin/bwrap", "--unshare-pid", "--"])
+    assert not started
+    assert set(tp._HELD_GATES) == held
+    assert _fd_count() == baseline
