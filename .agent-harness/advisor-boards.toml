@@ -2,8 +2,8 @@
 # phase_loop_runtime.advisor_board.config.load_president_ladder).
 #
 # The president fallback order for landings in THIS repository, first rung first.
-# Rungs are review-seat aliases: fable = Opus 5.5 (claude-opus-5-5), sol = Astra
-# (gpt-6-astra), grok = Grok 4.7, gemini = Gemini 4 Argon (gemini-4-argon).
+# Rungs are review-seat aliases: fable = Opus 5.5 (claude-opus-5-5), sol = Astra 6.2
+# (gpt-6.2-astra), grok = Grok 4.7, gemini = Gemini 4 Argon (gemini-4-argon).
 # Precedence: built-in PRESIDENT_LADDER < user
 # $XDG_CONFIG_HOME/agent-harness/advisor-boards.toml [president] < this file.
 [president]

@@ -1,7 +1,7 @@
 """The 0.7.27 implementer roster (maintainer ruling 2026-10-14).
 
 Implementation (execute / repair, the ``implementer`` class) runs on
-``gemini-3.8-flash`` at high, ``gpt-6.1-sol`` at medium, ``claude-sonnet-5-5`` at
+``gemini-3.8-flash`` at high, ``gpt-6.2-sol`` at medium (Sol 6.1 until 2026-11-19), ``claude-sonnet-5-5`` at
 medium and ``grok-4.7`` at high. The Gemini worker runs ``gemini-3.8-flash-high``.
 The roster must hold on BOTH resolution paths -- the executor defaults
 (``resolve_profile_for_executor``) and the runner's shipped model policy -- and must be
@@ -24,13 +24,13 @@ from phase_loop_runtime.prompts import build_prompt
 
 ROSTER = {  # model-id-source: test pins the 0.7.27 implementer roster under test
     "gemini": ("gemini-3.8-flash", "high"),
-    "codex": ("gpt-6.1-sol", "medium"),
+    "codex": ("gpt-6.2-sol", "medium"),
     "claude": ("claude-sonnet-5-5", "medium"),
     "grok": ("grok-4.7", "high"),
 }
 ARGV = {  # model-id-source: test pins the rendered provider argv
     "gemini": ["--model", "gemini-3.8-flash-high"],
-    "codex": ["--model", "gpt-6.1-sol", "-c", 'model_reasoning_effort="medium"'],
+    "codex": ["--model", "gpt-6.2-sol", "-c", 'model_reasoning_effort="medium"'],
     "claude": ["--model", "claude-sonnet-5-5", "--effort", "medium"],
     "grok": ["-m", "grok-4.7", "--reasoning-effort", "high"],
 }
@@ -86,7 +86,7 @@ def test_planner_and_reviewer_classes_are_unchanged_by_the_roster():
     assert profiles.resolve_model_class("gemini", "planner") == "gemini-4-argon"
     assert profiles.resolve_model_class("gemini", "reviewer") == "gemini-4-argon"
     assert profiles.resolve_model_class("claude", "planner") == "claude-opus-5"
-    assert profiles.resolve_model_class("codex", "planner") == "gpt-6-astra"
+    assert profiles.resolve_model_class("codex", "planner") == "gpt-6.2-astra"
 
 
 def test_workers():
@@ -107,8 +107,8 @@ def test_execute_launch_argv_carries_the_roster(executor, monkeypatch):
 @pytest.mark.parametrize(("executor", "action", "expected"), [
     ("gemini", "plan", ("gemini-4-argon", "high")),
     ("gemini", "review", ("gemini-4-argon", "high")),
-    ("codex", "plan", ("gpt-6-astra", "high")),
-    ("codex", "review", ("gpt-6-astra", "high")),
+    ("codex", "plan", ("gpt-6.2-astra", "high")),
+    ("codex", "review", ("gpt-6.2-astra", "high")),
     ("claude", "plan", ("claude-opus-5", "max")),
     ("claude", "review", ("claude-opus-5-5", "max")),
     ("grok", "plan", ("grok-4.7", "high")),
@@ -188,7 +188,7 @@ def test_executor_defaults_and_shipped_policy_agree(executor, action):
 
 @pytest.mark.parametrize(("executor", "expected"), [
     ("claude", ("claude-opus-5", "high")),
-    ("codex", ("gpt-6-astra", "high")),
+    ("codex", ("gpt-6.2-astra", "high")),
 ])
 def test_governed_repair_escalation_keeps_the_shipped_high_effort(executor, expected, tmp_path):
     # A governed repair that escalates to the planner class keeps main's shipped `high`

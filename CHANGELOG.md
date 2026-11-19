@@ -6,6 +6,20 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Changed
+
+- The OpenAI defaults move to GPT-6.2. Codex roadmap, plan and review, `skill-maintenance`
+  and the `command` executor's default profile use `gpt-6.2-astra`, which is also the
+  OpenAI seat on the panel leg, the `default` and `code-review` boards and every named
+  preset, with unchanged effort and lens. That seat keeps its frozen review alias `sol`, so
+  the president's `sol` rung now resolves to `gpt-6.2-astra`. Codex execute and repair use
+  `gpt-6.2-sol` at medium. `gpt-6-astra` and `gpt-6.1-sol` stay registered and answer to
+  `sol`, so explicit seats keep working and the change reverts cleanly. `gpt-6.2-sol` is
+  also an accepted explicit seat. The opencode, Gemini, Claude and Grok defaults are
+  unchanged. The agy validator's source-closure pin moves because the model registry
+  gained two rows (only `advisor_board.registries:_MODEL_DEFS` changed); the validator
+  identity and its verdict vector are unchanged.
+
 ### Fixed
 
 - Provider cleanup now waits for kernel-confirmed completion of its contained process tree

@@ -162,11 +162,11 @@ class PopulatedRegistryTests(unittest.TestCase):
         inv = render_seat_invocation("codex", "gpt-6-sol", "max")
         self.assertEqual((inv.model, inv.effort_args), ("gpt-6-sol", ("-c", "model_reasoning_effort=xhigh")))
         # registration only: the codex seat default is unchanged
-        self.assertEqual(DEFAULT_LEG_MODELS["codex"], "gpt-6-astra")
+        self.assertEqual(DEFAULT_LEG_MODELS["codex"], "gpt-6.2-astra")
 
     def test_gpt_6_1_sol_is_an_explicit_codex_seat_not_a_default(self) -> None:
         # Registration only (agent-harness#1172): a board config may seat gpt-6.1-sol;
-        # every shipped default stays gpt-6-astra until the model roster moves it.
+        # it was the codex implementer until 2026-11-19 and no shipped board default names it.
         from phase_loop_runtime import profiles
         from phase_loop_runtime.advisor_board import DEFAULT_MODEL_REGISTRY
         from phase_loop_runtime.advisor_board.backing import HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES
@@ -180,10 +180,10 @@ class PopulatedRegistryTests(unittest.TestCase):
         self.assertEqual(DEFAULT_REVIEW_SEAT_ALIASES["gpt-6.1-sol"], "sol")
         inv = render_seat_invocation("codex", "gpt-6.1-sol", "max")
         self.assertEqual((inv.model, inv.effort_args), ("gpt-6.1-sol", ("-c", "model_reasoning_effort=xhigh")))
-        self.assertEqual(DEFAULT_LEG_MODELS["codex"], "gpt-6-astra")
-        self.assertEqual(HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["codex"], "gpt-6-astra")
+        self.assertEqual(DEFAULT_LEG_MODELS["codex"], "gpt-6.2-astra")
+        self.assertEqual(HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["codex"], "gpt-6.2-astra")
         self.assertNotIn("gpt-6.1-sol", {s.model for board in PRESETS.values() for s in board.seats})
-        self.assertEqual(profiles.OPENAI_HEAVY_MODEL, "gpt-6-astra")
+        self.assertEqual(profiles.OPENAI_HEAVY_MODEL, "gpt-6.2-astra")
 
     def test_claude_sonnet_5_5_is_an_explicit_claude_seat_not_a_default(self) -> None:
         # A board config may seat claude-sonnet-5-5; no board default or preset names it.
