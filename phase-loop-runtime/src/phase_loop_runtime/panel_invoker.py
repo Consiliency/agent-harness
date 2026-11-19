@@ -15156,6 +15156,38 @@ def _grok_binary_identity(command, env=None):
     return str(resolved), sha256(resolved.read_bytes()).hexdigest()
 
 
+def _grok_probe_identity(command, env):
+    """``(path, digest, state)`` of the executable a tool probe measures, read through one
+    descriptor so the digest is of exactly the file whose state is reported.
+
+    ``state`` is (device, inode, size, mtime, ctime). A write to the file, or a rename or
+    relink of it, changes it, so equal states before and after the probe runs mean the file
+    at that path was not replaced in between, even if it was restored afterwards. Outside
+    this bound: a directory on the path swapped and restored within the window, or an actor
+    able to reset ctime. A strict same-image guarantee would need the probe to execute an
+    immutable snapshot (such as the held subject of an executable-dependency session); it
+    executes the measured path."""
+    from .executable_dependency_startup import current_dependency_for_provider
+    dependency = current_dependency_for_provider(command=command)
+    executable = dependency.subject_source if dependency is not None else _seat_provider_source(command[0], env)[1]
+    resolved = Path(executable).resolve(strict=True)
+    descriptor = os.open(resolved, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("grok executable is not a regular file")
+        digest = sha256()
+        while chunk := os.read(descriptor, 1 << 20):
+            digest.update(chunk)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    state = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+    if state != (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns):
+        raise ValueError("grok executable changed while it was measured")
+    return str(resolved), digest.hexdigest(), state
+
+
 def require_grok_admission(argv, env=None) -> bool:
     """The shared Grok launch gate. True when ``argv`` is a Grok launch it admitted."""
     if not argv or Path(argv[0]).name != "grok" or _grok_admin_command(argv):
@@ -15199,14 +15231,28 @@ def _grok_argv_digest(command):
     return sha256(json.dumps(form, separators=(",", ":")).encode()).hexdigest()
 
 
-def record_tool_probe(command, definitions, *, allowed_tools, version="unavailable", env=None):
+def record_tool_probe(command, definitions, *, allowed_tools, version="unavailable", env=None,
+                      probed=None):
+    """Write the tool-probe receipt. ``probed`` is the ``_grok_probe_identity`` the probe
+    measured: the receipt certifies that digest, never one chosen afresh here, and a fresh
+    measurement that differs from it at publication refuses."""
     from .president_adapter import write_private_record
-    try:
-        # Without a bound dependency lease the binary is found on ``env``'s PATH; the
-        # operator CLI has neither a lease nor a launch env, so it defaults to this process's.
-        _, binary = _grok_binary_identity(command, os.environ if env is None else env)
-    except (OSError, ValueError, RuntimeError):
-        binary = "0" * 64
+    # Without a bound dependency lease the binary is found on ``env``'s PATH; the operator
+    # CLI has neither a lease nor a launch env, so it defaults to this process's.
+    env = os.environ if env is None else env
+    if probed is not None:
+        binary = probed[1]
+        try:
+            current = _grok_probe_identity(command, env)
+        except (OSError, ValueError, RuntimeError):
+            current = None
+        if current != probed:
+            definitions = None
+    else:
+        try:
+            _, binary = _grok_binary_identity(command, env)
+        except (OSError, ValueError, RuntimeError):
+            binary = "0" * 64
     offered = definitions.get("tools") if type(definitions) is dict else None
     passed = (_grok_tools_admitted(command, offered, allowed_tools) and (bool(offered) or not allowed_tools)
               and definitions.get("diagnostics") == [] and binary != "0" * 64
@@ -15277,11 +15323,12 @@ def probe_grok_tools(command, *, allowed_tools, runner=None):
             child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE, **kw)
     definitions = None
     version = "unavailable"
-    env = None
+    env = probed = None
     try:
         # The binary is resolved on the same environment it is run with.
         env = _subscription_env()
-        binary, digest = _grok_binary_identity(command, env)
+        probed = _grok_probe_identity(command, env)
+        binary = probed[0]
         with tempfile.TemporaryDirectory(prefix="pl-tools-definition-") as directory:
             options = dict(cwd=directory, capture_output=True, text=True, timeout=30,
                            stdin=subprocess.DEVNULL, env=env)
@@ -15303,11 +15350,14 @@ def probe_grok_tools(command, *, allowed_tools, runner=None):
                         and not version_result.stderr and version_result.stdout.strip()):
                     definitions = json.loads(result.stdout)
                     version = version_result.stdout
-        if _grok_binary_identity(command, env)[1] != digest:
+        if _grok_probe_identity(command, env) != probed:
             definitions = None
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
-        pass
-    return record_tool_probe(command, definitions, allowed_tools=allowed_tools, version=version, env=env)
+        definitions = None
+    if probed is None:
+        return {"passed": False, "public_code": "grok_tool_surface_unverified"}
+    return record_tool_probe(command, definitions, allowed_tools=allowed_tools, version=version,
+                             env=env, probed=probed)
 
 
 @_retained_leg_exec

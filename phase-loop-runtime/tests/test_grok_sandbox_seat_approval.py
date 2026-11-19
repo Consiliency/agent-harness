@@ -155,6 +155,7 @@ def test_seats_firstseat_tool_surface_workflow_route(tmp_path, monkeypatch):
 def test_seats_firstseat_tool_surface_probe(tmp_path, monkeypatch, failure):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(pi, "_grok_binary_identity", lambda *a: ("/fixture/grok", "1" * 64))
+    monkeypatch.setattr(pi, "_grok_probe_identity", lambda *a: ("/fixture/grok", "1" * 64, ("fixture-state",)))
     calls = []
     def runner(argv, **options):
         assert not list(Path(options["cwd"]).iterdir())
@@ -246,6 +247,7 @@ def test_seats_firstseat_tool_surface_president(tmp_path, monkeypatch, passing):
 def test_seats_firstseat_tool_surface_probe_controls(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(pi, "_grok_binary_identity", lambda *a: ("/fixture/grok", "1" * 64))
+    monkeypatch.setattr(pi, "_grok_probe_identity", lambda *a: ("/fixture/grok", "1" * 64, ("fixture-state",)))
     def runner(argv, **options):
         if argv[-1] == "--help":
             return subprocess.CompletedProcess(argv, 0, "--list-tools Print tool definitions without running a model", "")
@@ -583,3 +585,59 @@ def test_seat_window_probe_tools_cli_without_a_lease(tmp_path, monkeypatch, caps
     assert {argv0 for argv0, _ in seen} == {str(binary)}
     for command in forms.values():
         assert pi.grok_tool_gate(command, {"PATH": str(binary.parent)})
+
+
+def test_a_replacement_before_receipt_publication_is_not_certified(tmp_path, monkeypatch):
+    """The probe validated binary A; A is replaced by B after that final validation and before
+    the receipt is published. The receipt must not certify B: the writer used to re-resolve
+    and re-hash the executable itself, so B got A's passing definitions and the launch gate
+    admitted a binary that was never probed."""
+    binary = _unleased_grok(tmp_path, monkeypatch)
+    command = ["grok", "-p", "fixture", "--tools", "fixture_read"]
+    seat_env = {"PATH": str(binary.parent)}
+    replacement = tmp_path / "replacement"
+    replacement.write_bytes(b"\x7fELFfixture-never-probed")
+    replacement.chmod(0o700)
+    publish = pi.record_tool_probe
+
+    def replaced_then_published(*args, **kwargs):
+        os.replace(replacement, binary)
+        return publish(*args, **kwargs)
+
+    monkeypatch.setattr(pi, "record_tool_probe", replaced_then_published)
+    seen = []
+    receipt = pi.probe_grok_tools(command, allowed_tools={"fixture_read"}, runner=_definition_runner(seen))
+    assert {argv0 for argv0, _ in seen} == {str(binary)}
+    assert not receipt["passed"]
+    assert receipt["public_code"] == "grok_tool_surface_unverified"
+    assert not pi.grok_tool_gate(command, seat_env)
+
+
+def test_a_replacement_restored_during_the_probe_is_refused(tmp_path, monkeypatch):
+    """A is swapped for B while the probe runs and restored before the final check (A->B->A).
+    The content digest is equal before and after, so only the file's state shows it."""
+    binary = _unleased_grok(tmp_path, monkeypatch)
+    original = binary.read_bytes()
+    os.utime(binary, ns=(1_000_000_000 * 10**9, 1_000_000_000 * 10**9))
+    command = ["grok", "-p", "fixture", "--tools", "fixture_read"]
+    seen = []
+    answer = _definition_runner(seen)
+
+    def runner(argv, **options):
+        if "--list-tools" in argv:
+            binary.write_bytes(b"\x7fELFfixture-swapped-in")
+            binary.write_bytes(original)
+        return answer(argv, **options)
+
+    receipt = pi.probe_grok_tools(command, allowed_tools={"fixture_read"}, runner=runner)
+    assert binary.read_bytes() == original
+    assert not receipt["passed"]
+    assert not pi.grok_tool_gate(command, {"PATH": str(binary.parent)})
+
+
+def test_probe_identity_refuses_a_non_regular_executable(tmp_path, monkeypatch):
+    binary = _unleased_grok(tmp_path, monkeypatch)
+    binary.unlink()
+    os.mkfifo(binary, 0o700)
+    with pytest.raises((OSError, ValueError)):
+        pi._grok_probe_identity(["grok"], dict(os.environ))

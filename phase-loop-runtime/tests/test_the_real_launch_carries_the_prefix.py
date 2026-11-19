@@ -376,6 +376,7 @@ def test_definition_probe_executes_the_owner_prefix(tmp_path, monkeypatch):
             yield owned
     monkeypatch.setattr(panel_invoker, "_seat_command_profile", profile)
     monkeypatch.setattr(panel_invoker, "_grok_binary_identity", lambda *a: ("/fixture/grok", "1" * 64))
+    monkeypatch.setattr(panel_invoker, "_grok_probe_identity", lambda *a: ("/fixture/grok", "1" * 64, ("fixture-state",)))
     with _filtered_marker(marker, monkeypatch, administrative=True) as processes:
         assert panel_invoker.probe_grok_tools(["grok", "--tools", "fixture_read"],
                                              allowed_tools={"fixture_read"})["passed"]
