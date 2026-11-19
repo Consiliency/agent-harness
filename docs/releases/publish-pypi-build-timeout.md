@@ -83,6 +83,7 @@ verifier's own wrapper is 1200 s; its inner suite run is bounded at 900 s, again
 measured 104-141 s). With five minutes for checkout, Python and the sandbox prerequisites,
 3 for teardown and 5 for the upload, the pull-request job needs 53 minutes and is set to
 55. `test_every_gate_bound_fits_inside_the_job_so_cleanup_and_evidence_still_run` keeps
-these numbers consistent. Measured pull-request runs are unchanged by this: the bound only
+these numbers consistent. The five setup minutes are an allowance, not an enforced
+bound: a wedged setup step can still exhaust the job. Measured pull-request runs are unchanged by this: the bound only
 decides when a wedged gate is reported, now with its evidence. The tag and dispatch bound
 stays 140, which already covers the same steps plus the full Gate A suite.

@@ -2,10 +2,11 @@ name: seat-caps-gate
 
 # Probe for the agy release gate's host preparation (agent-harness#1993). Six shards run
 # publish-pypi.yml's gate exactly as the release build does (the mirror is test-enforced by
-# test_seat_caps_gate_workflow_mirrors_the_release_gate), so one round lands on more than
-# one hosted runner pool. Each shard also runs the I/O enforcement validation on the
-# scratch device and uploads its evidence. A shard cannot choose its pool; coverage of
-# every pool is recorded from the uploaded evidence, not assumed.
+# test_seat_caps_gate_workflow_mirrors_the_release_gate). A round samples six hosted
+# runners; it cannot choose a pool and does not guarantee more than one. Each shard also
+# runs the I/O enforcement validation on the scratch device and uploads its evidence.
+# Classify each shard's cloud from its job log's "Runner Image Provisioner" header; the
+# recorded sys_vendor only corroborates it. Pool coverage is recorded, never assumed.
 on:
   workflow_dispatch: {}
   pull_request:

@@ -383,14 +383,33 @@ unmount_scratch() {
   return 1
 }
 
-owned_loops() {
-  # The recorded device, plus any device attached to the recorded image (an attach
-  # whose record line was never written). Only these are ever detached.
-  local loop=$1 image_rec=$2
-  [ -n "$loop" ] && printf '%s\n' "$loop"
-  if [ -n "$image_rec" ]; then
-    losetup -nO NAME -j "$image_rec" 2>/dev/null || true
-  fi
+# Every attached loop device with its backing file, one "NAME BACK-FILE" line each.
+# Fails when the query fails: an unreadable table is unknown state, never "not attached".
+loop_table() {
+  losetup --list --noheadings --output NAME,BACK-FILE
+}
+
+# The backing file of $1 in table $2, or nothing when $1 is not listed (detached).
+table_back() {
+  local name back
+  while read -r name back; do
+    if [ "$name" = "$1" ]; then
+      printf '%s' "${back%"${back##*[![:space:]]}"}"
+      return 0
+    fi
+  done <<<"$2"
+  return 0
+}
+
+# Devices in table $1 whose backing file is $2: attaches whose record line was never written.
+table_attached_to() {
+  local name back
+  [ -n "$2" ] || return 0
+  while read -r name back; do
+    back="${back%"${back##*[![:space:]]}"}"
+    [ -n "$name" ] && [ "$back" = "$2" ] && printf '%s\n' "$name"
+  done <<<"$1"
+  return 0
 }
 
 # Undo whatever the state file records, in reverse order. Safe for every prefix of
@@ -419,29 +438,50 @@ teardown_core() {
       return 1
     fi
   fi
-  local device back seen=" "
-  while read -r device; do
-    [ -n "$device" ] || continue
-    case "$seen" in *" $device "*) continue ;; esac
-    seen="$seen$device "
-    back="$(losetup -nO BACK-FILE "$device" 2>/dev/null || true)"
-    back="${back%"${back##*[![:space:]]}"}"
-    if [ -z "$back" ]; then
-      note "$device is not attached"
-    elif [ "$back" = "$image_rec" ]; then
-      if ! sudo losetup -d "$device"; then
-        fail "could not detach $device"
+  # Only a device whose backing file is the recorded image is ever detached. The image
+  # is deleted only once a successful query shows no device attached to it, so a failed
+  # query or detach keeps the image, the state file and the evidence for another attempt.
+  local table devices device back seen=" " attachments_clear=0
+  if ! table="$(loop_table)"; then
+    fail "could not list attached loop devices; the scratch attachment state is unknown"
+    rc=1
+  else
+    devices="$( [ -n "$loop" ] && printf '%s\n' "$loop"; table_attached_to "$table" "$image_rec")"
+    while read -r device; do
+      [ -n "$device" ] || continue
+      case "$seen" in *" $device "*) continue ;; esac
+      seen="$seen$device "
+      back="$(table_back "$device" "$table")"
+      if [ -z "$back" ]; then
+        note "$device is not attached"
+      elif [ "$back" = "$image_rec" ]; then
+        if ! sudo losetup -d "$device"; then
+          fail "could not detach $device"
+          rc=1
+        fi
+      else
+        fail "$device is backed by '$back', not '$image_rec'; leaving it attached"
         rc=1
       fi
-    else
-      fail "$device is backed by '$back', not '$image_rec'; leaving it attached"
-      rc=1
+    done <<<"$devices"
+    if [ "$rc" -eq 0 ] && [ -n "$image_rec" ]; then
+      if ! table="$(loop_table)"; then
+        fail "could not confirm that $image_rec is detached; the scratch attachment state is unknown"
+        rc=1
+      elif [ -n "$(table_attached_to "$table" "$image_rec")" ]; then
+        fail "$image_rec is still attached after detach: $(table_attached_to "$table" "$image_rec" | tr '\n' ' ')"
+        rc=1
+      else
+        attachments_clear=1
+      fi
+    elif [ "$rc" -eq 0 ]; then
+      attachments_clear=1
     fi
-  done < <(owned_loops "$loop" "$image_rec")
+  fi
   if [ -n "$mountdir" ] && [ -d "$mountdir" ]; then
     rmdir "$mountdir" || { fail "could not remove $mountdir"; rc=1; }
   fi
-  if [ -n "$image_rec" ]; then
+  if [ -n "$image_rec" ] && [ "$attachments_clear" = 1 ]; then
     rm -f "$image_rec" || { fail "could not remove $image_rec"; rc=1; }
   fi
   if [ "$rc" -eq 0 ]; then
@@ -451,7 +491,7 @@ teardown_core() {
   if [ "$rc" -eq 0 ]; then
     note "teardown complete"
   else
-    note "teardown incomplete; $state is kept"
+    note "teardown incomplete; $state and the recorded image are kept"
   fi
   return "$rc"
 }

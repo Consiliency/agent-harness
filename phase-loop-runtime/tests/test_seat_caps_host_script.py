@@ -36,11 +36,30 @@ exec "$@"
 ''',
     "losetup": r'''
 loops="$FAKE_STATE/loops"; mkdir -p "$loops"
+# FAKE_LOSETUP_QUERY_FAIL: "all" fails every query; "after1" fails every query after the first.
+query_fails() {
+  case "${FAKE_LOSETUP_QUERY_FAIL:-}" in
+    all) return 0 ;;
+    after1)
+      n=$(cat "$FAKE_STATE/queries" 2>/dev/null || echo 0); n=$((n + 1))
+      echo "$n" > "$FAKE_STATE/queries"; [ "$n" -gt 1 ] ;;
+    *) return 1 ;;
+  esac
+}
 case "$*" in
-  "--find --show "*) img="$3"; echo "$img" > "$loops/loop7"; echo /dev/loop7 ;;
-  "-nO BACK-FILE "*) f="$loops/$(basename "$3")"; [ -f "$f" ] || exit 1; cat "$f" ;;
-  "-nO NAME -j "*) for f in "$loops"/*; do [ -f "$f" ] && [ "$(cat "$f")" = "$4" ] && echo "/dev/$(basename "$f")"; done; exit 0 ;;
-  "-d "*) rm -f "$loops/$(basename "$2")" ;;
+  "--find --show "*)
+    [ -n "${FAKE_LOSETUP_ATTACH_FAIL:-}" ] && exit 1
+    img="$3"; echo "$img" > "$loops/loop7"; echo /dev/loop7 ;;
+  "--list --noheadings --output NAME,BACK-FILE")
+    query_fails && { echo "losetup: cannot list devices" >&2; exit 1; }
+    for f in "$loops"/*; do [ -f "$f" ] && printf '/dev/%s %s  \n' "$(basename "$f")" "$(cat "$f")"; done
+    exit 0 ;;
+  "-nO BACK-FILE "*) query_fails && exit 1; f="$loops/$(basename "$3")"; [ -f "$f" ] || exit 1; cat "$f" ;;
+  "-nO NAME -j "*) query_fails && exit 1; for f in "$loops"/*; do [ -f "$f" ] && [ "$(cat "$f")" = "$4" ] && echo "/dev/$(basename "$f")"; done; exit 0 ;;
+  "-d "*)
+    [ -n "${FAKE_LOSETUP_DETACH_FAIL:-}" ] && { echo "losetup: detach failed" >&2; exit 1; }
+    [ -n "${FAKE_LOSETUP_DETACH_NOOP:-}" ] && exit 0
+    rm -f "$loops/$(basename "$2")" ;;
   "--json --list "*) echo '{}' ;;
   *) echo "unexpected losetup $*" >&2; exit 99 ;;
 esac
@@ -228,7 +247,7 @@ def test_provision_records_every_step_and_leaves_the_device_mounted(world):
 
 
 @pytest.mark.parametrize("env", [
-    {"FAKE_FAIL": "truncate"}, {"FAKE_FAIL": "losetup"}, {"FAKE_FAIL": "lsblk"},
+    {"FAKE_FAIL": "truncate"}, {"FAKE_LOSETUP_ATTACH_FAIL": "1"}, {"FAKE_FAIL": "lsblk"},
     {"FAKE_FAIL": "mkfs.ext4"}, {"FAKE_FAIL": "mount"}, {"FAKE_FAIL": "chown"},
     {"FAKE_FSTYPE": "xfs"},
 ], ids=lambda env: next(iter(env.values())))
@@ -241,6 +260,17 @@ def test_a_failure_at_any_provision_step_rolls_back_every_recorded_item(world, e
     log = (world.evidence / "host.log").read_text()
     assert "provision failed with status" in log and "teardown complete" in log
     assert not any(" -D" in call or "umount -l" in call for call in _calls(world))
+
+
+def test_rollback_that_cannot_query_loops_keeps_its_state_and_fails(world):
+    world.bus()
+    done = world.run("provision", env={"FAKE_FAIL": "losetup"})
+    assert done.returncode == 1
+    assert "rollback also failed" in done.stderr
+    assert "attachment state is unknown" in done.stderr
+    assert (world.state_dir / "state").is_file() and world.image.exists()
+    world.run("teardown", clean=True, check=0)
+    _assert_clean(world)
 
 
 def test_a_signal_during_provision_rolls_back(world):
@@ -347,6 +377,62 @@ def test_a_device_backed_by_another_file_is_not_detached(world):
     assert "not '" in done.stderr and "leaving it attached" in done.stderr
     assert _loops(world) == ["loop7"]
     assert not any(call.startswith("losetup -d") for call in _calls(world))
+
+
+def _assert_retained(world):
+    """A teardown that could not establish the attachment state keeps what it needs."""
+    assert _loops(world) == ["loop7"] or world.image.exists()
+    assert world.image.exists(), "the backing image was removed before detach was confirmed"
+    assert (world.state_dir / "state").is_file()
+    log = (world.evidence / "host.log").read_text()
+    assert "teardown incomplete" in log
+    assert "teardown complete" not in log
+
+
+@pytest.mark.parametrize("env", [
+    {"FAKE_LOSETUP_QUERY_FAIL": "all"},
+    {"FAKE_FAIL": "losetup"},
+], ids=["query-fails", "every-losetup-fails"])
+def test_a_failed_loop_query_is_unknown_state_never_success(world, env):
+    _provision(world)
+    done = world.run("teardown", env=env)
+    assert done.returncode == 1, done.stderr
+    assert "attachment state is unknown" in done.stderr
+    assert _loops(world) == ["loop7"]
+    _assert_retained(world)
+    # A later teardown with a working query finishes the job.
+    world.run("teardown", clean=True, check=0)
+    _assert_clean(world)
+
+
+def test_a_failed_detach_keeps_the_image_and_state_for_a_retry(world):
+    _provision(world)
+    done = world.run("teardown", env={"FAKE_LOSETUP_DETACH_FAIL": "1"})
+    assert done.returncode == 1 and "could not detach /dev/loop7" in done.stderr
+    assert _loops(world) == ["loop7"]
+    _assert_retained(world)
+    world.run("teardown", clean=True, check=0)
+    _assert_clean(world)
+
+
+def test_a_detach_that_leaves_the_device_attached_is_caught(world):
+    _provision(world)
+    done = world.run("teardown", env={"FAKE_LOSETUP_DETACH_NOOP": "1"})
+    assert done.returncode == 1 and "is still attached after detach" in done.stderr
+    _assert_retained(world)
+    world.run("teardown", clean=True, check=0)
+    _assert_clean(world)
+
+
+def test_a_failed_confirmation_query_after_detach_is_unknown_state(world):
+    _provision(world)
+    (world.state / "queries").unlink(missing_ok=True)
+    done = world.run("teardown", env={"FAKE_LOSETUP_QUERY_FAIL": "after1"})
+    assert done.returncode == 1, done.stderr
+    assert "attachment state is unknown" in done.stderr
+    _assert_retained(world)
+    world.run("teardown", clean=True, check=0)
+    _assert_clean(world)
 
 
 def _state(world, *lines):

@@ -414,30 +414,59 @@ def _write(records: list[dict[str, Any]], out: Path | None) -> None:
         stream.write("\n".join(lines) + "\n")
 
 
+def _outcome(records: list[dict[str, Any]]) -> tuple[str, str]:
+    """(first failing check, outcome) for one report file.
+
+    ``ready`` and ``assert passed`` are claimed only from a complete, successful report:
+    an explicit ``verdict: null`` with consistent attribution and all six checks passed,
+    or an assert verdict with ``passed: true``. Anything missing or failed says so.
+    """
+    by_check: dict[str, dict[str, Any]] = {}
+    for record in records:
+        by_check.setdefault(str(record.get("check")), record)
+    if "report_error" in by_check:
+        error = by_check["report_error"].get("error") or {}
+        return "", f"report error ({error.get('type', 'unknown')})"
+    if "assert_verdict" in by_check:
+        verdict = by_check["assert_verdict"]
+        if verdict.get("passed") is True and "error" not in verdict:
+            return "", "assert passed"
+        failed = [row.get("name", "") for row in records
+                  if row.get("check") == "assert" and row.get("ok") is not True]
+        return ", ".join(failed), "assert FAILED"
+    verdict = by_check.get("verdict")
+    if verdict is None:
+        return "", "incomplete (no verdict)"
+    failing = str(verdict.get("first_failing") or "")
+    if "verdict_error" in verdict:
+        error = verdict["verdict_error"] or {}
+        return failing, f"verdict error ({error.get('type', 'unknown')})"
+    if "verdict" not in verdict:
+        return failing, "incomplete (no verdict)"
+    if verdict["verdict"] is not None:
+        return failing, str(verdict["verdict"])
+    statuses = [by_check.get(name, {}).get("status") for name in CHECKS]
+    if verdict.get("attribution") == "consistent" and statuses == ["pass"] * len(CHECKS):
+        return "", "ready"
+    return failing, "incomplete (checks did not all pass)"
+
+
 def summarize(directory: Path) -> str:
     rows = ["| report | context | sys_vendor | kernel | first failing check | verdict |",
             "|---|---|---|---|---|---|"]
     for path in sorted(directory.glob("*.jsonl")):
-        host: dict[str, Any] = {}
-        verdict: dict[str, Any] = {}
         try:
-            for line in path.read_text(encoding="utf-8").splitlines():
-                record = json.loads(line)
-                if record.get("check") == "host":
-                    host = record
-                elif record.get("check") in ("verdict", "assert_verdict"):
-                    verdict = record
+            records = [json.loads(line) for line in
+                       path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            if not all(isinstance(record, dict) for record in records):
+                raise ValueError("not a JSON object per line")
         except (OSError, ValueError):
-            rows.append(f"| {path.stem} | unreadable | | | | |")
+            rows.append(f"| {path.stem} | unreadable | | | | unreadable |")
             continue
+        host = next((record for record in records if record.get("check") == "host"), {})
         context = {True: "user manager", False: "host"}.get(host.get("in_user_manager"), "unknown")
         vendor = host.get("sys_vendor")
-        if "passed" in verdict:
-            outcome = "assert passed" if verdict["passed"] else "assert FAILED"
-            failing = ""
-        else:
-            outcome = verdict.get("verdict") or "ready"
-            failing = verdict.get("first_failing") or ""
+        failing, outcome = _outcome(records)
         rows.append(f"| {path.stem} | {context} | {vendor if isinstance(vendor, str) else 'unknown'}"
                     f" | {host.get('kernel', '')} | {failing} | {outcome} |")
     enforcement = directory / "enforcement.json"

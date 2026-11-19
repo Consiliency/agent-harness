@@ -286,3 +286,61 @@ def test_the_context_is_read_from_the_cgroup_not_the_environment(monkeypatch, tm
     cgroup.write_text(f"0::/user.slice/user-{os.getuid()}.slice/user@{os.getuid()}.service/"
                       "app.slice/ci-seat-caps-run-1-2.service\n")
     assert report_mod.host_facts("b")["in_user_manager"] is True
+
+
+def _summary_row(tmp_path, capsys, name, records, raw=None):
+    directory = tmp_path / name
+    directory.mkdir()
+    text = raw if raw is not None else "".join(json.dumps(r) + "\n" for r in records)
+    (directory / "baseline.jsonl").write_text(text)
+    assert report_mod.main(["--summarize", str(directory)]) == 0
+    (row,) = [line for line in capsys.readouterr().out.splitlines() if line.startswith("| baseline")]
+    return row
+
+
+_HOST = {"check": "host", "sys_vendor": "Vendor", "kernel": "6.8", "in_user_manager": True}
+_ALL_PASS = [{"check": name, "status": "pass"} for name in report_mod.CHECKS]
+_READY = {"check": "verdict", "verdict": None, "first_failing": None, "attribution": "consistent"}
+
+
+@pytest.mark.parametrize("name, records, raw, expected", [
+    ("report-error", [{"check": "report_error", "label": "baseline",
+                       "error": {"type": "ZeroDivisionError", "reason": "x"}}], None,
+     "report error (ZeroDivisionError)"),
+    ("verdict-error", [_HOST, *_ALL_PASS, {"check": "verdict", "first_failing": None,
+                                           "verdict_error": {"type": "OSError"}}], None,
+     "verdict error (OSError)"),
+    ("empty", [], "", "incomplete (no verdict)"),
+    ("host-only", [_HOST], None, "incomplete (no verdict)"),
+    ("verdict-key-missing", [_HOST, *_ALL_PASS, {"check": "verdict", "first_failing": None}], None,
+     "incomplete (no verdict)"),
+    ("null-but-a-check-failed", [_HOST, *_ALL_PASS[:5], {"check": "device_plan", "status": "fail"},
+                                 {**_READY, "attribution": "attribution_mismatch"}], None,
+     "incomplete (checks did not all pass)"),
+    ("null-but-checks-missing", [_HOST, _ALL_PASS[0], _READY], None,
+     "incomplete (checks did not all pass)"),
+    ("assert-error", [{"check": "assert_verdict", "passed": False, "error": {"type": "OSError"}}],
+     None, "assert FAILED"),
+    ("not-json", [], "{oops\n", "unreadable"),
+])
+def test_summary_never_says_ready_for_a_missing_or_failed_report(tmp_path, capsys, name, records,
+                                                                 raw, expected):
+    row = _summary_row(tmp_path, capsys, name, records, raw)
+    assert row.rstrip().endswith(f"| {expected} |"), row
+    assert "| ready |" not in row and "assert passed" not in row
+
+
+def test_summary_says_ready_only_for_a_complete_passing_report(tmp_path, capsys):
+    row = _summary_row(tmp_path, capsys, "ready", [_HOST, *_ALL_PASS, _READY])
+    assert row == "| baseline | user manager | Vendor | 6.8 |  | ready |"
+
+
+def test_summary_of_a_real_failed_report_is_not_ready(monkeypatch, tmp_path, capsys):
+    """End to end: the report's own crash record must not summarize as ready."""
+    monkeypatch.setattr(report_mod, "report", lambda _label: 1 / 0)
+    directory = tmp_path / "ev"
+    assert report_mod.main(["--label", "baseline", "--out", str(directory / "baseline.jsonl")]) == 0
+    capsys.readouterr()
+    assert report_mod.main(["--summarize", str(directory)]) == 0
+    out = capsys.readouterr().out
+    assert "report error (ZeroDivisionError)" in out and "| ready |" not in out
