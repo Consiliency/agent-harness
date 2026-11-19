@@ -37,7 +37,8 @@ import tempfile
 import os
 import time
 from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+from urllib.parse import urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 import xml.etree.ElementTree as ElementTree
 
 
@@ -240,22 +241,48 @@ def release_key(version):
     return tuple(int(part) for part in parts)
 
 
-GITHUB_API = "https://api.github.com/"
+GITHUB_API_HOST = "api.github.com"
 TOKEN_ENV = "GITHUB_TOKEN"
 
 
-def fetch_release(url, *, environ=None):
+def _api_origin(url):
+    """Whether ``url`` is on the HTTPS GitHub API origin, the only place the token may go."""
+    parts = urlsplit(url)
+    return (parts.scheme == "https" and parts.hostname == GITHUB_API_HOST
+            and parts.port in (None, 443) and parts.username is None and parts.password is None)
+
+
+class _ApiOnlyRedirect(HTTPRedirectHandler):
+    """Checked at every hop: a redirect away from HTTPS is refused, and one off the API
+    origin is followed without the token. urllib's default handler copies every header,
+    Authorization included, to any target."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if urlsplit(newurl).scheme != "https":
+            raise HTTPError(newurl, code, "refusing a redirect away from HTTPS", headers, fp)
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None and not _api_origin(newurl):
+            new.remove_header("Authorization")
+        return new
+
+
+def _api_opener(*handlers):
+    return build_opener(_ApiOnlyRedirect(), *handlers)
+
+
+def fetch_release(url, *, environ=None, opener=None):
     """One GitHub releases API document. When ``GITHUB_TOKEN`` is set (CI passes the job's
     read-only token), the request is authenticated, which lifts the per-address limit that
     unauthenticated calls from shared runner addresses exhaust (agent-harness#1993). The
-    token is sent to the GitHub API only, and never printed."""
+    token is sent to the HTTPS GitHub API origin only, at every redirect hop, and never
+    printed."""
     headers = {"Accept": "application/vnd.github+json",
                "User-Agent": "agent-harness-qualified-image-check"}
     token = (os.environ if environ is None else environ).get(TOKEN_ENV, "").strip()
-    if token and url.startswith(GITHUB_API):
+    if token and _api_origin(url):
         headers["Authorization"] = f"Bearer {token}"
     request = Request(url, headers=headers)
-    with urlopen(request, timeout=30) as response:
+    with (opener or _api_opener()).open(request, timeout=30) as response:
         return json.load(response)
 
 

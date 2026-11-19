@@ -16,6 +16,8 @@ import json
 from pathlib import Path
 import tarfile
 
+from types import SimpleNamespace
+
 import pytest
 import yaml
 
@@ -93,7 +95,9 @@ def world(verifier, monkeypatch, tmp_path):
     upstream.add("2.0.0", _archive(b"#!/bin/sh\necho not a member\n"))
     upstream.latest = "2.0.0"
     monkeypatch.setattr(verifier, "contract", lambda: records)
-    monkeypatch.setattr(verifier, "urlopen", upstream.urlopen)
+    monkeypatch.setattr(verifier, "urlopen", upstream.urlopen)  # asset downloads
+    # Releases API reads go through their own redirect-confined opener (agent-harness#1993).
+    monkeypatch.setattr(verifier, "_api_opener", lambda *handlers: SimpleNamespace(open=upstream.urlopen))
 
     def run(*extra):
         # The mode's own function, so a refusal surfaces as its ValueError (main() turns it

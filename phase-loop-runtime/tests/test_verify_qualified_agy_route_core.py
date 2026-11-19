@@ -246,28 +246,110 @@ def _verifier_module():
     return module
 
 
-class _Json:
-    def __enter__(self):
-        return self
+class _Server:
+    """An urllib handler standing in for HTTP and HTTPS, so fetch_release runs through
+    urllib's real opener, error processing and redirect machinery without a network.
+    ``routes`` maps a URL to (status, Location or None); every request is recorded with the
+    Authorization value it carried (redirectable or not)."""
 
-    def __exit__(self, *exc):
-        return False
+    handler_order = 100  # ahead of the real HTTP(S) handlers
 
-    def read(self, *_args):
-        return b"{}"
+    def __init__(self, routes):
+        self.routes, self.seen = routes, []
+
+    def add_parent(self, parent):
+        self.parent = parent
+
+    def close(self):
+        pass
+
+    def __lt__(self, other):
+        return self.handler_order < getattr(other, "handler_order", 500)
+
+    def _serve(self, request):
+        import email.message
+        import io
+        import urllib.response
+        self.seen.append((request.full_url, request.get_header("Authorization")))
+        status, location = self.routes[request.full_url]
+        headers = email.message.Message()
+        headers["Content-Type"] = "application/json"
+        if location:
+            headers["Location"] = location
+        response = urllib.response.addinfourl(io.BytesIO(b'{"ok": true}'), headers,
+                                              request.full_url, status)
+        response.msg = "Found" if location else "OK"
+        return response
+
+    https_open = http_open = _serve
 
 
-def test_the_releases_api_read_carries_the_token_only_to_the_api(monkeypatch):
+API = "https://api.github.com/repos/o/r/releases/tags/1.0.0"
+
+
+def _fetch(verifier, routes, token="tok-123"):
+    server = _Server(routes)
+    result = verifier.fetch_release(API, environ={"GITHUB_TOKEN": token} if token else {},
+                                    opener=verifier._api_opener(server))
+    return result, server.seen
+
+
+def test_the_releases_api_read_carries_the_token_only_to_the_api():
     verifier = _verifier_module()
-    seen = []
-    monkeypatch.setattr(verifier, "urlopen", lambda request, timeout: seen.append(request) or _Json())
-    api = "https://api.github.com/repos/o/r/releases/tags/1.0.0"
-    verifier.fetch_release(api, environ={"GITHUB_TOKEN": "tok-123"})
-    verifier.fetch_release(api, environ={})
-    verifier.fetch_release("https://example.invalid/releases", environ={"GITHUB_TOKEN": "tok-123"})
-    headers = [dict(request.header_items()) for request in seen]
-    assert headers[0]["Authorization"] == "Bearer tok-123"
-    assert "Authorization" not in headers[1] and "Authorization" not in headers[2]
+    assert _fetch(verifier, {API: (200, None)}) == ({"ok": True}, [(API, "Bearer tok-123")])
+    assert _fetch(verifier, {API: (200, None)}, token="")[1] == [(API, None)]
+    other = "https://example.invalid/releases"
+    server = _Server({other: (200, None)})
+    verifier.fetch_release(other, environ={"GITHUB_TOKEN": "tok-123"}, opener=verifier._api_opener(server))
+    assert server.seen == [(other, None)]
+    for lookalike in ("https://api.github.com.evil.invalid/x", "https://user@api.github.com/x",
+                      "http://api.github.com/x", "https://api.github.com:8443/x"):
+        assert not verifier._api_origin(lookalike), lookalike
+    assert verifier._api_origin(API) and verifier._api_origin("https://api.github.com:443/x")
+
+
+def test_a_same_origin_redirect_keeps_the_token():
+    verifier = _verifier_module()
+    moved = "https://api.github.com/repositories/1/releases/tags/1.0.0"
+    _result, seen = _fetch(verifier, {API: (301, moved), moved: (200, None)})
+    assert seen == [(API, "Bearer tok-123"), (moved, "Bearer tok-123")]
+
+
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+def test_a_cross_host_redirect_drops_the_token(status):
+    verifier = _verifier_module()
+    elsewhere = "https://objects.example.invalid/release.json"
+    result, seen = _fetch(verifier, {API: (status, elsewhere), elsewhere: (200, None)})
+    assert result == {"ok": True}
+    assert seen == [(API, "Bearer tok-123"), (elsewhere, None)]
+
+
+def test_the_token_is_not_restored_when_a_redirect_chain_returns_to_the_api():
+    verifier = _verifier_module()
+    elsewhere = "https://objects.example.invalid/hop"
+    back = "https://api.github.com/repositories/1/releases/tags/1.0.0"
+    _result, seen = _fetch(verifier, {API: (302, elsewhere), elsewhere: (302, back), back: (200, None)})
+    assert seen == [(API, "Bearer tok-123"), (elsewhere, None), (back, None)]
+
+
+@pytest.mark.parametrize("target", ["http://api.github.com/repos/o/r/releases/tags/1.0.0",
+                                    "http://objects.example.invalid/release.json"])
+def test_a_redirect_away_from_https_is_refused_before_any_request(target):
+    from urllib.error import HTTPError
+    verifier = _verifier_module()
+    server = _Server({API: (302, target), target: (200, None)})
+    with pytest.raises(HTTPError, match="refusing a redirect away from HTTPS"):
+        verifier.fetch_release(API, environ={"GITHUB_TOKEN": "tok-123"},
+                               opener=verifier._api_opener(server))
+    assert server.seen == [(API, "Bearer tok-123")]
+
+
+def test_the_default_opener_uses_the_api_only_redirect_policy():
+    import urllib.request
+    verifier = _verifier_module()
+    redirects = [handler for handler in verifier._api_opener().handlers
+                 if isinstance(handler, urllib.request.HTTPRedirectHandler)]
+    assert len(redirects) == 1 and isinstance(redirects[0], verifier._ApiOnlyRedirect)
 
 
 def test_asset_downloads_and_the_conformance_run_never_receive_the_token(monkeypatch, tmp_path):
