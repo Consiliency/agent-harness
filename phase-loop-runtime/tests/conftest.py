@@ -53,6 +53,21 @@ _scratch_audit_pid = os.getpid()
 _scratch_audit_hook.log_path = os.path.join(_scratch_audit_dir, "violations.log")
 
 
+class _CapturedLaunch:
+    """Stand-in for a faked capped launch whose ``Popen`` double only captured its call."""
+
+    pid = 2**22 + 1  # above Linux pid_max; os.killpg on it fails with ESRCH
+
+    def kill(self):
+        pass
+
+    def poll(self):
+        return 0
+
+    def wait(self, timeout=None):
+        return 0
+
+
 def _cleanup_scratch_audit():
     # Each xdist worker owns its directory. Forked children share the log but must
     # not remove their parent's directory when they exit.
@@ -206,6 +221,10 @@ def _no_real_seat_resource_caps(monkeypatch, request):
                 seat_resource_caps.CODE, "a live seat key is required",
             )
         process = subprocess.Popen(command, **kwargs)
+        if process is None:
+            # A test's argv-capturing Popen fake returned nothing; stand in a launch that
+            # names no live process so the completion proof can attach as in production.
+            process = _CapturedLaunch()
         attach_pipe_proof(process)
         return process
 
