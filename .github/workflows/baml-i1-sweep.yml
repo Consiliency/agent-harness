@@ -6,8 +6,8 @@ name: baml-i1-sweep
 # fixed regression subset (test_i1_boundary_subset in test.yml's pytest lane).
 # This workflow runs it weekly and on dispatch, and a release cut requires a
 # green run on the release commit (docs/releases/baml-v1-release-checks.md).
-# One lane: 3.12 is the floor (agent-harness#1546), where the sweep injects
-# through sys.monitoring.
+# One lane: 3.14.10, the CI interpreter, where the sweep injects through
+# sys.monitoring.
 on:
   schedule:
     - cron: '17 5 * * 1'
@@ -28,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.12']
+        python-version: ['3.14.10']
     steps:
       - uses: actions/checkout@v4
 

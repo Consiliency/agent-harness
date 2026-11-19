@@ -23,6 +23,9 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14.10'
       - uses: astral-sh/setup-uv@v6
       - name: Install locked dependencies
         run: uv sync --project phase-loop-runtime --group test --extra visual --locked
