@@ -22,6 +22,12 @@ pytestmark = pytest.mark.real_seat_caps
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "seat_caps_readiness_report.py"
 
 
+# scripts/ is repository source, absent from the Gate A standalone layout (the clean room
+# stages tests/ and an allowlist of scripts only); skip before loading it.
+if not SCRIPT.is_file():
+    pytest.skip("scripts/ is absent from the standalone consumer layout", allow_module_level=True)
+
+
 def _load():
     spec = importlib.util.spec_from_file_location("seat_caps_readiness_report", SCRIPT)
     module = importlib.util.module_from_spec(spec)
