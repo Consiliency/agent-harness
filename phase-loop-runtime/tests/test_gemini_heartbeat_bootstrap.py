@@ -802,7 +802,9 @@ def test_other_routes_respect_their_required_launch_capabilities(fixture_cli, tm
     result = panel.invoke_board(board, "synthetic other-route control", monitoring_policy=policy,
                                 stream_dir=tmp_path / "records", gateway_available=False)
     leg, = result.legs
-    if missing == "memfd" or (missing == "image" and route == "bounded_gemini"):
+    # Both brokered routes pin their client's PID-namespace init with a pidfd
+    # (agent-harness#1994), so pidfd_open is a required capability of each of them.
+    if missing in {"memfd", "pidfd"} or (missing == "image" and route == "bounded_gemini"):
         assert leg.status != "OK" and not leg.text, (leg.status, leg.detail)
         assert not fixture_cli.attempts.exists()
         return
@@ -1124,11 +1126,17 @@ def test_owner_loss_through_real_broker_reclaims_namespace(fixture_cli, tmp_path
 from dataclasses import replace
 from pathlib import Path
 import subprocess
+import os
 from phase_loop_runtime import panel_invoker as panel, gemini_heartbeat as gh, seat_resource_caps as caps
+from phase_loop_runtime import provider_tree_proof as tree_proof
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
 def capped(command, *, seat_key, **kwargs):
     assert seat_key and seat_key == caps.live_seat_key()
-    return subprocess.Popen(command, **kwargs)
+    process = subprocess.Popen(command, **kwargs)
+    proof_read, proof_write = os.pipe()
+    os.close(proof_write)
+    tree_proof.attach(process, tree_proof.TreeProof.bwrap_init(proof_read))
+    return process
 caps.capped_popen=capped
 gh.QUALIFIED_IMAGES={fixture_cli.module.QUALIFIED_IMAGES!r}
 panel._measuring_qualification_candidate=lambda: True

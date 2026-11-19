@@ -112,6 +112,43 @@ def test_the_switch_position_does_not_depend_on_a_chdir(tmp_path):
 
 # --- the probe runs through the launch's OWN prefix -----------------------------------------
 
+#: The owned launch's bwrap lifecycle descriptors (agent-harness#1994) follow the owner's
+#: bwrap in the launch only; the identity probe runs without them.
+_LIFECYCLE = ("--info-fd", "--block-fd")
+
+
+def _without_lifecycle_fds(argv):
+    out, skip = [], 0
+    for item in argv:
+        if skip:
+            skip -= 1
+        elif item in _LIFECYCLE:
+            skip = 1
+        else:
+            out.append(item)
+    return out
+
+
+class _CapturedProcess:
+    """A capture-only launch double: it names no live process."""
+
+    pid = 2**22 + 1  # above Linux PID_MAX_LIMIT
+
+
+def _unpinned_witness(monkeypatch):
+    """A capture-only launch has no bwrap to pin: release its gate and attach a complete
+    proof, which is what a pinned and finished launch carries."""
+    from phase_loop_runtime import provider_tree_proof
+
+    def complete(witness, process):
+        witness.abandon()
+        read_fd, write_fd = os.pipe()
+        os.close(write_fd)
+        provider_tree_proof.attach(process, provider_tree_proof.TreeProof.bwrap_init(read_fd))
+        return process
+
+    monkeypatch.setattr(panel_invoker, "_complete_bwrap_witness", complete)
+
 
 def test_the_probe_runs_through_the_exact_launch_prefix(tmp_path, monkeypatch):
     seen: list[list[str]] = []
@@ -121,17 +158,22 @@ def test_the_probe_runs_through_the_exact_launch_prefix(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(
             argv, 0, "\n".join(panel_invoker._expected_seat_identity(argv, ())) + "\n", "")
 
-    class FakePopen:
+    class FakePopen(_CapturedProcess):
         def __init__(self, argv, **kwargs):
             seen.append(list(argv))
 
     monkeypatch.setattr(panel_invoker.subprocess, "run", fake_run)
     monkeypatch.setattr(panel_invoker.subprocess, "Popen", FakePopen)
+    _unpinned_witness(monkeypatch)
     owner = _owner(tmp_path)
     with _egress(HOLDER):
         panel_invoker.launch_provider(["/bin/echo", "exec"], process_owner=owner,
                                       retain_caps=(), cwd=str(tmp_path))
-    probe, launch = seen
+    probe, launched = seen
+    bwrap = launched.index("/usr/bin/bwrap")
+    assert launched[bwrap + 1] == "--info-fd" and launched[bwrap + 3] == "--block-fd"
+    assert "--info-fd" not in probe
+    launch = _without_lifecycle_fds(launched)
     assert launch[-2:] == ["/bin/echo", "exec"]
     assert probe[:len(launch) - 2] == launch[:-2], "the probe used a different prefix"
     assert probe[len(launch) - 2:len(launch)] == ["/bin/sh", "-c"]
@@ -142,7 +184,8 @@ def test_only_the_gemini_owner_probes_without_its_single_use_descriptors(tmp_pat
     monkeypatch.setattr(panel_invoker.subprocess, "run", lambda argv, **k: (
         seen.append(list(argv)) or subprocess.CompletedProcess(
             argv, 0, "\n".join(panel_invoker._expected_seat_identity(argv)) + "\n", "")))
-    monkeypatch.setattr(panel_invoker.subprocess, "Popen", lambda argv, **k: seen.append(list(argv)))
+    monkeypatch.setattr(panel_invoker.subprocess, "Popen",
+                        lambda argv, **k: seen.append(list(argv)) or _CapturedProcess())
     fd_args = ["--info-fd", "7", "--block-fd", "8"]
     with_fds = _owner(tmp_path)
     with_fds[with_fds.index("--"):with_fds.index("--")] = fd_args
@@ -375,6 +418,8 @@ DRIVER = textwrap.dedent("""
             "/usr/bin/setpriv", "--bounding-set=-all" + "".join(",+" + c for c in caps),
             "--inh-caps=-all", "--"]
         panel_invoker._require_seat_identity = lambda *a, **k: None
+        # main had no completion witness for an owned launch (agent-harness#1994).
+        panel_invoker._owner_unshares_pid = lambda owner: False
         def legacy_compose(cwd, process_owner=(), retain_caps=()):
             prefix = panel_invoker._provider_launch_prefix(cwd, retain_caps)
             if process_owner and retain_caps:

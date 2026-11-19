@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import weakref
 import tempfile
 import time
 from pathlib import Path
@@ -51,6 +52,45 @@ _scratch_audit_hook.enabled = True
 _scratch_audit_dir = tempfile.mkdtemp(prefix="pl-scratch-audit-")
 _scratch_audit_pid = os.getpid()
 _scratch_audit_hook.log_path = os.path.join(_scratch_audit_dir, "violations.log")
+
+
+class _CapturedLaunch:
+    """Stand-in for a faked capped launch whose ``Popen`` double only captured its call.
+
+    Production launches are ``subprocess.Popen`` objects, which carry the completion proof
+    (an attribute and a weak-reference finalizer). A double that returns ``None`` or an
+    object without weak-reference support (``types.SimpleNamespace``) is wrapped; reads of
+    any other attribute go to the double itself.
+    """
+
+    pid = 2**22 + 1  # above Linux PID_MAX_LIMIT; os.killpg on it fails with ESRCH
+
+    def __init__(self, captured=None):
+        self._captured = captured
+
+    def __getattr__(self, name):
+        if name.startswith("__") or self.__dict__.get("_captured") is None:
+            raise AttributeError(name)
+        return getattr(self.__dict__["_captured"], name)
+
+    def kill(self):
+        pass
+
+    def poll(self):
+        return 0
+
+    def wait(self, timeout=None):
+        return 0
+
+
+def _carries_a_proof(process) -> bool:
+    if process is None:
+        return False
+    try:
+        weakref.ref(process)
+    except TypeError:
+        return False
+    return True
 
 
 def _cleanup_scratch_audit():
@@ -198,13 +238,21 @@ def _no_real_seat_resource_caps(monkeypatch, request):
     if request.node.get_closest_marker("real_seat_caps") is not None:
         return
     from phase_loop_runtime import seat_jail, seat_resource_caps
+    from tree_proof_fakes import attach_pipe_proof
 
     def capped(command, *, seat_key, **kwargs):
         if not seat_key:
             raise seat_jail.SeatSandboxRefused(
                 seat_resource_caps.CODE, "a live seat key is required",
             )
-        return subprocess.Popen(command, **kwargs)
+        process = subprocess.Popen(command, **kwargs)
+        if not _carries_a_proof(process):
+            # A test's argv-capturing Popen double returned nothing, or an object that
+            # cannot carry the proof; stand in a launch that names no live process so the
+            # completion proof attaches as in production.
+            process = _CapturedLaunch(process)
+        attach_pipe_proof(process)
+        return process
 
     monkeypatch.setattr(seat_resource_caps, "readiness_code", lambda: None)
     monkeypatch.setattr(seat_resource_caps, "capped_popen", capped)

@@ -440,6 +440,11 @@ class ParentUnixBroker:
         staged_dir: Path,
         canonical_repo: Path,
     ) -> None:
+        # Retention state first: a root is removed only when no client ever launched or
+        # the client, server and adapter were all proven quiescent.
+        self._client_launched = False
+        self._quiescence_proven = False
+        self._adapter: _BrokerInferenceAdapter | None = None
         if (
             not isinstance(authorization, ReviewLegAuthorization)
             or authorization._seal is not _AUTHORIZATION_SEAL
@@ -557,14 +562,30 @@ class ParentUnixBroker:
                 except OSError:
                     pass
 
-    def close(self) -> None:
+    def _adapter_quiescent(self) -> bool:
+        """The launched client's inference adapter reports its provider cleanup proven."""
+        adapter = self._adapter
+        if adapter is None:
+            return False
+        try:
+            return adapter.is_quiescent() is True
+        except Exception:
+            return False
+
+    def close(self, *, adapter_quiescent: bool | None = None) -> None:
+        """Close the listener; remove the root only when no client launched, or when the
+        client, server and adapter cleanup were all proven (``adapter_quiescent`` defaults
+        to the launched adapter's own quiescence report, and to retention without one)."""
         sock = getattr(self, "_sock", None)
         if sock is not None:
             sock.close()
-        try: self.path.unlink()
-        except FileNotFoundError: pass
-        try: self.root.rmdir()
-        except OSError: pass
+        if adapter_quiescent is None:
+            adapter_quiescent = self._adapter_quiescent()
+        if not self._client_launched or (self._quiescence_proven and adapter_quiescent):
+            try: self.path.unlink()
+            except FileNotFoundError: pass
+            try: self.root.rmdir()
+            except OSError: pass
         try: self._host_secret_probe.unlink()
         except FileNotFoundError: pass
         self.evidence["cleanup_root_removed"] = not self.root.exists()
@@ -641,6 +662,8 @@ class ParentUnixBroker:
             deadline_s is None or not math.isfinite(deadline_s) or deadline_s <= 0
         )):
             raise ValueError("review_monitoring_policy_mismatch")
+        self._quiescence_proven = False
+        self._adapter = adapter
         if cancel_event is not None:
             self._cancel_event = cancel_event
         self._admission_remaining()
@@ -686,7 +709,7 @@ class ParentUnixBroker:
         runtime_binds: list[str] = ["--ro-bind", "/usr", "/usr"]
         for runtime in ("/lib", "/lib64"):
             if Path(runtime).exists(): runtime_binds.extend(("--ro-bind", runtime, runtime))
-        argv = [str(bwrap),"--unshare-all","--die-with-parent","--new-session","--clearenv",*runtime_binds,"--dir","/run","--dir","/run/phase-loop-broker","--ro-bind",str(self.path),"/run/phase-loop-broker/intended-inference.sock","--ro-bind",str(self.staged_dir),"/run/phase-loop-review","--tmpfs","/tmp","--proc","/proc","--dev","/dev","--setenv","PATH","/usr/bin","--setenv","PYTHONNOUSERSITE","1","--setenv","PYTHONDONTWRITEBYTECODE","1",str(python),"-I","-S","-c",code]
+        argv = [str(bwrap),"--info-fd","{info_fd}","--block-fd","{block_fd}","--unshare-all","--die-with-parent","--new-session","--clearenv",*runtime_binds,"--dir","/run","--dir","/run/phase-loop-broker","--ro-bind",str(self.path),"/run/phase-loop-broker/intended-inference.sock","--ro-bind",str(self.staged_dir),"/run/phase-loop-review","--tmpfs","/tmp","--proc","/proc","--dev","/dev","--setenv","PATH","/usr/bin","--setenv","PYTHONNOUSERSITE","1","--setenv","PYTHONDONTWRITEBYTECODE","1",str(python),"-I","-S","-c",code]
         error: list[BaseException] = []
         child: list[tuple[subprocess.Popen[bytes], int]] = []
         def serve() -> None:
@@ -700,9 +723,29 @@ class ParentUnixBroker:
         start = None
         stdout = b""; stderr = b""; timed_out = False; provider_cancelled = False
         completed = False
+        terminated = False
         started = time.monotonic()
+        from .. import panel_invoker as _panel
+        from .. import provider_tree_proof as _tree_proof
+
         try:
-            proc=subprocess.Popen(argv,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,env={"PATH":"/usr/bin","PYTHONNOUSERSITE":"1","PYTHONDONTWRITEBYTECODE":"1"},close_fds=True,start_new_session=True)
+            pin_timeout = min(_tree_proof.PIN_TIMEOUT_S, self._admission_remaining())
+            witness = _tree_proof.BwrapLaunch()
+            launch = [str(witness.info_fd) if item == "{info_fd}" else str(witness.block_fd)
+                      if item == "{block_fd}" else item for item in argv]
+            try:
+                proc=subprocess.Popen(launch,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,env={"PATH":"/usr/bin","PYTHONNOUSERSITE":"1","PYTHONDONTWRITEBYTECODE":"1"},close_fds=True,start_new_session=True,pass_fds=(witness.info_fd, witness.block_fd))
+            except BaseException:
+                witness.abandon()
+                raise
+            self._client_launched = True
+            try:
+                witness.complete(
+                    proc, timeout=pin_timeout, on_spawn=_panel._anchor_process_group,
+                    before_gate=_panel._require_launch_proof,
+                )
+            except _tree_proof.WitnessUnavailable as exc:
+                raise ValueError("credentialless broker client could not be witnessed") from exc
             _ppid, start = self._proc_stat(proc.pid)
             child.append((proc, start))
             thread = start_context_carrying_thread(serve, daemon=False)
@@ -732,14 +775,20 @@ class ParentUnixBroker:
                     error.append(exc)
                 finally:
                     if proc is not None:
-                        for signum in (15, 9):
-                            try:
-                                try: os.killpg(proc.pid, signum)
-                                except ProcessLookupError: pass
-                                stdout, stderr = proc.communicate(timeout=2)
-                                break
-                            except BaseException as exc:
-                                error.append(exc)
+                        terminated = True
+                        try:
+                            _panel._terminate_process_group(proc)
+                        except BaseException as exc:
+                            error.append(exc)
+                        try:
+                            stdout, stderr = proc.communicate(timeout=2)
+                        except BaseException as exc:
+                            error.append(exc)
+            if proc is not None and not terminated:
+                try:
+                    _panel._terminate_process_group(proc)
+                except BaseException as exc:
+                    error.append(exc)
             if thread is not None:
                 thread.join(timeout=_BROKER_TRANSPORT_ALLOWANCE_NS / 1_000_000_000)
             if proc is not None:
@@ -752,15 +801,21 @@ class ParentUnixBroker:
             except BaseException as exc:
                 error.append(exc)
                 provider_quiescent = False
+            client_proven = proc is None or (proc.poll() is not None and _panel._tree_quiescent(proc))
             self.evidence.update({
-                "child_quiescent": proc is None or proc.poll() is not None,
+                "child_quiescent": client_proven,
                 "broker_thread_quiescent": (thread is None or not thread.is_alive()),
                 "provider_adapter_quiescent": provider_quiescent,
                 "provider_cancel_requested": provider_cancelled,
             })
-            if not provider_quiescent or (thread is not None and thread.is_alive()) or (proc is not None and proc.poll() is None):
+            if not provider_quiescent or (thread is not None and thread.is_alive()) or not client_proven:
                 from ..panel_invoker import ProviderProcessGroupQuiescenceError
-                raise ProviderProcessGroupQuiescenceError("broker provider or server quiescence unproven")
+                failure = ProviderProcessGroupQuiescenceError("broker provider or server quiescence unproven")
+                proof = _tree_proof.proof_of(proc) if proc is not None else None
+                if proof is not None:
+                    failure.add_note(f"client_proof={proof.describe()}")
+                raise failure
+        self._quiescence_proven = True
         adapter_quiescent = adapter.is_quiescent()
         self.evidence.update({
             "bwrap": str(bwrap), "outer_bwrap_pid": proc.pid, "outer_bwrap_start": start,
@@ -776,7 +831,7 @@ class ParentUnixBroker:
             "canonical_repo_file_denied": proc.returncode == 0,
             "canonical_repo_directory_denied": proc.returncode == 0,
             "host_stage_path_denied": proc.returncode == 0,
-            "child_returncode": proc.returncode, "child_quiescent": proc.poll() is not None,
+            "child_returncode": proc.returncode, "child_quiescent": client_proven,
             "no_inherited_fd_observed": proc.returncode == 0,
             "child_stderr_sha256": sha256(stderr).hexdigest(),
             "operation_deadline_s": float(deadline_s) if deadline_s is not None else None,

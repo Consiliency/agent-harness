@@ -134,6 +134,8 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
     ("sandbox_egress.py", "host_addresses"): (NOT_AGENT, "trusted `ip` address listing"),
     ("seat_resource_caps.py", "_systemctl"): (
         NOT_AGENT, "systemctl configures or collects the transient capped parent"),
+    ("provider_tree_proof.py", "run_bounded"): (
+        NOT_AGENT, "bounded systemctl kill of a witnessed scope without cgroup.kill"),
     ("seat_keyring_exec.py", "execute"): (
         NOT_AGENT, "the owned seat's final link: execs the chain `launch_owned` hands it, "
                    "with that launch's decided env"),

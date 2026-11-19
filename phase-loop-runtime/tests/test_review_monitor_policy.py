@@ -647,10 +647,15 @@ def test_signal_cancellation_joins_worker_and_child(tmp_path, signum):
 import os,subprocess,sys,threading
 from pathlib import Path
 from phase_loop_runtime import panel_invoker as p, seat_resource_caps as caps
+from phase_loop_runtime import provider_tree_proof as tree_proof
 from phase_loop_runtime.sandbox_egress import isolated_network
 def capped(command, *, seat_key, **kwargs):
     assert seat_key and seat_key == caps.live_seat_key()
-    return subprocess.Popen(command, **kwargs)
+    process = subprocess.Popen(command, **kwargs)
+    proof_read, proof_write = os.pipe()
+    os.close(proof_write)
+    tree_proof.attach(process, tree_proof.TreeProof.bwrap_init(proof_read))
+    return process
 caps.capped_popen=capped
 event=threading.Event()
 monitor=p._ReviewMonitor(Path({str(tmp_path / 'monitor.json')!r}), 'test', 0, event)
@@ -1409,3 +1414,208 @@ def _host_pid(record: str, timeout_s: float = 5.0) -> int:
         if time.monotonic() >= deadline:
             raise AssertionError(f"no host process for {record!r}")
         time.sleep(.02)
+
+
+# --------------------------------------------------------------------------------------
+# agent-harness#1994: the broker client's cleanup and the broker root's retention.
+# --------------------------------------------------------------------------------------
+
+def _spy_terminations(monkeypatch):
+    calls = []
+    real = panel._terminate_process_group
+
+    def spy(proc, **kwargs):
+        calls.append(proc)
+        return real(proc, **kwargs)
+
+    monkeypatch.setattr(panel, "_terminate_process_group", spy)
+    return calls
+
+
+def _is_client(proc) -> bool:
+    return list(getattr(proc, "args", ()) or ())[:1] == ["/usr/bin/bwrap"]
+
+
+def _discard_root(broker) -> None:
+    import shutil
+
+    shutil.rmtree(broker.root, ignore_errors=True)
+
+
+def _ok_adapter(is_quiescent=lambda: True, invoke=lambda: ("OK", "review complete")):
+    return backing._make_broker_inference_adapter(invoke, lambda: None, is_quiescent)
+
+
+def test_broker_normal_completion_cleans_up_the_client_through_the_shared_helper(
+        tmp_path, monkeypatch):
+    calls = _spy_terminations(monkeypatch)
+    with real_broker(tmp_path) as (broker, _auth):
+        response, evidence = broker.run_credentialless_client(_ok_adapter(), deadline_s=None)
+        assert response["status"] == "OK"
+        assert [proc for proc in calls if _is_client(proc)]
+        assert evidence["child_quiescent"] is True
+
+
+def test_broker_unproven_client_tree_fails_closed_and_retains_the_root(
+        tmp_path, monkeypatch):
+    from phase_loop_runtime import provider_tree_proof as tree_proof
+
+    monkeypatch.setattr(panel, "_PROCESS_GROUP_TERM_GRACE_S", 0.2)
+    monkeypatch.setattr(panel, "_PROCESS_GROUP_KILL_GRACE_S", 0.5)
+    unfinished = []
+    real_complete = tree_proof.BwrapLaunch.complete
+
+    def complete(self, proc, **kwargs):
+        result = real_complete(self, proc, **kwargs)
+        read_fd, write_fd = os.pipe()
+        unfinished.append(write_fd)
+        # An unfinished witness: its tree never reports completion.
+        proc._phase_loop_proof = tree_proof.TreeProof.bwrap_init(read_fd)
+        return result
+
+    monkeypatch.setattr(tree_proof.BwrapLaunch, "complete", complete)
+    try:
+        with real_broker(tmp_path) as (broker, _auth):
+            with pytest.raises(panel.ProviderProcessGroupQuiescenceError) as raised:
+                broker.run_credentialless_client(_ok_adapter(), deadline_s=None)
+            notes = getattr(raised.value, "__notes__", [])
+            assert "client_proof=bwrap_init:INCOMPLETE" in notes, notes
+            assert broker.evidence["child_quiescent"] is False
+            broker.close()
+            retained = broker.root.exists()
+            removed = broker.evidence["cleanup_root_removed"]
+            _discard_root(broker)
+            assert retained and removed is False
+    finally:
+        for fd in unfinished:
+            os.close(fd)
+
+
+def test_broker_abnormal_completion_cleans_up_the_client_through_the_shared_helper(
+        tmp_path, monkeypatch):
+    calls = _spy_terminations(monkeypatch)
+
+    def infer():
+        raise ValueError("injected inference failure")
+
+    with real_broker(tmp_path) as (broker, _auth):
+        with pytest.raises(Exception):
+            broker.run_credentialless_client(_ok_adapter(invoke=infer), deadline_s=None)
+        assert [proc for proc in calls if _is_client(proc)]
+
+
+def test_broker_root_is_retained_while_the_callers_provider_cleanup_is_unproven(tmp_path):
+    latch = panel._ProviderQuiescenceLatch()
+    unreleased = SimpleNamespace(pid=4_000_000)
+
+    def infer():
+        latch._processes[unreleased.pid] = unreleased  # a launch never proven quiescent
+        return "OK", "review complete"
+
+    with real_broker(tmp_path) as (broker, _auth):
+        try:
+            with pytest.raises(panel.ProviderProcessGroupQuiescenceError):
+                broker.run_credentialless_client(
+                    _ok_adapter(is_quiescent=latch.is_quiescent, invoke=infer), deadline_s=None)
+        finally:
+            broker.close()
+        retained = broker.root.exists()
+        removed = broker.evidence["cleanup_root_removed"]
+        latch._processes.clear()
+        _discard_root(broker)
+        assert retained and removed is False
+
+    proven = tmp_path / "proven"
+    proven.mkdir()
+    with real_broker(proven) as (broker, _auth):
+        clean = panel._ProviderQuiescenceLatch()
+        broker.run_credentialless_client(_ok_adapter(is_quiescent=clean.is_quiescent),
+                                         deadline_s=None)
+        broker.close()
+        assert not broker.root.exists() and broker.evidence["cleanup_root_removed"]
+
+
+def test_broker_close_retains_the_root_without_proven_adapter_cleanup(tmp_path):
+    with real_broker(tmp_path) as (broker, _auth):
+        broker.run_credentialless_client(_ok_adapter(), deadline_s=None)
+        broker.close(adapter_quiescent=False)
+        assert broker.root.exists() and broker.evidence["cleanup_root_removed"] is False
+        broker._adapter = None  # no recorded adapter: the default retains as well
+        broker.close()
+        assert broker.root.exists()
+        broker.close(adapter_quiescent=True)
+        assert not broker.root.exists() and broker.evidence["cleanup_root_removed"]
+
+
+def test_broker_partial_launch_retains_the_root_and_reuse_resets_the_proof(
+        tmp_path, monkeypatch):
+    from phase_loop_runtime import provider_tree_proof as tree_proof
+
+    def fail(pid, fd, *, deadline):
+        raise tree_proof.PinFailure("S2", "injected")
+
+    monkeypatch.setattr(tree_proof, "pin_bwrap_init", fail)
+    with real_broker(tmp_path) as (broker, _auth):
+        with pytest.raises(ValueError, match="could not be witnessed"):
+            broker.run_credentialless_client(_ok_adapter(), deadline_s=None)
+        assert broker._client_launched
+        broker._quiescence_proven = True  # a stale proof from an earlier use
+        with pytest.raises(ValueError):
+            broker.run_credentialless_client(_ok_adapter(), deadline_s=None)
+        assert broker._quiescence_proven is False
+        broker.close(adapter_quiescent=True)
+        retained = broker.root.exists()
+        _discard_root(broker)
+        assert retained
+
+
+def test_broker_unjoined_server_retains_the_root(tmp_path, monkeypatch):
+    monkeypatch.setattr(backing, "_BROKER_TRANSPORT_ALLOWANCE_NS", 200_000_000)
+    stuck = threading.Event()
+
+    def serve_once(self, adapter, **_kwargs):
+        stuck.wait(30)
+
+    monkeypatch.setattr(backing.ParentUnixBroker, "serve_once", serve_once)
+    cancel = threading.Event()
+    with real_broker(tmp_path) as (broker, _auth):
+        timer = threading.Timer(1.0, cancel.set)
+        timer.start()
+        try:
+            with pytest.raises(panel.ProviderProcessGroupQuiescenceError):
+                broker.run_credentialless_client(_ok_adapter(), deadline_s=None,
+                                                 cancel_event=cancel)
+            assert broker.evidence["child_quiescent"] is True
+            assert broker._quiescence_proven is False
+            broker.close(adapter_quiescent=True)
+            retained = broker.root.exists()
+        finally:
+            stuck.set()
+            timer.cancel()
+        _discard_root(broker)
+        assert retained
+
+
+class _RecordingSubprocess:
+    def __init__(self, launched):
+        self._launched = launched
+
+    def __getattr__(self, name):
+        return getattr(subprocess, name)
+
+    def Popen(self, argv, *args, **kwargs):  # noqa: N802 - the module attribute's name
+        self._launched.append(list(argv))
+        return subprocess.Popen(argv, *args, **kwargs)
+
+
+def test_broker_client_lifecycle_fds_are_bwrap_options(tmp_path, monkeypatch):
+    launched = []
+    monkeypatch.setattr(backing, "subprocess", _RecordingSubprocess(launched))
+    with real_broker(tmp_path) as (broker, _auth):
+        response, evidence = broker.run_credentialless_client(_ok_adapter(), deadline_s=None)
+    (argv,) = [item for item in launched if item[:1] == ["/usr/bin/bwrap"]]
+    info, block, python = (argv.index("--info-fd"), argv.index("--block-fd"),
+                           argv.index("/usr/bin/python3"))
+    assert (info, block) == (1, 3) and block < python
+    assert response["status"] == "OK"
+    assert evidence["child_returncode"] == 0 and evidence["no_inherited_fd_observed"] is True

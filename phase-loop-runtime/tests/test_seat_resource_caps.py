@@ -17,6 +17,7 @@ from types import MappingProxyType, SimpleNamespace
 
 import pytest
 
+from tree_proof_fakes import attach_pipe_proof
 from phase_loop_runtime import seat_jail
 from phase_loop_runtime import seat_profiles
 from phase_loop_runtime import seat_route
@@ -450,10 +451,26 @@ def _fake_systemd_run(path: Path, root: Path, proc_cgroup: Path, log: Path | Non
             parent_path /= '-'.join(parts[:index]) + '.slice'
         pathlib.Path({str(proc_cgroup)!r}).write_text(
             '0::/' + str(parent_path / unit) + '\\n')
+        # The scope systemd would create, and this pid's own /proc/<pid>/cgroup view.
+        scope = pathlib.Path({str(root)!r}, parent_path, unit)
+        scope.mkdir(parents=True, exist_ok=True)
+        (scope / 'cgroup.events').write_text('populated 1\\nfrozen 0\\n')
+        (scope / 'cgroup.kill').touch()
+        pathlib.Path({str(proc_cgroup)!r} + '.' + str(os.getpid())).write_text(
+            '0::/' + str(parent_path / unit) + '\\n')
         marker = sys.argv.index('--')
         os.execv(sys.argv[marker + 1], sys.argv[marker + 1:])
     """))
     path.chmod(0o755)
+
+
+def _seam_proc_cgroup(monkeypatch, proc_cgroup: Path) -> None:
+    """Read the fake runner's per-pid ``/proc/<pid>/cgroup`` view."""
+    def proc_cgroup_of(pid):
+        text = Path(f"{proc_cgroup}.{pid}").read_text()
+        return next(line[3:] for line in text.splitlines() if line.startswith("0::"))
+
+    monkeypatch.setattr(caps, "_proc_cgroup_of", proc_cgroup_of, raising=False)
 
 
 def _install_fake_cap_host(monkeypatch, tmp_path, isolated, *, runner_body=None, log=None):
@@ -467,6 +484,7 @@ def _install_fake_cap_host(monkeypatch, tmp_path, isolated, *, runner_body=None,
         runner.chmod(0o755)
     monkeypatch.setattr(caps, "_SYSTEMD_RUN", runner)
     monkeypatch.setattr(caps, "_PROC_CGROUP", proc_cgroup)
+    _seam_proc_cgroup(monkeypatch, proc_cgroup)
     configured: list[str] = []
     stopped: list[str] = []
 
@@ -493,6 +511,7 @@ def test_capped_popen_real_helper_pid_fd_env_and_one_parent(monkeypatch, tmp_pat
     _fake_systemd_run(runner, root, proc_cgroup)
     monkeypatch.setattr(caps, "_SYSTEMD_RUN", runner)
     monkeypatch.setattr(caps, "_PROC_CGROUP", proc_cgroup)
+    _seam_proc_cgroup(monkeypatch, proc_cgroup)
     configured = []
 
     def systemctl(*args, **_kwargs):
@@ -857,7 +876,9 @@ def test_launch_boundary_carries_the_live_seat_key_into_capped_popen(
 
     def capped(command, *, seat_key, **kwargs):
         seen.append(seat_key)
-        return subprocess.Popen(command, **kwargs)
+        process = subprocess.Popen(command, **kwargs)
+        attach_pipe_proof(process)
+        return process
 
     monkeypatch.setattr(caps, "capped_popen", capped)
     with caps._seat_scope("gemini:boundary"):
@@ -883,6 +904,16 @@ _PANEL_LAUNCH_CLASSIFICATION = {
         ("Exempt", "process registry type only"),
     ("_anchor_process_group", "subprocess.Popen", "host-helper", 1):
         ("Exempt", "post-launch helper"),
+    ("_await_tree", "subprocess.Popen", "host-helper", 1):
+        ("Exempt", "post-launch cleanup helper"),
+    ("_complete_bwrap_witness", "subprocess.Popen", "host-helper", 2):
+        ("Exempt", "post-launch witness pin; no process starts"),
+    ("_require_launch_proof", "subprocess.Popen", "host-helper", 1):
+        ("Exempt", "post-launch witness check"),
+    ("_terminate_proofed_tree", "subprocess.Popen", "host-helper", 1):
+        ("Exempt", "post-launch cleanup helper"),
+    ("_tree_quiescent", "subprocess.Popen", "host-helper", 1):
+        ("Exempt", "post-launch cleanup predicate"),
     ("_claude_code_support_status", "run_provider", "owned", 1):
         ("Exempt", "short capability probe"),
     ("_claude_subscription_auth_ok", "run_provider", "owned", 1):
