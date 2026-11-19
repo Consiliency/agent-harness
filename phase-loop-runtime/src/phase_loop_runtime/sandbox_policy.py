@@ -1192,7 +1192,12 @@ _OPAQUE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}")
 _ENDPOINT_HOST = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?")
 _CLIENT_KEYS = frozenset({"schema", "client", "providers", "targets", "seat_route", "launch"})
 _HOST_KEYS = frozenset({"schema", "local_headroom"})
-_PROVIDER_KEYS = frozenset({"endpoints", "workloads", "policy_vectors"})
+#: One shape per provider kind. An endpoint provider adds its endpoints to the effective
+#: egress grant; a provider reached only through the link (``"reach": "link"``) adds its
+#: name and no rule. Any other shape refuses.
+_ENDPOINT_PROVIDER_KEYS = frozenset({"endpoints", "workloads", "policy_vectors"})
+_LINK_PROVIDER_KEYS = frozenset({"reach", "workloads", "policy_vectors"})
+_PROVIDER_REACH_LINK = "link"
 _TARGET_KEYS = frozenset({"name", "kind", "rank", "transport_id", "root",
                           "probe_receipt_providers", "od7_providers"})
 _MAX_TARGETS = 8
@@ -1216,6 +1221,12 @@ class PlacementProvider:
     endpoints: tuple[tuple[str, int], ...]
     workloads: frozenset[str]
     policy_vectors: frozenset[str]
+
+    @property
+    def link_only(self) -> bool:
+        """Reached only through the link: no endpoint of its own (the loader never admits an
+        endpoint provider with an empty endpoint set)."""
+        return not self.endpoints
 
 
 @dataclass(frozen=True)
@@ -1363,6 +1374,36 @@ def _policy_digests() -> dict[str, str]:
     return {name: digests[name] for name in _PLACEMENT_POLICY_VECTORS}
 
 
+def _placement_policies_raw() -> bytes:
+    from importlib import resources
+
+    return resources.files(__package__).joinpath("contracts/placement/vectors/policies.json").read_bytes()
+
+
+def placement_policy_status() -> str:
+    """The packaged policy vectors' ``status`` (``pending_qualification`` until ACTIVATE
+    repins them). An unreadable file, a strict-parse failure, or a missing or non-string
+    status raises :class:`PlacementConfigError`; it is never guessed at."""
+    try:
+        raw = _placement_policies_raw()
+    except OSError:
+        raise PlacementConfigError() from None
+    document = _strict_config_object(raw)
+    _require(isinstance(document, dict))
+    status = document.get("status")
+    _require(isinstance(status, str))
+    return status  # type: ignore[return-value]
+
+
+def placement_sandbox_egress_providers(config: PlacementClientConfig) -> tuple[str, ...]:
+    """The sorted names of providers in this effective configuration that serve
+    ``pi-runner`` and grant sandbox egress (any provider that is not link-only), whatever
+    their policy vectors. Empty when every ``pi-runner`` provider is reached only through
+    the link; always empty for a client without ``pi-runner``."""
+    return tuple(sorted(name for name, provider in config.providers.items()
+                        if "pi-runner" in provider.workloads and not provider.link_only))
+
+
 def placement_policy_baseline(name: str) -> tuple[tuple[str, int], ...]:
     """The egress baseline a named policy vector grants: every ``host``/``port`` endpoint in
     its ``network_policies``. An unknown shape refuses rather than being guessed at."""
@@ -1413,6 +1454,44 @@ def _parse_target(value: object) -> PlacementTargetConfig:
     return PlacementTargetConfig(name, kind, rank, transport, root, probe, od7)  # type: ignore[arg-type]
 
 
+def _parse_placement_provider(name: str, body: object, workloads: frozenset[str]) -> PlacementProvider:
+    """One operator provider body. Exactly one of two shapes: an endpoint provider
+    (``endpoints``: 1-16 unique endpoints) or a provider reached only through the link
+    (``"reach": "link"``, no ``endpoints``). Both name their ``workloads`` and
+    ``policy_vectors``. Anything else refuses ``placement_config_invalid``."""
+    _require(isinstance(body, dict))
+    keys = set(body)  # type: ignore[arg-type]
+    if keys == _LINK_PROVIDER_KEYS:
+        reach = body["reach"]  # type: ignore[index]
+        _require(type(reach) is str and reach == _PROVIDER_REACH_LINK)
+        endpoints: tuple[tuple[str, int], ...] = ()
+    else:
+        _require(keys == _ENDPOINT_PROVIDER_KEYS)
+        endpoints_raw = body["endpoints"]  # type: ignore[index]
+        _require(isinstance(endpoints_raw, list) and 0 < len(endpoints_raw) <= 16)
+        endpoints = tuple(sorted({_endpoint(item) for item in endpoints_raw}))
+        _require(len(endpoints) == len(endpoints_raw))
+    return PlacementProvider(
+        name, endpoints,
+        _names(body["workloads"], allowed=workloads, pattern=re.compile(r"[a-z-]+")),  # type: ignore[index]
+        _names(body["policy_vectors"], allowed=frozenset(_PLACEMENT_POLICY_VECTORS),  # type: ignore[index]
+               pattern=re.compile(r"[a-z-]+")),
+    )
+
+
+def _placement_provider_effective(provider: PlacementProvider) -> dict[str, object]:
+    """A provider's canonical form inside the effective configuration. An endpoint provider
+    keeps its v1 form byte for byte (no ``reach`` member), so its ``config_sha256`` is
+    unchanged; a link-only provider carries ``"reach": "link"`` and no ``endpoints``."""
+    if provider.link_only:
+        return {"reach": _PROVIDER_REACH_LINK,
+                "workloads": sorted(provider.workloads),
+                "policy_vectors": sorted(provider.policy_vectors)}
+    return {"endpoints": [{"host": h, "port": p} for h, p in provider.endpoints],
+            "workloads": sorted(provider.workloads),
+            "policy_vectors": sorted(provider.policy_vectors)}
+
+
 def load_placement_client_config(
     client: str, *, config_root: Path | None = None, seat_caps_sha256: str,
 ) -> PlacementClientConfig:
@@ -1440,16 +1519,7 @@ def load_placement_client_config(
     providers: dict[str, PlacementProvider] = {}
     for name, body in sorted(providers_raw.items()):  # type: ignore[union-attr]
         _require(isinstance(name, str) and bool(_PROVIDER_NAME.fullmatch(name)))
-        _require(isinstance(body, dict) and set(body) == _PROVIDER_KEYS)
-        endpoints_raw = body["endpoints"]
-        _require(isinstance(endpoints_raw, list) and 0 < len(endpoints_raw) <= 16)
-        endpoints = tuple(sorted({_endpoint(item) for item in endpoints_raw}))
-        _require(len(endpoints) == len(endpoints_raw))
-        providers[name] = PlacementProvider(
-            name, endpoints, _names(body["workloads"], allowed=workloads, pattern=re.compile(r"[a-z-]+")),
-            _names(body["policy_vectors"], allowed=frozenset(_PLACEMENT_POLICY_VECTORS),
-                   pattern=re.compile(r"[a-z-]+")),
-        )
+        providers[name] = _parse_placement_provider(name, body, workloads)
     targets_raw = document.get("targets", [])
     _require(isinstance(targets_raw, list) and len(targets_raw) <= _MAX_TARGETS)
     targets = tuple(sorted((_parse_target(item) for item in targets_raw), key=lambda t: t.rank))
@@ -1475,9 +1545,7 @@ def load_placement_client_config(
         "schema": PLACEMENT_CLIENT_CONFIG_SCHEMA,
         "client": client,
         "local_headroom": headroom,
-        "providers": {name: {"endpoints": [{"host": h, "port": p} for h, p in provider.endpoints],
-                             "workloads": sorted(provider.workloads),
-                             "policy_vectors": sorted(provider.policy_vectors)}
+        "providers": {name: _placement_provider_effective(provider)
                       for name, provider in providers.items()},
         "targets": [{"name": t.name, "kind": t.kind, "rank": t.rank, "transport_id": t.transport_id,
                      "root": None if t.kind != "openshell" else _root_text(t.root),
