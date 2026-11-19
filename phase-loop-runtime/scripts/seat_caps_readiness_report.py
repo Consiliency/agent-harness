@@ -17,8 +17,11 @@ A record failure is reported as a record failure. The report never retries with 
 packaged defaults and never substitutes a bound.
 
 ``--expect-device MAJ:MIN`` (assert mode) exits 1 unless readiness passes, both automatic
-paths are on MAJ:MIN, the child scratch is not the degraded fallback, and the I/O device
-plan is exactly ``(MAJ:MIN,)``.
+paths and the temporary directory are on MAJ:MIN, the child scratch is not the degraded
+fallback, and the I/O device plan is exactly ``(MAJ:MIN,)``. The temporary directory
+matters because a test session (the strict conformance suite) moves both automatic paths
+below pytest's tmp_path, which is rooted there; ``tests/test_seat_caps_scratch_binding.py``
+checks that binding from inside such a session.
 
 ``--summarize DIR`` prints a Markdown summary of the JSON Lines files in DIR.
 """
@@ -31,6 +34,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import tempfile
 from typing import Any, Callable
 
 
@@ -74,6 +78,11 @@ def _read_text(path: Path) -> str:
     return path.read_text(encoding="ascii", errors="replace").strip()
 
 
+def _temp_root() -> str:
+    """The temporary directory: pytest's tmp_path root, and so the suite's scratch root."""
+    return tempfile.gettempdir()
+
+
 def _in_user_manager() -> bool:
     """Whether this process runs below this user's systemd user manager (the in-unit
     baseline and provisioned reports), as opposed to the step's own shell (host context)."""
@@ -89,6 +98,7 @@ def host_facts(label: str) -> dict[str, Any]:
         "sys_vendor": _fact(lambda: _read_text(_SYS_VENDOR)),
         "cpu_count": os.cpu_count(),
         "uid": os.getuid(),
+        "tempdir": _fact(_temp_root),
         "in_user_manager": _fact(_in_user_manager),
         "proc_self_cgroup": _fact(lambda: _read_text(_PROC_SELF_CGROUP)),
         "env": {name: os.environ.get(name, "unset") for name in (
@@ -383,6 +393,8 @@ def assert_device(label: str, expected: str) -> tuple[bool, list[dict[str, Any]]
     check("readiness_code is None", lambda: (lambda code: (code is None, code))(caps.readiness_code()))
     check("staging_root on device",
           lambda: (lambda dev: (dev == expected, dev))(_majmin(policy.staging_root())))
+    check("temporary directory on device",
+          lambda: (lambda dev: (dev == expected, dev))(_majmin(Path(_temp_root()))))
     child = None
 
     def child_location():

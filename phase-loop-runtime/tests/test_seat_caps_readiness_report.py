@@ -234,6 +234,10 @@ def device_host(monkeypatch, host, tmp_path):
     monkeypatch.setattr(sandbox_policy, "_child_tmp_dir", lambda: location["value"])
     monkeypatch.setattr(caps, "_dev_number", lambda path: devices[str(path)])
     monkeypatch.setattr(caps, "_automatic_paths", lambda: (staging, child))
+    temp_root = tmp_path / "dev-tmp"
+    temp_root.mkdir()
+    devices[str(temp_root)] = (7, 3)
+    monkeypatch.setattr(report_mod, "_temp_root", lambda: str(temp_root))
     monkeypatch.setattr(report_mod, "_majmin", lambda path: "%d:%d" % devices[str(path)])
     return devices, staging, child, location
 
@@ -344,3 +348,14 @@ def test_summary_of_a_real_failed_report_is_not_ready(monkeypatch, tmp_path, cap
     assert report_mod.main(["--summarize", str(directory)]) == 0
     out = capsys.readouterr().out
     assert "report error (ZeroDivisionError)" in out and "| ready |" not in out
+
+
+def test_assert_mode_fails_when_the_temporary_directory_is_off_the_device(device_host, tmp_path,
+                                                                         capsys):
+    """agent-harness#1993: the test session's scratch follows the temporary directory."""
+    devices, _staging, _child, _location = device_host
+    devices[str(tmp_path / "dev-tmp")] = (252, 0)
+    assert report_mod.main(["--expect-device", "7:3"]) == 1
+    rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    failed = [row["name"] for row in rows if row.get("check") == "assert" and not row["ok"]]
+    assert failed == ["temporary directory on device"]

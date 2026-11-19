@@ -14,7 +14,8 @@
 #   delegate                     give the user manager the five controllers
 #   provision                    create, attach, format and mount the scratch device
 #   run [--baseline] -- CMD...   run CMD as a oneshot unit of the user manager; without
-#                                --baseline, CMD's scratch paths point at the device
+#                                --baseline, CMD's scratch paths and its temporary
+#                                directory (TMPDIR) point at the device
 #   majmin                       print the scratch device's MAJ:MIN
 #   mountpoint                   print the scratch filesystem's mount point
 #   teardown                     stop leftover units, unmount, detach only the owned device
@@ -240,6 +241,10 @@ cmd_provision() {
   record mount "$mnt"
   sudo chown "$uid:$gid" "$mnt"
   chmod 0700 "$mnt"
+  # The temporary directory for gate commands (TMPDIR in run). The conformance suite's
+  # test isolation moves both automatic scratch paths below pytest's tmp_path, whose
+  # root is the temporary directory, so it must be on the device too (agent-harness#1993).
+  mkdir -m 0700 "$mnt/tmp"
   local source fstype
   read -r source fstype < <(findmnt -no SOURCE,FSTYPE --mountpoint "$mnt") || true
   if [ "${source:-} ${fstype:-}" != "$loop ext4" ]; then
@@ -309,8 +314,16 @@ cmd_run() {
       fail "${st[mount]} is not the provisioned ${st[loop]} ext4 filesystem"
       exit 1
     fi
+    if [ ! -d "${st[mount]}/tmp" ] || [ -L "${st[mount]}/tmp" ]; then
+      fail "${st[mount]}/tmp is not the provisioned temporary directory"
+      exit 1
+    fi
+    # The two documented scratch overrides, and TMPDIR. A test session (the strict
+    # conformance suite) replaces the overrides with paths below pytest's tmp_path, which
+    # is rooted at TMPDIR; without it those paths fall back to the host's /tmp.
     scratch=(-E "PHASE_LOOP_SANDBOX_STAGING_DIR=${st[mount]}/sandboxes"
-             -E "XDG_CACHE_HOME=${st[mount]}/cache")
+             -E "XDG_CACHE_HOME=${st[mount]}/cache"
+             -E "TMPDIR=${st[mount]}/tmp")
   fi
   run_unit="$unit_prefix$(date +%s)-$$"
   # --same-dir keeps the caller's working directory. Type=oneshot makes a signal death

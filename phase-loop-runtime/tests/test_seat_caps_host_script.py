@@ -15,7 +15,9 @@ import shutil
 import socket
 import stat
 import subprocess
+import sys
 import tempfile
+import textwrap
 
 import pytest
 
@@ -81,6 +83,8 @@ printf '%s\n' "$1" > "$FAKE_STATE/mounts/$(printf '%s' "$2" | tr / _)"
 case " $* " in *" -l "*) exit 99 ;; esac
 [ -n "${FAKE_BUSY:-}" ] && { echo "target is busy" >&2; exit 32; }
 rm -f "$FAKE_STATE/mounts/$(printf '%s' "$1" | tr / _)"
+# What was written below the mount point lived on the unmounted filesystem.
+find "$1" -mindepth 1 -delete
 ''',
     "findmnt": r'''
 target=""; mode=""
@@ -168,6 +172,7 @@ def world(tmp_path):
     ns = type("World", (), {})()
     ns.root, ns.run, ns.bus, ns.log, ns.state = root, run, bus, log, state
     ns.runner_temp = runner_temp
+    ns.bin = bin_dir
     ns.state_dir = runner_temp / "seat-caps"
     ns.mnt = ns.state_dir / "mnt"
     ns.image = ns.state_dir / "scratch.img"
@@ -516,3 +521,57 @@ def test_context_never_fails_the_step(world):
     done = world.run("context", "--", "false", check=0)
     assert "::warning::host-context diagnostic exited 1" in done.stderr
     world.run("context", "--", "true", check=0)
+
+
+# --- the scratch binding as the conformance suite sees it ------------------------------
+
+BINDING = REPO / "phase-loop-runtime" / "tests" / "test_seat_caps_scratch_binding.py"
+
+
+def _exec_systemd_run(world):
+    """A systemd-run that really runs CMD, in a clean environment holding only the -E
+    values, as a user-manager unit does."""
+    (world.bin / "systemd-run").write_text(f"#!{sys.executable}\n" + textwrap.dedent("""
+        import os, sys
+        args, env, i = sys.argv[1:], {}, 0
+        while args[i] != "--":
+            if args[i] == "-E":
+                key, _, value = args[i + 1].partition("=")
+                env[key] = value
+                i += 2
+            else:
+                i += 1
+        os.execvpe(args[i + 1], args[i + 1:], env)
+    """))
+
+
+def _binding_run(world):
+    _provision(world)
+    _exec_systemd_run(world)
+    runtime = REPO / "phase-loop-runtime"
+    return world.run(
+        "run", "--", "env", "CI_SCRATCH_DEVICE=7:7", f"CI_SCRATCH_STUB_ROOT={world.mnt}",
+        f"PYTHONPATH={runtime / 'src'}{os.pathsep}{runtime / 'tests'}",
+        sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-q", "-rs", str(BINDING),
+        clean=True)
+
+
+def test_the_conformance_session_resolves_its_scratch_on_the_device(world):
+    """agent-harness#1993, AWS: the suite's isolation moves both automatic paths below
+    pytest's tmp_path. Through the real run wrapper they must still be on the device,
+    which needs TMPDIR on it; with the two overrides alone they land on the host's /tmp."""
+    done = _binding_run(world)
+    assert done.returncode == 0, done.stdout[-3000:] + done.stderr[-2000:]
+    assert "1 passed" in done.stdout
+
+
+def test_run_points_tmpdir_at_the_provisioned_temporary_directory(world):
+    _provision(world)
+    assert stat.S_IMODE((world.mnt / "tmp").stat().st_mode) == 0o700
+    world.log.write_text("")
+    world.run("run", "--", "true", check=0)
+    (launch,) = [call for call in _calls(world) if call.startswith("systemd-run ")]
+    assert f"-E TMPDIR={world.mnt}/tmp" in launch
+    (world.mnt / "tmp").rmdir()
+    done = world.run("run", "--", "true", check=1)
+    assert "is not the provisioned temporary directory" in done.stderr

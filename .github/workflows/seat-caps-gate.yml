@@ -94,6 +94,10 @@ jobs:
           majmin="$("$host" majmin)"
           "$host" run -- timeout 60 "$py" "$report" --label provisioned-assert \
             --out "$evidence/provisioned-assert.jsonl" --expect-device "$majmin"
+          # The strict suite resolves its scratch inside a test session, below pytest's
+          # tmp_path; check that binding the same way before the verifier relies on it.
+          "$host" run -- env CI_SCRATCH_DEVICE="$majmin" PYTHONPATH="$PWD/src:$PWD/tests" \
+            timeout 120 "$py" -m pytest -p no:cacheprovider -q -rs tests/test_seat_caps_scratch_binding.py
           env -u XDG_RUNTIME_DIR -u DBUS_SESSION_BUS_ADDRESS \
             "$host" run -- timeout 1200 "$py" scripts/verify_qualified_agy_image.py \
             --release --conformance-report "$RUNNER_TEMP/agy-conformance/conformance.xml"

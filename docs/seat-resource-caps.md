@@ -99,9 +99,13 @@ whole block device fails readiness with `seat_resource_caps_unavailable`
   manager, waits for its bus and checks the delegated controllers.
 - `provision` creates a private, sparse, 8 GiB loop-backed ext4 filesystem under
   `$RUNNER_TEMP`. `run` points the two automatic paths at it through the documented
-  overrides, `PHASE_LOOP_SANDBOX_STAGING_DIR` and `XDG_CACHE_HOME`, and launches its command
-  as a oneshot unit of the user manager. A loop device is a whole block device, so the
-  capped parent receives real `io.max` rows for it.
+  overrides, `PHASE_LOOP_SANDBOX_STAGING_DIR` and `XDG_CACHE_HOME`, sets `TMPDIR` to a
+  private directory on it, and launches its command as a oneshot unit of the user
+  manager. A loop device is a whole block device, so the capped parent receives real
+  `io.max` rows for it. `TMPDIR` is needed because the strict conformance suite runs under
+  the test suite's host isolation, which replaces both overrides with paths below pytest's
+  `tmp_path`; those follow the temporary directory, which on some runners is on a device
+  that cannot carry `io.max`.
 - `teardown` runs on every outcome. It stops leftover seat and gate units, unmounts without
   forcing, and detaches only the device whose backing file is the job's own image. A busy or
   leaked scratch fails the job before the build.
@@ -115,9 +119,12 @@ separately, with check 5 split into the caps record and the device plan. The gat
 in the step's own environment first, again after a failed delegation or provision, inside the
 user manager before the scratch overrides apply (the baseline), and with them. It is a
 diagnostic and always exits 0, except in assert mode (`--expect-device MAJ:MIN`), which the
-gate uses to require that both automatic paths are on the provisioned device and that the
-child scratch is not the degraded fallback. A record failure is reported as a record failure,
-never retried with the defaults.
+gate uses to require that both automatic paths and the temporary directory are on the
+provisioned device and that the child scratch is not the degraded fallback. A record failure
+is reported as a record failure, never retried with the defaults. The gate then runs
+`phase-loop-runtime/tests/test_seat_caps_scratch_binding.py` inside the user manager, which
+makes the same check from inside a test session, where the strict suite resolves its paths.
+It skips everywhere else.
 
 The `seat-caps-gate.yml` probe runs the same gate on six shards and adds
 `phase-loop-runtime/scripts/seat_caps_loop_validation.py`, which performs real direct I/O on

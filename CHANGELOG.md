@@ -12,8 +12,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   (agent-harness#1994).
 - The agy release gate in `publish-pypi.yml` prepares the same host on every hosted runner
   pool (agent-harness#1993). `ci/seat-caps-host.sh` delegates the user manager's controllers
-  and mounts a private loop-backed scratch filesystem for the automatic scratch paths, so
-  the per-seat caps' I/O device plan no longer depends on a pool's storage layout. Teardown
+  and mounts a private loop-backed scratch filesystem for the automatic scratch paths and
+  the temporary directory, so the per-seat caps' I/O device plan no longer depends on a
+  pool's storage layout, including inside the conformance suite's test session. Teardown
   and an evidence upload run on every outcome. A per-check readiness report records which
   readiness check fails, and the new `seat-caps-gate.yml` probe also validates that the I/O
   bandwidth caps bind on the scratch device. The pull-request job timeout is 55 minutes so

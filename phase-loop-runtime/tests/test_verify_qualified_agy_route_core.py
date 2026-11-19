@@ -86,6 +86,10 @@ def test_publication_gates_on_release_which_runs_strict_conformance_before_the_b
         "\ncd phase-loop-runtime\n",
         '"$host" run -- timeout 60 "$py" "$report" --label provisioned ',
         '--expect-device "$majmin"',
+        # agent-harness#1993: the strict suite resolves its scratch inside a test session
+        # (below pytest's tmp_path); that binding is checked the same way, before the verifier.
+        '"$host" run -- env CI_SCRATCH_DEVICE="$majmin" PYTHONPATH="$PWD/src:$PWD/tests"',
+        "tests/test_seat_caps_scratch_binding.py",
         '"$host" run -- timeout 1200 "$py" scripts/verify_qualified_agy_image.py',
     ]
     positions = [run.index(item) for item in order]
@@ -123,6 +127,9 @@ def test_the_host_script_provisions_the_real_prerequisites_without_forcing_or_by
         "losetup --find --show",
         '-E "PHASE_LOOP_SANDBOX_STAGING_DIR=${st[mount]}/sandboxes"',
         '-E "XDG_CACHE_HOME=${st[mount]}/cache"',
+        # The suite's isolation re-roots both automatic paths at pytest's tmp_path, whose
+        # root is the temporary directory (agent-harness#1993).
+        '-E "TMPDIR=${st[mount]}/tmp"', 'mkdir -m 0700 "$mnt/tmp"',
     ):
         assert required in script, required
     assert "losetup -D" not in script and "umount -l" not in script
