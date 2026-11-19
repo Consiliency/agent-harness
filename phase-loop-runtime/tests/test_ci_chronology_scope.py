@@ -512,9 +512,9 @@ def test_offload_requires_trust_secret_and_supported_sandbox(
     assert jobs["wheel-smoke"]["if"] == (
         "needs.elig.outputs.eligible != 'true' && github.event_name == 'pull_request'"
     )
-    # agent-harness#1546: 3.12 is the floor, so every event runs the one 3.12 lane; with
+    # Every event runs the one CI-interpreter lane (3.14.10, the Python 3.14 move); with
     # nothing to drop on a pull request the matrix has no `exclude`.
-    assert jobs["pytest"]["strategy"]["matrix"] == {"python-version": ["3.12"]}
+    assert jobs["pytest"]["strategy"]["matrix"] == {"python-version": ["3.14.10"]}
 
 
 @pytest.mark.parametrize("event,pytest_r,retention,cleanroom,smoke,success", [

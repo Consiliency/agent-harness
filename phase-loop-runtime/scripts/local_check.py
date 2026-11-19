@@ -47,7 +47,7 @@ SUITE_IGNORES = ("tests/test_legible_roadmap_contract.py", "tests/test_legible_e
 CI_TEST_DEPS = ("./phase-loop-runtime[visual,claude-sdk]", "pytest", "pytest-xdist==3.8.0", "build==1.6.1", "setuptools>=70.1")
 SYSTEM_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 VENV_DIR = ".local-check-venv"
-VENV_PYTHON = "3.12"  # the CI lane pull requests run (the floor since agent-harness#1546)
+VENV_PYTHON = "3.14.10"  # the CI lane pull requests run (exact patch: uv 3.14.5 lacks memfd_create)
 
 
 def changed_files(repo: Path, base: str) -> list[str]:
@@ -218,7 +218,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--base", default="origin/main")
     ap.add_argument("--full", action="store_true", help="run the whole standalone suite")
     ap.add_argument("--with-chronology", action="store_true",
-                    help="keep the ~50-minute CONFORM chronology node (CI runs it on py3.12/Gate A)")
+                    help="keep the ~50-minute CONFORM chronology node (CI runs it on py3.14/Gate A)")
     ap.add_argument("--host-env", action="store_true", help="keep this shell's environment")
     ap.add_argument("--dry-run", action="store_true", help="print the plan, run nothing")
     args = ap.parse_args(argv)
@@ -251,7 +251,7 @@ def main(argv: list[str] | None = None) -> int:
     elif main_tests:
         pytest_cmd += main_tests
     if tests != [] and not args.with_chronology:
-        # CI runs the ~50-minute CONFORM chronology node on py3.12/Gate A only; so does this
+        # CI runs the ~50-minute CONFORM chronology node on py3.14/Gate A only; so does this
         # only with --with-chronology, in either mode.
         scope = subprocess.run(["bash", str(repo / "ci" / "chronology-scope.sh"), "--node"],
                                cwd=repo, capture_output=True, text=True)
@@ -263,7 +263,7 @@ def main(argv: list[str] | None = None) -> int:
         pytest_cmd.append(f"--deselect={node}")
         if tests and node.split("::", 1)[0] in tests:
             print(f"  NOTE : this diff reaches {node}, which is deselected here "
-                  "(CI runs it on py3.12); pass --with-chronology to run it")
+                  "(CI runs it on py3.14); pass --with-chronology to run it")
 
     uvx = shutil.which("uvx")
     lint_cmd = [uvx, RUFF_PIN.replace("==", "@"), "check", "."] if uvx else None

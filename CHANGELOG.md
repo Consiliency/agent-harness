@@ -6,6 +6,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Changed
+
+- CI and tooling now run on CPython 3.14.10: every workflow `python-version`, the
+  hosted suite lane and Gate A, the Dagger lanes and `make check`/`local_check.py`. The
+  pins are exact patches, and a new guard requires each to be 3.14 at patch 10 or later,
+  because uv-managed 3.14.5 lacks `os.memfd_create`. A capability test fails any Linux
+  CPython suite lane without memfd sealing. The chronology junit artifact is now
+  `chronology-junit-py314`. The package floor is unchanged (`requires-python = ">=3.12"`).
+
 ## [0.7.35] - Unreleased candidate
 
 ### Changed

@@ -34,7 +34,7 @@ in under half that.
 - `test.yml` `pytest` and `clean-room` were left at **100**: at the time both were
   skipped on pull requests, so the sampled runs carried no timing for them, and any
   tighter number would have been a guess. Since then `pytest` runs on pull requests
-  (currently its py3.12 lane), because the offload path is disabled in `test.yml`
+  (currently its 3.14 lane), because the offload path is disabled in `test.yml`
   (`OFFLOAD_SANDBOX_READY: 'false'`), and
   `clean-room` runs only on push, schedule, dispatch and tags (agent-harness#1029) with
   a stopgap of **150** (agent-harness#1297).

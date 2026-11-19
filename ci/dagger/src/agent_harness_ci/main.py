@@ -28,7 +28,7 @@ import asyncio
 import dagger
 from dagger import dag, function, object_type
 
-# The heavy CONFORM chronology node (~50 min). When retained, it runs in the 3.12
+# The heavy CONFORM chronology node (~50 min). When retained, it runs in the 3.14
 # container and in the Gate A stage, nowhere else. Kept in lockstep with
 # ci/chronology-scope.sh (`--node`) by tests/test_ci_chronology_scope.py.
 CHRONOLOGY_NODE = (
@@ -36,12 +36,15 @@ CHRONOLOGY_NODE = (
     "test_mutation_definitions_are_frozen_but_not_executed_preimplementation"
 )
 
-# Oldest supported interpreter. It keeps the chronology node because the node
-# drives version-sensitive subprocess machinery -- the egg-info divergence
-# recorded in agent-harness#382. 3.12 is the floor and the only suite lane since
-# agent-harness#1546.
-CHRONOLOGY_PYTHON = "3.12"
-PYTHON_VERSIONS = ("3.12",)
+# The CI interpreter and the only suite lane (Python 3.14 move, 2026-11-19). It
+# keeps the chronology node because the node drives version-sensitive subprocess
+# machinery -- the egg-info divergence recorded in agent-harness#382. That
+# rationale ties the node to the oldest supported interpreter; the lane is the
+# package floor again only once requires-python is raised to 3.14. Gate A runs
+# on this same interpreter. An exact patch: 3.14.10 is the first uv-managed
+# 3.14 build with os.memfd_create.
+CHRONOLOGY_PYTHON = "3.14.10"
+PYTHON_VERSIONS = ("3.14.10",)
 
 # The per-stage verdict roll-up, written into the exported evidence directory
 # alongside the junit. `all` returns a Directory, so this is where the roll-up
@@ -77,9 +80,10 @@ BASE_PACKAGES = [
 # /opt/python3.12 and `python -m pip install` wrote the console scripts to
 # /opt/python3.12/bin, which is not on PATH -- pip said so in the run log, and
 # `codex-phase-loop` then failed to spawn. The 3.10 and 3.11 lanes ran the same
-# test green, which is what localises the fault to the graft. With 3.12 the only
-# suite lane (agent-harness#1546) no current lane takes the graft; it stays for a
-# lane on any other interpreter.
+# test green, which is what localises the fault to the graft. With 3.14 the only
+# suite lane, every current lane (and Gate A) takes the graft, which supplies the
+# deliberately different python3.12 the `automation.python: python3.12` pin
+# tests need.
 PIN_INTERPRETER_IMAGE = "python:3.12-bookworm"
 PIN_INTERPRETER_PATH = "/usr/local/bin/python3.12"
 # The version whose own interpreter already satisfies the pin, so it must be left
@@ -319,12 +323,12 @@ PYTHONPATH="$suite_root/tests" python -m pytest \\
     def suite(
         self, source: dagger.Directory, python_version: str, chronology: bool = True
     ) -> dagger.Container:
-        """Run the standalone suite for one interpreter (3.12 keeps the chronology node)."""
+        """Run the standalone suite for one interpreter (3.14 keeps the chronology node)."""
         return self._suite(source, python_version, chronology)
 
     @function
     def gate_a(self, source: dagger.Directory, chronology: bool = True) -> dagger.Container:
-        """Run the Gate A clean-room stage (py3.12), which retains the chronology node.
+        """Run the Gate A clean-room stage (3.14), which retains the chronology node.
 
         With ``chronology`` off the clean-room script deselects the node itself
         (``GATE_A_DESELECT_CHRONOLOGY=1``) and proves the deselection against its
@@ -339,7 +343,7 @@ mkdir -p /junit
 export GATE_A_JUNIT=/junit/junit-gate-a.xml
 {deselect}bash scripts/gate_a_cleanroom.sh
 """
-        return self._sandbox_exec(self._base(source, "3.12", cache_scope="gate-a"), script)
+        return self._sandbox_exec(self._base(source, CHRONOLOGY_PYTHON, cache_scope="gate-a"), script)
 
     @function
     async def all(self, source: dagger.Directory, chronology: bool = True) -> dagger.Directory:

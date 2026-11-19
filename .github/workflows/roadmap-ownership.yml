@@ -29,7 +29,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14.10"
 
       # INSTALL, don't PYTHONPATH. The parser this imports pulls in pydantic via
       # roadmap_lint, so a bare PYTHONPATH run dies with ModuleNotFoundError --

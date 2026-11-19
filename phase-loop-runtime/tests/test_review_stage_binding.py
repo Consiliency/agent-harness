@@ -849,6 +849,88 @@ def test_inventory_uses_invoking_install_when_system_python_lacks_pytest(
     assert (dependencies / "pytest" / "native.so").exists() is (target_minor_delta == 0)
 
 
+class _RuntimeSys:
+    """``sys`` as ``review_stage`` sees it, with only the runtime's version replaced."""
+
+    def __init__(self, version_info):
+        self.version_info = version_info
+
+    def __getattr__(self, name):
+        return getattr(sys, name)
+
+
+def _fake_distribution(site: Path, name: str, files: dict[str, bytes]) -> None:
+    for relative, content in files.items():
+        (site / relative).parent.mkdir(parents=True, exist_ok=True)
+        (site / relative).write_bytes(content)
+    metadata = site / f"{name}-1.0.dist-info"
+    metadata.mkdir()
+    (metadata / "METADATA").write_text(f"Name: {name}\nVersion: 1.0\n", encoding="utf-8")
+    (metadata / "RECORD").write_text("".join(f"{relative},,\n" for relative in files), encoding="utf-8")
+
+
+@pytest.mark.parametrize("runtime,host", [
+    ((3, 14, 10), (3, 12, 3)),  # the hosted lane: CI interpreter 3.14.10, ubuntu-24.04 /usr/bin/python3
+    ((3, 14, 10), (3, 14, 4)),  # same minor, different patch (dev0's distro 3.14.4)
+])
+def test_inventory_snapshot_targets_an_older_system_python_than_the_runtime(
+    tmp_path, monkeypatch, runtime, host,
+):
+    """The falsifier runs under the host's /usr/bin/python3, so the snapshot is for IT.
+
+    With the runtime on 3.14.10 and the hosted runner's system interpreter on 3.12, the
+    ``cross_minor`` branch is taken for real in CI. Dependency markers must be evaluated
+    for the 3.12 target, not the 3.14 runtime, and every native extension (abi3 included)
+    is left out, because a 3.14 build cannot be assumed to load under 3.12. Pure-Python
+    files are copied either way. A runtime-importing node that needs a native dependency
+    under the older host is therefore a typed error, not something this snapshot fixes.
+    """
+    cross_minor = runtime[:2] != host[:2]
+    prefix = tmp_path / "toolcache"
+    site = prefix / "lib" / f"python{runtime[0]}.{runtime[1]}" / "site-packages"
+    site.mkdir(parents=True)
+    _fake_distribution(site, "pytest", {
+        "pytest/__init__.py": b"# installed pytest\n",
+        "pytest/native.cpython-314-x86_64-linux-gnu.so": b"native extension",
+        "pytest/speedups.abi3.so": b"abi3 extension",
+    })
+    _fake_distribution(site, "hostonly", {"hostonly/__init__.py": b"# selected for <3.13\n"})
+    _fake_distribution(site, "runtimeonly", {"runtimeonly/__init__.py": b"# selected for >=3.14\n"})
+    stage = tmp_path / "stage"
+    (stage / "phase-loop-runtime").mkdir(parents=True)
+    (stage / "phase-loop-runtime" / "pyproject.toml").write_text(
+        "[project]\nname = 'probe'\ndependencies = [\n"
+        "  'hostonly; python_version < \"3.13\"',\n"
+        "  'runtimeonly; python_version >= \"3.14\"',\n"
+        "]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys, "prefix", str(prefix))
+    monkeypatch.setattr(sys, "path", [str(site), *sys.path])
+    monkeypatch.setattr(review_stage, "sys", _RuntimeSys((*runtime, "final", 0)))
+    original_run = subprocess.run
+
+    def system_inventory(argv, *args, **kwargs):
+        if argv[0] == "/usr/bin/python3" and "-c" in argv:
+            version = ",".join(map(str, host))
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=f'{{"paths":[],"version":[{version}]}}', stderr="",
+            )
+        return original_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(review_stage.subprocess, "run", system_inventory)
+    dependencies = tmp_path / "dependencies"
+    review_stage._snapshot_falsifier_dependencies(stage, dependencies)
+
+    assert (dependencies / "pytest" / "__init__.py").read_text() == "# installed pytest\n"
+    for native in ("native.cpython-314-x86_64-linux-gnu.so", "speedups.abi3.so"):
+        assert (dependencies / "pytest" / native).exists() is not cross_minor, native
+    # Markers follow the host interpreter: the <3.13 backport is staged for a 3.12 host
+    # even though the 3.14 runtime would not select it, and the >=3.14 dependency is not.
+    assert (dependencies / "hostonly" / "__init__.py").exists() is (host[:2] < (3, 13))
+    assert (dependencies / "runtimeonly" / "__init__.py").exists() is (host[:2] >= (3, 14))
+
+
 def test_falsifier_inventory_does_not_run_editable_usercustomize(tmp_path, monkeypatch):
     repo = _git_repo(tmp_path / "repo")
     marker = tmp_path / "host-marker"

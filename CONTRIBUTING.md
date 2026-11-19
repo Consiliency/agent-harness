@@ -22,7 +22,8 @@ below don't repeat it.
 ## Local checks
 
 Requirements: Python 3.12 or newer for the runtime (`requires-python = ">=3.12"`), plus
-[`uv`](https://docs.astral.sh/uv/).
+[`uv`](https://docs.astral.sh/uv/). CI and `make check` use Python 3.14.10; with
+uv-managed Python use 3.14.10 or newer (3.14.5 lacks `os.memfd_create`).
 
 On shared hosts, use only named test files, serially without `-n`, under `timeout`.
 Leave whole-suite checks to hosted CI (see `AGENTS.md`).

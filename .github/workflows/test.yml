@@ -106,7 +106,7 @@ jobs:
     if: needs.elig.outputs.eligible == 'true'
     # One job runs ALL the heavy stages, so this budget is not the per-lane 100
     # the hosted jobs use. The Dagger module runs them concurrently, so the wall
-    # clock is max(py3.12 suite, Gate A) -- ~60 min on a warm engine when the chronology
+    # clock is max(3.14 suite, Gate A) -- ~60 min on a warm engine when the chronology
     # node is retained, 7:45 when it is deselected (measured on run 33773648179,
     # a chronology=false dispatch of main). 120 leaves room for a
     # cold-image run and a Gate A slower than the ~58 min its hosted 86:36 scales
@@ -261,7 +261,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.14.10'
 
       - name: Install the runtime
         run: |
@@ -333,7 +333,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.14.10'
 
       - name: ruff check (config-driven)
         # ah#334: before this job CI ran NO linter, which is how an undefined name in an
@@ -341,7 +341,7 @@ jobs:
         # `from __future__ import annotations` defers evaluation, so only a linter or
         # get_type_hints() can see it.
         #
-        # Its OWN job, not a step gated on `matrix.python-version == '3.12'`: a
+        # Its OWN job, not a step gated on `matrix.python-version == '3.14.10'`: a
         # matrix-conditional step silently vanishes if the matrix is ever bumped past
         # that version, taking the gate with it and leaving CI fully green.
         #
@@ -413,7 +413,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.14.10'
       - uses: astral-sh/setup-uv@v6
       - name: Install locked source verification environment
         run: uv sync --project phase-loop-runtime --group test --extra visual --locked
@@ -439,9 +439,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # agent-harness#1546: 3.12 is the floor and the only lane, on every event.
+        # 3.14.10 is the only lane, on every event (Python 3.14 move, 2026-11-19);
+        # the package floor stays 3.12 until it is raised separately.
         # A one-entry matrix keeps the job name and the retention guard's subject.
-        python-version: ['3.12']
+        python-version: ['3.14.10']
     steps:
       - uses: actions/checkout@v4
         with:
@@ -527,16 +528,15 @@ jobs:
           # deliberately to exercise the installed-consumer posture.
           # Chronology selection: when this run retains the heavy CONFORM
           # chronology node (~50 min; see ci/chronology-scope.sh) it runs in
-          # exactly two CI executions -- this py3.12 lane (the oldest supported
-          # interpreter since agent-harness#1546; the node drives version-sensitive
-          # subprocess machinery, cf. the egg-info divergence in agent-harness#382)
-          # and Gate A (py3.12 clean room). Any other matrix lane deselects it. The
-          # py3.12 lane always writes junit, so the uploaded evidence witnesses the
-          # decision either way.
+          # exactly two CI executions -- this 3.14 lane (the only suite lane; the
+          # node drives version-sensitive subprocess machinery, cf. the egg-info
+          # divergence in agent-harness#382) and Gate A (3.14 clean room). Any other
+          # matrix lane deselects it. The 3.14 lane always writes junit, so the
+          # uploaded evidence witnesses the decision either way.
           CHRONOLOGY_NODE="$(bash ../ci/chronology-scope.sh --node)"
           suite_args=()
-          if [ "${{ matrix.python-version }}" = "3.12" ]; then
-            suite_args+=("--junitxml=$RUNNER_TEMP/junit-py312.xml")
+          if [ "${{ matrix.python-version }}" = "3.14.10" ]; then
+            suite_args+=("--junitxml=$RUNNER_TEMP/junit-py314.xml")
             if [ "${CHRONOLOGY:-true}" = "true" ]; then
               expect=present
             else
@@ -568,7 +568,7 @@ jobs:
             # The junit must WITNESS the decision: node present (ran, passed)
             # when retained, absent when deselected. A skipped row is neither.
             python scripts/chronology_witness.py \
-              --junit "$RUNNER_TEMP/junit-py312.xml" --node "$CHRONOLOGY_NODE" --expect "$expect"
+              --junit "$RUNNER_TEMP/junit-py314.xml" --node "$CHRONOLOGY_NODE" --expect "$expect"
           fi
           suite_root="$(mktemp -d)/phase-loop-runtime"
           mkdir -p "$suite_root" "$(dirname "$suite_root")/specs"
@@ -579,15 +579,15 @@ jobs:
             "$suite_root/tests/test_legible_evidence.py" \
             -m "not dotfiles_integration"
 
-      - name: Upload chronology junit (py3.12 lane)
+      - name: Upload chronology junit (py3.14 lane)
         # Durable per-node evidence: without the upload the xml dies with the
-        # runner. Only the py3.12 lane produces it (any other lane deselects the
+        # runner. Only the 3.14 lane produces it (any other lane deselects the
         # node), and it must survive a red suite, hence if: always().
-        if: always() && matrix.python-version == '3.12'
+        if: always() && matrix.python-version == '3.14.10'
         uses: actions/upload-artifact@v4
         with:
-          name: chronology-junit-py312
-          path: ${{ runner.temp }}/junit-py312.xml
+          name: chronology-junit-py314
+          path: ${{ runner.temp }}/junit-py314.xml
           if-no-files-found: error
 
       - name: WIRE-THE-DOCTOR — fail on a stale gating BOM target
@@ -690,7 +690,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.14.10'
 
       - name: Install review sandbox prerequisites
         run: |
@@ -774,7 +774,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.14.10'
 
       - name: Install review sandbox prerequisites
         run: |

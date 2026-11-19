@@ -146,6 +146,8 @@ Immutable snapshots require Linux `os.memfd_create`, seal support and the matchi
 prove availability: uv-managed CPython 3.14.5 lacks that API on the audited host.
 A missing API refuses admission as `immutable snapshot unavailable`; it does not
 fall back to mutable files. Check the interpreter actually used by the runtime.
+The repository's pinned interpreters (CI, Dagger and `local_check.py`) are CPython
+3.14.10 or newer; uv-managed 3.14.5 is not supported.
 
 ## Qualification status
 
