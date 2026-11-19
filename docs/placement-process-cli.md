@@ -25,8 +25,10 @@ agent-harness-placement --client agent-harness|agent-toolkit reserve|release|rea
 
 The `--client` flag is required. It alone selects the per-client operator configuration, the
 certificate OU and the inventory. No environment variable selects or overrides any of them,
-including `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and any placement-named variable. Each client
-accepts only its own workloads:
+including `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and any placement-named variable. The one
+placement setting read from the environment, `PHASE_LOOP_PLACEMENT_MAX_INPUT_DEPTH` (see
+[Input nesting limit](#input-nesting-limit)), only tightens or loosens the decoders' nesting
+safeguard. Each client accepts only its own workloads:
 
 | Client | Workloads | Certificate OU | Rank policy |
 | --- | --- | --- | --- |
@@ -57,7 +59,8 @@ All of the following fail as a protocol failure, exit 70 with stdout absent, and
 effect:
 
 - duplicate keys, trailing data, invalid UTF-8, or non-finite or unsafe numbers;
-- an oversized body;
+- an oversized body, or one nesting arrays or objects deeper than the input nesting limit
+  (64 by default; see [Input nesting limit](#input-nesting-limit));
 - a schema-invalid object for the verb;
 - non-empty stdin for `version`.
 
@@ -66,6 +69,46 @@ for every schema-valid outcome. Otherwise it carries one closed line such as
 `agent-harness-placement: protocol_failure input_duplicate_key` or
 `agent-harness-placement: placement_config_invalid`. Stderr never carries an input value, a
 credential, a policy document or an exception chain.
+
+### Input nesting limit
+
+The request decoder (and the `decode_response` client decoder) refuses a JSON body that nests
+arrays or objects deeper than a limit, as `input_invalid_json`, before decoding it. The top-level
+object counts as depth 1. This is an implementation resource safeguard, not a rule of the frozen
+`x-cli.input`, and it makes the outcome the same on every supported interpreter (Python 3.14's
+decoder accepts depths that 3.12's raises on). Because the check runs first, a too-deep body
+that also breaks another input rule (a duplicate key, an unsafe or non-finite number) reports
+`input_invalid_json`.
+
+The limit is 64 unless `PHASE_LOOP_PLACEMENT_MAX_INPUT_DEPTH` is set in the process
+environment. The variable is read on every decode.
+
+- **Accepted values.** A plain ASCII base-10 integer from 3 to 256 inclusive: no sign,
+  whitespace, underscore, leading zero, decimal point or non-ASCII digit.
+  - The minimum, 3, is the deepest schema-valid request or response, so no accepted value
+    refuses a valid message or a journaled response on replay.
+  - The maximum, 256, keeps input at the limit well inside the interpreter's recursion limit
+    on Python 3.12 and 3.14. At 512, input at the limit would itself be refused through
+    recursion exhaustion.
+- **Invalid values fail closed.** An empty string, or any other value outside the accepted
+  form or range, never falls back to 64. While the setting is invalid, every `reserve`,
+  `release` and `reap` body that passes the size and UTF-8 checks is refused as
+  `input_invalid_json` (exit 70, stdout absent), and so is every response given to
+  `decode_response`. No new diagnostic exists for this. `version` reads no JSON and is
+  unaffected.
+- **Not a protocol field.** The setting adds no message member, diagnostic or exit class. The
+  packaged schema and its SHA-256 (`130a894d…83ea`), the vectors and the CLI fixtures are
+  unchanged.
+- **Client configurations are never limited.** The operator configuration files are parsed
+  without a nesting limit and ignore this setting, because their top-level `launch` object is
+  uninterpreted and has no depth bound. Nesting too deep for the interpreter to decode or walk
+  is still refused as invalid rather than raising.
+
+The deepest real placement inputs in the repository nest far below 64:
+
+- schema-valid process messages nest at most 3 deep;
+- the CLI fixture requests nest 2 deep and the fixture client configurations 5;
+- the packaged coordinator wire vectors nest at most 8 deep and the policy vectors 7.
 
 ## Operator configuration
 
