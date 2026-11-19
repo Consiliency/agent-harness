@@ -6,6 +6,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+## [0.7.36] - Unreleased candidate
+
 ### Added
 
 - Placement operator configuration accepts providers reached only through the link
@@ -13,9 +15,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `Reservation.providers` and adds no egress rule; configurations with only endpoint
   providers keep their `config_sha256`. Placement also exposes the openshell launch check
   (`sandbox_placement.openshell_launch_refusal`) and route state
-  (`sandbox_placement.openshell_route_state`). The protocol bytes are unchanged.
+  (`sandbox_placement.openshell_route_state`). The protocol bytes are unchanged
+  (agent-harness#2003). This adds no sandbox provider egress and enables no live route.
 
-## [0.7.35] - Unreleased candidate
+### Fixed
+
+- The openshell test of output delayed beyond the dispatch bound is deterministic on a
+  loaded runner (agent-harness#2000, agent-harness#2002). It uses a 1.0 s answer bound and
+  asserts that the placement was made and that the output arrived after the bound. Runtime
+  behaviour is unchanged.
+
+## [0.7.35] - 2026-11-18
 
 ### Changed
 
