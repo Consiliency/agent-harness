@@ -98,6 +98,19 @@ missing client file means no providers and no targets, so every reservation refu
 - **Providers.** Each entry is an operator allowlist of provider names, never URLs, hostnames
   or model names. Each name maps to its endpoints, the workloads it may serve and the policy
   vectors it may run under.
+- **Providers reached only through the link.** A provider can instead name no endpoints and
+  set `"reach": "link"`. Model traffic for it goes over the reservation's link to the
+  requester's credential proxy, so it adds no endpoint to the sandbox's egress:
+
+  ```json
+  "openai": {"reach": "link", "workloads": ["pi-runner"],
+             "policy_vectors": ["full-remote-pi-runner", "minimal-without-app"]}
+  ```
+
+  Each provider has exactly one of the two shapes: `endpoints` (1 to 16 unique endpoints), or
+  `"reach": "link"` with no `endpoints` member. Any other `reach` value, `reach` together with
+  `endpoints`, or an empty `endpoints` list refuses at load. Releases before this support
+  refuse a configuration that uses `reach`, with `placement_config_invalid`.
 - **Targets for `agent-toolkit`.** Targets follow the agent and executor order: OpenShell
   (`ai`), then local, then E2B.
 - **Targets for `agent-harness`.** `seat_route` names the single trusted target for each seat
@@ -113,11 +126,13 @@ effective configuration. That configuration includes:
 
 - the effective headroom thresholds;
 - the resolved policy-vector digests;
-- the provider mapping;
+- the provider mapping, including each provider's shape;
 - `launch`;
 - `seat_caps_sha256`.
 
-Changing any of them changes `config_sha256`, and `version` reports it.
+Changing any of them changes `config_sha256`, and `version` reports it. An endpoint
+provider keeps its existing canonical form, so a configuration with only endpoint providers
+keeps the same `config_sha256` it had before link-only providers were supported.
 
 ## Reserve
 
@@ -156,6 +171,12 @@ allowlisted endpoints of every declared provider. It is
 `{"providers": [...], "rules": [{"host": ..., "port": ...}]}`, with names and rules sorted
 and de-duplicated. `Reservation.egress_sha256` is `sha256:` plus the lowercase hex SHA-256 of
 its RFC 8785 serialization. No credential enters the grant.
+
+A provider reached only through the link adds its name to `providers` and no rule, so a
+request that names only such providers gets the vector's baseline alone. Every packaged
+vector's baseline is empty. A request that mixes both shapes gets the endpoint providers'
+rules, as before. This follows the existing rule unchanged; the protocol bytes are not
+modified.
 
 The admitted launch envelope v2 field `launch.grants.egress_policy_sha256.sha256` is the
 **bare 64-hex digest**: the hex digits of `Reservation.egress_sha256` after the `sha256:`
@@ -329,6 +350,31 @@ when it is told to and always at expiry, removing its socket and directory. If t
 handle was never journaled, cleanup still finds the helper by the reservation's directory.
 
 Local reservations have `bridge: null` and use the requester-owned proxy in process.
+
+### The openshell launch check
+
+`sandbox_placement.openshell_launch_refusal` is the activation check for the launch service
+to call on every OpenShell launch, with the effective configuration loaded for that launch and
+the reservation's values. It returns `None` to admit, or one of the existing launch codes. In
+the launch service's order, binding before activation:
+
+1. The reservation's `config_sha256` must equal the loaded configuration's, or the launch
+   refuses `sandbox_launch_input_mismatch`.
+2. For every OpenShell workload, the route must be enabled (`openshell_route_state()`), or
+   the launch refuses `sandbox_launch_route_disabled`.
+3. A `pi-runner` launch also refuses `sandbox_launch_route_disabled` unless every
+   `pi-runner` provider in the configuration is reached only through the link, the remote
+   vector's baseline is empty and every declared provider is such a provider.
+4. A `pi-runner` launch's recomputed grant must carry no rule and equal the reservation's
+   `egress_sha256`, or the launch refuses `launch_input_unbound`.
+
+`openshell_route_state()` returns `enabled` only when the packaged policy status is no longer
+`pending_qualification`, the non-local execution driver is on and a production OpenShell
+backend is registered. A state it cannot read is `unknown`, which no launch accepts. While the
+route is not disabled, `reserve` applies the same `pi-runner` rule on OpenShell targets: a
+declared provider that is not reached only through the link refuses
+`sandbox_placement_provider_refused`, and a configuration that keeps the route closed refuses
+`sandbox_placement_driver_unavailable`.
 
 ## Toolkit cutover
 

@@ -93,6 +93,8 @@ __all__ = [
     "applied_rule",
     "effective_egress",
     "backend_for_scheme",
+    "openshell_launch_refusal",
+    "openshell_route_state",
     "is_local",
     "lifetime_at_floor",
     "lifetime_sufficient",
@@ -2515,6 +2517,130 @@ def effective_egress(
     return grant, "sha256:" + hashlib.sha256(canonical_bytes(grant)).hexdigest()
 
 
+# -- the openshell route and providers reached only through the link ----------------------
+
+#: LANEEXEC launch codes (``x-activation.remote``, ``x-launch-inputs``; PLACECLI
+#: ``x-provider-egress.launch_binding``). No new code is added.
+_LAUNCH_ROUTE_DISABLED = "sandbox_launch_route_disabled"
+_LAUNCH_INPUT_MISMATCH = "sandbox_launch_input_mismatch"
+_LAUNCH_INPUT_UNBOUND = "launch_input_unbound"
+_PENDING_QUALIFICATION = "pending_qualification"
+
+
+def openshell_route_state() -> str:
+    """``"disabled"``, ``"enabled"`` or ``"unknown"``: the one implementation of the three
+    conditions of LANEEXEC ``x-activation.remote``. The route is enabled only when the
+    packaged policy status is no longer pending, ``panel_invoker._NONLOCAL_EXECUTION_DRIVER``
+    is true and a production ``openshell`` backend is registered. The status is read first,
+    so the invoker is never imported while it is pending. An unreadable status, an invoker
+    import failure or a failing registry lookup is ``"unknown"``, which never counts as
+    disabled for enforcement or as enabled for a launch."""
+    try:
+        status = sandbox_policy.placement_policy_status()
+    except sandbox_policy.PlacementConfigError:
+        return "unknown"
+    if status == _PENDING_QUALIFICATION:
+        return "disabled"
+    try:
+        import importlib
+
+        flag = importlib.import_module(f"{__package__}.panel_invoker")._NONLOCAL_EXECUTION_DRIVER
+    except Exception:
+        return "unknown"
+    if flag is not True:
+        return "disabled"
+    try:
+        backend = backend_for_scheme("openshell")
+    except Exception:
+        return "unknown"
+    return "disabled" if backend is None else "enabled"
+
+
+def _launch_config_bound(config: "sandbox_policy.PlacementClientConfig", config_sha256: str) -> bool:
+    return config_sha256 == config.config_sha256
+
+
+def _launch_grant_refusal(config: "sandbox_policy.PlacementClientConfig", providers: Sequence[str],
+                          baseline: Iterable[tuple[str, int]], egress_sha256: str) -> str | None:
+    """The recomputed grant must carry no rule and equal the reservation's digest."""
+    registry = config.providers
+    grant, digest = effective_egress(providers, baseline, {name: registry[name].endpoints for name in providers})
+    if grant["rules"] or digest != egress_sha256:
+        return _LAUNCH_INPUT_UNBOUND
+    return None
+
+
+def _openshell_pi_runner_providers_refusal(config: "sandbox_policy.PlacementClientConfig") -> bool:
+    """True while the configuration keeps the openshell ``pi-runner`` route closed: some
+    ``pi-runner`` provider grants sandbox egress, or the remote vector's baseline is not
+    empty."""
+    try:
+        return bool(sandbox_policy.placement_sandbox_egress_providers(config)
+                    or sandbox_policy.placement_policy_baseline(_PI_RUNNER_BINDINGS["openshell"]))
+    except sandbox_policy.PlacementConfigError:
+        return True
+
+
+def openshell_launch_refusal(
+    config: "sandbox_policy.PlacementClientConfig", *, workload: str, target_kind: str,
+    providers: Sequence[str], config_sha256: str, egress_sha256: str,
+    route_state: Callable[[], str] | None = None,
+) -> str | None:
+    """The launch-boundary check for an openshell launch; ``None`` admits it.
+
+    ``config`` is the effective configuration loaded for this launch, and the other values
+    come from the reservation being launched. Checked in LANEEXEC's frozen order, binding
+    before activation:
+
+    1. ``config_sha256`` must equal the loaded configuration's digest
+       (``sandbox_launch_input_mismatch``);
+    2. for every openshell workload, the route state must be ``"enabled"``
+       (``sandbox_launch_route_disabled``);
+    3. for ``pi-runner`` only: no ``pi-runner`` provider in the configuration may grant
+       sandbox egress, the remote vector's baseline must be empty, and every declared name
+       must be a configured link-only provider (``sandbox_launch_route_disabled``);
+    4. for ``pi-runner`` only: the recomputed grant must carry no rule and equal
+       ``egress_sha256`` (``launch_input_unbound``).
+
+    Launches on other targets are outside this check. ``route_state`` defaults to
+    :func:`openshell_route_state`.
+    """
+    if target_kind != "openshell":
+        return None
+    if not _launch_config_bound(config, config_sha256):
+        return _LAUNCH_INPUT_MISMATCH
+    state = (route_state if route_state is not None else openshell_route_state)()
+    if state != "enabled":
+        return _LAUNCH_ROUTE_DISABLED
+    if workload != "pi-runner":
+        return None
+    if _openshell_pi_runner_providers_refusal(config):
+        return _LAUNCH_ROUTE_DISABLED
+    names = tuple(providers)
+    registry = config.providers
+    if not names or any(name not in registry or not registry[name].link_only for name in names):
+        return _LAUNCH_ROUTE_DISABLED
+    return _launch_grant_refusal(config, names, (), egress_sha256)
+
+
+def _openshell_pi_runner_refusal(config: "sandbox_policy.PlacementClientConfig",
+                                 providers: Sequence[str]) -> str | None:
+    """The reserve-time gate for ``pi-runner`` on openshell while the route state is not
+    ``"disabled"`` (defence in depth; the launch check is the enforcing boundary). A declared
+    provider that is not link-only is not permitted by the target's vector; otherwise a
+    configuration that keeps the route closed makes the driver unavailable."""
+    registry = config.providers
+    if any(not registry[name].link_only for name in providers):
+        return _PROVIDER_REFUSED
+    if _openshell_pi_runner_providers_refusal(config):
+        return _DRIVER_UNAVAILABLE
+    return None
+
+
+def _default_route_state() -> str:
+    return openshell_route_state()
+
+
 class PlacementLifecycle:
     """Reserve, release and reap for one placement client (``--client``).
 
@@ -2522,7 +2648,8 @@ class PlacementLifecycle:
     or production default: ``caps_loader``/``caps_readiness`` (``seat_resource_caps``),
     ``observe`` (the host's memory, load and PSI), ``backend_for`` (the backend registry,
     where no production OpenShell backend is registered), ``reconcile`` (the read-only
-    replay check), ``bridge`` and ``clock``. Nothing is read from the environment.
+    replay check), ``bridge``, ``clock`` and ``route_state`` (:func:`openshell_route_state`).
+    Nothing is read from the environment.
     """
 
     def __init__(
@@ -2537,6 +2664,7 @@ class PlacementLifecycle:
         clock: Callable[[], float] | None = None,
         settings: sandbox_policy.PlacementDriverSettings | None = None,
         new_id: Callable[[], str] | None = None,
+        route_state: Callable[[], str] | None = None,
     ) -> None:
         from .placement_process_contract import CLIENTS
 
@@ -2555,6 +2683,7 @@ class PlacementLifecycle:
         self.clock = clock if clock is not None else time.time
         self._settings = settings
         self.new_id = new_id if new_id is not None else (lambda: secrets.token_hex(16))
+        self.route_state = route_state if route_state is not None else _default_route_state
 
     # -- configuration -------------------------------------------------------------------
     @property
@@ -2953,6 +3082,11 @@ class PlacementLifecycle:
         elif kind == "openshell" and not set(providers) <= target.probe_receipt_providers:  # type: ignore[attr-defined]
             # An owned host needs the generic egress-and-credential probe receipt.
             refusal = _PROVIDER_REFUSED
+        elif (kind == "openshell" and request.workload == "pi-runner"  # type: ignore[attr-defined]
+              and self.route_state() != "disabled"):
+            # Once the route may be live (or its state is unknown), pi-runner on openshell
+            # admits only providers reached through the link (defence in depth).
+            refusal = _openshell_pi_runner_refusal(config, providers)
         elif kind == "local" and not local_ready:
             refusal = _CAPABILITY_UNMET
         try:

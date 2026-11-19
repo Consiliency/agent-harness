@@ -6,6 +6,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Added
+
+- Placement operator configuration accepts providers reached only through the link
+  (`"reach": "link"`, no endpoints). Such a provider is bound into `config_sha256` and
+  `Reservation.providers` and adds no egress rule; configurations with only endpoint
+  providers keep their `config_sha256`. Placement also exposes the openshell launch check
+  (`sandbox_placement.openshell_launch_refusal`) and route state
+  (`sandbox_placement.openshell_route_state`). The protocol bytes are unchanged.
+
 ## [0.7.35] - Unreleased candidate
 
 ### Changed

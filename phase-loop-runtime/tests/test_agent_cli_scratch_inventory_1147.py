@@ -138,6 +138,8 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
         NOT_AGENT, "the owned seat's final link: execs the chain `launch_owned` hands it, "
                    "with that launch's decided env"),
     ("panel_invoker.py", "_require_seat_identity"): (NOT_AGENT, "/bin/sh namespace probe"),
+    ("sandbox_placement.py", "openshell_route_state"): (
+        NOT_AGENT, "imports this package's own panel_invoker module to read a flag; starts no program"),
     ("advisor_board/backing.py", "ParentUnixBroker.run_credentialless_client"): (
         NOT_AGENT, "fixed python probe in the HARDEN broker jail"),
     ("agy_canary_evidence.py", "_uv_tool_dir"): (NOT_AGENT, "uv"),
