@@ -17,6 +17,8 @@ import subprocess
 import threading
 from typing import Literal, Sequence
 
+from . import provider_tree_proof as _tree_proof
+
 
 SCHEMA = "seat_resource_caps.v1"
 CODE = "seat_resource_caps_unavailable"
@@ -553,6 +555,85 @@ def _release_parent(seat_key: str, parent: _Parent, _carved: Sequence[Path]) -> 
             )
 
 
+def _proc_cgroup_of(pid: int) -> str:
+    """The unified (``0::``) cgroup path of ``pid`` as the kernel reports it."""
+    text = Path(f"/proc/{pid}/cgroup").read_text(encoding="ascii")
+    unified = [line[3:] for line in text.splitlines() if line.startswith("0::")]
+    if len(unified) != 1:
+        raise ValueError("unified cgroup line unavailable")
+    return unified[0]
+
+
+def _systemctl_kill_fallback(unit: str):
+    """The bounded ``systemctl --user kill`` used where the kernel has no ``cgroup.kill``."""
+    runtime = _runtime_dir()
+    manager_env = {**os.environ, "XDG_RUNTIME_DIR": str(runtime),
+                   "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime / 'bus'}"}
+    argv = [str(_SYSTEMCTL), "--user", "kill", "--signal=SIGKILL", unit]
+
+    def fallback(timeout: float) -> None:
+        _tree_proof.run_bounded(argv, timeout, env=manager_env)
+
+    return fallback
+
+
+def _witness_scope(pid: int, parent_unit: str, child_unit: str) -> _tree_proof.TreeProof:
+    """Hold the launch scope's ``cgroup.events`` (and ``cgroup.kill``) for unreaped ``pid``.
+
+    The caller has started no reaper, so ``pid`` names its own child throughout.  The
+    path must be exactly the generated scope below the seat slice, before and after the
+    descriptors are opened, and the scope must read ``populated 1``.
+    """
+    scope = _seat_slice_chain(parent_unit)[-1] / child_unit
+    expected = "/" + scope.relative_to(_CGROUP_ROOT).as_posix()
+    first = _proc_cgroup_of(pid)
+    if first != expected:
+        _refuse("the launch cgroup is not the expected scope")
+    directory = os.open(scope, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    events = kill = None
+    try:
+        events = os.open("cgroup.events", os.O_RDONLY | os.O_CLOEXEC, dir_fd=directory)
+        try:
+            kill = os.open("cgroup.kill", os.O_WRONLY | os.O_CLOEXEC, dir_fd=directory)
+        except FileNotFoundError:
+            kill = None
+        try:
+            populated = not _tree_proof.parse_events(os.pread(events, 4096, 0))
+        except _tree_proof.ProofFault as exc:
+            _refuse("the launch cgroup events are malformed", exc)
+        if not populated:
+            _refuse("the launch cgroup is not populated")
+        if _proc_cgroup_of(pid) != first:
+            _refuse("the launch cgroup changed while it was witnessed")
+        return _tree_proof.TreeProof.cgroup(
+            events, kill, unit=child_unit,
+            kill_fallback=None if kill is not None else _systemctl_kill_fallback(child_unit),
+        )
+    except BaseException:
+        for descriptor in (events, kill):
+            if descriptor is not None:
+                os.close(descriptor)
+        raise
+    finally:
+        os.close(directory)
+
+
+def _await_refused_child(process: "subprocess.Popen[bytes]") -> None:
+    """Wait for the helper's cooperative exit after its gate closed, then escalate."""
+    try:
+        process.wait(timeout=_ATTEST_TIMEOUT_S)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    if process.poll() is None:
+        process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
 def _refused(reason: str, exc: BaseException | None = None):
     from . import seat_jail
     error = seat_jail.SeatSandboxRefused(CODE, reason)
@@ -607,6 +688,9 @@ def capped_popen(command, *, seat_key: str, **popen_kwargs) -> "subprocess.Popen
             os.close(env_write)
         read_fd, write_fd = os.pipe()
         diagnostic_read, diagnostic_write = os.pipe()
+        # The helper execs the target only after this gate opens, and the parent opens it
+        # only once it holds the launch cgroup's witness.
+        gate_read, gate_write = os.pipe()
         expected = json.dumps(_expected(caps, devices, carved), sort_keys=True, separators=(",", ":"))
         helper = Path(__file__).with_name("seat_resource_caps_enter.py")
         argv = [
@@ -614,12 +698,13 @@ def capped_popen(command, *, seat_key: str, **popen_kwargs) -> "subprocess.Popen
             f"--unit={child_unit}", f"--slice={parent.unit}", "--same-dir", "--",
             "/usr/bin/python3", "-I", "-S", str(helper), "--attest-fd", str(write_fd),
             "--env-fd", str(env_read), "--diagnostic-fd", str(diagnostic_write),
+            "--gate-fd", str(gate_read),
             "--expected", expected, "--cgroup-root", str(_CGROUP_ROOT),
             "--proc-cgroup", str(_PROC_CGROUP),
             "--", *[os.fsdecode(item) for item in command],
         ]
         pass_fds = set(popen_kwargs.get("pass_fds", ()))
-        pass_fds.update((write_fd, env_read, diagnostic_write))
+        pass_fds.update((write_fd, env_read, diagnostic_write, gate_read))
         popen_kwargs["pass_fds"] = tuple(sorted(pass_fds))
         popen_kwargs.setdefault("close_fds", True)
         try:
@@ -628,17 +713,20 @@ def capped_popen(command, *, seat_key: str, **popen_kwargs) -> "subprocess.Popen
             except BaseException:
                 os.close(read_fd)
                 os.close(diagnostic_read)
+                os.close(gate_write)
                 raise
         finally:
             os.close(write_fd)
             os.close(env_read)
             os.close(diagnostic_write)
+            os.close(gate_read)
         try:
             readable, _, _ = select.select([read_fd], [], [], _ATTEST_TIMEOUT_S)
             attested = bool(readable and os.read(read_fd, 1) == b"1")
         finally:
             os.close(read_fd)
         if not attested:
+            os.close(gate_write)
             if process.poll() is None:
                 process.terminate()
             try:
@@ -656,6 +744,21 @@ def capped_popen(command, *, seat_key: str, **popen_kwargs) -> "subprocess.Popen
             suffix = f"; {detail}" if detail else ""
             _refuse(f"the child did not attest its effective caps{suffix}")
         os.close(diagnostic_read)
+        try:
+            proof = _witness_scope(process.pid, parent.unit, child_unit)
+            _tree_proof.attach(process, proof)
+            try:
+                os.write(gate_write, b"1")
+            except BrokenPipeError:
+                _refuse("the capped child exited before its gate opened")
+        except (CapsUnavailable, OSError, ValueError) as exc:
+            os.close(gate_write)
+            _await_refused_child(process)
+            for pipe in (process.stdin, process.stdout, process.stderr):
+                if pipe is not None:
+                    pipe.close()
+            _refuse("the launch cgroup could not be witnessed", exc)
+        os.close(gate_write)
 
         def reap() -> None:
             try:

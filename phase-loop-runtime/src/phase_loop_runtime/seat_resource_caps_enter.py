@@ -78,6 +78,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--attest-fd", type=int, required=True)
     parser.add_argument("--env-fd", type=int, required=True)
     parser.add_argument("--diagnostic-fd", type=int, required=True)
+    parser.add_argument("--gate-fd", type=int, required=True)
     parser.add_argument("--expected", required=True)
     parser.add_argument("--cgroup-root", default="/sys/fs/cgroup")
     parser.add_argument("--proc-cgroup", default="/proc/self/cgroup")
@@ -103,6 +104,12 @@ def main(argv: list[str] | None = None) -> int:
         os.write(args.attest_fd, b"1")
         os.close(args.attest_fd)
         os.close(args.diagnostic_fd)
+        # The parent opens this gate only after it holds the launch cgroup's witness; on
+        # EOF (or anything else) the target never runs.
+        released = os.read(args.gate_fd, 1)
+        os.close(args.gate_fd)
+        if released != b"1":
+            return 125
         os.execvpe(command[0], command, target_env)
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
         message = f"seat cap attestation failed: {exc}"

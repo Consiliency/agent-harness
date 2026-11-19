@@ -514,8 +514,8 @@ class PresidentInvoke:
                 leg, harness=harness, model=route_model, staged_dir=stage, canonical_repo=repo,
             )
             outcome: dict[str, object] = {}
+            latch = panel_invoker._ProviderQuiescenceLatch()
             try:
-                latch = panel_invoker._ProviderQuiescenceLatch()
 
                 def infer() -> tuple[str, str]:
                     rc, text, log = self._supervise_transport(

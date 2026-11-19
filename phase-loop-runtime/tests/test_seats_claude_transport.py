@@ -1564,9 +1564,14 @@ def test_live_parent_death_reaps_the_worker(tmp_path, sealed_install):
         import test_seats_claude_sdk as T
         from phase_loop_runtime import claude_seat_sdk as sdk, panel_invoker as pi
         from phase_loop_runtime import sandbox_egress, seat_resource_caps, seat_uid
-        seat_resource_caps.capped_popen = (
-            lambda command, *, seat_key, **kwargs: subprocess.Popen(command, **kwargs)
-        )
+        from tree_proof_fakes import attach_pipe_proof
+
+        def capped(command, *, seat_key, **kwargs):
+            process = subprocess.Popen(command, **kwargs)
+            attach_pipe_proof(process)
+            return process
+
+        seat_resource_caps.capped_popen = capped
         install = sdk.verify_install(__import__("pathlib").Path({str(state)!r}),
                                      manifest_raw=open({str(tmp_path / "manifest.json")!r}, "rb").read())
         spec = sdk.worker_launch_spec(install)

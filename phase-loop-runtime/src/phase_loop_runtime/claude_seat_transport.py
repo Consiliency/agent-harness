@@ -977,6 +977,8 @@ SDK_INSTALLED_BINDINGS: Mapping[str, str] = MappingProxyType({
 _PI = f"{RUNTIME_DIR}/panel_invoker.py"
 _JAIL = f"{RUNTIME_DIR}/seat_jail.py"
 _UID = f"{RUNTIME_DIR}/seat_uid.py"
+_TP = f"{RUNTIME_DIR}/provider_tree_proof.py"
+_PA = f"{RUNTIME_DIR}/president_adapter.py"
 #: The proof inputs, exactly (EC-CLAUDE-3 "Receipt and verification"): whole files, then
 #: named regions of shared modules. Nothing outside this set can stale a receipt; a change
 #: inside it always does. ``claude_seat_sdk`` re-exports these; this is their one source.
@@ -994,6 +996,11 @@ SDK_PROOF_FILES: tuple[str, ...] = (
     f"{RUNTIME_DIR}/seat_route.py",
     f"{RUNTIME_DIR}/seat_route_contract.py",
     f"{RUNTIME_DIR}/seat_subject.py",
+    # The worker's launch cgroup witness, its helper gate (executed by path) and the
+    # completion proof that cleanup consults.
+    f"{RUNTIME_DIR}/seat_resource_caps.py",
+    f"{RUNTIME_DIR}/seat_resource_caps_enter.py",
+    _TP,
     *(path for name, path in SDK_INSTALLED_BINDINGS.items() if name != "seat_module_sha256"),
     "phase-loop-runtime/tests/data/seats_claude_sdk/launch-v1.json",
     "phase-loop-runtime/tests/data/seats_claude_sdk/fake_cli.py",
@@ -1024,6 +1031,10 @@ SDK_PROOF_REGIONS: Mapping[str, tuple[str, ...]] = MappingProxyType({
         "_PROCESS_GROUP_TERM_GRACE_S", "_PROCESS_GROUP_KILL_GRACE_S", "_process_group_exists",
         "_wait_for_process_group_exit", "_terminate_process_group_windows",
         "_PROCESS_GROUP_POLL_S",
+        # The completion proof's evaluator and the launch sites' witness requirements.
+        "_tree_quiescent", "_require_launch_proof", "_owner_unshares_pid",
+        "_with_bwrap_lifecycle_fds", "_complete_bwrap_witness", "_terminate_proofed_tree",
+        "_await_tree", "_quiescence_error", "_seat_resource_caps_code",
         # The launch path's optional trace wrapper.
         "_window_trace_argv", "_WINDOW_TRACE_SYSCALLS"),
     _JAIL: (
@@ -1037,7 +1048,7 @@ SDK_PROOF_REGIONS: Mapping[str, tuple[str, ...]] = MappingProxyType({
 })
 #: The module aliases a bound region reaches other bound modules through.
 SDK_PROOF_ALIASES: Mapping[str, Mapping[str, str]] = MappingProxyType({
-    _PI: MappingProxyType({"_seat_jail": _JAIL, "_seat_uid": _UID}),
+    _PI: MappingProxyType({"_seat_jail": _JAIL, "_seat_uid": _UID, "_tree_proof": _TP}),
 })
 #: Reviewed, closed: the module-level names the bound regions reference that are outside the
 #: worker boundary -- type names, and the provider-launch, egress, Gemini and login
@@ -1070,6 +1081,12 @@ SDK_PROOF_UNBOUND: Mapping[str, frozenset[str]] = MappingProxyType({
     _UID: frozenset({
         "NEWGIDMAP", "NEWUIDMAP", "SEAT_DIR_NAMES", "_privileged_helper", "_pythonpath_env",
         "in_h_argv", "record_retention",
+    }),
+    # Records that a leg produced output; outside the worker boundary.
+    _PA: frozenset({"note_attempt_output"}),
+    # Host subordinate-range and private-directory lookups the seat-uid regions call.
+    f"{RUNTIME_DIR}/seat_host_namespace.py": frozenset({
+        "operator_private_dir", "subordinate_ranges_disjoint",
     }),
 })
 #: Every module the seat module imports; any other import fails closed.
@@ -1215,6 +1232,42 @@ def module_dependencies(source: bytes) -> set[str]:
     return found
 
 
+def _sdk_reference_classified(target: str, ref: str) -> bool:
+    """A reference is bound by a whole-file input or a region, or reviewed as unbound."""
+    return (target in SDK_PROOF_FILES or ref in SDK_PROOF_REGIONS.get(target, ())
+            or ref in SDK_PROOF_UNBOUND.get(target, frozenset()))
+
+
+def _check_region_local_imports(rel: str, name: str, node: ast.AST) -> None:
+    """Every package-relative import inside a bound region names a classified input."""
+    package = rel.rsplit("/", 1)[0]
+    for item in ast.walk(node):
+        if isinstance(item, ast.Import):
+            if any(alias.name.split(".")[0] == "phase_loop_runtime" for alias in item.names):
+                raise AuditError(f"an absolute package import in {rel}::{name}")
+            continue
+        if not isinstance(item, ast.ImportFrom):
+            continue
+        if not item.level:
+            if (item.module or "").split(".")[0] == "phase_loop_runtime":
+                raise AuditError(f"an absolute package import in {rel}::{name}")
+            continue
+        if item.level != 1:
+            raise AuditError(f"a parent-package import in {rel}::{name}")
+        if item.module is None:
+            for alias in item.names:
+                target = f"{package}/{alias.name}.py"
+                if target not in SDK_PROOF_FILES:
+                    raise AuditError(f"an unclassified local import in {rel}::{name}: "
+                                     f"{target}")
+            continue
+        target = f"{package}/{item.module.replace('.', '/')}.py"
+        for alias in item.names:
+            if not _sdk_reference_classified(target, alias.name):
+                raise AuditError(f"an unclassified local import in {rel}::{name}: "
+                                 f"{target}::{alias.name}")
+
+
 def sdk_proof_bindings(read: Callable[[str], bytes | None]) -> dict[str, str]:
     """``{input: sha256}`` over :data:`SDK_PROOF_FILES` and :data:`SDK_PROOF_REGIONS`, read
     through ``read`` (a head tree or a checkout, as data). Fails closed (``AuditError``) on a
@@ -1256,10 +1309,10 @@ def sdk_proof_bindings(read: Callable[[str], bytes | None]) -> dict[str, str]:
                     target, ref = aliases[node.value.id], node.attr
                 else:
                     continue
-                if ref not in SDK_PROOF_REGIONS.get(target, ()) and \
-                        ref not in SDK_PROOF_UNBOUND.get(target, frozenset()):
+                if not _sdk_reference_classified(target, ref):
                     raise AuditError(f"an unclassified dependency of {rel}::{name}: "
                                      f"{target}::{ref}")
+            _check_region_local_imports(rel, name, defs[name])
     seat = read(f"{RUNTIME_DIR}/claude_seat_sdk.py") or b""
     try:
         imported = module_dependencies(seat)

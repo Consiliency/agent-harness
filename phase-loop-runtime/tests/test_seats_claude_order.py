@@ -637,7 +637,103 @@ def test_the_real_tree_binds_every_input_and_classifies_every_dependency():
     regions = sum(len(names) for names in ct.SDK_PROOF_REGIONS.values())
     assert len(bindings) == len(ct.SDK_PROOF_FILES) + regions
     for rel, unbound in ct.SDK_PROOF_UNBOUND.items():
-        assert not set(unbound) & set(ct.SDK_PROOF_REGIONS[rel]), rel
+        assert not set(unbound) & set(ct.SDK_PROOF_REGIONS.get(rel, ())), rel
+
+
+_CAPS = f"{ct.RUNTIME_DIR}/seat_resource_caps.py"
+_CAPS_ENTER = f"{ct.RUNTIME_DIR}/seat_resource_caps_enter.py"
+
+
+def _real_tree_reader():
+    repo = Path(__file__).resolve().parents[2]
+    if not all((repo / rel).is_file() for rel in (*ct.SDK_PROOF_FILES, *ct.SDK_PROOF_REGIONS)):
+        pytest.skip("the proof inputs are repository-only files")
+    return repo, (lambda rel: (repo / rel).read_bytes() if (repo / rel).is_file() else None)
+
+
+def _swap(source: str, old: str, new: str) -> str:
+    assert source.count(old) == 1, old
+    return source.replace(old, new)
+
+
+@pytest.mark.parametrize("change", ["identity_check", "gate_order", "helper_gate"])
+def test_the_launch_witness_and_its_gate_change_the_proof_bindings(change):
+    """The worker's completion evidence rests on the caps witness, its gate order and the
+    helper's gate; changing any of them changes ``sdk_proof_bindings``."""
+    repo, read = _real_tree_reader()
+    caps = (repo / _CAPS).read_text()
+    enter = (repo / _CAPS_ENTER).read_text()
+    if change == "identity_check":
+        changed = {_CAPS: _swap(caps, "        if _proc_cgroup_of(pid) != first:\n"
+                                      "            _refuse(\"the launch cgroup changed while it was witnessed\")\n",
+                                "")}
+    elif change == "gate_order":
+        moved = _swap(caps, "        try:\n            proof = _witness_scope(",
+                      "        os.write(gate_write, b\"1\")\n        try:\n            proof = _witness_scope(")
+        changed = {_CAPS: moved}
+    else:
+        changed = {_CAPS_ENTER: _swap(enter, "        released = os.read(args.gate_fd, 1)\n",
+                                      "        released = b\"1\"\n")}
+    baseline = ct.sdk_proof_bindings(read)
+    altered = ct.sdk_proof_bindings(
+        lambda rel: changed[rel].encode() if rel in changed else read(rel))
+    assert altered != baseline
+    assert all(altered[rel] != baseline[rel] for rel in changed)
+
+
+def _local_import_tree(statement: str) -> dict[str, str]:
+    files = _bound_files()
+    rel = next(iter(ct.SDK_PROOF_REGIONS))
+    files[rel] = files[rel].replace(
+        "def _run_claude_sdk_leg():\n    return 1",
+        f"def _run_claude_sdk_leg():\n    {statement}\n    return 1")
+    return files
+
+
+def _bindings(files: dict[str, str]):
+    return ct.sdk_proof_bindings(lambda rel: files[rel].encode() if rel in files else b"")
+
+
+@pytest.mark.parametrize("statement", [
+    "from .unbound_mod import x",
+    "from . import unbound_mod",
+    "from .. import other",
+    "from phase_loop_runtime import seat_jail",
+    "import phase_loop_runtime.seat_jail",
+])
+def test_an_unclassified_local_import_in_a_bound_region_fails_closed(statement):
+    with pytest.raises(ct.AuditError, match="import"):
+        _bindings(_local_import_tree(statement))
+
+
+def test_a_classified_or_whole_file_bound_local_import_passes(monkeypatch):
+    target = f"{ct.RUNTIME_DIR}/unbound_mod.py"
+    files = _local_import_tree("from .unbound_mod import x")
+    monkeypatch.setattr(ct, "SDK_PROOF_UNBOUND",
+                        {**ct.SDK_PROOF_UNBOUND, target: frozenset({"x"})})
+    _bindings(files)
+    monkeypatch.undo()
+    monkeypatch.setattr(ct, "SDK_PROOF_FILES", (*ct.SDK_PROOF_FILES, target))
+    files[target] = "x = 1\n"
+    _bindings(files)
+    _bindings({**_local_import_tree("from . import unbound_mod"), target: "x = 1\n"})
+
+
+def test_the_helper_executed_by_path_is_a_bound_input():
+    """``capped_popen`` runs its helper by path, which no reference can reach: the bound
+    region names it by one literal beside ``__file__``, and that file is a proof input."""
+    import ast
+
+    repo, _read = _real_tree_reader()
+    source = (repo / _CAPS).read_bytes()
+    region = ct.source_region(source, "capped_popen")
+    assert region is not None
+    literals = [node.value for node in ast.walk(ast.parse(region))
+                if isinstance(node, ast.Constant) and isinstance(node.value, str)
+                and node.value.endswith("_enter.py")]
+    assert literals == ["seat_resource_caps_enter.py"]
+    assert 'Path(__file__).with_name("seat_resource_caps_enter.py")' in region.decode()
+    assert _CAPS_ENTER in ct.SDK_PROOF_FILES and _CAPS in ct.SDK_PROOF_FILES
 
 
 SDK_AUDIT_WORKFLOW = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "claude-sdk-audit.yml"

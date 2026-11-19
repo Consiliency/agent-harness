@@ -6,6 +6,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Fixed
+
+- Provider cleanup now waits for kernel-confirmed completion of its contained process tree
+  (agent-harness#1994).
+
 ## [0.7.36] - Unreleased candidate
 
 ### Added

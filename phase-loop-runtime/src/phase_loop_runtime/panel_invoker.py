@@ -90,6 +90,7 @@ from .agy_canary_evidence import (
 from .claude_agent_view import ClaudeAgentViewAdapter
 from . import gemini_heartbeat
 from . import credential_redaction as _credential_redaction
+from . import provider_tree_proof as _tree_proof
 from .launcher import GROK_REVIEW_READONLY_TOOLS
 from .profiles import CLAUDE_IMPLEMENTER_MODEL  # noqa: F401 - public compatibility export
 from .advisor_board import backing as _advisor_board_backing
@@ -856,7 +857,7 @@ class _ProviderQuiescenceLatch:
 
     def release(self, proc: subprocess.Popen[bytes]) -> None:
         """Deregister only after the exact anchored group is proven absent."""
-        if os.name != "nt" and _process_group_exists(proc.pid):
+        if os.name != "nt" and not _tree_quiescent(proc):
             raise ProviderProcessGroupQuiescenceError(
                 "provider process group deregistration preceded quiescence"
             )
@@ -901,7 +902,7 @@ class _ProviderQuiescenceLatch:
                     if os.name == "nt":
                         absent = proc.poll() is not None
                     else:
-                        absent = not _process_group_exists(pid)
+                        absent = _tree_quiescent(proc)
                     if absent:
                         proc.poll()
                         del self._processes[pid]
@@ -6178,6 +6179,7 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
         jailed_process = capped_popen(
             capped_command, seat_key=seat_caps or "", **kwargs,
         )
+        _require_launch_proof(jailed_process)
         # A jailed provider is a local provider spawn like any other (agent-harness#896's
         # placement record counts it); counted once the process exists.
         _count_provider_spawn()
@@ -6196,10 +6198,29 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
     if dependency is not None:
         dependency.revalidate()
     if seat_caps is None:
-        process = subprocess.Popen([*prefix, *argv], **kwargs)
+        # An owned launch in its own PID namespace is witnessed by its pinned bwrap init.
+        # The Gemini profile's owner already carries the lifecycle descriptors: its init is
+        # adopted from the profile once that profile's own admission succeeds.
+        unshares_pid = _owner_unshares_pid(process_owner)
+        witness = (_tree_proof.BwrapLaunch() if unshares_pid and "--info-fd" not in prefix
+                   else None)
+        command = [*prefix, *argv] if witness is None else [
+            *_with_bwrap_lifecycle_fds(prefix, witness.info_fd, witness.block_fd), *argv]
+        try:
+            process = subprocess.Popen(
+                command, **(kwargs if witness is None else witness.popen_kwargs(kwargs)))
+        except BaseException:
+            if witness is not None:
+                witness.abandon()
+            raise
+        if witness is not None:
+            process = _complete_bwrap_witness(witness, process)
+        elif unshares_pid:
+            _tree_proof.attach(process, _tree_proof.TreeProof.pending())
     else:
         from .seat_resource_caps import capped_popen
         process = capped_popen([*prefix, *argv], seat_key=seat_caps, **kwargs)
+        _require_launch_proof(process)
     # Counted once the process exists: a launch that fails to exec is not a spawn.
     _count_provider_spawn()
     return process
@@ -9268,6 +9289,10 @@ def _terminate_process_group(
     if os.name == "nt":
         _terminate_process_group_windows(proc, force_group=force_group)
         return
+    proof = _tree_proof.proof_of(proc)
+    if proof is not None:
+        _terminate_proofed_tree(proc, proof)
+        return
 
     anchored_pgid = getattr(proc, "_phase_loop_pgid", proc.pid)
     if (not isinstance(anchored_pgid, int) or anchored_pgid <= 0 or
@@ -9334,6 +9359,165 @@ def _terminate_process_group(
         )
 
 
+def _quiescence_error(proof: "_tree_proof.TreeProof", *notes: str,
+                      ) -> ProviderProcessGroupQuiescenceError:
+    error = ProviderProcessGroupQuiescenceError("provider process group did not terminate")
+    error.add_note(f"child_proof={proof.describe()}")
+    for note in notes:
+        error.add_note(note)
+    return error
+
+
+def _await_tree(proc: subprocess.Popen[bytes], proof: "_tree_proof.TreeProof", *,
+                until: float, deadline: float) -> bool:
+    """Reap the leader and observe the tree until ``until`` (never past ``deadline``)."""
+    until = min(until, deadline)
+    while True:
+        proc.poll()
+        if _tree_quiescent(proc, deadline=deadline):
+            return True
+        if time.monotonic() >= until:
+            return False
+        proof.wait(until)
+
+
+def _terminate_proofed_tree(proc: subprocess.Popen[bytes],
+                            proof: "_tree_proof.TreeProof") -> None:
+    """Terminate a launch whose tree carries a completion proof (one absolute deadline)."""
+    deadline = (time.monotonic() + _PROCESS_GROUP_TERM_GRACE_S
+                + _PROCESS_GROUP_KILL_GRACE_S)
+    busy_before = proof.state_lock_busy
+
+    def busy_note() -> tuple[str, ...]:
+        busy = proof.state_lock_busy - busy_before
+        return (f"state_lock_busy={busy}",) if busy else ()
+
+    if not proof.cleanup_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+        raise _quiescence_error(proof, "cleanup_lock_timeout")
+    try:
+        if _tree_quiescent(proc, deadline=deadline):
+            return
+        if proof.status == _tree_proof.PENDING:
+            while not proof.mark_witness_missing(deadline):
+                if time.monotonic() >= deadline:
+                    raise _quiescence_error(proof, *busy_note())
+        anchored_pgid = getattr(proc, "_phase_loop_pgid", proc.pid)
+        if (not isinstance(anchored_pgid, int) or anchored_pgid <= 0 or
+                anchored_pgid != proc.pid):
+            raise ProviderProcessGroupQuiescenceError(
+                "provider process group anchor is invalid"
+            )
+        pgid = anchored_pgid
+        if proc.poll() is None:
+            try:
+                observed_pgid = os.getpgid(proc.pid)
+            except ProcessLookupError:
+                proc.poll()
+            else:
+                if observed_pgid != pgid:
+                    raise ProviderProcessGroupQuiescenceError(
+                        "provider process group anchor is invalid"
+                    )
+        escalate = True
+        if _process_group_exists(pgid):
+            try:
+                os.killpg(pgid, signal.SIGTERM)
+                escalate = False
+            except ProcessLookupError:
+                escalate = False
+            except Exception:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+        if not escalate and _await_tree(
+            proc, proof, until=time.monotonic() + _PROCESS_GROUP_TERM_GRACE_S,
+            deadline=deadline,
+        ):
+            return
+        if _process_group_exists(pgid):
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        proof.kill(deadline)
+        if _await_tree(proc, proof, until=deadline, deadline=deadline):
+            return
+        raise _quiescence_error(proof, *busy_note())
+    except ProviderProcessGroupQuiescenceError:
+        raise
+    except Exception as exc:
+        raise _quiescence_error(proof, *busy_note()) from exc
+    finally:
+        proof.cleanup_lock.release()
+
+
+def _tree_quiescent(proc: subprocess.Popen[bytes], *, deadline: float | None = None) -> bool:
+    """The shared cleanup predicate: the anchored group is absent and, for a launch that
+    carries a completion proof, the proof observed the whole tree complete."""
+    if _process_group_exists(proc.pid):
+        return False
+    proof = _tree_proof.proof_of(proc)
+    return proof is None or proof.observe(deadline)
+
+
+def _require_launch_proof(proc: subprocess.Popen[bytes], *, owned: bool = False) -> None:
+    """A launch that needs a completion witness is returned only with one."""
+    if _tree_proof.proof_of(proc) is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    if owned:
+        raise _sandbox_egress.SeatIdentityUnverified("seat_owner_unavailable")
+    raise _seat_jail.SeatSandboxRefused(
+        _seat_resource_caps_code(), "the launch carries no completion witness",
+    )
+
+
+def _complete_bwrap_witness(witness: "_tree_proof.BwrapLaunch",
+                            process: subprocess.Popen[bytes]) -> subprocess.Popen[bytes]:
+    """Pin an owned bwrap launch's PID-namespace init before its command runs."""
+    try:
+        return witness.complete(
+            process, timeout=_tree_proof.PIN_TIMEOUT_S,
+            before_gate=lambda started: _require_launch_proof(started, owned=True),
+        )
+    except _tree_proof.WitnessUnavailable as exc:
+        raise _sandbox_egress.SeatIdentityUnverified("seat_owner_unavailable") from exc
+
+
+def _seat_resource_caps_code() -> str:
+    from .seat_resource_caps import CODE
+    return CODE
+
+
+def _owner_unshares_pid(process_owner) -> bool:
+    """Whether a composed owned launch starts its own PID namespace under bwrap."""
+    if isinstance(process_owner, _seat_jail.SeatJail) or not process_owner:
+        return False
+    owner = [os.fsdecode(item) for item in process_owner]
+    return owner[0] == "/usr/bin/bwrap" and ("--unshare-pid" in owner
+                                             or "--unshare-all" in owner)
+
+
+def _with_bwrap_lifecycle_fds(prefix: Sequence[str], info_fd: int, block_fd: int) -> list[str]:
+    """Insert ``--info-fd``/``--block-fd`` right after the owner's bwrap executable."""
+    composed = list(prefix)
+    index = composed.index("/usr/bin/bwrap")
+    composed[index + 1:index + 1] = ["--info-fd", str(info_fd), "--block-fd", str(block_fd)]
+    return composed
+
+
 def _process_group_exists(pgid: int) -> bool:
     """Return whether the preserved POSIX process group is still present."""
     try:
@@ -9356,6 +9540,9 @@ def _wait_for_process_group_exit(
 ) -> bool:
     """Reap the direct leader while waiting for the entire group to disappear."""
     deadline = time.monotonic() + timeout
+    proof = _tree_proof.proof_of(proc)
+    if proof is not None:
+        return _await_tree(proc, proof, until=deadline, deadline=deadline)
     while True:
         proc.poll()
         if not _process_group_exists(pgid):
@@ -9562,6 +9749,11 @@ def _run_leg_with_liveness(
             proc = quiescence_latch.launch(_popen)
         if gemini_profile is not None:
             gemini_profile.admit(proc, review_monitor.cancel)
+            pending = _tree_proof.proof_of(proc)
+            if pending is not None and pending.status == _tree_proof.PENDING and (
+                    gemini_profile.init_fd is None
+                    or not pending.adopt_init(os.dup(gemini_profile.init_fd))):
+                raise ValueError("gemini_heartbeat_admission_handshake_failed")
     except BaseException:
         try:
             _reap()
@@ -10029,6 +10221,7 @@ def _launch_claude_sdk_worker(spec, *, worker_id: int, prepared,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
             start_new_session=True, seat_key=seat_key or "",
         )
+        _require_launch_proof(process)
     except (OSError, ValueError, KeyError) as exc:
         for fd in (*parent_to_worker, *worker_to_parent, *payload_fds.values()):
             try:
@@ -16677,8 +16870,8 @@ def _default_spawn(
             )
             response: dict[str, object] | None = None
             probe: Mapping[str, object] | None = None
+            broker_latch = _ProviderQuiescenceLatch()
             try:
-                broker_latch = _ProviderQuiescenceLatch()
                 broker_extra = {**extra, "quiescence_latch": broker_latch}
                 provider_mode = mode
                 staged_bundle = (review_dir / "review-bundle.md").read_text(encoding="utf-8")
