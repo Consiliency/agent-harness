@@ -69,6 +69,10 @@ jobs:
         timeout-minutes: 40
         env:
           UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/agy-conformance-venv
+          # The job's read-only token, for the verifier's GitHub releases API reads only:
+          # unauthenticated calls from shared runner addresses hit the per-address rate
+          # limit (agent-harness#1993). Only the verifier's unit receives it (--pass-env).
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           python -m pip install uv
           mkdir -p -m 0700 "$RUNNER_TEMP/agy-conformance"
@@ -99,12 +103,15 @@ jobs:
           "$host" run -- env CI_SCRATCH_DEVICE="$majmin" PYTHONPATH="$PWD/src:$PWD/tests" \
             timeout 120 "$py" -m pytest -p no:cacheprovider -q -rs tests/test_seat_caps_scratch_binding.py
           env -u XDG_RUNTIME_DIR -u DBUS_SESSION_BUS_ADDRESS \
-            "$host" run -- timeout 1200 "$py" scripts/verify_qualified_agy_image.py \
+            "$host" run --pass-env GITHUB_TOKEN -- timeout 1200 "$py" scripts/verify_qualified_agy_image.py \
             --release --conformance-report "$RUNNER_TEMP/agy-conformance/conformance.xml"
       - name: Seat caps enforcement validation
         # Real direct I/O through the production capped launch path on the scratch device
         # (phase-loop-runtime/scripts/seat_caps_loop_validation.py). A step starts in the
-        # workspace root, so the directory and every path here are explicit.
+        # workspace root, so the directory and every path here are explicit. It runs even
+        # when the gate failed, so a provisioned shard always records enforcement evidence;
+        # without a provisioned device it fails at once.
+        if: ${{ !cancelled() }}
         timeout-minutes: 10
         working-directory: phase-loop-runtime
         env:

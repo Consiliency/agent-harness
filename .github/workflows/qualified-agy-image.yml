@@ -46,4 +46,7 @@ jobs:
         run: python -m pip install uv
       - name: Verify latest release, archive and executable
         working-directory: phase-loop-runtime
+        env:
+          # Read-only; authenticates the releases API reads (agent-harness#1993).
+          GITHUB_TOKEN: ${{ github.token }}
         run: uv run --locked python scripts/verify_qualified_agy_image.py --upstream-only

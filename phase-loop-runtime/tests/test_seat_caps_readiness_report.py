@@ -359,3 +359,11 @@ def test_assert_mode_fails_when_the_temporary_directory_is_off_the_device(device
     rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     failed = [row["name"] for row in rows if row.get("check") == "assert" and not row["ok"]]
     assert failed == ["temporary directory on device"]
+
+
+def test_host_facts_never_dump_the_api_token(monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_fake-token-value")
+    facts = report_mod.host_facts("h")
+    assert "ghs_fake-token-value" not in json.dumps(facts, default=str)
+    assert set(facts["env"]) == {"XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "XDG_CACHE_HOME",
+                                 "PHASE_LOOP_SANDBOX_STAGING_DIR", "HOME"}

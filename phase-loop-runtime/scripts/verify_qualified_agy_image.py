@@ -240,9 +240,21 @@ def release_key(version):
     return tuple(int(part) for part in parts)
 
 
-def fetch_release(url):
-    request = Request(url, headers={"Accept": "application/vnd.github+json",
-                                    "User-Agent": "agent-harness-qualified-image-check"})
+GITHUB_API = "https://api.github.com/"
+TOKEN_ENV = "GITHUB_TOKEN"
+
+
+def fetch_release(url, *, environ=None):
+    """One GitHub releases API document. When ``GITHUB_TOKEN`` is set (CI passes the job's
+    read-only token), the request is authenticated, which lifts the per-address limit that
+    unauthenticated calls from shared runner addresses exhaust (agent-harness#1993). The
+    token is sent to the GitHub API only, and never printed."""
+    headers = {"Accept": "application/vnd.github+json",
+               "User-Agent": "agent-harness-qualified-image-check"}
+    token = (os.environ if environ is None else environ).get(TOKEN_ENV, "").strip()
+    if token and url.startswith(GITHUB_API):
+        headers["Authorization"] = f"Bearer {token}"
+    request = Request(url, headers=headers)
     with urlopen(request, timeout=30) as response:
         return json.load(response)
 
@@ -282,6 +294,7 @@ def download_asset(url, target, *, opener=None, sleep=None):
     after 1 s and 2 s; every attempt restarts the file; exhaustion re-raises. Size and digests
     are checked by the callers as before."""
     opener, sleep = opener or urlopen, sleep or time.sleep  # resolved per call (tests patch urlopen)
+    # Never authenticated: the asset URL redirects to a download host outside the API.
     request = Request(url, headers={"User-Agent": "agent-harness-qualified-image-check"})
     for attempt in range(DOWNLOAD_ATTEMPTS):
         try:
@@ -303,7 +316,9 @@ def run_conformance_suite(report, *, runner=subprocess.run, python=sys.executabl
     root = REPO / "phase-loop-runtime"
     # No ambient pytest or Python configuration reaches the run (PYTEST_ADDOPTS could deselect
     # an obligation, PYTEST_PLUGINS or PYTHONSTARTUP could load code): only the fixed keys.
-    base = {key: value for key, value in os.environ.items() if not key.startswith(("PYTEST_", "PYTHON"))}
+    # Nor does the API token: the suite makes no GitHub call.
+    base = {key: value for key, value in os.environ.items()
+            if not key.startswith(("PYTEST_", "PYTHON")) and key != TOKEN_ENV}
     env = {**base, "AGY_CONFORMANCE_STRICT": "1", "PYTHONDONTWRITEBYTECODE": "1",
            "PYTHONPATH": os.pathsep.join([str(root / "src"), str(root / "tests")])}
     done = runner([python, "-m", "pytest", "-q", "-p", "no:cacheprovider", str(CONFORMANCE_SUITE),

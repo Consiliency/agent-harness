@@ -13,9 +13,12 @@
 #                                (no user manager needed); never fails the step
 #   delegate                     give the user manager the five controllers
 #   provision                    create, attach, format and mount the scratch device
-#   run [--baseline] -- CMD...   run CMD as a oneshot unit of the user manager; without
+#   run [--baseline] [--pass-env NAME]... -- CMD...
+#                                run CMD as a oneshot unit of the user manager; without
 #                                --baseline, CMD's scratch paths and its temporary
-#                                directory (TMPDIR) point at the device
+#                                directory (TMPDIR) point at the device. --pass-env hands
+#                                NAME's value to the unit by name only (never in argv),
+#                                and only when NAME is set
 #   majmin                       print the scratch device's MAJ:MIN
 #   mountpoint                   print the scratch filesystem's mount point
 #   teardown                     stop leftover units, unmount, detach only the owned device
@@ -44,7 +47,7 @@ user="$(id -un)"
 subcommand="${1:-}"
 
 usage() {
-  echo "usage: seat-caps-host.sh {context -- CMD...|delegate|provision|run [--baseline] -- CMD...|majmin|mountpoint|teardown}" >&2
+  echo "usage: seat-caps-host.sh {context -- CMD...|delegate|provision|run [--baseline] [--pass-env NAME]... -- CMD...|majmin|mountpoint|teardown}" >&2
   exit 2
 }
 
@@ -292,10 +295,18 @@ require_provisioned() {
 }
 
 cmd_run() {
-  local baseline=0
+  local baseline=0 passed=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --baseline) baseline=1; shift ;;
+      --pass-env)
+        [ $# -ge 2 ] && [[ $2 =~ ^[A-Z_][A-Z0-9_]*$ ]] || usage
+        # "-E NAME" without a value: systemd-run reads the value from its own environment,
+        # so a secret never appears in argv. Unset or empty means nothing is passed.
+        if [ -n "${!2:-}" ]; then
+          passed+=(-E "$2")
+        fi
+        shift 2 ;;
       --) shift; break ;;
       *) usage ;;
     esac
@@ -331,7 +342,7 @@ cmd_run() {
   systemd-run --user --pipe --wait --collect --quiet --same-dir -p Type=oneshot \
     --unit="$run_unit" \
     -E "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" -E PYTHONDONTWRITEBYTECODE=1 \
-    -E "PATH=$PATH" -E "HOME=$HOME" "${scratch[@]}" \
+    -E "PATH=$PATH" -E "HOME=$HOME" "${scratch[@]}" "${passed[@]}" \
     -- "$@" &
   run_child=$!
   trap on_run_signal TERM INT

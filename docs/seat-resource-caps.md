@@ -110,6 +110,13 @@ whole block device fails readiness with `seat_resource_caps_unavailable`
   forcing, and detaches only the device whose backing file is the job's own image. A busy or
   leaked scratch fails the job before the build.
 
+The verifier's GitHub releases API reads are authenticated with the job's read-only token
+(`GITHUB_TOKEN`, `contents: read`): unauthenticated reads from shared runner addresses hit the
+per-address rate limit. The gate passes the token only to the verifier's unit, by name
+(`run --pass-env GITHUB_TOKEN`), so it never appears in a command line or in the evidence. The
+verifier sends it only to `api.github.com`, never with the asset download, and not to the
+conformance run.
+
 Nothing in this changes how the runtime decides readiness or enforces caps, and strict
 conformance stays strict: `--release` still runs the suite with strict mode set by the
 verifier itself and accepts only the report that run wrote.

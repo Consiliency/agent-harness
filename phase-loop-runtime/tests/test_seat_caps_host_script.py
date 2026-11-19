@@ -536,8 +536,11 @@ def _exec_systemd_run(world):
         args, env, i = sys.argv[1:], {}, 0
         while args[i] != "--":
             if args[i] == "-E":
-                key, _, value = args[i + 1].partition("=")
-                env[key] = value
+                key, sep, value = args[i + 1].partition("=")
+                if sep:
+                    env[key] = value
+                elif key in os.environ:  # "-E NAME": the value of systemd-run's own NAME
+                    env[key] = os.environ[key]
                 i += 2
             else:
                 i += 1
@@ -575,3 +578,48 @@ def test_run_points_tmpdir_at_the_provisioned_temporary_directory(world):
     (world.mnt / "tmp").rmdir()
     done = world.run("run", "--", "true", check=1)
     assert "is not the provisioned temporary directory" in done.stderr
+
+
+
+# --- the verifier's API token: by name only, to the one unit that asks for it ---------
+
+SECRET = "ghs_fake-token-value-0123456789"
+
+
+def _no_secret_anywhere(world, done):
+    assert SECRET not in done.stderr, "the token reached the script's own output"
+    assert all(SECRET not in call for call in _calls(world)), "the token reached the logged argv"
+    for path in world.evidence.rglob("*"):
+        if path.is_file():
+            assert SECRET not in path.read_text(errors="replace"), path
+
+
+def test_pass_env_hands_the_token_by_name_never_in_argv_or_evidence(world):
+    _provision(world)
+    world.log.write_text("")
+    done = world.run("run", "--pass-env", "GITHUB_TOKEN", "--", "true",
+                     env={"GITHUB_TOKEN": SECRET}, check=0)
+    (launch,) = [call for call in _calls(world) if call.startswith("systemd-run ")]
+    assert " -E GITHUB_TOKEN " in f"{launch} "
+    _no_secret_anywhere(world, done)
+
+
+def test_the_unit_receives_the_token_only_when_asked(world):
+    _provision(world)
+    _exec_systemd_run(world)
+    asked = world.run("run", "--pass-env", "GITHUB_TOKEN", "--", "/usr/bin/printenv", "GITHUB_TOKEN",
+                      env={"GITHUB_TOKEN": SECRET}, check=0)
+    assert asked.stdout.strip() == SECRET
+    _no_secret_anywhere(world, asked)
+    unasked = world.run("run", "--", "/usr/bin/printenv", "GITHUB_TOKEN", env={"GITHUB_TOKEN": SECRET})
+    assert unasked.returncode != 0 and SECRET not in unasked.stdout
+
+
+def test_pass_env_skips_an_unset_name_and_refuses_a_malformed_one(world):
+    _provision(world)
+    world.log.write_text("")
+    world.run("run", "--pass-env", "GITHUB_TOKEN", "--", "true", check=0)
+    (launch,) = [call for call in _calls(world) if call.startswith("systemd-run ")]
+    assert "GITHUB_TOKEN" not in launch
+    assert world.run("run", "--pass-env", "lower=x", "--", "true").returncode == 2
+    assert world.run("run", "--pass-env").returncode == 2

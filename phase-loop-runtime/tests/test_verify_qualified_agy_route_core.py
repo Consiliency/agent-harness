@@ -71,7 +71,8 @@ def test_publication_gates_on_release_which_runs_strict_conformance_before_the_b
     # The locked test environment is synced and every Python runs from it by absolute path:
     # a bare `python` would be the setup-python interpreter without the locked test group.
     assert "uv sync --locked --group test --no-install-project" in run
-    assert gate["env"] == {"UV_PROJECT_ENVIRONMENT": "${{ runner.temp }}/agy-conformance-venv"}
+    assert gate["env"] == {"UV_PROJECT_ENVIRONMENT": "${{ runner.temp }}/agy-conformance-venv",
+                           "GITHUB_TOKEN": "${{ github.token }}"}
     assert 'py="$UV_PROJECT_ENVIRONMENT/bin/python"' in run
     assert not re.search(r"(?<![\w/$\"])python3? ", run.replace("python -m pip install uv", ""))
     # The host prerequisites (agent-harness#1895, agent-harness#1993) come from the host script,
@@ -90,7 +91,7 @@ def test_publication_gates_on_release_which_runs_strict_conformance_before_the_b
         # (below pytest's tmp_path); that binding is checked the same way, before the verifier.
         '"$host" run -- env CI_SCRATCH_DEVICE="$majmin" PYTHONPATH="$PWD/src:$PWD/tests"',
         "tests/test_seat_caps_scratch_binding.py",
-        '"$host" run -- timeout 1200 "$py" scripts/verify_qualified_agy_image.py',
+        '"$host" run --pass-env GITHUB_TOKEN -- timeout 1200 "$py" scripts/verify_qualified_agy_image.py',
     ]
     positions = [run.index(item) for item in order]
     assert positions == sorted(positions)
@@ -201,7 +202,9 @@ def test_seat_caps_gate_workflow_mirrors_the_release_gate():
     validation = by_name["Seat caps enforcement validation"]
     # A step starts in the workspace root: the directory, host script and interpreter are explicit.
     assert validation["working-directory"] == "phase-loop-runtime"
-    assert validation["env"] == release_gate["env"]
+    assert validation["env"] == {"UV_PROJECT_ENVIRONMENT": release_gate["env"]["UV_PROJECT_ENVIRONMENT"]}
+    # It runs even after a failed gate, so a provisioned shard always records enforcement.
+    assert validation["if"] == "${{ !cancelled() }}"
     assert '"$GITHUB_WORKSPACE/ci/seat-caps-host.sh"' in validation["run"]
     assert '"$UV_PROJECT_ENVIRONMENT/bin/python"' in validation["run"]
     assert "$GITHUB_WORKSPACE/phase-loop-runtime/scripts/seat_caps_loop_validation.py" in validation["run"]
@@ -230,3 +233,91 @@ def test_the_verifier_has_exactly_the_three_modes():
         assert f'"{flag}"' in text
     for flag in ("--source-only", "--route-core"):
         assert f'"{flag}"' not in text
+
+
+# --- the releases API token (agent-harness#1993: shared runner addresses hit the limit) ---
+
+def _verifier_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("verify_qualified_agy_image_token",
+                                                  SCRIPTS / "verify_qualified_agy_image.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class _Json:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, *_args):
+        return b"{}"
+
+
+def test_the_releases_api_read_carries_the_token_only_to_the_api(monkeypatch):
+    verifier = _verifier_module()
+    seen = []
+    monkeypatch.setattr(verifier, "urlopen", lambda request, timeout: seen.append(request) or _Json())
+    api = "https://api.github.com/repos/o/r/releases/tags/1.0.0"
+    verifier.fetch_release(api, environ={"GITHUB_TOKEN": "tok-123"})
+    verifier.fetch_release(api, environ={})
+    verifier.fetch_release("https://example.invalid/releases", environ={"GITHUB_TOKEN": "tok-123"})
+    headers = [dict(request.header_items()) for request in seen]
+    assert headers[0]["Authorization"] == "Bearer tok-123"
+    assert "Authorization" not in headers[1] and "Authorization" not in headers[2]
+
+
+def test_asset_downloads_and_the_conformance_run_never_receive_the_token(monkeypatch, tmp_path):
+    import subprocess
+    verifier = _verifier_module()
+    monkeypatch.setenv("GITHUB_TOKEN", "tok-123")
+    requests = []
+
+    class _Body:
+        def __init__(self):
+            self.sent = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self, *_args):
+            if self.sent:
+                return b""
+            self.sent = True
+            return b"x"
+
+    verifier.download_asset("https://github.com/o/r/releases/download/1.0.0/a.tar.gz",
+                            tmp_path / "a", opener=lambda request, timeout: requests.append(request) or _Body(),
+                            sleep=lambda _s: None)
+    assert all("Authorization" not in dict(request.header_items()) for request in requests)
+    seen = {}
+
+    def runner(argv, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(argv, 0)
+
+    verifier.run_conformance_suite(tmp_path / "conformance.xml", runner=runner)
+    assert "GITHUB_TOKEN" not in seen["env"]
+
+
+def test_only_the_verifier_unit_receives_the_read_only_token():
+    for path, job in ((PUBLISH, "build"), (PROBE, "probe")):
+        workflow, _ = _workflow(path)
+        assert workflow["permissions"] == {"contents": "read"}, path
+        assert "permissions" not in workflow["jobs"][job], path
+        _steps, gate = _gate(workflow, job)
+        assert gate["env"]["GITHUB_TOKEN"] == "${{ github.token }}"
+        passing = [line for line in gate["run"].splitlines() if "--pass-env" in line]
+        assert [line.strip() for line in passing] == [
+            '"$host" run --pass-env GITHUB_TOKEN -- timeout 1200 "$py" scripts/verify_qualified_agy_image.py \\']
+        # The token is never put on a command line.
+        assert "github.token" not in gate["run"] and "$GITHUB_TOKEN" not in gate["run"]
+    upstream = yaml.safe_load(QUALIFIED.read_text())["jobs"]["upstream"]
+    (step,) = [s for s in upstream["steps"] if "--upstream-only" in s.get("run", "")]
+    assert step["env"] == {"GITHUB_TOKEN": "${{ github.token }}"}

@@ -18,8 +18,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   and an evidence upload run on every outcome. A per-check readiness report records which
   readiness check fails, and the new `seat-caps-gate.yml` probe also validates that the I/O
   bandwidth caps bind on the scratch device. The pull-request job timeout is 55 minutes so
-  that cleanup and evidence outlast the gate's own bounds. Strict conformance and runtime
-  caps behaviour are unchanged.
+  that cleanup and evidence outlast the gate's own bounds. The verifier authenticates its
+  GitHub releases API reads with the job's read-only token when `GITHUB_TOKEN` is set (also
+  in the nightly `--upstream-only` check), because unauthenticated reads from shared runner
+  addresses hit the rate limit. Strict conformance and runtime caps behaviour are unchanged.
 
 ## [0.7.36] - Unreleased candidate
 
