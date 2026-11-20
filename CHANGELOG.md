@@ -8,6 +8,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- Seat scopes use a fixed description. `capped_popen` passes `systemd-run` a
+  `--description` that names only the seat key's digest (the value already in the unit
+  name), so a scope's unit metadata no longer repeats the seat's command line. The
+  per-seat caps, their attestation and the launched command are unchanged
+  (agent-harness#1895).
 - The agy size bounds are defined once, in `agy_provenance`, and every reader looks them up
   there when it runs: a 512 MB image (the seat readers in `gemini_heartbeat` and
   `agy_integrity` stopped at 300 MB, with current upstream images at about 269 MB), a 256 MB
