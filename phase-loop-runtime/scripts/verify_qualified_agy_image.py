@@ -51,8 +51,10 @@ CONFORMANCE_FIXTURES = REPO / "phase-loop-runtime/tests/fixtures/agy_conformance
 # The properties a real strict run writes into its JUnit report (agent-harness#1937 review B4).
 IDENTITY_PROPERTIES = ("agy_conformance_strict", "agy_conformance_commit", "agy_conformance_source_sha256")
 ASSET = "agy_cli_linux_x64.tar.gz"
-# The archive's ``antigravity`` member bound; equal to ``agy_provenance.MAX_MEMBER_BYTES``.
+# The archive's ``antigravity`` member bound and the release asset bound (AGYFRESH §1.1);
+# tested equal to ``agy_provenance.MAX_MEMBER_BYTES`` and ``agy_provenance.MAX_ARCHIVE_BYTES``.
 MAX_MEMBER_BYTES = 512_000_000
+MAX_ARCHIVE_BYTES = 256_000_000
 UPSTREAM = "google-antigravity/antigravity-cli"
 RELEASES = f"https://api.github.com/repos/{UPSTREAM}/releases"
 API = RELEASES + "/latest"
@@ -330,7 +332,7 @@ def download_asset(url, target, *, opener=None, sleep=None):
             with opener(request, timeout=60) as response, Path(target).open("wb") as stream:
                 while chunk := response.read(1024 * 1024):
                     stream.write(chunk)
-                    require(stream.tell() <= 128_000_000, "release asset exceeds expected size")
+                    require(stream.tell() <= MAX_ARCHIVE_BYTES, "release asset exceeds expected size")
             return
         except HTTPError as exc:
             if not 500 <= exc.code < 600 or attempt == DOWNLOAD_ATTEMPTS - 1:

@@ -5,14 +5,13 @@ Release-qualified images are admitted statically, by digest. With the caller's e
 ``agy_qualification.lookup``, which may run ``agy --help`` from a sealed memfd to
 measure the help digest (agent-harness#1331). It never qualifies an image."""
 
-from hashlib import sha256
 from contextlib import contextmanager
 import os
 from pathlib import Path
 import stat
 import shutil
 
-from . import gemini_heartbeat
+from . import agy_provenance, gemini_heartbeat
 
 _PROVIDER_SEARCH_PATH = os.environ.get("PATH", os.defpath)
 
@@ -21,17 +20,18 @@ class AgyImageUnqualified(RuntimeError):
     pass
 
 
-def _locally_qualified(data, source, env, evidence=None):
+def _locally_qualified(image, source, env, evidence=None):
     """The image's local self-qualification admission (agent-harness#1076), else refuse.
 
     Same lookup as ``gemini_heartbeat.admit`` step 2: opt-out, failed entry, provenance,
-    then the qualified entry for this host and runtime. Lookup only; it never qualifies."""
+    then the qualified entry for this host and runtime. Lookup only; it never qualifies.
+    ``image`` is the sealed memfd of the single read; lookup owns and closes it."""
     from . import agy_qualification
     from .panel_invoker import ProviderProcessGroupQuiescenceError
     from .sandbox_egress import EgressUnavailable
     from .seat_jail import SeatSandboxRefused
     try:
-        admission = agy_qualification.lookup(dict(env), data, str(source))
+        admission = agy_qualification.lookup(dict(env), image, str(source))
         if evidence is not None:
             evidence.update(provider_admission_class=admission.admission_class,
                             provider_image_sha256=admission.image.sha256)
@@ -56,36 +56,39 @@ def check(path, env=None, *, evidence=None):
     """Admit a release-qualified agy image. With ``env``, also admit a locally
     self-qualified one, so the seat probe and launch honour the same admission as the
     heartbeat route (agent-harness#1331). Without ``env`` (canary evidence) only
-    release-qualified images are admitted."""
-    descriptor = None
+    release-qualified images are admitted.
+
+    The image is read once, streamed into one sealed memfd (AGYFRESH §1.2), within
+    ``agy_provenance.MAX_MEMBER_BYTES`` read at call time."""
+    descriptor = image = None
     try:
         source = Path(path).resolve(strict=True)
         descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
         info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or info.st_size > 300_000_000:
+        if not stat.S_ISREG(info.st_mode) or info.st_size > agy_provenance.MAX_MEMBER_BYTES:
             raise AgyImageUnqualified("agy_image_unqualified")
-        chunks, size = [], 0
-        while size <= 300_000_000:
-            chunk = os.read(descriptor, min(1024 * 1024, 300_000_001 - size))
-            if not chunk:
-                break
-            size += len(chunk)
-            chunks.append(chunk)
-        data = b"".join(chunks)
-        if size > 300_000_000:
-            raise AgyImageUnqualified("agy_image_unqualified")
-        if sha256(data).hexdigest() not in gemini_heartbeat.QUALIFIED_IMAGES:
+        try:
+            image = gemini_heartbeat.VerifiedImage.from_fd(descriptor, path=source)
+        except gemini_heartbeat.AgyCanaryEvidenceError as exc:
+            # A memfd seal failure is the typed refusal, as when lookup sealed the bytes.
+            raise AgyImageUnqualified("agy_image_unqualified") from exc
+        os.close(descriptor)
+        descriptor = None
+        if image.sha256 not in gemini_heartbeat.QUALIFIED_IMAGES:
             if env is None:
                 raise AgyImageUnqualified("agy_image_unqualified")
-            return _locally_qualified(data, source, env, evidence)
-        image = gemini_heartbeat.VerifiedImage.from_bytes(data, source)
+            local, image = image, None  # lookup owns it from here
+            return _locally_qualified(local, source, env, evidence)
         if evidence is not None:
             evidence.update(provider_admission_class="release_qualified",
                             provider_image_sha256=image.sha256)
-        return image
+        admitted, image = image, None
+        return admitted
     except (OSError, ValueError) as exc:
         raise AgyImageUnqualified("agy_image_unqualified") from exc
     finally:
+        if image is not None:
+            image.close()
         if descriptor is not None:
             os.close(descriptor)
 

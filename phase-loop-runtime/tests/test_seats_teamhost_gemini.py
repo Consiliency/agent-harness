@@ -473,7 +473,12 @@ def test_lookup_only_verdict_refuses_when_the_image_cannot_be_sealed(tmp_path, m
     def unsealed(_data, _path=None):
         raise ValueError(gh._CAPABILITY)
 
+    def unsealed_stream(_fd, *, path=None):
+        raise ValueError(gh._CAPABILITY)
+
     monkeypatch.setattr(gh.VerifiedImage, "from_bytes", unsealed)
+    # The seat path streams the image into its memfd (AGYFRESH §1.2).
+    monkeypatch.setattr(gh.VerifiedImage, "from_fd", unsealed_stream)
     expected = q.AgyVerdict("refuses", "agy_image_unqualified", None)
     assert q.admission_verdict({}, path, execute=False) == expected
     assert q.admission_verdict(env, path, execute=True) == expected

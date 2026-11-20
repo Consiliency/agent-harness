@@ -361,8 +361,8 @@ def test_the_member_bound_admits_current_upstream_and_stays_bounded():
 def test_path_swap_after_provenance_still_executes_the_verified_bytes(world, monkeypatch):
     """I1 TOCTOU. Mutation: re-opening the PATH file after provenance (a second open)."""
     opens = []
-    real_read = gh._read_image
-    monkeypatch.setattr(gh, "_read_image", lambda path: opens.append(path) or real_read(path))
+    real_open = gh._open_image_fd
+    monkeypatch.setattr(gh, "_open_image_fd", lambda path: opens.append(path) or real_open(path))
     real_find = prov.find_provenance
 
     def find_then_swap(*args, **kwargs):

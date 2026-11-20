@@ -1385,8 +1385,9 @@ A non-release `agy` image is admitted only by verifying it, never by trusting it
   `qualification_candidate` (only inside a qualification run; never counted, never
   persisted). The evidence's `provider_image_sha256` is the admitted image's own digest.
 - **VerifiedImage.** `PATH` is resolved once (a versioned-install symlink to its final
-  target), the target is opened once (`O_NOFOLLOW`, regular file, size cap) and read
-  into memory; that buffer is hashed and fills a sealed memfd, which is re-hashed.
+  target), the target is opened once (`O_NOFOLLOW`, regular file, size cap) and
+  streamed in 1 MiB chunks, hashed as it goes, into a sealed memfd, which is re-hashed
+  (`VerifiedImage.from_fd`; see RESTORE below).
   Help measurement, the three live operations, board legs and the president execute
   that memfd (an independent, re-hashed read of it per profile) and never open the path
   again.
@@ -2280,3 +2281,37 @@ default command returns `window_owner_approval_required` before composition pref
 authentication, storage or provider launch. Missing frozen producers also fail closed.
 The matrix reducer changes only rows observed in every context of a complete verified
 W1 set; all unexercised rows retain `candidate` (remote rows retain `remote-pending`).
+
+## RESTORE — agy size bounds and the streaming seat reader · `agy_provenance.py`, `gemini_heartbeat.py`, `agy_integrity.py` (AGYFRESH §1)
+
+- **Bounds, defined once in `agy_provenance`.** `MAX_MEMBER_BYTES` (512,000,000: the largest
+  agy image accepted anywhere), `MAX_ARCHIVE_BYTES` (256,000,000: the largest compressed
+  release asset) and `MAX_EXPANDED_BYTES` (1,024,000,000: the largest decompressed tar stream
+  of one archive). Every reader looks them up as `agy_provenance.<NAME>` when it runs; no
+  module keeps an alias. `scripts/verify_qualified_agy_image.py` keeps `MAX_MEMBER_BYTES` and
+  `MAX_ARCHIVE_BYTES` as script literals, tested equal to the module's. These are ceilings,
+  not a measure of what a host can afford.
+- **Archive reading (`read_member`).** The archive is decompressed below the tar parser, one
+  chunk per read, and every decompressed byte handed to the parser counts against
+  `MAX_EXPANDED_BYTES`: headers, extension records, padding, skipped members and the member.
+  The declared sizes of all members are also summed as each is announced and refused above
+  the same bound. What the parser keeps is bounded separately: at most `MAX_ARCHIVE_ENTRIES`
+  (4,096) header blocks of any kind, at most `MAX_ARCHIVE_METADATA_BYTES` (4 MiB) of
+  extension records (PAX, GNU long name and link) summed over the archive, and at most
+  `MAX_EXTENSION_CHAIN` (8) consecutive extension headers before one member. Sparse members
+  (GNU type `S`, or PAX-encoded sparse maps) are refused. Each refusal is
+  `gemini_heartbeat_provenance_unverified`; the member bound and the archive digest check
+  are unchanged.
+- **Seat reader.** `gh.admit` and `agy_integrity.check` open the image once and stream it
+  with `VerifiedImage.from_fd(fd, *, path=None)`: 1 MiB chunks through one reused buffer,
+  hashed while copied into a memfd with the mode and seals of `VerifiedImage.from_bytes`,
+  refused above `MAX_MEMBER_BYTES`, then re-hashed. The image exists once, in the memfd; the
+  traced Python allocation of a seat admission stays under 4 MiB for any image size. A
+  non-member image goes to `agy_qualification.lookup` as that sealed image (lookup takes
+  ownership and closes it unless it is handed on); `lookup` still accepts bytes from other
+  callers. On the seat path a memfd seal failure stays the typed `agy_image_unqualified`
+  refusal, now also for a release member. `gh._read_image` remains for callers that need
+  the bytes and reads the bound when it runs; `VerifiedImage.from_bytes` remains for callers
+  that already hold bytes. The upstream watch's `fetch_member(keep_bytes=True)` still joins
+  the member in memory (ROLLJOB moves it to streaming).
+- **Not changed.** The seat QCI, store keys, the shipped catalog, records and pins.
