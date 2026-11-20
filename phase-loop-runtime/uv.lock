@@ -334,11 +334,11 @@ wheels = [
 
 [[package]]
 name = "consiliency-contract"
-version = "0.6.5"
+version = "0.7.2"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/ba/07/e5f11b1286a0b0a724cd8fae497ec43bb6b6925d748e847fb21f1f669077/consiliency_contract-0.6.5.tar.gz", hash = "sha256:81a4eb100814fa92ca5a6f32082cb82a9211a62a5dd360cff8ba66eb2695d17c", size = 110074, upload-time = "2026-07-09T07:44:59.664Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/18/78/5eb66cb8046ebcc3f9750903d116285219c3e79d5d798cd01fb140ac08cf/consiliency_contract-0.7.2.tar.gz", hash = "sha256:ff04e1c6f8f4e60d71abfa6e3c972b141896280be1829dcad311934f1e77c5a4", size = 471151, upload-time = "2026-11-20T17:06:45.238Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/3a/04/76afc56be791ff7c3c50fcdbd36fdfd37e3e7c3dbf7412f55ed7610d859e/consiliency_contract-0.6.5-py3-none-any.whl", hash = "sha256:741dfef40bdd1a43f28afca6f39baf8cc3093f49e9b2a9787334631ea352d425", size = 109899, upload-time = "2026-07-09T07:44:58.425Z" },
+    { url = "https://files.pythonhosted.org/packages/07/e8/16b93aca93513d3093ea95edec62a962b970c628730f8fd21c41e849e4e6/consiliency_contract-0.7.2-py3-none-any.whl", hash = "sha256:6eaed71df2ced8ced20ca80df259e31b28e70267dddc2914057e3a767b12617c", size = 201226, upload-time = "2026-11-20T17:06:43.43Z" },
 ]
 
 [[package]]
@@ -645,7 +645,7 @@ test = [
 requires-dist = [
     { name = "baml-bridge", specifier = "==0.23.0" },
     { name = "claude-agent-sdk", marker = "extra == 'claude-sdk'", specifier = "==0.2.167" },
-    { name = "consiliency-contract", specifier = ">=0.6.5,<0.7" },
+    { name = "consiliency-contract", specifier = ">=0.7.2,<0.8" },
     { name = "detect-secrets", specifier = "==1.5.0" },
     { name = "exceptiongroup", specifier = ">=1" },
     { name = "jsonschema", specifier = ">=4,<5" },

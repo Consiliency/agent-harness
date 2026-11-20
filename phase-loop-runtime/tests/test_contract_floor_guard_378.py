@@ -380,12 +380,17 @@ def test_foreign_adjacent_pyproject_does_not_abort_end_to_end(tmp_path, monkeypa
     # with a >=9.9 pin sits at parents[2], yet a HEALTHY install must NOT abort. Monkeypatching
     # ownership->True is faithful here -- it reproduces "ownership passes" so the pyproject-trust
     # decision is what the test isolates. RED under the B1own mutation: the foreign >=9.9 pin
-    # governs -> 0.6.5 install aborts with ContractFloorError.
+    # governs -> a healthy install aborts with ContractFloorError.
     import importlib.metadata as md
 
     import phase_loop_runtime as pl
     import phase_loop_runtime.consiliency_layout as cl
 
+    # Healthy metadata is the package's real declared pin, read BEFORE __file__ is repointed
+    # (the clean-room wheel ships no pyproject, so fall back to the imported contract version).
+    # Deriving it keeps this test from carrying a second copy of the floor that goes stale on
+    # the next contract bump.
+    healthy = _requirement_from_pyproject() or f"consiliency-contract=={cl.installed_contract_version()}"
     init = _plant_layout(
         tmp_path, project_name="some-consumer-app",
         deps=["consiliency-contract>=9.9,<10"],
@@ -394,10 +399,10 @@ def test_foreign_adjacent_pyproject_does_not_abort_end_to_end(tmp_path, monkeypa
     monkeypatch.setattr(cl, "_dist_owns_imported_runtime", lambda dist: True)
     monkeypatch.setattr(
         md, "distribution",
-        lambda name: _StaleMetadataDist("consiliency-contract>=0.6.5,<0.7"), raising=True,
+        lambda name: _StaleMetadataDist(healthy), raising=True,
     )
-    # Foreign pin rejected by the name gate -> healthy metadata (>=0.6.5,<0.7) governs ->
-    # the imported 0.6.5 satisfies it -> no raise (and no divergence: there is no owned pin).
+    # Foreign pin rejected by the name gate -> healthy metadata governs -> the imported
+    # contract satisfies it -> no raise (and no divergence: there is no owned pin).
     cl.check_installed_contract_floor()
 
 
