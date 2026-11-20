@@ -19,6 +19,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- The jailed Gemini seat pins agy's agent mode to Default. Since agy 1.5.7, a headless run
+  with no saved mode starts in Auto wherever Auto is available. Auto sends commands that
+  would leave agy's terminal sandbox to a separate reviewing agent, which is a second
+  model session that the seat does not allow. The settings file that the parent writes
+  into the seat's `.gemini/antigravity-cli/` was `{}`. It is now `{"agentMode":""}`, the
+  value agy itself saves when Default is chosen. The seat's probe jail and the jail
+  qualification's seat shape write the same file. The seat argv is unchanged and still
+  passes no `--mode`. The heartbeat route still passes `--mode plan` with its own owned
+  settings. The agy validator closure, the seat QCI, the jail profile digests and the
+  Claude-SDK proof inputs are unchanged, so nothing needs requalification.
 - Seat scopes use a fixed description. `capped_popen` passes `systemd-run` a
   `--description` that names only the seat key's digest (the value already in the unit
   name), so a scope's unit metadata no longer repeats the seat's command line. The

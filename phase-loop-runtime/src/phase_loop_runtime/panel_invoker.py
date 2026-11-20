@@ -13311,12 +13311,25 @@ def _approved_stage_or_refuse(review_dir: Path, review_authorization) -> Path:
     return tree
 
 
+# The jailed seat's agy settings: the agent mode pinned to Default. Since agy 1.5.7, a
+# session with no saved mode, a headless `-p` run included, starts in Auto where Auto is
+# available, and Auto sends commands that would leave agy's terminal sandbox to a separate
+# reviewing agent: a second model session, which the seat forbids. `"agentMode": ""` is the
+# value agy itself saves when Default is chosen (its 1.5.7 release note). Before 1.5.7,
+# Default was already the default, so there the pin changes nothing. The pin lives here
+# rather than in the argv, which stays the qualified profile's and passes no `--mode`.
+# This file is not `_broker_agy_settings_bytes()`: those bytes belong to the owned
+# heartbeat profile and feed `agy_profile_digest()`, so the seat QCI.
+_JAILED_GEMINI_SETTINGS = b'{"agentMode":""}\n'
+
+
 def _write_gemini_config(dotdir: Path, copy: bytes) -> None:
     """The parent-built ``.gemini`` directory (D7, F006): it holds ``antigravity-cli/`` with
-    the access-token-only copy, an empty settings file, an installation id, and the empty
-    mount points of the writable subdirectories. ``.gemini`` is the read-only bind, so the
-    seat cannot rename it; the in-H hand-off makes the tree the operator's, group n,
-    traversable (dirs 0550) and read-only to the seat (files 0440)."""
+    the access-token-only copy, the settings file that pins the agent mode
+    (``_JAILED_GEMINI_SETTINGS``), an installation id, and the empty mount points of the
+    writable subdirectories. ``.gemini`` is the read-only bind, so the seat cannot rename
+    it; the in-H hand-off makes the tree the operator's, group n, traversable (dirs 0550)
+    and read-only to the seat (files 0440)."""
     dotdir.mkdir(mode=0o700)
     for name in _seat_jail.GEMINI_WRITABLE_DOTDIR_DIRS:
         (dotdir / name).mkdir(mode=0o700)  # mount points for agy's runtime-state overlays
@@ -13326,7 +13339,7 @@ def _write_gemini_config(dotdir: Path, copy: bytes) -> None:
     try:
         if copy:
             _seat_jail.write_new_file_at(fd, "antigravity-oauth-token", copy)
-        _seat_jail.write_new_file_at(fd, "settings.json", b"{}\n")
+        _seat_jail.write_new_file_at(fd, "settings.json", _JAILED_GEMINI_SETTINGS)
         _seat_jail.write_new_file_at(fd, "installation_id", str(uuid.uuid4()).encode())
         for name in _seat_jail.GEMINI_WRITABLE_CONFIG_DIRS:
             os.mkdir(name, 0o700, dir_fd=fd)
