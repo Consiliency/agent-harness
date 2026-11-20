@@ -15760,10 +15760,10 @@
           "sha256": "dbb47fcf09466b0330e04066bc003e6b01a7ea629af5673d3a7b1f2259797ae4"
         },
         "plans/artifacts/agyfresh-hold-amendment.md": {
-          "sha256": "b9171ad6e5d765369156e293f5cc20d2f646fb0725b33caacbaa1ae54a1bf144"
+          "sha256": "630a9f647f8c0a71d80cb3b7104c0a5a49c8313d740ff78912accce41dc98bdc"
         },
         "plans/artifacts/agyfresh-hold-lanes.md": {
-          "sha256": "8af0c01186d703345c6ce9ad2edb0b5cbd6bb4587ebbb15a8e57b105ca25b8ca"
+          "sha256": "f7f37b6c514093ea326f8d17a100ba3edc8c9551eedd82b2f39bccfb34d03b15"
         }
       },
       "handoff_ref": null,
@@ -15797,7 +15797,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-11-20T03:30:00Z"
+      "updated_at": "2026-11-20T05:30:00Z"
     },
     {
       "acceptance_criteria_count": 4,
