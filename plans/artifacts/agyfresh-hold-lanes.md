@@ -1,4 +1,4 @@
-# AGYFRESH HOLD lanes r4: frozen detail for the HOLD phase plan
+# AGYFRESH HOLD lanes r5: frozen detail for the HOLD phase plan
 
 Detail for `plans/phase-plan-v1-agyroll-HOLD.md` (lanes SL-0 to SL-6) and
 `plans/detailed-agyfresh-failexp-20261120-0114.md` (SL-5 FAILEXP). The design is
@@ -36,8 +36,9 @@ Paths are under `phase-loop-runtime/` unless they name another root; `src/` mean
 | **STOP, new amendment** | the coordinator has recorded the failed probe and the owner called for a new amendment | SL-2 → SL-4 → SL-5; SL-6 waits | stays `not_covered` | the phase stays open; this plan is amended for the new jail design |
 
 SL-2 does not wait for SL-1: it is the same in every branch. SL-4 and SL-5 need SL-1's
-outcome only to know whether SL-3 goes before them. Until SL-1 reports, nothing after SL-2
-starts.
+outcome only to know whether SL-3 goes before them. Until SL-1 reports and the branch
+checkpoint (§K) is committed, nothing after SL-2 starts. The reducer SL-6 runs only on GO
+and on STOP, gap accepted.
 
 ## B. Options and rules
 
@@ -246,7 +247,8 @@ least one case that enters through those functions over files on disk; cases tha
   symlink alias of the managed root and of the subject; a managed subject removed after
   resolution is still classified managed (no hold); a PATH `agy` that is the guarded
   frontdoor is skipped on route 2; a PATH `agy` outside the managed root is standalone.
-  Before SL-3: a held admission has `path is None`, and `_prepare_jailed_gemini` with a
+  Before SL-3 (test name contains `jailed_standalone`; it is the STOP branches' control,
+  §K2): a held admission has `path is None`, and `_prepare_jailed_gemini` with a
   standalone subject and that admission raises `gemini_heartbeat_capability_unavailable`
   without calling `build_seat_jail`.
 - **EC-HOLD-7 (order and budgets).** A newer vendor member beats an older cache member that
@@ -416,12 +418,15 @@ claimed for these only.**
 - **Memory.** None beyond the admission's memfd.
 - **Jail requalification.** None, because no canonical digest or key changes. That is what
   EC-HOLD-14 proves; it is not assumed.
-- **Release hold G-REL: the control is the merge** (amendment §1.4). This PR does not merge
-  to `main` until the release owner (the Agent-Harness Exec) has recorded an affirmative
-  clearance on its final head. The clearance needs SL-1's recorded digest comparison and
-  the EC-HOLD-14 cases passing, executed, in hosted CI on that head. A push after the
-  clearance voids it. The standing approval to merge accepted AGYFRESH PRs does not cover
-  this PR without that clearance. The PR's first paragraph states the hold and links both
+- **Release hold G-REL: the control is the merge** (amendment §1.4; plan, Lane Index
+  section). The only merge actor is the release owner (the Agent-Harness Exec). The
+  clearance names the cleared head SHA and links SL-1's recorded digest comparison and
+  that head's hosted CI run with the EC-HOLD-14 cases executed and zero skips. The merge is
+  `gh pr merge --match-head-commit <cleared-sha>` (or the train runner's equivalent
+  head-conditioned merge), after all required checks pass on that head. The PR is never
+  set to auto-merge and never enters a queued or deferred merge. A different head at merge
+  time invalidates the clearance. The standing approval to merge accepted AGYFRESH PRs
+  does not cover this PR. The PR's first paragraph states the hold and links both
   proofs. Nothing else is needed before a tag, and a deployment that consumes `main`
   directly is covered by the same gate.
 - **agy requalification.** None intended; `tests/test_agy_qci.py` decides (AGYFRESH §3).
@@ -498,3 +503,67 @@ Q1 of r1 (the jailed standalone route) is decided: SL-1 and SL-3. Remaining, non
 - **Q-C.** `hold_status` may read up to five images. The doctor computes it only when the
   Gemini verdict is not `admits`, and it mutates nothing.
 - **Q-D.** If SL-1 stops, §A's STOP branches apply.
+
+## K. Branch checkpoint: the plan amendment the coordinator commits
+
+**When.** SL-1 has reported, and on a STOP the owner has chosen between accepting the gap
+and a new amendment. **Who.** The coordinator. **What.** One commit that edits
+`plans/phase-plan-v1-agyroll-HOLD.md` only, with exactly the edits of the branch taken
+below, so the machine-readable lane index, the whole-phase command and the closeout
+evidence match what will run. If SL-0 has not merged yet, the commit goes into SL-0's PR;
+otherwise it is its own docs PR. No lane after SL-2 is dispatched before it is on `main`.
+
+Every branch also adds, as the first line under `## Lane Index & Dependencies`:
+`Branch recorded at the SL-1 checkpoint: <GO | STOP, gap accepted | STOP, new amendment>.`
+
+### K1. GO
+
+1. SL-3 stanza: `Blocks: SL-6` → `Blocks: SL-4, SL-6`.
+2. SL-4 stanza: `Depends on: SL-2` → `Depends on: SL-2, SL-3`.
+
+Nothing else. The frontmatter `suite_command` keeps `tests/test_agy_hold_jail.py`, so the
+closeout command (SL-6.1) and the evidence list keep it.
+
+### K2. STOP, gap accepted
+
+1. Lane index: delete the whole SL-3 stanza. Remove `SL-3` from the `Blocks:` lines of
+   SL-0, SL-1 and SL-2 (SL-1 becomes `Blocks: SL-6`). SL-6: `Depends on: SL-0, SL-1, SL-2,
+   SL-4, SL-5`.
+2. `## Lanes`: delete the `### SL-3` section, heading to the end of its task table.
+3. SL-1 `Owned files`: `plans/evidence/agyfresh-jailbind-feasibility.md` only (the probe
+   test file is not merged on a STOP). SL-1's task row keeps naming the probe file, as
+   the record of what was run on the scratch branch.
+4. `Continues` and `Interfaces` lines that name SL-3 or IF-0-HOLD-5: none remain in SL-4,
+   SL-5 or SL-6 by construction; check with `grep -n "SL-3\|IF-0-HOLD-5"` and leave only
+   prose mentions.
+5. Frontmatter `suite_command`: remove ` tests/test_agy_hold_jail.py`. This is the **STOP
+   closeout command**; SL-6.1 runs it as written.
+6. Spec Closeout Plan, `evidence paths`: remove
+   `phase-loop-runtime/tests/test_agy_hold_jail.py`. The STOP evidence list is then
+   `tests/test_agy_hold.py`, `tests/test_agy_hold_cache.py`,
+   `tests/test_agy_hold_managed.py` and `plans/evidence/agyfresh-jailbind-feasibility.md`.
+7. Acceptance Criteria, replace the two lines:
+   - `- [ ] EC-HOLD-13 — **unmet** (STOP, gap accepted; SL-3 was not run): proven by `plans/evidence/agyfresh-jailbind-feasibility.md` naming the failed check and by `pytest tests/test_agy_hold_managed.py -k jailed_standalone` showing the route refuses a held admission; falsified by a status that reports `routes.jailed` as `covered`. Path-entered control: through `panel_invoker._prepare_jailed_gemini`.`
+   - `- [ ] EC-HOLD-14 — **unmet** (STOP, gap accepted; SL-3 was not run; G-REL not applicable): proven by `plans/evidence/agyfresh-jailbind-feasibility.md`; falsified by any edit to `seat_jail.py` or `panel_invoker.py` in this phase's merged lanes. Path-entered control: through `git diff` of the merged lanes against the base tree.`
+
+The refusal control named in the EC-HOLD-13 line is SL-2's appended case in
+`tests/test_agy_hold_managed.py` (§E3, EC-HOLD-6), which stays as it is on a STOP.
+
+### K3. STOP, new amendment
+
+Edits 1 to 6 of §K2, and also:
+
+- Lane index and `## Lanes`: delete the SL-6 stanza and the `### SL-6` section, and remove
+  `SL-6` from every `Blocks:` line (a line left empty becomes `Blocks: (none)`). With no
+  reducer in the index the phase cannot close from this plan: it stays open after SL-5
+  until the amended plan for the new jail design restores SL-3 and SL-6.
+- Acceptance Criteria: EC-HOLD-13 and EC-HOLD-14 keep their GO text, each prefixed
+  `**pending a new amendment** — `.
+
+### K4. Validation of the commit
+
+`python phase-loop-skills/plan-phase/scripts/validate_plan_doc.py plans/phase-plan-v1-agyroll-HOLD.md`
+must exit 0. All three sets of edits were dry-run against revision 5 of the plan and
+passed. Expected warnings: on every branch (N), the changelog heuristic, and (P) for
+EC-HOLD-13 to -15 until SL-0's roadmap amendment is on `main`; on §K3 also (J), no docs
+lane, which is the intended state. Then `git diff --check`.

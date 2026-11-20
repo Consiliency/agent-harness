@@ -92,11 +92,15 @@ the authority path, and any jail change beyond AGYFRESH §2.11".
 Add the same line to "Top Interface-Freeze Gates".
 
 **Release hold G-REL (execution gate; release owner: the Agent-Harness Exec).** The control
-is the merge. The jail integration lane's PR does not merge to `main` until the release
-owner has recorded an affirmative clearance on its **final PR head**. The clearance needs
-both proofs: the feasibility lane's recorded digest comparison, and EC-HOLD-14 passing in
-hosted CI on that head, with its required cases executed, not skipped. A push after the
-clearance voids it. Because the lane is never on `main` without the clearance, `main` stays
+is the merge, and the release owner is the only merge actor for the jail integration lane.
+Its PR does not merge to `main` until the release owner has recorded an affirmative
+clearance that names the cleared head SHA. The clearance needs both proofs: the feasibility
+lane's recorded digest comparison, and EC-HOLD-14 executed with zero skips in that head's
+hosted CI, linked in the clearance. The merge is head-conditioned on the cleared SHA
+(`gh pr merge --match-head-commit <cleared-sha>`, or the train runner's equivalent), after
+every required check has passed on that same head; the lane is excluded from auto-merge
+and from any queued or deferred merge. A different PR head at merge time invalidates the
+clearance, and the head condition enforces that. Because the lane is never on `main` without the clearance, `main` stays
 releasable at every tag, every PyPI publication and every dotfiles nightly consumer is
 covered, and a deployment that consumes `main` directly is covered by the same gate; no
 pre-tag check is needed. The clearance is recorded in the engagement plan and ledger and

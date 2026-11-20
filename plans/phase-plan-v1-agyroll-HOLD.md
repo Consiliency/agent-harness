@@ -12,8 +12,8 @@ automation:
 ## Context
 
 HOLD lets a Gemini seat run an already-qualified agy image when its selected one cannot be
-used for a subject-side reason. Revision 4 of this plan follows three reviews, one owner
-decision and the coordinator's rulings on the second and third reviews.
+used for a subject-side reason. Revision 5 of this plan follows four reviews, one owner
+decision and the coordinator's rulings on the reviews.
 
 **Inputs this plan points at and does not restate:**
 
@@ -129,8 +129,8 @@ lane, each merged before the next starts. `Owned files` names each file once, un
 first lane that writes it; a later lane's `Continues` line lists the files it also edits
 after the owner has merged.
 
-**Branches after SL-1** (lanes artifact §A). The stanzas above are the hard dependencies;
-the branch decides where SL-3 sits.
+**Branches after SL-1** (lanes artifact §A). The stanzas above are the state before the
+branch checkpoint; the checkpoint amendment (below) rewrites them for the branch taken.
 
 - **GO** — SL-1's report shows P1–P7 all hold. Order: SL-2 → SL-3 → SL-4 → SL-5 → SL-6.
   SL-4 waits for SL-3 because they continue the same files.
@@ -146,14 +146,28 @@ the branch decides where SL-3 sits.
 SL-2 is the same in every branch and does not wait for SL-1. Nothing after SL-2 starts
 until SL-1 has reported.
 
-**Execution gate G-REL (release hold): the control is the merge.** Release owner: the
-Agent-Harness Exec. SL-3's PR does not merge to `main` until the release owner has recorded
-an affirmative clearance on its **final PR head**. The clearance needs both proofs: SL-1's
-recorded digest comparison, and EC-HOLD-14 passing in hosted CI on that head with its cases
-executed. A push after the clearance voids it; the standing approval to merge accepted PRs
-does not replace it. `main` therefore stays releasable at every tag, and a deployment that
-consumes `main` directly is covered by the same gate; no pre-tag check is needed. The hold
-is recorded in the engagement plan and ledger (amendment §1.4).
+**Execution gate G-REL (release hold): the control is the merge.** Release owner and
+**only merge actor** for SL-3: the Agent-Harness Exec.
+
+- **Clearance.** Recorded by the release owner in the engagement plan and ledger. It names
+  the cleared head SHA and links (i) SL-1's recorded digest comparison and (ii) that
+  head's hosted CI run showing the EC-HOLD-14 cases **executed with zero skips**.
+- **Merge.** Only by a head-conditioned merge on the cleared SHA
+  (`gh pr merge --match-head-commit <cleared-sha>`, or the train runner's equivalent
+  head-conditioned merge), after every required check has passed on that same head. If the
+  PR head differs at merge time the clearance is invalid, and the head condition makes the
+  merge fail rather than race a push.
+- **No unattended path.** SL-3 is excluded from auto-merge and from any queued or deferred
+  merge. The standing approval to merge accepted PRs does not replace the clearance.
+- `main` therefore stays releasable at every tag, and a deployment that consumes `main`
+  directly is covered by the same gate; no pre-tag check is needed (amendment §1.4).
+
+**Branch checkpoint.** When SL-1 has reported, the coordinator records the branch by one
+small amendment commit to this plan: the exact edits and the validator run are in lanes
+artifact §K. That commit makes the lane index above match the branch: on GO it holds SL-4
+until SL-3 merges; on either STOP it removes SL-3; on STOP, new amendment it also removes
+SL-6, so the phase stays open after SL-5. It also sets the frontmatter `suite_command`, so
+SL-6.1 and whole-phase verification never name a file the branch does not have.
 
 ## Lanes
 
@@ -219,7 +233,7 @@ is recorded in the engagement plan and ledger (amendment §1.4).
   - Sealed launches: "what ran" is measured by the stand-in hashing its own running image, not by reading the path.
   - Ordinary launches: the path bind is kept, with a real stable-source launch as the control and the evidence compared with the base tree's.
   - Proves, unstubbed, that the managed-dependency jail and every jail `seat_jail_qualification._run_probe_in_jail` builds pass the real canonical guard against their own leg's digest; it edits neither and records no qualification pass.
-  - **Merges only under G-REL.** The PR's first paragraph states the hold and links both proofs.
+  - **Merges only under G-REL**, by the release owner's head-conditioned merge; never auto-merged or queued. The PR's first paragraph states the hold and links both proofs.
   - Cases that launch bwrap must run in hosted CI; a skipped required case is no proof.
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
@@ -278,7 +292,8 @@ is recorded in the engagement plan and ledger (amendment §1.4).
 ## Verification
 
 Per lane: the run lists in lanes artifact §E4, §F3 and §G and in the detailed plan. Whole
-phase: the frontmatter `suite_command`, then, read-only,
+phase: the frontmatter `suite_command` as the branch checkpoint left it (lanes artifact
+§K; on a STOP branch it omits `tests/test_agy_hold_jail.py`), then, read-only,
 `phase-loop agy-qualification status` (expect a `hold` object with `routes`).
 
 Shared-host rule: the listed files only, serially without `-n`, under `timeout`, after a
