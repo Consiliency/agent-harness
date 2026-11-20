@@ -6,6 +6,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Changed
+
+- `phase-loop-runtime` now requires `consiliency-contract>=0.7.2,<0.8` (was `>=0.6.5,<0.7`).
+  The registries and manifest schema that phase-loop reads are unchanged in the 0.7 line;
+  the contract's version-skew window moves to `>=0.7.0 <0.8.0`, the fixture authority key
+  is retired from the production trust registry, and the authority verifier refuses a
+  `test_only` registry unless the caller opts in. phase-loop does not call the authority
+  verifier, so no runtime code changes. This brings the `consiliency-contract` floor back
+  in line with the latest published contract, which `phase-loop doctor --fail-on-stale`
+  checks.
+
 ### Fixed
 
 - Seat scopes use a fixed description. `capped_popen` passes `systemd-run` a
