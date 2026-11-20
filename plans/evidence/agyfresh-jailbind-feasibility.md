@@ -22,9 +22,9 @@ Through the real owner launch chain, bubblewrap exits with status 1 before it bu
 bwrap: Can't find source path /proc/self/fd/<fd>: No such file or directory
 ```
 
-The cause is bwrap, not the kernel, the image mode or the uid drop. bubblewrap 0.11.1
-canonicalizes a bind source by reading each link's text. An strace of one launch through the
-real chain shows:
+The immediate failure on bubblewrap 0.11.1 is in bwrap, before any mount: it is not the image
+mode or the uid drop. bubblewrap 0.11.1 canonicalizes a bind source by reading each link's
+text. An strace of one launch through the real chain shows:
 
 ```
 readlink("/proc/<pid>/fd/<fd>", "/memfd:agy-image (deleted)", 1023) = 26
@@ -32,7 +32,9 @@ readlink("/memfd:agy-image (deleted)", ...) = -1 ENOENT (No such file or directo
 ```
 
 A memfd has no path, so its link text names nothing, and bwrap never reaches `mount(2)` with
-the descriptor. There is no second form to fall back to (amendment §2.8). Under the decision
+the descriptor. Later diagnostics (below) found the same failure on bubblewrap 0.13.1, and
+found that this kernel also refuses the bind itself when bwrap is not involved. There is no
+second form to fall back to (amendment §2.8). Under the decision
 rule (lanes artifact §D), SL-3 does not run, and the owner decides between accepting the gap
 and a new amendment (§A).
 
@@ -129,6 +131,70 @@ expects. The form fails only because bwrap cannot mount it (P1).
   (`sl1-jailprobe/`): per-case JSON lines (`HOLD_JAILPROBE_RECORD`), pytest output and JUnit for both
   interpreters, and the strace extract.
 
+## Follow-up diagnostics (not P1–P7 evidence)
+
+These ran after the P1–P7 run, on dev0, to ask whether a newer bubblewrap or a different
+mount call changes P1. They use a hand-built jail and direct system calls, not the owner launch
+chain, so under §D they are data, not checks. They change no result above.
+
+**Build of bubblewrap 0.13.1.** The current upstream release (`containers/bubblewrap` tag
+`v0.13.1`, published 2026-10-14).
+
+- Tarball `bubblewrap-0.13.1.tar.xz`, sha256
+  `0e85c8702248b8dd64144f594147553650cdd0e4c951690345faace79c217c4d`, equal to the digest in
+  the release notes and the release asset.
+- Tag object `46ec5c413a3c1da265624ddac3a715b4d1bc487d`, commit
+  `362936aea0d5c6e70f7af75d2d44b5a914cb4ba2`. The tag signature verified locally (`GOODSIG`,
+  `VALIDSIG 252C6FEA78A69D3BC0AD458A616C5BDC0C29AB04`) and on the forge. The extracted tarball
+  is identical to the tag tree (`diff -r --exclude=.git`). The tag's `Git-EVTag-v0-SHA512` was
+  not checked.
+- Built unprivileged with gcc 15.2.0, meson 1.10.1 and ninja 1.13.2 (`ninja -j2`), against
+  libcap-dev 1:2.75-10ubuntu2, which matches the installed runtime. The build dependencies were
+  fetched as packages whose sha256 equals the signed apt index and extracted into a private
+  directory, not installed.
+- The binary reports `bubblewrap 0.13.1`, sha256
+  `cfe505bbd2c5b87d18e5e8c4f4c73a6c53149ff8f390d3b5321e6cc72a2fad4a`, mode 0700, not setuid.
+  It ran in place and was deleted afterwards. `/usr/bin/bwrap` (0.11.1) was not changed.
+
+**bubblewrap 0.11.1 and 0.13.1.** The image was made as `gemini_heartbeat` makes it (a sealed
+memfd reopened read-only through `/proc/self/fd`), with a static stand-in as content, at modes
+0500 and 0555, launched as H-root and as the seat uid through `setpriv`.
+
+| Form | Source descriptor | 0.11.1 | 0.13.1 |
+|---|---|---|---|
+| `--ro-bind /proc/self/fd/<fd>` | sealed memfd | no mount: `Can't find source path` | no mount: `Can't find source path` |
+| `--ro-bind /proc/self/fd/<fd>` | `O_PATH` to the memfd | no mount: same error | no mount: same error |
+| `--ro-bind-fd <fd>` (observation only) | sealed memfd or `O_PATH` to it | no mount: same error | no mount: same error |
+| `--ro-bind <named file>` (control) | regular file | mounts; same inode; hash matches | mounts; same inode; hash matches |
+| `--ro-bind-fd <fd>` (control) | `O_PATH` to a regular file | mounts; same inode; hash matches | mounts; same inode; hash matches |
+
+On 0.13.1, strace shows the same two `readlink` calls as above and no mount-family system call
+before exit. Its source applies `realpath()` to every bind source, and `--ro-bind-fd` rewrites
+its argument to `/proc/self/fd/<fd>`, so both forms take the same path. `--ro-bind-fd` would
+also change the canonical Gemini digest; it is reported as data only.
+
+**Image mode, where observable.** With a named file owned by H-root, the seat uid executes the
+mounted file at 0555. At 0500 the seat uid gets `Permission denied` for both exec and read.
+For a memfd the mode question remains unobserved, because no memfd mount happens.
+
+**Kernel 7.0.0-43, without bwrap.** In a private user and mount namespace, binding onto a file
+on a namespace-private tmpfs:
+
+| Source descriptor | `mount(2)` `MS_BIND` of `/proc/self/fd/<fd>` | `open_tree(OPEN_TREE_CLONE\|AT_EMPTY_PATH)` + `move_mount` |
+|---|---|---|
+| sealed memfd created before entering the namespace (the production shape) | `EINVAL` | `open_tree`: `EINVAL` |
+| sealed memfd created inside the namespace | `EINVAL` | `open_tree`: `EINVAL` |
+| named-file descriptor opened before entering the namespace | `EINVAL` | `open_tree`: `EINVAL` |
+| named-file descriptor opened inside the namespace (control) | mounts; same inode; hash matches; executes | mounts; same inode; hash matches; executes |
+
+So on this kernel a sealed memfd is refused as a bind source through both the classic and the
+newer mount API, wherever it was created. A bwrap that bound directly from the descriptor would
+make one of these calls.
+
+Raw records for these diagnostics (the build provenance and logs, the result matrix, the strace
+extracts, the kernel observation and the scripts) are kept outside the repository, in the
+coordinator's engagement directory (`sl1-bwrap-0131/`).
+
 ## Supported configurations, for the ordinary-launch follow-up only
 
 This inventory does not gate anything. It is the starting list for the follow-up (lanes
@@ -138,6 +204,8 @@ uid drop on each configuration.
 | Configuration | Source | Proc-descriptor bind of a sealed memfd |
 |---|---|---|
 | Ubuntu 26.04.1, kernel 7.0.0-43, bubblewrap 0.11.1 (user namespaces, not setuid), AppArmor `bwrap-userns-restrict` plus the seat-jail override (dev0) | this run | **observed: fails** (P1) |
+| kernel 7.0.0-43, bubblewrap 0.13.1 scratch build, hand-built jail (dev0) | follow-up diagnostics above | **observed: fails** before mounting (diagnostic, not through the owner chain) |
+| kernel 7.0.0-43, direct `mount(2)` and `open_tree`/`move_mount` (dev0) | follow-up diagnostics above | **observed: `EINVAL`** |
 | Ubuntu 26.04 with bubblewrap 0.11.1 and the override, other hosts | `docs/advisor-board-capabilities-card.md` | not observed (same bwrap version as dev0) |
 | Ubuntu 24.04 (no `unpriv_bwrap` denial as measured) and Ubuntu 22.04 | `docs/advisor-board-capabilities-card.md` | not observed |
 | kernel 6.8.0-138, bubblewrap 0.6.1 | `plans/evidence/seat-jail-1132/p5-seat-uid.json` | not observed |
@@ -146,5 +214,7 @@ uid drop on each configuration.
 | setuid bubblewrap | none recorded | not observed |
 | `ai` | never used by this lane | not observed |
 
-Whether another bubblewrap version resolves a bind source differently was not observed. A
-run on a second host is a separate request to the coordinator.
+Of other bubblewrap versions, only 0.13.1 was observed, and it fails the same way. Because the
+kernel on dev0 also refuses the bind without bwrap, a different bubblewrap version alone is not
+expected to change P1 on that kernel. Other kernels were not observed. A run on a second host is
+a separate request to the coordinator.
