@@ -15815,6 +15815,47 @@
       "task_summary": "Expire repeated-transient agy failed entries after 24 h and show the hold candidate, its state and route coverage in the doctor's Gemini row (REQUAL early slice; SL-5 of the HOLD plan).",
       "type": "detailed",
       "updated_at": "2026-11-20T01:14:00Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "amends": "plans/phase-plan-v1-agyroll-HOLD.md",
+      "created_at": "2026-11-20T14:00:00Z",
+      "file": "plans/amendments/agyroll-HOLD-jailbind-v2.md",
+      "frozen_inputs": {
+        "plans/artifacts/agyfresh-contract.md": {
+          "sha256": "9832286b9eab398b652f3d36d592568b27816cd447f93b19ec491e5ee17571b5"
+        },
+        "plans/artifacts/agyfresh-jailbind-v2.md": {
+          "sha256": "4a6530c7640b14dac6cd7659bc48e9d9450237fb5d0e915d962d0d95075abd52"
+        }
+      },
+      "handoff_ref": null,
+      "if_gates_produced": [
+        "IF-0-HOLD-5"
+      ],
+      "lanes": [
+        "SL-7",
+        "SL-8",
+        "SL-3",
+        "SL-6"
+      ],
+      "lifecycle": [],
+      "owner_skill": "claude-plan-phase",
+      "phase_alias": "HOLD",
+      "planning_artifact_only": true,
+      "reflection_ref": null,
+      "review_status": "pending",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-agyroll-v1.md",
+        "slug": "phase-plans-agyroll-v1",
+        "status": "committed",
+        "type": "phase"
+      },
+      "slug": "v1-agyroll-HOLD-amend-jailbind-v2",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-11-20T18:00:00Z"
     }
   ],
   "schema_version": 1
