@@ -2029,22 +2029,48 @@ def worker(root, image_fd=None, parent_pid=None, authority=None):
     root = Path(root).absolute()
     # The board reviews the coordinator's authority, never the inherited cwd; the chdir
     # gives any remaining cwd reader the same directory. Not ``canonical_repo_authority``:
-    # that would make the request governed and demand a pre-minted authorization.
-    os.chdir(authority)
-    result = panel.invoke_board(
-        board, (root / "artifact.md").read_text(), brief_ref=str(root / "brief.md"),
-        repo_dir=authority, mode="review", monitoring_policy="heartbeat_only",
-        stream_dir=root / "stream", cancel_event=cancel,
-        review_policy=panel.ReviewLandingPolicy(("gemini",), False),
-    )
-    leg, = result.legs
-    if not _staged_authority_matches(leg):
-        # No terminal record: the coordinator then fails this operation as a local failure.
-        raise QualificationFailure("qualification staged review tree differs from its authority")
-    write_json(root / "terminal.json", {
-        "monitoring": leg.review_monitoring, "broker": leg.harden_isolation_evidence,
-        "result": {"status": leg.status, "text": leg.text, "detail": leg.detail},
-    })
+    # that would make the request governed and demand a pre-minted authorization. The
+    # previous directory is restored afterwards, so an in-process call leaves no trace.
+    previous_cwd = _hold_cwd()
+    try:
+        os.chdir(authority)
+        result = panel.invoke_board(
+            board, (root / "artifact.md").read_text(), brief_ref=str(root / "brief.md"),
+            repo_dir=authority, mode="review", monitoring_policy="heartbeat_only",
+            stream_dir=root / "stream", cancel_event=cancel,
+            review_policy=panel.ReviewLandingPolicy(("gemini",), False),
+        )
+        leg, = result.legs
+        if not _staged_authority_matches(leg):
+            # No terminal record: the coordinator then fails this operation as a local failure.
+            raise QualificationFailure("qualification staged review tree differs from its authority")
+        write_json(root / "terminal.json", {
+            "monitoring": leg.review_monitoring, "broker": leg.harden_isolation_evidence,
+            "result": {"status": leg.status, "text": leg.text, "detail": leg.detail},
+        })
+    finally:
+        _restore_cwd(previous_cwd)
+
+
+def _hold_cwd():
+    """An fd on the current directory, to return to it later; ``None`` when it cannot be held.
+
+    ``O_PATH`` needs no read permission on the directory. The qualification never depends
+    on this: a dedicated worker process exits right after the board."""
+    try:
+        return os.open(".", getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_CLOEXEC)
+    except OSError:
+        return None
+
+
+def _restore_cwd(fd):
+    if fd is None:
+        return
+    try:
+        with contextlib.suppress(OSError):
+            os.fchdir(fd)
+    finally:
+        os.close(fd)
 
 
 def release_image_from_path(env):

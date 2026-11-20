@@ -42,6 +42,28 @@ F_SEAL_SEAL, F_SEAL_SHRINK, F_SEAL_GROW, F_SEAL_WRITE, F_SEAL_FUTURE_WRITE = 0x1
 
 # ----------------------------------------------------------------------------- fixtures
 
+@pytest.fixture(scope="module", autouse=True)
+def _module_working_directory():
+    """The working directory this module started in; it must be the one it ends in."""
+    before = os.getcwd()
+    yield before
+    after = os.getcwd()
+    os.chdir(before)
+    assert after == before, f"a test left the working directory at {after}"
+
+
+@pytest.fixture(autouse=True)
+def _working_directory_is_restored(_module_working_directory):
+    """No test here may leave the process in another directory: an in-process ``q.worker``
+    changes into its authority, and later tests in the same process (other modules too)
+    resolve paths from the cwd. Checked as each test starts, when every fixture of the
+    previous test, ``monkeypatch`` included, has been torn down."""
+    current = os.getcwd()
+    if current != _module_working_directory:
+        os.chdir(_module_working_directory)
+        pytest.fail(f"a previous test left the working directory at {current}")
+
+
 @pytest.fixture(autouse=True)
 def _private_state(tmp_path_factory, monkeypatch):
     """Every test gets its own per-user state home and machine-id (the watch keeps its push
@@ -447,6 +469,7 @@ FULL = F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL
 def test_worker_refuses_any_fd_that_is_not_a_fully_sealed_memfd(world, kind, monkeypatch):
     """Worker bypass. Genuine bytes, a VALID provenance entry, and a write after the hash
     where the fd allows one: zero launches. Mutation: dropping any seal from the mask."""
+    monkeypatch.chdir(world.tmp)
     _ensure(world)  # a valid provenance entry for these exact bytes exists
     launches = []
     monkeypatch.setattr(q._panel(), "invoke_board", lambda *a, **k: launches.append(1))
@@ -476,6 +499,7 @@ def test_worker_refuses_any_fd_that_is_not_a_fully_sealed_memfd(world, kind, mon
 
 
 def test_worker_refuses_sealed_unverified_bytes_without_provenance(world, monkeypatch):
+    monkeypatch.chdir(world.tmp)
     launches = []
     monkeypatch.setattr(q._panel(), "invoke_board", lambda *a, **k: launches.append(1))
     monkeypatch.setattr(q, "_set_parent_death_signal", lambda: None)
@@ -561,9 +585,10 @@ def authority_base(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def worker_process(monkeypatch):
-    """``q.worker`` run in-process: no PDEATHSIG on the test runner, its candidate and the
-    SIGTERM/SIGINT handlers it installs restored afterwards."""
+def worker_process(monkeypatch, tmp_path):
+    """``q.worker`` run in-process: no PDEATHSIG on the test runner, its candidate, the
+    SIGTERM/SIGINT handlers it installs and the working directory restored afterwards."""
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(q, "_set_parent_death_signal", lambda: None)
     monkeypatch.setattr(gh, "_CANDIDATE", None)
     saved = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
@@ -937,6 +962,33 @@ def test_coordinator_and_worker_refuse_an_authority_path_with_a_percent_escape(
     failure = json.loads((root / "failure.json").read_text())
     assert (failure["stage"], failure["reason"]) == ("authority", q.LOCAL_FAILURE)
     assert launches == [] and sorted(p.name for p in escaped.iterdir()) == [moved.name]
+
+
+def test_an_in_process_worker_returns_to_the_callers_directory(world, monkeypatch, authority_base):
+    """The worker changes into its authority for the board and returns to the directory it
+    was called from, after a board that passed and after one its post-check refused. No
+    ``monkeypatch.chdir`` here: the worker's own restore is what is tested. Mutation:
+    dropping the restore leaves the process in the authority."""
+    monkeypatch.setattr(q, "_set_parent_death_signal", lambda: None)
+    monkeypatch.setattr(gh, "_CANDIDATE", None)
+    saved = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+    before = os.getcwd()
+    try:
+        for staged in (None, "0" * 64):
+            root = _operation_root(world.tmp, "ok" if staged is None else "refused")
+            authority = q._create_review_authority()
+            calls = _capture_board(monkeypatch, staged=staged)
+            if staged is None:
+                _run_worker(world, monkeypatch, root, str(authority))
+            else:
+                with pytest.raises(q.QualificationFailure, match="staged review tree differs"):
+                    _run_worker(world, monkeypatch, root, str(authority))
+            assert calls[0]["cwd"] == authority
+            assert os.getcwd() == before
+    finally:
+        os.chdir(before)
+        for sig, handler in saved.items():
+            signal.signal(sig, handler)
 
 
 @pytest.mark.parametrize("staged,status,refused", [
@@ -2560,6 +2612,7 @@ def test_caller_keys_cannot_override_the_mac_base_context(world):
 def test_production_worker_binds_its_parent_death_signal_first(world, monkeypatch):
     """codex r1 (5.4 mapping): the REAL worker entry sets PDEATHSIG before it inspects the
     fd. Mutation: removing that call from worker()."""
+    monkeypatch.chdir(world.tmp)
     order = []
     monkeypatch.setattr(q, "_set_parent_death_signal", lambda: order.append("pdeathsig"))
     monkeypatch.setattr(q, "verified_fd_image", lambda fd: order.append("fd") or (_ for _ in ()).throw(

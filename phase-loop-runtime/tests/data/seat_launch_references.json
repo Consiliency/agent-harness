@@ -256,6 +256,7 @@
   {"count": 2, "function": "_authority_proven", "module": "agy_qualification", "primitive": "io.lstat", "role": "host-io"},
   {"count": 2, "function": "_classify_failure", "module": "agy_qualification", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "_create_review_authority", "module": "agy_qualification", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "_hold_cwd", "module": "agy_qualification", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_network_owner_pid", "module": "agy_qualification", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_network_owner_pid", "module": "agy_qualification", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "_network_owner_pid", "module": "agy_qualification", "primitive": "io.stat", "role": "host-io"},
