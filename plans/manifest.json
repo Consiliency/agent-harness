@@ -15757,7 +15757,7 @@
       "file": "plans/phase-plan-v1-agyroll-HOLD.md",
       "frozen_inputs": {
         "plans/artifacts/agyfresh-contract.md": {
-          "sha256": "dbb47fcf09466b0330e04066bc003e6b01a7ea629af5673d3a7b1f2259797ae4"
+          "sha256": "9832286b9eab398b652f3d36d592568b27816cd447f93b19ec491e5ee17571b5"
         },
         "plans/artifacts/agyfresh-hold-amendment.md": {
           "sha256": "e024b8b505c3f83bfbc837873150c8ba07f901d7eea15d61b888a53550320a8e"
@@ -15777,10 +15777,8 @@
         "SL-0",
         "SL-1",
         "SL-2",
-        "SL-3",
         "SL-4",
-        "SL-5",
-        "SL-6"
+        "SL-5"
       ],
       "lifecycle": [],
       "owner_skill": "claude-plan-phase",
@@ -15797,7 +15795,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-11-20T09:00:00Z"
+      "updated_at": "2026-11-20T17:59:00Z"
     },
     {
       "acceptance_criteria_count": 4,
