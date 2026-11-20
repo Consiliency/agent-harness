@@ -250,10 +250,12 @@ class DefaultHarnessRegistry:
 # max; lower it only where there is concrete evidence a model caps out below max
 # (none of the built-3 do — codex's ``xhigh`` IS canonical ``max``).
 _MODEL_DEFS: tuple[tuple[str, str, str], ...] = (
-    ("gpt-6-astra", "codex", "max"),
+    ("gpt-6.2-astra", "codex", "max"),  # panel/board default OpenAI seat since 2026-11-19
+    ("gpt-6.2-sol", "codex", "max"),  # explicit seat (codex execute/repair default); not a board default
+    ("gpt-6-astra", "codex", "max"),  # explicit seat (the prior panel default, before 2026-11-19)
     ("gpt-5.6-sol", "codex", "max"),  # explicit legacy seat (fleet default before 2026-09-04)
     ("gpt-6-sol", "codex", "max"),  # explicit seat (codex's own default model); not a board default
-    ("gpt-6.1-sol", "codex", "max"),  # explicit seat, selected by board config; not a board default
+    ("gpt-6.1-sol", "codex", "max"),  # explicit seat (prior codex implementer default); not a board default
     ("claude-sonnet-5", "claude", "max"),
     ("claude-sonnet-5-5", "claude", "max"),  # explicit seat, selected by board config; not a board default
     ("claude-opus-4-8", "claude", "max"),

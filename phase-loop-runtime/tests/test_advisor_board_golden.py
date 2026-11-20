@@ -224,7 +224,7 @@ class GoldenWholeBoardBehaviorTests(unittest.TestCase):
         self.assertEqual([r.seat_key for r in panel.legs], list(pi.PANEL_LEGS))
         self.assertEqual(
             [r.seat_key for r in board.legs],
-            ["codex:gpt-6-astra:high:red-team",
+            ["codex:gpt-6.2-astra:high:red-team",
              "gemini:gemini-4-argon:medium:alternative-approach",
              "claude:claude-opus-5-5:high:correctness",
              "grok:grok-4.7:high:adversarial"],

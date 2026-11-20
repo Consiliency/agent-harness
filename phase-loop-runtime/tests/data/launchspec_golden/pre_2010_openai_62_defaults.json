@@ -1,0 +1,24 @@
+{
+  "_note": "agent-harness#2010 permitted golden delta: the OpenAI 6.2 defaults move only model fields (codex execute gpt-6.1-sol -> gpt-6.2-sol in the --model argv and selected_model; the command executor's DEFAULT_PROFILES selected_model gpt-6-astra -> gpt-6.2-astra). `current` -> `pre_2010` restores the golden as it was before; nothing else moved.",
+  "changes": [
+    {
+      "case": "codex",
+      "current": "gpt-6.2-sol",
+      "field": "command",
+      "index": 5,
+      "pre_2010": "gpt-6.1-sol"
+    },
+    {
+      "case": "codex",
+      "current": "gpt-6.2-sol",
+      "field": "selected_model",
+      "pre_2010": "gpt-6.1-sol"
+    },
+    {
+      "case": "command",
+      "current": "gpt-6.2-astra",
+      "field": "selected_model",
+      "pre_2010": "gpt-6-astra"
+    }
+  ]
+}

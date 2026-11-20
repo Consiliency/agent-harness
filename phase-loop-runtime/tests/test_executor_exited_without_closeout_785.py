@@ -54,6 +54,18 @@ def test_final_response_schema_excludes_interim_without_changing_lifecycle(tmp_p
 
 def test_golden_delta_is_only_final_schema_exclusion():
     golden = json.loads((Path(__file__).parent / "data/launchspec_golden/launchspec_golden.json").read_text())
+    # The thirteenth permitted delta (agent-harness#2010): the OpenAI 6.2 defaults move
+    # only model fields (codex execute argv + selected_model, the command executor's
+    # selected_model). Bind the current values, then restore the prior ones.
+    pre_2010 = json.loads((Path(__file__).parent / "data/launchspec_golden/pre_2010_openai_62_defaults.json").read_text())
+    for change in pre_2010["changes"]:
+        case = golden[change["case"]]
+        if change["field"] == "command":
+            assert case["command"][change["index"]] == change["current"]
+            case["command"][change["index"]] = change["pre_2010"]
+        else:
+            assert case[change["field"]] == change["current"]
+            case[change["field"]] = change["pre_2010"]
     # The twelfth permitted delta (follows agent-harness#1978): runner lane-concurrency
     # skill wording changes only the two injected command strings. Bind exact bytes,
     # then restore the prior strings; every older snapshot stays unchanged.

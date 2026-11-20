@@ -37,7 +37,7 @@ _BLOCK = ReviewFinding(code="x", reason="unresolved", severity="block", blocker_
 class RoutingInvariantsTest(unittest.TestCase):
     # 1 — the empty-policy path is byte-for-byte unchanged (back-compat).
     def test_empty_policy_resolution_unchanged(self):
-        self.assertEqual(_resolve("plan", "codex"), ("gpt-6-astra", "high"))
+        self.assertEqual(_resolve("plan", "codex"), ("gpt-6.2-astra", "high"))
         # design-model-tier-taxonomy.md (operator-ratified): claude implementation
         # uses the regular tier (sonnet-5-5 at medium since the 0.7.27 roster); the
         # executor-default path agrees.

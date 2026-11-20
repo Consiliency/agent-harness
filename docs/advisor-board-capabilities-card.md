@@ -62,7 +62,7 @@ overwritten (content refreshed, orphan files pruned), never left drifting.
 ## Model × harness matrix
 
 A seat is valid only when its `(model, harness)` pairing is registered — a
-cross-vendor pairing (e.g. `claude:gpt-6-astra`) is **rejected at config time** with an
+cross-vendor pairing (e.g. `claude:gpt-6.2-astra`) is **rejected at config time** with an
 actionable message, before any subprocess is spawned. Source of truth:
 `DefaultHarnessRegistry` / `DefaultModelRegistry` / `DefaultCompatibilityMatrix`.
 
@@ -90,6 +90,8 @@ actionable message, before any subprocess is spawned. Source of truth:
 
 | Model            | Vendor family | Default lane | Runnable by       | Effort ceiling |
 | ---------------- | ------------- | ------------ | ----------------- | -------------- |
+| `gpt-6.2-astra`  | codex         | `codex`      | codex, opencode   | max            |
+| `gpt-6.2-sol`    | codex         | `codex`      | codex, opencode   | max            |
 | `gpt-6-astra`    | codex         | `codex`      | codex, opencode   | max            |
 | `gpt-5.6-sol`    | codex         | `codex`      | codex, opencode   | max            |
 | `gpt-6-sol`      | codex         | `codex`      | codex, opencode   | max            |
@@ -111,11 +113,13 @@ actionable message, before any subprocess is spawned. Source of truth:
 | `grok-4.6`       | grok          | `grok`       | grok              | max            |
 | `grok-4.5`       | grok          | `grok`       | grok              | max            |
 
+`gpt-6.2-astra` (GPT-6.2 Astra) is the OpenAI default seat on every shipped board and the codex heavy model. `gpt-6-astra`, the prior default, stays registered and answers to the `sol` alias, so explicit boards and user configs that name it keep working. `gpt-6.2-sol` (GPT-6.2 Sol) is an explicit seat, not a board default: it answers to the `sol` alias and is the codex regular tier, and therefore the codex implementer model (execute/repair at medium). The `opencode` pairs for both 6.2 ids are registered by vendor family; opencode's catalog does not list them, so they are not launch-verified there.
+
 `gpt-6-sol` is an explicit seat (launch-tested on `codex` only). It answers to the `sol` alias, so it cannot fill a governed review's `grok` seat.
 
 `gemini-4-argon` (Gemini 4 Argon) is the Gemini default seat. `gemini-3.8-flash`, the prior default, stays registered and answers to the `gemini` alias, so explicit boards and user configs that name it keep working. A president ladder rung that names the exact id `gemini-3.8-flash` (rather than the `gemini` alias) resolves only on a board that seats that model.
 
-`gpt-6.1-sol` is likewise an explicit seat, not a default: it answers to the `sol` alias, so a governed policy requiring `sol` accepts a board that seats it. It is launch-tested on `codex` only; the `opencode` pair is registered by vendor family and is not launch-verified. No board default or preset names it; since the 0.7.27 implementer roster it is the codex regular tier, and therefore the codex implementer model. The production review entry points (`phase-loop advisor-board`, the governed review gate, run-train) compose `code-review` with `compose_review_board()` and do not read the user board file, so today a user `[[boards]]` entry cannot move their codex seat; the shipped default moves through the model roster (agent-harness#1171).
+`gpt-6.1-sol` is likewise an explicit seat, not a default: it answers to the `sol` alias, so a governed policy requiring `sol` accepts a board that seats it. It is launch-tested on `codex` only; the `opencode` pair is registered by vendor family and is not launch-verified. No board default or preset names it; it was the codex regular tier (the codex implementer model) from the 0.7.27 implementer roster until `gpt-6.2-sol` replaced it. The production review entry points (`phase-loop advisor-board`, the governed review gate, run-train) compose `code-review` with `compose_review_board()` and do not read the user board file, so today a user `[[boards]]` entry cannot move their codex seat; the shipped default moves through the model roster (agent-harness#1171).
 
 `claude-sonnet-5-5` (Claude Sonnet 5.5) is likewise an explicit seat, not a default. It is registered only: it answers to the `fable` alias, the Anthropic seat, so a governed policy requiring `fable` accepts a board that seats it. It does not answer to `gemini`, so seating it where the gemini seat would sit does not satisfy a policy that requires `gemini`. It runs only on the `claude` lane. It is not a TUI-policy model (that is the `claude-fable-*` and `claude-opus-*` prefixes), so it is routed like `claude-sonnet-5`. No board default or preset names it. Since the 0.7.27 implementer roster it is the Claude regular tier, and therefore the implementer model; `claude-sonnet-5` stays an accepted explicit model. As with `gpt-6.1-sol`, there is no user-config route to it in the production review entry points yet (agent-harness#1171).
 
@@ -193,7 +197,7 @@ on any host other than Claude Code through the subscription TUI adapter (amended
 direct HTTP call, gateway backing or alternate endpoint; a native fill counts only once its
 verdict is bound.
 
-| host ↓ / seat vendor → | Anthropic (`claude-opus-5-5` / Fable) | OpenAI (`gpt-6-astra`) | Google (`gemini-4-argon`) | xAI (`grok-4.7`) |
+| host ↓ / seat vendor → | Anthropic (`claude-opus-5-5` / Fable) | OpenAI (`gpt-6.2-astra`) | Google (`gemini-4-argon`) | xAI (`grok-4.7`) |
 |---|---|---|---|---|
 | Claude Code | native sub-agent (emit → fill → invoke) | `codex` CLI | `agy` CLI | `grok` CLI |
 | `codex` | TUI adapter (self-PTY) | native `codex` subagent | `agy` CLI | `grok` CLI |
@@ -215,14 +219,14 @@ the matrix at load time).
 
 | Preset                  | Purpose               | Seats (model · effort · harness · lens) |
 | ----------------------- | --------------------- | ---------------------------------------- |
-| `default`               | premerge-review       | gpt-6-astra · high · codex · red-team ; gemini-4-argon · medium · gemini · alternative-approach ; claude-opus-5-5 · high · claude · correctness ; grok-4.7 · high · grok · adversarial |
-| `code-review`           | code-review           | grok-4.7 · high · grok · adversarial ; claude-opus-5-5 · high · claude · correctness ; gpt-6-astra · high · codex · red-team ; gemini-4-argon · medium · gemini · alternative-approach |
-| `brainstorm`            | brainstorm            | claude-sonnet-5 · medium · claude · adversarial ; gpt-6-astra · medium · codex · supportive ; gemini-4-argon · medium · gemini · lateral |
-| `doc-edit`              | doc-edit              | claude-sonnet-5 · low · claude · copyedit ; gpt-6-astra · low · codex · structure |
-| `legal-review`          | legal-review          | gpt-6-astra · high · codex · opposing-counsel ; gemini-4-argon · medium · gemini · risk-liability ; claude-opus-5-5 · high · claude · authority-verification |
-| `legal-strategy-review` | legal-strategy-review | gpt-6-astra · high · codex · red-team ; gemini-4-argon · medium · gemini · alternatives ; claude-opus-5-5 · high · claude · downside-ethics |
-| `legal-brainstorm`      | legal-brainstorm      | claude-sonnet-5 · medium · claude · aggressive ; gpt-6-astra · medium · codex · conservative ; gemini-4-argon · medium · gemini · creative |
-| `general`               | general               | gpt-6-astra · high · codex · adversarial ; gemini-4-argon · medium · gemini · alternative ; claude-opus-5-5 · high · claude · completeness |
+| `default`               | premerge-review       | gpt-6.2-astra · high · codex · red-team ; gemini-4-argon · medium · gemini · alternative-approach ; claude-opus-5-5 · high · claude · correctness ; grok-4.7 · high · grok · adversarial |
+| `code-review`           | code-review           | grok-4.7 · high · grok · adversarial ; claude-opus-5-5 · high · claude · correctness ; gpt-6.2-astra · high · codex · red-team ; gemini-4-argon · medium · gemini · alternative-approach |
+| `brainstorm`            | brainstorm            | claude-sonnet-5 · medium · claude · adversarial ; gpt-6.2-astra · medium · codex · supportive ; gemini-4-argon · medium · gemini · lateral |
+| `doc-edit`              | doc-edit              | claude-sonnet-5 · low · claude · copyedit ; gpt-6.2-astra · low · codex · structure |
+| `legal-review`          | legal-review          | gpt-6.2-astra · high · codex · opposing-counsel ; gemini-4-argon · medium · gemini · risk-liability ; claude-opus-5-5 · high · claude · authority-verification |
+| `legal-strategy-review` | legal-strategy-review | gpt-6.2-astra · high · codex · red-team ; gemini-4-argon · medium · gemini · alternatives ; claude-opus-5-5 · high · claude · downside-ethics |
+| `legal-brainstorm`      | legal-brainstorm      | claude-sonnet-5 · medium · claude · aggressive ; gpt-6.2-astra · medium · codex · conservative ; gemini-4-argon · medium · gemini · creative |
+| `general`               | general               | gpt-6.2-astra · high · codex · adversarial ; gemini-4-argon · medium · gemini · alternative ; claude-opus-5-5 · high · claude · completeness |
 | `solo`                  | general               | claude-opus-5-5 · high · claude · completeness |
 
 **Catch-alls for unmodeled tasks.** `general` (top-tier cross-vendor panel) and
@@ -256,7 +260,7 @@ The explicit `PANEL_LEGS == (codex, gemini, claude)` and `invoke_panel` API stay
 separately frozen for legacy callers (proven in `tests/test_advisor_board_golden.py`).
 
 The president availability ladder is Fable (the Anthropic seat — Opus 5.5 by default) → Sol → Grok 4.7 → Gemini 4 Argon
-(`Sol` is the GPT seat alias: `gpt-6-astra` by default, `gpt-5.6-sol` accepted as an explicit legacy id).
+(`Sol` is the GPT seat alias, not the Sol product: `gpt-6.2-astra` by default; `gpt-6.2-sol`, `gpt-6-astra`, `gpt-6.1-sol` and `gpt-5.6-sol` are accepted as explicit ids).
 It advances only on typed unavailability, not on disagreement or a blocking ruling.
 `requires_president` landing policies execute it (`invoke_board(president_invoke=)`)
 and fail the landing closed without a ruling. The ladder runs through the president's
@@ -455,7 +459,7 @@ purpose = "code-review"
 research_enabled = true                 # optional; default false, exact PMCP profile
 
   [[boards.seats]]
-  model = "gpt-6-astra"                  # must be a registered model…
+  model = "gpt-6.2-astra"                # must be a registered model…
   effort = "high"                    # …at/under its effort ceiling…
   harness = "codex"                  # …on a compatible lane (else config-time reject)
 
@@ -506,7 +510,7 @@ a two-same-vendor board is not collapsed.
 
    - **One intentional result-shape enrichment:** `invoke_board` populates
      `PanelLegResult.seat_key` with a richer per-seat label (e.g.
-     `codex:gpt-6-astra:high:red-team`) instead of the bare leg (`codex`). `.leg` is preserved, so
+     `codex:gpt-6.2-astra:high:red-team`) instead of the bare leg (`codex`). `.leg` is preserved, so
      any caller keying on `.leg` / `.status` / `.usable` is unaffected; this only
      *adds* the ability to tell two same-vendor seats apart. This is the sole
      contract-sanctioned delta (ABDRESOLVE finding 4), asserted explicitly in the

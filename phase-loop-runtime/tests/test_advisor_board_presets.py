@@ -35,7 +35,7 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(len(general.seats), 3)
         self.assertEqual(
             {s.model for s in general.seats},
-            {"gpt-6-astra", "gemini-4-argon", "claude-opus-5-5"},
+            {"gpt-6.2-astra", "gemini-4-argon", "claude-opus-5-5"},
         )
         solo = PRESETS["solo"]
         self.assertEqual(len(solo.seats), 1)  # a 1-seat board is fully valid
@@ -54,7 +54,7 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(
             tuple((s.model, s.effort, s.harness) for s in PRESETS["default"].seats),
             (
-                ("gpt-6-astra", "high", "codex"),
+                ("gpt-6.2-astra", "high", "codex"),
                 ("gemini-4-argon", "medium", "gemini"),
                 ("claude-opus-5-5", "high", "claude"),
                 ("grok-4.7", "high", "grok"),
@@ -81,7 +81,7 @@ class PresetTests(unittest.TestCase):
             (
                 ("grok-4.7", "high", "grok", "adversarial"),
                 ("claude-opus-5-5", "high", "claude", "correctness"),
-                ("gpt-6-astra", "high", "codex", "red-team"),
+                ("gpt-6.2-astra", "high", "codex", "red-team"),
                 ("gemini-4-argon", "medium", "gemini", "alternative-approach"),
             ),
         )
@@ -101,12 +101,12 @@ class PresetTests(unittest.TestCase):
         pinned = {
             "brainstorm": (
                 ("claude-sonnet-5", "medium", "claude", "adversarial"),
-                ("gpt-6-astra", "medium", "codex", "supportive"),
+                ("gpt-6.2-astra", "medium", "codex", "supportive"),
                 ("gemini-4-argon", "medium", "gemini", "lateral"),
             ),
             "doc-edit": (
                 ("claude-sonnet-5", "low", "claude", "copyedit"),
-                ("gpt-6-astra", "low", "codex", "structure"),
+                ("gpt-6.2-astra", "low", "codex", "structure"),
             ),
         }
         for name, expected in pinned.items():
@@ -119,18 +119,18 @@ class PresetTests(unittest.TestCase):
     def test_legal_boards_present_and_shaped(self) -> None:
         legal = {
             "legal-review": (
-                ("gpt-6-astra", "high", "codex", "opposing-counsel"),
+                ("gpt-6.2-astra", "high", "codex", "opposing-counsel"),
                 ("gemini-4-argon", "medium", "gemini", "risk-liability"),
                 ("claude-opus-5-5", "high", "claude", "authority-verification"),
             ),
             "legal-strategy-review": (
-                ("gpt-6-astra", "high", "codex", "red-team"),
+                ("gpt-6.2-astra", "high", "codex", "red-team"),
                 ("gemini-4-argon", "medium", "gemini", "alternatives"),
                 ("claude-opus-5-5", "high", "claude", "downside-ethics"),
             ),
             "legal-brainstorm": (
                 ("claude-sonnet-5", "medium", "claude", "aggressive"),
-                ("gpt-6-astra", "medium", "codex", "conservative"),
+                ("gpt-6.2-astra", "medium", "codex", "conservative"),
                 ("gemini-4-argon", "medium", "gemini", "creative"),
             ),
         }

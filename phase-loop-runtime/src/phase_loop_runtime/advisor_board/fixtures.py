@@ -27,7 +27,7 @@ DEFAULT_BOARD_VENDOR_ORDER: tuple[str, ...] = ("codex", "gemini", "claude", "gro
 # The default board's four seats — model-first, effort split out of the model
 # name. These reconstruct ``DEFAULT_LEG_MODELS`` under
 # ``harness_mapping.render_seat_invocation``:
-#   codex  gpt-6-astra           + effort high  -> ``-c model_reasoning_effort=high``
+#   codex  gpt-6.2-astra         + effort high  -> ``-c model_reasoning_effort=high``
 #   gemini gemini-4-argon     + effort medium -> model ``gemini-4-argon-medium``
 #   claude claude-opus-5-5   + effort high  -> ``--effort high``
 #   grok   grok-4.7           + effort high  -> ``--reasoning-effort high``
@@ -37,7 +37,7 @@ DEFAULT_BOARD_VENDOR_ORDER: tuple[str, ...] = ("codex", "gemini", "claude", "gro
 # model ``claude-sonnet-5``. It keeps the review-policy seat NAME ``fable``. This is
 # byte-pinned to ``panel_invoker.DEFAULT_LEG_MODELS["claude"]`` by the golden proof.
 DEFAULT_SEATS: tuple[Seat, ...] = (
-    Seat(model="gpt-6-astra", effort="high", harness="codex", lens="red-team",
+    Seat(model="gpt-6.2-astra", effort="high", harness="codex", lens="red-team",
          auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW),
     Seat(model="gemini-4-argon", effort="medium", harness="gemini", lens="alternative-approach",
          auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW),
@@ -57,7 +57,7 @@ DEFAULT_BOARD: Board = Board(
 # Golden literals the default seats must reproduce (cross-checked in the
 # back-compat test against the live ``panel_invoker`` constants).
 DEFAULT_SEAT_RENDERED_MODEL: dict[str, str] = {
-    "codex": "gpt-6-astra",
+    "codex": "gpt-6.2-astra",
     "gemini": "gemini-4-argon-medium",
     "claude": "claude-opus-5-5",
     "grok": "grok-4.7",
@@ -73,7 +73,12 @@ DEFAULT_SEAT_EFFORT_ARGS: dict[str, tuple[str, ...]] = {
 # against. Same-vendor-across-harness (gpt-6-astra on codex and opencode) is VALID and
 # projects to one family; a cross-vendor mismatch (gpt-6-astra on claude) is INVALID.
 CANONICAL_VALID_PAIRS: tuple[tuple[str, str], ...] = (
-    ("gpt-6-astra", "codex"),
+    ("gpt-6.2-astra", "codex"),  # the default OpenAI seat since 2026-11-19
+    # vendor-family policy coverage, not launch availability (opencode's catalog lacks 6.2)
+    ("gpt-6.2-astra", "opencode"),
+    ("gpt-6.2-sol", "codex"),  # explicit seat (codex execute/repair default), not a board default
+    ("gpt-6.2-sol", "opencode"),  # vendor-family policy coverage, not launch availability
+    ("gpt-6-astra", "codex"),  # the prior default stays an explicit seat
     ("gpt-6-astra", "opencode"),
     ("gpt-5.6-sol", "codex"),  # legacy default id remains expressible
     ("gpt-6-sol", "codex"),  # explicit seat on user/ad-hoc boards (not a governed grok stand-in)
@@ -95,6 +100,7 @@ CANONICAL_VALID_PAIRS: tuple[tuple[str, str], ...] = (
 )
 CANONICAL_INVALID_PAIRS: tuple[tuple[str, str], ...] = (
     ("gpt-6-astra", "claude"),        # openai-family model on the claude lane
+    ("gpt-6.2-astra", "claude"),      # the new default is still openai-family only
     ("claude-sonnet-5", "codex"),  # anthropic model on the codex lane
     ("grok-4.6", "claude"),        # xAI-family model on the claude lane
     ("gpt-6-astra", "grok"),       # openai-family model on the grok lane

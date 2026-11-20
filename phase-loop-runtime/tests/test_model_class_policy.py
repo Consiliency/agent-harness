@@ -41,7 +41,7 @@ class ModelClassResolutionTest(unittest.TestCase):
         # design-model-tier-taxonomy.md: worker class → the lite tier's DATED pin
         # (was the undated claude-haiku-4-5, a floating-alias shape).
         self.assertEqual(resolve_model_class("claude", "worker"), "claude-haiku-4-5-20251001")
-        self.assertEqual(resolve_model_class("codex", "implementer"), "gpt-6.1-sol")
+        self.assertEqual(resolve_model_class("codex", "implementer"), "gpt-6.2-sol")
         # Gemini plans and reviews on the heavy Argon id; implementer uses the canonical agy
         # 3.8 Flash id (newest GA, CR round-5 finding B), worker the agy 3.8 Flash high id
         # since the 0.7.27 roster (agy has no flash-lite → the matrix's gemini-3.5-flash-lite
@@ -61,7 +61,7 @@ class ModelClassResolutionTest(unittest.TestCase):
 
 class EmptyPolicyBackCompatTest(unittest.TestCase):
     def test_plan_codex_unchanged(self):
-        self.assertEqual(_resolve("plan", "codex", model_policy=False), ("gpt-6-astra", "high"))
+        self.assertEqual(_resolve("plan", "codex", model_policy=False), ("gpt-6.2-astra", "high"))
 
     def test_execute_claude_unchanged(self):
         # design-model-tier-taxonomy.md (operator-ratified): claude execute uses the
@@ -72,7 +72,7 @@ class EmptyPolicyBackCompatTest(unittest.TestCase):
 
 class ShippedPolicyTest(unittest.TestCase):
     def test_plan_codex_becomes_max(self):
-        self.assertEqual(_resolve("plan", "codex", model_policy=True), ("gpt-6-astra", "max"))
+        self.assertEqual(_resolve("plan", "codex", model_policy=True), ("gpt-6.2-astra", "max"))
 
     def test_roadmap_is_max(self):
         self.assertEqual(_resolve("roadmap", "codex", model_policy=True)[1], "max")
@@ -185,7 +185,7 @@ class AppliedModelClassEscalationTest(unittest.TestCase):
         self.assertEqual(result.policy.fallback_applied, policy.fallback_applied)
 
     def test_codex_and_manual_map_provider_resolve_their_planner_models(self):
-        self.assertEqual(self._apply("codex")[1].effective_model, "gpt-6-astra")
+        self.assertEqual(self._apply("codex")[1].effective_model, "gpt-6.2-astra")
         self.assertEqual(self._apply("gemini")[1].effective_model, "gemini-4-argon")
 
     def test_explicit_operator_model_is_not_overridden(self):

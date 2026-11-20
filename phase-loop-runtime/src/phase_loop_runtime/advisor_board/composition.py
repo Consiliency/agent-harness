@@ -76,7 +76,7 @@ _VENDOR_ORDER: tuple[str, ...] = ("grok", "claude", "codex", "gemini")
 _VENDOR_SEAT: dict[str, dict[str, str]] = {
     "grok": {"model": "grok-4.7", "harness": "grok", "effort": "high", "lens": "adversarial"},
     "claude": {"model": "claude-opus-5-5", "harness": "claude", "effort": "high", "lens": "correctness"},
-    "codex": {"model": "gpt-6-astra", "harness": "codex", "effort": "high", "lens": "red-team"},
+    "codex": {"model": "gpt-6.2-astra", "harness": "codex", "effort": "high", "lens": "red-team"},
     "gemini": {"model": "gemini-4-argon", "harness": "gemini", "effort": "medium", "lens": "alternative-approach"},
 }
 
