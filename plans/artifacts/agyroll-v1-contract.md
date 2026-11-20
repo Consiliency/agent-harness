@@ -12,9 +12,10 @@ those sections are binding: a lane that cannot meet a condition stops and routes
 amendment.
 
 **AGYFRESH amendment (2026-11-20).** `plans/artifacts/agyfresh-contract.md` (AGYFRESH) adds
-the RESTORE and HOLD phases. It changes this file in three places only: the archive bounds in
-§1.2 (AGYFRESH §1.1), R6 as amended by R6′ in §6.1 (owner decision D8 = B, AGYFRESH §5.1), and
-the tick frequency in §6.2 (owner decision D9).
+the RESTORE and HOLD phases. It changes this file in four places only: the archive bounds in
+§1.2 (AGYFRESH §1.1), R6 as amended by R6′ in §6.1 (owner decision D8 = B, AGYFRESH §5.1), the
+tick frequency in §6.2 (owner decision D9), and §6.3's lag warning, which no longer awaits an
+owner signature.
 
 ## 0. Vocabulary
 
@@ -402,27 +403,31 @@ outcomes from §1.2 do not count toward that limit. Spawn stays lookup-only.
   written (2026-11-08) and adopted the board's alternative:
   - **Base-branch policy.** The signer list, verifier and merge rule come from the base
     branch (steps 2 and 3).
-  - **Two distinct signers (Q10).** The job's key and an **enrolled owner key**, both listed
-    in the base branch's `agy-allowed-signers`. A PR without both valid signatures never
-    merges, except as R6′ below allows.
+  - **Two distinct signers (Q10).** As ruled: the job's key and an **enrolled owner key**,
+    both listed in the base branch's `agy-allowed-signers`. **Amended by R6′ below:** the
+    second signer is the base branch's hosted provenance check, so no owner key is enrolled
+    and `agy-allowed-signers` lists the job key only. A PR without a valid job signature and
+    a passing provenance check never merges.
   - **Auto-merge (conditional supersession of Q10/(G)'s "a maintainer merges").** Once
     `main` has a non-bypassable ruleset, a data-only diff (`data/agy_catalog.json` plus agy
-    records) auto-merges after both signatures verify. Every other diff, and every PR opened
+    records) auto-merges after both Q10 signers pass. Every other diff, and every PR opened
     before that ruleset exists, is still merged by a maintainer.
   - **Today `main` has none.** The only ruleset covers `conform-evidence/*` tags. Classic
     protection requires status checks but no review, `enforce_admins` is false, and the
     `gate` check is self-certifiable (`.github/CODEOWNERS:5-9`).
-  - **R6′ (owner decision D8 = B, 2026-11-20; AGYFRESH §5.1).** R6 stands except: for a PR
-    whose diff is only `data/agy_catalog.json` and
-    `plans/evidence/agy-*-linux-x64-qualification.json`, that adds or ages non-`pinned`
-    members, the second Q10 signer may be the base branch's hosted provenance check instead
-    of the enrolled owner key. Owner signature remains required for any `pinned` change, any
-    other path, and any change to the signer list, verifier or merge-rule workflow.
+  - **R6′ (owner decision D8 = B, 2026-11-20; AGYFRESH §5.1).** R6 stands except that no
+    catalog PR needs an owner signature. The second Q10 signer is the base branch's hosted
+    provenance check, which re-fetches the asset by tag and re-derives the member digest. Only
+    a PR whose diff is only `data/agy_catalog.json` and
+    `plans/evidence/agy-*-linux-x64-qualification.json`, and that adds or ages non-`pinned`
+    members, auto-merges. A `pinned` change, any other path, and any change to the signer
+    list, verifier or merge-rule workflow never auto-merges: a maintainer merges it through
+    the ordinary reviewed pull request under the non-bypassable `main` ruleset.
   - **What a compromised job identity can promote under R6′:** a **genuine** upstream stable
     release recorded as having passed live qualification when it did not. It cannot promote
-    non-upstream bytes, a `pinned` flag, or a policy change. Hosted provenance
-    re-verification proves the bytes are upstream's; it does not prove the live operations
-    passed (AGYFRESH §5.1).
+    non-upstream bytes, and it cannot promote a `pinned` flag or a policy change without a
+    maintainer merge. Hosted provenance re-verification proves the bytes are upstream's; it
+    does not prove the live operations passed (AGYFRESH §5.1).
 - **Aging [R8].** Approved 2026-11-08. A member is kept while it is among the newest
   `CATALOG_KEEP = 3` or was published less than `CATALOG_MIN_AGE = 14 d` ago. A `pinned`
   member is never pruned, and pruning happens in the same PR. **Q11 is superseded for the agy
@@ -460,7 +465,7 @@ Let `L` be the newest stable upstream release.
 - **Fail.** Nightly `--upstream-only` fails when `L` is more than `LAG_BOUND = 48 h` old,
   `L` is not a member, and no open `agy-catalog-auto` PR for `L` exists.
 - **Warn.** It warns when such a PR has been open longer than `LAG_BOUND`, naming the awaited
-  owner signature or merge. It also warns inside the bound.
+  check or merge. It also warns inside the bound.
 
 Expected lag by consumer:
 - to `main`: one tick, plus the series, plus CI, plus the merge rule;

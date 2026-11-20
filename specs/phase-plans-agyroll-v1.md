@@ -84,7 +84,7 @@ red when breached.
                          ^
    ai: watch (timer) -- signed v2 record, one member/tick --> draft PR -> base-branch policy CI
                                                               -> job + owner signatures -> main
-                                                                 (R6′: job + base provenance check)
+                                               (R6′, all catalog PRs: job + base provenance check)
                                                                    |
         admit_for_seat        admit_for_executor (memfd)    admit_for_canary (memfd)
         (board preflight)     (runner-start preflight)      (capture-start preflight)
@@ -103,16 +103,22 @@ red when breached.
    user-namespace setup that `publish-pypi.yml` already provisions. If not, RECBIND stops and
    is amended.
 4. `ai` remains the qualifying host, and the job runs there only after R9's conditions hold.
-5. Whether a managed-release seat may run a held image whose digest differs from the pinned
-   subject is unproven (AGYFRESH §2.9). HOLD's feasibility lane decides it; if it fails,
-   managed hosts are recorded as not covered and the authority check is unchanged.
+5. The feasibility lane (2026-11-20) found that the jailed review route
+   (`panel_invoker.py:13402`, refusing with `gemini_heartbeat_capability_unavailable`) and the
+   release-authority check refuse a held image whose digest differs from the managed
+   release's pinned executable. Managed-release subjects are therefore not covered by the
+   harness-side hold (EC-HOLD-6, second branch), and the authority check is unchanged. The
+   evidence is `phase-loop-runtime/tests/test_agy_hold_managed.py` on branch
+   `t3/agyfresh-f0-probe`; it ships with HOLD's core lane as a regression guard. On managed
+   hosts, recovery happens at build time (EXT-DOT) and through the RESTORE restore runs.
+   HOLD's core lane records how it handles the non-jailed heartbeat route.
 
 ## External Inputs
 
 | Input | Pin |
 | --- | --- |
-| AGYROLL contract | `plans/artifacts/agyroll-v1-contract.md`, sha256 `85715920d821d95dbad87336f045408487ad71403f2b5d294622e62631837569` (repinned by AGYFRESH: §1.2 archive bounds, §6.1 R6′, §6.2 tick frequency) |
-| AGYFRESH contract (RESTORE, HOLD, ROLLJOB additions, R6′) | `plans/artifacts/agyfresh-contract.md`, sha256 `e1c4b2cdc085133297f2a5b4c39ace7878779d8adb10ca312855ef1282e233b7` |
+| AGYROLL contract | `plans/artifacts/agyroll-v1-contract.md`, sha256 `a1bc1771467b68539faaa5c3d0f76d76afc04c4dca69c6d6471407521034f310` (repinned by AGYFRESH: §1.2 archive bounds, §6.1 R6′, §6.2 tick frequency, §6.3 warning) |
+| AGYFRESH contract (RESTORE, HOLD, ROLLJOB additions, R6′) | `plans/artifacts/agyfresh-contract.md`, sha256 `dbb47fcf09466b0330e04066bc003e6b01a7ea629af5673d3a7b1f2259797ae4` |
 | TEAMHOST contract §5 (agy key, `requalify_once` call sites) | `plans/seats-teamhost-contract.md`, sha256 `3ca3d3a57346acca8bf4e16e50304f00e3e2e19bc5bcd20b1831b4f837c3b1b1`. **REQUAL amends §5.** The amendment adds the runner and canary preflight call sites, and names `seat_qci()` as the `qualified` key. Its value equals `agy_profile_digest()` at `agy_validator_v1`, so no entry drops, and §5 stays correct after a validator bump. The repin lands in REQUAL's docs lane. |
 | Q10 and (G) promotion rules | `.consiliency/plans/detailed-lkg-cli-qualification-1602-20261014-0359.md` §(G) and the Q10 ruling |
 | Upstream provenance surface | the GitHub releases API for `google-antigravity/antigravity-cli`: per-asset `digest`; the attestations endpoint returned 404 on 2026-11-08 |
@@ -175,14 +181,16 @@ condition stops and routes an amendment.
     ruleset. Until then a maintainer merges after both signatures verify.
 
   Q10's draft promotion PR, signer quorum and publisher digest stand, and so does (G)'s base-branch rule. R6 **conditionally supersedes** Q10/(G)'s "a maintainer merges": once `main` has a non-bypassable ruleset, a data-only diff auto-merges. Every other diff, and every PR before that ruleset exists, is still merged by a maintainer.
-  - **Amended 2026-11-20 (D8 = B), as R6′.** R6 stands except: for a PR whose diff is only
-    `data/agy_catalog.json` and `plans/evidence/agy-*-linux-x64-qualification.json`, that adds
-    or ages non-`pinned` members, the second Q10 signer may be the base branch's hosted
-    provenance check instead of the enrolled owner key. Owner signature remains required for
-    any `pinned` change, any other path, and any change to the signer list, verifier or
-    merge-rule workflow. The owner's words: "Whatever the solution is it should not involve
-    me signing anything. It needs to be automated." The residual risk is stated in AGYFRESH
-    §5.1 and AGYROLL §6.1.
+  - **Amended 2026-11-20 (D8 = B), as R6′.** R6 stands except that no catalog PR needs an
+    owner signature. The second Q10 signer is the base branch's hosted provenance check, which
+    re-fetches the asset by tag and re-derives the member digest. Only a PR whose diff is only
+    `data/agy_catalog.json` and `plans/evidence/agy-*-linux-x64-qualification.json`, and that
+    adds or ages non-`pinned` members, auto-merges. A `pinned` change, any other path, and any
+    change to the signer list, verifier or merge-rule workflow never auto-merges: a maintainer
+    merges it through the ordinary reviewed pull request under the non-bypassable `main`
+    ruleset. The owner's words: "Whatever the solution is it should not involve me signing
+    anything. It needs to be automated." The residual risk is stated in AGYFRESH §5.1 and
+    AGYROLL §6.1.
   - **Implemented by:** ROLLJOB.
 - **R7 — APPROVED with conditions.** The `ai` job renews its own Gemini login, outside any
   seat.
@@ -215,14 +223,16 @@ The owner decided these for the AGYFRESH amendment. Values live in the cited sec
 - **D2** — one live self-qualification per host after that release installs, then the
   automatic first-use run, on all machines including `ai` (RESTORE; EC-RESTORE-1).
 - **D3a** — the hold is on by default (`[agy] hold`, AGYFRESH §2.7).
-- **D3b** — managed hosts are included if the feasibility lane passes (§2.9; EC-HOLD-6).
+- **D3b** — managed hosts are included if the feasibility lane passes (§2.9; EC-HOLD-6). It
+  failed, so they are not covered (Assumption 5).
 - **D3c** — held images are shipped catalog members and images this account qualified (§2.3).
 - **D4** — no age limit on a held image; a per-host deny list (`[agy] hold_deny`, §2.7).
 - **D5** — keep the last two admitted images on disk (§2.8; EC-HOLD-10).
 - **D6** — minimal dotfiles change: a refused agy no longer fails the tooling build (§2.10;
   EC-HOLD-11).
-- **D7** — start R9's prerequisites now: bot identity, non-bypassable `main` ruleset, signing
-  keys. Setup only; ACTIVATE still needs EXECADMIT and ROLLJOB.
+- **D7** — start R9's prerequisites now: bot identity, non-bypassable `main` ruleset, and the
+  job's signing key. The owner creates and enrols no key (R6′). Setup only; ACTIVATE still
+  needs EXECADMIT and ROLLJOB.
 - **D8** — B: amend R6 (R6′ above).
 - **D9** — hourly watch tick (AGYROLL §6.2).
 - **D10** — 512 MB member, 256 MB archive, 1 GB expanded, one in-memory image copy (§1).
@@ -486,7 +496,8 @@ promise is bounded best effort (§2.4).
 
 Decompose into 4 lanes:
 - **F0 feasibility** (scratch test, first): drives a managed subject and a different admitted
-  image through the real projection and jail admission; decides EC-HOLD-6.
+  image through the real projection and jail admission; decides EC-HOLD-6. Done: it failed
+  (Assumption 5).
 - **Core**: `agy_hold.py`, `admit_seat` in `agy_qualification.py`, config, status. After
   RESTORE's caps lane and F0.
 - **Cache**: retain, prune and `clear --all`. After core; same files, so sequential.
@@ -664,7 +675,7 @@ member, through Q10/(G) promotion. A breach of the lag bound turns CI red (goals
 - [ ] EC-ROLLJOB-1 — A tick qualifies only the newest non-member release, retries the whole series up to `SERIES_RETRIES`, signs the record and opens a draft `agy-catalog-auto` PR; other members change only when their `qci` differs.
 - [ ] EC-ROLLJOB-2 — `watch --install-units` and `--check` install and report the timer and the last tick's status line.
 - [ ] EC-ROLLJOB-3 — Nightly `--upstream-only` fails under the AGYROLL §6.3 lag rule, and warns inside the bound or while a PR awaits approval.
-- [ ] EC-ROLLJOB-4 — Promotion CI runs the base branch's verifier, signer list and merge rule, and reads only the catalog and agy records from the PR head; a PR touching any other path or the policy fails and never auto-merges; under R6 (rejected as written, alternative adopted), a PR merges only with valid job and enrolled-owner signatures, and auto-merges only for a data-only diff once `main` has a non-bypassable ruleset. Under R6′ (D8 = B), for the diff class in R6′ only, "valid job and enrolled-owner signatures" is replaced by "a valid job signature and a passing base-branch provenance check that re-fetches the asset by tag and re-derives the member digest".
+- [ ] EC-ROLLJOB-4 — Promotion CI runs the base branch's verifier, signer list and merge rule, and reads only the catalog and agy records from the PR head; a PR touching any other path or the policy fails and never auto-merges; under R6 (rejected as written, alternative adopted), a PR merges only with valid job and enrolled-owner signatures, and auto-merges only for a data-only diff once `main` has a non-bypassable ruleset. Under R6′ (D8 = B), for every catalog PR, "valid job and enrolled-owner signatures" is replaced by "a valid job signature and a passing base-branch provenance check that re-fetches the asset by tag and re-derives the member digest"; auto-merge stays limited to the diff class in R6′, and any other diff never auto-merges and is merged by a maintainer under the non-bypassable `main` ruleset.
 - [ ] EC-ROLLJOB-5 — Aging keeps the newest `CATALOG_KEEP` members or those younger than `CATALOG_MIN_AGE`, and never prunes a `pinned` member (R8).
 - [ ] EC-ROLLJOB-6 — An expired login ends the tick with `gemini_login_expired` and a non-zero exit, opens no PR, and makes `watch --check` report `failed: gemini_login_expired`; falsified by an expired-login tick that exits 0, opens a PR, or leaves `--check` reporting `installed`, or by nightly `--upstream-only` passing once the newest release exceeds `LAG_BOUND` while the login stays expired.
 - [ ] EC-ROLLJOB-7 — When the lag rule fails, the nightly workflow creates or updates exactly one open issue labelled `agy-lag`, and closes it on the next pass.

@@ -281,6 +281,9 @@ check is never weakened. If F0 fails, the hold ships for standalone subjects onl
 hosts are reported as **not covered**, and D6 option B is an operational recovery route, not
 delivery of the hold.
 
+**Outcome (2026-11-20): F0 failed**, so managed-release subjects are not covered by the hold;
+the HOLD core lane amends this section and §2.6 to match.
+
 ### 2.10 Dotfiles (lane L3, Consiliency/dotfiles)
 
 `lib/seat_authority.py` `stage_agy`: candidates passed to `agy_verdicts` are the selected
@@ -381,14 +384,19 @@ contract for §1.2 (archive bound; expanded-bytes rule) and, per D8/D9, §6.1/§
 
 Text landed **only under D8-B**:
 
-- *R6′.* R6 stands except: for a PR whose diff is only `data/agy_catalog.json` and
-  `plans/evidence/agy-*-linux-x64-qualification.json`, that adds or ages non-`pinned`
-  members, the second Q10 signer may be the base branch's hosted provenance check instead of
-  the enrolled owner key. Owner signature remains required for any `pinned` change, any
-  other path, and any change to the signer list, verifier or merge-rule workflow.
-- *EC-ROLLJOB-4′.* As EC-ROLLJOB-4, with "valid job and enrolled-owner signatures" replaced
-  by "a valid job signature and a passing base-branch provenance check that re-fetches the
-  asset by tag and re-derives the member digest", for the diff class in R6′ only.
+- *R6′.* R6 stands except that no catalog PR needs an owner signature. The second Q10 signer
+  is the base branch's hosted provenance check, which re-fetches the asset by tag and
+  re-derives the member digest. Only a PR whose diff is only `data/agy_catalog.json` and
+  `plans/evidence/agy-*-linux-x64-qualification.json`, and that adds or ages non-`pinned`
+  members, auto-merges. A `pinned` change, any other path, and any change to the signer list,
+  verifier or merge-rule workflow never auto-merges: a maintainer merges it through the
+  ordinary reviewed pull request under the non-bypassable `main` ruleset.
+- *EC-ROLLJOB-4′.* As EC-ROLLJOB-4, with "valid job and enrolled-owner signatures" replaced by
+  "a valid job signature and a passing base-branch provenance check that re-fetches the asset
+  by tag and re-derives the member digest", for every catalog PR. Auto-merge stays limited to
+  the diff class in R6′; any other diff never auto-merges and is merged by a maintainer under
+  the non-bypassable `main` ruleset. No owner key is enrolled: `agy-allowed-signers` lists the
+  job key only.
 - *EC-ACTIVATE-2′.* The newest stable upstream release at activation reaches `main` through
   an `agy-catalog-auto` PR with no hand step.
 
@@ -400,10 +408,10 @@ from the **base** branch; the PR head supplies data only.
 
 What a compromised job identity can promote: under D8-A, nothing by itself. Under D8-B, a
 **genuine** upstream stable release recorded as having passed live qualification when it did
-not. It cannot promote non-upstream bytes, a `pinned` flag, or a policy change. Hosted
-provenance re-verification proves the bytes are upstream's; it does not prove the live
-operations passed. The seat jail contains a misbehaving binary; it is not a substitute for
-that attestation.
+not. It cannot promote non-upstream bytes, and it cannot promote a `pinned` flag or a policy
+change without a maintainer merge. Hosted provenance re-verification proves the bytes are
+upstream's; it does not prove the live operations passed. The seat jail contains a misbehaving
+binary; it is not a substitute for that attestation.
 
 **DAG after amendment:**
 
