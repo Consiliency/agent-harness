@@ -114,6 +114,7 @@ def test_agy_qualification_run_uses_the_resolved_subject(tmp_path, monkeypatch, 
         admission_class="locally_qualified",
         image=SimpleNamespace(sha256="a" * 64),
         help_sha256="b" * 64,
+        source="subject",
         close=lambda: closed.append(True),
     )
     monkeypatch.setattr(agy_qualification, "Store", _Store)
@@ -136,7 +137,9 @@ def test_agy_qualification_run_uses_the_resolved_subject(tmp_path, monkeypatch, 
     assert agy_qualification.cli_main(SimpleNamespace(action="run")) == 0
     assert seen == [subject]
     assert closed == [True]
-    assert json.loads(capsys.readouterr().out)["image_sha256"] == "a" * 64
+    out = json.loads(capsys.readouterr().out)
+    assert out["image_sha256"] == "a" * 64
+    assert out["source"] == "subject"
 
 
 def _unresolved(monkeypatch, tmp_path, error):
