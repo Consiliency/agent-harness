@@ -112,13 +112,19 @@ red when breached.
    ships with HOLD's core lane as a regression guard. On managed
    hosts, recovery happens at build time (EXT-DOT) and through the RESTORE restore runs.
    HOLD's core lane records how it handles the non-jailed heartbeat route.
+   The jailed **standalone** route executes the provider by path, so a held admission could
+   not run there either. D12 changes that route, for held admissions only, to execute the
+   admitted sealed image (AGYFRESH §2.11). Whether the one admitted mount form works is
+   decided by HOLD's jail feasibility lane, not assumed. If it does not, the route stays not
+   covered and the owner decides between a new amendment and accepting the gap; the rest of
+   HOLD is delivered either way.
 
 ## External Inputs
 
 | Input | Pin |
 | --- | --- |
 | AGYROLL contract | `plans/artifacts/agyroll-v1-contract.md`, sha256 `a1bc1771467b68539faaa5c3d0f76d76afc04c4dca69c6d6471407521034f310` (repinned by AGYFRESH: §1.2 archive bounds, §6.1 R6′, §6.2 tick frequency, §6.3 warning) |
-| AGYFRESH contract (RESTORE, HOLD, ROLLJOB additions, R6′) | `plans/artifacts/agyfresh-contract.md`, sha256 `f66de4c5d3b7f2c0b0d853e4c79abe8eacc715db1ed6098198f0ef2fad08594b` |
+| AGYFRESH contract (RESTORE, HOLD, ROLLJOB additions, R6′) | `plans/artifacts/agyfresh-contract.md`, sha256 `9832286b9eab398b652f3d36d592568b27816cd447f93b19ec491e5ee17571b5` |
 | TEAMHOST contract §5 (agy key, `requalify_once` call sites) | `plans/seats-teamhost-contract.md`, sha256 `3ca3d3a57346acca8bf4e16e50304f00e3e2e19bc5bcd20b1831b4f837c3b1b1`. **REQUAL amends §5.** The amendment adds the runner and canary preflight call sites, and names `seat_qci()` as the `qualified` key. Its value equals `agy_profile_digest()` at `agy_validator_v1`, so no entry drops, and §5 stays correct after a validator bump. The repin lands in REQUAL's docs lane. |
 | Q10 and (G) promotion rules | `.consiliency/plans/detailed-lkg-cli-qualification-1602-20261014-0359.md` §(G) and the Q10 ruling |
 | Upstream provenance surface | the GitHub releases API for `google-antigravity/antigravity-cli`: per-asset `digest`; the attestations endpoint returned 404 on 2026-11-08 |
@@ -237,6 +243,12 @@ The owner decided these for the AGYFRESH amendment. Values live in the cited sec
 - **D9** — hourly watch tick (AGYROLL §6.2).
 - **D10** — 512 MB member, 256 MB archive, 1 GB expanded, one in-memory image copy (§1).
 - **D11** — amend this roadmap rather than open a separate one.
+- **D12** — on the jailed standalone route a **held** admission runs as the admitted sealed
+  image, not a path (AGYFRESH §2.11; EC-HOLD-13, EC-HOLD-14). Ordinary launches keep the
+  existing path bind. The managed projection and its digest gate are unchanged. The bind
+  must leave every canonical jail digest and qualification key as it is; a form that
+  changes one is not admitted by this amendment. The jail integration lane merges only on
+  the release owner's clearance (G-REL).
 
 ## External Readiness Gates
 
@@ -256,7 +268,11 @@ The owner decided these for the AGYFRESH amendment. Values live in the cited sec
 - Platforms other than linux-x64 glibc.
 - Fetching a catalog at runtime.
 - A root-owned qualification tier. TEAMHOST §7 pins are seat authority, not qualification.
-- Seat-jail, egress or `SEALED_FALLBACK_CODES` changes.
+- Egress or `SEALED_FALLBACK_CODES` changes.
+- Seat-jail changes, **except** the one AGYFRESH §2.11 defines: for a held admission the
+  standalone Gemini jail binds the admitted sealed image at `/seat/bin/gemini`. No other mount, capability, filter,
+  uid, environment or egress property of any jail changes, and no jail of another leg
+  changes.
 - `cli_qualification` adapters for other harnesses (agent-harness#1333 PR3–PR7,
   agent-harness#1602 L1–L5).
 - Any live run or `ai` access before ACTIVATE, except RESTORE's restore runs under D2.
@@ -293,6 +309,7 @@ The owner decided these for the AGYFRESH amendment. Values live in the cited sec
 - IF-0-HOLD-2 — The harness-owned cache of admitted images (AGYFRESH §2.8).
 - IF-0-HOLD-3 — Consiliency/dotfiles `stage_agy` falling back to a retained image (AGYFRESH §2.10).
 - IF-0-HOLD-4 — The managed-release authority outcome from the feasibility lane (AGYFRESH §2.9).
+- IF-0-HOLD-5 — The standalone Gemini jail's sealed-image bind, its descriptor ownership and its evidence (AGYFRESH §2.11).
 
 ## Phases
 
@@ -487,30 +504,40 @@ promise is bounded best effort (§2.4).
 - [ ] EC-HOLD-6 — Managed release: with a fallback image whose digest differs from the pinned subject, the real projection and jail admission pass (lane F0); otherwise managed hosts are recorded as not covered and the authority check is unchanged.
 - [ ] EC-HOLD-7 — Order and budgets (§2.4): a newer vendor member beats an older cache member whatever their mtimes; 64 forged hints cannot prevent admission of an authenticated candidate; result is identical under shuffled directory order.
 - [ ] EC-HOLD-8 — Resource rule (§1.2, §2.2): at most one sealed image is open at any point of a hold; every rejected, cancelled or failing candidate is closed.
-- [ ] EC-HOLD-9 — Filesystem rule (§2.5): a symlinked candidate, a directory swapped for a symlink between listing and open, and a file replaced during the read are all rejected.
+- [ ] EC-HOLD-9 — Filesystem rule (§2.5): a symlinked candidate, a directory swapped for a symlink between listing and open, and a file whose replacement is observed during the read (AGYFRESH §2.5) are all rejected.
 - [ ] EC-HOLD-10 — Cache (§2.8): retain, prune, corrupt-file removal and `clear --all` are correct under concurrent retain and clear.
 - [ ] EC-HOLD-11 — (Consiliency/dotfiles) a selected agy the release runtime refuses no longer fails the release build when a retained image verifies.
 - [ ] EC-HOLD-12 — `agy-qualification status` reports the hold state (§2.6).
+- [ ] EC-HOLD-13 — Jailed standalone route (AGYFRESH §2.11): for a held admission the production and the probe jail bind the same admitted sealed image at `/seat/bin/gemini`, the bytes the seat executes hash to the evidence's `provider_image_sha256` after the candidate's source file is renamed, unlinked or rewritten, and the evidence carries source `lkg`; a descriptor that is not that sealed image is refused; a failed build and a cancellation leave no descriptor open; an ordinary launch keeps the existing path bind and its launch and evidence behaviour.
+- [ ] EC-HOLD-14 — Jail qualification (AGYFRESH §2.11, §3): the canonical digest of every registered leg and every qualification key are the same before and after the jail integration lane; a sealed-image jail, the managed-dependency jail and every jail the qualifier builds each pass the unstubbed canonical comparison against their own leg's canonical digest.
+- [ ] EC-HOLD-15 — Status (AGYFRESH §2.6): `hold` reports the subject class, coverage per route, and a candidate with its state; it never reports a candidate as in use.
 
 **Scope notes**
 
-Decompose into 4 lanes:
-- **F0 feasibility** (scratch test, first): drives a managed subject and a different admitted
-  image through the real projection and jail admission; decides EC-HOLD-6. Done: it failed
-  (Assumption 5).
-- **Core**: `agy_hold.py`, `admit_seat` in `agy_qualification.py`, config, status. After
-  RESTORE's caps lane and F0.
-- **Cache**: retain, prune and `clear --all`. After core; same files, so sequential.
+Decompose into these lanes:
+- **F0 feasibility** (managed authority): done; it failed (Assumption 5).
+- **Amend** (docs): this amendment.
+- **Jail feasibility** (scratch test, no production change): decides whether the mount form
+  of AGYFRESH §2.11 works. If it does not, the jail integration lane is not run and the
+  other lanes complete without it.
+- **Core**: `agy_hold.py`, `admit_seat` in `agy_qualification.py`, config, status.
+- **Jail integration**: `panel_invoker._prepare_jailed_gemini` and `seat_jail.build_seat_jail`
+  for a held admission on the standalone Gemini jail; evidence. After core and a passing
+  jail feasibility lane; merged only under G-REL.
+- **Cache**: retain, prune and `clear --all`.
 - **Dotfiles** (Consiliency/dotfiles, EXT-DOT): independent.
 
 Core and cache carry the binding ordering and replacement-detection requirements (AGYFRESH
-§6.2, §6.3). Implements D3a–c, D4, D5 and D6. Stop rule: if any authority or jail check would
-have to change for a test to pass, the lane stops.
+§6.2, §6.3). Implements D3a–c, D4, D5 and D6.
+
+Stop rule: if the managed projection, its digest gate, the authority path, or any jail
+property other than the AGYFRESH §2.11 bind would have to change for a test to pass, the
+lane stops.
 
 **Non-goals**
 
 New refusal codes (AGYFRESH §4), store-key, catalog or record changes, executor and canary
-admission, and any change to the authority or jail path.
+admission, any change to the authority path, and any jail change beyond AGYFRESH §2.11.
 
 **Key files**
 
@@ -519,9 +546,12 @@ admission, and any change to the authority or jail path.
 - `phase-loop-runtime/src/phase_loop_runtime/gemini_heartbeat.py`
 - `phase-loop-runtime/src/phase_loop_runtime/agy_integrity.py`
 - `phase-loop-runtime/src/phase_loop_runtime/advisor_board/config.py`
+- `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`
+- `phase-loop-runtime/src/phase_loop_runtime/seat_jail.py`
 - `phase-loop-runtime/tests/test_agy_hold.py`
 - `phase-loop-runtime/tests/test_agy_hold_managed.py`
 - `phase-loop-runtime/tests/test_agy_hold_cache.py`
+- `phase-loop-runtime/tests/test_agy_hold_jail.py`
 - `docs/advisor-board-capabilities-card.md`
 
 **Depends on**
@@ -534,6 +564,43 @@ admission, and any change to the authority or jail path.
 - IF-0-HOLD-2 — The harness-owned cache of admitted images (AGYFRESH §2.8).
 - IF-0-HOLD-3 — Consiliency/dotfiles `stage_agy` falling back to a retained image (AGYFRESH §2.10).
 - IF-0-HOLD-4 — The managed-release authority outcome from the feasibility lane (AGYFRESH §2.9).
+- IF-0-HOLD-5 — The standalone Gemini jail's sealed-image bind, its descriptor ownership and its evidence (AGYFRESH §2.11).
+
+**Release hold G-REL (execution gate; release owner: the Agent-Harness Exec).** The control
+is the merge, and the release owner is the only merge actor for the jail integration lane.
+Its PR does not merge to `main` until the release owner has recorded an affirmative
+clearance that names the cleared head SHA. The clearance needs both proofs: the feasibility
+lane's recorded digest comparison, and EC-HOLD-14 executed with zero skips in that head's
+hosted CI, linked in the clearance. The merge is head-conditioned on the cleared SHA
+(`gh pr merge --match-head-commit <cleared-sha>`, or the train runner's equivalent), after
+every required check has passed on that same head; the lane is excluded from auto-merge
+and from any queued or deferred merge. A different PR head at merge time invalidates the
+clearance, and the head condition enforces that. Because the lane is never on `main` without the clearance, `main` stays
+releasable at every tag, every PyPI publication and every dotfiles nightly consumer is
+covered, and a deployment that consumes `main` directly is covered by the same gate; no
+pre-tag check is needed. The clearance is recorded in the engagement plan and ledger and
+linked from the PR.
+
+If a canonical key would change, the lane stops (it is outside this amendment). Should a
+later amendment admit such a change, it would also need:
+
+- **O4 — jail requalification (owner-gated)** covering every affected host, including the
+  dotfiles nightly consumers, before the change merges. The harness requalifies a jail by
+  itself at first use (`seat_jail_autoqualify`), so installation is the trigger; the owner
+  is asked first. A rollback that changes a canonical key again is under the same rule. No
+  code lane runs it.
+
+**If the jail feasibility lane fails.** Once the coordinator has recorded the failed probe
+and the owner has accepted the gap, the cache lane and the REQUAL early slice follow the
+core lane, `routes.jailed` stays `"not_covered"`, and the phase closes on the delivered
+scope with EC-HOLD-13 and EC-HOLD-14 recorded as **unmet** and G-REL not applicable. If the
+owner instead calls for a new amendment, those lanes still proceed and the phase stays
+open for the jailed route.
+
+**Follow-up, not part of this phase.** Binding the sealed image for ordinary jailed
+launches as well. Its precondition is evidence, per supported deployment configuration, of
+this particular proc-descriptor bind through the owner chain and the seat-uid drop;
+evidence that the existing jail works on a configuration is not enough.
 
 **Spec closeout policy**
 
@@ -559,7 +626,7 @@ automatically at every instantiation point, and every refusal is visible (goal b
 - [ ] EC-REQUAL-5 — `repeated_transient` failed entries expire after 24 h, and `violation` entries persist until cleared.
 - [ ] EC-REQUAL-6 — A near-expiry login in `seat_profile` waits and renews through `_await_gemini_login` → `_refresh_gemini_credential`, and the doctor's auth hint names the runtime token path.
 - [ ] EC-REQUAL-7 — TEAMHOST §5 is repinned to list the runner and canary preflight call sites and to name `seat_qci()` as the `qualified` key, equal to `agy_profile_digest()` at `agy_validator_v1`; falsified by a §5 that still names `agy_profile_digest` as the key, or by a validator bump that leaves §5's key description wrong.
-- [ ] EC-REQUAL-8 — The doctor's Gemini row names an active hold (AGYFRESH §5, early slice).
+- [ ] EC-REQUAL-8 — The doctor's Gemini row names a hold candidate, its state and the route coverage (AGYFRESH §2.6, early slice), and never reports it as in use.
 
 **Scope notes**
 
@@ -811,7 +878,8 @@ RECBIND ─┬─> RESTORE ──> HOLD ──> REQUAL(early slice) ─┐
   - `agy_provenance.py`: RECBIND → RESTORE → PROVFWD → ROLLJOB. PROVFWD's first lane lands
     after RESTORE's caps lane merges; it does not wait for EC-RESTORE-1.
   - `agy_watch.py`: RECBIND → PROVFWD → ROLLJOB.
-  - `panel_invoker.py`: agent-harness#1916 → REQUAL → EXECADMIT.
+  - `panel_invoker.py`: agent-harness#1916 → HOLD (jail integration) → REQUAL → EXECADMIT.
+  - `seat_jail.py`: HOLD (jail integration) only.
   - `doctor.py`: REQUAL only (early slice first).
   - `gemini_heartbeat.py`, `agy_integrity.py`: RECBIND → RESTORE → HOLD → EXECADMIT.
   - `plans/seats-teamhost-contract.md`: REQUAL only.

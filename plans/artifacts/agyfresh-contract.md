@@ -103,6 +103,9 @@ The safety control is the reader:
   (`agy_provenance.py:259`–`:268`) and its one-memfd-per-catalog-member loop. ROLLJOB (§5)
   must move it to `from_fd`-style streaming and one member at a time.
 
+On the jailed standalone route the image is the same memfd (§2.11): the jails mount it and
+hold no further copy.
+
 ## 2. The hold (HOLD)
 
 ### 2.1 What it is, precisely
@@ -158,19 +161,31 @@ catches **only** that type. No `except ValueError` decides a hold.
 | first use (`first_use=True` only) | `provenance_unverified`, `provenance_unavailable`, `first_use_failed`, `first_use_unavailable` |
 
 **Never hold-eligible; always propagate unchanged:** `_local_capabilities()` failure (memfd
-or pidfd ABI); a memfd seal failure (`AgyCanaryEvidenceError`); `CANCELLED`;
+or pidfd ABI); a memfd seal failure (`AgyCanaryEvidenceError`); an unavailable memfd seal
+ABI when the image memfd is created; `CANCELLED`;
 `EgressUnavailable` and subclasses; `GeminiQuiescenceError`;
 `ProviderProcessGroupQuiescenceError`; `SeatSandboxRefused`; `dependency_route_unwired`;
 an unsupported platform; and **no provider installed** (`resolve_seat_subject` raising
 `seat_provider_unavailable`, or `shutil.which` returning `None`). A host with no agy
 installed has no seat by configuration; the hold does not invent one.
 
+`agy_integrity.check` maps a seal failure and an unavailable seal ABI to the same
+`agy_image_unqualified` an unqualified subject raises. `admit_seat` classifies both
+**before** that mapping; the mapped refusal is never a hold reason.
+
 **Order in `first_use=True`.** The subject is always tried first, including first-use
 qualification. Only when that raises `_SubjectNotAdmitted` does the hold run. `CANCELLED`
 during first use propagates and uses no attempt, as today.
 
-**Handler.** On `_SubjectNotAdmitted`: close the subject's image if one exists; if
-`hold_enabled()`, call `admit_held(...)`; return its admission, or raise `refusal` unchanged.
+**Handler.** On `_SubjectNotAdmitted`: close the subject's image if one exists. If the
+subject is a managed-release subject (§2.9) or `hold_enabled()` is false, raise `refusal`
+unchanged, opening nothing. Otherwise call `admit_held(...)` and return its admission, or
+raise `refusal` unchanged. A held admission is `gh.Admission(image, help_sha256, class,
+None, source="lkg")`: it carries **no path**. Every route executes the admission's sealed
+image (§2.11 for the jail); none may execute a path derived from a held admission.
+
+In the candidate loop a candidate-local error skips that candidate. Cancellation and the
+typed egress, quiescence and jail outcomes of a candidate's help measurement propagate.
 
 ### 2.3 Which held images qualify
 
@@ -240,8 +255,12 @@ displace an authenticated candidate. Integrity never depended on hints; with thi
 availability of the release-member floor does not either.
 
 **Total work per hold:** at most 5 image reads, 64 small file reads and
-`MAX_DIR_ENTRIES` names per directory. A process memo keeps the admitted candidate's `name`
-so later legs try it first (it is still re-read and re-hashed).
+`MAX_DIR_ENTRIES` names per directory.
+
+There is no process memo. Every hold rebuilds the candidate list and walks it in the total
+order, so a newer eligible candidate that appears between two holds wins the second.
+"Always examined" means `AUTH_READS` reads are reserved for authenticated candidates and
+are spent as earlier candidates fail; the first candidate that passes §2.3 ends the walk.
 
 ### 2.5 Filesystem handling (F5)
 
@@ -258,9 +277,15 @@ path-following call. All access is descriptor-relative:
   dir_fd=...)`; `fstat` on the **opened file** must show a regular file, owner uid 0 or
   euid, not group- or other-writable, size ≤ `MAX_MEMBER_BYTES`. A symlink at any step fails
   the open and the candidate is skipped.
-- **Read.** `VerifiedImage.from_fd` on that descriptor. Afterwards `fstat` again; a changed
-  `(st_dev, st_ino, st_size, st_mtime_ns)` rejects the candidate. A file rewritten in place
-  during the read yields a digest that matches nothing and is rejected by §2.3 anyway.
+- **Read.** `VerifiedImage.from_fd` on that descriptor, and no other reader. Afterwards
+  (i) `fstat` of the descriptor must equal the pre-read
+  `(st_dev, st_ino, st_size, st_mtime_ns)`, and (ii) a no-follow `stat` of the file name
+  relative to the opened candidate directory must be a regular file with the descriptor's
+  `(st_dev, st_ino)`. A mismatch or a missing name rejects the candidate (§6.3 option (b)).
+  This detects a replacement that is observable at that moment. It does not prove none
+  happened: a swap reverted before (ii) is not seen. The integrity control is the digest of
+  the sealed bytes under §2.3, not this check. A cache file pruned or cleared while it is
+  being read is rejected, which can cost that one hold a candidate.
 - **Cache mutations** (retain, prune, corrupt-file unlink, `clear --all`) all take
   `Store.lock()` and all use `dir_fd`: temp file with `O_CREAT|O_EXCL|O_NOFOLLOW` 0600,
   `os.rename(..., src_dir_fd=, dst_dir_fd=)`, `os.unlink(name, dir_fd=)` only after
@@ -271,7 +296,7 @@ path-following call. All access is descriptor-relative:
 ### 2.6 Evidence and status
 
 Additive keys where `provider_admission_class` is written (`agy_integrity.py:36`, `:83`;
-`gemini_heartbeat.py:496`):
+`gemini_heartbeat.py:496`), and in `panel_invoker`'s jailed-seat evidence:
 
 - `provider_admission_source`: `"subject"` or `"lkg"`;
 - when `"lkg"`: `provider_hold_reason` (a §2.2 `reason`), and
@@ -283,9 +308,26 @@ Additive keys where `provider_admission_class` is written (`agy_integrity.py:36`
 
 `admission_verdict(execute=False)` (`:1217`) is unchanged: a non-member subject never
 reports `admits` because a held image exists (the dotfiles build reads that as "release
-member"). `agy-qualification status` adds
-`"hold": {"enabled": bool, "held": {"origin","version","image_sha256","admission_class"} | null}`
-(first candidate passing §2.3 without measuring help), and `clear --all` removes `held/`.
+member").
+
+`agy-qualification status` adds:
+
+```
+"hold": {"enabled": bool,
+         "subject": "standalone" | "managed_release",
+         "routes": {"seat_profile": C, "heartbeat": C, "jailed": C},
+         "candidate": {"origin", "version", "image_sha256", "admission_class",
+                       "state": "ready" | "pending_help_measurement"} | null}
+```
+
+`C` is `"covered"` or `"not_covered"`. For a managed-release subject every route is
+`"not_covered"`, `candidate` is `null` and nothing is searched; it is rendered "not covered
+(managed release)". `routes.jailed` is `"not_covered"` until the §2.11 bind is implemented.
+`candidate` is the first candidate passing §2.3 without measuring help: `"ready"` for a
+release member, `"pending_help_measurement"` for one that passed only the store half of
+step 3. It is a lookup result. Neither status nor the doctor says an image is in use; use
+is reported only by the evidence of a launch (`provider_admission_source == "lkg"`).
+`clear --all` removes `held/`.
 
 ### 2.7 Config
 
@@ -307,6 +349,9 @@ pruned first. A cache file whose content does not hash to its name is unlinked.
 Disk: at most `HELD_KEEP` × `MAX_MEMBER_BYTES` steady state, plus one temp file while
 retaining. `Store.status()` must stay `ok` with `held/` present.
 
+`retain` is called only when the hold is enabled and the subject is not a managed-release
+subject.
+
 ### 2.9 Managed-release authority (F6)
 
 Qualification and managed dependency authority are independent. A qualified digest does not
@@ -321,8 +366,13 @@ check is never weakened. If F0 fails, the hold ships for standalone subjects onl
 hosts are reported as **not covered**, and D6 option B is an operational recovery route, not
 delivery of the hold.
 
-**Outcome (2026-11-20): F0 failed**, so managed-release subjects are not covered by the hold;
-the HOLD core lane amends this section and §2.6 to match.
+**Outcome (2026-11-20): F0 failed.** `admit_seat` skips the hold for a managed-release
+subject: one whose resolved path lies below the managed releases root
+(`seat_subject._names_managed_root`, called read-only). The skip is by subject, at the one
+boundary, so it applies on every route, including the non-jailed heartbeat route. A PATH
+`agy` outside the managed root is a standalone subject, on any host. Managed hosts recover
+at build time (§2.10, EXT-DOT) and through the RESTORE restore runs. The projection, its
+digest gate and the jail's dependency binding are unchanged by §2.11.
 
 ### 2.10 Dotfiles (lane L3, Consiliency/dotfiles)
 
@@ -332,6 +382,54 @@ image first, then up to five retained store images, newest version first.
 is staged; if it is not the selected one the build log says so and the sidecar's existing
 `source` field names it. None verifies → `Refused` as today. The selection-changed check
 stays. No sidecar field, pin or authority schema changes.
+
+### 2.11 The jailed standalone route
+
+On the jailed standalone route, `panel_invoker._prepare_jailed_gemini` treats the two
+admission sources differently.
+
+- **Ordinary admission (`source == "subject"`): unchanged.** The production and probe jails
+  bind `realpath(admission.path)` as today. Launch behaviour is preserved, and the evidence
+  is unchanged apart from the additive `provider_admission_source: "subject"`. The route's
+  existing property stands: it executes the file at that path, so nothing in this section
+  about admitted bytes or source mutation is claimed for an ordinary launch.
+- **Held admission (`source == "lkg"`): the sealed image.** The remaining bullets apply to
+  it only. They are what "sealed launch" means.
+- **Same bytes in both jails.** The production jail and the probe jail each receive their
+  own descriptor from `admission.image.reopen()`. Before a jail takes it,
+  `seat_jail.build_seat_jail(..., provider_fd=fd)` requires a regular file carrying the
+  write, grow, shrink and seal seals whose content hashes to the admission's digest;
+  anything else is `SeatSandboxRefused` (`identity`). `provider_fd` with a dependency is
+  refused. The seat's recorded `image_sha256` is that digest.
+- **Mount form: one, and only one.** `--ro-bind /proc/self/fd/<fd> /seat/bin/gemini`, with
+  that literal spelling both in the argv and in the jail's `provider_path`. The source
+  stands where the provider path stands, so the owner argv shape, the canonical Gemini
+  digest, every qualification key and every recorded pass are unchanged, and
+  `actual_profile_digest` needs no new normalization. If the seat uid can execute the mount
+  only with the image's mode set to 0555, that mode is a production requirement: it is set
+  on the jail's descriptor before the build and asserted by a regression test.
+- **No fallback form.** A data bind (`--ro-bind-data`) changes the one canonical Gemini
+  digest. That digest is shared by `panel_invoker._require_canonical_jail`, by the
+  dependency branch of `actual_profile_digest` (which restores the path-bind shape for the
+  managed route), by `seat_qualification_key.key_for_launch` and by the jails the qualifier
+  builds (`seat_jail_qualification._run_probe_in_jail`). Admitting it would need a
+  route-aware canonical through all four, which cannot be done without touching the managed
+  branch or its normalization. It is **not admitted** by this amendment. If the feasibility
+  lane shows the proc-descriptor form does not satisfy every check, the jail integration
+  lane does not run and the route stays `"not_covered"`.
+- **Descriptor ownership.** A jail owns its descriptor from a successful build until
+  `close_jail_fds`; it is in the jail's `pass_fds` for every launch of that jail. The
+  admission is closed after both jails are built, and on any failure or cancellation before
+  that, together with every descriptor already taken.
+- **Inside the jail.** The seat uid can read and execute `/seat/bin/gemini` and cannot
+  write it. No host path of the provider, the store, `held/` or a vendor store is bound.
+  The provider process holds exactly the descriptors the profile declares and none on the
+  image. Credentials, egress, filter, capabilities and uid drop are unchanged.
+- **Managed dependency and the qualifier:** unchanged in every line. The managed jail and
+  every jail the qualifier builds still pass the unstubbed canonical comparison against
+  their own leg's canonical digest.
+- `routes.jailed` (§2.6) is `"covered"` once this is implemented: it describes whether a
+  hold can run on the route, which is all a held admission needs.
 
 ## 3. Requalification triggers
 
@@ -344,6 +442,11 @@ stays. No sidecar field, pin or authority schema changes.
 | New machine-id, euid or state directory | all requalify | — |
 | Harness upgrade with the same QCI | none | none |
 
+| Event | Host store entries | Catalog records | Jail pass records |
+|---|---|---|---|
+| §2.11 bind for a held admission (proc-descriptor form) | none | none | none: the canonical digests and qualification keys are unchanged, which EC-HOLD-14 proves rather than assumes |
+| Any change to a canonical jail digest or qualification key | none | none | not admitted here; under a later amendment, every affected key requalifies at first use, behind owner step O4 |
+
 **This plan's lanes: none intended, conditionally.** `seat_qci()` depends on the profile and
 the validator literal (`agy_qualification.py:816`–`:825`), which no lane edits. That is true
 only if the validator's transitive closure and verdict vector are in fact unchanged, which
@@ -354,6 +457,13 @@ source edit never justifies a live re-record.
 
 No lane may edit `PROFILE_ID`, `profile_description`, `OPERATIONS_CONTRACT`,
 `validate_records`, `validate_directory`, `_classify_failure` or anything they reach.
+
+Jail qualification and agy qualification are separate. A `seat_jail.py` or
+`panel_invoker.py` edit does not by itself change `seat_qci()`; `tests/test_agy_qci.py`
+decides, as above (`panel_invoker.py` is in the validator's source-hash supplement, so that
+table is updated as a reviewed change when only it flags). A changed canonical jail digest
+is never normalized to reuse a pass record. No lane runs a jail qualification on a host; the tests
+that touch the qualifier construct its jail with a harmless stand-in and record no pass.
 
 ## 4. Codes
 
@@ -397,12 +507,32 @@ contract for §1.2 (archive bound; expanded-bytes rule) and, per D8/D9, §6.1/§
 - EC-HOLD-8 — Resource rule (§1.2, §2.2): at most one sealed image is open at any point of a
   hold; every rejected, cancelled or failing candidate is closed.
 - EC-HOLD-9 — Filesystem rule (§2.5): a symlinked candidate, a directory swapped for a
-  symlink between listing and open, and a file replaced during the read are all rejected.
+  symlink between listing and open, and a file whose replacement is observed during the read
+  (AGYFRESH §2.5) are all rejected.
 - EC-HOLD-10 — Cache (§2.8): retain, prune, corrupt-file removal and `clear --all` are
   correct under concurrent retain and clear.
 - EC-HOLD-11 — (Consiliency/dotfiles) a selected agy the release runtime refuses no longer
   fails the release build when a retained image verifies.
 - EC-HOLD-12 — `agy-qualification status` reports the hold state (§2.6).
+- EC-HOLD-13 — Jailed standalone route (AGYFRESH §2.11): for a held admission the production
+  and the probe jail bind the same admitted sealed image at `/seat/bin/gemini`, the bytes
+  the seat executes hash to the evidence's `provider_image_sha256` after the candidate's
+  source file is renamed, unlinked or rewritten, and the evidence carries source `lkg`; a
+  descriptor that is not that sealed image is refused; a failed build and a cancellation
+  leave no descriptor open; an ordinary launch keeps the existing path bind and its launch
+  and evidence behaviour.
+- EC-HOLD-14 — Jail qualification (AGYFRESH §2.11, §3): the canonical digest of every
+  registered leg and every qualification key are the same before and after the jail
+  integration lane; a sealed-image jail, the managed-dependency jail and every jail the
+  qualifier builds each pass the unstubbed canonical comparison against their own leg's
+  canonical digest.
+- EC-HOLD-15 — Status (AGYFRESH §2.6): `hold` reports the subject class, coverage per route,
+  and a candidate with its state; it never reports a candidate as in use.
+
+**HOLD also produces:**
+
+- IF-0-HOLD-5 — The standalone Gemini jail's sealed-image bind, its descriptor ownership and
+  its evidence (AGYFRESH §2.11).
 
 **ROLLJOB adds:**
 
@@ -413,7 +543,10 @@ contract for §1.2 (archive bound; expanded-bytes rule) and, per D8/D9, §6.1/§
 - EC-ROLLJOB-9 — The watch streams each member to a sealed descriptor and holds one member
   image at a time.
 
-**REQUAL early slice adds:** the doctor's Gemini row names an active hold.
+**REQUAL early slice adds:**
+
+- EC-REQUAL-8 — The doctor's Gemini row names a hold candidate, its state and the route
+  coverage (AGYFRESH §2.6, early slice), and never reports it as in use.
 
 ### 5.1 D8: frozen mapping (F1)
 
@@ -480,12 +613,14 @@ the lane's phase plan records the option it chose.
    `MAX_EXPANDED_BYTES`, keep the separate member-size check, bound member count and parser
    metadata as needed, and add small-budget fixtures for large extension records and many
    empty members.
-2. **One selection promise (HOLD core and cache lanes; §2.4, EC-HOLD-7).** "The three newest
+2. **One selection promise (HOLD core and cache lanes; §2.4, EC-HOLD-7).** *Resolved by
+   §2.4 (no memo).* "The three newest
    authenticated candidates are always examined" means reserved authenticated read capacity
    *if earlier candidates fail*. Every admission preserves the §2.4 total order; the process
    memo may only skip discovery work where it cannot change that order. A test freezes the
    case of a newer eligible candidate appearing after the memo was populated.
-3. **Replacement detection (HOLD core lane; §2.5, EC-HOLD-9).** A before/after `fstat` of an
+3. **Replacement detection (HOLD core lane; §2.5, EC-HOLD-9).** *Resolved by §2.5
+   (option (b)).* A before/after `fstat` of an
    open descriptor cannot see a rename over the pathname. The lane either (a) accepts the
    opened inode, states that rename or unlink is harmless, and tests that only its admitted
    sealed bytes run; or (b) compares a final descriptor-relative no-follow stat of the name

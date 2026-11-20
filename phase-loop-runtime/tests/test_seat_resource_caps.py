@@ -1229,6 +1229,51 @@ def test_runner_reaches_the_bus_and_the_target_env_is_exact(monkeypatch, tmp_pat
     assert observed == seat_env
 
 
+def test_the_seat_scope_has_a_fixed_description(monkeypatch, tmp_path, isolated):
+    """The scope's unit metadata is fixed: systemd-run gets a description naming only the
+    seat key's digest, and no option before the target carries an argv or env value."""
+    runner_argv = tmp_path / "runner-argv.jsonl"
+    _root, _proc_cgroup, _configured, _stopped = _install_fake_cap_host(
+        monkeypatch, tmp_path, isolated)
+    runner = tmp_path / "systemd-run"
+    body = runner.read_text().replace(
+        "import os, pathlib, sys\n",
+        "import os, pathlib, sys, json\n"
+        f"pathlib.Path({str(runner_argv)!r}).open('a').write(json.dumps(sys.argv) + '\\n')\n", 1)
+    runner.write_text(body)
+    properties: list[str] = []
+    recorded = caps._systemctl
+
+    def systemctl(*args, **kwargs):
+        properties.extend(args)
+        return recorded(*args, **kwargs)
+
+    monkeypatch.setattr(caps, "_systemctl", systemctl)
+    value = "fixture-argv-value-0123456789"
+    key = "gemini:gemini-4-argon:medium:alternative-approach"
+    commands = (
+        [sys.executable, "-I", "-c", "pass", "--setenv", "SEAT_FIXTURE", value],
+        [sys.executable, "-I", "-c", "pass", "--other-shape"],
+    )
+    for command in commands:
+        process = caps.capped_popen(command, seat_key=key,
+                                    env={"PATH": "/usr/bin:/bin", "SEAT_FIXTURE": value})
+        assert process.wait(timeout=10) == 0
+    launches = [json.loads(line) for line in runner_argv.read_text().splitlines()]
+    assert len(launches) == len(commands)
+    descriptions = set()
+    for argv, command in zip(launches, commands):
+        options = argv[1:argv.index("--")]
+        described = [item for item in options if item.startswith("--description=")]
+        assert described == [f"--description=phase-loop seat {caps._unit_key(key)}"]
+        descriptions.update(described)
+        metadata = " ".join([*options, *properties])
+        for absent in (value, "SEAT_FIXTURE", key, "--setenv", "--other-shape", sys.executable):
+            assert absent not in metadata, absent
+        assert argv[argv.index("--") + 1:][-len(command):] == command  # the target is unchanged
+    assert len(descriptions) == 1  # the same for every command of the seat
+
+
 def _stub_owned_launch_view(monkeypatch, seen):
     from phase_loop_runtime import seat_seccomp
     monkeypatch.setattr(panel_invoker, "_filtered_holder_namespace", lambda: 0)

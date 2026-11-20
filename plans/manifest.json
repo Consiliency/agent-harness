@@ -15750,6 +15750,71 @@
       "status": "committed",
       "type": "phase",
       "updated_at": "2026-11-09T17:16:18Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-11-20T01:14:00Z",
+      "file": "plans/phase-plan-v1-agyroll-HOLD.md",
+      "frozen_inputs": {
+        "plans/artifacts/agyfresh-contract.md": {
+          "sha256": "9832286b9eab398b652f3d36d592568b27816cd447f93b19ec491e5ee17571b5"
+        },
+        "plans/artifacts/agyfresh-hold-amendment.md": {
+          "sha256": "e024b8b505c3f83bfbc837873150c8ba07f901d7eea15d61b888a53550320a8e"
+        },
+        "plans/artifacts/agyfresh-hold-lanes.md": {
+          "sha256": "3b30b9db7626974e71ea7d1a79cdc9fe1c34ee1a7f3ba3ec989aa275e32faff4"
+        }
+      },
+      "handoff_ref": null,
+      "if_gates_produced": [
+        "IF-0-HOLD-1",
+        "IF-0-HOLD-2",
+        "IF-0-HOLD-4",
+        "IF-0-HOLD-5"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2",
+        "SL-4",
+        "SL-5"
+      ],
+      "lifecycle": [],
+      "owner_skill": "claude-plan-phase",
+      "phase_alias": "HOLD",
+      "planning_artifact_only": true,
+      "reflection_ref": null,
+      "roadmap_ref": {
+        "file": "specs/phase-plans-agyroll-v1.md",
+        "slug": "phase-plans-agyroll-v1",
+        "status": "committed",
+        "type": "phase"
+      },
+      "slug": "v1-agyroll-HOLD",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-11-20T17:59:00Z"
+    },
+    {
+      "acceptance_criteria_count": 4,
+      "created_at": "2026-11-20T01:14:00Z",
+      "file": "plans/detailed-agyfresh-failexp-20261120-0114.md",
+      "handoff_ref": null,
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [],
+      "owner_skill": "claude-plan-detailed",
+      "phase_alias": null,
+      "planning_artifact_only": true,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "agyfresh-failexp-20261120-0114",
+      "status": "committed",
+      "task_summary": "Expire repeated-transient agy failed entries after 24 h and show the hold candidate, its state and route coverage in the doctor's Gemini row (REQUAL early slice; SL-5 of the HOLD plan).",
+      "type": "detailed",
+      "updated_at": "2026-11-20T01:14:00Z"
     }
   ],
   "schema_version": 1
