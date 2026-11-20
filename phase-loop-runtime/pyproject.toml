@@ -46,7 +46,20 @@ dependencies = [
     # Registry-present is authoritative; the runtime still degrades to the legacy
     # six-tuple if a caller runs an older contract (no hard crash), but this floor
     # guarantees the contract-owned vocabulary (incl. governance_contracts) is live.
-    "consiliency-contract>=0.6.5,<0.7",
+    #
+    # PIN (contract 0.7 line): floor at 0.7.2 -- the 0.7 line moves the contract's
+    # version-skew window to `>=0.7.0 <0.8.0` and is otherwise additive for what
+    # phase-loop reads (the registries above and the manifest schema are byte-identical
+    # to 0.6.5). 0.7.1 retires the fixture authority key from the production trust
+    # registry, moves the authority conformance vectors to a test-only registry
+    # (`load_conformance_registry`), and first publishes the supervised-run envelope /
+    # run-status schemas (0.6.6 + the provisional 0.7.0 envelope v2). 0.7.2 makes
+    # `verify_authority_event` refuse a `test_only` registry unless the caller passes
+    # `allow_test_registry=True` (production callers never do) and adds the
+    # `malformed_registry` reason. phase-loop does not call the authority verifier.
+    # The floor tracks the newest 0.7 release because `phase-loop doctor
+    # --fail-on-stale` gates on this floor matching the latest published contract.
+    "consiliency-contract>=0.7.2,<0.8",
     "jsonschema>=4,<5",
     # agent-harness#1357 (maintainer ruling): the seat jail's qualification runs a real falsifier
     # run whose wrapper imports pytest, and the run copies its dependencies from the runtime's own
