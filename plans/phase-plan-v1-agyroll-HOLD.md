@@ -4,7 +4,7 @@ phase: HOLD
 roadmap: specs/phase-plans-agyroll-v1.md
 roadmap_sha256: fb4144be47a5d57048ca1390a9775a860a90dfda427d3a03631fa5d6cabcd0d1
 automation:
-  suite_command: ["bash", "-lc", "cd phase-loop-runtime && PYTHONPATH=$PWD/src:$PWD/tests timeout 600 .venv/bin/python -m pytest -q -p no:cacheprovider tests/test_agy_hold.py tests/test_agy_hold_managed.py tests/test_agy_hold_jail.py tests/test_agy_hold_cache.py tests/test_seats_teamhost_gemini.py tests/test_seats_teamhost_doctor.py tests/test_seat_jail.py tests/test_gemini_seat_egress_1170.py tests/test_agy_integrity_seat_admission.py tests/test_agy_static_integrity.py tests/test_agy_catalog_data.py tests/test_advisor_board_config.py tests/test_gemini_heartbeat_bootstrap.py tests/test_agy_size_bounds.py tests/test_agy_qci.py tests/test_seat_reference_inventory.py && PYTHONPATH=$PWD/src:$PWD/tests timeout 600 .venv/bin/python -m pytest -q -p no:cacheprovider tests/test_agy_self_qualification.py && timeout 300 uv run --locked python scripts/verify_qualified_agy_image.py --contract"]
+  suite_command: ["bash", "-lc", "cd phase-loop-runtime && PYTHONPATH=$PWD/src:$PWD/tests timeout 600 .venv/bin/python -m pytest -q -p no:cacheprovider tests/test_agy_hold.py tests/test_agy_hold_managed.py tests/test_agy_hold_cache.py tests/test_seats_teamhost_gemini.py tests/test_seats_teamhost_doctor.py tests/test_seat_jail.py tests/test_gemini_seat_egress_1170.py tests/test_agy_integrity_seat_admission.py tests/test_agy_static_integrity.py tests/test_agy_catalog_data.py tests/test_advisor_board_config.py tests/test_gemini_heartbeat_bootstrap.py tests/test_agy_size_bounds.py tests/test_agy_qci.py tests/test_seat_reference_inventory.py && PYTHONPATH=$PWD/src:$PWD/tests timeout 600 .venv/bin/python -m pytest -q -p no:cacheprovider tests/test_agy_self_qualification.py && timeout 300 uv run --locked python scripts/verify_qualified_agy_image.py --contract"]
 ---
 
 # HOLD: Availability floor
@@ -88,38 +88,30 @@ standalone Gemini provider bind. `admission_verdict(execute=False)` is unchanged
 
 ## Lane Index & Dependencies
 
+Branch recorded at the SL-1 checkpoint: STOP, new amendment.
+
 SL-0 — AMEND: roadmap and contract amendment
   Depends on: (none)
-  Blocks: SL-2, SL-3, SL-4, SL-5, SL-6
+  Blocks: SL-2, SL-4, SL-5
   Parallel-safe: yes
 
 SL-1 — JAILPROBE: sealed-image jail feasibility gate
   Depends on: (none)
-  Blocks: SL-3, SL-6
+  Blocks: (none)
   Parallel-safe: yes
 
 SL-2 — HOLD-CORE: admission boundary, hold, discovery, status
   Depends on: SL-0
-  Blocks: SL-3, SL-4, SL-5, SL-6
-  Parallel-safe: no
-
-SL-3 — JAILBIND: a held admission's standalone Gemini jail binds the sealed image
-  Depends on: SL-0, SL-1, SL-2
-  Blocks: SL-6
+  Blocks: SL-4, SL-5
   Parallel-safe: no
 
 SL-4 — HOLD-CACHE: retain, prune, clear
   Depends on: SL-2
-  Blocks: SL-5, SL-6
+  Blocks: SL-5
   Parallel-safe: no
 
 SL-5 — FAILEXP: failed-entry expiry and the doctor row
   Depends on: SL-2, SL-4
-  Blocks: SL-6
-  Parallel-safe: no
-
-SL-6 — Documentation & spec reconciliation
-  Depends on: SL-0, SL-1, SL-2, SL-3, SL-4, SL-5
   Blocks: (none)
   Parallel-safe: no
 
@@ -187,7 +179,7 @@ SL-6.1 and whole-phase verification never name a file the branch does not have.
 
 ### SL-1 — JAILPROBE: sealed-image jail feasibility gate
 - **Scope**: Decide, by observed runs on one local host with a stand-in executable and no production change, whether the proc-descriptor bind of the sealed image works in the standalone Gemini jail: GO or STOP.
-- **Owned files**: `phase-loop-runtime/tests/test_agy_hold_jail.py`, `plans/evidence/agyfresh-jailbind-feasibility.md`
+- **Owned files**: `plans/evidence/agyfresh-jailbind-feasibility.md`
 - **Interfaces provided**: the feasibility result (GO or STOP) for IF-0-HOLD-5
 - **Interfaces consumed**: IF-0-RESTORE-1 (pre-existing), `seat_jail._owner_argv` (pre-existing), `seat_jail.jail_profile_digest` (pre-existing)
 - **Parallel-safe**: yes
@@ -220,30 +212,6 @@ SL-6.1 and whole-phase verification never name a file the branch does not have.
 | SL-2.5 | docs | SL-2.4 | `CONTRACTS.md`, capabilities card, `CHANGELOG.md` | (none) | (none) |
 | SL-2.6 | verify | SL-2.5 | lanes artifact §E4 run list | all | §E4 |
 
-### SL-3 — JAILBIND: a held admission's standalone Gemini jail binds the sealed image
-- **Scope**: For a held admission, make the jailed standalone Gemini route execute the admitted sealed image in both its production and probe jails, with the evidence keys, by the proc-descriptor bind; keep ordinary launches on the existing path bind; change no canonical digest; leave the managed branch and the qualifier untouched.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail.py`, `phase-loop-runtime/tests/test_seat_jail.py`, `phase-loop-runtime/tests/test_panel_invoker.py`, `phase-loop-runtime/tests/test_gemini_seat_egress_1170.py`, `phase-loop-runtime/tests/test_seats_teamhost_integration.py`, `phase-loop-runtime/tests/test_seat_qualification_key.py`
-- **Continues**: SL-1's `tests/test_agy_hold_jail.py`; SL-2's `agy_hold.py` (`ROUTE_COVERAGE`), `tests/test_agy_hold.py`, `tests/test_agy_hold_managed.py`, `tests/test_agy_qci.py`, `tests/data/seat_launch_references.json`, `CONTRACTS.md`, `docs/advisor-board-capabilities-card.md`, `CHANGELOG.md`
-- **Interfaces provided**: IF-0-HOLD-5
-- **Interfaces consumed**: the feasibility result (SL-1), `admit_seat`, `agy_hold.ROUTE_COVERAGE`, AGYFRESH §2.11
-- **Parallel-safe**: no
-- **Notes**:
-  - Files, and the modules that are not edited: lanes artifact §F1. Tests: §F2. Cost, release hold and stop rules: §F3.
-  - GO branch only. Held admissions only; there is no switch.
-  - Sealed launches: "what ran" is measured by the stand-in hashing its own running image, not by reading the path.
-  - Ordinary launches: the path bind is kept, with a real stable-source launch as the control and the evidence compared with the base tree's.
-  - Proves, unstubbed, that the managed-dependency jail and every jail `seat_jail_qualification._run_probe_in_jail` builds pass the real canonical guard against their own leg's digest; it edits neither and records no qualification pass.
-  - **Merges only under G-REL**, by the release owner's head-conditioned merge; never auto-merged or queued. The PR's first paragraph states the hold and links both proofs.
-  - Cases that launch bwrap must run in hosted CI; a skipped required case is no proof.
-
-| Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
-|---|---|---|---|---|---|
-| SL-3.1 | test | (none) | `tests/test_agy_hold_jail.py`, `tests/test_agy_hold_managed.py`, `tests/test_agy_hold.py` | lanes artifact §F2 | `pytest tests/test_agy_hold_jail.py -k "ec_hold_13 or ec_hold_14"` |
-| SL-3.2 | impl | SL-3.1 | `seat_jail.py` | (none) | `pytest tests/test_agy_hold_jail.py tests/test_seat_jail.py` |
-| SL-3.3 | impl | SL-3.2 | `panel_invoker.py`, `agy_hold.py`, moved-stub test files, inventory | (none) | `pytest tests/test_agy_hold_jail.py tests/test_agy_hold_managed.py tests/test_gemini_seat_egress_1170.py` |
-| SL-3.4 | docs | SL-3.3 | `CONTRACTS.md`, card, `CHANGELOG.md` | (none) | (none) |
-| SL-3.5 | verify | SL-3.4 | lanes artifact §F3 run list | all | §F3 |
-
 ### SL-4 — HOLD-CACHE: retain, prune, clear
 - **Scope**: Keep the last two admitted images in a digest-addressed, lock-coordinated cache under the store, and remove them on `clear --all`.
 - **Owned files**: `phase-loop-runtime/tests/test_agy_hold_cache.py`
@@ -275,19 +243,6 @@ SL-6.1 and whole-phase verification never name a file the branch does not have.
 | SL-5.2 | impl | SL-5.1 | `agy_qualification.py`, `doctor.py`, doctor schema and golden | (none) | `pytest tests/test_agy_self_qualification.py -k "expir or legacy or violation"` |
 | SL-5.3 | docs | SL-5.2 | `CONTRACTS.md`, card, `TEAM-ONBOARDING.md`, `CHANGELOG.md` | (none) | (none) |
 | SL-5.4 | verify | SL-5.3 | detailed plan, Verification | all | detailed plan |
-
-### SL-6 — Documentation & spec reconciliation
-- **Scope**: After the lanes of the branch taken, confirm the docs each lane carried agree with what landed, record the spec closeout and the branch, and update the plan manifest lifecycle; no code change.
-- **Owned files**: `plans/manifest.json`
-- **Interfaces provided**: (none)
-- **Interfaces consumed**: IF-0-HOLD-1, IF-0-HOLD-2, IF-0-HOLD-4, `hold_status`, the feasibility result (SL-1)
-- **Parallel-safe**: no
-- **Notes**: Each code lane writes its own `CONTRACTS.md`, card and `CHANGELOG.md` text, because hosted CI checks docs per PR. The reducer itself is `no_doc_delta`. Closeout by branch: **GO** — every goal below, and the release owner's G-REL clearance on SL-3's merged head. **STOP, gap accepted** — every goal except EC-HOLD-13 and EC-HOLD-14, which are recorded unmet with SL-1's report as the reason; G-REL not applicable; the docs say the jailed route is not covered. **STOP, new amendment** — no closeout; the phase stays open.
-
-| Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
-|---|---|---|---|---|---|
-| SL-6.1 | test | (none) | (none) | (none) | the frontmatter `suite_command` |
-| SL-6.2 | docs | SL-6.1 | `plans/manifest.json` | (none) | `python phase-loop-skills/plan-phase/scripts/validate_plan_doc.py plans/phase-plan-v1-agyroll-HOLD.md` |
 
 ## Verification
 
@@ -353,14 +308,14 @@ roadmap amendment; until it lands, the validator reports them as not yet in the 
 - [ ] EC-HOLD-10 — proven by `pytest tests/test_agy_hold_cache.py -k ec_hold_10`; falsified by a partial file after concurrent retain and clear. Path-entered control: through `admit_seat(first_use=True)` and `cli_main` `clear --all` on a real store directory.
 - [ ] EC-HOLD-11 — proven in Consiliency/dotfiles by `pytest tests/test_seat_authority.py` under EXT-DOT; falsified by `Refused` while a retained image verifies. No lane here changes it. Path-entered control: through that repository's `stage_agy`.
 - [ ] EC-HOLD-12 — proven by `pytest tests/test_agy_hold.py -k ec_hold_12`; falsified by a `status` output with no `hold` key. Path-entered control: through `cli_main` `status`.
-- [ ] EC-HOLD-13 — GO branch: proven by `pytest tests/test_agy_hold_jail.py -k ec_hold_13` in hosted CI with the bwrap cases executed; falsified by restoring the path bind for a held admission (the source-rewrite case then executes other bytes), by an unsealed descriptor being accepted, by a descriptor outside the declared set surviving in the provider, by a descriptor left open after a failed build, or by an ordinary launch's argv or evidence differing from the base tree's beyond the one additive key. STOP, gap accepted: recorded unmet. Path-entered control: through `panel_invoker._prepare_jailed_gemini`, the real `seat_jail.build_seat_jail` and the production owner chain, with the executed stand-in reporting its own digest.
-- [ ] EC-HOLD-14 — GO branch: proven by `pytest tests/test_agy_hold_jail.py -k ec_hold_14` in hosted CI on SL-3's final head, with `plans/evidence/agyfresh-jailbind-feasibility.md`; falsified by any leg's canonical digest or the launch key differing from its base value, or by the managed-dependency jail or a qualifier-built jail failing the real `_require_canonical_jail` against its own leg's digest. These two proofs are what the G-REL clearance needs. STOP, gap accepted: recorded unmet. Path-entered control: through `seat_jail.build_seat_jail`, `seat_jail_qualification._run_probe_in_jail` and `panel_invoker._require_canonical_jail`, none stubbed.
+- [ ] EC-HOLD-13 — **pending a new amendment** — GO branch: proven by `pytest tests/test_agy_hold_jail.py -k ec_hold_13` in hosted CI with the bwrap cases executed; falsified by restoring the path bind for a held admission (the source-rewrite case then executes other bytes), by an unsealed descriptor being accepted, by a descriptor outside the declared set surviving in the provider, by a descriptor left open after a failed build, or by an ordinary launch's argv or evidence differing from the base tree's beyond the one additive key. STOP, gap accepted: recorded unmet. Path-entered control: through `panel_invoker._prepare_jailed_gemini`, the real `seat_jail.build_seat_jail` and the production owner chain, with the executed stand-in reporting its own digest.
+- [ ] EC-HOLD-14 — **pending a new amendment** — GO branch: proven by `pytest tests/test_agy_hold_jail.py -k ec_hold_14` in hosted CI on SL-3's final head, with `plans/evidence/agyfresh-jailbind-feasibility.md`; falsified by any leg's canonical digest or the launch key differing from its base value, or by the managed-dependency jail or a qualifier-built jail failing the real `_require_canonical_jail` against its own leg's digest. These two proofs are what the G-REL clearance needs. STOP, gap accepted: recorded unmet. Path-entered control: through `seat_jail.build_seat_jail`, `seat_jail_qualification._run_probe_in_jail` and `panel_invoker._require_canonical_jail`, none stubbed.
 - [ ] EC-HOLD-15 — proven by `pytest tests/test_agy_hold.py -k ec_hold_15`; falsified by a status that names a candidate for a managed subject, reports the jailed route covered before SL-3, or calls a candidate in use. Path-entered control: through `cli_main` `status`.
 
 ## Spec Closeout Plan
 - schema: `spec_delta_closeout.v1`
 - decision: `roadmap_amendment`
 - target surfaces: `specs/phase-plans-agyroll-v1.md`, `plans/artifacts/agyfresh-contract.md`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md`, `docs/advisor-board-capabilities-card.md`
-- evidence paths: `phase-loop-runtime/tests/test_agy_hold.py`, `phase-loop-runtime/tests/test_agy_hold_cache.py`, `phase-loop-runtime/tests/test_agy_hold_managed.py`, `phase-loop-runtime/tests/test_agy_hold_jail.py`, `plans/evidence/agyfresh-jailbind-feasibility.md`
+- evidence paths: `phase-loop-runtime/tests/test_agy_hold.py`, `phase-loop-runtime/tests/test_agy_hold_cache.py`, `phase-loop-runtime/tests/test_agy_hold_managed.py`, `plans/evidence/agyfresh-jailbind-feasibility.md`
 - redaction posture: `metadata_only`
 - downstream handling: roadmap amendment (SL-0, text in `plans/artifacts/agyfresh-hold-amendment.md`); release hold G-REL on SL-3; REQUAL's remaining lanes are planned on the amended roadmap after PROVFWD
