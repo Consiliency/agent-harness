@@ -15759,21 +15759,28 @@
         "plans/artifacts/agyfresh-contract.md": {
           "sha256": "dbb47fcf09466b0330e04066bc003e6b01a7ea629af5673d3a7b1f2259797ae4"
         },
+        "plans/artifacts/agyfresh-hold-amendment.md": {
+          "sha256": "b9171ad6e5d765369156e293f5cc20d2f646fb0725b33caacbaa1ae54a1bf144"
+        },
         "plans/artifacts/agyfresh-hold-lanes.md": {
-          "sha256": "5aa4290f1adfb9d1d5eb1de0e5ca115f814bbce03d2bcb5b2c3bd952ae3011c6"
+          "sha256": "8af0c01186d703345c6ce9ad2edb0b5cbd6bb4587ebbb15a8e57b105ca25b8ca"
         }
       },
       "handoff_ref": null,
       "if_gates_produced": [
         "IF-0-HOLD-1",
         "IF-0-HOLD-2",
-        "IF-0-HOLD-4"
+        "IF-0-HOLD-4",
+        "IF-0-HOLD-5"
       ],
       "lanes": [
+        "SL-0",
         "SL-1",
         "SL-2",
         "SL-3",
-        "SL-4"
+        "SL-4",
+        "SL-5",
+        "SL-6"
       ],
       "lifecycle": [],
       "owner_skill": "claude-plan-phase",
@@ -15790,7 +15797,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-11-20T01:14:00Z"
+      "updated_at": "2026-11-20T03:30:00Z"
     },
     {
       "acceptance_criteria_count": 4,
@@ -15807,7 +15814,7 @@
       "roadmap_ref": null,
       "slug": "agyfresh-failexp-20261120-0114",
       "status": "committed",
-      "task_summary": "Expire repeated-transient agy failed entries after 24 h and name the hold in the doctor's Gemini row (REQUAL early slice; SL-3 of the HOLD plan).",
+      "task_summary": "Expire repeated-transient agy failed entries after 24 h and show the hold candidate, its state and route coverage in the doctor's Gemini row (REQUAL early slice; SL-5 of the HOLD plan).",
       "type": "detailed",
       "updated_at": "2026-11-20T01:14:00Z"
     }
