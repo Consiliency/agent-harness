@@ -47,16 +47,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - `phase-loop seat-window probe-tools --vendor grok` no longer crashes with
   `AttributeError` when no executable-dependency lease is bound, which is always the case
   for the operator CLI. The probe now resolves the grok binary on the environment it runs
-  the binary with, and the receipt it writes falls back to this process's environment.
+  the binary with, and passes that environment to the receipt writer.
   Before this fix, no tool-probe receipt could be written, so every grok seat was deferred
   with `grok_tool_surface_unverified`. The launch gate is unchanged.
 - A grok tool-probe receipt now certifies only the executable the probe measured. The probe
   measures the resolved path, its content digest and its file state through one descriptor,
   before and after the probe runs, and passes that identity to the receipt writer. The
   writer certifies the measured digest and refuses if a fresh measurement at publication
-  differs. Before this change, the writer re-resolved and re-hashed the executable itself,
-  so a replacement made after the probe's final check was certified with the probed
-  binary's definitions. A replacement made while the probe ran and restored before its
+  differs. A replacement made while the probe ran and restored before its
   final check is also refused. The bound is documented on `_grok_probe_identity`.
 
 ## [0.7.36] - Unreleased candidate
