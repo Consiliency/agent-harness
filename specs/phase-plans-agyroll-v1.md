@@ -59,6 +59,14 @@ What exists today, and why it leaves the lag in place:
   API returns 404. Provenance rests on GitHub's per-asset digest, fetched over the pinned
   transport.
 
+**AGYFRESH amendment (2026-11-20).** Only RECBIND was built. On 2026-11-11 the agy binary
+passed the 250 MB member bound at 1.5.6 and the Gemini seat was lost: a subject that is not
+admitted is simply excluded, with no floor. The amendment adds two phases. RESTORE replaces
+the size literals with call-time bounds and a streaming reader. HOLD lets the seat run an
+already-qualified image when the selected one cannot be used, so availability stops
+depending on qualification speed. It also adds ROLLJOB clauses and amends R6 (R6′). Design:
+the AGYFRESH contract (External Inputs).
+
 Thesis: admit by evidence, keyed on what the evidence depends on. That means genuine upstream
 bytes, a qualification under the route's contract identity (QCI), and a named custody tier.
 An observable recurring job keeps the shipped catalog current, inside a lag bound that turns
@@ -76,6 +84,7 @@ red when breached.
                          ^
    ai: watch (timer) -- signed v2 record, one member/tick --> draft PR -> base-branch policy CI
                                                               -> job + owner signatures -> main
+                                               (R6′, all catalog PRs: job + base provenance check)
                                                                    |
         admit_for_seat        admit_for_executor (memfd)    admit_for_canary (memfd)
         (board preflight)     (runner-start preflight)      (capture-start preflight)
@@ -94,12 +103,22 @@ red when breached.
    user-namespace setup that `publish-pypi.yml` already provisions. If not, RECBIND stops and
    is amended.
 4. `ai` remains the qualifying host, and the job runs there only after R9's conditions hold.
+5. The feasibility lane (2026-11-20) found that the jailed review route
+   (refusing with `gemini_heartbeat_capability_unavailable`) and the
+   release-authority check refuse a held image whose digest differs from the managed
+   release's pinned executable. Managed-release subjects are therefore not covered by the
+   harness-side hold (EC-HOLD-6, second branch), and the authority check is unchanged. The
+   evidence is the probe test `phase-loop-runtime/tests/test_agy_hold_managed.py`, which
+   ships with HOLD's core lane as a regression guard. On managed
+   hosts, recovery happens at build time (EXT-DOT) and through the RESTORE restore runs.
+   HOLD's core lane records how it handles the non-jailed heartbeat route.
 
 ## External Inputs
 
 | Input | Pin |
 | --- | --- |
-| AGYROLL contract | `plans/artifacts/agyroll-v1-contract.md`, sha256 `60fd406574d87f512a94a373fa22cddc56f9c455147a2ec8ad0c5f398ca39102` |
+| AGYROLL contract | `plans/artifacts/agyroll-v1-contract.md`, sha256 `a1bc1771467b68539faaa5c3d0f76d76afc04c4dca69c6d6471407521034f310` (repinned by AGYFRESH: §1.2 archive bounds, §6.1 R6′, §6.2 tick frequency, §6.3 warning) |
+| AGYFRESH contract (RESTORE, HOLD, ROLLJOB additions, R6′) | `plans/artifacts/agyfresh-contract.md`, sha256 `dbb47fcf09466b0330e04066bc003e6b01a7ea629af5673d3a7b1f2259797ae4` |
 | TEAMHOST contract §5 (agy key, `requalify_once` call sites) | `plans/seats-teamhost-contract.md`, sha256 `3ca3d3a57346acca8bf4e16e50304f00e3e2e19bc5bcd20b1831b4f837c3b1b1`. **REQUAL amends §5.** The amendment adds the runner and canary preflight call sites, and names `seat_qci()` as the `qualified` key. Its value equals `agy_profile_digest()` at `agy_validator_v1`, so no entry drops, and §5 stays correct after a validator bump. The repin lands in REQUAL's docs lane. |
 | Q10 and (G) promotion rules | `.consiliency/plans/detailed-lkg-cli-qualification-1602-20261014-0359.md` §(G) and the Q10 ruling |
 | Upstream provenance surface | the GitHub releases API for `google-antigravity/antigravity-cli`: per-asset `digest`; the attestations endpoint returned 404 on 2026-11-08 |
@@ -162,6 +181,16 @@ condition stops and routes an amendment.
     ruleset. Until then a maintainer merges after both signatures verify.
 
   Q10's draft promotion PR, signer quorum and publisher digest stand, and so does (G)'s base-branch rule. R6 **conditionally supersedes** Q10/(G)'s "a maintainer merges": once `main` has a non-bypassable ruleset, a data-only diff auto-merges. Every other diff, and every PR before that ruleset exists, is still merged by a maintainer.
+  - **Amended 2026-11-20 (D8 = B), as R6′.** R6 stands except that no catalog PR needs an
+    owner signature. The second Q10 signer is the base branch's hosted provenance check, which
+    re-fetches the asset by tag and re-derives the member digest. Only a PR whose diff is only
+    `data/agy_catalog.json` and `plans/evidence/agy-*-linux-x64-qualification.json`, and that
+    adds or ages non-`pinned` members, auto-merges. A `pinned` change, any other path, and any
+    change to the signer list, verifier or merge-rule workflow never auto-merges: a maintainer
+    merges it through the ordinary reviewed pull request under the non-bypassable `main`
+    ruleset. The owner's words: "Whatever the solution is it should not involve me signing
+    anything. It needs to be automated." The residual risk is stated in AGYFRESH §5.1 and
+    AGYROLL §6.1.
   - **Implemented by:** ROLLJOB.
 - **R7 — APPROVED with conditions.** The `ai` job renews its own Gemini login, outside any
   seat.
@@ -186,6 +215,29 @@ condition stops and routes an amendment.
     - a non-bypassable `main` ruleset.
   - **Implemented by:** ACTIVATE (with agent-harness#1138).
 
+## Owner Decisions (2026-11-20, AGYFRESH)
+
+The owner decided these for the AGYFRESH amendment. Values live in the cited sections.
+
+- **D1** — cut a release now (RESTORE operational step).
+- **D2** — one live self-qualification per host after that release installs, then the
+  automatic first-use run, on all machines including `ai` (RESTORE; EC-RESTORE-1).
+- **D3a** — the hold is on by default (`[agy] hold`, AGYFRESH §2.7).
+- **D3b** — managed hosts are included if the feasibility lane passes (§2.9; EC-HOLD-6). It
+  failed, so they are not covered (Assumption 5).
+- **D3c** — held images are shipped catalog members and images this account qualified (§2.3).
+- **D4** — no age limit on a held image; a per-host deny list (`[agy] hold_deny`, §2.7).
+- **D5** — keep the last two admitted images on disk (§2.8; EC-HOLD-10).
+- **D6** — minimal dotfiles change: a refused agy no longer fails the tooling build (§2.10;
+  EC-HOLD-11).
+- **D7** — start R9's prerequisites now: bot identity, non-bypassable `main` ruleset, and the
+  job's signing key. The owner creates and enrols no key (R6′). Setup only; ACTIVATE still
+  needs EXECADMIT and ROLLJOB.
+- **D8** — B: amend R6 (R6′ above).
+- **D9** — hourly watch tick (AGYROLL §6.2).
+- **D10** — 512 MB member, 256 MB archive, 1 GB expanded, one in-memory image copy (§1).
+- **D11** — amend this roadmap rather than open a separate one.
+
 ## External Readiness Gates
 
 - **EXT-0730.** agent-harness#1923 is merged or abandoned. It merged on 2026-11-08, so the
@@ -194,6 +246,9 @@ condition stops and routes an amendment.
   after it merges or closes, and rebase onto it.
 - **EXT-R.** Every owner ruling is recorded on agent-harness#1008 (decided 2026-11-08), so the
   gate is met. Each phase implements its rulings' conditions as listed in Owner Rulings.
+- **EXT-DOT.** EC-HOLD-11 lands in Consiliency/dotfiles under that repository's rules. It is
+  independent of every agent-harness lane and reads `admission_verdict(execute=False)`,
+  which HOLD leaves unchanged (EC-HOLD-5).
 
 ## Non-Goals
 
@@ -204,7 +259,9 @@ condition stops and routes an amendment.
 - Seat-jail, egress or `SEALED_FALLBACK_CODES` changes.
 - `cli_qualification` adapters for other harnesses (agent-harness#1333 PR3–PR7,
   agent-harness#1602 L1–L5).
-- Any live run or `ai` access before ACTIVATE.
+- Any live run or `ai` access before ACTIVATE, except RESTORE's restore runs under D2.
+- A held image that meets no existing qualification predicate, or any weakening of the
+  managed-release authority check to admit one (AGYFRESH §2.3, §2.9).
 
 ## Cross-Cutting Principles
 
@@ -219,7 +276,9 @@ condition stops and routes an amendment.
 - **Measured, not literal.** No version literal gates admission. Versions appear only as
   untrusted, path-derived hints and as reporting fields.
 - **Shared-host test limits.** Targeted pytest runs serially under `timeout`. Full suites and
-  live runs go to CI, Gate A or ACTIVATE.
+  live runs go to CI, Gate A, ACTIVATE or RESTORE's D2 restore runs.
+- **Availability floor.** A subject-side refusal falls back to an already-qualified image
+  (HOLD); with no candidate, the original refusal is raised unchanged.
 
 ## Top Interface-Freeze Gates
 
@@ -229,6 +288,11 @@ condition stops and routes an amendment.
 - IF-0-REQUAL-1 — The `agy-qualification preflight` CLI and hooks, retryable-outcome handling, the `MODE_DEGRADED` surface, failed classes and the TEAMHOST §5 repin (AGYROLL §5).
 - IF-0-EXECADMIT-1 — `admit_for_executor`/`admit_for_canary`, memfd exec and the custody tiers (AGYROLL §4).
 - IF-0-ROLLJOB-1 — The tick contract, signed records, the base-branch promotion policy, the lag rule and aging (AGYROLL §6).
+- IF-0-RESTORE-1 — The size constants, call-time reads, `VerifiedImage.from_fd`, the expanded-bytes rule and the memory rule (AGYFRESH §1, §6.1).
+- IF-0-HOLD-1 — `admit_seat`, hold-eligible and never-eligible conditions, qualification predicates, discovery order and budgets, filesystem handling, evidence and config (AGYFRESH §2.1–§2.7, §6.2–§6.3).
+- IF-0-HOLD-2 — The harness-owned cache of admitted images (AGYFRESH §2.8).
+- IF-0-HOLD-3 — Consiliency/dotfiles `stage_agy` falling back to a retained image (AGYFRESH §2.10).
+- IF-0-HOLD-4 — The managed-release authority outcome from the feasibility lane (AGYFRESH §2.9).
 
 ## Phases
 
@@ -349,7 +413,137 @@ evidence paths: `phase-loop-runtime/tests/test_agy_provenance_forward.py`;
 `redaction_posture: metadata_only`; missing or malformed evidence routes non-human
 `blocker_class=contract_bug`.
 
-### Phase 3 — Per-instantiation preflight and recovery (REQUAL)
+### Phase 3 — Size bounds and seat restore (RESTORE)
+
+**Objective**
+
+Return the Gemini seat on hosts whose agy outgrew the size bounds, and make the next growth a
+constant change: three ceilings defined once and read at call time, and a streaming reader
+that holds one image copy (AGYFRESH §1).
+
+**Exit criteria**
+
+- [ ] EC-RESTORE-1 — A released `phase-loop-runtime` contains the 512 MB member bound, and `phase-loop agy-qualification status` on each host named in the O2 grant reports `verdict.status == "admits"` for the staged seat subject; operational evidence in `plans/evidence/agyfresh-restore.json`, stamped by the runner.
+- [ ] EC-RESTORE-2 — AGYFRESH §1: at a patched bound N, an image of N−1 and of exactly N bytes is accepted and N+1 refused by `read_member`, `gh.admit`, `agy_integrity.check` and the verifier; an archive whose declared member sizes exceed `MAX_EXPANDED_BYTES` is refused; the seat reader's peak traced allocation stays under 4 MiB for any image size.
+
+**Scope notes**
+
+Decompose into 2 lanes:
+- **Caps** (code): `agy_provenance.py`, `agy_integrity.py`, `gemini_heartbeat.py`, the
+  verifier and a new size-bounds test. Carries the binding archive-expansion requirement
+  (AGYFRESH §6.1).
+- **Restore** (operational, O1 then O2): cut the release under D1; on each granted host run
+  `status`, one live `run`, and `status` again under D2, recording the runner-stamped
+  evidence for EC-RESTORE-1.
+
+No requalification intended (AGYFRESH §3). Implements D1, D2 and D10.
+
+**Non-goals**
+
+The hold, the watch's member streaming (EC-ROLLJOB-9), and showing that a host can afford the
+ceilings.
+
+**Key files**
+
+- `phase-loop-runtime/src/phase_loop_runtime/agy_provenance.py`
+- `phase-loop-runtime/src/phase_loop_runtime/agy_integrity.py`
+- `phase-loop-runtime/src/phase_loop_runtime/gemini_heartbeat.py`
+- `phase-loop-runtime/scripts/verify_qualified_agy_image.py`
+- `phase-loop-runtime/tests/test_agy_size_bounds.py`
+- `plans/evidence/agyfresh-restore.json`
+
+**Depends on**
+
+- RECBIND
+
+**Produces**
+
+- IF-0-RESTORE-1 — The size constants, call-time reads, `VerifiedImage.from_fd`, the expanded-bytes rule and the memory rule (AGYFRESH §1, §6.1).
+
+**Spec closeout policy**
+
+schema: `spec_delta_closeout.v1`; expected decision: `canonical_spec_update`;
+target surfaces: `advisor_board/CONTRACTS.md` (qualified images);
+evidence paths: `phase-loop-runtime/tests/test_agy_size_bounds.py`, `plans/evidence/agyfresh-restore.json`;
+`redaction_posture: metadata_only`; missing or malformed evidence routes non-human
+`blocker_class=contract_bug`.
+
+### Phase 4 — Availability floor (HOLD)
+
+**Objective**
+
+When the seat's selected agy cannot be used for a subject-side reason, the seat runs an
+already-qualified image found by a bounded search of the host. Every executed image still
+meets an existing qualification predicate; what changes is selection (AGYFRESH §2.1). The
+promise is bounded best effort (§2.4).
+
+**Exit criteria**
+
+- [ ] EC-HOLD-1 — For each hold-eligible reason in AGYFRESH §2.2, at preflight and at spawn, a held release member is admitted with source `lkg` and the reason in evidence; with no candidate the original refusal is raised unchanged.
+- [ ] EC-HOLD-2 — Each never-eligible condition in §2.2 propagates unchanged with a candidate present, including no provider installed.
+- [ ] EC-HOLD-3 — A held non-member needs a MAC-valid `provenance` and `qualified` entry and no `failed` entry, and is never executed before the provenance check; `hold_deny` excludes it.
+- [ ] EC-HOLD-4 — First use runs for the subject before any hold; a passing subject is returned.
+- [ ] EC-HOLD-5 — `admission_verdict(execute=False)` never reports `admits` for a non-member because of a held image; `[agy] hold = false` restores today's refusals.
+- [ ] EC-HOLD-6 — Managed release: with a fallback image whose digest differs from the pinned subject, the real projection and jail admission pass (lane F0); otherwise managed hosts are recorded as not covered and the authority check is unchanged.
+- [ ] EC-HOLD-7 — Order and budgets (§2.4): a newer vendor member beats an older cache member whatever their mtimes; 64 forged hints cannot prevent admission of an authenticated candidate; result is identical under shuffled directory order.
+- [ ] EC-HOLD-8 — Resource rule (§1.2, §2.2): at most one sealed image is open at any point of a hold; every rejected, cancelled or failing candidate is closed.
+- [ ] EC-HOLD-9 — Filesystem rule (§2.5): a symlinked candidate, a directory swapped for a symlink between listing and open, and a file replaced during the read are all rejected.
+- [ ] EC-HOLD-10 — Cache (§2.8): retain, prune, corrupt-file removal and `clear --all` are correct under concurrent retain and clear.
+- [ ] EC-HOLD-11 — (Consiliency/dotfiles) a selected agy the release runtime refuses no longer fails the release build when a retained image verifies.
+- [ ] EC-HOLD-12 — `agy-qualification status` reports the hold state (§2.6).
+
+**Scope notes**
+
+Decompose into 4 lanes:
+- **F0 feasibility** (scratch test, first): drives a managed subject and a different admitted
+  image through the real projection and jail admission; decides EC-HOLD-6. Done: it failed
+  (Assumption 5).
+- **Core**: `agy_hold.py`, `admit_seat` in `agy_qualification.py`, config, status. After
+  RESTORE's caps lane and F0.
+- **Cache**: retain, prune and `clear --all`. After core; same files, so sequential.
+- **Dotfiles** (Consiliency/dotfiles, EXT-DOT): independent.
+
+Core and cache carry the binding ordering and replacement-detection requirements (AGYFRESH
+§6.2, §6.3). Implements D3a–c, D4, D5 and D6. Stop rule: if any authority or jail check would
+have to change for a test to pass, the lane stops.
+
+**Non-goals**
+
+New refusal codes (AGYFRESH §4), store-key, catalog or record changes, executor and canary
+admission, and any change to the authority or jail path.
+
+**Key files**
+
+- `phase-loop-runtime/src/phase_loop_runtime/agy_hold.py`
+- `phase-loop-runtime/src/phase_loop_runtime/agy_qualification.py`
+- `phase-loop-runtime/src/phase_loop_runtime/gemini_heartbeat.py`
+- `phase-loop-runtime/src/phase_loop_runtime/agy_integrity.py`
+- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/config.py`
+- `phase-loop-runtime/tests/test_agy_hold.py`
+- `phase-loop-runtime/tests/test_agy_hold_managed.py`
+- `phase-loop-runtime/tests/test_agy_hold_cache.py`
+- `docs/advisor-board-capabilities-card.md`
+
+**Depends on**
+
+- RESTORE
+
+**Produces**
+
+- IF-0-HOLD-1 — `admit_seat`, hold-eligible and never-eligible conditions, qualification predicates, discovery order and budgets, filesystem handling, evidence and config (AGYFRESH §2.1–§2.7, §6.2–§6.3).
+- IF-0-HOLD-2 — The harness-owned cache of admitted images (AGYFRESH §2.8).
+- IF-0-HOLD-3 — Consiliency/dotfiles `stage_agy` falling back to a retained image (AGYFRESH §2.10).
+- IF-0-HOLD-4 — The managed-release authority outcome from the feasibility lane (AGYFRESH §2.9).
+
+**Spec closeout policy**
+
+schema: `spec_delta_closeout.v1`; expected decision: `canonical_spec_update`;
+target surfaces: `advisor_board/CONTRACTS.md` (self-qualification, hold), `docs/advisor-board-capabilities-card.md`;
+evidence paths: `phase-loop-runtime/tests/test_agy_hold.py`, `phase-loop-runtime/tests/test_agy_hold_cache.py`;
+`redaction_posture: metadata_only`; missing or malformed evidence routes non-human
+`blocker_class=contract_bug`.
+
+### Phase 5 — Per-instantiation preflight and recovery (REQUAL)
 
 **Objective**
 
@@ -365,6 +559,7 @@ automatically at every instantiation point, and every refusal is visible (goal b
 - [ ] EC-REQUAL-5 — `repeated_transient` failed entries expire after 24 h, and `violation` entries persist until cleared.
 - [ ] EC-REQUAL-6 — A near-expiry login in `seat_profile` waits and renews through `_await_gemini_login` → `_refresh_gemini_credential`, and the doctor's auth hint names the runtime token path.
 - [ ] EC-REQUAL-7 — TEAMHOST §5 is repinned to list the runner and canary preflight call sites and to name `seat_qci()` as the `qualified` key, equal to `agy_profile_digest()` at `agy_validator_v1`; falsified by a §5 that still names `agy_profile_digest` as the key, or by a validator bump that leaves §5's key description wrong.
+- [ ] EC-REQUAL-8 — The doctor's Gemini row names an active hold (AGYFRESH §5, early slice).
 
 **Scope notes**
 
@@ -377,6 +572,10 @@ Decompose into 3 lanes plus docs:
 The docs lane owns the TEAMHOST §5 repin. EC-REQUAL-3/5/6 do not need PROVFWD, so they may
 be planned and landed as an early first slice if the owner wants the fastest route to the
 per-instantiation preflight. Gated on EXT-1916.
+
+AGYFRESH: the early slice now carries EC-REQUAL-5 and EC-REQUAL-8 and lands after HOLD, as
+the next writer of `agy_qualification.py`; it needs HOLD but not PROVFWD. The rest of REQUAL
+needs both.
 
 **Non-goals**
 
@@ -394,6 +593,7 @@ Executor and canary admission tiers (EXECADMIT).
 **Depends on**
 
 - PROVFWD
+- HOLD
 
 **Produces**
 
@@ -407,7 +607,7 @@ evidence paths: `phase-loop-runtime/tests/test_agy_self_qualification.py`;
 `redaction_posture: metadata_only`; missing or malformed evidence routes non-human
 `blocker_class=contract_bug`.
 
-### Phase 4 — Executor and canary admission (EXECADMIT)
+### Phase 6 — Executor and canary admission (EXECADMIT)
 
 **Objective**
 
@@ -463,7 +663,7 @@ evidence paths: `phase-loop-runtime/tests/test_agy_integrity_seat_admission.py`;
 `redaction_posture: metadata_only`; missing or malformed evidence routes non-human
 `blocker_class=contract_bug`.
 
-### Phase 5 — Rolling catalog job and lag rule (ROLLJOB)
+### Phase 7 — Rolling catalog job and lag rule (ROLLJOB)
 
 **Objective**
 
@@ -475,9 +675,12 @@ member, through Q10/(G) promotion. A breach of the lag bound turns CI red (goals
 - [ ] EC-ROLLJOB-1 — A tick qualifies only the newest non-member release, retries the whole series up to `SERIES_RETRIES`, signs the record and opens a draft `agy-catalog-auto` PR; other members change only when their `qci` differs.
 - [ ] EC-ROLLJOB-2 — `watch --install-units` and `--check` install and report the timer and the last tick's status line.
 - [ ] EC-ROLLJOB-3 — Nightly `--upstream-only` fails under the AGYROLL §6.3 lag rule, and warns inside the bound or while a PR awaits approval.
-- [ ] EC-ROLLJOB-4 — Promotion CI runs the base branch's verifier, signer list and merge rule, and reads only the catalog and agy records from the PR head; a PR touching any other path or the policy fails and never auto-merges; under R6 (rejected as written, alternative adopted), a PR merges only with valid job and enrolled-owner signatures, and auto-merges only for a data-only diff once `main` has a non-bypassable ruleset.
+- [ ] EC-ROLLJOB-4 — Promotion CI runs the base branch's verifier, signer list and merge rule, and reads only the catalog and agy records from the PR head; a PR touching any other path or the policy fails and never auto-merges; under R6 (rejected as written, alternative adopted), a PR merges only with valid job and enrolled-owner signatures, and auto-merges only for a data-only diff once `main` has a non-bypassable ruleset. Under R6′ (D8 = B), for every catalog PR, "valid job and enrolled-owner signatures" is replaced by "a valid job signature and a passing base-branch provenance check that re-fetches the asset by tag and re-derives the member digest"; auto-merge stays limited to the diff class in R6′, and any other diff never auto-merges and is merged by a maintainer under the non-bypassable `main` ruleset.
 - [ ] EC-ROLLJOB-5 — Aging keeps the newest `CATALOG_KEEP` members or those younger than `CATALOG_MIN_AGE`, and never prunes a `pinned` member (R8).
 - [ ] EC-ROLLJOB-6 — An expired login ends the tick with `gemini_login_expired` and a non-zero exit, opens no PR, and makes `watch --check` report `failed: gemini_login_expired`; falsified by an expired-login tick that exits 0, opens a PR, or leaves `--check` reporting `installed`, or by nightly `--upstream-only` passing once the newest release exceeds `LAG_BOUND` while the login stays expired.
+- [ ] EC-ROLLJOB-7 — When the lag rule fails, the nightly workflow creates or updates exactly one open issue labelled `agy-lag`, and closes it on the next pass.
+- [ ] EC-ROLLJOB-8 — Nightly `--upstream-only` measures the newest upstream archive and member and warns at 80%, fails at 90%, of `MAX_ARCHIVE_BYTES` or `MAX_MEMBER_BYTES`.
+- [ ] EC-ROLLJOB-9 — The watch streams each member to a sealed descriptor and holds one member image at a time.
 
 **Scope notes**
 
@@ -486,7 +689,9 @@ Decompose into 3 lanes plus docs:
 - **Promotion CI:** the verifier's signature, lag and base-policy checks, plus the workflows.
 - **Units and install/check:** `docs/ops/agy-upstream-watch/**` and the `watch` flags.
 
-Implements R6 (alternative), R7 and R8. Auto-merge stays disabled until a `main` ruleset exists.
+Implements R6 as amended by R6′, R7 and R8, plus D9's hourly tick (AGYROLL §6.2).
+EC-ROLLJOB-7..9 come from AGYFRESH §5; EC-ROLLJOB-9 retires the `fetch_member(keep_bytes=True)`
+join (AGYFRESH §1.2). Auto-merge stays disabled until a `main` ruleset exists.
 
 **Non-goals**
 
@@ -519,7 +724,7 @@ evidence paths: `phase-loop-runtime/tests/test_agy_upstream_advisory.py`;
 `redaction_posture: metadata_only`; missing or malformed evidence routes non-human
 `blocker_class=contract_bug`.
 
-### Phase 6 — Live activation on ai (ACTIVATE)
+### Phase 8 — Live activation on ai (ACTIVATE)
 
 **Objective**
 
@@ -529,7 +734,7 @@ release and a release cut both pass with no hand step. Then close agent-harness#
 **Exit criteria**
 
 - [ ] EC-ACTIVATE-1 — Before install, the R9 identity (non-admin, no `workflows` permission) and a non-bypassable `main` ruleset exist; then `watch --check` on `ai` reports `installed`; both are recorded in `plans/evidence/agyroll-activate.json`.
-- [ ] EC-ACTIVATE-2 — The newest stable upstream release at activation reaches `main` through an `agy-catalog-auto` PR, with no hand step other than the owner's R6 signature.
+- [ ] EC-ACTIVATE-2 — The newest stable upstream release at activation reaches `main` through an `agy-catalog-auto` PR with no hand step.
 - [ ] EC-ACTIVATE-3 — The first release cut after RECBIND passes strict conformance and `--release` with no hand live run.
 - [ ] EC-ACTIVATE-4 — An executor lane and a canary capture on `ai` admit a current release, neither 1.3.5 nor 1.1.13, through their preflights, and exec the memfd.
 - [ ] EC-ACTIVATE-5 — agent-harness#1008 closes with that evidence linked.
@@ -568,10 +773,13 @@ evidence paths: `plans/evidence/agyroll-activate.json`;
 ## Phase Dependency DAG
 
 ```
-RECBIND ──> PROVFWD ──┬──> REQUAL ──> EXECADMIT ──┐
-                      │                           ├──> ACTIVATE
-                      └──> ROLLJOB ───────────────┘
+RECBIND ─┬─> RESTORE ──> HOLD ──> REQUAL(early slice) ─┐
+         └─> PROVFWD ─┬─> REQUAL(rest) ──> EXECADMIT ──┼──> ACTIVATE
+                      └─> ROLLJOB ─────────────────────┘
 ```
+
+- AGYFRESH: RESTORE and HOLD run beside PROVFWD. REQUAL's early slice follows HOLD; the rest
+  of REQUAL follows PROVFWD and, as the next writer of `agy_qualification.py`, HOLD.
 
 - ROLLJOB follows PROVFWD for two reasons:
   - it consumes the `attestation`/`second_channel` fields;
@@ -581,7 +789,8 @@ RECBIND ──> PROVFWD ──┬──> REQUAL ──> EXECADMIT ──┐
 - REQUAL follows PROVFWD for two reasons:
   - its automatic requalification and retryable handling consume IF-0-PROVFWD-1;
   - hosts that are far behind need forward provenance to recover.
-- Critical path: RECBIND → PROVFWD → REQUAL → EXECADMIT → ACTIVATE.
+- Critical path: RECBIND → PROVFWD → REQUAL → EXECADMIT → ACTIVATE, with HOLD also ahead of
+  REQUAL.
 
 ## Execution Notes
 
@@ -592,12 +801,19 @@ RECBIND ──> PROVFWD ──┬──> REQUAL ──> EXECADMIT ──┐
   - All rulings are decided (EXT-R met); each phase implements its conditions.
 - **Before RECBIND lands**, PROVFWD and REQUAL must not land: `--route-core` would demand a
   live re-record.
+- **AGYFRESH planning.** Plan RESTORE and HOLD with the same command. HOLD's F0 lane and
+  RESTORE's caps lane can start at once; PROVFWD and ROLLJOB are planned on this amended
+  roadmap. Operational steps need their grants: O1 release (D1), O2 restore (D2, after O1),
+  O3 R9 prerequisites (D7, setup only).
 - **Single-writer files across phases:**
-  - `agy_qualification.py`: RECBIND → REQUAL.
-  - `verify_qualified_agy_image.py`: RECBIND → PROVFWD (`--upstream-only` fetch) → ROLLJOB.
+  - `agy_qualification.py`: RECBIND → HOLD → REQUAL.
+  - `verify_qualified_agy_image.py`: RECBIND → RESTORE → PROVFWD (`--upstream-only` fetch) → ROLLJOB.
+  - `agy_provenance.py`: RECBIND → RESTORE → PROVFWD → ROLLJOB. PROVFWD's first lane lands
+    after RESTORE's caps lane merges; it does not wait for EC-RESTORE-1.
   - `agy_watch.py`: RECBIND → PROVFWD → ROLLJOB.
   - `panel_invoker.py`: agent-harness#1916 → REQUAL → EXECADMIT.
-  - `doctor.py`: REQUAL only.
+  - `doctor.py`: REQUAL only (early slice first).
+  - `gemini_heartbeat.py`, `agy_integrity.py`: RECBIND → RESTORE → HOLD → EXECADMIT.
   - `plans/seats-teamhost-contract.md`: REQUAL only.
 - **In-flight PRs.** agent-harness#1925 and agent-harness#1926 conflict with this roadmap only
   at the `plans/manifest.json` tail; rebase and re-append.
@@ -612,7 +828,11 @@ PYTHONPATH=$PWD/src:$PWD/tests timeout 900 .venv/bin/python -m pytest -q -p no:c
   tests/test_agy_canary_evidence.py tests/test_verify_qualified_agy_route_core.py \
   tests/test_qualified_agy_image_set.py tests/test_agy_upstream_advisory.py \
   tests/test_seat_reference_inventory.py
+PYTHONPATH=$PWD/src:$PWD/tests timeout 600 .venv/bin/python -m pytest -q -p no:cacheprovider -n 0 \
+  tests/test_agy_size_bounds.py tests/test_agy_hold.py tests/test_agy_hold_cache.py \
+  tests/test_seats_teamhost_gemini.py tests/test_agy_catalog_data.py tests/test_agy_qci.py
 timeout 300 uv run --locked python scripts/verify_qualified_agy_image.py --contract
+phase-loop agy-qualification status   # read-only; after HOLD, reports a "hold" object
 # CI / Gate A only: strict conformance into a private run directory, then the release gate
 RUN_DIR="${RUNNER_TEMP:-$(mktemp -d)}/agy-conformance" && mkdir -p -m 0700 "$RUN_DIR"
 AGY_CONFORMANCE_STRICT=1 PYTHONPATH=$PWD/src:$PWD/tests timeout 900 .venv/bin/python -m pytest -q \
@@ -621,5 +841,5 @@ timeout 600 uv run --locked python scripts/verify_qualified_agy_image.py --relea
   --conformance-report "$RUN_DIR/conformance.xml"
 ```
 
-Operational evidence comes from ACTIVATE, in `plans/evidence/agyroll-activate.json`, stamped
-by the runner.
+Operational evidence comes from ACTIVATE, in `plans/evidence/agyroll-activate.json`, and from
+RESTORE, in `plans/evidence/agyfresh-restore.json`, both stamped by the runner.
