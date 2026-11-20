@@ -15757,13 +15757,19 @@
       "file": "plans/phase-plan-v1-agyroll-HOLD.md",
       "frozen_inputs": {
         "plans/artifacts/agyfresh-contract.md": {
-          "sha256": "9832286b9eab398b652f3d36d592568b27816cd447f93b19ec491e5ee17571b5"
+          "sha256": "14df926fcf51ea170c5673909d045cb5d50d5497bb2d1d0b5e8bfbeef9e775ab"
         },
         "plans/artifacts/agyfresh-hold-amendment.md": {
           "sha256": "e024b8b505c3f83bfbc837873150c8ba07f901d7eea15d61b888a53550320a8e"
         },
         "plans/artifacts/agyfresh-hold-lanes.md": {
           "sha256": "3b30b9db7626974e71ea7d1a79cdc9fe1c34ee1a7f3ba3ec989aa275e32faff4"
+        },
+        "plans/artifacts/agyfresh-jailbind-v2.md": {
+          "sha256": "4a6530c7640b14dac6cd7659bc48e9d9450237fb5d0e915d962d0d95075abd52"
+        },
+        "plans/evidence/agyfresh-jailbind-v2-feasibility.md": {
+          "sha256": "8d2acc72671e29efc75df2f0f8708cb75246b9ab684195a382e90510d45f7357"
         }
       },
       "handoff_ref": null,
@@ -15777,8 +15783,12 @@
         "SL-0",
         "SL-1",
         "SL-2",
+        "SL-3",
         "SL-4",
-        "SL-5"
+        "SL-5",
+        "SL-6",
+        "SL-7",
+        "SL-8"
       ],
       "lifecycle": [],
       "owner_skill": "claude-plan-phase",
@@ -15795,7 +15805,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-11-20T17:59:00Z"
+      "updated_at": "2026-11-20T23:30:00Z"
     },
     {
       "acceptance_criteria_count": 4,
