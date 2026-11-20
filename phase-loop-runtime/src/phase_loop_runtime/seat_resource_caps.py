@@ -700,7 +700,11 @@ def capped_popen(command, *, seat_key: str, **popen_kwargs) -> "subprocess.Popen
         helper = Path(__file__).with_name("seat_resource_caps_enter.py")
         argv = [
             str(_SYSTEMD_RUN), "--user", "--scope", "--quiet", "--collect",
-            f"--unit={child_unit}", f"--slice={parent.unit}", "--same-dir", "--",
+            f"--unit={child_unit}", f"--slice={parent.unit}",
+            # A fixed description: without one, systemd describes a scope by its full
+            # command line. The unit's metadata names only the seat key's digest.
+            f"--description=phase-loop seat {_unit_key(seat_key)}",
+            "--same-dir", "--",
             "/usr/bin/python3", "-I", "-S", str(helper), "--attest-fd", str(write_fd),
             "--env-fd", str(env_read), "--diagnostic-fd", str(diagnostic_write),
             "--gate-fd", str(gate_read),

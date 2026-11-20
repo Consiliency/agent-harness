@@ -1873,6 +1873,73 @@ def _live_assumption_block(number: int) -> str:
     return "\n".join(block)
 
 
+# Probes whose frozen ``agreed_value`` restates the shipped version. The v10
+# roadmap is superseded and its bytes and probe sidecar are digest-pinned in
+# roadmap_assumptions.py, so "we ship 0.7.31" is a historical snapshot: releases
+# through v0.7.31 re-anchored it, later releases do not. The invariant the
+# probe's mutation names (change-either-surface-alone) is that the version
+# surfaces agree. The live arm checks that against the released-version record,
+# RELEASE_PIN, which release-consistency.yml holds equal to the package version.
+RELEASE_TRACKING_PROBES = frozenset({"LEGIBLE-A2-LOCAL-VERSION"})
+RELEASE_PIN_REL = "RELEASE_PIN"
+
+for _row in ASSUMPTION_PROBES:
+    if _row["id"] in RELEASE_TRACKING_PROBES:
+        assert _row["kind"] == "repo_constant", _row["id"]
+        assert _row["expected"].get("must_agree") is True, _row["id"]
+        assert "surfaces" in _row["subject"], _row["id"]
+assert RELEASE_TRACKING_PROBES <= {row["id"] for row in ASSUMPTION_PROBES}
+del _row
+
+
+def _released_version(repo: Path) -> str:
+    """The released version named by ``RELEASE_PIN`` (``v`` + package version)."""
+    pin = (repo / RELEASE_PIN_REL).read_text(encoding="utf-8").strip()
+    assert pin.startswith("v") and pin[1:], f"{RELEASE_PIN_REL}: malformed pin {pin!r}"
+    return pin[1:]
+
+
+def _release_tracking_mismatch(module, repo: Path, probe: dict[str, object]) -> str | None:
+    """Observe the probe's surfaces through the fixed seam and require every one
+    to equal the released version. Returns ``None`` on pass, else the mismatch."""
+    observation = getattr(module, ASSUMPTION_OBSERVATION_SEAM)(repo, probe)
+    released = _released_version(repo)
+    values = observation.get("values")
+    expected = [released] * len(probe["subject"]["surfaces"])
+    if values != expected:
+        return f"values {values!r} != released {RELEASE_PIN_REL} version {released!r} on every surface"
+    return None
+
+
+def _assert_release_tracking_follows_bumps(module, tmp_path: Path, monkeypatch, probe) -> None:
+    """A coherent release bump keeps the live arm green without re-anchoring the
+    frozen roadmap or sidecar, and bumping any ONE surface alone is still caught.
+    Uses synthetic trees and the real seam, so it runs in every posture
+    (including hosted CI's copied-tests leg, which never reaches the live arm).
+    Folded into the existing probe node: the file's nodeid inventory is frozen."""
+    import phase_loop_runtime
+
+    released, other = "99.98.97", "99.98.98"
+    assert probe["expected"]["agreed_value"] not in (released, other)
+    for bumped in ("none", "pyproject", "__version__", "RELEASE_PIN"):
+        versions = {"pyproject": released, "__version__": released, "RELEASE_PIN": released}
+        if bumped != "none":
+            versions[bumped] = other
+        repo = tmp_path / f"release-bump-{bumped}"
+        (repo / "phase-loop-runtime").mkdir(parents=True)
+        (repo / "phase-loop-runtime" / "pyproject.toml").write_text(
+            f'[project]\nname = "phase-loop-runtime"\nversion = "{versions["pyproject"]}"\n',
+            encoding="utf-8",
+        )
+        (repo / RELEASE_PIN_REL).write_text(f"v{versions['RELEASE_PIN']}\n", encoding="utf-8")
+        monkeypatch.setattr(phase_loop_runtime, "__version__", versions["__version__"])
+        problem = _release_tracking_mismatch(module, repo, probe)
+        if bumped == "none":
+            assert problem is None, f"{probe['id']}: coherent bump must pass: {problem}"
+        else:
+            assert problem is not None, f"{probe['id']}: bumping {bumped} alone must be caught"
+
+
 @pytest.mark.parametrize("probe", ASSUMPTION_PROBES, ids=[row["id"] for row in ASSUMPTION_PROBES])
 def test_assumption_probe_mutation_and_positive_control(probe, tmp_path, monkeypatch):
     # Source injection anchor: the cited literal is really in the roadmap, and
@@ -1893,6 +1960,9 @@ def test_assumption_probe_mutation_and_positive_control(probe, tmp_path, monkeyp
         return
 
     repo = _synthetic_probe_repo(tmp_path)
+
+    if probe["id"] in RELEASE_TRACKING_PROBES:
+        _assert_release_tracking_follows_bumps(module, tmp_path, monkeypatch, probe)
 
     # (1) The exact mutation this row's plan-table entry names must be a typed
     # not-ok finding. An adapter (or audit) that answers ok=True for every
@@ -1931,6 +2001,19 @@ def test_assumption_probe_mutation_and_positive_control(probe, tmp_path, monkeyp
             # nor a live contradiction of the contract: the live arm is an operator instrument
             # run from Claude Code with a fill. Skip (typed), never pass.
             pytest.skip(f"{probe['id']}: live observation incomplete on this host: {_finding}")
+        if probe["id"] in RELEASE_TRACKING_PROBES:
+            # The audit above still validated the frozen sidecar and roadmap seals
+            # (it raises on contract drift). Its only permitted live complaint is the
+            # stale frozen ``agreed_value``; the live invariant is checked against
+            # the released-version record instead.
+            assert _finding is None or _finding.code == "values_disagree", (
+                f"{probe['id']}: unexpected live finding {_finding}"
+            )
+            problem = _release_tracking_mismatch(module, REPO_ROOT, probe)
+            assert problem is None, (
+                f"{probe['id']} positive control must pass against live state: {problem}"
+            )
+            return
         assert live[probe["id"]].ok, (
             f"{probe['id']} positive control must pass against live state"
         )

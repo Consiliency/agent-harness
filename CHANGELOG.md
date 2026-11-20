@@ -6,8 +6,24 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Changed
+
+- `phase-loop-runtime` now requires `consiliency-contract>=0.7.2,<0.8` (was `>=0.6.5,<0.7`).
+  The registries and manifest schema that phase-loop reads are unchanged in the 0.7 line;
+  the contract's version-skew window moves to `>=0.7.0 <0.8.0`, the fixture authority key
+  is retired from the production trust registry, and the authority verifier refuses a
+  `test_only` registry unless the caller opts in. phase-loop does not call the authority
+  verifier, so no runtime code changes. This brings the `consiliency-contract` floor back
+  in line with the latest published contract, which `phase-loop doctor --fail-on-stale`
+  checks.
+
 ### Fixed
 
+- Seat scopes use a fixed description. `capped_popen` passes `systemd-run` a
+  `--description` that names only the seat key's digest (the value already in the unit
+  name), so a scope's unit metadata no longer repeats the seat's command line. The
+  per-seat caps, their attestation and the launched command are unchanged
+  (agent-harness#1895).
 - The agy size bounds are defined once, in `agy_provenance`, and every reader looks them up
   there when it runs: a 512 MB image (the seat readers in `gemini_heartbeat` and
   `agy_integrity` stopped at 300 MB, with current upstream images at about 269 MB), a 256 MB
