@@ -32,6 +32,7 @@ import sys
 import tempfile
 import threading
 import time
+import zlib
 from typing import Callable, Literal, NamedTuple
 
 from . import __version__
@@ -402,13 +403,15 @@ def write_json(path, value):
     os.replace(temporary, path)
 
 
-def write_failure(root, exc, stage, helpers, observed_processes):
+def write_failure(root, exc, stage, helpers, observed_processes, worker_terminal=None):
     value = {"schema": "gemini_heartbeat_qualification_failure.v1",
              "exception_type": type(exc).__name__, "stage": stage,
              "reason": str(exc) if isinstance(exc, QualificationFailure) else LOCAL_FAILURE,
              "helpers": helpers.records, "rejected_image": helpers.rejected_image,
              "observed_processes": list(observed_processes.values()),
              "qualification_passed": False, "same_candidate_retry_authorized": False}
+    if worker_terminal is not None:
+        value["worker_terminal"] = worker_terminal
     path = root / "failure.json"
     if stage == "observer_cleanup" and path.exists():
         original = json.loads(path.read_text())
@@ -562,6 +565,293 @@ def inspect_network(pid):
             "network_rules_sha256": sha256(measured.stdout).hexdigest(), "network_rule_checks": len(rules)}
 
 
+# ------------------------------------------------------------------- review authority
+
+# Each operation's board reviews a repository that the coordinator creates fresh for that
+# operation and removes afterwards. The caller's cwd plays no part: the board needs a git
+# toplevel owned by this uid with at least one tracked regular file, so the outcome used to
+# depend on the directory the command ran in. The authority reaches the worker as
+# ``--authority`` and the board as ``repo_dir`` only: ``canonical_repo_authority`` would make
+# the request governed. It is not part of the preregistration or the record.
+#
+# Threat model. Processes running as this uid are OUT of scope: they own the qualification
+# store and could falsify any record directly. Other uids are IN scope. The authority is
+# created only under a directory whose every ancestor is owned by root or this uid and is
+# not writable by group or others unless it is sticky, so no other uid can rename or
+# replace any component of its path. The worker proves that again before the board runs.
+#
+# The repository is byte-for-byte constant: one blob, one tree and one commit with a fixed
+# identity, date and message on a fixed branch, written as loose objects by git's own
+# plumbing. Its object ids are pinned below. The verifier accepts exactly this layout,
+# these refs and these objects, and nothing else: no other history, refs, tags, stash,
+# packed-refs, packs, alternates, grafts or shallow state. ``.git/config`` is fixed too, so
+# the repository is SHA-1 with no extensions on every git version.
+_AUTHORITY_FILE = "QUALIFICATION"
+_AUTHORITY_BYTES = b"agy self-qualification authority placeholder\n"
+_AUTHORITY_BRANCH = "refs/heads/qualification"
+_AUTHORITY_CONFIG = (b"[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n"
+                     b"\tbare = false\n\tlogallrefupdates = false\n")
+_AUTHORITY_SIGNATURE = b"phase-loop <qualification@invalid> 946684800 +0000"
+_AUTHORITY_BLOB = "7e10b71ae4bc3b01ea8100680c32f67ddca84186"
+_AUTHORITY_TREE = "8475a3951f689f66f76ac9223faddb4d3b84dc58"
+_AUTHORITY_COMMIT = "02338206e2a590f29d3611bc0d2c1bb7a66cda95"
+_AUTHORITY_COMMIT_BODY = (b"tree " + _AUTHORITY_TREE.encode() + b"\nauthor " + _AUTHORITY_SIGNATURE
+                          + b"\ncommitter " + _AUTHORITY_SIGNATURE + b"\n\nqualification authority\n")
+# ``review_stage.review_tree_manifest_sha256`` of the authority's working tree: the digest
+# the board authorizes and revalidates its stage against.
+_AUTHORITY_MANIFEST_SHA256 = "52e879d934588abe71210022586afc20f887d7455846ecdfc885b426136bdf6a"
+_AUTHORITY_SMALL_FILE = 4096
+_AUTHORITY_MAX_ENTRIES = 64
+_WORKER_DETAIL_CHARS = 1024
+
+
+def _authority_objects():
+    """``{object id: uncompressed loose-object bytes}`` for the authority's three objects."""
+    def raw(kind, body):
+        return b"%s %d\0%s" % (kind, len(body), body)
+
+    return {
+        _AUTHORITY_BLOB: raw(b"blob", _AUTHORITY_BYTES),
+        _AUTHORITY_TREE: raw(b"tree", b"100644 " + _AUTHORITY_FILE.encode() + b"\0"
+                             + bytes.fromhex(_AUTHORITY_BLOB)),
+        _AUTHORITY_COMMIT: raw(b"commit", _AUTHORITY_COMMIT_BODY),
+    }
+
+
+def _authority_layout():
+    """Every path in the authority, relative to it: ``"d"`` for a directory, ``"f"`` for a file."""
+    layout = {".git": "d", ".git/HEAD": "f", ".git/config": "f", ".git/index": "f",
+              ".git/objects": "d", ".git/objects/info": "d", ".git/objects/pack": "d",
+              ".git/refs": "d", ".git/refs/heads": "d", ".git/refs/tags": "d",
+              ".git/" + _AUTHORITY_BRANCH: "f", _AUTHORITY_FILE: "f"}
+    for oid in _authority_objects():
+        layout[f".git/objects/{oid[:2]}"] = "d"
+        layout[f".git/objects/{oid[:2]}/{oid[2:]}"] = "f"
+    return layout
+
+
+def _private_ancestry(path, euid):
+    """No other uid can rename or replace any directory on ``path``.
+
+    Each directory, ``path`` included, is a real directory owned by root or ``euid``; one
+    writable by group or others must be sticky, so only its owner (root or ``euid``) and
+    the owner of an entry (root or ``euid``, checked one level down) can rename it."""
+    for directory in (path, *path.parents):
+        info = os.lstat(directory)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, euid):
+            return False
+        if info.st_mode & 0o022 and not info.st_mode & stat.S_ISVTX:
+            return False
+    return True
+
+
+def _git_url_literal(path):
+    """Does git read ``file://<path>`` as exactly ``path``?
+
+    The board stages the authority by cloning ``file://<authority>``, and git decodes
+    ``%XX`` escapes in a file URL, so a path such as ``/tmp/qual%20state/...`` would be
+    verified literally but cloned from ``/tmp/qual state/...``. Any ``%`` is refused, and
+    so is any ASCII control character, which git versions treat differently in URLs."""
+    text = str(path)
+    return "%" not in text and not any(ord(char) < 0x20 or ord(char) == 0x7F for char in text)
+
+
+def _authority_bases():
+    """Candidate parents for a review authority, most preferred first.
+
+    A private directory in the qualification store, when the store root exists and passes
+    the store's own safety check; then ``/tmp``. A candidate is used only when its whole
+    ancestry is private (``_private_ancestry``) and git reads its path literally in a file
+    URL (``_git_url_literal``); otherwise the next candidate is tried."""
+    store = Store()
+    bases = [store.root / "authority"] if store._dir_ok(store.root) is True else []
+    return [*bases, Path("/tmp")]
+
+
+def _authority_parent():
+    euid = os.geteuid()
+    for base in _authority_bases():
+        try:
+            if not _git_url_literal(base):
+                continue
+            if not os.path.lexists(base):
+                with contextlib.suppress(FileExistsError):
+                    base.mkdir(mode=0o700)
+            resolved = Path(base).resolve(strict=True)
+            if _git_url_literal(resolved) and _private_ancestry(resolved, euid):
+                return resolved
+        except (OSError, RuntimeError, ValueError):
+            continue
+    raise QualificationFailure(LOCAL_FAILURE)
+
+
+def _read_small(path):
+    """A regular file's bytes, read without following a symlink and bounded."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("not a regular file")
+        data = os.read(fd, _AUTHORITY_SMALL_FILE + 1)
+    finally:
+        os.close(fd)
+    if len(data) > _AUTHORITY_SMALL_FILE:
+        raise ValueError("file too large")
+    return data
+
+
+def _inflates_to(data, expected):
+    inflater = zlib.decompressobj()
+    try:
+        inflated = inflater.decompress(data, _AUTHORITY_SMALL_FILE)
+    except zlib.error:
+        return False
+    return inflater.eof and not inflater.unconsumed_tail and not inflater.unused_data and inflated == expected
+
+
+def _tree_layout(root):
+    """``{relative path: "d" | "f" | "?"}`` without following symlinks; ``None`` past the bound."""
+    found, pending = {}, [root]
+    while pending:
+        directory = pending.pop()
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                relative = os.path.relpath(entry.path, root)
+                if entry.is_dir(follow_symlinks=False):
+                    found[relative] = "d"
+                    pending.append(entry.path)
+                else:
+                    found[relative] = "f" if entry.is_file(follow_symlinks=False) else "?"
+                if len(found) > _AUTHORITY_MAX_ENTRIES:
+                    return None
+    return found
+
+
+def _authority_proven(authority):
+    """Is ``authority`` (absolute, canonical) exactly the constant repository, privately placed?
+
+    Raises ``OSError``, ``ValueError`` or ``SubprocessError`` when a check cannot run."""
+    from .review_stage import host_git
+
+    if not _git_url_literal(authority):
+        return False
+    euid = os.geteuid()
+    info = os.lstat(authority)
+    if not (stat.S_ISDIR(info.st_mode) and info.st_uid == euid and stat.S_IMODE(info.st_mode) == 0o700):
+        return False
+    if not _private_ancestry(authority.parent, euid) or _tree_layout(authority) != _authority_layout():
+        return False
+    contents = {".git/HEAD": b"ref: " + _AUTHORITY_BRANCH.encode() + b"\n",
+                ".git/" + _AUTHORITY_BRANCH: _AUTHORITY_COMMIT.encode() + b"\n",
+                ".git/config": _AUTHORITY_CONFIG, _AUTHORITY_FILE: _AUTHORITY_BYTES}
+    if any(_read_small(authority / relative) != data for relative, data in contents.items()):
+        return False
+    if os.lstat(authority / _AUTHORITY_FILE).st_mode & 0o111:
+        return False
+    for oid, raw in _authority_objects().items():
+        if not _inflates_to(_read_small(authority / ".git/objects" / oid[:2] / oid[2:]), raw):
+            return False
+    if _panel()._canonical_review_repo_authority(authority) != authority:
+        return False
+
+    def git(*args):
+        return host_git(authority, *args, check=True, capture_output=True, timeout=3, offline=True).stdout
+
+    return (git("ls-files", "-s", "-z") == b"100644 %s 0\t%s\0" % (_AUTHORITY_BLOB.encode(), _AUTHORITY_FILE.encode())
+            and git("rev-parse", "--verify", "HEAD^{commit}") == _AUTHORITY_COMMIT.encode() + b"\n")
+
+
+def _remove_review_authority(authority):
+    """Best effort: a leftover authority is inert, private and constant."""
+    shutil.rmtree(authority, ignore_errors=True)
+
+
+def _create_review_authority():
+    """Create one operation's authority: a fresh 0700 directory holding the constant repository.
+
+    Runs the hardened offline host git (no system or global config, no hooks, no templates),
+    checks every object id it reports against the pinned ones, and proves the result with
+    the worker's own verifier. Any error is a local failure and leaves nothing behind."""
+    from .review_stage import host_git
+
+    authority = None
+    try:
+        authority = Path(tempfile.mkdtemp(prefix="agy-authority-", dir=_authority_parent()))
+
+        def git(*args, data=None):
+            return host_git(authority, *args, check=True, capture_output=True, timeout=30,
+                            offline=True, input=data).stdout
+
+        git("init", "-q", "--template=")
+        (authority / ".git/config").write_bytes(_AUTHORITY_CONFIG)
+        written = (
+            git("hash-object", "-w", "--stdin", "--no-filters", data=_AUTHORITY_BYTES),
+            git("mktree", data=b"100644 blob %s\t%s\n" % (_AUTHORITY_BLOB.encode(), _AUTHORITY_FILE.encode())),
+            git("hash-object", "-t", "commit", "-w", "--stdin", data=_AUTHORITY_COMMIT_BODY),
+        )
+        if written != tuple(oid.encode() + b"\n" for oid in (_AUTHORITY_BLOB, _AUTHORITY_TREE, _AUTHORITY_COMMIT)):
+            raise ValueError("authority object ids differ from the pinned ones")
+        git("symbolic-ref", "HEAD", _AUTHORITY_BRANCH)
+        git("update-ref", _AUTHORITY_BRANCH, _AUTHORITY_COMMIT, "")
+        git("read-tree", _AUTHORITY_COMMIT)
+        fd = os.open(authority / _AUTHORITY_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        try:
+            os.write(fd, _AUTHORITY_BYTES)
+        finally:
+            os.close(fd)
+        if not _authority_proven(authority):
+            raise ValueError("authority differs from the constant repository")
+    except Exception as exc:
+        if authority is not None:
+            _remove_review_authority(authority)
+        raise QualificationFailure(LOCAL_FAILURE) from exc
+    return authority
+
+
+def _verified_review_authority(authority):
+    """The operation's coordinator-created authority, proven before the board may use it.
+
+    Fails closed unless the path is absolute and canonical and ``_authority_proven`` holds:
+    a 0700 directory owned by this euid under a private ancestry, holding exactly the
+    constant repository (pinned objects, one ref, no other history or state) and the
+    placeholder, as its own git toplevel."""
+    try:
+        path = Path(authority)
+        proven = path.is_absolute() and path.resolve(strict=True) == path and _authority_proven(path)
+    except (OSError, ValueError, TypeError, RuntimeError, subprocess.SubprocessError) as exc:
+        raise QualificationFailure("qualification review authority is not private") from exc
+    if not proven:
+        raise QualificationFailure("qualification review authority is not private")
+    return path
+
+
+def _staged_authority_matches(leg):
+    """Bind what the board staged to what the worker verified.
+
+    The leg's placement evidence carries the staged-tree manifest the board authorized and
+    revalidated its stage against; it must be the authority's constant manifest. A leg that
+    answered without a staged tree does not match; one refused before staging has none."""
+    placement = getattr(leg, "sandbox_placement_evidence", None) or {}
+    staged = placement.get("sandbox_snapshot_sha256")
+    if staged is None:
+        return leg.status != "OK"
+    return staged == _AUTHORITY_MANIFEST_SHA256
+
+
+def _worker_terminal(root):
+    """The worker's terminal ``{status, detail}`` for ``failure.json``, never its ``text``.
+
+    When the provider was never observed, this is the board's refusal code, which is
+    otherwise only in the worker's ``terminal.json``. ``None`` if the worker wrote none."""
+    try:
+        result = json.loads((root / "terminal.json").read_text())["result"]
+        status, detail = result["status"], result["detail"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if not all(value is None or isinstance(value, str) for value in (status, detail)):
+        return None
+    return {"status": status, "detail": detail if detail is None else detail[:_WORKER_DETAIL_CHARS]}
+
+
 def run_operation(operation, root, help_evidence, extra_helpers=(), *, image, expected_help_sha256,
                   cancel_event=None):
     """External observer survives owner loss; no provider adapter is replaced.
@@ -618,13 +908,18 @@ def run_operation(operation, root, help_evidence, extra_helpers=(), *, image, ex
     monitor = None
     proc = None
     completed = False
-    stage = "launch"
+    authority = None
+    stage = "authority"
     try:
+        # A fresh authority per operation, outside ``root``; the worker re-proves it.
+        authority = _create_review_authority()
+        stage = "launch"
         image_fd = image.reopen()
         try:
             with (root / "worker.log").open("wb") as log:
                 proc = _panel().launch_provider(
                     [sys.executable, "-I", "-c", _WORKER_BOOT, str(_SRC), "--worker", str(root),
+                     "--authority", str(authority),
                      "--image-fd", str(image_fd), "--parent-pid", str(os.getpid())],
                     stdout=log, stderr=log, start_new_session=True, pass_fds=(image_fd,))
         finally:
@@ -768,7 +1063,8 @@ def run_operation(operation, root, help_evidence, extra_helpers=(), *, image, ex
                          expected_helper_sha256=registered_helpers)
         completed = True
     except BaseException as exc:
-        write_failure(root, exc, stage, helpers, observed_processes)
+        write_failure(root, exc, stage, helpers, observed_processes,
+                      worker_terminal=_worker_terminal(root) if stage == "terminal_observation" and observer is None else None)
         raise
     finally:
         try:
@@ -776,6 +1072,9 @@ def run_operation(operation, root, help_evidence, extra_helpers=(), *, image, ex
         except BaseException as exc:
             write_failure(root, exc, "observer_cleanup", helpers, observed_processes)
             raise
+        finally:
+            if authority is not None:
+                _remove_review_authority(authority)
     write_json(root / "qualification.json", record)
     return completed
 
@@ -1708,7 +2007,7 @@ def _set_parent_death_signal():
         raise QualificationFailure("qualification worker cannot bind to its owner") from exc
 
 
-def worker(root, image_fd=None, parent_pid=None):
+def worker(root, image_fd=None, parent_pid=None, authority=None):
     # Dies with the qualification coordinator: a SIGKILLed lock holder leaves no worker.
     _set_parent_death_signal()
     if parent_pid is not None and os.getppid() != parent_pid:
@@ -1718,6 +2017,7 @@ def worker(root, image_fd=None, parent_pid=None):
     image = verified_fd_image(image_fd)
     if not provenance_gate(image.sha256):
         raise QualificationFailure("qualification image fd has no provenance")
+    authority = _verified_review_authority(authority)
     gh._CANDIDATE = image
     from .advisor_board.fixtures import DEFAULT_BOARD
     panel = _panel()
@@ -1726,17 +2026,51 @@ def worker(root, image_fd=None, parent_pid=None):
     signal.signal(signal.SIGINT, lambda *_: cancel.set())
     board = replace(DEFAULT_BOARD, name="gemini-heartbeat-qualification",
                     seats=tuple(s for s in DEFAULT_BOARD.seats if s.harness == "gemini"))
-    result = panel.invoke_board(
-        board, (root / "artifact.md").read_text(), brief_ref=str(root / "brief.md"),
-        repo_dir=Path.cwd(), mode="review", monitoring_policy="heartbeat_only",
-        stream_dir=root / "stream", cancel_event=cancel,
-        review_policy=panel.ReviewLandingPolicy(("gemini",), False),
-    )
-    leg, = result.legs
-    write_json(root / "terminal.json", {
-        "monitoring": leg.review_monitoring, "broker": leg.harden_isolation_evidence,
-        "result": {"status": leg.status, "text": leg.text, "detail": leg.detail},
-    })
+    root = Path(root).absolute()
+    # The board reviews the coordinator's authority, never the inherited cwd; the chdir
+    # gives any remaining cwd reader the same directory. Not ``canonical_repo_authority``:
+    # that would make the request governed and demand a pre-minted authorization. The
+    # previous directory is restored afterwards, so an in-process call leaves no trace.
+    previous_cwd = _hold_cwd()
+    try:
+        os.chdir(authority)
+        result = panel.invoke_board(
+            board, (root / "artifact.md").read_text(), brief_ref=str(root / "brief.md"),
+            repo_dir=authority, mode="review", monitoring_policy="heartbeat_only",
+            stream_dir=root / "stream", cancel_event=cancel,
+            review_policy=panel.ReviewLandingPolicy(("gemini",), False),
+        )
+        leg, = result.legs
+        if not _staged_authority_matches(leg):
+            # No terminal record: the coordinator then fails this operation as a local failure.
+            raise QualificationFailure("qualification staged review tree differs from its authority")
+        write_json(root / "terminal.json", {
+            "monitoring": leg.review_monitoring, "broker": leg.harden_isolation_evidence,
+            "result": {"status": leg.status, "text": leg.text, "detail": leg.detail},
+        })
+    finally:
+        _restore_cwd(previous_cwd)
+
+
+def _hold_cwd():
+    """An fd on the current directory, to return to it later; ``None`` when it cannot be held.
+
+    ``O_PATH`` needs no read permission on the directory. The qualification never depends
+    on this: a dedicated worker process exits right after the board."""
+    try:
+        return os.open(".", getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_CLOEXEC)
+    except OSError:
+        return None
+
+
+def _restore_cwd(fd):
+    if fd is None:
+        return
+    try:
+        with contextlib.suppress(OSError):
+            os.fchdir(fd)
+    finally:
+        os.close(fd)
 
 
 def release_image_from_path(env):
@@ -1767,9 +2101,10 @@ def main(argv=None):
     parser.add_argument("--image-fd", type=int,
                         help="Qualify the image held by this inherited, fully sealed memfd (the upstream watch)")
     parser.add_argument("--parent-pid", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--authority", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.worker is not None:
-        worker(args.worker.resolve(), args.image_fd, args.parent_pid)
+        worker(args.worker.resolve(), args.image_fd, args.parent_pid, args.authority)
     elif args.measure_help:
         # The upstream watch measures help with the PREPARED tree's owned profile.
         if args.image_fd is None or args.output is None:
