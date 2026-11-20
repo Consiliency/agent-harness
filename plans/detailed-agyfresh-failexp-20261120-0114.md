@@ -100,7 +100,8 @@ Paths below are under `phase-loop-runtime/`.
   key when the seat admits; `hold_status` raising. No case's output contains "active" or
   "in use".
 - Actual held execution is not a doctor fact: it is asserted from launch evidence in
-  `tests/test_agy_hold.py` and `tests/test_agy_hold_jail.py` (lanes SL-2 and SL-3).
+  `tests/test_agy_hold.py` (lane SL-2) and, where the jail lane ran,
+  `tests/test_agy_hold_jail.py` (lane SL-3).
 - The golden validates against the schema; `test_doctor_maps_registered_admission_verdicts`
   stays green unmodified.
 
@@ -137,7 +138,7 @@ Serial, without `-n`, targeted and bounded (shared-host rule). Full suite, stric
 ```bash
 cd phase-loop-runtime
 PYTHONPATH=$PWD/src:$PWD/tests timeout 600 .venv/bin/python -m pytest -q -p no:cacheprovider \
-  tests/test_agy_hold.py tests/test_agy_hold_cache.py tests/test_agy_hold_jail.py \
+  tests/test_agy_hold.py tests/test_agy_hold_cache.py \
   tests/test_seats_teamhost_doctor.py \
   tests/test_doctor_bom.py tests/test_seats_teamhost_gemini.py tests/test_agy_qci.py \
   tests/test_seat_reference_inventory.py
@@ -145,6 +146,10 @@ PYTHONPATH=$PWD/src:$PWD/tests timeout 600 .venv/bin/python -m pytest -q -p no:c
   tests/test_agy_self_qualification.py
 timeout 300 uv run --locked python scripts/verify_qualified_agy_image.py --contract
 ```
+
+If the HOLD plan's jail lane (SL-3) has merged, add `tests/test_agy_hold_jail.py` to the
+first run. This lane is the same whether or not it has: the doctor prints whatever
+`agy_hold.ROUTE_COVERAGE` says.
 
 ## Acceptance criteria
 

@@ -1,4 +1,4 @@
-# AGYFRESH HOLD lanes r3: frozen detail for the HOLD phase plan
+# AGYFRESH HOLD lanes r4: frozen detail for the HOLD phase plan
 
 Detail for `plans/phase-plan-v1-agyroll-HOLD.md` (lanes SL-0 to SL-6) and
 `plans/detailed-agyfresh-failexp-20261120-0114.md` (SL-5 FAILEXP). The design is
@@ -11,7 +11,10 @@ referenced.
 r2 followed the review of r1 and the owner's decision that the jailed standalone seat runs
 the admitted sealed image. r3 follows the review of r2 and the coordinator's four rulings:
 the data-bind form is ruled out, the feasibility gate's checks are complete, release is
-under a hold, and the jail lane's isolation and execution assertions are finished.
+under a hold, and the jail lane's isolation and execution assertions are finished. r4
+follows the review of r3: the jail lane binds the sealed image for held admissions only,
+the hold's control is the merge, the qualifier proof names the real function, and the
+failed-probe branch is dispatchable.
 
 Paths are under `phase-loop-runtime/` unless they name another root; `src/` means
 `src/phase_loop_runtime/`. `gh` is `gemini_heartbeat`, `q` is `agy_qualification`.
@@ -21,10 +24,20 @@ Paths are under `phase-loop-runtime/` unless they name another root; `src/` mean
 - Every code lane starts only after RESTORE's caps lane, with its contract repin, has
   merged. No lane branches from an unmerged lane.
 - SL-0 (AMEND) and SL-1 (JAILPROBE) start at once, in parallel; they share no file.
-- Then, one PR each, in order: SL-2 HOLD-CORE → SL-3 JAILBIND → SL-4 HOLD-CACHE → SL-5
-  FAILEXP → SL-6 (reducer).
 - SL-2 carries `tests/test_agy_hold_managed.py` from the F0 lane (branch
   `t3/agyfresh-f0-probe`), unmodified, as the EC-HOLD-6 guard.
+
+**Branches after SL-1.** One PR per lane, each merged before the next starts.
+
+| Branch | When | Order | Jailed route | Closeout |
+|---|---|---|---|---|
+| **GO** | SL-1's report: P1–P7 all hold | SL-2 → SL-3 → SL-4 → SL-5 → SL-6 | `covered` once SL-3 merges (under G-REL) | all of EC-HOLD-1..10, -12..15 |
+| **STOP, gap accepted** | the coordinator has recorded the failed probe and the owner accepted the gap | SL-2 → SL-4 → SL-5 → SL-6; SL-3 is not run | stays `not_covered` | EC-HOLD-13 and -14 recorded **unmet**; G-REL not applicable; IF-0-HOLD-5 not produced |
+| **STOP, new amendment** | the coordinator has recorded the failed probe and the owner called for a new amendment | SL-2 → SL-4 → SL-5; SL-6 waits | stays `not_covered` | the phase stays open; this plan is amended for the new jail design |
+
+SL-2 does not wait for SL-1: it is the same in every branch. SL-4 and SL-5 need SL-1's
+outcome only to know whether SL-3 goes before them. Until SL-1 reports, nothing after SL-2
+starts.
 
 ## B. Options and rules
 
@@ -54,7 +67,8 @@ seam in `q.lookup` is untouched. The skip is by subject, so it covers every rout
 
 Amendment §2.2. `admit_held` returns an `Admission` with `path=None`. Until SL-3 merges,
 the jailed standalone route therefore refuses a held admission with today's code, and
-`routes.jailed` is `"not_covered"`. SL-3 makes that route execute the sealed image.
+`routes.jailed` is `"not_covered"`. SL-3 makes that route execute the sealed image for a held
+admission; ordinary admissions keep their path bind.
 
 ### B5. Readers in SL-2, writers in SL-4
 
@@ -83,7 +97,7 @@ a row is missing or its "executes" column is wrong.
 | 1 | Seat profile launch and credential refresh: `agy_integrity.admit_for_seat` (two sites in `panel_invoker.seat_profile`) | caller's executable | admitted memfd | SL-2 |
 | 2 | Non-jailed heartbeat: `gh.require_capability`, `gh.owned_profile` without an admission (`panel_invoker` brokered Gemini leg and its route check; `president_adapter`) | PATH `agy` | admitted memfd | SL-2 |
 | 3 | Jailed review seat, managed dependency: `panel_invoker._prepare_jailed_gemini` | `dependency.subject_source` | the release projection | never (EC-HOLD-6); unchanged |
-| 4 | Jailed review seat, standalone: same function | resolved subject | today the **path** `realpath(admission.path)`; after SL-3 the admitted sealed image | SL-3 |
+| 4 | Jailed review seat, standalone: same function | resolved subject | the **path** `realpath(admission.path)`, for an ordinary admission, before and after this phase; for a held admission, nothing until SL-3 (refused), then the admitted sealed image | SL-3, held admissions only |
 | 5 | Board preflight and `agy-qualification run`: `q.requalify_once` | resolved subject | nothing | SL-2 |
 | 6 | Help measurement: `q._run_help` → `gh.owned_profile(admission=...)` | given admission | given memfd | not an admission site |
 | 7 | Executor and canary: `agy_integrity.check(path)` without env, `trusted_command`, `admitted_command`, `agy_canary_evidence` | PATH `agy` | memfd or path | never (AGYFRESH §2.2) |
@@ -94,7 +108,7 @@ A managed subject is skipped on every row (B3).
 ## D. SL-1 JAILPROBE (feasibility gate)
 
 **What it is.** A scratch lane with no production change. It decides whether the one
-admitted mount form (amendment §2.8) works, and which launches may use it. It runs bwrap on
+admitted mount form (amendment §2.8) works. It runs bwrap on
 **one local host** with a stand-in executable (the conformance stand-in,
 `tests/fixtures/agy_conformance/`): no agy, no network, no credential, no provider call.
 For other configurations it uses static or already recorded evidence only. A run on a
@@ -121,18 +135,19 @@ launched. A hand-built bwrap call or a run without the uid drop is not evidence.
 | P6 | Two descriptors from `image.reopen()`, one for a production-shaped and one for a probe-shaped jail: before mounting they have the same `(st_dev, st_ino)` and digest; after mounting, the content hash of `/seat/bin/gemini` in each jail equals the admission's digest. |
 | P7 | One jail launched twice executes the stand-in both times (the descriptor survives a launch). |
 
-**Decision rule.** The form is selected only if P1 to P7 all hold. If any does not: stop.
-SL-3 does not start, the route stays not covered, and the coordinator is told; the owner
-decides between a new amendment and accepting the gap. There is no second form to fall
-back to (amendment §2.8 says why).
+**Decision rule.** GO only if P1 to P7 all hold. If any does not: STOP. The report says
+which check failed and how; the coordinator records it; SL-3 does not run; the owner
+decides between accepting the gap and a new amendment (§A). There is no second form to
+fall back to (amendment §2.8 says why).
 
-**Supported deployment configurations.** The report lists the configurations the harness
+**Also recorded, for the follow-up only.** The report lists the configurations the harness
 supports for the jailed seat (from `docs/` and the recorded seat-jail evidence under
 `plans/evidence/`: kernel and bwrap versions, setuid or user-namespace bwrap, the AppArmor
-`unpriv_bwrap` restriction and its override) and marks each *observed here*, *recorded
-evidence*, or *unverified*. The ordinary-launch default (amendment §2.8, "Which launches")
-is recommended only if none is unverified; otherwise the report recommends held admissions
-only and names the missing evidence.
+`unpriv_bwrap` restriction and its override) and marks each *observed here* or *not
+observed*. This does not gate SL-3, which binds the sealed image for held admissions only.
+It is the starting inventory for the later change that would do so for ordinary launches;
+that change needs this particular bind observed through the owner chain and uid drop on
+each configuration, and evidence that the existing jail works there does not count.
 
 **Not assumed.** Whether a memfd can be the source of a bind mount is a kernel fact this
 plan does not know; P1 exists to find out.
@@ -288,27 +303,31 @@ Rollback: `[agy] hold = false` per host; revert globally. No state to clean.
 
 ## F. SL-3 JAILBIND
 
-**Needs.** SL-0 merged (the roadmap permits the change), SL-1's report with every check
-passing, SL-2 merged. If SL-1 stopped, this lane does not start.
+**Needs.** The GO branch (§A): SL-0 merged, SL-1's report with every check passing, SL-2
+merged. On either STOP branch this lane is not run.
+
+**Scope: held admissions only.** A held admission's jails bind the sealed image. An
+ordinary admission's jails keep the existing path bind, with their launch and evidence
+behaviour preserved. There is no switch between the two.
 
 ### F1. Files
 
 | File | Change |
 |---|---|
-| `src/panel_invoker.py` | `_prepare_jailed_gemini`, standalone branch only: for the launches SL-1's report allows (amendment §2.8), one `admission.image.reopen()` descriptor per jail, passed as `provider_fd`, in place of `realpath(admission.path)`; the admission is closed after both jails are built and on every earlier exit; `_JailedSeat` gains `admission_source`, `hold_reason`, `subject_image_sha256`; the jailed seat's evidence writes the three keys beside `provider_image_sha256`. The managed branch, including its digest gate, and `_require_canonical_jail` are byte-identical. |
-| `src/seat_jail.py` | `build_seat_jail(..., provider_fd=None)`: the checks of amendment §2.8; `provider_path = "/proc/self/fd/<fd>"`; the 0555 mode if SL-1 recorded it as required; the descriptor joins `pass_fds`, is closed on a failed build and by `close_jail_fds`. `_owner_argv`, `jail_profile_digest`, `actual_profile_digest` and `expected_mount_points` are not edited. |
+| `src/panel_invoker.py` | `_prepare_jailed_gemini`, standalone branch only. For `admission.source == "lkg"`: one `admission.image.reopen()` descriptor per jail, passed as `provider_fd`; the admission is closed after both jails are built and on every earlier exit. For `source == "subject"`: the existing lines, unchanged. `_JailedSeat` gains `admission_source`, `hold_reason`, `subject_image_sha256`; the jailed seat's evidence writes `provider_admission_source` always, and the other two keys for a held admission. The managed branch, including its digest gate, and `_require_canonical_jail` are byte-identical. |
+| `src/seat_jail.py` | `build_seat_jail(..., provider_fd=None)`: the checks of amendment §2.8; `provider_path = "/proc/self/fd/<fd>"`, the same literal in the argv; the 0555 mode if SL-1 recorded it as required; the descriptor joins `pass_fds`, is closed on a failed build and by `close_jail_fds`. Without `provider_fd` the function behaves exactly as before. `_owner_argv`, `jail_profile_digest`, `actual_profile_digest` and `expected_mount_points` are not edited. |
 | `src/agy_hold.py` | `ROUTE_COVERAGE["jailed"] = True`. |
 | `tests/test_agy_hold_jail.py` | SL-1's probe cases kept as regression guards; §F2 added. |
 | `tests/test_agy_hold_managed.py` | the "before SL-3" refusal case becomes the covered case; the eight F0 tests byte-identical. |
 | `tests/test_agy_hold.py` | status: `routes.jailed == "covered"`. |
 | `tests/test_seat_jail.py`, `tests/test_panel_invoker.py`, `tests/test_gemini_seat_egress_1170.py`, `tests/test_seats_teamhost_integration.py`, `tests/test_seat_qualification_key.py` | only where a stub must follow. A test file outside this list that must change is named in the PR; if another lane owns it, stop. |
 | `tests/test_agy_qci.py` | the source-hash supplement for `panel_invoker.py`, if it alone flags. |
-| `tests/data/seat_launch_references.json`, `CONTRACTS.md`, the card, `CHANGELOG.md` | rows; the jailed route in the HOLD section; one entry. |
+| `tests/data/seat_launch_references.json`, `CONTRACTS.md`, the card, `CHANGELOG.md` | rows; the jailed route in the HOLD section, saying plainly that only a held admission runs as the sealed image; one entry. |
 
 Not edited, by name: `seat_jail_qualification.py`, `seat_qualification_key.py`,
-`seat_jail_autoqualify.py`, `seat_subject.py`, `seat_route.py`. The qualifier's
-`_launch_probe` needs no work, because no canonical digest changes; §F2 proves that with
-its real construction instead of assuming it.
+`seat_jail_autoqualify.py`, `seat_subject.py`, `seat_route.py`. The qualifier needs no
+work, because no canonical digest changes; §F2 proves that with its real construction
+(`_run_probe_in_jail`) instead of assuming it.
 
 ### F2. Tests (`tests/test_agy_hold_jail.py`, names `test_ec_hold_13_…`, `test_ec_hold_14_…`)
 
@@ -317,17 +336,21 @@ Driven through the real `_prepare_jailed_gemini` with a standalone subject and t
 is the stand-in. **The stand-in reports the SHA-256 of its own running image
 (`/proc/self/exe`)**, so "what ran" is measured from the executing process, never from a
 second process reading the pathname. Cases that launch bwrap skip, with a reason, on a host
-that cannot jail; hosted CI must run them, and a run that skips them all is not a pass.
+that cannot jail; hosted CI must run them. A skipped required case is no proof, and a run
+that skips them is not a pass.
+
+**Sealed launches (a held admission). The admitted-byte and source-mutation guarantees are
+claimed for these only.**
 
 - **Same bytes.** Before mounting, the production and probe jails' descriptors have one
   `(st_dev, st_ino)` and hash to `_JailedSeat.image_sha256`; the stand-in executed in each
   jail reports that digest.
-- **Evidence digest.** For a subject admission and for a held one, the launch evidence's
-  `provider_image_sha256` equals the digest the executed stand-in reported; for the held
-  one `provider_admission_source == "lkg"`, the reason and the subject digest are present.
-- **Source mutation after admission.** The subject or candidate file is renamed away,
-  unlinked, and rewritten in place after admission and before launch: the stand-in still
-  executes, and the digest it reports is the admitted one.
+- **Evidence digest.** The launch evidence's `provider_image_sha256` equals the digest the
+  executed stand-in reported; `provider_admission_source == "lkg"`, and the reason and the
+  subject digest are present.
+- **Source mutation after admission.** The candidate's file is renamed away, unlinked, and
+  rewritten in place after admission and before launch: the stand-in still executes, and
+  the digest it reports is the admitted one.
 - **Wrong or unsealed descriptor.** `provider_fd` that is a regular file on disk, an
   unsealed memfd, a memfd missing one seal, a sealed memfd with other bytes, a pipe, a
   closed number: each is `SeatSandboxRefused` (`identity`) and nothing launches.
@@ -348,45 +371,68 @@ that cannot jail; hosted CI must run them, and a run that skips them all is not 
 - **Owner-store sentinel.** A sentinel file is placed in `Store.host_dir` and one in
   `held/`. As the seat uid, opening either by its host path fails, and neither path is in
   mountinfo. The same for the vendor-store path the candidate came from.
-- **Mount.** A write to `/seat/bin/gemini` fails; mountinfo equals `expected_mount_points`.
-  If SL-1 recorded the 0555 requirement: the mode inside the jail is 0555, and an image
-  that never entered a jail keeps the caps lane's 0500.
-- **Launch scope.** With the ordinary default off (SL-1 recommended held only), a subject
-  admission still binds its path and a held one binds the image; with it on, both bind the
-  image. Whichever SL-1's report selected is the shipped default; the other is tested by
-  patching the one switch.
-- **Managed unchanged.** The eight F0 tests; a managed dependency never receives
-  `provider_fd`; **unstubbed:** a managed-dependency jail built by the real
-  `build_seat_jail` passes the real `_require_canonical_jail`.
-- **Qualifier unchanged.** For each profile whose jail the qualifier builds, the real
-  `seat_jail_qualification._launch_probe` construction, with a harmless stand-in, passes
-  the real `_require_canonical_jail`, and its actual digest equals that of a sealed-image
-  jail. No pass is recorded and no qualification runs.
+- **Mount.** A write to `/seat/bin/gemini` fails; mountinfo equals `expected_mount_points`;
+  the argv token and `jail.provider_path` are both the literal `/proc/self/fd/<fd>`. If
+  SL-1 recorded the 0555 requirement: the mode inside the jail is 0555, and an image that
+  never entered a jail keeps the caps lane's 0500.
 - **Held, end to end.** An unqualified standalone subject with a member in the vendor
   store: the jailed route launches the member, and the stand-in reports the member's
   digest.
-- **EC-HOLD-14.** `actual_profile_digest(jail) == jail_profile_digest("gemini")` for a
-  sealed-image jail; the canonical digest of every registered leg, and the key from
-  `key_for_launch`, equal their values on the base tree (pinned in the test as inputs).
 
-### F3. Cost, release, stop rules
+**Ordinary launches (a subject admission). Unchanged behaviour is what is proven.**
+
+- **Path bind kept.** Both the production and the probe jail are built without
+  `provider_fd`; their argv binds `realpath(admission.path)`; no image descriptor is in
+  `pass_fds`.
+- **Stable-source launch control.** With the subject file left untouched, the jailed route
+  launches through the production owner chain, the stand-in executes, and the digest it
+  reports equals the evidence's `provider_image_sha256`. This is a real launch, not a
+  construction check, and it is the control for the sealed cases above.
+- **Evidence preserved.** The evidence equals what the base tree writes for the same
+  launch, plus `provider_admission_source: "subject"` and nothing else.
+- **No claim under mutation.** No test asserts admitted bytes for an ordinary launch after
+  its source changes; the docs the lane writes say the same.
+
+**Managed and qualifier.**
+
+- **Managed unchanged.** The eight F0 tests; a managed dependency never receives
+  `provider_fd`; **unstubbed:** a managed-dependency jail built by the real
+  `build_seat_jail` passes the real `_require_canonical_jail`.
+- **Qualifier unchanged.** For every leg the qualifier can build, the real
+  `seat_jail_qualification._run_probe_in_jail` construction and its own canonical guard are
+  exercised with a harmless stand-in provider; only the outer launch dependencies that
+  would start a real seat are isolated. Each such jail passes the real
+  `_require_canonical_jail` against **its own leg's** canonical digest. For the Gemini leg
+  only, its actual digest also equals that of a sealed-image Gemini jail (the profile hash
+  includes the leg, so no cross-leg equality is asserted). No pass is recorded and no
+  qualification runs.
+- **EC-HOLD-14.** `actual_profile_digest(jail) == jail_profile_digest("gemini")` for a
+  sealed-image jail and for a path-bound one; the canonical digest of every registered leg,
+  and the key from `key_for_launch`, equal their values on the base tree (pinned in the
+  test as inputs).
+
+### F3. Cost, release hold, stop rules
 
 - **Memory.** None beyond the admission's memfd.
 - **Jail requalification.** None, because no canonical digest or key changes. That is what
   EC-HOLD-14 proves; it is not assumed.
-- **Release hold G-REL.** No tag, PyPI publication or deployment may contain this lane
-  until SL-1's recorded P3 and this lane's EC-HOLD-14 cases, run in hosted CI on the final
-  head, show every canonical digest and key unchanged (amendment §1.4). The release owner
-  is the Agent-Harness Exec, who records the hold. The PR's first paragraph states the hold
-  and links both proofs. If any deployment consumes `main` directly, the merge waits too.
+- **Release hold G-REL: the control is the merge** (amendment §1.4). This PR does not merge
+  to `main` until the release owner (the Agent-Harness Exec) has recorded an affirmative
+  clearance on its final head. The clearance needs SL-1's recorded digest comparison and
+  the EC-HOLD-14 cases passing, executed, in hosted CI on that head. A push after the
+  clearance voids it. The standing approval to merge accepted AGYFRESH PRs does not cover
+  this PR without that clearance. The PR's first paragraph states the hold and links both
+  proofs. Nothing else is needed before a tag, and a deployment that consumes `main`
+  directly is covered by the same gate.
 - **agy requalification.** None intended; `tests/test_agy_qci.py` decides (AGYFRESH §3).
 - **Run.** `tests/test_agy_hold_jail.py tests/test_agy_hold_managed.py tests/test_agy_hold.py tests/test_seat_jail.py tests/test_gemini_seat_egress_1170.py tests/test_seat_qualification_key.py tests/test_seats_teamhost_gemini.py tests/test_seats_teamhost_integration.py tests/test_agy_qci.py tests/test_seat_reference_inventory.py`,
   serially under `timeout 600`; `tests/test_panel_invoker.py` as its own run; then
   `--contract`.
 - **Stop.** Any canonical digest or qualification key moves; `actual_profile_digest`,
-  `_require_canonical_jail`, the qualifier or the managed branch would need an edit; any
-  jail property other than the provider bind's source would have to change; the form does
-  not behave as SL-1 recorded.
+  `_require_canonical_jail`, the qualifier or the managed branch would need an edit; an
+  ordinary launch's argv or evidence would change beyond the one additive key; any jail
+  property other than a held admission's provider-bind source would have to change; the
+  form does not behave as SL-1 recorded.
 - **Rollback.** Revert; the route returns to refusing a held admission and status to
   `not_covered`. No key changes in either direction.
 
@@ -413,10 +459,12 @@ no other candidate that hold raises the original refusal (the stated limit of B2
 B7: no file for a managed subject or with the hold disabled; no retain on a spawn admission
 or after a held admission; B1: a newer image arriving through `retain` wins the next hold.
 End to end, with no vendor store: a retained image is the hold for a later unqualified
-subject on route 1 and, through `_prepare_jailed_gemini`, on route 4 — the cache file stays
-0600 and is never bound into the jail.
+subject on route 1. On the GO branch only (§A), the same through `_prepare_jailed_gemini`
+on route 4, where the cache file stays 0600 and is never bound into the jail; on a STOP
+branch that case is not written, and route 4 is asserted to refuse the held admission.
 
-**Run.** `tests/test_agy_hold_cache.py tests/test_agy_hold.py tests/test_agy_hold_jail.py tests/test_agy_hold_managed.py tests/test_agy_qci.py tests/test_seat_reference_inventory.py`,
+**Run.** `tests/test_agy_hold_cache.py tests/test_agy_hold.py tests/test_agy_hold_managed.py tests/test_agy_qci.py tests/test_seat_reference_inventory.py`
+(and `tests/test_agy_hold_jail.py` on the GO branch),
 then `tests/test_agy_self_qualification.py`, then `--contract`.
 
 **Stop rules.** As §E4. Rollback: revert; `clear --all` or removing `held/` frees the disk.
@@ -441,12 +489,12 @@ Changes, tests and commands: `plans/detailed-agyfresh-failexp-20261120-0114.md`.
 
 Q1 of r1 (the jailed standalone route) is decided: SL-1 and SL-3. Remaining, none blocking:
 
-- **Q-A.** Whether ordinary (non-hold) jailed launches also bind the sealed image is
-  decided by SL-1's evidence on supported configurations (amendment §2.8). If the report
-  recommends held only, a second-host run to close the gap is a separate request.
+- **Q-A (follow-up, not a lane).** Binding the sealed image for ordinary jailed launches
+  too. Precondition: this proc-descriptor bind observed through the owner chain and the
+  seat-uid drop on each supported configuration (SL-1's inventory is the starting list). A
+  run on a second host is a separate request to the coordinator.
 - **Q-B.** `requalify_once` still reads the subject once into memory to key its process
   memo. It is not evidence that everything streams; a streamed digest is a follow-up.
 - **Q-C.** `hold_status` may read up to five images. The doctor computes it only when the
   Gemini verdict is not `admits`, and it mutates nothing.
-- **Q-D.** If SL-1 stops, the jailed standalone route stays not covered and the owner
-  chooses between a new amendment (a route-aware canonical for a data bind) and the gap.
+- **Q-D.** If SL-1 stops, §A's STOP branches apply.

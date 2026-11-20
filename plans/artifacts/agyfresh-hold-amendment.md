@@ -18,19 +18,20 @@ re-stamps the HOLD plan's frontmatter digest, and runs `roadmap_lint`.
 
 ### 1.1 Owner Decisions (2026-11-20, AGYFRESH): add
 
-- **D12** — the jailed standalone Gemini seat runs the admitted sealed image, not a path
-  (AGYFRESH §2.11; EC-HOLD-13, EC-HOLD-14). The managed projection and its digest gate are
-  unchanged. The bind must leave every canonical jail digest and qualification key as it
-  is; a form that changes one is not admitted by this amendment. Release of the change is
-  under the hold in the HOLD phase (G-REL).
+- **D12** — on the jailed standalone route a **held** admission runs as the admitted sealed
+  image, not a path (AGYFRESH §2.11; EC-HOLD-13, EC-HOLD-14). Ordinary launches keep the
+  existing path bind. The managed projection and its digest gate are unchanged. The bind
+  must leave every canonical jail digest and qualification key as it is; a form that
+  changes one is not admitted by this amendment. The jail integration lane merges only on
+  the release owner's clearance (G-REL).
 
 ### 1.2 Non-Goals
 
 Replace "- Seat-jail, egress or `SEALED_FALLBACK_CODES` changes." with:
 
 - Egress or `SEALED_FALLBACK_CODES` changes.
-- Seat-jail changes, **except** the one AGYFRESH §2.11 defines: the standalone Gemini jail
-  binds the admitted sealed image at `/seat/bin/gemini`. No other mount, capability, filter,
+- Seat-jail changes, **except** the one AGYFRESH §2.11 defines: for a held admission the
+  standalone Gemini jail binds the admitted sealed image at `/seat/bin/gemini`. No other mount, capability, filter,
   uid, environment or egress property of any jail changes, and no jail of another leg
   changes.
 
@@ -39,11 +40,12 @@ weakening of the managed-release authority check…") stays as written.
 
 ### 1.3 Assumption 5: append
 
-The jailed **standalone** route executed the provider by path, so a held admission could
-not run there either. D12 changes that route to execute the admitted sealed image
-(AGYFRESH §2.11). Whether the one admitted mount form works is decided by HOLD's jail
-feasibility lane, not assumed; if it does not, the route stays not covered and the owner
-decides between a new amendment and accepting the gap.
+The jailed **standalone** route executes the provider by path, so a held admission could
+not run there either. D12 changes that route, for held admissions only, to execute the
+admitted sealed image (AGYFRESH §2.11). Whether the one admitted mount form works is
+decided by HOLD's jail feasibility lane, not assumed. If it does not, the route stays not
+covered and the owner decides between a new amendment and accepting the gap; the rest of
+HOLD is delivered either way.
 
 ### 1.4 Phase HOLD
 
@@ -51,8 +53,8 @@ decides between a new amendment and accepting the gap.
 all rejected" with "and a file whose replacement is observed during the read (AGYFRESH
 §2.5) are all rejected". Add:
 
-- [ ] EC-HOLD-13 — Jailed standalone route (AGYFRESH §2.11): the production and the probe jail bind the same admitted sealed image at `/seat/bin/gemini`; the bytes the seat executes hash to the evidence's `provider_image_sha256` after the source file is renamed, unlinked or rewritten; a held admission runs there with source `lkg`; a descriptor that is not that sealed image is refused; a failed build and a cancellation leave no descriptor open.
-- [ ] EC-HOLD-14 — Jail qualification (AGYFRESH §2.11, §3): the canonical digest of every registered leg and every qualification key are the same before and after the jail integration lane; a sealed-image jail, the managed-dependency jail and the jail the qualifier builds each pass the unstubbed canonical comparison.
+- [ ] EC-HOLD-13 — Jailed standalone route (AGYFRESH §2.11): for a held admission the production and the probe jail bind the same admitted sealed image at `/seat/bin/gemini`, the bytes the seat executes hash to the evidence's `provider_image_sha256` after the candidate's source file is renamed, unlinked or rewritten, and the evidence carries source `lkg`; a descriptor that is not that sealed image is refused; a failed build and a cancellation leave no descriptor open; an ordinary launch keeps the existing path bind and its launch and evidence behaviour.
+- [ ] EC-HOLD-14 — Jail qualification (AGYFRESH §2.11, §3): the canonical digest of every registered leg and every qualification key are the same before and after the jail integration lane; a sealed-image jail, the managed-dependency jail and every jail the qualifier builds each pass the unstubbed canonical comparison against their own leg's canonical digest.
 - [ ] EC-HOLD-15 — Status (AGYFRESH §2.6): `hold` reports the subject class, coverage per route, and a candidate with its state; it never reports a candidate as in use.
 
 EC-HOLD-12 stays; its object is the amended §2.6.
@@ -63,10 +65,12 @@ Decompose into these lanes:
 - **F0 feasibility** (managed authority): done; it failed (Assumption 5).
 - **Amend** (docs): this amendment.
 - **Jail feasibility** (scratch test, no production change): decides whether the mount form
-  of AGYFRESH §2.11 works and which launches may use it.
+  of AGYFRESH §2.11 works. If it does not, the jail integration lane is not run and the
+  other lanes complete without it.
 - **Core**: `agy_hold.py`, `admit_seat` in `agy_qualification.py`, config, status.
 - **Jail integration**: `panel_invoker._prepare_jailed_gemini` and `seat_jail.build_seat_jail`
-  for the standalone Gemini jail; evidence. After core and the jail feasibility lane.
+  for a held admission on the standalone Gemini jail; evidence. After core and a passing
+  jail feasibility lane; merged only under G-REL.
 - **Cache**: retain, prune and `clear --all`.
 - **Dotfiles** (Consiliency/dotfiles, EXT-DOT): independent.
 
@@ -87,26 +91,37 @@ the authority path, and any jail change beyond AGYFRESH §2.11".
 
 Add the same line to "Top Interface-Freeze Gates".
 
-**Release hold G-REL (execution gate; release owner: the Agent-Harness Exec).** No tag,
-PyPI publication or deployment may contain the jail integration lane until its exemption is
-**proven**: the feasibility lane's recorded digest comparison, and EC-HOLD-14 passing in
-hosted CI on the lane's final head, show every canonical digest and qualification key
-unchanged. A publication reaches the dotfiles nightly consumers without a further step, so
-the hold is on the tag, not on the merge; if any deployment consumes `main` directly, the
-merge waits too. The hold is recorded by the release owner in the engagement plan and
-ledger; this roadmap and the phase plan reference it.
+**Release hold G-REL (execution gate; release owner: the Agent-Harness Exec).** The control
+is the merge. The jail integration lane's PR does not merge to `main` until the release
+owner has recorded an affirmative clearance on its **final PR head**. The clearance needs
+both proofs: the feasibility lane's recorded digest comparison, and EC-HOLD-14 passing in
+hosted CI on that head, with its required cases executed, not skipped. A push after the
+clearance voids it. Because the lane is never on `main` without the clearance, `main` stays
+releasable at every tag, every PyPI publication and every dotfiles nightly consumer is
+covered, and a deployment that consumes `main` directly is covered by the same gate; no
+pre-tag check is needed. The clearance is recorded in the engagement plan and ledger and
+linked from the PR.
 
 If a canonical key would change, the lane stops (it is outside this amendment). Should a
-later amendment admit such a change, the same hold applies until:
+later amendment admit such a change, it would also need:
 
-- **O4 — jail requalification (owner-gated)** covers every affected host, including the
-  dotfiles nightly consumers (the Consiliency dev0 accounts and the personal fleet). The
-  harness requalifies a jail by itself at first use (`seat_jail_autoqualify`), so
-  installation is the trigger; the owner is asked first. If the authorized host set is
-  narrower than the automatic rollout, publication waits until the other consumers are
-  pinned or opt in. A rollback that changes a canonical key again is under the same hold.
-  Evidence: `plans/evidence/agyfresh-jail-requalification.json`, stamped by the runner. No
+- **O4 — jail requalification (owner-gated)** covering every affected host, including the
+  dotfiles nightly consumers, before the change merges. The harness requalifies a jail by
+  itself at first use (`seat_jail_autoqualify`), so installation is the trigger; the owner
+  is asked first. A rollback that changes a canonical key again is under the same rule. No
   code lane runs it.
+
+**If the jail feasibility lane fails.** Once the coordinator has recorded the failed probe
+and the owner has accepted the gap, the cache lane and the REQUAL early slice follow the
+core lane, `routes.jailed` stays `"not_covered"`, and the phase closes on the delivered
+scope with EC-HOLD-13 and EC-HOLD-14 recorded as **unmet** and G-REL not applicable. If the
+owner instead calls for a new amendment, those lanes still proceed and the phase stays
+open for the jailed route.
+
+**Follow-up, not part of this phase.** Binding the sealed image for ordinary jailed
+launches as well. Its precondition is evidence, per supported deployment configuration, of
+this particular proc-descriptor bind through the owner chain and the seat-uid drop;
+evidence that the existing jail works on a configuration is not enough.
 
 ### 1.5 Phase REQUAL
 
@@ -215,36 +230,38 @@ digest gate and the jail's dependency binding are unchanged by §2.11.
 
 ### 2.8 New §2.11, the jailed standalone route
 
-For a standalone subject, `panel_invoker._prepare_jailed_gemini` hands the jail the
-admitted sealed image instead of a path.
+On the jailed standalone route, `panel_invoker._prepare_jailed_gemini` treats the two
+admission sources differently.
 
-- **Which launches.** Every **held** admission. Every ordinary (subject) admission too,
-  **only if** the feasibility lane's report shows the form verified on every supported
-  deployment configuration; otherwise ordinary launches keep today's path bind until that
-  evidence exists, and the report names what is missing. Both sources have the same owner
-  argv shape, so the choice changes no digest.
+- **Ordinary admission (`source == "subject"`): unchanged.** The production and probe jails
+  bind `realpath(admission.path)` as today. Launch behaviour is preserved, and the evidence
+  is unchanged apart from the additive `provider_admission_source: "subject"`. The route's
+  existing property stands: it executes the file at that path, so nothing in this section
+  about admitted bytes or source mutation is claimed for an ordinary launch.
+- **Held admission (`source == "lkg"`): the sealed image.** The remaining bullets apply to
+  it only. They are what "sealed launch" means.
 - **Same bytes in both jails.** The production jail and the probe jail each receive their
   own descriptor from `admission.image.reopen()`. Before a jail takes it,
   `seat_jail.build_seat_jail(..., provider_fd=fd)` requires a regular file carrying the
   write, grow, shrink and seal seals whose content hashes to the admission's digest;
   anything else is `SeatSandboxRefused` (`identity`). `provider_fd` with a dependency is
   refused. The seat's recorded `image_sha256` is that digest.
-- **Mount form: one, and only one.** `--ro-bind /proc/self/fd/<fd> /seat/bin/gemini`. The
-  source stands where the provider path stood, so the owner argv shape, the canonical
-  Gemini digest, every qualification key and every recorded pass are unchanged, and
+- **Mount form: one, and only one.** `--ro-bind /proc/self/fd/<fd> /seat/bin/gemini`, with
+  that literal spelling both in the argv and in the jail's `provider_path`. The source
+  stands where the provider path stands, so the owner argv shape, the canonical Gemini
+  digest, every qualification key and every recorded pass are unchanged, and
   `actual_profile_digest` needs no new normalization. If the seat uid can execute the mount
   only with the image's mode set to 0555, that mode is a production requirement: it is set
   on the jail's descriptor before the build and asserted by a regression test.
 - **No fallback form.** A data bind (`--ro-bind-data`) changes the one canonical Gemini
   digest. That digest is shared by `panel_invoker._require_canonical_jail`, by the
   dependency branch of `actual_profile_digest` (which restores the path-bind shape for the
-  managed route), by `seat_qualification_key.key_for_launch` and by the jail the qualifier
-  builds (`seat_jail_qualification._launch_probe`). Admitting it would need a route-aware
-  canonical through all four, which cannot be done without touching the managed branch or
-  its normalization. It is **not admitted** by this amendment. If the feasibility lane shows
-  the proc-descriptor form does not satisfy every check, the jail integration lane does not
-  start, the route stays `"not_covered"`, and the owner decides between a new amendment and
-  accepting the gap.
+  managed route), by `seat_qualification_key.key_for_launch` and by the jails the qualifier
+  builds (`seat_jail_qualification._run_probe_in_jail`). Admitting it would need a
+  route-aware canonical through all four, which cannot be done without touching the managed
+  branch or its normalization. It is **not admitted** by this amendment. If the feasibility
+  lane shows the proc-descriptor form does not satisfy every check, the jail integration
+  lane does not run and the route stays `"not_covered"`.
 - **Descriptor ownership.** A jail owns its descriptor from a successful build until
   `close_jail_fds`; it is in the jail's `pass_fds` for every launch of that jail. The
   admission is closed after both jails are built, and on any failure or cancellation before
@@ -254,14 +271,17 @@ admitted sealed image instead of a path.
   The provider process holds exactly the descriptors the profile declares and none on the
   image. Credentials, egress, filter, capabilities and uid drop are unchanged.
 - **Managed dependency and the qualifier:** unchanged in every line. The managed jail and
-  the qualifier's jail still pass the unstubbed canonical comparison.
+  every jail the qualifier builds still pass the unstubbed canonical comparison against
+  their own leg's canonical digest.
+- `routes.jailed` (§2.6) is `"covered"` once this is implemented: it describes whether a
+  hold can run on the route, which is all a held admission needs.
 
 ### 2.9 §3, requalification triggers: add rows and a paragraph
 
 | Event | Host store entries | Catalog records | Jail pass records |
 |---|---|---|---|
-| §2.11 bind (proc-descriptor form) | none | none | none: the canonical digests and qualification keys are unchanged, which EC-HOLD-14 proves rather than assumes |
-| Any change to a canonical jail digest or qualification key | none | none | not admitted here; under a later amendment, every affected key requalifies at first use, behind roadmap O4 |
+| §2.11 bind for a held admission (proc-descriptor form) | none | none | none: the canonical digests and qualification keys are unchanged, which EC-HOLD-14 proves rather than assumes |
+| Any change to a canonical jail digest or qualification key | none | none | not admitted here; under a later amendment, every affected key requalifies at first use, behind owner step O4 |
 
 Jail qualification and agy qualification are separate. A `seat_jail.py` or
 `panel_invoker.py` edit does not by itself change `seat_qci()`; `tests/test_agy_qci.py`

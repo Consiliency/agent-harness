@@ -12,8 +12,8 @@ automation:
 ## Context
 
 HOLD lets a Gemini seat run an already-qualified agy image when its selected one cannot be
-used for a subject-side reason. Revision 3 of this plan follows two reviews, one owner
-decision and the coordinator's rulings on the second review.
+used for a subject-side reason. Revision 4 of this plan follows three reviews, one owner
+decision and the coordinator's rulings on the second and third reviews.
 
 **Inputs this plan points at and does not restate:**
 
@@ -28,25 +28,29 @@ decision and the coordinator's rulings on the second review.
 **Owner decision (2026-11-20), jailed standalone seat: "Do it: sandbox runs verified
 copy."** The jailed standalone route executes the provider by path, so a held admission
 could not run there, and on a host that can jail, the Gemini review seat takes only that
-route. The route now binds the admitted sealed image. This needs the roadmap's seat-jail
-non-goal and HOLD's stop rule amended explicitly (SL-0), a feasibility gate before any jail
-code (SL-1), and its own integration lane (SL-3). The managed projection and its digest
-gate stay as they are; managed hosts recover at build time.
+route. For a held admission the route now binds the admitted sealed image. This needs the
+roadmap's seat-jail non-goal and HOLD's stop rule amended explicitly (SL-0), a feasibility
+gate before any jail code (SL-1), and its own integration lane (SL-3). The managed
+projection and its digest gate stay as they are; managed hosts recover at build time.
 
-**Coordinator rulings on the second review, as applied here:**
+**Coordinator rulings on the reviews, as applied here:**
 
 1. **One mount form, no fallback.** The proc-descriptor bind keeps every canonical jail
    digest and qualification key. A data bind would change the one canonical Gemini digest,
    which the managed route's canonical gate, the dependency-branch normalization, the
-   qualification key and the qualifier's own jail all share; it cannot be frozen without
-   touching the managed branch, so it is **ruled out** (amendment §2.8). If SL-1 shows the
-   proc-descriptor form fails any check, SL-3 does not start and the owner decides between
-   a new amendment and accepting the gap.
-2. **SL-1 selects on every check**, run through the real owner launch chain and uid drop,
-   on one local host; other configurations by static or recorded evidence only; never `ai`.
-3. **Release hold G-REL** is an execution gate of this plan (below).
-4. **SL-3's assertions** include the surviving descriptor set, credential and owner-store
-   sentinels, and the digest of the bytes actually executed.
+   qualification key and the qualifier's jails all share; it is **ruled out** (amendment
+   §2.8).
+2. **SL-1 decides GO or STOP on every check**, run through the real owner launch chain and
+   uid drop, on one local host; never `ai`.
+3. **Held only.** SL-3 binds the sealed image for held admissions. Ordinary jailed launches
+   keep the existing path bind, with launch and evidence behaviour preserved; the
+   admitted-byte and source-mutation guarantees are claimed for sealed launches only.
+   Doing the same for ordinary launches is a later, separate change (lanes artifact §J).
+4. **Release hold G-REL: the control is the merge** (Lane Index, below).
+5. **The failed-probe branch is dispatchable** (Lane Index, below).
+6. **SL-3's proofs** include the surviving descriptor set, credential and owner-store
+   sentinels, the digest of the bytes actually executed, and the managed and qualifier
+   jails against the real canonical guard.
 
 **Other binding inputs.** Owner decisions D3a, D3b, D3c, D4, D5. Coordinator rulings
 R-F0-1 (skip managed-release subjects; "not covered (managed release)") and R-F0-2
@@ -79,7 +83,7 @@ standalone Gemini provider bind. `admission_verdict(execute=False)` is unchanged
   - evidence keys `provider_admission_source`, `provider_hold_reason`, `provider_subject_image_sha256`.
 - [ ] IF-0-HOLD-2 — AGYFRESH §2.8 as amended: `agy_hold.retain(image, store)`, pruning to `HELD_KEEP`, `clear --all` removing `held/`.
 - [ ] IF-0-HOLD-4 — the recorded F0 outcome: managed-release subjects are not covered on any route.
-- [ ] IF-0-HOLD-5 — amendment §2.8 (AGYFRESH §2.11): `seat_jail.build_seat_jail(..., provider_fd=)`, the proc-descriptor bind, which launches use it, descriptor ownership, and the jailed seat's evidence keys. Declared by SL-0's roadmap amendment.
+- [ ] IF-0-HOLD-5 — amendment §2.8 (AGYFRESH §2.11): `seat_jail.build_seat_jail(..., provider_fd=)`, the proc-descriptor bind for a held admission, descriptor ownership, and the jailed seat's evidence keys. Declared by SL-0's roadmap amendment; produced only on the GO branch.
 - IF-0-HOLD-3 (Consiliency/dotfiles `stage_agy`) is produced under EXT-DOT, not by a lane here.
 
 ## Lane Index & Dependencies
@@ -99,18 +103,18 @@ SL-2 — HOLD-CORE: admission boundary, hold, discovery, status
   Blocks: SL-3, SL-4, SL-5, SL-6
   Parallel-safe: no
 
-SL-3 — JAILBIND: the standalone Gemini jail binds the sealed image
+SL-3 — JAILBIND: a held admission's standalone Gemini jail binds the sealed image
   Depends on: SL-0, SL-1, SL-2
-  Blocks: SL-4, SL-5, SL-6
+  Blocks: SL-6
   Parallel-safe: no
 
 SL-4 — HOLD-CACHE: retain, prune, clear
-  Depends on: SL-2, SL-3
+  Depends on: SL-2
   Blocks: SL-5, SL-6
   Parallel-safe: no
 
 SL-5 — FAILEXP: failed-entry expiry and the doctor row
-  Depends on: SL-2, SL-3, SL-4
+  Depends on: SL-2, SL-4
   Blocks: SL-6
   Parallel-safe: no
 
@@ -120,19 +124,36 @@ SL-6 — Documentation & spec reconciliation
   Parallel-safe: no
 
 External prerequisite for every lane: RESTORE's caps lane and its contract repin are merged
-(IF-0-RESTORE-1). SL-0 and SL-1 run in parallel; they share no file. SL-2 to SL-5 are
-strictly sequential, one PR each, each merged before the next starts. `Owned files` names
-each file once, under the first lane that writes it; a later lane's `Continues` line lists
-the files it also edits after the owner has merged.
+(IF-0-RESTORE-1). SL-0 and SL-1 run in parallel; they share no file. After them, one PR per
+lane, each merged before the next starts. `Owned files` names each file once, under the
+first lane that writes it; a later lane's `Continues` line lists the files it also edits
+after the owner has merged.
 
-**Execution gate G-REL (release hold).** Release owner: the Agent-Harness Exec, who
-records the hold in the engagement plan and ledger. No tag, PyPI publication or deployment
-may contain SL-3 until its exemption is proven by SL-1's recorded digest comparison and by
-EC-HOLD-14 passing in hosted CI on SL-3's final head. A publication reaches the dotfiles
-nightly consumers by itself, so the hold is on the tag; if any deployment consumes `main`
-directly, SL-3's merge waits too. A change that moved a canonical key is outside this plan
-(SL-3 stops); under a later amendment it would stay held until owner step O4 covered every
-affected host (amendment §1.4).
+**Branches after SL-1** (lanes artifact §A). The stanzas above are the hard dependencies;
+the branch decides where SL-3 sits.
+
+- **GO** — SL-1's report shows P1–P7 all hold. Order: SL-2 → SL-3 → SL-4 → SL-5 → SL-6.
+  SL-4 waits for SL-3 because they continue the same files.
+- **STOP, gap accepted** — the coordinator has recorded the failed probe and the owner
+  accepted the gap. Order: SL-2 → SL-4 → SL-5 → SL-6. SL-3 is not run; SL-6 treats it as
+  closed without a change. The jailed route stays `not_covered`. Closeout delivers the
+  non-jailed scope with EC-HOLD-13 and EC-HOLD-14 recorded as **unmet**, IF-0-HOLD-5 not
+  produced, and G-REL not applicable.
+- **STOP, new amendment** — the owner called for a new amendment instead. SL-2 → SL-4 →
+  SL-5 proceed the same way; SL-6 waits and the phase stays open for the jailed route,
+  under an amended plan.
+
+SL-2 is the same in every branch and does not wait for SL-1. Nothing after SL-2 starts
+until SL-1 has reported.
+
+**Execution gate G-REL (release hold): the control is the merge.** Release owner: the
+Agent-Harness Exec. SL-3's PR does not merge to `main` until the release owner has recorded
+an affirmative clearance on its **final PR head**. The clearance needs both proofs: SL-1's
+recorded digest comparison, and EC-HOLD-14 passing in hosted CI on that head with its cases
+executed. A push after the clearance voids it; the standing approval to merge accepted PRs
+does not replace it. `main` therefore stays releasable at every tag, and a deployment that
+consumes `main` directly is covered by the same gate; no pre-tag check is needed. The hold
+is recorded in the engagement plan and ledger (amendment §1.4).
 
 ## Lanes
 
@@ -151,12 +172,12 @@ affected host (amendment §1.4).
 | SL-0.3 | verify | SL-0.2 | the three files | (none) | `git diff --check` and both commands above |
 
 ### SL-1 — JAILPROBE: sealed-image jail feasibility gate
-- **Scope**: Decide, by observed runs on one local host with a stand-in executable and no production change, whether the proc-descriptor bind of the sealed image works in the standalone Gemini jail and which launches may use it.
+- **Scope**: Decide, by observed runs on one local host with a stand-in executable and no production change, whether the proc-descriptor bind of the sealed image works in the standalone Gemini jail: GO or STOP.
 - **Owned files**: `phase-loop-runtime/tests/test_agy_hold_jail.py`, `plans/evidence/agyfresh-jailbind-feasibility.md`
-- **Interfaces provided**: the feasibility result (go with a launch scope, or stop) for IF-0-HOLD-5
+- **Interfaces provided**: the feasibility result (GO or STOP) for IF-0-HOLD-5
 - **Interfaces consumed**: IF-0-RESTORE-1 (pre-existing), `seat_jail._owner_argv` (pre-existing), `seat_jail.jail_profile_digest` (pre-existing)
 - **Parallel-safe**: yes
-- **Notes**: Checks P1–P7, all required, and the decision rule: lanes artifact §D. Every check runs through the real owner launch chain and the uid drop, with the conformance stand-in; no agy, network, credential or provider call. One local host, after a headroom check; other supported configurations by static or recorded evidence only; a second-host run is a separate request to the coordinator; never `ai`. Any failing check stops the jail work. Whether a memfd can be a bind source is not assumed. The probe file merges with SL-3.
+- **Notes**: Checks P1–P7, all required, and the decision rule: lanes artifact §D. Every check runs through the real owner launch chain and the uid drop, with the conformance stand-in; no agy, network, credential or provider call. One local host, after a headroom check; a second-host run is a separate request to the coordinator; never `ai`. Any failing check is STOP: the report says which and how, and the coordinator records it. The report also lists supported configurations as observed or not, for the ordinary-launch follow-up only. Whether a memfd can be a bind source is not assumed. On GO the probe file merges with SL-3; on STOP the report alone is kept.
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
@@ -185,8 +206,8 @@ affected host (amendment §1.4).
 | SL-2.5 | docs | SL-2.4 | `CONTRACTS.md`, capabilities card, `CHANGELOG.md` | (none) | (none) |
 | SL-2.6 | verify | SL-2.5 | lanes artifact §E4 run list | all | §E4 |
 
-### SL-3 — JAILBIND: the standalone Gemini jail binds the sealed image
-- **Scope**: Make the jailed standalone Gemini route execute the admitted sealed image in both its production and probe jails, with the three evidence keys, by the proc-descriptor bind, changing no canonical digest and leaving the managed branch and the qualifier untouched.
+### SL-3 — JAILBIND: a held admission's standalone Gemini jail binds the sealed image
+- **Scope**: For a held admission, make the jailed standalone Gemini route execute the admitted sealed image in both its production and probe jails, with the evidence keys, by the proc-descriptor bind; keep ordinary launches on the existing path bind; change no canonical digest; leave the managed branch and the qualifier untouched.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail.py`, `phase-loop-runtime/tests/test_seat_jail.py`, `phase-loop-runtime/tests/test_panel_invoker.py`, `phase-loop-runtime/tests/test_gemini_seat_egress_1170.py`, `phase-loop-runtime/tests/test_seats_teamhost_integration.py`, `phase-loop-runtime/tests/test_seat_qualification_key.py`
 - **Continues**: SL-1's `tests/test_agy_hold_jail.py`; SL-2's `agy_hold.py` (`ROUTE_COVERAGE`), `tests/test_agy_hold.py`, `tests/test_agy_hold_managed.py`, `tests/test_agy_qci.py`, `tests/data/seat_launch_references.json`, `CONTRACTS.md`, `docs/advisor-board-capabilities-card.md`, `CHANGELOG.md`
 - **Interfaces provided**: IF-0-HOLD-5
@@ -194,11 +215,12 @@ affected host (amendment §1.4).
 - **Parallel-safe**: no
 - **Notes**:
   - Files, and the modules that are not edited: lanes artifact §F1. Tests: §F2. Cost, release hold and stop rules: §F3.
-  - Starts only if every SL-1 check passed. The launch scope (held only, or every standalone launch) is the one SL-1's report recommends.
-  - "What ran" is measured by the stand-in hashing its own running image, not by reading the path.
-  - Proves, unstubbed, that the managed-dependency jail and the jail the qualifier builds still pass the canonical comparison; it edits neither.
-  - Under G-REL: the PR's first paragraph states the hold and links both proofs.
-  - Cases that launch bwrap must run in hosted CI; a run that skips them all is not a pass.
+  - GO branch only. Held admissions only; there is no switch.
+  - Sealed launches: "what ran" is measured by the stand-in hashing its own running image, not by reading the path.
+  - Ordinary launches: the path bind is kept, with a real stable-source launch as the control and the evidence compared with the base tree's.
+  - Proves, unstubbed, that the managed-dependency jail and every jail `seat_jail_qualification._run_probe_in_jail` builds pass the real canonical guard against their own leg's digest; it edits neither and records no qualification pass.
+  - **Merges only under G-REL.** The PR's first paragraph states the hold and links both proofs.
+  - Cases that launch bwrap must run in hosted CI; a skipped required case is no proof.
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
@@ -213,9 +235,9 @@ affected host (amendment §1.4).
 - **Owned files**: `phase-loop-runtime/tests/test_agy_hold_cache.py`
 - **Continues**: SL-2's `agy_hold.py`, `agy_qualification.py`, `tests/data/seat_launch_references.json`, `CONTRACTS.md`, `CHANGELOG.md`
 - **Interfaces provided**: IF-0-HOLD-2
-- **Interfaces consumed**: IF-0-HOLD-1, IF-0-HOLD-5, `agy_hold.retain` (no-op), `admit_seat`
+- **Interfaces consumed**: IF-0-HOLD-1, `agy_hold.retain` (no-op), `admit_seat`
 - **Parallel-safe**: no
-- **Notes**: Files, tests, run list and stop rules: lanes artifact §G. All mutations take `Store.lock()` and use `dir_fd`; `retain` never waits and never raises. Cache files stay 0600 and are never bound into a jail.
+- **Notes**: Files, tests, run list and stop rules: lanes artifact §G. All mutations take `Store.lock()` and use `dir_fd`; `retain` never waits and never raises. Cache files stay 0600 and are never bound into a jail. After SL-3 on the GO branch, after SL-2 on a STOP branch; the jailed end-to-end case is written only on GO.
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
@@ -229,9 +251,9 @@ affected host (amendment §1.4).
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/doctor.py`, `phase-loop-runtime/src/phase_loop_runtime/schemas/phase-loop-doctor.v1.schema.json`, `phase-loop-runtime/src/phase_loop_runtime/schemas/phase-loop-doctor.v1.golden.json`, `phase-loop-runtime/tests/test_seats_teamhost_doctor.py`, `docs/TEAM-ONBOARDING.md`
 - **Continues**: SL-2's `agy_qualification.py`, `tests/test_agy_self_qualification.py`, `tests/test_agy_hold.py`, `CONTRACTS.md`, `docs/advisor-board-capabilities-card.md`, `CHANGELOG.md`
 - **Interfaces provided**: the failed-class part of IF-0-REQUAL-1 (pre-existing gate, REQUAL)
-- **Interfaces consumed**: `hold_status`, IF-0-HOLD-1, IF-0-HOLD-2, IF-0-HOLD-5
+- **Interfaces consumed**: `hold_status`, IF-0-HOLD-1, IF-0-HOLD-2
 - **Parallel-safe**: no
-- **Notes**: Changes, verification and acceptance: the detailed plan. Its goals belong to REQUAL and are accepted there.
+- **Notes**: Changes, verification and acceptance: the detailed plan. It is the same on every branch: the doctor prints whatever `ROUTE_COVERAGE` says. Its goals belong to REQUAL and are accepted there.
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
@@ -241,12 +263,12 @@ affected host (amendment §1.4).
 | SL-5.4 | verify | SL-5.3 | detailed plan, Verification | all | detailed plan |
 
 ### SL-6 — Documentation & spec reconciliation
-- **Scope**: After the lanes, confirm the docs each lane carried agree with what landed, record the spec closeout and SL-1's result against EC-HOLD-14, and update the plan manifest lifecycle; no code change.
+- **Scope**: After the lanes of the branch taken, confirm the docs each lane carried agree with what landed, record the spec closeout and the branch, and update the plan manifest lifecycle; no code change.
 - **Owned files**: `plans/manifest.json`
 - **Interfaces provided**: (none)
-- **Interfaces consumed**: IF-0-HOLD-1, IF-0-HOLD-2, IF-0-HOLD-4, IF-0-HOLD-5, `hold_status`
+- **Interfaces consumed**: IF-0-HOLD-1, IF-0-HOLD-2, IF-0-HOLD-4, `hold_status`, the feasibility result (SL-1)
 - **Parallel-safe**: no
-- **Notes**: Each code lane writes its own `CONTRACTS.md`, card and `CHANGELOG.md` text, because hosted CI checks docs per PR. The reducer itself is `no_doc_delta`. It records whether G-REL's two proofs exist; without them the phase is not complete.
+- **Notes**: Each code lane writes its own `CONTRACTS.md`, card and `CHANGELOG.md` text, because hosted CI checks docs per PR. The reducer itself is `no_doc_delta`. Closeout by branch: **GO** — every goal below, and the release owner's G-REL clearance on SL-3's merged head. **STOP, gap accepted** — every goal except EC-HOLD-13 and EC-HOLD-14, which are recorded unmet with SL-1's report as the reason; G-REL not applicable; the docs say the jailed route is not covered. **STOP, new amendment** — no closeout; the phase stays open.
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
@@ -281,14 +303,17 @@ call and no jail qualification run on a host is part of any lane.
   passed to those phases' plans.
 - **Requalification.** agy: none intended; `tests/test_agy_qci.py` decides under AGYFRESH
   §3. Jail: none, because no canonical digest or key changes; EC-HOLD-14 proves it and
-  G-REL holds the release until it has. The analysis is amendment §2.8–§2.9.
+  G-REL holds SL-3's merge until it has. The analysis is amendment §2.8–§2.9.
+- **Follow-up, not a lane.** The sealed bind for ordinary jailed launches (lanes artifact
+  §J, Q-A).
 - **Cost of the jail work.** Two extra lanes (SL-1 small, SL-3 medium to high) and two
   files this phase did not touch before. No extra memory.
 - **Not covered, stated in the docs each lane writes.** Managed-release subjects, on every
-  route (EC-HOLD-6, second branch). The jailed standalone route until SL-3 merges.
+  route (EC-HOLD-6, second branch). The jailed standalone route until SL-3 merges, and
+  permanently on a STOP branch. Ordinary jailed launches still execute a path.
 - **Open questions**: lanes artifact §J. None blocks a lane.
 - **Stop rule.** As amended (amendment §1.4): the managed projection, its digest gate, the
-  authority path, or any jail property other than the §2.11 bind.
+  authority path, or any jail property other than the §2.11 bind for a held admission.
 - **Rollback.** `[agy] hold = false` per host; every lane reverts with no state migration;
   `clear --all` frees the cache. Reverting SL-3 changes no canonical key.
 - **Known destructive changes**: none.
@@ -313,8 +338,8 @@ roadmap amendment; until it lands, the validator reports them as not yet in the 
 - [ ] EC-HOLD-10 — proven by `pytest tests/test_agy_hold_cache.py -k ec_hold_10`; falsified by a partial file after concurrent retain and clear. Path-entered control: through `admit_seat(first_use=True)` and `cli_main` `clear --all` on a real store directory.
 - [ ] EC-HOLD-11 — proven in Consiliency/dotfiles by `pytest tests/test_seat_authority.py` under EXT-DOT; falsified by `Refused` while a retained image verifies. No lane here changes it. Path-entered control: through that repository's `stage_agy`.
 - [ ] EC-HOLD-12 — proven by `pytest tests/test_agy_hold.py -k ec_hold_12`; falsified by a `status` output with no `hold` key. Path-entered control: through `cli_main` `status`.
-- [ ] EC-HOLD-13 — proven by `pytest tests/test_agy_hold_jail.py -k ec_hold_13` in hosted CI with the bwrap cases executed; falsified by restoring the path bind for a held admission (the source-rewrite case then executes other bytes), by an unsealed descriptor being accepted, by a descriptor outside the declared set surviving in the provider, or by a descriptor left open after a failed build. Path-entered control: through `panel_invoker._prepare_jailed_gemini`, the real `seat_jail.build_seat_jail` and the production owner chain, with the executed stand-in reporting its own digest.
-- [ ] EC-HOLD-14 — proven by `pytest tests/test_agy_hold_jail.py -k ec_hold_14` in hosted CI on SL-3's final head, with `plans/evidence/agyfresh-jailbind-feasibility.md`; falsified by any leg's canonical digest or the launch key differing from its base value, or by the managed-dependency jail or the qualifier's jail failing the real `_require_canonical_jail`. These two proofs are what releases G-REL. Path-entered control: through `seat_jail.build_seat_jail`, `seat_jail_qualification._launch_probe` and `panel_invoker._require_canonical_jail`, none stubbed.
+- [ ] EC-HOLD-13 — GO branch: proven by `pytest tests/test_agy_hold_jail.py -k ec_hold_13` in hosted CI with the bwrap cases executed; falsified by restoring the path bind for a held admission (the source-rewrite case then executes other bytes), by an unsealed descriptor being accepted, by a descriptor outside the declared set surviving in the provider, by a descriptor left open after a failed build, or by an ordinary launch's argv or evidence differing from the base tree's beyond the one additive key. STOP, gap accepted: recorded unmet. Path-entered control: through `panel_invoker._prepare_jailed_gemini`, the real `seat_jail.build_seat_jail` and the production owner chain, with the executed stand-in reporting its own digest.
+- [ ] EC-HOLD-14 — GO branch: proven by `pytest tests/test_agy_hold_jail.py -k ec_hold_14` in hosted CI on SL-3's final head, with `plans/evidence/agyfresh-jailbind-feasibility.md`; falsified by any leg's canonical digest or the launch key differing from its base value, or by the managed-dependency jail or a qualifier-built jail failing the real `_require_canonical_jail` against its own leg's digest. These two proofs are what the G-REL clearance needs. STOP, gap accepted: recorded unmet. Path-entered control: through `seat_jail.build_seat_jail`, `seat_jail_qualification._run_probe_in_jail` and `panel_invoker._require_canonical_jail`, none stubbed.
 - [ ] EC-HOLD-15 — proven by `pytest tests/test_agy_hold.py -k ec_hold_15`; falsified by a status that names a candidate for a managed subject, reports the jailed route covered before SL-3, or calls a candidate in use. Path-entered control: through `cli_main` `status`.
 
 ## Spec Closeout Plan
