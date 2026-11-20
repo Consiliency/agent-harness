@@ -5,6 +5,43 @@ outside-agent conformance runtime. It is metadata-only: the document itself did
 not publish a package, create a tag, dispatch a workflow, edit governed-pipeline,
 or make production merge enforcement live.
 
+## 0.7.37 release preparation
+
+Expected, unpublished artifacts: `phase_loop_runtime-0.7.37-py3-none-any.whl`
+and `phase_loop_runtime-0.7.37.tar.gz`.
+
+Candidate only: no tag, publication or installation is claimed. The candidate is
+based on merged main after the published 0.7.36 release. It carries provider
+cleanup that waits for kernel-confirmed completion (agent-harness#1994,
+agent-harness#2008), the same caps host for the agy release gate on every hosted
+runner pool (agent-harness#1993, agent-harness#2009), the OpenAI defaults moved to
+`gpt-6.2-astra` and `gpt-6.2-sol` (agent-harness#2010), the agy provenance member
+bound raised to 512 MB (agent-harness#2012, agent-harness#2014) and a working grok
+`seat-window probe-tools` with a receipt bound to the probed executable
+(agent-harness#2011, agent-harness#2013). The 0.7.37 changelog section lists the
+scope. The published 0.7.36 package remains unchanged. The package still requires
+Python 3.12 or newer.
+
+No live launch of `gpt-6.2-astra` or `gpt-6.2-sol` through the harness had been
+recorded when this candidate was prepared. The previous OpenAI IDs stay registered
+as explicit seats.
+
+Live routes stay disabled. This candidate does not lift sandbox activation holds
+or grant installed-provider qualification. The agy seat QCI is unchanged from
+0.7.36 at `agy_validator_v1`. agent-harness#2010 moves only the validator's
+source-closure pin, and the validator identity and verdict vector are unchanged.
+The agy catalog and its records are unchanged, so the retained QCI-bound record
+stays valid. The raised member bound qualifies no new agy image: a host that runs
+an agy release outside the catalog still needs its own live self-qualification
+after installation. The strict hermetic agy release gate still runs its own
+conformance suite and verifies the vendor archive at publication.
+
+Before publication, required candidate checks, standalone-wheel Gate A and the
+strict hermetic agy release gate must pass, and publication authority must be
+granted. Recording these gates does not authorize dispatch. After publication,
+verify registry artifacts, GitHub Release assets and the managed installation
+separately.
+
 ## 0.7.36 release preparation
 
 Expected, unpublished artifacts: `phase_loop_runtime-0.7.36-py3-none-any.whl`
