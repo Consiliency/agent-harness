@@ -1353,17 +1353,21 @@ def _host():
 def lookup(env, data, path, *, store=None):
     """Admission steps 2-5 for a non-release image; lookup only (no network, no qualification).
 
-    Called by ``gemini_heartbeat.admit`` with the bytes of its single read. Opt-out is
+    Called by ``gemini_heartbeat.admit`` and ``agy_integrity.check`` with the sealed image of
+    their single read (a ``gh.VerifiedImage``, whose ownership passes to this call), or with
+    bytes, which are sealed here. Opt-out is
     checked first and reads nothing else (D3). A failed entry refuses with no execution.
     Help is measured -- from the sealed memfd -- only after a provenance entry verifies
     against the live key (5.1 option (b)); the qualified entry is then verified against the
     full live key, including the measured help. A miss raises ``AdmissionMiss``.
     """
-    if not self_qualification_enabled():
-        raise ValueError(gh._CAPABILITY)
-    image = gh.VerifiedImage.from_bytes(data, path)
+    image = data if isinstance(data, gh.VerifiedImage) else None
     handed_off = False  # the memfd leaves only inside an Admission or an AdmissionMiss
     try:
+        if not self_qualification_enabled():
+            raise ValueError(gh._CAPABILITY)
+        if image is None:
+            image = gh.VerifiedImage.from_bytes(data, path)
         store = store or Store()
         try:
             host = _host()
@@ -1387,7 +1391,7 @@ def lookup(env, data, path, *, store=None):
         handed_off = True
         raise gh.AdmissionMiss(image, path)
     finally:
-        if not handed_off:
+        if not handed_off and image is not None:
             image.close()
 
 

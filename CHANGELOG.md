@@ -6,6 +6,23 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Fixed
+
+- The agy size bounds are defined once, in `agy_provenance`, and every reader looks them up
+  there when it runs: a 512 MB image (the seat readers in `gemini_heartbeat` and
+  `agy_integrity` stopped at 300 MB, with current upstream images at about 269 MB), a 256 MB
+  compressed release asset (was 128 MB, also in `scripts/verify_qualified_agy_image.py`),
+  and a new 1 GB bound on the decompressed tar stream of one archive. The archive reader now
+  decompresses below the tar parser and counts every byte it hands to it, including headers,
+  extension records and padding; it also limits header blocks to 4,096, extension-record
+  bytes to 4 MiB and consecutive extension headers to 8, and refuses sparse members. Seat
+  admission streams the image into its sealed memfd in 1 MiB chunks
+  (`VerifiedImage.from_fd`) instead of reading it into memory and copying it, so a seat
+  admission holds one copy of the image instead of about three. On the seat path a memfd
+  seal failure is the `agy_image_unqualified` refusal for a release member too. The seat
+  QCI, store keys, the shipped catalog and records are unchanged; nothing needs
+  requalification.
+
 ## [0.7.37] - Unreleased candidate
 
 ### Changed

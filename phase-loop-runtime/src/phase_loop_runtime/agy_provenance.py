@@ -27,6 +27,7 @@ import ssl
 import sys
 import tarfile
 from urllib.parse import urlsplit
+import zlib
 
 REPO = "google-antigravity/antigravity-cli"
 API_HOST = "api.github.com"
@@ -41,11 +42,29 @@ MAX_REDIRECTS = 3
 # At least 2, so that a non-pinned in-window build can exercise the path live.
 RECENCY_WINDOW = 4
 MAX_LISTING_BYTES = 4_000_000
-MAX_ARCHIVE_BYTES = 128_000_000
-# Upstream's native image passed 250 MB at 1.5.11 (268,841,672 bytes). The member is hashed
-# in 1 MiB chunks, so this bounds work, not memory; only ``keep_bytes`` (the upstream watch)
-# holds the member. ``scripts/verify_qualified_agy_image.py`` keeps the same bound.
+# The three agy size bounds (AGYFRESH §1.1), each defined only here. Every reader looks them
+# up as ``agy_provenance.<NAME>`` when it runs, so patching this module moves every reader.
+# They are ceilings, not a measure of what a host can afford.
+#
+# Largest compressed release asset.
+MAX_ARCHIVE_BYTES = 256_000_000
+# Largest agy image accepted anywhere: the archive member here, the seat readers
+# (``gemini_heartbeat``, ``agy_integrity``) and, as a tested-equal script literal,
+# ``scripts/verify_qualified_agy_image.py``. Upstream's image passed 250 MB at 1.5.11
+# (268,841,672 bytes). The member is hashed in 1 MiB chunks, so here this bounds work, not
+# memory; only ``keep_bytes`` (the upstream watch) holds the member.
 MAX_MEMBER_BYTES = 512_000_000
+# Largest decompressed tar stream read from one archive: every byte the tar parser is given
+# (headers, extension records, padding, skipped members and the member) counts, and so does
+# the sum of the declared member sizes. The compressed bound alone does not bound this.
+MAX_EXPANDED_BYTES = 1_024_000_000
+# What the tar parser may keep while reading one archive (review of AGYFRESH r2, finding 1):
+# header blocks of any kind, bytes of extension records (PAX, GNU long name and link), and
+# consecutive extension headers before one member (the parser recurses once per header).
+# Sparse members are refused outright: their maps are parser metadata of unbounded length.
+MAX_ARCHIVE_ENTRIES = 4096
+MAX_ARCHIVE_METADATA_BYTES = 4_194_304
+MAX_EXTENSION_CHAIN = 8
 MEMBER_NAME = "antigravity"
 USER_AGENT = "agent-harness-agy-provenance"
 
@@ -213,6 +232,9 @@ def release_asset(release: dict, host: HostPlatform) -> ReleaseAsset:
     return ReleaseAsset(tag, host.asset, url, match.group(1))
 
 
+_CHUNK_BYTES = 1024 * 1024
+
+
 class _HashingReader:
     """Feed every byte read by the tar reader through the archive digest, with a cap."""
 
@@ -220,7 +242,7 @@ class _HashingReader:
         self.stream, self.digest, self.size = stream, sha256(), 0
 
     def read(self, n=-1):
-        chunk = self.stream.read(1024 * 1024 if n is None or n < 0 else n)
+        chunk = self.stream.read(_CHUNK_BYTES if n is None or n < 0 else n)
         self.size += len(chunk)
         if self.size > MAX_ARCHIVE_BYTES:
             raise ProvenanceError(UNVERIFIED)
@@ -228,8 +250,75 @@ class _HashingReader:
         return chunk
 
     def drain(self):
-        while self.read(1024 * 1024):
+        while self.read(_CHUNK_BYTES):
             pass
+
+
+class _ExpandedReader:
+    """Gunzip below the tar parser, counting every decompressed byte handed to it.
+
+    Each read inflates at most one chunk, so the count is checked before the parser holds
+    the bytes: headers, extension records, padding, skipped members and the member itself
+    together stay within ``MAX_EXPANDED_BYTES``, however small the compressed input is.
+    """
+
+    def __init__(self, compressed):
+        self.compressed, self.size = compressed, 0
+        self.inflate = zlib.decompressobj(16 + zlib.MAX_WBITS)
+
+    def read(self, n=-1):
+        if n == 0:
+            return b""
+        limit = _CHUNK_BYTES if n is None or n < 0 else min(n, _CHUNK_BYTES)
+        while not self.inflate.eof:
+            source = self.inflate.unconsumed_tail or self.compressed.read(_CHUNK_BYTES)
+            chunk = self.inflate.decompress(source, limit)
+            if chunk:
+                self.size += len(chunk)
+                if self.size > MAX_EXPANDED_BYTES:
+                    raise ProvenanceError(UNVERIFIED)
+                return chunk
+            if not source:
+                raise ProvenanceError(UNVERIFIED)  # the compressed stream ended mid-member
+        return b""
+
+
+_EXTENSION_TYPES = frozenset({tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK,
+                              tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.SOLARIS_XHDTYPE})
+
+
+def _bounded_tarinfo():
+    """A ``TarInfo`` class for one archive read that bounds what the parser keeps.
+
+    Every header block, extension headers included, passes ``_proc_member`` before the
+    parser reads the record it announces, so the entry, metadata and chain bounds are
+    checked before that allocation.
+    """
+    budget = {"entries": 0, "metadata": 0, "chain": 0}
+
+    class _BoundedTarInfo(tarfile.TarInfo):
+        def _proc_member(self, archive):
+            budget["entries"] += 1
+            if (budget["entries"] > MAX_ARCHIVE_ENTRIES or self.size < 0
+                    or self.type == tarfile.GNUTYPE_SPARSE):
+                raise ProvenanceError(UNVERIFIED)
+            if self.type in _EXTENSION_TYPES:
+                budget["chain"] += 1
+                budget["metadata"] += self.size
+                if (budget["chain"] > MAX_EXTENSION_CHAIN
+                        or budget["metadata"] > MAX_ARCHIVE_METADATA_BYTES):
+                    raise ProvenanceError(UNVERIFIED)
+            else:
+                budget["chain"] = 0
+            return super()._proc_member(archive)
+
+        def _refuse_sparse(self, *_args):
+            raise ProvenanceError(UNVERIFIED)
+
+        # PAX-encoded sparse maps (GNU formats 0.0, 0.1 and 1.0) are refused like type 'S'.
+        _proc_gnusparse_00 = _proc_gnusparse_01 = _proc_gnusparse_10 = _refuse_sparse
+
+    return _BoundedTarInfo
 
 
 def _normalized(name: str) -> str:
@@ -242,12 +331,21 @@ def read_member(stream, asset: ReleaseAsset, *, keep_bytes: bool = False) -> tup
     Exactly one member may normalize to ``antigravity`` and it must be a regular file;
     a duplicate, a link or a device of that name refuses. The archive digest must equal
     the asset's published digest before the member digest is returned.
+
+    Bounds (AGYFRESH §1.1), all read at call time: compressed bytes ``MAX_ARCHIVE_BYTES``;
+    decompressed bytes given to the tar parser, and separately the declared sizes of all
+    members, ``MAX_EXPANDED_BYTES``; the member ``MAX_MEMBER_BYTES``; header blocks,
+    extension-record bytes and extension chains as ``_bounded_tarinfo`` says.
     """
     reader = _HashingReader(stream)
-    member_digest, member_bytes, seen = None, None, 0
+    member_digest, member_bytes, seen, declared = None, None, 0, 0
     try:
-        with tarfile.open(fileobj=reader, mode="r|gz") as bundle:
+        with tarfile.open(fileobj=_ExpandedReader(reader), mode="r|", bufsize=_CHUNK_BYTES,
+                          tarinfo=_bounded_tarinfo()) as bundle:
             for member in bundle:
+                declared += member.size
+                if declared > MAX_EXPANDED_BYTES:
+                    raise ProvenanceError(UNVERIFIED)
                 if _normalized(member.name) != MEMBER_NAME:
                     continue
                 seen += 1
@@ -257,7 +355,7 @@ def read_member(stream, asset: ReleaseAsset, *, keep_bytes: bool = False) -> tup
                 if handle is None:
                     raise ProvenanceError(UNVERIFIED)
                 h, parts, size = sha256(), [], 0
-                while chunk := handle.read(1024 * 1024):
+                while chunk := handle.read(_CHUNK_BYTES):
                     size += len(chunk)
                     if size > MAX_MEMBER_BYTES:
                         raise ProvenanceError(UNVERIFIED)
@@ -267,7 +365,7 @@ def read_member(stream, asset: ReleaseAsset, *, keep_bytes: bool = False) -> tup
                 member_digest = h.hexdigest()
                 member_bytes = b"".join(parts) if keep_bytes else None
         reader.drain()
-    except (tarfile.TarError, EOFError, OSError, http.client.HTTPException) as exc:
+    except (tarfile.TarError, EOFError, zlib.error, OSError, http.client.HTTPException) as exc:
         raise ProvenanceError(UNAVAILABLE if isinstance(exc, (OSError, http.client.HTTPException)) else UNVERIFIED) from exc
     if seen != 1 or member_digest is None:
         raise ProvenanceError(UNVERIFIED)

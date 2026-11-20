@@ -189,21 +189,21 @@ def test_an_admission_miss_closes_the_carried_image(world, monkeypatch):
 
 
 def test_a_memfd_seal_failure_in_lookup_is_the_typed_refusal(world, monkeypatch):
-    """Fault injection: lookup's ``VerifiedImage.from_bytes`` raises the seal error.
+    """Fault injection: sealing the image's memfd raises the seal error.
 
-    The broad ``RuntimeError`` mapping in ``_locally_qualified`` covers it, after the typed
-    re-raises. Mutation: re-raising ``AgyCanaryEvidenceError`` (the base of
-    ``ProviderProcessGroupQuiescenceError``), or catching it before the mapping, lets a seal
-    failure escape untyped.
+    The image is sealed by ``VerifiedImage.from_fd`` in ``check`` before lookup (AGYFRESH
+    §1.2), which maps the seal error to the typed refusal. Mutation: letting
+    ``AgyCanaryEvidenceError`` (the base of ``ProviderProcessGroupQuiescenceError``) escape
+    ``check`` untyped.
     """
     from phase_loop_runtime.agy_canary_evidence import AgyCanaryEvidenceError
 
     _seed(world)
 
-    def unsealable(**_kwargs):
+    def unsealable(_fd):
         raise AgyCanaryEvidenceError("synthetic memfd seal failure")
 
-    monkeypatch.setattr(gh, "_sealed_tree_fd", unsealable)
+    monkeypatch.setattr(gh, "_seal_image_memfd", unsealable)
     with pytest.raises(agy_integrity.AgyImageUnqualified, match="^agy_image_unqualified$") as caught:
         agy_integrity.admit_for_seat(str(world.agy), world.env)
     assert isinstance(caught.value.__cause__, AgyCanaryEvidenceError)
@@ -250,8 +250,7 @@ def test_a_quiescence_or_sandbox_refusal_in_lookup_keeps_its_type(world, monkeyp
     real_lookup = q.lookup
 
     def refuse(env, data, path, **kwargs):
-        image = gh.VerifiedImage.from_bytes(data, path)
-        image.close()  # lookup's own cleanup before it propagates
+        data.close()  # lookup owns the sealed image; its own cleanup before it propagates
         raise raised
 
     monkeypatch.setattr(q, "lookup", refuse)

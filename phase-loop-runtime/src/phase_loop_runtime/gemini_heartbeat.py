@@ -14,6 +14,7 @@ import signal
 import stat
 import time
 
+from . import agy_provenance
 from .agy_canary_evidence import AgyCanaryEvidenceError, _linux_memfd_seal_abi, _sealed_tree_fd
 
 
@@ -113,7 +114,6 @@ class GeminiQuiescenceError(RuntimeError):
     pass
 
 
-_MAX_IMAGE_BYTES = 300_000_000
 ADMISSION_CLASSES = ("release_qualified", "locally_qualified", "qualification_candidate")
 # Process-local qualification candidate. Set ONLY by the qualification worker entry
 # (agy_qualification._worker_entry) after it has proved its inherited fd is a fully
@@ -145,6 +145,41 @@ class VerifiedImage:
             raise
         return cls(fd, digest, path)
 
+    @classmethod
+    def from_fd(cls, fd, *, path=None):
+        """Stream an opened, ``fstat``-checked image descriptor into one sealed memfd (AGYFRESH §1.2).
+
+        The image is copied in 1 MiB chunks through one reused buffer while it is hashed, so
+        it exists once, in the memfd. The sealed memfd is re-hashed through the same buffer,
+        so peak anonymous memory is one chunk. Above ``agy_provenance.MAX_MEMBER_BYTES``
+        (read at call time) it refuses. The memfd gets the mode and seals of ``from_bytes``.
+        ``fd`` stays the caller's to close.
+        """
+        digest, size = sha256(), 0
+        buffer = bytearray(_CHUNK_BYTES)
+        view = memoryview(buffer)
+        image = _new_image_memfd()
+        try:
+            while count := os.readv(fd, [buffer]):
+                size += count
+                if size > agy_provenance.MAX_MEMBER_BYTES:
+                    raise ValueError(_CAPABILITY)
+                digest.update(view[:count])
+                written = 0
+                while written < count:
+                    step = os.write(image, view[written:count])
+                    if step <= 0:
+                        raise OSError(errno.EIO, "agy image memfd short write")
+                    written += step
+            _seal_image_memfd(image)
+            os.fchmod(image, 0o500)
+            if _fd_digest_into(image, buffer) != digest.hexdigest():
+                raise ValueError(_CAPABILITY)
+        except BaseException:
+            os.close(image)
+            raise
+        return cls(image, digest.hexdigest(), path)
+
     def reopen(self):
         """An independent, re-verified read of the SAME sealed memfd (own file offset)."""
         fd = os.open(f"/proc/self/fd/{self.fd}", os.O_RDONLY | os.O_CLOEXEC)
@@ -161,6 +196,48 @@ class VerifiedImage:
         if self.fd is not None:
             os.close(self.fd)
             self.fd = None
+
+
+_CHUNK_BYTES = 1024 * 1024
+
+
+def _new_image_memfd():
+    """An empty, sealable image memfd, created as ``_sealed_tree_fd(executable=True)`` does."""
+    _linux_memfd_seal_abi()
+    fd = os.memfd_create("agy-image", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
+    try:
+        os.fchmod(fd, 0o755)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _seal_image_memfd(fd):
+    """Apply and confirm the seals ``_sealed_tree_fd`` applies; a failure is the seal error."""
+    import fcntl
+
+    seal_abi = _linux_memfd_seal_abi()
+    required = (seal_abi["F_SEAL_WRITE"] | seal_abi["F_SEAL_GROW"]
+                | seal_abi["F_SEAL_SHRINK"] | seal_abi["F_SEAL_SEAL"])
+    try:
+        os.fsync(fd)
+        fcntl.fcntl(fd, seal_abi["F_ADD_SEALS"], required)
+        if fcntl.fcntl(fd, seal_abi["F_GET_SEALS"]) != required:
+            raise AgyCanaryEvidenceError("agy image memfd sealing did not hold")
+        os.lseek(fd, 0, os.SEEK_SET)
+    except OSError as exc:
+        raise AgyCanaryEvidenceError("agy image memfd sealing failed") from exc
+
+
+def _fd_digest_into(fd, buffer):
+    """``_fd_digest`` through a caller's reused buffer: no allocation per chunk."""
+    value, offset, view = sha256(), 0, memoryview(buffer)
+    while count := os.preadv(fd, [buffer], offset):
+        value.update(view[:count])
+        offset += count
+    os.lseek(fd, 0, os.SEEK_SET)
+    return value.hexdigest()
 
 
 def _fd_digest(fd):
@@ -195,17 +272,39 @@ class AdmissionMiss(ValueError):
         self.image, self.path = image, path
 
 
-def _read_image(path):
-    """The single read of the resolved agy (I1): final target, O_NOFOLLOW, regular, capped."""
+def _open_image_fd(path):
+    """Open the resolved agy (I1): final target, O_NOFOLLOW, regular, within the member bound."""
     fd = os.open(os.path.realpath(path), os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK | os.O_NOFOLLOW)
     try:
         info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_size > _MAX_IMAGE_BYTES:
+        if not stat.S_ISREG(info.st_mode) or info.st_size > agy_provenance.MAX_MEMBER_BYTES:
             raise ValueError(_CAPABILITY)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _open_image(path):
+    """The single read of the resolved agy (I1), streamed into one sealed memfd (AGYFRESH §1.2)."""
+    fd = _open_image_fd(path)
+    try:
+        return VerifiedImage.from_fd(fd, path=path)
+    finally:
+        os.close(fd)
+
+
+def _read_image(path):
+    """The resolved agy's bytes, for callers that need them (one read, capped at call time).
+
+    Seat admission uses ``_open_image``, which never holds the image outside its memfd.
+    """
+    fd = _open_image_fd(path)
+    try:
         chunks, size = [], 0
-        while chunk := os.read(fd, 1024 * 1024):
+        while chunk := os.read(fd, _CHUNK_BYTES):
             size += len(chunk)
-            if size > _MAX_IMAGE_BYTES:
+            if size > agy_provenance.MAX_MEMBER_BYTES:
                 raise ValueError(_CAPABILITY)
             chunks.append(chunk)
         return b"".join(chunks)
@@ -244,17 +343,16 @@ def admit(env, *, subject_path=None, keep_miss=False):
                 else shutil.which("agy", path=env.get("PATH", os.defpath)))
         if path is None:
             raise ValueError(_CAPABILITY)
-        data = _read_image(path)
-        digest = sha256(data).hexdigest()
-        if digest in QUALIFIED_IMAGES:
-            image = VerifiedImage.from_bytes(data, path)
-            return Admission(image, QUALIFIED_IMAGES[digest], "release_qualified", Path(path),
+        image = _open_image(path)
+        if image.sha256 in QUALIFIED_IMAGES:
+            return Admission(image, QUALIFIED_IMAGES[image.sha256], "release_qualified", Path(path),
                              source="subject")
     except (OSError, AgyCanaryEvidenceError, ValueError) as exc:
         raise ValueError(_CAPABILITY) from exc
     from . import agy_qualification
     try:
-        return agy_qualification.lookup(env, data, path)
+        # lookup takes ownership of the image: it is closed there unless it is handed on.
+        return agy_qualification.lookup(env, image, path)
     except AdmissionMiss as miss:
         # Only ensure_admitted takes the miss's image for first use; every lookup-only
         # caller closes it here, so a refusal never leaks a memfd (codex B2).

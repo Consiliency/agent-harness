@@ -24,7 +24,7 @@ cited inline); §6 records the binding findings of its re-review.
 |---|---|---|
 | `MAX_MEMBER_BYTES` | `512_000_000` (from agent-harness#2014) | largest agy image accepted anywhere |
 | `MAX_ARCHIVE_BYTES` | `256_000_000` (was `128_000_000`) | largest compressed release asset |
-| `MAX_EXPANDED_BYTES` | `1_024_000_000` (new) | largest sum of declared member sizes in one archive |
+| `MAX_EXPANDED_BYTES` | `1_024_000_000` (new) | largest decompressed tar stream of one archive, and largest sum of its declared member sizes |
 
 - Every consumer reads the constant **at call time** as `agy_provenance.<NAME>`. No module
   keeps an alias: `gh._MAX_IMAGE_BYTES` (`gemini_heartbeat.py:116`) is deleted, and the three
@@ -33,9 +33,38 @@ cited inline); §6 records the binding findings of its re-review.
 - `phase-loop-runtime/scripts/verify_qualified_agy_image.py` keeps script literals
   `MAX_MEMBER_BYTES` and a new `MAX_ARCHIVE_BYTES` (used at `:333`), tested equal to the
   module's.
-- `read_member` (`agy_provenance.py:239`) adds the declared sizes of **all** members as it
-  iterates and raises `UNVERIFIED` above `MAX_EXPANDED_BYTES`. This bounds decompression
-  work for unrelated members, which the compressed bound alone does not (F3).
+- **Archive accounting in `read_member`** (F3; satisfies §6.1). The compressed bound alone
+  does not bound decompression, and a sum of declared sizes does not bound what the tar
+  parser consumes before a member is yielded. So `read_member`:
+  - decompresses below the tar parser (`_ExpandedReader`: gzip inflated one bounded 1 MiB
+    chunk per read, beneath `tarfile` in `r|` mode) and counts every decompressed byte
+    handed to the parser against `MAX_EXPANDED_BYTES`: headers, extension records, padding,
+    skipped members and the member;
+  - also sums the declared sizes of **all** members as each is announced, and raises
+    `UNVERIFIED` above `MAX_EXPANDED_BYTES`;
+  - keeps the separate member-size check against `MAX_MEMBER_BYTES`;
+  - bounds what the parser keeps, checked per header before the parser reads the record
+    that header announces (`_bounded_tarinfo`):
+
+    | Constant | Value | Bounds |
+    |---|---|---|
+    | `MAX_ARCHIVE_ENTRIES` | `4096` | header blocks of any kind, extension headers included |
+    | `MAX_ARCHIVE_METADATA_BYTES` | `4_194_304` | bytes of extension records (PAX, GNU long name and link), summed over the archive |
+    | `MAX_EXTENSION_CHAIN` | `8` | consecutive extension headers before one member (the parser recurses once per header) |
+
+  - refuses sparse members: GNU type `S` and PAX-encoded sparse maps (GNU formats 0.0, 0.1
+    and 1.0).
+
+  Every refusal is `UNVERIFIED`. Integrity still rests on the archive digest, taken over
+  every compressed byte. These limits fail closed. If upstream archives ever carry PAX
+  records or sparse members beyond them, provenance reading refuses until the limits are
+  reviewed. Upstream 1.2.10 and 1.5.13 archives are a single ustar member.
+- **Maintenance dependency.** The parser bounds override private `tarfile.TarInfo` methods
+  (`_proc_member`, `_proc_gnusparse_00`, `_01`, `_10`). The test
+  `test_the_parser_hooks_exist_on_this_python` fails if any of them is renamed away, and it
+  must stay.
+- The verifier's `verify_archive` does not do this accounting. It checks the archive against
+  the catalog record's upstream digest first, and bounds the member by `MAX_MEMBER_BYTES`.
 
 ### 1.2 Memory rule
 
@@ -51,9 +80,20 @@ The safety control is the reader:
   image exists once, in the memfd.
 - `gh._read_image` + `VerifiedImage.from_bytes` (chunk list, `join`, then memfd: about three
   copies) is replaced by `from_fd` in `gh.admit` and `agy_integrity.check`. `from_bytes`
-  stays for callers that already hold bytes.
+  stays for callers that already hold bytes. `_read_image` stays for callers that need the
+  bytes, and reads `MAX_MEMBER_BYTES` at call time.
+- **Ownership.** A non-member image reaches `agy_qualification.lookup` as the sealed
+  `VerifiedImage` of that single read. `lookup` takes ownership of a supplied image: it
+  closes the image unless it hands it on inside an `Admission` or an `AdmissionMiss`,
+  including on the opt-out. `lookup` still accepts bytes from other callers.
+- **Seal failure on the seat path.** `agy_integrity.check` maps a memfd seal failure from
+  `from_fd` to `AgyImageUnqualified("agy_image_unqualified")`, for a release member as well
+  as a non-member.
 - **Frozen peak per seat admission:** at most **one** sealed image alive at a time, so
-  `MAX_MEMBER_BYTES` of shared memory plus 2 MiB. §2 keeps this true during a hold: the
+  `MAX_MEMBER_BYTES` of shared memory plus 2 MiB. The tested form of the 2 MiB is a traced
+  Python allocation (`tracemalloc`) below 2 MiB for `from_fd`, `gh.admit` and
+  `agy_integrity.check`. The memfd is re-hashed through the same reused buffer, so the
+  measured peak is about one chunk. §2 keeps this true during a hold: the
   subject's memfd is closed before the first candidate is opened, and a rejected candidate
   is closed before the next is opened.
 - **Concurrency.** Candidate loading in one process is serialized by a module lock in
@@ -433,7 +473,8 @@ coordinator ruled them **binding implementation requirements** for the lanes the
 lane's code review verifies them. Where the text above conflicts, the requirement governs and
 the lane's phase plan records the option it chose.
 
-1. **Archive expansion (RESTORE caps lane; §1.1, EC-RESTORE-2).** Summing declared
+1. **Archive expansion (RESTORE caps lane; §1.1, EC-RESTORE-2).** *Satisfied by §1.1
+   ("Archive accounting in `read_member`").* Summing declared
    `member.size` does not bound tar headers, padding or extension records parsed before a
    member is yielded. Count actual decompressed bytes below the tar parser against
    `MAX_EXPANDED_BYTES`, keep the separate member-size check, bound member count and parser

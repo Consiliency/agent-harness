@@ -172,13 +172,17 @@ def test_a_locally_qualified_image_is_admitted_when_the_caller_passes_env(tmp_pa
     admitted, seen = _Image(), {}
 
     def lookup(env, data, path):
-        seen.update(env=env, data=data, path=path)
+        # lookup receives the sealed image of the single read (AGYFRESH §1.2) and owns it.
+        seen.update(env=env, data=os.pread(data.fd, 1 << 20, 0), sha256=data.sha256, path=path)
+        data.close()
         return gemini_heartbeat.Admission(admitted, "synthetic-help-digest", "locally_qualified")
 
     monkeypatch.setattr(agy_qualification, "lookup", lookup)
     image = _unlisted(tmp_path)
     assert agy_integrity.check(image, {"HOME": "/h"}) is admitted
-    assert seen == {"env": {"HOME": "/h"}, "data": b"synthetic-unlisted-image", "path": str(image.resolve())}
+    assert seen == {"env": {"HOME": "/h"}, "data": b"synthetic-unlisted-image",
+                    "sha256": hashlib.sha256(b"synthetic-unlisted-image").hexdigest(),
+                    "path": str(image.resolve())}
 
 
 def test_without_env_an_unlisted_image_is_still_refused_without_a_lookup(tmp_path, monkeypatch):
