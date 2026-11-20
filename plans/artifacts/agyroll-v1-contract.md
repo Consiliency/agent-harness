@@ -11,6 +11,11 @@ agent-harness#1927 as written. The decisions are in the roadmap ("Owner Rulings
 those sections are binding: a lane that cannot meet a condition stops and routes an
 amendment.
 
+**AGYFRESH amendment (2026-11-20).** `plans/artifacts/agyfresh-contract.md` (AGYFRESH) adds
+the RESTORE and HOLD phases. It changes this file in three places only: the archive bounds in
+§1.2 (AGYFRESH §1.1), R6 as amended by R6′ in §6.1 (owner decision D8 = B, AGYFRESH §5.1), and
+the tick frequency in §6.2 (owner decision D9).
+
 ## 0. Vocabulary
 
 - **Image.** The bytes of the `antigravity` member that `agy` resolves to on a host.
@@ -53,8 +58,12 @@ attribute, and its `str()` stays the code.
   steady progress.
 - **Total bound.** Each (store, image) may fetch at most `TOTAL_DOWNLOAD_CAP = 12` uncached
   archives per rolling 24 h. The fetch times ride in the MAC-bound `transient` entry. That
-  caps the worst case at 12 × `MAX_ARCHIVE_BYTES` (128 MB), about 1.5 GB per image per day,
-  and `member_cache` is shared across images.
+  caps the worst case at 12 × `MAX_ARCHIVE_BYTES` (256 MB, AGYFRESH §1.1), about 3 GB per
+  image per day, and `member_cache` is shared across images.
+- **Archive bounds (AGYFRESH §1.1, §6).** `MAX_MEMBER_BYTES`, `MAX_ARCHIVE_BYTES` and
+  `MAX_EXPANDED_BYTES` are defined once in `agy_provenance` and read at call time.
+  `read_member` refuses `unverified` when an archive's expanded bytes exceed
+  `MAX_EXPANDED_BYTES`, in addition to the member and compressed-asset bounds.
 - **Retryable outcomes.** When the per-call budget runs out, the reason is `budget_exhausted`.
   When the total bound is reached, the reason is `download_cap_reached`. Both refuse with
   `unverified`.
@@ -395,7 +404,7 @@ outcomes from §1.2 do not count toward that limit. Spawn stays lookup-only.
     branch (steps 2 and 3).
   - **Two distinct signers (Q10).** The job's key and an **enrolled owner key**, both listed
     in the base branch's `agy-allowed-signers`. A PR without both valid signatures never
-    merges.
+    merges, except as R6′ below allows.
   - **Auto-merge (conditional supersession of Q10/(G)'s "a maintainer merges").** Once
     `main` has a non-bypassable ruleset, a data-only diff (`data/agy_catalog.json` plus agy
     records) auto-merges after both signatures verify. Every other diff, and every PR opened
@@ -403,6 +412,17 @@ outcomes from §1.2 do not count toward that limit. Spawn stays lookup-only.
   - **Today `main` has none.** The only ruleset covers `conform-evidence/*` tags. Classic
     protection requires status checks but no review, `enforce_admins` is false, and the
     `gate` check is self-certifiable (`.github/CODEOWNERS:5-9`).
+  - **R6′ (owner decision D8 = B, 2026-11-20; AGYFRESH §5.1).** R6 stands except: for a PR
+    whose diff is only `data/agy_catalog.json` and
+    `plans/evidence/agy-*-linux-x64-qualification.json`, that adds or ages non-`pinned`
+    members, the second Q10 signer may be the base branch's hosted provenance check instead
+    of the enrolled owner key. Owner signature remains required for any `pinned` change, any
+    other path, and any change to the signer list, verifier or merge-rule workflow.
+  - **What a compromised job identity can promote under R6′:** a **genuine** upstream stable
+    release recorded as having passed live qualification when it did not. It cannot promote
+    non-upstream bytes, a `pinned` flag, or a policy change. Hosted provenance
+    re-verification proves the bytes are upstream's; it does not prove the live operations
+    passed (AGYFRESH §5.1).
 - **Aging [R8].** Approved 2026-11-08. A member is kept while it is among the newest
   `CATALOG_KEEP = 3` or was published less than `CATALOG_MIN_AGE = 14 d` ago. A `pinned`
   member is never pruned, and pruning happens in the same PR. **Q11 is superseded for the agy
@@ -414,8 +434,9 @@ outcomes from §1.2 do not count toward that limit. Spawn stays lookup-only.
 
 ### 6.2 Install and observe
 
-- **Units.** `watch --install-units` writes and enables the existing `.service`/`.timer` (four
-  ticks a day).
+- **Units.** `watch --install-units` writes and enables the existing `.service`/`.timer`,
+  ticking hourly (`OnCalendar=hourly`, `RandomizedDelaySec=10m`; owner decision D9,
+  2026-11-20). A tick with nothing new is one API call.
 - **Status.** `--check` reports `installed`, `stale` or `absent`, plus the last tick's status
   line.
 - **Login [R7].** Approved 2026-11-08 on three conditions:
