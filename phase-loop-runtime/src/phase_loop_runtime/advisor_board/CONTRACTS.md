@@ -2230,12 +2230,67 @@ on first use.
 IF-0-FIRSTSEAT-3: `leg_exec.v1` records a generated attempt id, vendor, a
 closed allowlist of argv flags (no values or prompts), integer exit code,
 typed outcome, tri-state parent auth (`healthy`, `signed_out`, `unavailable`),
-structured turn/verdict availability and a byte bound. Store outside the
+structured turn/verdict availability, the closed `stage`, `refusal`, `secret_match`
+and `stream_rejection` fields (agent-harness#1823) and a byte bound. Store outside the
 checkout in operator-owned 0700 directories, using exclusive, no-follow 0600
 files and descriptor ownership/mode checks. Scan before bounding. Unavailable
 scan assurance omits the field; no unscanned output is retained.
 Board returns that did not reach an observed process retain a record with a null
 exit code and `leg_execution_unobserved`; they do not invent a process exit.
+A leg whose exit was not observed, whose spawn started no provider process and that
+stopped before any launch boundary (`subject`, `prepare` or `jail_build`) is
+`leg_execution_unlaunched`; past a launch boundary a zero count proves nothing, so it
+stays `leg_execution_failed`.
+A leg whose exit was observed as 0 but that ended in one of a jailed seat's explicit
+refusals (a stream, verdict, leak or token refusal) is `leg_execution_refused`, never
+`leg_execution_completed` (agent-harness#1823). Everything else keeps its outcome: a leg
+that still ends accepted, a nonzero or unobserved exit, a cancellation, and a clean exit
+that fails ordinary review classification without such a refusal (as on the jailed Claude
+and Codex routes).
+Two closed fields say where a leg stopped (agent-harness#1823): `stage`, the last
+checkpoint reached (`subject`, `prepare`, `admission`, `credential`, `jail_build`,
+`launch`, `stream`, `cleanup`, `broker`, `unlaunched`, or null), and `refusal`, the
+harness code of a typed refusal, raised or returned, else an allowlisted exception class
+(an `ExecutableDependencyError` with a code from its exact allowlist). Classification
+looks through one wrapper only: the broker client's failure when the adapter
+invocation's own outcome was its sole failure (no transport or cleanup error, deadline,
+cancellation, or abnormal or unknown client exit, the client's own exit being observed
+before cleanup signals it). Neither field ever carries an exception's message or
+provider text.
+`secret_match` records which configured value a jailed seat's output scan matched,
+and where: the kind (`bearer` or `proxy_credential`), the encoding (`raw`, `hex`,
+`b64`, `b64url`), the stream (`stdout`, `stderr`, `output_file`, or, for an after-exit
+match across a join of the scanned streams, every stream it covers joined by `+`,
+such as `stdout+stderr`), the phase (`live` or `post_exit`), the event, step and tool,
+and the line index and byte offset in that line (for a match across streams, in the
+first, where it starts). The labels are read by structure at fixed JSON paths from the
+line's bytes before the match -- Gemini `event`, `step_update.step_type` and
+`step_update.tool_name`; Codex `type` and `item.type` -- never from a nested key of the
+same name: an allowlisted string is kept, any other parsed value is `other`, and a
+label those bytes do not establish is null (a complete `true`, `false` or `null` is a
+parsed value, so `other`; only a number no delimiter follows may have been cut short).
+Live positions address the raw bytes of the stream. After-exit positions address the
+scan input the after-exit check reads, which has two sources: for `stdout` and
+`stderr`, the decoded, redacted and re-encoded output, not the raw provider bytes; for
+Codex's `output_file`, the raw bytes of the file as read from the seat. A match across
+streams is placed in the first stream it covers, so one that starts in `output_file`
+uses the raw file's coordinates. It never carries the value, any part or digest of it,
+or the provider text around it.
+When the tooled Gemini stream refuses a well-formed line as
+`gemini_seat_subagent_or_unknown_event`, the closed `stream_rejection` field says what
+kind of line it was: the reason, in the parser's own order (`bad_step_type` for an
+unrecorded step type, else `subagent_info` for a step carrying that key, or
+`unknown_event`), the line index, the line count and how many lines the same rules
+refuse; the line's event, step type, tool name and step state; which keys the line, its
+step and the step's `subagent_info` carry; per-event, per-step-type and per-tool counts
+for the whole stream; and the init event's keys and its mode values (`permission_mode`,
+`agent_mode`, `agentMode`, `mode`). Every name comes from a fixed allowlist (`other`
+outside it, null for an absent key) and every other value is a count or a position; it
+never carries a line, a value or provider text. It is computed from the retained stdout
+after the parser has refused it, so the parser and the agy validator closure are
+unchanged. A later line that does not decode, including one nested past the decoder's
+bound, is counted as `unparsed` and does not lose the refusal; a value that is not
+closed is never recorded, and the field is null.
 The provider wrapper preserves the record identity through board delivery.
 
 Auth classification requires a nonzero exit, independently observed absence
