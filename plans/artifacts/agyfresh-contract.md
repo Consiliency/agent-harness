@@ -181,8 +181,9 @@ during first use propagates and uses no attempt, as today.
 subject is a managed-release subject (§2.9) or `hold_enabled()` is false, raise `refusal`
 unchanged, opening nothing. Otherwise call `admit_held(...)` and return its admission, or
 raise `refusal` unchanged. A held admission is `gh.Admission(image, help_sha256, class,
-None, source="lkg")`: it carries **no path**. Every route executes the admission's sealed
-image (§2.11 for the jail); none may execute a path derived from a held admission.
+None, source="lkg")`: it carries **no path**. The memfd routes execute the admission's
+sealed image; the held jailed standalone route executes the private copy staged from it
+under §2.11. None may execute a path derived from a held admission.
 
 In the candidate loop a candidate-local error skips that candidate. Cancellation and the
 typed egress, quiescence and jail outcomes of a candidate's help measurement propagate.

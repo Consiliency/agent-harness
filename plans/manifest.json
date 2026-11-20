@@ -15757,7 +15757,7 @@
       "file": "plans/phase-plan-v1-agyroll-HOLD.md",
       "frozen_inputs": {
         "plans/artifacts/agyfresh-contract.md": {
-          "sha256": "14df926fcf51ea170c5673909d045cb5d50d5497bb2d1d0b5e8bfbeef9e775ab"
+          "sha256": "a8c1616a13dca51c70cd8aeb22abf744882a20641d435d501d7f962383505ad9"
         },
         "plans/artifacts/agyfresh-hold-amendment.md": {
           "sha256": "e024b8b505c3f83bfbc837873150c8ba07f901d7eea15d61b888a53550320a8e"

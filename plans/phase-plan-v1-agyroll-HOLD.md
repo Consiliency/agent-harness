@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: HOLD
 roadmap: specs/phase-plans-agyroll-v1.md
-roadmap_sha256: 3add28a6eaa4ad3db17aff33715b1dfef5e88f0a8cd61fc18cb0b97a1246dbaa
+roadmap_sha256: 6c48caeb931380e5da226760f65b2c7790a44ee3a311595dee6f7cff12f190df
 automation:
   suite_command: ["bash", "-lc", "cd phase-loop-runtime && PYTHONPATH=$PWD/src:$PWD/tests timeout 600 .venv/bin/python -m pytest -q -p no:cacheprovider tests/test_agy_hold.py tests/test_agy_hold_managed.py tests/test_agy_hold_jail.py tests/test_agy_hold_cache.py tests/test_seats_teamhost_gemini.py tests/test_seats_teamhost_doctor.py tests/test_seat_jail.py tests/test_gemini_seat_egress_1170.py tests/test_agy_integrity_seat_admission.py tests/test_agy_static_integrity.py tests/test_agy_catalog_data.py tests/test_advisor_board_config.py tests/test_gemini_heartbeat_bootstrap.py tests/test_agy_size_bounds.py tests/test_agy_qci.py tests/test_seat_reference_inventory.py && PYTHONPATH=$PWD/src:$PWD/tests timeout 600 .venv/bin/python -m pytest -q -p no:cacheprovider tests/test_agy_self_qualification.py && timeout 300 uv run --locked python scripts/verify_qualified_agy_image.py --contract"]
 ---
@@ -197,7 +197,7 @@ decision and the report's notes for SL-3 are recorded in AGYFRESH §2.11.
 - **Interfaces provided**: the feasibility result (GO or STOP) for IF-0-HOLD-5
 - **Interfaces consumed**: IF-0-RESTORE-1 (pre-existing), `seat_jail._owner_argv` (pre-existing), `seat_jail.jail_profile_digest` (pre-existing)
 - **Parallel-safe**: yes
-- **Notes**: Checks P1–P7, all required, and the decision rule: lanes artifact §D. Every check runs through the real owner launch chain and the uid drop, with the conformance stand-in; no agy, network, credential or provider call. One local host, after a headroom check; a second-host run is a separate request to the coordinator; never `ai`. Any failing check is STOP: the report says which and how, and the coordinator records it. The report also lists supported configurations as observed or not, for the ordinary-launch follow-up only. Whether a memfd can be a bind source is not assumed. On GO the probe file merges with SL-3; on STOP the report alone is kept.
+- **Notes**: **Completed; historical.** This lane ran and reported STOP on the first design; its text is kept as the record of that probe and directs no further work. Checks P1–P7, all required, and the decision rule: lanes artifact §D. Every check runs through the real owner launch chain and the uid drop, with the conformance stand-in; no agy, network, credential or provider call. One local host, after a headroom check; a second-host run is a separate request to the coordinator; never `ai`. Any failing check is STOP: the report says which and how, and the coordinator records it. The report also lists supported configurations as observed or not, for the ordinary-launch follow-up only. Whether a memfd can be a bind source is not assumed. On GO the probe file merges with SL-3; on STOP the report alone is kept.
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
@@ -353,8 +353,8 @@ call and no jail qualification run on a host is part of any lane.
 - **Requalification.** agy: none intended; `tests/test_agy_qci.py` decides under AGYFRESH
   §3. Jail: none, because no canonical digest or key changes; EC-HOLD-14 proves it and
   G-REL holds SL-3's merge until it has. The analysis is amendment §2.8–§2.9.
-- **Follow-up, not a lane.** The sealed bind for ordinary jailed launches (lanes artifact
-  §J, Q-A).
+- **Not a lane.** Ordinary jailed launches stay outside HOLD and keep the existing path
+  bind; a design that gives them an admitted-image guarantee is separate work.
 - **Cost of the jail work.** Two feasibility lanes (SL-1, spent; SL-7), one docs lane
   (SL-8) and the jail lane (SL-3), which adds one module and edits `panel_invoker.py`.
   Disk: one image per held leg while it runs. No extra memory.
@@ -363,8 +363,8 @@ call and no jail qualification run on a host is part of any lane.
   hosts whose state directory fails the staging name rules. Ordinary jailed launches still
   execute a path.
 - **Open questions**: lanes artifact §J. None blocks a lane.
-- **Stop rule.** As amended (amendment §1.4): the managed projection, its digest gate, the
-  authority path, or any jail property other than the §2.11 bind for a held admission.
+- **Stop rule.** As the roadmap's HOLD stop rule: the managed projection, its digest gate,
+  the authority path, or any jail property.
 - **Rollback.** `[agy] hold = false` per host; every lane reverts with no state migration;
   `clear --all` frees the cache. Reverting SL-3 changes no canonical key.
 - **Known destructive changes**: none.
@@ -374,8 +374,8 @@ call and no jail qualification run on a host is part of any lane.
 
 ## Acceptance Criteria
 
-Test paths are under `phase-loop-runtime/`. EC-HOLD-13 to -15 are declared by SL-0's
-roadmap amendment; until it lands, the validator reports them as not yet in the roadmap.
+Test paths are under `phase-loop-runtime/`. EC-HOLD-13, EC-HOLD-14 and EC-HOLD-15 are in the
+roadmap as amended.
 
 - [ ] EC-HOLD-1 — proven by `pytest tests/test_agy_hold.py -k ec_hold_1`; falsified by the same cases with no candidate present (the original refusal must return) and by a subject-side reason that admits without `provider_admission_source == "lkg"`. Path-entered control: through `admit_seat(first_use=True)` and `agy_integrity.admit_for_seat`.
 - [ ] EC-HOLD-2 — proven by `pytest tests/test_agy_hold.py -k ec_hold_2`; falsified by the candidate-opener spy recording a call, or by a seal failure or an unavailable seal ABI reaching the hold handler. Path-entered control: through `admit_seat(first_use=True)` and `agy_integrity.admit_for_seat`.

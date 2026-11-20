@@ -113,11 +113,12 @@ red when breached.
    hosts, recovery happens at build time (EXT-DOT) and through the RESTORE restore runs.
    HOLD's core lane records how it handles the non-jailed heartbeat route.
    The jailed **standalone** route executes the provider by path, so a held admission could
-   not run there either. D12 changes that route, for held admissions only, to execute the
-   admitted sealed image (AGYFRESH §2.11). Whether the one admitted mount form works is
-   decided by HOLD's jail feasibility lane, not assumed. If it does not, the route stays not
-   covered and the owner decides between a new amendment and accepting the gap; the rest of
-   HOLD is delivered either way.
+   not run there either. History, first design: D12 first changed that route, for held
+   admissions only, to execute the admitted sealed image, and left it to HOLD's jail
+   feasibility lane to decide whether the one admitted mount form worked. Had it not, the
+   route was to stay not covered while the owner chose between a new amendment and accepting
+   the gap, with the rest of HOLD delivered either way. That lane reported STOP and the
+   owner called for a new amendment. Current status:
    The first mount form (a sealed-memfd bind) failed its feasibility lane: neither
    bubblewrap nor the kernel binds a memfd. The route instead stages a private copy
    (AGYFRESH §2.11), subject to the second feasibility lane. Its guarantee rests on custody
@@ -132,7 +133,7 @@ red when breached.
 | Input | Pin |
 | --- | --- |
 | AGYROLL contract | `plans/artifacts/agyroll-v1-contract.md`, sha256 `a1bc1771467b68539faaa5c3d0f76d76afc04c4dca69c6d6471407521034f310` (repinned by AGYFRESH: §1.2 archive bounds, §6.1 R6′, §6.2 tick frequency, §6.3 warning) |
-| AGYFRESH contract (RESTORE, HOLD, ROLLJOB additions, R6′) | `plans/artifacts/agyfresh-contract.md`, sha256 `14df926fcf51ea170c5673909d045cb5d50d5497bb2d1d0b5e8bfbeef9e775ab` |
+| AGYFRESH contract (RESTORE, HOLD, ROLLJOB additions, R6′) | `plans/artifacts/agyfresh-contract.md`, sha256 `a8c1616a13dca51c70cd8aeb22abf744882a20641d435d501d7f962383505ad9` |
 | TEAMHOST contract §5 (agy key, `requalify_once` call sites) | `plans/seats-teamhost-contract.md`, sha256 `3ca3d3a57346acca8bf4e16e50304f00e3e2e19bc5bcd20b1831b4f837c3b1b1`. **REQUAL amends §5.** The amendment adds the runner and canary preflight call sites, and names `seat_qci()` as the `qualified` key. Its value equals `agy_profile_digest()` at `agy_validator_v1`, so no entry drops, and §5 stays correct after a validator bump. The repin lands in REQUAL's docs lane. |
 | Q10 and (G) promotion rules | `.consiliency/plans/detailed-lkg-cli-qualification-1602-20261014-0359.md` §(G) and the Q10 ruling |
 | Upstream provenance surface | the GitHub releases API for `google-antigravity/antigravity-cli`: per-asset `digest`; the attestations endpoint returned 404 on 2026-11-08 |
@@ -540,13 +541,14 @@ Core and cache carry the binding ordering and replacement-detection requirements
 §6.2, §6.3). Implements D3a–c, D4, D5 and D6.
 
 Stop rule: if the managed projection, its digest gate, the authority path, or any jail
-property other than the AGYFRESH §2.11 bind would have to change for a test to pass, the
-lane stops.
+property would have to change for a test to pass, the lane stops.
 
 **Non-goals**
 
 New refusal codes (AGYFRESH §4), store-key, catalog or record changes, executor and canary
-admission, any change to the authority path, and any jail change beyond AGYFRESH §2.11.
+admission, any change to the authority path, and any change to a jail property. The staged
+source and the start gate that AGYFRESH §2.11 defines for a held admission are in scope;
+they change no jail property.
 
 **Key files**
 
@@ -602,17 +604,20 @@ later amendment admit such a change, it would also need:
   is asked first. A rollback that changes a canonical key again is under the same rule. No
   code lane runs it.
 
-**If the jail feasibility lane fails.** Once the coordinator has recorded the failed probe
-and the owner has accepted the gap, the cache lane and the REQUAL early slice follow the
-core lane, `routes.jailed` stays `"not_covered"`, and the phase closes on the delivered
-scope with EC-HOLD-13 and EC-HOLD-14 recorded as **unmet** and G-REL not applicable. If the
+**If the jail feasibility lane fails (historical STOP contingency).** This paragraph was
+written for the first design. Its terms were: once the coordinator has recorded the failed
+probe and the owner has accepted the gap, the cache lane and the REQUAL early slice follow
+the core lane, `routes.jailed` stays `"not_covered"`, and the phase closes on the delivered
+scope with EC-HOLD-13 and EC-HOLD-14 recorded as **unmet** and G-REL not applicable; if the
 owner instead calls for a new amendment, those lanes still proceed and the phase stays
-open for the jailed route.
+open for the jailed route. What happened: the first feasibility lane reported STOP, the
+owner called for a new amendment, and the second feasibility lane reported GO, observed
+(Assumption 5). The gap-accepted closeout therefore does not apply to this phase as
+amended.
 
-**Follow-up, not part of this phase.** Binding the sealed image for ordinary jailed
-launches as well. Its precondition is evidence, per supported deployment configuration, of
-this particular proc-descriptor bind through the owner chain and the seat-uid drop;
-evidence that the existing jail works on a configuration is not enough.
+**Not part of this phase.** Ordinary jailed launches stay outside HOLD and keep the
+existing path bind. Any design that gives them an admitted-image guarantee is separate
+work, with its own feasibility evidence.
 
 **Spec closeout policy**
 

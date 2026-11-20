@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: HOLD
 roadmap: specs/phase-plans-agyroll-v1.md
-roadmap_sha256: 3add28a6eaa4ad3db17aff33715b1dfef5e88f0a8cd61fc18cb0b97a1246dbaa
+roadmap_sha256: 6c48caeb931380e5da226760f65b2c7790a44ee3a311595dee6f7cff12f190df
 automation:
   suite_command: ["bash", "-lc", "cd phase-loop-runtime && PYTHONPATH=$PWD/src:$PWD/tests timeout 600 .venv/bin/python -m pytest -q -p no:cacheprovider tests/test_agy_hold_jail.py tests/test_agy_hold_managed.py tests/test_agy_hold.py tests/test_gemini_seat_egress_1170.py tests/test_seats_teamhost_gemini.py tests/test_seats_teamhost_integration.py tests/test_agy_qci.py tests/test_seat_reference_inventory.py && timeout 300 uv run --locked python scripts/verify_qualified_agy_image.py --contract"]
 ---
