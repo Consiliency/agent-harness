@@ -25,6 +25,14 @@ assigns to the samples taken, and no output was used before the decision. Whenev
 file was still alive at a sample, the start was a mismatch. If V5(b)'s list is read as
 exhaustive, V5 does not hold, and the rule gives STOP.
 
+**Coordinator ruling: V5 holds; the outcome is GO, observed.** V5(b)'s two named outcomes are
+read as the outcomes expected, not as an exhaustive list. The outcome recorded above is the
+sampling limit §4.1 already states, and the v2 contract treats the runtime check as a
+fail-closed integrity backstop on top of custody of the staged file, not as attestation of
+everything a process executes. Every recorded decision is the one §4.3 assigns to the samples
+taken, and no output was used before the decision. SL-3 keeps the observer's ordered launch-chain
+rule (see "Notes for SL-3" below).
+
 **V8:** hosted CI can launch a seat jail. On `ubuntu-24.04` the D8 prerequisites are present,
 and the live D8 jail cases execute and pass on `main` (run 44812999409: 18 passed, no
 prerequisite skip).
@@ -239,3 +247,15 @@ These equal the values `plans/evidence/agyfresh-jailbind-feasibility.md` records
   - pytest output and JUnit;
   - the headroom gate output;
   - the cleanup proofs.
+
+## Notes for SL-3
+
+- Keep the observer's ordered launch-chain rule (bwrap, then setpriv, then env, then python3,
+  then the staged inode). A set-membership reading misclassifies a provider that execs a file
+  sharing an inode with a chain executable, such as a multicall coreutils binary (see the V5
+  table above).
+- These probes replaced the per-seat caps wrapper with a plain spawn, through the test fixture.
+  SL-3's tier 2 confirms that the observer identifies the provider slot the same way under the
+  real caps wrapper.
+- Whether the hosted runner image provides `socat`, which the proxy-only holder needs, is
+  unchecked; SL-3's CI tiers decide whether that matters.
