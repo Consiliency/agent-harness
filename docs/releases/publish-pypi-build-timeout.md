@@ -1,8 +1,9 @@
 # The publish-pypi build timeout is per path, and each number is measured
 
 `publish-pypi.yml`'s `build + verify wheel + sdist` job runs with
-`timeout-minutes: 25` on a pull request and `140` on a tag push or a manual
-dispatch. The two paths run different work (see below). On pull requests, over
+`timeout-minutes: 55` on a pull request and `140` on a tag push or a manual
+dispatch. The pull-request bound was 25 until agent-harness#1993; see
+"The pull-request bound must outlast the gate's own bounds" below. The two paths run different work (see below). On pull requests, over
 the 18 completed runs sampled on 2026-09-04 the job
 averaged **7.7 minutes** and peaked at **12**, so 25 is roughly twice the worst
 observed run — enough for a slow runner or a cold cache, and still a fast failure
@@ -69,3 +70,20 @@ this file (maintainer-gated); the version number is unchanged when nothing was
 published, and the release record is completed against the run that publishes.
 
 Raise a timeout only against a measurement, and record the measurement here.
+
+## The pull-request bound must outlast the gate's own bounds
+
+agent-harness#1993 moved the agy release gate's host preparation into
+`ci/seat-caps-host.sh` and added two always-run steps after the gate: the scratch
+teardown and the evidence upload. A job killed by its own timeout runs neither, so the
+job bound must exceed the gate step's bound plus theirs. Every command in the gate has
+its own `timeout`, and their worst-case sum plus three minutes for installing `uv` and
+syncing the locked environment fits in the gate step's `timeout-minutes: 40` (the
+verifier's own wrapper is 1200 s; its inner suite run is bounded at 900 s, against a
+measured 104-141 s). With five minutes for checkout, Python and the sandbox prerequisites,
+3 for teardown and 5 for the upload, the pull-request job needs 53 minutes and is set to
+55. `test_every_gate_bound_fits_inside_the_job_so_cleanup_and_evidence_still_run` keeps
+these numbers consistent. The five setup minutes are an allowance, not an enforced
+bound: a wedged setup step can still exhaust the job. Measured pull-request runs are unchanged by this: the bound only
+decides when a wedged gate is reported, now with its evidence. The tag and dispatch bound
+stays 140, which already covers the same steps plus the full Gate A suite.

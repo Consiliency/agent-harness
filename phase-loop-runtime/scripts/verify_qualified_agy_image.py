@@ -37,7 +37,8 @@ import tempfile
 import os
 import time
 from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+from urllib.parse import urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 import xml.etree.ElementTree as ElementTree
 
 
@@ -240,10 +241,48 @@ def release_key(version):
     return tuple(int(part) for part in parts)
 
 
-def fetch_release(url):
-    request = Request(url, headers={"Accept": "application/vnd.github+json",
-                                    "User-Agent": "agent-harness-qualified-image-check"})
-    with urlopen(request, timeout=30) as response:
+GITHUB_API_HOST = "api.github.com"
+TOKEN_ENV = "GITHUB_TOKEN"
+
+
+def _api_origin(url):
+    """Whether ``url`` is on the HTTPS GitHub API origin, the only place the token may go."""
+    parts = urlsplit(url)
+    return (parts.scheme == "https" and parts.hostname == GITHUB_API_HOST
+            and parts.port in (None, 443) and parts.username is None and parts.password is None)
+
+
+class _ApiOnlyRedirect(HTTPRedirectHandler):
+    """Checked at every hop: a redirect away from HTTPS is refused, and one off the API
+    origin is followed without the token. urllib's default handler copies every header,
+    Authorization included, to any target."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if urlsplit(newurl).scheme != "https":
+            raise HTTPError(newurl, code, "refusing a redirect away from HTTPS", headers, fp)
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None and not _api_origin(newurl):
+            new.remove_header("Authorization")
+        return new
+
+
+def _api_opener(*handlers):
+    return build_opener(_ApiOnlyRedirect(), *handlers)
+
+
+def fetch_release(url, *, environ=None, opener=None):
+    """One GitHub releases API document. When ``GITHUB_TOKEN`` is set (CI passes the job's
+    read-only token), the request is authenticated, which lifts the per-address limit that
+    unauthenticated calls from shared runner addresses exhaust (agent-harness#1993). The
+    token is sent to the HTTPS GitHub API origin only, at every redirect hop, and never
+    printed."""
+    headers = {"Accept": "application/vnd.github+json",
+               "User-Agent": "agent-harness-qualified-image-check"}
+    token = (os.environ if environ is None else environ).get(TOKEN_ENV, "").strip()
+    if token and _api_origin(url):
+        headers["Authorization"] = f"Bearer {token}"
+    request = Request(url, headers=headers)
+    with (opener or _api_opener()).open(request, timeout=30) as response:
         return json.load(response)
 
 
@@ -282,6 +321,7 @@ def download_asset(url, target, *, opener=None, sleep=None):
     after 1 s and 2 s; every attempt restarts the file; exhaustion re-raises. Size and digests
     are checked by the callers as before."""
     opener, sleep = opener or urlopen, sleep or time.sleep  # resolved per call (tests patch urlopen)
+    # Never authenticated: the asset URL redirects to a download host outside the API.
     request = Request(url, headers={"User-Agent": "agent-harness-qualified-image-check"})
     for attempt in range(DOWNLOAD_ATTEMPTS):
         try:
@@ -303,7 +343,9 @@ def run_conformance_suite(report, *, runner=subprocess.run, python=sys.executabl
     root = REPO / "phase-loop-runtime"
     # No ambient pytest or Python configuration reaches the run (PYTEST_ADDOPTS could deselect
     # an obligation, PYTEST_PLUGINS or PYTHONSTARTUP could load code): only the fixed keys.
-    base = {key: value for key, value in os.environ.items() if not key.startswith(("PYTEST_", "PYTHON"))}
+    # Nor does the API token: the suite makes no GitHub call.
+    base = {key: value for key, value in os.environ.items()
+            if not key.startswith(("PYTEST_", "PYTHON")) and key != TOKEN_ENV}
     env = {**base, "AGY_CONFORMANCE_STRICT": "1", "PYTHONDONTWRITEBYTECODE": "1",
            "PYTHONPATH": os.pathsep.join([str(root / "src"), str(root / "tests")])}
     done = runner([python, "-m", "pytest", "-q", "-p", "no:cacheprovider", str(CONFORMANCE_SUITE),

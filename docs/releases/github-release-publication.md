@@ -21,6 +21,14 @@ the successful trusted-publishing runs. No artifacts were rebuilt or republished
 Version 0.7.28 was not backfilled: its publication run failed and PyPI has no files
 for that version. The existing tag was left untouched.
 
+If the build job's release gate fails on a tag, a fix merged afterwards cannot reach that
+tag: a rerun keeps the tag's commit and workflow file, and a dispatch from a branch cannot
+publish. Rerunning the failed jobs re-executes the unchanged gate. An attempt that passes it
+is valid strict evidence for that attempt, so a bounded number of failed-job reruns is
+acceptable while each failure carries the same known host-prerequisite signature and PyPI
+still has no files for the version. Any other failure stops the reruns for investigation.
+Otherwise leave the tag untouched and release the next version from `main`, as for 0.7.28.
+
 GitHub's latest-release designation alone is not evidence of the newest package
 publication or installed version. Reconcile the package registry, tag/workflow
 provenance and local installation manifest separately.
