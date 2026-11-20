@@ -26,9 +26,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   into the seat's `.gemini/antigravity-cli/` was `{}`. It is now `{"agentMode":""}`, the
   value agy itself saves when Default is chosen. The seat's probe jail and the jail
   qualification's seat shape write the same file. The seat argv is unchanged and still
-  passes no `--mode`. The heartbeat route still passes `--mode plan` with its own owned
-  settings. The agy validator closure, the seat QCI, the jail profile digests and the
-  Claude-SDK proof inputs are unchanged, so nothing needs requalification.
+  passes no `--mode`. The brokered agy routes that run today (the heartbeat route,
+  advisory documents and the brokered president) pass `--mode plan` and keep their own
+  owned settings. The brokered builder can also form a staged invocation with no mode, but
+  no production Gemini route reaches it. Existing qualification pins are unchanged.
 - Seat scopes use a fixed description. `capped_popen` passes `systemd-run` a
   `--description` that names only the seat key's digest (the value already in the unit
   name), so a scope's unit metadata no longer repeats the seat's command line. The
