@@ -6,6 +6,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+## [0.7.37] - Unreleased candidate
+
 ### Changed
 
 - The OpenAI defaults move to GPT-6.2. Codex roadmap, plan and review, `skill-maintenance`
@@ -18,46 +20,52 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   also an accepted explicit seat. The opencode, Gemini, Claude and Grok defaults are
   unchanged. The agy validator's source-closure pin moves because the model registry
   gained two rows (only `advisor_board.registries:_MODEL_DEFS` changed); the validator
-  identity and its verdict vector are unchanged.
+  identity and its verdict vector are unchanged (agent-harness#2010). No live launch of
+  `gpt-6.2-astra` or `gpt-6.2-sol` through the harness had been recorded when this release
+  was prepared.
 
 ### Fixed
 
 - Provider cleanup now waits for kernel-confirmed completion of its contained process tree
-  (agent-harness#1994).
+  (agent-harness#1994, agent-harness#2008).
 - The agy release gate in `publish-pypi.yml` prepares the same host on every hosted runner
-  pool (agent-harness#1993). `ci/seat-caps-host.sh` delegates the user manager's controllers
-  and mounts a private loop-backed scratch filesystem for the automatic scratch paths and
-  the temporary directory, so the per-seat caps' I/O device plan no longer depends on a
-  pool's storage layout, including inside the conformance suite's test session. Teardown
-  and an evidence upload run on every outcome. A per-check readiness report records which
-  readiness check fails, and the new `seat-caps-gate.yml` probe also validates that the I/O
-  bandwidth caps bind on the scratch device. The pull-request job timeout is 55 minutes so
-  that cleanup and evidence outlast the gate's own bounds. The verifier authenticates its
-  GitHub releases API reads with the job's read-only token when `GITHUB_TOKEN` is set (also
-  in the nightly `--upstream-only` check), because unauthenticated reads from shared runner
-  addresses hit the rate limit. Strict conformance and runtime caps behaviour are unchanged.
+  pool (agent-harness#1993, agent-harness#2009). `ci/seat-caps-host.sh` delegates the user
+  manager's controllers and mounts a private loop-backed scratch filesystem for the
+  automatic scratch paths and the temporary directory, so the per-seat caps' I/O device plan
+  no longer depends on a pool's storage layout, including inside the conformance suite's
+  test session. Teardown and an evidence upload run on every outcome. A per-check readiness
+  report records which readiness check fails, and the new `seat-caps-gate.yml` probe also
+  validates that the I/O bandwidth caps bind on the scratch device. The pull-request job
+  timeout is 55 minutes so that cleanup and evidence outlast the gate's own bounds. The
+  verifier authenticates its GitHub releases API reads with the job's read-only token when
+  `GITHUB_TOKEN` is set (also in the nightly `--upstream-only` check), because
+  unauthenticated reads from shared runner addresses hit the rate limit. Strict conformance
+  and runtime caps behaviour are unchanged.
 - agy self-qualification can verify the provenance of current upstream images again. The
   `antigravity` member of upstream agy 1.5.11's linux-x64 archive is 268,841,672 bytes, so
   the 250 MB member bound in `agy_provenance` skipped every in-window release, and
   `phase-loop agy-qualification run` ended `gemini_heartbeat_provenance_unverified`. The
   bound is now 512 MB, and `scripts/verify_qualified_agy_image.py` uses the same value.
   The member is still hashed in 1 MiB chunks, and the 128 MB archive bound is unchanged.
-  The seat QCI, the validator closure, the shipped catalog and existing store entries are
-  unchanged, so nothing needs requalification.
+  This fix leaves the seat QCI, the validator closure, the shipped catalog and existing
+  store entries unchanged, so nothing needs requalification (agent-harness#2012,
+  agent-harness#2014).
 - `phase-loop seat-window probe-tools --vendor grok` no longer crashes with
   `AttributeError` when no executable-dependency lease is bound, which is always the case
   for the operator CLI. The probe now resolves the grok binary on the environment it runs
   the binary with, and passes that environment to the receipt writer.
   Before this fix, no tool-probe receipt could be written, so every grok seat was deferred
-  with `grok_tool_surface_unverified`. The launch gate is unchanged.
+  with `grok_tool_surface_unverified`. The launch gate is unchanged (agent-harness#2011,
+  agent-harness#2013).
 - A grok tool-probe receipt now certifies only the executable the probe measured. The probe
   measures the resolved path, its content digest and its file state through one descriptor,
   before and after the probe runs, and passes that identity to the receipt writer. The
   writer certifies the measured digest and refuses if a fresh measurement at publication
   differs. A replacement made while the probe ran and restored before its
-  final check is also refused. The bound is documented on `_grok_probe_identity`.
+  final check is also refused. The bound is documented on `_grok_probe_identity`
+  (agent-harness#2013).
 
-## [0.7.36] - Unreleased candidate
+## [0.7.36] - 2026-11-19
 
 ### Added
 
