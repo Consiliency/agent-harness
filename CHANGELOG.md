@@ -22,6 +22,22 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   seal failure is the `agy_image_unqualified` refusal for a release member too. The seat
   QCI, store keys, the shipped catalog and records are unchanged; nothing needs
   requalification.
+- agy self-qualification no longer depends on the directory it runs from, so
+  `phase-loop agy-qualification run` and first-use qualification work from any directory.
+  Each operation's board now reviews a constant one-file repository that the coordinator
+  creates for that operation and removes afterwards. It goes in a private directory of
+  the qualification store, or in `/tmp` when the store's location cannot be proven
+  private or contains a `%` (git decodes percent escapes in the `file://` URL the board
+  clones from). The repository holds one commit with a fixed identity, date and message, so
+  its object ids are fixed. Before running the board, the worker checks the repository's
+  location, ownership and mode, its exact files, objects and refs, and its index. After
+  the board, the worker checks that the staged tree is the repository's. Before, the
+  board used the caller's working directory, so a run from a directory that was not a git
+  repository, or from a repository with no tracked file, stopped before agy started and
+  counted as a transient attempt. When an operation ends before the provider is observed,
+  `failure.json` now also records the worker's terminal status and detail as
+  `worker_terminal`. The validator, seat QCI, store keys, the shipped catalog and records
+  are unchanged; nothing needs requalification.
 
 ## [0.7.37] - Unreleased candidate
 

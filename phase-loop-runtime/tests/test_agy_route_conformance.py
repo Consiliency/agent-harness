@@ -180,7 +180,9 @@ def _qualify(mode: str, base: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
     # The store defaults under $HOME; the inherited env of the qualification worker is the
     # test's own, so both the coordinator and the worker resolve this private store.
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.chdir(REPO)  # the worker's board needs a canonical repository authority
+    # Not a git checkout: the driver gives each operation's board its own review authority,
+    # so the series must not depend on the directory it runs from.
+    monkeypatch.chdir(work)
     # As on a real first use, the image under qualification IS the `agy` on PATH. No host
     # agy may be reachable: the run must not depend on what this machine has installed.
     binary = _build(mode, base)

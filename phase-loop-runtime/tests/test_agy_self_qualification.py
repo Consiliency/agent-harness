@@ -534,6 +534,604 @@ def test_manual_shim_path_refuses_a_non_release_image(world):
         q.release_image_from_path(world.env)
 
 
+# ------------------------------------------------------- the worker's review authority
+
+def _authority_git(repo, *args):
+    return subprocess.run(["/usr/bin/git", "-C", str(repo), "-c", "user.name=Fixture",
+                           "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", *args],
+                          check=True, capture_output=True).stdout
+
+
+def _operation_root(tmp_path, name="completion"):
+    root = tmp_path / name
+    root.mkdir(mode=0o700)
+    (root / "artifact.md").write_text("synthetic qualification artifact\n")
+    (root / "brief.md").write_text("synthetic qualification brief\n")
+    return root
+
+
+@pytest.fixture
+def authority_base(tmp_path, monkeypatch):
+    """A private parent for the authorities a test creates (the production candidates are
+    the store's private area, then /tmp; their selection has its own tests)."""
+    base = tmp_path / "authorities"
+    base.mkdir(mode=0o700)
+    monkeypatch.setattr(q, "_authority_bases", lambda: [base])
+    return base.resolve()
+
+
+@pytest.fixture
+def worker_process(monkeypatch):
+    """``q.worker`` run in-process: no PDEATHSIG on the test runner, its candidate and the
+    SIGTERM/SIGINT handlers it installs restored afterwards."""
+    monkeypatch.setattr(q, "_set_parent_death_signal", lambda: None)
+    monkeypatch.setattr(gh, "_CANDIDATE", None)
+    saved = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+    yield
+    for sig, handler in saved.items():
+        signal.signal(sig, handler)
+
+
+def _capture_board(monkeypatch, *, staged=None, status="OK"):
+    calls = []
+    staged = q._AUTHORITY_MANIFEST_SHA256 if staged is None else staged
+
+    def invoke_board(board, artifact, **kwargs):
+        calls.append({**kwargs, "cwd": Path.cwd()})
+        leg = SimpleNamespace(review_monitoring={}, harden_isolation_evidence={},
+                              sandbox_placement_evidence={} if staged == "absent" else {"sandbox_snapshot_sha256": staged},
+                              status=status, text="AGREE" if status == "OK" else "", detail=None)
+        return SimpleNamespace(legs=(leg,))
+
+    monkeypatch.setattr(q._panel(), "invoke_board", invoke_board)
+    return calls
+
+
+def _run_worker(world, monkeypatch, root, authority):
+    monkeypatch.setattr(q, "provenance_gate", lambda *a, **k: True)
+    fd = _memfd(world.image, FULL)
+    try:
+        q.worker(root, fd, None, authority)
+    finally:
+        os.close(fd)
+
+
+def test_the_authority_repository_is_the_pinned_constant(tmp_path, authority_base):
+    """The pinned object ids are the SHA-1 of the constant objects (computed here without
+    git), git reports the same ones, the repository is fsck-clean, and two creations give
+    distinct private directories holding the identical repository."""
+    import hashlib
+
+    from phase_loop_runtime import review_stage
+
+    objects = q._authority_objects()
+    assert {hashlib.sha1(raw).hexdigest() for raw in objects.values()} == set(objects)
+    assert set(objects) == {q._AUTHORITY_BLOB, q._AUTHORITY_TREE, q._AUTHORITY_COMMIT}
+    old = os.umask(0o022)
+    try:
+        first, second = q._create_review_authority(), q._create_review_authority()
+    finally:
+        os.umask(old)
+    try:
+        assert first != second and first.parent == second.parent == authority_base
+        for authority in (first, second):
+            assert stat.S_IMODE(authority.stat().st_mode) == 0o700
+            assert _authority_git(authority, "rev-parse", "HEAD").decode().strip() == q._AUTHORITY_COMMIT
+            assert _authority_git(authority, "for-each-ref", "--format=%(refname)").decode() == "refs/heads/qualification\n"
+            assert _authority_git(authority, "log", "--format=%H %an <%ae> %at %ct %s").decode() == (
+                f"{q._AUTHORITY_COMMIT} phase-loop <qualification@invalid> 946684800 946684800 qualification authority\n")
+            assert _authority_git(authority, "fsck", "--strict", "--no-dangling") == b""
+            assert review_stage.review_tree_manifest_sha256(authority) == q._AUTHORITY_MANIFEST_SHA256
+            assert q._verified_review_authority(str(authority)) == authority
+    finally:
+        q._remove_review_authority(first)
+        q._remove_review_authority(second)
+    assert not first.exists() and not second.exists()
+
+
+def test_worker_reviews_the_coordinators_authority_from_a_non_git_cwd(world, monkeypatch, worker_process,
+                                                                        authority_base):
+    """The board's review authority is the coordinator's, never the inherited cwd, and never
+    a governed ``canonical_repo_authority``. Mutations: restoring ``repo_dir=Path.cwd()``
+    without the chdir, passing ``canonical_repo_authority``, dropping the chdir."""
+    plain = world.tmp / "not-a-repo"
+    plain.mkdir()
+    monkeypatch.chdir(plain)
+    root = _operation_root(world.tmp)
+    authority = q._create_review_authority()
+    calls = _capture_board(monkeypatch)
+    _run_worker(world, monkeypatch, root, str(authority))
+    call, = calls
+    assert call["repo_dir"] == authority
+    assert "canonical_repo_authority" not in call
+    assert call["cwd"] == authority
+    assert json.loads((root / "terminal.json").read_text())["result"]["status"] == "OK"
+
+
+def _plant(how, authority, monkeypatch):
+    """Change a created authority one way; returns the path the worker is then given."""
+    git_dir = authority / ".git"
+    if how == "missing":
+        q._remove_review_authority(authority)
+    elif how == "absent":
+        return None
+    elif how == "relative":
+        return os.path.relpath(authority)
+    elif how == "alias":
+        alias = authority.parent.parent / "alias"
+        alias.symlink_to(authority.parent)
+        return str(alias / authority.name)
+    elif how == "mode":
+        authority.chmod(0o750)
+    elif how == "symlink":
+        moved = authority.with_name(authority.name + "-moved")
+        authority.rename(moved)
+        authority.symlink_to(moved)
+    elif how == "dotdot":
+        return f"{authority.parent}/../{authority.parent.name}/{authority.name}"
+    elif how == "foreign_owner":
+        # Only the authority directory reports another owner (a chown needs root).
+        real_lstat = os.lstat
+
+        def lstat(path, *args, **kwargs):
+            info = real_lstat(path, *args, **kwargs)
+            if os.fspath(path) == str(authority):
+                fields = list(info[:10])
+                fields[4] = info.st_uid + 1
+                return os.stat_result(fields)
+            return info
+
+        monkeypatch.setattr(q.os, "lstat", lstat)
+    elif how == "unsafe_ancestor":
+        authority.parent.chmod(0o770)
+    elif how == "ancestor":
+        # Its own repository replaced by an inert ``.git`` directory; the parent tracks it.
+        subprocess.run(["rm", "-rf", str(git_dir)], check=True)
+        _authority_git(authority.parent, "init", "-q")
+        _authority_git(authority.parent, "add", f"{authority.name}/QUALIFICATION")
+        _authority_git(authority.parent, "commit", "-q", "-m", "ancestor")
+        git_dir.mkdir(mode=0o700)
+    elif how == "extra_tracked":
+        (authority / "EXTRA").write_text("extra\n")
+        _authority_git(authority, "add", "EXTRA")
+        _authority_git(authority, "commit", "-q", "-m", "extra")
+    elif how == "extra_index_entry":
+        (authority / "EXTRA").write_text("extra\n")
+        _authority_git(authority, "add", "EXTRA")
+        (authority / "EXTRA").unlink()
+    elif how == "nothing_tracked":
+        _authority_git(authority, "rm", "-q", "--cached", "QUALIFICATION")
+    elif how == "untracked":
+        (authority / "EXTRA").write_text("extra\n")
+    elif how == "content":
+        (authority / "QUALIFICATION").write_text("changed\n")
+    elif how == "executable":
+        (authority / "QUALIFICATION").chmod(0o700)
+    elif how == "file_symlink":
+        target = authority.parent / "target"
+        target.write_bytes((authority / "QUALIFICATION").read_bytes())
+        (authority / "QUALIFICATION").unlink()
+        (authority / "QUALIFICATION").symlink_to(target)
+    elif how == "history":
+        # A marker committed and then deleted
+        # leaves the worktree, index and listing exactly as created, but the staged clone
+        # would carry the marker in its history.
+        (authority / "MARKER").write_text("synthetic marker\n")
+        _authority_git(authority, "add", "MARKER")
+        _authority_git(authority, "commit", "-q", "-m", "marker")
+        _authority_git(authority, "rm", "-q", "MARKER")
+        _authority_git(authority, "commit", "-q", "-m", "drop marker")
+    elif how in ("extra_branch", "tag", "stash", "replace"):
+        ref = {"extra_branch": "refs/heads/other", "tag": "refs/tags/v0",
+               "stash": "refs/stash", "replace": f"refs/replace/{q._AUTHORITY_BLOB}"}[how]
+        _authority_git(authority, "update-ref", ref, q._AUTHORITY_COMMIT if how != "replace" else q._AUTHORITY_BLOB)
+    elif how == "packed_refs":
+        _authority_git(authority, "pack-refs", "--all")
+    elif how == "pack":
+        _authority_git(authority, "repack", "-a", "-q")
+    elif how == "alternates":
+        other = authority.parent / "other.git"
+        _authority_git(authority.parent, "init", "-q", "--bare", str(other))
+        (git_dir / "objects/info/alternates").write_text(str(other / "objects") + "\n")
+    elif how == "shallow":
+        (git_dir / "shallow").write_text(q._AUTHORITY_COMMIT + "\n")
+    elif how == "grafts":
+        (git_dir / "info").mkdir()
+        (git_dir / "info/grafts").write_text(q._AUTHORITY_COMMIT + "\n")
+    elif how == "head":
+        _authority_git(authority, "symbolic-ref", "HEAD", "refs/heads/other")
+    elif how == "config":
+        with (git_dir / "config").open("a") as handle:
+            handle.write("[core]\n\tworktree = /\n")
+    elif how == "forged_object":
+        import zlib
+
+        path = git_dir / "objects" / q._AUTHORITY_BLOB[:2] / q._AUTHORITY_BLOB[2:]
+        path.chmod(0o600)
+        path.write_bytes(zlib.compress(b"blob 8\0changed\n"))
+    return str(authority)
+
+
+AUTHORITY_PLANTS = ["missing", "absent", "relative", "alias", "dotdot", "mode", "symlink", "foreign_owner",
+                    "unsafe_ancestor", "ancestor", "extra_tracked", "extra_index_entry",
+                    "nothing_tracked", "untracked", "content", "executable", "file_symlink", "history",
+                    "extra_branch", "tag", "stash", "replace", "packed_refs", "pack", "alternates",
+                    "shallow", "grafts", "head", "config", "forged_object"]
+
+
+@pytest.mark.parametrize("how", AUTHORITY_PLANTS)
+def test_worker_refuses_an_authority_it_cannot_prove_private(world, monkeypatch, worker_process,
+                                                             authority_base, how):
+    """Each check fails closed before any board runs: the placement (absolute, canonical,
+    0700, this euid, private ancestry), the exact layout and contents (pinned objects, one
+    ref, no packs, alternates, grafts or shallow state), the toplevel and the index."""
+    monkeypatch.chdir(world.tmp)
+    root = _operation_root(world.tmp)
+    authority = q._create_review_authority()
+    given = _plant(how, authority, monkeypatch)
+    calls = _capture_board(monkeypatch)
+    try:
+        with pytest.raises(q.QualificationFailure, match="review authority is not private"):
+            _run_worker(world, monkeypatch, root, given)
+    finally:
+        authority.parent.chmod(0o700)
+    assert calls == [] and gh._CANDIDATE is None
+    assert not (root / "terminal.json").exists()
+
+
+def test_a_marker_in_earlier_history_is_refused(authority_base):
+    """After a marker is committed and then deleted, the
+    top-level listing, the index and the placeholder are as created, yet HEAD and the object
+    store are not the pinned repository, so the verifier refuses it."""
+    authority = q._create_review_authority()
+    _plant("history", authority, None)
+    assert sorted(os.listdir(authority)) == [".git", "QUALIFICATION"]
+    assert _authority_git(authority, "ls-files", "-z") == b"QUALIFICATION\0"
+    assert (authority / "QUALIFICATION").read_bytes() == q._AUTHORITY_BYTES
+    assert _authority_git(authority, "show", "HEAD~1:MARKER") == b"synthetic marker\n"
+    with pytest.raises(q.QualificationFailure, match="review authority is not private"):
+        q._verified_review_authority(str(authority))
+
+
+def test_a_sticky_shared_parent_is_private_enough(authority_base):
+    """A world-writable parent is acceptable only when sticky (the /tmp case): no other uid
+    can rename this uid's entry in it."""
+    authority = q._create_review_authority()
+    authority_base.chmod(0o1777)
+    try:
+        assert q._verified_review_authority(str(authority)) == authority
+        authority_base.chmod(0o777)
+        with pytest.raises(q.QualificationFailure):
+            q._verified_review_authority(str(authority))
+    finally:
+        authority_base.chmod(0o700)
+
+
+def test_private_ancestry_rule(tmp_path):
+    euid = os.geteuid()
+    private = tmp_path / "private"
+    private.mkdir(mode=0o700)
+    assert q._private_ancestry(private.resolve(), euid) is True
+    assert q._private_ancestry(private.resolve(), euid + 1) is False  # owned by another uid
+    for mode, expected in ((0o750, True), (0o770, False), (0o702, False), (0o1777, True), (0o1770, True)):
+        private.chmod(mode)
+        assert q._private_ancestry(private.resolve(), euid) is expected, oct(mode)
+    private.chmod(0o700)
+    link = tmp_path / "link"
+    link.symlink_to(private)
+    assert q._private_ancestry(link, euid) is False  # a symlink is not a directory
+
+
+def test_the_authority_prefers_the_stores_private_area(world):
+    """With a safe store, authorities live in its private ``authority`` directory; never under
+    an operation's (possibly operator-chosen) output root."""
+    store = q.Store()
+    store.create()
+    assert q._authority_bases()[0] == store.root / "authority"
+    authority = q._create_review_authority()
+    try:
+        assert authority.parent == (store.root / "authority").resolve()
+        assert stat.S_IMODE(authority.parent.stat().st_mode) == 0o700
+        assert store.status() == "ok"
+    finally:
+        q._remove_review_authority(authority)
+
+
+def test_without_a_safe_store_the_authority_parent_is_tmp(world, monkeypatch):
+    assert q.Store().status() == "absent"
+    assert q._authority_bases() == [Path("/tmp")]
+    if q._private_ancestry(Path("/tmp").resolve(), os.geteuid()):
+        assert q._authority_parent() == Path("/tmp").resolve()
+
+
+def test_an_unsafe_candidate_is_skipped_and_none_left_is_a_local_failure(tmp_path, monkeypatch):
+    shared = tmp_path / "shared"
+    shared.mkdir(mode=0o700)
+    shared.chmod(0o770)
+    private = tmp_path / "private"
+    monkeypatch.setattr(q, "_authority_bases", lambda: [shared, private])
+    assert q._authority_parent() == private.resolve()
+    assert stat.S_IMODE(private.stat().st_mode) == 0o700  # created when absent
+    monkeypatch.setattr(q, "_authority_bases", lambda: [shared])
+    with pytest.raises(q.QualificationFailure, match=q.LOCAL_FAILURE):
+        q._create_review_authority()
+    assert list(shared.iterdir()) == []
+
+
+ESCAPES = ["%20", "%25", "%2F"]
+
+
+def _decoy(tmp_path, escape):
+    """The path git would decode ``qual<escape>state`` to, with a store-shaped decoy."""
+    decoded = tmp_path / {"%20": "qual state", "%25": "qual%state", "%2F": "qual/state"}[escape]
+    (decoded / "phase-loop/agy-qualification/authority").mkdir(parents=True)
+    return decoded
+
+
+@pytest.mark.parametrize("escape", ESCAPES)
+def test_a_store_path_git_would_url_decode_is_never_used(tmp_path, monkeypatch, escape):
+    """The board clones ``file://<authority>`` and git decodes ``%XX``
+    escapes there, so a store under a literal ``qual%20state`` would be verified at one path
+    and staged from another. Such a store is skipped for /tmp (or, with no private /tmp,
+    creation refuses); no authority path ever holds a ``%``, and the decoded path is untouched."""
+    state = tmp_path / f"qual{escape}state"
+    state.mkdir(mode=0o700)
+    decoy = _decoy(tmp_path, escape)
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    store = q.Store()
+    store.create()
+    assert q._authority_bases()[0] == store.root / "authority"
+    if q._private_ancestry(Path("/tmp").resolve(), os.geteuid()):
+        authority = q._create_review_authority()
+        try:
+            assert authority.parent == Path("/tmp").resolve() and "%" not in str(authority)
+            assert q._verified_review_authority(str(authority)) == authority
+        finally:
+            q._remove_review_authority(authority)
+    else:
+        with pytest.raises(q.QualificationFailure, match=q.LOCAL_FAILURE):
+            q._create_review_authority()
+    assert not (store.root / "authority").exists(), "nothing is created under an escaped path"
+    assert list((decoy / "phase-loop/agy-qualification/authority").iterdir()) == []
+
+
+@pytest.mark.parametrize("escape", ESCAPES)
+def test_a_candidate_that_resolves_to_a_percent_escape_is_skipped(tmp_path, monkeypatch, escape):
+    """The check applies to the resolved path too: a candidate spelled without ``%`` that
+    resolves through a symlink to a path holding one is skipped for the next candidate."""
+    target = tmp_path / f"real{escape}dir"
+    target.mkdir(mode=0o700)
+    link = tmp_path / "link"
+    link.symlink_to(target)
+    safe = tmp_path / "safe"
+    monkeypatch.setattr(q, "_authority_bases", lambda: [link, safe])
+    assert q._authority_parent() == safe.resolve()
+
+
+@pytest.mark.parametrize("escape", ESCAPES)
+def test_coordinator_and_worker_refuse_an_authority_path_with_a_percent_escape(
+        world, monkeypatch, authority_base, escape):
+    """The final path is re-checked on both sides: the worker's verifier and the proof the
+    coordinator runs on its own creation refuse an otherwise exact authority whose path
+    holds an escape. A run whose only candidate parent holds one fails closed at stage
+    ``authority`` as a local failure, before any launch."""
+    authority = q._create_review_authority()
+    escaped = world.tmp / f"moved{escape}here"
+    escaped.mkdir(mode=0o700)
+    moved = escaped / authority.name
+    authority.rename(moved)
+    with pytest.raises(q.QualificationFailure, match="review authority is not private"):
+        q._verified_review_authority(str(moved))
+    assert q._authority_proven(moved) is False
+    help_path, help_sha256 = _operation_inputs(world, monkeypatch)
+    monkeypatch.setattr(q, "_authority_bases", lambda: [escaped])
+    launches = []
+    monkeypatch.setattr(q._panel(), "launch_provider", lambda *a, **k: launches.append(1))
+    root = world.tmp / "completion"
+    image = gh.VerifiedImage.from_bytes(world.image)
+    try:
+        with pytest.raises(q.QualificationFailure, match=q.LOCAL_FAILURE):
+            q.run_operation("completion", root, help_path, image=image, expected_help_sha256=help_sha256)
+    finally:
+        image.close()
+    failure = json.loads((root / "failure.json").read_text())
+    assert (failure["stage"], failure["reason"]) == ("authority", q.LOCAL_FAILURE)
+    assert launches == [] and sorted(p.name for p in escaped.iterdir()) == [moved.name]
+
+
+@pytest.mark.parametrize("staged,status,refused", [
+    ("pinned", "OK", False), ("0" * 64, "OK", True), ("absent", "OK", True),
+    ("absent", "UNAVAILABLE", False), ("0" * 64, "UNAVAILABLE", True),
+])
+def test_the_worker_binds_the_staged_tree_to_the_verified_authority(world, monkeypatch, worker_process,
+                                                                   authority_base, staged, status, refused):
+    """After the board: the staged-tree manifest it authorized and revalidated must be the
+    authority's constant manifest. A refusal before any staging keeps its terminal record."""
+    root = _operation_root(world.tmp)
+    authority = q._create_review_authority()
+    _capture_board(monkeypatch, staged=None if staged == "pinned" else staged, status=status)
+    if refused:
+        with pytest.raises(q.QualificationFailure, match="staged review tree differs"):
+            _run_worker(world, monkeypatch, root, str(authority))
+        assert not (root / "terminal.json").exists()
+    else:
+        _run_worker(world, monkeypatch, root, str(authority))
+        assert json.loads((root / "terminal.json").read_text())["result"]["status"] == status
+
+
+# ------------------------------------------ run_operation: authority stage and diagnostic
+
+def _operation_inputs(world, monkeypatch):
+    monkeypatch.setenv("HOME", world.env["HOME"])
+    monkeypatch.setattr(q, "helper_pins", lambda extra=(): {})
+    help_path = world.tmp / "agy-help.txt"
+    help_path.write_bytes(b"synthetic help\n")
+    return help_path, sha256(b"synthetic help\n").hexdigest()
+
+
+def test_a_creation_the_verifier_refuses_is_a_local_failure_that_leaves_nothing(authority_base, monkeypatch):
+    """The coordinator proves its own creation with the worker's verifier before launching."""
+    monkeypatch.setattr(q, "_authority_proven", lambda authority: False)
+    with pytest.raises(q.QualificationFailure, match=q.LOCAL_FAILURE):
+        q._create_review_authority()
+    assert list(authority_base.iterdir()) == []
+
+
+def test_an_authority_creation_failure_is_a_local_failure_at_its_own_stage(world, monkeypatch, authority_base):
+    """A creation error never launches the worker and leaves nothing behind; it is recorded
+    at stage ``authority`` as the local-failure transient."""
+    from phase_loop_runtime import review_stage
+
+    help_path, help_sha256 = _operation_inputs(world, monkeypatch)
+    launches = []
+    monkeypatch.setattr(q._panel(), "launch_provider", lambda *a, **k: launches.append(1))
+
+    def refused(*args, **kwargs):
+        raise ValueError("host_helper_unavailable")
+
+    monkeypatch.setattr(review_stage, "host_git", refused)
+    root = world.tmp / "completion"
+    image = gh.VerifiedImage.from_bytes(world.image)
+    try:
+        with pytest.raises(q.QualificationFailure, match=q.LOCAL_FAILURE):
+            q.run_operation("completion", root, help_path, image=image, expected_help_sha256=help_sha256)
+    finally:
+        image.close()
+    failure = json.loads((root / "failure.json").read_text())
+    assert (failure["stage"], failure["reason"]) == ("authority", q.LOCAL_FAILURE)
+    assert "worker_terminal" not in failure
+    assert launches == [] and list(authority_base.iterdir()) == []
+    assert q._classify_failure(root, "completion") == "transient"
+
+
+@pytest.mark.parametrize("terminal", ["refusal", "absent", "malformed"])
+def test_an_unobserved_worker_copies_only_its_terminal_status_and_detail(world, monkeypatch, authority_base, terminal):
+    """4.4 diagnostic. The worker got a proven authority outside the operation root (checked
+    at launch) and ended before any provider was observed: ``failure.json`` names the
+    board's refusal through ``worker_terminal`` = ``{status, detail}``, never ``text``; the
+    verdict is unchanged, and the authority is removed afterwards."""
+    help_path, help_sha256 = _operation_inputs(world, monkeypatch)
+    root = world.tmp / "completion"
+    detail = "broker canonical repository authority is not probeable"
+    written = {"refusal": json.dumps({"monitoring": None, "broker": None, "result": {
+                   "status": "UNAVAILABLE", "text": "PRIVATE_FIXTURE_SENTINEL", "detail": detail}}),
+               "absent": None, "malformed": "{"}[terminal]
+    proven = []
+
+    def launch(argv, **kwargs):
+        given = argv[argv.index("--authority") + 1]
+        proven.append(q._verified_review_authority(given))
+        script = "" if written is None else (
+            f"from pathlib import Path; Path({str(root / 'terminal.json')!r}).write_text({written!r})")
+        return subprocess.Popen([sys.executable, "-I", "-c", script], stdout=kwargs.get("stdout"),
+                                stderr=kwargs.get("stderr"), start_new_session=True)
+
+    monkeypatch.setattr(q._panel(), "launch_provider", launch)
+    image = gh.VerifiedImage.from_bytes(world.image)
+    try:
+        with pytest.raises(q.QualificationFailure, match=q.ENDED_BEFORE_ADMISSION):
+            q.run_operation("completion", root, help_path, image=image, expected_help_sha256=help_sha256)
+    finally:
+        image.close()
+    authority, = proven
+    assert authority.parent == authority_base and root not in authority.parents
+    assert not authority.exists(), "the operation's authority outlived it"
+    failure = json.loads((root / "failure.json").read_text())
+    assert failure["stage"] == "terminal_observation"
+    if terminal == "refusal":
+        assert failure["worker_terminal"] == {"status": "UNAVAILABLE", "detail": detail}
+    else:
+        assert "worker_terminal" not in failure
+    assert "PRIVATE_FIXTURE_SENTINEL" not in (root / "failure.json").read_text()
+    assert q._classify_failure(root, "completion") == "transient"
+
+
+# ---------------------------------------- the real repository gates, no provider (4.5.2)
+
+@pytest.mark.parametrize("shape", ["one_file", "init_only", "empty_commit"])
+def test_the_created_authority_clears_the_real_gates_through_broker_construction(tmp_path, monkeypatch,
+                                                                                authority_base, shape):
+    """From a non-git cwd: the real authority resolution, authorization, activation, local
+    stage, revalidations, leg authorization and ``ParentUnixBroker`` construction. The
+    created authority is accepted with QUALIFICATION as its probe file, and the authorized
+    staged-tree digest is the pinned manifest. Mutation: an authority with zero tracked
+    files reproduces the broker refusal seen in production."""
+    from dataclasses import replace
+
+    from phase_loop_runtime import review_stage, sandbox_placement
+    from phase_loop_runtime.advisor_board import backing
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+
+    panel = q._panel()
+    monkeypatch.delenv("PHASE_LOOP_SANDBOX_DISABLE", raising=False)
+    plain = tmp_path / "not-a-repo"
+    plain.mkdir()
+    monkeypatch.chdir(plain)
+    if panel._outside_any_git_work_tree(plain):
+        # The first production refusal: the cwd as the authority.
+        with pytest.raises(ValueError, match="no canonical repository authority"):
+            panel._resolve_review_authority(None, Path.cwd(), governed=False)
+    if shape == "one_file":
+        authority = q._create_review_authority()
+    else:
+        authority = authority_base / "empty"
+        authority.mkdir(mode=0o700)
+        _authority_git(authority, "init", "-q")
+        if shape == "empty_commit":
+            _authority_git(authority, "commit", "-q", "--allow-empty", "-m", "empty")
+    board = replace(DEFAULT_BOARD, name="gemini-heartbeat-qualification",
+                    seats=tuple(s for s in DEFAULT_BOARD.seats if s.harness == "gemini"))
+    seat, = board.seats
+    model = backing.harden_subscription_model(seat.harness, seat.model, seat.effort)
+    artifact, brief = "synthetic qualification artifact\n", "synthetic qualification brief\n"
+    token = backing.set_review_instruction_digest(brief)
+    auth = broker = prepared = None
+    try:
+        resolved = panel._resolve_review_authority(None, authority, governed=False)
+        assert resolved == authority.resolve()
+        auth = backing.prepare_review_isolation_authorization(
+            board, artifact, mode="review", canonical_repo_authority=resolved,
+            monitoring_policy="heartbeat_only")
+        assert auth.staged_tree_sha256 is not None
+        if shape == "one_file":
+            assert auth.staged_tree_sha256 == q._AUTHORITY_MANIFEST_SHA256
+        backing.activate_review_isolation_authorization(
+            auth, board, artifact, mode="review", canonical_repo_authority=resolved)
+        leg_base = tmp_path / "pl-panel-leg"
+        review_dir = leg_base / "review"
+        review_dir.mkdir(parents=True)
+        for name, content in (("review-bundle.md", artifact), ("review-instructions.md", brief)):
+            (review_dir / name).write_text(content)
+            (review_dir / name).chmod(0o400)
+        prepared = sandbox_placement.prepare_local_stage(resolved, review_dir, floor_bytes=0, mark=leg_base)
+        backing._revalidate_staged_tree(auth, review_dir)
+        backing.revalidate_review_isolation_authorization(
+            auth, None, artifact, mode="review", staged_dir=review_dir, canonical_repo_authority=resolved)
+        leg = backing.derive_review_leg_authorization(
+            auth, artifact, harness=seat.harness, model=model, deadline_s=None, mode="review",
+            canonical_repo_authority=resolved)
+        if shape != "one_file":
+            with pytest.raises(ValueError, match="broker canonical repository authority is not probeable"):
+                backing.ParentUnixBroker(leg, harness=seat.harness, model=model,
+                                         staged_dir=review_dir, canonical_repo=resolved)
+            return
+        broker = backing.ParentUnixBroker(leg, harness=seat.harness, model=model,
+                                          staged_dir=review_dir, canonical_repo=resolved)
+        assert broker._canonical_probe_file == authority / "QUALIFICATION"
+        assert sorted(path.name for path in prepared.local_tree.iterdir() if path.name != ".git") == ["QUALIFICATION"]
+        # The stage's history is the pinned single commit and nothing else.
+        assert _authority_git(prepared.local_tree, "rev-list", "--all").decode() == q._AUTHORITY_COMMIT + "\n"
+    finally:
+        if broker is not None:
+            broker.close()
+        if prepared is not None:
+            review_stage.remove_review_stage(prepared.local_tree)
+        if auth is not None:
+            backing.close_review_isolation_authorization(auth)
+        backing.reset_review_instruction_digest(token)
+        q._remove_review_authority(authority)
+
+
 # ------------------------------------------------------------------------- two-phase
 
 def test_first_use_executes_nothing_before_a_help_free_provenance_entry_exists(world, monkeypatch):

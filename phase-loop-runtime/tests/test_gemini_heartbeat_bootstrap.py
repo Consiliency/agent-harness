@@ -403,6 +403,78 @@ def test_a_non_git_repo_dir_keeps_the_cwd_authority(fixture_cli, tmp_path, monke
     assert digested == [cwd_repo.resolve()], digested
 
 
+def _qualification_worker(fixture_cli, tmp_path, monkeypatch):
+    """The production worker, in-process, from a non-git cwd, with a coordinator-created
+    authority under a private test parent. Returns ``(q, root, authority, run)``."""
+    q = importlib.import_module("phase_loop_runtime.agy_qualification")
+    plain = tmp_path / "not-a-repo"
+    plain.mkdir()
+    monkeypatch.chdir(plain)  # the last chdir wins over the autouse fixture repository
+    root = tmp_path / "completion"
+    root.mkdir(mode=0o700)
+    (root / "artifact.md").write_text("synthetic qualification artifact\n")
+    (root / "brief.md").write_text("synthetic qualification brief\n")
+    base = tmp_path / "authorities"
+    base.mkdir(mode=0o700)
+    monkeypatch.setattr(q, "_authority_bases", lambda: [base])
+    authority = q._create_review_authority()
+    monkeypatch.setattr(q, "provenance_gate", lambda *a, **k: True)
+    monkeypatch.setattr(q, "_set_parent_death_signal", lambda: None)
+    monkeypatch.setattr(fixture_cli.module, "_CANDIDATE", None)
+
+    def run():
+        saved = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+        # The coordinator's hand-off: an independent read of the candidate's sealed memfd.
+        image = fixture_cli.module.VerifiedImage.from_bytes(fixture_cli.path.read_bytes())
+        fd = image.reopen()
+        try:
+            q.worker(root, fd, None, str(authority))
+        finally:
+            os.close(fd)
+            image.close()
+            for sig, handler in saved.items():
+                signal.signal(sig, handler)
+
+    return q, root, authority, run
+
+
+def test_the_qualification_worker_spawns_agy_from_a_non_git_cwd(fixture_cli, tmp_path, monkeypatch):
+    """agy self-qualification is independent of the caller's cwd. From a directory that is
+    not a git repository, the production worker runs its board on the coordinator's
+    per-operation authority and the synthetic agy runs exactly once to an OK leg. The
+    broker's probe file is the authority's QUALIFICATION and the staged tree is the pinned
+    manifest. Mutation: the worker taking ``Path.cwd()`` as its authority refuses before
+    any spawn."""
+    fixture_cli.mode.write_text("ok")
+    q, root, authority, run = _qualification_worker(fixture_cli, tmp_path, monkeypatch)
+    run()
+    terminal = json.loads((root / "terminal.json").read_text())
+    assert terminal["result"]["status"] == "OK", terminal["result"]
+    assert fixture_cli.attempts.read_text().splitlines() == ["attempt"]
+    probe = sha256(str(authority / "QUALIFICATION").encode()).hexdigest()
+    assert terminal["broker"]["canonical_repo_probe_file_sha256"] == probe
+
+
+def test_a_change_after_verification_cannot_reach_a_qualification_record(fixture_cli, tmp_path, monkeypatch):
+    """A deterministic change between the worker's verification and the board's
+    authorization (an added file, as a same-uid process could make): the board authorizes
+    and stages the changed tree consistently, and the worker's post-check refuses it
+    because the staged manifest is not the authority's. No terminal record is written, so
+    the coordinator fails the operation as a local failure."""
+    fixture_cli.mode.write_text("ok")
+    q, root, authority, run = _qualification_worker(fixture_cli, tmp_path, monkeypatch)
+    resolve = panel._resolve_review_authority
+
+    def changed(*args, **kwargs):
+        (authority / "LATE").write_text("added after verification\n")
+        return resolve(*args, **kwargs)
+
+    monkeypatch.setattr(panel, "_resolve_review_authority", changed)
+    with pytest.raises(q.QualificationFailure, match="staged review tree differs"):
+        run()
+    assert not (root / "terminal.json").exists()
+
+
 def test_the_work_tree_probe_fails_closed_on_filesystem_errors(tmp_path, monkeypatch):
     """#1055 r2 (codex, claude): an EACCES/EIO on a ``.git`` lookup, or a symlink loop,
     means "maybe a repository" -- never "outside" (which would review the cwd instead)."""
