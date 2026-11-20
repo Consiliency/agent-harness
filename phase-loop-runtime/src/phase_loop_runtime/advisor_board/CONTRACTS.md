@@ -2305,8 +2305,9 @@ W1 set; all unexercised rows retain `candidate` (remote rows retain `remote-pend
 - **Seat reader.** `gh.admit` and `agy_integrity.check` open the image once and stream it
   with `VerifiedImage.from_fd(fd, *, path=None)`: 1 MiB chunks through one reused buffer,
   hashed while copied into a memfd with the mode and seals of `VerifiedImage.from_bytes`,
-  refused above `MAX_MEMBER_BYTES`, then re-hashed. The image exists once, in the memfd; the
-  traced Python allocation of a seat admission stays under 4 MiB for any image size. A
+  refused above `MAX_MEMBER_BYTES`, then re-hashed through the same buffer. The image exists
+  once, in the memfd; the traced Python allocation of a seat admission stays within the
+  frozen 2 MiB overhead (AGYFRESH §1.2) for any image size, about one 1 MiB chunk. A
   non-member image goes to `agy_qualification.lookup` as that sealed image (lookup takes
   ownership and closes it unless it is handed on); `lookup` still accepts bytes from other
   callers. On the seat path a memfd seal failure stays the typed `agy_image_unqualified`

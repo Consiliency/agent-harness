@@ -150,10 +150,10 @@ class VerifiedImage:
         """Stream an opened, ``fstat``-checked image descriptor into one sealed memfd (AGYFRESH §1.2).
 
         The image is copied in 1 MiB chunks through one reused buffer while it is hashed, so
-        it exists once, in the memfd; peak anonymous memory is one chunk. Above
-        ``agy_provenance.MAX_MEMBER_BYTES`` (read at call time) it refuses. The memfd gets the
-        mode and seals of ``from_bytes`` and is re-hashed before use. ``fd`` stays the
-        caller's to close.
+        it exists once, in the memfd. The sealed memfd is re-hashed through the same buffer,
+        so peak anonymous memory is one chunk. Above ``agy_provenance.MAX_MEMBER_BYTES``
+        (read at call time) it refuses. The memfd gets the mode and seals of ``from_bytes``.
+        ``fd`` stays the caller's to close.
         """
         digest, size = sha256(), 0
         buffer = bytearray(_CHUNK_BYTES)
@@ -173,7 +173,7 @@ class VerifiedImage:
                     written += step
             _seal_image_memfd(image)
             os.fchmod(image, 0o500)
-            if _fd_digest(image) != digest.hexdigest():
+            if _fd_digest_into(image, buffer) != digest.hexdigest():
                 raise ValueError(_CAPABILITY)
         except BaseException:
             os.close(image)
@@ -228,6 +228,16 @@ def _seal_image_memfd(fd):
         os.lseek(fd, 0, os.SEEK_SET)
     except OSError as exc:
         raise AgyCanaryEvidenceError("agy image memfd sealing failed") from exc
+
+
+def _fd_digest_into(fd, buffer):
+    """``_fd_digest`` through a caller's reused buffer: no allocation per chunk."""
+    value, offset, view = sha256(), 0, memoryview(buffer)
+    while count := os.preadv(fd, [buffer], offset):
+        value.update(view[:count])
+        offset += count
+    os.lseek(fd, 0, os.SEEK_SET)
+    return value.hexdigest()
 
 
 def _fd_digest(fd):

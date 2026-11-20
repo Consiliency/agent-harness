@@ -556,10 +556,15 @@ def _peak(fn):
 
 
 IMAGE_MIB = 24
+# AGYFRESH §1.2: one sealed image plus at most 2 MiB per seat admission. The image lives in
+# the memfd (shared memory, untraced); everything Python allocates must stay within 2 MiB.
+# The streaming buffer is one 1 MiB chunk, and the re-hash reuses it.
+OVERHEAD_CEILING = 2 * 1024 * 1024
 
 
 @linux_memfd
 def test_from_fd_peak_allocation_is_one_chunk_not_the_image(tmp_path):
+    """Streaming and the sealed re-hash share one 1 MiB buffer (AGYFRESH §1.2)."""
     image = os.urandom(IMAGE_MIB * 1024 * 1024)
     path = _subject(tmp_path, image)
     del image
@@ -569,13 +574,14 @@ def test_from_fd_peak_allocation_is_one_chunk_not_the_image(tmp_path):
     finally:
         os.close(fd)
     verified.close()
-    assert peak < 4 * 1024 * 1024
+    assert peak < OVERHEAD_CEILING, peak
 
 
 @linux_memfd
 @pytest.mark.parametrize("reader", ["gh.admit", "agy_integrity.check"])
-def test_the_seat_readers_peak_allocation_stays_under_4_mib(tmp_path, monkeypatch, reader):
-    """EC-RESTORE-2: the seat reader no longer holds the image in Python memory."""
+def test_the_seat_readers_peak_allocation_stays_within_the_overhead_ceiling(tmp_path, monkeypatch, reader):
+    """EC-RESTORE-2 and the §1.2 frozen peak: the seat reader holds no image copy in Python
+    memory, and its overhead (stream buffer plus re-hash) stays within 2 MiB."""
     image = os.urandom(IMAGE_MIB * 1024 * 1024)
     path = _subject(tmp_path, image)
     _member(monkeypatch, image)
@@ -586,7 +592,7 @@ def test_the_seat_readers_peak_allocation_stays_under_4_mib(tmp_path, monkeypatc
     else:
         admitted, peak = _peak(lambda: agy_integrity.check(path, {"PATH": str(path.parent)}))
         admitted.close()
-    assert peak < 4 * 1024 * 1024
+    assert peak < OVERHEAD_CEILING, peak
 
 
 @linux_memfd
