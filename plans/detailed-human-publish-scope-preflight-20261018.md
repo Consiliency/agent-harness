@@ -1,7 +1,7 @@
 # Human publication scope preflight
 
 ## Task
-Prevent the commit-then-scope-refusal failure observed in Consiliency/jev-assembler. Its caller supplied dirty paths but omitted already-committed branch changes. The broker refused after the SDK created a commit; corrected scope selected a new checkpoint, and prebuilt refused the existing FABPUB trailer.
+Prevent the commit-then-scope-refusal failure observed in a downstream consumer repository. Its caller supplied dirty paths but omitted already-committed branch changes. The broker refused after the SDK created a commit; corrected scope selected a new checkpoint, and prebuilt refused the existing FABPUB trailer.
 
 ## Changes
 - Add the versioned `PublishScopeCorrection.v1` SDK/broker operation in `phase-loop-runtime/src/phase_loop_runtime/publish_scope_correction.py`, with additive request lineage in `convergence/contracts.py` and broker validation/idempotency in `convergence/broker/verbs.py`. Keep original commit/checkpoint/evidence intact. Authenticate only an exact sealed ownership-scope rejection in the active broker generation, reserve one successor receipt under the existing admission lock, and apply existing generation/admission/provider ownership to that successor. Generic no-effect, ambiguity, changed proof or commit, scope shrink, conflicting successor and unsealed owners refuse. Add real production-entrypoint tests in `tests/test_publish_scope_correction.py`.
