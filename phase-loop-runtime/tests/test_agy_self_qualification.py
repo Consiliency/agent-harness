@@ -296,6 +296,66 @@ def test_member_digest_is_returned_only_after_the_archive_digest_matches(world):
         prov.read_member(io.BytesIO(archive), asset)
 
 
+# Upstream agy 1.5.11's linux-x64 ``antigravity`` member is 268,841,672 bytes (1.5.12's is
+# 269,443,784). A 250 MB member bound refused every in-window release, so self-qualification
+# of a genuine current agy always ended ``gemini_heartbeat_provenance_unverified``.
+UPSTREAM_MEMBER_BYTES = 268_841_672
+
+
+def _sparse_member_archive(tmp_path, size):
+    """A tar.gz whose ``antigravity`` member is ``size`` bytes, almost all zeros. The member
+    is a sparse file and is streamed into the archive, so neither disk nor memory holds it."""
+    member = tmp_path / "antigravity"
+    with open(member, "wb") as handle:
+        handle.write(b"\x7fELF")
+        handle.truncate(size)
+    digest = sha256()
+    with open(member, "rb") as handle:
+        while chunk := handle.read(1 << 20):
+            digest.update(chunk)
+    path = tmp_path / HOST.asset
+    with tarfile.open(path, "w:gz", compresslevel=1) as bundle:
+        bundle.add(member, arcname="antigravity")
+    member.unlink()
+    return path.read_bytes(), digest.hexdigest()
+
+
+def test_an_upstream_sized_member_is_verified_and_matched(tmp_path):
+    archive, image_sha256 = _sparse_member_archive(tmp_path, UPSTREAM_MEMBER_BYTES)
+    assert UPSTREAM_MEMBER_BYTES > 250_000_000 and len(archive) <= prov.MAX_ARCHIVE_BYTES
+    asset = prov.ReleaseAsset("1.5.11", HOST.asset, "u", sha256(archive).hexdigest())
+    assert prov.read_member(io.BytesIO(archive), asset) == (image_sha256, None)
+    t = FakeTransport()
+    t.add("1.5.11", None, archive=archive)
+    found = prov.find_provenance(image_sha256, host=HOST, transport=t)
+    assert (found.image_sha256, found.asset.version) == (image_sha256, "1.5.11")
+
+
+@pytest.mark.parametrize("over", [0, 1])
+def test_a_member_over_the_bound_is_refused(world, monkeypatch, over):
+    """The bound still holds: a member at the bound is read, one byte over is refused."""
+    archive = _archive([("antigravity", world.image, tarfile.REGTYPE)])
+    asset = prov.ReleaseAsset("1.2.99", HOST.asset, "u", sha256(archive).hexdigest())
+    monkeypatch.setattr(prov, "MAX_MEMBER_BYTES", len(world.image) - over)
+    if over:
+        with pytest.raises(prov.ProvenanceError, match=prov.UNVERIFIED):
+            prov.read_member(io.BytesIO(archive), asset)
+    else:
+        assert prov.read_member(io.BytesIO(archive), asset)[0] == world.digest
+
+
+def test_the_member_bound_admits_current_upstream_and_stays_bounded():
+    """One bound for the runtime and the release verifier, above current upstream images
+    and well below anything that could exhaust memory in the streaming path."""
+    import importlib.util
+    script = Path(__file__).resolve().parents[1] / "scripts" / "verify_qualified_agy_image.py"
+    spec = importlib.util.spec_from_file_location("verify_qualified_agy_image_bound", script)
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+    assert verifier.MAX_MEMBER_BYTES == prov.MAX_MEMBER_BYTES
+    assert 269_443_784 < prov.MAX_MEMBER_BYTES <= 512_000_000
+
+
 # --------------------------------------------------------------- I1 after verification
 
 def test_path_swap_after_provenance_still_executes_the_verified_bytes(world, monkeypatch):
