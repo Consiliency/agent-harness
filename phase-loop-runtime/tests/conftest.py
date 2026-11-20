@@ -213,6 +213,16 @@ def _isolate_host_state(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_agy_vendor_store(monkeypatch):
+    """AGYFRESH HOLD: a seat refused for a subject-side reason searches the host's agy vendor
+    store for a held image. No test reads the developer's real store; a test of the hold
+    builds its own vendor store and sets ``agy_hold.VENDOR_STORES`` to it."""
+    from phase_loop_runtime import agy_hold
+
+    monkeypatch.setattr(agy_hold, "VENDOR_STORES", ())
+
+
+@pytest.fixture(autouse=True)
 def _no_real_first_use_jail_qualification(monkeypatch):
     """agent-harness#1132 (plan amendment A2): a Claude seat whose jail has no recorded
     EC-EXECFIND-2 pass on this host qualifies it on first use -- a REAL falsifier run on

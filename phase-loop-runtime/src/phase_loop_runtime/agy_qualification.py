@@ -1589,7 +1589,9 @@ def requalify_once(env, *, cancel_event=None, heartbeat=None, subject_path=None)
         first = key not in _REQUALIFIED
         _REQUALIFIED.add(key)
     if not first:
-        return gh.admit(env, subject_path=subject_path)
+        # A repeat preflight is lookup only, with gh.admit's refusal mapping; it can still
+        # reach the hold, which observes the caller's cancellation (AGYFRESH §2.2).
+        return gh.admit(env, subject_path=subject_path, cancel_event=cancel_event)
     try:
         return ensure_admitted(
             env, cancel_event, heartbeat, store=store, subject_path=subject_path)
@@ -1606,24 +1608,35 @@ _HELP_MEMO = {}
 _HELP_LOCK = threading.Lock()
 
 
-def _run_help(image, env):
-    """Execute ``--help`` from the sealed memfd inside the owned profile; return the bytes."""
+def _run_help(image, env, *, cancel_event=None):
+    """Execute ``--help`` from the sealed memfd inside the owned profile; return the bytes.
+
+    ``cancel_event`` is the caller's cancellation (the hold passes its own). The run's monitor
+    carries it, so the existing liveness path stops the run when it is set, and a run
+    stopped that way is ``CANCELLED``, never a failed measurement."""
     panel = _panel()
     admission = gh.Admission(gh.VerifiedImage(image.reopen(), image.sha256), None, "qualification_candidate")
+    cancel = cancel_event if cancel_event is not None else threading.Event()
     try:
         with tempfile.TemporaryDirectory(prefix="agy-help-") as scratch:
-            cancel = threading.Event()
             monitor = panel._ReviewMonitor(Path(scratch) / "monitor.json", "agy-help", 0, cancel)
             home = env.get("HOME") or str(Path.home())
             with gh.owned_profile(env, settings_bytes=panel._broker_agy_settings_bytes(),
                                   credential_path=Path(home) / ".gemini/antigravity-cli/antigravity-oauth-token",
                                   admission=admission) as profile:
                 with panel._uncapped_nonseat_probe():
-                    proc = panel._run_leg_with_liveness(
-                        [profile.executable, "--help"], cwd=scratch, env=profile.env,
-                        deadline_s=panel._MAX_LEG_TIMEOUT_S, input_text=None,
-                        review_monitor=monitor, gemini_profile=profile,
-                    )
+                    try:
+                        proc = panel._run_leg_with_liveness(
+                            [profile.executable, "--help"], cwd=scratch, env=profile.env,
+                            deadline_s=panel._MAX_LEG_TIMEOUT_S, input_text=None,
+                            review_monitor=monitor, gemini_profile=profile,
+                        )
+                    except panel._ReviewOperationCancelled as exc:
+                        if cancel.is_set():
+                            raise ValueError(CANCELLED) from exc
+                        raise
+        if cancel.is_set():
+            raise ValueError(CANCELLED)
         # agy prints its usage on stderr; the measured help is both streams, in that
         # order (``agy --help > help.txt 2>&1`` for a tool that writes only one).
         text = proc.stdout + proc.stderr
@@ -1634,11 +1647,14 @@ def _run_help(image, env):
         admission.close()
 
 
-def measure_help(image, env, profile_digest):
+def measure_help(image, env, profile_digest, *, cancel_event=None):
+    """The memoized help of ``image``; a cancelled run is not memoized. ``cancel_event`` (the
+    hold's) reaches the run's liveness path."""
     key = (image.sha256, profile_digest)
     with _HELP_LOCK:
         if key not in _HELP_MEMO:
-            _HELP_MEMO[key] = _run_help(image, env)
+            _HELP_MEMO[key] = (_run_help(image, env) if cancel_event is None
+                               else _run_help(image, env, cancel_event=cancel_event))
         return _HELP_MEMO[key]
 
 
@@ -1696,18 +1712,423 @@ def lookup(env, data, path, *, store=None):
 
 def ensure_admitted(env, cancel_event=None, heartbeat=None, *, store=None, transport=None,
                     qualify=None, subject_path=None):
-    """``admit``, and on a miss the first-use path (agent-harness#1076).
+    """The seat admission boundary with first use (AGYFRESH §2.2): ``admit_seat(first_use=True)``.
 
-    Called only by the whole-board preflight and by ``agy-qualification run``. Phase 1
-    (provenance, nothing executes) writes a provenance entry; phase 2 measures help and
-    runs the three live operations from the same sealed memfd, then writes the qualified
-    entry. Operation failures write a typed failed entry; transients, cancellation and
-    fetch failures write nothing.
+    Called only by the whole-board preflight and by ``agy-qualification run``. The
+    qualification worker's candidate token is admitted through ``gh.admit``, as before.
+    """
+    if gh._CANDIDATE is not None:
+        return gh.admit(env, subject_path=subject_path)
+    return admit_seat(env, subject_path, first_use=True, cancel_event=cancel_event,
+                      heartbeat=heartbeat, store=store, transport=transport, qualify=qualify)
+
+
+# ------------------------------------------------- the seat admission boundary (AGYFRESH §2.2)
+
+#: The subject-side reasons a hold may follow (AGYFRESH §2.2). Evidence values only: a hold
+#: is an admission, and with no qualifying candidate the original refusal is raised.
+HOLD_REASONS = (
+    "subject_unreadable", "subject_not_regular", "subject_over_bound",
+    "self_qualification_disabled",
+    "subject_failed", "subject_unqualified", "store_unsafe",
+    "provenance_unverified", "provenance_unavailable", "first_use_failed", "first_use_unavailable",
+)
+# First use's refusals by their code. Any other code (a cancellation, an unsupported
+# platform) is not the subject's and propagates unchanged.
+_FIRST_USE_REASONS = {
+    SELF_QUALIFICATION_FAILED: "first_use_failed",
+    SELF_QUALIFICATION_UNAVAILABLE: "first_use_unavailable",
+    STORE_UNSAFE: "store_unsafe",
+    agy_provenance.UNVERIFIED: "provenance_unverified",
+    agy_provenance.UNAVAILABLE: "provenance_unavailable",
+}
+
+
+class _SubjectNotAdmitted(Exception):
+    """The subject was not admitted for a reason in ``HOLD_REASONS``, raised at one explicit
+    stage of ``admit_seat``. The hold handler catches only this type; ``refusal`` is the
+    exception today's code raises, re-raised unchanged when nothing is held."""
+
+    def __init__(self, reason, refusal, subject_sha256):
+        super().__init__(reason)
+        self.reason, self.refusal, self.subject_sha256 = reason, refusal, subject_sha256
+
+
+class _SubjectImageUnsealed(gh.AgyCanaryEvidenceError, ValueError):
+    """H2: the subject's image memfd was not sealed: the seal ABI was unavailable when it was
+    created, or its seals did not hold. Never hold-eligible. Classified here, before
+    ``agy_integrity.check`` maps it to the same ``agy_image_unqualified`` an unqualified
+    subject raises. It is still the seal error (``AgyCanaryEvidenceError``), and a
+    ``ValueError`` whose ``str()`` is today's ``gemini_heartbeat_capability_unavailable``, so
+    every caller's mapping is unchanged."""
+
+
+def _refusal(code, cause):
+    refusal = ValueError(code)
+    refusal.__cause__ = cause
+    return refusal
+
+
+def _read_subject(path, resolved):
+    """Stage 2: the subject's single read into one sealed memfd (AGYFRESH §1.2).
+
+    ``resolved`` is the subject's resolved name, captured once by ``admit_seat`` and also used
+    for the managed-release classification, so the bytes read and the classification name the
+    same file; ``path`` stays the image's path metadata. The subject's digest is unknown for
+    all three subject-side reasons, so they carry ``None``."""
+    try:
+        fd = os.open(resolved, os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise _SubjectNotAdmitted("subject_unreadable", _refusal(gh._CAPABILITY, exc), None) from None
+    try:
+        try:
+            info = os.fstat(fd)
+        except OSError as exc:
+            raise _SubjectNotAdmitted("subject_unreadable", _refusal(gh._CAPABILITY, exc), None) from None
+        if not stat.S_ISREG(info.st_mode):
+            raise _SubjectNotAdmitted("subject_not_regular", ValueError(gh._CAPABILITY), None)
+        if info.st_size > agy_provenance.MAX_MEMBER_BYTES:
+            raise _SubjectNotAdmitted("subject_over_bound", ValueError(gh._CAPABILITY), None)
+        try:
+            return gh.VerifiedImage.from_fd(fd, path=path)
+        except gh.AgyCanaryEvidenceError as exc:
+            raise _SubjectImageUnsealed(gh._CAPABILITY) from exc
+        except OSError as exc:
+            raise _SubjectNotAdmitted("subject_unreadable", _refusal(gh._CAPABILITY, exc), None) from None
+        except gh.ImageOverBound as exc:
+            # The streaming cap, as the reader raised it: the file grew past the bound while it
+            # was read, whatever its size is now. A digest mismatch is not the subject's and
+            # propagates unchanged.
+            raise _SubjectNotAdmitted("subject_over_bound", _refusal(gh._CAPABILITY, exc), None) from None
+    finally:
+        os.close(fd)
+
+
+def admit_seat(env, subject_path, *, first_use=False, cancel_event=None, heartbeat=None,
+               store=None, transport=None, qualify=None) -> gh.Admission:
+    """The only place a seat image is admitted (AGYFRESH §2.2).
+
+    Stages, in order: the never-eligible conditions at their own sites (local
+    capabilities, no provider, an unsealable image); the subject's single read; a release
+    member, before any config or store read; the opt-out; the store lookup (which owns the
+    image, and whose agent-harness#1602 seam admission is returned unchanged); with
+    ``first_use=True`` only, first use. A subject-side failure at any of them is a
+    ``_SubjectNotAdmitted``, and only that reaches the hold: ``admit_held`` for a standalone
+    subject with the hold enabled, else the original refusal, unchanged. What a stage raises
+    with its own type (a cancellation, a typed seat, quiescence or jail refusal) propagates.
+
+    ``gh.admit`` and ``agy_integrity.check`` (with an env) call this with
+    ``first_use=False`` and map its refusals as they always have; ``ensure_admitted`` calls
+    it with ``first_use=True``.
     """
     try:
-        return gh.admit(env, subject_path=subject_path, keep_miss=True)
+        gh._local_capabilities()
+    except (OSError, gh.AgyCanaryEvidenceError, ValueError) as exc:
+        raise ValueError(gh._CAPABILITY) from exc
+    path = (os.fspath(subject_path) if subject_path is not None
+            else shutil.which("agy", path=env.get("PATH", os.defpath)))
+    if path is None:
+        raise ValueError(gh._CAPABILITY)  # no provider installed: no seat, and no hold
+    # Resolved before anything is read, so a subject removed later is still classified.
+    resolved = Path(os.path.realpath(path))
+    try:
+        return _admit_subject(env, path, resolved, first_use=first_use, cancel_event=cancel_event,
+                              heartbeat=heartbeat, store=store, transport=transport, qualify=qualify)
+    except _SubjectNotAdmitted as refused:
+        not_admitted = refused
+    return _hold_or_refuse(env, not_admitted, resolved, store=store, cancel_event=cancel_event,
+                           path=path)
+
+
+def _admit_subject(env, path, resolved, *, first_use, cancel_event, heartbeat, store, transport,
+                   qualify):
+    """Stages 2 to 6 of ``admit_seat`` for the subject only. Every subject image is closed or
+    handed on exactly once (H1)."""
+    image = _read_subject(path, resolved)
+    digest = image.sha256
+    if digest in gh.QUALIFIED_IMAGES:
+        try:
+            return gh.Admission(image, gh.QUALIFIED_IMAGES[digest], "release_qualified", Path(path),
+                                source="subject")
+        except BaseException:
+            image.close()
+            raise
+    try:
+        enabled = self_qualification_enabled()
+    except BaseException:
+        image.close()
+        raise
+    if not enabled:
+        image.close()
+        raise _SubjectNotAdmitted("self_qualification_disabled", ValueError(gh._CAPABILITY), digest)
+    try:
+        # lookup takes ownership of the image: it is closed there unless it is handed on.
+        return lookup(env, image, path)
     except gh.AdmissionMiss as miss:
-        image, path = miss.image, miss.path
+        missed = miss.image
+    except ValueError as exc:
+        if str(exc) == SELF_QUALIFICATION_FAILED:
+            raise _SubjectNotAdmitted("subject_failed", exc, digest) from None
+        if str(exc) == gh._CAPABILITY:  # the opt-out, read again inside lookup
+            raise _SubjectNotAdmitted("self_qualification_disabled", exc, digest) from None
+        raise
+    except (OSError, gh.AgyCanaryEvidenceError) as exc:
+        # AGYFRESH §2.2: the help measurement's typed outcomes propagate unchanged, so the typed
+        # process-group quiescence outcome keeps its type here, as it always did when first
+        # use's own phase 2 measured the help; only an OSError or the seal error itself keep
+        # first use's capability refusal. (Which stage measures first depends on the help memo.)
+        if first_use and not _is_typed_quiescence(exc):
+            raise ValueError(gh._CAPABILITY) from exc
+        raise
+    if not first_use:
+        missed.close()
+        unsafe = (store or Store()).status() == "unsafe"
+        raise _SubjectNotAdmitted("store_unsafe" if unsafe else "subject_unqualified",
+                                  ValueError(gh._CAPABILITY), digest)
+    try:
+        return _first_use_subject(env, missed, path, cancel_event=cancel_event, heartbeat=heartbeat,
+                                  store=store, transport=transport, qualify=qualify)
+    except ValueError as exc:
+        reason = _FIRST_USE_REASONS.get(str(exc))
+        if reason is None:
+            raise
+        raise _SubjectNotAdmitted(reason, exc, digest) from None
+
+
+def _is_typed_quiescence(exc):
+    from .panel_invoker import ProviderProcessGroupQuiescenceError
+    return isinstance(exc, ProviderProcessGroupQuiescenceError)
+
+
+def _cancelled(cancel_event):
+    return cancel_event is not None and cancel_event.is_set()
+
+
+def _names_managed_release(*names) -> bool:
+    """Whether any of ``names`` lies below the managed releases root or one of its aliases,
+    BY NAME: the root is resolved, the names never are.
+
+    The subject's name is resolved once, by ``admit_seat``, and that captured name is both
+    read and classified here. Resolving it again (``seat_subject._names_managed_root``
+    does) would follow whatever replaced the entry during the read. ``MANAGED_RELEASES_ROOT``
+    is read at call time."""
+    from . import seat_subject
+
+    root = seat_subject.MANAGED_RELEASES_ROOT
+    roots = [root.absolute()]
+    try:
+        roots.append(root.resolve(strict=True))
+    except OSError:
+        pass
+    return any(Path(os.path.abspath(name)).is_relative_to(item) for name in names for item in roots)
+
+
+def _hold_or_refuse(env, refused, resolved, *, store, cancel_event, path=None):
+    """The hold handler (AGYFRESH §2.2). The subject's image is already closed here."""
+    from . import agy_hold
+
+    refusal = refused.refusal
+    # A managed-release subject is never held, on any route (§2.9, R-F0-1, R-F0-2): nothing
+    # is searched or opened. Nor with the hold off, nor on an unsupported platform. The
+    # classification is of the captured names (as given, and as resolved once), not of
+    # whatever the entry names now.
+    names = (resolved,) if path is None else (path, resolved)
+    if _names_managed_release(*names) or not agy_hold.hold_enabled():
+        raise refusal from refusal.__cause__
+    try:
+        _host()
+    except ValueError:
+        raise refusal from refusal.__cause__
+    admission = admit_held(env, reason=refused.reason, subject_sha256=refused.subject_sha256,
+                           store=store, cancel_event=cancel_event)
+    if admission is None:
+        raise refusal from refusal.__cause__
+    return admission
+
+
+def _held_help(image, env, profile_digest, cancel_event=None):
+    """A candidate's measured help digest, or ``None`` on a candidate-local failure. A
+    cancellation and the help measurement's typed outcomes propagate (AGYFRESH §2.2): the
+    caller's ``cancel_event`` reaches the run's liveness path, is checked before and after
+    the run, and a run it stopped is ``CANCELLED``, never a rejected candidate."""
+    from .executable_dependency import ExecutableDependencyError
+    from .panel_invoker import ProviderProcessGroupQuiescenceError
+    from .sandbox_egress import EgressUnavailable
+    from .seat_jail import SeatSandboxRefused
+
+    if _cancelled(cancel_event):
+        raise ValueError(CANCELLED)
+    try:
+        measured = measure_help(image, env, profile_digest, cancel_event=cancel_event)
+    except (EgressUnavailable, gh.GeminiQuiescenceError, ProviderProcessGroupQuiescenceError,
+            SeatSandboxRefused, ExecutableDependencyError):
+        raise
+    except ValueError as exc:
+        if str(exc) == CANCELLED:
+            raise
+        if _cancelled(cancel_event):
+            raise ValueError(CANCELLED) from exc
+        return None
+    except (OSError, RuntimeError) as exc:
+        if _cancelled(cancel_event):
+            raise ValueError(CANCELLED) from exc
+        return None
+    if _cancelled(cancel_event):
+        raise ValueError(CANCELLED)
+    return sha256(measured).hexdigest()
+
+
+def _hold_predicates(env, *, subject_sha256, store, measure, cancel_event=None):
+    """The §2.3 predicate over one sealed candidate, and the cache's version lookup (§2.4).
+
+    ``measure=False`` (status) stops before executing anything: a candidate that passed the
+    store half of step 3 is reported with ``help_sha256 None``. Returns ``None`` when the
+    hold cannot run (the deny list is unreadable)."""
+    from . import agy_hold
+
+    deny = agy_hold.hold_deny()
+    if deny is None:
+        return None
+    excluded = frozenset(deny | ({subject_sha256} if subject_sha256 else set()))
+    store_ok = store.status() == "ok"
+    try:
+        host = _host()
+    except ValueError:
+        host = None
+    local = store_ok and host is not None and self_qualification_enabled()
+    profile_digest = agy_profile_digest()
+
+    def cache_version(digest, member_version):
+        if digest in excluded:
+            return None
+        if store_ok and host is not None and store.get_failed(digest, host, profile_digest) is not None:
+            return None
+        if member_version is not None:
+            return member_version
+        if not store_ok or host is None:
+            return None
+        payload = store.get_provenance(digest, host, profile_digest)
+        return agy_hold.parse_version(payload.get("release_version")) if payload else None
+
+    def predicate(image, candidate):
+        digest = image.sha256
+        if digest in excluded:
+            return None
+        if digest in gh.QUALIFIED_IMAGES:
+            return gh.QUALIFIED_IMAGES[digest], "release_qualified"
+        if not local:
+            return None
+        if store.get_failed(digest, host, profile_digest) is not None:
+            return None
+        if store.get_provenance(digest, host, profile_digest) is None:
+            return None  # never executed, not even for --help, before this (F5)
+        if not measure:
+            return None, "locally_qualified"
+        help_sha256 = _held_help(image, env, profile_digest, cancel_event)
+        if help_sha256 is None or store.get_qualified(digest, help_sha256, host, profile_digest) is None:
+            return None
+        return help_sha256, "locally_qualified"
+
+    return excluded, cache_version, predicate, (store.host_dir if store_ok else None)
+
+
+def admit_held(env, *, reason, subject_sha256, store=None, cancel_event=None) -> gh.Admission | None:
+    """The hold (AGYFRESH §2.3, §2.4): the first candidate of the bounded, ordered search that
+    passes an existing qualification predicate, admitted with ``source="lkg"`` and no path,
+    or ``None``. Every route executes a held admission's sealed image; none executes a path
+    derived from it."""
+    from . import agy_hold
+
+    store = store or Store()
+    predicates = _hold_predicates(env, subject_sha256=subject_sha256, store=store, measure=True,
+                                  cancel_event=cancel_event)
+    if predicates is None:
+        # No hold (the deny list could not be read): a miss, unless the caller cancelled
+        # meanwhile, which is a cancellation and never the subject's refusal.
+        if _cancelled(cancel_event):
+            raise ValueError(CANCELLED)
+        return None
+    excluded, cache_version, predicate, store_dir = predicates
+    held = agy_hold.search(
+        members=gh.catalog_members(), store_dir=store_dir, cache_version=cache_version,
+        predicate=predicate, excluded=excluded, cancelled=lambda: _cancelled(cancel_event))
+    if held is None:
+        if _cancelled(cancel_event):
+            raise ValueError(CANCELLED)
+        return None
+    if _cancelled(cancel_event):  # never hand a winner off after the caller cancelled
+        held.image.close()
+        raise ValueError(CANCELLED)
+    try:
+        return gh.Admission(held.image, held.help_sha256, held.admission_class, None, source="lkg",
+                            hold_reason=reason, subject_sha256=subject_sha256)
+    except BaseException:
+        held.image.close()
+        raise
+
+
+def hold_status(env, subject_path) -> dict:
+    """The ``hold`` object of ``agy-qualification status`` (AGYFRESH §2.6; EC-HOLD-12, -15).
+
+    A lookup: it measures no help and executes nothing, and it never says an image is in
+    use. Use is reported only by a launch's evidence (``provider_admission_source``). For a
+    managed-release subject, with the hold off or with no provider, every route is
+    ``not_covered``, ``candidate`` is ``None`` and nothing is searched."""
+    from . import agy_hold
+
+    enabled = agy_hold.hold_enabled()
+    path = (os.fspath(subject_path) if subject_path is not None
+            else shutil.which("agy", path=env.get("PATH", os.defpath)))
+    resolved = None if path is None else Path(os.path.realpath(path))
+    managed = resolved is not None and _names_managed_release(path, resolved)
+    status = {"enabled": enabled, "subject": "managed_release" if managed else "standalone",
+              "routes": {route: "not_covered" for route in agy_hold.ROUTE_COVERAGE},
+              "candidate": None}
+    if managed or not enabled or path is None:
+        return status
+    try:
+        _host()
+    except ValueError:
+        return status
+    status["routes"] = {route: "covered" if covered else "not_covered"
+                        for route, covered in agy_hold.ROUTE_COVERAGE.items()}
+    try:
+        subject = _read_subject(path, resolved)
+    except (_SubjectNotAdmitted, OSError, ValueError):
+        subject_sha256 = None
+    else:
+        subject_sha256 = subject.sha256
+        subject.close()
+    try:
+        predicates = _hold_predicates(env, subject_sha256=subject_sha256, store=Store(), measure=False)
+        if predicates is None:
+            return status
+        excluded, cache_version, predicate, store_dir = predicates
+        held = agy_hold.search(members=gh.catalog_members(), store_dir=store_dir,
+                               cache_version=cache_version, predicate=predicate, excluded=excluded)
+    except (OSError, ValueError, RuntimeError):
+        return status
+    if held is not None:
+        held.image.close()
+        status["candidate"] = {
+            "origin": held.candidate.origin,
+            "version": ".".join(str(part) for part in held.candidate.version),
+            "image_sha256": held.image.sha256,
+            "admission_class": held.admission_class,
+            "state": "ready" if held.admission_class == "release_qualified" else "pending_help_measurement",
+        }
+    return status
+
+
+def _first_use_subject(env, image, path, *, cancel_event=None, heartbeat=None, store=None,
+                       transport=None, qualify=None):
+    """Stage 6, first use for the subject's image after a lookup miss (agent-harness#1076).
+
+    Phase 1 (provenance, nothing executes) writes a provenance entry; phase 2 measures help
+    and runs the three live operations from the same sealed memfd, then writes the qualified
+    entry. Operation failures write a typed failed entry; transients, cancellation and fetch
+    failures write nothing. Owns ``image``: it is closed unless handed on in the admission.
+    """
     try:
         store = store or Store()
         if store.machine_id is None:
@@ -2148,6 +2569,7 @@ def cli_main(args):
         from .executable_dependency import ExecutableDependencyError
         from .seat_subject import resolve_seat_subject
 
+        subject_path = None  # unresolved: the hold status looks the PATH agy up itself
         try:
             subject = resolve_seat_subject("gemini", env)
         except FileNotFoundError:
@@ -2155,11 +2577,12 @@ def cli_main(args):
         except ExecutableDependencyError as exc:
             verdict = AgyVerdict("refuses", exc.code, None)
         else:
-            verdict = admission_verdict(env, subject.subject_path, execute=True)
+            subject_path = subject.subject_path
+            verdict = admission_verdict(env, subject_path, execute=True)
         print(json.dumps({"store": str(store.host_dir), "store_status": store.status(),
                           "entries": store.entries(), "self_qualification": self_qualification_enabled(),
                           "key": agy_profile_digest(), "written_under": __version__,
-                          "verdict": verdict._asdict()},
+                          "verdict": verdict._asdict(), "hold": hold_status(env, subject_path)},
                          sort_keys=True))
         return 0
     if args.action == "clear":
@@ -2185,8 +2608,13 @@ def cli_main(args):
         print(f"phase-loop agy-qualification run: {exc}", file=sys.stderr)
         return 1
     try:
-        print(json.dumps({"admission_class": admission.admission_class, "image_sha256": admission.image.sha256,
-                          "help_sha256": admission.help_sha256}, sort_keys=True))
+        output = {"admission_class": admission.admission_class, "image_sha256": admission.image.sha256,
+                  "help_sha256": admission.help_sha256, "source": admission.source}
+        if admission.source == "lkg":
+            # A held image is not the subject qualifying: say so (AGYFRESH §2.6).
+            output.update(hold_reason=admission.hold_reason,
+                          subject_image_sha256=admission.subject_sha256)
+        print(json.dumps(output, sort_keys=True))
     finally:
         admission.close()
     return 0

@@ -608,3 +608,86 @@ def test_placement_headroom_defaults_are_packaged_only(tmp_path, monkeypatch):
             config.load_placement_headroom_defaults()
     resource.write_text(body)
     assert config.load_placement_headroom_defaults() == defaults
+
+
+# --- AGYFRESH HOLD (§2.7): ``[agy] hold`` and ``[agy] hold_deny``, user file only ----------
+
+_DIGEST = "ab" * 32
+
+
+def _user(tmp_path, body):
+    path = tmp_path / "advisor-boards.toml"
+    path.write_text(body)
+    return path
+
+
+@pytest.mark.parametrize("body", [None, "", "[agy]\n", "[agy]\nself_qualification = false\n"])
+def test_the_hold_defaults_on_with_nothing_denied(tmp_path, body):
+    path = tmp_path / "absent.toml" if body is None else _user(tmp_path, body)
+    assert config.load_agy_hold(path=path) is True
+    assert config.load_agy_hold_deny(path=path) == frozenset()
+
+
+def test_hold_false_disables_the_hold_and_keeps_self_qualification(tmp_path):
+    path = _user(tmp_path, "[agy]\nhold = false\n")
+    assert config.load_agy_hold(path=path) is False
+    assert config.load_agy_self_qualification(path=path) is True
+
+
+def test_hold_deny_lists_digests(tmp_path):
+    path = _user(tmp_path, f'[agy]\nhold_deny = ["{_DIGEST}", "{"c" * 64}"]\n')
+    assert config.load_agy_hold_deny(path=path) == frozenset({_DIGEST, "c" * 64})
+    assert config.load_agy_hold(path=path) is True
+
+
+@pytest.mark.parametrize("body", [
+    '[agy]\nhold = "false"\n', "[agy]\nhold = 0\n",
+    '[agy]\nhold_deny = "' + _DIGEST + '"\n', "[agy]\nhold_deny = [1]\n",
+    '[agy]\nhold_deny = ["' + _DIGEST.upper() + '"]\n', '[agy]\nhold_deny = ["' + _DIGEST[:-1] + '"]\n',
+    "[agy]\nhold_denied = []\n",
+])
+def test_a_malformed_hold_key_is_a_config_error_and_disables_the_hold(tmp_path, monkeypatch, body):
+    from phase_loop_runtime import agy_hold
+
+    path = _user(tmp_path, body)
+    with pytest.raises(config.BoardConfigError):
+        config.load_agy_hold(path=path)
+    with pytest.raises(config.BoardConfigError):
+        config.load_agy_hold_deny(path=path)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    (tmp_path / "xdg" / "agent-harness").mkdir(parents=True)
+    (tmp_path / "xdg" / "agent-harness" / "advisor-boards.toml").write_text(body)
+    assert agy_hold.hold_enabled() is False
+    assert agy_hold.hold_deny() is None
+
+
+def test_the_hold_keys_in_a_repository_config_are_refused_like_self_qualification(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / ".agent-harness").mkdir(parents=True)
+    (repo / ".agent-harness" / "advisor-boards.toml").write_text(
+        f'[agy]\nhold = false\nhold_deny = ["{_DIGEST}"]\n')
+    with pytest.raises(config.BoardConfigError) as caught:
+        config.load_president_ladder(repo_dir=repo, env={})
+    assert "unknown config key(s) ['agy']" in str(caught.value)
+    assert "agy" not in config._KNOWN_REPO_TOP_KEYS
+
+
+@pytest.mark.parametrize("bad", ['hold = "false"', 'hold_deny = "x"', "hold_deny = [1]"])
+@pytest.mark.parametrize("enabled", [True, False])
+def test_a_malformed_hold_value_never_changes_a_valid_self_qualification(tmp_path, bad, enabled):
+    """The narrow self-qualification reader ignores HOLD values; the hold fails closed, and
+    the board-file check (``_parse_agy``) stays strict."""
+    import tomllib
+
+    path = _user(tmp_path, f"[agy]\nself_qualification = {str(enabled).lower()}\n{bad}\n")
+    assert config.load_agy_self_qualification(path=path) is enabled
+    with pytest.raises(config.BoardConfigError):
+        config.load_agy_hold(path=path)
+    with pytest.raises(config.BoardConfigError):
+        config._parse_agy(tomllib.loads(path.read_text()), str(path))
+
+
+def test_an_unknown_agy_key_still_fails_self_qualification_closed(tmp_path):
+    path = _user(tmp_path, "[agy]\nself_qualification = true\nhold_denied = []\n")
+    with pytest.raises(config.BoardConfigError):
+        config.load_agy_self_qualification(path=path)

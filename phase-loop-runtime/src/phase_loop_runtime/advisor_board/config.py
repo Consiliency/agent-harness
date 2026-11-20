@@ -60,8 +60,11 @@ _KNOWN_TOP_KEYS: frozenset[str] = frozenset({"default_board", "boards", "preside
 _KNOWN_REPO_TOP_KEYS: frozenset[str] = frozenset({"president", "sandbox"})
 _KNOWN_PRESIDENT_KEYS: frozenset[str] = frozenset({"ladder"})
 # agent-harness#1076 D3: the USER file's ``[agy] self_qualification = false`` restores the
-# hard refusal of a non-release agy image. A repository file cannot carry it.
-_KNOWN_AGY_KEYS: frozenset[str] = frozenset({"self_qualification"})
+# hard refusal of a non-release agy image. AGYFRESH §2.7 (HOLD): ``[agy] hold`` (default
+# true) and ``[agy] hold_deny`` (image digests never held). A repository file cannot carry
+# any of them.
+_KNOWN_AGY_KEYS: frozenset[str] = frozenset({"self_qualification", "hold", "hold_deny"})
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 # agent-harness#896: the USER file's ``[sandbox]`` names one root per remote placement
 # backend and the order to try them in. Repositories may carry only driver tunables.
 _KNOWN_SANDBOX_KEYS: frozenset[str] = frozenset({"roots", "order", "driver"})
@@ -227,8 +230,35 @@ def _parse_president(data: Mapping[str, Any], where: str) -> tuple[str, ...] | N
         raise BoardConfigError(f"{where} [president] ladder: {exc}") from exc
 
 
+def _parse_agy_table(data: Mapping[str, Any], where: str) -> tuple[bool, bool, frozenset[str]]:
+    """The user file's whole ``[agy]`` table, validated: ``self_qualification`` and ``hold``
+    (both default ``True``) and ``hold_deny`` (default empty; a list of SHA-256 hex digests)."""
+    raw = data.get("agy")
+    if raw is None:
+        return True, True, frozenset()
+    if not isinstance(raw, Mapping):
+        raise BoardConfigError(f"{where}: 'agy' must be a table")
+    _reject_unknown(raw.keys(), _KNOWN_AGY_KEYS, f"{where} [agy]")
+    deny = raw.get("hold_deny", [])
+    if not isinstance(deny, list) or not all(isinstance(item, str) and _SHA256_HEX.fullmatch(item)
+                                             for item in deny):
+        raise BoardConfigError(f"{where} [agy]: 'hold_deny' must be a list of SHA-256 hex digests")
+    return (_require_bool(raw, "self_qualification", True, f"{where} [agy]"),
+            _require_bool(raw, "hold", True, f"{where} [agy]"), frozenset(deny))
+
+
 def _parse_agy(data: Mapping[str, Any], where: str) -> bool:
-    """The user file's ``[agy] self_qualification`` (default ``True``), validated."""
+    """The user file's ``[agy] self_qualification`` (default ``True``), with the whole table
+    validated: the board-file check (a bad ``[agy]`` fails at load)."""
+    return _parse_agy_table(data, where)[0]
+
+
+def _parse_agy_self_qualification(data: Mapping[str, Any], where: str) -> bool:
+    """``[agy] self_qualification`` alone, for the narrow self-qualification reader.
+
+    The table and its key names are checked, but the HOLD values are not: a malformed
+    ``hold`` or ``hold_deny`` disables the hold (``load_agy_hold``, fail-closed) and never a
+    valid self-qualification setting. Loading the board file still rejects them."""
     raw = data.get("agy")
     if raw is None:
         return True
@@ -317,14 +347,42 @@ def load_agy_self_qualification(*, path: Path | None = None) -> bool:
     """D3 (agent-harness#1076): whether first-use self-qualification is enabled.
 
     Reads the user file only (this process's ``board_config_path()``). A malformed file
-    raises; the admission caller treats any error as opted out (today's refusal).
+    raises; the admission caller treats any error as opted out (today's refusal). The HOLD
+    values in ``[agy]`` are not this reader's: a malformed ``hold`` or ``hold_deny`` leaves a
+    valid ``self_qualification`` in force (AGYFRESH §2.7).
     """
     user_path = path if path is not None else board_config_path(None)
     user = _load_toml(user_path)
     if user is None:
         return True
     _reject_unknown(user.keys(), _KNOWN_TOP_KEYS, str(user_path))
-    return _parse_agy(user, str(user_path))
+    return _parse_agy_self_qualification(user, str(user_path))
+
+
+def _load_agy_table(path: Path | None) -> tuple[bool, bool, frozenset[str]]:
+    user_path = path if path is not None else board_config_path(None)
+    user = _load_toml(user_path)
+    if user is None:
+        return True, True, frozenset()
+    _reject_unknown(user.keys(), _KNOWN_TOP_KEYS, str(user_path))
+    return _parse_agy_table(user, str(user_path))
+
+
+def load_agy_hold(*, path: Path | None = None) -> bool:
+    """AGYFRESH §2.7: whether the hold is enabled (``[agy] hold``, default ``True``).
+
+    Reads the user file only. A malformed file -- any bad ``[agy]`` key included -- raises;
+    the caller treats any error as the hold disabled.
+    """
+    return _load_agy_table(path)[1]
+
+
+def load_agy_hold_deny(*, path: Path | None = None) -> frozenset[str]:
+    """AGYFRESH §2.7: image digests never admitted as a hold (``[agy] hold_deny``).
+
+    Reads the user file only. A malformed file raises; the caller then disables the hold.
+    """
+    return _load_agy_table(path)[2]
 
 
 def load_cli_self_qualification(harness: str, *, path: Path | None = None) -> bool:

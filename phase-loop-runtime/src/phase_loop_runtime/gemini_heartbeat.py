@@ -9,7 +9,6 @@ import os
 from pathlib import Path
 import re
 import select
-import shutil
 import signal
 import stat
 import time
@@ -30,8 +29,9 @@ _HEX64 = re.compile(r"[0-9a-f]{64}")
 _RELEASE = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 _RFC3339 = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\.[0-9]+)?"
                       r"(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])")
-#: Why the last ``load_catalog`` call returned what it did: ``ok``, ``missing``,
-#: ``malformed`` or ``empty``. Anything but ``ok`` is an empty catalog (fail-closed).
+#: Why the last catalog read (``catalog_members``, and so ``load_catalog``) returned what it
+#: did: ``ok``, ``missing``, ``malformed`` or ``empty``. Anything but ``ok`` is an empty
+#: catalog (fail-closed).
 CATALOG_STATUS = "unloaded"
 
 
@@ -77,10 +77,10 @@ def parse_catalog(text: str) -> list[dict]:
     return members
 
 
-def load_catalog(path=None) -> dict[str, str]:
-    """``image_sha256 -> help_sha256`` from the shipped catalog (or ``path``). Strict, offline,
-    and never raises: a missing or malformed file is an empty catalog, so the release fast
-    path admits nothing and every image takes local qualification or a refusal."""
+def catalog_members(path=None) -> list[dict]:
+    """The members of the shipped catalog (or ``path``). Strict, offline, and never raises: a
+    missing or malformed file is no members (``CATALOG_STATUS`` says why). The hold reads the
+    members' ``release_version`` to authenticate a candidate's version (AGYFRESH §2.4)."""
     global CATALOG_STATUS
     try:
         if path is None:
@@ -89,17 +89,21 @@ def load_catalog(path=None) -> dict[str, str]:
             text = Path(path).read_text(encoding="utf-8")
     except (OSError, UnicodeError):
         CATALOG_STATUS = "missing"
-        return {}
+        return []
     try:
         members = parse_catalog(text)
     except (ValueError, TypeError, KeyError, RecursionError):
         CATALOG_STATUS = "malformed"
-        return {}
-    if not members:
-        CATALOG_STATUS = "empty"
-        return {}
-    CATALOG_STATUS = "ok"
-    return {member["image_sha256"]: member["help_sha256"] for member in members}
+        return []
+    CATALOG_STATUS = "ok" if members else "empty"
+    return members
+
+
+def load_catalog(path=None) -> dict[str, str]:
+    """``image_sha256 -> help_sha256`` from the shipped catalog (or ``path``). Strict, offline,
+    and never raises: a missing or malformed file is an empty catalog, so the release fast
+    path admits nothing and every image takes local qualification or a refusal."""
+    return {member["image_sha256"]: member["help_sha256"] for member in catalog_members(path)}
 
 
 # The closed set of qualified agy entry images: image SHA256 -> its measured `--help` SHA256.
@@ -119,6 +123,15 @@ ADMISSION_CLASSES = ("release_qualified", "locally_qualified", "qualification_ca
 # (agy_qualification._worker_entry) after it has proved its inherited fd is a fully
 # sealed memfd whose digest passes the provenance gate (agent-harness#1076).
 _CANDIDATE = None
+
+
+class ImageOverBound(ValueError):
+    """The image passed ``agy_provenance.MAX_MEMBER_BYTES`` while it was streamed. Raised where
+    the reader counts it, so a caller can tell it from a digest mismatch whatever the file's
+    size is afterwards; ``str()`` keeps the public ``gemini_heartbeat_capability_unavailable``."""
+
+    def __init__(self):
+        super().__init__(_CAPABILITY)
 
 
 class VerifiedImage:
@@ -152,7 +165,9 @@ class VerifiedImage:
         The image is copied in 1 MiB chunks through one reused buffer while it is hashed, so
         it exists once, in the memfd. The sealed memfd is re-hashed through the same buffer,
         so peak anonymous memory is one chunk. Above ``agy_provenance.MAX_MEMBER_BYTES``
-        (read at call time) it refuses. The memfd gets the mode and seals of ``from_bytes``.
+        (read at call time) it refuses with ``ImageOverBound``; a re-hash that disagrees is a
+        plain ``ValueError``; both carry the same public string. The memfd gets the mode and
+        seals of ``from_bytes``.
         ``fd`` stays the caller's to close.
         """
         digest, size = sha256(), 0
@@ -163,7 +178,7 @@ class VerifiedImage:
             while count := os.readv(fd, [buffer]):
                 size += count
                 if size > agy_provenance.MAX_MEMBER_BYTES:
-                    raise ValueError(_CAPABILITY)
+                    raise ImageOverBound()
                 digest.update(view[:count])
                 written = 0
                 while written < count:
@@ -250,15 +265,32 @@ def _fd_digest(fd):
 
 
 class Admission:
-    """The image a Gemini heartbeat leg executes, with exactly one admission class."""
+    """The image a Gemini heartbeat leg executes, with exactly one admission class.
 
-    def __init__(self, image, help_sha256, admission_class, path=None, *, source="subject"):
+    A held admission (``source="lkg"``, AGYFRESH §2.2) carries no path, and the reason the
+    subject was not admitted plus the subject's digest (``None`` when it could not be read)
+    for the evidence (§2.6)."""
+
+    def __init__(self, image, help_sha256, admission_class, path=None, *, source="subject",
+                 hold_reason=None, subject_sha256=None):
         if admission_class not in ADMISSION_CLASSES:
             raise ValueError(_CAPABILITY)
         if source not in {"subject", "lkg"}:
             raise ValueError(_CAPABILITY)
         self.image, self.help_sha256, self.admission_class = image, help_sha256, admission_class
         self.path, self.source = path, source
+        self.hold_reason, self.subject_sha256 = hold_reason, subject_sha256
+
+    def evidence(self):
+        """The admission's evidence keys (AGYFRESH §2.6): the class, the digest of the image
+        that runs, the source and, for a held admission, the hold reason and subject digest."""
+        keys = {"provider_admission_class": self.admission_class,
+                "provider_image_sha256": self.image.sha256,
+                "provider_admission_source": self.source}
+        if self.source == "lkg":
+            keys.update(provider_hold_reason=self.hold_reason,
+                        provider_subject_image_sha256=self.subject_sha256)
+        return keys
 
     def close(self):
         self.image.close()
@@ -285,19 +317,11 @@ def _open_image_fd(path):
     return fd
 
 
-def _open_image(path):
-    """The single read of the resolved agy (I1), streamed into one sealed memfd (AGYFRESH §1.2)."""
-    fd = _open_image_fd(path)
-    try:
-        return VerifiedImage.from_fd(fd, path=path)
-    finally:
-        os.close(fd)
-
-
 def _read_image(path):
     """The resolved agy's bytes, for callers that need them (one read, capped at call time).
 
-    Seat admission uses ``_open_image``, which never holds the image outside its memfd.
+    Seat admission (``agy_qualification.admit_seat``) streams the image into its sealed memfd
+    instead and never holds it outside it.
     """
     fd = _open_image_fd(path)
     try:
@@ -325,42 +349,38 @@ def _local_capabilities():
         os.close(fd)
 
 
-def admit(env, *, subject_path=None, keep_miss=False):
+def admit(env, *, subject_path=None, cancel_event=None):
     """Admission, lookup only; never qualifies, never touches the network.
 
-    1. A release-qualified digest is admitted before any config, store or network read (I6).
-    2. Otherwise the lookup (opt-out, failed entry, provenance-gated help, qualified entry)
-       lives in ``agy_qualification``; a miss refuses with today's
-       ``gemini_heartbeat_capability_unavailable`` (``keep_miss=True``, for
-       ``ensure_admitted`` only, raises ``AdmissionMiss`` carrying the image instead).
+    The qualification worker's candidate token is admitted as today, after the local
+    capability probe. Otherwise the seat
+    admission boundary, ``agy_qualification.admit_seat(first_use=False)`` (AGYFRESH §2.2): a
+    release-qualified digest before any config, store or network read (I6), else the lookup
+    (opt-out, failed entry, provenance-gated help, qualified entry), else, for a
+    subject-side refusal, the hold. A refusal is today's
+    ``gemini_heartbeat_capability_unavailable``; a refusal with its own code (a failed
+    record, a cancellation, a typed seat refusal) keeps it, as before, and so does the help
+    measurement's typed process-group quiescence outcome. ``cancel_event`` (the repeat board
+    preflight's) reaches the hold.
     """
-    try:
-        _local_capabilities()
-        if _CANDIDATE is not None:
+    if _CANDIDATE is not None:
+        try:
+            _local_capabilities()
             return Admission(VerifiedImage(_CANDIDATE.reopen(), _CANDIDATE.sha256),
                              QUALIFIED_IMAGES.get(_CANDIDATE.sha256), "qualification_candidate")
-        path = (os.fspath(subject_path) if subject_path is not None
-                else shutil.which("agy", path=env.get("PATH", os.defpath)))
-        if path is None:
-            raise ValueError(_CAPABILITY)
-        image = _open_image(path)
-        if image.sha256 in QUALIFIED_IMAGES:
-            return Admission(image, QUALIFIED_IMAGES[image.sha256], "release_qualified", Path(path),
-                             source="subject")
-    except (OSError, AgyCanaryEvidenceError, ValueError) as exc:
-        raise ValueError(_CAPABILITY) from exc
+        except (OSError, AgyCanaryEvidenceError, ValueError) as exc:
+            raise ValueError(_CAPABILITY) from exc
     from . import agy_qualification
     try:
-        # lookup takes ownership of the image: it is closed there unless it is handed on.
-        return agy_qualification.lookup(env, image, path)
-    except AdmissionMiss as miss:
-        # Only ensure_admitted takes the miss's image for first use; every lookup-only
-        # caller closes it here, so a refusal never leaks a memfd (codex B2).
-        if keep_miss:
-            raise
-        miss.image.close()
-        raise ValueError(_CAPABILITY) from None
+        # admit_seat probes the local capabilities itself, first.
+        return agy_qualification.admit_seat(env, subject_path, first_use=False,
+                                            cancel_event=cancel_event)
     except (OSError, AgyCanaryEvidenceError) as exc:
+        # The help measurement's typed process-group quiescence outcome is an
+        # AgyCanaryEvidenceError too; it keeps its type (AGYFRESH §2.2), so the heartbeat
+        # caller reaches its quiescence path. Everything else here is today's capability code.
+        if agy_qualification._is_typed_quiescence(exc):
+            raise
         raise ValueError(_CAPABILITY) from exc
 
 
@@ -590,6 +610,7 @@ def owned_profile(env, *, settings_bytes, credential_path, admission=None):
             description = {"id": PROFILE_ID, "image_sha256": image_sha256,
                            "settings_sha256": settings_hash, "home": PRIVATE_HOME}
             profile.evidence.update({
+                **admission.evidence(),
                 "provider_image_sha256": image_sha256,
                 "provider_admission_class": admission.admission_class,
                 "provider_agy_settings_sha256": settings_hash,

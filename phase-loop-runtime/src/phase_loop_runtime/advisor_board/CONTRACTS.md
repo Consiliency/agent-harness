@@ -2316,3 +2316,106 @@ W1 set; all unexercised rows retain `candidate` (remote rows retain `remote-pend
   that already hold bytes. The upstream watch's `fetch_member(keep_bytes=True)` still joins
   the member in memory (ROLLJOB moves it to streaming).
 - **Not changed.** The seat QCI, store keys, the shipped catalog, records and pins.
+
+## HOLD — availability floor · `agy_qualification.admit_seat`, `agy_hold.py`, `gemini_heartbeat.py`, `agy_integrity.py` (AGYFRESH §2.1–§2.7)
+
+- **One admission boundary.** `agy_qualification.admit_seat(env, subject_path, *,
+  first_use=False, cancel_event=None, heartbeat=None, store=None, transport=None,
+  qualify=None)` is the only place a seat image is admitted. `gh.admit` (after the
+  qualification worker's candidate token) and `agy_integrity.check` with an env (the two
+  seat sites) call it with `first_use=False`; `ensure_admitted` calls it with
+  `first_use=True`, its signature kept. Each caller maps a refusal exactly as before:
+  `gemini_heartbeat_capability_unavailable` for `gh.admit`, `agy_image_unqualified` for
+  `check`, today's codes for first use. The help measurement's typed process-group
+  quiescence outcome (`ProviderProcessGroupQuiescenceError`) keeps its type on every path,
+  the heartbeat's `gh.admit` included, so the caller reaches its quiescence path; first use's
+  old capability mapping now covers only an `OSError` and the plain seal error. `check(path)`
+  without an env (executor, canary) never holds. `admission_verdict(execute=False)` is
+  unchanged: a non-member never reports `admits` because a held image exists.
+- **Stages.** In order: local capabilities, no provider and an unsealable image memfd (an
+  unavailable seal ABI, or seals that did not hold: classified before `check` maps them,
+  and never a hold); the subject's single read, of the resolved name captured once and used
+  for the managed-release classification too (a size cap the streaming reader hits is
+  `subject_over_bound` whatever the file's size is afterwards, `gh.ImageOverBound`; a
+  digest mismatch is not the subject's and is never held); a release member, before any config or
+  store read; the opt-out; `lookup` (which owns the image; its agent-harness#1602 seam
+  admission is returned unchanged); first use, with `first_use=True` only. A subject-side
+  failure raises one internal type, `_SubjectNotAdmitted(reason, refusal, subject_sha256)`,
+  and only that reaches the hold. Hold reasons (`agy_qualification.HOLD_REASONS`):
+  `subject_unreadable`, `subject_not_regular`, `subject_over_bound`,
+  `self_qualification_disabled`, `subject_failed`, `subject_unqualified`, `store_unsafe`,
+  `provenance_unverified`, `provenance_unavailable`, `first_use_failed`,
+  `first_use_unavailable`. Never held, and propagated unchanged: a capability failure, a
+  seal failure, a cancellation, a typed egress, quiescence or jail refusal, an unsupported
+  platform, no provider installed.
+- **The hold.** For a standalone subject with the hold enabled, `admit_held` admits the
+  first candidate that passes an existing predicate, with `Admission.source = "lkg"` and
+  **no path**: a release member (`release_qualified`, no store read and no execution), or a
+  locally qualified image (`locally_qualified`: store `ok`, self-qualification on, no
+  `failed` entry, a MAC-valid `provenance` entry before anything executes, then help measured
+  from the sealed memfd and a `qualified` entry under it). The subject's own digest and the
+  `[agy] hold_deny` digests are never admitted. With no qualifying candidate the subject's
+  original refusal is raised unchanged. There is no new refusal code. The caller's
+  cancellation reaches the hold: it is checked before each candidate is opened, after it is
+  streamed, before help (whose run's liveness path carries the caller's event) and before a
+  winner is handed off or any miss returned, an early one included; once set, the hold
+  raises `review_operation_cancelled` with every image closed. A repeat board preflight
+  (lookup only, through `gh.admit(..., cancel_event=)`) carries the event too.
+- **Candidates (`agy_hold`).** From `<Store.host_dir>/held/<sha256>` (read only here; the
+  cache writers are lane SL-4) and the vendor store
+  `/opt/consiliency/operational-clis/agy/<x.y.z>-<16 hex>/agy`. A version is authenticated by
+  a catalog member (`gh.catalog_members()`) or a MAC-valid provenance entry; a vendor version
+  named only by a `qualified-*.json` store entry (read without MAC verification, at most 64)
+  is a hint. Order: version descending, authenticated before hinted, cache before vendor,
+  name ascending; directory listing order never matters. Budgets: 3 image reads for
+  authenticated candidates and 2 for hinted ones, so forged hints can never displace an
+  authenticated candidate; at most 2 directories per version and 1,024 names per directory.
+  No process memo: every hold rebuilds the list, so a newer eligible candidate that appears
+  between two holds wins the second.
+- **Filesystem.** Every access is descriptor-relative from an anchor opened one component
+  at a time, no symlink, each directory owned by root or the euid and not group- or
+  other-writable; the same for the candidate file, which must also be within
+  `agy_provenance.MAX_MEMBER_BYTES` (read when it runs). A candidate is read only by
+  `VerifiedImage.from_fd`; one image is open at a time, and the subject's is closed first.
+  After the read the descriptor must be unchanged and its name must still name that inode
+  (AGYFRESH §6.3, option (b)): this detects a replacement observable at that moment; the
+  sealed digest is the integrity control. Candidate loading is serialized per process.
+- **Managed-release subjects are not covered, on any route.** A subject whose name, as
+  given or as resolved once by `admit_seat`, is below the managed releases root or one of
+  its aliases is never held: nothing is searched or opened and today's refusal stands. The
+  captured name is compared by name (`agy_qualification._names_managed_release`); it is
+  never resolved again, so an entry replaced during the read does not change the
+  classification of what was read. This includes a PATH `agy`
+  that resolves to a release's guarded frontdoor (the non-jailed heartbeat route). A PATH
+  `agy` outside the managed root is a standalone subject, and so is a copy of a guarded
+  frontdoor placed outside it: the classification is by where the name resolves. Managed
+  hosts recover at build time (Consiliency/dotfiles) and through the RESTORE restore runs.
+- **Routes (`agy_hold.ROUTE_COVERAGE`).** The seat-profile launch and credential refresh,
+  and the non-jailed heartbeat route (`require_capability`, `owned_profile`), execute the held
+  admission's sealed memfd: covered. **The jailed standalone Gemini route is not covered**:
+  it binds the admission's path, so it refuses a held admission
+  (`gemini_heartbeat_capability_unavailable`, before any jail is built). Ordinary jailed
+  launches still execute a path.
+- **Evidence (additive).** Where `provider_admission_class` is written (the seat-profile
+  evidence from `check`, the owned profile): `provider_admission_source` (`"subject"` or
+  `"lkg"`), and for `"lkg"` `provider_hold_reason` and `provider_subject_image_sha256`
+  (`null` when the subject could not be read). `provider_image_sha256` remains the digest of
+  the image that runs. Counting is unchanged.
+- **Status.** `phase-loop agy-qualification status` adds `hold`:
+  `{"enabled", "subject": "standalone" | "managed_release", "routes": {"seat_profile",
+  "heartbeat", "jailed": "covered" | "not_covered"}, "candidate": {"origin", "version",
+  "image_sha256", "admission_class", "state": "ready" | "pending_help_measurement"} | null}`.
+  It is a lookup: it executes nothing and never says an image is in use; use is reported
+  only by a launch's evidence. With the hold off, for a managed-release subject or with no
+  provider, every route is `not_covered` and `candidate` is `null`. `phase-loop
+  agy-qualification run` adds `source` to its output, and for a held admission
+  `hold_reason` and `subject_image_sha256`, so a held image is never read as the subject
+  qualifying.
+- **Config (user board config only).** `[agy] hold` (boolean, default `true`) and
+  `[agy] hold_deny` (a list of SHA-256 hex digests). A repository config cannot carry them.
+  Any error disables the hold (fail-closed). A malformed `hold` or `hold_deny` value does
+  not disable a valid `self_qualification`: the self-qualification reader checks the table
+  and its key names but not the HOLD values. An unreadable file or an unknown `[agy]` key
+  still disables both, as before, and loading the board file still rejects any bad value.
+- **Not changed.** The seat QCI, store keys, the shipped catalog, records and pins; no jail,
+  projection or authority path; `seat_subject.py`. Rollback: `[agy] hold = false`.
