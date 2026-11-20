@@ -104,12 +104,12 @@ red when breached.
    is amended.
 4. `ai` remains the qualifying host, and the job runs there only after R9's conditions hold.
 5. The feasibility lane (2026-11-20) found that the jailed review route
-   (`panel_invoker.py:13402`, refusing with `gemini_heartbeat_capability_unavailable`) and the
+   (refusing with `gemini_heartbeat_capability_unavailable`) and the
    release-authority check refuse a held image whose digest differs from the managed
    release's pinned executable. Managed-release subjects are therefore not covered by the
    harness-side hold (EC-HOLD-6, second branch), and the authority check is unchanged. The
-   evidence is `phase-loop-runtime/tests/test_agy_hold_managed.py` on branch
-   `t3/agyfresh-f0-probe`; it ships with HOLD's core lane as a regression guard. On managed
+   evidence is the probe test `phase-loop-runtime/tests/test_agy_hold_managed.py`, which
+   ships with HOLD's core lane as a regression guard. On managed
    hosts, recovery happens at build time (EXT-DOT) and through the RESTORE restore runs.
    HOLD's core lane records how it handles the non-jailed heartbeat route.
 
