@@ -182,6 +182,7 @@ def test_seats_firstseat_window_probe_launch_forms(tmp_path, monkeypatch, capsys
     from phase_loop_runtime import cli, panel_invoker as pi
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(pi, "_grok_binary_identity", lambda *a: ("/fixture/grok", "1" * 64))
+    monkeypatch.setattr(pi, "_grok_probe_identity", lambda *a: ("/fixture/grok", "1" * 64, ("fixture-state",)))
     def runner(argv, **kw):
         if argv[-1] == "--help":
             text = "--list-tools Print tool definitions without running a model"

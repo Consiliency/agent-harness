@@ -1306,6 +1306,7 @@
   {"count": 1, "function": "_retain_panel_leg", "module": "panel_invoker", "primitive": "io.read_bytes", "role": "host-io"},
   {"count": 1, "function": "_retained_leg_exec.retained", "module": "panel_invoker", "primitive": "io.read_bytes", "role": "host-io"},
   {"count": 1, "function": "_grok_binary_identity", "module": "panel_invoker", "primitive": "io.read_bytes", "role": "host-io"},
+  {"count": 1, "function": "_grok_probe_identity", "module": "panel_invoker", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "grok_tool_gate", "module": "panel_invoker", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "probe_grok_tools", "module": "panel_invoker", "primitive": "run_provider", "role": "owned"},
   {"count": 1, "function": "_await_tree", "module": "panel_invoker", "primitive": "subprocess.Popen", "role": "host-helper"},
