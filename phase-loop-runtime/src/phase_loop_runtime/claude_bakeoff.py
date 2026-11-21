@@ -691,16 +691,46 @@ def bracket_positions(block: int) -> tuple[int, int]:
     return after - 1, after
 
 
+#: The arms whose capture twin exists. ``sdk``'s twin (the dedicated worker under the current
+#: GL-2 receipt, EC-CLAUDE-5) lands with the ``sdk`` enablement; until then session 2 refuses.
+TWIN_ARMS = frozenset({"print"})
+
+
+def sdk_readiness_problems(repo: Path) -> list[str]:
+    """What an admitted ``sdk`` arm still needs before a session that runs it spends anything:
+    its capture twin, the ratified OD-3a section (G1) and a current GL-2 worker receipt."""
+    problems = []
+    if "sdk" not in TWIN_ARMS:
+        problems.append("the sdk arm has no capture twin yet")
+    record = repo / _transport.DECISION_RECORD
+    raw = record.read_bytes() if record.is_file() else b""
+    found = _transport.record_sections(raw).get("4b")
+    if found is None or not found[0].startswith("## 4b. OD-3a"):
+        problems.append("the decision record has no ratified OD-3a section (G1)")
+    try:
+        from . import claude_seat_sdk
+
+        claude_seat_sdk.preflight()
+    except Exception as exc:  # any refusal or missing piece: no current GL-2 receipt here
+        problems.append(f"the sdk worker has no current GL-2 receipt here ({type(exc).__name__})")
+    return problems
+
+
 def session_problems(session: object, directory: Path,
-                     admitted: Callable[[str], bool] | None = None) -> list[str]:
+                     admitted: Callable[[str], bool] | None = None,
+                     repo: Path | None = None) -> list[str]:
     """What refuses ``run --session``, before credentials, CA or any reading: an unknown
-    session, a native arm of this session that is not admitted, a directory that already
-    holds this session's records, and for session 2 a directory without session 1's."""
+    session, a native arm of this session that is not admitted or (``sdk``) not ready, a
+    directory that already holds this session's records, and for session 2 a directory
+    without session 1's complete records."""
     if session not in SESSIONS:
         return ["run: --session must be one of " + ", ".join(map(str, SESSIONS))]
     is_admitted = admitted or _transport.is_admitted
+    arms = session_arms(int(session))
     problems = [f"the {arm} arm is not admitted on this tree"
-                for arm in session_arms(int(session)) if arm in NATIVE_ARMS and not is_admitted(arm)]
+                for arm in arms if arm in NATIVE_ARMS and not is_admitted(arm)]
+    if "sdk" in arms and is_admitted("sdk"):
+        problems += sdk_readiness_problems(repo if repo is not None else Path("."))
     records, found = load_records(directory) if directory.exists() else ([], [])
     problems += [f"evidence: {problem}" for problem in found]
     held = sessions_held(records)
@@ -1118,7 +1148,7 @@ def twin_command(arm: str, executable: Path, *, model: str | None, effort: str |
 
     from . import claude_seat_print, panel_invoker
 
-    if arm != "print":
+    if arm not in TWIN_ARMS:
         raise ValueError(f"no capture twin for the {arm} arm")
     jail = types.SimpleNamespace(leg="claude", provider_argv0=str(executable))
     command = panel_invoker._broker_claude_tui_command(
@@ -1513,6 +1543,90 @@ def claim_evidence(directory: Path) -> Iterator[None]:
 
 
 SECURITY_NOTES = "security-outcomes.txt"
+#: The private record of what session 1 compared, which session 2 must match.
+IDENTITY = "session-identity.json"
+
+
+def comparison_identity(plan: Mapping[str, object], repo: Path) -> dict:
+    """What both sessions must share for their blocks to compare: the review bundle's path and
+    bytes, the model, the effort and the board. The W0 head may move between sessions."""
+    artifact = bundle_artifact(repo, str(plan.get("w0_head")), plan.get("artifact"))
+    board = plan.get("board")
+    return {"artifact": plan.get("artifact"), "artifact_sha256": hashlib.sha256(artifact).hexdigest(),
+            "model": plan.get("model"), "effort": plan.get("effort"),
+            "seats": list(board.get("seats", [])) if isinstance(board, dict) else None}
+
+
+def identity_problems(root: Path, plan: Mapping[str, object], repo: Path,
+                      session: int) -> list[str]:
+    """Session 2 compares only with session 1's identity, kept privately when session 1 began."""
+    if session == 1:
+        return []
+    path = root / IDENTITY
+    try:
+        kept = json.loads(path.read_bytes()) if path.is_file() else None
+        current = comparison_identity(plan, repo)
+    except ValueError as exc:
+        return [f"identity: {exc}"]
+    if kept is None:
+        return ["identity: session 1's comparison identity is missing from the private ledger"]
+    if kept != current:
+        return ["identity: the bundle, model, effort or board differs from session 1's"]
+    return []
+
+
+@dataclass
+class ControlFiles:
+    """The operator's control output files: each a regular file, never a link, written after
+    its block's brief, and never one already given in this window."""
+
+    root: Path
+    prompt: Callable[[str], str] = input
+    report: Callable[[str], None] = print
+    since: float = 0.0
+
+    def problem(self, path: Path) -> str | None:
+        if not path.is_absolute():
+            return "give an absolute path"
+        try:
+            info = os.lstat(path)
+        except OSError:
+            return "no such file"
+        if not stat.S_ISREG(info.st_mode):
+            return "not a regular file"
+        if info.st_mtime < self.since:
+            return "written before this block's brief"
+        used = self.root / "control-files.txt"
+        given = used.read_bytes().decode("utf-8", "replace").splitlines() if used.is_file() else []
+        if str(path) in given:
+            return "already given for another run"
+        return None
+
+    def accept(self, block: int, n: int) -> bytes:
+        for _attempt in range(READING_ATTEMPTS):
+            path = Path(self.prompt(f"control block {block} run {n}: path of the child's "
+                                    "output file: ").strip())
+            problem = self.problem(path)
+            if problem is None:
+                raw = path.read_bytes()
+                used = self.root / "control-files.txt"
+                given = (used.read_bytes().decode("utf-8", "replace").splitlines()
+                         if used.is_file() else [])
+                write_private(used, "\n".join([*given, str(path)]).encode())
+                return raw
+            self.report(f"control block {block} run {n}: {problem}; give another file")
+        raise ValueError(f"W0 stopped: no acceptable control file for block {block} run {n}")
+
+
+def control_model_problem(raw: bytes, model: object) -> str | None:
+    """A control child that reports another model than the run plan's is not this control."""
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None  # ingest_control refuses it
+    if isinstance(data, dict) and "model" in data and data["model"] != model:
+        return "the child reports another model than the run plan's"
+    return None
 
 
 def private_stopped_arms(root: Path) -> set[str]:
@@ -1822,12 +1936,14 @@ class Window:
         artifact, the observed CLI version, the session's evidence, and the activation and
         admission of this session's arms only (session 1 never needs ``sdk``)."""
         problems = check_run_plan(self.plan)
-        problems += session_problems(self.session, self.out_dir)
+        problems += session_problems(self.session, self.out_dir, repo=self.repo)
         if self.ledger.problem:
             problems.append(self.ledger.problem)
         elif self.session in SESSIONS:
             records = load_records(self.out_dir)[0] if self.out_dir.exists() else []
             problems += self.ledger.session_problems(int(self.session), records)  # type: ignore[arg-type]
+            problems += identity_problems(self.ledger.root, self.plan, self.repo,
+                                          int(self.session))  # type: ignore[arg-type]
         problems += composition_problems(self.plan)
         head = str(self.plan.get("w0_head", ""))
         if _HEX40.fullmatch(head):
@@ -1868,6 +1984,16 @@ class Window:
         with claim_evidence(self.out_dir):
             return self._run()
 
+    def _control_file(self, block: int, n: int) -> bytes:
+        for _attempt in range(READING_ATTEMPTS):
+            raw = self.control(block, n)  # type: ignore[misc]
+            problem = control_model_problem(raw, self.plan.get("model"))
+            if problem is None:
+                return raw
+            self.report(f"control block {block} run {n}: {problem}; give another file")
+        raise ValueError(f"W0 stopped: no control file for block {block} run {n} on the "
+                         "run plan's model")
+
     def _note_security(self, arm: str, block: int, code: str) -> None:
         """Persist a security outcome privately the moment it is seen (OD-10), before any
         reading or record, so an interrupted session still leaves it and keeps the arm
@@ -1888,6 +2014,9 @@ class Window:
                               if obj["security_outcome"] == "withheld_private"}
         self.stopped_arms |= private_stopped_arms(self.ledger.root)
         written: list[Path] = []
+        if session == 1:
+            write_private(self.ledger.root / IDENTITY, json.dumps(
+                comparison_identity(self.plan, self.repo), sort_keys=True).encode())
         self.ledger.read(opening_position(session), settle_s=0)
         for block in EXECUTION_NOTES.session_blocks[session - 1]:
             arm = EXECUTION_NOTES.blocks[block - 1]
@@ -1899,7 +2028,7 @@ class Window:
             elif arm == CONTROL:
                 self.report(control_brief(block, self.plan))
                 for n in range(1, EXECUTION_NOTES.runs_per_block + 1):
-                    outcomes.append(ingest_control(self.control(block, n)))  # type: ignore[misc]
+                    outcomes.append(ingest_control(self._control_file(block, n)))
             else:
                 changed = checkout_problems(self.repo, str(self.plan["w0_head"]))
                 if changed:
@@ -2015,12 +2144,14 @@ def _run_claimed(plan: Mapping[str, object], repo: Path, window: str,
 
     from . import panel_invoker, seat_credentials, seat_egress_proxy, seat_jail
 
-    gate = session_problems(session, repo / EVIDENCE_DIR)
+    gate = session_problems(session, repo / EVIDENCE_DIR, repo=repo)
     root = private_root(window)
     ledger = MeterLedger(root)  # reads only; nothing is created before the gate passes
     if not gate:
         gate = [ledger.problem] if ledger.problem else ledger.session_problems(
             session, load_records(repo / EVIDENCE_DIR)[0])
+    if not gate:
+        gate = identity_problems(root, plan, repo, session)
     if gate:  # before any credential, CA, private directory or reading
         print("claude-bakeoff run: REFUSED: " + "; ".join(gate), file=sys.stderr)
         return 1
@@ -2052,9 +2183,13 @@ def _run_claimed(plan: Mapping[str, object], repo: Path, window: str,
         print(f"claude-bakeoff run: REFUSED: {exc}", file=sys.stderr)
         return 1
 
+    files = ControlFiles(root)
+    briefed: dict[int, float] = {}
+
     def control(block: int, n: int) -> bytes:
-        path = input(f"control block {block} run {n}: path of the child's output file: ").strip()
-        return Path(path).read_bytes()
+        # The block's brief was printed just before its first prompt.
+        files.since = briefed.setdefault(block, time.time())
+        return files.accept(block, n)
 
     def twin(block: int, arm: str) -> Mapping[str, object]:
         return run_capture_twin(arm, plan, root=root, repo=repo, token=credential.token,

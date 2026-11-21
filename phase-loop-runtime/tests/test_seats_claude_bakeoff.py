@@ -977,9 +977,10 @@ class _Ledger(bk.MeterLedger):
 def _window(repo, tmp_path, *, native_outcomes, monkeypatch, admit_sdk=True, session=1, **kw):
     monkeypatch.setattr(bk, "head_on_main", lambda _r, _h: True)
     monkeypatch.setattr(bk, "checkout_problems", lambda _r, _h: [])
-    if admit_sdk:
+    if admit_sdk:  # and ready: its twin, G1 and a current GL-2 receipt stand in
         real = ct.is_admitted
         monkeypatch.setattr(ct, "is_admitted", lambda arm: arm == "sdk" or real(arm))
+        monkeypatch.setattr(bk, "sdk_readiness_problems", lambda _repo: [])
     outcomes = iter(native_outcomes)
     calls: list[tuple[str, int]] = []
 
@@ -1296,6 +1297,159 @@ def test_a_security_stop_is_private_before_the_closing_reading(repo, tmp_path, m
     rerun, rerun_calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[])
     rerun.run()
     assert rerun_calls == []
+
+
+def test_an_admitted_sdk_still_needs_its_twin_g1_and_a_current_receipt(repo, monkeypatch):
+    found = bk.sdk_readiness_problems(repo)
+    assert any("no capture twin" in p for p in found)
+    assert any("OD-3a" in p for p in found)
+    assert any("GL-2 receipt" in p for p in found)
+    from phase_loop_runtime import claude_seat_sdk
+
+    (repo / ct.DECISION_RECORD).write_text(RECORD_4A + SDK_4B)
+    monkeypatch.setattr(bk, "TWIN_ARMS", frozenset({"print", "sdk"}))
+    monkeypatch.setattr(claude_seat_sdk, "preflight", lambda: object())
+    assert bk.sdk_readiness_problems(repo) == []
+
+
+def test_session_two_refuses_an_admitted_but_unready_sdk(repo, tmp_path, monkeypatch):
+    records = _first_session(repo, tmp_path, monkeypatch)
+    monkeypatch.undo()
+    real = ct.is_admitted
+    monkeypatch.setattr(ct, "is_admitted", lambda arm: arm == "sdk" or real(arm))
+    assert len(records) == 6
+    found = bk.session_problems(2, tmp_path / "w0", repo=repo)
+    assert any("no capture twin" in p for p in found), found
+
+
+@pytest.mark.parametrize("change", ["none", "effort", "artifact", "identity-lost"])
+def test_session_two_compares_only_with_session_ones_bundle_model_and_board(
+        repo, tmp_path, monkeypatch, change):
+    _first_session(repo, tmp_path, monkeypatch)
+    monkeypatch.undo()
+    window, calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[],
+                            session=2)
+    if change == "effort":
+        window.plan = _plan(repo, effort="medium")
+    elif change == "artifact":  # the W0 head may move, the bundle may not change
+        (repo / "docs" / "bundle.md").write_text("# Another bundle\n")
+        _git(repo, "-c", "commit.gpgsign=false", "commit", "-qam", "bundle")
+        window.plan = _plan(repo)
+    elif change == "identity-lost":
+        (tmp_path / "private" / bk.IDENTITY).unlink()
+    found = [p for p in window.preflight() if p.startswith("identity:")]
+    assert (found == []) is (change == "none"), found
+
+
+def test_a_control_file_on_another_model_is_asked_again(repo, tmp_path, monkeypatch):
+    window, _calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[_ok()] * 3)
+    good = window.control
+    given: list[int] = []
+
+    def control(block, n):
+        given.append(n)
+        raw = good(block, n)
+        if len(given) == 1:  # the first file reports another model
+            return raw.replace(b"claude-opus-5-5", b"claude-sonnet-5-5")
+        return raw
+
+    window.control = control
+    assert len(window.run()) == 6
+    assert given == [1, 1, 2, 3]
+    window2, _c = _window(repo, tmp_path / "again", monkeypatch=monkeypatch,
+                          native_outcomes=[_ok()] * 3)
+    window2.control = lambda block, n: good(block, n).replace(b"claude-opus-5-5", b"other")
+    with pytest.raises(ValueError, match="run plan's model"):
+        window2.run()
+
+
+def test_a_control_file_is_fresh_regular_and_never_given_twice(tmp_path):
+    import os
+
+    out = tmp_path / "child.json"
+    out.write_text("{}")
+    files = bk.ControlFiles(root=tmp_path / "private", since=0.0)
+    assert files.problem(Path("child.json")) == "give an absolute path"
+    link = tmp_path / "link.json"
+    link.symlink_to(out)
+    assert files.problem(link) == "not a regular file"
+    answers = [str(out), str(out), str(out), str(out)]
+    files.prompt = lambda _q: answers.pop(0)
+    files.report = lambda _m: None
+    assert files.accept(2, 1) == b"{}"
+    with pytest.raises(ValueError, match="no acceptable control file"):
+        files.accept(2, 2)  # the same path, three times
+    os.utime(out, (1, 1))
+    assert bk.ControlFiles(root=tmp_path / "p2", since=2.0).problem(out) == \
+        "written before this block's brief"
+
+
+def _cli_plan(repo, tmp_path) -> Path:
+    path = tmp_path / "w0-plan.json"
+    path.write_text(json.dumps(_plan(repo)))
+    return path
+
+
+@pytest.mark.parametrize("case", ["no-session-1", "ledger-taken", "claimed"])
+def test_the_run_cli_refuses_before_any_credential_ca_or_private_directory(
+        repo, tmp_path, monkeypatch, capsys, case):
+    from phase_loop_runtime import seat_credentials, seat_egress_proxy
+
+    state = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+
+    def sentinel(*_a, **_k):
+        raise AssertionError("an effect ran before the gate")
+
+    for module, name in ((seat_credentials, "resolve_claude_seat_credential"),
+                         (seat_egress_proxy, "verify_install"), (bk, "create_window_ca"),
+                         (bk, "bundle_artifact")):
+        monkeypatch.setattr(module, name, sentinel)
+    session = "2" if case == "no-session-1" else "1"
+    root = bk.private_root("w0")
+    if case == "ledger-taken":
+        root.mkdir(parents=True)
+        (root / "meter.json").write_text(json.dumps(
+            [{"subscription_usage": "10.00", "extra_usage_spend": "none", "api_spend": "none"}]
+            + [None] * 7))
+    argv = ["run", "--plan", str(_cli_plan(repo, tmp_path)), "--repo", str(repo),
+            "--session", session]
+    if case == "claimed":
+        with bk.claim_evidence(repo / bk.EVIDENCE_DIR):
+            assert bk.main(argv) == 1
+    else:
+        assert bk.main(argv) == 1
+    assert "REFUSED" in capsys.readouterr().err
+    assert root.exists() is (case == "ledger-taken")
+    assert not list((repo / bk.EVIDENCE_DIR).glob("*.json"))
+
+
+def test_the_run_cli_compares_session_two_before_any_credential(repo, tmp_path, monkeypatch,
+                                                                  capsys):
+    import shutil
+
+    from phase_loop_runtime import seat_credentials, seat_egress_proxy
+
+    _first_session(repo, tmp_path, monkeypatch)  # session 1 on tmp_path/w0 and tmp_path/private
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    shutil.copytree(tmp_path / "private", bk.private_root("w0"))
+    evidence = repo / bk.EVIDENCE_DIR
+    evidence.mkdir(parents=True)
+    for path in (tmp_path / "w0").glob("*.json"):
+        shutil.copy(path, evidence / path.name)
+
+    def sentinel(*_a, **_k):
+        raise AssertionError("an effect ran before the gate")
+
+    for module, name in ((seat_credentials, "resolve_claude_seat_credential"),
+                         (seat_egress_proxy, "verify_install"), (bk, "create_window_ca")):
+        monkeypatch.setattr(module, name, sentinel)
+    plan = tmp_path / "w0-plan.json"
+    plan.write_text(json.dumps(_plan(repo, effort="medium")))
+    argv = ["run", "--plan", str(plan), "--repo", str(repo), "--session", "2"]
+    capsys.readouterr()
+    assert bk.main(argv) == 1
+    assert "identity: the bundle, model, effort or board differs" in capsys.readouterr().err
 
 
 def test_the_sessions_partition_the_blocks_and_fix_the_readings():
