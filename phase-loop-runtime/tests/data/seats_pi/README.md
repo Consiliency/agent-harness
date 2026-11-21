@@ -11,10 +11,22 @@ and never write it. `manifest.json` lists every file with its sha256 and provena
 |---|---|
 | `recorded` | Captured from the installed Pi 1.6.0 (`cli_bundle_sha256` in the manifest) under projected Node v24.22.3. Pi ran offline with no credential and no network: a network namespace with loopback only, a scratch home and a placeholder store. The answers came from a per-launch loopback recording proxy that forwards nothing. |
 | `stub_witness` | Witness records written by the SL-1.0 stub extension from Pi's real `after_provider_response` and `provider_stream_event` calls. SL-1.2's `witness.mjs` re-records them. |
-| `derived` | A recorded stream with one stated mutation (`derived_from`, `case`). |
+| `derived` | A recorded file with stated changes: `derived_from`, `case`, and `transformations` when there is more than one change. |
 | `synthetic` | Hand-written in the documented format. Values the contract marks *to measure* are placeholders until SL-3.6. |
 
 `manifest.owed` lists what offline recording could not supply.
+
+**How the recordings were made.** Pi was started directly as the projected Node running the
+recorded Pi bundle. The manifest's `command` is that argv normalized to `pi`, with `WITNESS`
+standing for the stub witness path. Pi reached `chatgpt.com` through `HTTPS_PROXY`. The
+per-launch proxy terminated TLS locally with a throwaway CA and answered every request itself.
+That seam is test-only: it proves nothing about the jail's or the seat host's trust setup.
+
+**Derived positive case.** `events/derived/tooled-verdict-eligible.jsonl`, with its witness and
+proxy counterparts under `witness/derived/` and `proxy/derived/`, is the eligible counterpart of
+the recorded tooled success. Its `transformations` list every change: a recognized terminal
+verdict, the recomputed output digest, and the tool-originated POST removed. The recorded
+tooled runs remain the refusal case, because their counts are unequal.
 
 ## Formats
 
@@ -36,8 +48,10 @@ and never write it. `manifest.json` lists every file with its sha256 and provena
   `after-settled` carries `settled_after_ordinal`, the last ordinal written before
   `agent_settled`.
 - **`proxy/*.json`**: `pi_seat_fixture_proxy.v1`, the requests one launch's proxy saw.
-  `origin` is `pi` or `tool_descendant`. `allowed_inference_count` is the number of 2xx
-  inference POSTs.
+  `origin` is `pi` or `tool_descendant`. `allowed_inference_count` counts the inference POSTs the
+  proxy admitted. It is decided at admission, before any response, so it does not depend on
+  `status_sent`. `response_body_sha256` is the sha256 of the response body the proxy sent, where
+  that body was a fixed error body; it is null for event streams.
 - **`stores/*.json`**: synthetic `auth.json` stores. `access` is a template,
   `{"$fixture_jwt": {"claims": {...}}}`. A consumer encodes it as
   `b64url({"alg":"none","typ":"JWT"}) + "." + b64url(claims) + ".FIXTURE-NOT-A-SIGNATURE"`, with

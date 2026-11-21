@@ -15,6 +15,7 @@
    "method": "POST",
    "origin": "pi",
    "path": "/backend-api/codex/responses",
+   "response_body_sha256": null,
    "response_id": "resp_transport_reset_1",
    "seq": 1,
    "status_sent": 200

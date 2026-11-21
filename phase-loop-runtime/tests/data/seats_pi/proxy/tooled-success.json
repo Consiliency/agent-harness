@@ -19,6 +19,7 @@
    "method": "POST",
    "origin": "pi",
    "path": "/backend-api/codex/responses",
+   "response_body_sha256": null,
    "response_id": "resp_tooled_success_1",
    "seq": 1,
    "status_sent": 200
@@ -28,6 +29,7 @@
    "method": "POST",
    "origin": "tool_descendant",
    "path": "/backend-api/codex/responses",
+   "response_body_sha256": null,
    "response_id": "resp_tool_originated",
    "seq": 2,
    "status_sent": 200
@@ -37,6 +39,7 @@
    "method": "POST",
    "origin": "pi",
    "path": "/backend-api/codex/responses",
+   "response_body_sha256": null,
    "response_id": "resp_tooled_success_2",
    "seq": 3,
    "status_sent": 200
