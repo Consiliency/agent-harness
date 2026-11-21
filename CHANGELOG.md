@@ -14,14 +14,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
     (`seat_window_w1_grant.v1`) and the approved packet. `seat_window.mint_w1_grant` writes
     the grant on the designated host in a fixed admission directory under the account's
     passwd home. The grant binds the host digest, `not_before` and `not_after`, vendor
-    `gemini`, host class `standard`, `max_attempts` (1 or 2), the packet digest and a nonce.
+    `gemini`, host class `standard`, `max_attempts` 1 (W1 is one attempt), the packet digest
+    and a nonce.
   - **What `qualify` admits.** Only the Gemini window in the standard context, and the CLI
     refuses `--model`, `--record` and `--peer-record` for a live run. An attempt must start
     no later than `W1_COMPLETION_MARGIN_S` (10800 s) before the earlier of the grant's end
     and `OWNER_W1_APPROVED_UNTIL` (2026-12-04T00:00Z).
-  - **Attempts.** Under an exclusive lock, each attempt appends a hash-chained line to the
-    grant file and writes an independent `w1-attempt-<nonce>-<n>.json` witness before
-    preflight. Missing or disagreeing journal and witnesses refuse further attempts.
+  - **Attempts.** Under an exclusive lock, the one attempt appends a hash-chained line to
+    the grant file and writes a `w1-attempt-<nonce>-1.json` witness beside it, before
+    preflight; a preflight refusal still uses it. Missing or disagreeing journal and witness
+    refuse further attempts.
   - **Unchanged.** Composition preflight, `--attended`, the recorded EC-EXECFIND-2 pass and
     the egress-layer check.
   - **Pins.** `seat_window.runtime_digest()` moves. No jail profile, allow-list, agy QCI,

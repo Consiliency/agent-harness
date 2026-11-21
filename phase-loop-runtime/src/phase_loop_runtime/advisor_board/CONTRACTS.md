@@ -2339,9 +2339,9 @@ separate private records. The owner summary is never verified or exported.
 Live W1 runs only under an owner grant. `OWNER_W1_GRANT_SHA256` and `OWNER_W1_PACKET_SHA256`,
 set by a reviewed source change, name the first line of one private `seat_window_w1_grant.v1`
 file and the approved packet. The grant line binds host digest, start window, Gemini, the
-standard context, one or two attempts and that packet digest. No start is allowed at or
+standard context, exactly one attempt and that packet digest. No start is allowed at or
 after 2026-12-04T00:00Z, nor within 10800 s of the grant's or the cutoff's end. Each attempt
-appends a hash-chained journal line under a lock and writes an independent witness before
+appends a hash-chained journal line under a lock and writes a witness beside the grant before
 preflight; missing or disagreeing attempt evidence refuses. Without a usable grant the
 command returns `window_owner_approval_required` before composition preflight,
 authentication, storage or provider launch. Missing frozen producers also fail closed.

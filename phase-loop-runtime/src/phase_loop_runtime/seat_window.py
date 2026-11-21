@@ -203,7 +203,7 @@ def preflight(*, is_available=None, auth_ok=None):
 #: the review of that change must check the owner's approval of the named packet. The grant
 #: digest names the first line of one private grant file, minted on the designated host by
 #: :func:`mint_w1_grant`. That line binds the host, the start window, the vendor, the standard
-#: context, the attempt count, the packet digest and a nonce. ``None`` keeps live W1 closed.
+#: context, exactly one attempt, the packet digest and a nonce. ``None`` keeps live W1 closed.
 OWNER_W1_GRANT_SHA256: str | None = None
 OWNER_W1_PACKET_SHA256: str | None = None
 #: No live W1 starts at or after this instant (UTC), whatever the grant says. It is its own
@@ -257,14 +257,13 @@ def _private_dir_fd(path: Path, *, create: bool) -> int:
         raise
 
 
-def mint_w1_grant(*, not_before: str, not_after: str, packet_sha256: str,
-                  max_attempts: int = 1) -> str:
+def mint_w1_grant(*, not_before: str, not_after: str, packet_sha256: str) -> str:
     """Write this host's one W1 grant (never overwriting one) and return the digest the
     approval change pins. Runs on the designated host, after the owner approves the packet."""
     line = (json.dumps({"schema": W1_GRANT_SCHEMA, "host_digest": _host_digest(),
                         "not_before": not_before, "not_after": not_after,
                         "vendor": OWNER_W1_VENDOR, "host_class": OWNER_W1_HOST_CLASS,
-                        "max_attempts": max_attempts, "packet_sha256": packet_sha256,
+                        "max_attempts": 1, "packet_sha256": packet_sha256,
                         "nonce": secrets.token_hex(16)},
                        sort_keys=True, separators=(",", ":")) + "\n").encode()
     directory = _private_dir_fd(_w1_grant_dir(), create=True)
@@ -306,10 +305,10 @@ def _w1_journal(raw: bytes) -> tuple[dict, list[dict]] | None:
 
 
 def _w1_witnesses(nonce: str) -> int | None:
-    """Count the independent per-attempt witnesses in the private record root, or ``None``
-    when they are not a contiguous run from 1."""
-    from . import president_adapter
-    root = president_adapter.private_record_root()
+    """Count the independent per-attempt witnesses beside the grant, in the same fixed
+    admission directory (never under ``XDG_STATE_HOME``), or ``None`` when they are not a
+    contiguous run from 1."""
+    root = _w1_grant_dir()
     try:
         numbers = sorted(int(match.group(1)) for path in root.glob(f"w1-attempt-{nonce}-*.json")
                          if (match := re.fullmatch(rf"w1-attempt-{nonce}-([1-9])\.json",
@@ -329,7 +328,7 @@ def _w1_grant_usable(grant: dict, attempts: list[dict], now: dt.datetime) -> boo
     if (grant["schema"] != W1_GRANT_SCHEMA or grant["vendor"] != OWNER_W1_VENDOR
             or grant["host_class"] != OWNER_W1_HOST_CLASS
             or grant["host_digest"] != _host_digest()
-            or type(grant["max_attempts"]) is not int or grant["max_attempts"] not in (1, 2)
+            or type(grant["max_attempts"]) is not int or grant["max_attempts"] != 1
             or not _is_digest(OWNER_W1_PACKET_SHA256)
             or grant["packet_sha256"] != OWNER_W1_PACKET_SHA256
             or type(grant["nonce"]) is not str or _NONCE.fullmatch(grant["nonce"]) is None
@@ -372,18 +371,17 @@ def owner_w1_grant(now: dt.datetime | None = None) -> dict | None:
 
 
 def owner_w1_approved(now: dt.datetime | None = None) -> bool:
-    """The live W1 gate: admit ONE attempt under the owner's grant.
+    """The live W1 gate: admit the grant's ONE attempt.
 
     Under an exclusive lock on the grant file, the grant and its journal are re-read and
     checked (:func:`_w1_grant_usable`), a hash-chained attempt line is appended and fsynced,
-    and an independent witness is written to the private record root, all before anything
-    else runs. Every claimed attempt counts, whatever it later returns, and is never
-    released. Removing the state root, the witnesses or the journal lines refuses further
-    attempts. A trusted operator who restores both stores from a copy is outside this
-    guard; the runbook's ledger and the owner's quiet slot cover that case.
+    and an independent witness is written beside the grant, all before anything else runs.
+    The attempt counts whatever it later returns, a preflight refusal included, and is never
+    released. Removing the witness or the journal line refuses further attempts; no
+    environment variable moves either. A trusted operator who restores both from a copy is
+    outside this guard; the runbook's ledger and the owner's quiet slot cover that case.
     """
     import fcntl
-    from . import president_adapter
     if not _is_digest(OWNER_W1_GRANT_SHA256):
         return False
     now = _now() if now is None else now
@@ -411,8 +409,15 @@ def owner_w1_approved(now: dt.datetime | None = None) -> bool:
                                + "\n").encode(), len(raw))
                 os.fsync(fd)
                 os.fsync(directory)
-                president_adapter.write_private_record(
-                    f"w1-attempt-{grant['nonce']}-{attempt}.json", entry)
+                witness = os.open(f"w1-attempt-{grant['nonce']}-{attempt}.json",
+                                  os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                                  | os.O_CLOEXEC, 0o600, dir_fd=directory)
+                try:
+                    os.write(witness, (json.dumps(entry, sort_keys=True) + "\n").encode())
+                    os.fsync(witness)
+                finally:
+                    os.close(witness)
+                os.fsync(directory)
                 return True
             finally:
                 os.close(fd)

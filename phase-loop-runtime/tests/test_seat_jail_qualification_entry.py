@@ -701,7 +701,7 @@ def _mint_w1_grant(tmp_path, monkeypatch, *, raw=None, **overrides):
     now = dt.datetime(2026, 11, 25, 12, tzinfo=dt.timezone.utc)
     fields = {"not_before": (now - dt.timedelta(hours=1)).isoformat(),
               "not_after": (now + dt.timedelta(hours=6)).isoformat(),
-              "packet_sha256": "5" * 64, "max_attempts": 1}
+              "packet_sha256": "5" * 64}
     fields.update({key: value for key, value in overrides.items() if key in fields})
     digest = window.mint_w1_grant(**fields)
     path = tmp_path / "admission" / window.W1_GRANT_NAME
@@ -717,7 +717,7 @@ def _mint_w1_grant(tmp_path, monkeypatch, *, raw=None, **overrides):
 
 
 def _witnesses(tmp_path):
-    return sorted((tmp_path / "state").rglob("w1-attempt-*.json"))
+    return sorted((tmp_path / "admission").glob("w1-attempt-*.json"))
 
 
 def test_seats_firstseat_window_owner_grant_literals():
@@ -750,15 +750,16 @@ def test_seats_firstseat_window_owner_grant_closed_without_approved_digests(
     assert not _witnesses(tmp_path)
 
 
-@pytest.mark.parametrize("attempts", [1, 2])
-def test_seats_firstseat_window_owner_grant_claims_each_attempt_once(
-        tmp_path, monkeypatch, attempts):
+def test_seats_firstseat_window_owner_grant_claims_its_one_attempt_once(tmp_path, monkeypatch):
+    import json
     from phase_loop_runtime import seat_window as window
-    now, path = _mint_w1_grant(tmp_path, monkeypatch, max_attempts=attempts)
-    assert [window.owner_w1_approved(now) for _ in range(attempts + 1)] == \
-        [True] * attempts + [False]
-    assert len(_witnesses(tmp_path)) == attempts
-    assert len(path.read_bytes().splitlines()) == 1 + attempts
+    now, path = _mint_w1_grant(tmp_path, monkeypatch)
+    assert json.loads(path.read_bytes().splitlines()[0])["max_attempts"] == 1
+    assert [window.owner_w1_approved(now) for _ in range(3)] == [True, False, False]
+    assert len(_witnesses(tmp_path)) == 1
+    assert len(path.read_bytes().splitlines()) == 2
+    # The witness lives beside the grant: no state-root setting reaches it.
+    assert not list((tmp_path / "state").rglob("w1-attempt-*"))
 
 
 @pytest.mark.parametrize("reset", ["state_root_removed", "witness_removed",
@@ -766,14 +767,14 @@ def test_seats_firstseat_window_owner_grant_claims_each_attempt_once(
                                    "journal_line_edited", "journal_chain_edited",
                                    "grant_removed"])
 def test_seats_firstseat_window_owner_grant_attempts_survive_resets(tmp_path, monkeypatch, reset):
-    """After one claimed attempt of two, no reset of local state yields a fresh pair."""
+    """After the one claimed attempt, no reset of local state yields a fresh attempt."""
     import shutil
     from phase_loop_runtime import seat_window as window
-    now, path = _mint_w1_grant(tmp_path, monkeypatch, max_attempts=2)
+    now, path = _mint_w1_grant(tmp_path, monkeypatch)
     original = path.read_bytes()
     assert window.owner_w1_approved(now) is True
     if reset == "state_root_removed":
-        shutil.rmtree(tmp_path / "state")
+        shutil.rmtree(tmp_path / "state", ignore_errors=True)
     elif reset == "witness_removed":
         _witnesses(tmp_path)[0].unlink()
     elif reset == "journal_rolled_back":
@@ -795,7 +796,7 @@ def test_seats_firstseat_window_owner_grant_attempts_survive_resets(tmp_path, mo
 def test_seats_firstseat_window_owner_grant_claims_are_serialized(tmp_path, monkeypatch):
     import fcntl
     from phase_loop_runtime import seat_window as window
-    now, path = _mint_w1_grant(tmp_path, monkeypatch, max_attempts=2)
+    now, path = _mint_w1_grant(tmp_path, monkeypatch)
     with open(path, "rb") as held:
         fcntl.flock(held, fcntl.LOCK_EX)
         assert window.owner_w1_approved(now) is False
@@ -804,14 +805,14 @@ def test_seats_firstseat_window_owner_grant_claims_are_serialized(tmp_path, monk
 
 
 @pytest.mark.parametrize("change", [
-    "host", "bytes", "vendor", "host_class", "schema", "extra", "attempts_3",
+    "host", "bytes", "vendor", "host_class", "schema", "extra", "attempts_2", "attempts_3",
     "attempts_bool", "packet", "other_packet", "nonce", "naive_time",
 ])
 def test_seats_firstseat_window_owner_grant_refuses_any_other_grant(tmp_path, monkeypatch, change):
     from phase_loop_runtime import seat_window as window
     raw = {"vendor": {"vendor": "grok"}, "host_class": {"host_class": "team"},
            "schema": {"schema": "seat_window_w1_grant.v0"}, "extra": {"note": "x"},
-           "attempts_3": {"max_attempts": 3}, "attempts_bool": {"max_attempts": True},
+           "attempts_2": {"max_attempts": 2}, "attempts_3": {"max_attempts": 3}, "attempts_bool": {"max_attempts": True},
            "packet": {"packet_sha256": "nope"}, "other_packet": {"packet_sha256": "6" * 64},
            "nonce": {"nonce": "Z" * 32},
            "naive_time": {"not_before": "2026-11-25T11:00:00"}}.get(change)
