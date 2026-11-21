@@ -21,7 +21,7 @@ window-kit decisions (jail contract §15). The roadmap text is unchanged.
 **Frozen inputs (pinned).**
 
 - `plans/artifacts/grok-jail-tool-surface-contract-v1.md` at sha256
-  `0d878405fdf6a7780d0a6225b4ee254a2ce5b51000e7bcef6337290ebc25eb59` ("the jail contract"). This plan cites its sections.
+  `3312514dc6ad8572f83d75ac5178998ffd18d00dd75986fd4a6312467428b884` ("the jail contract"). This plan cites its sections.
 - `plans/artifacts/grok-tool-surface-contract-v1.md` at sha256
   `9c56fc68e164d9ae7abbeb4969ee860c6844355c3d80569e4bb4600a3e6355d4` (agent-harness#2033
   through erratum 7: the **historical base**). The effective input is that file once erratum
@@ -40,11 +40,13 @@ window-kit decisions (jail contract §15). The roadmap text is unchanged.
 profile drops the `unconfined` exception (`seat_window.readiness_rows`); S-2 is closed in
 source. No Grok profile, credential module or `grok_seat_*` code exists.
 
-**r4 hold.** The jail contract's projection and mask design (§2.3, §2.4) is withdrawn by
-the coordinator's ruling; its replacement is question Q-r4 (jail contract §17). SL-1, SL-2
-and SL-3 are not dispatched until Q-r4 is answered and this plan amended; SL-0 and SL-8 are
-unaffected. Where IF-0-GROK-1 and IF-0-GROK-2 below name the projection directory, the
-ordered mount list or `PROTECTED_SETS`, they await that answer.
+**Jailed projection (option A, r5).** The coordinator ruled option A on Q-r4: main's
+Gemini-style jail projection (jail contract §2.3, §2.4). The jailed seat's config is a
+read-only staged file, checked by digest at each launch; the unjailed seat keeps E8-A's sealed
+memfd. The unjailed path is owned by E8-A (`panel_invoker.seat_profile`, `grok_tool_surface`);
+the jailed path by GROK (`seat_grok_credential`, `seat_profile_grok`, `grok_jail_surface`).
+Both take their bytes from `grok_tool_surface.seat_config()`, and SL-3 fails on any difference.
+SL-1, SL-2 and SL-3 are dispatchable again.
 
 **Execution gate.** JAILCORE and TEAMHOST code is on main (agent-harness#1890,
 agent-harness#1904) and CODEX executed against the same gate (agent-harness#1916); the
@@ -74,17 +76,17 @@ stays ineligible. The jailed measurement measures `staged` only.
 
   - **Credential** (`seat_grok_credential`, a new module):
     - `grok_seat_credential_present() -> bool`, reading no secret.
-    - `stage_grok_seat_credential(projection_dir, *, margin_s) -> GrokSeatCredential`: opens
+    - `stage_grok_seat_credential(config_dir, *, margin_s) -> GrokSeatCredential`: opens
       the operator's store `O_NOFOLLOW` under the operator's ownership (unsafe stores refuse
-      `seat_profile_unavailable`) and writes, mode 0444, into the fresh operator-owned 0700
-      projection directory (jail contract §2.3): the access-only `auth.json`, `agent_id`, and
-      the seat config whose sha256 is the pinned input
+      `seat_profile_unavailable`) and writes, mode 0444, into the staged `<review_dir>/grok-config/`
+      directory (jail contract §2.3): the access-only `auth.json`, `agent_id`, and the seat
+      config whose sha256 is the pinned input
       `2984e0c368943bb6c1627146e413995df12cca5820e782adffcb052a9b761780`.
     - Refusals, `GrokCredentialRefused(code)`: `grok_seat_credential_missing`;
       `grok_seat_credential_refused` unless the store shows a positive subscription marker;
       `grok_seat_token_expired` unless the expiry parses and the remaining lifetime exceeds
       `margin_s` (the leg deadline plus 300 s).
-    - `GrokSeatCredential(projection_dir, scan_values, digest, expires_at)`: `scan_values` are taken from
+    - `GrokSeatCredential(config_dir, scan_values, digest, expires_at)`: `scan_values` are taken from
       the exact projected copy, every secret value (at least 8 characters) and its last 12
       characters, in memory only. `grok_seat_credential_after(seat_home, delivered) -> str |
       None` returns `grok_seat_token_refreshed_in_jail` if a credential-shaped file appeared
@@ -99,7 +101,7 @@ stays ineligible. The jailed measurement measures `staged` only.
   |---|---|
   | `leg`, `vendor` | `grok`, `grok` |
   | `argv` | main's `staged` form for the production model and effort; argv0 and `--cwd /seat/tree` replaced only |
-  | `owner_binds` | exactly the ordered mount list of jail contract §2.3: `.grok` and `.config` tmpfs; read-only path binds of the projection directory's files (`<grok-projection>` placeholder); the home masks; the `.grok/logs` and `.grok/sessions` tmpfs; the tree masks. No descriptor; no builder edit |
+  | `owner_binds` | exactly the ordered mount list of jail contract §2.3: the staged `.grok` directory read-only through `OwnerPaths.provider_config`; the `.grok/logs` and `.grok/sessions` tmpfs and the two lock-file binds from seat-home; the CA by read-only path bind; the home and tree masks of §2.4. No descriptor; no builder, `seat_uid` or SDK-region edit |
   | `env` | proxy variables and `SSL_CERT_FILE`; no `GROK_*`, `XAI_*` or key variable |
   | `home_dirs` | `(".grok",)` |
   | `projection` | `"none"` |
@@ -113,10 +115,10 @@ stays ineligible. The jailed measurement measures `staged` only.
   | `containment` | `ContainmentEvidence("grok-credential-scope", "grok-refresh-detection", "grok-unlisted-refusal", None)` |
   | `allowlist_id`, `notice_codes` | `"grok-review"`; the five codes and `grok_tool_surface_unverified` |
 
-  SL-2 also lands `seat_profile_grok.PROTECTED_SETS` (jail contract §2.4, transcribed from
-  erratum 8 r3's frozen text, so SL-2 has a complete input), one Grok branch in
+  SL-2 also lands `seat_profile_grok.JAIL_PROTECTION` (jail contract §2.4's table for the
+  1.0.92 image, so SL-2 has a complete input), one Grok branch in
   `seat_jail_qualification.py` delegating to `seat_profile_grok.qualification_shape(seat_dir)`
-  (which builds a fixture projection directory and tree stubs), and `phase-loop seat-sandbox
+  (which writes a fixture staged `.grok` directory, the mask sources and the mount points), and `phase-loop seat-sandbox
   qualify --leg grok`, whose receipt names the leg and its qualification key.
 
 - [ ] IF-0-GROK-3 — Jailed launch site and gate, provided by SL-3: `grok_jail_surface`
