@@ -58,6 +58,12 @@ UPDATER = ("CONNECT", "x.ai", None, "deny")
 ARTIFACTS = ("CONNECT", "storage.googleapis.com", None, "deny")
 SEAT = gts.MEASURED_ROUTES
 REFUSED = "grok_tool_surface_unverified"
+#: The two images of the tolerated map (errata 3 and 8), by binary sha256.
+GROK_1_0_89 = "a3dface51d9bdc71fd121e0481dd02d9b46a721f7a6b892f756480e9666eba1f"
+GROK_1_0_92 = "add4d201dbf2c0bd6077a36feb55a76939de30bae48dbb06f16b2307d38ceacb"
+#: The map as shipped, before any bench stands its stand-in binary for an image.
+SHIPPED_TOLERATED = gts.TOLERATED_REFUSALS_BY_IMAGE
+LEGACY_TOLERATED = SHIPPED_TOLERATED[GROK_1_0_89]
 #: The real BA-3 binding check, before any bench models it.
 REAL_BRIDGED_TO = gts.bridged_to
 
@@ -131,10 +137,12 @@ class Bench:
     """A host for the measurement: a stand-in grok binary on the provider path (never
     executed), a private state home, an operator HOME holding a planted sentinel credential,
     a fake transport, a recording child, and a stand-in runner for ``--help`` and
-    ``--version`` that answers with the real 1.0.89 outputs."""
+    ``--version`` that answers with the real 1.0.89 outputs. The stand-in binary stands for
+    the release image ``image`` in the tolerated map (:meth:`stand_for`)."""
 
-    def __init__(self, root: Path, patch, *, real: bool = False):
+    def __init__(self, root: Path, patch, *, real: bool = False, image: str | None = GROK_1_0_89):
         self.root = root
+        self.patch = patch
         bin_dir = root / "bin"
         bin_dir.mkdir(exist_ok=True)
         self.binary = bin_dir / "grok"
@@ -213,10 +221,22 @@ class Bench:
             patch.setattr(pi, "_filtered_holder_namespace", lambda: 1)
             patch.setattr(seat_egress_proxy, "unavailable_reason", lambda: None)
             patch.setattr(sandbox_egress, "egress_isolation_available", lambda: True)
+        self.stand_for(image)
 
     @property
     def digest(self):
         return sha256(self.binary.read_bytes()).hexdigest()
+
+    def stand_for(self, image: str | None):
+        """The stand-in binary stands for the release image ``image`` (erratum 8): its own
+        digest, which the grant pins, reads that image's entries of the tolerated map through
+        the real lookup. ``None`` leaves it an image the map does not hold. Call it again
+        after rewriting the binary."""
+        self.image = image
+        table = dict(SHIPPED_TOLERATED)
+        if image is not None:
+            table[self.digest] = SHIPPED_TOLERATED[image]
+        self.patch.setattr(gts, "TOLERATED_REFUSALS_BY_IMAGE", table)
 
     # -- the stand-ins
     def run_provider(self, argv, **options):
@@ -1829,6 +1849,7 @@ def test_ba3_the_measurement_launch_proves_isolation_in_its_own_child(required_u
                                 .replace("__VERSION__", repr(VERSION))
                                 .replace("__HELP__", repr(HELP)))
         bench.binary.chmod(0o700)
+        bench.stand_for(GROK_1_0_89)
         bench.open_grant(planned="review")
         # The real rehearsal's marker was written by the hook inside the real launch_provider.
         names = sorted(p.name for p in (bench.grant_dir() / "rehearsals").iterdir())
@@ -1918,6 +1939,7 @@ def test_ba3_the_final_check_binds_the_exact_live_holder_to_this_proxy(tmp_path,
                                 .replace("__VERSION__", repr(VERSION))
                                 .replace("__HELP__", repr(HELP)))
         bench.binary.chmod(0o700)
+        bench.stand_for(GROK_1_0_89)
         bench.open_grant(planned="review")  # its rehearsal runs on a real pair of its own
 
         @contextlib.contextmanager
@@ -1965,8 +1987,8 @@ def test_the_hosted_ba3_job_is_mandatory_and_cannot_skip_green():
 
 # ======================================== erratum 3: tolerated startup refusals
 
-def test_the_tolerated_refusals_are_the_closed_list_of_erratum_3():
-    assert gts.TOLERATED_REFUSALS == (
+def test_the_tolerated_refusals_of_1_0_89_are_the_closed_list_of_erratum_3():
+    assert gts.tolerated_refusals(GROK_1_0_89) == (
         ("GET", "cli-chat-proxy.grok.com", "/v1/settings"),
         ("CONNECT", "x.ai", None),
         ("CONNECT", "storage.googleapis.com", None))
@@ -1986,7 +2008,7 @@ def test_a_tolerated_refusal_before_or_after_the_counted_request_still_measures(
     (result,) = bench.results().values()
     expected = {}
     for method, host, path, _decision in requests:
-        if (method, host, path) in gts.TOLERATED_REFUSALS:
+        if (method, host, path) in LEGACY_TOLERATED:
             expected[(method, host, path)] = expected.get((method, host, path), 0) + 1
     assert {(item["method"], item["host"], item["path"]): item["count"]
             for item in result["tolerated_refusals"]} == expected
@@ -2020,7 +2042,7 @@ def test_the_proxy_names_exactly_the_tolerated_observations(fake_srt):
     entry of ``named`` is observed verbatim, everything else keeps the closed vocabulary,
     and no decision changes."""
     fake = fake_srt()
-    named = gts.TOLERATED_REFUSALS
+    named = LEGACY_TOLERATED
     with seat_egress_proxy.start_proxy(allowlist_id="grok-review", request_budget=1,
                                        named=named) as proxy:
         verdicts = fake.decide([
@@ -2049,7 +2071,7 @@ def test_the_real_proxy_names_a_tolerated_connect_and_folds_a_sign_in_host(requi
     ``<other>``, so it can never pass for a tolerated refusal."""
     from test_grok_measure_egress import _exchange, _http
     with seat_egress_proxy.start_proxy(allowlist_id="grok-review", request_budget=1,
-                                       named=gts.TOLERATED_REFUSALS) as proxy:
+                                       named=LEGACY_TOLERATED) as proxy:
         for host in ("x.ai", "auth.x.ai", "storage.googleapis.com"):
             status, _reply = _exchange(proxy, host, _http("GET", host, "/"))
             assert status.startswith(b"HTTP/1.1 403"), (host, status)
@@ -2314,7 +2336,7 @@ def test_the_real_proxy_reports_which_check_refused_an_inference_post(required_u
     post = _http("POST", gts.INFERENCE_HOST, INFERENCE_PATH)
     foreign = post.replace(f"Host: {gts.INFERENCE_HOST}".encode(), b"Host: elsewhere.example")
     with seat_egress_proxy.start_proxy(allowlist_id="grok-review", request_budget=1,
-                                       named=gts.TOLERATED_REFUSALS) as proxy:
+                                       named=LEGACY_TOLERATED) as proxy:
         for request in (foreign, post, post):
             _exchange(proxy, gts.INFERENCE_HOST, request)
     events = [(e.method, e.host, e.path, e.decision, e.cause)
@@ -2344,14 +2366,14 @@ def test_a_tolerated_connect_is_the_exact_authority_port_443_included(required_u
     authorities = ("x.ai:8443", "storage.googleapis.com:80", "x.ai:0443",
                    "storage.googleapis.com:0443", "x.ai:443", "storage.googleapis.com:443")
     with seat_egress_proxy.start_proxy(allowlist_id="grok-review", request_budget=1,
-                                       named=gts.TOLERATED_REFUSALS) as proxy:
+                                       named=LEGACY_TOLERATED) as proxy:
         for authority in authorities:
             assert _raw_connect(proxy, authority).startswith(b"HTTP/1.1 403"), authority
     events = seat_egress_proxy.proxy_stream(proxy).outside_events
     # Zero-padded 443 (fix round 3) is not the authority either: neither named nor tolerated.
     assert [(e.method, e.host, e.path, e.decision) for e in events] == [
         ("CONNECT", "<other>", None, "deny")] * 4 + [UPDATER, ARTIFACTS]
-    assert gts.tolerated_summary(events) == [
+    assert gts.tolerated_summary(events, GROK_1_0_89) == [
         {"method": "CONNECT", "host": "x.ai", "path": None, "count": 1},
         {"method": "CONNECT", "host": "storage.googleapis.com", "path": None, "count": 1}]
 
