@@ -3618,3 +3618,48 @@ def test_on_1_0_89_the_named_settings_entry_wins_over_its_label(bench, labels):
     assert record["observed"][0]["path"] == "/v1/settings"
     assert gts.retained_observation("GET", gts.INFERENCE_HOST, "/v1/settings", "deny", "rules",
                                     binary_sha256=bench.digest)["path"] == "/v1/settings"
+
+
+@contextlib.contextmanager
+def _runtime_installed_during_the_launch(bench, monkeypatch, new="c" * 64):
+    """A runtime-only update that lands while the launch runs: from the spawn on, the
+    on-disk runtime digest is ``new``."""
+    real = bench.launch_owned
+
+    def launch_owned(*args, **kwargs):
+        monkeypatch.setattr(seat_window, "runtime_digest", lambda: new)
+        return real(*args, **kwargs)
+    monkeypatch.setattr(pi, "launch_owned", launch_owned)
+    yield new
+
+
+def test_a_rehearsal_records_the_runtime_it_launched_under(bench, monkeypatch):
+    """The rehearsal's runtime is captured before its proxy and child start: a runtime
+    installed during the launch is not stamped on the passing record, so the new runtime
+    cannot use it."""
+    before = seat_window.runtime_digest()
+    bench.open_grant(planned="review", rehearse=False)
+    with _runtime_installed_during_the_launch(bench, monkeypatch) as after:
+        code, report = bench.cli("--attended", "--rehearse", "--route", "review")
+    assert (code, report["result"]) == (0, "passed"), report
+    assert seat_window.runtime_digest() == after != before
+    record = json.loads(_rehearsal_record(bench).read_text())
+    assert record["runtime_digest"] == before
+    code, report = bench.cli("--require-rehearsed", "review")
+    assert (code, report["status"]) == (1, "not_rehearsed"), report
+    assert bench.measure("review")[1]["routes"][0]["code"] == "rehearsal_required"
+    assert bench.launches == []
+
+
+def test_a_result_records_the_runtime_it_launched_under(bench, monkeypatch):
+    """The same for a measurement: the result carries the runtime of its launch, so a
+    runtime installed during it stops publication."""
+    before = seat_window.runtime_digest()
+    bench.open_grant(planned="review")
+    with _runtime_installed_during_the_launch(bench, monkeypatch):
+        assert bench.measure("review")[1]["routes"][0]["status"] == "measured"
+    (result,) = bench.results().values()
+    assert result["runtime_digest"] == before
+    code, report = bench.cli("--aggregate")
+    assert (code, report["code"]) == (1, "context_mismatch"), report
+    assert bench.host_record() is None

@@ -2988,6 +2988,8 @@ def _run_reserved(stage: _Stage, reservation: Reservation, *, route, form, argv,
     from . import panel_invoker as panel
     from . import seat_egress_proxy
 
+    # The result's runtime and context binding is taken here, before the proxy and the child
+    # start, and recorded as is (erratum 8, item 7).
     result = _base_result(stage, reservation, route, model=model, context=context,
                           allowlist_digest=allowlist_digest)
     raw = _subdir(stage.output, "raw", create=True)
@@ -3130,6 +3132,10 @@ def rehearse(stage: _Stage, route: str) -> dict[str, Any]:
     from . import seat_egress_proxy
 
     form, _model, context, allowlist_digest = _prepare_route(route)
+    # Erratum 8, item 7: the runtime this rehearsal launches under, captured once before the
+    # proxy and the child start and recorded as is, so a runtime installed while it runs
+    # never inherits its pass.
+    runtime = running_binding()[0]
     if route not in stage.grant.planned:
         raise _refuse("route_not_planned")
     if route != stage.grant.planned[0]:
@@ -3244,7 +3250,7 @@ def rehearse(stage: _Stage, route: str) -> dict[str, Any]:
     record = {
         "schema": REHEARSAL_SCHEMA, "grant": stage.grant.id, "rehearsal": rehearsal_id,
         "route": route, "argv_digest": argv_digest, "binary_sha256": stage.identity[1],
-        "context_digest": context, "runtime_digest": running_binding()[0],
+        "context_digest": context, "runtime_digest": runtime,
         "egress": {"allowlist_id": EGRESS_ALLOWLIST_ID, "allowlist_sha256": allowlist_digest},
         "status": "passed" if reason == "passed" else "failed", "reason": reason,
         "exit_code": exit_code, "observation": observation, "incomplete": incomplete,
