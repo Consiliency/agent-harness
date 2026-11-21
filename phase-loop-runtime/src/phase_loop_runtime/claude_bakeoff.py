@@ -541,8 +541,8 @@ def od3b_problems(record_text: bytes, directory: Path,
     alone, so a later session's records can land beside it before the next section does. It
     picks ``print``, ``sdk`` or "none admitted"; a section over session 1 alone picks only
     ``print`` or "none admitted", and a transport it picks has records in its sessions."""
-    headings = [line for line in record_text.decode("utf-8", "replace").splitlines()
-                if line.startswith("## ")]
+    headings = [line.decode("utf-8", "replace") for line in record_text.splitlines()
+                if line.startswith(b"## ")]
     ids = [found.group(1) for line in headings
            if (found := re.match(r"## (\d+[a-z]?)\. ", line)) is not None]
     od3b_ids = {found.group(1) for line in headings if _OD3B_HEADING.match(line)
@@ -930,6 +930,74 @@ def write_private(path: Path, data: bytes) -> None:
     os.chmod(path, 0o600)
 
 
+class PrivateInputError(OSError):
+    """A private input that exists but is not a readable regular file."""
+
+
+#: Private kit files are small; a larger one is not the kit's.
+_PRIVATE_CAP = 1 << 20
+
+
+def read_private_regular(path: Path, *, cap: int = _PRIVATE_CAP) -> bytes | None:
+    """The bytes of a private regular file, ``None`` when nothing is at ``path``, and
+    :class:`PrivateInputError` (or the ``OSError`` of an unreadable file) for anything else.
+    It never blocks: the entry is checked with ``lstat`` before opening, opened without
+    following a link and without blocking, and the descriptor must still be that regular
+    file, so a FIFO, socket, device, directory or link is refused, never waited on."""
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(info.st_mode):
+        raise PrivateInputError(f"{path.name}: not a regular file")
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (
+                info.st_dev, info.st_ino):
+            raise PrivateInputError(f"{path.name}: not the regular file it was")
+        chunks, size = [], 0
+        while size <= cap:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+        if size > cap:
+            raise PrivateInputError(f"{path.name}: too large")
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
+#: The salt the kit writes: 32 random bytes as hex.
+_SALT = re.compile(rb"[0-9a-f]{64}")
+#: Every private file a session reads, and the diagnostic it refuses with when it exists but
+#: cannot be read as a regular file.
+PRIVATE_INPUTS = (
+    ("meter.json", "meter: the private ledger cannot be read"),
+    ("meter.salt", "meter: the private salt cannot be read"),
+    ("session-identity.json", "identity: session 1's comparison identity cannot be read"),
+    ("security-outcomes.txt", "security notes: the private notes cannot be read"),
+    ("control-files.txt", "control files: the private list cannot be read"),
+)
+
+
+def private_input_problems(root: Path) -> list[str]:
+    """Each private input that exists but is not a readable regular file of the kit's shape.
+    Checked before any credential, CA, reading or native block, without blocking."""
+    problems = []
+    for name, diagnostic in PRIVATE_INPUTS:
+        try:
+            raw = read_private_regular(root / name)
+        except OSError:
+            problems.append(diagnostic)
+            continue
+        if name == "meter.salt" and raw is not None and not _SALT.fullmatch(raw):
+            problems.append("meter: the private salt is not this kit's; archive it first")
+    return problems
+
+
 _READING_NAMES = ("subscription_usage", "extra_usage_spend", "api_spend")
 #: A value the owner could not read is ``unavailable``; a spend the account has no meter for
 #: (no API organization, no extra usage) is ``none``. Anything else is a number.
@@ -995,17 +1063,21 @@ class MeterLedger:
     def __post_init__(self) -> None:
         size = EXECUTION_NOTES.meter_readings
         path = self.root / "meter.json"
-        if self.readings or not path.exists():
-            self.readings = list(self.readings) or [None] * size
+        if self.readings:
             return
         try:
-            kept = json.loads(path.read_bytes())
-        except ValueError:
-            kept = None
+            raw = read_private_regular(path)
         except OSError:
             self.readings = [None] * size
             self.problem = "meter: the private ledger cannot be read"
             return
+        if raw is None:
+            self.readings = [None] * size
+            return
+        try:
+            kept = json.loads(raw)
+        except ValueError:
+            kept = None
         if (isinstance(kept, list) and len(kept) == size
                 and all(item is None or _stored_reading(item) for item in kept)):
             self.readings = kept
@@ -1038,9 +1110,16 @@ class MeterLedger:
 
     def salt(self) -> bytes:
         path = self.root / "meter.salt"
-        if not path.exists():
-            write_private(path, os.urandom(32).hex().encode())
-        return path.read_bytes()
+        try:
+            raw = read_private_regular(path)
+            if raw is None:
+                write_private(path, os.urandom(32).hex().encode())
+                raw = read_private_regular(path)
+        except OSError:
+            raise ValueError("meter: the private salt cannot be read") from None
+        if raw is None or not _SALT.fullmatch(raw):
+            raise ValueError("meter: the private salt is not this kit's; archive it first")
+        return raw
 
     def _digest(self, block: int, salt: bytes) -> str:
         bracket = [self.readings[position] for position in bracket_positions(block)]
@@ -1057,16 +1136,18 @@ class MeterLedger:
         first = opening_position(session)
         if any(slot is not None for slot in self.readings[first:]):
             return [f"meter: session {session}'s readings are already taken; archive the ledger"]
+        path = self.root / "meter.salt"
+        try:  # an existing salt must be readable and the kit's, in every session
+            salt = read_private_regular(path)
+        except OSError:
+            return ["meter: the private salt cannot be read"]
+        if salt is not None and not _SALT.fullmatch(salt):
+            return ["meter: the private salt is not this kit's; archive it first"]
         if session == 1:
             return []
         if any(slot is None for slot in self.readings[:first]):
             return ["meter: the private ledger lacks the earlier sessions' readings "
                     "(another --window, or a lost ledger)"]
-        path = self.root / "meter.salt"
-        try:
-            salt = path.read_bytes() if path.exists() else None
-        except OSError:
-            return ["meter: the private salt cannot be read"]
         earlier = [obj for obj in records if session_of(int(obj["block"])) < session]  # type: ignore[call-overload]
         if salt is None or any(obj["meter_digest"] != self._digest(int(obj["block"]), salt)  # type: ignore[call-overload]
                                for obj in earlier):
@@ -1581,7 +1662,8 @@ def identity_problems(root: Path, plan: Mapping[str, object], repo: Path,
         return []
     path = root / IDENTITY
     try:
-        kept = json.loads(path.read_bytes()) if path.exists() else None
+        raw = read_private_regular(path)
+        kept = json.loads(raw) if raw is not None else None
     except (OSError, ValueError):
         return ["identity: session 1's comparison identity cannot be read"]
     try:
@@ -1612,8 +1694,19 @@ class ControlFiles:
     since: float = 0.0
 
     def _given(self) -> list[str]:
-        used = self.root / "control-files.txt"
-        return used.read_bytes().decode("utf-8", "replace").splitlines() if used.is_file() else []
+        """Rows ``<device>:<inode>\t<path>``; a row from an earlier kit is a bare path."""
+        try:
+            raw = read_private_regular(self.root / "control-files.txt")
+        except OSError:
+            raise ValueError("control files: the private list cannot be read") from None
+        return (raw or b"").decode("utf-8", "replace").splitlines()
+
+    def _already_given(self, identity: str, path: Path) -> bool:
+        for row in self._given():
+            given_identity, _sep, given_path = row.rpartition("\t")
+            if given_identity == identity or (given_path or row) == str(path):
+                return True
+        return False
 
     def take(self, path: Path) -> tuple[str | None, bytes, str]:
         """``(problem, bytes, identity)``; ``problem`` is ``None`` when the file is acceptable."""
@@ -1631,7 +1724,7 @@ class ControlFiles:
             if info.st_mtime < self.since:
                 return "written before this block's brief", b"", ""
             identity = f"{info.st_dev}:{info.st_ino}"
-            if identity in self._given():
+            if self._already_given(identity, path):
                 return "already given for another run", b"", ""
             raw = handle.read(_CONTROL_CAP + 1)
         if len(raw) > _CONTROL_CAP:
@@ -1648,7 +1741,7 @@ class ControlFiles:
             problem, raw, identity = self.take(path)
             if problem is None:
                 write_private(self.root / "control-files.txt",
-                              "\n".join([*self._given(), identity]).encode())
+                              "\n".join([*self._given(), f"{identity}\t{path}"]).encode())
                 return raw
             self.report(f"control block {block} run {n}: {problem}; give another file")
         raise ValueError(f"W0 stopped: no acceptable control file for block {block} run {n}")
@@ -1669,13 +1762,13 @@ def private_stopped_arms(root: Path) -> set[str]:
     """Arms the private security-outcome notes stop, so an interrupted session that never
     wrote its withheld record still keeps the arm stopped. Notes that exist but cannot be
     read refuse (``ValueError``) rather than read as none."""
-    path = root / SECURITY_NOTES
-    if not path.exists():
-        return set()
     try:
-        lines = path.read_bytes().decode("utf-8", "replace").splitlines()
+        raw = read_private_regular(root / SECURITY_NOTES)
     except OSError:
         raise ValueError("security notes: the private notes cannot be read") from None
+    if raw is None:
+        return set()
+    lines = raw.decode("utf-8", "replace").splitlines()
     return {line.split(" ", 1)[0] for line in lines if line.split(" ", 1)[0] in ARMS}
 
 
@@ -1980,7 +2073,10 @@ class Window:
         admission of this session's arms only (session 1 never needs ``sdk``)."""
         problems = check_run_plan(self.plan)
         problems += session_problems(self.session, self.out_dir, repo=self.repo)
-        if self.ledger.problem:
+        private = private_input_problems(self.ledger.root)
+        if private:
+            problems += private
+        elif self.ledger.problem:
             problems.append(self.ledger.problem)
         elif self.session in SESSIONS:
             records = load_records(self.out_dir)[0] if self.out_dir.exists() else []
@@ -2048,7 +2144,7 @@ class Window:
         self.stopped_arms.add(arm)
         self.private_notes.append(f"{arm} block {block}: {code}")
         path = self.ledger.root / SECURITY_NOTES
-        kept = path.read_bytes().decode("utf-8", "replace").splitlines() if path.is_file() else []
+        kept = (read_private_regular(path) or b"").decode("utf-8", "replace").splitlines()
         write_private(path, "\n".join(dict.fromkeys(kept + self.private_notes)).encode())
 
     def _run(self) -> list[Path]:
@@ -2195,6 +2291,8 @@ def _run_claimed(plan: Mapping[str, object], repo: Path, window: str,
 
     gate = session_problems(session, repo / EVIDENCE_DIR, repo=repo)
     root = private_root(window)
+    if not gate:  # every private input is a readable regular file, checked without blocking
+        gate = private_input_problems(root)
     ledger = MeterLedger(root)  # reads only; nothing is created before the gate passes
     if not gate:
         gate = [ledger.problem] if ledger.problem else ledger.session_problems(

@@ -1433,6 +1433,174 @@ def test_an_unreadable_private_file_refuses_with_a_diagnostic(repo, tmp_path, mo
         [p for p in _preflight_session_two(repo, tmp_path, monkeypatch, root)])
 
 
+def _within(function, seconds: float = 10.0):
+    """Run ``function`` on a daemon thread; fail if it is still blocked after ``seconds``."""
+    import threading
+
+    out: dict = {}
+
+    def target():
+        try:
+            out["value"] = function()
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the test thread
+            out["error"] = exc
+
+    thread = threading.Thread(target=target, daemon=True)
+    thread.start()
+    thread.join(seconds)
+    assert not thread.is_alive(), "blocked on a private input"
+    if "error" in out:
+        raise out["error"]
+    return out["value"]
+
+
+@pytest.mark.parametrize("name", [name for name, _diagnostic in bk.PRIVATE_INPUTS])
+def test_a_fifo_private_input_refuses_without_blocking(tmp_path, name):
+    import os
+
+    root = tmp_path / "private"
+    root.mkdir()
+    os.mkfifo(root / name)  # no writer: a blocking open would wait forever
+    diagnostic = dict(bk.PRIVATE_INPUTS)[name]
+    assert diagnostic in _within(lambda: bk.private_input_problems(root))
+    if name == "meter.json":
+        assert _within(lambda: bk.MeterLedger(root=root)).problem == diagnostic
+    with pytest.raises(bk.PrivateInputError):
+        _within(lambda: bk.read_private_regular(root / name))
+
+
+@pytest.mark.parametrize("kind", ["symlink", "socket"])
+def test_a_link_or_socket_private_input_is_refused(tmp_path, monkeypatch, kind):
+    import socket
+
+    root = tmp_path / "private"
+    root.mkdir()
+    target = root / "meter.salt"
+    if kind == "symlink":
+        (tmp_path / "real.salt").write_text("a" * 64)
+        target.symlink_to(tmp_path / "real.salt")
+        assert "meter: the private salt cannot be read" in bk.private_input_problems(root)
+    else:
+        server = socket.socket(socket.AF_UNIX)
+        monkeypatch.chdir(root)  # a socket path is limited in length; bind it relatively
+        try:
+            server.bind(target.name)
+            assert "meter: the private salt cannot be read" in _within(
+                lambda: bk.private_input_problems(root))
+        finally:
+            server.close()
+
+
+@pytest.mark.parametrize("salt", ["absent", "valid", "directory", "fifo", "bad-shape",
+                                  "unreadable"])
+def test_an_existing_session_one_salt_is_checked_before_any_reading(repo, tmp_path, monkeypatch,
+                                                                   salt):
+    import os
+
+    root = tmp_path / "private"
+    root.mkdir()
+    path = root / "meter.salt"
+    if salt == "valid":
+        path.write_text("ab" * 32)
+    elif salt == "directory":
+        path.mkdir()
+    elif salt == "fifo":
+        os.mkfifo(path)
+    elif salt == "bad-shape":
+        path.write_text("not a salt\n")
+    elif salt == "unreadable":
+        path.write_text("ab" * 32)
+        path.chmod(0)
+        if os.access(path, os.R_OK):
+            pytest.skip("this account reads mode-000 files")
+    ledger_check = _within(lambda: bk.MeterLedger(root=root).session_problems(1, []))
+    inputs_check = _within(lambda: bk.private_input_problems(root))
+    window, calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[_ok()] * 3)
+    if salt in {"absent", "valid"}:
+        assert ledger_check == [] and inputs_check == []
+        assert len(_within(window.run, 60)) == 6
+        return
+    assert any("salt" in problem for problem in ledger_check), ledger_check  # each layer
+    assert any("salt" in problem for problem in inputs_check), inputs_check  # refuses alone
+    if salt != "unreadable":
+        with pytest.raises(ValueError, match="salt"):
+            bk.MeterLedger(root=root).salt()
+    assert any("salt" in problem for problem in _within(window.preflight))
+    with pytest.raises(ValueError, match="refused before any run"):
+        _within(window.run)
+    assert calls == [] and not (root / "meter.json").exists()  # a rerun is not blocked
+
+
+@pytest.mark.parametrize(("name", "diagnostic"), [
+    ("meter.salt", "meter: the private salt cannot be read"),
+    ("control-files.txt", "control files: the private list cannot be read"),
+])
+def test_the_run_cli_refuses_a_fifo_private_input_before_any_effect(
+        repo, tmp_path, monkeypatch, capsys, name, diagnostic):
+    import os
+
+    from phase_loop_runtime import seat_credentials, seat_egress_proxy
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    def sentinel(*_a, **_k):
+        raise AssertionError("an effect ran before the gate")
+
+    for module, attribute in ((seat_credentials, "resolve_claude_seat_credential"),
+                              (seat_egress_proxy, "verify_install"), (bk, "create_window_ca"),
+                              (bk, "bundle_artifact")):
+        monkeypatch.setattr(module, attribute, sentinel)
+    root = bk.private_root("w0")
+    root.mkdir(parents=True)
+    os.mkfifo(root / name)
+    argv = ["run", "--plan", str(_cli_plan(repo, tmp_path)), "--repo", str(repo),
+            "--session", "1"]
+    assert _within(lambda: bk.main(argv)) == 1
+    assert diagnostic in capsys.readouterr().err
+    with bk.claim_evidence(repo / bk.EVIDENCE_DIR):  # the lock was released, not held
+        pass
+
+
+def test_window_preflight_refuses_a_fifo_private_list_before_any_reading(repo, tmp_path,
+                                                                         monkeypatch):
+    import os
+
+    root = tmp_path / "private"
+    root.mkdir()
+    os.mkfifo(root / "control-files.txt")
+    window, calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[_ok()] * 3)
+    assert "control files: the private list cannot be read" in _within(window.preflight)
+    with pytest.raises(ValueError, match="refused before any run"):
+        _within(window.run)
+    assert calls == [] and not (root / "meter.json").exists()
+
+
+def test_a_control_file_given_by_an_earlier_kit_is_still_refused_by_path(tmp_path):
+    out = tmp_path / "child.json"
+    out.write_text("{}")
+    root = tmp_path / "private"
+    root.mkdir()
+    (root / "control-files.txt").write_text(f"{out}\n")  # an earlier kit stored bare paths
+    files = bk.ControlFiles(root=root, since=0.0)
+    assert files.problem(out) == "already given for another run"
+    other = tmp_path / "other.json"
+    other.write_text("{}")
+    answers = [str(other)]
+    files.prompt = lambda _q: answers.pop(0)
+    assert files.accept(2, 1) == b"{}"
+    rows = (root / "control-files.txt").read_text().splitlines()
+    assert rows[0] == str(out) and rows[1].endswith(f"\t{other}")
+
+
+def test_a_unicode_line_separator_in_prose_is_not_a_heading(repo, tmp_path):
+    directory = write(tmp_path / "w0", *_session1(repo))
+    digest = bk.evidence_digest(directory)
+    prose = "\nA note\u2028## 4c. OD-3b: not a heading, the parser keeps it in this line\n"
+    text = RECORD_4A + prose + _od3b("4c", digest)
+    assert bk.validate_directory(directory, repo=repo, record_text=text.encode(),
+                                 tui_digest=TUI) == []
+
+
 def _preflight_session_two(repo, tmp_path, monkeypatch, root) -> list[str]:
     monkeypatch.undo()
     window, _calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[],
