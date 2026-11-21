@@ -752,7 +752,8 @@ def qualify(*, window, monitoring_policy, repo=".", host_class="standard", atten
 
 def register_parser(subparsers):
     parser = subparsers.add_parser("seat-window", help="Qualify, verify or export seat-window metadata")
-    parser.add_argument("action", choices=("qualify", "verify", "export", "probe-tools", "matrix"))
+    parser.add_argument("action", choices=("qualify", "verify", "export", "probe-tools", "matrix",
+                                           "measure-tools"))
     parser.add_argument("--window", default="W1", choices=("W1",))
     parser.add_argument("--monitoring-policy", default="bounded", choices=("bounded",))
     parser.add_argument("--host-class", default="standard", choices=("team", "standard"))
@@ -764,6 +765,44 @@ def register_parser(subparsers):
     parser.add_argument("--output")
     parser.add_argument("--model")
     parser.add_argument("--effort", default="high")
+    # measure-tools (grok tool-surface contract v1, section 5.10): one stage per invocation.
+    measure = parser.add_argument_group("measure-tools")
+    measure.add_argument("--grant")
+    measure.add_argument("--binary")
+    measure.add_argument("--expect-binary-sha256")
+    measure.add_argument("--new-grant", action="store_true")
+    measure.add_argument("--planned")
+    measure.add_argument("--retries", type=int)
+    measure.add_argument("--route", action="append", choices=("review", "sealed", "staged"))
+    measure.add_argument("--require-measured", choices=("review", "sealed", "staged"))
+    measure.add_argument("--aggregate", action="store_true")
+    measure.add_argument("--verify-probe", choices=("initial", "final"))
+    measure.add_argument("--status", action="store_true")
+    measure.add_argument("--reprocess")
+    measure.add_argument("--purge", action="store_true")
+    measure.add_argument("--rehearse", action="store_true")
+    measure.add_argument("--require-rehearsed", choices=("review", "sealed", "staged"))
+    measure.add_argument("--hosted-check")
+
+
+def probe_tool_rows(*, model=None, effort="high") -> list[dict]:
+    """One ``seat-window probe-tools`` row per grok route form: ``route``, ``passed`` and the
+    ``basis`` the receipt rests on (grok tool-surface contract §4.5)."""
+    from . import panel_invoker as panel
+    forms = panel.grok_runtime_forms(model=model, effort=effort)
+    routes = []
+    for route, command in forms.items():
+        receipt = panel.probe_grok_tools(
+            command, allowed_tools=panel._grok_allowed_tools(command))
+        passed = receipt.get("passed") is True
+        row = {"route": route, "passed": passed,
+               "basis": receipt.get("basis", "none") if passed else "none"}
+        if row["basis"] == "frozen_measurement":
+            row["source"] = receipt.get("surface_source")
+            if receipt.get("shadowed"):
+                row["shadowed"] = receipt["shadowed"]
+        routes.append(row)
+    return routes
 
 
 def _selected_records(args, president_adapter):
@@ -792,15 +831,14 @@ def cli_main(args):
                 repo=args.repo or ".", host_class=args.host_class, attended=args.attended,
                 peer_record=args.peer_record, model=args.model)
         elif args.action == "probe-tools":
-            from . import panel_invoker as panel
-            forms = panel.grok_runtime_forms(model=args.model, effort=args.effort)
-            routes = []
-            for route, command in forms.items():
-                receipt = panel.probe_grok_tools(
-                    command, allowed_tools=panel._grok_allowed_tools(command))
-                routes.append({"route": route, "passed": receipt.get("passed") is True})
+            routes = probe_tool_rows(model=args.model, effort=args.effort)
             result = {"status": "passed" if all(row["passed"] for row in routes) else "candidate",
                       "routes": routes}
+        elif args.action == "measure-tools":
+            from . import grok_tool_surface
+            code, report = grok_tool_surface.measure_tools_cli(args)
+            print(json.dumps(report, sort_keys=True))
+            return code
         else:
             records, source_root = _selected_records(args, president_adapter)
             result = verify_records(records, source_root=source_root)

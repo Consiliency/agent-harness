@@ -209,7 +209,7 @@ jobs:
   gate:
     name: suite gate
     runs-on: ubuntu-latest
-    needs: [offload, hosted, baml-sources]
+    needs: [offload, hosted, baml-sources, grok-egress-ns]
     # Never skipped: `needs` failing or skipping must still land here.
     if: always()
     timeout-minutes: 5
@@ -247,6 +247,115 @@ jobs:
             echo "suite gate FAILED: baml-sources=$BAMLSRC (must be success)" >&2
             exit 1
           fi
+      - name: Require the grok egress namespace check
+        # Grok tool-surface contract v1, BA-3: grok-egress-ns has no `if:`, so anything but
+        # success (including skipped) is a red.
+        env:
+          GROKNS: ${{ needs.grok-egress-ns.result }}
+        run: |
+          set -euo pipefail
+          echo "grok-egress-ns=$GROKNS"
+          if [ "$GROKNS" != "success" ]; then
+            echo "suite gate FAILED: grok-egress-ns=$GROKNS (must be success)" >&2
+            exit 1
+          fi
+
+  grok-egress-ns:
+    name: grok egress namespace (BA-3)
+    # Grok tool-surface contract v1, section 10 (BA-3), and erratum 3: the isolation proofs
+    # of the grok measurement and board leg run on the real seat egress layer (node and the
+    # pinned srt), user and network namespaces and bwrap, which the suite lanes do not
+    # install, so there they skip. This job installs them on an ephemeral hosted runner and
+    # sets PHASE_LOOP_REQUIRE_GROK_EGRESS_NS=1, so a missing prerequisite fails instead of
+    # skipping, and its junit check refuses any skip. It includes the same composed child
+    # reaching a fixture upstream through the proxy while its direct connection fails.
+    # `gate` requires it on every event.
+    runs-on: ubuntu-24.04  # the pytest lanes' image (agent-harness#1763)
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node (the seat egress layer needs 22.12 or newer)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.12.0"
+
+      - name: Install review sandbox and seat egress prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap slirp4netns iptables util-linux uidmap socat ripgrep openssl
+          # Only this ephemeral CI runner: unshare must be allowed to create the
+          # user/network namespaces whose enforcement the integration tests prove.
+          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          bwrap --unshare-user --unshare-pid --ro-bind / / -- /bin/true
+          unshare --net --map-root-user true
+          # The proxy-only namespace maps the operator's subordinate ids (seat_uid_map).
+          for db in /etc/subuid /etc/subgid; do
+            grep -q "^$(id -un):" "$db" || echo "$(id -un):100000:65536" | sudo tee -a "$db"
+          done
+          # The runtime takes node and npm only from a path that is root-owned and not group- or
+          # world-writable all the way up (review_stage.trusted_host_executable). A copy under
+          # /opt was refused on the hosted image, so the copy goes under /usr/lib, which the
+          # Ubuntu image keeps root-owned with no group or world write.
+          node_root="$(dirname "$(dirname "$(command -v node)")")"
+          sudo cp -a "$node_root" /usr/lib/pl-node
+          sudo chown -R root:root /usr/lib/pl-node
+          sudo chmod -R go-w /usr/lib/pl-node
+          namei -l /usr/lib/pl-node/bin/node
+          echo "/usr/lib/pl-node/bin" >> "$GITHUB_PATH"
+
+      - name: Install phase-loop-runtime and the seat egress layer
+        run: |
+          # Not the suite's install line. scripts/local_check.py mirrors that one (CI_TEST_DEPS,
+          # checked by tests/test_local_check.py), and it alone may pin the parallel runner
+          # (tests/test_ci_xdist_adoption.py). This job runs serially and needs only pytest.
+          python -m pip install pytest "./phase-loop-runtime[visual,claude-sdk]"
+          # Fail here, with the reason, if the runtime would not trust this node and npm.
+          python - <<'PYEOF'
+          import os, subprocess, sys
+          from phase_loop_runtime.review_stage import trusted_host_executable
+          for name in ("node", "npm"):
+              try:
+                  print(name, trusted_host_executable(name))
+              except ValueError:
+                  for directory in os.environ.get("PATH", "").split(os.pathsep):
+                      candidate = os.path.join(directory, name)
+                      if os.path.exists(candidate):
+                          subprocess.run(["namei", "-l", candidate], check=False)
+                  sys.exit(f"the runtime trusts no {name} on PATH")
+          PYEOF
+          phase-loop seat-egress install
+          phase-loop seat-egress status
+
+      - name: BA-3 isolation and fixture-upstream round trip (no skip)
+        working-directory: phase-loop-runtime
+        env:
+          PHASE_LOOP_REQUIRE_GROK_EGRESS_NS: "1"
+        run: |
+          PYTHONPATH=src:tests timeout 900 python -m pytest -p no:cacheprovider -q -rs \
+            --junitxml="$RUNNER_TEMP/grok-egress-ns.xml" \
+            tests/test_grok_measure_egress.py tests/test_grok_tool_surface_measure.py \
+            tests/test_grok_board_leg_frozen_basis.py
+          python3 - "$RUNNER_TEMP/grok-egress-ns.xml" <<'PYEOF'
+          import sys
+          import xml.etree.ElementTree as ET
+          root = ET.parse(sys.argv[1]).getroot()
+          suites = [root] if root.tag == "testsuite" else list(root)
+          tests = sum(int(suite.get("tests", 0)) for suite in suites)
+          skipped = sum(int(suite.get("skipped", 0)) for suite in suites)
+          if tests == 0 or skipped:
+              sys.exit(f"grok egress namespace check: {skipped} of {tests} tests skipped; none may")
+          print(f"grok egress namespace check: {tests} tests, none skipped")
+          PYEOF
 
   baml-sources:
     name: BAML sources (pinned baml-cli fmt + check)

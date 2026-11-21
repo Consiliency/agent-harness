@@ -1061,12 +1061,25 @@ SDK_PROOF_UNBOUND: Mapping[str, frozenset[str]] = MappingProxyType({
         "_LEG_POST_EXIT_GRACE_S", "_LEG_STALL_THRESHOLD_S", "_OWNED_LAUNCH",
         "_ProviderQuiescenceLatch", "_ReviewMonitor", "_ReviewOperationCancelled",
         "_await_gemini_login", "_build_jail_with_owned_inputs", "_child_scratch_kwargs",
+        # Grok tool-surface, lane L2b: wraps the grok rehearsal's spawn hook for the capped
+        # spawn boundary. `launch_provider` references it only when a caller passes
+        # `spawn_hook`, which only the rehearsal does; classified like `_count_provider_spawn`.
+        "_caps_spawn_hook",
         "_claude_seat_login_margin_s", "_compose_launch_prefix", "_compose_seat_jail_prefix",
         "_count_provider_spawn", "_dedupe", "_jail_launch_env", "_names_provider",
         "_note_exec_result", "_probes_seat", "_redact_seat_credentials",
+        # Grok tool-surface, lane L1: the jailed route's grok gate in `_run_leg_with_liveness`.
+        # It runs only for an argv whose executable is `grok`, so never on the Claude SDK
+        # path, which launches the claude CLI.
+        "_grok_gate_with_basis",
         "_require_jailed_seat_identity", "_require_qualified_jail", "_require_seat_identity",
         "_resolve_claude_executable", "_seat_command_profile", "_validate_jail_dependency",
         "launch_owned",
+        # Grok tool-surface, lane L2c: the board leg's grok-review egress and final check in
+        # `_run_leg_with_liveness`. Both are on its unjailed branch, after the jailed branch
+        # has returned, so never on the Claude SDK path, whose leg is always jailed
+        # (`_run_claude_sdk_leg` passes `seat_jail`).
+        "_grok_leg_final_check", "_grok_leg_launch_egress",
     }),
     _JAIL: frozenset({
         "CLAUDE_PRESEED", "CLAUDE_TOKEN_FD_ENV", "GEMINI_WRITABLE_CONFIG_DIRS",

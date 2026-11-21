@@ -1,0 +1,132 @@
+{
+ "binary_sha256": "a3dface51d9bdc71fd121e0481dd02d9b46a721f7a6b892f756480e9666eba1f",
+ "method": "env -i, empty HOME, unshare -rn, timeout 20, argv + trailing --help",
+ "rows": [
+  {
+   "case": "execute",
+   "rc": 0,
+   "stdout_sha256": "67572647636f496ccfdd1899390efb1dc14bc7de8a4e77c109ef22787fb80c16",
+   "stdout_bytes": 5187,
+   "stderr_first": ""
+  },
+  {
+   "case": "workflow",
+   "rc": 0,
+   "stdout_sha256": "67572647636f496ccfdd1899390efb1dc14bc7de8a4e77c109ef22787fb80c16",
+   "stdout_bytes": 5187,
+   "stderr_first": ""
+  },
+  {
+   "case": "review",
+   "rc": 0,
+   "stdout_sha256": "67572647636f496ccfdd1899390efb1dc14bc7de8a4e77c109ef22787fb80c16",
+   "stdout_bytes": 5187,
+   "stderr_first": ""
+  },
+  {
+   "case": "sealed",
+   "rc": 0,
+   "stdout_sha256": "67572647636f496ccfdd1899390efb1dc14bc7de8a4e77c109ef22787fb80c16",
+   "stdout_bytes": 5187,
+   "stderr_first": ""
+  },
+  {
+   "case": "staged",
+   "rc": 0,
+   "stdout_sha256": "67572647636f496ccfdd1899390efb1dc14bc7de8a4e77c109ef22787fb80c16",
+   "stdout_bytes": 5187,
+   "stderr_first": ""
+  },
+  {
+   "case": "ctl-unknown-flag",
+   "rc": 2,
+   "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "stdout_bytes": 0,
+   "stderr_first": "error: unexpected argument '--no-such-flag' found"
+  },
+  {
+   "case": "ctl-bad-permission-mode",
+   "rc": 2,
+   "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "stdout_bytes": 0,
+   "stderr_first": "error: invalid value 'bogus' for '--permission-mode <MODE>'"
+  },
+  {
+   "case": "ctl-bad-output-format",
+   "rc": 2,
+   "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "stdout_bytes": 0,
+   "stderr_first": "error: invalid value 'bogus' for '--output-format <OUTPUT_FORMAT>'"
+  },
+  {
+   "case": "ctl-bad-effort",
+   "rc": 0,
+   "stdout_sha256": "67572647636f496ccfdd1899390efb1dc14bc7de8a4e77c109ef22787fb80c16",
+   "stdout_bytes": 5187,
+   "stderr_first": ""
+  },
+  {
+   "case": "ctl-list-tools",
+   "rc": 2,
+   "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "stdout_bytes": 0,
+   "stderr_first": "error: unexpected argument '--list-tools' found"
+  },
+  {
+   "case": "flag-no-memory",
+   "rc": 0,
+   "stdout_sha256": "67572647636f496ccfdd1899390efb1dc14bc7de8a4e77c109ef22787fb80c16",
+   "stdout_bytes": 5187,
+   "stderr_first": ""
+  },
+  {
+   "case": "flag-no-subagents",
+   "rc": 0,
+   "stdout_sha256": "67572647636f496ccfdd1899390efb1dc14bc7de8a4e77c109ef22787fb80c16",
+   "stdout_bytes": 5187,
+   "stderr_first": ""
+  },
+  {
+   "case": "flag-disable-web-search",
+   "rc": 0,
+   "stdout_sha256": "67572647636f496ccfdd1899390efb1dc14bc7de8a4e77c109ef22787fb80c16",
+   "stdout_bytes": 5187,
+   "stderr_first": ""
+  },
+  {
+   "case": "flag-tools-empty",
+   "rc": 0,
+   "stdout_sha256": "67572647636f496ccfdd1899390efb1dc14bc7de8a4e77c109ef22787fb80c16",
+   "stdout_bytes": 5187,
+   "stderr_first": ""
+  },
+  {
+   "case": "flag-tools-unknown-name",
+   "rc": 0,
+   "stdout_sha256": "67572647636f496ccfdd1899390efb1dc14bc7de8a4e77c109ef22787fb80c16",
+   "stdout_bytes": 5187,
+   "stderr_first": ""
+  },
+  {
+   "case": "flag-disallowed-unknown-name",
+   "rc": 0,
+   "stdout_sha256": "67572647636f496ccfdd1899390efb1dc14bc7de8a4e77c109ef22787fb80c16",
+   "stdout_bytes": 5187,
+   "stderr_first": ""
+  },
+  {
+   "case": "flag-max-turns",
+   "rc": 0,
+   "stdout_sha256": "67572647636f496ccfdd1899390efb1dc14bc7de8a4e77c109ef22787fb80c16",
+   "stdout_bytes": 5187,
+   "stderr_first": ""
+  },
+  {
+   "case": "flag-session-id",
+   "rc": 0,
+   "stdout_sha256": "67572647636f496ccfdd1899390efb1dc14bc7de8a4e77c109ef22787fb80c16",
+   "stdout_bytes": 5187,
+   "stderr_first": ""
+  }
+ ]
+}
