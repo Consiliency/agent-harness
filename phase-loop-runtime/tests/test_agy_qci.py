@@ -45,7 +45,7 @@ VERDICT_VECTOR_SHA256 = {
 #: The validator's source-hash closure per literal (the supplement). An edit that keeps every
 #: verdict updates this pin in a reviewed change; one that changes a verdict bumps the literal.
 VALIDATOR_CLOSURE_SHA256 = {
-    "agy_validator_v1": "bd684bd0fc16e88774a5f63161c6c3ce986bb9a8e9e4ecf3dcf03c310510e905",
+    "agy_validator_v1": "51e7b7e078f125d2fcb9f36e71fd6e942a2849d60169b7f2f6ce942e2e686062",
 }
 
 

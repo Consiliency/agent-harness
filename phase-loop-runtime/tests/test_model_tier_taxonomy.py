@@ -32,8 +32,8 @@ class TierMatrixTest(unittest.TestCase):
             ("heavy", "codex"): ("gpt-6.2-astra", "xhigh", False),
             ("regular", "codex"): ("gpt-6.2-sol", "medium", False),
             ("lite", "codex"): ("gpt-5.6-luna", "low", False),
-            ("ultra", "gemini"): ("gemini-4-argon", "max", True),
-            ("heavy", "gemini"): ("gemini-4-argon", "xhigh", True),
+            ("ultra", "gemini"): ("gemini-4-neon", "max", True),
+            ("heavy", "gemini"): ("gemini-4-neon", "xhigh", True),
             ("regular", "gemini"): ("gemini-3.8-flash", "medium", False),
             ("lite", "gemini"): ("gemini-3.5-flash-lite", "low", False),
             # grok: no dated snapshot published → every cell volatile (blocker 2).
@@ -131,7 +131,7 @@ class PinOnlyInvariantTest(unittest.TestCase):
 
     def test_known_floating_shapes_are_marked_volatile(self):
         # A vendor id with no immutable dated snapshot MUST be volatile-marked, so a
-        # governed run can see it floats. gemini heavy (Argon, undated) + all grok cells.
+        # governed run can see it floats. gemini heavy (NEON, undated) + all grok cells.
         self.assertTrue(resolve("heavy", "gemini").volatile)
         for tier in MODEL_TIERS:
             self.assertTrue(resolve(tier, "grok").volatile, tier)
@@ -255,11 +255,11 @@ class TierLiveWiringTest(unittest.TestCase):
 
     def test_gemini_adapter_maps_tier_ids_without_collapsing_flash_to_pro(self):
         # The gemini CLI adapter must map each tier id to the RIGHT agy model — heavy
-        # → Argon, but regular/lite must NOT silently collapse to heavy (the CR bug).
+        # → NEON, but regular/lite must NOT silently collapse to heavy (the CR bug).
         from phase_loop_runtime.launcher import _gemini_cli_model
 
         heavy = resolve("heavy", "gemini").model_id
-        self.assertEqual(_gemini_cli_model(heavy), "gemini-4-argon-high")
+        self.assertEqual(_gemini_cli_model(heavy), "gemini-4-neon-high")
         regular = _gemini_cli_model(resolve("regular", "gemini").model_id, "medium")
         lite = _gemini_cli_model(resolve("lite", "gemini").model_id)
         self.assertNotEqual(regular, _gemini_cli_model(heavy, "medium"))

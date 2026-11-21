@@ -6,6 +6,23 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Changed
+
+- Gemini 4 NEON (`gemini-4-neon`) is the shipped Gemini planning, review and board
+  default. Gemini roadmap, plan and review render `gemini-4-neon-high`; the panel's
+  Gemini leg, every built-in preset's Gemini seat and the president's `gemini` rung
+  also run NEON at `high`. agy's `gemini-4-neon-xhigh` is not admitted: Gemini effort
+  stays capped at `high`. The Gemini implementer and worker stay on
+  `gemini-3.8-flash-high`. Gemini 4 Argon (`gemini-4-argon`) stays registered as an
+  explicit seat and answers to the `gemini` alias; `PHASE_LOOP_GEMINI_MODEL=gemini-4-argon`
+  restores it per host. The agy validator identity stays `agy_validator_v1`: registering
+  NEON adds admitted models without changing a verdict of the fixed corpus, so the
+  verdict vector is unchanged and only the validator source-closure pin moves (its
+  changed nodes are the model registry and the two agy model patterns). The ship
+  condition is met: brokered subscription launches of `gemini-4-neon-medium` and
+  `gemini-4-neon-high` on a locally qualified agy image both passed on 2026-11-20,
+  each with an AGREE verdict.
+
 ## [0.7.38] - Unreleased candidate
 
 ### Added

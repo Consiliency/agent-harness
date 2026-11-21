@@ -62,7 +62,7 @@ def test_board_default_preserves_effort_auth_lenses_and_other_vendors(monkeypatc
     board = compose_review_board_report(**probes).board
     assert [s for s in board.seats if s.harness != "gemini"] == [s for s in baseline.seats if s.harness != "gemini"]
     seat = next(s for s in board.seats if s.harness == "gemini")
-    assert render_seat_invocation(seat.harness, seat.model, seat.effort).model == "gemini-3.8-flash-medium"
+    assert render_seat_invocation(seat.harness, seat.model, seat.effort).model == "gemini-3.8-flash-high"
     assert (seat.auth, seat.backing, seat.lens) == ("subscription", "homebrew", "alternative-approach")
 
 
@@ -124,7 +124,7 @@ def test_argon_embedded_effort_conflict_is_rejected():
 
 
 # Port of agent-harness#1615 onto main: the preference must respect the shipped roster.
-# Unset, planning/review run on Argon and implementation on the roster's Flash id; set,
+# Unset, planning/review run on NEON and implementation on the roster's Flash id; set,
 # only the UNPINNED Gemini routes move.
 _PLANNING = ("roadmap", "plan", "review")
 
@@ -135,12 +135,12 @@ def test_unset_preference_keeps_the_shipped_roster(monkeypatch):
     monkeypatch.delenv("PHASE_LOOP_GEMINI_MODEL", raising=False)
     for action in _PLANNING:
         command = _launch(action)
-        assert command[command.index("--model") + 1] == "gemini-4-argon-high", action
+        assert command[command.index("--model") + 1] == "gemini-4-neon-high", action
     for action in ("execute", "repair"):
         command = _launch(action)
         expected = render_agy_model(EXECUTOR_MODEL_OVERRIDES["gemini"][action], "high")
         assert command[command.index("--model") + 1] == expected, action
-        assert "argon" not in expected
+        assert "argon" not in expected and "neon" not in expected
 
 
 def test_set_preference_moves_only_unpinned_gemini_routes(monkeypatch):

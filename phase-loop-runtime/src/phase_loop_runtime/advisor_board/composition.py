@@ -2,7 +2,7 @@
 
 The default target is four seats, with a floor of three. The primary vendor order
 is Grok, Claude, Codex, Gemini, using ``_VENDOR_SEAT`` models and efforts (high
-for the first three, medium for Gemini). Gemini's model may be overridden by the
+for every vendor). Gemini's model may be overridden by the
 caller or resolved from the configured default.
 
 Production probes require review-composition authorization and check both PATH
@@ -77,7 +77,7 @@ _VENDOR_SEAT: dict[str, dict[str, str]] = {
     "grok": {"model": "grok-4.7", "harness": "grok", "effort": "high", "lens": "adversarial"},
     "claude": {"model": "claude-opus-5-5", "harness": "claude", "effort": "high", "lens": "correctness"},
     "codex": {"model": "gpt-6.2-astra", "harness": "codex", "effort": "high", "lens": "red-team"},
-    "gemini": {"model": "gemini-4-argon", "harness": "gemini", "effort": "medium", "lens": "alternative-approach"},
+    "gemini": {"model": "gemini-4-neon", "harness": "gemini", "effort": "high", "lens": "alternative-approach"},
 }
 
 # Distinct lenses the backfill cycles through (each vendor's primary lens is drawn
