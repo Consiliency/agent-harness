@@ -15986,6 +15986,39 @@
       "task_summary": "Grok seat tool-surface verification for builds with no --list-tools: frozen measured surface per binary digest and argv digest, valid in one enforced launch context and consumed by the board review leg; code fails closed; owner-gated vendor-only measurement on the measurement host.",
       "type": "detailed",
       "updated_at": "2026-11-20T18:56:49Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-11-21T09:30:00Z",
+      "file": "plans/phase-plan-v1-grokroll-GROKROLL.md",
+      "handoff_ref": null,
+      "if_gates_produced": [
+        "IF-0-GROKROLL-1",
+        "IF-0-GROKROLL-2",
+        "IF-0-GROKROLL-3",
+        "IF-0-GROKROLL-4"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2",
+        "SL-3"
+      ],
+      "lifecycle": [],
+      "owner_skill": "claude-plan-phase",
+      "phase_alias": "GROKROLL",
+      "reflection_ref": null,
+      "roadmap_ref": {
+        "file": "specs/phase-plans-grokroll-v1.md",
+        "slug": "phase-plans-grokroll-v1",
+        "status": "committed",
+        "type": "phase"
+      },
+      "slug": "v1-grokroll-GROKROLL",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-11-21T12:00:00Z"
     }
   ],
   "schema_version": 1
