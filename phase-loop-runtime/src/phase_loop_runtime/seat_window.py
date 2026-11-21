@@ -584,9 +584,28 @@ def runtime_digest():
                    for path in sorted(files_) if path.is_file() and not path.is_symlink()})
 
 
+def _read_machine_id(path="/etc/machine-id", limit=4096) -> str:
+    """The machine id, read without blocking through one descriptor with a bound. A link is
+    followed as before (distributions ship it as one); a non-regular, oversize or non-ASCII
+    file raises ``OSError`` so the caller falls back exactly as for a missing one."""
+    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | getattr(os, "O_NOCTTY", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise OSError("machine id is not a regular file")
+        raw = os.read(descriptor, limit + 1)
+    finally:
+        os.close(descriptor)
+    if len(raw) > limit:
+        raise OSError("machine id exceeds its bound")
+    try:
+        return raw.decode("ascii").strip()
+    except UnicodeDecodeError as exc:
+        raise OSError("machine id is not ASCII") from exc
+
+
 def _host_digest():
     try:
-        identity = Path("/etc/machine-id").read_text(encoding="ascii").strip()
+        identity = _read_machine_id()
     except OSError:
         identity = os.uname().nodename
     return hashlib.sha256(("seat-window-host\0" + identity).encode()).hexdigest()
@@ -776,7 +795,7 @@ def qualify(*, window, monitoring_policy, repo=".", host_class="standard", atten
 def register_parser(subparsers):
     parser = subparsers.add_parser("seat-window", help="Qualify, verify or export seat-window metadata")
     parser.add_argument("action", choices=("qualify", "verify", "export", "probe-tools", "matrix",
-                                           "measure-tools"))
+                                           "measure-tools", "status"))
     parser.add_argument("--window", default="W1", choices=("W1",))
     parser.add_argument("--monitoring-policy", default="bounded", choices=("bounded",))
     parser.add_argument("--host-class", default="standard", choices=("team", "standard"))
@@ -806,6 +825,16 @@ def register_parser(subparsers):
     measure.add_argument("--rehearse", action="store_true")
     measure.add_argument("--require-rehearsed", choices=("review", "sealed", "staged"))
     measure.add_argument("--hosted-check")
+    # status (GROKROLL §3): read-only; reuses --binary above as the subject path selector.
+    status = parser.add_argument_group("status")
+    status.add_argument("--binary-digest")
+    status.add_argument("--release-version")
+    status.add_argument("--candidate")
+    status.add_argument("--candidate-digest")
+    status.add_argument("--candidate-version")
+    status.add_argument("--require-route", action="append", choices=("review", "sealed", "staged"))
+    status.add_argument("--schema", choices=("v1",), default="v1")
+    status.add_argument("--exit-code", action="store_true")
 
 
 def probe_tool_rows(*, model=None, effort="high") -> list[dict]:
@@ -839,6 +868,9 @@ def _selected_records(args, president_adapter):
 
 
 def cli_main(args):
+    if args.action == "status":
+        from .grok_roll.status import cli_main as status_main
+        return status_main(args)
     from . import president_adapter
     try:
         if args.action == "matrix":
