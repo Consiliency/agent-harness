@@ -149,6 +149,27 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Changed
 
+- The agy upstream watch is now the rolling catalog job (AGYROLL ROLLJOB). It runs every
+  hour and makes no git write. Each tick checks its keys and the new `agy-watch` extra
+  before any live operation. It renews the Gemini login only with an image that seat
+  admission admits on the host, and qualifies only the newest non-member release plus any
+  member at another QCI, one sealed image at a time, retrying a series that fails for a
+  transient reason. It signs each record with the job's key and submits it as an issue
+  through an issues-only GitHub App (the INTAKE App). A new workflow on `main`
+  (`agy-catalog-intake.yml`) authenticates the issue, verifies the record with the new
+  `verify_qualified_agy_image.py --intake` mode, opens the catalog pull request with a
+  second App (the PROMOTION App, whose key stays in a `main`-only environment), and arms
+  auto-merge only behind an attested gate. A scheduled reconcile picks up stale, stranded or
+  stalled work. The new check `agy catalog provenance` (`--catalog-pr`), made required after
+  post-merge verification, re-derives every catalog member a pull request adds or changes,
+  whoever wrote it, and passes at once when the catalog is untouched. The nightly check now
+  reports catalog lag, report-only until `AGY_LAG_ENFORCE` is set, and fails at 90 percent
+  of an agy size bound. `agy-qualification watch` gains `--install-units` and `--check`.
+  `read_member` and `fetch_member` take a `sink` and return only the digest; `keep_bytes` is
+  removed. Everything ships inert: no signing key is enrolled,
+  `config/agy-rollout-attestation.json` is unattested, and both switches are off. The owner
+  setup that makes it live is listed in `docs/ops/agy-upstream-watch.md`. The seat QCI,
+  store keys, the catalog and its records are unchanged.
 - Gemini 4 NEON (`gemini-4-neon`) is the shipped Gemini planning, review and board
   default. Gemini roadmap, plan and review render `gemini-4-neon-high`; the panel's
   Gemini leg, every built-in preset's Gemini seat and the president's `gemini` rung
@@ -182,6 +203,25 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `--upstream-only` takes the newest stable release from the listing and reports when it
   was published. The seat QCI, the shipped catalog and records are unchanged; nothing needs
   requalification.
+- The jailed Gemini seat's tooled stream parser checks the tool name of each step in the
+  retained stream. It refuses a step whose canonical tool name is one of `invoke_subagent`,
+  `define_subagent`, `manage_subagents`, `agent`, `browser_subagent`, `send_message`,
+  `swarm`, `post_message`, `read_board` or `swarm_wait`. The canonical name is the text
+  after the last `:`, with outer ASCII whitespace stripped, casefolded. The parser also
+  refuses a `tool` step, or any step carrying a `tool_name`, whose name is missing, holds
+  any non-ASCII character (judged before stripping), is not printable without inner
+  whitespace, is longer than 128 characters, is not a letter followed
+  by letters, digits or `_` once canonical, or one of agy's fallback names for an unnamed
+  tool (`generic`, `call_mcp_tool`). Such a step ends the leg with
+  `gemini_seat_subagent_or_unknown_event`. Every other valid tool name is accepted as
+  before. The parser still accepts only `user_input`, `agent_response` and `tool` steps.
+  The seat's private `stream_rejection` record names the reason (`refused_tool` or
+  `bad_tool_name`). It also names more of agy's own vocabulary instead of recording
+  `other`: the step types `error_message` and `unknown`, the step keys `duration_seconds`
+  and `usage`, and agy 1.5.13's tool names. Naming a step type does not admit it. The agy
+  validator identity stays `agy_validator_v1` and the fixed-corpus verdict vector is
+  unchanged; only the validator source-closure pin moves, because the stream parser and its
+  tool-name helper and constants are closure nodes.
 
 ### Fixed
 

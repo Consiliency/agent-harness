@@ -5,6 +5,19 @@ outside-agent conformance runtime. It is metadata-only: the document itself did
 not publish a package, create a tag, dispatch a workflow, edit governed-pipeline,
 or make production merge enforcement live.
 
+## agy catalog members
+
+A release does not add agy catalog members. They arrive by the rolling catalog job
+(AGYROLL ROLLJOB, `docs/ops/agy-upstream-watch.md`): the qualification host submits
+a signed record, and a workflow on `main` verifies it and opens the catalog pull
+request as the PROMOTION App. A repository writer can also add a member by an
+ordinary pull request, which must pass the `agy catalog provenance` check. A
+release carries whatever catalog `main` has when it is prepared. The strict
+hermetic agy release gate still verifies every member's vendor archive at
+publication. The qualification host installs the released
+`phase-loop-runtime[agy-watch]`, since the job signs its App token with the extra's
+`cryptography`.
+
 ## 0.7.38 release preparation
 
 Expected, unpublished artifacts: `phase_loop_runtime-0.7.38-py3-none-any.whl`

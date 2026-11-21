@@ -452,7 +452,8 @@ def test_a_token_split_across_chunks_is_caught_before_it_is_kept(monkeypatch, tm
 
 def test_a_tooled_review_is_returned(monkeypatch, tmp_path):
     seat = _seat(tmp_path)
-    _run_with(monkeypatch, [_events({"step_type": "tool", "tool_info": {}}).encode()])
+    _run_with(monkeypatch, [_events({"step_type": "tool", "tool_name": "run_command",
+                                     "tool_info": {}}).encode()])
     evidence = {}
     status, text = pi._exec_jailed_gemini_leg(
         seat, deadline_s=60, model="m", prompt="p", broker_evidence=evidence,

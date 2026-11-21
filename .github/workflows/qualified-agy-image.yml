@@ -32,11 +32,23 @@ jobs:
         working-directory: phase-loop-runtime
         run: uv run --locked python scripts/verify_qualified_agy_image.py --contract
 
+  # ROLLJOB-detail §5: the newest member's integrity (blocking), headroom (fails at 90 percent
+  # of a size bound) and the lag rule. Lag is report-only until ACTIVATE: it changes the exit
+  # and the agy-lag issue only when AGY_LAG_ENFORCE is exactly `true`, a variable of the
+  # `agy-activation` environment (limited to main, no secret), the only environment this job
+  # names, so the job that reads the switch never sits beside the PROMOTION key. It can write
+  # issues, so it runs on main only, whatever ref a dispatch names; the environment's own
+  # branch rule is the second boundary once the owner sets it up.
   upstream:
     name: latest agy release asset
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment: agy-activation
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -49,4 +61,11 @@ jobs:
         env:
           # Read-only; authenticates the releases API reads (agent-harness#1993).
           GITHUB_TOKEN: ${{ github.token }}
-        run: uv run --locked python scripts/verify_qualified_agy_image.py --upstream-only
+          AGY_LAG_ENFORCE: ${{ vars.AGY_LAG_ENFORCE }}
+        run: uv run --locked python scripts/verify_qualified_agy_image.py --upstream-only --report "$RUNNER_TEMP/agy-lag-report.json"
+      - name: Report the catalog lag as the agy-lag issue
+        if: always()
+        env:
+          AGY_LAG_REPORT: ${{ runner.temp }}/agy-lag-report.json
+          GH_TOKEN: ${{ github.token }}
+        run: ci/agy-lag-issue.sh

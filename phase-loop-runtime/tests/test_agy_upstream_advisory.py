@@ -19,6 +19,7 @@ import json
 from pathlib import Path
 import re
 import tarfile
+import time
 from urllib.parse import parse_qs, urlsplit
 
 from types import SimpleNamespace
@@ -32,6 +33,8 @@ QUALIFIED = REPO / ".github" / "workflows" / "qualified-agy-image.yml"
 RELEASES = "https://api.github.com/repos/google-antigravity/antigravity-cli/releases"
 LISTING = f"{RELEASES}?per_page=100"
 PUBLISHED = "2026-11-19T08:38:26Z"
+PUBLISHED_S = 1_795_077_506  # PUBLISHED as a POSIX time
+INSIDE = "::warning::agy catalog lag: {} is not a member yet, inside the 48 h bound"
 DOWNLOAD = "https://github.com/google-antigravity/antigravity-cli/releases/download/"
 ASSET = "agy_cli_linux_x64.tar.gz"
 WARNING = "::warning::newest upstream agy {} is not a shipped member; hosts self-qualify it on first use"
@@ -115,11 +118,14 @@ def world(verifier, monkeypatch, tmp_path):
     # Releases API reads go through their own redirect-confined opener (agent-harness#1993).
     monkeypatch.setattr(verifier, "_api_opener", lambda *handlers: SimpleNamespace(open=upstream.urlopen))
 
-    def run(*extra):
+    def run(*extra, now=PUBLISHED_S + 3600, in_flight=lambda version: [], environ=None):
         # The mode's own function, so a refusal surfaces as its ValueError (main() turns it
-        # into exit status 1, tested below).
+        # into exit status 1, tested below). By default the newest release is an hour old.
         archive = Path(extra[extra.index("--archive") + 1]) if "--archive" in extra else None
-        print(json.dumps({**verifier.upstream_only(archive), "verified": True}))
+        result = {**verifier.upstream_only(archive, now=now, in_flight=in_flight, environ=environ or {}),
+                  "verified": True}
+        print(json.dumps(result))
+        return result
 
     return upstream, archives, run
 
@@ -134,7 +140,7 @@ def test_a_newer_non_member_upstream_only_warns(world, capsys):
     upstream, archives, run = world
     run("--archive", str(archives["1.10.0"]))
     annotations, result = _result(capsys)
-    assert annotations == [WARNING.format("2.0.0")]
+    assert annotations == [WARNING.format("2.0.0"), INSIDE.format("2.0.0")]
     assert result["latest_release"] == "2.0.0" and result["latest_is_member"] is False
     assert result["verified_member"] == "1.10.0" and result["verified"] is True
     assert f"{RELEASES}/tags/1.10.0" in upstream.calls
@@ -144,9 +150,11 @@ def test_the_newest_member_is_fetched_and_its_archive_downloaded_by_tag(world, c
     upstream, _archives, run = world
     run()
     annotations, result = _result(capsys)
-    assert annotations == [WARNING.format("2.0.0")]
+    assert annotations == [WARNING.format("2.0.0"), INSIDE.format("2.0.0")]
     assert result["verified_member"] == "1.10.0"
-    assert upstream.calls == [LISTING, f"{RELEASES}/tags/1.10.0", f"{DOWNLOAD}1.10.0/{ASSET}"]
+    # the newest member's archive, then the newest release's for its headroom
+    assert upstream.calls == [LISTING, f"{RELEASES}/tags/1.10.0", f"{DOWNLOAD}1.10.0/{ASSET}",
+                              f"{DOWNLOAD}2.0.0/{ASSET}"]
 
 
 def test_a_member_latest_verifies_without_a_warning(world, capsys):
@@ -200,7 +208,8 @@ def test_the_upstream_job_step_is_blocking():
     """The step reds on a member-integrity failure. Mutation: ``continue-on-error``."""
     job = yaml.safe_load(QUALIFIED.read_text())["jobs"]["upstream"]
     (step,) = [step for step in job["steps"] if "--upstream-only" in step.get("run", "")]
-    assert step["run"] == "uv run --locked python scripts/verify_qualified_agy_image.py --upstream-only"
+    assert step["run"] == ('uv run --locked python scripts/verify_qualified_agy_image.py --upstream-only '
+                           '--report "$RUNNER_TEMP/agy-lag-report.json"')
     assert step["working-directory"] == "phase-loop-runtime"
     assert "continue-on-error" not in step and "if" not in step
     assert "continue-on-error" not in job
@@ -259,6 +268,7 @@ def test_upstream_only_skips_entries_ahead_of_the_newest_stable_release(world, c
     run("--archive", str(archives["1.10.0"]))
     annotations, result = _result(capsys)
     assert annotations == [] and result["latest_release"] == "1.10.0" and result["latest_is_member"] is True
+    assert result["lag"]["status"] == "ok"
 
 
 def test_the_result_carries_the_newest_releases_published_at(world, capsys):
@@ -269,10 +279,211 @@ def test_the_result_carries_the_newest_releases_published_at(world, capsys):
     assert result["latest_published_at"] == "2026-11-20T01:02:03Z" and result["latest_release"] == "2.0.0"
 
 
-def test_the_verifier_keeps_exactly_its_three_modes(verifier, capsys):
+def test_the_verifier_has_exactly_its_five_modes(verifier, capsys):
     with pytest.raises(SystemExit):
         verifier.main(["--help"])
     usage = " ".join(capsys.readouterr().out.split())
-    assert "(--contract | --release | --upstream-only)" in usage
-    assert usage.count("--") == len(re.findall(r"--(?:contract|release|upstream-only|conformance-report|archive|help)",
-                                               usage))
+    assert "(--contract | --release | --upstream-only | --intake ISSUE | --catalog-pr)" in usage
+    assert usage.count("--") == len(re.findall(
+        r"--(?:contract|release|upstream-only|intake|catalog-pr|conformance-report|archive|report|out|base|head|pr|help)"
+        r"\b", usage))
+
+
+# ------------------------------------------- ROLLJOB: the lag rule, both modes, and headroom
+
+HOUR = 3600
+ATTESTED = {"schema": "agy_rollout_attestation.v1", "status": "attested",
+            "intake_app": {"app_id": 11, "bot_user_id": 111}, "promotion_app": {"app_id": 22, "bot_user_id": 222},
+            "main_ruleset": {"id": 5, "target": "refs/heads/main", "enforcement": "active", "bypass_actors": [],
+                             "strict_required_status_checks": True,
+                             "required_checks": ["agy catalog provenance", "agy catalog contract"]},
+            "catalog_ruleset": {"id": 6, "target": "refs/heads/agy-catalog/**", "enforcement": "active",
+                                "rules": ["creation", "update", "deletion"],
+                                "bypass_actors": [{"actor_type": "Integration", "actor_id": 22,
+                                                   "bypass_mode": "always"}]},
+            "promotion_environment": {"name": "agy-promotion", "branches": ["main"], "required_reviewers": 0,
+                                      "admin_bypass": False},
+            "attested_by": "owner", "attested_at": "2026-11-21T00:00:00Z"}
+
+
+@pytest.mark.parametrize("enforced", [False, True])
+@pytest.mark.parametrize("case,expected", [
+    ("member", "ok"), ("young", "warn_inside_bound"), ("in_flight", "warn_pr_open"), ("lagging", "fail")])
+def test_each_lag_status_in_both_modes(world, verifier, capsys, enforced, case, expected):
+    """EC-ROLLJOB-3: report-only never changes the exit; enforced fails only on ``fail``."""
+    upstream, archives, run = world
+    if case == "member":
+        upstream.latest = "1.10.0"
+    now = PUBLISHED_S + (HOUR if case == "young" else 49 * HOUR)
+    result = run("--archive", str(archives["1.10.0"]), now=now,
+                 in_flight=lambda version: [42] if case == "in_flight" else [],
+                 environ={"AGY_LAG_ENFORCE": "true"} if enforced else {})
+    annotations, printed = _result(capsys)
+    assert printed == result and result["lag"]["status"] == expected
+    assert result["lag"]["enforced"] is enforced and result["lag"]["release"] == result["latest_release"]
+    assert verifier.upstream_exit(result) == (1 if enforced and expected == "fail" else 0)
+    lag_lines = [line for line in annotations if "agy catalog lag" in line]
+    if expected == "fail":
+        assert lag_lines == [f"::{'error' if enforced else 'warning'}::agy catalog lag: 2.0.0 is not a member after "
+                             f"the 48 h bound and no promotion is in flight"
+                             + ("" if enforced else " (report-only until ACTIVATE)")]
+    elif expected == "warn_pr_open":
+        assert lag_lines and "agent-harness#42" in lag_lines[0] and lag_lines[0].startswith("::warning::")
+    elif expected == "ok":
+        assert lag_lines == []
+
+
+@pytest.mark.parametrize("value", ["", "false", "TRUE", "1", "yes", " true"])
+def test_any_switch_value_but_exactly_true_is_report_only(world, verifier, capsys, value):
+    upstream, archives, run = world
+    result = run("--archive", str(archives["1.10.0"]), now=PUBLISHED_S + 49 * HOUR, environ={"AGY_LAG_ENFORCE": value})
+    assert result["lag"]["status"] == "fail" and result["lag"]["enforced"] is False
+    assert verifier.upstream_exit(result) == 0
+
+
+def test_an_unreadable_or_incomplete_pull_listing_counts_as_nothing_in_flight(verifier):
+    attested = json.dumps(ATTESTED)
+
+    def down(url):
+        raise OSError("api down")
+
+    def full_pages(url):  # never a short page: the end is never reached
+        if "/pulls?" in url:
+            return [{"number": n, "head": {"ref": "other", "repo": {"full_name": "Consiliency/agent-harness"}}}
+                    for n in range(100)]
+        raise AssertionError(url)
+
+    for fetch in (down, lambda url: {"message": "not a list"}, full_pages):
+        assert verifier.promotions_in_flight("2.0.0", now=PUBLISHED_S, fetch=fetch, environ={},
+                                             attestation_text=attested) == []
+
+
+def _pulls_world(now):
+    created = lambda age: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - age))  # noqa: E731
+    pulls = [
+        {"number": 1, "head": {"ref": "agy-catalog/2.0.0-77-1", "repo": {"full_name": "Consiliency/agent-harness"}},
+         "created_at": created(HOUR)},                                   # the App's, young: in flight
+        {"number": 2, "head": {"ref": "agy-catalog/2.0.0-70-1", "repo": {"full_name": "Consiliency/agent-harness"}},
+         "created_at": created(25 * HOUR)},                              # the App's, too old
+        {"number": 3, "head": {"ref": "agy-catalog/2.0.0-71-1", "repo": {"full_name": "Consiliency/agent-harness"}},
+         "created_at": created(HOUR)},                                   # another author
+        {"number": 4, "head": {"ref": "agy-catalog/2.0.0-72-1", "repo": {"full_name": "someone/fork"}},
+         "created_at": created(HOUR)},                                   # a fork's branch
+        {"number": 5, "head": {"ref": "agy-catalog/1.9.0-73-1", "repo": {"full_name": "Consiliency/agent-harness"}},
+         "created_at": created(HOUR)},                                   # another version
+    ]
+    app = {"user": {"login": "agy-promotion[bot]", "id": 222, "type": "Bot"},
+           "performed_via_github_app": {"id": 22}}
+    issues = {1: app, 2: app, 3: {"user": {"login": "agy-promotion[bot]", "id": 999, "type": "User"},
+                                  "performed_via_github_app": None}, 4: app, 5: app,
+              9: dict(app, title="agy intake: 2.0.0")}  # an intake issue: never listed as a pull request
+    seen = []
+
+    def fetch(url):
+        seen.append(url)
+        if "/pulls?" in url:
+            return pulls if "page=1" in url else []
+        return issues[int(url.rsplit("/", 1)[1])]
+
+    return fetch, seen
+
+
+def test_only_a_young_promotion_app_pull_request_on_this_repository_counts_as_in_flight(verifier):
+    import time as clock
+    now = clock.time()
+    fetch, seen = _pulls_world(now)
+    assert verifier.promotions_in_flight("2.0.0", now=now, fetch=fetch, environ={},
+                                         attestation_text=json.dumps(ATTESTED)) == [1]
+    assert [url for url in seen if "/pulls?" in url] == [
+        "https://api.github.com/repos/Consiliency/agent-harness/pulls?state=open&per_page=100&page=1"]
+    assert not any(url.endswith("/issues/9") for url in seen)
+
+
+def test_with_an_unattested_file_nothing_is_in_flight(verifier):
+    import time as clock
+    now = clock.time()
+    fetch, seen = _pulls_world(now)
+    assert verifier.promotions_in_flight("2.0.0", now=now, fetch=fetch, environ={}) == []  # the shipped file
+    assert seen == []
+
+
+@pytest.mark.parametrize("percent,expected", [(79, "ok"), (80, "warn"), (89, "warn"), (90, "fail")])
+@pytest.mark.parametrize("part", ["archive", "member"])
+def test_headroom_at_the_thresholds_for_the_archive_and_the_member(world, verifier, monkeypatch, capsys,
+                                                                   percent, expected, part):
+    """EC-ROLLJOB-8: warn at 80 percent, fail at 90, for the newest release (member or not)."""
+    upstream, archives, run = world
+    upstream.latest = "1.10.0"
+    archive_size, member_size = verifier.archive_sizes(archives["1.10.0"])
+    size = archive_size if part == "archive" else member_size
+    # at a threshold (80, 90) the size reaches it; just under one (79, 89) it does not
+    bound = size * 100 // percent if percent in (80, 90) else -(-size * 100 // percent)
+    monkeypatch.setattr(verifier, "MAX_ARCHIVE_BYTES" if part == "archive" else "MAX_MEMBER_BYTES", bound)
+    result = run("--archive", str(archives["1.10.0"]))
+    annotations, _ = _result(capsys)
+    assert result["headroom"][part]["status"] == expected and result["headroom"]["release"] == "1.10.0"
+    other = "member" if part == "archive" else "archive"
+    assert result["headroom"][other]["status"] == "ok"
+    assert verifier.upstream_exit(result) == (1 if expected == "fail" else 0)
+    lines = [line for line in annotations if f" {part} is " in line]
+    assert len(lines) == (0 if expected == "ok" else 1)
+    if lines:
+        assert lines[0].startswith("::error::" if expected == "fail" else "::warning::")
+
+
+def test_headroom_fails_whatever_the_lag_switch_says(world, verifier, monkeypatch):
+    upstream, archives, run = world
+    upstream.latest = "1.10.0"
+    archive_size, _member = verifier.archive_sizes(archives["1.10.0"])
+    monkeypatch.setattr(verifier, "MAX_ARCHIVE_BYTES", archive_size * 100 // 95)
+    result = run("--archive", str(archives["1.10.0"]), environ={})
+    assert result["lag"]["status"] == "ok" and verifier.upstream_exit(result) == 1
+
+
+def test_headroom_is_measured_for_a_non_member_newest_release(world, verifier, capsys):
+    upstream, archives, run = world
+    result = run("--archive", str(archives["1.10.0"]))
+    assert result["headroom"]["release"] == "2.0.0" and result["latest_is_member"] is False
+    assert f"{DOWNLOAD}2.0.0/{ASSET}" in upstream.calls
+
+
+def test_main_writes_the_report_equal_to_the_printed_result_and_exits_by_mode(world, verifier, monkeypatch,
+                                                                              capsys, tmp_path):
+    import functools
+    upstream, archives, run = world
+    real = verifier.upstream_only
+    for enforce, code in (("", 0), ("true", 1)):
+        monkeypatch.setattr(verifier, "upstream_only", functools.partial(
+            real, now=PUBLISHED_S + 49 * HOUR, in_flight=lambda version: [], environ={"AGY_LAG_ENFORCE": enforce}))
+        report = tmp_path / f"report-{enforce or 'off'}.json"
+        assert verifier.main(["--upstream-only", "--archive", str(archives["1.10.0"]), "--report", str(report)]) == code
+        printed = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+        assert json.loads(report.read_text()) == printed
+        assert printed["lag"] == {"status": "fail", "enforced": enforce == "true", "release": "2.0.0",
+                                  "published_at": PUBLISHED, "bound_s": 48 * 3600, "in_flight": []}
+
+
+def test_report_is_only_for_upstream_only(verifier, tmp_path):
+    with pytest.raises(SystemExit):
+        verifier.main(["--contract", "--report", str(tmp_path / "r.json")])
+
+
+def test_only_the_upstream_job_may_write_issues_and_it_names_only_the_activation_environment():
+    workflow = yaml.safe_load(QUALIFIED.read_text())
+    assert workflow["permissions"] == {"contents": "read"}
+    upstream = workflow["jobs"]["upstream"]
+    assert upstream["permissions"] == {"contents": "read", "issues": "write", "pull-requests": "read"}
+    assert upstream["environment"] == "agy-activation"
+    # write-capable, so main only: a dispatch can name any ref
+    assert upstream["if"] == ("github.ref == 'refs/heads/main' && (github.event_name == 'schedule' "
+                              "|| github.event_name == 'workflow_dispatch')")
+    for name, job in workflow["jobs"].items():
+        if name != "upstream":
+            assert "environment" not in job and (job.get("permissions") or {}).get("issues") != "write"
+    (verify,) = [s for s in upstream["steps"] if "--upstream-only" in s.get("run", "")]
+    assert verify["env"]["AGY_LAG_ENFORCE"] == "${{ vars.AGY_LAG_ENFORCE }}"
+    (report,) = [s for s in upstream["steps"] if s.get("run") == "ci/agy-lag-issue.sh"]
+    assert report["if"] == "always()" and report["env"] == {
+        "AGY_LAG_REPORT": "${{ runner.temp }}/agy-lag-report.json", "GH_TOKEN": "${{ github.token }}"}
+    assert upstream["steps"].index(report) == len(upstream["steps"]) - 1
+    assert "agy-lag-report.json" in verify["run"]
