@@ -21,7 +21,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   every other grok profile, and every other harness, is composed as before. Before the
   launch the final context check and the measurement check bind the descriptor
   bubblewrap reads: exactly four seals, 424 bytes, offset 0, the pinned bytes read without
-  consuming it, passed and not kept. The home rule admits exactly this mount: a missing,
+  consuming it, passed and not kept, and named by no other operation (no other passed or
+  kept descriptor may be the same file). The home rule admits exactly this mount: a missing,
   second, differing, writable, unsealed or host-backed config, any other spelling of its
   path, a mount below it or over `.grok/`, and a mount destination that is not a
   normalised absolute path each refuse as `grok_tool_surface_unverified`, before anything
@@ -30,7 +31,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `SEAT_FIXED_INPUT_EXCLUSIONS` pinned beside them. A frozen-basis receipt admits a launch
   only for a form whose allow-list and admitted names stay within `NON_MUTATING_TOOLS`, so
   the `staged` board leg is refused at the final check before spawn; `sealed` and
-  `review` still launch, and measurement is unaffected. Each secret value of the grok
+  `review` still launch, and measurement is unaffected. The launch mark carries the
+  admitted tools and surface digest of the one receipt it judged, and a marked profile
+  launches only on that frozen receipt. `--verify-probe initial` now stages managed policy
+  first, read-only: a file, a dangling link or an unreadable path at either `/etc/grok`
+  path stops it (`managed_config_present`), and it reports whether Claude Code's managed
+  settings exist without blocking on them. Each secret value of the grok
   credential copy a profile projects, and its last 12 characters, are redacted from the
   seat's output and held in memory as `SeatProfile.scan_values`, which the measurement's
   launch helper returns for the definitions scan.
