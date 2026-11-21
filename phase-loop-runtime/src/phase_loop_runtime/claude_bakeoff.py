@@ -976,7 +976,7 @@ def write_private(path: Path, data: bytes) -> None:
         written = os.fstat(handle.fileno())
         try:
             now = os.lstat(path)
-        except FileNotFoundError:
+        except (FileNotFoundError, NotADirectoryError):  # the entry, or its directory, moved
             now = None
         if now is None or not stat.S_ISREG(now.st_mode) or (now.st_dev, now.st_ino) != (
                 written.st_dev, written.st_ino):
@@ -2339,7 +2339,8 @@ def keep_dropped_hosts(root: Path, dropped: Sequence[str], *, session: int,
             held = [obj for obj in load_records(evidence)[0]
                     if session_of(int(obj["block"])) == session]  # type: ignore[call-overload]
             count = f"{len(held)} record(s) of session {session} are already"
-        except (OSError, ValueError):
+        except Exception:  # best effort: the note never replaces the session's outcome
+            # (a record file replaced mid-session can make the scan raise, e.g. RecursionError)
             count = f"an unknown number of session {session}'s records may already be"
         return (f"claude-bakeoff run: NOTE: the private dropped-host list was not kept ({exc}); "
                 f"{count} in the evidence directory")

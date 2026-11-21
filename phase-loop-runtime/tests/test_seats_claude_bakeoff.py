@@ -1692,6 +1692,46 @@ def test_a_private_write_swapped_after_its_pin_is_refused_not_reported(
         _within(lambda: bk.write_private(target, b"new reading"))
 
 
+def test_a_private_write_whose_directory_was_replaced_is_refused_not_raised(tmp_path, monkeypatch):
+    import os
+
+    root = tmp_path / "private"
+    root.mkdir()
+    target = root / "meter.json"
+    real = os.ftruncate
+
+    def replaced(fd, length):  # the private directory moves and a file takes its name
+        root.rename(tmp_path / "moved-away")
+        root.write_bytes(b"not a directory")
+        return real(fd, length)
+
+    monkeypatch.setattr(bk.os, "ftruncate", replaced)
+    with pytest.raises(bk.PrivateInputError, match="meter: the private ledger cannot be read"):
+        _within(lambda: bk.write_private(target, b"new reading"))
+
+
+def test_a_failing_record_scan_keeps_the_dropped_host_note_and_the_outcome(
+        repo, tmp_path, capsys, monkeypatch):
+    import os
+
+    root = tmp_path / "private"
+    root.mkdir()
+    os.mkfifo(root / "dropped-hosts.txt")
+    evidence = write(tmp_path / "w0", *_session1(repo))
+
+    def deep(_directory):  # a record file replaced mid-session with deeply nested JSON
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(bk, "load_records", deep)
+    note = _within(lambda: bk.keep_dropped_hosts(root, ["x.example"], session=1,
+                                                 evidence=evidence))
+    assert note is not None and "an unknown number of session 1's records may already be" in note
+    capsys.readouterr()
+    assert bk.session_outcome(1, refusal="W0 stopped: x", written=None, note=note) == 1
+    err = capsys.readouterr().err.splitlines()
+    assert err[0].startswith("claude-bakeoff run: REFUSED: W0 stopped: x") and err[1] == note
+
+
 def test_a_ledger_reading_whose_file_was_swapped_is_refused(tmp_path, monkeypatch):
     import os
 
