@@ -134,6 +134,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   allow-list digests and `context_digest` do not move. No record exists
   yet, so every grok route stays `grok_tool_surface_unverified` until the owner-gated
   measurement.
+- A Gemini seat now keeps the agy image its board preflight last admitted, so a later
+  hold can fall back to it: after the preflight admits the selected agy, its sealed image
+  is kept in the per-user qualification store under `held/` (0600 files in a 0700
+  directory). At most two are kept, by authenticated version, among files the hold can
+  actually read; a corrupt or unreadable file is removed. Writing never waits for the
+  store lock, never fails the admission, creates nothing under an unsafe directory, and
+  adds nothing to a cache too large to inspect. Not kept: spawn and heartbeat admissions,
+  held admissions, managed-release seats, denied digests, or anything with
+  `[agy] hold = false`. `phase-loop agy-qualification clear --all` also removes `held/`
+  completely and reports `held_removed`; anything it cannot remove is listed in
+  `held_not_removed` and the command fails. A plain `clear` leaves the cache. The seat QCI,
+  store keys, the catalog, records and pins are unchanged.
 
 ### Changed
 

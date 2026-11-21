@@ -1287,6 +1287,9 @@ def test_release_image_is_admitted_offline_without_config_store_or_network(world
     world.transport.fail = AssertionError("network touched")
     monkeypatch.setattr(q, "self_qualification_enabled", lambda: pytest.fail("config read"))
     monkeypatch.setattr(q, "Store", lambda *a, **k: pytest.fail("store read"))
+    # Keeping the admitted image afterwards is the HOLD cache's (tests/test_agy_hold_cache.py);
+    # this test pins the admission itself, which reads nothing before the release match.
+    monkeypatch.setattr(q, "_retain_admitted", lambda *a, **k: None)
     assert _ensure(world)[0] == "release_qualified"
     assert world.transport.calls == []
 
@@ -1387,6 +1390,8 @@ def test_store_copied_from_another_host_is_absent(world, monkeypatch):
     dst = q.Store(machine_id=other).host_dir
     dst.mkdir(mode=0o700)
     for path in src.iterdir():
+        if not path.is_file():
+            continue  # held/, the HOLD cache, is a directory of images, not an entry
         (dst / path.name).write_bytes(path.read_bytes())
         (dst / path.name).chmod(0o600)
     monkeypatch.setattr(q, "read_machine_id", lambda path="/etc/machine-id": other)
@@ -2614,6 +2619,11 @@ def test_first_use_admission_and_refusals_do_not_leak_memfds(world):
     before = _fd_count()
     for _ in range(10):
         _ensure(world)
+    # The refusals below are the subject's: with the hold on, the image admitted above (now
+    # kept by the HOLD cache) would be held instead (tests/test_agy_hold_cache.py).
+    config = world.tmp / "config" / "agent-harness" / "advisor-boards.toml"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text("[agy]\nhold = false\n")
     world.agy.write_bytes(b"#!/bin/sh\necho tampered\n")
     for _ in range(10):
         with pytest.raises(ValueError):

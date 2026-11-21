@@ -1323,10 +1323,12 @@ class Store:
                       if path.suffix == ".json" and not path.name.startswith("."))
 
     @contextlib.contextmanager
-    def lock(self, cancel_event=None, heartbeat=None, *, poll_s=0.1):
+    def lock(self, cancel_event=None, heartbeat=None, *, poll_s=0.1, dir_fd=None):
         """Once per key per user per host (I3): a flock on a CLOEXEC fd; waiters stay
-        cancellable and emit heartbeats."""
-        fd = os.open(self.host_dir / "lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        cancellable and emit heartbeats. ``dir_fd`` is an already verified descriptor of
+        ``host_dir`` (the HOLD cache's anchor): the lock is then opened relative to it."""
+        fd = os.open("lock" if dir_fd is not None else self.host_dir / "lock",
+                     os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=dir_fd)
         try:
             info = self._fstat(fd)
             if not stat.S_ISREG(info.st_mode) or info.st_uid != self.euid or stat.S_IMODE(info.st_mode) != 0o600:
@@ -1342,6 +1344,26 @@ class Store:
                         heartbeat("agy_qualification_lock_wait")
                     time.sleep(poll_s)
             yield
+        finally:
+            os.close(fd)
+
+    @contextlib.contextmanager
+    def try_lock(self, *, dir_fd=None):
+        """The same lock without waiting (AGYFRESH §2.5, the HOLD cache's ``retain``): yields
+        ``True`` while held, ``False`` at once when another holder has it. ``dir_fd`` as for
+        ``lock``."""
+        fd = os.open("lock" if dir_fd is not None else self.host_dir / "lock",
+                     os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=dir_fd)
+        try:
+            info = self._fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != self.euid or stat.S_IMODE(info.st_mode) != 0o600:
+                raise ValueError(STORE_UNSAFE)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                yield False
+                return
+            yield True
         finally:
             os.close(fd)
 
@@ -1974,13 +1996,47 @@ def admit_seat(env, subject_path, *, first_use=False, cancel_event=None, heartbe
     # Resolved before anything is read, so a subject removed later is still classified.
     resolved = Path(os.path.realpath(path))
     try:
-        return _admit_subject(env, path, resolved, first_use=first_use, cancel_event=cancel_event,
-                              heartbeat=heartbeat, store=store, transport=transport, qualify=qualify,
-                              on_retryable=on_retryable)
+        admission = _admit_subject(env, path, resolved, first_use=first_use, cancel_event=cancel_event,
+                                   heartbeat=heartbeat, store=store, transport=transport, qualify=qualify,
+                                   on_retryable=on_retryable)
     except _SubjectNotAdmitted as refused:
         not_admitted = refused
+    else:
+        if first_use and admission.source == "subject":
+            # AGYFRESH §2.8: after a subject admission, and after the first-use lock is
+            # released (_admit_subject has returned), keep the image for a later hold.
+            _retain_admitted(env, admission, path, resolved, store)
+        return admission
     return _hold_or_refuse(env, not_admitted, resolved, store=store, cancel_event=cancel_event,
                            path=path)
+
+
+def _retain_admitted(env, admission, path, resolved, store):
+    """``agy_hold.retain`` for a subject admission, gated as AGYFRESH §2.8 says (B7): only with
+    the hold enabled and for a standalone subject; never a denied digest. Best effort: it
+    never raises and never changes the admission."""
+    from . import agy_hold
+
+    try:
+        if _names_managed_release(path, resolved) or not agy_hold.hold_enabled():
+            return
+        deny = agy_hold.hold_deny()
+        if deny is None or admission.image.sha256 in deny:
+            return
+        store = store or Store()
+        built = []
+
+        def cache_version(digest, member_version):
+            # Built on first use: only pruning needs versions, and an image already
+            # retained (the common case) returns before any pruning.
+            if not built:
+                predicates = _hold_predicates(env, subject_sha256=None, store=store, measure=False)
+                built.append(None if predicates is None else predicates[1])
+            return None if built[0] is None else built[0](digest, member_version)
+
+        agy_hold.retain(admission.image, store, cache_version=cache_version)
+    except Exception:  # noqa: BLE001 - retention never fails an admission
+        return
 
 
 def _admit_subject(env, path, resolved, *, first_use, cancel_event, heartbeat, store, transport,
@@ -2741,10 +2797,33 @@ def cli_main(args):
                          sort_keys=True))
         return 0
     if args.action == "clear":
-        removed = store.remove(_ENTRY_TYPES if args.all else ("failed", "transient"))
+        if not args.all:
+            removed = store.remove(("failed", "transient"))
+            _HELP_MEMO.clear()
+            print(json.dumps({"removed": removed}))
+            return 0
+        from . import agy_hold
+        # --all also removes the HOLD cache (AGYFRESH §2.6, §2.8); a plain clear leaves it.
+        # The cache step is isolated: an entry's removal error cannot skip it or hide its
+        # result, and is then raised as clear has always raised it. What could not be removed
+        # from the cache is reported, and the command fails: no silent leftovers.
+        entry_error = None
+        try:
+            removed = store.remove(_ENTRY_TYPES)
+        except Exception as exc:  # noqa: BLE001 - re-raised below, after the cache step
+            entry_error, removed = exc, None
         _HELP_MEMO.clear()
-        print(json.dumps({"removed": removed}))
-        return 0
+        cleared = agy_hold.clear_held(store)
+        output = {"removed": removed, "held_removed": cleared.removed}
+        if cleared.not_removed:
+            output["held_not_removed"] = list(cleared.not_removed)
+        print(json.dumps(output))
+        if cleared.not_removed:
+            print("phase-loop agy-qualification clear --all: the HOLD cache was not removed "
+                  "completely; see held_not_removed", file=sys.stderr)
+        if entry_error is not None:
+            raise entry_error
+        return 1 if cleared.not_removed else 0
     env = _panel()._broker_subscription_env()
     from .executable_dependency import ExecutableDependencyError
     from .seat_subject import resolve_seat_subject
