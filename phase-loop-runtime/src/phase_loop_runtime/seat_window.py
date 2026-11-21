@@ -753,7 +753,7 @@ def qualify(*, window, monitoring_policy, repo=".", host_class="standard", atten
 def register_parser(subparsers):
     parser = subparsers.add_parser("seat-window", help="Qualify, verify or export seat-window metadata")
     parser.add_argument("action", choices=("qualify", "verify", "export", "probe-tools", "matrix",
-                                           "measure-tools"))
+                                           "measure-tools", "status"))
     parser.add_argument("--window", default="W1", choices=("W1",))
     parser.add_argument("--monitoring-policy", default="bounded", choices=("bounded",))
     parser.add_argument("--host-class", default="standard", choices=("team", "standard"))
@@ -783,6 +783,16 @@ def register_parser(subparsers):
     measure.add_argument("--rehearse", action="store_true")
     measure.add_argument("--require-rehearsed", choices=("review", "sealed", "staged"))
     measure.add_argument("--hosted-check")
+    # status (GROKROLL §3): read-only; reuses --binary above as the subject path selector.
+    status = parser.add_argument_group("status")
+    status.add_argument("--binary-digest")
+    status.add_argument("--release-version")
+    status.add_argument("--candidate")
+    status.add_argument("--candidate-digest")
+    status.add_argument("--candidate-version")
+    status.add_argument("--require-route", action="append", choices=("review", "sealed", "staged"))
+    status.add_argument("--schema", choices=("v1",), default="v1")
+    status.add_argument("--exit-code", action="store_true")
 
 
 def probe_tool_rows(*, model=None, effort="high") -> list[dict]:
@@ -816,6 +826,9 @@ def _selected_records(args, president_adapter):
 
 
 def cli_main(args):
+    if args.action == "status":
+        from .grok_roll.status import cli_main as status_main
+        return status_main(args)
     from . import president_adapter
     try:
         if args.action == "matrix":

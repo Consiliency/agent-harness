@@ -1484,5 +1484,11 @@
   {"count": 1, "function": "placement_policy_baseline", "module": "sandbox_policy", "primitive": "io.read_bytes", "role": "host-io"},
   {"count": 1, "function": "_placement_policies_raw", "module": "sandbox_policy", "primitive": "io.read_bytes", "role": "host-io"},
   {"count": 1, "function": "_helpers_serving", "module": "placement_bridge", "primitive": "io.read_bytes", "role": "host-io"},
-  {"count": 1, "function": "_helpers_serving", "module": "placement_bridge", "primitive": "io.stat", "role": "host-io"}
+  {"count": 1, "function": "_helpers_serving", "module": "placement_bridge", "primitive": "io.stat", "role": "host-io"},
+  {"count": 1, "function": "_read_package_data", "module": "grok_roll/catalog", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "_read_tree_file", "module": "grok_roll/catalog", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "open_record_directory", "module": "grok_roll/evidence", "primitive": "io.open", "role": "host-io"},
+  {"count": 2, "function": "_walk", "module": "grok_roll/evidence", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "receipt", "module": "grok_roll/evidence", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "hash_path", "module": "grok_roll/status", "primitive": "io.open", "role": "host-io"}
 ]

@@ -1,0 +1,55 @@
+{
+  "schema": "grok_seat_status.v1",
+  "answer": {
+    "schema": {"type": "string", "enum": ["grok_seat_status.v1"]},
+    "vendor": {"type": "string", "enum": ["grok"]},
+    "context_digest": {"type": "hex64"},
+    "inputs": {"type": "object", "shape": "inputs"},
+    "required_routes": {"type": "array", "items": {"type": "string", "enum": ["review", "sealed", "staged"]}},
+    "subject": {"type": "object", "nullable": true, "shape": "build"},
+    "candidate": {"type": "object", "nullable": true, "shape": "build"},
+    "decision": {"type": "object", "nullable": true, "shape": "decision"},
+    "advance_to": {"type": "object", "nullable": true, "shape": "target"},
+    "rollback_to": {"type": "object", "nullable": true, "shape": "target"}
+  },
+  "shapes": {
+    "inputs": {
+      "surface_catalog": {"type": "string", "enum": ["ok", "invalid"]},
+      "release_catalog": {"type": "string", "enum": ["ok", "invalid"]},
+      "host_records": {"type": "string", "enum": ["ok", "absent", "invalid"]}
+    },
+    "build": {
+      "binary_sha256": {"type": "hex64", "nullable": true},
+      "version": {"type": "string", "nullable": true},
+      "release": {"type": "string", "enum": ["member", "unknown"]},
+      "state": {"type": "string", "enum": ["unresolved", "invalid", "revoked", "measured", "partial", "stale_context", "unmeasured"]},
+      "measured": {"type": "boolean"},
+      "routes": {"type": "array", "length": 3, "items": {"type": "object", "shape": "route"}},
+      "context_digest": {"type": "hex64", "nullable": true},
+      "measured_at": {"type": "utc", "nullable": true}
+    },
+    "route": {
+      "route": {"type": "string", "enum": ["review", "sealed", "staged"]},
+      "argv_digest": {"type": "hex64"},
+      "evidence": {"type": "string", "enum": ["invalid", "usable", "refused", "withdrawn", "stale", "absent"]},
+      "basis": {"type": "string", "enum": ["frozen_measurement", "list_tools", "none"]},
+      "source": {"type": "string", "nullable": true, "enum": ["catalog", "host_local", "receipt"]},
+      "surface_digest": {"type": "hex64", "nullable": true}
+    },
+    "decision": {
+      "action": {"type": "string", "enum": ["advance", "hold"]},
+      "reason": {"type": "string", "enum": ["inputs_invalid", "candidate_unresolved", "candidate_evidence_invalid", "candidate_revoked", "subject_evidence_invalid", "same_build", "candidate_measured", "candidate_partial", "subject_revoked", "candidate_unmeasured", "first_install_unmeasured", "no_measured_build"]}
+    },
+    "target": {
+      "version": {"type": "string"},
+      "binary_sha256": {"type": "hex64"},
+      "tarball_integrity": {"type": "string"}
+    }
+  },
+  "error": {
+    "schema": {"type": "string", "enum": ["grok_seat_status.v1"]},
+    "error": {"type": "string", "enum": ["status_unavailable"]},
+    "detail": {"type": "string", "enum": ["subject_unreadable", "subject_not_regular", "subject_changed", "subject_too_large", "subject_not_native", "candidate_unreadable", "candidate_not_regular", "candidate_changed", "candidate_too_large", "candidate_not_native", "context_unavailable"]}
+  },
+  "exit": {"answer": 0, "not_measured_or_hold_with_exit_code": 1, "usage": 2, "unavailable": 3}
+}
