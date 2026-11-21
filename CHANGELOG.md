@@ -8,6 +8,35 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
+- A grok seat composed with the `grok-review` egress proxy now holds a pinned
+  `.grok/config.toml` in its private home (grok tool-surface contract, erratum 8, lane
+  E8-A; `plans/artifacts/grok-tool-surface-contract-v1.md`). The file is harness-written
+  and byte-exact, 424 bytes with sha256 `2984e0c3…1780` (`SEAT_CONFIG_SHA256`): a local
+  entry for the measurement model on the `grok-review` inference host with its effort
+  rows, and `[features] remote_fetch = false`. Its bytes are composed from
+  `MEASUREMENT_MODEL` and `INFERENCE_HOST`, and a build whose constants no longer compose
+  the pinned bytes composes no such profile. It is projected only with that proxy (the
+  measurement, the rehearsal and the frozen-basis board leg), from a sealed descriptor;
+  every other grok profile, and every other harness, is composed as before.
+  `grok_seat_context.v1` gains the field `seat_config` (path and sha256), and the home
+  rule admits exactly this file: a missing, second, differing, unsealed or host-backed
+  config, a grok managed config or requirements file in the home, a mount destination
+  that is not a normalised absolute path, and a mount at or above the home each refuse the
+  launch as `grok_tool_surface_unverified`, at the final context check and at the
+  measurement check, before anything is launched. The projection mode (today a file
+  copied into the seat's tmpfs home) is decided in one function,
+  `grok_tool_surface.seat_config_projection`, and is provisional until the erratum's
+  second revision settles it.
+  Pins: `grok_tool_surface.context_digest()` moves, so a frozen-basis receipt or host-local
+  record made under the earlier value is stale. `seat_window.runtime_digest()` moves
+  (`grok_tool_surface.py`, `panel_invoker.py`); it is hashed over the runtime sources as a
+  whole, so every seat window keyed on it needs requalifying, the Gemini seat's included.
+  The `grok-review` allow-list and its digest, the seat jail qualification's
+  `proxy_sha256`, the agy seat QCI, the jail profile digests, the five grok forms and
+  their argv digests, the `tool_probe.v1` receipt and the public detail codes do not move.
+  No Claude SDK proof input moves: no proof file or proof region is edited, and
+  `SDK_PROOF_UNBOUND` is unchanged. No rows are added to
+  `tests/data/seat_launch_references.json`.
 - The grok tool probe has a second basis for builds with no `--list-tools`, which is every
   installed build through 1.0.89 (lane L1 of the grok tool-surface plan,
   `plans/artifacts/grok-tool-surface-contract-v1.md`). Basis selection is by the help gate

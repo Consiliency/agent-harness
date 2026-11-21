@@ -42,7 +42,10 @@ and each row reports its `basis`. A build whose `--help` advertises `--list-tool
 listed; no installed build does, 1.0.89 included. Any other build needs a frozen surface
 measured for its exact binary digest and route argv digest, from the shipped catalog or a
 host-local record, and that basis holds only inside the `grok_seat_context.v1` launch
-context: a fresh seat home, the allow-listed environment, no managed grok configuration
+context: a fresh seat home that holds, besides the projection, one harness-written
+`.grok/config.toml` with pinned bytes (a local entry for the measurement model, and the
+client's remote catalog fetch switched off; contract erratum 8), the allow-listed
+environment, no managed grok configuration
 and no Claude Code managed settings in the seat's view, no tool-discovery path visible in
 the reviewed tree, vendor-only `grok-review` egress and
 the launch-owner review composition. The board review leg (the `sealed`, `staged` and

@@ -5621,7 +5621,6 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
                 # 8): sealed bytes, in the one mode grok_tool_surface decides.
                 config_descriptor = _grok_surface.seat_config_descriptor()
                 stack.callback(os.close, config_descriptor)
-                directory(str(Path(private_home, _grok_surface.SEAT_CONFIG_RELATIVE).parent))
                 pass_fds.add(config_descriptor)
                 mounts.extend(_grok_surface.seat_config_projection(config_descriptor))
                 # The same projection at measurement and at use (contract section 5.2).
