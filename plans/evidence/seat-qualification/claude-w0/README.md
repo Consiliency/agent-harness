@@ -21,7 +21,7 @@ No record is here until W0 runs.
 
 OQ-4 of `plans/phase-plan-v1-seats-CLAUDE.md` was decided on 2026-11-21. The owner chose
 "Early session", whose wording was: "Session 1 runs now-ish: 3 jailed print boards, 1
-capture run and 3 control runs on `ai`'s Claude login. It produces the records the network
+capture run and 3 control runs on [the W0 host]'s Claude login. It produces the records the network
 lockdown needs. The SDK session follows once that route is admitted." This records-only
 amendment fixes the following. The 18-run plan and its six blocks do not change.
 
