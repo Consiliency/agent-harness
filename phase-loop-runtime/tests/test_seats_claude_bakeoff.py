@@ -1374,16 +1374,71 @@ def test_a_control_file_is_fresh_regular_and_never_given_twice(tmp_path):
     assert files.problem(Path("child.json")) == "give an absolute path"
     link = tmp_path / "link.json"
     link.symlink_to(out)
-    assert files.problem(link) == "not a regular file"
-    answers = [str(out), str(out), str(out), str(out)]
+    assert files.problem(link) == "not a regular file, or no such file"
+    assert files.problem(tmp_path) == "not a regular file, or no such file"
+    answers = [str(out)]
     files.prompt = lambda _q: answers.pop(0)
     files.report = lambda _m: None
     assert files.accept(2, 1) == b"{}"
+    # The same file again, under any name: itself, a hard link, a path through `..` or a
+    # linked directory.
+    hard = tmp_path / "hard.json"
+    os.link(out, hard)
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "dirlink").symlink_to(tmp_path)
+    for alias in (out, hard, tmp_path / "sub" / ".." / "child.json",
+                  tmp_path / "dirlink" / "child.json"):
+        assert files.problem(alias) == "already given for another run", alias
+    answers[:] = [str(out), str(hard), str(tmp_path / "dirlink" / "child.json")]
     with pytest.raises(ValueError, match="no acceptable control file"):
-        files.accept(2, 2)  # the same path, three times
-    os.utime(out, (1, 1))
-    assert bk.ControlFiles(root=tmp_path / "p2", since=2.0).problem(out) == \
-        "written before this block's brief"
+        files.accept(2, 2)
+    other = tmp_path / "other.json"
+    other.write_text("{}")  # identical bytes from another child are a different file
+    assert files.problem(other) is None
+    files.since = 2.0
+    os.utime(other, (1, 1))
+    assert files.problem(other) == "written before this block's brief"
+
+
+def test_the_control_cutoff_is_taken_before_the_brief_is_printed(repo, tmp_path, monkeypatch):
+    window, _calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[_ok()] * 3)
+    events: list[str] = []
+    window.on_brief = lambda block: events.append(f"cutoff {block}")
+    window.report = lambda message: events.append(
+        "brief" if message.startswith("W0 control block") else "other")
+    window.run()
+    assert "cutoff 2" in events and events.index("cutoff 2") < events.index("brief")
+
+
+@pytest.mark.parametrize("unreadable", ["meter.json", "meter.salt", "session-identity.json",
+                                        "security-outcomes.txt"])
+def test_an_unreadable_private_file_refuses_with_a_diagnostic(repo, tmp_path, monkeypatch,
+                                                             unreadable):
+    _first_session(repo, tmp_path, monkeypatch)
+    root = tmp_path / "private"
+    target = root / unreadable
+    if target.exists():
+        target.unlink()
+    target.mkdir()  # exists, cannot be read as a file
+    ledger = bk.MeterLedger(root=root)
+    records = bk.load_records(tmp_path / "w0")[0]
+    found = ([ledger.problem] if ledger.problem else ledger.session_problems(2, records)
+             + bk.identity_problems(root, _plan(repo), repo, 2))
+    if unreadable == "security-outcomes.txt":
+        with pytest.raises(ValueError, match="cannot be read"):
+            bk.private_stopped_arms(root)
+    else:
+        assert any("cannot be read" in problem for problem in found), found
+    assert "cannot be read" in " ".join(
+        [p for p in _preflight_session_two(repo, tmp_path, monkeypatch, root)])
+
+
+def _preflight_session_two(repo, tmp_path, monkeypatch, root) -> list[str]:
+    monkeypatch.undo()
+    window, _calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[],
+                             session=2)
+    window.ledger = bk.MeterLedger(root=root)
+    return window.preflight()
 
 
 def _cli_plan(repo, tmp_path) -> Path:

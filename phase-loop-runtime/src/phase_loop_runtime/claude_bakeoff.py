@@ -1002,6 +1002,10 @@ class MeterLedger:
             kept = json.loads(path.read_bytes())
         except ValueError:
             kept = None
+        except OSError:
+            self.readings = [None] * size
+            self.problem = "meter: the private ledger cannot be read"
+            return
         if (isinstance(kept, list) and len(kept) == size
                 and all(item is None or _stored_reading(item) for item in kept)):
             self.readings = kept
@@ -1059,7 +1063,10 @@ class MeterLedger:
             return ["meter: the private ledger lacks the earlier sessions' readings "
                     "(another --window, or a lost ledger)"]
         path = self.root / "meter.salt"
-        salt = path.read_bytes() if path.is_file() else None
+        try:
+            salt = path.read_bytes() if path.exists() else None
+        except OSError:
+            return ["meter: the private salt cannot be read"]
         earlier = [obj for obj in records if session_of(int(obj["block"])) < session]  # type: ignore[call-overload]
         if salt is None or any(obj["meter_digest"] != self._digest(int(obj["block"]), salt)  # type: ignore[call-overload]
                                for obj in earlier):
@@ -1574,7 +1581,10 @@ def identity_problems(root: Path, plan: Mapping[str, object], repo: Path,
         return []
     path = root / IDENTITY
     try:
-        kept = json.loads(path.read_bytes()) if path.is_file() else None
+        kept = json.loads(path.read_bytes()) if path.exists() else None
+    except (OSError, ValueError):
+        return ["identity: session 1's comparison identity cannot be read"]
+    try:
         current = comparison_identity(plan, repo)
     except ValueError as exc:
         return [f"identity: {exc}"]
@@ -1585,44 +1595,60 @@ def identity_problems(root: Path, plan: Mapping[str, object], repo: Path,
     return []
 
 
+#: A control output file is a few hundred bytes; anything past this is not one.
+_CONTROL_CAP = 1 << 20
+
+
 @dataclass
 class ControlFiles:
-    """The operator's control output files: each a regular file, never a link, written after
-    its block's brief, and never one already given in this window."""
+    """The operator's control output files. Each is opened once, without following a final
+    link, and checked on that descriptor: a regular file written at or after its block's
+    brief (``since``), never the same file (by device and inode) as one already given in
+    this window, whatever path names it. Two children may still write identical bytes."""
 
     root: Path
     prompt: Callable[[str], str] = input
     report: Callable[[str], None] = print
     since: float = 0.0
 
-    def problem(self, path: Path) -> str | None:
-        if not path.is_absolute():
-            return "give an absolute path"
-        try:
-            info = os.lstat(path)
-        except OSError:
-            return "no such file"
-        if not stat.S_ISREG(info.st_mode):
-            return "not a regular file"
-        if info.st_mtime < self.since:
-            return "written before this block's brief"
+    def _given(self) -> list[str]:
         used = self.root / "control-files.txt"
-        given = used.read_bytes().decode("utf-8", "replace").splitlines() if used.is_file() else []
-        if str(path) in given:
-            return "already given for another run"
-        return None
+        return used.read_bytes().decode("utf-8", "replace").splitlines() if used.is_file() else []
+
+    def take(self, path: Path) -> tuple[str | None, bytes, str]:
+        """``(problem, bytes, identity)``; ``problem`` is ``None`` when the file is acceptable."""
+        if not path.is_absolute():
+            return "give an absolute path", b"", ""
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+        except OSError:
+            return "not a regular file, or no such file", b"", ""
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            os.close(fd)
+            return "not a regular file, or no such file", b"", ""
+        with os.fdopen(fd, "rb") as handle:
+            if info.st_mtime < self.since:
+                return "written before this block's brief", b"", ""
+            identity = f"{info.st_dev}:{info.st_ino}"
+            if identity in self._given():
+                return "already given for another run", b"", ""
+            raw = handle.read(_CONTROL_CAP + 1)
+        if len(raw) > _CONTROL_CAP:
+            return "too large for a control output file", b"", ""
+        return None, raw, identity
+
+    def problem(self, path: Path) -> str | None:
+        return self.take(path)[0]
 
     def accept(self, block: int, n: int) -> bytes:
         for _attempt in range(READING_ATTEMPTS):
             path = Path(self.prompt(f"control block {block} run {n}: path of the child's "
                                     "output file: ").strip())
-            problem = self.problem(path)
+            problem, raw, identity = self.take(path)
             if problem is None:
-                raw = path.read_bytes()
-                used = self.root / "control-files.txt"
-                given = (used.read_bytes().decode("utf-8", "replace").splitlines()
-                         if used.is_file() else [])
-                write_private(used, "\n".join([*given, str(path)]).encode())
+                write_private(self.root / "control-files.txt",
+                              "\n".join([*self._given(), identity]).encode())
                 return raw
             self.report(f"control block {block} run {n}: {problem}; give another file")
         raise ValueError(f"W0 stopped: no acceptable control file for block {block} run {n}")
@@ -1641,11 +1667,15 @@ def control_model_problem(raw: bytes, model: object) -> str | None:
 
 def private_stopped_arms(root: Path) -> set[str]:
     """Arms the private security-outcome notes stop, so an interrupted session that never
-    wrote its withheld record still keeps the arm stopped."""
+    wrote its withheld record still keeps the arm stopped. Notes that exist but cannot be
+    read refuse (``ValueError``) rather than read as none."""
     path = root / SECURITY_NOTES
-    if not path.is_file():
+    if not path.exists():
         return set()
-    lines = path.read_bytes().decode("utf-8", "replace").splitlines()
+    try:
+        lines = path.read_bytes().decode("utf-8", "replace").splitlines()
+    except OSError:
+        raise ValueError("security notes: the private notes cannot be read") from None
     return {line.split(" ", 1)[0] for line in lines if line.split(" ", 1)[0] in ARMS}
 
 
@@ -1935,6 +1965,9 @@ class Window:
     compose: Callable[[], Sequence[str]] = effective_composition
     cli_version: str = "unknown"
     session: int | None = None
+    #: Called with the block number just before a control block's brief is printed, so a
+    #: control file's freshness cutoff never falls after the brief.
+    on_brief: Callable[[int], None] | None = None
     #: True when the caller already holds :func:`claim_evidence` on ``out_dir``.
     claimed: bool = False
     stopped_arms: set[str] = field(default_factory=set)
@@ -1954,6 +1987,10 @@ class Window:
             problems += self.ledger.session_problems(int(self.session), records)  # type: ignore[arg-type]
             problems += identity_problems(self.ledger.root, self.plan, self.repo,
                                           int(self.session))  # type: ignore[arg-type]
+            try:
+                private_stopped_arms(self.ledger.root)
+            except ValueError as exc:
+                problems.append(str(exc))
         problems += composition_problems(self.plan)
         head = str(self.plan.get("w0_head", ""))
         if _HEX40.fullmatch(head):
@@ -2036,6 +2073,8 @@ class Window:
             if arm in self.stopped_arms:
                 self.report(f"block {block} ({arm}): skipped, the arm stopped on a private outcome")
             elif arm == CONTROL:
+                if self.on_brief is not None:
+                    self.on_brief(block)
                 self.report(control_brief(block, self.plan))
                 for n in range(1, EXECUTION_NOTES.runs_per_block + 1):
                     outcomes.append(ingest_control(self._control_file(block, n)))
@@ -2162,6 +2201,11 @@ def _run_claimed(plan: Mapping[str, object], repo: Path, window: str,
             session, load_records(repo / EVIDENCE_DIR)[0])
     if not gate:
         gate = identity_problems(root, plan, repo, session)
+    if not gate:
+        try:
+            private_stopped_arms(root)
+        except ValueError as exc:
+            gate = [str(exc)]
     if gate:  # before any credential, CA, private directory or reading
         print("claude-bakeoff run: REFUSED: " + "; ".join(gate), file=sys.stderr)
         return 1
@@ -2194,11 +2238,11 @@ def _run_claimed(plan: Mapping[str, object], repo: Path, window: str,
         return 1
 
     files = ControlFiles(root)
-    briefed: dict[int, float] = {}
+
+    def on_brief(_block: int) -> None:
+        files.since = time.time()  # taken before the brief is printed
 
     def control(block: int, n: int) -> bytes:
-        # The block's brief was printed just before its first prompt.
-        files.since = briefed.setdefault(block, time.time())
         return files.accept(block, n)
 
     def twin(block: int, arm: str) -> Mapping[str, object]:
@@ -2213,7 +2257,8 @@ def _run_claimed(plan: Mapping[str, object], repo: Path, window: str,
 
     window_run = Window(plan=plan, out_dir=repo / EVIDENCE_DIR, ledger=ledger,
                         token=credential.token, repo=repo, native=native, control=control,
-                        twin=twin, cli_version=cli_version, session=session, claimed=True)
+                        twin=twin, cli_version=cli_version, session=session, claimed=True,
+                        on_brief=on_brief)
     try:
         written = window_run.run()
     except ValueError as exc:
