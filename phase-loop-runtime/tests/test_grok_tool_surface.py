@@ -1436,6 +1436,16 @@ def _config_change(case, profile, root):
         return added("--perms", gts.SEAT_CONFIG_MODE, "--ro-bind-data", str(descriptor),
                      destination, pass_fds=(descriptor,))
 
+    def reused(relative, descriptor):
+        """``profile`` with the data mount at ``relative`` copying from ``descriptor``."""
+        words = list(profile.mount_args)
+        at = words.index(home + "/" + relative) - 1
+        words[at] = str(descriptor)
+        return replace(profile, mount_args=tuple(words),
+                       pass_fds=tuple(sorted({*profile.pass_fds, int(descriptor)})))
+
+    dup = str(_held(os.dup(int(real))))  # shares the config's open file and offset
+
     grok = home + "/.grok"
     empty = root / "empty-directory"
     empty.mkdir(exist_ok=True)
@@ -1484,6 +1494,15 @@ def _config_change(case, profile, root):
         "chmod": lambda: added("--chmod", "0666", CONFIG_PATH),
         "remount_ro": lambda: added("--remount-ro", CONFIG_PATH),
         "overlay": lambda: added("--tmp-overlay", grok),
+        # The config's descriptor has one consumer (review of E8-A, finding 1).
+        "config_fd_as_ca": lambda: reused(gts.PROXY_PROJECTED_PATHS[0], real),
+        "config_fd_as_credential": lambda: reused(".grok/auth.json", real),
+        "duplicate_as_ca": lambda: reused(gts.PROXY_PROJECTED_PATHS[0], dup),
+        "duplicate_passed": lambda: replace(profile, pass_fds=(*profile.pass_fds, int(dup))),
+        "reopened_passed": lambda: replace(profile, pass_fds=(*profile.pass_fds, _held(
+            os.open(f"/proc/self/fd/{real}", os.O_RDONLY | os.O_CLOEXEC)))),
+        "duplicate_kept": lambda: replace(profile, keep_fds=(*profile.keep_fds, int(dup))),
+        "terminal": lambda: replace(profile, terminal_fd=int(real)),
     }[case]()
 
 
@@ -1495,7 +1514,9 @@ CONFIG_CHANGES = ("missing", "one_byte_changed", "one_byte_more", "one_byte_fewe
                   "other_descriptor", "dot_spelling", "doubled_slash_spelling",
                   "doubled_root_spelling", "dot_spelling_beside", "doubled_slash_beside",
                   "below_it", "bind_over_grok", "tmpfs_over_grok", "symlink_over_grok", "chmod",
-                  "remount_ro", "overlay")
+                  "remount_ro", "overlay", "config_fd_as_ca", "config_fd_as_credential",
+                  "duplicate_as_ca", "duplicate_passed", "reopened_passed", "duplicate_kept",
+                  "terminal")
 
 
 @pytest.mark.parametrize("case", CONFIG_CHANGES)

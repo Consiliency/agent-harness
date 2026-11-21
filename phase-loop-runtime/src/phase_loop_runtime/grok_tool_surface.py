@@ -558,6 +558,10 @@ _MOUNT_ARITY = {"--tmpfs": 1, "--perms": 1, "--dir": 1, "--file": 2, "--ro-bind"
                 "--bind-data": 2, "--symlink": 2}
 
 
+#: The operations that copy their file from a descriptor (the first operand).
+_DATA_OPERATIONS = frozenset({"--file", "--bind-data", "--ro-bind-data"})
+
+
 def _mounts(arguments) -> list[tuple[str, tuple[str, ...]]]:
     arguments = list(arguments)
     mounts = []
@@ -674,9 +678,24 @@ def _check_seat_config(profile: Any) -> None:
     descriptor left at its end would hand bubblewrap an empty file."""
     import fcntl
 
-    descriptor = _config_descriptor(_config_mount(_mounts(profile.mount_args)))
+    mounts = _mounts(profile.mount_args)
+    descriptor = _config_descriptor(_config_mount(mounts))
     _require(descriptor in tuple(profile.pass_fds))
     _require(descriptor not in tuple(profile.keep_fds))
+    # One consumer: bubblewrap copies every data mount from the descriptor it names, so the
+    # config's descriptor is named by its own triple and nothing else -- by number in no
+    # other operation and not as the terminal, and no other descriptor passed or kept is
+    # the same file (a duplicate shares its offset; a reopened path shares its bytes).
+    _require(sum(1 for operation, operands in mounts if operation in _DATA_OPERATIONS
+                 and operands[0] == str(descriptor)) == 1)
+    _require(profile.terminal_fd != descriptor)
+    config_file = os.fstat(descriptor)
+    for other in {*profile.pass_fds, *profile.keep_fds} - {descriptor}:
+        try:
+            info = os.fstat(other)
+        except OSError:
+            continue  # not open here, so not this file; the launch refuses it anyway
+        _require((info.st_dev, info.st_ino) != (config_file.st_dev, config_file.st_ino))
     # Only a memfd created to allow sealing can carry these seals; anything else either
     # fails the request or reports F_SEAL_SEAL alone.
     seals = fcntl.fcntl(descriptor, getattr(fcntl, "F_GET_SEALS", _F_GET_SEALS))

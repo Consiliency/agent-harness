@@ -402,6 +402,7 @@ def test_each_form_completes_through_exec_leg_under_the_grok_review_egress(
     print("grok seat config, parent rename:", json.dumps(parent))
     if parent["rename"] == "succeeded":
         assert parent["moved"] == gts.SEAT_CONFIG_SHA256, parent
+        assert parent["path"] == sha256(b"replacement").hexdigest(), parent
     else:
         assert parent["path"] == gts.SEAT_CONFIG_SHA256, parent
     assert {path for kind, path in result["home"] if kind == "dir"} <= HOME_DIRECTORIES
