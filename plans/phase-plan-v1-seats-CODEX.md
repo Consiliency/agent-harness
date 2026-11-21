@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: CODEX
 roadmap: specs/phase-plans-seats-v1.md
-roadmap_sha256: b91c98ad7b9097ba411ca21f39cf390878dabac449e59d6fdfd1750915c16a09
+roadmap_sha256: 2f26635bfcb5119967735cf5d5966f1ce39695a8331d2543eb9e11c07d187018
 automation:
   suite_command: ["timeout", "900", "env", "PYTEST_ADDOPTS=", "python3", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_seat_codex_vocabulary.py", "phase-loop-runtime/tests/test_seat_codex_runtime.py", "phase-loop-runtime/tests/test_seat_codex_credential.py", "phase-loop-runtime/tests/test_executor_availability.py", "phase-loop-runtime/tests/test_seat_egress_allowlist_codex.py", "phase-loop-runtime/tests/test_seat_codex_cli_shape.py", "phase-loop-runtime/tests/test_seat_profile_codex.py", "phase-loop-runtime/tests/test_seat_codex_evidence.py", "phase-loop-runtime/tests/test_seat_codex_leg.py", "phase-loop-runtime/tests/test_seat_codex_route_gate.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
 ---
@@ -308,7 +308,7 @@ the jailed route, and `seat_cli_qualification[]` reports it through the Codex ga
 - **Scope**: Build the profile and jailed leg, prove EC-CODEX-5 from the branch head, then on OD-4 register the profile, record the agent-harness#1480 decision and retire the inner-sandbox retention.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_profile_codex.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_codex_evidence.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail_qualification.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/src/phase_loop_runtime/sandbox_egress.py`, `phase-loop-runtime/tests/test_seat_profile_codex.py`, `phase-loop-runtime/tests/test_seat_profiles.py`, `phase-loop-runtime/tests/test_seat_codex_evidence.py`, `phase-loop-runtime/tests/test_seat_codex_leg.py`, `phase-loop-runtime/tests/test_seat_codex_route_gate.py`, `phase-loop-runtime/tests/test_seat_codex_provider_free.py`, `phase-loop-runtime/tests/fixtures/codex_fixture_provider.py`, `phase-loop-runtime/tests/test_seat_jail_qualification_entry.py`, `phase-loop-runtime/tests/test_codex_seat_tool_sandbox_1335.py`, `phase-loop-runtime/tests/test_codex_seat_writable_tree_1470.py`, `phase-loop-runtime/tests/test_broker_staged_tree_delivery.py`, `phase-loop-runtime/tests/test_sandbox_egress.py`, `phase-loop-runtime/tests/test_panel_invoker.py`, `plans/decision-seats-codex-boundary.md`, `plans/evidence/seat-codex/refresh-detection.json`, `plans/evidence/seat-codex/provider-free.json`
 - **Interfaces provided**: IF-0-CODEX-1, IF-0-CODEX-4; evidence id `codex-refresh-detection`
-- **Interfaces consumed**: IF-0-CODEX-2 (SL-1), IF-0-CODEX-3 (SL-2), `codex_cli_shape_problem` (SL-2), IF-0-CODEX-5 (SL-0), IF-0-JAILCORE-1 (pre-existing), IF-0-JAILCORE-3 (pre-existing), IF-0-FIRSTSEAT-3 (pre-existing), IF-0-TEAMHOST-1 (pre-existing), IF-0-TEAMHOST-3 (pre-existing), the profile-sourced window kit `seat_window` (pre-existing)
+- **Interfaces consumed**: IF-0-CODEX-2 (SL-1), IF-0-CODEX-3 (SL-2), `codex_cli_shape_problem` (SL-2), IF-0-CODEX-5 (SL-0), IF-0-JAILCORE-1 (pre-existing), IF-0-JAILCORE-3 (pre-existing), IF-0-FIRSTSEAT-3 (pre-existing), IF-0-TEAMHOST-1 (pre-existing), IF-0-TEAMHOST-3 (pre-existing), the profile-sourced window kit `seat_window` (pre-existing; its vendor-neutral launcher, reducer and CLI are FIRSTSEAT K-1's IF-0-FIRSTSEAT-6)
 - **Parallel-safe**: no
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
@@ -363,9 +363,13 @@ leaves it no path once the profile is registered. `advisory_document` and
   `seat_jail.py`, `panel_invoker.py` and `seat_profiles.py` are shared with GROK, PI and v11
   PANELSPLIT; the first two take additive rows only. Whichever lands second rebases; if PANELSPLIT has moved the seat-launch code,
   SL-3 edits the named successor and records the path.
-- **Coordinator rulings.** Vendor codes follow contract §1's additive rule. JAILCORE owns the
-  vendor-parametric window kit (its SL-3.5), so this phase adds only `CODEX_WINDOW_ROWS`, as
-  data on the profile. EC-CODEX-2 is read as Context's Subject decision states.
+- **Coordinator rulings.** Vendor codes follow contract §1's additive rule. FIRSTSEAT owns the
+  vendor-parametric window kit (IF-0-FIRSTSEAT-2, extended by its K-1 amendment,
+  `plans/amendments/seats-FIRSTSEAT-K1-window-kit.md`, whose SL-6 is the Codex supplier
+  adapter), so this phase adds only `CODEX_WINDOW_ROWS`, as data on the profile.
+  EC-CODEX-2 is read as Context's Subject decision states.
+  *Amendment (2026-11-21, K-1, records only):* this sentence earlier named JAILCORE's SL-3.5
+  as the kit owner; SL-3.5 delivered the profile-sourced rows only.
 - **Open with TEAMHOST.** Its contract §6 item 5 says "An idle front connection closes after
   `FRONT_IDLE_MS = 30000`" and that the bound cannot be disabled. It does not say the bound ends
   at the splice. The runtime records healthy Codex transcript silences of about 73 seconds, and

@@ -227,8 +227,9 @@ if [ "${PHASE_LOOP_SKIP_GATE_A_SUITE:-0}" = "1" ]; then
 else
   echo "-- full standalone suite: pytest -m 'not dotfiles_integration' vs installed wheel --"
   # The base-install probes above must run before adding optional SDK test
-  # dependencies. Install the extra from this same wheel for the SDK suite.
-  env -u PYTHONPATH "$PY" -m pip install --quiet "${WHEEL}[claude-sdk]" pytest build "setuptools>=68" >/dev/null
+  # dependencies. Install the extras from this same wheel for the SDK suite and the grok
+  # release-catalog signature test (GROKROLL §2.2), which has no skip path.
+  env -u PYTHONPATH "$PY" -m pip install --quiet "${WHEEL}[claude-sdk,grok-catalog]" pytest build "setuptools>=68" >/dev/null
   set +e
   env -u PYTHONPATH PYTHONNOUSERSITE=1 "$PY" - <<'PYEOF'
 import importlib.util

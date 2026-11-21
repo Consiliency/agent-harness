@@ -1,0 +1,11 @@
+{
+  "version": "1.0.89",
+  "package": "@xai-official/grok-linux-x64",
+  "tarball_integrity": "sha512-Pn8FmBEpl/r/rGmnKbHFHmOdJdy/cT0gaJNDO67bPIF0YqCDWvpRo/MdDnzS+1F2DVIzunypsMRTEdESB8H7zw==",
+  "registry_keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
+  "registry_signature": "MEQCIE1vGxkiiQQ6NRBZOGowpKeSYjbjYijpgqVbuiCqSTsBAiAGZ0eiOBIRKjikQAnrFhYPpSy0UjrsxqG+Qm528GFBTw==",
+  "member": "package/bin/grok.br",
+  "binary_sha256": "a3dface51d9bdc71fd121e0481dd02d9b46a721f7a6b892f756480e9666eba1f",
+  "binary_bytes": 208487936,
+  "pinned": false
+}

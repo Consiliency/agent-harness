@@ -587,7 +587,9 @@ jobs:
         # gate's decode-requiring tests (tests/phase_loop_test_utils.py
         # write_varied_png/write_blank_png/write_transparent_varied_png) run
         # instead of erroring at test time (agent-harness#91 round-4 CR).
-        run: python -m pip install "./phase-loop-runtime[visual,claude-sdk]" pytest "pytest-xdist==3.8.0" "build==1.6.1" "setuptools>=70.1"
+        # The `grok-catalog` extra (cryptography, brotli) makes the grok release-catalog
+        # signature vector test run, never skip (GROKROLL §2.2).
+        run: python -m pip install "./phase-loop-runtime[visual,claude-sdk,grok-catalog]" pytest "pytest-xdist==3.8.0" "build==1.6.1" "setuptools>=70.1"
 
       - name: Guard — no scattered/duplicated hardcoded model IDs
         # Enforces the "reference the central constant, don't inline the model ID"
@@ -698,6 +700,48 @@ jobs:
           name: chronology-junit-py312
           path: ${{ runner.temp }}/junit-py312.xml
           if-no-files-found: error
+
+      - name: Wheel smoke — grok status from an installed wheel without the extra
+        # GROKROLL §2.2: the built wheel alone, installed into its own environment that
+        # cannot see this job's site-packages (which hold the grok-catalog extra), runs the
+        # status command from the installed entry point. brotli must not import there;
+        # cryptography may arrive through a base dependency, so it proves nothing.
+        working-directory: phase-loop-runtime
+        run: |
+          smoke="$(mktemp -d)"
+          python -m build --wheel --outdir "$smoke/dist" .
+          python -m venv "$smoke/venv"
+          "$smoke/venv/bin/python" -m pip install --quiet "$smoke"/dist/*.whl
+          if "$smoke/venv/bin/python" -I -c "import brotli" 2>/dev/null; then
+            echo "::error::brotli imports in the wheel-smoke environment: the grok-catalog extra is not absent" >&2
+            exit 1
+          fi
+          # No grok on the search path and an unused state root, so the answer is fixed: exit
+          # 0, both catalogs readable, the shipped gate unattested, no subject, no record
+          # directory, and the state root still absent afterwards.
+          mkdir "$smoke/empty-path"
+          set +e
+          (cd "$smoke" && env PATH="$smoke/empty-path" XDG_STATE_HOME="$smoke/state" \
+            "$smoke/venv/bin/phase-loop" seat-window status --vendor grok > "$smoke/status.json")
+          rc=$?
+          set -e
+          test ! -e "$smoke/state"
+          "$smoke/venv/bin/python" -I - "$smoke/status.json" "$rc" <<'PYEOF'
+          import json, sys
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              document = json.load(handle)
+          rc = int(sys.argv[2])
+          assert rc == 0, (rc, document)
+          answer = {"schema", "vendor", "context_digest", "inputs", "required_routes", "subject",
+                    "candidate", "decision", "advance_to", "rollback_to"}
+          assert type(document) is dict and set(document) >= answer, document
+          assert document["schema"] == "grok_seat_status.v1", document
+          assert document["inputs"] == {"surface_catalog": "ok", "release_catalog": "ok",
+                                        "host_records": "absent",
+                                        "catalog_gate": "unattested"}, document["inputs"]
+          assert document["subject"] is None and document["advance_to"] is None, document
+          print("grok status from the installed wheel:", document["inputs"])
+          PYEOF
 
       - name: WIRE-THE-DOCTOR — fail on a stale gating BOM target
         # A drift detector nobody invokes re-rots on day 1 (IF-0-AHADOPT-2). This
