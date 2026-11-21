@@ -102,28 +102,34 @@ CHILD_ABSENT_POLICY_PATHS = ("/etc/claude-code/managed-settings.json",)
 DISCOVERY_PATHS = (".agents", ".claude", ".cursor", ".grok", ".mcp.json")
 #: Erratum 8, item 2 (amending erratum 3, item 1): the closed map of the refusals that do
 #: not disqualify a measurement or a rehearsal, keyed by the binary sha256 the grant pins.
-#: Each entry is an exact proxy observation -- method, host, path (``None`` for a
-#: ``CONNECT``) -- and counts only when it was refused: nothing here is ever allowed,
-#: forwarded or counted. An image with no entry tolerates nothing. Pinned by a test; an entry
-#: or an image needs an erratum. The map qualifies a measurement, constrains no launch, and
-#: is not part of the context digest. :func:`tolerated_refusals` reads it.
-TOLERATED_REFUSALS_BY_IMAGE: Mapping[str, tuple[tuple[str, str, str | None], ...]] = (
+#: Each row is ``(method, host, path, cause, order)``: the exact proxy observation (``path``
+#: ``None`` for a ``CONNECT``), the one check whose refusal of it is tolerated (the event's
+#: ``cause``), and when (:data:`ORDER_ANY`, or :data:`ORDER_PRE_INFERENCE`: strictly before
+#: the launch's first inference request). Within one image each ``(method, host, path)`` has
+#: one row. Nothing here is ever allowed, forwarded or counted. An image with no entry
+#: tolerates nothing. Pinned by a test; a row or an image needs an erratum. The map qualifies
+#: a measurement, constrains no launch, and is not part of the context digest.
+#: :func:`tolerated_refusals` projects the identities; :func:`tolerated` is the predicate.
+ORDER_ANY = "any"
+ORDER_PRE_INFERENCE = "pre_inference"
+TOLERATED_REFUSALS_BY_IMAGE: Mapping[str, tuple[tuple[str, str, str | None, str, str], ...]] = (
     MappingProxyType({
-        # grok 1.0.89 (erratum 3): the startup fetch of remote settings, and the updater's
-        # release check and artifact host.
+        # grok 1.0.89 (erratum 3): the startup fetch of remote settings, refused by the
+        # request rules, and the updater's release check and artifact host, refused at the
+        # tunnel front by the CONNECT-authority check.
         "a3dface51d9bdc71fd121e0481dd02d9b46a721f7a6b892f756480e9666eba1f": (
-            ("GET", "cli-chat-proxy.grok.com", "/v1/settings"),
-            ("CONNECT", "x.ai", None),
-            ("CONNECT", "storage.googleapis.com", None),
+            ("GET", "cli-chat-proxy.grok.com", "/v1/settings", "rules", ORDER_ANY),
+            ("CONNECT", "x.ai", None, "front", ORDER_ANY),
+            ("CONNECT", "storage.googleapis.com", None, "front", ORDER_ANY),
         ),
         # grok 1.0.92 (erratum 8): four startup fetches, and the pre-turn calls on another
         # model, which are refused because they would be a second, uncounted inference route.
         "add4d201dbf2c0bd6077a36feb55a76939de30bae48dbb06f16b2307d38ceacb": (
-            ("GET", "cli-chat-proxy.grok.com", "/v1/bundle/archive"),
-            ("GET", "cli-chat-proxy.grok.com", "/"),
-            ("GET", "cli-chat-proxy.grok.com", "/v1/subagents/bundle"),
-            ("GET", "cli-chat-proxy.grok.com", "/v1/feedback/config"),
-            ("POST", "cli-chat-proxy.grok.com", "/v1/responses"),
+            ("GET", "cli-chat-proxy.grok.com", "/v1/bundle/archive", "rules", ORDER_ANY),
+            ("GET", "cli-chat-proxy.grok.com", "/", "rules", ORDER_ANY),
+            ("GET", "cli-chat-proxy.grok.com", "/v1/subagents/bundle", "rules", ORDER_ANY),
+            ("GET", "cli-chat-proxy.grok.com", "/v1/feedback/config", "rules", ORDER_ANY),
+            ("POST", "cli-chat-proxy.grok.com", "/v1/responses", "rules", ORDER_PRE_INFERENCE),
         ),
     }))
 EGRESS_ALLOWLIST_ID = "grok-review"
@@ -2219,29 +2225,18 @@ _EVIDENCE_ROUTE_KEYS = frozenset({"route", "argv_digest", "status", "eligible", 
 _TOLERATED_KEYS = frozenset({"method", "host", "path", "count"})
 
 
-def tolerated_refusals(binary_sha256: object) -> tuple[tuple[str, str, str | None], ...]:
-    """The entries of :data:`TOLERATED_REFUSALS_BY_IMAGE` for the image ``binary_sha256``,
-    the grant's pinned digest (§5.3); none for any other image."""
+def tolerated_rows(binary_sha256: object) -> tuple[tuple[str, str, str | None, str, str], ...]:
+    """The rows of :data:`TOLERATED_REFUSALS_BY_IMAGE` for the image ``binary_sha256``, the
+    grant's pinned digest (§5.3); none for any other image."""
     if type(binary_sha256) is not str:
         return ()
     return tuple(TOLERATED_REFUSALS_BY_IMAGE.get(binary_sha256, ()))
 
 
-def _refusing_check(entry: tuple) -> str:
-    """Which of the proxy's checks refuses a tolerated entry, as its event's ``cause`` names
-    it. A ``CONNECT`` entry names a host that is not on the allow-list, so the front refuses
-    the tunnel (``front``); every other entry is a request inside a tunnel to an
-    allow-listed host, which the request rules refuse (``rules``)."""
-    return "front" if entry[0] == "CONNECT" else "rules"
-
-
-def _only_before_inference(entry: tuple) -> bool:
-    """THE ORDERING RULE of erratum 8, item 2: is ``entry`` tolerated only before the
-    launch's inference request? As the erratum states it, a ``POST`` to the inference host
-    is: after that request a later model call may rewrite the definitions artifact, so any
-    such ``POST`` still disqualifies, as erratum 3 said of every one. Every other entry is
-    tolerated before or after. To relax the rule, return ``False`` here."""
-    return entry[0] == "POST" and entry[1] == INFERENCE_HOST
+def tolerated_refusals(binary_sha256: object) -> tuple[tuple[str, str, str | None], ...]:
+    """The ``(method, host, path)`` identities of the image's rows: what the proxy's
+    ``named`` list carries and what a saved summary may name."""
+    return tuple(row[:3] for row in tolerated_rows(binary_sha256))
 
 
 def _inference_request(event: Any) -> bool:
@@ -2252,27 +2247,43 @@ def _inference_request(event: Any) -> bool:
                                      and event.host == INFERENCE_HOST)
 
 
-def _tolerated(events, binary_sha256: object) -> list[tuple | None]:
-    """Per event, the entry of the image's list it is a tolerated refusal of, else ``None``.
-    The one predicate the classification, the rehearsal and the recorded counts share, so a
-    record never calls tolerated what disqualified its launch.
+def _in_order(order: str, position: int, first_inference: int) -> bool:
+    """THE ORDERING RULE of erratum 8, item 2, read from the row's declared ``order``: a
+    :data:`ORDER_PRE_INFERENCE` row is tolerated only strictly before the first inference
+    request in the proxy's decision stream; at or after it, a later model call may rewrite
+    the definitions artifact. An :data:`ORDER_ANY` row is tolerated anywhere. Any other
+    value tolerates nothing."""
+    if order == ORDER_ANY:
+        return True
+    return order == ORDER_PRE_INFERENCE and position < first_inference
 
-    An entry is tolerated only as the allow-list's own refusal of it (erratum 8, item 2):
-    the same observation refused by another check -- the inner Host check, the budget, the
-    shutdown -- is not one. An entry under the ordering rule (:func:`_only_before_inference`)
-    is tolerated only when the proxy decided it before the first inference request."""
-    entries = tolerated_refusals(binary_sha256)
+
+def tolerated(binary_sha256: object, event: Any, position: int, first_inference: int
+              ) -> tuple[str, str, str | None] | None:
+    """The one predicate (erratum 8, item 2): the identity of the image's row that ``event``
+    -- at ``position`` in the proxy's decision stream, whose first inference request is at
+    ``first_inference`` -- is a tolerated refusal of, else ``None``. It must be a denial by
+    exactly the row's declared ``cause`` (another check refusing the same observation -- the
+    inner Host check, the budget, the shutdown, the front for a request -- is not one), at a
+    position the row's declared ``order`` admits."""
+    if event.decision != "deny":
+        return None
+    key = (event.method, event.host, event.path)
+    for row in tolerated_rows(binary_sha256):
+        if row[:3] == key:
+            return key if (getattr(event, "cause", None) == row[3]
+                           and _in_order(row[4], position, first_inference)) else None
+    return None
+
+
+def _tolerated(events, binary_sha256: object) -> list[tuple | None]:
+    """:func:`tolerated` over a whole decision stream. The one predicate the classification,
+    the rehearsal and the recorded counts share, so a record never calls tolerated what
+    disqualified its launch."""
     events = list(events)
     first = next((index for index, event in enumerate(events) if _inference_request(event)),
                  len(events))
-    matched: list[tuple | None] = []
-    for index, event in enumerate(events):
-        key = (event.method, event.host, event.path)
-        matched.append(key if (event.decision == "deny" and key in entries
-                               and getattr(event, "cause", None) == _refusing_check(key)
-                               and not (index > first and _only_before_inference(key)))
-                       else None)
-    return matched
+    return [tolerated(binary_sha256, event, index, first) for index, event in enumerate(events)]
 
 
 #: Erratum 8, item 3, held to a closed vocabulary: the paths a retained observation may name.

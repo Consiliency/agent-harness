@@ -63,7 +63,7 @@ GROK_1_0_89 = "a3dface51d9bdc71fd121e0481dd02d9b46a721f7a6b892f756480e9666eba1f"
 GROK_1_0_92 = "add4d201dbf2c0bd6077a36feb55a76939de30bae48dbb06f16b2307d38ceacb"
 #: The map as shipped, before any bench stands its stand-in binary for an image.
 SHIPPED_TOLERATED = gts.TOLERATED_REFUSALS_BY_IMAGE
-LEGACY_TOLERATED = SHIPPED_TOLERATED[GROK_1_0_89]
+LEGACY_TOLERATED = gts.tolerated_refusals(GROK_1_0_89)
 #: The real BA-3 binding check, before any bench models it.
 REAL_BRIDGED_TO = gts.bridged_to
 
@@ -2621,18 +2621,46 @@ def _pilot(bench, requests):
     return result["status"], result
 
 
-def test_each_tolerated_entry_names_the_check_that_refuses_it():
-    """The two updater CONNECTs of 1.0.89 are refused by the front; every other entry is a
-    request the rules refuse inside a tunnel to the inference host."""
+def test_each_tolerated_row_declares_the_check_that_refuses_it():
+    """Each row names its cause: the two updater CONNECTs of 1.0.89 are refused by the
+    front; every other row is a request the rules refuse inside a tunnel to the inference
+    host. Within one image an identity has exactly one row."""
     by_check = {}
-    for entries in SHIPPED_TOLERATED.values():
-        for entry in entries:
-            by_check.setdefault(gts._refusing_check(entry), []).append(entry)
+    for rows in SHIPPED_TOLERATED.values():
+        assert len({row[:3] for row in rows}) == len(rows)
+        for row in rows:
+            by_check.setdefault(row[3], []).append(row[:3])
     assert by_check["front"] == [("CONNECT", "x.ai", None),
                                  ("CONNECT", "storage.googleapis.com", None)]
     assert len(by_check["rules"]) == 6 and set(by_check) == {"front", "rules"}
     assert all(host == gts.INFERENCE_HOST and path is not None
                for _method, host, path in by_check["rules"])
+
+
+def test_the_predicate_reads_the_rows_declared_cause_and_order(monkeypatch):
+    """The cause and the order come from the row, not from its method or host: a row
+    declaring another cause or order changes what is tolerated, and an unknown order
+    tolerates nothing."""
+    host = gts.INFERENCE_HOST
+
+    def event(method, path, cause, decision="deny"):
+        return seat_egress_proxy.RequestEvent(method=method, host=host, path=path,
+                                              decision=decision, cause=cause)
+    get = event("GET", "/v1/feedback/config", "rules")
+    infer = event("POST", INFERENCE_PATH, "allowed", "allow")
+    for order, before, after in ((gts.ORDER_ANY, True, True),
+                                 (gts.ORDER_PRE_INFERENCE, True, False),
+                                 ("post_inference", False, False)):
+        table = {"f" * 64: (("GET", host, "/v1/feedback/config", "rules", order),)}
+        monkeypatch.setattr(gts, "TOLERATED_REFUSALS_BY_IMAGE", table)
+        assert gts._tolerated([get, infer, get], "f" * 64) == [
+            get_id if ok else None for get_id, ok in
+            ((("GET", host, "/v1/feedback/config"), before), (None, False),
+             (("GET", host, "/v1/feedback/config"), after))], order
+    table = {"f" * 64: (("GET", host, "/v1/feedback/config", "inner_host", gts.ORDER_ANY),)}
+    monkeypatch.setattr(gts, "TOLERATED_REFUSALS_BY_IMAGE", table)
+    assert gts._tolerated([get, event("GET", "/v1/feedback/config", "inner_host")], "f" * 64) == [
+        None, ("GET", host, "/v1/feedback/config")]
 
 
 @pytest.mark.parametrize("image,entry,cause", [
@@ -2662,12 +2690,14 @@ def test_the_ordering_rule_a_tolerated_post_counts_only_before_the_inference_req
     """THE ORDERING RULE (erratum 8, item 2), as the erratum states it. ``POST /v1/responses``
     is tolerated only before the inference request: the counted request of a measurement,
     the first budget denial of a rehearsal. One after it disqualifies the launch, while a
-    tolerated GET may come before or after. Relaxing the rule is one line in
-    ``grok_tool_surface._only_before_inference``; this test then fails at its ``late`` cases
-    and is the place to record the new decision."""
-    only_before = [entry for entries in SHIPPED_TOLERATED.values() for entry in entries
-                   if gts._only_before_inference(entry)]
+    tolerated GET may come before or after. Relaxing the rule is the row's declared
+    ``order`` in ``grok_tool_surface.TOLERATED_REFUSALS_BY_IMAGE``; this test then fails at
+    its ``late`` cases and is the place to record the new decision."""
+    only_before = [row[:3] for rows in SHIPPED_TOLERATED.values() for row in rows
+                   if row[4] == gts.ORDER_PRE_INFERENCE]
     assert only_before == [RESPONSES[:3]]
+    assert {row[4] for rows in SHIPPED_TOLERATED.values() for row in rows} == {
+        gts.ORDER_ANY, gts.ORDER_PRE_INFERENCE}
 
     def bench(name):
         root = tmp_path / name
@@ -2710,17 +2740,23 @@ def _on_the_allow_list(method, host, path):
 def test_the_tolerated_map_is_the_closed_map_of_erratum_8():
     """Erratum 8, item 2: the map, exactly. An entry or an image needs an erratum."""
     host = "cli-chat-proxy.grok.com"
+    any_, pre = gts.ORDER_ANY, gts.ORDER_PRE_INFERENCE
+    assert (any_, pre) == ("any", "pre_inference")
     assert dict(SHIPPED_TOLERATED) == {
-        GROK_1_0_89: (("GET", host, "/v1/settings"), ("CONNECT", "x.ai", None),
-                      ("CONNECT", "storage.googleapis.com", None)),
-        GROK_1_0_92: (("GET", host, "/v1/bundle/archive"), ("GET", host, "/"),
-                      ("GET", host, "/v1/subagents/bundle"), ("GET", host, "/v1/feedback/config"),
-                      ("POST", host, "/v1/responses"))}
+        GROK_1_0_89: (("GET", host, "/v1/settings", "rules", any_),
+                      ("CONNECT", "x.ai", None, "front", any_),
+                      ("CONNECT", "storage.googleapis.com", None, "front", any_)),
+        GROK_1_0_92: (("GET", host, "/v1/bundle/archive", "rules", any_),
+                      ("GET", host, "/", "rules", any_),
+                      ("GET", host, "/v1/subagents/bundle", "rules", any_),
+                      ("GET", host, "/v1/feedback/config", "rules", any_),
+                      ("POST", host, "/v1/responses", "rules", pre))}
     assert host == gts.INFERENCE_HOST and not hasattr(gts, "TOLERATED_REFUSALS")
     with pytest.raises(TypeError):
         SHIPPED_TOLERATED["f" * 64] = ()  # closed: not a table a caller can extend
-    for image, entries in SHIPPED_TOLERATED.items():
-        assert gts.tolerated_refusals(image) == entries
+    for image, rows in SHIPPED_TOLERATED.items():
+        entries = tuple(row[:3] for row in rows)
+        assert gts.tolerated_rows(image) == rows and gts.tolerated_refusals(image) == entries
         assert len(entries) <= 16  # the proxy's named channel
         # Refused only: nothing tolerated is on the allow-list, so nothing is ever forwarded
         # or counted, and adding an entry adds nothing to the allow-list.
@@ -2753,7 +2789,7 @@ def test_each_launch_names_exactly_its_images_entries_to_the_proxy(tmp_path, mon
     bench.open_grant(planned="review")
     assert bench.status()["grant"]["binary_sha256"] == bench.digest  # the key: the grant's pin
     assert bench.measure("review")[1]["routes"][0]["status"] == "measured"
-    expected = () if image is None else SHIPPED_TOLERATED[image]
+    expected = () if image is None else tuple(row[:3] for row in SHIPPED_TOLERATED[image])
     assert [(proxy.request_budget, proxy.named) for proxy in bench.proxies] == [
         (0, expected), (1, expected)]
 
@@ -2764,7 +2800,7 @@ def test_the_proxy_names_the_entries_of_1_0_92_and_nothing_else(fake_srt):
     model-list fetches stay ``<other>``; no decision changes, and nothing but the inference
     request is allowed."""
     fake = fake_srt()
-    named = SHIPPED_TOLERATED[GROK_1_0_92]
+    named = gts.tolerated_refusals(GROK_1_0_92)
     paths = ["/v1/bundle/archive", "/", "/v1/subagents/bundle", "/v1/feedback/config",
              "/v1/settings", "/v1/models"]
     with seat_egress_proxy.start_proxy(allowlist_id="grok-review", request_budget=1,
@@ -2808,7 +2844,7 @@ def test_the_rehearsal_of_1_0_92_passes_on_the_tabled_observation(bench92):
     and the budget's own denial of the inference request. The client's exit status (1) does
     not matter; a passing rehearsal lets the pilot reserve."""
     assert [row[:3] for row in EXPECTED_REHEARSAL_1_0_92[:-1]] == [
-        *SHIPPED_TOLERATED[GROK_1_0_92], RESPONSES[:3]]
+        *gts.tolerated_refusals(GROK_1_0_92), RESPONSES[:3]]
     code, report = _rehearse(bench92, EXPECTED_REHEARSAL_1_0_92)
     assert (code, report["result"], report["reason"]) == (0, "passed", "passed"), report
     assert report["budget_denials"] == 1
