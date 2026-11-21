@@ -849,15 +849,37 @@ def _visible(path: str, mounts) -> bool:
     return shown
 
 
+def _present(path: str) -> bool:
+    """Is anything at ``path``, read with ``lstat``? Absent only on ``FileNotFoundError`` or
+    ``NotADirectoryError``: a dangling link, and any other access error, count as present."""
+    try:
+        os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def managed_policy_staging() -> dict[str, object]:
+    """Erratum 8, item 4: the read-only staging check, before a grant opens (run by
+    ``--verify-probe initial``; it launches and reads nothing else). It uses the launch
+    guard's own rule (:func:`_present`): staging stops if either grok managed path is
+    present, a dangling link included, and it records whether Claude Code's managed
+    settings exist on the host, which is allowed (the launch check proves them hidden from
+    the child). Preliminary: the launch check binds."""
+    present = [path for path in MANAGED_CONFIG_PATHS if _present(path)]
+    return {"passed": not present, "grok_managed_present": present,
+            "claude_managed_settings_present": any(_present(path)
+                                                   for path in CHILD_ABSENT_POLICY_PATHS)}
+
+
 def _check_managed_config(mounts) -> None:
     """Managed config: grok's own is absent on the host and from the child's view; Claude's
     managed settings are absent from the child's view (§4.4)."""
     for path in MANAGED_CONFIG_PATHS:
-        try:
-            os.lstat(path)
-        except (FileNotFoundError, NotADirectoryError):
-            continue
-        raise _Refused("managed configuration is present")
+        if _present(path):
+            raise _Refused("managed configuration is present")
     for path in (*MANAGED_CONFIG_PATHS, *CHILD_ABSENT_POLICY_PATHS):
         _require(not _visible(path, mounts))
 
@@ -3426,7 +3448,12 @@ def verify_probe(kind: str, *, expected: str, output: int, output_path: Path,
     if resolved != expected:
         return {"passed": False, "code": "probe_binary_mismatch"}
     expected_rows: dict[str, tuple[bool, str]] = {}
+    staging = None
     if kind == "initial":
+        # Erratum 8, item 4: managed policy, read-only and before anything is projected.
+        staging = managed_policy_staging()
+        if not staging["passed"]:
+            return {"passed": False, "code": "managed_config_present", "managed_policy": staging}
         isolation = isolation_check(work_root=output_path)
         if not isolation["passed"]:
             return {"passed": False, "code": isolation["code"]}
@@ -3460,8 +3487,11 @@ def verify_probe(kind: str, *, expected: str, output: int, output_path: Path,
             expected_rows[row["route"]] = (True, "frozen_measurement") if ok else (False, "none")
     mismatches = [row["route"] for row in rows
                   if (row["passed"], row["basis"]) != expected_rows.get(row["route"])]
-    return {"passed": not mismatches, "code": "probe_matches" if not mismatches else "probe_mismatch",
-            "routes": rows, "mismatches": mismatches}
+    report = {"passed": not mismatches, "code": "probe_matches" if not mismatches else "probe_mismatch",
+              "routes": rows, "mismatches": mismatches}
+    if staging is not None:
+        report["managed_policy"] = staging
+    return report
 
 
 def _check_grant_if_present(grant_id: str, binary_sha256: str) -> None:

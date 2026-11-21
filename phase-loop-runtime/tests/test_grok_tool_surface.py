@@ -1844,6 +1844,88 @@ def test_a_dangling_managed_config_link_refuses(seat, monkeypatch, tmp_path, whe
                 _verify(seat, profile)
 
 
+@pytest.fixture
+def staging(tmp_path, monkeypatch):
+    """``--verify-probe initial`` on fixture policy paths: the probe's binary resolves, the
+    isolation self-check is recorded and passes, and no route row is probed."""
+    # One parent each, so one can be made unreadable alone.
+    grok = (tmp_path / "etc-grok-1" / "managed_config.toml",
+            tmp_path / "etc-grok-2" / "requirements.toml")
+    claude = tmp_path / "etc-claude-code" / "managed-settings.json"
+    for path in (*grok, claude):
+        path.parent.mkdir(exist_ok=True)
+    monkeypatch.setattr(gts, "MANAGED_CONFIG_PATHS", tuple(str(path) for path in grok))
+    monkeypatch.setattr(gts, "CHILD_ABSENT_POLICY_PATHS", (str(claude),))
+    monkeypatch.setattr(pi, "_grok_probe_identity", lambda *a, **k: ("/fixture/grok", "e" * 64))
+    isolated = []
+    monkeypatch.setattr(gts, "isolation_check",
+                        lambda **kwargs: isolated.append(kwargs) or {"passed": True})
+    monkeypatch.setattr(gts, "_probe_rows", lambda: [])
+
+    def run():
+        return gts.verify_probe("initial", expected="e" * 64, output=-1, output_path=tmp_path)
+    return SimpleNamespace(grok=grok, claude=claude, isolated=isolated, run=run, root=tmp_path)
+
+
+@pytest.mark.parametrize("which", [0, 1], ids=["managed_config", "requirements"])
+@pytest.mark.parametrize("kind", ["dangling_link", "file", "unreadable"])
+def test_staging_stops_on_either_grok_managed_path(staging, which, kind):
+    """Erratum 8, item 4: staging (``--verify-probe initial``) uses the launch guard's
+    ``lstat`` rule, so a dangling link, a file, or a path it cannot read at either grok
+    managed path stops it, before the isolation check or any projection."""
+    path = staging.grok[which]
+    if kind == "dangling_link":
+        path.symlink_to(staging.root / "nowhere")
+        assert not path.exists()
+    elif kind == "file":
+        path.write_text("")
+    else:
+        path.parent.chmod(0o000)
+    try:
+        report = staging.run()
+    finally:
+        path.parent.chmod(0o700)
+    assert report["passed"] is False and report["code"] == "managed_config_present"
+    assert report["managed_policy"]["grok_managed_present"] == [str(path)]
+    assert staging.isolated == []
+
+
+@pytest.mark.parametrize("claude", ["absent", "file", "dangling_link"])
+def test_staging_records_claude_managed_settings_and_allows_them(staging, claude):
+    if claude == "file":
+        staging.claude.write_text("{}")
+    elif claude == "dangling_link":
+        staging.claude.symlink_to(staging.root / "nowhere")
+    report = staging.run()
+    assert report["passed"] is True and report["code"] == "probe_matches", report
+    assert report["managed_policy"] == {"passed": True, "grok_managed_present": [],
+                                        "claude_managed_settings_present": claude != "absent"}
+    assert len(staging.isolated) == 1
+
+
+def test_the_staging_rule_is_the_launch_rule(tmp_path, monkeypatch):
+    """One primitive: whatever staging counts as present, the launch guard refuses."""
+    cases = {"absent": None, "file": "file", "dangling": "link", "below_a_file": "below"}
+    for name, kind in cases.items():
+        path = tmp_path / name / "requirements.toml"
+        path.parent.mkdir()
+        if kind == "file":
+            path.write_text("")
+        elif kind == "link":
+            path.symlink_to(tmp_path / "nowhere")
+        elif kind == "below":
+            path.parent.rmdir()
+            path.parent.write_text("")
+        monkeypatch.setattr(gts, "MANAGED_CONFIG_PATHS", (str(path),))
+        present = gts.managed_policy_staging()["grok_managed_present"] != []
+        assert present == (kind in {"file", "link"}), name
+        if present:
+            with pytest.raises(gts._Refused):
+                gts._check_managed_config(())
+        else:
+            gts._check_managed_config(())
+
+
 # --------------------------------------------- the forms eligible at use (erratum 8, item 1d)
 
 def test_the_forms_eligible_at_use():
