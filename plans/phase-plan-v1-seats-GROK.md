@@ -21,7 +21,7 @@ window-kit decisions (jail contract §15). The roadmap text is unchanged.
 **Frozen inputs (pinned).**
 
 - `plans/artifacts/grok-jail-tool-surface-contract-v1.md` at sha256
-  `a78c8f4bf77763e201b7876d5d78db8f2c9ead4fd3407a368d2ea0f5c9349081` ("the jail contract"). This plan cites its sections.
+  `0d878405fdf6a7780d0a6225b4ee254a2ce5b51000e7bcef6337290ebc25eb59` ("the jail contract"). This plan cites its sections.
 - `plans/artifacts/grok-tool-surface-contract-v1.md` at sha256
   `9c56fc68e164d9ae7abbeb4969ee860c6844355c3d80569e4bb4600a3e6355d4` (agent-harness#2033
   through erratum 7: the **historical base**). The effective input is that file once erratum
@@ -39,6 +39,12 @@ window-kit decisions (jail contract §15). The roadmap text is unchanged.
 **Base.** `origin/main` with GROKROLL SL-0 (agent-harness#2050) merged. Registering a Grok
 profile drops the `unconfined` exception (`seat_window.readiness_rows`); S-2 is closed in
 source. No Grok profile, credential module or `grok_seat_*` code exists.
+
+**r4 hold.** The jail contract's projection and mask design (§2.3, §2.4) is withdrawn by
+the coordinator's ruling; its replacement is question Q-r4 (jail contract §17). SL-1, SL-2
+and SL-3 are not dispatched until Q-r4 is answered and this plan amended; SL-0 and SL-8 are
+unaffected. Where IF-0-GROK-1 and IF-0-GROK-2 below name the projection directory, the
+ordered mount list or `PROTECTED_SETS`, they await that answer.
 
 **Execution gate.** JAILCORE and TEAMHOST code is on main (agent-harness#1890,
 agent-harness#1904) and CODEX executed against the same gate (agent-harness#1916); the
