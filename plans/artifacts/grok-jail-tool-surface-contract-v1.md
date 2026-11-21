@@ -55,10 +55,10 @@ constants and `grok_tool_surface.context_digest()` are not edited by any GROK la
 | Owner argv | the **actual** composed bwrap argv and seccomp filter, normalised by the profile's digest placeholders, hash to the record's `launch_digest` (§2.2). It is computed from the argv that is spawned, not from the registered profile. A dependency projection is refused: the Grok profile declares `projection="none"`. |
 | Binary | the bytes bound at `/seat/bin/grok` are the resolved subject's, from a source that passes `seat_subject`'s root-owned pin walk (every component owned by root and not group- or other-writable), hashed at the spawn boundary (§4.4); their sha256 is the record's `binary_sha256`. |
 | Argv | the `staged` form of `grok_runtime_forms()` for the production model and effort, with only argv0 and the `--cwd` value replaced (`--cwd /seat/tree`, prompt on stdin); `_grok_argv_digest(launch) == _grok_argv_digest(staged)`, and the launch's cwd is exactly `/seat/tree`. |
-| Seat home | the per-launch fresh `seat-home`. At spawn its mount list is exactly the ordered list of §2.3. |
+| Seat home | the per-launch fresh `seat-home`, with `.grok` the read-only staged directory of §2.3 and the masks of §2.4; at spawn the home's mount list is exactly §2.3's ordered list. |
 | Environment | the profile's allow-listed environment plus `HTTPS_PROXY` and `SSL_CERT_FILE`; no `GROK_*` or `XAI_*` variable. |
 | Managed config | the two `/etc/grok` paths absent on the host and in the jail view; `/etc/claude-code/managed-settings.json` absent from the jail view (TS contract erratum 1). |
-| Fixed inputs | every path of erratum 8's `SEAT_FIXED_INPUTS` (as of r3), and every project discovery path at `/seat/tree` and its visible ancestors, is immutable in the actual mount view (§2.4). |
+| Fixed inputs | every path of E8-A's `SEAT_FIXED_INPUTS`, and every `DISCOVERY_PATHS` entry at `/seat/tree`, has the treatment §2.4's table gives it, checked on the actual mount view. |
 | Egress | allow-list `grok-review`, its content digest; the jail's proxy-only namespace. |
 | Tools | the receipt's admitted names are a subset of the `staged` form's `--tools` allow-list (`_grok_tools_admitted`); write and run tools are allowed only because §2.4 holds. |
 
@@ -67,8 +67,8 @@ constants and `grok_tool_surface.context_digest()` are not edited by any GROK la
 - `jail_context_digest()`: sha256 of the canonical JSON (keys sorted, separators `,` and `:`,
   ASCII, no trailing newline) of `{schema: "grok_jail_context.v1", composition:
   "seat_jail.build_seat_jail+profile:grok", home: "/seat/home", seat_config: {path,
-  sha256: SEAT_CONFIG_SHA256, projection: "ro-bind"}, mounts: [the ordered list of §2.3],
-  protected_set: {image_sha256, home: [...], tree: [...]}, environment:
+  sha256: SEAT_CONFIG_SHA256, projection: "ro-staged-dotdir"}, mounts: [the ordered list of
+  §2.3], protection: {image_sha256, the §2.4 table}, environment:
   {allowed, forbidden_prefixes}, managed_config, child_absent_policy, egress: {allowlist_id:
   "grok-review", content_digest}}`. It moves with any of those inputs.
 - `launch_digest`: sha256 of the normalised actual owner argv and filter of a production
@@ -90,63 +90,85 @@ constants and `grok_tool_surface.context_digest()` are not edited by any GROK la
 - The record key stays `(binary_sha256, argv_digest)`; `context`, `jail_context_digest` and
   `launch_digest` are record fields checked at use.
 
-### §2.3 Projections, the ordered mount list and the scan values
+### §2.3 Projections, the ordered mount list and the scan values (option A, r5)
 
-> **r4: the projection-directory design below is withdrawn** (coordinator ruling,
-> 2026-11-21). Its replacement is open question Q-r4 (§17). The scan-value rules of this
-> section stand.
+The coordinator's ruling on Q-r4 adopts main's Gemini-style jail projection
+(`seat_jail._gemini_binds`): a staged dot-directory bound read-only, writable children bound
+over named entries, and the CA by read-only path bind. `build_seat_jail`, `_owner_argv` and
+the SDK proof region `build_seat_jail` are not edited.
 
-**Delivery (no descriptor handoff).** `build_seat_jail` passes only its own descriptors, and
-`owner_binds` emits arguments but owns none, so the jailed seat uses **path** binds and no new
-descriptor. Per launch, the launch site (SL-3; for the provider-free qualification,
-`seat_profile_grok.qualification_shape`, SL-2) creates a fresh **projection directory**:
-operator-owned, mode 0700, outside seat-home, seat-out and the tree. It holds, each mode 0444
-and written once with `O_CREAT|O_EXCL|O_NOFOLLOW`: `config.toml` (erratum 8's 424 bytes),
-`auth.json` (the access-only copy), `agent_id`, `egress-ca.pem`, and `empty` (zero bytes); and
-`empty.d/`, an empty directory, mode 0555. The profile's `owner_binds(paths)` binds them by
-path through the `<grok-projection>` placeholder. Inside the jail a read-only bind mount point
-cannot be written, replaced, renamed or unlinked (`EROFS`/`EBUSY`), and mode 0444 or 0555
-makes it readable by the dropped seat UID without any ownership handoff. The directory is
-removed in `finally`, and by the existing abandoned-scratch purge after a crash. The builder
-and `seat_uid` are not edited. This differs from erratum 8's unjailed `--ro-bind-data` projection;
-erratum 8's launch 7 observed the client tolerating a read-only mount point at the config path,
-and condition 3's confirmation (§2.4) is taken under this exact path-bind projection. If the dropped UID cannot read a bound file or write a tmpfs
-(BA-J4), SL-2 STOPs and the plan is amended before execution.
+**The staged `.grok` directory.** Per launch, before `seat_uid.handoff`, the launch site (SL-3;
+for the provider-free qualification, `seat_profile_grok.qualification_shape`, SL-2) writes
+`<review_dir>/grok-config/`, the Grok counterpart of Gemini's `<review_dir>/gemini-config/`,
+reached through the existing `OwnerPaths.provider_config` field (placeholder
+`<provider-config>`):
 
-**Integrity at spawn.** The final check (§4.4) opens each projection file `O_NOFOLLOW`,
-requires a regular file, mode 0444, owner the operator, size and sha256 equal to the expected
-bytes, and the directory to be mode 0700, owned by the operator and to hold exactly those
-entries. A same-UID writer can still change a file after the check; that is the TS contract's
-D1 trust model (an operator-UID writer can forge a receipt too), stated here, not hidden.
+| Entry | Type, mode | Content |
+|---|---|---|
+| `config.toml` | file, 0444 | E8-A's 424 bytes; sha256 `SEAT_CONFIG_SHA256` |
+| `auth.json`, `agent_id` | files, 0444 | the access-only copy and the agent id (`seat_grok_credential`) |
+| `logs/`, `sessions/` | empty dirs, 0555 | mount points for the writable entries |
+| `.config-init.lock`, `managed_config.lock` | empty files, 0444 | mount points for the two lock files the client writes (erratum 8 r2 item 1d, launch 7) |
 
-**The ordered mount list (supersedes erratum 8 r2 item 1b's "nothing over `.grok/` but
-`--dir`" for the jailed context only).** After the builder's `--bind <tree> /seat/tree`,
-`--bind <home> /seat/home` and `--bind <out> /seat/out`, the profile appends exactly, in this
-order:
+The directory itself is 0555 and holds nothing else. Mode 0444 and 0555 make it readable and
+traversable by the dropped seat UID without Gemini's group handoff, which is Gemini-specific
+in `seat_uid.handoff`; the review directory (0700, operator-owned) keeps it private on the
+host. `seat_uid.py` is not edited (its bytes are a validator input). If the dropped UID cannot
+read it (BA-J4), SL-2 STOPs.
 
-1. `--perms 1777 --tmpfs /seat/home/.grok` and `--perms 1777 --tmpfs /seat/home/.config`;
-2. `--ro-bind <grok-projection>/config.toml /seat/home/.grok/config.toml`, then `auth.json`
-   and `agent_id` the same way, and `--ro-bind <grok-projection>/egress-ca.pem
-   /seat/egress-ca.pem`;
-3. the home masks of §2.4, in protected-set order;
-4. `--perms 1777 --tmpfs /seat/home/.grok/logs` and `--perms 1777 --tmpfs
-   /seat/home/.grok/sessions` (during a measurement, the sink bind of §5.1 in place of the
-   second);
-5. the tree masks of §2.4, in protected-set order.
+**The mask sources.** `<review_dir>/grok-masks/` holds `empty` (zero bytes, 0444) and
+`empty.d/` (empty, 0555). The profile derives its path from `paths.provider_config` (its
+sibling), as `_gemini_writable_source` derives Gemini's writable sources from `paths.home`.
 
-No other mount may have a normalised destination equal to, below or above (between the home
-or tree mount and) any protected path, projection or ephemeral mount, and none may follow
-the list (no shadow mount). Every destination is absolute, `posixpath.normpath`-stable and
-has no symlink component in the jail view.
+**The writable sources.** `<home>/.grok-rw/` inside seat-home, which `seat_uid.handoff`
+already hands to the seat UID, holds `.config-init.lock` and `managed_config.lock` (empty
+files). Seat-home is per launch and removed with the jailed seat.
 
-**Ancestor rule, home and tree.** Every ancestor of a protected path, between it and the
-`/seat/home` or `/seat/tree` bind, is itself a mount point (`.grok`, `.config`), so it
-cannot be renamed away to plant a replacement (erratum 8 r3 item 1f). Above `/seat/tree`,
-`/seat` and `/` are read-only (`--remount-ro /`), so a visible project ancestor cannot be
-written or renamed.
+**The ordered mount list.** After the builder's `--bind <tree> /seat/tree`, `--bind <home>
+/seat/home` and `--bind <out> /seat/out`, the profile's `owner_binds(paths)` appends exactly,
+in order:
+
+1. `--ro-bind <provider-config> /seat/home/.grok` (the read-only dot-directory);
+2. `--perms 1777 --tmpfs /seat/home/.grok/logs` and `--perms 1777 --tmpfs
+   /seat/home/.grok/sessions` (during a measurement, the second is `--bind <home>/.grok-rw/sessions
+   /seat/home/.grok/sessions`, §5.1);
+3. `--bind <home>/.grok-rw/.config-init.lock /seat/home/.grok/.config-init.lock` and the same
+   for `managed_config.lock`;
+4. `--ro-bind <egress-ca> /seat/egress-ca.pem`;
+5. the home masks of §2.4, in table order;
+6. the tree masks of §2.4, in table order.
+
+No other mount may have a normalised destination at, below or above (between the home or tree
+bind and) any entry of this list, and none may follow it. Every destination is absolute,
+`posixpath.normpath`-stable and has no symlink component.
+
+**Integrity at spawn (§4.4 check 3).** The final check opens each staged file `O_NOFOLLOW` and
+requires a regular file, mode 0444, operator-owned, with exactly the expected bytes: the
+config's sha256 equal to `SEAT_CONFIG_SHA256`, the credential files equal to
+`GrokSeatCredential.digest`, the CA equal to the CA digest of this launch's proxy. The staged
+directory must hold exactly the table's entries.
+
+**Difference from E8-A, recorded.** The unjailed seat (`panel_invoker.seat_profile`, grok
+branch, with E8-A's `grok_tool_surface` check) projects the config as a sealed memfd with
+`--perms 0444 --ro-bind-data`, checked by seals, size and `pread`. The jailed seat projects the
+same bytes as a read-only file inside a read-only bind, checked by digest at each launch. Both
+are immutable from inside: a read-only bind mount cannot be written (`EROFS`), and its mount
+points cannot be renamed over or unlinked (`EBUSY`). The memfd path does not exist in the seat
+jail because `build_seat_jail` passes only its own descriptors.
+
+**Code ownership of the two config paths (no drift).**
+
+| Path | Owner | Bytes from |
+|---|---|---|
+| unjailed `grok_seat_context.v1` | E8-A: `panel_invoker.seat_profile` (grok branch) and `grok_tool_surface`'s projection check | `grok_tool_surface.seat_config()` |
+| jailed `grok_jail_context.v1` | GROK: `seat_grok_credential` (SL-1, staging), `seat_profile_grok` (SL-2, mounts), `grok_jail_surface` (SL-3, final check) | the same function once E8-A merges |
+
+Until E8-A merges, SL-1 writes the bytes whose sha256 is the pinned input; SL-3 asserts
+`seat_grok_credential`'s bytes equal `grok_tool_surface.seat_config()` and fails on any
+difference, so the two paths cannot drift.
 
 **Ephemeral paths.** `.grok/logs` (the client log carries the token's last 12 characters) and
-`.grok/sessions` vanish with the jail.
+`.grok/sessions` are tmpfs at use and vanish with the jail.
 
 **Scan values and their handoff (erratum 8 r3 item 5).** `stage_grok_seat_credential` derives,
 from the exact projected bytes (never a reread of the store), every secret value of
@@ -160,7 +182,7 @@ result record is written. Retained channels and their rule:
 | Channel | Jailed rule |
 |---|---|
 | seat output, returned text, the exec record | scanned before retention; a hit is `grok_seat_token_in_output`, nothing retained |
-| provider stdout and stderr of a **failed** measurement (TS contract §5.9's private `provider.log`, the r3 raw-failure exception) | stricter than the TS contract: scanned before it is written; on a hit it is not written; otherwise kept private with the 7-day expiry |
+| provider stdout and stderr of a **failed** measurement (TS contract §5.9's private `provider.log`) | stricter than the TS contract: scanned before it is written; on a hit it is not written; otherwise kept private with the 7-day expiry |
 | the definitions artifact and the sessions sink | scanned before retention or extraction; a hit is `artifact_refused` |
 | `.grok/logs`, `.grok/sessions` (use) | tmpfs, never retained |
 
@@ -168,36 +190,52 @@ result record is written. Retained channels and their rule:
 the settled charge stands; `--require-measured` fails; the result and evidence readers accept
 the status.
 
-### §2.4 Fixed-input masks: why `staged` is eligible in the jail
+### §2.4 Fixed-input protection: why `staged` is eligible in the jail (option A, r5)
 
-> **r4: the mask inventory and mechanism below are withdrawn** (coordinator ruling). The
-> five-condition gate, its ordering and its evidence records stand; condition 2's protected
-> set and the mask mechanism await Q-r4 (§17).
+Erratum 8 r2 item 1d leaves `staged` ineligible because a writing tool can create a fixed input
+during the launch. Under option A no tool can, because every fixed input is in one of three
+places a seat process cannot write. Treatments come from E8-A's code (`SEAT_FIXED_INPUTS`,
+`SEAT_FIXED_INPUT_EXCLUSIONS`, `MANAGED_CONFIG_PATHS`, `CHILD_ABSENT_POLICY_PATHS`) and main's
+`DISCOVERY_PATHS`.
 
-Erratum 8 r2 item 1d leaves `staged` ineligible because a tool can create a fixed input. In the
-jail no tool can:
+**The protection table** (`seat_profile_grok.JAIL_PROTECTION`, keyed by image sha256; the entry
+for `add4d201…`, grok 1.0.92, landed by SL-2):
 
-- **Masks.** A file entry is `--ro-bind <grok-projection>/empty <path>`; a directory entry is
-  `--ro-bind <grok-projection>/empty.d <path>`. Nothing can be created inside, over or in
-  place of a read-only mount point (erratum 8 r2 item 1b, observed for the config file).
-- **Protected set: a complete input for SL-2.** `seat_profile_grok.PROTECTED_SETS` is a literal
-  keyed by image sha256, landed by SL-2. For `add4d201…` (1.0.92) it is transcribed from the
-  frozen text of erratum 8 r3 item 1c: `SEAT_FIXED_INPUTS` less `SEAT_FIXED_INPUT_EXCLUSIONS`
-  (`auth.json` and `agent_id` are projections here; `.grok/rules` is prompt-only) for the home,
-  and `grok_tool_surface.DISCOVERY_PATHS` (`.agents`, `.claude`, `.cursor`, `.grok`,
-  `.mcp.json`) for the tree. Once E8-A merges, SL-3 asserts the home set equals E8-A's
-  constants for that image; a mismatch STOPs SL-3. An image with no entry has no eligible
-  `staged`.
-- **Canonical coverage.** Each set is reduced before use: an entry with an ancestor in the same
-  set is dropped as covered, so no mask is mounted inside another. A tree entry `.grok` covers
-  a project `.grok/config.toml`. Home `.grok` is the writable tmpfs, not a mask, so home
-  entries below it are masked one by one. The reduced list, not the raw one, is in the digest.
-- **Tree mount points.** Before the jail is built, after the copy's `staged_tree_sha256`
-  check, the launch site creates, in the per-launch copy, an empty file or directory of the
-  entry's type at each absent tree entry, so the bind has a target. An entry that exists as a
-  symlink, as a different type, or under a symlinked component refuses. An entry that exists
-  is covered as it stands; its bytes stay in the authorised stage. These stubs are excluded,
-  by name, from EC-GROK-1's "everything else unchanged" comparison.
+| Inputs | Treatment | Why mid-launch creation is impossible |
+|---|---|---|
+| `.grok/config.toml` | **projected**: staged file, bytes bound by `SEAT_CONFIG_SHA256` | inside the read-only bind of `.grok`: `EROFS` on write, `EBUSY` on rename over or unlink |
+| `.grok/auth.json`, `.grok/agent_id` (exclusions) | **projected**: staged files, bytes checked against the staged copy's digest per launch | as above |
+| `.grok/rules` (exclusion, prompt-only) | absent from the staged directory | inside the read-only `.grok`: cannot be created |
+| every other `.grok/…` entry of `SEAT_FIXED_INPUTS`: `managed_config.toml`, `requirements.toml`, `managed_config_cache.json`, `managed_config.sig.json`, `managed_identity.sig.json`, `staged/managed_config_refresh.json`, `models_cache.json`, `experiments_state.json`, `campaigns_state.json`, `skills`, `agents`, `bundled/agents`, `bundled/skills`, `commands`, `plugins`, `installed-plugins`, `hooks`, `hooks-paths`, `disabled-hooks`, `workflows`, `lsp.json`, `sandbox.toml`, `trusted-plugins`, `trusted-hook-projects`, `trusted_folders.toml`, `mcp_preferences.json`, `mcp_credentials.json`, `settings.json` | **absent inside the read-only `.grok`** | `.grok` is a read-only bind, so nothing can be created in it; nested entries (`staged/…`, `bundled/…`) have absent parents that cannot be created either. `.grok` itself is a mount point and cannot be renamed away. The only writable places inside it are the `logs` and `sessions` tmpfs and the two lock-file binds, none of them a fixed input. |
+| `/etc/grok/managed_config.toml`, `/etc/grok/requirements.toml`, `/etc/claude-code/managed-settings.json` | **absent outside writable mounts** | absent on the host (`/etc/grok`) and in the jail view (all three); `/` is `--remount-ro` |
+| `.claude.json`, `.mcp.json` (home) | **masked file**: `--ro-bind <grok-masks>/empty <path>` | a read-only file mount point: not writable, not replaceable, not removable |
+| `.claude`, `.cursor`, `.agents` (home) | **masked directory**: `--ro-bind <grok-masks>/empty.d <path>` | a read-only empty directory mount point: nothing can be created in or over it |
+| `.config/grove` (home) | **masked directory** under a protected ancestor: `--perms 1777 --tmpfs /seat/home/.config`, then `--perms 0555 --dir /seat/home/.config/grove`, then `--ro-bind <grok-masks>/empty.d /seat/home/.config/grove` | `.config` is a mount point, so it cannot be renamed away to plant a new `grove`; `grove` is read-only |
+| `.agents`, `.claude`, `.cursor`, `.grok` (tree, `DISCOVERY_PATHS`) | **masked directory** at `/seat/tree/<entry>` | read-only mount points over the per-launch copy; the hot-reloaded `<cwd>/.grok/` cannot gain an entry |
+| `.mcp.json` (tree, `DISCOVERY_PATHS`) | **masked file** at `/seat/tree/.mcp.json` | as for the home file masks |
+
+- **Mount points.** bwrap, running without DAC capability, cannot create a mount point in the
+  seat's directories, so the launch site creates them first, as Gemini's staged directory
+  carries its "three empty mount points": in seat-home before `seat_uid.handoff`, an empty file
+  at `.claude.json` and `.mcp.json`, empty directories at `.claude`, `.cursor`, `.agents` and
+  `.config`; in the per-launch tree copy, after its `staged_tree_sha256` check and before
+  handoff, an empty entry of the table's type at each absent `DISCOVERY_PATHS` entry. An entry
+  that exists in the stage keeps its type if it matches and is covered as it stands (its bytes
+  stay in the authorised stage); a symlink, a symlinked component or a mismatched type refuses.
+  The tree stubs are excluded, by name, from EC-GROK-1's "everything else unchanged"
+  comparison.
+- **Coverage.** No mask is mounted inside another: the table has no entry with an ancestor in
+  the same table except `.config/grove`, whose ancestor is the tmpfs, not a mask. The ancestor
+  rule holds: every protected path's ancestors below the home or tree bind are mount points
+  (`.grok`, `.config`), and above `/seat/tree`, `/seat` and `/` are read-only.
+- **Drift.** Once E8-A merges, SL-3 asserts that the table's inputs equal E8-A's
+  `SEAT_FIXED_INPUTS` and `SEAT_FIXED_INPUT_EXCLUSIONS` and main's `DISCOVERY_PATHS` exactly,
+  and fails on any difference. An image with no table entry has no eligible `staged`.
+- **Client writes that fail.** Launch 7 also showed the client creating
+  `installed-plugins/registry.lock` (inside a fixed input) and its docs and worktree database.
+  Under option A those writes fail (`EROFS`). Whether the client tolerates that is what
+  condition 3's confirmation observes. Adding a writable entry that is not a fixed input is a
+  jail contract erratum before the grant; a fixed input is never made writable.
 - **Residuals, stated.** Discovery from directories nested below the cwd is not bound; the
   client watches `<cwd>/` and `<cwd>/.grok/` only [erratum 8, documented]. A run tool can start
   `/seat/bin/grok` again with other flags; that child is bounded by the same egress and
@@ -211,8 +249,8 @@ launch (all five must pass). Any failure is `grok_tool_surface_unverified`.
 | # | Condition | Evidence and check | Authority, binding |
 |---|---|---|---|
 | 1 | SL-3's enforcement is installed | `grok_jail_surface.ENFORCEMENT` is importable from the installed package and names the §2.3 list revision | the installed release |
-| 2 | the protected set is pinned for the image | `PROTECTED_SETS[binary_sha256]` exists | SL-2's reviewed source |
-| 3 | the masked-projection confirmation is recorded | a record `grok-jail-confirmation-<binary_sha256>.json`, schema `grok_jail_confirmation.v1`, under the private record root (TS contract §3.2 file checks), or the same object in the jailed catalog entry; fields: image sha256, `launch_digest` per architecture, `jail_context_digest`, the observed outcome (inference request reached; no `/v1/settings`, no `/v1/models`; masks and config unchanged), the owner's approval id and date | the owner's approval of the offline, credential-free, no-egress launch; bound to the image, `launch_digest` and `jail_context_digest` |
+| 2 | the protection table is pinned for the image | `JAIL_PROTECTION[binary_sha256]` exists | SL-2's reviewed source |
+| 3 | the option-A projection confirmation is recorded | a record `grok-jail-confirmation-<binary_sha256>.json`, schema `grok_jail_confirmation.v1`, under the private record root (TS contract §3.2 file checks), or the same object in the jailed catalog entry; fields: image sha256, `launch_digest` per architecture, `jail_context_digest`, the observed outcome (inference request reached; no `/v1/settings`, no `/v1/models`; staged files and masks unchanged), the owner's approval id and date | the owner's approval of the offline, credential-free, no-egress launch under the exact §2.3 projection; bound to the image, `launch_digest` and `jail_context_digest` |
 | 4 | the real-launcher boundary check passed | a record `grok-jail-boundary-<launch_digest>.json`, schema `grok_jail_boundary.v1`, or the same object in the catalog entry; fields: hosted run id, head, `launch_digest`, `jail_context_digest`, BA-J5 result `passed` with no skipped case | the hosted CI run, recorded with `--hosted-check`; bound to `launch_digest` and `jail_context_digest` |
 | 5 | an admitted jailed record exists | §3 record for the image and `staged` argv digest, `measured`, `admitted`, its `jail_context_digest` and `launch_digest` equal the running values | §5 measurement, catalog or host-local |
 
@@ -319,12 +357,13 @@ digest refuses).
 and **atomically consumes** the reservation's admission by creating `admission-<reservation
 id>` with `O_CREAT|O_EXCL` in the grant directory, immediately before spawn. The admission
 binds the grant id, the reservation id, the image sha256, the `staged` argv digest and cwd,
-the projection directory's device and inode, the sink's device and inode, the holder's pid
+the staged `.grok` directory's device and inode, the sink's device and inode, the holder's pid
 and network-namespace inode, the proxy socket and the stage budget. Its two declared
-differences are verified on the actual objects: the sink is a fresh, empty, 0700 directory
-under the private record root, writable by the dropped UID (proven by a probe write and read
-in the jail before the provider starts), and removed in `finally` and by the abandoned-scratch
-purge; the proxy is the reservation's budgeted proxy. The admission cannot be consumed twice.
+differences are verified on the actual objects: the sink is the fresh, empty
+`<home>/.grok-rw/sessions` in this launch's seat-home, owned by the seat UID after handoff and
+writable by it (proven by a probe write and read in the jail before the provider starts), and
+removed with seat-home in `finally` and by the existing cleanup of abandoned jailed seats; the
+proxy is the reservation's budgeted proxy. The admission cannot be consumed twice.
 
 The function issues a `JailLaunchContext` mark binding these objects; the spawn admits only
 that mark for that exact argv and jail. Every failure is `grok_tool_surface_unverified`
@@ -343,8 +382,10 @@ The measurement does not enter `seat_route.resolve`'s L6 and gains no general by
 2. composes the jail through the same builder path as a production jailed launch;
 3. verifies the composition equals the production composition except for exactly two
    declared differences, and computes `launch_digest` with both substituted back:
-   - `.grok/sessions` is the reservation's private sink, a fresh 0700 directory under the
-     private record root (never a discovery path), instead of the tmpfs;
+   - `.grok/sessions` is the reservation's sink, `<home>/.grok-rw/sessions`, a fresh empty
+     directory in seat-home (handed to the seat UID by `seat_uid.handoff`, so the dropped UID
+     can write it), bound at `.grok/sessions` instead of the tmpfs. The parent reads the
+     artifact from it after the leg and removes it with seat-home;
    - the proxy is the reservation's budgeted proxy (`request_budget`), instead of the
      budgetless one;
 4. records the admission of §4.4 (not yet consumed). Only §4.4's measurement mode consumes it,
@@ -668,9 +709,10 @@ Retiring the id would move both contexts' digests; it is not done.
   spawn; a jailed receipt refuses in `launch_owned`; a jailed probe does not overwrite an
   unjailed receipt.
 - **BA-J4 (SL-2, extended by SL-3) — the dropped child.** A stand-in under the actual seat UID in
-  the real Grok jail can read the three projections and the CA, cannot append, truncate,
-  rename over, unlink or chmod any of them, cannot rename `.grok` (or `.config`) away, can
-  write both tmpfs mounts and `.grok` itself, cannot create inside a mask; a planted
+  the real Grok jail can read the three staged files and the CA, cannot append, truncate,
+  rename over, unlink or chmod any of them, cannot create any file in `.grok` outside the
+  writable entries, cannot rename `.grok` or `.config` away, can write both tmpfs mounts and
+  both lock files, cannot create inside a mask; a planted
   12-character suffix written to `.grok/logs` and the credential bytes are absent from
   seat-out, the review dir, the grant, the output directory, the record root and the evidence
   after teardown. SL-3 adds, through the real composed jail with a stand-in, for a short and a
@@ -678,12 +720,14 @@ Retiring the id would move both contexts' digests; it is not done.
   (`grok_seat_token_in_output`, nothing retained); into a failed measurement's stdout and
   stderr (no `provider.log` written); into the definitions artifact and the sessions sink
   (`artifact_refused`, `--require-measured` fails, the charge stands, both readers accept the
-  record); and a crash after spawn (the projection directory and the sink are gone after the
-  abandoned-scratch purge, and no retained path holds the suffix).
+  record); and a crash after spawn (the review directory's staged `.grok` directory and the
+  seat-home sink are gone after the existing cleanup of abandoned jailed seats, and no
+  retained path holds the suffix).
 - **BA-J5 (SL-3) — masks, through the real launcher.** In `live_jail` and as a hosted check,
-  with the `planted` tree: every protected path is an immutable mask; creating
-  `.grok/requirements.toml`, `.grok/managed_config.toml`, an MCP, skill, agent, hook or command
-  source in the home, or a discovery path at `/seat/tree`, fails; renaming `.grok`, `.config` or
+  with the `planted` tree: every row of §2.4's table has its treatment on the actual mount
+  view; creating `.grok/requirements.toml`, `.grok/managed_config.toml`,
+  `.grok/staged/managed_config_refresh.json`, an MCP, skill, agent, hook or command source in
+  the home, `.claude.json`, `.config/grove/x`, or a discovery path at `/seat/tree`, fails; renaming `.grok`, `.config` or
   a tree mask's parent and re-looking-up the path still finds the mask; the rest of the copy is
   writable and byte-identical to the stage; an overlapping or symlinked mask path refuses.
 - **BA-J6 (SL-2) — gate closed.** Through ordinary board routing with an absent, a valid
@@ -833,3 +877,24 @@ Review `review-amendment-r3.md` and the coordinator's ruling `DIAGNOSIS-r3.md`.
   - **C:** E8-A's absence rule only: jailed `staged` stays closed; the jailed seat then admits
     only non-mutating forms, and EC-GROK-1's tool write needs a roadmap amendment.
   - **D:** pause GROK until E8-A and E8-B merge, then amend against merged code.
+
+## §18 Revision r5 (option A, 2026-11-22)
+
+The coordinator ruled option A on Q-r4.
+
+- **C1 closed.** §2.3: main's Gemini-style projection. The staged `<review_dir>/grok-config/`
+  is bound read-only at `.grok` through `OwnerPaths.provider_config`; it holds E8-A's config
+  bytes and the access-only credential. Writable entries (`logs`, `sessions` as tmpfs; two lock
+  files from seat-home) are bound over named mount points, and the CA by read-only path bind.
+  No `build_seat_jail`, `_owner_argv`, `seat_uid` or SDK-region edit. Readability by the dropped
+  UID is by mode (0444, 0555), not Gemini's group handoff. The difference from E8-A's memfd
+  projection and the code ownership of both config paths are recorded, with SL-3's
+  byte-equality guard. The measurement sink is a seat-home directory the handoff already makes
+  writable.
+- **C3 closed.** §2.4's protection table classifies every `SEAT_FIXED_INPUTS` entry, both
+  exclusions groups and every `DISCOVERY_PATHS` entry as projected, absent inside the
+  read-only `.grok`, absent outside writable mounts, masked file or masked directory, with the
+  reason creation is impossible; mount points are pre-created as Gemini's are; the ancestor
+  rule and coverage are stated; SL-3 guards drift against E8-A.
+- **C2** stays closed (§17).
+- The r4 banners are removed; Q-r4 is answered.
