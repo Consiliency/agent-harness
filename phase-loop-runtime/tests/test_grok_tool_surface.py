@@ -1515,6 +1515,16 @@ def _config_change(case, profile, root):
             os.open(f"/proc/self/fd/{real}", os.O_RDONLY | os.O_CLOEXEC)))),
         "duplicate_kept": lambda: replace(profile, keep_fds=(*profile.keep_fds, int(dup))),
         "terminal": lambda: replace(profile, terminal_fd=int(real)),
+        # bubblewrap reads a source operand as a decimal integer: another spelling of the
+        # config's number is the same descriptor, and no operand has two spellings.
+        "config_fd_leading_zero_as_ca": lambda: reused(gts.PROXY_PROJECTED_PATHS[0], "0" + real),
+        "config_fd_plus_as_ca": lambda: reused(gts.PROXY_PROJECTED_PATHS[0], "+" + real),
+        "config_fd_space_as_credential": lambda: reused(".grok/auth.json", " " + real),
+        "config_fd_trailing_space_as_ca": lambda: reused(gts.PROXY_PROJECTED_PATHS[0], real + " "),
+        "out_of_range_source": lambda: reused(gts.PROXY_PROJECTED_PATHS[0], str(2**31)),
+        "noncanonical_other_source": lambda: reused(
+            gts.PROXY_PROJECTED_PATHS[0],
+            "0" + arguments[arguments.index(home + "/" + gts.PROXY_PROJECTED_PATHS[0]) - 1]),
     }[case]()
 
 
@@ -1528,7 +1538,9 @@ CONFIG_CHANGES = ("missing", "one_byte_changed", "one_byte_more", "one_byte_fewe
                   "below_it", "bind_over_grok", "tmpfs_over_grok", "symlink_over_grok", "chmod",
                   "remount_ro", "overlay", "config_fd_as_ca", "config_fd_as_credential",
                   "duplicate_as_ca", "duplicate_passed", "reopened_passed", "duplicate_kept",
-                  "terminal")
+                  "terminal", "config_fd_leading_zero_as_ca", "config_fd_plus_as_ca",
+                  "config_fd_space_as_credential", "config_fd_trailing_space_as_ca",
+                  "out_of_range_source", "noncanonical_other_source")
 
 
 @pytest.mark.parametrize("case", CONFIG_CHANGES)
@@ -1561,6 +1573,16 @@ def test_the_home_holds_exactly_one_seat_config_mount():
             gts._config_mount(mounts)
     with pytest.raises(gts._Refused):
         gts._config_descriptor(("--perms", "0600", "--bind", "/host/config.toml", CONFIG_PATH))
+
+
+def test_a_descriptor_operand_has_one_spelling():
+    """The canonical decimal spelling, within the descriptor range, and nothing else."""
+    for word, value in (("0", 0), ("3", 3), ("10", 10), (str(2**31 - 1), 2**31 - 1)):
+        assert gts._fd_operand(word) == value
+    for word in ("03", "00", "+3", "-3", " 3", "3 ", "3\n", "", "0x3", "3.0", "\u0663",
+                 str(2**31), "9" * 11, "1_0"):
+        with pytest.raises(gts._Refused):
+            gts._fd_operand(word)
 
 
 @pytest.mark.parametrize("other", [

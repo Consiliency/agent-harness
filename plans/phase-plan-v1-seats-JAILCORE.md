@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: JAILCORE
 roadmap: specs/phase-plans-seats-v1.md
-roadmap_sha256: b91c98ad7b9097ba411ca21f39cf390878dabac449e59d6fdfd1750915c16a09
+roadmap_sha256: 2f26635bfcb5119967735cf5d5966f1ce39695a8331d2543eb9e11c07d187018
 automation:
   suite_command: ["timeout", "900", "env", "PYTEST_ADDOPTS=", "python3", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_seat_route_contract.py", "phase-loop-runtime/tests/test_seat_egress_allowlists_jailcore.py", "phase-loop-runtime/tests/test_seat_qualification_key.py", "phase-loop-runtime/tests/test_seat_profiles.py", "phase-loop-runtime/tests/test_seat_route.py", "phase-loop-runtime/tests/test_seat_jail.py", "phase-loop-runtime/tests/test_seat_qualification_host_context.py", "phase-loop-runtime/tests/test_seat_notices.py", "phase-loop-runtime/tests/test_seat_jail_autoqualify.py", "phase-loop-runtime/tests/test_gemini_seat_egress_1170.py", "phase-loop-runtime/tests/test_sealed_seat_never_counts.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py", "phase-loop-runtime/tests/test_seat_resource_caps.py"]
 ---
@@ -185,7 +185,7 @@ subject, and it stays inside the agent-harness#1782 selected-subject contract.
 
 - **Scope**: Register the Claude and Gemini profiles digest-invariantly, replace J7 with the contract §2 walk, bind the v2 pass store, enforce the named exceptions, and wire every seat-route call site.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_jail.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_route.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_uid.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail_qualification.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail_autoqualify.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_preflight.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/tests/test_seat_profiles.py`, `phase-loop-runtime/tests/test_seat_route.py`, `phase-loop-runtime/tests/test_seat_jail.py`, `phase-loop-runtime/tests/test_seat_notices.py`, `phase-loop-runtime/tests/test_seat_jail_autoqualify.py`, `phase-loop-runtime/tests/test_seat_jail_qualification_entry.py`, `phase-loop-runtime/tests/test_gemini_seat_egress_1170.py`, `phase-loop-runtime/tests/test_sealed_seat_never_counts.py`, `phase-loop-runtime/tests/test_seat_preflight_1204.py`, `phase-loop-runtime/tests/test_panel_invoker.py`, `phase-loop-runtime/tests/test_codex_seat_tool_sandbox_1335.py`, `phase-loop-runtime/tests/data/seat_profile_digests_jailcore.json`, `phase-loop-runtime/tests/data/seat_jail_1132_sealed_golden.json`, `phase-loop-runtime/tests/data/seat_jail_1132_sealed_tui_session_golden.json`, `plans/evidence/seat-jailcore/**`, `phase-loop-runtime/src/phase_loop_runtime/seat_window.py`, `phase-loop-runtime/tests/test_seat_qualification_host_context.py`
-- **Interfaces provided**: `seat_profiles` registry, `seat_route.resolve`, `seat_route.load_route_policy`, `seat_route.mode_line_codes`, `INACTIVE_REMOTE_RUNG`, the native-fill rung adapter, the production `SeatCapacity` adapter, the profile-sourced window kit (`seat_window`), `MODE_REMOTE`, the v2 pass store, `python -m phase_loop_runtime.seat_profiles digest-receipt`
+- **Interfaces provided**: `seat_profiles` registry, `seat_route.resolve`, `seat_route.load_route_policy`, `seat_route.mode_line_codes`, `INACTIVE_REMOTE_RUNG`, the native-fill rung adapter, the production `SeatCapacity` adapter, the profile-sourced window kit (`seat_window`; the `WindowRows` seam and its rows only, see the SL-3.5 note), `MODE_REMOTE`, the v2 pass store, `python -m phase_loop_runtime.seat_profiles digest-receipt`
 - **Interfaces consumed**: everything SL-0 provides; SL-1's `allowlist_ref`, `start_proxy(*, allowlist_id)`, `unavailable_code`, opt-out predicate; SL-2's `key_for_launch`, `admit_profile_projection`; `seat_window.readiness_rows()` (pre-existing); `claude_seat_transport.resolve_jailed_claude_transport` (pre-existing), `claude_seat_transport.CODES` (pre-existing); `leg_exec_record` (pre-existing, IF-0-FIRSTSEAT-3)
 - **Parallel-safe**: no
 
@@ -304,6 +304,10 @@ the host prerequisite and the probe. `docs/TEAM-ONBOARDING.md` gains one pointer
   the named successor modules and records the path change in its PR.
   `docs/review-seats-readiness.md` is read-only here. `seat_window.py` joins SL-3 for SL-3.5
   only; FIRSTSEAT lane E's landed code is its base.
+  *Amendment (2026-11-21, K-1, records only):* SL-3.5 delivered the profile-sourced rows
+  (vendor gate and path rows read from `JailProfile.window`). It did not make the launcher,
+  board result, reducer or CLI vendor selection vendor-neutral, and this phase does not own
+  them. FIRSTSEAT owns them through `plans/amendments/seats-FIRSTSEAT-K1-window-kit.md`.
 - **TEAMHOST shared edits (agent-harness#1859, its contract §8).** TEAMHOST may edit only
   these named parts of JAILCORE-owned files, and nothing else in them:
   - `seat_uid.py`: `seat_runtime_dir`, plus one range-disjointness check in the L3

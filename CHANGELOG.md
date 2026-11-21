@@ -51,6 +51,50 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   No Claude SDK proof input moves: `memfd_with` is called, not edited, and
   `SDK_PROOF_UNBOUND` is unchanged. No rows are added to
   `tests/data/seat_launch_references.json`.
+- `phase-loop seat-window status --vendor grok`, a read-only answer to "is this grok build
+  measured, and should a host move onto an update?" (GROKROLL lane SL-0,
+  `plans/artifacts/grokroll-v1-contract.md` §1-§3 and §5.1; Consiliency/agent-harness#2047).
+  It prints one `grok_seat_status.v1` object for the installed build (found by the seat's
+  own resolver), a `--binary` path, a `--binary-digest` or a `--release-version`, and,
+  with `--candidate`, `--candidate-digest` or `--candidate-version`, a `decision` from a
+  twelve-row table whose only `advance` is a measured candidate on sound inputs.
+  `--require-route` adds routes beyond `review`; `--exit-code` turns a hold or an
+  unmeasured subject into exit 1. Every evidence source (both catalogs, the host-local
+  record, the attempt register, the probe receipt) is read into `ok`, `absent` or
+  `invalid`, so a corrupt source is never reported as absent or measured; a receipt with
+  an unknown or repeated key, a passing receipt whose `public_code` is missing or non-null,
+  or a failed receipt of any other shape, is `invalid`. A withdrawn frozen publication
+  contributes no usable evidence; a valid listing receipt stays independent evidence. A
+  build is `partial` when a required route's first-match evidence resolves to `withdrawn`,
+  unless a higher-priority state applies (a malformed receipt beside it makes the build
+  `invalid`); a withdrawn route that is not required does not stop a build from being
+  measured or a target. A context change is `stale_context`, and a revoked digest is `revoked` before
+  any evidence. Release-catalog membership (a version selector resolving, `release:
+  "member"`, `advance_to` and `rollback_to`) holds only while the packaged gate reads
+  attested; `inputs.catalog_gate` reports `attested`, `unattested` or `invalid`. The query opens no socket, executes nothing and writes
+  nothing. A path selector must be a regular native (ELF) file and is hashed through one
+  descriptor; a FIFO, a directory, a link, an oversize file, a rewrite during the read or a
+  launcher the resolver does not follow fails with exit 3 and a `status_unavailable`
+  detail. New, inert package data: the release catalog `data/grok_releases.json` (empty)
+  and its gate `data/grok_catalog_gate.json` (unattested), with the loader, the offline
+  signature check against the pinned registry key and the tree invariant `check_tree`
+  in `phase_loop_runtime.grok_roll`. Package data and explicit trees are read with no
+  linked component, as regular files, without blocking and with a bound; `check_tree` takes
+  a checkout `anchor`. A new optional extra `grok-catalog`
+  (`cryptography==50.0.2`, `brotli==1.2.1`) is needed only by the signature check and the
+  later provenance derivation; the hosted pytest job, `scripts/local_check.py` and the
+  Gate A suite container install `[visual,claude-sdk,grok-catalog]`, Gate A's inner suite
+  venv adds it after the base-wheel probes, the `test` group includes it, and the hosted
+  pytest job now also installs the built wheel alone in a fresh environment (brotli
+  absent) and requires the one deterministic answer from it. Pins:
+  `seat_window.runtime_digest()` moves (the `status` action and a bounded, non-blocking
+  `/etc/machine-id` read, with the same host identity, are added to `seat_window.py`;
+  the new `grok_roll/` package and the data files are outside the hash), so window records
+  on the previous key need requalifying; new `host-io` rows in
+  `tests/data/seat_launch_references.json`; two package-data entries; `uv.lock` gains
+  `brotli`. The grok context digest, the route argv digests, the `tool_probe.v1` receipt,
+  the egress allow-list digests, the agy seat QCI and the agy validator closure do not
+  move.
 - The grok tool probe has a second basis for builds with no `--list-tools`, which is every
   installed build through 1.0.89 (lane L1 of the grok tool-surface plan,
   `plans/artifacts/grok-tool-surface-contract-v1.md`). Basis selection is by the help gate

@@ -587,6 +587,19 @@ _MOUNT_ARITY = {"--tmpfs": 1, "--perms": 1, "--dir": 1, "--file": 2, "--ro-bind"
 
 #: The operations that copy their file from a descriptor (the first operand).
 _DATA_OPERATIONS = frozenset({"--file", "--bind-data", "--ro-bind-data"})
+#: A descriptor operand in its one spelling: bubblewrap parses the operand as a decimal
+#: integer, so ``03``, ``+3`` or `` 3`` would name descriptor 3 too.
+_FD_OPERAND = re.compile(r"0|[1-9][0-9]{0,9}")
+_FD_MAX = 2**31 - 1
+
+
+def _fd_operand(word: str) -> int:
+    """The descriptor a data mount's source operand names, only when it is spelt
+    canonically (ASCII digits, no sign, space or leading zero) and is in range."""
+    _require(type(word) is str and _FD_OPERAND.fullmatch(word) is not None)
+    value = int(word)
+    _require(value <= _FD_MAX)
+    return value
 
 
 def _mounts(arguments) -> list[tuple[str, tuple[str, ...]]]:
@@ -713,8 +726,9 @@ def _check_seat_config(profile: Any) -> None:
     # config's descriptor is named by its own triple and nothing else -- by number in no
     # other operation and not as the terminal, and no other descriptor passed or kept is
     # the same file (a duplicate shares its offset; a reopened path shares its bytes).
-    _require(sum(1 for operation, operands in mounts if operation in _DATA_OPERATIONS
-                 and operands[0] == str(descriptor)) == 1)
+    sources = [_fd_operand(operands[0]) for operation, operands in mounts
+               if operation in _DATA_OPERATIONS]
+    _require(sources.count(descriptor) == 1)
     _require(profile.terminal_fd != descriptor)
     config_file = os.fstat(descriptor)
     for other in {*profile.pass_fds, *profile.keep_fds} - {descriptor}:
