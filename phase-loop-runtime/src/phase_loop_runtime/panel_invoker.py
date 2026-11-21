@@ -2141,6 +2141,23 @@ def _claude_mode_transport_refusal(cache: dict[str, object]) -> str | None:
     return cache["sdk"] if isinstance(cache["sdk"], str) else None
 
 
+def _gemini_login_unrenewable(env: Mapping[str, str] | None) -> bool:
+    """agent-harness#1823: whether the jailed Gemini seat's launch gate would refuse its login
+    now -- the login is not fresh (`_gemini_credential_fresh`) and the seat's subject is bound
+    to an executable dependency (a session lease or a managed release), which must not renew
+    the host login. Read-only and advisory: anything it cannot tell is ``False``, and the
+    seat's own gate decides."""
+    subscription_env = _broker_subscription_env(env)
+    try:
+        if _gemini_credential_fresh(Path(subscription_env.get("HOME", str(Path.home())))):
+            return False
+        from .seat_subject import resolve_seat_subject
+        subject = resolve_seat_subject("gemini", subscription_env)
+    except Exception:
+        return False
+    return subject.source in {"session_lease", "managed_release"}
+
+
 def _seat_launch_modes(
     board: Board, *, mode: str | None,
     review_authorization: "ReviewIsolationAuthorization | None",
@@ -2280,6 +2297,12 @@ def _seat_launch_modes(
                                              None, position))
                     sdk_refused.add(position)
                     continue
+            if leg == "gemini" and _gemini_login_unrenewable(base_env):
+                # agent-harness#1823: the launch gate would refuse this login, and a
+                # dependency route must not renew it (agent-harness#1782): say so now,
+                # with its renewal fix, rather than after the board has run.
+                modes.append(_coded(sp.MODE_DEGRADED, "gemini_credential_near_expiry"))
+                continue
             kind, code, source, left, also = (_claude_credential(leg) if leg == "claude"
                                               else (sp.MODE_JAILED, None, None, None, ()))
             profile = _seat_profiles.profile_for(leg)
@@ -3320,6 +3343,9 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "claude_seat_login_token_expired", "claude_seat_login_token_expiring",
     "claude_seat_login_token_awaiting_refresh",
     "seat_jail_qualification_failed",
+    # agent-harness#1823: the qualification board's watcher could not start. A detail code
+    # only, not a seat notice: the mode-line closure (`seat_route_contract`) is unchanged.
+    "seat_sandbox_refused:watch_unavailable",
     # agent-harness#1407: a Gemini seat waiting for its agy login to expire (never a refusal)
     "gemini_credential_awaiting_refresh",
     "gemini_seat_credential_missing", "gemini_seat_credential_unusable",
@@ -3583,7 +3609,67 @@ def _exception_failure(exc: BaseException) -> object:
         # A full disk is an operator-actionable environment failure (board round 8 of
         # agent-harness#908); its message names paths, so it gets our own template.
         return "env_failure: staging filesystem below its free-space floor"
+    code = _caused_refusal_code(exc)
+    if code is not None:
+        return code
     return _LegFailure(_UNKNOWN_DETAIL, raw=f"{type(exc).__name__}: {message}", unknown=True)
+
+
+#: How many ``__cause__`` links `_exception_failure` follows to find a typed refusal
+#: (agent-harness#1823), bounded so that a cycle cannot spin. Only explicit chaining
+#: (``raise ... from``) is followed, never ``__context__``, and only out of a recognized
+#: transparent wrapper (`_is_transparent_wrapper`): any other outer exception keeps its own
+#: classification.
+_EXCEPTION_CAUSE_DEPTH = 4
+#: The login-freshness gate's refusal on a dependency route (agent-harness#1782), by its two
+#: typed fields: the session must not renew the host's agy login, so the seat reports the
+#: existing ``gemini_credential_near_expiry`` code, whose notice tells the operator to renew it.
+_GEMINI_HOST_REFRESH_REFUSAL = ("dependency_route_unwired", "Gemini host credential refresh")
+#: Exception types (EXACT types) whose single argument, when it EQUALS one of our fixed
+#: literals, is that refusal's code.
+_CODED_MESSAGE_TYPES: tuple[type, ...] = (
+    ValueError, _sandbox_egress.EgressUnavailable, _sandbox_egress.SeatIdentityUnverified,
+    _ReviewOperationCancelled,
+)
+
+
+def _typed_refusal_code(exc: BaseException) -> str | None:
+    """The one harness code an exception of ours carries, by EXACT type, or ``None``. A code
+    is a typed attribute, or an argument that EQUALS one of our literals; no text is parsed."""
+    kind = type(exc)
+    if kind is _seat_jail.SeatSandboxRefused:
+        code = exc.code
+    elif kind is ExecutableDependencyError:
+        fields = (exc.code, exc.detail)
+        typed = all(type(value) is str for value in fields)
+        code = ("gemini_credential_near_expiry"
+                if typed and fields == _GEMINI_HOST_REFRESH_REFUSAL else None)
+    elif any(kind is coded for coded in _CODED_MESSAGE_TYPES) and len(exc.args) == 1:
+        code = exc.args[0]
+    else:
+        return None
+    return code if type(code) is str and code in _HARNESS_DETAIL_CODES else None
+
+
+def _is_transparent_wrapper(exc: BaseException) -> bool:
+    """The wrappers classification looks through, by EXACT type: today only the broker
+    client's failure that its adapter's exception alone caused (its independent checks held)."""
+    return type(exc) is _advisor_board_backing.CredentiallessAdapterFailure
+
+
+def _caused_refusal_code(exc: BaseException) -> str | None:
+    """``exc``'s typed refusal, or, when ``exc`` is a transparent wrapper, its cause's,
+    within :data:`_EXCEPTION_CAUSE_DEPTH` links. An outer exception of any other type keeps
+    its own classification, whatever it was raised from."""
+    current: BaseException | None = exc
+    for _ in range(_EXCEPTION_CAUSE_DEPTH + 1):
+        if current is None:
+            return None
+        code = _typed_refusal_code(current)
+        if code is not None or not _is_transparent_wrapper(current):
+            return code
+        current = current.__cause__
+    return None
 
 
 def _resolve_leg_detail(value: object, run_dir: Path | str | None, seat_key: str) -> object:
@@ -13137,6 +13223,7 @@ def _exec_jailed_claude_leg(
     the parent keeps. The seat directories are torn down in H before H exits; a failed
     teardown retains them and adds `seat_sandbox_retained_after_teardown`."""
     if review_monitor is not None and review_monitor.cancel.is_set():
+        _note_exec_refusal_code("review_operation_cancelled")
         return "UNAVAILABLE", "review_operation_cancelled"
     jail = seat.jail
     session_id = str(uuid.uuid4())
@@ -13288,9 +13375,29 @@ def _exec_jailed_claude_leg(
 
 
 def _jailed_failure(code: str, sink: list[_LegFailure] | None) -> tuple[str, str]:
+    _note_exec_refusal_code(code)
+    _note_exec_output_refused()
     if sink is not None:
         sink.append(_LegFailure(template=code))
     return "DEGRADED", ""
+
+
+#: What a jailed Gemini seat's boundary never turns into a degraded leg: a provider group not
+#: proven gone, and a cancellation, keep propagating exactly as before (agent-harness#1823).
+_JAILED_GEMINI_PROPAGATES: tuple[type[BaseException], ...] = (
+    ProviderProcessGroupQuiescenceError, gemini_heartbeat.GeminiQuiescenceError,
+    _ReviewOperationCancelled,
+)
+
+
+def _jailed_gemini_failure(exc: Exception) -> _LegFailure:
+    """agent-harness#1823: a jailed Gemini seat's preparation or execution exception as its
+    leg failure: a typed refusal keeps its one code (the login-freshness gate on a dependency
+    route reports ``gemini_credential_near_expiry``); anything else is the unknown failure,
+    whose text goes only to the private per-leg log. The leg record keeps the closed reason."""
+    failure = _exception_failure(exc)
+    _note_exec_refusal(exc, failure)
+    return failure if type(failure) is _LegFailure else _LegFailure(template=failure)
 
 
 def _approved_stage_or_refuse(review_dir: Path, review_authorization) -> Path:
@@ -13373,6 +13480,7 @@ def _prepare_jailed_gemini(
     artifact, instructions = prompt_parts
     if credential not in {"none", "live", "expired"}:
         raise ValueError("contract_bug")
+    _note_exec_stage("subject")
     try:
         subject, dependency = _resolved_jail_subject(
             "gemini", _broker_subscription_env(env),
@@ -13385,6 +13493,7 @@ def _prepare_jailed_gemini(
                     else subject.subject_path)
     if subject_path is None:
         raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build"))
+    _note_exec_stage("prepare")
     if dependency is not None and credential != "none":
         home = Path(subscription_env.get("HOME", str(Path.home())))
         if not _gemini_credential_fresh(home):
@@ -13396,6 +13505,7 @@ def _prepare_jailed_gemini(
     try:
         tree = _approved_stage_or_refuse(review_dir, review_authorization)
         home = Path(subscription_env.get("HOME", str(Path.home())))
+        _note_exec_stage("admission")
         admission = gemini_heartbeat.admit(subscription_env, subject_path=subject_path)
         try:
             if dependency is not None:
@@ -13407,6 +13517,7 @@ def _prepare_jailed_gemini(
             else:
                 executable = Path(os.path.realpath(admission.path))
             image_sha256, admission_class = admission.image.sha256, admission.admission_class
+            _note_exec_stage("credential")
             if credential != "none":
                 _await_gemini_login(
                     ["agy"],
@@ -13432,6 +13543,7 @@ def _prepare_jailed_gemini(
                 raise _seat_jail.SeatSandboxRefused("gemini_seat_token_expired")
             if credential == "expired":
                 copy, expires_at = _window_expired_gemini_copy(copy)
+        _note_exec_stage("jail_build")
         try:
             _write_gemini_config(seat_dir / _seat_jail.HOST_GEMINI_CONFIG_DIRNAME, copy)
             ca = _write_egress_ca(seat_dir, egress.ca_cert)
@@ -13578,13 +13690,22 @@ def _exec_jailed_codex_leg(
     tails = [b"", b""]
     longest = max((len(secret) for secret in secrets), default=1)
     secret_seen = False
+    proxy_secret = password.encode() if password else None
+    kinds = tuple("proxy_credential" if secret == proxy_secret else "bearer" for secret in secrets)
+    cursors = (_StreamCursor(keep=4 * longest), _StreamCursor(keep=4 * longest))
 
     def guard(index):
         def feed(chunk):
             nonlocal secret_seen
             window = tails[index] + chunk
-            secret_seen |= any(_seat_jail.contains_secret(window, secret) for secret in secrets)
+            hit = any(_seat_jail.contains_secret(window, secret) for secret in secrets)
+            if hit and not secret_seen:
+                _note_secret_match(_live_secret_match(
+                    "codex", window, len(tails[index]), cursors[index], secrets, kinds,
+                    ("stdout", "stderr")[index]))
+            secret_seen |= hit
             tails[index] = window[-4 * longest:]
+            cursors[index].advance(chunk)
             return secret_seen
         return feed
 
@@ -13594,6 +13715,7 @@ def _exec_jailed_codex_leg(
     unsafe = False
     try:
         if review_monitor is not None and review_monitor.cancel.is_set():
+            _note_exec_refusal_code("review_operation_cancelled")
             return "UNAVAILABLE", "review_operation_cancelled"
         _record_broker_provider_evidence(
             broker_evidence, harness="codex", model=model, command=command, prompt=prompt,
@@ -13644,8 +13766,13 @@ def _exec_jailed_codex_leg(
         _cleanup_jailed_seat(seat, primary=sys.exception())
     if proc is not None:
         _note_exec_result(proc.returncode, command, seat.jail.env)
-    kept = text + (f"{proc.stdout}{proc.stderr}".encode(errors="replace") if proc else b"")
+    parts = (("output_file", text), *(
+        (("stdout", proc.stdout.encode(errors="replace")),
+         ("stderr", proc.stderr.encode(errors="replace"))) if proc else ()))
+    kept = b"".join(data for _stream, data in parts)
     if secret_seen or any(_seat_jail.contains_secret(kept, secret) for secret in secrets):
+        if not secret_seen:
+            _note_secret_match(_post_exit_secret_match("codex", parts, secrets, kinds))
         return _jailed_failure("codex_seat_token_in_output", failure_detail_sink)
     if cred.tokens_changed(copy, observed):
         return _jailed_failure("codex_seat_token_refreshed_in_jail", failure_detail_sink)
@@ -13674,6 +13801,349 @@ def _jailed_gemini_secrets(seat: "_JailedSeat") -> tuple[bytes, ...]:
     if password:
         secrets.append(password.encode("utf-8"))
     return tuple(s for s in secrets if s)
+
+
+# agent-harness#1823: when a jailed seat's output scan matches, the leg's private record says
+# which configured value matched and where, as closed fields only -- never the value, a
+# prefix or digest of it, or the provider text around it. The scan itself is unchanged: the
+# match is located with the same `secret_encodings` forms that `contains_secret` uses.
+_SECRET_MATCH_HEAD_CAP = 4096  # line-head bytes held in memory to read its closed keys
+_SECRET_MATCH_KINDS = frozenset({"bearer", "proxy_credential"})
+_SECRET_MATCH_ENCODINGS = ("raw", "hex", "b64", "b64url")  # tie-break order at one offset
+#: One stream, or -- for an after-exit match across a join of the scanned streams -- every
+#: stream the match covers, in scan order.
+_SECRET_MATCH_STREAMS = frozenset({
+    "stdout", "stderr", "output_file",
+    "stdout+stderr", "output_file+stdout", "output_file+stderr", "output_file+stdout+stderr",
+})
+_SECRET_MATCH_PHASES = frozenset({"live", "post_exit"})
+_SECRET_MATCH_OTHER = "other"
+_SECRET_MATCH_UNPARSED = "unparsed"  # the matched line is not a JSON event
+_GEMINI_MATCH_EVENTS = frozenset({"init", "step_update", "result"})
+_GEMINI_MATCH_STEPS = _JAILED_GEMINI_STEP_TYPES | {"subagent"}
+_GEMINI_MATCH_TOOLS = frozenset({
+    "run_command", "view_file", "list_dir", "grep_search", "find_by_name", "write_to_file",
+    "define_subagent", "manage_subagents", "manage_task",
+})
+_CODEX_MATCH_ITEMS = frozenset({
+    "command_execution", "agent_message", "reasoning", "file_change", "mcp_tool_call",
+    "web_search", "todo_list", "error",
+})
+#: The fixed JSON paths a match's labels are read from: each the chain of object keys from
+#: the line's top-level object. A key of the same name anywhere else never counts.
+_SECRET_MATCH_PATHS: Mapping[str, Mapping[str, tuple[str, ...]]] = {
+    "gemini": {"event_type": ("event",), "step_type": ("step_update", "step_type"),
+               "tool_name": ("step_update", "tool_name")},
+    "codex": {"event_type": ("type",), "step_type": ("item", "type")},
+}
+_PREFIX_SCAN_DEPTH = 32  # nesting levels the prefix reader follows before it stops
+_JSON_SCALAR = re.compile(r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null")
+_NOT_A_STRING = object()
+
+
+def _secret_form_encoding(secret: bytes, form: bytes) -> str:
+    """The encoding a scanned form of ``secret`` is (a form `secret_encodings` returned)."""
+    if form == secret:
+        return "raw"
+    if form in (secret.hex().encode(), secret.hex().upper().encode()):
+        return "hex"
+    return "b64url" if b"-" in form or b"_" in form else "b64"
+
+
+def _first_secret_form(data: bytes, secrets: Sequence[bytes]) -> tuple[int, int, str, int] | None:
+    """``(offset, secret index, encoding, length)`` of the earliest scanned form in ``data``."""
+    best: tuple[int, int, int, int] | None = None
+    for index, secret in enumerate(secrets):
+        for form in _seat_jail.secret_encodings(secret):
+            offset = data.find(form)
+            if offset < 0:
+                continue
+            rank = _SECRET_MATCH_ENCODINGS.index(_secret_form_encoding(secret, form))
+            if best is None or (offset, index, rank) < best[:3]:
+                best = (offset, index, rank, len(form))
+    return None if best is None else (best[0], best[1], _SECRET_MATCH_ENCODINGS[best[2]], best[3])
+
+
+def _json_string_end(text: str, start: int) -> int | None:
+    """The index just past the JSON string that opens at ``text[start]``, or ``None`` when
+    the text ends inside it."""
+    index = start + 1
+    while index < len(text):
+        if text[index] == "\\":
+            index += 2
+        elif text[index] == '"':
+            return index + 1
+        else:
+            index += 1
+    return None
+
+
+def _json_prefix_fields(text: str, wanted: frozenset[tuple[str, ...]]) -> dict[tuple[str, ...], object]:
+    """The values at the ``wanted`` key paths of the JSON object that ``text`` begins, read
+    by STRUCTURE from a possibly truncated prefix. A member counts only at its exact path of
+    object keys from the top-level object (never inside an array, never a nested key of the
+    same name), and its first occurrence wins. A string value is returned decoded, any other
+    value as ``_NOT_A_STRING``; a path whose value the prefix does not complete is absent.
+    Bounded: one pass over ``text``, at most :data:`_PREFIX_SCAN_DEPTH` levels."""
+    found: dict[tuple[str, ...], object] = {}
+    frames: list[list] = []  # [kind ("obj" | "arr"), current key, state]
+    index, size, started = 0, len(text), False
+
+    def path() -> tuple[str, ...] | None:
+        if any(frame[0] != "obj" for frame in frames):
+            return None
+        return tuple(frame[1] for frame in frames)
+
+    def note(value: object) -> None:
+        where = path()
+        if where in wanted and where not in found:
+            found[where] = value
+
+    def close() -> bool:
+        frames.pop()
+        if frames:
+            frames[-1][2] = "comma"
+        return bool(frames)
+
+    while index < size:
+        char = text[index]
+        if char in " \t\r\n":
+            index += 1
+            continue
+        if not frames:
+            if started or char != "{":
+                break
+            started = True
+            frames.append(["obj", None, "key"])
+            index += 1
+            continue
+        kind, _key, state = frames[-1]
+        if state == "comma":
+            if char == ",":
+                frames[-1][2] = "key" if kind == "obj" else "value"
+                index += 1
+                continue
+            if char == ("}" if kind == "obj" else "]"):
+                index += 1
+                if not close():
+                    break
+                continue
+            break
+        if kind == "obj" and state == "key":
+            if char == "}":
+                index += 1
+                if not close():
+                    break
+                continue
+            end = _json_string_end(text, index) if char == '"' else None
+            if end is None:
+                break
+            try:
+                key = json.loads(text[index:end])
+            except ValueError:
+                break
+            frames[-1][1], frames[-1][2] = key, "colon"
+            index = end
+            continue
+        if state == "colon":
+            if char != ":":
+                break
+            frames[-1][2] = "value"
+            index += 1
+            continue
+        if kind == "arr" and char == "]":
+            index += 1
+            if not close():
+                break
+            continue
+        if char == '"':
+            end = _json_string_end(text, index)
+            if end is None:
+                break
+            try:
+                value = json.loads(text[index:end])
+            except ValueError:
+                break
+            note(value)
+            frames[-1][2] = "comma"
+            index = end
+            continue
+        if char in "{[":
+            if len(frames) >= _PREFIX_SCAN_DEPTH:
+                break
+            note(_NOT_A_STRING)
+            frames[-1][2] = "comma"
+            frames.append(["obj", None, "key"] if char == "{" else ["arr", None, "value"])
+            index += 1
+            continue
+        scalar = _JSON_SCALAR.match(text, index)
+        if scalar is None:
+            break  # not JSON, or a literal the prefix cut short
+        if scalar.group() not in ("true", "false", "null") and (
+                scalar.end() == size or text[scalar.end()] not in ",}] \t\r\n"):
+            break  # a number only a delimiter completes: the prefix may have cut it short
+        note(_NOT_A_STRING)
+        frames[-1][2] = "comma"
+        index = scalar.end()
+    return found
+
+
+def _secret_match_labels(vendor: str, head: bytes) -> dict[str, str | None]:
+    """The event, step and tool of the matched line, read by structure at the vendor's fixed
+    paths (:data:`_SECRET_MATCH_PATHS`) from the line's bytes BEFORE the match: an allowlisted
+    string is kept; any other parsed value (another string, a number, an object) is
+    ``other``; a label those bytes do not establish (the member absent, or not complete
+    before the match) is null. A line that does not begin with a JSON object is
+    ``unparsed``."""
+    text = head[:_SECRET_MATCH_HEAD_CAP].decode("utf-8", errors="replace")
+    labels: dict[str, str | None] = {"event_type": None, "step_type": None, "tool_name": None}
+    if not text.lstrip().startswith("{"):
+        return {**labels, "event_type": _SECRET_MATCH_UNPARSED}
+    if vendor == "codex":
+        allowed = {"event_type": _codex_tool_events(), "step_type": _CODEX_MATCH_ITEMS}
+    else:
+        allowed = {"event_type": _GEMINI_MATCH_EVENTS, "step_type": _GEMINI_MATCH_STEPS,
+                   "tool_name": _GEMINI_MATCH_TOOLS}
+    paths = _SECRET_MATCH_PATHS["codex" if vendor == "codex" else "gemini"]
+    found = _json_prefix_fields(text, frozenset(paths.values()))
+    for name, where in paths.items():
+        if where in found:
+            value = found[where]
+            labels[name] = value if type(value) is str and value in allowed[name] else _SECRET_MATCH_OTHER
+    return labels
+
+
+def _codex_tool_events() -> frozenset[str]:
+    from .seat_codex_evidence import CODEX_TOOL_EVENTS
+    return CODEX_TOOL_EVENTS
+
+
+def _secret_match_descriptor(vendor, kind, encoding, stream, phase, line_index, byte_offset,
+                             head) -> dict[str, object]:
+    return {"secret_kind": kind, "encoding": encoding, "stream": stream, "phase": phase,
+            **_secret_match_labels(vendor, head[:_SECRET_MATCH_HEAD_CAP]),
+            "line_index": line_index, "byte_offset": byte_offset}
+
+
+class _StreamCursor:
+    """The line position of one raw stream as its guard sees it, chunk by chunk. It keeps the
+    index, start and first bytes (at most :data:`_SECRET_MATCH_HEAD_CAP`) of EVERY line that
+    overlaps the guard's retained tail of ``keep`` bytes -- in memory only -- so a match that
+    starts anywhere in that tail, even on a line that began before the retained bytes, gets
+    its exact line and offset. Nothing it holds is ever recorded."""
+
+    __slots__ = ("keep", "pos", "lines")
+
+    def __init__(self, keep: int) -> None:
+        self.keep = keep
+        self.pos = 0                 # bytes of the stream before the current chunk
+        self.lines = [[0, 0, b""]]   # [index, start, head]; the last is the current line
+
+    def locate(self, window: bytes, tail: int, offset: int) -> tuple[int | None, int | None, bytes]:
+        """``(line index, byte offset in the line, line bytes before it)`` of ``window[offset]``,
+        where ``window`` is the guard's kept ``tail`` bytes followed by the current chunk."""
+        cap = _SECRET_MATCH_HEAD_CAP
+        absolute = self.pos - tail + offset
+        index, start, head = self.lines[-1]
+        if absolute >= self.pos:
+            before = window[tail:offset]
+            count = before.count(b"\n")
+            if count:
+                cut = before.rfind(b"\n") + 1
+                return index + count, len(before) - cut, before[cut:cut + cap]
+            return index, absolute - start, (head + before)[:cap]
+        for index, start, head in reversed(self.lines):
+            if start <= absolute:
+                return index, absolute - start, head[:absolute - start]
+        return None, None, b""  # older than the kept lines: only a tail longer than ``keep``
+
+    def advance(self, chunk: bytes) -> None:
+        cap = _SECRET_MATCH_HEAD_CAP
+        current = self.lines[-1]
+        cut = chunk.find(b"\n")
+        if len(current[2]) < cap:
+            current[2] = (current[2] + (chunk if cut < 0 else chunk[:cut]))[:cap]
+        line = current[0]
+        while cut >= 0:
+            line += 1
+            following = chunk.find(b"\n", cut + 1)
+            self.lines.append([line, self.pos + cut + 1,
+                               chunk[cut + 1:following if following >= 0 else len(chunk)][:cap]])
+            cut = following
+        self.pos += len(chunk)
+        floor = self.pos - self.keep  # a line ending before the retained tail is dropped
+        while len(self.lines) > 1 and self.lines[1][1] <= floor:
+            del self.lines[0]
+
+
+def _live_secret_match(vendor, window, tail, cursor, secrets, kinds, stream):
+    found = _first_secret_form(window, secrets)
+    if found is None:
+        return None
+    offset, index, encoding, _length = found
+    line_index, byte_offset, head = cursor.locate(window, tail, offset)
+    return _secret_match_descriptor(vendor, kinds[index], encoding, stream, "live",
+                                    line_index, byte_offset, head)
+
+
+def _post_exit_secret_match(vendor, parts, secrets, kinds):
+    """Locate the first match in the kept output the after-exit check scans. ``parts`` are
+    ``(stream, bytes)`` in the order that check joined them, and the positions address that
+    scan input: for ``stdout`` and ``stderr`` the decoded, redacted and re-encoded output (not
+    the raw provider bytes), for Codex's ``output_file`` the raw bytes of the file as read
+    from the seat. A match across a join is named by every stream it covers
+    (``stdout+stderr``) and placed in the first, where it starts -- so one that starts in
+    ``output_file`` uses the raw file's coordinates."""
+    found = _first_secret_form(b"".join(data for _name, data in parts), secrets)
+    if found is None or not parts:
+        return None
+    offset, index, encoding, length = found
+    covered: list[str] = []
+    first: tuple[bytes, int] | None = None
+    base = 0
+    for name, data in parts:
+        if data and base < offset + length and offset < base + len(data):
+            covered.append(name)
+            if first is None:
+                first = (data, offset - base)
+        base += len(data)
+    if first is None:
+        return None
+    data, local = first
+    start = data.rfind(b"\n", 0, local) + 1
+    return _secret_match_descriptor(vendor, kinds[index], encoding, "+".join(covered),
+                                    "post_exit", data.count(b"\n", 0, local), local - start,
+                                    data[start:min(local, start + _SECRET_MATCH_HEAD_CAP)])
+
+
+def _note_secret_match(descriptor: dict[str, object] | None) -> None:
+    """The leg's first match is the one its record keeps."""
+    observation = _EXEC_OBSERVATION.get()
+    if descriptor is not None and observation is not None and observation.get("secret_match") is None:
+        observation["secret_match"] = descriptor
+
+
+def _secret_match_valid(value: object) -> bool:
+    """Closed fields only: every string from its fixed set, the positions plain integers."""
+    def closed(field_value, allowed, nullable=False):
+        return (field_value is None and nullable) or (type(field_value) is str and field_value in allowed)
+
+    def position(field_value):
+        return field_value is None or (type(field_value) is int and 0 <= field_value < 2 ** 53)
+
+    events = _GEMINI_MATCH_EVENTS | _codex_tool_events() | {_SECRET_MATCH_OTHER, _SECRET_MATCH_UNPARSED}
+    return (type(value) is dict and set(value) == {
+        "secret_kind", "encoding", "stream", "phase", "event_type", "step_type", "tool_name",
+        "line_index", "byte_offset"}
+        and closed(value["secret_kind"], _SECRET_MATCH_KINDS)
+        and closed(value["encoding"], _SECRET_MATCH_ENCODINGS)
+        and closed(value["stream"], _SECRET_MATCH_STREAMS)
+        and closed(value["phase"], _SECRET_MATCH_PHASES)
+        and closed(value["event_type"], events, nullable=True)
+        and closed(value["step_type"], _GEMINI_MATCH_STEPS | _CODEX_MATCH_ITEMS
+                   | {_SECRET_MATCH_OTHER}, nullable=True)
+        and closed(value["tool_name"], _GEMINI_MATCH_TOOLS | {_SECRET_MATCH_OTHER}, nullable=True)
+        and position(value["line_index"]) and position(value["byte_offset"]))
 
 
 _WINDOW_STEP_STDOUT_CAP = 65536
@@ -14603,6 +15073,260 @@ def window_board_launch(spec: WindowBoardSpec) -> WindowBoardResult:
     )
 
 
+# agent-harness#1823: when the tooled stream refuses a well-formed line as
+# `gemini_seat_subagent_or_unknown_event`, the leg's private `leg_exec.v1` record says what kind
+# of line it was, in the closed `stream_rejection` field. The parser is a validator-closure entry
+# point and stays untouched: `_jailed_gemini_stream_rejection` re-reads the stdout the leg
+# already holds, with the same three rules, after the parser has refused it. Every string it
+# records is a name from one of the fixed sets below (``other`` outside them), every other
+# value is a count or a position; it never copies a line, a value or provider text.
+_STREAM_REJECTION_OTHER = "other"
+_STREAM_REJECTION_ABSENT = "absent"        # a step count's label for a step with no step type
+_STREAM_REJECTION_UNPARSED = "unparsed"    # an event count's label for a line that is not JSON
+_STREAM_REJECTION_MALFORMED = "malformed"  # ... for JSON that is not an event object
+_STREAM_REJECTION_EMPTY = "empty"          # a mode key present with an empty string
+_STREAM_REJECTION_REASONS = frozenset({"unknown_event", "bad_step_type", "subagent_info"})
+_STREAM_REJECTION_EVENTS = frozenset({
+    "init", "step_update", "result", "error", "warning", "notice", "message", "user",
+    "system", "progress", "usage",
+})
+_STREAM_REJECTION_STEPS = _JAILED_GEMINI_STEP_TYPES | frozenset({
+    "subagent", "browser", "system_message", "thinking", "plan", "checkpoint", "compaction",
+    "error", "workflow", "background_task", "finish", "notification",
+})
+_STREAM_REJECTION_TOOLS = frozenset({
+    "run_command", "view_file", "list_dir", "grep_search", "find_by_name", "write_to_file",
+    "replace_file_content", "command_status", "manage_task", "invoke_subagent",
+    "define_subagent", "manage_subagents", "send_message", "browser_subagent", "search_web",
+    "read_url_content",
+})
+_STREAM_REJECTION_STATES = frozenset({
+    "ACTIVE", "DONE", "ERROR", "PENDING", "WAITING", "CANCELED", "CANCELLED",
+})
+_STREAM_REJECTION_LINE_KEYS = frozenset({
+    "event", "conversation_id", "init", "step_update", "result", "error", "message",
+    "timestamp", "session_id", "type",
+})
+_STREAM_REJECTION_STEP_KEYS = frozenset({
+    "conversation_id", "step_index", "state", "status", "step_type", "tool_name", "tool_info",
+    "subagent_info", "text_delta", "text", "type_name", "error",
+})
+_STREAM_REJECTION_SUBAGENT_KEYS = frozenset({
+    "conversation_id", "log_uri", "name", "agent_name", "model", "spec", "status",
+})
+#: Where an init event may name agy's mode, in its ``init`` payload or on the line itself.
+#: ``permission_mode`` is the key a captured agy 1.2.13 init carried (its tool-permission
+#: preset); the others are where agy's agent mode (``agentMode``, Auto by default for headless
+#: runs since agy 1.5.7) may appear.
+_STREAM_REJECTION_MODE_KEYS = frozenset({"permission_mode", "agent_mode", "agentMode", "mode"})
+_STREAM_REJECTION_MODES = frozenset({
+    "request-review", "strict", "always-proceed", "proceed-in-sandbox",  # tool permission
+    "default", "auto", "plan", "accept-edits",                           # agent mode
+})
+_STREAM_REJECTION_INIT_KEYS = _STREAM_REJECTION_MODE_KEYS | frozenset({
+    "model", "cwd", "tools", "session_id", "conversation_id", "version",
+})
+_STREAM_REJECTION_FIELDS = frozenset({
+    "reason", "line_index", "line_count", "rejected_lines", "event_type", "step_type",
+    "tool_name", "state", "line_keys", "step_keys", "subagent_info_keys", "event_counts",
+    "step_counts", "tool_counts", "init_keys", "init_modes",
+})
+
+
+def _stream_label(value: object, allowed: frozenset[str]) -> str:
+    return value if type(value) is str and value in allowed else _STREAM_REJECTION_OTHER
+
+
+def _stream_field_label(mapping: Mapping, key: str, allowed: frozenset[str]) -> str | None:
+    """``mapping[key]``'s label: ``None`` when the key is absent, ``other`` outside ``allowed``."""
+    return _stream_label(mapping[key], allowed) if key in mapping else None
+
+
+def _stream_key_names(mapping: object, allowed: frozenset[str]) -> list[str] | None:
+    """Which keys ``mapping`` has, as sorted names from ``allowed`` (``other`` for the rest)."""
+    if not isinstance(mapping, dict):
+        return None
+    return sorted({_stream_label(key, allowed) for key in mapping})
+
+
+def _stream_init_modes(init_line: Mapping | None) -> dict[str, str] | None:
+    if init_line is None:
+        return None
+    payload = init_line.get("init")
+    modes: dict[str, str] = {}
+    for source in (payload if isinstance(payload, dict) else {}, init_line):
+        for key in sorted(_STREAM_REJECTION_MODE_KEYS):
+            if key in source and key not in modes:
+                value = source[key]
+                modes[key] = (_STREAM_REJECTION_EMPTY if type(value) is str and value == ""
+                              else _stream_label(value, _STREAM_REJECTION_MODES))
+    return dict(sorted(modes.items()))
+
+
+def _jailed_gemini_stream_rejection(raw: str) -> dict[str, object] | None:
+    """The closed descriptor of the line the tooled stream refused as
+    `gemini_seat_subagent_or_unknown_event`, or ``None`` when the parser's own rules find a
+    different first failure, or none. Counts cover the whole stream. It never raises: a
+    diagnostic cannot change how the leg ends."""
+    try:
+        return _stream_rejection_walk(raw)
+    except Exception:
+        return None
+
+
+def _stream_rejection_walk(raw: str) -> dict[str, object] | None:
+    lines = raw.splitlines()  # exactly the parser's lines, so the index is its index
+    events: Counter[str] = Counter()
+    steps: Counter[str] = Counter()
+    tools: Counter[str] = Counter()
+    first: dict[str, object] | None = None
+    init_line: Mapping | None = None
+    rejected = 0
+    ended = False  # the parser's walk ended at an earlier line, for a reason of its own
+    for index, line in enumerate(lines):
+        try:
+            event = json.loads(line)
+        except (ValueError, RecursionError):
+            # A line that does not decode fails on its own, including one nested past the
+            # decoder's bound (`RecursionError`): it is counted, and the walk goes on. Before
+            # the first refusal it ends the parser's walk, which raises or reports its own
+            # failure there; after it, the refusal already found is kept.
+            events[_STREAM_REJECTION_UNPARSED] += 1
+            ended = True
+            continue
+        if not isinstance(event, dict) or not isinstance(event.get("event"), str):
+            events[_STREAM_REJECTION_MALFORMED] += 1
+            ended = True
+            continue
+        name = event["event"]
+        events[_stream_label(name, _STREAM_REJECTION_EVENTS)] += 1
+        step = None
+        reason = None
+        if name == "step_update":
+            step = event.get("step_update")
+            if not isinstance(step, dict):
+                ended = True
+                continue
+            steps[_stream_field_label(step, "step_type", _STREAM_REJECTION_STEPS)
+                  or _STREAM_REJECTION_ABSENT] += 1
+            if "tool_name" in step:
+                tools[_stream_label(step["tool_name"], _STREAM_REJECTION_TOOLS)] += 1
+            try:
+                recorded = step.get("step_type") in _JAILED_GEMINI_STEP_TYPES
+            except TypeError:  # an unhashable step type: the parser's malformed event
+                ended = True
+                continue
+            # The parser's own order: an unrecorded step type refuses the line before the
+            # `subagent_info` key is looked at. Key presence stays in `step_keys`.
+            if not recorded:
+                reason = "bad_step_type"
+            elif "subagent_info" in step:
+                reason = "subagent_info"
+        elif name == "result":
+            if not isinstance(event.get("result"), dict):
+                ended = True
+        elif name == "init":
+            init_line = event if init_line is None else init_line
+        else:
+            reason = "unknown_event"
+        if reason is None:
+            continue
+        rejected += 1
+        if first is None and not ended:
+            first = {
+                "reason": reason, "line_index": index,
+                "event_type": _stream_label(name, _STREAM_REJECTION_EVENTS),
+                "step_type": (None if step is None
+                              else _stream_field_label(step, "step_type", _STREAM_REJECTION_STEPS)),
+                "tool_name": (None if step is None
+                              else _stream_field_label(step, "tool_name", _STREAM_REJECTION_TOOLS)),
+                "state": (None if step is None
+                          else _stream_field_label(step, "state", _STREAM_REJECTION_STATES)),
+                "line_keys": _stream_key_names(event, _STREAM_REJECTION_LINE_KEYS),
+                "step_keys": _stream_key_names(step, _STREAM_REJECTION_STEP_KEYS),
+                "subagent_info_keys": (None if step is None else _stream_key_names(
+                    step.get("subagent_info"), _STREAM_REJECTION_SUBAGENT_KEYS)),
+                "init_keys": (None if init_line is None else _stream_key_names(
+                    init_line.get("init"), _STREAM_REJECTION_INIT_KEYS)),
+                "init_modes": _stream_init_modes(init_line),
+            }
+        ended = True  # the parser stops at its first refused line
+    if first is None:
+        return None
+    return {**first, "line_count": len(lines), "rejected_lines": rejected,
+            "event_counts": dict(sorted(events.items())), "step_counts": dict(sorted(steps.items())),
+            "tool_counts": dict(sorted(tools.items()))}
+
+
+def _stream_rejection_valid(value: object) -> bool:
+    """Closed fields only: every string from its fixed set, every count a plain integer. It
+    never raises: any value it cannot establish as closed is not a descriptor, and the record
+    keeps a null field."""
+    try:
+        return _stream_rejection_closed(value)
+    except Exception:
+        return False
+
+
+def _stream_rejection_closed(value: object) -> bool:
+    def label(item, allowed, nullable=False):
+        return (item is None and nullable) or (
+            type(item) is str and (item in allowed or item == _STREAM_REJECTION_OTHER))
+
+    def position(item):
+        return type(item) is int and 0 <= item < 2 ** 53
+
+    def names(item, allowed):
+        # Element types and vocabulary first: only a list of known strings is hashed or sorted.
+        return item is None or (type(item) is list
+                                and all(label(name, allowed) for name in item)
+                                and item == sorted(set(item)))
+
+    def counts(item, allowed):
+        return type(item) is dict and all(
+            label(key, allowed) and position(count) and count > 0 for key, count in item.items())
+
+    if type(value) is not dict or set(value) != _STREAM_REJECTION_FIELDS:
+        return False
+    modes = value["init_modes"]
+    return (type(value["reason"]) is str and value["reason"] in _STREAM_REJECTION_REASONS
+            and all(position(value[key]) for key in ("line_index", "line_count", "rejected_lines"))
+            and label(value["event_type"], _STREAM_REJECTION_EVENTS)
+            and label(value["step_type"], _STREAM_REJECTION_STEPS, nullable=True)
+            and label(value["tool_name"], _STREAM_REJECTION_TOOLS, nullable=True)
+            and label(value["state"], _STREAM_REJECTION_STATES, nullable=True)
+            and names(value["line_keys"], _STREAM_REJECTION_LINE_KEYS)
+            and names(value["step_keys"], _STREAM_REJECTION_STEP_KEYS)
+            and names(value["subagent_info_keys"], _STREAM_REJECTION_SUBAGENT_KEYS)
+            and names(value["init_keys"], _STREAM_REJECTION_INIT_KEYS)
+            and counts(value["event_counts"], _STREAM_REJECTION_EVENTS | {
+                _STREAM_REJECTION_UNPARSED, _STREAM_REJECTION_MALFORMED})
+            and counts(value["step_counts"], _STREAM_REJECTION_STEPS | {_STREAM_REJECTION_ABSENT})
+            and counts(value["tool_counts"], _STREAM_REJECTION_TOOLS)
+            and (modes is None or type(modes) is dict and all(
+                type(key) is str and key in _STREAM_REJECTION_MODE_KEYS
+                and label(mode, _STREAM_REJECTION_MODES | {_STREAM_REJECTION_EMPTY})
+                for key, mode in modes.items())))
+
+
+def _note_stream_rejection(descriptor: dict[str, object] | None) -> None:
+    """The leg's first stream rejection is the one its record keeps."""
+    observation = _EXEC_OBSERVATION.get()
+    if (descriptor is not None and observation is not None
+            and observation.get("stream_rejection") is None):
+        observation["stream_rejection"] = descriptor
+
+
+def _note_exec_output_refused() -> None:
+    """The leg ended in one of the jailed seat's explicit refusals (`_jailed_failure`,
+    agent-harness#1823): a clean exit then records `leg_execution_refused`, not
+    `leg_execution_completed`. A clean exit that fails ordinary review classification
+    without such a refusal is not marked here and keeps its outcome."""
+    observation = _EXEC_OBSERVATION.get()
+    if observation is not None:
+        observation["output_refused"] = True
+
+
 def _exec_jailed_gemini_leg(
     seat: _JailedSeat,
     *,
@@ -14624,6 +15348,7 @@ def _exec_jailed_gemini_leg(
     byte the parent keeps is scanned for the access token first. The seat directories are
     torn down in H before H exits."""
     if review_monitor is not None and review_monitor.cancel.is_set():
+        _note_exec_refusal_code("review_operation_cancelled")
         return "UNAVAILABLE", "review_operation_cancelled"
     jail = seat.jail
     command = _jailed_gemini_command(model)
@@ -14641,14 +15366,19 @@ def _exec_jailed_gemini_leg(
     longest = max((len(s) for s in secrets), default=1)
     seen: list[bytes] = [b""]
     token_seen: list[bool] = []
+    kinds = tuple("bearer" if secret == seat.token else "proxy_credential" for secret in secrets)
+    stdout_cursor = _StreamCursor(keep=4 * longest)
 
     def _guard(chunk: bytes) -> bool:
         # A secret can straddle two chunks: keep a tail as long as its longest encoding.
         window = seen[0] + chunk
         if any(_seat_jail.contains_secret(window, secret) for secret in secrets):
             token_seen.append(True)
+            _note_secret_match(_live_secret_match(
+                "gemini", window, len(seen[0]), stdout_cursor, secrets, kinds, "stdout"))
             return True
         seen[0] = window[-4 * longest:]
+        stdout_cursor.advance(chunk)
         return False
 
     _record_broker_provider_evidence(
@@ -14685,6 +15415,7 @@ def _exec_jailed_gemini_leg(
             **({"egress": dict(egress_evidence)} if egress_evidence is not None else {}),
         })
     proc = None
+    _note_exec_stage("launch")
     try:
         if window_board is not None:
             if quiescence_latch is None or review_authorization is None:
@@ -14705,6 +15436,8 @@ def _exec_jailed_gemini_leg(
     except subprocess.TimeoutExpired:
         proc = None
     finally:
+        if proc is not None and sys.exception() is None:
+            _note_exec_stage("cleanup")  # a launch that ended; its cleanup is what remains
         try:
             if window_board is not None and quiescence_latch is not None:
                 window_board.finish(
@@ -14713,14 +15446,20 @@ def _exec_jailed_gemini_leg(
         finally:
             _cleanup_jailed_seat(seat, primary=sys.exception())
     if proc is not None:
+        _note_exec_stage("stream")
         _note_exec_result(proc.returncode, command, jail.env)
+    kept = (() if proc is None else (("stdout", proc.stdout.encode("utf-8", errors="replace")),
+                                     ("stderr", proc.stderr.encode("utf-8", errors="replace"))))
     if token_seen or (proc is not None and any(
-            _seat_jail.contains_secret(f"{proc.stdout}{proc.stderr}".encode("utf-8", errors="replace"), secret)
+            _seat_jail.contains_secret(b"".join(data for _stream, data in kept), secret)
             for secret in secrets)):
+        if not token_seen:
+            _note_secret_match(_post_exit_secret_match("gemini", kept, secrets, kinds))
         return _jailed_failure("gemini_seat_token_in_output", failure_detail_sink)
     if proc is None:
         return _jailed_failure("Gemini broker deadline exceeded", failure_detail_sink)
     if review_monitor is not None and review_monitor.cancel.is_set():
+        _note_exec_refusal_code("review_operation_cancelled")
         return "UNAVAILABLE", "review_operation_cancelled"
     expired = seat.expires_at is not None and time.time() >= seat.expires_at
     if proc.returncode != 0:
@@ -14736,6 +15475,8 @@ def _exec_jailed_gemini_leg(
     if rc != 0:
         if detail == _JAILED_GEMINI_UNKNOWN_EVENT:
             seat.notices.append(_JAILED_GEMINI_UNKNOWN_EVENT)
+            # What the refused line was, as closed fields, for the leg's private record.
+            _note_stream_rejection(_jailed_gemini_stream_rejection(proc.stdout))
         return _jailed_failure("gemini_seat_token_expired" if expired else detail,
                                failure_detail_sink)
     status = _classify_leg(0, text, "", "review")
@@ -15000,7 +15741,8 @@ def _note_exec_unlaunched(command, env):
     """Nothing started: the exit stays null whatever code the adapter then returns."""
     observation = _EXEC_OBSERVATION.get()
     if observation is not None and not observation.get("exit_observed"):
-        observation.update(returncode=None, argv=list(command), env=env, exit_observed=True)
+        observation.update(returncode=None, argv=list(command), env=env, exit_observed=True,
+                           stage="unlaunched")
 
 
 def _note_exec_result(rc, command, env, *, actual=False):
@@ -15009,6 +15751,120 @@ def _note_exec_result(rc, command, env, *, actual=False):
         if actual or not observation.get("exit_observed"):
             observation.update(returncode=rc, argv=list(command), env=env)
         observation["exit_observed"] = True
+
+
+# agent-harness#1823: where a leg got to, and the closed reason it stopped, in its
+# `leg_exec.v1` record -- fixed codes and stage names only, never an exception's text.
+_EXEC_STAGES = frozenset({
+    "subject", "prepare", "admission", "credential", "jail_build", "launch", "stream",
+    "cleanup", "broker", "unlaunched",
+})
+#: Exception classes a record's ``refusal`` may name when no harness code applies, by
+#: EXACT type (builtins are named by `_BUILTIN_EXCEPTION_NAMES`).
+_EXEC_REFUSAL_TYPES: tuple[tuple[type, str], ...] = (
+    (ExecutableDependencyError, "ExecutableDependencyError"),
+    (_seat_jail.SeatSandboxRefused, "SeatSandboxRefused"),
+    (_sandbox_egress.EgressUnavailable, "EgressUnavailable"),
+    (_sandbox_egress.SeatIdentityUnverified, "SeatIdentityUnverified"),
+    (_ReviewOperationCancelled, "ReviewOperationCancelled"),
+    (subprocess.TimeoutExpired, "TimeoutExpired"),
+)
+_EXEC_REFUSAL_UNCLASSIFIED = "unclassified"
+#: The `ExecutableDependencyError` codes a record may name, EXACTLY (the constructor accepts
+#: any string): every literal the package raises. Any other code gets the bare class label.
+_EXEC_DEPENDENCY_CODES = frozenset({
+    "adapter_unauthorized", "authority_invalid", "authority_missing", "dependency_closed",
+    "dependency_route_unwired", "platform_unsupported", "runtime_mismatch", "session_closed",
+    "session_replacement", "source_changed", "subject_mismatch", "task_invalid", "task_live",
+    "task_replacement", "task_unbound",
+})
+
+
+#: The stages a leg can stop at with no provider launch begun: before any launch (subject,
+#: prepare), or after every earlier launch returned and was counted (jail_build). A launch
+#: that raises leaves its own stage (admission, credential, launch) in place.
+_EXEC_PRELAUNCH_STAGES = frozenset({"subject", "prepare", "jail_build"})
+
+
+def _exec_launched(observation: dict) -> bool | None:
+    """Whether the leg started a provider: ``True`` once one was counted; ``False`` only when
+    none was AND the leg stopped at a pre-launch stage; otherwise ``None``. A launch can
+    begin before it is counted -- a capped child's gate opens, then its launcher raises --
+    so a zero count past a launch boundary proves nothing and the outcome stays failed."""
+    spawns = observation.get("spawns")
+    if type(spawns) is not _SpawnCounter:
+        return None
+    if spawns.count > 0:
+        return True
+    return False if observation.get("stage") in _EXEC_PRELAUNCH_STAGES else None
+
+
+def _note_exec_stage(stage: str) -> None:
+    """The leg reached ``stage``; its record keeps the last one reached."""
+    observation = _EXEC_OBSERVATION.get()
+    if observation is not None and stage in _EXEC_STAGES:
+        observation["stage"] = stage
+
+
+def _exec_refusal_label(exc: BaseException) -> str | None:
+    import builtins
+
+    kind = type(exc)
+    if kind is ExecutableDependencyError:
+        code = exc.code
+        if type(code) is str and code in _EXEC_DEPENDENCY_CODES:
+            return f"ExecutableDependencyError:{code}"
+        return "ExecutableDependencyError"
+    for known, label in _EXEC_REFUSAL_TYPES:
+        if kind is known:
+            return label
+    name = kind.__name__ if type(kind.__name__) is str else ""
+    if name in _BUILTIN_EXCEPTION_NAMES and getattr(builtins, name, None) is kind:
+        return name
+    return None
+
+
+def _exec_refusal(exc: BaseException, failure: object) -> str:
+    """A record's closed ``refusal``: the harness code when the failure is typed, else the
+    allowlisted class of ``exc`` -- or, through transparent wrappers only, of the exception
+    they wrap (an `ExecutableDependencyError` with its allowlisted code). Never ``str(exc)``."""
+    if type(failure) is str and (failure in _HARNESS_DETAIL_CODES
+                                 or failure in _PARAMETER_FREE_FAILURES):
+        return failure
+    current: BaseException = exc
+    for _ in range(_EXCEPTION_CAUSE_DEPTH):
+        if not _is_transparent_wrapper(current) or current.__cause__ is None:
+            break
+        current = current.__cause__
+    return _exec_refusal_label(current) or _EXEC_REFUSAL_UNCLASSIFIED
+
+
+def _exec_refusal_valid(value: object) -> bool:
+    if type(value) is not str:
+        return False
+    if (value in _HARNESS_DETAIL_CODES or value in _PARAMETER_FREE_FAILURES
+            or value == _EXEC_REFUSAL_UNCLASSIFIED or value in _BUILTIN_EXCEPTION_NAMES
+            or any(value == label for _known, label in _EXEC_REFUSAL_TYPES)):
+        return True
+    kind, sep, code = value.partition(":")
+    return kind == "ExecutableDependencyError" and bool(sep) and code in _EXEC_DEPENDENCY_CODES
+
+
+def _note_exec_refusal_code(code: str) -> None:
+    """Record a fixed code a leg RETURNED as its failure (first one wins), as an exception
+    handler records a raised one."""
+    observation = _EXEC_OBSERVATION.get()
+    if (observation is not None and observation.get("refusal") is None and type(code) is str
+            and code in _HARNESS_DETAIL_CODES):
+        observation["refusal"] = code
+
+
+def _note_exec_refusal(exc: BaseException, failure: object) -> None:
+    """Record why the leg stopped. The first (innermost) classification wins: an outer
+    handler that sees the same failure again does not overwrite it."""
+    observation = _EXEC_OBSERVATION.get()
+    if observation is not None and observation.get("refusal") is None:
+        observation["refusal"] = _exec_refusal(exc, failure)
 
 
 def _parent_auth_state(leg: str, env=None) -> str:
@@ -15040,13 +15896,17 @@ def _parent_auth_state(leg: str, env=None) -> str:
     return "unavailable"
 
 
-def _scan_exec_field(value: object, secrets: tuple[bytes, ...] | None):
+def _scan_exec_field(value: object, secrets: tuple[bytes, ...] | None, *, patterns: bool = True):
+    """``value`` when it holds none of ``secrets`` and (with ``patterns``) no detected secret
+    shape; ``None`` otherwise, or when no assurance is available."""
     if secrets is None:
         return None
     try:
         encoded = json.dumps(value).encode()
         if any(_seat_jail.contains_secret(encoded, secret) for secret in secrets):
             return None
+        if not patterns:
+            return value
         # Independent pattern assurance applies even to legs without a known token.
         from detect_secrets.core.scan import scan_line
         from detect_secrets.settings import default_settings
@@ -15059,19 +15919,53 @@ def _scan_exec_field(value: object, secrets: tuple[bytes, ...] | None):
 
 
 def leg_exec_record(leg, rc, argv, *, auth_state="unavailable", model_turn=None,
-                    verdict=None, scan_secrets=None) -> dict[str, object]:
+                    verdict=None, scan_secrets=None, stage=None, refusal=None,
+                    launched=None, secret_match=None, output_refused=False,
+                    stream_rejection=None) -> dict[str, object]:
+    """``stage``, ``refusal``, ``secret_match`` and ``stream_rejection`` are closed
+    (agent-harness#1823); ``launched`` is whether any provider process started for the leg,
+    ``None`` when that is not known. ``output_refused``: the leg ended in an explicit
+    jailed-seat refusal, so a clean exit is `leg_execution_refused`."""
     state = auth_state if auth_state in {"healthy", "signed_out", "unavailable"} else "unavailable"
     outcome = "leg_execution_completed" if rc == 0 else "leg_execution_failed"
+    if rc is None and launched is False:
+        # No exit observed and nothing started: never launched, not failed.
+        outcome = "leg_execution_unlaunched"
+    if type(rc) is int and rc == 0 and output_refused is True:
+        # The process exited 0, but the leg was refused: not a completed leg.
+        outcome = "leg_execution_refused"
     if type(rc) is int and rc != 0 and model_turn is False and verdict is False and state == "signed_out":
         outcome = "leg_auth_signed_out"
     elif type(rc) is int and rc != 0 and model_turn is False and verdict is False and state == "unavailable":
         outcome = "leg_auth_unavailable"
     flags = _scan_exec_field(sorted(set(argv) & _EXEC_FLAGS), scan_secrets)
+    # A refusal is a closed value we built (`_exec_refusal_valid`), so the vocabulary is its
+    # assurance; it is still scanned for the leg's known secrets when the leg has them. The
+    # pattern scan is not applied to it: it reports every snake_case code as a high-entropy
+    # string, which would drop every refusal.
+    refused = (_scan_exec_field(refusal, scan_secrets if scan_secrets is not None else (),
+                                patterns=False)
+               if _exec_refusal_valid(refusal) else None)
     return {"schema": "leg_exec.v1", "attempt_id": uuid.uuid4().hex,
         "vendor": leg if leg in {"claude", "gemini", "codex", "grok"} else "other",
         "exit_code": rc if type(rc) is int else None, "outcome": outcome,
         "auth_state": state, "model_turn": model_turn if type(model_turn) is bool else None,
         "verdict": verdict if type(verdict) is bool else None,
+        "stage": stage if type(stage) is str and stage in _EXEC_STAGES else None,
+        "refusal": refused,
+        # Which configured value an output scan matched, and where: closed fields and
+        # positions only, scanned for the leg's own secrets like every field.
+        "secret_match": (_scan_exec_field(secret_match, scan_secrets if scan_secrets is not None else (),
+                                          patterns=False)
+                         if _secret_match_valid(secret_match) else None),
+        # What kind of line the tooled stream refused: closed names and counts only
+        # (`_stream_rejection_valid`), still scanned for the leg's own secrets. The vocabulary
+        # is its pattern assurance: the pattern scan reports snake_case names as high-entropy
+        # strings, which would drop the field.
+        "stream_rejection": (_scan_exec_field(stream_rejection,
+                                              scan_secrets if scan_secrets is not None else (),
+                                              patterns=False)
+                             if _stream_rejection_valid(stream_rejection) else None),
         "argv_flags": flags, "output": "omitted", "bound_bytes": 4096}
 
 
@@ -15113,9 +16007,16 @@ def _retained_leg_exec(function):
             if (type(rc) is int and rc != 0 and observation["model_turn"] is False
                     and observation["verdict"] is False and not observation["auth_probed"]):
                 observation["auth_state"] = _parent_auth_state(leg, observation.get("env"))
+            # A refusal counts only when the leg did not end accepted after all.
+            accepted = result is not None and (
+                result[0] == "OK" or (type(result[0]) is int and result[0] == 0))
             record = leg_exec_record(leg, rc, observation["argv"], auth_state=observation["auth_state"],
                 model_turn=observation["model_turn"], verdict=observation["verdict"],
-                scan_secrets=observation.get("scan_secrets"))
+                scan_secrets=observation.get("scan_secrets"), stage=observation.get("stage"),
+                refusal=observation.get("refusal"), secret_match=observation.get("secret_match"),
+                launched=_exec_launched(observation),
+                output_refused=observation.get("output_refused") is True and not accepted,
+                stream_rejection=observation.get("stream_rejection"))
             if result is not None and type(result[0]) is int and result[0] != 0:
                 detail = result[2] if len(result) > 2 else None
                 if type(detail) is not _HarnessCode and record["outcome"].startswith("leg_auth_"):
@@ -16640,6 +17541,10 @@ def _default_spawn(
     quiescence_failed = False
     spawn_counter = _SpawnCounter()
     spawn_token = _LEG_SPAWNS.set(spawn_counter)
+    observation = _EXEC_OBSERVATION.get()
+    if observation is not None:
+        # The leg record's `launched`: whether any provider started (agent-harness#1823).
+        observation.setdefault("spawns", spawn_counter)
     # A notice the seat owner raises while this leg's profile ends lands in the leg's list.
     owner_notices_token = _SEAT_OWNER_NOTICES.set(seat_notices)
     # The leg starts with NO sandbox facts, whatever its calling context holds, and the
@@ -17088,9 +17993,19 @@ def _default_spawn(
                             )
                             seat = _bind_route_qualification(seat, seat_route)
                         except _seat_jail.SeatSandboxRefused as exc:
+                            _note_exec_refusal(exc, exc.code)
                             leg_detail = _LegFailure(template=exc.code)
                             seat_notices.append(exc.code)
                             seat_notices.extend(exc.also)
+                            return "DEGRADED", ""
+                        except _JAILED_GEMINI_PROPAGATES:
+                            raise
+                        except Exception as exc:
+                            # agent-harness#1823: typed HERE, not through the broker client's
+                            # wrapper, so a refusal keeps its code and notice.
+                            leg_detail = _jailed_gemini_failure(exc)
+                            if leg_detail.template in _seat_jail.NOTICE_CODES:
+                                seat_notices.append(leg_detail.template)
                             return "DEGRADED", ""
                         try:
                             gemini_status, gemini_text = _exec_jailed_gemini_leg(
@@ -17103,7 +18018,13 @@ def _default_spawn(
                                 review_authorization=review_authorization,
                             )
                         except _seat_jail.SeatSandboxRefused as exc:
+                            _note_exec_refusal(exc, exc.code)
                             gemini_sink.append(_LegFailure(template=exc.code))
+                            gemini_status, gemini_text = "DEGRADED", ""
+                        except _JAILED_GEMINI_PROPAGATES:
+                            raise
+                        except Exception as exc:
+                            gemini_sink.append(_jailed_gemini_failure(exc))
                             gemini_status, gemini_text = "DEGRADED", ""
                         seat_notices.extend(seat.notices)
                         if gemini_status != "OK" and gemini_sink:
@@ -17137,6 +18058,7 @@ def _default_spawn(
                         # A typed seat refusal (admission, jail, egress) keeps its code and
                         # notice here exactly as off the broker (the outer handler below).
                         failure = _exception_failure(exc)
+                        _note_exec_refusal(exc, failure)
                         typed = isinstance(failure, str) and failure in _seat_jail.NOTICE_CODES
                         if typed:
                             seat_notices.append(failure)
@@ -17165,6 +18087,7 @@ def _default_spawn(
                     _cancel_parent_infer,
                     broker_latch.is_quiescent,
                 )
+                _note_exec_stage("broker")
                 response, probe = broker.run_credentialless_client(
                     adapter, deadline_s=None if review_monitor is not None else float(leg_deadline),
                     **({"cancel_event": review_monitor.cancel} if review_monitor is not None else {}),
@@ -17286,6 +18209,7 @@ def _default_spawn(
         # one call site away went to `detail` with empty text and was a WARN. Same fault,
         # two verdicts, decided by which line raised.
         failure = _exception_failure(exc)
+        _note_exec_refusal(exc, failure)
         if isinstance(failure, str) and failure in _seat_jail.NOTICE_CODES:
             seat_notices.append(failure)
         if jailed and leg == "claude":
