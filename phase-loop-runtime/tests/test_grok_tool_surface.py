@@ -846,7 +846,8 @@ def test_the_egress_and_composition_conditions_each_refuse_alone(seat, monkeypat
 
 
 @pytest.mark.parametrize("change", ["profile", "cwd", "egress_prefix", "proxy_exited", "role",
-                                    "record_withdrawn", "context_drift", "forged"])
+                                    "record_withdrawn", "context_drift", "forged",
+                                    "record_remeasured", "listing_receipt"])
 def test_launch_owned_holds_the_mark_to_the_launch(seat, launches, monkeypatch, change):
     command = _composed(seat)
     alive = {"proxy": None}
@@ -867,6 +868,17 @@ def test_launch_owned_holds_the_mark_to_the_launch(seat, launches, monkeypatch, 
             (pa.private_record_root() / gts.host_record_name(seat.digest)).unlink()
         elif change == "context_drift":
             monkeypatch.setattr(gts, "egress_allowlist_digest", lambda: "b" * 64)
+        elif change == "record_remeasured":
+            # A consistent newer record and receipt, admitting fewer names: not the one the
+            # final check judged, so the mark does not carry over (erratum 8).
+            assert marked.grok_launch_context.admitted_tools == tuple(
+                sorted(pi._grok_allowed_tools(command)))
+            _publish_host(_surface(seat.digest, [_route("review", command, ["read_file"])],
+                                   measured_at="2026-11-21T12:00:00Z"))
+            assert _probe(command)["passed"] and pi.grok_tool_gate(command, seat.env)
+        elif change == "listing_receipt":
+            _receipt(seat, command, "list_tools")  # a marked profile needs its frozen basis
+            assert pi.grok_tool_gate(command, seat.env)
         elif change == "forged":
             with pytest.raises(TypeError):
                 gts.LaunchContext(command=tuple(command), context_digest=gts.context_digest(),
@@ -1967,21 +1979,22 @@ def test_a_staged_receipt_refuses_at_the_final_check_alone(seat, launches):
 
 
 def test_a_receipt_whose_names_leave_the_non_mutating_tuple_refuses(seat, launches, monkeypatch):
-    """The admitted names are read from the receipt itself at the final check."""
+    """Eligibility is judged on the frozen snapshot the gate itself validated: the one
+    receipt read, whose admitted names the mark then carries."""
     command = _composed(seat, "review")
     with _egress(), pi._seat_command_profile(command, env=seat.env, cwd=seat.out) as (_owned, profile):
-        assert gts.is_issued(_verify(seat, profile).grok_launch_context)
-        real = pi._read_grok_receipt
-
-        def widened(cmd, env=None):
-            binary, digest, record = real(cmd, env)
-            return binary, digest, {**record, "tools": [*record["tools"], "write"]}
-        monkeypatch.setattr(pi, "_read_grok_receipt", widened)
-        assert pi._grok_tool_gate(command, seat.env) is False  # the gate itself refuses it too
-        monkeypatch.setattr(pi, "_grok_tool_gate", lambda *a, **k: True)
+        marked = _verify(seat, profile)
+        tools, surface = pi._grok_frozen_snapshot(command, seat.env)
+        assert marked.grok_launch_context.admitted_tools == tools
+        assert marked.grok_launch_context.surface_digest == surface
+        monkeypatch.setattr(pi, "_grok_frozen_snapshot",
+                            lambda cmd, env=None: ((*tools, "write"), surface))
         with pytest.raises(pi._seat_jail.SeatSandboxRefused) as refusal:
             _verify(seat, profile)
         assert refusal.value.code == REFUSED
+        monkeypatch.setattr(pi, "_grok_frozen_snapshot", lambda cmd, env=None: None)
+        with pytest.raises(pi._seat_jail.SeatSandboxRefused):
+            _verify(seat, profile)
     assert launches == []
 
 

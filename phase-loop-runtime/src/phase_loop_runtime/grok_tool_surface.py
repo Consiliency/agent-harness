@@ -524,7 +524,11 @@ class LaunchContext:
     cwd: str
     egress_prefix: tuple[str, ...]
     profile_fingerprint: str
-    proxy: object = field(repr=False, compare=False)
+    #: The frozen receipt the final check judged (erratum 8, item 1d): its admitted tool
+    #: names and surface digest, which the launch's own receipt must still carry.
+    admitted_tools: tuple[str, ...] = ()
+    surface_digest: str = ""
+    proxy: object = field(default=None, repr=False, compare=False)
     issuer: object = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -972,13 +976,17 @@ def verify_launch_context(profile: Any, *, env: Mapping[str, str], cwd, role, pr
         _require(isinstance(state, ProvisionalContext))
         current, cwd, prefix = _check_context(panel, profile, cwd=cwd, command=state.command,
                                               role=role, proxy=proxy, jailed=jailed)
-        _require(panel._grok_tool_gate(list(state.command), env))
+        # The one receipt read: the frozen snapshot the gate itself validated.
+        snapshot = panel._grok_frozen_snapshot(list(state.command), env)
+        _require(snapshot is not None)
+        assert snapshot is not None
+        admitted, surface = snapshot
         # Erratum 8, item 1d: at use, only a form with no writing tool; `staged` is
         # ineligible under grok_seat_context.v1 and refused here, before any spawn.
-        receipt = panel._read_grok_receipt(list(state.command), env)
-        _require(receipt is not None and eligible_at_use(state.command, receipt[2].get("tools")))
+        _require(eligible_at_use(state.command, list(admitted)))
         mark = LaunchContext(command=state.command, context_digest=current, cwd=cwd,
                              egress_prefix=prefix, profile_fingerprint=profile_fingerprint(profile),
+                             admitted_tools=admitted, surface_digest=surface,
                              proxy=proxy, issuer=_ISSUER)
     except Exception as exc:  # noqa: BLE001 - every failure is the one public refusal (§4.6)
         raise SeatSandboxRefused("grok_tool_surface_unverified") from exc
