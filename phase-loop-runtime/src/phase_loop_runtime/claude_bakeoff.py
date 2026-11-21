@@ -13,12 +13,14 @@ set. :func:`evidence_digest` is what an OD-3b section cites.
 
 * ``validate DIR`` -- V7, the shape check of every record in ``DIR`` and across them;
 * ``digest DIR`` -- the order-independent evidence digest;
-* ``run --plan PLAN`` -- the W0 kit (an owner action, LA-3). It refuses a run plan that differs
-  from the phase plan's Execution Notes, a board whose president or a co-seat would use the W0
-  Claude account, and a bundle head that is not on ``main``. Per block it brackets the runs
-  with the owner's meter readings, runs the block's arm, and once per native block runs the
-  capture twin. A security-class outcome stops the arm, and its records carry only
-  ``withheld_private``;
+* ``run --plan PLAN --session 1|2`` -- the W0 kit (an owner action, LA-3), one of the two
+  sessions OQ-4 fixes: session 1 is blocks 1-2 (print, control), session 2 blocks 3-6 and only
+  once ``sdk`` is admitted and session 1's records are present. It refuses a run plan that
+  differs from the phase plan's Execution Notes, a board whose president or a co-seat would use
+  the W0 Claude account, and a bundle head that is not on ``main``. Each session opens with a
+  meter reading and each block closes with one; it runs the block's arm, and once per native
+  block the capture twin. A security-class outcome stops the arm, in that session and the
+  next, and its records carry only ``withheld_private``;
 * ``control-brief`` -- print the T3 Code SDK-route control block's brief.
   Its response is parsed through the Python ``ingest_control`` API; there is
   no ``ingest-control`` CLI subcommand.
@@ -343,6 +345,9 @@ def _git_show(repo: Path, rev: str, path: str) -> bytes | None:
 
 
 _OD3B_DIGEST = re.compile(r"\*\*W0 evidence digest:\*\* `(?P<digest>[0-9a-f]{64})`")
+#: The sessions an OD-3b section's evidence holds (OQ-4): ``1`` or ``1 and 2``.
+_OD3B_SESSIONS = re.compile(r"^\*\*W0 sessions:\*\* (?P<sessions>1|1 and 2)[ \t]*$", re.M)
+_OD3B_HEADING = re.compile(r"## 4[c-z]\. .*\bOD-3b\b")
 
 
 #: The architectures a W0 host may run; a W0 head's TUI digest is one per architecture.
@@ -438,24 +443,10 @@ def validate_directory(directory: Path | str, *, repo: Path | str = ".",
     when given, else the digests :func:`tui_digests_at` derives without running that head's
     code; a head whose digest cannot be derived fails."""
     directory, repo = Path(directory), Path(repo)
-    paths, problems = _directory_entries(directory)
-    records: list[dict] = []
-    for path in paths:
-        raw = path.read_bytes()
-        try:
-            obj = json.loads(raw)
-        except ValueError:
-            problems.append(f"{path.name}: not JSON")
-            continue
-        found = validate_record(obj)
-        if found:
-            problems += [f"{path.name}: {problem}" for problem in found]
-            continue
-        if raw != canonical_bytes(obj):
-            problems.append(f"{path.name}: not canonical JSON")
-        if path.name != f"{obj['run_id']}.json":
-            problems.append(f"{path.name}: the file is not named for its run_id")
-        records.append(obj)
+    records, problems = load_records(directory)
+    held = sessions_held(records)
+    if 2 in held and 1 not in held:
+        problems.append("session 2 records without session 1's")
     arms_by_block: dict[int, set[str]] = {}
     heads_by_block: dict[int, set[str]] = {}
     for obj in records:
@@ -500,14 +491,59 @@ def validate_directory(directory: Path | str, *, repo: Path | str = ".",
     if record_text is None:
         current = repo / _transport.DECISION_RECORD
         record_text = current.read_bytes() if current.exists() else b""
-    digest = evidence_digest(directory)
-    for sid, (heading, _d) in sorted(_transport.record_sections(record_text).items()):
-        if re.match(r"## 4[c-z]\. .*\bOD-3b\b", heading):
-            body = _transport.section_bytes(record_text, sid) or b""
-            cited = {m["digest"] for m in _OD3B_DIGEST.finditer(body.decode("utf-8", "replace"))}
-            if digest not in cited:
-                problems.append(f"OD-3b section {sid} does not cite this directory's evidence digest")
+    problems += od3b_problems(record_text, evidence_digest(directory), records)
     return list(dict.fromkeys(problems))
+
+
+def load_records(directory: Path) -> tuple[list[dict], list[str]]:
+    """The valid records of ``directory`` and the problem of every entry that is not one."""
+    paths, problems = _directory_entries(directory)
+    records: list[dict] = []
+    for path in paths:
+        raw = path.read_bytes()
+        try:
+            obj = json.loads(raw)
+        except ValueError:
+            problems.append(f"{path.name}: not JSON")
+            continue
+        found = validate_record(obj)
+        if found:
+            problems += [f"{path.name}: {problem}" for problem in found]
+            continue
+        if raw != canonical_bytes(obj):
+            problems.append(f"{path.name}: not canonical JSON")
+        if path.name != f"{obj['run_id']}.json":
+            problems.append(f"{path.name}: the file is not named for its run_id")
+        records.append(obj)
+    return records, problems
+
+
+def od3b_problems(record_text: bytes, digest: str, records: Sequence[Mapping[str, object]]
+                  ) -> list[str]:
+    """OQ-4: only the latest OD-3b section, by letter, answers for this directory; earlier ones
+    are history. It cites ``digest``, its ``**W0 sessions:**`` line names exactly the sessions
+    the records hold, and a native transport it names has records here, so a section over
+    session 1 alone says ``1`` and cannot name ``sdk``."""
+    od3b = sorted(sid for sid, (heading, _d) in _transport.record_sections(record_text).items()
+                  if _OD3B_HEADING.match(heading))
+    if not od3b:
+        return []
+    sid = od3b[-1]
+    body = (_transport.section_bytes(record_text, sid) or b"").decode("utf-8", "replace")
+    problems = []
+    if digest not in {m["digest"] for m in _OD3B_DIGEST.finditer(body)}:
+        problems.append(f"OD-3b section {sid} does not cite this directory's evidence digest")
+    named = [m["sessions"] for m in _OD3B_SESSIONS.finditer(body)]
+    if named != [sessions_label(sessions_held(records))]:
+        problems.append(f"OD-3b section {sid} does not name the W0 sessions this directory holds")
+    value = None
+    for line in body.splitlines():
+        found = _transport.DEFAULT_LINE.match(line)
+        if found is not None:
+            value = found.group("value")
+    if value in NATIVE_ARMS and not any(obj["arm"] == value for obj in records):
+        problems.append(f"OD-3b section {sid} names `{value}`, which has no record here")
+    return problems
 
 
 # --------------------------------------------------------------------------------------
@@ -518,15 +554,76 @@ def validate_directory(directory: Path | str, *, repo: Path | str = ".",
 class RunPlan:
     blocks: tuple[str, ...] = ("print", CONTROL, "sdk", "sdk", CONTROL, "print")
     runs_per_block: int = 3
-    meter_readings: int = 7
+    #: One reading opens each session and one closes each block (OQ-2, OQ-4).
+    meter_readings: int = 8
     settle_s: int = 300
     timeout_s: int = 1800
     twins_per_native_block: int = 1
-    sessions: int = 1
+    sessions: int = 2
+    #: OQ-4's early session: the blocks of each session, in order.
+    session_blocks: tuple[tuple[int, ...], ...] = ((1, 2), (3, 4, 5, 6))
 
 
 #: The phase plan's Execution Notes, fixed before the window.
 EXECUTION_NOTES = RunPlan()
+SESSIONS = tuple(range(1, EXECUTION_NOTES.sessions + 1))
+
+
+def session_of(block: int) -> int:
+    for session, blocks in enumerate(EXECUTION_NOTES.session_blocks, start=1):
+        if block in blocks:
+            return session
+    raise ValueError(f"block {block} is in no session")
+
+
+def sessions_held(records: Iterable[Mapping[str, object]]) -> tuple[int, ...]:
+    return tuple(sorted({session_of(int(obj["block"])) for obj in records}))  # type: ignore[call-overload]
+
+
+def sessions_label(held: Sequence[int]) -> str:
+    """How an OD-3b section names the sessions its evidence holds."""
+    return " and ".join(str(session) for session in held)
+
+
+def session_arms(session: int) -> tuple[str, ...]:
+    return tuple(sorted({EXECUTION_NOTES.blocks[block - 1]
+                         for block in EXECUTION_NOTES.session_blocks[session - 1]}))
+
+
+def opening_position(session: int) -> int:
+    """The ledger position of the reading that opens ``session``."""
+    return sum(len(blocks) + 1 for blocks in EXECUTION_NOTES.session_blocks[:session - 1])
+
+
+def bracket_positions(block: int) -> tuple[int, int]:
+    """The ledger positions of the two readings around ``block``: the one before it in its
+    own session (the session's opening reading for its first block) and its closing one."""
+    session = session_of(block)
+    blocks = EXECUTION_NOTES.session_blocks[session - 1]
+    after = opening_position(session) + 1 + blocks.index(block)
+    return after - 1, after
+
+
+def session_problems(session: object, directory: Path,
+                     admitted: Callable[[str], bool] | None = None) -> list[str]:
+    """What refuses ``run --session``, before credentials, CA or any reading: an unknown
+    session, a native arm of this session that is not admitted, a directory that already
+    holds this session's records, and for session 2 a directory without session 1's."""
+    if session not in SESSIONS:
+        return ["run: --session must be one of " + ", ".join(map(str, SESSIONS))]
+    is_admitted = admitted or _transport.is_admitted
+    problems = [f"the {arm} arm is not admitted on this tree"
+                for arm in session_arms(int(session)) if arm in NATIVE_ARMS and not is_admitted(arm)]
+    records, found = load_records(directory) if directory.exists() else ([], [])
+    problems += [f"evidence: {problem}" for problem in found]
+    held = sessions_held(records)
+    if any(later >= int(session) for later in held):
+        problems.append(f"evidence: session {session}'s or a later session's records are here")
+    have = {int(obj["block"]) for obj in records}  # type: ignore[call-overload]
+    for earlier in range(1, int(session)):
+        if not set(EXECUTION_NOTES.session_blocks[earlier - 1]) <= have:
+            problems.append(f"evidence: session {session} needs session {earlier}'s records here")
+    return problems
 
 #: Fields of a run-plan file that the kit takes from the operator (not plan constants). A W0
 #: board runs without a landing tier, so it has no president to place on any account.
@@ -550,7 +647,7 @@ def check_run_plan(plan: Mapping[str, object]) -> list[str]:
         "timeout_s": EXECUTION_NOTES.timeout_s,
         "twins_per_native_block": EXECUTION_NOTES.twins_per_native_block,
         "sessions": EXECUTION_NOTES.sessions,
-    }
+    }  # ``session_blocks`` is the kit's constant, never the operator's
     for key, value in expected.items():
         if plan.get(key) != value:
             problems.append(f"run plan: {key} differs from the phase plan's Execution Notes")
@@ -706,25 +803,49 @@ def write_private(path: Path, data: bytes) -> None:
     os.chmod(path, 0o600)
 
 
+_READING_NAMES = ("subscription_usage", "extra_usage_spend", "api_spend")
+
+
 @dataclass
 class MeterLedger:
-    """The owner's account usage meter readings, one before the first block and one after
-    each block (after the settle interval), kept privately. A record carries only its
-    block's ``meter_ref`` and the salted digest of the two readings that bracket it."""
+    """The owner's account usage meter readings, kept privately at fixed positions: one opens
+    each session and one closes each block, after the settle interval (OQ-2, OQ-4). Session 2
+    keeps session 1's readings. A record carries only its block's ``meter_ref`` and the salted
+    digest of the two readings that bracket it (:func:`bracket_positions`)."""
 
     root: Path
     prompt: Callable[[str], str] = input
     sleep: Callable[[float], None] = time.sleep
-    readings: list[dict] = field(default_factory=list)
+    readings: list[dict | None] = field(default_factory=list)
+    problem: str | None = None
 
-    def read(self, index: int, *, settle_s: float) -> dict:
-        if index:
+    def __post_init__(self) -> None:
+        size = EXECUTION_NOTES.meter_readings
+        path = self.root / "meter.json"
+        if self.readings or not path.exists():
+            self.readings = list(self.readings) or [None] * size
+            return
+        try:
+            kept = json.loads(path.read_bytes())
+        except ValueError:
+            kept = None
+        if (isinstance(kept, list) and len(kept) == size
+                and all(item is None or (isinstance(item, dict) and set(item) == set(_READING_NAMES))
+                        for item in kept)):
+            self.readings = kept
+        else:
+            self.readings = [None] * size
+            self.problem = "meter: the private ledger is not this run plan's; archive it first"
+
+    def read(self, position: int, *, settle_s: float) -> dict:
+        if settle_s:
             self.sleep(settle_s)
         reading = {}
-        for name in ("subscription_usage", "extra_usage_spend", "api_spend"):
-            answer = self.prompt(f"meter reading {index}: {name} (as shown, or 'none'): ").strip()
+        for name in _READING_NAMES:
+            answer = self.prompt(f"meter reading {position + 1} of {len(self.readings)}: "
+                                 f"{name} (as shown, or 'none'): ").strip()
             reading[name] = answer[:64]
-        self.readings.append(reading)
+        self.readings[position] = reading
         write_private(self.root / "meter.json", json.dumps(self.readings, indent=2).encode())
         return reading
 
@@ -735,16 +856,16 @@ class MeterLedger:
         return path.read_bytes()
 
     def digest(self, block: int) -> str:
-        bracket = self.readings[block - 1:block + 1]
+        bracket = [self.readings[position] for position in bracket_positions(block)]
         return hashlib.sha256(self.salt() + json.dumps(bracket, sort_keys=True).encode()).hexdigest()
 
     def billing(self, block: int, moved: Callable[[str, str], bool] | None = None) -> str:
         """Where the block's runs landed: ``extra_usage`` or ``api`` when that spend moved
         across the block, ``subscription`` when only subscription usage moved, otherwise
         ``unknown``."""
-        if len(self.readings) <= block:
+        before, after = (self.readings[position] for position in bracket_positions(block))
+        if before is None or after is None:
             return "unknown"
-        before, after = self.readings[block - 1], self.readings[block]
         changed = moved or (lambda a, b: a != b)
         if changed(before["api_spend"], after["api_spend"]):
             return "api"
@@ -1465,7 +1586,7 @@ def run_native(arm: str, *, repo: Path, artifact_copy: Path, observations: Path,
 
 @dataclass
 class Window:
-    """One W0 session over the plan's six blocks. Every effect is injectable."""
+    """One W0 session (OQ-4) over its blocks of the plan's six. Every effect is injectable."""
 
     plan: Mapping[str, object]
     out_dir: Path
@@ -1478,14 +1599,19 @@ class Window:
     report: Callable[[str], None] = print
     compose: Callable[[], Sequence[str]] = effective_composition
     cli_version: str = "unknown"
+    session: int | None = None
     stopped_arms: set[str] = field(default_factory=set)
     private_notes: list[str] = field(default_factory=list)
 
     def preflight(self) -> list[str]:
         """Everything that can refuse the window, before the first meter reading: the run
         plan, the lineup (declared and as this host composes it), the W0 checkout, head and
-        artifact, the observed CLI version, and every arm's activation and admission."""
+        artifact, the observed CLI version, the session's evidence, and the activation and
+        admission of this session's arms only (session 1 never needs ``sdk``)."""
         problems = check_run_plan(self.plan)
+        problems += session_problems(self.session, self.out_dir)
+        if self.ledger.problem:
+            problems.append(self.ledger.problem)
         problems += composition_problems(self.plan)
         head = str(self.plan.get("w0_head", ""))
         if _HEX40.fullmatch(head):
@@ -1496,13 +1622,12 @@ class Window:
                 bundle_artifact(self.repo, head, self.plan.get("artifact"))
             except ValueError as exc:
                 problems.append(str(exc))
-            for arm in sorted(set(EXECUTION_NOTES.blocks) & set(NATIVE_ARMS)):
+            arms = session_arms(self.session) if self.session in SESSIONS else ()  # type: ignore[arg-type]
+            for arm in sorted(set(arms) & set(NATIVE_ARMS)):
                 try:
                     self.activation(arm)
                 except ValueError as exc:
                     problems.append(str(exc))
-                if not _transport.is_admitted(arm):
-                    problems.append(f"the {arm} arm is not admitted on this tree")
         if self.cli_version == "unknown" or not _CLI_VERSION.fullmatch(self.cli_version):
             problems.append("the Claude CLI version cannot be observed")
         if not problems:
@@ -1525,9 +1650,14 @@ class Window:
         problems = self.preflight()
         if problems:
             raise ValueError("W0 refused before any run: " + "; ".join(problems))
+        session = int(self.session)  # type: ignore[arg-type]
+        records, _found = load_records(self.out_dir) if self.out_dir.exists() else ([], [])
+        self.stopped_arms |= {str(obj["arm"]) for obj in records
+                              if obj["security_outcome"] == "withheld_private"}
         written: list[Path] = []
-        self.ledger.read(0, settle_s=0)
-        for block, arm in enumerate(EXECUTION_NOTES.blocks, start=1):
+        self.ledger.read(opening_position(session), settle_s=0)
+        for block in EXECUTION_NOTES.session_blocks[session - 1]:
+            arm = EXECUTION_NOTES.blocks[block - 1]
             outcomes: list[RunOutcome] = []
             request_set = {"completeness": "partial",
                            "capture_digest": hashlib.sha256(b"[]").hexdigest(), "entries": []}
@@ -1558,7 +1688,7 @@ class Window:
                 if changed:
                     raise ValueError("W0 stopped after the block's runs: "
                                      + "; ".join(changed))
-            self.ledger.read(block, settle_s=EXECUTION_NOTES.settle_s)
+            self.ledger.read(bracket_positions(block)[1], settle_s=EXECUTION_NOTES.settle_s)
             billing = self.ledger.billing(block)
             for n, outcome in enumerate(outcomes, start=1):
                 record = build_record(
@@ -1591,6 +1721,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     run.add_argument("--plan", required=True)
     run.add_argument("--repo", default=".")
     run.add_argument("--window", default="w0")
+    run.add_argument("--session", type=int, required=True, choices=SESSIONS,
+                     help="OQ-4: 1 runs blocks 1-2 (print, control); 2 runs blocks 3-6 "
+                          "once sdk is admitted and session 1's records are here")
     brief = sub.add_parser("control-brief", help="print a control block's brief")
     brief.add_argument("--plan", required=True)
     brief.add_argument("--block", type=int, required=True)
@@ -1601,24 +1734,43 @@ def main(argv: Sequence[str] | None = None) -> int:
         for problem in problems:
             print(f"claude-bakeoff validate: FAIL: {problem}", file=sys.stderr)
         if not problems:
-            count = len(_directory_entries(directory)[0])
-            print(f"claude-bakeoff validate: OK ({count} record(s))")
+            records = load_records(directory)[0]
+            print(f"claude-bakeoff validate: OK ({len(records)} record(s)"
+                  f"{coverage_note(sessions_held(records))})")
         return 1 if problems else 0
     if args.command == "digest":
         print(evidence_digest(args.directory))
+        note = coverage_note(sessions_held(load_records(Path(args.directory))[0]))
+        if note:
+            print(f"claude-bakeoff digest: note: {note.removeprefix('; ')}", file=sys.stderr)
         return 0
     plan = json.loads(Path(args.plan).read_text(encoding="utf-8"))
     if args.command == "control-brief":
         print(control_brief(args.block, plan))
         return 0
-    return _run_window(plan, Path(args.repo), args.window)
+    return _run_window(plan, Path(args.repo), args.window, args.session)
 
 
-def _run_window(plan: Mapping[str, object], repo: Path, window: str) -> int:  # pragma: no cover
+def coverage_note(held: Sequence[int]) -> str:
+    """What the directory's sessions mean: session 1 alone is never the complete bake-off."""
+    if not held:
+        return ""
+    if tuple(held) == SESSIONS:
+        return "; sessions " + sessions_label(held)
+    return (f"; session {sessions_label(held)} of {len(SESSIONS)} only: an interim set, "
+            "not the complete bake-off")
+
+
+def _run_window(plan: Mapping[str, object], repo: Path, window: str,
+                session: int) -> int:  # pragma: no cover
     import shutil
 
     from . import panel_invoker, seat_credentials, seat_egress_proxy, seat_jail
 
+    gate = session_problems(session, repo / EVIDENCE_DIR)
+    if gate:  # before any credential, CA or reading
+        print("claude-bakeoff run: REFUSED: " + "; ".join(gate), file=sys.stderr)
+        return 1
     root = private_root(window)
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(root, 0o700)
@@ -1664,7 +1816,7 @@ def _run_window(plan: Mapping[str, object], repo: Path, window: str) -> int:  # 
 
     window_run = Window(plan=plan, out_dir=repo / EVIDENCE_DIR, ledger=MeterLedger(root),
                         token=credential.token, repo=repo, native=native, control=control,
-                        twin=twin, cli_version=cli_version)
+                        twin=twin, cli_version=cli_version, session=session)
     try:
         written = window_run.run()
     except ValueError as exc:
@@ -1675,7 +1827,8 @@ def _run_window(plan: Mapping[str, object], repo: Path, window: str) -> int:  # 
             shutil.rmtree(ca_dir, ignore_errors=True)  # this window's CA ends with it
         if dropped:
             write_private(root / "dropped-hosts.txt", "\n".join(sorted(set(dropped))).encode())
-    print(f"claude-bakeoff run: wrote {len(written)} record(s); review them before the records PR")
+    print(f"claude-bakeoff run: session {session} wrote {len(written)} record(s); "
+          "review them before the records PR")
     return 0
 
 

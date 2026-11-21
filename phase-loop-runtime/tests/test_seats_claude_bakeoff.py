@@ -274,8 +274,10 @@ def test_a_shared_meter_ref_fails(repo, tmp_path):
 
 
 def test_an_sdk_record_whose_head_lacks_4b_fails(repo, tmp_path):
-    assert validate(write(tmp_path / "w0", native(repo, block=3, arm="sdk",
-                                                  activation_section_sha256="f" * 64)), repo) == 1
+    sdk = native(repo, block=3, arm="sdk", activation_section_sha256="f" * 64)
+    directory = write(tmp_path / "w0", native(repo), control(repo), sdk)
+    assert bk.validate_directory(directory, repo=repo, tui_digest=TUI) == [
+        "w0-b3-r1: its W0 head lacks the section its activation names"]
 
 
 def test_an_sdk_record_whose_head_has_4b_passes_that_check(repo, tmp_path):
@@ -283,7 +285,8 @@ def test_an_sdk_record_whose_head_has_4b_passes_that_check(repo, tmp_path):
     _git(repo, "-c", "commit.gpgsign=false", "commit", "-qam", "4b")
     _publish(repo)
     record = native(repo, block=3, arm="sdk")
-    assert validate(write(tmp_path / "w0", record), repo, "--tui-digest", TUI) == 0
+    directory = write(tmp_path / "w0", native(repo), control(repo), record)
+    assert validate(directory, repo, "--tui-digest", TUI) == 0
 
 
 def test_a_native_record_off_the_tui_digest_fails(repo, tmp_path):
@@ -309,11 +312,18 @@ def test_the_control_may_mark_exactly_its_four_checks_not_applicable(repo):
     assert bk.validate_record(record) == []
 
 
+def _od3b(letter: str, digest: str, *, value: str = "`print`", sessions: str | None = "1") -> str:
+    lines = [f"\n## {letter}. OD-3b: the jailed Claude default\n",
+             f"**Jailed Claude default:** {value}\n", f"**W0 evidence digest:** `{digest}`\n"]
+    if sessions is not None:
+        lines.append(f"**W0 sessions:** {sessions}\n")
+    return "\n".join(lines)
+
+
 def test_an_od3b_section_must_cite_the_evidence_digest(repo, tmp_path):
     directory = write(tmp_path / "w0", native(repo))
     digest = bk.evidence_digest(directory)
-    wrong = (RECORD_4A + "\n## 4c. OD-3b: the jailed Claude default\n\n"
-             "**Jailed Claude default:** `print`\n\n**W0 evidence digest:** `" + "0" * 64 + "`\n")
+    wrong = RECORD_4A + _od3b("4c", "0" * 64)
     right = wrong.replace("0" * 64, digest)
     assert bk.validate_directory(directory, repo=repo, record_text=wrong.encode(),
                                  tui_digest=TUI) != []
@@ -866,8 +876,8 @@ SEATS = ["grok:grok-4.7:high:adversarial", "claude:claude-opus-5-5:high:correctn
 
 
 def _plan(repo: Path, **overrides) -> dict:
-    plan = {"blocks": list(bk.EXECUTION_NOTES.blocks), "runs_per_block": 3, "meter_readings": 7,
-            "settle_s": 300, "timeout_s": 1800, "twins_per_native_block": 1, "sessions": 1,
+    plan = {"blocks": list(bk.EXECUTION_NOTES.blocks), "runs_per_block": 3, "meter_readings": 8,
+            "settle_s": 300, "timeout_s": 1800, "twins_per_native_block": 1, "sessions": 2,
             "w0_head": _head(repo), "artifact": "docs/bundle.md", "model": "claude-opus-5-5",
             "effort": "high", "board": {"seats": list(SEATS)}}
     plan.update(overrides)
@@ -876,8 +886,9 @@ def _plan(repo: Path, **overrides) -> dict:
 
 @pytest.mark.parametrize("change", [
     {"runs_per_block": 5}, {"blocks": ["print", "sdk", "t3-sdk-control"] * 2},
-    {"meter_readings": 19}, {"settle_s": 60}, {"timeout_s": 3600},
-    {"twins_per_native_block": 3}, {"sessions": 2}, {"unknown": 1}, {"w0_head": "main"},
+    {"meter_readings": 19}, {"meter_readings": 7}, {"settle_s": 60}, {"timeout_s": 3600},
+    {"twins_per_native_block": 3}, {"sessions": 1}, {"session_blocks": [[1, 2, 3, 4, 5, 6]]},
+    {"unknown": 1}, {"w0_head": "main"},
     {"landing_tier": "plan"}, {"artifact": "/tmp/untrusted-injection.md"},
     {"artifact": "../outside.md"}, {"artifact": "docs/../docs/bundle.md"},
 ])
@@ -946,7 +957,7 @@ class _Ledger(bk.MeterLedger):
         super().__init__(root=root, prompt=lambda _q: flat.pop(0), sleep=lambda _s: None)
 
 
-def _window(repo, tmp_path, *, native_outcomes, monkeypatch, admit_sdk=True, **kw):
+def _window(repo, tmp_path, *, native_outcomes, monkeypatch, admit_sdk=True, session=1, **kw):
     monkeypatch.setattr(bk, "head_on_main", lambda _r, _h: True)
     monkeypatch.setattr(bk, "checkout_problems", lambda _r, _h: [])
     if admit_sdk:
@@ -964,9 +975,10 @@ def _window(repo, tmp_path, *, native_outcomes, monkeypatch, admit_sdk=True, **k
                            "model": "claude-opus-5-5", "canonical_output": "admitted",
                            "verdict": "AGREE", "cli_version": "2.1.318"}).encode()
 
-    (repo / ct.DECISION_RECORD).write_text(RECORD_4A + SDK_4B)
-    _git(repo, "-c", "commit.gpgsign=false", "commit", "-qam", "4b")
-    settings = {"compose": lambda: list(SEATS), "cli_version": "2.1.318", **kw}
+    if SDK_4B not in (repo / ct.DECISION_RECORD).read_text():
+        (repo / ct.DECISION_RECORD).write_text(RECORD_4A + SDK_4B)
+        _git(repo, "-c", "commit.gpgsign=false", "commit", "-qam", "4b")
+    settings = {"compose": lambda: list(SEATS), "cli_version": "2.1.318", "session": session, **kw}
     window = bk.Window(plan=_plan(repo), out_dir=tmp_path / "w0", ledger=_Ledger(tmp_path / "private"),
                        token=TOKEN, repo=repo, native=run_native, control=run_control,
                        twin=lambda block, arm: _set(), report=lambda _m: None, **settings)
@@ -981,33 +993,61 @@ def _ok(**overrides):
                             **overrides})
 
 
-def test_the_kit_writes_eighteen_valid_records_over_six_blocks(repo, tmp_path, monkeypatch):
-    sdk = _ok(dependency_projection_digest="e" * 64)
-    window, calls = _window(repo, tmp_path, monkeypatch=monkeypatch,
-                            native_outcomes=[_ok()] * 3 + [sdk] * 6 + [_ok()] * 3)
+def _two_sessions(repo, tmp_path, monkeypatch, first, second):
+    window, calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=first)
     written = window.run()
-    assert len(written) == 18
-    assert [arm for arm, _t in calls] == ["print"] * 3 + ["sdk"] * 6 + ["print"] * 3
-    assert all(timeout == 1800 for _a, timeout in calls)
+    later, later_calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=second,
+                                 session=2)
+    return written, calls, later.run(), later_calls
+
+
+def test_the_kit_writes_eighteen_valid_records_over_two_sessions(repo, tmp_path, monkeypatch,
+                                                                 capsys):
+    sdk = _ok(dependency_projection_digest="e" * 64)
+    first, calls, second, later_calls = _two_sessions(
+        repo, tmp_path, monkeypatch, [_ok()] * 3, [sdk] * 6 + [_ok()] * 3)
+    assert sorted({json.loads(p.read_text())["block"] for p in first}) == [1, 2]
+    assert len(first) == 6 and len(second) == 12
+    assert [arm for arm, _t in calls] == ["print"] * 3
+    assert [arm for arm, _t in later_calls] == ["sdk"] * 6 + ["print"] * 3
+    assert all(timeout == 1800 for _a, timeout in calls + later_calls)
+    capsys.readouterr()
     assert validate(tmp_path / "w0", repo, "--tui-digest", TUI) == 0
+    assert "sessions 1 and 2" in capsys.readouterr().out
     readings = json.loads((tmp_path / "private" / "meter.json").read_text())
-    assert len(readings) == 7
+    assert len(readings) == 8 and None not in readings  # session 2 kept session 1's three
     assert (tmp_path / "private" / "meter.json").stat().st_mode & 0o777 == 0o600
-    for path in written:
+    for path in first + second:
         assert "10%" not in path.read_text()  # readings stay private; records carry a digest
+
+
+def test_session_one_alone_is_reported_as_interim(repo, tmp_path, monkeypatch, capsys):
+    window, _calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[_ok()] * 3)
+    assert len(window.run()) == 6
+    capsys.readouterr()
+    assert validate(tmp_path / "w0", repo, "--tui-digest", TUI) == 0
+    assert "session 1 of 2 only: an interim set, not the complete bake-off" in capsys.readouterr().out
+    assert bk.main(["digest", str(tmp_path / "w0")]) == 0
+    captured = capsys.readouterr()
+    assert re.fullmatch(r"[0-9a-f]{64}\n", captured.out)  # stdout stays the bare digest
+    assert "not the complete bake-off" in captured.err
 
 
 def test_a_security_outcome_stops_the_arm_and_publishes_only_withheld(repo, tmp_path, monkeypatch):
     leak = _ok(canonical_output="refused", code="claude_seat_token_in_output")
     sdk = _ok(dependency_projection_digest="e" * 64)
     window, calls = _window(repo, tmp_path, monkeypatch=monkeypatch,
-                            native_outcomes=[_ok(), leak] + [sdk] * 6)
+                            native_outcomes=[_ok(), leak])
     written = window.run()
+    private = (tmp_path / "private" / "security-outcomes.txt").read_text()
+    # The stop outlives session 1: session 2 reads it from the withheld record.
+    later, later_calls = _window(repo, tmp_path, monkeypatch=monkeypatch,
+                                 native_outcomes=[sdk] * 6, session=2)
+    written += later.run()
     print_records = [json.loads(p.read_text()) for p in written if "w0-b1-" in p.name or "w0-b6-" in p.name]
     assert [r["security_outcome"] for r in print_records] == ["none", "withheld_private"]
     assert all("claude_seat_token_in_output" not in json.dumps(r) for r in print_records)
-    assert [arm for arm, _t in calls].count("print") == 2  # block 6 never ran
-    private = (tmp_path / "private" / "security-outcomes.txt").read_text()
+    assert [arm for arm, _t in calls + later_calls].count("print") == 2  # block 6 never ran
     assert "claude_seat_token_in_output" in private
     assert validate(tmp_path / "w0", repo, "--tui-digest", TUI) == 0
 
@@ -1044,8 +1084,15 @@ def test_the_kit_refuses_before_any_run(repo, tmp_path, monkeypatch):
                                   "checkout", "artifact"])
 def test_every_arm_and_the_lineup_are_checked_before_the_first_meter_reading(
         repo, tmp_path, monkeypatch, miss):
+    session = 2 if miss in {"sdk-not-admitted", "no-4b"} else 1
+    if session == 2:  # session 2 needs session 1's records first
+        first, _calls = _window(repo, tmp_path, monkeypatch=monkeypatch,
+                                native_outcomes=[_ok()] * 3)
+        first.run()
+        (tmp_path / "private" / "meter.json").unlink()
+        monkeypatch.undo()
     window, calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[],
-                            admit_sdk=miss != "sdk-not-admitted")
+                            admit_sdk=miss != "sdk-not-admitted", session=session)
     if miss == "no-4b":
         (repo / ct.DECISION_RECORD).write_text(RECORD_4A)
         _git(repo, "-c", "commit.gpgsign=false", "commit", "-qam", "no 4b")
@@ -1086,20 +1133,122 @@ def test_a_checkout_change_during_a_native_block_stops_the_window(
 
 
 def test_billing_follows_the_meter_bracket(tmp_path):
-    answers = ["10%", "$0", "$0", "20%", "$0", "$0", "20%", "$5", "$0", "20%", "$5", "$9",
-               "20%", "$5", "$9"]
+    # Positions: 0 opens session 1, 1-2 close blocks 1-2, 3 opens session 2, 4-7 close 3-6.
+    answers = ["10%", "$0", "$0", "20%", "$0", "$0", "20%", "$5", "$0",
+               "30%", "$5", "$0",  # other use between the sessions moved subscription usage
+               "30%", "$5", "$0", "30%", "$5", "$9"]
     ledger = bk.MeterLedger(root=tmp_path / "p", prompt=lambda _q: answers.pop(0),
                             sleep=lambda _s: None)
-    for index in range(5):
-        ledger.read(index, settle_s=300)
-    assert [ledger.billing(block) for block in (1, 2, 3, 4)] == [
-        "subscription", "extra_usage", "api", "unknown"]
+    for position in range(6):
+        ledger.read(position, settle_s=300)
+    # Block 3 opens on session 2's reading, never on block 2's closing one.
+    assert [ledger.billing(block) for block in (1, 2, 3, 4, 5)] == [
+        "subscription", "extra_usage", "unknown", "api", "unknown"]
     assert ledger.digest(1) != ledger.digest(2)
     # The digest is salted with a private salt, so a public record cannot be checked
     # against guessed readings.
     bracket = json.dumps(ledger.readings[0:2], sort_keys=True).encode()
     assert ledger.digest(1) != hashlib.sha256(bracket).hexdigest()
     assert (tmp_path / "p" / "meter.salt").stat().st_mode & 0o777 == 0o600
+    # Session 2 keeps session 1's readings; a ledger from another run plan refuses.
+    assert bk.MeterLedger(root=tmp_path / "p").readings[:6] == ledger.readings[:6]
+    (tmp_path / "p" / "meter.json").write_text(json.dumps(ledger.readings[:7]))
+    assert bk.MeterLedger(root=tmp_path / "p").problem is not None
+
+
+def test_the_sessions_partition_the_blocks_and_fix_the_readings():
+    notes = bk.EXECUTION_NOTES
+    assert [b for blocks in notes.session_blocks for b in blocks] == list(
+        range(1, len(notes.blocks) + 1))
+    assert notes.sessions == len(notes.session_blocks) == 2
+    assert notes.meter_readings == len(notes.blocks) + notes.sessions == 8
+    assert bk.session_arms(1) == ("print", bk.CONTROL)
+    assert [bk.bracket_positions(b) for b in range(1, 7)] == [
+        (0, 1), (1, 2), (3, 4), (4, 5), (5, 6), (6, 7)]
+
+
+def test_session_one_needs_neither_sdk_admission_nor_its_section(repo, tmp_path, monkeypatch):
+    window, calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[_ok()] * 3,
+                            admit_sdk=False)
+    (repo / ct.DECISION_RECORD).write_text(RECORD_4A)
+    _git(repo, "-c", "commit.gpgsign=false", "commit", "-qam", "no 4b")
+    window.plan = _plan(repo)
+    assert not ct.is_admitted("sdk")
+    assert window.preflight() == []
+    assert len(window.run()) == 6
+    assert [arm for arm, _t in calls] == ["print"] * 3
+
+
+@pytest.mark.parametrize("case", ["no-session", "session-3", "no-session-1", "partial-session-1",
+                                  "session-2-again", "session-1-again", "sdk-not-admitted"])
+def test_a_session_refuses_before_any_reading(repo, tmp_path, monkeypatch, case):
+    if case not in {"no-session", "session-3", "no-session-1"}:
+        first, _calls = _window(repo, tmp_path, monkeypatch=monkeypatch,
+                                native_outcomes=[_ok()] * 3)
+        first.run()
+        monkeypatch.undo()
+    if case == "partial-session-1":
+        for path in (tmp_path / "w0").glob("w0-b2-*.json"):
+            path.unlink()
+    if case == "session-2-again":
+        second, _calls = _window(repo, tmp_path, monkeypatch=monkeypatch, session=2,
+                                 native_outcomes=[_ok(dependency_projection_digest="e" * 64)] * 6
+                                 + [_ok()] * 3)
+        second.run()
+        monkeypatch.undo()
+    session = {"no-session": None, "session-3": 3, "session-1-again": 1}.get(case, 2)
+    meter = tmp_path / "private" / "meter.json"
+    before = meter.read_bytes() if meter.exists() else None
+    window, calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[],
+                            admit_sdk=case != "sdk-not-admitted", session=session)
+    assert window.preflight() != []
+    with pytest.raises(ValueError, match="refused before any run"):
+        window.run()
+    assert calls == []
+    assert (meter.read_bytes() if meter.exists() else None) == before
+
+
+def test_the_run_cli_requires_a_session(tmp_path):
+    with pytest.raises(SystemExit):
+        bk.main(["run", "--plan", str(tmp_path / "plan.json")])
+    with pytest.raises(SystemExit):
+        bk.main(["run", "--plan", str(tmp_path / "plan.json"), "--session", "3"])
+
+
+def test_session_two_records_without_session_one_fail_v7(repo, tmp_path):
+    directory = write(tmp_path / "w0", control(repo, block=5))
+    assert "session 2 records without session 1's" in bk.validate_directory(
+        directory, repo=repo, tui_digest=TUI)
+    write(directory, control(repo, block=2))
+    assert bk.validate_directory(directory, repo=repo, tui_digest=TUI) == []
+
+
+def test_only_the_latest_od3b_section_answers_for_the_directory(repo, tmp_path):
+    directory = write(tmp_path / "w0", native(repo), control(repo))
+    interim = bk.evidence_digest(directory)
+    write(directory, control(repo, block=5))
+    full = bk.evidence_digest(directory)
+
+    def problems(text: str) -> list[str]:
+        return bk.validate_directory(directory, repo=repo, record_text=text.encode(),
+                                     tui_digest=TUI)
+
+    history = RECORD_4A + _od3b("4c", interim) + _od3b("4d", full, sessions="1 and 2")
+    assert problems(history) == []  # the interim section is history, not re-checked
+    assert problems(RECORD_4A + _od3b("4c", full, sessions="1 and 2")
+                    + _od3b("4d", interim)) != []
+
+
+@pytest.mark.parametrize(("value", "sessions", "ok"), [
+    ("`print`", "1", True), ("none admitted", "1", True), ("`tui`", "1", True),
+    ("`print`", "1 and 2", False), ("`print`", None, False), ("`sdk`", "1", False),
+])
+def test_an_interim_od3b_section_says_session_one_and_names_only_what_it_measured(
+        repo, tmp_path, value, sessions, ok):
+    directory = write(tmp_path / "w0", native(repo), control(repo))
+    text = RECORD_4A + _od3b("4c", bk.evidence_digest(directory), value=value, sessions=sessions)
+    found = bk.validate_directory(directory, repo=repo, record_text=text.encode(), tui_digest=TUI)
+    assert (found == []) is ok, found
 
 
 # --------------------------------------------------------------------------------------
