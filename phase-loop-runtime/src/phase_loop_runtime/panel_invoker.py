@@ -14491,6 +14491,24 @@ def _window_json_digest(value: object) -> str:
     return sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def _window_receipt_matches(path: Path, expected: Mapping[str, object]) -> bool:
+    """Whether a retained private receipt (regular, 0600, ours, bounded) holds ``expected``."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError:
+        return False
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size > 16384):
+            return False
+        return json.loads(os.read(fd, 16385)) == dict(expected)
+    except (OSError, ValueError):
+        return False
+    finally:
+        os.close(fd)
+
+
 @dataclass
 class _WindowJailedRun:
     """Lane D's I-9 implementation over one already-built seat and namespace."""
@@ -15375,10 +15393,17 @@ def window_board_launch(spec: WindowBoardSpec) -> WindowBoardResult:
     tool_receipt_sha256 = None
     if staged_read:
         # The retained source the offline verifier reconciles (``window-read-<digest>``).
-        from .president_adapter import write_private_record
+        from .president_adapter import private_record_root, write_private_record
+        tool_receipt_sha256 = _window_json_digest(read_receipt)
+        name = f"window-read-{tool_receipt_sha256}.json"
         try:
-            tool_receipt_sha256 = _window_json_digest(read_receipt)
-            write_private_record(f"window-read-{tool_receipt_sha256}.json", read_receipt)
+            write_private_record(name, read_receipt)
+        except FileExistsError:
+            # Content-addressed: an existing receipt is reused only when it holds exactly
+            # these values; anything else at that name fails the staged read.
+            if not _window_receipt_matches(private_record_root() / name, read_receipt):
+                tool_receipt_sha256 = None
+                staged_read = False
         except (OSError, ValueError, TypeError):
             tool_receipt_sha256 = None
             staged_read = False

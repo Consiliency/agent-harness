@@ -422,12 +422,16 @@ READ_RECEIPT_FIELDS = ("schema", "access_observed", "tool_observed", "input_sha2
 
 
 def _read_receipt_valid(read, record) -> bool:
-    """The board's retained staged-read receipt: a tool read observed in a named staged tree,
-    for exactly the board input the record binds."""
+    """The board's retained staged-read receipt: a tool read observed in the staged tree the
+    containment reduction bound (the reducer requires the board leg's launch binding to name
+    the reference stage), for exactly the board input the record binds."""
+    binding = record.get("containment_binding")
     return (type(read) is dict and set(read) == set(READ_RECEIPT_FIELDS)
             and read["schema"] == "seat_window_read.v1"
             and read["access_observed"] is True and read["tool_observed"] is True
             and _is_digest(read["tree_digest"])
+            and type(binding) is dict
+            and read["tree_digest"] == binding.get("stage_manifest_sha256")
             and read["input_sha256"] == record["board_input_digest"])
 
 

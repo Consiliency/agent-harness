@@ -82,11 +82,15 @@ def _window_records(contexts=_W1_CONTEXTS):
             "bracket": {}, "issuer": {}, "unavailable_reasons": {}}
         identity = w.digest(observation)
         pa.write_private_record("window-observation-" + identity + ".json", observation)
-        read = {"schema": "seat_window_read.v1", "tree_digest": ("defab"[index] * 64),
+        # The board leg read the reference stage the containment binding names ("9" * 64).
+        read = {"schema": "seat_window_read.v1", "tree_digest": "9" * 64,
             "access_observed": True, "tool_observed": True,
             "input_sha256": record["board_input_digest"]}
         record["tool_receipt_digest"] = w.digest(read)
-        pa.write_private_record("window-read-" + w.digest(read) + ".json", read)
+        try:
+            pa.write_private_record("window-read-" + w.digest(read) + ".json", read)
+        except FileExistsError:  # content-addressed: another context retained the same values
+            pass
         egress_source = {"schema": "seat_window_egress.v1", "context_id": context_id,
             "measured_decisions": ["allow", "deny"], "board_decisions": ["allow"],
             "direct_without_proxy": "refused", "board_sha256": record["board_digest"],
@@ -363,7 +367,10 @@ def _rebind_read_receipt(record, read):
     from phase_loop_runtime import seat_window as w
     from phase_loop_runtime import president_adapter as pa
     identity = w.digest(read)
-    pa.write_private_record("window-read-" + identity + ".json", read)
+    try:
+        pa.write_private_record("window-read-" + identity + ".json", read)
+    except FileExistsError:  # content-addressed: the same values are already retained
+        pass
     record["tool_receipt_digest"] = identity
     egress = {"schema": "seat_window_egress.v1", "context_id": record["context_id"],
         "measured_decisions": ["allow", "deny"], "board_decisions": ["allow"],
@@ -373,7 +380,10 @@ def _rebind_read_receipt(record, read):
         "exec_record_sha256": record["exec_record_digest"],
         "tool_receipt_sha256": identity}
     egress_identity = w.digest(egress)
-    pa.write_private_record("window-egress-" + egress_identity + ".json", egress)
+    try:
+        pa.write_private_record("window-egress-" + egress_identity + ".json", egress)
+    except FileExistsError:  # content-addressed: the same values are already retained
+        pass
     record["egress"] = w.measurement(record["egress"]["checks"],
                                      observation_digest=egress_identity)
     record.pop("record_digest")
@@ -381,12 +391,15 @@ def _rebind_read_receipt(record, read):
 
 
 @pytest.mark.parametrize("change", ["valid", "missing_input", "other_input", "extra_field",
-                                    "no_tree", "not_accessed"])
+                                    "no_tree", "not_accessed", "other_tree"])
 def test_seats_firstseat_w1_receipt_read_receipt_binds_the_board_input(change):
+    """Through public verification: a receipt rehashed with every digest that names it still
+    fails unless it names the board input and the staged tree the containment binding names."""
     from phase_loop_runtime import seat_window as w
     records = _window_records()
     assert w.verify_records(records)["passed"]
-    read = {"schema": "seat_window_read.v1", "tree_digest": "3" * 64,
+    assert records[0]["containment_binding"]["stage_manifest_sha256"] == "9" * 64
+    read = {"schema": "seat_window_read.v1", "tree_digest": "9" * 64,
             "access_observed": True, "tool_observed": True,
             "input_sha256": records[0]["board_input_digest"]}
     if change == "valid":
@@ -399,6 +412,8 @@ def test_seats_firstseat_w1_receipt_read_receipt_binds_the_board_input(change):
         read["detail"] = "x"
     elif change == "no_tree":
         read["tree_digest"] = None
+    elif change == "other_tree":
+        read["tree_digest"] = "3" * 64
     else:
         read["access_observed"] = False
     _rebind_read_receipt(records[0], read)
