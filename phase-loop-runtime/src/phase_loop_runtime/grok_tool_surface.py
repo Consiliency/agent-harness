@@ -528,22 +528,24 @@ def _inside(path: str, root: str) -> bool:
 
 
 def _config_mount(mounts) -> tuple[str, ...]:
-    """The one operation at the seat config's path, with the ``--perms`` before it,
-    flattened as ``seat_profile`` composed them. A missing or second operation refuses."""
+    """The one operation at the seat config's path and the operation before it (its
+    ``--perms``), as the words ``seat_profile`` composed. A missing or second operation at
+    that path refuses."""
     destination = PRIVATE_HOME + "/" + SEAT_CONFIG_RELATIVE
     found = [index for index, (operation, operands) in enumerate(mounts)
              if operation != "--perms" and operands[-1] == destination]
-    _require(len(found) == 1 and found[0] >= 1 and mounts[found[0] - 1][0] == "--perms")
+    _require(len(found) == 1)
     (index,) = found
-    return (*(word for mount in mounts[index - 1:index + 1] for word in (mount[0], *mount[1])),)
+    return tuple(word for operation, operands in mounts[max(index - 1, 0):index + 1]
+                 for word in (operation, *operands))
 
 
 def _config_descriptor(composed: tuple[str, ...]) -> int:
-    """The descriptor a composed config mount names, as its canonical decimal spelling."""
-    _require(len(composed) == 5)
-    text = composed[3]
-    _require(text.isascii() and text.isdigit() and str(int(text)) == text)
-    return int(text)
+    """The descriptor a composed config mount names; an operation that names none refuses."""
+    try:
+        return int(composed[-2])
+    except ValueError as exc:
+        raise _Refused("no descriptor behind the seat config") from exc
 
 
 def _check_home(profile: Any, sessions: str | None = None) -> None:

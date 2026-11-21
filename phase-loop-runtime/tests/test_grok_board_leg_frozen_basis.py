@@ -58,6 +58,8 @@ INFERENCE_HOST = "cli-chat-proxy.grok.com"
 INFERENCE_PATH = "/v1/chat/completions"
 FORMS = ("sealed", "staged", "review")
 PROJECTED_FILES = {".grok/agent_id", ".grok/auth.json", ".phase-loop-seat-egress-ca.pem"}
+#: The projection plus the seat config of the contract's erratum 8.
+HOME_FILES = PROJECTED_FILES | {gts.SEAT_CONFIG_RELATIVE}
 HOME_DIRECTORIES = {".grok", ".config", ".cache", ".local", ".local/share"}
 
 
@@ -78,7 +80,7 @@ def _prerequisites() -> None:
 # ---------------------------------------------------------------------- the leg and its host
 
 _STAND_IN = r'''#!/usr/bin/python3 -I
-import base64, json, os, socket, ssl, sys, urllib.parse
+import base64, hashlib, json, os, socket, ssl, sys, urllib.parse
 argv = sys.argv[1:]
 if argv[-1:] == ["--help"]:
     sys.stdout.buffer.write(__HELP__)
@@ -125,8 +127,13 @@ entries = []
 for root, dirs, files in os.walk(home):
     entries += [["dir", os.path.relpath(os.path.join(root, name), home)] for name in dirs]
     entries += [["file", os.path.relpath(os.path.join(root, name), home)] for name in files]
+try:
+    with open(os.path.join(home, ".grok", "config.toml"), "rb") as handle:
+        config = hashlib.sha256(handle.read()).hexdigest()
+except OSError as exc:
+    config = "error:" + type(exc).__name__
 print(json.dumps({"proxied": proxied, "direct": direct, "home": sorted(entries),
-                  "env": sorted(os.environ), "pid": os.getpid()}))
+                  "config": config, "env": sorted(os.environ), "pid": os.getpid()}))
 print("AGREE")
 sys.exit(0 if proxied.startswith("HTTP/1.1 200") and direct.startswith("refused") else 3)
 '''
@@ -331,7 +338,9 @@ def test_each_form_completes_through_exec_leg_under_the_grok_review_egress(
     events = seat_egress_proxy.proxy_stream(proxy).outside_events
     assert [(event.method, event.host, event.path, event.decision) for event in events] == [
         ("POST", INFERENCE_HOST, INFERENCE_PATH, "allow")]
-    assert {path for kind, path in result["home"] if kind == "file"} == PROJECTED_FILES
+    assert {path for kind, path in result["home"] if kind == "file"} == HOME_FILES
+    # The child reads the pinned bytes at the config's path, through the real launcher.
+    assert result["config"] == gts.SEAT_CONFIG_SHA256
     assert {path for kind, path in result["home"] if kind == "dir"} <= HOME_DIRECTORIES
     assert {"HTTPS_PROXY", "SSL_CERT_FILE"} <= set(result["env"])
     assert not [key for key in result["env"] if key.startswith(("GROK_", "XAI_"))]

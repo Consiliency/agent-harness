@@ -36,6 +36,7 @@ import urllib.parse
 
 import pytest
 
+from phase_loop_runtime import grok_tool_surface
 from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime import sandbox_egress, seat_egress_proxy, seat_profiles
 
@@ -1314,6 +1315,11 @@ def test_the_grok_profile_carries_the_proxy_projection_and_nothing_else(tmp_path
     assert "NO_PROXY" not in env and "no_proxy" not in env
     added = ["--perms", "0444", "--ro-bind-data", "<fd>", destination]
     normalised = _normalised(args)
+    # Beside the proxy projection the profile carries the seat config of the contract's
+    # erratum 8, in the one mode grok_tool_surface composes (its own tests cover it).
+    config = grok_tool_surface.seat_config_projection(0)
+    end = normalised.index(config[-1]) + 1
+    normalised = normalised[:end - len(config)] + normalised[end:]
     start = next(i for i in range(len(normalised)) if normalised[i:i + 5] == added)
     assert normalised[:start] + normalised[start + 5:] == _normalised(plain_args)
     assert ca == (proxy.ca_cert.read_bytes(), destination)
