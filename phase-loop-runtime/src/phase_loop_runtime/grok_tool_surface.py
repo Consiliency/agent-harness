@@ -1082,6 +1082,7 @@ REHEARSAL_REASONS = ("passed", "context_refused", "launch_failed", "egress_refus
                      "no_model_request")
 #: §5.8, in that order.
 STATUSES = ("measured", "format_unrecognised", "artifact_missing", "artifact_ambiguous",
+            "artifact_refused",
             "launch_failed", "egress_refused", "budget_exhausted", "identity_changed",
             "context_refused", "interrupted")
 
@@ -2951,7 +2952,8 @@ def _run_reserved(stage: _Stage, reservation: Reservation, *, route, form, argv,
         status = _classify(early=early, exit_code=exit_code, proof=proof, events=events or (),
                            identity_ok=identity_ok, binary_sha256=stage.grant.binary_sha256)
         if status is None:
-            status = _read_and_extract(result, form, folder, sessions)
+            status = _read_and_extract(result, form, folder, sessions, scan_values)
+        scan_values = ()  # erratum 8, item 5: dropped once the reader has returned
         result["status"] = status
         if status == "measured":
             # Deleted at once on a measured route (§5.9).
@@ -2966,8 +2968,15 @@ def _run_reserved(stage: _Stage, reservation: Reservation, *, route, form, argv,
     return result
 
 
-def _read_and_extract(result: dict[str, Any], form, folder: int, sessions: str) -> str:
-    """Read the artifact (§5.5), retain a private copy (§5.9), extract (§5.6)."""
+def _read_and_extract(result: dict[str, Any], form, folder: int, sessions: str,
+                      scan_values: tuple[bytes, ...]) -> str:
+    """Read the artifact (§5.5), scan it, retain a private copy (§5.9), extract (§5.6).
+
+    ``scan_values`` (erratum 8, item 5) are the composed profile's registered secret values
+    and their last 12 characters, in memory from the launch, never reread or written. The
+    raw bytes are scanned for each before anything else is done with them: a hit, or no
+    values to scan with, is ``artifact_refused``, with nothing retained, hashed or
+    extracted."""
     try:
         directory = os.open(sessions, _dir_flags())
     except OSError:
@@ -2978,6 +2987,8 @@ def _read_and_extract(result: dict[str, Any], form, folder: int, sessions: str) 
         return refusal.status
     finally:
         os.close(directory)
+    if not scan_values or any(not value or value in raw for value in scan_values):
+        return "artifact_refused"
     _retain(folder, DEFINITIONS_NAME, raw, RAW_RETENTION_S)
     result["definitions_sha256"] = sha256(raw).hexdigest()
     result["definitions_bytes"] = len(raw)

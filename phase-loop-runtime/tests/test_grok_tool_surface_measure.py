@@ -319,7 +319,9 @@ class Bench:
             session.mkdir(parents=True)
             target = session / "tool_definitions.json"
             if artifact == "admitted":
-                target.write_bytes(_s2(_tools(self.route), extra=SENTINEL))
+                # Clean: a definitions artifact carrying a registered value is refused
+                # (erratum 8, item 5; ``artifact_refused``).
+                target.write_bytes(_s2(_tools(self.route), extra="fixture"))
             elif artifact == "two":
                 target.write_bytes(_s2(_tools(self.route)))
                 other = sessions / "-encoded-cwd" / "session-0002"
@@ -654,6 +656,8 @@ STATUS_CASES = {
     "budget_exhausted": Scenario(requests=[ALLOWED, BUDGET_DENIED]),
     "identity_changed": Scenario(change_binary=True),
     "context_refused": Scenario(),
+    # Erratum 8, item 5: the definitions carry the planted credential's last 12 characters.
+    "artifact_refused": Scenario(artifact=_s2(_tools("review"), extra=SENTINEL[-12:])),
 }
 EXPECTED_STATUS = {
     "artifact_symlink": "artifact_ambiguous", "launch_timeout": "launch_failed",
@@ -3325,3 +3329,76 @@ def test_a_host_bind_at_the_client_log_refuses_at_the_context_check(bench, monke
     binding["on"] = True
     code, report = bench.measure("review")
     assert report["routes"][0]["status"] == "context_refused" and bench.launches == []
+
+
+# --------------------- erratum 8, item 5 (review of E8-B): the definitions scan
+
+#: The two credential shapes of erratum 8, item 5: a secret value of 12 characters or fewer
+#: (its own suffix) and one well over 24 (a full value and a separate 12-character suffix).
+SHORT_SECRET = "Kp4Vx9Lm2Qt"  # 11
+LONG_SECRET = "fabricated-long-grok-bearer-" + "Zr8Hq3Nw6Ty1"
+
+
+def _credential(bench, secret):
+    auth = Path(bench.env["HOME"]) / ".grok" / "auth.json"
+    auth.unlink()
+    auth.write_text(json.dumps({"key": secret}))
+    auth.chmod(0o600)
+
+
+@pytest.mark.parametrize("secret,copied", [
+    (SHORT_SECRET, SHORT_SECRET), (LONG_SECRET, LONG_SECRET), (LONG_SECRET, LONG_SECRET[-12:])],
+    ids=["short-full", "long-full", "long-suffix-only"])
+def test_definitions_carrying_a_registered_value_are_refused_before_retention(bench, secret,
+                                                                             copied):
+    """The measurement scans the raw definitions for every registered value -- each full
+    secret and its last 12 characters, from the profile's own copy -- before it retains,
+    hashes or extracts them. A hit is ``artifact_refused``: the request stays settled, no
+    raw copy is kept, nothing is extracted, and the status survives reload, fails
+    ``--require-measured``, is never reprocessed and never published."""
+    _credential(bench, secret)
+    bench.open_grant(planned="review")
+    bench.default = Scenario(artifact=_s2(_tools("review"), extra=copied))
+    code, report = bench.measure("review")
+    assert code == 0 and report["routes"][0]["status"] == "artifact_refused", report
+    (result,) = bench.results().values()
+    gts.check_result_keys(result)
+    assert result["status"] == "artifact_refused"
+    assert all(result[key] is None for key in ("definitions_sha256", "definitions_bytes",
+                                               "shape", "tools", "admitted", "structure"))
+    assert not [p for p in (bench.output / "raw").rglob(gts.DEFINITIONS_NAME)]
+    for root in (bench.output, bench.grant_dir(), pa.private_record_root()):
+        for path in _files(root):
+            if path.name != "provider.log":  # private, secret-bearing (§5.9)
+                assert copied.encode() not in path.read_bytes(), path
+    assert bench.status()["charged"] == 1
+    assert _route_rows(bench.status())["review"]["status"] == "artifact_refused"
+    code, report = bench.cli("--require-measured", "review")
+    assert code == 1 and report["result"] == "artifact_refused", report
+    code, report = bench.cli("--reprocess", result["reservation"])
+    assert code == 1, report
+    code, report = bench.cli("--aggregate")
+    assert code == 0 and report["published"] == [], report
+    evidence = json.loads((bench.output / "tool-surface.json").read_text())
+    gts.check_evidence_keys(evidence)
+    assert [row["status"] for row in evidence["routes"]] == ["artifact_refused"]
+    assert bench.host_record() is None and not bench.probe("review")["passed"]
+
+
+def test_a_clean_definitions_artifact_with_the_same_credential_still_measures(bench):
+    _credential(bench, LONG_SECRET)
+    bench.open_grant(planned="review")
+    assert bench.measure("review")[1]["routes"][0]["status"] == "measured"
+
+
+def test_a_measurement_with_no_values_to_scan_with_refuses_the_artifact(bench, monkeypatch):
+    """No registered value means the scan cannot show the artifact clean: refused."""
+    real = pi.seat_profile
+
+    @contextlib.contextmanager
+    def unscanned(**kwargs):
+        with real(**kwargs) as (destination, profile):
+            yield destination, replace(profile, scan_values=())
+    bench.open_grant(planned="review")
+    monkeypatch.setattr(pi, "seat_profile", unscanned)
+    assert bench.measure("review")[1]["routes"][0]["status"] == "artifact_refused"
