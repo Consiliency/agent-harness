@@ -2,9 +2,9 @@
 phase_loop_plan_version: 1
 phase: PI
 roadmap: specs/phase-plans-seats-v1.md
-roadmap_sha256: b91c98ad7b9097ba411ca21f39cf390878dabac449e59d6fdfd1750915c16a09
+roadmap_sha256: 2f26635bfcb5119967735cf5d5966f1ce39695a8331d2543eb9e11c07d187018
 automation:
-  suite_command: ["timeout", "900", "env", "PYTEST_ADDOPTS=", "python3", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_pi_panel_leg.py", "phase-loop-runtime/tests/test_panel_invoker.py", "phase-loop-runtime/tests/test_advisor_board_backing_homebrew.py", "phase-loop-runtime/tests/test_panel_per_leg_model_66.py", "phase-loop-runtime/tests/test_pi_seat_profile.py", "phase-loop-runtime/tests/test_seat_profiles.py", "phase-loop-runtime/tests/test_seat_jail.py", "phase-loop-runtime/tests/test_seat_route_contract.py", "phase-loop-runtime/tests/test_seat_notices.py", "phase-loop-runtime/tests/test_executable_dependency.py", "phase-loop-runtime/tests/test_pi_routed_identity.py", "phase-loop-runtime/tests/test_advisor_board_composition.py", "phase-loop-runtime/tests/test_governed_review.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
+  suite_command: ["timeout", "900", "uv", "run", "--quiet", "--project", "phase-loop-runtime", "--group", "test", "--python", "3.14", "--python-preference", "only-system", "--locked", "python", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_pi_panel_leg.py", "phase-loop-runtime/tests/test_panel_invoker.py", "phase-loop-runtime/tests/test_advisor_board_backing_homebrew.py", "phase-loop-runtime/tests/test_panel_per_leg_model_66.py", "phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py", "phase-loop-runtime/tests/test_seat_launch_helpers_trusted.py", "phase-loop-runtime/tests/test_pi_seat_profile.py", "phase-loop-runtime/tests/test_seat_pi_qualification.py", "phase-loop-runtime/tests/test_seat_profiles.py", "phase-loop-runtime/tests/test_seat_jail.py", "phase-loop-runtime/tests/test_seat_route_contract.py", "phase-loop-runtime/tests/test_seat_notices.py", "phase-loop-runtime/tests/test_executable_dependency.py", "phase-loop-runtime/tests/test_seat_pi_credential.py", "phase-loop-runtime/tests/test_pi_routed_identity.py", "phase-loop-runtime/tests/test_advisor_board_composition.py", "phase-loop-runtime/tests/test_governed_review.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
 ---
 
 # PI: Pi Review Seat
@@ -14,170 +14,237 @@ automation:
 This plan covers roadmap Phase 8 (PI) of `specs/phase-plans-seats-v1.md`, tracked by
 agent-harness#1820. Acceptance is EC-PI-1 through EC-PI-5, cited by ID only.
 
-**Frozen inputs.** PI consumes `plans/seats-jailcore-route-contract.md` at sha256
-`235f1faded1d7f15d0ff69668b6a451cee7167e6438d258da57257faf7bdae81`, including
-IF-0-JAILCORE-1, IF-0-JAILCORE-2 and IF-0-JAILCORE-3. It also consumes
-IF-0-TEAMHOST-1, IF-0-TEAMHOST-2 and IF-0-TEAMHOST-3; TEAMHOST must publish those exact IDs
-before PI execution, and a different ID or meaning requires this plan to be amended. PI adds
-exactly one `JailProfile` and exactly one allowlist. It changes no existing JAILCORE code,
-descend set, resolver, proxy, qualification-key or route-policy behavior.
+**Frozen inputs.**
 
-**Placement boundary.** The 2026-11-06 placement agreement is pinned to
-Consiliency/agent-toolkit `docs/placement-consolidation.md` at external revision 9304a5b9.
-agent-harness owns placement; agent-toolkit retains Pi agents,
-toolsets, runner inputs, link and credential proxy. The projection keeps `landlock-exec` at
-d945fdd0 and `pi-subagents` at `0.84.0`; the `ai` client remains
-`OU=agent-toolkit`. Pi children remain one-shot, non-steerable and limited to 3600 seconds per
-attempt. The separate Pi LANE-executor placement plan owns remote placement, admission, patch
-return and retry. This phase is only the Pi REVIEW SEAT: it does not edit `launcher.py`, placement
-profiles, `supervised_worker_cli`, runner images or remote-executor policy.
+- `plans/seats-jailcore-route-contract.md`, sha256
+  `235f1faded1d7f15d0ff69668b6a451cee7167e6438d258da57257faf7bdae81`: IF-0-JAILCORE-1,
+  IF-0-JAILCORE-2 and IF-0-JAILCORE-3.
+- IF-0-TEAMHOST-1, IF-0-TEAMHOST-2 and IF-0-TEAMHOST-3.
+- `plans/artifacts/seats-pi-route-contract-v3.md`, sha256
+  `10144ca068c2e28e0ee93224def1149b02d3fd18e9e81dcdf333864ef1ee8980`, the "contract", cited by
+  section.
 
-**Owner ruling (OD-5, 2026-11-06).** The roadmap default is accepted. Pi uses the
-provider-scoped credential its executor already uses for the routed provider, with no aggregator
-and a spend cap when that route is API-billed. V1 changes no plan or production board slot: Pi
-qualifies only on a board that explicitly composes it and counts as its routed vendor. Lane C binds
-the current executor route and measures its request set and credential scope under this ruling.
+The lanes of this plan land the subscription route only. That is one `JailProfile` (`pi`), one
+allowlist, one readiness row and one alias key family. All of them are additions under
+IF-0-JAILCORE-1. No JAILCORE code, descend set, resolver, proxy, qualification-key or
+route-policy behavior changes. Resource caps come from `seat_profiles.register`.
+
+**Placement boundary.** The placement agreement is pinned to Consiliency/agent-toolkit
+`docs/placement-consolidation.md` at external revision 9304a5b9.
+
+- agent-toolkit keeps the Pi agents, toolsets, runner inputs, link and credential proxy.
+- The `landlock-exec` (d945fdd0) and `pi-subagents` (`0.84.0`) pins belong to the Pi
+  LANE-executor plan, which also owns `launcher.py`.
+- This phase edits no placement, `supervised_worker_cli`, runner image or remote-executor
+  policy.
+
+**OD-5 (owner, 2026-11-21).** The owner's answer, verbatim: "1. But pi should be able to use
+subscription authed providers primarily". The roadmap default otherwise stands. The owner then
+answered two follow-ups:
+
+- **OQ-1: "OpenAI subscription".** The primary route is Pi's `openai-codex` sign-in, counted as
+  codex. Its credential is the operator's existing Pi sign-in.
+- **OQ-2: "Yes, DeepSeek with a cap".** The owner wants a paid DeepSeek route in v1.
+
+The paid route is sequenced after this plan's lanes, as the deferred lane group SL-5 below. It
+waits on:
+
+- the owner's cap amount;
+- the owner's cap period;
+- the owner's key source (the executor's key or a seat-only key);
+- a FIRSTSEAT readiness-identity amendment;
+- its own plan review.
+
+This is sequencing of the owner's decision, not a change to it. No subscription-route failure
+ever selects the paid route.
 
 ## Interface Freeze Gates
 
-- [ ] **IF-0-PI-1 (plan-internal) — one-shot leg and verdict.** One fresh process per attempt,
-  no session resume or mid-run input, deadline at most 3600 seconds. The command shape, bound to
-  the projected `pi` package version in the projection digest and proven against that binary, is
-  `pi --provider P --model M --thinking E --mode json --print --no-session --no-approve
-  --no-context-files --no-mcp --no-skills --no-prompt-templates --no-themes --no-extensions
-  --extension TOOLSET --tools read,read_image,glob,grep,bash --`; prompt bytes arrive on stdin.
-  `TOOLSET` is the projected, pinned agent-toolkit reviewer toolset, never ambient discovery.
-  Success requires one terminal assistant `message_end`, a board-verdict payload, and
-  `agent_settled.aborted == false`; malformed, missing, duplicate or post-terminal content is a
-  typed leg failure. No retry resumes a process.
-- [ ] **IF-0-PI-2 (plan-internal) — single profile.** One registry entry, key `pi`,
-  `vendor="pi"` (the readiness-row id bound by IF-0-JAILCORE-1), `projection="required"`,
-  `CredentialDelivery(channel="home_file",
-  scope_evidence=<OD-5 receipt>)`, `allowlist_id="pi"`, closed `ConfigSurface`, full declared
-  reviewer tools, and a terminal output-secret code. Its private home contains only the selected
-  provider/model and scoped credential. Missing OD-5 evidence, projection, credential, allowlist or
-  qualification resolves degraded through IF-0-JAILCORE-1; no exception or unconfined route is
-  added. Under IF-0-JAILCORE-1's additive vendor rule it contributes
-  `pi_seat_credential_missing` (ordinary), `pi_seat_od5_evidence_missing` (ordinary),
-  `pi_seat_spend_cap_missing` (ordinary), and `pi_seat_secret_in_output` (security), with matching
-  `seat_jail.NOTICES` and `OD10_CLASSES` entries, plus only Pi's `WindowRows` data. No existing
-  code, class or window-kit function changes.
-- [ ] **IF-0-PI-3 (plan-internal) — route and identity.** The sole egress artifact is
-  `phase_loop_runtime/seat_egress/pi-allowlist.json`, id `pi`, schema
-  `phase_loop_seat_egress_allowlist.v1`, with only OD-5's measured provider requests and refusals.
-  `PiRoutedIdentity(harness, requested_model, launch_provider, response_provider, response_model)`
-  is accepted only when `harness == "pi"`, both provider fields equal the OD-5 provider and the
-  response model is present. Vendor counting uses that provider, never the model string. The
-  `JailProfile.vendor` remains `pi`; only board composition and independence use the routed
-  provider from `PiRoutedIdentity`. Landing
-  aliases use `(harness, model)` keys. Pi has no implicit plan/production alias; a same-routed-vendor
-  author/reviewer pair is refused.
+- [ ] **IF-0-PI-1 (plan-internal) — one-shot leg, witness and verdict.**
+  - The command, private directory, witness, cross-check, tools, terminal grammar and fixtures
+    are as in contract §7.
+  - The deadline is at most `panel_invoker._LEG_TIMEOUT_MAX_S`.
+  - Typed ends follow contract §5, in its stated order.
+  - Verdict eligibility follows contract §11.
+  - No end leads the harness to retry, renew or switch route.
+- [ ] **IF-0-PI-2 (plan-internal) — one profile.**
+  - Registry key `pi`, defined in `seat_profile_pi.py` and registered by `register_pi()`. That
+    function also registers the provider executable `pi` and a `seat_admission` gate.
+  - The profile has `vendor="pi"`, `projection="required"`, `allowlist_id="pi"`, a closed
+    `ConfigSurface`, the declared reviewer tools, and `variant` from contract §3.
+  - Preconditions: the inherited `resource_caps` and `pi_containment` (contract §9).
+  - `CredentialDelivery(channel="home_file", scope_evidence=<route record>)`.
+  - `ContainmentEvidence` points at `plans/evidence/seats-pi/vl0/containment.json`.
+  - Pi's window data is registered under the kit contract's Pi revision (K1 §10.E). SL-2.2
+    registers no `WindowVendorData`.
+  - The 12 codes of contract §10 get `seat_jail.NOTICES` rows, a `seat_jail.PI_SEAT_CODES` set
+    and `OD10_CLASSES` entries.
+- [ ] **IF-0-PI-3 (plan-internal) — route, credential, egress, identity and policy.**
+  - Route record, trust anchor (`pi_review_route.PI_ROUTE_SHA256`) and snapshot: contract §3.
+  - Request set: contract §4.
+  - Copy, claims, mount, ancestors and secrets: contract §8.
+  - Egress: contract §6.
+  - Attribution, the `PI_PROVIDER_VENDOR` map, `(harness, model)` alias keys, named consumers
+    and the seat authorship rule: contract §11.
 
 ## Lane Index & Dependencies
 
-SL-1 — Leg and verdict (lane A)
+SL-1 — Leg, witness, verdict and fixtures (lane A)
   Depends on: (none)
+  Task gate: SL-1.1 onward waits on SL-1.0's frozen fixtures
   Blocks: SL-4
-  Parallel-safe: yes until enablement
+  Parallel-safe: yes until SL-1.3
 
-SL-2 — Profile and projection (lane B)
+SL-2 — Profile, projection and Pi containment supplier (lane B)
   Depends on: (none)
-  Blocks: SL-1 enablement, SL-4
-  Parallel-safe: yes
+  Task gate: SL-2.1 onward waits on SL-1.0's frozen fixtures
+  Blocks: SL-4
+  Parallel-safe: yes until SL-2.3
 
-SL-3 — Credential, egress and identity (lane C)
-  Depends on: SL-2
-  Blocks: SL-1 enablement, SL-4
-  Parallel-safe: no
+SL-3 — Route, credential, identity and policy (lane C)
+  Depends on: (none)
+  Task gate: SL-3.2 and SL-3.3 wait on SL-1.0's frozen fixtures
+  Blocks: SL-4
+  Parallel-safe: yes until SL-3.5
 
-SL-4 — Evidence and documentation reducer (SL-docs)
+SL-4 — Qualification evidence and documentation (SL-docs)
   Depends on: SL-1, SL-2, SL-3
   Blocks: (none)
   Parallel-safe: no
 
 ## Lanes
 
-### SL-1 — Leg and verdict (lane A)
+### SL-1 — Leg, witness, verdict and fixtures (lane A)
 
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/registries.py`, `phase-loop-runtime/tests/test_pi_panel_leg.py`, `phase-loop-runtime/tests/test_panel_invoker.py`, `phase-loop-runtime/tests/test_advisor_board_backing_homebrew.py`, `phase-loop-runtime/tests/test_panel_per_leg_model_66.py`, `phase-loop-runtime/tests/test_seat_reference_inventory.py`, `phase-loop-runtime/tests/data/seat_launch_references.json`
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/registries.py`, `phase-loop-runtime/src/phase_loop_runtime/data/pi_seat/witness.mjs`, `phase-loop-runtime/pyproject.toml`, `phase-loop-runtime/tests/data/seats_pi/**`, `phase-loop-runtime/tests/test_pi_panel_leg.py`, `phase-loop-runtime/tests/test_panel_invoker.py`, `phase-loop-runtime/tests/test_advisor_board_backing_homebrew.py`, `phase-loop-runtime/tests/test_panel_per_leg_model_66.py`, `phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py`, `phase-loop-runtime/tests/test_seat_launch_helpers_trusted.py`, `phase-loop-runtime/tests/test_seat_reference_inventory.py`, `phase-loop-runtime/tests/data/seat_launch_references.json`
 - **Interfaces provided**: IF-0-PI-1
+- **Fixtures.** SL-1.0 freezes `tests/data/seats_pi/`: event streams, witness records,
+  synthetic route records and synthetic stores. SL-2 and SL-3 read it and never write it.
+- **`pyproject.toml`.** The edit is one package-data line for `data/pi_seat/*`. `phase-loop-runtime/uv.lock` stays byte-identical: there is no dependency change, and it is a Claude SDK proof input. Any lock change is an S2 STOP (C6).
+- **Shared surface.** `panel_invoker.py` is shared with v11 PANELSPLIT and the K1 window-kit lane. PI edits only its Pi-specific functions, never at the same time as those lanes. The second landing rebases. If PANELSPLIT lands first, SL-1 edits the successor modules.
 
 | Task | Type | Depends on | Action | Proof |
 |---|---|---|---|---|
-| SL-1.1 | test | — | Path-enter the exact argv/stdin and JSONL parser. Prove one process, ≤3600-second deadline, no session/steering flags, exact toolset, bounded output, board-verdict validation, and typed failures for every malformed terminal sequence. Prove the registered backing is homebrew. An absent flag/event is a typed failure; SL-4 records the proven shape from this test. | `V1` |
-| SL-1.2 | impl | SL-1.1 | Add the disabled Pi adapter and parser. It cannot be selected while any IF-0-PI-2/3 predicate is false. | `V1` |
-| SL-1.3 | test | SL-3 | Prove the adapter remains unreachable for each missing profile, credential, scope receipt, spend-cap record, allowlist, qualification or attribution input; then prove the fully admitted path. | `V1` |
-| SL-1.4 | impl | SL-1.3 | Flip Pi to homebrew and enable it through the leg selector only when IF-0-PI-2/3 hold and board config lists `pi`. Assert the default plan/production composition is unchanged. | `V1` |
+| SL-1.0 | test | — | Record the contract §7 fixtures from the projected binary through the test-only loopback seam, including 401, 403 and 429 with identical bodies and a tool-originated POST. Freeze the witness record schema; witness records stay synthetic until SL-1.2. Measure the three §7 witness trust preconditions credential-free, with the projected Node and a stub witness. This needs owner approval before it runs. | `V1` |
+| SL-1.1 | test | SL-1.0 | Path-enter the argv, stdin, settings and parser. Prove: the terminal grammar; per-event tool names; the witness and proxy count cross-check; the §5 end precedence; distinct ends for identical bodies; effective retries; the C1 witness-parser refusals; the C2 settings, with no extra POST on a long tool turn; `--offline`; no `--api-key`; one process; the deadline. Finish the §7 precondition measurements before SL-1.2 (C3). | `V1` |
+| SL-1.2 | impl | SL-1.1 | Add the disabled adapter and `witness.mjs`. Add the per-launch namespace, proxy and `bridged_to` binding; the selected model in the route environment; the pre-spawn snapshot, allowlist and witness checks; the `--ro-bind-data` mount with its pre-exec byte check through `--info-fd`/`--block-fd`, plus the O_PATH anchor (C4); secret-registration hooks; the per-launch `ptrace_scope >= 1` check. Add a disabled seam that calls the `pi_review_route` alias interface, and inventory entries. Edit no `SDK_PROOF_REGIONS` function. | `V1` |
+| SL-1.3 | test | SL-1.2, SL-3.4 | Path-enter `_validate_review_board_policy` with the real `pi_review_route`. Refuse a `(model)`-only alias, a Pi `gemini-*` fill and a same-vendor pair. This is the final alias proof before enablement. | `V1` |
+| SL-1.4 | test | SL-1.3, SL-2.4, SL-3.6 | Prove the adapter is unreachable for each missing input: profile, record digest, snapshot equality, credential, login record, allowlist, qualification, `pi_containment` record, bridge, witness and stream completion. Then prove the admitted path. Prove that a planted paid route file or cap record changes nothing. | `V1` |
+| SL-1.5 | impl | SL-1.4 | Flip `pi` to homebrew with the subscription lane only. Enable it through the leg selector when IF-0-PI-2/3 hold and board config lists `pi`. The default composition is unchanged. | `V1` |
 
-### SL-2 — Profile and projection (lane B)
+### SL-2 — Profile, projection and Pi containment supplier (lane B)
 
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_route_contract.py`, `phase-loop-runtime/tests/test_pi_seat_profile.py`, `phase-loop-runtime/tests/test_seat_profiles.py`, `phase-loop-runtime/tests/test_seat_jail.py`, `phase-loop-runtime/tests/test_seat_route_contract.py`, `phase-loop-runtime/tests/test_seat_notices.py`, `phase-loop-runtime/tests/test_executable_dependency.py`
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_profile_pi.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_pi_qualification.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_route_contract.py`, `phase-loop-runtime/tests/test_pi_seat_profile.py`, `phase-loop-runtime/tests/test_seat_pi_qualification.py`, `phase-loop-runtime/tests/test_seat_profiles.py`, `phase-loop-runtime/tests/test_seat_jail.py`, `phase-loop-runtime/tests/test_seat_route_contract.py`, `phase-loop-runtime/tests/test_seat_notices.py`, `phase-loop-runtime/tests/test_executable_dependency.py`
 - **Interfaces provided**: IF-0-PI-2
-- **Interfaces consumed**: IF-0-JAILCORE-1/2/3 (pre-existing), IF-0-TEAMHOST-1/2/3 (pre-existing at execution)
+- **Interfaces consumed**: IF-0-JAILCORE-1/2/3 (pre-existing), IF-0-TEAMHOST-1/2/3 (pre-existing)
 
 | Task | Type | Depends on | Action | Proof |
 |---|---|---|---|---|
-| SL-2.1 | test | — | Assert registry count increases by exactly one and the only new key is `pi`. Exercise the real projection for the Pi runtime and explicit toolkit toolset. The closure excludes `landlock-exec` and `pi-subagents`; their d945fdd0 and 0.84.0 pins belong to the separate Pi LANE-executor plan. Plant project/user provider overrides, hooks, skills, MCP and extensions and prove none load. Assert the four exact codes/classes and Pi-only window data; mutation of any existing entry or window-kit function fails. | `V2` |
-| SL-2.2 | impl | SL-2.1 | Register the IF-0-PI-2 profile and append only its four code/class entries and `WindowRows`. Its credential and absent allowlist fail closed until SL-3. | `V2` |
-| SL-2.3 | verify | SL-2.2 | Prove profile digest stability, projection-digest binding, private per-account state, full declared tools, planted-config refusal and terminal planted-secret detection. | `V2`, `VL0` |
+| SL-2.1 | test | SL-1.0 | Assert the registry grows by exactly `pi` and readiness gains no row beyond Pi's. Assert the real projection: node, the Pi package, the toolset and the witness; `landlock-exec` and `pi-subagents` are excluded. Plant configuration and prove none loads. Assert the 12 codes and classes, `resource_caps`, and the `pi_containment` negative control. | `V2` |
+| SL-2.2 | impl | SL-2.1 | Add `seat_profile_pi.py` and `register_pi()`, with the executable, the admission gate and the codes. Register no `WindowVendorData`; that waits on K1 §10.E. It fails closed until SL-3's record and module exist. | `V2` |
+| SL-2.3 | impl | SL-2.2, SL-1.2, SL-3.4 | Add `seat_pi_qualification.py`, the contract §9 supplier. It writes the key-bound pass record from the real projected Pi, mount, proxy and witness against the loopback fixture. | `V2` |
+| SL-2.4 | verify | SL-2.3 | Prove each of: digest stability; snapshot-in-variant; projection binding; private per-account state; CA; cleanup; planted-secret detection; that the supplier's record is required. | `V2`, `VL0` |
 
-### SL-3 — Credential, egress and identity (lane C)
+### SL-3 — Route, credential, identity and policy (lane C)
 
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/pi_review_route.py`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/schema.py`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/composition.py`, `phase-loop-runtime/src/phase_loop_runtime/governed_review.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_egress/pi-allowlist.json`, `phase-loop-runtime/tests/test_pi_routed_identity.py`, `phase-loop-runtime/tests/test_advisor_board_composition.py`, `phase-loop-runtime/tests/test_governed_review.py`
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_pi_credential.py`, `phase-loop-runtime/src/phase_loop_runtime/pi_review_route.py`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/schema.py`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/composition.py`, `phase-loop-runtime/src/phase_loop_runtime/governed_review.py`, `phase-loop-runtime/src/phase_loop_runtime/president_adapter.py`, `phase-loop-runtime/src/phase_loop_runtime/cli.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_egress/pi-allowlist.json`, `phase-loop-runtime/src/phase_loop_runtime/seat_egress/pi-route.json`, `plans/evidence/seats-pi/route/**`, `phase-loop-runtime/tests/test_seat_pi_credential.py`, `phase-loop-runtime/tests/test_pi_routed_identity.py`, `phase-loop-runtime/tests/test_advisor_board_composition.py`, `phase-loop-runtime/tests/test_governed_review.py`
 - **Interfaces provided**: IF-0-PI-3
-- **Interfaces consumed**: IF-0-PI-2, IF-0-JAILCORE-1/2/3 (pre-existing), OD-5 (pre-existing owner record)
-  `advisor_board/schema.py`, `advisor_board/composition.py` and `governed_review.py` are also v11
-  PANEL/ROUTE surfaces. This lane adds `PiRoutedIdentity` and edits only `schema.vendor_family`,
-  `schema.vendor_of_harness`, `schema.vendor_of_model`, `composition.board_independence`,
-  `governed_review.select_reviewer_pool` and `governed_review.author_vendor_for_model`; it rebases
-  if second and never edits the same function concurrently.
+- **Interfaces consumed**: IF-0-JAILCORE-1/2/3 (pre-existing), OD-5/OQ-1/OQ-2 (pre-existing owner record)
+- **Policy ownership.** SL-3 is the single policy and alias owner. It edits only these
+  functions:
+  - `schema.vendor_family` and `schema.vendor_of_harness`;
+  - `composition.board_independence`;
+  - `governed_review.select_reviewer_pool` and `author_vendor_for_model`;
+  - `president_adapter.seat_for_rung`;
+  - the `cli.py` `seat-sandbox pi-login-record` subcommand.
+
+  **Shared with v11.** `schema.py`, `composition.py` and `governed_review.py` are shared with
+  v11 PANEL and ROUTE, and `president_adapter.py` with ROUTE. PI edits only the functions named
+  above, never at the same time as those phases. The second landing rebases.
+
+  `runner._phase_author_vendors` is not edited. It keeps every non-empty author, and SL-3.3
+  path-enters it.
 
 | Task | Type | Depends on | Action | Proof |
 |---|---|---|---|---|
-| SL-3.1 | evidence | SL-2 | Implement the settled OD-5 ruling. Bind the current executor route, measure its provider request/refusal set and credential scope, and create one `pi-allowlist.json`, never a second provider file. | receipt digest |
-| SL-3.2 | test | SL-2; SL-3.1 for provider fixture | Path-enter launch config plus terminal provider response. Refuse mismatch, absent response provider/model, model-name vendor inference, `(model)`-only alias lookup, a Pi `gemini-*` alias fill, same-routed-vendor independence and every other-provider/unlisted endpoint. Mutation controls neutralise each check. | `V3` |
-| SL-3.3 | impl | SL-3.2 | Add the private provider config, IF-0-PI-3 identity, tuple-key aliases, independence check and sole allowlist. Store no credential or response body in evidence. | `V3` |
-| SL-3.4 | verify | SL-3.3 | Re-hash the allowlist into the qualification key; run the real proxy refusals and a redaction scan. | `V3`, `VL0` |
+| SL-3.1 | evidence | — | Credential-free route work now: source-derived candidate rows, synthetic records and loopback-fixture request paths. No token and no live call. | receipt digest |
+| SL-3.2 | test | SL-1.0 | Path-enter the credential module against synthetic stores. Cover: malformed and duplicate entries; the wrong provider or type; the margin at −1 ms, 0 and +1 ms; requested-minimum validity; missing, future or implausible `iat`/`exp`; every claim rule (`iss`, `aud`, `client_id`, scopes, account against the login record); a store at the wrong path; planted ambient credentials. Mutation controls neutralise each check. | `V3` |
+| SL-3.3 | test | SL-1.0 | Path-enter the snapshot, the provider map, verdict eligibility over witness fixtures, `board_independence`, `seat_for_rung`, and the seat authorship rule through `runner._phase_author_vendors`: a Pi-authored phase never seats the `pi` leg on the omnigent or homebrew backing; a mixed Claude and Pi-executor phase excludes both; a codex author excludes the `pi` leg. | `V3` |
+| SL-3.4 | impl | SL-3.2, SL-3.3 | Add `seat_pi_credential.py`, `pi_review_route.py` (with `load_route()` and `PI_ROUTE_SHA256`), the named policy edits and `pi-login-record`. Store no credential or response body. | `V3` |
+| SL-3.5 | verify | SL-3.4, SL-1.2, SL-2.4 | Fixture-only VL0: contract §6 probes from real tool descendants, §8 mount and ancestor checks, the redaction scan, installed-package tamper and missing-record tests, and the falsifiers below. | `V3`, `VL0` |
+| SL-3.6 | evidence | SL-3.5 | Authenticated, non-billable measurement on the designated seat host. The owner authorizes it after LA-2 and `pi-login-record`. It runs through the production-shaped jailed launch under a private observation allowlist. Record the contract §2 to-measure facts and write `pi-route.json`, `pi-allowlist.json` and `PI_ROUTE_SHA256`. The row window (`VL1`) is the first governed confirmation. A short lifetime, a needed writable copy, an untrusted witness or an inadequate `named`/budget interface is a STOP. | receipt digest |
 
-### SL-4 — Evidence and documentation reducer (SL-docs)
+| Claim | Falsifier (any one fails the claim) |
+|---|---|
+| Subscription only | Any paid profile, allowlist, window, alias or harness is reachable in production, or a `pi` outcome selects a paid route. |
+| Access-only, read-only | The copy carries a non-empty `refresh`, an unlisted field or a second entry; the file is writable; read-back accepts other bytes or a moved ancestor. |
+| No in-jail refresh | A token-host request is allowed, or a refresh signal is not reported. |
+| Expiry typed | A copy below the margin at spawn launches, or identical bodies on 401 and 429 give the same end. |
+| Egress per launch | Any contract §6 probe from a tool descendant succeeds, or a leg uses another leg's namespace. |
+| Attribution | A verdict counts without a 2xx, complete, digest-matched witness record and equal proxy counts. |
+| Authorship | The Pi seat counts on a phase with a Pi-executor or codex author. |
+| No secret leak | A planted sentinel reaches any published artifact on any path. |
 
-- **Owned files**: `docs/advisor-board-capabilities-card.md`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md`, `docs/review-seats-readiness.md`, `CHANGELOG.md`, `.doc-decisions.json`, `.claude/docs-catalog.json`, `plans/manifest.json`, `plans/evidence/seats-pi/**`
+### SL-4 — Qualification evidence and documentation (SL-docs)
+
+- **Owned files**: `docs/advisor-board-capabilities-card.md`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md`, `docs/review-seats-readiness.md`, `CHANGELOG.md`, `.doc-decisions.json`, `.claude/docs-catalog.json`, `plans/manifest.json`, `plans/evidence/seats-pi/vl0/**`, `plans/evidence/seats-pi/vl1/**`
 - **Interfaces consumed**: IF-0-PI-1, IF-0-PI-2, IF-0-PI-3
+- **Cross-lane qualification owner.** SL-4 runs `VL0` and `VL1` on the designated seat host.
 
 | Task | Type | Depends on | Action | Proof |
 |---|---|---|---|---|
-| SL-4.1 | evidence | SL-1, SL-2, SL-3 | On the designated seat host, after the TEAMHOST interfaces are available, attach provider-free `VL0` receipts and set only the Pi row to `candidate`. Attach the owner's `VL1` row-window record and set `done-local` only when it binds the current qualification key. If the owner records OD-9 for a named host-class falsifier, set `remote-pending` with its interim route. | `VL0`, `VL1` |
-| SL-4.2 | docs | SL-4.1 | Apply `canonical_spec_update` to the three required spec surfaces, inventory and changelog. Rescan the docs catalog. Evidence is metadata-only. | `V4` |
-| SL-4.3 | closeout | SL-4.2 | Emit `spec_delta_closeout.v1`; missing/malformed evidence uses `terminal_status=blocked`, `verification_status=blocked`, `blocker_class=contract_bug`. Otherwise record the supported terminal status with `verification_status=passed` and `blocker_class=none`. | `V4` |
+| SL-4.1 | evidence | SL-1, SL-2, SL-3; the K1 §10.E Pi revision and the kit's Pi adapter | Run the SL-2.3 supplier for the current key and attach `vl0/containment.json`. Set the Pi row to route `jailed`, status `candidate`. Attach the owner's `VL1` record and set `done-local` only when it binds the current qualification key. OD-9 gives `remote-pending`. | `VL0`, `VL1` |
+| SL-4.2 | docs | SL-4.1 | Apply `canonical_spec_update` to the three spec surfaces. Record the subscription route, and record that the paid route is wanted in v1 and sequenced as SL-5, with its owner inputs listed. Update the inventory, changelog and catalog. Evidence is metadata-only. | `V4` |
+| SL-4.3 | closeout | SL-4.2 | Emit `spec_delta_closeout.v1`. Missing or malformed evidence: `terminal_status=blocked`, `verification_status=blocked`, `blocker_class=contract_bug`. Otherwise `verification_status=passed` and `blocker_class=none`. | `V4` |
+
+## Deferred: SL-5 paid route
+
+SL-5 is not part of this plan's lanes, and nothing in SL-1 to SL-4 registers it. Its design is
+contract §13. It gets its own plan amendment and plan review only after all three of these hold:
+
+1. the owner's cap amount and currency, cap period and key source, recorded privately;
+2. a FIRSTSEAT amendment to IF-0-FIRSTSEAT-1 giving it its own readiness identity;
+3. a verified provider-side enforcement binding.
+
+No billable measurement is authorized before then. When SL-5 exists, its typed refusal is
+`pi_seat_spend_cap_missing`.
 
 ## Execution Notes
 
-- Lane A and lane B start in parallel. Lane A lands its adapter disabled; SL-1.3 and SL-1.4
-  resume only after lane C publishes IF-0-PI-3. With OD-5 settled, lane C starts after lane B.
-  TEAMHOST's IF-0-TEAMHOST-1/2/3 publication is the sole remaining execution gate. SL-4 is terminal.
-- `panel_invoker.py` is lane A's single-writer surface. `seat_profiles.py` is lane B's. The
-  identity functions named in lane C are its narrow v11 PANEL/ROUTE sharing boundary; the
-  second landing rebases. Lane B's only JAILCORE-file edits are the additive Pi entries frozen in
-  IF-0-PI-2. No lane edits `seat_egress_proxy.py`, placement or executor modules.
-- The exactly-one profile and exactly-one allowlist assertions are repository-wide count and
-  path controls, not prescribed commit counts. The plan pins only upstream inputs.
-- No release is dispatched, so no post-dispatch back-fill of a tag or workflow result applies.
+- **Buildable now.** SL-1.0 to SL-1.2, SL-2.1 and SL-2.2, and SL-3.1 to SL-3.4.
+- **Then.**
+  - SL-2.3 and SL-2.4, then SL-3.5.
+  - SL-3.6 once the owner authorizes it.
+  - SL-1.3 to SL-1.5, with activation last.
+  - SL-4.
+- **Single writers.**
+  - `panel_invoker.py`: SL-1.
+  - `seat_profile_pi.py`, the `register_pi()` call in `seat_profiles.py`, and the additive
+    JAILCORE-file entries: SL-2.
+  - The named policy functions: SL-3.
+- **Stops (contract §12).**
+  - S2: recheck at the SL-2 PR base and head; run `claude-sdk-audit` and `audit-order`.
+  - S1, S3, S4, S5 and S6 are STOPs if reached.
+- **Pins.** Count assertions are repository-wide controls, not commit counts. No release is
+  dispatched.
 
 ## Verification
 
-Run serially after the repository load/IO precheck:
+Run serially after the load/IO precheck.
 
 ```bash
-V1="timeout 900 env PYTEST_ADDOPTS= python3 -m pytest -p no:cacheprovider -q phase-loop-runtime/tests/test_pi_panel_leg.py phase-loop-runtime/tests/test_panel_invoker.py phase-loop-runtime/tests/test_advisor_board_backing_homebrew.py phase-loop-runtime/tests/test_panel_per_leg_model_66.py phase-loop-runtime/tests/test_seat_reference_inventory.py"
-V2="timeout 900 env PYTEST_ADDOPTS= python3 -m pytest -p no:cacheprovider -q phase-loop-runtime/tests/test_pi_seat_profile.py phase-loop-runtime/tests/test_seat_profiles.py phase-loop-runtime/tests/test_seat_jail.py phase-loop-runtime/tests/test_seat_route_contract.py phase-loop-runtime/tests/test_seat_notices.py phase-loop-runtime/tests/test_executable_dependency.py"
-V3="timeout 900 env PYTEST_ADDOPTS= python3 -m pytest -p no:cacheprovider -q phase-loop-runtime/tests/test_pi_routed_identity.py phase-loop-runtime/tests/test_advisor_board_composition.py phase-loop-runtime/tests/test_governed_review.py"
-V4="timeout 900 env PYTEST_ADDOPTS= python3 -m pytest -p no:cacheprovider -q phase-loop-runtime/tests/test_seat_reference_inventory.py"
+U="timeout 900 uv run --quiet --project phase-loop-runtime --group test --python 3.14 --python-preference only-system --locked python -m pytest -p no:cacheprovider -q"
+V1="$U phase-loop-runtime/tests/test_pi_panel_leg.py phase-loop-runtime/tests/test_panel_invoker.py phase-loop-runtime/tests/test_advisor_board_backing_homebrew.py phase-loop-runtime/tests/test_panel_per_leg_model_66.py phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py phase-loop-runtime/tests/test_seat_launch_helpers_trusted.py phase-loop-runtime/tests/test_seat_reference_inventory.py"
+V2="$U phase-loop-runtime/tests/test_pi_seat_profile.py phase-loop-runtime/tests/test_seat_pi_qualification.py phase-loop-runtime/tests/test_seat_profiles.py phase-loop-runtime/tests/test_seat_jail.py phase-loop-runtime/tests/test_seat_route_contract.py phase-loop-runtime/tests/test_seat_notices.py phase-loop-runtime/tests/test_executable_dependency.py"
+V3="$U phase-loop-runtime/tests/test_seat_pi_credential.py phase-loop-runtime/tests/test_pi_routed_identity.py phase-loop-runtime/tests/test_advisor_board_composition.py phase-loop-runtime/tests/test_governed_review.py"
+V4="$U phase-loop-runtime/tests/test_seat_reference_inventory.py phase-loop-runtime/tests/test_legible_roadmap_contract.py"
 ```
 
-`VL0` is provider-free: real TEAMHOST projection/admission, closed-config and planted-secret
-falsifiers, plus real-proxy refusal of an unlisted host and a second provider's listed host. `VL1`
-is the governed row window: one real Pi review, launch/response attribution, verdict, exec record,
-current qualification key and spend-cap evidence. Secret values and response bodies are not retained.
+- **`VL0`** is the contract §9 supplier pass plus SL-3.5's fixture-only falsifiers. The generic
+  first-use jail pass is not `VL0`.
+- **`VL1`** is the governed row window on `pi`. It records the witness-eligible verdict, the
+  exec record, the qualification key and usage.
+- Secret values and response bodies are not retained.
 
 ## Spec Closeout Plan
 
@@ -192,8 +259,8 @@ current qualification key and spend-cap evidence. Secret values and response bod
 
 ## Acceptance Criteria
 
-- [ ] EC-PI-1 — proven by `V1` and IF-0-PI-1. Falsified by any removed enablement predicate making the recording adapter reachable. Path-entered control: each mutation enters through the real panel-leg selector and spawn path.
-- [ ] EC-PI-2 — proven by `V2`, IF-0-PI-2 and `VL0`. Falsified by any planted ambient surface loading or by removing a projection pin without changing the qualification key. Path-entered control: the real profile resolver, projection admission and jailed launch are used.
-- [ ] EC-PI-3 — proven by `V3` plus OD-5, the sole allowlist digest, `VL0` and `VL1`. Falsified by the real proxy admitting an unlisted or second-provider request. Path-entered control: the jailed reviewer tool enters through its per-seat proxy.
-- [ ] EC-PI-4 — proven by `plans/evidence/seats-pi/**` and `VL0`/`VL1`. Falsified by accepting a `done-local` row whose window record does not bind the current qualification key. Path-entered control: the readiness-row reducer reads the recorded window result.
-- [ ] EC-PI-5 — proven by `V3`. Falsified by neutralising each attribution, tuple-alias or independence check while its mutation test still passes. Path-entered control: launch config and terminal provider response enter through the real composition and governed-review paths.
+- [ ] EC-PI-1 — Proven by `V1` and IF-0-PI-1. Falsified by any enablement predicate whose removal makes the adapter reachable, or by a non-clean final stop accepted as a verdict. Path-entered control: the real panel-leg selector and spawn path.
+- [ ] EC-PI-2 — Proven by `V2`, IF-0-PI-2 and `VL0`. Falsified by a planted ambient surface loading, or by a snapshot or projection change that leaves the qualification key unchanged. Path-entered control: the real profile resolver, projection admission, supplier and jailed launch.
+- [ ] EC-PI-3 — Proven by `V3`, the route record and its trust anchor, the allowlist digest, SL-3's falsifier table, `VL0` and `VL1`. The paid lane is not registered, and its cap is SL-5's. Falsified by any row of that table. Path-entered control: tool descendants enter through the per-launch proxy, and the credential through the real copy and mount.
+- [ ] EC-PI-4 — Proven by `plans/evidence/seats-pi/**` and `VL0`/`VL1`. Falsified by an accepted `done-local` row whose window record does not bind the current qualification key. Path-entered control: the readiness-row reducer reads the recorded window result.
+- [ ] EC-PI-5 — Proven by `V1` (SL-1.3) and `V3`. Falsified by neutralising any witness-eligibility, provider-map, alias-key, independence or author-provenance check while its mutation test still passes. Path-entered control: the witness, the proxy stream and the dispatch authorship (`runner._phase_author_vendors`) enter through the real composition, governed gates, runner aggregation, landing policy and president paths.

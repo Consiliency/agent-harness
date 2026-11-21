@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: CLAUDENET
 roadmap: specs/phase-plans-seats-v1.md
-roadmap_sha256: b91c98ad7b9097ba411ca21f39cf390878dabac449e59d6fdfd1750915c16a09
+roadmap_sha256: 2f26635bfcb5119967735cf5d5966f1ce39695a8331d2543eb9e11c07d187018
 automation:
   suite_command: ["timeout", "900", "env", "PYTEST_ADDOPTS=", "uv", "run", "--quiet", "--project", "phase-loop-runtime", "--group", "test", "--python", "/usr/bin/python3", "--python-preference", "only-system", "--locked", "python", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_seat_egress_allowlist_claude.py", "phase-loop-runtime/tests/test_seat_claude_credential_scope.py", "phase-loop-runtime/tests/test_seat_profile_claude_egress.py", "phase-loop-runtime/tests/test_seat_claude_containment.py", "phase-loop-runtime/tests/test_seat_profiles.py", "phase-loop-runtime/tests/test_seat_notices.py", "phase-loop-runtime/tests/test_seat_route_contract.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py", "phase-loop-runtime/tests/test_seat_egress_allowlists_jailcore.py", "phase-loop-runtime/tests/test_seat_jail.py", "phase-loop-runtime/tests/test_seat_route.py", "phase-loop-runtime/tests/test_panel_invoker.py", "phase-loop-runtime/tests/test_seat_claude_provider_free.py", "phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py", "phase-loop-runtime/tests/test_seat_launch_helpers_trusted.py"]
 ---
@@ -189,7 +189,7 @@ seat CA through `NODE_EXTRA_CA_CERTS`, the sentence is in IF-0-CLAUDENET-1.
 - **Scope**: Land IF-0-CLAUDENET-1 and IF-0-CLAUDENET-3 as the phase's one Claude digest change.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_route_contract.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_claude_containment.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/tests/data/seat_profile_digests_jailcore.json`, `phase-loop-runtime/tests/test_seat_profile_claude_egress.py`, `phase-loop-runtime/tests/test_seat_claude_containment.py`, `phase-loop-runtime/tests/test_seat_profiles.py`, `phase-loop-runtime/tests/test_seat_jail.py`, `phase-loop-runtime/tests/test_seat_notices.py`, `phase-loop-runtime/tests/test_seat_route_contract.py`, `phase-loop-runtime/tests/test_panel_invoker.py`, `plans/evidence/seat-qualification/claude-sdk-boundary/receipt-v1.json`, `phase-loop-runtime/src/phase_loop_runtime/data/claude_sdk/receipt-v1.json`
 - **Interfaces provided**: IF-0-CLAUDENET-1, IF-0-CLAUDENET-3; evidence id `claude-refresh-detection` (named; SL-3 records it)
-- **Interfaces consumed**: IF-0-CLAUDENET-2 (SL-1), IF-0-JAILCORE-1 Claude registration (pre-existing), IF-0-JAILCORE-2 (pre-existing), IF-0-CLAUDE-1 (pre-existing), the profile-sourced window kit `seat_window` (pre-existing), the SDK worker launcher and receipt verifier (pre-existing)
+- **Interfaces consumed**: IF-0-CLAUDENET-2 (SL-1), IF-0-JAILCORE-1 Claude registration (pre-existing), IF-0-JAILCORE-2 (pre-existing), IF-0-CLAUDE-1 (pre-existing), the profile-sourced window kit `seat_window` (pre-existing; the Claude row window also needs FIRSTSEAT K-1's IF-0-FIRSTSEAT-6 and its Claude adapter lane SL-7, `plans/amendments/seats-FIRSTSEAT-K1-window-kit.md`), the SDK worker launcher and receipt verifier (pre-existing)
 - **Parallel-safe**: no
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
@@ -259,11 +259,12 @@ that one selection profile-driven. Nothing else.
   worktree produces commits that destroy peer-lane work on `--no-ff` merge.
 - **Batching.** If TEAMHOST SL-8's switch-on also returns the Claude row to `candidate`, one
   row window requalifies both changes. Neither waits for the other.
-- **Open with JAILCORE (GROK plan S-2).** `seat_window.readiness_rows()` still names Claude
-  `open egress`, and only the kit's owner may change that. Until the kit omits `open egress`
-  for a profile with an allowlist, SL-4 records the exception's end in the readiness doc only.
-  The first window, before 2026-12-04, does not need this fix. A Claude requalification after
-  that date does.
+- **Exception literal (GROK plan S-2), resolved in source (recorded 2026-11-21, K-1).**
+  `seat_window.readiness_rows()` drops `open egress` once the registered Claude profile has an
+  allowlist, so SL-2 ends the exception in the matrix itself. The kit's owner is FIRSTSEAT
+  (`plans/amendments/seats-FIRSTSEAT-K1-window-kit.md`). Its Claude adapter consumes
+  IF-0-CLAUDENET-1 to IF-0-CLAUDENET-3 and SL-1's `claude-credential-scope` receipt as planned
+  here, and needs no new interface from this phase.
 - **Single writers.** `seat_jail.py`, `seat_route_contract.py`, `seat_profiles.py` and
   `panel_invoker.py` are shared with CODEX, GROK, PI, TEAMHOST and v11 PANELSPLIT, and the
   first two take additive rows only. Whichever lands second rebases. In either landing order,
