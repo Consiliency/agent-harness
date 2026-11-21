@@ -6,6 +6,31 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Added
+
+- A Gemini seat whose selected `agy` cannot be used for a reason of its own (unreadable,
+  over the size bound, not regular, not qualified, a failed record, self-qualification off,
+  an unsafe store, first use failing) now admits an already-qualified image found on the
+  host instead: a release member, or a locally qualified image, from the harness cache or
+  the vendor store `/opt/consiliency/operational-clis/agy` (the hold, AGYFRESH HOLD). Every
+  seat admission goes through one boundary, `agy_qualification.admit_seat`. The search is
+  bounded and ordered (newest authenticated version first; at most five image reads),
+  descriptor-relative and symlink-free, holds one image at a time, and rejects a file whose
+  replacement it observes during the read. A held seat runs the held image's sealed memfd;
+  its evidence carries `provider_admission_source: "lkg"`, `provider_hold_reason` and
+  `provider_subject_image_sha256`, and every seat admission now records its
+  `provider_admission_source`. `phase-loop agy-qualification status` gains a `hold` object
+  (subject class, per-route coverage, the candidate and its state; never "in use"). Not
+  covered: managed-release seats on every route, and the jailed standalone Gemini route,
+  which refuses a held admission. Today's refusals stand when nothing qualifies, and the
+  user config `[agy] hold = false` turns the hold off; `[agy] hold_deny` lists image digests
+  never held (a bad value turns the hold off, never a valid `self_qualification`). A
+  cancellation during the hold is a cancellation, never an admission or the subject's
+  refusal. `phase-loop agy-qualification run` adds `source`, and for a held image the reason
+  and the subject's digest. The help measurement's typed process-group quiescence outcome
+  now keeps its type on the heartbeat route and in first use's lookup, as it already did at
+  the seat sites. The seat QCI, store keys, the catalog, records and pins are unchanged.
+
 ### Changed
 
 - `phase-loop-runtime` now requires `consiliency-contract>=0.7.2,<0.8` (was `>=0.6.5,<0.7`).

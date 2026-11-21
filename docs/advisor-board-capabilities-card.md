@@ -567,6 +567,23 @@ anything, then runs the same three live operations, and records the result in a 
 per-host, HMAC-bound store. Such a seat is `locally_qualified` and counts at every tier.
 A user config `[agy] self_qualification = false` restores the hard refusal. See
 CONTRACTS.md "First-use self-qualification".
+When the `agy` on `PATH` cannot be used for a reason of its own (unreadable, over the size
+bound, not qualified, a failed record, first use failing), a seat admits an
+already-qualified image found on the host instead (the hold): a release member, or a
+locally qualified image, from the harness cache or
+`/opt/consiliency/operational-clis/agy`. That seat runs the held image's sealed memfd, and
+its evidence says so (`provider_admission_source: "lkg"`, with the reason and the subject's
+digest). With nothing to hold, the original refusal stands. **Not covered:** managed-release
+seats (on every route), and the jailed standalone Gemini route, which refuses a held
+admission. Whether a seat is managed is decided by where its `agy` resolves: the deployed
+`current/bin/agy` resolves into the managed releases root and is never held, while a copy
+of the guarded frontdoor placed outside that root is a standalone subject and can be.
+`[agy] hold = false` turns it off; `[agy] hold_deny` lists image digests never held. A bad
+`hold` or `hold_deny` value turns the hold off without touching a valid
+`self_qualification`. `phase-loop agy-qualification run` prints `source` and, for a held
+image, the reason and the subject's digest. `phase-loop agy-qualification status` reports a `hold` object with the per-route
+coverage and the candidate, never an image in use. See CONTRACTS.md "HOLD — availability
+floor".
 Each member has its own redacted record v2,
 `plans/evidence/agy-<release>-linux-x64-qualification.json`, bound to the seat QCI
 (`agy_qualification.seat_qci()`) rather than to source hashes; the records are not a

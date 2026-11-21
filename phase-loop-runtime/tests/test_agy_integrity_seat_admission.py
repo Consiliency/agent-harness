@@ -243,7 +243,7 @@ def test_a_quiescence_or_sandbox_refusal_in_lookup_keeps_its_type(world, monkeyp
     the sandbox notice), never be relabelled ``agy_image_unqualified``. Nothing is admitted
     and no descriptor leaks.
 
-    Mutation: dropping the class from the re-raise in ``_locally_qualified``.
+    Mutation: dropping the class from the re-raise in ``agy_integrity._admitted_for_seat``.
     """
     _seed(world)
     raised = _quiescence_or_sandbox_refusal(kind)
@@ -339,8 +339,10 @@ def test_seat_and_probe_record_the_admitted_image(world, monkeypatch, admission_
         monkeypatch.setitem(gh.QUALIFIED_IMAGES, world.digest, "e" * 64)
     else:
         _seed(world)
+    # AGYFRESH §2.6: every seat admission also records its source, additively.
     expected = {"provider_admission_class": admission_class,
-                "provider_image_sha256": world.digest}
+                "provider_image_sha256": world.digest,
+                "provider_admission_source": "subject"}
     evidence = {}
     image = agy_integrity.check(world.agy, world.env, evidence=evidence)
     try:

@@ -385,6 +385,9 @@ def test_path_swap_after_provenance_still_executes_the_verified_bytes(world, mon
     opens = []
     real_open = gh._open_image_fd
     monkeypatch.setattr(gh, "_open_image_fd", lambda path: opens.append(path) or real_open(path))
+    # The seat admission boundary reads the subject itself (AGYFRESH §2.2); count both readers.
+    real_read = q._read_subject
+    monkeypatch.setattr(q, "_read_subject", lambda path, resolved: opens.append(path) or real_read(path, resolved))
     real_find = prov.find_provenance
 
     def find_then_swap(*args, **kwargs):

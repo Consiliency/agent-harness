@@ -22,6 +22,14 @@ default_board = "default"
 # restores the hard refusal (`gemini_heartbeat_capability_unavailable`).
 # [agy]
 # self_qualification = false
+#
+# Optional (AGYFRESH HOLD, user file only): when the selected agy cannot be used for a
+# reason of its own (unreadable, over the size bound, not qualified, failed, ...), a seat
+# admits an already-qualified image found on the host instead. On by default; `false`
+# restores today's refusal. `hold_deny` lists image SHA-256 digests never admitted this way.
+# Not covered: managed-release seats, and the jailed standalone Gemini route.
+# hold = false
+# hold_deny = ["<64 hex characters>"]
 
 # This explicit example overrides the built-in default board, keeping higher effort.
 # Its three seats, in panel-leg order, render to these CLI invocations:
