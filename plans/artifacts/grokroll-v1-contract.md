@@ -624,3 +624,76 @@ Owner acts, after merge: OD-3's ruleset and its attestation; the first catalog e
 | Store publication time or attestation status in the catalog | Rejected. Both can change after the fact, which breaks re-derivation. |
 | A harness-side cache of measured binaries | Deferred. It needs a launch-path change. |
 | A runtime catalog fetch | Deferred. It needs a signed side channel. |
+
+## Erratum 1 (2026-11-21, after the SL-0 implementation review)
+
+Each item below amends the section it names. Where an item and the text above disagree,
+the item wins.
+
+**E1 — membership needs an attested gate (§1, §2.5, §3, §3.3).** The base-wheel query
+reads the packaged gate file `data/grok_catalog_gate.json` through the same reader as the
+catalogs (§3.1 descriptor rules) and fails closed:
+
+- When the gate is missing, unreadable, malformed (§2.5) or unattested, release-catalog
+  membership is not established. No `--release-version` or `--candidate-version` resolves
+  through the catalog, so the build is `unresolved`. No build reports `release: "member"`,
+  and `version` is `null` unless a version selector named it. `advance_to` and
+  `rollback_to` are `null`. A candidate named by path or by digest is still judged on its
+  route evidence, so the decision is never `advance` on the strength of catalog
+  membership.
+- When the gate reads attested, the query trusts the packaged release catalog as shipped
+  package data. It does not verify the stored signatures at query time, and the base
+  install still imports neither `cryptography` nor `brotli`. The trust comes from
+  `check_tree` in the hosted provenance check and the release gate (§2.4, §2.5; SL-1,
+  SL-2), together with the integrity of the installed wheel.
+- `inputs` gains the additive key `catalog_gate`, with the value `attested`, `unattested`
+  or `invalid`. The gate state is not a row-1 input of §5.1: an `invalid` or `unattested`
+  gate withholds membership but does not turn every decision into `inputs_invalid`.
+- Readers of package data and of explicit trees follow no link in any component from
+  their anchor down. They take only regular files, never block, and read with a bound. A
+  link, FIFO, directory or other special file is `invalid`. `check_tree` takes an explicit
+  checkout `anchor`, and the files are read from `phase-loop-runtime/src/phase_loop_runtime/data`
+  below it. With only a data directory, that directory itself must not be a link. In the
+  gate, `attested_at` must name a real calendar time. `workflow_ref` must be a ref that
+  `git check-ref-format` accepts: no empty component, no component starting with `.` or
+  ending in `.lock`, no `..` or `@{`, and no trailing `.` or `/`.
+
+**E2 — receipt shape (§3.1, §3.2 step 2) and a named admission difference.** A receipt
+is classified `invalid` in each of these cases:
+
+- it repeats a key at any level of its JSON. Its decoded value is still the one
+  `_read_grok_receipt` returns, so conformance 2 holds on content, but the receipt is
+  ambiguous;
+- it carries any key outside the set `panel_invoker.record_tool_probe` writes. For a
+  passing receipt that set is `schema`, `binary_digest`, `argv_digest`, `passed`,
+  `public_code` (which must be `null`), `tools` and `version_digest`, plus `basis`
+  optionally and, for `frozen_measurement`, the four `RECEIPT_FIELDS`;
+- a required key is missing;
+- `passed` is `false` and the receipt is not exactly `schema`, `binary_digest`,
+  `argv_digest`, `passed` and a non-empty string `public_code`. A malformed failed
+  receipt is never positive absence.
+
+The admission gate is not changed and admits a listing receipt with an unknown or
+repeated key. That is a third intended difference of conformance 3, alongside the two in
+§3.1: it is excluded from the implication and tested as a named exception.
+
+**E3 — withdrawal (§3.2 step 3, §5.1, EC-GROKROLL-1, EC-GROKROLL-3).** The first-match
+table stands as written. A withdrawn frozen publication contributes no usable evidence. A
+valid listing receipt is independent evidence, and it still makes the route `usable`
+(basis `list_tools`) when the frozen record was withdrawn. A withdrawn route with no valid
+listing receipt holds: it is `withdrawn`, the build is `partial`, and the build is never a
+target. Read "a withdrawn host-local route is never `usable`" (§3.2) as "never `usable`
+on the strength of its frozen record".
+
+**E4 — version grammar (§1, §3).** A canonical version is three unsigned decimal
+components of at most nine digits each, with no leading zero, `0` excepted. A longer
+component is refused by the loader and by both version selectors. This bounds the integer
+triples and is far beyond any version the vendor publishes.
+
+**E5 — `context_unavailable` (§3.3).** It is an additive detail of `status_unavailable`
+(exit 3), for the case where the running `grok_seat_context.v1` digest cannot be computed
+because its `grok-review` allow-list cannot be read. It is pinned by the golden table.
+
+**E6 — the evidence count (§3.3).** "The seven values of §3.2 step 3" counts table rows.
+There are six distinct values: `invalid`, `usable`, `refused`, `withdrawn`, `stale` and
+`absent`. The two `usable` rows differ by basis and source.

@@ -39,7 +39,7 @@ The fail-loud assumption is A1 in GROKROLL §0. If it is false the status lane s
 
 | Input | Pin |
 | --- | --- |
-| GROKROLL contract | `plans/artifacts/grokroll-v1-contract.md`, sha256 `2ac8d5ce2e5bf49b659e09975aa944da38614944510deea9d1bc710b0b822e4f` |
+| GROKROLL contract | `plans/artifacts/grokroll-v1-contract.md`, sha256 `c8f89400d5c4531a3f60e03a97121ef9d734675d901e8833bc7423f54d655703` |
 | grok tool-surface contract (§3, §4.1–§4.3, rulings D1 and D3) | `plans/artifacts/grok-tool-surface-contract-v1.md`, sha256 `9c56fc68e164d9ae7abbeb4969ee860c6844355c3d80569e4bb4600a3e6355d4`. This file is not edited. |
 | AGYROLL contract (§1.1 transport rules) | `plans/artifacts/agyroll-v1-contract.md`, sha256 `eaa438944f8422f610bab426f5681f35e19363b050a5e8a9ebf36f13aa2abcae` |
 | Vendor registry surface | the public npm registry documents, signatures and attestations endpoint for `@xai-official/grok` and `@xai-official/grok-linux-x64`, as observed in GROKROLL §0 on 2026-11-21 |
