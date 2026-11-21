@@ -33,9 +33,14 @@ from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime.grok_roll import catalog as rc
 from phase_loop_runtime.grok_roll import evidence as ev
 from phase_loop_runtime.grok_roll import status as st
-from test_grok_evidence import (  # noqa: F401 - ``seat`` is a fixture
-    ROUTES, catalog, ensure_root, listing_receipt, publish, put, seat, serve, surface,
+import test_grok_evidence
+from test_grok_evidence import (
+    ROUTES, catalog, ensure_root, listing_receipt, publish, put, serve, surface,
     write_receipt)
+
+#: The shared fixture, bound by assignment so a test parameter of the same name is not a
+#: redefinition of an import.
+seat = test_grok_evidence.seat
 
 GOLDEN = json.loads((Path(__file__).resolve().parent / "fixtures" / "grok_roll" / "status"
                      / "grok_seat_status.v1.golden.json").read_text())
