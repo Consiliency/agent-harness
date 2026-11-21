@@ -18,7 +18,9 @@ be the recorded image.
 
 ``--upstream-only`` (nightly): ``--contract``, then the newest shipped member's vendor asset
 digest, URL and archive; a newest upstream release that is not a member only warns, because
-hosts self-qualify it on first use (agent-harness#1333 PR1).
+hosts self-qualify it on first use (agent-harness#1333 PR1). The newest upstream release is the
+first stable entry of the first listing page, chosen with the resolver's stable filter
+(AGYROLL PROVFWD), and its ``published_at`` is reported.
 
 R1 (agent-harness#1008) removed the full pin (``--source-only``, agent-harness#1032) and the
 per-pull-request route-core gate (``--route-core``, agent-harness#1029).
@@ -57,7 +59,8 @@ MAX_MEMBER_BYTES = 512_000_000
 MAX_ARCHIVE_BYTES = 256_000_000
 UPSTREAM = "google-antigravity/antigravity-cli"
 RELEASES = f"https://api.github.com/repos/{UPSTREAM}/releases"
-API = RELEASES + "/latest"
+# The first page of the listing, as the resolver (agy_provenance.LISTING_PAGE) reads it.
+LISTING = RELEASES + "?per_page=100"
 RECORD_SCHEMA = "agy_redacted_qualification_summary.v2"
 RECORD_KEYS = frozenset({
     "schema", "provider", "route", "platform", "architecture", "release_version", "image_sha256",
@@ -122,8 +125,10 @@ def validate_record(member, record):
     require(isinstance(upstream, dict) and set(upstream) == UPSTREAM_KEYS, f"record {name} upstream is not closed")
     require(upstream["asset_sha256"] == member["asset_sha256"] and
             upstream["release_url"] == record["upstream_release_url"], f"record {name} upstream mismatch")
-    require(all(isinstance(upstream[key], str) and upstream[key] for key in ("attestation", "second_channel")),
-            f"record {name} upstream status malformed")
+    from phase_loop_runtime.agy_attestation import ATTESTATION_STATUSES, SECOND_CHANNEL_STATUSES
+    for key, vocabulary in (("attestation", ATTESTATION_STATUSES), ("second_channel", SECOND_CHANNEL_STATUSES)):
+        require(isinstance(upstream[key], str) and upstream[key] in vocabulary,
+                f"record {name} upstream {key} is not one of {', '.join(vocabulary)}")
     require(isinstance(record["signatures"], list), f"record {name} signatures malformed")
     require(isinstance(record["qualified_under"], str) and record["qualified_under"],
             f"record {name} qualified_under malformed")
@@ -394,9 +399,28 @@ def release(report, *, fetch=fetch_release, download=download_asset, identity=No
     return records, obligations
 
 
+_TAG = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
+
+
+def _is_stable(release):
+    """The resolver's stable filter (``agy_provenance``): not a draft, not a prerelease, an
+    ``x.y.z`` tag. Tested to agree with it on a shared listing."""
+    return (isinstance(release, dict) and release.get("draft") is False and release.get("prerelease") is False
+            and isinstance(release.get("tag_name"), str) and _TAG.fullmatch(release["tag_name"]) is not None)
+
+
+def newest_stable(fetch):
+    """The newest stable release: the first stable entry of the first listing page, in API order."""
+    releases = fetch(LISTING)
+    require(isinstance(releases, list), "the release listing is not a list")
+    newest = next((release for release in releases if _is_stable(release)), None)
+    require(newest is not None, "the first listing page has no stable release")
+    return newest
+
+
 def upstream_only(archive=None, *, fetch=fetch_release):
     records = contract()
-    latest = fetch(API)
+    latest = newest_stable(fetch)
     latest_is_member = any(record["release_version"] == latest["tag_name"] for record in records)
     if not latest_is_member:
         # Advisory only: a host admits a genuine newer release by first-use self-qualification.
@@ -412,7 +436,8 @@ def upstream_only(archive=None, *, fetch=fetch_release):
             path = Path(scratch) / ASSET
             download_asset(asset["browser_download_url"], path)
             verify_archive(record, path)
-    return {"latest_release": latest["tag_name"], "latest_is_member": latest_is_member,
+    return {"latest_release": latest["tag_name"], "latest_published_at": latest.get("published_at"),
+            "latest_is_member": latest_is_member,
             "verified_member": record["release_version"], "asset_sha256": record["upstream_asset_sha256"],
             "image_sha256": record["image_sha256"]}
 

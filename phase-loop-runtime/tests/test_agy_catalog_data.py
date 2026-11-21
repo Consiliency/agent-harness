@@ -166,3 +166,31 @@ def test_a_malformed_catalog_admits_nothing_by_the_release_fast_path(tmp_path, m
     with pytest.raises(ValueError, match=gh._CAPABILITY):
         gh.admit({"PATH": str(path.parent)}, subject_path=path)
     assert no_lookup == [str(path)]  # it fell through to lookup, which refuses
+
+
+# --- AGYFRESH HOLD (§2.4): the hold authenticates candidate versions from the members --------
+
+def test_catalog_members_are_the_shipped_members_and_load_catalog_is_built_on_them():
+    members = gh.catalog_members()
+    assert members == gh.parse_catalog(DATA.read_text()) and gh.CATALOG_STATUS == "ok"
+    assert gh.load_catalog() == {m["image_sha256"]: m["help_sha256"] for m in members}
+
+
+def test_catalog_members_reads_a_given_path(tmp_path):
+    path = tmp_path / "agy_catalog.json"
+    path.write_text(json.dumps(_catalog(_member(), _member(image="f" * 64, version="9.9.8"))))
+    assert [m["release_version"] for m in gh.catalog_members(path)] == ["9.9.9", "9.9.8"]
+
+
+@pytest.mark.parametrize("name", ["malformed_json", "duplicate_version", "deeply_nested"])
+def test_catalog_members_never_raises_on_a_malformed_catalog(tmp_path, name):
+    path = tmp_path / "agy_catalog.json"
+    path.write_text(BAD[name])
+    assert gh.catalog_members(path) == [] and gh.CATALOG_STATUS == "malformed"
+
+
+def test_catalog_members_never_raises_on_a_missing_or_empty_catalog(tmp_path):
+    assert gh.catalog_members(tmp_path / "absent.json") == [] and gh.CATALOG_STATUS == "missing"
+    path = tmp_path / "agy_catalog.json"
+    path.write_text(json.dumps(_catalog()))
+    assert gh.catalog_members(path) == [] and gh.CATALOG_STATUS == "empty"

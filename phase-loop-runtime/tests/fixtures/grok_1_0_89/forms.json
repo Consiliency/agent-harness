@@ -1,0 +1,107 @@
+{
+ "execute": {
+  "argv": [
+   "grok",
+   "-p",
+   "Read and follow the workflow instructions in `bundle` exactly. Use that file as the authoritative workflow bundle, do not try to read installed skill files outside the workspace, and emit the required shared automation closeout.",
+   "--output-format",
+   "plain",
+   "--cwd",
+   "/definition-probe",
+   "-m",
+   "grok-4.7",
+   "--reasoning-effort",
+   "high",
+   "--permission-mode",
+   "bypassPermissions",
+   "--no-subagents",
+   "--disallowed-tools",
+   "scheduler_create,scheduler_delete,scheduler_list,monitor,image_gen,image_edit,image_to_video,reference_to_video,spawn_subagent,workflow"
+  ],
+  "argv_digest": "b4d769acb44ef37c461443546a2454bb273317b189bb89f011cfd089c49a8d72"
+ },
+ "workflow": {
+  "argv": [
+   "grok",
+   "-p",
+   "Read and follow the workflow instructions in `bundle` exactly. Use that file as the authoritative workflow bundle, do not try to read installed skill files outside the workspace, and emit the required shared automation closeout.",
+   "--output-format",
+   "plain",
+   "--cwd",
+   "/definition-probe",
+   "-m",
+   "grok-4.7",
+   "--reasoning-effort",
+   "high",
+   "--permission-mode",
+   "bypassPermissions"
+  ],
+  "argv_digest": "6bf5f222ba78ca8c68f7c488732a31881f6d07798cc2ec6840f06e0334bfdc9d"
+ },
+ "review": {
+  "argv": [
+   "grok",
+   "-p",
+   "",
+   "--output-format",
+   "plain",
+   "--cwd",
+   "/definition-probe",
+   "-m",
+   "grok-4.7",
+   "--reasoning-effort",
+   "high",
+   "--tools",
+   "read_file,grep,list_dir,search_tool"
+  ],
+  "argv_digest": "c8267fd3dde1dc535546aca371b41936e2cc13cc286edbb438d225f5c66993c9"
+ },
+ "sealed": {
+  "argv": [
+   "grok",
+   "--disable-web-search",
+   "--no-memory",
+   "--no-subagents",
+   "--permission-mode",
+   "plan",
+   "--prompt-file",
+   "/dev/stdin",
+   "--output-format",
+   "plain",
+   "--cwd",
+   "/definition-probe",
+   "-m",
+   "grok-4.7",
+   "--reasoning-effort",
+   "high",
+   "--tools",
+   ""
+  ],
+  "argv_digest": "b7178b763fe9563c267c24f0f341f7ab97eeb0e2797f6866583ec4a83ba0d953"
+ },
+ "staged": {
+  "argv": [
+   "grok",
+   "--disable-web-search",
+   "--no-memory",
+   "--no-subagents",
+   "--permission-mode",
+   "bypassPermissions",
+   "--disallowed-tools",
+   "ask_user_question,enter_plan_mode,exit_plan_mode,image_edit,image_gen,image_to_video,reference_to_video,monitor,send_feedback,todo_write,use_tool,workflow",
+   "--prompt-file",
+   "/dev/stdin",
+   "--output-format",
+   "plain",
+   "--cwd",
+   "/definition-probe",
+   "-m",
+   "grok-4.7",
+   "--reasoning-effort",
+   "high",
+   "--tools",
+   "read_file,grep,list_dir,search_tool,write,search_replace,run_terminal_command"
+  ],
+  "argv_digest": "9a3fed1c1475a1a061c06d87b2c279c64aa637473476b3a0f4ab10491d7be043"
+ }
+}

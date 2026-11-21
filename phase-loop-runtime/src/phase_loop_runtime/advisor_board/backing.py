@@ -429,6 +429,129 @@ def start_context_carrying_thread(
     return thread
 
 
+class CredentiallessAdapterFailure(ValueError):
+    """The credentialless client failed only because the adapter it served raised, while every
+    independent broker check held (agent-harness#1823). The adapter's exception is its
+    ``__cause__``, and it is the one wrapper that ``panel_invoker._exception_failure`` looks
+    through; its message is the plain wrapper's."""
+
+
+def _credentialless_client_failure(
+    error: "list[BaseException]", *, adapter_failure: BaseException | None, timed_out: bool,
+    cancelled: bool, serving: bool, adapter_quiescent: bool, client_exit_expected: bool,
+    returncode: int | None,
+) -> ValueError:
+    """The exception a failed credentialless client raises (agent-harness#1823).
+
+    ``adapter_failure`` is the exception the adapter's own invocation raised, tracked apart
+    from ``error``, the shared list every serve, cancellation, termination, read and
+    pipe-closing failure lands in. It is the cause only when it is the SOLE failure: it is
+    the one entry in ``error``, there was no deadline and no cancellation, the serve thread
+    finished, the adapter is quiescent, and the client's exit is the expected consequence of
+    the adapter failure (`_client_exit_expected`). Anything else -- including an abnormal or
+    unknown client exit -- is the broker's own failure and is never chained, so a nested
+    refusal cannot stand in for it."""
+    message = (f"credentialless broker client failed: "
+               f"{error[0] if error else 'deadline' if timed_out else returncode}")
+    sole = (adapter_failure is not None and len(error) == 1 and error[0] is adapter_failure
+            and client_exit_expected
+            and not (timed_out or cancelled or serving or not adapter_quiescent))
+    if sole:
+        failure = CredentiallessAdapterFailure(message)
+        failure.__cause__ = adapter_failure
+        return failure
+    return ValueError(message)
+
+
+def _past_deadline(elapsed_s: float, deadline_s: float | None) -> bool:
+    return deadline_s is not None and elapsed_s >= max(1.0, deadline_s) + 2.0
+
+
+def _client_wait_decision(*, cancelled: bool, failed: bool, elapsed_s: float,
+                          deadline_s: float | None) -> str | None:
+    """What ends the credentialless client's wait now: a cancellation, then the deadline,
+    then a serve failure; ``None`` keeps waiting. The clock is read BEFORE a serve failure
+    ends the wait, so a failure first seen past the deadline still counts as the deadline."""
+    if cancelled:
+        return "cancelled"
+    if _past_deadline(elapsed_s, deadline_s):
+        return "deadline"
+    return "failed" if failed else None
+
+
+#: The client's exit status when the broker closes its connection without a response: its
+#: ``exact()`` read raises an uncaught ``RuntimeError`` (see the client program below).
+_CLIENT_TRUNCATED_EXIT = 1
+#: How long a serve failure waits for the client's own exit before cleanup may signal it.
+_CLIENT_EXIT_GRACE_S = 1.0
+
+
+@dataclass
+class _ClientWait:
+    """What the client's wait saw, up to the point where cleanup may signal the client."""
+
+    stdout: bytes = b""
+    stderr: bytes = b""
+    completed: bool = False
+    timed_out: bool = False
+    cancelled: bool = False
+    #: The client's OWN exit status and when it was observed, before any cleanup signal;
+    #: ``None`` when it had not exited (its exit is then unknown).
+    exit_status: int | None = None
+    exit_ns: int | None = None
+
+
+def _await_client(
+    proc: "subprocess.Popen[bytes]", payload: bytes | None, *,
+    failed: Callable[[], bool], cancelled: Callable[[], bool], started: float,
+    deadline_s: float | None, clock: Callable[[], float] | None = None,
+    clock_ns: Callable[[], int] | None = None,
+) -> _ClientWait:
+    """The credentialless client's wait (agent-harness#1823), up to the point where the
+    broker's cleanup may signal the client. The deadline is read before a serve failure ends
+    the wait AND whenever the client's read completes, so a completion past the deadline is
+    a timeout. After a serve failure the client is given :data:`_CLIENT_EXIT_GRACE_S` to exit
+    on its own (its truncated read), and its own exit status is observed before cleanup.
+    The clocks default to this module's ``time`` as it is at the call."""
+    clock = clock or time.monotonic
+    clock_ns = clock_ns or time.monotonic_ns
+    wait = _ClientWait()
+    while True:
+        decision = _client_wait_decision(cancelled=cancelled(), failed=failed(),
+                                         elapsed_s=clock() - started, deadline_s=deadline_s)
+        if decision == "cancelled":
+            wait.cancelled = True
+            return wait
+        if decision == "deadline":
+            wait.timed_out = True
+            return wait
+        if decision == "failed" and payload is not None:
+            return wait  # the client never had its request: its exit cannot follow from it
+        try:
+            wait.stdout, wait.stderr = proc.communicate(
+                payload, timeout=_CLIENT_EXIT_GRACE_S if decision == "failed" else 0.1)
+        except subprocess.TimeoutExpired:
+            if decision == "failed":
+                return wait  # still running after the grace: an unknown exit
+            payload = None
+            continue
+        wait.exit_status, wait.exit_ns = proc.returncode, clock_ns()
+        wait.completed = proc.returncode == 0
+        wait.timed_out = _past_deadline(clock() - started, deadline_s)
+        return wait
+
+
+def _client_exit_expected(wait: "_ClientWait | None", adapter_failure_ns: int | None) -> bool:
+    """Whether the client's exit is the expected consequence of an adapter-only failure: its
+    OWN exit, observed before any cleanup signal, with the truncated-response status, after
+    the adapter failed. A signal death or any other status, an exit before the adapter
+    failed, or no observation at all is an abnormal or unknown exit, which keeps the
+    broker's failure."""
+    return (wait is not None and wait.exit_status == _CLIENT_TRUNCATED_EXIT
+            and wait.exit_ns is not None and adapter_failure_ns is not None
+            and wait.exit_ns >= adapter_failure_ns)
+
+
 class ParentUnixBroker:
     """One-request parent-owned AF_UNIX broker; child selects no provider action."""
     def __init__(
@@ -634,7 +757,13 @@ class ParentUnixBroker:
             self._admission_remaining()
             self._used = True
             conn.settimeout(None)
-            status, text = adapter.invoke()
+            try:
+                status, text = adapter.invoke()
+            except BaseException as exc:
+                # The adapter's own outcome, apart from every transport and cleanup error
+                # (agent-harness#1823): recorded before the connection closes on the way out.
+                self._adapter_failure = (exc, time.monotonic_ns())
+                raise
             if (
                 status not in _BROKER_RESPONSE_STATUSES
                 or not isinstance(text, str)
@@ -712,6 +841,9 @@ class ParentUnixBroker:
         argv = [str(bwrap),"--info-fd","{info_fd}","--block-fd","{block_fd}","--unshare-all","--die-with-parent","--new-session","--clearenv",*runtime_binds,"--dir","/run","--dir","/run/phase-loop-broker","--ro-bind",str(self.path),"/run/phase-loop-broker/intended-inference.sock","--ro-bind",str(self.staged_dir),"/run/phase-loop-review","--tmpfs","/tmp","--proc","/proc","--dev","/dev","--setenv","PATH","/usr/bin","--setenv","PYTHONNOUSERSITE","1","--setenv","PYTHONDONTWRITEBYTECODE","1",str(python),"-I","-S","-c",code]
         error: list[BaseException] = []
         child: list[tuple[subprocess.Popen[bytes], int]] = []
+        self._adapter_failure: tuple[BaseException, int] | None = None
+        client_wait: _ClientWait | None = None
+
         def serve() -> None:
             try:
                 self.serve_once(
@@ -750,21 +882,16 @@ class ParentUnixBroker:
             child.append((proc, start))
             thread = start_context_carrying_thread(serve, daemon=False)
             payload = json.dumps(request,separators=(",",":")).encode()
-            while True:
-                if self._cancel_event.is_set() or not _leg_operation_active(self.authorization):
-                    error.append(ValueError("broker operation cancelled or closed"))
-                    break
-                if error:
-                    break
-                if deadline_s is not None and time.monotonic() - started >= max(1.0, deadline_s) + 2.0:
-                    timed_out = True
-                    break
-                try:
-                    stdout, stderr = proc.communicate(payload, timeout=0.1)
-                    completed = proc.returncode == 0
-                    break
-                except subprocess.TimeoutExpired:
-                    payload = None
+            client_wait = _await_client(
+                proc, payload, failed=lambda: bool(error),
+                cancelled=lambda: (self._cancel_event.is_set()
+                                   or not _leg_operation_active(self.authorization)),
+                started=started, deadline_s=deadline_s,
+            )
+            stdout, stderr = client_wait.stdout, client_wait.stderr
+            completed, timed_out = client_wait.completed, client_wait.timed_out
+            if client_wait.cancelled:
+                error.append(ValueError("broker operation cancelled or closed"))
         finally:
             if not completed or self._cancel_event.is_set():
                 self._wake_server()
@@ -847,14 +974,22 @@ class ParentUnixBroker:
                 "authorization_expiry_scope": "admission_only",
                 "admission_expires_monotonic_ns": self.authorization.expires_monotonic_ns,
             }
-        if self._cancel_event.is_set() or not _leg_operation_active(self.authorization):
+        cancelled = self._cancel_event.is_set() or not _leg_operation_active(self.authorization)
+        if cancelled:
             error.append(ValueError("broker operation cancelled or closed"))
         from ..panel_invoker import ProviderProcessGroupQuiescenceError
         for failure in error:
             if isinstance(failure, ProviderProcessGroupQuiescenceError):
                 raise failure
-        if timed_out or error or (thread is not None and thread.is_alive()) or not adapter_quiescent or proc.returncode != 0:
-            raise ValueError(f"credentialless broker client failed: {error[0] if error else 'deadline' if timed_out else proc.returncode}")
+        serving = thread is not None and thread.is_alive()
+        if timed_out or error or serving or not adapter_quiescent or proc.returncode != 0:
+            adapter_failure, adapter_failure_ns = self._adapter_failure or (None, None)
+            raise _credentialless_client_failure(
+                error, adapter_failure=adapter_failure, timed_out=timed_out,
+                cancelled=cancelled, serving=serving, adapter_quiescent=adapter_quiescent,
+                client_exit_expected=_client_exit_expected(client_wait, adapter_failure_ns),
+                returncode=proc.returncode,
+            )
         result=json.loads(stdout)
         if set(result) != {"schema", "status", "text"} or result.get("schema") != PARENT_UNIX_BROKER_V1:
             raise ValueError("broker child response grammar")

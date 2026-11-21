@@ -15757,13 +15757,19 @@
       "file": "plans/phase-plan-v1-agyroll-HOLD.md",
       "frozen_inputs": {
         "plans/artifacts/agyfresh-contract.md": {
-          "sha256": "9832286b9eab398b652f3d36d592568b27816cd447f93b19ec491e5ee17571b5"
+          "sha256": "a8c1616a13dca51c70cd8aeb22abf744882a20641d435d501d7f962383505ad9"
         },
         "plans/artifacts/agyfresh-hold-amendment.md": {
           "sha256": "e024b8b505c3f83bfbc837873150c8ba07f901d7eea15d61b888a53550320a8e"
         },
         "plans/artifacts/agyfresh-hold-lanes.md": {
           "sha256": "3b30b9db7626974e71ea7d1a79cdc9fe1c34ee1a7f3ba3ec989aa275e32faff4"
+        },
+        "plans/artifacts/agyfresh-jailbind-v2.md": {
+          "sha256": "4a6530c7640b14dac6cd7659bc48e9d9450237fb5d0e915d962d0d95075abd52"
+        },
+        "plans/evidence/agyfresh-jailbind-v2-feasibility.md": {
+          "sha256": "8d2acc72671e29efc75df2f0f8708cb75246b9ab684195a382e90510d45f7357"
         }
       },
       "handoff_ref": null,
@@ -15777,8 +15783,12 @@
         "SL-0",
         "SL-1",
         "SL-2",
+        "SL-3",
         "SL-4",
-        "SL-5"
+        "SL-5",
+        "SL-6",
+        "SL-7",
+        "SL-8"
       ],
       "lifecycle": [],
       "owner_skill": "claude-plan-phase",
@@ -15795,7 +15805,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-11-20T17:59:00Z"
+      "updated_at": "2026-11-20T23:30:00Z"
     },
     {
       "acceptance_criteria_count": 4,
@@ -15815,6 +15825,167 @@
       "task_summary": "Expire repeated-transient agy failed entries after 24 h and show the hold candidate, its state and route coverage in the doctor's Gemini row (REQUAL early slice; SL-5 of the HOLD plan).",
       "type": "detailed",
       "updated_at": "2026-11-20T01:14:00Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "amends": "plans/phase-plan-v1-agyroll-HOLD.md",
+      "created_at": "2026-11-20T14:00:00Z",
+      "file": "plans/amendments/agyroll-HOLD-jailbind-v2.md",
+      "frozen_inputs": {
+        "plans/artifacts/agyfresh-contract.md": {
+          "sha256": "9832286b9eab398b652f3d36d592568b27816cd447f93b19ec491e5ee17571b5"
+        },
+        "plans/artifacts/agyfresh-jailbind-v2.md": {
+          "sha256": "4a6530c7640b14dac6cd7659bc48e9d9450237fb5d0e915d962d0d95075abd52"
+        }
+      },
+      "handoff_ref": null,
+      "if_gates_produced": [
+        "IF-0-HOLD-5"
+      ],
+      "lanes": [
+        "SL-7",
+        "SL-8",
+        "SL-3",
+        "SL-6"
+      ],
+      "lifecycle": [],
+      "owner_skill": "claude-plan-phase",
+      "phase_alias": "HOLD",
+      "planning_artifact_only": true,
+      "reflection_ref": null,
+      "review_status": "pending",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-agyroll-v1.md",
+        "slug": "phase-plans-agyroll-v1",
+        "status": "committed",
+        "type": "phase"
+      },
+      "slug": "v1-agyroll-HOLD-amend-jailbind-v2",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-11-20T18:00:00Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-11-20T06:20:41Z",
+      "file": "plans/phase-plan-v1-agyroll-PROVFWD.md",
+      "handoff_ref": null,
+      "if_gates_produced": [
+        "IF-0-PROVFWD-1"
+      ],
+      "lanes": [
+        "SL-1",
+        "SL-2",
+        "SL-3",
+        "SL-4",
+        "SL-5"
+      ],
+      "lifecycle": [
+        {
+          "at": "2026-11-21T01:01:08Z",
+          "by": "claude-execute-phase",
+          "metadata": {
+            "lanes": [
+              "SL-1",
+              "SL-2",
+              "SL-3",
+              "SL-5",
+              "SL-4"
+            ],
+            "note": "Lanes SL-1 to SL-5 land as one pull request; SL-5 followed HOLD's core lane.",
+            "phase_alias": "PROVFWD",
+            "run_id": "v1-agyroll-provfwd-impl"
+          },
+          "transition": "executing"
+        }
+      ],
+      "owner_skill": "claude-plan-phase",
+      "phase_alias": "PROVFWD",
+      "reflection_ref": null,
+      "roadmap_ref": {
+        "file": "specs/phase-plans-agyroll-v1.md",
+        "slug": "phase-plans-agyroll-v1",
+        "status": "committed",
+        "type": "phase"
+      },
+      "slug": "v1-agyroll-PROVFWD",
+      "status": "executing",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-11-21T01:01:08Z"
+    },
+    {
+      "acceptance_criteria_count": 5,
+      "created_at": "2026-11-20T15:45:00Z",
+      "file": ".consiliency/plans/detailed-grok-tool-surface-frozen-basis-20261120-1545.md",
+      "handoff_ref": ".dev-skills/handoffs/claude-plan-detailed/latest.md",
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-11-20T15:45:00Z",
+          "by": "claude-plan-detailed",
+          "metadata": {
+            "artifact": "plans/artifacts/grok-tool-surface-contract-v1.md",
+            "run_id": "20261120T154500Z-grok-tool-surface"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-11-20T18:00:00Z",
+          "by": "claude-plan-detailed",
+          "metadata": {
+            "reason": "plan review ACCEPT-WITH-CHANGES: four required changes and coordinator rulings D1-D6 adopted",
+            "revision": "r2",
+            "run_id": "20261120T180000Z-grok-tool-surface-r2"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-11-20T19:15:00Z",
+          "by": "claude-plan-detailed",
+          "metadata": {
+            "reason": "r2 re-review ACCEPT-WITH-CHANGES: durable grant ledger, consumable basis wired into the board review leg, paste-safe owner procedure",
+            "revision": "r3",
+            "run_id": "20261120T191500Z-grok-tool-surface-r3"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-11-20T20:30:00Z",
+          "by": "claude-plan-detailed",
+          "metadata": {
+            "reason": "r3 review: three implementation proofs added as binding acceptance criteria (contract section 10)",
+            "revision": "r4",
+            "run_id": "20261120T203000Z-grok-tool-surface-r4"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-11-20T18:56:49Z",
+          "by": "claude-execute-detailed",
+          "metadata": {
+            "artifact": ".consiliency/plans/detailed-grok-tool-surface-frozen-basis-20261120-1545.md",
+            "branch": "t3/grok-ts-l1",
+            "contract": "plans/artifacts/grok-tool-surface-contract-v1.md",
+            "lane": "L1",
+            "note": "lane L1 only; L2a, L2b, L2c, the owner-gated measurement and L3 remain",
+            "run_id": "20261120T-grok-ts-l1"
+          },
+          "transition": "executing"
+        }
+      ],
+      "owner_skill": "claude-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "detailed-grok-tool-surface-frozen-basis-20261120-1545",
+      "status": "executing",
+      "task_summary": "Grok seat tool-surface verification for builds with no --list-tools: frozen measured surface per binary digest and argv digest, valid in one enforced launch context and consumed by the board review leg; code fails closed; owner-gated vendor-only measurement on the measurement host.",
+      "type": "detailed",
+      "updated_at": "2026-11-20T18:56:49Z"
     }
   ],
   "schema_version": 1

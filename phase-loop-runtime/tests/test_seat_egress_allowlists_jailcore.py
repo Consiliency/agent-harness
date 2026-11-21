@@ -63,8 +63,16 @@ def test_provider_allowlists_are_tls_443_only(tmp_path, monkeypatch, port):
 
 def test_public_proxy_api_cannot_disable_any_attestation():
     parameters = inspect.signature(seat_egress_proxy.start_proxy).parameters
-    assert list(parameters) == ["allowlist_id", "refuse_all"]
+    # ``request_budget`` (grok tool-surface contract v1, section 5.3) can only narrow, and it
+    # adds an attestation (the ready line's budget) rather than removing one.
+    # ``named`` (grok tool-surface contract v1, erratum 3) only names exact observations in
+    # the stream; it decides nothing and removes no attestation.
+    assert list(parameters) == ["allowlist_id", "refuse_all", "request_budget", "named"]
     assert parameters["allowlist_id"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameters["request_budget"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameters["request_budget"].default is None
+    assert parameters["named"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameters["named"].default == ()
     assert "inner_sni_check" not in parameters
     source = inspect.getsource(seat_egress_proxy.start_proxy)
     assert '"inner_sni_check": True' in source

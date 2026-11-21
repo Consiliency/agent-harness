@@ -44,14 +44,22 @@ __all__ = [
     "FENCE_ACK_TIMEOUT_S",
     "FENCE_QUIET_S",
     "FenceResult",
+    "GROK_REVIEW_ALLOWLIST",
+    "MAX_REQUEST_BUDGET",
+    "ProxyCompletion",
     "ProxyStream",
     "ProxyWindow",
     "RequestEvent",
+    "SEAT_CA_ENV",
+    "SEAT_PROXY_ENV",
     "SeatEgressProxy",
     "SRT_HOST_TOOLS",
     "SRT_VERSION",
     "allowlist",
     "allowlist_ref",
+    "ca_certificate",
+    "charged_requests",
+    "completion",
     "egress_evidence",
     "install",
     "fence",
@@ -87,6 +95,19 @@ ALLOWLIST_MISSING_CODE = "seat_egress_allowlist_missing"
 INSTALL_FIX = "phase-loop seat-egress install"
 _DATA = "seat_egress"
 _READY_TIMEOUT_S = 60.0
+#: How long the context waits for the proxy to exit once its stdin is closed; past it the
+#: proxy is killed, and a budgeted proxy's observation is then incomplete.
+_SHUTDOWN_TIMEOUT_S = 10.0
+#: The vendor-only egress of a launch-owner grok launch (grok tool-surface contract v1,
+#: section 5.2), shared by the measurement and the board review leg. The id ``grok`` stays
+#: reserved for the jailed seat (SEATS GROK SL-1).
+GROK_REVIEW_ALLOWLIST = "grok-review"
+#: The variables that carry this proxy and its CA to a launch-owner seat, as confirmed
+#: offline for grok 1.0.89's sign-in and updater clients (contract section 5.2).
+SEAT_PROXY_ENV = "HTTPS_PROXY"
+SEAT_CA_ENV = "SSL_CERT_FILE"
+#: The largest per-launch request budget the proxy accepts (``proxy.mjs`` agrees).
+MAX_REQUEST_BUDGET = 1000
 _CA_CAP_BYTES = 64 * 1024
 #: Contract section 14: the wrapper counts a fence only when its id is acknowledged within
 #: this bound; the proxy acknowledges after this quiet interval with no open connection.
@@ -101,6 +122,9 @@ TOKEN_ENDPOINT_HOSTS = frozenset({"oauth2.googleapis.com", "accounts.google.com"
 _EVENT_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS",
                             "CONNECT", "<other>"})
 _CANARY_HOST = re.compile(r"[0-9a-f]{32}\.invalid")
+#: The closed vocabulary of a budgeted proxy's ``cause`` field.
+EVENT_CAUSES = frozenset({"allowed", "budget", "shutdown", "rules", "inner_host", "front"})
+_NAMED_HOST = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?")
 _FENCE_ID = re.compile(r"[0-9a-f]{32}")
 _ALLOWLIST_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 
@@ -489,6 +513,34 @@ class SeatEgressProxy:
     _cond: threading.Condition = field(default_factory=threading.Condition, repr=False)
     _fence_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _reader: threading.Thread | None = field(default=None, repr=False)
+    #: Contract grok-tool-surface section 5.3: the per-launch request budget the proxy
+    #: attested at start, or ``None`` for a proxy started without one.
+    request_budget: int | None = None
+    #: Grok tool-surface contract v1, erratum 3: the exact ``(method, host, path)``
+    #: observations this proxy names verbatim instead of ``<other>``. They decide nothing.
+    named: tuple = ()
+    #: A budgeted proxy's end-of-stream marker, once read; nothing may follow it.
+    _end: dict | None = field(default=None, repr=False)
+    #: Set at shutdown: the proxy's exit status, and whether the context had to kill it.
+    _returncode: int | None = field(default=None, repr=False)
+    _killed: bool = field(default=False, repr=False)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ProxyCompletion:
+    """Whether a budgeted proxy's observation is complete (contract grok-tool-surface
+    section 5.3, BA-1). Complete only on positive proof: the context has exited and read
+    stdout to EOF, the proxy exited 0 on its own (not killed, not signalled), its last record
+    is the end-of-stream marker, the marker's counts equal the records read and its budget
+    the attested one, and no record failed to parse. ``reason`` names the first unmet
+    condition; ``requests`` and ``counted`` are what was read (``counted``: the allowed POST
+    requests)."""
+
+    complete: bool
+    reason: str
+    requests: int
+    counted: int
+    budget: int | None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -510,6 +562,9 @@ class RequestEvent:
     host: str
     path: str | None
     decision: Literal["allow", "deny"]
+    #: Which check decided (grok tool-surface contract v1, errata 3 and 4): one of
+    #: :data:`EVENT_CAUSES`, written only by a budgeted proxy; ``None`` otherwise.
+    cause: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -634,10 +689,25 @@ def _accept(proxy: SeatEgressProxy, line: str) -> None:
         if len(proxy._items) >= _STREAM_ITEM_CAP:
             proxy._protocol_error = True
             return
-        if _valid_request_event(item, proxy._rules):
+        if proxy._end is not None:
+            # The end-of-stream marker is the last record; anything after it is a protocol
+            # error, and so is a marker from a proxy started without a budget.
+            proxy._protocol_error = True
+            return
+        if proxy.request_budget is not None and not line.endswith("\n"):
+            # A budgeted stream's every record is newline-terminated; an unterminated final
+            # frame is a truncated observation even when its JSON is whole (contract
+            # grok-tool-surface section 5.3, BA-1), so it can never settle a charge.
+            proxy._protocol_error = True
+            return
+        if proxy.request_budget is not None and _valid_end_marker(item, proxy.request_budget):
+            proxy._end = dict(item)
+            proxy._cond.notify_all()
+        elif _valid_request_event(item, proxy._rules, proxy.named,
+                                  budgeted=proxy.request_budget is not None):
             proxy._items.append(("request", RequestEvent(
                 method=item["method"], host=item["host"], path=item["path"],
-                decision=item["decision"])))
+                decision=item["decision"], cause=item.get("cause"))))
         elif (isinstance(item, dict) and set(item) == {"event", "id"}
               and item["event"] == "fence" and isinstance(item["id"], str)
               and item["id"] == proxy._outstanding):
@@ -648,6 +718,114 @@ def _accept(proxy: SeatEgressProxy, line: str) -> None:
         else:
             # An unknown line, or a mismatched or unsolicited acknowledgement.
             proxy._protocol_error = True
+
+
+def _valid_end_marker(item, budget: int) -> bool:
+    """The four-field end-of-stream marker of a budgeted proxy, and nothing else."""
+    if not isinstance(item, dict) or set(item) != {"event", "requests", "counted", "budget"}:
+        return False
+    if item["event"] != "end":
+        return False
+    if any(type(item[name]) is not int or item[name] < 0
+           for name in ("requests", "counted", "budget")):
+        return False
+    return item["budget"] == budget
+
+
+def completion(proxy: SeatEgressProxy) -> ProxyCompletion:
+    """The completion proof of a budgeted proxy's observation (contract grok-tool-surface
+    section 5.3, BA-1). End-of-stream alone is not proof: a crash can lose buffered output
+    at a record boundary and leave a stream that parses."""
+    with proxy._cond:
+        items = list(proxy._items)
+        end = dict(proxy._end) if proxy._end is not None else None
+        final = proxy._eof and proxy._exited
+        protocol_error = proxy._protocol_error
+        killed = proxy._killed
+        returncode = proxy._returncode
+    events = [item[1] for item in items if item[0] == "request"]
+    requests = len(events)
+    counted = sum(1 for event in events if event.decision == "allow" and event.method == "POST")
+    budget = proxy.request_budget
+
+    def result(reason: str) -> ProxyCompletion:
+        return ProxyCompletion(complete=reason == "complete", reason=reason,
+                               requests=requests, counted=counted, budget=budget)
+
+    if budget is None:
+        return result("unbudgeted")
+    if not final:
+        return result("not_final")
+    if killed:
+        return result("killed")
+    if returncode != 0:
+        return result("exit_status")
+    if protocol_error:
+        return result("protocol_error")
+    if end is None:
+        return result("no_end_marker")
+    if (end["requests"] != requests or end["counted"] != counted
+            or end["budget"] != budget or counted > budget):
+        return result("count_mismatch")
+    return result("complete")
+
+
+#: The keys of :func:`completion_detail`, closed.
+COMPLETION_DETAIL_KEYS = frozenset({"marker", "last_record", "records", "exit_status", "killed",
+                                    "stdout_eof", "exited", "protocol_error"})
+
+
+def completion_detail(proxy: SeatEgressProxy) -> dict[str, object]:
+    """What the proxy's stream and shutdown showed, metadata only, so that a record of an
+    incomplete observation can say what was missing (grok tool-surface contract v1, BA-1):
+    whether the end-of-stream marker was read, the kind of the last record read
+    (``request``, ``fence``, ``end`` or ``None``) and how many records were read, the proxy's
+    exit status, whether the context had to kill it, whether stdout reached EOF and the
+    context recorded the exit, and whether a record failed to parse. It decides nothing:
+    :func:`completion` alone proves an observation complete."""
+    with proxy._cond:
+        last = ("end" if proxy._end is not None
+                else proxy._items[-1][0] if proxy._items else None)
+        return {"marker": proxy._end is not None, "last_record": last,
+                "records": len(proxy._items) + (proxy._end is not None),
+                "exit_status": proxy._returncode, "killed": proxy._killed,
+                "stdout_eof": proxy._eof, "exited": proxy._exited,
+                "protocol_error": proxy._protocol_error}
+
+
+def charged_requests(proxy: SeatEgressProxy) -> int:
+    """What one budgeted launch is charged: the counted requests observed when the
+    observation is complete, otherwise the whole budget (contract grok-tool-surface section
+    5.3: an incomplete observation stays charged in full). Raises ``ValueError`` for a proxy
+    started without a budget."""
+    if proxy.request_budget is None:
+        raise ValueError("a proxy without a request budget has no charge")
+    proof = completion(proxy)
+    return proof.counted if proof.complete else proxy.request_budget
+
+
+def ca_certificate(proxy: SeatEgressProxy) -> bytes:
+    """The PEM certificate of the CA this proxy terminates with, for a launch-owner seat's
+    trust file (contract grok-tool-surface section 5.2). Refused unless it is still the
+    certificate whose fingerprint was taken when the proxy started."""
+    import ssl
+
+    try:
+        pem = proxy.ca_cert.read_bytes()
+    except OSError as exc:
+        raise EgressLayerUnavailable(
+            INTEGRITY_CODE, "the seat egress CA certificate cannot be read") from exc
+    try:
+        if len(pem) > _CA_CAP_BYTES:
+            raise ValueError("too large")
+        der = ssl.PEM_cert_to_DER_cert(pem.decode("ascii"))
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise EgressLayerUnavailable(
+            INTEGRITY_CODE, "the seat egress CA certificate is invalid") from exc
+    if hashlib.sha256(der).hexdigest() != proxy.ca_sha256:
+        raise EgressLayerUnavailable(
+            INTEGRITY_CODE, "the seat egress CA certificate changed after the proxy started")
+    return pem
 
 
 def _digest(value) -> str:
@@ -663,10 +841,21 @@ def _path_templates(rules, host: str) -> set:
     return paths
 
 
-def _valid_request_event(item, rules) -> bool:
-    """The five-field request event, in the proxy's closed vocabulary, and nothing else."""
-    if not isinstance(item, dict) or set(item) != {"event", "method", "host", "path", "decision"}:
+def _valid_request_event(item, rules, named=(), *, budgeted: bool = False) -> bool:
+    """The five-field request event, in the proxy's closed vocabulary, and nothing else. An
+    entry of ``named`` (erratum 3) is in the vocabulary too, exactly as named. A budgeted
+    proxy also writes ``cause``, from :data:`EVENT_CAUSES`; only it may."""
+    fields = {"event", "method", "host", "path", "decision"}
+    if not isinstance(item, dict):
         return False
+    if set(item) == fields | {"cause"}:
+        if not budgeted or item["cause"] not in EVENT_CAUSES:
+            return False
+    elif set(item) != fields:
+        return False
+    if (item["method"], item["host"], item["path"]) in named and item["event"] == "request" \
+            and item["decision"] in ("allow", "deny"):
+        return True
     host = item["host"]
     if item["event"] != "request" or item["method"] not in _EVENT_METHODS:
         return False
@@ -691,14 +880,43 @@ def ca_fingerprint(cert: Path) -> str:
 
 @contextlib.contextmanager
 def start_proxy(*, allowlist_id: str,
-                refuse_all: bool = False) -> Iterator[SeatEgressProxy]:
+                refuse_all: bool = False,
+                request_budget: int | None = None,
+                named: tuple = ()) -> Iterator[SeatEgressProxy]:
     """Run the seat's proxy for the life of the context. Raises
     :class:`EgressLayerUnavailable` before anything runs when the layer is unavailable.
 
     ``refuse_all`` (contract section 15, the credential-free controls) passes an empty
     rule list through the proxy's existing configuration file; it can only narrow the
     rules, and the production allowlist file is unchanged. The proxy's observation stream
-    and fences go through :func:`fence` and :func:`proxy_stream`."""
+    and fences go through :func:`fence` and :func:`proxy_stream`.
+
+    ``request_budget`` (grok tool-surface contract v1, section 5.3) goes through the same
+    configuration file and can only narrow: the proxy charges each allowed POST before it
+    forwards it, refuses every request once the budget is spent, attests the budget in its
+    ready line, and on an orderly shutdown writes an end-of-stream marker as its last
+    record. :func:`completion` and :func:`charged_requests` read the proof after the
+    context exits. Without a budget the configuration, the stream and every decision are
+    what they were.
+
+    ``named`` (grok tool-surface contract v1, erratum 3) lists exact ``(method, host, path)``
+    observations, ``path`` ``None`` for a ``CONNECT``, that the stream reports verbatim
+    instead of folding into ``<other>``, so a measurement can tell a tolerated refusal from
+    any other. It names; it never allows, refuses or counts anything. Without it the
+    configuration and the stream are what they were."""
+    named = tuple(tuple(entry) for entry in named)
+    if len(named) > 16 or not all(
+            len(entry) == 3 and entry[0] in _EVENT_METHODS - {"<other>"}
+            and type(entry[1]) is str and _NAMED_HOST.fullmatch(entry[1]) is not None
+            and (entry[2] is None or (type(entry[2]) is str and entry[2].startswith("/")
+                                      and len(entry[2]) <= 256))
+            for entry in named):
+        raise ValueError("a named observation must be (method, lower-case host, path or None)")
+    if request_budget is not None and (
+            type(request_budget) is not int
+            or not 0 <= request_budget <= MAX_REQUEST_BUDGET):
+        raise ValueError("the request budget must be an integer from 0 to "
+                         f"{MAX_REQUEST_BUDGET}")
     node = _node()
     _require_srt_host_tools(node)
     srt_index = verify_install()
@@ -716,6 +934,8 @@ def start_proxy(*, allowlist_id: str,
             config.write_text(json.dumps({
                 "allow": rules, "ca_cert": str(cert), "ca_key": str(key),
                 "inner_sni_check": True,
+                **({} if request_budget is None else {"request_budget": request_budget}),
+                **({"named": [list(entry) for entry in named]} if named else {}),
             }), encoding="utf-8")
             process = subprocess.Popen(
                 [node, str(_data_path("proxy.mjs")), str(srt_index), str(config)],
@@ -734,6 +954,12 @@ def start_proxy(*, allowlist_id: str,
                     TLS_UNTERMINATED_CODE,
                     "the proxy did not attest its fail-closed TLS front",
                 )
+            attested = ready.get("request_budget")
+            if (request_budget is None) != (attested is None) or (
+                    request_budget is not None
+                    and (type(attested) is not int or attested != request_budget)):
+                raise EgressLayerUnavailable(
+                    START_FAILED_CODE, "the proxy did not attest its request budget")
             token = str(ready["token"])
             try:
                 ca_sha256 = ca_fingerprint(cert)
@@ -746,7 +972,8 @@ def start_proxy(*, allowlist_id: str,
                 ca_cert=cert, ca_sha256=ca_sha256,
                 inner_sni_check=True, process=process,
                 allowlist_id=selected.id, allowlist_digest=selected.content_digest,
-                allowlist_sha256=_digest(rules), _rules=tuple(rules))
+                allowlist_sha256=_digest(rules), _rules=tuple(rules),
+                request_budget=request_budget, named=named)
             proxy._reader = threading.Thread(target=_read_stream, args=(proxy,), daemon=True,
                                              name="seat-egress-stream")
             proxy._reader.start()
@@ -755,15 +982,19 @@ def start_proxy(*, allowlist_id: str,
             with contextlib.suppress(OSError, ValueError):
                 if process.stdin is not None:
                     process.stdin.close()
+            killed = False
             try:
-                process.wait(timeout=10)
+                process.wait(timeout=_SHUTDOWN_TIMEOUT_S)
             except subprocess.TimeoutExpired:
+                killed = True
                 process.kill()
                 process.wait(timeout=5)
             if proxy is not None and proxy._reader is not None:
                 proxy._reader.join(timeout=5)
                 with proxy._cond:
                     proxy._exited = True
+                    proxy._killed = killed
+                    proxy._returncode = getattr(process, "returncode", None)
                     if proxy._reader.is_alive():
                         proxy._protocol_error = True
             if process.stdout is not None:

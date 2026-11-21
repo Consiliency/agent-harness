@@ -32,6 +32,7 @@ import sys
 import tempfile
 import threading
 import time
+import zlib
 from typing import Callable, Literal, NamedTuple
 
 from . import __version__
@@ -402,13 +403,15 @@ def write_json(path, value):
     os.replace(temporary, path)
 
 
-def write_failure(root, exc, stage, helpers, observed_processes):
+def write_failure(root, exc, stage, helpers, observed_processes, worker_terminal=None):
     value = {"schema": "gemini_heartbeat_qualification_failure.v1",
              "exception_type": type(exc).__name__, "stage": stage,
              "reason": str(exc) if isinstance(exc, QualificationFailure) else LOCAL_FAILURE,
              "helpers": helpers.records, "rejected_image": helpers.rejected_image,
              "observed_processes": list(observed_processes.values()),
              "qualification_passed": False, "same_candidate_retry_authorized": False}
+    if worker_terminal is not None:
+        value["worker_terminal"] = worker_terminal
     path = root / "failure.json"
     if stage == "observer_cleanup" and path.exists():
         original = json.loads(path.read_text())
@@ -562,6 +565,293 @@ def inspect_network(pid):
             "network_rules_sha256": sha256(measured.stdout).hexdigest(), "network_rule_checks": len(rules)}
 
 
+# ------------------------------------------------------------------- review authority
+
+# Each operation's board reviews a repository that the coordinator creates fresh for that
+# operation and removes afterwards. The caller's cwd plays no part: the board needs a git
+# toplevel owned by this uid with at least one tracked regular file, so the outcome used to
+# depend on the directory the command ran in. The authority reaches the worker as
+# ``--authority`` and the board as ``repo_dir`` only: ``canonical_repo_authority`` would make
+# the request governed. It is not part of the preregistration or the record.
+#
+# Threat model. Processes running as this uid are OUT of scope: they own the qualification
+# store and could falsify any record directly. Other uids are IN scope. The authority is
+# created only under a directory whose every ancestor is owned by root or this uid and is
+# not writable by group or others unless it is sticky, so no other uid can rename or
+# replace any component of its path. The worker proves that again before the board runs.
+#
+# The repository is byte-for-byte constant: one blob, one tree and one commit with a fixed
+# identity, date and message on a fixed branch, written as loose objects by git's own
+# plumbing. Its object ids are pinned below. The verifier accepts exactly this layout,
+# these refs and these objects, and nothing else: no other history, refs, tags, stash,
+# packed-refs, packs, alternates, grafts or shallow state. ``.git/config`` is fixed too, so
+# the repository is SHA-1 with no extensions on every git version.
+_AUTHORITY_FILE = "QUALIFICATION"
+_AUTHORITY_BYTES = b"agy self-qualification authority placeholder\n"
+_AUTHORITY_BRANCH = "refs/heads/qualification"
+_AUTHORITY_CONFIG = (b"[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n"
+                     b"\tbare = false\n\tlogallrefupdates = false\n")
+_AUTHORITY_SIGNATURE = b"phase-loop <qualification@invalid> 946684800 +0000"
+_AUTHORITY_BLOB = "7e10b71ae4bc3b01ea8100680c32f67ddca84186"
+_AUTHORITY_TREE = "8475a3951f689f66f76ac9223faddb4d3b84dc58"
+_AUTHORITY_COMMIT = "02338206e2a590f29d3611bc0d2c1bb7a66cda95"
+_AUTHORITY_COMMIT_BODY = (b"tree " + _AUTHORITY_TREE.encode() + b"\nauthor " + _AUTHORITY_SIGNATURE
+                          + b"\ncommitter " + _AUTHORITY_SIGNATURE + b"\n\nqualification authority\n")
+# ``review_stage.review_tree_manifest_sha256`` of the authority's working tree: the digest
+# the board authorizes and revalidates its stage against.
+_AUTHORITY_MANIFEST_SHA256 = "52e879d934588abe71210022586afc20f887d7455846ecdfc885b426136bdf6a"
+_AUTHORITY_SMALL_FILE = 4096
+_AUTHORITY_MAX_ENTRIES = 64
+_WORKER_DETAIL_CHARS = 1024
+
+
+def _authority_objects():
+    """``{object id: uncompressed loose-object bytes}`` for the authority's three objects."""
+    def raw(kind, body):
+        return b"%s %d\0%s" % (kind, len(body), body)
+
+    return {
+        _AUTHORITY_BLOB: raw(b"blob", _AUTHORITY_BYTES),
+        _AUTHORITY_TREE: raw(b"tree", b"100644 " + _AUTHORITY_FILE.encode() + b"\0"
+                             + bytes.fromhex(_AUTHORITY_BLOB)),
+        _AUTHORITY_COMMIT: raw(b"commit", _AUTHORITY_COMMIT_BODY),
+    }
+
+
+def _authority_layout():
+    """Every path in the authority, relative to it: ``"d"`` for a directory, ``"f"`` for a file."""
+    layout = {".git": "d", ".git/HEAD": "f", ".git/config": "f", ".git/index": "f",
+              ".git/objects": "d", ".git/objects/info": "d", ".git/objects/pack": "d",
+              ".git/refs": "d", ".git/refs/heads": "d", ".git/refs/tags": "d",
+              ".git/" + _AUTHORITY_BRANCH: "f", _AUTHORITY_FILE: "f"}
+    for oid in _authority_objects():
+        layout[f".git/objects/{oid[:2]}"] = "d"
+        layout[f".git/objects/{oid[:2]}/{oid[2:]}"] = "f"
+    return layout
+
+
+def _private_ancestry(path, euid):
+    """No other uid can rename or replace any directory on ``path``.
+
+    Each directory, ``path`` included, is a real directory owned by root or ``euid``; one
+    writable by group or others must be sticky, so only its owner (root or ``euid``) and
+    the owner of an entry (root or ``euid``, checked one level down) can rename it."""
+    for directory in (path, *path.parents):
+        info = os.lstat(directory)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, euid):
+            return False
+        if info.st_mode & 0o022 and not info.st_mode & stat.S_ISVTX:
+            return False
+    return True
+
+
+def _git_url_literal(path):
+    """Does git read ``file://<path>`` as exactly ``path``?
+
+    The board stages the authority by cloning ``file://<authority>``, and git decodes
+    ``%XX`` escapes in a file URL, so a path such as ``/tmp/qual%20state/...`` would be
+    verified literally but cloned from ``/tmp/qual state/...``. Any ``%`` is refused, and
+    so is any ASCII control character, which git versions treat differently in URLs."""
+    text = str(path)
+    return "%" not in text and not any(ord(char) < 0x20 or ord(char) == 0x7F for char in text)
+
+
+def _authority_bases():
+    """Candidate parents for a review authority, most preferred first.
+
+    A private directory in the qualification store, when the store root exists and passes
+    the store's own safety check; then ``/tmp``. A candidate is used only when its whole
+    ancestry is private (``_private_ancestry``) and git reads its path literally in a file
+    URL (``_git_url_literal``); otherwise the next candidate is tried."""
+    store = Store()
+    bases = [store.root / "authority"] if store._dir_ok(store.root) is True else []
+    return [*bases, Path("/tmp")]
+
+
+def _authority_parent():
+    euid = os.geteuid()
+    for base in _authority_bases():
+        try:
+            if not _git_url_literal(base):
+                continue
+            if not os.path.lexists(base):
+                with contextlib.suppress(FileExistsError):
+                    base.mkdir(mode=0o700)
+            resolved = Path(base).resolve(strict=True)
+            if _git_url_literal(resolved) and _private_ancestry(resolved, euid):
+                return resolved
+        except (OSError, RuntimeError, ValueError):
+            continue
+    raise QualificationFailure(LOCAL_FAILURE)
+
+
+def _read_small(path):
+    """A regular file's bytes, read without following a symlink and bounded."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("not a regular file")
+        data = os.read(fd, _AUTHORITY_SMALL_FILE + 1)
+    finally:
+        os.close(fd)
+    if len(data) > _AUTHORITY_SMALL_FILE:
+        raise ValueError("file too large")
+    return data
+
+
+def _inflates_to(data, expected):
+    inflater = zlib.decompressobj()
+    try:
+        inflated = inflater.decompress(data, _AUTHORITY_SMALL_FILE)
+    except zlib.error:
+        return False
+    return inflater.eof and not inflater.unconsumed_tail and not inflater.unused_data and inflated == expected
+
+
+def _tree_layout(root):
+    """``{relative path: "d" | "f" | "?"}`` without following symlinks; ``None`` past the bound."""
+    found, pending = {}, [root]
+    while pending:
+        directory = pending.pop()
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                relative = os.path.relpath(entry.path, root)
+                if entry.is_dir(follow_symlinks=False):
+                    found[relative] = "d"
+                    pending.append(entry.path)
+                else:
+                    found[relative] = "f" if entry.is_file(follow_symlinks=False) else "?"
+                if len(found) > _AUTHORITY_MAX_ENTRIES:
+                    return None
+    return found
+
+
+def _authority_proven(authority):
+    """Is ``authority`` (absolute, canonical) exactly the constant repository, privately placed?
+
+    Raises ``OSError``, ``ValueError`` or ``SubprocessError`` when a check cannot run."""
+    from .review_stage import host_git
+
+    if not _git_url_literal(authority):
+        return False
+    euid = os.geteuid()
+    info = os.lstat(authority)
+    if not (stat.S_ISDIR(info.st_mode) and info.st_uid == euid and stat.S_IMODE(info.st_mode) == 0o700):
+        return False
+    if not _private_ancestry(authority.parent, euid) or _tree_layout(authority) != _authority_layout():
+        return False
+    contents = {".git/HEAD": b"ref: " + _AUTHORITY_BRANCH.encode() + b"\n",
+                ".git/" + _AUTHORITY_BRANCH: _AUTHORITY_COMMIT.encode() + b"\n",
+                ".git/config": _AUTHORITY_CONFIG, _AUTHORITY_FILE: _AUTHORITY_BYTES}
+    if any(_read_small(authority / relative) != data for relative, data in contents.items()):
+        return False
+    if os.lstat(authority / _AUTHORITY_FILE).st_mode & 0o111:
+        return False
+    for oid, raw in _authority_objects().items():
+        if not _inflates_to(_read_small(authority / ".git/objects" / oid[:2] / oid[2:]), raw):
+            return False
+    if _panel()._canonical_review_repo_authority(authority) != authority:
+        return False
+
+    def git(*args):
+        return host_git(authority, *args, check=True, capture_output=True, timeout=3, offline=True).stdout
+
+    return (git("ls-files", "-s", "-z") == b"100644 %s 0\t%s\0" % (_AUTHORITY_BLOB.encode(), _AUTHORITY_FILE.encode())
+            and git("rev-parse", "--verify", "HEAD^{commit}") == _AUTHORITY_COMMIT.encode() + b"\n")
+
+
+def _remove_review_authority(authority):
+    """Best effort: a leftover authority is inert, private and constant."""
+    shutil.rmtree(authority, ignore_errors=True)
+
+
+def _create_review_authority():
+    """Create one operation's authority: a fresh 0700 directory holding the constant repository.
+
+    Runs the hardened offline host git (no system or global config, no hooks, no templates),
+    checks every object id it reports against the pinned ones, and proves the result with
+    the worker's own verifier. Any error is a local failure and leaves nothing behind."""
+    from .review_stage import host_git
+
+    authority = None
+    try:
+        authority = Path(tempfile.mkdtemp(prefix="agy-authority-", dir=_authority_parent()))
+
+        def git(*args, data=None):
+            return host_git(authority, *args, check=True, capture_output=True, timeout=30,
+                            offline=True, input=data).stdout
+
+        git("init", "-q", "--template=")
+        (authority / ".git/config").write_bytes(_AUTHORITY_CONFIG)
+        written = (
+            git("hash-object", "-w", "--stdin", "--no-filters", data=_AUTHORITY_BYTES),
+            git("mktree", data=b"100644 blob %s\t%s\n" % (_AUTHORITY_BLOB.encode(), _AUTHORITY_FILE.encode())),
+            git("hash-object", "-t", "commit", "-w", "--stdin", data=_AUTHORITY_COMMIT_BODY),
+        )
+        if written != tuple(oid.encode() + b"\n" for oid in (_AUTHORITY_BLOB, _AUTHORITY_TREE, _AUTHORITY_COMMIT)):
+            raise ValueError("authority object ids differ from the pinned ones")
+        git("symbolic-ref", "HEAD", _AUTHORITY_BRANCH)
+        git("update-ref", _AUTHORITY_BRANCH, _AUTHORITY_COMMIT, "")
+        git("read-tree", _AUTHORITY_COMMIT)
+        fd = os.open(authority / _AUTHORITY_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        try:
+            os.write(fd, _AUTHORITY_BYTES)
+        finally:
+            os.close(fd)
+        if not _authority_proven(authority):
+            raise ValueError("authority differs from the constant repository")
+    except Exception as exc:
+        if authority is not None:
+            _remove_review_authority(authority)
+        raise QualificationFailure(LOCAL_FAILURE) from exc
+    return authority
+
+
+def _verified_review_authority(authority):
+    """The operation's coordinator-created authority, proven before the board may use it.
+
+    Fails closed unless the path is absolute and canonical and ``_authority_proven`` holds:
+    a 0700 directory owned by this euid under a private ancestry, holding exactly the
+    constant repository (pinned objects, one ref, no other history or state) and the
+    placeholder, as its own git toplevel."""
+    try:
+        path = Path(authority)
+        proven = path.is_absolute() and path.resolve(strict=True) == path and _authority_proven(path)
+    except (OSError, ValueError, TypeError, RuntimeError, subprocess.SubprocessError) as exc:
+        raise QualificationFailure("qualification review authority is not private") from exc
+    if not proven:
+        raise QualificationFailure("qualification review authority is not private")
+    return path
+
+
+def _staged_authority_matches(leg):
+    """Bind what the board staged to what the worker verified.
+
+    The leg's placement evidence carries the staged-tree manifest the board authorized and
+    revalidated its stage against; it must be the authority's constant manifest. A leg that
+    answered without a staged tree does not match; one refused before staging has none."""
+    placement = getattr(leg, "sandbox_placement_evidence", None) or {}
+    staged = placement.get("sandbox_snapshot_sha256")
+    if staged is None:
+        return leg.status != "OK"
+    return staged == _AUTHORITY_MANIFEST_SHA256
+
+
+def _worker_terminal(root):
+    """The worker's terminal ``{status, detail}`` for ``failure.json``, never its ``text``.
+
+    When the provider was never observed, this is the board's refusal code, which is
+    otherwise only in the worker's ``terminal.json``. ``None`` if the worker wrote none."""
+    try:
+        result = json.loads((root / "terminal.json").read_text())["result"]
+        status, detail = result["status"], result["detail"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if not all(value is None or isinstance(value, str) for value in (status, detail)):
+        return None
+    return {"status": status, "detail": detail if detail is None else detail[:_WORKER_DETAIL_CHARS]}
+
+
 def run_operation(operation, root, help_evidence, extra_helpers=(), *, image, expected_help_sha256,
                   cancel_event=None):
     """External observer survives owner loss; no provider adapter is replaced.
@@ -618,13 +908,18 @@ def run_operation(operation, root, help_evidence, extra_helpers=(), *, image, ex
     monitor = None
     proc = None
     completed = False
-    stage = "launch"
+    authority = None
+    stage = "authority"
     try:
+        # A fresh authority per operation, outside ``root``; the worker re-proves it.
+        authority = _create_review_authority()
+        stage = "launch"
         image_fd = image.reopen()
         try:
             with (root / "worker.log").open("wb") as log:
                 proc = _panel().launch_provider(
                     [sys.executable, "-I", "-c", _WORKER_BOOT, str(_SRC), "--worker", str(root),
+                     "--authority", str(authority),
                      "--image-fd", str(image_fd), "--parent-pid", str(os.getpid())],
                     stdout=log, stderr=log, start_new_session=True, pass_fds=(image_fd,))
         finally:
@@ -768,7 +1063,8 @@ def run_operation(operation, root, help_evidence, extra_helpers=(), *, image, ex
                          expected_helper_sha256=registered_helpers)
         completed = True
     except BaseException as exc:
-        write_failure(root, exc, stage, helpers, observed_processes)
+        write_failure(root, exc, stage, helpers, observed_processes,
+                      worker_terminal=_worker_terminal(root) if stage == "terminal_observation" and observer is None else None)
         raise
     finally:
         try:
@@ -776,6 +1072,9 @@ def run_operation(operation, root, help_evidence, extra_helpers=(), *, image, ex
         except BaseException as exc:
             write_failure(root, exc, "observer_cleanup", helpers, observed_processes)
             raise
+        finally:
+            if authority is not None:
+                _remove_review_authority(authority)
     write_json(root / "qualification.json", record)
     return completed
 
@@ -783,7 +1082,8 @@ def run_operation(operation, root, help_evidence, extra_helpers=(), *, image, ex
 # ------------------------------------------------------------------------------- store
 
 _ENTRY_SCHEMA = "agy_qualification_entry.v1"
-_ENTRY_TYPES = ("provenance", "qualified", "failed", "member_cache", "transient", "watch_push")
+_ENTRY_TYPES = ("provenance", "qualified", "failed", "member_cache", "transient", "watch_push",
+                "fetch_ledger")
 # After this many CONSECUTIVE transient attempts for one key, the image is refused with a
 # failed entry (claude N2 on agent-harness#1130 r1): a deterministic incompatibility must not
 # re-run help and a real completion on every board forever. The count resets when the key
@@ -977,20 +1277,34 @@ class Store:
 
     def get(self, entry_type, name_context, context):
         """The entry's payload iff its MAC verifies against the LIVE context; else None."""
+        return self._entry(entry_type, name_context, context)[1]
+
+    def _entry(self, entry_type, name_context, context):
+        """``("valid", payload)``, ``("absent", None)`` or ``("invalid", None)``.
+
+        ``get`` reads both failures as None. The fetch ledger must not: an entry that exists
+        but does not verify is a tampered ledger, never an empty one."""
         if self.status() != "ok":
-            return None
+            return "invalid", None
         try:
-            raw = json.loads(self._read(self._path(entry_type, name_context)))
+            data = self._read(self._path(entry_type, name_context))
+        except FileNotFoundError:
+            return "absent", None
+        except (OSError, ValueError):
+            return "invalid", None
+        try:
+            raw = json.loads(data)
             if raw.get("schema") != _ENTRY_SCHEMA or raw.get("type") != entry_type:
-                return None
+                return "invalid", None
             payload, mac = raw["payload"], raw["mac"]
             if not isinstance(payload, dict) or not isinstance(mac, str):
-                return None
+                return "invalid", None
             if not hmac.compare_digest(mac, self._mac(self._key(), entry_type, context, payload)):
-                return None
-            return payload
-        except (OSError, ValueError, KeyError, TypeError, AttributeError):
-            return None
+                return "invalid", None
+            return "valid", payload
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError):
+            # RecursionError: a deeply nested document is not an entry (json recurses per level).
+            return "invalid", None
 
     def remove(self, entry_types):
         removed = 0
@@ -1009,10 +1323,12 @@ class Store:
                       if path.suffix == ".json" and not path.name.startswith("."))
 
     @contextlib.contextmanager
-    def lock(self, cancel_event=None, heartbeat=None, *, poll_s=0.1):
+    def lock(self, cancel_event=None, heartbeat=None, *, poll_s=0.1, dir_fd=None):
         """Once per key per user per host (I3): a flock on a CLOEXEC fd; waiters stay
-        cancellable and emit heartbeats."""
-        fd = os.open(self.host_dir / "lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        cancellable and emit heartbeats. ``dir_fd`` is an already verified descriptor of
+        ``host_dir`` (the HOLD cache's anchor): the lock is then opened relative to it."""
+        fd = os.open("lock" if dir_fd is not None else self.host_dir / "lock",
+                     os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=dir_fd)
         try:
             info = self._fstat(fd)
             if not stat.S_ISREG(info.st_mode) or info.st_uid != self.euid or stat.S_IMODE(info.st_mode) != 0o600:
@@ -1031,6 +1347,26 @@ class Store:
         finally:
             os.close(fd)
 
+    @contextlib.contextmanager
+    def try_lock(self, *, dir_fd=None):
+        """The same lock without waiting (AGYFRESH §2.5, the HOLD cache's ``retain``): yields
+        ``True`` while held, ``False`` at once when another holder has it. ``dir_fd`` as for
+        ``lock``."""
+        fd = os.open("lock" if dir_fd is not None else self.host_dir / "lock",
+                     os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=dir_fd)
+        try:
+            info = self._fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != self.euid or stat.S_IMODE(info.st_mode) != 0o600:
+                raise ValueError(STORE_UNSAFE)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                yield False
+                return
+            yield True
+        finally:
+            os.close(fd)
+
     # -- typed entries (agent-harness#1076; claude 5.1/5.3 on agent-harness#1118) --------
     @staticmethod
     def _base(image_sha256, platform, profile_digest):
@@ -1042,11 +1378,15 @@ class Store:
         return {**payload, "written_under": __version__}
 
     def put_provenance(self, prov, profile_digest):
+        # The two recorded statuses ride in the payload (AGYROLL §1.3); the MAC context is
+        # unchanged, so entries written before them still verify.
         context = {**self._base(prov.image_sha256, prov.platform, profile_digest),
                    "asset": prov.asset.name}
         self.put("provenance", context, context,
                  self._reported({"release_version": prov.asset.version,
-                                 "asset_sha256": prov.asset.digest}))
+                                 "asset_sha256": prov.asset.digest,
+                                 "attestation": getattr(prov, "attestation", "not_checked"),
+                                 "second_channel": getattr(prov, "second_channel", "not_checked")}))
 
     def get_provenance(self, image_sha256, host, profile_digest):
         context = {**self._base(image_sha256, host.name, profile_digest), "asset": host.asset}
@@ -1122,6 +1462,101 @@ class Store:
                            self._member_context(asset, host, profile_digest))
         value = payload.get("member_sha256") if payload else None
         return value if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) else None
+
+    # -- the fetch ledger (AGYROLL §1.2 total bound; PROVFWD-detail §1.3) -------------------
+    # One MAC-bound entry per (store, image, platform): no profile, help or runtime digest in
+    # its key, so every profile and runtime using this store shares one allowance per image.
+    # First use calls these under the store's one lock, so the cap is read, compared and
+    # charged before a fetch starts with no release in between. A pass (``reset_transients``)
+    # and ``agy-qualification clear`` leave it; ``clear --all`` removes it.
+    @staticmethod
+    def _ledger_context(image_sha256, host):
+        return {"image_sha256": image_sha256, "platform": host.name}
+
+    @staticmethod
+    def _ledger_shape(payload):
+        times = payload.get("fetches")
+        rejected = payload.get("rejected")
+        quarantined_at = payload.get("quarantined_at")
+        number = (int, float)
+        if (not isinstance(times, list) or not all(type(t) in number for t in times)
+                or not isinstance(rejected, dict)
+                or not all(isinstance(d, str) and re.fullmatch(r"[0-9a-f]{64}", d) and isinstance(v, list)
+                           and all(type(t) in number for t in v) for d, v in rejected.items())
+                or (quarantined_at is not None and type(quarantined_at) not in number)):
+            return None
+        return {"fetches": list(times), "rejected": {d: list(v) for d, v in rejected.items()},
+                "quarantined_at": quarantined_at}
+
+    def _ledger_read(self, image_sha256, host, now):
+        """``(ledger, quarantined_now)``. A ledger that exists but does not verify (a bad MAC,
+        unreadable, undecodable or the wrong shape) is replaced, when first seen, by an
+        authenticated quarantine of ``TOTAL_DOWNLOAD_CAP`` fetch times at that moment: it
+        counts as a reached cap for the next 24 h, then expires like any fetch, and a new
+        ``Store`` reads the same quarantine. It is never read as empty."""
+        context = self._ledger_context(image_sha256, host)
+        state, payload = self._entry("fetch_ledger", context, context)
+        if state == "absent":
+            return {"fetches": [], "rejected": {}, "quarantined_at": None}, False
+        ledger = self._ledger_shape(payload) if state == "valid" else None
+        if ledger is not None:
+            return ledger, False
+        quarantine = {"fetches": [now] * agy_provenance.TOTAL_DOWNLOAD_CAP, "rejected": {}, "quarantined_at": now}
+        self._put_ledger(image_sha256, host, quarantine, now)
+        return quarantine, True
+
+    def _ledger(self, image_sha256, host, now):
+        return self._ledger_read(image_sha256, host, now)[0]
+
+    def _put_ledger(self, image_sha256, host, ledger, now):
+        """Write the ledger, dropping what is older than 24 h: at most ``TOTAL_DOWNLOAD_CAP``
+        fetch times and ``MAX_LISTED`` rejected digests are kept. A quarantine marker is kept
+        for as long as the quarantine lasts."""
+        cutoff = now - agy_provenance.TOTAL_DOWNLOAD_WINDOW_S
+        fetches = sorted(t for t in ledger["fetches"] if t > cutoff)[-agy_provenance.TOTAL_DOWNLOAD_CAP:]
+        rejected = {digest: sorted(t for t in times if t > cutoff) for digest, times in ledger["rejected"].items()}
+        rejected = {digest: times for digest, times in rejected.items() if times}
+        if len(rejected) > agy_provenance.MAX_LISTED:
+            kept = sorted(rejected, key=lambda digest: rejected[digest][-1])[-agy_provenance.MAX_LISTED:]
+            rejected = {digest: rejected[digest] for digest in kept}
+        payload = {"fetches": fetches, "rejected": rejected}
+        quarantined_at = ledger.get("quarantined_at")
+        if quarantined_at is not None and quarantined_at > cutoff:
+            payload["quarantined_at"] = quarantined_at
+        context = self._ledger_context(image_sha256, host)
+        self.put("fetch_ledger", context, context, self._reported(payload))
+
+    def fetch_times(self, image_sha256, host):
+        """The recorded fetch times for this image; a tampered ledger reads as a full one."""
+        return tuple(self._ledger(image_sha256, host, _ledger_clock())["fetches"])
+
+    def note_fetch(self, image_sha256, host, at):
+        """Charge one fetch, or refuse it. The charge reads the ledger again; if that read finds
+        it invalid (now quarantined) or already full, nothing is written and the fetch is
+        refused with the retryable ``download_cap_reached``, so the fetch never starts and a
+        quarantine is never overwritten."""
+        ledger, quarantined = self._ledger_read(image_sha256, host, at)
+        cutoff = at - agy_provenance.TOTAL_DOWNLOAD_WINDOW_S
+        if quarantined or sum(1 for t in ledger["fetches"] if t > cutoff) >= agy_provenance.TOTAL_DOWNLOAD_CAP:
+            raise agy_provenance.ProvenanceError(agy_provenance.UNVERIFIED, agy_provenance.DOWNLOAD_CAP_REACHED)
+        self._put_ledger(image_sha256, host, {**ledger, "fetches": [*ledger["fetches"], at]}, at)
+
+    def rejected_assets(self, image_sha256, host, *, now):
+        """Asset digest -> how often its archive refused ``unverified`` in the last 24 h."""
+        cutoff = now - agy_provenance.TOTAL_DOWNLOAD_WINDOW_S
+        counts = {digest: sum(1 for t in times if t > cutoff)
+                  for digest, times in self._ledger(image_sha256, host, now)["rejected"].items()}
+        return {digest: count for digest, count in counts.items() if count}
+
+    def note_rejected(self, image_sha256, host, asset_sha256, at):
+        ledger = self._ledger(image_sha256, host, at)
+        rejected = {**ledger["rejected"], asset_sha256: [*ledger["rejected"].get(asset_sha256, ()), at]}
+        self._put_ledger(image_sha256, host, {**ledger, "rejected": rejected}, at)
+
+
+def _ledger_clock():
+    """The fetch ledger's clock (tests replace it)."""
+    return time.time()
 
 
 # ---------------------------------------------------------------------------- admission
@@ -1290,14 +1725,24 @@ def requalify_once(env, *, cancel_event=None, heartbeat=None, subject_path=None)
         first = key not in _REQUALIFIED
         _REQUALIFIED.add(key)
     if not first:
-        return gh.admit(env, subject_path=subject_path)
+        # A repeat preflight is lookup only, with gh.admit's refusal mapping; it can still
+        # reach the hold, which observes the caller's cancellation (AGYFRESH §2.2).
+        return gh.admit(env, subject_path=subject_path, cancel_event=cancel_event)
+
+    def release(_reason=None):
+        # The key is released so the next preflight runs first use again: after a
+        # cancellation, and after a retryable provenance refusal (``budget_exhausted``,
+        # ``download_cap_reached``; AGYROLL §1.2), even when a hold admitted another image,
+        # so a host far behind continues its forward walk.
+        with _REQUALIFIED_LOCK:
+            _REQUALIFIED.discard(key)
+
     try:
         return ensure_admitted(
-            env, cancel_event, heartbeat, store=store, subject_path=subject_path)
+            env, cancel_event, heartbeat, store=store, subject_path=subject_path, on_retryable=release)
     except ValueError as exc:
         if str(exc) == CANCELLED:  # a cancelled preflight used no attempt
-            with _REQUALIFIED_LOCK:
-                _REQUALIFIED.discard(key)
+            release()
         raise
 
 
@@ -1307,24 +1752,35 @@ _HELP_MEMO = {}
 _HELP_LOCK = threading.Lock()
 
 
-def _run_help(image, env):
-    """Execute ``--help`` from the sealed memfd inside the owned profile; return the bytes."""
+def _run_help(image, env, *, cancel_event=None):
+    """Execute ``--help`` from the sealed memfd inside the owned profile; return the bytes.
+
+    ``cancel_event`` is the caller's cancellation (the hold passes its own). The run's monitor
+    carries it, so the existing liveness path stops the run when it is set, and a run
+    stopped that way is ``CANCELLED``, never a failed measurement."""
     panel = _panel()
     admission = gh.Admission(gh.VerifiedImage(image.reopen(), image.sha256), None, "qualification_candidate")
+    cancel = cancel_event if cancel_event is not None else threading.Event()
     try:
         with tempfile.TemporaryDirectory(prefix="agy-help-") as scratch:
-            cancel = threading.Event()
             monitor = panel._ReviewMonitor(Path(scratch) / "monitor.json", "agy-help", 0, cancel)
             home = env.get("HOME") or str(Path.home())
             with gh.owned_profile(env, settings_bytes=panel._broker_agy_settings_bytes(),
                                   credential_path=Path(home) / ".gemini/antigravity-cli/antigravity-oauth-token",
                                   admission=admission) as profile:
                 with panel._uncapped_nonseat_probe():
-                    proc = panel._run_leg_with_liveness(
-                        [profile.executable, "--help"], cwd=scratch, env=profile.env,
-                        deadline_s=panel._MAX_LEG_TIMEOUT_S, input_text=None,
-                        review_monitor=monitor, gemini_profile=profile,
-                    )
+                    try:
+                        proc = panel._run_leg_with_liveness(
+                            [profile.executable, "--help"], cwd=scratch, env=profile.env,
+                            deadline_s=panel._MAX_LEG_TIMEOUT_S, input_text=None,
+                            review_monitor=monitor, gemini_profile=profile,
+                        )
+                    except panel._ReviewOperationCancelled as exc:
+                        if cancel.is_set():
+                            raise ValueError(CANCELLED) from exc
+                        raise
+        if cancel.is_set():
+            raise ValueError(CANCELLED)
         # agy prints its usage on stderr; the measured help is both streams, in that
         # order (``agy --help > help.txt 2>&1`` for a tool that writes only one).
         text = proc.stdout + proc.stderr
@@ -1335,11 +1791,14 @@ def _run_help(image, env):
         admission.close()
 
 
-def measure_help(image, env, profile_digest):
+def measure_help(image, env, profile_digest, *, cancel_event=None):
+    """The memoized help of ``image``; a cancelled run is not memoized. ``cancel_event`` (the
+    hold's) reaches the run's liveness path."""
     key = (image.sha256, profile_digest)
     with _HELP_LOCK:
         if key not in _HELP_MEMO:
-            _HELP_MEMO[key] = _run_help(image, env)
+            _HELP_MEMO[key] = (_run_help(image, env) if cancel_event is None
+                               else _run_help(image, env, cancel_event=cancel_event))
         return _HELP_MEMO[key]
 
 
@@ -1396,19 +1855,482 @@ def lookup(env, data, path, *, store=None):
 
 
 def ensure_admitted(env, cancel_event=None, heartbeat=None, *, store=None, transport=None,
-                    qualify=None, subject_path=None):
-    """``admit``, and on a miss the first-use path (agent-harness#1076).
+                    qualify=None, subject_path=None, on_retryable=None):
+    """The seat admission boundary with first use (AGYFRESH §2.2): ``admit_seat(first_use=True)``.
 
-    Called only by the whole-board preflight and by ``agy-qualification run``. Phase 1
-    (provenance, nothing executes) writes a provenance entry; phase 2 measures help and
-    runs the three live operations from the same sealed memfd, then writes the qualified
-    entry. Operation failures write a typed failed entry; transients, cancellation and
-    fetch failures write nothing.
+    Called only by the whole-board preflight and by ``agy-qualification run``. The
+    qualification worker's candidate token is admitted through ``gh.admit``, as before.
+    ``on_retryable`` is passed to ``admit_seat``.
+    """
+    if gh._CANDIDATE is not None:
+        return gh.admit(env, subject_path=subject_path)
+    return admit_seat(env, subject_path, first_use=True, cancel_event=cancel_event,
+                      heartbeat=heartbeat, store=store, transport=transport, qualify=qualify,
+                      on_retryable=on_retryable)
+
+
+# ------------------------------------------------- the seat admission boundary (AGYFRESH §2.2)
+
+#: The subject-side reasons a hold may follow (AGYFRESH §2.2). Evidence values only: a hold
+#: is an admission, and with no qualifying candidate the original refusal is raised.
+HOLD_REASONS = (
+    "subject_unreadable", "subject_not_regular", "subject_over_bound",
+    "self_qualification_disabled",
+    "subject_failed", "subject_unqualified", "store_unsafe",
+    "provenance_unverified", "provenance_unavailable", "first_use_failed", "first_use_unavailable",
+)
+#: The two retryable provenance reasons (AGYROLL §1.2): the per-call budget and the daily cap.
+RETRYABLE_PROVENANCE_REASONS = frozenset({agy_provenance.BUDGET_EXHAUSTED, agy_provenance.DOWNLOAD_CAP_REACHED})
+
+
+def provenance_refusal(exc: agy_provenance.ProvenanceError) -> ValueError:
+    """First use's provenance refusal: a plain ``ValueError`` whose ``str()`` is the code, as
+    before, with ``reason`` kept as an attribute. Its type stays exactly ``ValueError``, because
+    with nothing held the hold handler re-raises the original refusal unchanged (AGYFRESH §2.2)."""
+    refusal = ValueError(str(exc))
+    refusal.reason = exc.reason
+    return refusal
+
+
+# First use's refusals by their code. Any other code (a cancellation, an unsupported
+# platform) is not the subject's and propagates unchanged.
+_FIRST_USE_REASONS = {
+    SELF_QUALIFICATION_FAILED: "first_use_failed",
+    SELF_QUALIFICATION_UNAVAILABLE: "first_use_unavailable",
+    STORE_UNSAFE: "store_unsafe",
+    agy_provenance.UNVERIFIED: "provenance_unverified",
+    agy_provenance.UNAVAILABLE: "provenance_unavailable",
+}
+
+
+class _SubjectNotAdmitted(Exception):
+    """The subject was not admitted for a reason in ``HOLD_REASONS``, raised at one explicit
+    stage of ``admit_seat``. The hold handler catches only this type; ``refusal`` is the
+    exception today's code raises, re-raised unchanged when nothing is held."""
+
+    def __init__(self, reason, refusal, subject_sha256):
+        super().__init__(reason)
+        self.reason, self.refusal, self.subject_sha256 = reason, refusal, subject_sha256
+
+
+class _SubjectImageUnsealed(gh.AgyCanaryEvidenceError, ValueError):
+    """H2: the subject's image memfd was not sealed: the seal ABI was unavailable when it was
+    created, or its seals did not hold. Never hold-eligible. Classified here, before
+    ``agy_integrity.check`` maps it to the same ``agy_image_unqualified`` an unqualified
+    subject raises. It is still the seal error (``AgyCanaryEvidenceError``), and a
+    ``ValueError`` whose ``str()`` is today's ``gemini_heartbeat_capability_unavailable``, so
+    every caller's mapping is unchanged."""
+
+
+def _refusal(code, cause):
+    refusal = ValueError(code)
+    refusal.__cause__ = cause
+    return refusal
+
+
+def _read_subject(path, resolved):
+    """Stage 2: the subject's single read into one sealed memfd (AGYFRESH §1.2).
+
+    ``resolved`` is the subject's resolved name, captured once by ``admit_seat`` and also used
+    for the managed-release classification, so the bytes read and the classification name the
+    same file; ``path`` stays the image's path metadata. The subject's digest is unknown for
+    all three subject-side reasons, so they carry ``None``."""
+    try:
+        fd = os.open(resolved, os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise _SubjectNotAdmitted("subject_unreadable", _refusal(gh._CAPABILITY, exc), None) from None
+    try:
+        try:
+            info = os.fstat(fd)
+        except OSError as exc:
+            raise _SubjectNotAdmitted("subject_unreadable", _refusal(gh._CAPABILITY, exc), None) from None
+        if not stat.S_ISREG(info.st_mode):
+            raise _SubjectNotAdmitted("subject_not_regular", ValueError(gh._CAPABILITY), None)
+        if info.st_size > agy_provenance.MAX_MEMBER_BYTES:
+            raise _SubjectNotAdmitted("subject_over_bound", ValueError(gh._CAPABILITY), None)
+        try:
+            return gh.VerifiedImage.from_fd(fd, path=path)
+        except gh.AgyCanaryEvidenceError as exc:
+            raise _SubjectImageUnsealed(gh._CAPABILITY) from exc
+        except OSError as exc:
+            raise _SubjectNotAdmitted("subject_unreadable", _refusal(gh._CAPABILITY, exc), None) from None
+        except gh.ImageOverBound as exc:
+            # The streaming cap, as the reader raised it: the file grew past the bound while it
+            # was read, whatever its size is now. A digest mismatch is not the subject's and
+            # propagates unchanged.
+            raise _SubjectNotAdmitted("subject_over_bound", _refusal(gh._CAPABILITY, exc), None) from None
+    finally:
+        os.close(fd)
+
+
+def admit_seat(env, subject_path, *, first_use=False, cancel_event=None, heartbeat=None,
+               store=None, transport=None, qualify=None, on_retryable=None) -> gh.Admission:
+    """The only place a seat image is admitted (AGYFRESH §2.2).
+
+    Stages, in order: the never-eligible conditions at their own sites (local
+    capabilities, no provider, an unsealable image); the subject's single read; a release
+    member, before any config or store read; the opt-out; the store lookup (which owns the
+    image, and whose agent-harness#1602 seam admission is returned unchanged); with
+    ``first_use=True`` only, first use. A subject-side failure at any of them is a
+    ``_SubjectNotAdmitted``, and only that reaches the hold: ``admit_held`` for a standalone
+    subject with the hold enabled, else the original refusal, unchanged. What a stage raises
+    with its own type (a cancellation, a typed seat, quiescence or jail refusal) propagates.
+
+    ``gh.admit`` and ``agy_integrity.check`` (with an env) call this with
+    ``first_use=False`` and map its refusals as they always have; ``ensure_admitted`` calls
+    it with ``first_use=True``.
+
+    ``on_retryable(reason)`` is called when the subject's provenance stage refuses with
+    ``budget_exhausted`` or ``download_cap_reached`` (AGYROLL §1.2), before the hold, so it
+    is called whether the caller then raises or a hold admits another image. Such a refusal
+    stays hold-eligible as ``provenance_unverified`` and counts no transient.
     """
     try:
-        return gh.admit(env, subject_path=subject_path, keep_miss=True)
+        gh._local_capabilities()
+    except (OSError, gh.AgyCanaryEvidenceError, ValueError) as exc:
+        raise ValueError(gh._CAPABILITY) from exc
+    path = (os.fspath(subject_path) if subject_path is not None
+            else shutil.which("agy", path=env.get("PATH", os.defpath)))
+    if path is None:
+        raise ValueError(gh._CAPABILITY)  # no provider installed: no seat, and no hold
+    # Resolved before anything is read, so a subject removed later is still classified.
+    resolved = Path(os.path.realpath(path))
+    try:
+        admission = _admit_subject(env, path, resolved, first_use=first_use, cancel_event=cancel_event,
+                                   heartbeat=heartbeat, store=store, transport=transport, qualify=qualify,
+                                   on_retryable=on_retryable)
+    except _SubjectNotAdmitted as refused:
+        not_admitted = refused
+    else:
+        if first_use and admission.source == "subject":
+            # AGYFRESH §2.8: after a subject admission, and after the first-use lock is
+            # released (_admit_subject has returned), keep the image for a later hold.
+            _retain_admitted(env, admission, path, resolved, store)
+        return admission
+    return _hold_or_refuse(env, not_admitted, resolved, store=store, cancel_event=cancel_event,
+                           path=path)
+
+
+def _retain_admitted(env, admission, path, resolved, store):
+    """``agy_hold.retain`` for a subject admission, gated as AGYFRESH §2.8 says (B7): only with
+    the hold enabled and for a standalone subject; never a denied digest. Best effort: it
+    never raises and never changes the admission."""
+    from . import agy_hold
+
+    try:
+        if _names_managed_release(path, resolved) or not agy_hold.hold_enabled():
+            return
+        deny = agy_hold.hold_deny()
+        if deny is None or admission.image.sha256 in deny:
+            return
+        store = store or Store()
+        built = []
+
+        def cache_version(digest, member_version):
+            # Built on first use: only pruning needs versions, and an image already
+            # retained (the common case) returns before any pruning.
+            if not built:
+                predicates = _hold_predicates(env, subject_sha256=None, store=store, measure=False)
+                built.append(None if predicates is None else predicates[1])
+            return None if built[0] is None else built[0](digest, member_version)
+
+        agy_hold.retain(admission.image, store, cache_version=cache_version)
+    except Exception:  # noqa: BLE001 - retention never fails an admission
+        return
+
+
+def _admit_subject(env, path, resolved, *, first_use, cancel_event, heartbeat, store, transport,
+                   qualify, on_retryable=None):
+    """Stages 2 to 6 of ``admit_seat`` for the subject only. Every subject image is closed or
+    handed on exactly once (H1)."""
+    image = _read_subject(path, resolved)
+    digest = image.sha256
+    if digest in gh.QUALIFIED_IMAGES:
+        try:
+            return gh.Admission(image, gh.QUALIFIED_IMAGES[digest], "release_qualified", Path(path),
+                                source="subject")
+        except BaseException:
+            image.close()
+            raise
+    try:
+        enabled = self_qualification_enabled()
+    except BaseException:
+        image.close()
+        raise
+    if not enabled:
+        image.close()
+        raise _SubjectNotAdmitted("self_qualification_disabled", ValueError(gh._CAPABILITY), digest)
+    try:
+        # lookup takes ownership of the image: it is closed there unless it is handed on.
+        return lookup(env, image, path)
     except gh.AdmissionMiss as miss:
-        image, path = miss.image, miss.path
+        missed = miss.image
+    except ValueError as exc:
+        if str(exc) == SELF_QUALIFICATION_FAILED:
+            raise _SubjectNotAdmitted("subject_failed", exc, digest) from None
+        if str(exc) == gh._CAPABILITY:  # the opt-out, read again inside lookup
+            raise _SubjectNotAdmitted("self_qualification_disabled", exc, digest) from None
+        raise
+    except (OSError, gh.AgyCanaryEvidenceError) as exc:
+        # AGYFRESH §2.2: the help measurement's typed outcomes propagate unchanged, so the typed
+        # process-group quiescence outcome keeps its type here, as it always did when first
+        # use's own phase 2 measured the help; only an OSError or the seal error itself keep
+        # first use's capability refusal. (Which stage measures first depends on the help memo.)
+        if first_use and not _is_typed_quiescence(exc):
+            raise ValueError(gh._CAPABILITY) from exc
+        raise
+    if not first_use:
+        missed.close()
+        unsafe = (store or Store()).status() == "unsafe"
+        raise _SubjectNotAdmitted("store_unsafe" if unsafe else "subject_unqualified",
+                                  ValueError(gh._CAPABILITY), digest)
+    try:
+        return _first_use_subject(env, missed, path, cancel_event=cancel_event, heartbeat=heartbeat,
+                                  store=store, transport=transport, qualify=qualify)
+    except ValueError as exc:
+        reason = _FIRST_USE_REASONS.get(str(exc))
+        if reason is None:
+            raise
+        if on_retryable is not None and getattr(exc, "reason", None) in RETRYABLE_PROVENANCE_REASONS:
+            on_retryable(exc.reason)
+        raise _SubjectNotAdmitted(reason, exc, digest) from None
+
+
+def _is_typed_quiescence(exc):
+    from .panel_invoker import ProviderProcessGroupQuiescenceError
+    return isinstance(exc, ProviderProcessGroupQuiescenceError)
+
+
+def _cancelled(cancel_event):
+    return cancel_event is not None and cancel_event.is_set()
+
+
+def _names_managed_release(*names) -> bool:
+    """Whether any of ``names`` lies below the managed releases root or one of its aliases,
+    BY NAME: the root is resolved, the names never are.
+
+    The subject's name is resolved once, by ``admit_seat``, and that captured name is both
+    read and classified here. Resolving it again (``seat_subject._names_managed_root``
+    does) would follow whatever replaced the entry during the read. ``MANAGED_RELEASES_ROOT``
+    is read at call time."""
+    from . import seat_subject
+
+    root = seat_subject.MANAGED_RELEASES_ROOT
+    roots = [root.absolute()]
+    try:
+        roots.append(root.resolve(strict=True))
+    except OSError:
+        pass
+    return any(Path(os.path.abspath(name)).is_relative_to(item) for name in names for item in roots)
+
+
+def _hold_or_refuse(env, refused, resolved, *, store, cancel_event, path=None):
+    """The hold handler (AGYFRESH §2.2). The subject's image is already closed here."""
+    from . import agy_hold
+
+    refusal = refused.refusal
+    # A managed-release subject is never held, on any route (§2.9, R-F0-1, R-F0-2): nothing
+    # is searched or opened. Nor with the hold off, nor on an unsupported platform. The
+    # classification is of the captured names (as given, and as resolved once), not of
+    # whatever the entry names now.
+    names = (resolved,) if path is None else (path, resolved)
+    if _names_managed_release(*names) or not agy_hold.hold_enabled():
+        raise refusal from refusal.__cause__
+    try:
+        _host()
+    except ValueError:
+        raise refusal from refusal.__cause__
+    admission = admit_held(env, reason=refused.reason, subject_sha256=refused.subject_sha256,
+                           store=store, cancel_event=cancel_event)
+    if admission is None:
+        raise refusal from refusal.__cause__
+    return admission
+
+
+def _held_help(image, env, profile_digest, cancel_event=None):
+    """A candidate's measured help digest, or ``None`` on a candidate-local failure. A
+    cancellation and the help measurement's typed outcomes propagate (AGYFRESH §2.2): the
+    caller's ``cancel_event`` reaches the run's liveness path, is checked before and after
+    the run, and a run it stopped is ``CANCELLED``, never a rejected candidate."""
+    from .executable_dependency import ExecutableDependencyError
+    from .panel_invoker import ProviderProcessGroupQuiescenceError
+    from .sandbox_egress import EgressUnavailable
+    from .seat_jail import SeatSandboxRefused
+
+    if _cancelled(cancel_event):
+        raise ValueError(CANCELLED)
+    try:
+        measured = measure_help(image, env, profile_digest, cancel_event=cancel_event)
+    except (EgressUnavailable, gh.GeminiQuiescenceError, ProviderProcessGroupQuiescenceError,
+            SeatSandboxRefused, ExecutableDependencyError):
+        raise
+    except ValueError as exc:
+        if str(exc) == CANCELLED:
+            raise
+        if _cancelled(cancel_event):
+            raise ValueError(CANCELLED) from exc
+        return None
+    except (OSError, RuntimeError) as exc:
+        if _cancelled(cancel_event):
+            raise ValueError(CANCELLED) from exc
+        return None
+    if _cancelled(cancel_event):
+        raise ValueError(CANCELLED)
+    return sha256(measured).hexdigest()
+
+
+def _hold_predicates(env, *, subject_sha256, store, measure, cancel_event=None):
+    """The §2.3 predicate over one sealed candidate, and the cache's version lookup (§2.4).
+
+    ``measure=False`` (status) stops before executing anything: a candidate that passed the
+    store half of step 3 is reported with ``help_sha256 None``. Returns ``None`` when the
+    hold cannot run (the deny list is unreadable)."""
+    from . import agy_hold
+
+    deny = agy_hold.hold_deny()
+    if deny is None:
+        return None
+    excluded = frozenset(deny | ({subject_sha256} if subject_sha256 else set()))
+    store_ok = store.status() == "ok"
+    try:
+        host = _host()
+    except ValueError:
+        host = None
+    local = store_ok and host is not None and self_qualification_enabled()
+    profile_digest = agy_profile_digest()
+
+    def cache_version(digest, member_version):
+        if digest in excluded:
+            return None
+        if store_ok and host is not None and store.get_failed(digest, host, profile_digest) is not None:
+            return None
+        if member_version is not None:
+            return member_version
+        if not store_ok or host is None:
+            return None
+        payload = store.get_provenance(digest, host, profile_digest)
+        return agy_hold.parse_version(payload.get("release_version")) if payload else None
+
+    def predicate(image, candidate):
+        digest = image.sha256
+        if digest in excluded:
+            return None
+        if digest in gh.QUALIFIED_IMAGES:
+            return gh.QUALIFIED_IMAGES[digest], "release_qualified"
+        if not local:
+            return None
+        if store.get_failed(digest, host, profile_digest) is not None:
+            return None
+        if store.get_provenance(digest, host, profile_digest) is None:
+            return None  # never executed, not even for --help, before this (F5)
+        if not measure:
+            return None, "locally_qualified"
+        help_sha256 = _held_help(image, env, profile_digest, cancel_event)
+        if help_sha256 is None or store.get_qualified(digest, help_sha256, host, profile_digest) is None:
+            return None
+        return help_sha256, "locally_qualified"
+
+    return excluded, cache_version, predicate, (store.host_dir if store_ok else None)
+
+
+def admit_held(env, *, reason, subject_sha256, store=None, cancel_event=None) -> gh.Admission | None:
+    """The hold (AGYFRESH §2.3, §2.4): the first candidate of the bounded, ordered search that
+    passes an existing qualification predicate, admitted with ``source="lkg"`` and no path,
+    or ``None``. Every route executes a held admission's sealed image; none executes a path
+    derived from it."""
+    from . import agy_hold
+
+    store = store or Store()
+    predicates = _hold_predicates(env, subject_sha256=subject_sha256, store=store, measure=True,
+                                  cancel_event=cancel_event)
+    if predicates is None:
+        # No hold (the deny list could not be read): a miss, unless the caller cancelled
+        # meanwhile, which is a cancellation and never the subject's refusal.
+        if _cancelled(cancel_event):
+            raise ValueError(CANCELLED)
+        return None
+    excluded, cache_version, predicate, store_dir = predicates
+    held = agy_hold.search(
+        members=gh.catalog_members(), store_dir=store_dir, cache_version=cache_version,
+        predicate=predicate, excluded=excluded, cancelled=lambda: _cancelled(cancel_event))
+    if held is None:
+        if _cancelled(cancel_event):
+            raise ValueError(CANCELLED)
+        return None
+    if _cancelled(cancel_event):  # never hand a winner off after the caller cancelled
+        held.image.close()
+        raise ValueError(CANCELLED)
+    try:
+        return gh.Admission(held.image, held.help_sha256, held.admission_class, None, source="lkg",
+                            hold_reason=reason, subject_sha256=subject_sha256)
+    except BaseException:
+        held.image.close()
+        raise
+
+
+def hold_status(env, subject_path) -> dict:
+    """The ``hold`` object of ``agy-qualification status`` (AGYFRESH §2.6; EC-HOLD-12, -15).
+
+    A lookup: it measures no help and executes nothing, and it never says an image is in
+    use. Use is reported only by a launch's evidence (``provider_admission_source``). For a
+    managed-release subject, with the hold off or with no provider, every route is
+    ``not_covered``, ``candidate`` is ``None`` and nothing is searched."""
+    from . import agy_hold
+
+    enabled = agy_hold.hold_enabled()
+    path = (os.fspath(subject_path) if subject_path is not None
+            else shutil.which("agy", path=env.get("PATH", os.defpath)))
+    resolved = None if path is None else Path(os.path.realpath(path))
+    managed = resolved is not None and _names_managed_release(path, resolved)
+    status = {"enabled": enabled, "subject": "managed_release" if managed else "standalone",
+              "routes": {route: "not_covered" for route in agy_hold.ROUTE_COVERAGE},
+              "candidate": None}
+    if managed or not enabled or path is None:
+        return status
+    try:
+        _host()
+    except ValueError:
+        return status
+    status["routes"] = {route: "covered" if covered else "not_covered"
+                        for route, covered in agy_hold.ROUTE_COVERAGE.items()}
+    try:
+        subject = _read_subject(path, resolved)
+    except (_SubjectNotAdmitted, OSError, ValueError):
+        subject_sha256 = None
+    else:
+        subject_sha256 = subject.sha256
+        subject.close()
+    try:
+        predicates = _hold_predicates(env, subject_sha256=subject_sha256, store=Store(), measure=False)
+        if predicates is None:
+            return status
+        excluded, cache_version, predicate, store_dir = predicates
+        held = agy_hold.search(members=gh.catalog_members(), store_dir=store_dir,
+                               cache_version=cache_version, predicate=predicate, excluded=excluded)
+    except (OSError, ValueError, RuntimeError):
+        return status
+    if held is not None:
+        held.image.close()
+        status["candidate"] = {
+            "origin": held.candidate.origin,
+            "version": ".".join(str(part) for part in held.candidate.version),
+            "image_sha256": held.image.sha256,
+            "admission_class": held.admission_class,
+            "state": "ready" if held.admission_class == "release_qualified" else "pending_help_measurement",
+        }
+    return status
+
+
+def _first_use_subject(env, image, path, *, cancel_event=None, heartbeat=None, store=None,
+                       transport=None, qualify=None):
+    """Stage 6, first use for the subject's image after a lookup miss (agent-harness#1076).
+
+    Phase 1 (provenance, nothing executes) writes a provenance entry; phase 2 measures help
+    and runs the three live operations from the same sealed memfd, then writes the qualified
+    entry. Operation failures write a typed failed entry; transients, cancellation and fetch
+    failures write no verdict entry. Every archive fetch is charged to the fetch ledger before
+    it starts. Owns ``image``: it is closed unless handed on in the admission.
+    """
     try:
         store = store or Store()
         if store.machine_id is None:
@@ -1433,14 +2355,23 @@ def ensure_admitted(env, cancel_event=None, heartbeat=None, *, store=None, trans
                 if heartbeat is not None:
                     heartbeat("agy_qualification_provenance")
                 try:
+                    # The hint orders the walk; the ledger (keyed on this store, image and
+                    # platform, shared by every profile) bounds it to TOTAL_DOWNLOAD_CAP
+                    # fetches a day, checked and charged here under the store lock.
                     prov = agy_provenance.find_provenance(
                         image.sha256, host=host, transport=transport,
                         cached_member=lambda asset: store.get_member(asset, host, profile_digest),
                         remember_member=lambda asset, member: store.put_member(
                             asset, member, host, profile_digest),
+                        hint=agy_provenance.version_hint(path),
+                        fetch_times=lambda: store.fetch_times(image.sha256, host),
+                        note_fetch=lambda at: store.note_fetch(image.sha256, host, at),
+                        rejected=lambda: store.rejected_assets(image.sha256, host, now=_ledger_clock()),
+                        note_rejected=lambda digest, at: store.note_rejected(image.sha256, host, digest, at),
+                        now=lambda: _ledger_clock(),
                     )
                 except agy_provenance.ProvenanceError as exc:
-                    raise ValueError(str(exc)) from exc
+                    raise provenance_refusal(exc) from exc
                 store.put_provenance(prov, profile_digest)
             provenance = store.get_provenance(image.sha256, host, profile_digest)
             if provenance is None:
@@ -1708,7 +2639,7 @@ def _set_parent_death_signal():
         raise QualificationFailure("qualification worker cannot bind to its owner") from exc
 
 
-def worker(root, image_fd=None, parent_pid=None):
+def worker(root, image_fd=None, parent_pid=None, authority=None):
     # Dies with the qualification coordinator: a SIGKILLed lock holder leaves no worker.
     _set_parent_death_signal()
     if parent_pid is not None and os.getppid() != parent_pid:
@@ -1718,6 +2649,7 @@ def worker(root, image_fd=None, parent_pid=None):
     image = verified_fd_image(image_fd)
     if not provenance_gate(image.sha256):
         raise QualificationFailure("qualification image fd has no provenance")
+    authority = _verified_review_authority(authority)
     gh._CANDIDATE = image
     from .advisor_board.fixtures import DEFAULT_BOARD
     panel = _panel()
@@ -1726,17 +2658,51 @@ def worker(root, image_fd=None, parent_pid=None):
     signal.signal(signal.SIGINT, lambda *_: cancel.set())
     board = replace(DEFAULT_BOARD, name="gemini-heartbeat-qualification",
                     seats=tuple(s for s in DEFAULT_BOARD.seats if s.harness == "gemini"))
-    result = panel.invoke_board(
-        board, (root / "artifact.md").read_text(), brief_ref=str(root / "brief.md"),
-        repo_dir=Path.cwd(), mode="review", monitoring_policy="heartbeat_only",
-        stream_dir=root / "stream", cancel_event=cancel,
-        review_policy=panel.ReviewLandingPolicy(("gemini",), False),
-    )
-    leg, = result.legs
-    write_json(root / "terminal.json", {
-        "monitoring": leg.review_monitoring, "broker": leg.harden_isolation_evidence,
-        "result": {"status": leg.status, "text": leg.text, "detail": leg.detail},
-    })
+    root = Path(root).absolute()
+    # The board reviews the coordinator's authority, never the inherited cwd; the chdir
+    # gives any remaining cwd reader the same directory. Not ``canonical_repo_authority``:
+    # that would make the request governed and demand a pre-minted authorization. The
+    # previous directory is restored afterwards, so an in-process call leaves no trace.
+    previous_cwd = _hold_cwd()
+    try:
+        os.chdir(authority)
+        result = panel.invoke_board(
+            board, (root / "artifact.md").read_text(), brief_ref=str(root / "brief.md"),
+            repo_dir=authority, mode="review", monitoring_policy="heartbeat_only",
+            stream_dir=root / "stream", cancel_event=cancel,
+            review_policy=panel.ReviewLandingPolicy(("gemini",), False),
+        )
+        leg, = result.legs
+        if not _staged_authority_matches(leg):
+            # No terminal record: the coordinator then fails this operation as a local failure.
+            raise QualificationFailure("qualification staged review tree differs from its authority")
+        write_json(root / "terminal.json", {
+            "monitoring": leg.review_monitoring, "broker": leg.harden_isolation_evidence,
+            "result": {"status": leg.status, "text": leg.text, "detail": leg.detail},
+        })
+    finally:
+        _restore_cwd(previous_cwd)
+
+
+def _hold_cwd():
+    """An fd on the current directory, to return to it later; ``None`` when it cannot be held.
+
+    ``O_PATH`` needs no read permission on the directory. The qualification never depends
+    on this: a dedicated worker process exits right after the board."""
+    try:
+        return os.open(".", getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_CLOEXEC)
+    except OSError:
+        return None
+
+
+def _restore_cwd(fd):
+    if fd is None:
+        return
+    try:
+        with contextlib.suppress(OSError):
+            os.fchdir(fd)
+    finally:
+        os.close(fd)
 
 
 def release_image_from_path(env):
@@ -1767,9 +2733,10 @@ def main(argv=None):
     parser.add_argument("--image-fd", type=int,
                         help="Qualify the image held by this inherited, fully sealed memfd (the upstream watch)")
     parser.add_argument("--parent-pid", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--authority", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.worker is not None:
-        worker(args.worker.resolve(), args.image_fd, args.parent_pid)
+        worker(args.worker.resolve(), args.image_fd, args.parent_pid, args.authority)
     elif args.measure_help:
         # The upstream watch measures help with the PREPARED tree's owned profile.
         if args.image_fd is None or args.output is None:
@@ -1813,6 +2780,7 @@ def cli_main(args):
         from .executable_dependency import ExecutableDependencyError
         from .seat_subject import resolve_seat_subject
 
+        subject_path = None  # unresolved: the hold status looks the PATH agy up itself
         try:
             subject = resolve_seat_subject("gemini", env)
         except FileNotFoundError:
@@ -1820,18 +2788,42 @@ def cli_main(args):
         except ExecutableDependencyError as exc:
             verdict = AgyVerdict("refuses", exc.code, None)
         else:
-            verdict = admission_verdict(env, subject.subject_path, execute=True)
+            subject_path = subject.subject_path
+            verdict = admission_verdict(env, subject_path, execute=True)
         print(json.dumps({"store": str(store.host_dir), "store_status": store.status(),
                           "entries": store.entries(), "self_qualification": self_qualification_enabled(),
                           "key": agy_profile_digest(), "written_under": __version__,
-                          "verdict": verdict._asdict()},
+                          "verdict": verdict._asdict(), "hold": hold_status(env, subject_path)},
                          sort_keys=True))
         return 0
     if args.action == "clear":
-        removed = store.remove(_ENTRY_TYPES if args.all else ("failed", "transient"))
+        if not args.all:
+            removed = store.remove(("failed", "transient"))
+            _HELP_MEMO.clear()
+            print(json.dumps({"removed": removed}))
+            return 0
+        from . import agy_hold
+        # --all also removes the HOLD cache (AGYFRESH §2.6, §2.8); a plain clear leaves it.
+        # The cache step is isolated: an entry's removal error cannot skip it or hide its
+        # result, and is then raised as clear has always raised it. What could not be removed
+        # from the cache is reported, and the command fails: no silent leftovers.
+        entry_error = None
+        try:
+            removed = store.remove(_ENTRY_TYPES)
+        except Exception as exc:  # noqa: BLE001 - re-raised below, after the cache step
+            entry_error, removed = exc, None
         _HELP_MEMO.clear()
-        print(json.dumps({"removed": removed}))
-        return 0
+        cleared = agy_hold.clear_held(store)
+        output = {"removed": removed, "held_removed": cleared.removed}
+        if cleared.not_removed:
+            output["held_not_removed"] = list(cleared.not_removed)
+        print(json.dumps(output))
+        if cleared.not_removed:
+            print("phase-loop agy-qualification clear --all: the HOLD cache was not removed "
+                  "completely; see held_not_removed", file=sys.stderr)
+        if entry_error is not None:
+            raise entry_error
+        return 1 if cleared.not_removed else 0
     env = _panel()._broker_subscription_env()
     from .executable_dependency import ExecutableDependencyError
     from .seat_subject import resolve_seat_subject
@@ -1850,8 +2842,13 @@ def cli_main(args):
         print(f"phase-loop agy-qualification run: {exc}", file=sys.stderr)
         return 1
     try:
-        print(json.dumps({"admission_class": admission.admission_class, "image_sha256": admission.image.sha256,
-                          "help_sha256": admission.help_sha256}, sort_keys=True))
+        output = {"admission_class": admission.admission_class, "image_sha256": admission.image.sha256,
+                  "help_sha256": admission.help_sha256, "source": admission.source}
+        if admission.source == "lkg":
+            # A held image is not the subject qualifying: say so (AGYFRESH §2.6).
+            output.update(hold_reason=admission.hold_reason,
+                          subject_image_sha256=admission.subject_sha256)
+        print(json.dumps(output, sort_keys=True))
     finally:
         admission.close()
     return 0

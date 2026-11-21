@@ -30,7 +30,7 @@ equivalence is proven by a test (not asserted in prose).
   (`render_gemini_model` in `panel_invoker.py`). Built-3 lanes are concrete;
   breadth lanes raise `EffortMappingError` until ABDREG/ABDHOME/ABDOMNI.
   Default round-trip (proven): claude→`--effort high`, codex→
-  `-c model_reasoning_effort=high`, Gemini Argon→`gemini-4-argon-medium`;
+  `-c model_reasoning_effort=high`, Gemini NEON→`gemini-4-neon-high`;
   explicit legacy Pro display names remain compatible.
 - **Seat identity for result re-keying** — `Seat.seat_key` is a stable LABEL over
   every distinguishing field (lane, model, effort, lens), so lens-only-different
@@ -119,7 +119,7 @@ equivalence is proven by a test (not asserted in prose).
 ## IF-0-ABDFREEZE-4 — Back-compat contract · `fixtures.py` + `tests/test_advisor_board_backcompat.py`
 
 - The model-first `default` board (`DEFAULT_BOARD`) resolves four vendors in
-  `DEFAULT_BOARD_VENDOR_ORDER`: Codex/Sol, Gemini/Argon medium, Claude/Opus 5.5, and
+  `DEFAULT_BOARD_VENDOR_ORDER`: Codex/Sol, Gemini/NEON high, Claude/Opus 5.5, and
   Grok 4.7. The separate legacy `PANEL_LEGS` tuple and explicit `invoke_panel`
   API remain the frozen three-leg Codex/Gemini/Claude boundary.
 - `advisor-panel` stays a working alias of `advisor-board` — the rename + alias is
@@ -220,12 +220,13 @@ the real matrix at `load_boards()` time (`tests/test_advisor_board_config.py`,
   (`tests/test_advisor_board_golden.py`), which checks the fourth (Grok) seat
   separately; the sole sanctioned delta stays `seat_key`.
 - **`default` and `code-review` are four-vendor frontier boards.** Gemini uses
-  `gemini-4-argon` at `medium` alongside Astra 6.2 (`gpt-6.2-astra`, the `sol` seat), Opus 5.5, and Grok 4.7
-  (`gemini-3.8-flash`, the prior default, stays an accepted explicit seat);
+  `gemini-4-neon` at `high` alongside Astra 6.2 (`gpt-6.2-astra`, the `sol` seat), Opus 5.5, and Grok 4.7
+  (`gemini-4-argon`, the prior default, and `gemini-3.8-flash` stay accepted
+  explicit seats; agy's `gemini-4-neon-xhigh` is not admitted);
   `code-review` preserves availability-aware backfill and distinct lenses.
 - **President availability ladder.** Review findings go first to the `fable` seat
   (Opus 5.5 by default — the rung names the seat, not the model), then
-  the `sol` seat (Astra 6.2 by default), Grok 4.7, and Gemini 4 Argon. Descent occurs only for a typed
+  the `sol` seat (Astra 6.2 by default), Grok 4.7, and Gemini 4 NEON. Descent occurs only for a typed
   `president_unavailable` result, never because a president dissents. The ladder
   is EXECUTED (not merely declared) by every `requires_president` landing policy —
   see ABDPRES below.
@@ -237,7 +238,7 @@ the real matrix at `load_boards()` time (`tests/test_advisor_board_config.py`,
   (`schema.py`), so the legal lenses/purposes need no enum extension.
 - **Catch-alls for unmodeled tasks (`general`, `solo`).** So the board library is not
   limited to the pre-modeled domains: `general` is the domain-agnostic top-tier PANEL
-  (three frontier vendors — gpt-6.2-astra/adversarial, gemini-4-argon/alternative,
+  (three frontier vendors — gpt-6.2-astra/adversarial, gemini-4-neon/alternative,
   claude-opus-5-5/completeness — hand it any task + brief), and `solo` is the
   single-MEMBER form (one `claude-opus-5-5` seat) for a quick top-end opinion when a
   panel is overkill. A ONE-seat board validates + resolves through `invoke_board` like
@@ -1313,9 +1314,9 @@ set `gemini_heartbeat.QUALIFIED_IMAGES`, loaded from the shipped package data
 1.5.3 SHA256 `7ca212748ca0dfda718efbc39a776a104472e7e9344d4b6ea147c543684f96a3` today).
 The loader is strict and offline: a missing or malformed file is an empty catalog, so the
 release fast path admits nothing. A host on an
-older release self-qualifies it only while it is among the newest four stable upstream
-releases (`agy_provenance.RECENCY_WINDOW`). Today that excludes every retired release,
-so such a host refuses with `gemini_heartbeat_provenance_unverified` until agy is updated.
+older release can self-qualify it from any listed stable upstream release (forward
+provenance, see PROVFWD below); a host far behind may need several calls, each bounded by a
+per-call download budget and a daily cap.
 Self-qualification covers review seats only. Executor and canary paths
 (`trusted_command`, `admitted_command`, and canary admission) admit catalog images only,
 as they have since agent-harness#1333. Each member carries its measured help digest and
@@ -1404,8 +1405,9 @@ A non-release `agy` image is admitted only by verifying it, never by trusting it
   receiving the preflight's Admission object; any future cross-process hand-off of an
   image memfd must reuse the worker's seal check.
 - **Provenance** (coordinator process, nothing executes). Host platform from the running
-  host (D4: `linux-{x64,arm64}[-musl]`); the newest `agy_provenance.RECENCY_WINDOW`
-  stable releases (no prerelease, no draft); the exact platform asset; its URL equal to
+  host (D4: `linux-{x64,arm64}[-musl]`); every listed stable release (no prerelease, no
+  draft), hint first, within the per-call budget and the daily cap (PROVFWD below); the exact
+  platform asset; its URL equal to
   `https://github.com/google-antigravity/antigravity-cli/releases/download/<tag>/<asset>`;
   a strict `sha256:<hex>` asset digest equal to the streamed archive digest; exactly one
   regular-file `antigravity` member (duplicates and links refuse), stream-hashed and
@@ -1438,7 +1440,8 @@ A non-release `agy` image is admitted only by verifying it, never by trusting it
   a per-host key over its type, the euid, the machine-id and a context recomputed from the
   live key. The qualification entries (`provenance`, `qualified`, `failed`, `member_cache`,
   `transient`) bind the image digest, platform and runtime identity, plus the asset name,
-  profile id or help digest as the type requires. The watch's `watch_push` entry binds the
+  profile id or help digest as the type requires. The `fetch_ledger` entry binds only the
+  image digest and platform (PROVFWD below). The watch's `watch_push` entry binds the
   branch, the version and the base (the prepared tree's seat QCI).
   Without a readable machine-id, self-qualification refuses; the release path is unaffected.
 - **Lock.** One `flock` per host namespace; waiters are cancellable and heartbeat (the board
@@ -2230,12 +2233,67 @@ on first use.
 IF-0-FIRSTSEAT-3: `leg_exec.v1` records a generated attempt id, vendor, a
 closed allowlist of argv flags (no values or prompts), integer exit code,
 typed outcome, tri-state parent auth (`healthy`, `signed_out`, `unavailable`),
-structured turn/verdict availability and a byte bound. Store outside the
+structured turn/verdict availability, the closed `stage`, `refusal`, `secret_match`
+and `stream_rejection` fields (agent-harness#1823) and a byte bound. Store outside the
 checkout in operator-owned 0700 directories, using exclusive, no-follow 0600
 files and descriptor ownership/mode checks. Scan before bounding. Unavailable
 scan assurance omits the field; no unscanned output is retained.
 Board returns that did not reach an observed process retain a record with a null
 exit code and `leg_execution_unobserved`; they do not invent a process exit.
+A leg whose exit was not observed, whose spawn started no provider process and that
+stopped before any launch boundary (`subject`, `prepare` or `jail_build`) is
+`leg_execution_unlaunched`; past a launch boundary a zero count proves nothing, so it
+stays `leg_execution_failed`.
+A leg whose exit was observed as 0 but that ended in one of a jailed seat's explicit
+refusals (a stream, verdict, leak or token refusal) is `leg_execution_refused`, never
+`leg_execution_completed` (agent-harness#1823). Everything else keeps its outcome: a leg
+that still ends accepted, a nonzero or unobserved exit, a cancellation, and a clean exit
+that fails ordinary review classification without such a refusal (as on the jailed Claude
+and Codex routes).
+Two closed fields say where a leg stopped (agent-harness#1823): `stage`, the last
+checkpoint reached (`subject`, `prepare`, `admission`, `credential`, `jail_build`,
+`launch`, `stream`, `cleanup`, `broker`, `unlaunched`, or null), and `refusal`, the
+harness code of a typed refusal, raised or returned, else an allowlisted exception class
+(an `ExecutableDependencyError` with a code from its exact allowlist). Classification
+looks through one wrapper only: the broker client's failure when the adapter
+invocation's own outcome was its sole failure (no transport or cleanup error, deadline,
+cancellation, or abnormal or unknown client exit, the client's own exit being observed
+before cleanup signals it). Neither field ever carries an exception's message or
+provider text.
+`secret_match` records which configured value a jailed seat's output scan matched,
+and where: the kind (`bearer` or `proxy_credential`), the encoding (`raw`, `hex`,
+`b64`, `b64url`), the stream (`stdout`, `stderr`, `output_file`, or, for an after-exit
+match across a join of the scanned streams, every stream it covers joined by `+`,
+such as `stdout+stderr`), the phase (`live` or `post_exit`), the event, step and tool,
+and the line index and byte offset in that line (for a match across streams, in the
+first, where it starts). The labels are read by structure at fixed JSON paths from the
+line's bytes before the match -- Gemini `event`, `step_update.step_type` and
+`step_update.tool_name`; Codex `type` and `item.type` -- never from a nested key of the
+same name: an allowlisted string is kept, any other parsed value is `other`, and a
+label those bytes do not establish is null (a complete `true`, `false` or `null` is a
+parsed value, so `other`; only a number no delimiter follows may have been cut short).
+Live positions address the raw bytes of the stream. After-exit positions address the
+scan input the after-exit check reads, which has two sources: for `stdout` and
+`stderr`, the decoded, redacted and re-encoded output, not the raw provider bytes; for
+Codex's `output_file`, the raw bytes of the file as read from the seat. A match across
+streams is placed in the first stream it covers, so one that starts in `output_file`
+uses the raw file's coordinates. It never carries the value, any part or digest of it,
+or the provider text around it.
+When the tooled Gemini stream refuses a well-formed line as
+`gemini_seat_subagent_or_unknown_event`, the closed `stream_rejection` field says what
+kind of line it was: the reason, in the parser's own order (`bad_step_type` for an
+unrecorded step type, else `subagent_info` for a step carrying that key, or
+`unknown_event`), the line index, the line count and how many lines the same rules
+refuse; the line's event, step type, tool name and step state; which keys the line, its
+step and the step's `subagent_info` carry; per-event, per-step-type and per-tool counts
+for the whole stream; and the init event's keys and its mode values (`permission_mode`,
+`agent_mode`, `agentMode`, `mode`). Every name comes from a fixed allowlist (`other`
+outside it, null for an absent key) and every other value is a count or a position; it
+never carries a line, a value or provider text. It is computed from the retained stdout
+after the parser has refused it, so the parser and the agy validator closure are
+unchanged. A later line that does not decode, including one nested past the decoder's
+bound, is counted as `unparsed` and does not lose the refusal; a value that is not
+closed is never recorded, and the field is null.
 The provider wrapper preserves the record identity through board delivery.
 
 Auth classification requires a nonzero exit, independently observed absence
@@ -2316,3 +2374,243 @@ W1 set; all unexercised rows retain `candidate` (remote rows retain `remote-pend
   that already hold bytes. The upstream watch's `fetch_member(keep_bytes=True)` still joins
   the member in memory (ROLLJOB moves it to streaming).
 - **Not changed.** The seat QCI, store keys, the shipped catalog, records and pins.
+
+## HOLD — availability floor · `agy_qualification.admit_seat`, `agy_hold.py`, `gemini_heartbeat.py`, `agy_integrity.py` (AGYFRESH §2.1–§2.7)
+
+- **One admission boundary.** `agy_qualification.admit_seat(env, subject_path, *,
+  first_use=False, cancel_event=None, heartbeat=None, store=None, transport=None,
+  qualify=None)` is the only place a seat image is admitted. `gh.admit` (after the
+  qualification worker's candidate token) and `agy_integrity.check` with an env (the two
+  seat sites) call it with `first_use=False`; `ensure_admitted` calls it with
+  `first_use=True`, its signature kept. Each caller maps a refusal exactly as before:
+  `gemini_heartbeat_capability_unavailable` for `gh.admit`, `agy_image_unqualified` for
+  `check`, today's codes for first use. The help measurement's typed process-group
+  quiescence outcome (`ProviderProcessGroupQuiescenceError`) keeps its type on every path,
+  the heartbeat's `gh.admit` included, so the caller reaches its quiescence path; first use's
+  old capability mapping now covers only an `OSError` and the plain seal error. `check(path)`
+  without an env (executor, canary) never holds. `admission_verdict(execute=False)` is
+  unchanged: a non-member never reports `admits` because a held image exists.
+- **Stages.** In order: local capabilities, no provider and an unsealable image memfd (an
+  unavailable seal ABI, or seals that did not hold: classified before `check` maps them,
+  and never a hold); the subject's single read, of the resolved name captured once and used
+  for the managed-release classification too (a size cap the streaming reader hits is
+  `subject_over_bound` whatever the file's size is afterwards, `gh.ImageOverBound`; a
+  digest mismatch is not the subject's and is never held); a release member, before any config or
+  store read; the opt-out; `lookup` (which owns the image; its agent-harness#1602 seam
+  admission is returned unchanged); first use, with `first_use=True` only. A subject-side
+  failure raises one internal type, `_SubjectNotAdmitted(reason, refusal, subject_sha256)`,
+  and only that reaches the hold. Hold reasons (`agy_qualification.HOLD_REASONS`):
+  `subject_unreadable`, `subject_not_regular`, `subject_over_bound`,
+  `self_qualification_disabled`, `subject_failed`, `subject_unqualified`, `store_unsafe`,
+  `provenance_unverified`, `provenance_unavailable`, `first_use_failed`,
+  `first_use_unavailable`. Never held, and propagated unchanged: a capability failure, a
+  seal failure, a cancellation, a typed egress, quiescence or jail refusal, an unsupported
+  platform, no provider installed.
+- **The hold.** For a standalone subject with the hold enabled, `admit_held` admits the
+  first candidate that passes an existing predicate, with `Admission.source = "lkg"` and
+  **no path**: a release member (`release_qualified`, no store read and no execution), or a
+  locally qualified image (`locally_qualified`: store `ok`, self-qualification on, no
+  `failed` entry, a MAC-valid `provenance` entry before anything executes, then help measured
+  from the sealed memfd and a `qualified` entry under it). The subject's own digest and the
+  `[agy] hold_deny` digests are never admitted. With no qualifying candidate the subject's
+  original refusal is raised unchanged. There is no new refusal code. The caller's
+  cancellation reaches the hold: it is checked before each candidate is opened, after it is
+  streamed, before help (whose run's liveness path carries the caller's event) and before a
+  winner is handed off or any miss returned, an early one included; once set, the hold
+  raises `review_operation_cancelled` with every image closed. A repeat board preflight
+  (lookup only, through `gh.admit(..., cancel_event=)`) carries the event too.
+- **Candidates (`agy_hold`).** From `<Store.host_dir>/held/<sha256>` (read only here; the
+  cache writers are lane SL-4) and the vendor store
+  `/opt/consiliency/operational-clis/agy/<x.y.z>-<16 hex>/agy`. A version is authenticated by
+  a catalog member (`gh.catalog_members()`) or a MAC-valid provenance entry; a vendor version
+  named only by a `qualified-*.json` store entry (read without MAC verification, at most 64)
+  is a hint. Order: version descending, authenticated before hinted, cache before vendor,
+  name ascending; directory listing order never matters. Budgets: 3 image reads for
+  authenticated candidates and 2 for hinted ones, so forged hints can never displace an
+  authenticated candidate; at most 2 directories per version and 1,024 names per directory.
+  No process memo: every hold rebuilds the list, so a newer eligible candidate that appears
+  between two holds wins the second.
+- **Filesystem.** Every access is descriptor-relative from an anchor opened one component
+  at a time, no symlink, each directory owned by root or the euid and not group- or
+  other-writable; the same for the candidate file, which must also be within
+  `agy_provenance.MAX_MEMBER_BYTES` (read when it runs). A candidate is read only by
+  `VerifiedImage.from_fd`; one image is open at a time, and the subject's is closed first.
+  After the read the descriptor must be unchanged and its name must still name that inode
+  (AGYFRESH §6.3, option (b)): this detects a replacement observable at that moment; the
+  sealed digest is the integrity control. Candidate loading is serialized per process.
+- **Managed-release subjects are not covered, on any route.** A subject whose name, as
+  given or as resolved once by `admit_seat`, is below the managed releases root or one of
+  its aliases is never held: nothing is searched or opened and today's refusal stands. The
+  captured name is compared by name (`agy_qualification._names_managed_release`); it is
+  never resolved again, so an entry replaced during the read does not change the
+  classification of what was read. This includes a PATH `agy`
+  that resolves to a release's guarded frontdoor (the non-jailed heartbeat route). A PATH
+  `agy` outside the managed root is a standalone subject, and so is a copy of a guarded
+  frontdoor placed outside it: the classification is by where the name resolves. Managed
+  hosts recover at build time (Consiliency/dotfiles) and through the RESTORE restore runs.
+- **Routes (`agy_hold.ROUTE_COVERAGE`).** The seat-profile launch and credential refresh,
+  and the non-jailed heartbeat route (`require_capability`, `owned_profile`), execute the held
+  admission's sealed memfd: covered. **The jailed standalone Gemini route is not covered**:
+  it binds the admission's path, so it refuses a held admission
+  (`gemini_heartbeat_capability_unavailable`, before any jail is built). Ordinary jailed
+  launches still execute a path.
+- **Evidence (additive).** Where `provider_admission_class` is written (the seat-profile
+  evidence from `check`, the owned profile): `provider_admission_source` (`"subject"` or
+  `"lkg"`), and for `"lkg"` `provider_hold_reason` and `provider_subject_image_sha256`
+  (`null` when the subject could not be read). `provider_image_sha256` remains the digest of
+  the image that runs. Counting is unchanged.
+- **Status.** `phase-loop agy-qualification status` adds `hold`:
+  `{"enabled", "subject": "standalone" | "managed_release", "routes": {"seat_profile",
+  "heartbeat", "jailed": "covered" | "not_covered"}, "candidate": {"origin", "version",
+  "image_sha256", "admission_class", "state": "ready" | "pending_help_measurement"} | null}`.
+  It is a lookup: it executes nothing and never says an image is in use; use is reported
+  only by a launch's evidence. With the hold off, for a managed-release subject or with no
+  provider, every route is `not_covered` and `candidate` is `null`. `phase-loop
+  agy-qualification run` adds `source` to its output, and for a held admission
+  `hold_reason` and `subject_image_sha256`, so a held image is never read as the subject
+  qualifying.
+- **Config (user board config only).** `[agy] hold` (boolean, default `true`) and
+  `[agy] hold_deny` (a list of SHA-256 hex digests). A repository config cannot carry them.
+  Any error disables the hold (fail-closed). A malformed `hold` or `hold_deny` value does
+  not disable a valid `self_qualification`: the self-qualification reader checks the table
+  and its key names but not the HOLD values. An unreadable file or an unknown `[agy]` key
+  still disables both, as before, and loading the board file still rejects any bad value.
+- **Not changed.** The seat QCI, store keys, the shipped catalog, records and pins; no jail,
+  projection or authority path; `seat_subject.py`. Rollback: `[agy] hold = false`.
+
+## HOLD-CACHE — the harness cache · `agy_hold.py`, `agy_qualification.py` (AGYFRESH §2.5, §2.8)
+
+- **What is kept.** After `admit_seat(first_use=True)` (the board preflight and
+  `agy-qualification run`) admits the **subject**, its sealed image is kept as
+  `<Store.host_dir>/held/<image sha256>`: a 0600 file in a 0700 directory, owned by the
+  euid. The hold reads it as a cache candidate. Not kept: an admission on a spawn or
+  heartbeat route (`first_use=False`), a held admission, a managed-release subject, a digest
+  in `[agy] hold_deny`, and anything with the hold off.
+- **How it is written.** `agy_hold.retain(image, store)` is best effort: it never raises
+  and leaves the admission's image open. Before anything is created it validates the
+  store directory's existing ancestry (no symlink, owned by root or the euid, not group-
+  or other-writable); an absent store is then created. It opens `Store.host_dir` through
+  that walk (and requires the euid's 0700) **before** any lock, then takes the store lock
+  without waiting (a busy lock skips retention this time), opened relative to that same
+  verified directory. An existing `held/` must be the euid's 0700, or nothing is written.
+  If the file exists it returns. Nothing is added unless `held/` has room: its names plus
+  the new one (whose temp file counts too) must stay within `MAX_DIR_ENTRIES` (1,024), the
+  most the reader lists, so a write never makes the cache unreadable. Otherwise the sealed image is
+  streamed in 1 MiB chunks to a temp file (`O_CREAT|O_EXCL|O_NOFOLLOW`, 0600), `fsync`ed,
+  re-hashed, and renamed into place, all relative to the opened `held/` directory. Its
+  traced Python allocation stays within the 2 MiB overhead of AGYFRESH §1.2.
+- **Pruning.** At most `HELD_KEEP` (2) images: the one just retained, always, and the
+  highest authenticated versions among the rest (a catalog member's version, or a MAC-valid
+  provenance entry's), ranked **only among files the hold's reader would admit**: a regular
+  file owned by root or the euid, not group- or other-writable, within the member bound,
+  whose content hashes to its name. A file the reader would refuse, and a file with no
+  authenticated version, a `failed` entry or a denied digest, is unlinked and never kept
+  over a usable one; so is a regular file the reader cannot open at all (mode 000, say);
+  a temp file left by an interrupted retain is unlinked. A name is unlinked only if it still
+  names the inode that was judged; a symlink is neither followed nor unlinked. A removal
+  that fails is logged as a warning naming the file. Pruning is by version, never by mtime.
+- **Clearing.** `phase-loop agy-qualification clear` leaves the cache (and, as before, the
+  fetch ledger). `clear --all` also removes `held/` completely, under the store lock,
+  through the verified store directory: nested entries through checked no-follow
+  descriptors, and a `held` that is itself a symlink is removed without being traversed,
+  whatever the store's own status (a store missing its key still has its cache). It
+  reports `held_removed`; anything it could not remove is listed in `held_not_removed` and
+  the command exits 1, so nothing is left silently. When cleanup cannot safely proceed (no
+  safe path to the store directory, a path it cannot even check, a refused store lock, a
+  directory that cannot be listed) the part left is reported the same way. An error
+  removing the store's entries does not skip the cache step: its result is printed, then
+  that error is raised as `clear` has always raised it.
+- **Safety.** The writers open `Store.host_dir` by the readers' component walk and also
+  require it to be the euid's 0700 directory; the store lock is opened relative to it.
+  Every mutation takes the store lock and works by `dir_fd`. `Store.status()` stays `ok` with `held/` present, and store entries ignore it.
+  A cache file that is pruned or cleared while the hold reads it is rejected, and the hold
+  goes on to the next candidate (with none, the subject's refusal stands). The cache is
+  never bound into a jail.
+- **Disk.** At most `HELD_KEEP` × `MAX_MEMBER_BYTES` in steady state, plus one temp file
+  while retaining. Rollback: `clear --all`, or removing `held/`.
+
+## PROVFWD — forward provenance for any stable release · `agy_provenance.py`, `agy_attestation.py`, `agy_watch.py`, `agy_qualification.py` (AGYROLL §1)
+
+- **No window.** `find_provenance` examines every listed stable release; a release's position
+  in the listing is no longer an admission criterion. `stable_releases` reads
+  the listing lazily, `per_page=100` in API order, each page within `MAX_LISTING_BYTES`, and
+  stops at a short page, at `MAX_LISTED` (300) scanned entries or at its `limit`; a page is
+  requested only when the earlier ones are used up.
+- **Candidate order.** The hint first, when it names a listed stable release, then the
+  listing in order. A candidate whose archive refused `unverified` in the last 24 h goes
+  after every candidate that has not; the hinted candidate keeps first place after one such
+  refusal and goes last at two. This changes order only.
+- **Hint.** `version_hint(subject_path)` is the first component of the subject's real path
+  that matches `^(\d+\.\d+\.\d+)(?:[-+].*)?$`. It opens and executes nothing and never reads
+  `--version`. It only orders candidates; admission is still the member digest, so a wrong
+  hint still admits the genuine image and no hint admits a non-matching one.
+- **Per-call budget.** A candidate with a `member_cache` entry costs no download. Each call
+  fetches at most `DOWNLOAD_BUDGET` (2) uncached archives, and each fetch writes
+  `member_cache` before the next candidate, so repeated calls make steady progress.
+- **Daily cap and the fetch ledger.** Each (store, image) fetches at most
+  `TOTAL_DOWNLOAD_CAP` (12) uncached archives in any rolling 24 h
+  (`TOTAL_DOWNLOAD_WINDOW_S`), about 3 GB a day at `MAX_ARCHIVE_BYTES`. The fetch times live
+  in a MAC-bound `fetch_ledger` store entry keyed on the image digest and platform only, so
+  every profile and runtime using the store shares one allowance per image. The count is
+  read, compared with the cap and charged under the store's one lock before the fetch
+  starts: a failed or interrupted download is counted, and two processes cannot both spend
+  the last unit. The charge reads the ledger again and decides: if that read finds it full,
+  or finds it invalid and quarantines it, nothing is charged and the fetch is refused with
+  `download_cap_reached`; a quarantine is never overwritten. A qualification pass,
+  `reset_transients` and `agy-qualification clear` leave the ledger alone; `clear --all`
+  removes it. A ledger that exists but does not verify (bad MAC, unreadable, undecodable at
+  any nesting depth, or malformed) is told apart from an absent one: the first time it is
+  seen, under the lock, it is rewritten as an authenticated quarantine of
+  `TOTAL_DOWNLOAD_CAP` fetch times at that moment, so it counts as a reached cap for the
+  next 24 h, for every `Store`, and then expires like any fetch. It is never read as empty.
+- **Reasons.** `budget_exhausted` and `download_cap_reached` refuse
+  `gemini_heartbeat_provenance_unverified` with `ProvenanceError.reason` set; `str()` stays
+  the code. Neither counts toward `MAX_TRANSIENT_ATTEMPTS` or writes a `failed` entry, and
+  neither consumes `requalify_once`'s once-per-key cap: `on_retryable` releases the key, so
+  the next preflight continues the walk. A hold stays eligible for them under the existing
+  `provenance_unverified` reason. No match after every candidate is `unverified` with no
+  reason: the definitive refusal.
+- **Attestation (recorded, never a criterion).** On a match, `agy_attestation.attestation_status`
+  asks `GET /repos/google-antigravity/antigravity-cli/attestations/sha256:<asset digest>` once.
+  404 records `absent`; a JSON object with a non-empty `attestations` list records
+  `present_unverified`. Anything else (an empty list, a non-object, another status, an
+  oversized or unparseable body, a network error) refuses
+  `gemini_heartbeat_provenance_unavailable`. It never verifies an attestation and never
+  refuses for `absent`. This makes the GitHub API a dependency of first use: a rate-limited
+  answer refuses `unavailable`. `Provenance.attestation` carries the status, and the
+  `provenance` entry records `attestation` and `second_channel` (`not_checked` outside the
+  catalog job); its MAC context is unchanged.
+- **Second channel (the catalog job only).** `agy_attestation.second_channel_status`
+  compares the asset with Google's unsigned installer manifest
+  (`https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json`,
+  `{version, url, sha512}`), which exists for `linux-x64` only; any other platform is
+  `not_listed` with no request. The basis is the archive: measured once on 2026-11-20, for
+  1.5.13, Google's package was the GitHub asset byte for byte (100,548,668 bytes, equal
+  SHA-256 and SHA-512, and the manifest's SHA-512 was theirs). The check fetches the package
+  the manifest names (under `https://storage.googleapis.com/antigravity-public/antigravity-cli/`,
+  within `MAX_ARCHIVE_BYTES`), requires its SHA-512 to be the manifest's and compares its
+  SHA-256 with the asset's published digest. Equal is `match`; different refuses
+  `agy_provenance_second_channel_mismatch`; a manifest for another version, before or after
+  the comparison, is `not_listed`; an unreachable or malformed manifest or package refuses
+  `unavailable`. **`not_listed` is not corroboration**: it records that the second channel
+  could say nothing about this version, for example because the manifest has moved on. One
+  measured release selects the method; it does not prove the channels stay identical, so a
+  later difference refuses the tick instead of being assumed away.
+- **Transport.** `agy_attestation` has its own pinned opener: no credentials, no proxy, no
+  redirect, the compiled-in trust store (`agy_provenance._trust_context`), and exactly three
+  hosts (`api.github.com`, the manifest host and `storage.googleapis.com`).
+  `agy_provenance._Transport` is unchanged.
+- **Watch.** The newest release is `stable_releases(transport, limit=1)`, one request;
+  `--version` takes any listed stable release. The new member's record carries a fresh
+  `attestation` and its `second_channel`; each requalified member records a fresh
+  `attestation` and keeps its committed `second_channel`. A second-channel mismatch, or
+  either status unavailable, ends the tick with exit 2 and that code before anything is
+  pushed.
+- **Verifier.** `--contract` requires `upstream.attestation` in
+  `absent|present_unverified|not_checked` and `upstream.second_channel` in
+  `match|not_listed|not_checked`, read from the tree's own `agy_attestation`.
+  `--upstream-only` takes the newest stable release from the first listing page with the
+  resolver's stable filter, not `/releases/latest`, and reports `latest_published_at`;
+  membership stays advisory.
+- **Not changed.** The seat QCI, the keys and MAC contexts of the existing store entries, the
+  shipped catalog, records and pins. Nothing needs requalification.

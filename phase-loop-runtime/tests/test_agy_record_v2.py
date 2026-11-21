@@ -321,6 +321,36 @@ def test_contract_requires_a_closed_matching_v2_record(verifier, evidence, chang
         verifier.contract()
 
 
+@pytest.mark.parametrize("field,value", [
+    ("attestation", "verified"), ("attestation", "match"), ("attestation", "Absent"), ("attestation", None),
+    ("second_channel", "mismatch"), ("second_channel", "absent"), ("second_channel", "present_unverified"),
+    ("second_channel", ["match"]),
+])
+def test_contract_fails_an_out_of_vocabulary_upstream_status(verifier, evidence, field, value):
+    """PROVFWD-detail §3.2: both statuses are closed vocabularies, read from the tree's package."""
+    _edit_json(_record_path(evidence), lambda r: r["upstream"].update({field: value}))
+    with pytest.raises(ValueError, match=f"upstream {field}"):
+        verifier.contract()
+
+
+def test_contract_accepts_every_status_of_both_vocabularies(verifier, evidence):
+    from phase_loop_runtime.agy_attestation import ATTESTATION_STATUSES, SECOND_CHANNEL_STATUSES
+    for attestation in ATTESTATION_STATUSES:
+        for second_channel in SECOND_CHANNEL_STATUSES:
+            _edit_json(_record_path(evidence), lambda r: r["upstream"].update(
+                attestation=attestation, second_channel=second_channel))
+            assert verifier.contract()
+
+
+def test_contract_reads_the_vocabularies_from_the_trees_package(verifier, evidence, monkeypatch):
+    from phase_loop_runtime import agy_attestation
+    _edit_json(_record_path(evidence), lambda r: r["upstream"].update(attestation="absent"))
+    assert verifier.contract()
+    monkeypatch.setattr(agy_attestation, "ATTESTATION_STATUSES", ("present_unverified", "not_checked"))
+    with pytest.raises(ValueError, match="upstream attestation"):
+        verifier.contract()
+
+
 def test_contract_fails_a_member_with_no_record(verifier, evidence):
     _record_path(evidence).unlink()
     with pytest.raises(ValueError, match="has no record"):

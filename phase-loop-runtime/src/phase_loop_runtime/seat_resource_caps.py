@@ -647,8 +647,13 @@ def _refused(reason: str, exc: BaseException | None = None):
     raise error
 
 
-def capped_popen(command, *, seat_key: str, **popen_kwargs) -> "subprocess.Popen[bytes]":
-    """Start one local seat child below its seat-key parent and prove every cap."""
+def capped_popen(command, *, seat_key: str, before_spawn=None,
+                 **popen_kwargs) -> "subprocess.Popen[bytes]":
+    """Start one local seat child below its seat-key parent and prove every cap.
+
+    ``before_spawn`` (grok tool-surface contract v1, erratum 4), when given, is called once
+    after every preflight check here and immediately before the child is created; a refusal
+    before it creates no child and never calls it."""
     scope = _CURRENT_SEAT_SCOPE.get()
     if not isinstance(seat_key, str) or not seat_key:
         _refused("a live seat key is required")
@@ -718,6 +723,8 @@ def capped_popen(command, *, seat_key: str, **popen_kwargs) -> "subprocess.Popen
         popen_kwargs.setdefault("close_fds", True)
         try:
             try:
+                if before_spawn is not None:
+                    before_spawn()
                 process = subprocess.Popen(argv, **popen_kwargs)
             except BaseException:
                 os.close(read_fd)

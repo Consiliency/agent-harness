@@ -4,6 +4,9 @@ A newer upstream agy release that is not a shipped member only warns; hosts self
 on first use. The newest SHIPPED member's vendor asset digest, URL and archive stay blocking,
 so the scheduled `upstream` job reds on any member-integrity failure and never on membership.
 
+The newest upstream release is the first stable entry of the first listing page, chosen with
+the resolver's stable filter (PROVFWD-detail §3.2), not ``/releases/latest``.
+
 Nothing here reaches the network: the release API and the asset are served in memory, and
 the catalog is replaced by synthetic records whose digests match a synthetic archive.
 """
@@ -14,7 +17,9 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import re
 import tarfile
+from urllib.parse import parse_qs, urlsplit
 
 from types import SimpleNamespace
 
@@ -25,6 +30,8 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "verify_qualified_agy
 REPO = Path(__file__).resolve().parents[2]
 QUALIFIED = REPO / ".github" / "workflows" / "qualified-agy-image.yml"
 RELEASES = "https://api.github.com/repos/google-antigravity/antigravity-cli/releases"
+LISTING = f"{RELEASES}?per_page=100"
+PUBLISHED = "2026-11-19T08:38:26Z"
 DOWNLOAD = "https://github.com/google-antigravity/antigravity-cli/releases/download/"
 ASSET = "agy_cli_linux_x64.tar.gz"
 WARNING = "::warning::newest upstream agy {} is not a shipped member; hosts self-qualify it on first use"
@@ -53,24 +60,33 @@ def _archive(executable):
 
 
 class Upstream:
-    """The release API, by-tag lookups and asset downloads; records every URL."""
+    """The release listing, by-tag lookups and asset downloads; records every URL.
+
+    The listing is ``ahead`` (entries the stable filter must skip), then ``latest``, then the
+    other releases."""
 
     def __init__(self):
         self.releases, self.blobs, self.calls = {}, {}, []
-        self.latest = None
+        self.latest, self.ahead = None, []
 
     def add(self, version, archive, *, digest=None, url=None):
         url = url or f"{DOWNLOAD}{version}/{ASSET}"
         self.blobs[url] = archive
-        self.releases[version] = {"tag_name": version, "assets": [
-            {"name": ASSET, "browser_download_url": url,
-             "digest": digest or "sha256:" + sha256(archive).hexdigest()}]}
+        self.releases[version] = {"tag_name": version, "draft": False, "prerelease": False,
+                                  "published_at": PUBLISHED, "assets": [
+                                      {"name": ASSET, "browser_download_url": url,
+                                       "digest": digest or "sha256:" + sha256(archive).hexdigest()}]}
+
+    def listing(self):
+        rest = [release for tag, release in self.releases.items() if tag != self.latest]
+        return self.ahead + [self.releases[self.latest]] + rest
 
     def urlopen(self, request, timeout=None):
         url = getattr(request, "full_url", request)
         self.calls.append(url)
-        if url == f"{RELEASES}/latest":
-            return io.BytesIO(json.dumps(self.releases[self.latest]).encode())
+        assert url != f"{RELEASES}/latest", "the newest release comes from the listing"
+        if url == LISTING:
+            return io.BytesIO(json.dumps(self.listing()).encode())
         if url.startswith(f"{RELEASES}/tags/"):
             return io.BytesIO(json.dumps(self.releases[url.rsplit("/", 1)[1]]).encode())
         return io.BytesIO(self.blobs[url])
@@ -130,7 +146,7 @@ def test_the_newest_member_is_fetched_and_its_archive_downloaded_by_tag(world, c
     annotations, result = _result(capsys)
     assert annotations == [WARNING.format("2.0.0")]
     assert result["verified_member"] == "1.10.0"
-    assert upstream.calls == [f"{RELEASES}/latest", f"{RELEASES}/tags/1.10.0", f"{DOWNLOAD}1.10.0/{ASSET}"]
+    assert upstream.calls == [LISTING, f"{RELEASES}/tags/1.10.0", f"{DOWNLOAD}1.10.0/{ASSET}"]
 
 
 def test_a_member_latest_verifies_without_a_warning(world, capsys):
@@ -196,3 +212,67 @@ def test_main_reports_an_upstream_refusal_as_exit_status_one(world, verifier, mo
     next(r for r in records if r["release_version"] == "1.10.0")["upstream_asset_sha256"] = "0" * 64
     assert verifier.main(["--upstream-only", "--archive", str(archives["1.10.0"])]) == 1
     assert "verify_qualified_agy_image:" in capsys.readouterr().err
+
+
+# ------------------------------------------------- PROVFWD: the newest release from the listing
+
+#: One listing for both filters: drafts, prereleases and non-release tags ahead of the newest.
+SHARED_LISTING = [
+    {"tag_name": "3.0.0", "draft": True, "prerelease": False, "published_at": "2026-11-20T00:00:00Z"},
+    {"tag_name": "2.9.0", "draft": False, "prerelease": True, "published_at": "2026-11-19T12:00:00Z"},
+    {"tag_name": "nightly", "draft": False, "prerelease": False, "published_at": "2026-11-19T11:00:00Z"},
+    {"tag_name": "2.5.0", "draft": None, "prerelease": False, "published_at": "2026-11-19T10:00:00Z"},
+    {"tag_name": "2.1.0", "draft": False, "prerelease": False, "published_at": "2026-11-19T09:00:00Z"},
+    {"tag_name": "2.0.0", "draft": False, "prerelease": False, "published_at": "2026-11-18T09:00:00Z"},
+]
+
+
+class _Listing:
+    """``agy_provenance``'s transport over ``SHARED_LISTING`` (one short page)."""
+
+    def open(self, url, *, accept):
+        first = parse_qs(urlsplit(url).query).get("page", ["1"]) == ["1"]
+        return io.BytesIO(json.dumps(SHARED_LISTING if first else []).encode())
+
+
+def test_newest_stable_uses_the_resolvers_stable_filter(verifier):
+    """Mutation: ``/releases/latest`` (GitHub's choice), or a filter that keeps a draft or a
+    prerelease ahead of the newest stable release."""
+    from phase_loop_runtime import agy_provenance as prov
+    seen = []
+    newest = verifier.newest_stable(lambda url: seen.append(url) or SHARED_LISTING)
+    assert newest["tag_name"] == "2.1.0" == prov.stable_releases(_Listing())[0]["tag_name"]
+    assert seen == [LISTING]
+
+
+@pytest.mark.parametrize("listing", [[], [SHARED_LISTING[0], SHARED_LISTING[1]], {"tag_name": "2.0.0"}, None])
+def test_a_listing_without_a_stable_release_refuses(verifier, listing):
+    with pytest.raises(ValueError, match="listing"):
+        verifier.newest_stable(lambda url: listing)
+
+
+def test_upstream_only_skips_entries_ahead_of_the_newest_stable_release(world, capsys):
+    upstream, archives, run = world
+    upstream.latest = "1.10.0"
+    upstream.ahead = [dict(upstream.releases["2.0.0"], tag_name="3.0.0", prerelease=True),
+                      dict(upstream.releases["2.0.0"], tag_name="2.9.0", draft=True)]
+    run("--archive", str(archives["1.10.0"]))
+    annotations, result = _result(capsys)
+    assert annotations == [] and result["latest_release"] == "1.10.0" and result["latest_is_member"] is True
+
+
+def test_the_result_carries_the_newest_releases_published_at(world, capsys):
+    upstream, archives, run = world
+    upstream.releases["2.0.0"]["published_at"] = "2026-11-20T01:02:03Z"
+    run("--archive", str(archives["1.10.0"]))
+    _, result = _result(capsys)
+    assert result["latest_published_at"] == "2026-11-20T01:02:03Z" and result["latest_release"] == "2.0.0"
+
+
+def test_the_verifier_keeps_exactly_its_three_modes(verifier, capsys):
+    with pytest.raises(SystemExit):
+        verifier.main(["--help"])
+    usage = " ".join(capsys.readouterr().out.split())
+    assert "(--contract | --release | --upstream-only)" in usage
+    assert usage.count("--") == len(re.findall(r"--(?:contract|release|upstream-only|conformance-report|archive|help)",
+                                               usage))

@@ -23,12 +23,12 @@ git clone https://github.com/Consiliency/agent-harness
 agent-harness/install-agent-harness.sh --harness claude
 ```
 
-To install just this runtime package directly (0.7.37 is an unpublished candidate;
+To install just this runtime package directly (0.7.38 is an unpublished candidate;
 the exact pin below becomes available only after publication):
 
 ```sh
 pip install phase-loop-runtime              # latest compatible release
-pip install phase-loop-runtime==0.7.37      # candidate pin; unavailable before publication
+pip install phase-loop-runtime==0.7.38      # candidate pin; unavailable before publication
 ```
 
 To pin a specific tag from source instead, substitute a tag from
@@ -212,9 +212,10 @@ clean; non-zero prints each issue on stderr.
 
 ## Local Gemini model preference
 
-The shipped Gemini planning and review defaults use Gemini 4 Argon. To use that
-family for all local Gemini role defaults, add this to the environment that runs
-`phase-loop`:
+The shipped Gemini planning and review defaults use Gemini 4 NEON
+(`gemini-4-neon`, rendered `gemini-4-neon-high`). To use one family for all local
+Gemini role defaults, or to return to the prior Gemini 4 Argon default, add this
+to the environment that runs `phase-loop`:
 
 ```sh
 export PHASE_LOOP_GEMINI_MODEL=gemini-4-argon
@@ -222,7 +223,7 @@ export PHASE_LOOP_GEMINI_MODEL=gemini-4-argon
 
 Use a registered canonical base model without an effort suffix. The runtime
 preserves action and seat effort: executor policy normalizes unsupported max
-requests to high, and the default review board keeps medium. Explicit task models,
+requests to high, and the default review board keeps high. Explicit task models,
 plan/roadmap model pins and configured board seats take precedence. Other providers,
 subscription authentication and sandbox admission retain their existing behavior.
 Invalid preferences fail without model fallback. Unsetting the variable restores

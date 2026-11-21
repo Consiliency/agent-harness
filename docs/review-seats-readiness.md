@@ -37,6 +37,27 @@ designated seat host; source-checkout tests do not establish host readiness.
 | Grok remote | remote | remote-pending | none | REMOTE activation |
 | Pi remote | remote | remote-pending | none | REMOTE activation |
 
+Grok's tool probe (`phase-loop seat-window probe-tools --vendor grok`) has two bases,
+and each row reports its `basis`. A build whose `--help` advertises `--list-tools` is
+listed; no installed build does, 1.0.89 included. Any other build needs a frozen surface
+measured for its exact binary digest and route argv digest, from the shipped catalog or a
+host-local record, and that basis holds only inside the `grok_seat_context.v1` launch
+context: a fresh seat home, the allow-listed environment, no managed grok configuration
+and no Claude Code managed settings in the seat's view, no tool-discovery path visible in
+the reviewed tree, vendor-only `grok-review` egress and
+the launch-owner review composition. The board review leg (the `sealed`, `staged` and
+`review` forms) is wired to that context. A grok leg on a frozen-basis receipt runs in the
+`grok-review` proxy-only namespace its leg holds, and is checked after composition against
+that namespace and proxy. There is no fallback to a broader namespace. Until the
+owner-gated measurement has run, every grok route stays `grok_tool_surface_unverified`.
+Each new grok binary digest fails closed until it is measured, and each measurement needs
+an owner grant
+(`plans/artifacts/grok-tool-surface-contract-v1.md` §6). The measurement is
+`phase-loop seat-window measure-tools --vendor grok`, run on the measuring host by the
+contract's §5.10 procedure: a binding `--rehearse` stage first runs the pilot's launch
+under a zero-budget proxy, a durable grant ledger caps the counted requests (one per
+launch, at most 7 per grant), and only `--aggregate` writes the host-local record.
+
 President inventory is supplied by `PresidentInvoke`. These are the current
 runtime-named entries; sealed provider routes remain in the inventory.
 

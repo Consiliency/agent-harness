@@ -131,6 +131,7 @@ from .advisor_board.schema import (
     Seat,
     identify_host_leg,
 )
+from . import grok_tool_surface as _grok_surface
 from . import review_stage as _review_stage
 from . import sandbox_egress as _sandbox_egress
 from . import sandbox_placement as _sandbox_placement
@@ -999,8 +1000,9 @@ DEFAULT_REVIEW_SEAT_ALIASES: Mapping[str, str] = {
     "gpt-5.6-sol": "sol",  # model-id-source: explicit legacy review seat
     "gpt-6-sol": "sol",  # model-id-source: explicit review seat
     "gpt-6.1-sol": "sol",  # model-id-source: explicit review seat (board-config selected)
-    "gemini-4-argon": "gemini",  # model-id-source: frozen review policy default seat
-    "gemini-3.8-flash": "gemini",  # model-id-source: explicit review seat (the prior default)
+    "gemini-4-neon": "gemini",  # model-id-source: frozen review policy default seat
+    "gemini-4-argon": "gemini",  # model-id-source: explicit review seat (the prior default)
+    "gemini-3.8-flash": "gemini",  # model-id-source: explicit review seat (an earlier default)
     "gemini-3.7-flash": "gemini",  # model-id-source: explicit legacy review seat
     "gemini-3.6-flash": "gemini",  # model-id-source: explicit legacy review seat
     "grok-4.7": "grok",  # model-id-source: frozen review policy default seat
@@ -1740,7 +1742,7 @@ _LEG_CLI: dict[str, str] = {
 # drift back to Sonnet.
 DEFAULT_LEG_MODELS: dict[str, str] = {
     "codex": "gpt-6.2-astra",  # model-id-source: panel per-leg default (single source of truth)
-    "gemini": "gemini-4-argon-medium",  # model-id-source: panel per-leg default
+    "gemini": "gemini-4-neon-high",  # model-id-source: panel per-leg default
     "claude": "claude-opus-5-5",  # model-id-source: panel per-leg default (single source of truth)
     "grok": "grok-4.7",  # model-id-source: panel per-leg default (single source of truth)
 }
@@ -2141,6 +2143,23 @@ def _claude_mode_transport_refusal(cache: dict[str, object]) -> str | None:
     return cache["sdk"] if isinstance(cache["sdk"], str) else None
 
 
+def _gemini_login_unrenewable(env: Mapping[str, str] | None) -> bool:
+    """agent-harness#1823: whether the jailed Gemini seat's launch gate would refuse its login
+    now -- the login is not fresh (`_gemini_credential_fresh`) and the seat's subject is bound
+    to an executable dependency (a session lease or a managed release), which must not renew
+    the host login. Read-only and advisory: anything it cannot tell is ``False``, and the
+    seat's own gate decides."""
+    subscription_env = _broker_subscription_env(env)
+    try:
+        if _gemini_credential_fresh(Path(subscription_env.get("HOME", str(Path.home())))):
+            return False
+        from .seat_subject import resolve_seat_subject
+        subject = resolve_seat_subject("gemini", subscription_env)
+    except Exception:
+        return False
+    return subject.source in {"session_lease", "managed_release"}
+
+
 def _seat_launch_modes(
     board: Board, *, mode: str | None,
     review_authorization: "ReviewIsolationAuthorization | None",
@@ -2280,6 +2299,12 @@ def _seat_launch_modes(
                                              None, position))
                     sdk_refused.add(position)
                     continue
+            if leg == "gemini" and _gemini_login_unrenewable(base_env):
+                # agent-harness#1823: the launch gate would refuse this login, and a
+                # dependency route must not renew it (agent-harness#1782): say so now,
+                # with its renewal fix, rather than after the board has run.
+                modes.append(_coded(sp.MODE_DEGRADED, "gemini_credential_near_expiry"))
+                continue
             kind, code, source, left, also = (_claude_credential(leg) if leg == "claude"
                                               else (sp.MODE_JAILED, None, None, None, ()))
             profile = _seat_profiles.profile_for(leg)
@@ -3320,6 +3345,9 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "claude_seat_login_token_expired", "claude_seat_login_token_expiring",
     "claude_seat_login_token_awaiting_refresh",
     "seat_jail_qualification_failed",
+    # agent-harness#1823: the qualification board's watcher could not start. A detail code
+    # only, not a seat notice: the mode-line closure (`seat_route_contract`) is unchanged.
+    "seat_sandbox_refused:watch_unavailable",
     # agent-harness#1407: a Gemini seat waiting for its agy login to expire (never a refusal)
     "gemini_credential_awaiting_refresh",
     "gemini_seat_credential_missing", "gemini_seat_credential_unusable",
@@ -3583,7 +3611,67 @@ def _exception_failure(exc: BaseException) -> object:
         # A full disk is an operator-actionable environment failure (board round 8 of
         # agent-harness#908); its message names paths, so it gets our own template.
         return "env_failure: staging filesystem below its free-space floor"
+    code = _caused_refusal_code(exc)
+    if code is not None:
+        return code
     return _LegFailure(_UNKNOWN_DETAIL, raw=f"{type(exc).__name__}: {message}", unknown=True)
+
+
+#: How many ``__cause__`` links `_exception_failure` follows to find a typed refusal
+#: (agent-harness#1823), bounded so that a cycle cannot spin. Only explicit chaining
+#: (``raise ... from``) is followed, never ``__context__``, and only out of a recognized
+#: transparent wrapper (`_is_transparent_wrapper`): any other outer exception keeps its own
+#: classification.
+_EXCEPTION_CAUSE_DEPTH = 4
+#: The login-freshness gate's refusal on a dependency route (agent-harness#1782), by its two
+#: typed fields: the session must not renew the host's agy login, so the seat reports the
+#: existing ``gemini_credential_near_expiry`` code, whose notice tells the operator to renew it.
+_GEMINI_HOST_REFRESH_REFUSAL = ("dependency_route_unwired", "Gemini host credential refresh")
+#: Exception types (EXACT types) whose single argument, when it EQUALS one of our fixed
+#: literals, is that refusal's code.
+_CODED_MESSAGE_TYPES: tuple[type, ...] = (
+    ValueError, _sandbox_egress.EgressUnavailable, _sandbox_egress.SeatIdentityUnverified,
+    _ReviewOperationCancelled,
+)
+
+
+def _typed_refusal_code(exc: BaseException) -> str | None:
+    """The one harness code an exception of ours carries, by EXACT type, or ``None``. A code
+    is a typed attribute, or an argument that EQUALS one of our literals; no text is parsed."""
+    kind = type(exc)
+    if kind is _seat_jail.SeatSandboxRefused:
+        code = exc.code
+    elif kind is ExecutableDependencyError:
+        fields = (exc.code, exc.detail)
+        typed = all(type(value) is str for value in fields)
+        code = ("gemini_credential_near_expiry"
+                if typed and fields == _GEMINI_HOST_REFRESH_REFUSAL else None)
+    elif any(kind is coded for coded in _CODED_MESSAGE_TYPES) and len(exc.args) == 1:
+        code = exc.args[0]
+    else:
+        return None
+    return code if type(code) is str and code in _HARNESS_DETAIL_CODES else None
+
+
+def _is_transparent_wrapper(exc: BaseException) -> bool:
+    """The wrappers classification looks through, by EXACT type: today only the broker
+    client's failure that its adapter's exception alone caused (its independent checks held)."""
+    return type(exc) is _advisor_board_backing.CredentiallessAdapterFailure
+
+
+def _caused_refusal_code(exc: BaseException) -> str | None:
+    """``exc``'s typed refusal, or, when ``exc`` is a transparent wrapper, its cause's,
+    within :data:`_EXCEPTION_CAUSE_DEPTH` links. An outer exception of any other type keeps
+    its own classification, whatever it was raised from."""
+    current: BaseException | None = exc
+    for _ in range(_EXCEPTION_CAUSE_DEPTH + 1):
+        if current is None:
+            return None
+        code = _typed_refusal_code(current)
+        if code is not None or not _is_transparent_wrapper(current):
+            return code
+        current = current.__cause__
+    return None
 
 
 def _resolve_leg_detail(value: object, run_dir: Path | str | None, seat_key: str) -> object:
@@ -4857,6 +4945,10 @@ class SeatProfile:
     evidence: Mapping[str, object] = field(default_factory=dict)
     dependency: object | None = field(default=None, repr=False)
     dependency_projection_digest: str = ""
+    #: A grok launch on a frozen-basis receipt (grok tool-surface contract §4.4): the
+    #: ``ProvisionalContext`` its composition stamps, or the ``LaunchContext`` mark that
+    #: ``grok_tool_surface.verify_launch_context`` gives it. ``None`` otherwise.
+    grok_launch_context: object | None = field(default=None, repr=False, compare=False)
 
 
 _OWNED_LAUNCH = ContextVar("owned_provider_launch", default=False)
@@ -4918,6 +5010,9 @@ def _blank_refresh_token(value):
 #: it) and an ``OPENAI_API_KEY`` in API-key mode: neither can refresh the login, and both are
 #: redacted from the seat's output like every copied secret.
 _SEAT_CREDENTIAL_SHAPE = {"codex": "blank_refresh", "grok": "access_only", "opencode": "access_only"}
+#: Where a grok seat's egress CA certificate sits in its private home (contract grok
+#: tool-surface v1, section 5.2): outside ``.grok/``, read-only.
+_SEAT_EGRESS_CA_RELATIVE = ".phase-loop-seat-egress-ca.pem"
 
 
 def _seat_secret_values(value):
@@ -5349,11 +5444,30 @@ def _require_dependency_profile_composition(dependency, harness, env, *, gemini_
 @contextmanager
 def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=(),
                  broker_socket=None, gemini_profile=None, role=SeatLaunchRole.PROVIDER_REVIEW,
-                 writable_trees=(), needs_login=True, dependency=None):
+                 writable_trees=(), needs_login=True, dependency=None, grok_sessions=None,
+                 egress_proxy=None):
     """Copy declared subscription state into a per-launch private home.
 
     ``needs_login`` is False only for a launch that makes no provider request
-    (:func:`_gemini_launch_needs_login`): the freshness of the login is then not asked."""
+    (:func:`_gemini_launch_needs_login`): the freshness of the login is then not asked.
+
+    ``egress_proxy`` (grok tool-surface contract v1, section 5.2) is the ``grok-review``
+    proxy this launch owns; only a grok profile takes one. It adds the proxy projection and
+    nothing else: the proxy's address in :data:`seat_egress_proxy.SEAT_PROXY_ENV`, its CA
+    certificate as a read-only file in the private home named by
+    :data:`seat_egress_proxy.SEAT_CA_ENV` (the seat's whole trust bundle), and the proxy's
+    session token among the redactions. Without it the profile is composed as before.
+
+    ``grok_sessions`` (grok tool-surface contract v1, section 5.1) is the grok measurement's
+    scratch sessions directory, bound read-write at ``.grok/sessions``: the one host-backed
+    path a measurement's private home holds. Only a grok profile takes one; without it the
+    profile is composed byte-identically."""
+    if grok_sessions is not None and harness != "grok":
+        raise ValueError("only a grok profile takes a measurement sessions directory")
+    if egress_proxy is not None and (
+            harness != "grok"
+            or getattr(egress_proxy, "allowlist_id", None) != _seat_egress_proxy.GROK_REVIEW_ALLOWLIST):
+        raise ValueError("only a grok profile takes the grok-review egress proxy")
     if (
         dependency is None
         and gemini_profile is None
@@ -5500,6 +5614,34 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
         elif harness == "grok":
             credential(".grok/auth.json", shape=_SEAT_CREDENTIAL_SHAPE["grok"])
             data_file(".grok/agent_id", _seat_credential(home, ".grok/agent_id"))
+            if egress_proxy is not None:
+                # The same projection at measurement and at use (contract section 5.2).
+                ca_destination = private_home + "/" + _SEAT_EGRESS_CA_RELATIVE
+                descriptor = os.memfd_create("seat-profile", os.MFD_CLOEXEC)
+                stack.callback(os.close, descriptor)
+                os.write(descriptor, _seat_egress_proxy.ca_certificate(egress_proxy))
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                pass_fds.add(descriptor)
+                mounts.extend(("--perms", "0444", "--ro-bind-data", str(descriptor),
+                               ca_destination))
+                profile_env[_seat_egress_proxy.SEAT_PROXY_ENV] = egress_proxy.proxy_url
+                profile_env[_seat_egress_proxy.SEAT_CA_ENV] = ca_destination
+                proxy_token = urllib.parse.urlsplit(egress_proxy.proxy_url).password
+                if proxy_token:
+                    redactions.append(proxy_token)
+                    observation = _EXEC_OBSERVATION.get()
+                    if observation is not None:
+                        observation["scan_secrets"] = tuple(item.encode() for item in redactions)
+                evidence.update(
+                    seat_egress_allowlist_id=egress_proxy.allowlist_id,
+                    seat_egress_allowlist_digest=egress_proxy.allowlist_digest,
+                    seat_egress_ca_sha256=egress_proxy.ca_sha256,
+                )
+            if grok_sessions is not None:
+                # The measurement reads the session's tool_definitions.json from here; the
+                # rest of the home stays the tmpfs (contract section 5.1).
+                mounts.extend(("--bind", _seat_bind_source(grok_sessions, tree=True),
+                               private_home + "/" + _grok_surface.SESSIONS_RELATIVE))
         elif harness == "gemini":
             credential(".gemini/antigravity-cli/antigravity-oauth-token", access_only=True)
             if gemini_profile is None:
@@ -5721,8 +5863,13 @@ def _precreate_seat_output(path):
 @contextmanager
 def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None,
                           gemini_profile=None, role=SeatLaunchRole.PROVIDER_REVIEW,
-                          readonly_paths=(), replaceable_outputs=()):
+                          readonly_paths=(), replaceable_outputs=(), grok_egress_proxy=None):
     """The owned seat's command and profile for one launch.
+
+    ``grok_egress_proxy`` is the ``grok-review`` proxy a board leg holds for a grok leg on a
+    frozen-basis receipt (grok tool-surface contract v1, section 4.6); the profile then
+    carries that proxy's projection (``seat_profile(egress_proxy=...)``). Without it the
+    profile is composed exactly as before.
 
     ``outputs`` are bound in place: each is one precreated host file, shared live with the
     seat, which can write it but not replace it (a bound file is a mount point).
@@ -5752,9 +5899,15 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
     else:
         harness, executable = "gemini", gemini_profile.executable
         dependency = current_dependency_for_provider(harness)
-    if (harness == "grok" and not _grok_admin_command(command)
-            and not grok_tool_gate(command, env)):
-        raise _seat_jail.SeatSandboxRefused("grok_tool_surface_unverified")
+    frozen_basis = False
+    if harness == "grok" and not _grok_admin_command(command):
+        admitted, basis = _grok_gate_with_basis(command, env)
+        if not admitted:
+            raise _seat_jail.SeatSandboxRefused("grok_tool_surface_unverified")
+        # For a frozen-basis receipt the gate above is the provisional step: it admits this
+        # composition, never a launch. The profile says so, and launch_owned refuses it
+        # until verify_launch_context has marked it (grok tool-surface contract §4.4).
+        frozen_basis = basis == "frozen_measurement"
     _require_dependency_profile_composition(
         dependency, harness, env, gemini_profile=gemini_profile,
         needs_login=_gemini_launch_needs_login(command, gemini_profile), role=role,
@@ -5842,9 +5995,13 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
             gemini_profile=gemini_profile, role=role,
             writable_trees=tuple(writable),
             needs_login=_gemini_launch_needs_login(command, gemini_profile),
-            dependency=dependency))
+            dependency=dependency,
+            **({"egress_proxy": grok_egress_proxy} if grok_egress_proxy is not None else {})))
         profile = replace(profile, output_dirs=tuple(
             (source, directory) for directory, source in private.items()))
+        if frozen_basis:
+            profile = replace(profile, grok_launch_context=_grok_surface.ProvisionalContext(
+                tuple(command)))
         owned_command = [provider, *command[1:]]
         if transcript_path is not None:
             slug = re.sub(r"[^A-Za-z0-9.-]", "-", str(cwd))
@@ -5907,6 +6064,136 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
                 raise failure
 
 
+@contextlib.contextmanager
+def _grok_review_egress(*, timeout_s: float | None, request_budget: int | None = None,
+                        named: tuple = ()):
+    """The vendor-only egress of one launch-owner grok launch (contract grok tool-surface
+    v1, section 5.2), shared by the measurement and the board review leg: one proxy under
+    the ``grok-review`` allowlist, owned by this launch, then the proxy-only namespace
+    bridged to it, with no uplink. Yields ``(proxy, prefix)``; the caller holds ``prefix``
+    as the launch's egress prefix.
+
+    The launch-owner composition runs as the operator, whom the proxy-only holder maps to
+    uid 0 exactly as the slirp holder does; before it yields, the holder's own bridge check
+    shows a child under the prefix reaching the proxy and no public address. ``sandbox_egress``
+    is therefore not extended. Everything refuses before any launch -- the egress layer or the
+    allowlist missing (:class:`seat_egress_proxy.EgressLayerUnavailable`), the namespace not
+    coming up or yielding nothing (:class:`sandbox_egress.EgressUnavailable`) -- and there is
+    no fallback to a broader namespace."""
+    with contextlib.ExitStack() as stack:
+        proxy = stack.enter_context(_seat_egress_proxy.start_proxy(
+            allowlist_id=_seat_egress_proxy.GROK_REVIEW_ALLOWLIST,
+            request_budget=request_budget,
+            # Only a measurement names observations (erratum 3); every other call is as it was.
+            **({"named": tuple(named)} if named else {})))
+        prefix = tuple(stack.enter_context(_sandbox_egress.isolated_network(
+            timeout_s=timeout_s, required=True, seat_uid_map=True,
+            proxy_socket=proxy.socket, proxy_port=_seat_egress_proxy.SEAT_PROXY_PORT,
+        )))
+        if not prefix:
+            raise _sandbox_egress.EgressUnavailable(
+                "the grok-review proxy-only namespace yielded an empty launch prefix")
+        yield proxy, prefix
+
+
+#: The ``grok-review`` egress a board leg holds for a grok leg on a frozen-basis receipt
+#: (grok tool-surface contract v1, section 4.6): ``(proxy, prefix)``, set only by
+#: :func:`_grok_board_leg_egress` for the life of the leg.
+_GROK_LEG_EGRESS: ContextVar["tuple[_seat_egress_proxy.SeatEgressProxy, tuple[str, ...]] | None"] = (
+    ContextVar("_GROK_LEG_EGRESS", default=None))
+
+
+@contextlib.contextmanager
+def _grok_board_leg_egress(*, timeout_s: float | None):
+    """The egress of a board review leg whose grok form rests on a frozen-basis receipt (grok
+    tool-surface contract v1, section 4.6): the ``grok-review`` proxy, with no request
+    budget, and the proxy-only namespace bridged to it, held for the whole leg in place of
+    any slirp namespace. Yields the launch prefix and holds ``(proxy, prefix)`` as
+    ``_GROK_LEG_EGRESS``, which the leg's launches compose with and check against.
+
+    Any failure to set it up -- the egress layer or the allow-list missing, the namespace not
+    coming up, the namespace not bridged to its own proxy -- is ``grok_tool_surface_unverified``,
+    and nothing falls back to a broader namespace. The binding is the measurement's own
+    (``grok_tool_surface.bridged_to``, BA-3): one check serves both paths."""
+    stack = contextlib.ExitStack()
+    try:
+        proxy, prefix = stack.enter_context(_grok_review_egress(timeout_s=timeout_s))
+        prefix = tuple(prefix)
+        if not _grok_surface.bridged_to(prefix, proxy):
+            raise _sandbox_egress.EgressUnavailable(
+                "the grok-review namespace is not bridged to its own proxy")
+    except Exception as exc:  # noqa: BLE001 - every failure is the one public refusal
+        stack.close()
+        logging.getLogger(__name__).warning(
+            "seat grok: the grok-review egress is unavailable (%s: %s)", type(exc).__name__, exc)
+        raise _seat_jail.SeatSandboxRefused("grok_tool_surface_unverified") from exc
+    with stack:
+        token = _GROK_LEG_EGRESS.set((proxy, prefix))
+        try:
+            yield prefix
+        finally:
+            _GROK_LEG_EGRESS.reset(token)
+
+
+def _grok_leg_on_frozen_basis(*, brokered: bool, model, effort, env, review_dir, out_dir) -> bool:
+    """The provisional step (grok tool-surface contract v1, section 4.4) at the board leg's
+    egress setup: does the grok form this leg will launch rest on a frozen-basis receipt? The
+    form is built as ``_exec_leg`` builds it -- the ``sealed`` or ``staged`` form, on the
+    brokered model, for a brokered leg, the ``review`` form otherwise -- with only its masked
+    prompt slot left empty, so its argv digest is the launch's. Anything that cannot be
+    decided is ``False``: the leg then keeps today's egress, and its own gates refuse a frozen
+    basis there."""
+    try:
+        if brokered:
+            model = harden_subscription_model("grok", model or DEFAULT_LEG_MODELS["grok"], effort)
+        grok_effort_args = render_seat_invocation(
+            "grok", model or DEFAULT_LEG_MODELS["grok"], effort or "high").effort_args
+        if brokered:
+            command = _brokered_grok_command(
+                model=model, out_dir=out_dir, grok_effort_args=grok_effort_args,
+                staged_tree=_sandbox_in(review_dir))
+            gate_env = _broker_subscription_env(env)
+        else:
+            command = _grok_review_form(model=model, review_dir=review_dir, prompt="",
+                                        grok_effort_args=grok_effort_args)
+            gate_env = scrub_subscription_env(os.environ) if env is None else dict(env)
+        admitted, basis = _grok_gate_with_basis(command, gate_env)
+    except Exception:  # noqa: BLE001 - undecidable: today's egress, and the leg's gates refuse
+        return False
+    return admitted and basis == "frozen_measurement"
+
+
+def _grok_leg_launch_egress(cmd) -> "tuple[_seat_egress_proxy.SeatEgressProxy, tuple[str, ...]] | None":
+    """The ``grok-review`` egress this launch runs in, when its board leg holds one. While
+    one is held only the leg's own grok form launches, and only under that egress's prefix."""
+    held = _GROK_LEG_EGRESS.get()
+    if held is None:
+        return None
+    if (not cmd or Path(cmd[0]).name != "grok" or _grok_admin_command(cmd)
+            or tuple(_EGRESS_LAUNCH_PREFIX.get()) != held[1]):
+        raise _seat_jail.SeatSandboxRefused("grok_tool_surface_unverified")
+    return held
+
+
+def _grok_leg_final_check(profile, egress, *, env, cwd):
+    """The final step of a board leg's frozen-basis grok launch (grok tool-surface contract
+    v1, sections 4.4 and 4.6), after composition: the profile was composed for a frozen-basis
+    receipt with the projection of the ``grok-review`` proxy its leg holds, that proxy is the
+    one the leg's namespace holder bridges to (``grok_tool_surface.bridged_to``), and
+    ``verify_launch_context`` checks every launch-context condition against the composed
+    profile and marks it. A frozen-basis receipt with no such egress (the fallback
+    namespace), and that egress held for a receipt no longer on the frozen basis, each
+    refuse: there is no fallback either way."""
+    context = getattr(profile, "grok_launch_context", None)
+    if egress is None or not isinstance(context, _grok_surface.ProvisionalContext):
+        raise _seat_jail.SeatSandboxRefused("grok_tool_surface_unverified")
+    proxy, prefix = egress
+    if not _grok_surface.bridged_to(prefix, proxy):
+        raise _seat_jail.SeatSandboxRefused("grok_tool_surface_unverified")
+    return _grok_surface.verify_launch_context(
+        profile, env=env, cwd=cwd, role=SeatLaunchRole.PROVIDER_REVIEW, proxy=proxy)
+
+
 def _filtered_holder_namespace() -> int:
     prefix = _EGRESS_LAUNCH_PREFIX.get()
     try:
@@ -5924,8 +6211,12 @@ def _filtered_holder_namespace() -> int:
 def launch_owned(argv, *, role, profile: SeatProfile, supervisor=None,
                  seat_caps: str | None = None, **kwargs):
     role = SeatLaunchRole(role)
-    if require_grok_admission(argv, kwargs.get("env")) and role is SeatLaunchRole.EXECUTOR_TRUSTED:
+    grok_context = getattr(profile, "grok_launch_context", None)
+    if (require_grok_admission(argv, kwargs.get("env"), context=grok_context)
+            and role is SeatLaunchRole.EXECUTOR_TRUSTED):
         argv = [_grok_binary_identity(argv, kwargs.get("env"))[0], *argv[1:]]
+    _require_grok_launch_context(profile, role, argv=argv, cwd=kwargs.get("cwd", os.getcwd()),
+                                 env=kwargs.get("env"))
     if role is SeatLaunchRole.EXECUTOR_TRUSTED:
         from .executable_dependency_startup import refuse_unwired_dependency_route
         refuse_unwired_dependency_route("direct executor")
@@ -6100,10 +6391,24 @@ def _child_scratch_kwargs(kwargs: dict, decision: str) -> None:
         kwargs["env"] = _sandbox_policy.child_scratch_env(kwargs["env"], decision)
 
 
+def _caps_spawn_hook(hook: "Callable[[], None]") -> "Callable[[], None]":
+    """``hook`` for ``capped_popen``'s spawn boundary: any refusal it raises surfaces as the
+    ``OSError`` that ``capped_popen`` cleans up after (it releases its seat parent)."""
+    def call() -> None:
+        try:
+            hook()
+        except OSError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - one refusal type at that boundary
+            raise OSError("the launch's spawn hook refused it") from exc
+    return call
+
+
 def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None, dependency=None,
                     probe_pass_fds=(), seat_caps: str | None = None,
                     child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE,
                     trace_output: str | None = None,
+                    spawn_hook: "Callable[[], None] | None" = None,
                     **kwargs) -> "subprocess.Popen[bytes]":
     """THE one place a review provider process is started. Popen form.
 
@@ -6135,6 +6440,12 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
     handed to the child passes :func:`sandbox_policy.child_scratch_env` with
     ``child_scratch``, so a new seam cannot skip the decision. The only other value is
     ``CHILD_SCRATCH_PRIVATE_TMP``, for a child jailed with its own private ``/tmp``.
+
+    ``spawn_hook`` (grok tool-surface contract v1, erratum 4) is called once, at the spawn
+    boundary itself: after every check and every argument of the launch is settled -- the
+    seat-identity probe, the bwrap witness's arguments, the capped launch's preflight -- and
+    immediately before ``subprocess.Popen``. A refusal anywhere before it creates no process
+    and never calls it. Only the grok rehearsal passes one.
     """
     # A jailed seat's jail IS its owner (agent-harness#1132); every other provider start
     # comes through `launch_owned`. Any word of the argv naming a provider counts, so a
@@ -6179,7 +6490,9 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
             if trace_output is not None else [*prefix, *argv]
         )
         jailed_process = capped_popen(
-            capped_command, seat_key=seat_caps or "", **kwargs,
+            capped_command, seat_key=seat_caps or "",
+            **({"before_spawn": _caps_spawn_hook(spawn_hook)} if spawn_hook is not None else {}),
+            **kwargs,
         )
         _require_launch_proof(jailed_process)
         # A jailed provider is a local provider spawn like any other (agent-harness#896's
@@ -6209,8 +6522,10 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
         try:
             command = [*prefix, *argv] if witness is None else [
                 *_with_bwrap_lifecycle_fds(prefix, witness.info_fd, witness.block_fd), *argv]
-            process = subprocess.Popen(
-                command, **(kwargs if witness is None else witness.popen_kwargs(kwargs)))
+            spawn_kwargs = kwargs if witness is None else witness.popen_kwargs(kwargs)
+            if spawn_hook is not None:
+                spawn_hook()  # the spawn boundary: every argument above is settled
+            process = subprocess.Popen(command, **spawn_kwargs)
         except BaseException:
             if witness is not None:
                 witness.abandon()
@@ -6221,7 +6536,10 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
             _tree_proof.attach(process, _tree_proof.TreeProof.pending())
     else:
         from .seat_resource_caps import capped_popen
-        process = capped_popen([*prefix, *argv], seat_key=seat_caps, **kwargs)
+        process = capped_popen(
+            [*prefix, *argv], seat_key=seat_caps,
+            **({"before_spawn": _caps_spawn_hook(spawn_hook)} if spawn_hook is not None else {}),
+            **kwargs)
         _require_launch_proof(process)
     # Counted once the process exists: a launch that fails to exec is not a spawn.
     _count_provider_spawn()
@@ -9689,6 +10007,14 @@ def _run_leg_with_liveness(
         if review_monitor is not None and review_monitor.cancel.is_set():
             raise _ReviewOperationCancelled("review_operation_cancelled")
         if seat_jail is not None:
+            # The jailed route is not the composition a frozen tool surface was measured in
+            # (grok tool-surface contract §4.4). A grok argv launches here only on a positive
+            # decision of the gate itself, on a legacy or listing receipt: a frozen-basis
+            # receipt, or one withdrawn or unreadable since the leg's early gate, refuses.
+            if Path(cmd[0]).name == "grok":
+                admitted, basis = _grok_gate_with_basis(cmd, env)
+                if not admitted or basis != "list_tools":
+                    raise _seat_jail.SeatSandboxRefused("grok_tool_surface_unverified")
             # The jail is the owner (agent-harness#1132): `launch_provider` replaces the cwd,
             # environment and descriptors with the jail's declared ones.
             proc = launch_provider(
@@ -9699,12 +10025,21 @@ def _run_leg_with_liveness(
                 trace_output=trace_output, seat_caps=seat_caps,
             )
             return proc
+        # A grok leg on a frozen-basis receipt launches only under the grok-review egress its
+        # board leg holds, composed with that proxy's projection (grok tool-surface contract
+        # §4.6). Every other launch composes exactly as before.
+        grok_egress = _grok_leg_launch_egress(cmd)
         # The request's own refusals (an unavailable profile) come before the host's.
         owned_command, profile = profile_stack.enter_context(_seat_command_profile(
             cmd, env=env, cwd=cwd, gemini_profile=gemini_profile,
+            **({"grok_egress_proxy": grok_egress[0]} if grok_egress is not None else {}),
         ))
         if broker_evidence is not None:
             broker_evidence.update(profile.evidence)
+        if grok_egress is not None or getattr(profile, "grok_launch_context", None) is not None:
+            # The final step, after composition and before any fallback namespace: a frozen
+            # basis outside the grok-review egress refuses here, launching nothing.
+            profile = _grok_leg_final_check(profile, grok_egress, env=env, cwd=cwd)
         if not _EGRESS_LAUNCH_PREFIX.get():
             # An owned review launch runs only in the filtered namespace. A leg outside any
             # board leg (the agy --help measurement) holds none: it holds one for this
@@ -13137,6 +13472,7 @@ def _exec_jailed_claude_leg(
     the parent keeps. The seat directories are torn down in H before H exits; a failed
     teardown retains them and adds `seat_sandbox_retained_after_teardown`."""
     if review_monitor is not None and review_monitor.cancel.is_set():
+        _note_exec_refusal_code("review_operation_cancelled")
         return "UNAVAILABLE", "review_operation_cancelled"
     jail = seat.jail
     session_id = str(uuid.uuid4())
@@ -13288,9 +13624,29 @@ def _exec_jailed_claude_leg(
 
 
 def _jailed_failure(code: str, sink: list[_LegFailure] | None) -> tuple[str, str]:
+    _note_exec_refusal_code(code)
+    _note_exec_output_refused()
     if sink is not None:
         sink.append(_LegFailure(template=code))
     return "DEGRADED", ""
+
+
+#: What a jailed Gemini seat's boundary never turns into a degraded leg: a provider group not
+#: proven gone, and a cancellation, keep propagating exactly as before (agent-harness#1823).
+_JAILED_GEMINI_PROPAGATES: tuple[type[BaseException], ...] = (
+    ProviderProcessGroupQuiescenceError, gemini_heartbeat.GeminiQuiescenceError,
+    _ReviewOperationCancelled,
+)
+
+
+def _jailed_gemini_failure(exc: Exception) -> _LegFailure:
+    """agent-harness#1823: a jailed Gemini seat's preparation or execution exception as its
+    leg failure: a typed refusal keeps its one code (the login-freshness gate on a dependency
+    route reports ``gemini_credential_near_expiry``); anything else is the unknown failure,
+    whose text goes only to the private per-leg log. The leg record keeps the closed reason."""
+    failure = _exception_failure(exc)
+    _note_exec_refusal(exc, failure)
+    return failure if type(failure) is _LegFailure else _LegFailure(template=failure)
 
 
 def _approved_stage_or_refuse(review_dir: Path, review_authorization) -> Path:
@@ -13311,12 +13667,25 @@ def _approved_stage_or_refuse(review_dir: Path, review_authorization) -> Path:
     return tree
 
 
+# The jailed seat's agy settings: the agent mode pinned to Default. Since agy 1.5.7, a
+# session with no saved mode, a headless `-p` run included, starts in Auto where Auto is
+# available, and Auto sends commands that would leave agy's terminal sandbox to a separate
+# reviewing agent: a second model session, which the seat forbids. `"agentMode": ""` is the
+# value agy itself saves when Default is chosen (its 1.5.7 release note). Before 1.5.7,
+# Default was already the default, so there the pin changes nothing. The pin lives here
+# rather than in the argv, which stays the qualified profile's and passes no `--mode`.
+# This file is not `_broker_agy_settings_bytes()`: those bytes belong to the owned
+# heartbeat profile and feed `agy_profile_digest()`, so the seat QCI.
+_JAILED_GEMINI_SETTINGS = b'{"agentMode":""}\n'
+
+
 def _write_gemini_config(dotdir: Path, copy: bytes) -> None:
     """The parent-built ``.gemini`` directory (D7, F006): it holds ``antigravity-cli/`` with
-    the access-token-only copy, an empty settings file, an installation id, and the empty
-    mount points of the writable subdirectories. ``.gemini`` is the read-only bind, so the
-    seat cannot rename it; the in-H hand-off makes the tree the operator's, group n,
-    traversable (dirs 0550) and read-only to the seat (files 0440)."""
+    the access-token-only copy, the settings file that pins the agent mode
+    (``_JAILED_GEMINI_SETTINGS``), an installation id, and the empty mount points of the
+    writable subdirectories. ``.gemini`` is the read-only bind, so the seat cannot rename
+    it; the in-H hand-off makes the tree the operator's, group n, traversable (dirs 0550)
+    and read-only to the seat (files 0440)."""
     dotdir.mkdir(mode=0o700)
     for name in _seat_jail.GEMINI_WRITABLE_DOTDIR_DIRS:
         (dotdir / name).mkdir(mode=0o700)  # mount points for agy's runtime-state overlays
@@ -13326,7 +13695,7 @@ def _write_gemini_config(dotdir: Path, copy: bytes) -> None:
     try:
         if copy:
             _seat_jail.write_new_file_at(fd, "antigravity-oauth-token", copy)
-        _seat_jail.write_new_file_at(fd, "settings.json", b"{}\n")
+        _seat_jail.write_new_file_at(fd, "settings.json", _JAILED_GEMINI_SETTINGS)
         _seat_jail.write_new_file_at(fd, "installation_id", str(uuid.uuid4()).encode())
         for name in _seat_jail.GEMINI_WRITABLE_CONFIG_DIRS:
             os.mkdir(name, 0o700, dir_fd=fd)
@@ -13373,6 +13742,7 @@ def _prepare_jailed_gemini(
     artifact, instructions = prompt_parts
     if credential not in {"none", "live", "expired"}:
         raise ValueError("contract_bug")
+    _note_exec_stage("subject")
     try:
         subject, dependency = _resolved_jail_subject(
             "gemini", _broker_subscription_env(env),
@@ -13385,6 +13755,7 @@ def _prepare_jailed_gemini(
                     else subject.subject_path)
     if subject_path is None:
         raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build"))
+    _note_exec_stage("prepare")
     if dependency is not None and credential != "none":
         home = Path(subscription_env.get("HOME", str(Path.home())))
         if not _gemini_credential_fresh(home):
@@ -13396,6 +13767,7 @@ def _prepare_jailed_gemini(
     try:
         tree = _approved_stage_or_refuse(review_dir, review_authorization)
         home = Path(subscription_env.get("HOME", str(Path.home())))
+        _note_exec_stage("admission")
         admission = gemini_heartbeat.admit(subscription_env, subject_path=subject_path)
         try:
             if dependency is not None:
@@ -13407,6 +13779,7 @@ def _prepare_jailed_gemini(
             else:
                 executable = Path(os.path.realpath(admission.path))
             image_sha256, admission_class = admission.image.sha256, admission.admission_class
+            _note_exec_stage("credential")
             if credential != "none":
                 _await_gemini_login(
                     ["agy"],
@@ -13432,6 +13805,7 @@ def _prepare_jailed_gemini(
                 raise _seat_jail.SeatSandboxRefused("gemini_seat_token_expired")
             if credential == "expired":
                 copy, expires_at = _window_expired_gemini_copy(copy)
+        _note_exec_stage("jail_build")
         try:
             _write_gemini_config(seat_dir / _seat_jail.HOST_GEMINI_CONFIG_DIRNAME, copy)
             ca = _write_egress_ca(seat_dir, egress.ca_cert)
@@ -13578,13 +13952,22 @@ def _exec_jailed_codex_leg(
     tails = [b"", b""]
     longest = max((len(secret) for secret in secrets), default=1)
     secret_seen = False
+    proxy_secret = password.encode() if password else None
+    kinds = tuple("proxy_credential" if secret == proxy_secret else "bearer" for secret in secrets)
+    cursors = (_StreamCursor(keep=4 * longest), _StreamCursor(keep=4 * longest))
 
     def guard(index):
         def feed(chunk):
             nonlocal secret_seen
             window = tails[index] + chunk
-            secret_seen |= any(_seat_jail.contains_secret(window, secret) for secret in secrets)
+            hit = any(_seat_jail.contains_secret(window, secret) for secret in secrets)
+            if hit and not secret_seen:
+                _note_secret_match(_live_secret_match(
+                    "codex", window, len(tails[index]), cursors[index], secrets, kinds,
+                    ("stdout", "stderr")[index]))
+            secret_seen |= hit
             tails[index] = window[-4 * longest:]
+            cursors[index].advance(chunk)
             return secret_seen
         return feed
 
@@ -13594,6 +13977,7 @@ def _exec_jailed_codex_leg(
     unsafe = False
     try:
         if review_monitor is not None and review_monitor.cancel.is_set():
+            _note_exec_refusal_code("review_operation_cancelled")
             return "UNAVAILABLE", "review_operation_cancelled"
         _record_broker_provider_evidence(
             broker_evidence, harness="codex", model=model, command=command, prompt=prompt,
@@ -13644,8 +14028,13 @@ def _exec_jailed_codex_leg(
         _cleanup_jailed_seat(seat, primary=sys.exception())
     if proc is not None:
         _note_exec_result(proc.returncode, command, seat.jail.env)
-    kept = text + (f"{proc.stdout}{proc.stderr}".encode(errors="replace") if proc else b"")
+    parts = (("output_file", text), *(
+        (("stdout", proc.stdout.encode(errors="replace")),
+         ("stderr", proc.stderr.encode(errors="replace"))) if proc else ()))
+    kept = b"".join(data for _stream, data in parts)
     if secret_seen or any(_seat_jail.contains_secret(kept, secret) for secret in secrets):
+        if not secret_seen:
+            _note_secret_match(_post_exit_secret_match("codex", parts, secrets, kinds))
         return _jailed_failure("codex_seat_token_in_output", failure_detail_sink)
     if cred.tokens_changed(copy, observed):
         return _jailed_failure("codex_seat_token_refreshed_in_jail", failure_detail_sink)
@@ -13674,6 +14063,349 @@ def _jailed_gemini_secrets(seat: "_JailedSeat") -> tuple[bytes, ...]:
     if password:
         secrets.append(password.encode("utf-8"))
     return tuple(s for s in secrets if s)
+
+
+# agent-harness#1823: when a jailed seat's output scan matches, the leg's private record says
+# which configured value matched and where, as closed fields only -- never the value, a
+# prefix or digest of it, or the provider text around it. The scan itself is unchanged: the
+# match is located with the same `secret_encodings` forms that `contains_secret` uses.
+_SECRET_MATCH_HEAD_CAP = 4096  # line-head bytes held in memory to read its closed keys
+_SECRET_MATCH_KINDS = frozenset({"bearer", "proxy_credential"})
+_SECRET_MATCH_ENCODINGS = ("raw", "hex", "b64", "b64url")  # tie-break order at one offset
+#: One stream, or -- for an after-exit match across a join of the scanned streams -- every
+#: stream the match covers, in scan order.
+_SECRET_MATCH_STREAMS = frozenset({
+    "stdout", "stderr", "output_file",
+    "stdout+stderr", "output_file+stdout", "output_file+stderr", "output_file+stdout+stderr",
+})
+_SECRET_MATCH_PHASES = frozenset({"live", "post_exit"})
+_SECRET_MATCH_OTHER = "other"
+_SECRET_MATCH_UNPARSED = "unparsed"  # the matched line is not a JSON event
+_GEMINI_MATCH_EVENTS = frozenset({"init", "step_update", "result"})
+_GEMINI_MATCH_STEPS = _JAILED_GEMINI_STEP_TYPES | {"subagent"}
+_GEMINI_MATCH_TOOLS = frozenset({
+    "run_command", "view_file", "list_dir", "grep_search", "find_by_name", "write_to_file",
+    "define_subagent", "manage_subagents", "manage_task",
+})
+_CODEX_MATCH_ITEMS = frozenset({
+    "command_execution", "agent_message", "reasoning", "file_change", "mcp_tool_call",
+    "web_search", "todo_list", "error",
+})
+#: The fixed JSON paths a match's labels are read from: each the chain of object keys from
+#: the line's top-level object. A key of the same name anywhere else never counts.
+_SECRET_MATCH_PATHS: Mapping[str, Mapping[str, tuple[str, ...]]] = {
+    "gemini": {"event_type": ("event",), "step_type": ("step_update", "step_type"),
+               "tool_name": ("step_update", "tool_name")},
+    "codex": {"event_type": ("type",), "step_type": ("item", "type")},
+}
+_PREFIX_SCAN_DEPTH = 32  # nesting levels the prefix reader follows before it stops
+_JSON_SCALAR = re.compile(r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null")
+_NOT_A_STRING = object()
+
+
+def _secret_form_encoding(secret: bytes, form: bytes) -> str:
+    """The encoding a scanned form of ``secret`` is (a form `secret_encodings` returned)."""
+    if form == secret:
+        return "raw"
+    if form in (secret.hex().encode(), secret.hex().upper().encode()):
+        return "hex"
+    return "b64url" if b"-" in form or b"_" in form else "b64"
+
+
+def _first_secret_form(data: bytes, secrets: Sequence[bytes]) -> tuple[int, int, str, int] | None:
+    """``(offset, secret index, encoding, length)`` of the earliest scanned form in ``data``."""
+    best: tuple[int, int, int, int] | None = None
+    for index, secret in enumerate(secrets):
+        for form in _seat_jail.secret_encodings(secret):
+            offset = data.find(form)
+            if offset < 0:
+                continue
+            rank = _SECRET_MATCH_ENCODINGS.index(_secret_form_encoding(secret, form))
+            if best is None or (offset, index, rank) < best[:3]:
+                best = (offset, index, rank, len(form))
+    return None if best is None else (best[0], best[1], _SECRET_MATCH_ENCODINGS[best[2]], best[3])
+
+
+def _json_string_end(text: str, start: int) -> int | None:
+    """The index just past the JSON string that opens at ``text[start]``, or ``None`` when
+    the text ends inside it."""
+    index = start + 1
+    while index < len(text):
+        if text[index] == "\\":
+            index += 2
+        elif text[index] == '"':
+            return index + 1
+        else:
+            index += 1
+    return None
+
+
+def _json_prefix_fields(text: str, wanted: frozenset[tuple[str, ...]]) -> dict[tuple[str, ...], object]:
+    """The values at the ``wanted`` key paths of the JSON object that ``text`` begins, read
+    by STRUCTURE from a possibly truncated prefix. A member counts only at its exact path of
+    object keys from the top-level object (never inside an array, never a nested key of the
+    same name), and its first occurrence wins. A string value is returned decoded, any other
+    value as ``_NOT_A_STRING``; a path whose value the prefix does not complete is absent.
+    Bounded: one pass over ``text``, at most :data:`_PREFIX_SCAN_DEPTH` levels."""
+    found: dict[tuple[str, ...], object] = {}
+    frames: list[list] = []  # [kind ("obj" | "arr"), current key, state]
+    index, size, started = 0, len(text), False
+
+    def path() -> tuple[str, ...] | None:
+        if any(frame[0] != "obj" for frame in frames):
+            return None
+        return tuple(frame[1] for frame in frames)
+
+    def note(value: object) -> None:
+        where = path()
+        if where in wanted and where not in found:
+            found[where] = value
+
+    def close() -> bool:
+        frames.pop()
+        if frames:
+            frames[-1][2] = "comma"
+        return bool(frames)
+
+    while index < size:
+        char = text[index]
+        if char in " \t\r\n":
+            index += 1
+            continue
+        if not frames:
+            if started or char != "{":
+                break
+            started = True
+            frames.append(["obj", None, "key"])
+            index += 1
+            continue
+        kind, _key, state = frames[-1]
+        if state == "comma":
+            if char == ",":
+                frames[-1][2] = "key" if kind == "obj" else "value"
+                index += 1
+                continue
+            if char == ("}" if kind == "obj" else "]"):
+                index += 1
+                if not close():
+                    break
+                continue
+            break
+        if kind == "obj" and state == "key":
+            if char == "}":
+                index += 1
+                if not close():
+                    break
+                continue
+            end = _json_string_end(text, index) if char == '"' else None
+            if end is None:
+                break
+            try:
+                key = json.loads(text[index:end])
+            except ValueError:
+                break
+            frames[-1][1], frames[-1][2] = key, "colon"
+            index = end
+            continue
+        if state == "colon":
+            if char != ":":
+                break
+            frames[-1][2] = "value"
+            index += 1
+            continue
+        if kind == "arr" and char == "]":
+            index += 1
+            if not close():
+                break
+            continue
+        if char == '"':
+            end = _json_string_end(text, index)
+            if end is None:
+                break
+            try:
+                value = json.loads(text[index:end])
+            except ValueError:
+                break
+            note(value)
+            frames[-1][2] = "comma"
+            index = end
+            continue
+        if char in "{[":
+            if len(frames) >= _PREFIX_SCAN_DEPTH:
+                break
+            note(_NOT_A_STRING)
+            frames[-1][2] = "comma"
+            frames.append(["obj", None, "key"] if char == "{" else ["arr", None, "value"])
+            index += 1
+            continue
+        scalar = _JSON_SCALAR.match(text, index)
+        if scalar is None:
+            break  # not JSON, or a literal the prefix cut short
+        if scalar.group() not in ("true", "false", "null") and (
+                scalar.end() == size or text[scalar.end()] not in ",}] \t\r\n"):
+            break  # a number only a delimiter completes: the prefix may have cut it short
+        note(_NOT_A_STRING)
+        frames[-1][2] = "comma"
+        index = scalar.end()
+    return found
+
+
+def _secret_match_labels(vendor: str, head: bytes) -> dict[str, str | None]:
+    """The event, step and tool of the matched line, read by structure at the vendor's fixed
+    paths (:data:`_SECRET_MATCH_PATHS`) from the line's bytes BEFORE the match: an allowlisted
+    string is kept; any other parsed value (another string, a number, an object) is
+    ``other``; a label those bytes do not establish (the member absent, or not complete
+    before the match) is null. A line that does not begin with a JSON object is
+    ``unparsed``."""
+    text = head[:_SECRET_MATCH_HEAD_CAP].decode("utf-8", errors="replace")
+    labels: dict[str, str | None] = {"event_type": None, "step_type": None, "tool_name": None}
+    if not text.lstrip().startswith("{"):
+        return {**labels, "event_type": _SECRET_MATCH_UNPARSED}
+    if vendor == "codex":
+        allowed = {"event_type": _codex_tool_events(), "step_type": _CODEX_MATCH_ITEMS}
+    else:
+        allowed = {"event_type": _GEMINI_MATCH_EVENTS, "step_type": _GEMINI_MATCH_STEPS,
+                   "tool_name": _GEMINI_MATCH_TOOLS}
+    paths = _SECRET_MATCH_PATHS["codex" if vendor == "codex" else "gemini"]
+    found = _json_prefix_fields(text, frozenset(paths.values()))
+    for name, where in paths.items():
+        if where in found:
+            value = found[where]
+            labels[name] = value if type(value) is str and value in allowed[name] else _SECRET_MATCH_OTHER
+    return labels
+
+
+def _codex_tool_events() -> frozenset[str]:
+    from .seat_codex_evidence import CODEX_TOOL_EVENTS
+    return CODEX_TOOL_EVENTS
+
+
+def _secret_match_descriptor(vendor, kind, encoding, stream, phase, line_index, byte_offset,
+                             head) -> dict[str, object]:
+    return {"secret_kind": kind, "encoding": encoding, "stream": stream, "phase": phase,
+            **_secret_match_labels(vendor, head[:_SECRET_MATCH_HEAD_CAP]),
+            "line_index": line_index, "byte_offset": byte_offset}
+
+
+class _StreamCursor:
+    """The line position of one raw stream as its guard sees it, chunk by chunk. It keeps the
+    index, start and first bytes (at most :data:`_SECRET_MATCH_HEAD_CAP`) of EVERY line that
+    overlaps the guard's retained tail of ``keep`` bytes -- in memory only -- so a match that
+    starts anywhere in that tail, even on a line that began before the retained bytes, gets
+    its exact line and offset. Nothing it holds is ever recorded."""
+
+    __slots__ = ("keep", "pos", "lines")
+
+    def __init__(self, keep: int) -> None:
+        self.keep = keep
+        self.pos = 0                 # bytes of the stream before the current chunk
+        self.lines = [[0, 0, b""]]   # [index, start, head]; the last is the current line
+
+    def locate(self, window: bytes, tail: int, offset: int) -> tuple[int | None, int | None, bytes]:
+        """``(line index, byte offset in the line, line bytes before it)`` of ``window[offset]``,
+        where ``window`` is the guard's kept ``tail`` bytes followed by the current chunk."""
+        cap = _SECRET_MATCH_HEAD_CAP
+        absolute = self.pos - tail + offset
+        index, start, head = self.lines[-1]
+        if absolute >= self.pos:
+            before = window[tail:offset]
+            count = before.count(b"\n")
+            if count:
+                cut = before.rfind(b"\n") + 1
+                return index + count, len(before) - cut, before[cut:cut + cap]
+            return index, absolute - start, (head + before)[:cap]
+        for index, start, head in reversed(self.lines):
+            if start <= absolute:
+                return index, absolute - start, head[:absolute - start]
+        return None, None, b""  # older than the kept lines: only a tail longer than ``keep``
+
+    def advance(self, chunk: bytes) -> None:
+        cap = _SECRET_MATCH_HEAD_CAP
+        current = self.lines[-1]
+        cut = chunk.find(b"\n")
+        if len(current[2]) < cap:
+            current[2] = (current[2] + (chunk if cut < 0 else chunk[:cut]))[:cap]
+        line = current[0]
+        while cut >= 0:
+            line += 1
+            following = chunk.find(b"\n", cut + 1)
+            self.lines.append([line, self.pos + cut + 1,
+                               chunk[cut + 1:following if following >= 0 else len(chunk)][:cap]])
+            cut = following
+        self.pos += len(chunk)
+        floor = self.pos - self.keep  # a line ending before the retained tail is dropped
+        while len(self.lines) > 1 and self.lines[1][1] <= floor:
+            del self.lines[0]
+
+
+def _live_secret_match(vendor, window, tail, cursor, secrets, kinds, stream):
+    found = _first_secret_form(window, secrets)
+    if found is None:
+        return None
+    offset, index, encoding, _length = found
+    line_index, byte_offset, head = cursor.locate(window, tail, offset)
+    return _secret_match_descriptor(vendor, kinds[index], encoding, stream, "live",
+                                    line_index, byte_offset, head)
+
+
+def _post_exit_secret_match(vendor, parts, secrets, kinds):
+    """Locate the first match in the kept output the after-exit check scans. ``parts`` are
+    ``(stream, bytes)`` in the order that check joined them, and the positions address that
+    scan input: for ``stdout`` and ``stderr`` the decoded, redacted and re-encoded output (not
+    the raw provider bytes), for Codex's ``output_file`` the raw bytes of the file as read
+    from the seat. A match across a join is named by every stream it covers
+    (``stdout+stderr``) and placed in the first, where it starts -- so one that starts in
+    ``output_file`` uses the raw file's coordinates."""
+    found = _first_secret_form(b"".join(data for _name, data in parts), secrets)
+    if found is None or not parts:
+        return None
+    offset, index, encoding, length = found
+    covered: list[str] = []
+    first: tuple[bytes, int] | None = None
+    base = 0
+    for name, data in parts:
+        if data and base < offset + length and offset < base + len(data):
+            covered.append(name)
+            if first is None:
+                first = (data, offset - base)
+        base += len(data)
+    if first is None:
+        return None
+    data, local = first
+    start = data.rfind(b"\n", 0, local) + 1
+    return _secret_match_descriptor(vendor, kinds[index], encoding, "+".join(covered),
+                                    "post_exit", data.count(b"\n", 0, local), local - start,
+                                    data[start:min(local, start + _SECRET_MATCH_HEAD_CAP)])
+
+
+def _note_secret_match(descriptor: dict[str, object] | None) -> None:
+    """The leg's first match is the one its record keeps."""
+    observation = _EXEC_OBSERVATION.get()
+    if descriptor is not None and observation is not None and observation.get("secret_match") is None:
+        observation["secret_match"] = descriptor
+
+
+def _secret_match_valid(value: object) -> bool:
+    """Closed fields only: every string from its fixed set, the positions plain integers."""
+    def closed(field_value, allowed, nullable=False):
+        return (field_value is None and nullable) or (type(field_value) is str and field_value in allowed)
+
+    def position(field_value):
+        return field_value is None or (type(field_value) is int and 0 <= field_value < 2 ** 53)
+
+    events = _GEMINI_MATCH_EVENTS | _codex_tool_events() | {_SECRET_MATCH_OTHER, _SECRET_MATCH_UNPARSED}
+    return (type(value) is dict and set(value) == {
+        "secret_kind", "encoding", "stream", "phase", "event_type", "step_type", "tool_name",
+        "line_index", "byte_offset"}
+        and closed(value["secret_kind"], _SECRET_MATCH_KINDS)
+        and closed(value["encoding"], _SECRET_MATCH_ENCODINGS)
+        and closed(value["stream"], _SECRET_MATCH_STREAMS)
+        and closed(value["phase"], _SECRET_MATCH_PHASES)
+        and closed(value["event_type"], events, nullable=True)
+        and closed(value["step_type"], _GEMINI_MATCH_STEPS | _CODEX_MATCH_ITEMS
+                   | {_SECRET_MATCH_OTHER}, nullable=True)
+        and closed(value["tool_name"], _GEMINI_MATCH_TOOLS | {_SECRET_MATCH_OTHER}, nullable=True)
+        and position(value["line_index"]) and position(value["byte_offset"]))
 
 
 _WINDOW_STEP_STDOUT_CAP = 65536
@@ -14603,6 +15335,260 @@ def window_board_launch(spec: WindowBoardSpec) -> WindowBoardResult:
     )
 
 
+# agent-harness#1823: when the tooled stream refuses a well-formed line as
+# `gemini_seat_subagent_or_unknown_event`, the leg's private `leg_exec.v1` record says what kind
+# of line it was, in the closed `stream_rejection` field. The parser is a validator-closure entry
+# point and stays untouched: `_jailed_gemini_stream_rejection` re-reads the stdout the leg
+# already holds, with the same three rules, after the parser has refused it. Every string it
+# records is a name from one of the fixed sets below (``other`` outside them), every other
+# value is a count or a position; it never copies a line, a value or provider text.
+_STREAM_REJECTION_OTHER = "other"
+_STREAM_REJECTION_ABSENT = "absent"        # a step count's label for a step with no step type
+_STREAM_REJECTION_UNPARSED = "unparsed"    # an event count's label for a line that is not JSON
+_STREAM_REJECTION_MALFORMED = "malformed"  # ... for JSON that is not an event object
+_STREAM_REJECTION_EMPTY = "empty"          # a mode key present with an empty string
+_STREAM_REJECTION_REASONS = frozenset({"unknown_event", "bad_step_type", "subagent_info"})
+_STREAM_REJECTION_EVENTS = frozenset({
+    "init", "step_update", "result", "error", "warning", "notice", "message", "user",
+    "system", "progress", "usage",
+})
+_STREAM_REJECTION_STEPS = _JAILED_GEMINI_STEP_TYPES | frozenset({
+    "subagent", "browser", "system_message", "thinking", "plan", "checkpoint", "compaction",
+    "error", "workflow", "background_task", "finish", "notification",
+})
+_STREAM_REJECTION_TOOLS = frozenset({
+    "run_command", "view_file", "list_dir", "grep_search", "find_by_name", "write_to_file",
+    "replace_file_content", "command_status", "manage_task", "invoke_subagent",
+    "define_subagent", "manage_subagents", "send_message", "browser_subagent", "search_web",
+    "read_url_content",
+})
+_STREAM_REJECTION_STATES = frozenset({
+    "ACTIVE", "DONE", "ERROR", "PENDING", "WAITING", "CANCELED", "CANCELLED",
+})
+_STREAM_REJECTION_LINE_KEYS = frozenset({
+    "event", "conversation_id", "init", "step_update", "result", "error", "message",
+    "timestamp", "session_id", "type",
+})
+_STREAM_REJECTION_STEP_KEYS = frozenset({
+    "conversation_id", "step_index", "state", "status", "step_type", "tool_name", "tool_info",
+    "subagent_info", "text_delta", "text", "type_name", "error",
+})
+_STREAM_REJECTION_SUBAGENT_KEYS = frozenset({
+    "conversation_id", "log_uri", "name", "agent_name", "model", "spec", "status",
+})
+#: Where an init event may name agy's mode, in its ``init`` payload or on the line itself.
+#: ``permission_mode`` is the key a captured agy 1.2.13 init carried (its tool-permission
+#: preset); the others are where agy's agent mode (``agentMode``, Auto by default for headless
+#: runs since agy 1.5.7) may appear.
+_STREAM_REJECTION_MODE_KEYS = frozenset({"permission_mode", "agent_mode", "agentMode", "mode"})
+_STREAM_REJECTION_MODES = frozenset({
+    "request-review", "strict", "always-proceed", "proceed-in-sandbox",  # tool permission
+    "default", "auto", "plan", "accept-edits",                           # agent mode
+})
+_STREAM_REJECTION_INIT_KEYS = _STREAM_REJECTION_MODE_KEYS | frozenset({
+    "model", "cwd", "tools", "session_id", "conversation_id", "version",
+})
+_STREAM_REJECTION_FIELDS = frozenset({
+    "reason", "line_index", "line_count", "rejected_lines", "event_type", "step_type",
+    "tool_name", "state", "line_keys", "step_keys", "subagent_info_keys", "event_counts",
+    "step_counts", "tool_counts", "init_keys", "init_modes",
+})
+
+
+def _stream_label(value: object, allowed: frozenset[str]) -> str:
+    return value if type(value) is str and value in allowed else _STREAM_REJECTION_OTHER
+
+
+def _stream_field_label(mapping: Mapping, key: str, allowed: frozenset[str]) -> str | None:
+    """``mapping[key]``'s label: ``None`` when the key is absent, ``other`` outside ``allowed``."""
+    return _stream_label(mapping[key], allowed) if key in mapping else None
+
+
+def _stream_key_names(mapping: object, allowed: frozenset[str]) -> list[str] | None:
+    """Which keys ``mapping`` has, as sorted names from ``allowed`` (``other`` for the rest)."""
+    if not isinstance(mapping, dict):
+        return None
+    return sorted({_stream_label(key, allowed) for key in mapping})
+
+
+def _stream_init_modes(init_line: Mapping | None) -> dict[str, str] | None:
+    if init_line is None:
+        return None
+    payload = init_line.get("init")
+    modes: dict[str, str] = {}
+    for source in (payload if isinstance(payload, dict) else {}, init_line):
+        for key in sorted(_STREAM_REJECTION_MODE_KEYS):
+            if key in source and key not in modes:
+                value = source[key]
+                modes[key] = (_STREAM_REJECTION_EMPTY if type(value) is str and value == ""
+                              else _stream_label(value, _STREAM_REJECTION_MODES))
+    return dict(sorted(modes.items()))
+
+
+def _jailed_gemini_stream_rejection(raw: str) -> dict[str, object] | None:
+    """The closed descriptor of the line the tooled stream refused as
+    `gemini_seat_subagent_or_unknown_event`, or ``None`` when the parser's own rules find a
+    different first failure, or none. Counts cover the whole stream. It never raises: a
+    diagnostic cannot change how the leg ends."""
+    try:
+        return _stream_rejection_walk(raw)
+    except Exception:
+        return None
+
+
+def _stream_rejection_walk(raw: str) -> dict[str, object] | None:
+    lines = raw.splitlines()  # exactly the parser's lines, so the index is its index
+    events: Counter[str] = Counter()
+    steps: Counter[str] = Counter()
+    tools: Counter[str] = Counter()
+    first: dict[str, object] | None = None
+    init_line: Mapping | None = None
+    rejected = 0
+    ended = False  # the parser's walk ended at an earlier line, for a reason of its own
+    for index, line in enumerate(lines):
+        try:
+            event = json.loads(line)
+        except (ValueError, RecursionError):
+            # A line that does not decode fails on its own, including one nested past the
+            # decoder's bound (`RecursionError`): it is counted, and the walk goes on. Before
+            # the first refusal it ends the parser's walk, which raises or reports its own
+            # failure there; after it, the refusal already found is kept.
+            events[_STREAM_REJECTION_UNPARSED] += 1
+            ended = True
+            continue
+        if not isinstance(event, dict) or not isinstance(event.get("event"), str):
+            events[_STREAM_REJECTION_MALFORMED] += 1
+            ended = True
+            continue
+        name = event["event"]
+        events[_stream_label(name, _STREAM_REJECTION_EVENTS)] += 1
+        step = None
+        reason = None
+        if name == "step_update":
+            step = event.get("step_update")
+            if not isinstance(step, dict):
+                ended = True
+                continue
+            steps[_stream_field_label(step, "step_type", _STREAM_REJECTION_STEPS)
+                  or _STREAM_REJECTION_ABSENT] += 1
+            if "tool_name" in step:
+                tools[_stream_label(step["tool_name"], _STREAM_REJECTION_TOOLS)] += 1
+            try:
+                recorded = step.get("step_type") in _JAILED_GEMINI_STEP_TYPES
+            except TypeError:  # an unhashable step type: the parser's malformed event
+                ended = True
+                continue
+            # The parser's own order: an unrecorded step type refuses the line before the
+            # `subagent_info` key is looked at. Key presence stays in `step_keys`.
+            if not recorded:
+                reason = "bad_step_type"
+            elif "subagent_info" in step:
+                reason = "subagent_info"
+        elif name == "result":
+            if not isinstance(event.get("result"), dict):
+                ended = True
+        elif name == "init":
+            init_line = event if init_line is None else init_line
+        else:
+            reason = "unknown_event"
+        if reason is None:
+            continue
+        rejected += 1
+        if first is None and not ended:
+            first = {
+                "reason": reason, "line_index": index,
+                "event_type": _stream_label(name, _STREAM_REJECTION_EVENTS),
+                "step_type": (None if step is None
+                              else _stream_field_label(step, "step_type", _STREAM_REJECTION_STEPS)),
+                "tool_name": (None if step is None
+                              else _stream_field_label(step, "tool_name", _STREAM_REJECTION_TOOLS)),
+                "state": (None if step is None
+                          else _stream_field_label(step, "state", _STREAM_REJECTION_STATES)),
+                "line_keys": _stream_key_names(event, _STREAM_REJECTION_LINE_KEYS),
+                "step_keys": _stream_key_names(step, _STREAM_REJECTION_STEP_KEYS),
+                "subagent_info_keys": (None if step is None else _stream_key_names(
+                    step.get("subagent_info"), _STREAM_REJECTION_SUBAGENT_KEYS)),
+                "init_keys": (None if init_line is None else _stream_key_names(
+                    init_line.get("init"), _STREAM_REJECTION_INIT_KEYS)),
+                "init_modes": _stream_init_modes(init_line),
+            }
+        ended = True  # the parser stops at its first refused line
+    if first is None:
+        return None
+    return {**first, "line_count": len(lines), "rejected_lines": rejected,
+            "event_counts": dict(sorted(events.items())), "step_counts": dict(sorted(steps.items())),
+            "tool_counts": dict(sorted(tools.items()))}
+
+
+def _stream_rejection_valid(value: object) -> bool:
+    """Closed fields only: every string from its fixed set, every count a plain integer. It
+    never raises: any value it cannot establish as closed is not a descriptor, and the record
+    keeps a null field."""
+    try:
+        return _stream_rejection_closed(value)
+    except Exception:
+        return False
+
+
+def _stream_rejection_closed(value: object) -> bool:
+    def label(item, allowed, nullable=False):
+        return (item is None and nullable) or (
+            type(item) is str and (item in allowed or item == _STREAM_REJECTION_OTHER))
+
+    def position(item):
+        return type(item) is int and 0 <= item < 2 ** 53
+
+    def names(item, allowed):
+        # Element types and vocabulary first: only a list of known strings is hashed or sorted.
+        return item is None or (type(item) is list
+                                and all(label(name, allowed) for name in item)
+                                and item == sorted(set(item)))
+
+    def counts(item, allowed):
+        return type(item) is dict and all(
+            label(key, allowed) and position(count) and count > 0 for key, count in item.items())
+
+    if type(value) is not dict or set(value) != _STREAM_REJECTION_FIELDS:
+        return False
+    modes = value["init_modes"]
+    return (type(value["reason"]) is str and value["reason"] in _STREAM_REJECTION_REASONS
+            and all(position(value[key]) for key in ("line_index", "line_count", "rejected_lines"))
+            and label(value["event_type"], _STREAM_REJECTION_EVENTS)
+            and label(value["step_type"], _STREAM_REJECTION_STEPS, nullable=True)
+            and label(value["tool_name"], _STREAM_REJECTION_TOOLS, nullable=True)
+            and label(value["state"], _STREAM_REJECTION_STATES, nullable=True)
+            and names(value["line_keys"], _STREAM_REJECTION_LINE_KEYS)
+            and names(value["step_keys"], _STREAM_REJECTION_STEP_KEYS)
+            and names(value["subagent_info_keys"], _STREAM_REJECTION_SUBAGENT_KEYS)
+            and names(value["init_keys"], _STREAM_REJECTION_INIT_KEYS)
+            and counts(value["event_counts"], _STREAM_REJECTION_EVENTS | {
+                _STREAM_REJECTION_UNPARSED, _STREAM_REJECTION_MALFORMED})
+            and counts(value["step_counts"], _STREAM_REJECTION_STEPS | {_STREAM_REJECTION_ABSENT})
+            and counts(value["tool_counts"], _STREAM_REJECTION_TOOLS)
+            and (modes is None or type(modes) is dict and all(
+                type(key) is str and key in _STREAM_REJECTION_MODE_KEYS
+                and label(mode, _STREAM_REJECTION_MODES | {_STREAM_REJECTION_EMPTY})
+                for key, mode in modes.items())))
+
+
+def _note_stream_rejection(descriptor: dict[str, object] | None) -> None:
+    """The leg's first stream rejection is the one its record keeps."""
+    observation = _EXEC_OBSERVATION.get()
+    if (descriptor is not None and observation is not None
+            and observation.get("stream_rejection") is None):
+        observation["stream_rejection"] = descriptor
+
+
+def _note_exec_output_refused() -> None:
+    """The leg ended in one of the jailed seat's explicit refusals (`_jailed_failure`,
+    agent-harness#1823): a clean exit then records `leg_execution_refused`, not
+    `leg_execution_completed`. A clean exit that fails ordinary review classification
+    without such a refusal is not marked here and keeps its outcome."""
+    observation = _EXEC_OBSERVATION.get()
+    if observation is not None:
+        observation["output_refused"] = True
+
+
 def _exec_jailed_gemini_leg(
     seat: _JailedSeat,
     *,
@@ -14624,6 +15610,7 @@ def _exec_jailed_gemini_leg(
     byte the parent keeps is scanned for the access token first. The seat directories are
     torn down in H before H exits."""
     if review_monitor is not None and review_monitor.cancel.is_set():
+        _note_exec_refusal_code("review_operation_cancelled")
         return "UNAVAILABLE", "review_operation_cancelled"
     jail = seat.jail
     command = _jailed_gemini_command(model)
@@ -14641,14 +15628,19 @@ def _exec_jailed_gemini_leg(
     longest = max((len(s) for s in secrets), default=1)
     seen: list[bytes] = [b""]
     token_seen: list[bool] = []
+    kinds = tuple("bearer" if secret == seat.token else "proxy_credential" for secret in secrets)
+    stdout_cursor = _StreamCursor(keep=4 * longest)
 
     def _guard(chunk: bytes) -> bool:
         # A secret can straddle two chunks: keep a tail as long as its longest encoding.
         window = seen[0] + chunk
         if any(_seat_jail.contains_secret(window, secret) for secret in secrets):
             token_seen.append(True)
+            _note_secret_match(_live_secret_match(
+                "gemini", window, len(seen[0]), stdout_cursor, secrets, kinds, "stdout"))
             return True
         seen[0] = window[-4 * longest:]
+        stdout_cursor.advance(chunk)
         return False
 
     _record_broker_provider_evidence(
@@ -14685,6 +15677,7 @@ def _exec_jailed_gemini_leg(
             **({"egress": dict(egress_evidence)} if egress_evidence is not None else {}),
         })
     proc = None
+    _note_exec_stage("launch")
     try:
         if window_board is not None:
             if quiescence_latch is None or review_authorization is None:
@@ -14705,6 +15698,8 @@ def _exec_jailed_gemini_leg(
     except subprocess.TimeoutExpired:
         proc = None
     finally:
+        if proc is not None and sys.exception() is None:
+            _note_exec_stage("cleanup")  # a launch that ended; its cleanup is what remains
         try:
             if window_board is not None and quiescence_latch is not None:
                 window_board.finish(
@@ -14713,14 +15708,20 @@ def _exec_jailed_gemini_leg(
         finally:
             _cleanup_jailed_seat(seat, primary=sys.exception())
     if proc is not None:
+        _note_exec_stage("stream")
         _note_exec_result(proc.returncode, command, jail.env)
+    kept = (() if proc is None else (("stdout", proc.stdout.encode("utf-8", errors="replace")),
+                                     ("stderr", proc.stderr.encode("utf-8", errors="replace"))))
     if token_seen or (proc is not None and any(
-            _seat_jail.contains_secret(f"{proc.stdout}{proc.stderr}".encode("utf-8", errors="replace"), secret)
+            _seat_jail.contains_secret(b"".join(data for _stream, data in kept), secret)
             for secret in secrets)):
+        if not token_seen:
+            _note_secret_match(_post_exit_secret_match("gemini", kept, secrets, kinds))
         return _jailed_failure("gemini_seat_token_in_output", failure_detail_sink)
     if proc is None:
         return _jailed_failure("Gemini broker deadline exceeded", failure_detail_sink)
     if review_monitor is not None and review_monitor.cancel.is_set():
+        _note_exec_refusal_code("review_operation_cancelled")
         return "UNAVAILABLE", "review_operation_cancelled"
     expired = seat.expires_at is not None and time.time() >= seat.expires_at
     if proc.returncode != 0:
@@ -14736,6 +15737,8 @@ def _exec_jailed_gemini_leg(
     if rc != 0:
         if detail == _JAILED_GEMINI_UNKNOWN_EVENT:
             seat.notices.append(_JAILED_GEMINI_UNKNOWN_EVENT)
+            # What the refused line was, as closed fields, for the leg's private record.
+            _note_stream_rejection(_jailed_gemini_stream_rejection(proc.stdout))
         return _jailed_failure("gemini_seat_token_expired" if expired else detail,
                                failure_detail_sink)
     status = _classify_leg(0, text, "", "review")
@@ -15000,7 +16003,8 @@ def _note_exec_unlaunched(command, env):
     """Nothing started: the exit stays null whatever code the adapter then returns."""
     observation = _EXEC_OBSERVATION.get()
     if observation is not None and not observation.get("exit_observed"):
-        observation.update(returncode=None, argv=list(command), env=env, exit_observed=True)
+        observation.update(returncode=None, argv=list(command), env=env, exit_observed=True,
+                           stage="unlaunched")
 
 
 def _note_exec_result(rc, command, env, *, actual=False):
@@ -15009,6 +16013,120 @@ def _note_exec_result(rc, command, env, *, actual=False):
         if actual or not observation.get("exit_observed"):
             observation.update(returncode=rc, argv=list(command), env=env)
         observation["exit_observed"] = True
+
+
+# agent-harness#1823: where a leg got to, and the closed reason it stopped, in its
+# `leg_exec.v1` record -- fixed codes and stage names only, never an exception's text.
+_EXEC_STAGES = frozenset({
+    "subject", "prepare", "admission", "credential", "jail_build", "launch", "stream",
+    "cleanup", "broker", "unlaunched",
+})
+#: Exception classes a record's ``refusal`` may name when no harness code applies, by
+#: EXACT type (builtins are named by `_BUILTIN_EXCEPTION_NAMES`).
+_EXEC_REFUSAL_TYPES: tuple[tuple[type, str], ...] = (
+    (ExecutableDependencyError, "ExecutableDependencyError"),
+    (_seat_jail.SeatSandboxRefused, "SeatSandboxRefused"),
+    (_sandbox_egress.EgressUnavailable, "EgressUnavailable"),
+    (_sandbox_egress.SeatIdentityUnverified, "SeatIdentityUnverified"),
+    (_ReviewOperationCancelled, "ReviewOperationCancelled"),
+    (subprocess.TimeoutExpired, "TimeoutExpired"),
+)
+_EXEC_REFUSAL_UNCLASSIFIED = "unclassified"
+#: The `ExecutableDependencyError` codes a record may name, EXACTLY (the constructor accepts
+#: any string): every literal the package raises. Any other code gets the bare class label.
+_EXEC_DEPENDENCY_CODES = frozenset({
+    "adapter_unauthorized", "authority_invalid", "authority_missing", "dependency_closed",
+    "dependency_route_unwired", "platform_unsupported", "runtime_mismatch", "session_closed",
+    "session_replacement", "source_changed", "subject_mismatch", "task_invalid", "task_live",
+    "task_replacement", "task_unbound",
+})
+
+
+#: The stages a leg can stop at with no provider launch begun: before any launch (subject,
+#: prepare), or after every earlier launch returned and was counted (jail_build). A launch
+#: that raises leaves its own stage (admission, credential, launch) in place.
+_EXEC_PRELAUNCH_STAGES = frozenset({"subject", "prepare", "jail_build"})
+
+
+def _exec_launched(observation: dict) -> bool | None:
+    """Whether the leg started a provider: ``True`` once one was counted; ``False`` only when
+    none was AND the leg stopped at a pre-launch stage; otherwise ``None``. A launch can
+    begin before it is counted -- a capped child's gate opens, then its launcher raises --
+    so a zero count past a launch boundary proves nothing and the outcome stays failed."""
+    spawns = observation.get("spawns")
+    if type(spawns) is not _SpawnCounter:
+        return None
+    if spawns.count > 0:
+        return True
+    return False if observation.get("stage") in _EXEC_PRELAUNCH_STAGES else None
+
+
+def _note_exec_stage(stage: str) -> None:
+    """The leg reached ``stage``; its record keeps the last one reached."""
+    observation = _EXEC_OBSERVATION.get()
+    if observation is not None and stage in _EXEC_STAGES:
+        observation["stage"] = stage
+
+
+def _exec_refusal_label(exc: BaseException) -> str | None:
+    import builtins
+
+    kind = type(exc)
+    if kind is ExecutableDependencyError:
+        code = exc.code
+        if type(code) is str and code in _EXEC_DEPENDENCY_CODES:
+            return f"ExecutableDependencyError:{code}"
+        return "ExecutableDependencyError"
+    for known, label in _EXEC_REFUSAL_TYPES:
+        if kind is known:
+            return label
+    name = kind.__name__ if type(kind.__name__) is str else ""
+    if name in _BUILTIN_EXCEPTION_NAMES and getattr(builtins, name, None) is kind:
+        return name
+    return None
+
+
+def _exec_refusal(exc: BaseException, failure: object) -> str:
+    """A record's closed ``refusal``: the harness code when the failure is typed, else the
+    allowlisted class of ``exc`` -- or, through transparent wrappers only, of the exception
+    they wrap (an `ExecutableDependencyError` with its allowlisted code). Never ``str(exc)``."""
+    if type(failure) is str and (failure in _HARNESS_DETAIL_CODES
+                                 or failure in _PARAMETER_FREE_FAILURES):
+        return failure
+    current: BaseException = exc
+    for _ in range(_EXCEPTION_CAUSE_DEPTH):
+        if not _is_transparent_wrapper(current) or current.__cause__ is None:
+            break
+        current = current.__cause__
+    return _exec_refusal_label(current) or _EXEC_REFUSAL_UNCLASSIFIED
+
+
+def _exec_refusal_valid(value: object) -> bool:
+    if type(value) is not str:
+        return False
+    if (value in _HARNESS_DETAIL_CODES or value in _PARAMETER_FREE_FAILURES
+            or value == _EXEC_REFUSAL_UNCLASSIFIED or value in _BUILTIN_EXCEPTION_NAMES
+            or any(value == label for _known, label in _EXEC_REFUSAL_TYPES)):
+        return True
+    kind, sep, code = value.partition(":")
+    return kind == "ExecutableDependencyError" and bool(sep) and code in _EXEC_DEPENDENCY_CODES
+
+
+def _note_exec_refusal_code(code: str) -> None:
+    """Record a fixed code a leg RETURNED as its failure (first one wins), as an exception
+    handler records a raised one."""
+    observation = _EXEC_OBSERVATION.get()
+    if (observation is not None and observation.get("refusal") is None and type(code) is str
+            and code in _HARNESS_DETAIL_CODES):
+        observation["refusal"] = code
+
+
+def _note_exec_refusal(exc: BaseException, failure: object) -> None:
+    """Record why the leg stopped. The first (innermost) classification wins: an outer
+    handler that sees the same failure again does not overwrite it."""
+    observation = _EXEC_OBSERVATION.get()
+    if observation is not None and observation.get("refusal") is None:
+        observation["refusal"] = _exec_refusal(exc, failure)
 
 
 def _parent_auth_state(leg: str, env=None) -> str:
@@ -15040,13 +16158,17 @@ def _parent_auth_state(leg: str, env=None) -> str:
     return "unavailable"
 
 
-def _scan_exec_field(value: object, secrets: tuple[bytes, ...] | None):
+def _scan_exec_field(value: object, secrets: tuple[bytes, ...] | None, *, patterns: bool = True):
+    """``value`` when it holds none of ``secrets`` and (with ``patterns``) no detected secret
+    shape; ``None`` otherwise, or when no assurance is available."""
     if secrets is None:
         return None
     try:
         encoded = json.dumps(value).encode()
         if any(_seat_jail.contains_secret(encoded, secret) for secret in secrets):
             return None
+        if not patterns:
+            return value
         # Independent pattern assurance applies even to legs without a known token.
         from detect_secrets.core.scan import scan_line
         from detect_secrets.settings import default_settings
@@ -15059,19 +16181,53 @@ def _scan_exec_field(value: object, secrets: tuple[bytes, ...] | None):
 
 
 def leg_exec_record(leg, rc, argv, *, auth_state="unavailable", model_turn=None,
-                    verdict=None, scan_secrets=None) -> dict[str, object]:
+                    verdict=None, scan_secrets=None, stage=None, refusal=None,
+                    launched=None, secret_match=None, output_refused=False,
+                    stream_rejection=None) -> dict[str, object]:
+    """``stage``, ``refusal``, ``secret_match`` and ``stream_rejection`` are closed
+    (agent-harness#1823); ``launched`` is whether any provider process started for the leg,
+    ``None`` when that is not known. ``output_refused``: the leg ended in an explicit
+    jailed-seat refusal, so a clean exit is `leg_execution_refused`."""
     state = auth_state if auth_state in {"healthy", "signed_out", "unavailable"} else "unavailable"
     outcome = "leg_execution_completed" if rc == 0 else "leg_execution_failed"
+    if rc is None and launched is False:
+        # No exit observed and nothing started: never launched, not failed.
+        outcome = "leg_execution_unlaunched"
+    if type(rc) is int and rc == 0 and output_refused is True:
+        # The process exited 0, but the leg was refused: not a completed leg.
+        outcome = "leg_execution_refused"
     if type(rc) is int and rc != 0 and model_turn is False and verdict is False and state == "signed_out":
         outcome = "leg_auth_signed_out"
     elif type(rc) is int and rc != 0 and model_turn is False and verdict is False and state == "unavailable":
         outcome = "leg_auth_unavailable"
     flags = _scan_exec_field(sorted(set(argv) & _EXEC_FLAGS), scan_secrets)
+    # A refusal is a closed value we built (`_exec_refusal_valid`), so the vocabulary is its
+    # assurance; it is still scanned for the leg's known secrets when the leg has them. The
+    # pattern scan is not applied to it: it reports every snake_case code as a high-entropy
+    # string, which would drop every refusal.
+    refused = (_scan_exec_field(refusal, scan_secrets if scan_secrets is not None else (),
+                                patterns=False)
+               if _exec_refusal_valid(refusal) else None)
     return {"schema": "leg_exec.v1", "attempt_id": uuid.uuid4().hex,
         "vendor": leg if leg in {"claude", "gemini", "codex", "grok"} else "other",
         "exit_code": rc if type(rc) is int else None, "outcome": outcome,
         "auth_state": state, "model_turn": model_turn if type(model_turn) is bool else None,
         "verdict": verdict if type(verdict) is bool else None,
+        "stage": stage if type(stage) is str and stage in _EXEC_STAGES else None,
+        "refusal": refused,
+        # Which configured value an output scan matched, and where: closed fields and
+        # positions only, scanned for the leg's own secrets like every field.
+        "secret_match": (_scan_exec_field(secret_match, scan_secrets if scan_secrets is not None else (),
+                                          patterns=False)
+                         if _secret_match_valid(secret_match) else None),
+        # What kind of line the tooled stream refused: closed names and counts only
+        # (`_stream_rejection_valid`), still scanned for the leg's own secrets. The vocabulary
+        # is its pattern assurance: the pattern scan reports snake_case names as high-entropy
+        # strings, which would drop the field.
+        "stream_rejection": (_scan_exec_field(stream_rejection,
+                                              scan_secrets if scan_secrets is not None else (),
+                                              patterns=False)
+                             if _stream_rejection_valid(stream_rejection) else None),
         "argv_flags": flags, "output": "omitted", "bound_bytes": 4096}
 
 
@@ -15113,9 +16269,16 @@ def _retained_leg_exec(function):
             if (type(rc) is int and rc != 0 and observation["model_turn"] is False
                     and observation["verdict"] is False and not observation["auth_probed"]):
                 observation["auth_state"] = _parent_auth_state(leg, observation.get("env"))
+            # A refusal counts only when the leg did not end accepted after all.
+            accepted = result is not None and (
+                result[0] == "OK" or (type(result[0]) is int and result[0] == 0))
             record = leg_exec_record(leg, rc, observation["argv"], auth_state=observation["auth_state"],
                 model_turn=observation["model_turn"], verdict=observation["verdict"],
-                scan_secrets=observation.get("scan_secrets"))
+                scan_secrets=observation.get("scan_secrets"), stage=observation.get("stage"),
+                refusal=observation.get("refusal"), secret_match=observation.get("secret_match"),
+                launched=_exec_launched(observation),
+                output_refused=observation.get("output_refused") is True and not accepted,
+                stream_rejection=observation.get("stream_rejection"))
             if result is not None and type(result[0]) is int and result[0] != 0:
                 detail = result[2] if len(result) > 2 else None
                 if type(detail) is not _HarnessCode and record["outcome"].startswith("leg_auth_"):
@@ -15188,13 +16351,62 @@ def _grok_probe_identity(command, env):
     return str(resolved), digest.hexdigest(), state
 
 
-def require_grok_admission(argv, env=None) -> bool:
-    """The shared Grok launch gate. True when ``argv`` is a Grok launch it admitted."""
+def require_grok_admission(argv, env=None, *, context=None) -> bool:
+    """The shared Grok launch gate. True when ``argv`` is a Grok launch it admitted.
+
+    A frozen-basis receipt admits a launch only with ``context``: the mark
+    ``grok_tool_surface.verify_launch_context`` gave the composed profile (grok tool-surface
+    contract §4.4). A caller that passes none is ineligible for that basis. Listing receipts
+    are unaffected.
+
+    While a measurement admission is held (contract §5.1) it alone decides: it admits the
+    receipt-less argv of the one measurement launch it was issued for, and only inside the
+    proxy-only namespace of that launch's own budgeted proxy. Without one the gate behaves
+    exactly as before."""
     if not argv or Path(argv[0]).name != "grok" or _grok_admin_command(argv):
         return False
-    if not grok_tool_gate(argv, env):
+    admission = _grok_surface.measurement_admission()
+    if admission is not None:
+        if not _grok_surface.measurement_admits(admission, argv, env):
+            raise _seat_jail.SeatSandboxRefused("grok_tool_surface_unverified")
+        return True
+    admitted, basis = _grok_gate_with_basis(argv, env)
+    if admitted and basis == "frozen_measurement":
+        admitted = _grok_surface.is_issued(context) and _grok_tool_gate(argv, env, context=context)
+    if not admitted:
         raise _seat_jail.SeatSandboxRefused("grok_tool_surface_unverified")
     return True
+
+
+def _require_grok_launch_context(profile, role, *, argv, cwd, env) -> None:
+    """The final step of a frozen-basis grok launch (grok tool-surface contract §4.4).
+
+    A profile its composition stamped launches only with the mark verify_launch_context
+    gave it, and only while that mark still matches this launch: the launch-owner review
+    role, the argv it judged (everything after the executable, which composition rewrites,
+    so the ``--cwd`` and ``--add-dir`` its discovery check saw), the same profile, the same
+    cwd, the egress prefix held now, a live proxy that the namespace holder behind that
+    prefix bridges to (BA-3: a different live holder or proxy refuses), and the record
+    re-resolved against the running context digest. A digest or a non-empty egress prefix
+    alone never satisfies it. Profiles with no frozen basis pass untouched."""
+    context = getattr(profile, "grok_launch_context", None)
+    if context is None:
+        return
+    try:
+        admitted = (_grok_surface.is_issued(context)
+                    and role is SeatLaunchRole.PROVIDER_REVIEW
+                    and list(argv[1:]) == list(context.command[1:])
+                    and context.profile_fingerprint == _grok_surface.profile_fingerprint(profile)
+                    and context.cwd == os.path.abspath(cwd)
+                    and bool(context.egress_prefix)
+                    and tuple(_EGRESS_LAUNCH_PREFIX.get()) == context.egress_prefix
+                    and context.proxy.process.poll() is None
+                    and _grok_surface.bridged_to(context.egress_prefix, context.proxy)
+                    and _grok_tool_gate(list(context.command), env, context=context))
+    except (OSError, ValueError, TypeError, AttributeError, RuntimeError):
+        admitted = False
+    if not admitted:
+        raise _seat_jail.SeatSandboxRefused("grok_tool_surface_unverified")
 
 
 def _grok_admin_command(command):
@@ -15232,10 +16444,14 @@ def _grok_argv_digest(command):
 
 
 def record_tool_probe(command, definitions, *, allowed_tools, version="unavailable", env=None,
-                      probed=None):
+                      probed=None, frozen=None):
     """Write the tool-probe receipt. ``probed`` is the ``_grok_probe_identity`` the probe
     measured: the receipt certifies that digest, never one chosen afresh here, and a fresh
-    measurement that differs from it at publication refuses."""
+    measurement that differs from it at publication refuses.
+
+    A passing receipt names its ``basis`` (grok tool-surface contract §4.2): ``list_tools``,
+    or ``frozen_measurement`` when ``frozen`` (the ``grok_tool_surface.FrozenSurface`` the
+    definitions came from) is given, with that record's four binding fields."""
     from .president_adapter import write_private_record
     # Without a bound dependency lease the binary is found on ``env``'s PATH; the operator
     # CLI has neither a lease nor a launch env, so it defaults to this process's.
@@ -15263,6 +16479,9 @@ def record_tool_probe(command, definitions, *, allowed_tools, version="unavailab
     if passed:
         record["tools"] = sorted(set(offered))
         record["version_digest"] = sha256(version.encode()).hexdigest()
+        record["basis"] = "list_tools" if frozen is None else "frozen_measurement"
+        if frozen is not None:
+            record.update(frozen.receipt_fields())
     name = "grok-probe-" + binary + "-" + record["argv_digest"] + ".json"
     try:
         from .president_adapter import private_record_root
@@ -15285,45 +16504,131 @@ def record_tool_probe(command, definitions, *, allowed_tools, version="unavailab
     return record
 
 
-def grok_tool_gate(command, env=None) -> bool:
+#: What the last real ``grok_tool_gate`` call in this context admitted: ``(argv, basis)``.
+#: Read by the two callers that must know the basis, so the receipt is read once per check.
+_GROK_ADMITTED_BASIS: ContextVar["tuple[tuple[str, ...], str] | None"] = ContextVar(
+    "grok_admitted_basis", default=None)
+
+
+def _is_sha256(value) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
+def _read_grok_receipt(command, env=None):
+    """``(binary digest, argv digest, receipt)`` for ``command``'s binary and form, read with
+    the descriptor checks the gate has always applied; ``None`` when they refuse it."""
     from .president_adapter import private_record_root
+    _, binary = _grok_binary_identity(command, env)
+    argv_digest = _grok_argv_digest(command)
+    root = private_record_root()
+    directory = _seat_jail.open_dir_nofollow(root)
     try:
-        _, binary = _grok_binary_identity(command, env)
-        argv_digest = _grok_argv_digest(command)
-        root = private_record_root()
-        directory = _seat_jail.open_dir_nofollow(root)
+        info = os.fstat(directory)
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            return None
+        name = "grok-probe-" + binary + "-" + argv_digest + ".json"
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
         try:
-            info = os.fstat(directory)
-            if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
-                return False
-            name = "grok-probe-" + binary + "-" + argv_digest + ".json"
-            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
-            try:
-                info = os.fstat(fd)
-                if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600 or not stat.S_ISREG(info.st_mode):
-                    return False
-                record = json.loads(os.read(fd, 16385))
-            finally:
-                os.close(fd)
+            info = os.fstat(fd)
+            if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600 or not stat.S_ISREG(info.st_mode):
+                return None
+            record = json.loads(os.read(fd, 16385))
         finally:
-            os.close(directory)
-        return (record.get("schema") == "tool_probe.v1" and record.get("passed") is True
+            os.close(fd)
+    finally:
+        os.close(directory)
+    return binary, argv_digest, record
+
+
+def _grok_frozen_receipt_current(command, binary, argv_digest, record, context) -> bool:
+    """A ``frozen_measurement`` receipt (grok tool-surface contract §4.2-§4.4)."""
+    if not (_is_sha256(record.get("surface_digest")) and _is_sha256(record.get("context_digest"))
+            and record.get("surface_source") in _grok_surface.SURFACE_SOURCES
+            and record.get("context") == _grok_surface.GROK_SEAT_CONTEXT):
+        return False
+    # The receipt caches a record, so the record is re-resolved on every consumption: a
+    # revoked digest, a withdrawn or replaced host-local record, a catalog route that now
+    # shadows it, and a changed context each invalidate it (§4.3).
+    resolved = _grok_surface.frozen_surface(binary, argv_digest)
+    current = _grok_surface.context_digest()
+    if (resolved is None or resolved.surface_digest != record["surface_digest"]
+            or resolved.source != record["surface_source"]
+            or resolved.surface["context_digest"] != record["context_digest"]
+            or record["context_digest"] != current
+            or resolved.surface["version_sha256"] != record["version_digest"]
+            or resolved.tools != record["tools"]):
+        return False
+    if context is None:
+        return True  # the provisional step: composition, never a launch (§4.4)
+    return (_grok_surface.is_issued(context) and context.context_digest == current
+            and _grok_argv_digest(list(context.command)) == argv_digest
+            and list(command[1:]) == list(context.command[1:]))
+
+
+def _grok_tool_gate(command, env=None, *, context=None) -> bool:
+    try:
+        read = _read_grok_receipt(command, env)
+        if read is None:
+            return False
+        binary, argv_digest, record = read
+        if not (record.get("schema") == "tool_probe.v1" and record.get("passed") is True
                 and record.get("binary_digest") == binary and record.get("argv_digest") == argv_digest
                 and _grok_tools_admitted(command, record.get("tools"))
-                and isinstance(record.get("version_digest"), str)
-                and re.fullmatch(r"[0-9a-f]{64}", record["version_digest"]) is not None)
+                and _is_sha256(record.get("version_digest"))):
+            return False
+        frozen_fields = [key for key in _grok_surface.RECEIPT_FIELDS if key in record]
+        if "basis" not in record or record["basis"] == "list_tools":
+            # Written before the basis field, or a listing receipt: today's checks only.
+            admitted = not frozen_fields
+            basis = "list_tools"
+        elif record["basis"] == "frozen_measurement":
+            admitted = _grok_frozen_receipt_current(command, binary, argv_digest, record, context)
+            basis = "frozen_measurement"
+        else:
+            return False
     except (OSError, ValueError, TypeError, AttributeError, IndexError, RuntimeError):
         return False
+    if admitted:
+        _GROK_ADMITTED_BASIS.set((tuple(command), basis))
+    return admitted
+
+
+def grok_tool_gate(command, env=None, *, context=None) -> bool:
+    """The tool-probe receipt check every grok launch path runs first.
+
+    With no ``context`` a frozen-basis receipt passes only the provisional step of the grok
+    tool-surface contract (§4.4): §4.2 and §4.3 hold, which admits composition and never a
+    launch. With ``context``, the mark a verified launch context issued, it is the final
+    step. Listing receipts are checked as they always were."""
+    return _grok_tool_gate(command, env, context=context)
+
+
+def _grok_gate_with_basis(command, env=None) -> "tuple[bool, str | None]":
+    """``grok_tool_gate(command, env)`` and the basis of the receipt it admitted."""
+    token = _GROK_ADMITTED_BASIS.set(None)
+    try:
+        admitted = grok_tool_gate(command, env)
+        seen = _GROK_ADMITTED_BASIS.get()
+    finally:
+        _GROK_ADMITTED_BASIS.reset(token)
+    basis = seen[1] if admitted and seen is not None and seen[0] == tuple(command) else None
+    return admitted, basis
 
 
 def probe_grok_tools(command, *, allowed_tools, runner=None):
-    """Definition-only introspection, with no staged tree or model turn."""
+    """Definition-only introspection, with no staged tree or model turn.
+
+    The basis is chosen by the help gate alone (grok tool-surface contract §4.1). A build
+    that advertises ``--list-tools`` is listed and never falls back. Any other build that
+    answers ``--help`` and ``--version`` cleanly takes the frozen record measured on exactly
+    this binary, argv form and the literal bytes of ``--version`` and ``--help`` under the
+    running launch context, if there is one; otherwise the receipt fails."""
     if runner is None:
         runner = lambda argv, **kw: run_provider(argv,
             child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE, **kw)
     definitions = None
     version = "unavailable"
-    env = probed = None
+    env = probed = frozen = None
     try:
         # The binary is resolved on the same environment it is run with.
         env = _subscription_env()
@@ -15350,14 +16655,41 @@ def probe_grok_tools(command, *, allowed_tools, runner=None):
                         and not version_result.stderr and version_result.stdout.strip()):
                     definitions = json.loads(result.stdout)
                     version = version_result.stdout
+            elif help_result.returncode == 0 and not help_result.stderr:
+                # A record binds the literal bytes the build prints, which text mode would
+                # normalise (universal newlines): both outputs are read again as bytes.
+                literal = dict(options, text=False)
+                help_bytes = runner([binary, "--help"], **literal)
+                version_bytes = runner([binary, "--version"], **literal)
+                if (help_bytes.returncode == 0 and help_bytes.stderr == b""
+                        and type(help_bytes.stdout) is bytes
+                        and not (b"--list-tools" in help_bytes.stdout and
+                                 b"Print tool definitions without running a model" in help_bytes.stdout)
+                        and version_bytes.returncode == 0 and version_bytes.stderr == b""
+                        and type(version_bytes.stdout) is bytes and version_bytes.stdout.strip()):
+                    frozen = _grok_surface.frozen_surface(
+                        probed[1], _grok_argv_digest(command),
+                        version_sha256=sha256(version_bytes.stdout).hexdigest(),
+                        help_sha256=sha256(help_bytes.stdout).hexdigest())
+                    if (frozen is not None
+                            and frozen.surface["context_digest"] == _grok_surface.context_digest()):
+                        definitions = {"tools": frozen.tools, "diagnostics": []}
+                        # The receipt's version digest is of these same bytes.
+                        version = version_bytes.stdout.decode("utf-8")
         if _grok_probe_identity(command, env) != probed:
             definitions = None
-    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+    except (OSError, ValueError, TypeError, AttributeError, RuntimeError, subprocess.SubprocessError):
         definitions = None
     if probed is None:
         return {"passed": False, "public_code": "grok_tool_surface_unverified"}
-    return record_tool_probe(command, definitions, allowed_tools=allowed_tools, version=version,
-                             env=env, probed=probed)
+    if definitions is None:
+        frozen = None
+    receipt = record_tool_probe(command, definitions, allowed_tools=allowed_tools, version=version,
+                                env=env, probed=probed, frozen=frozen)
+    if frozen is not None and frozen.shadowed and receipt.get("passed") is True:
+        # Reported, never persisted: the catalog route won over a different host-local one.
+        receipt = {**receipt, "shadowed": frozen.shadowed}
+    return receipt
 
 
 @_retained_leg_exec
@@ -15649,7 +16981,7 @@ def _exec_leg(
             if effort is None
             else render_seat_invocation(
                 "gemini",
-                model or "gemini-4-argon",  # model-id-source: board base default
+                model or "gemini-4-neon",  # model-id-source: board base default
                 effort,
             ).model
         )
@@ -16640,6 +17972,10 @@ def _default_spawn(
     quiescence_failed = False
     spawn_counter = _SpawnCounter()
     spawn_token = _LEG_SPAWNS.set(spawn_counter)
+    observation = _EXEC_OBSERVATION.get()
+    if observation is not None:
+        # The leg record's `launched`: whether any provider started (agent-harness#1823).
+        observation.setdefault("spawns", spawn_counter)
     # A notice the seat owner raises while this leg's profile ends lands in the leg's list.
     owner_notices_token = _SEAT_OWNER_NOTICES.set(seat_notices)
     # The leg starts with NO sandbox facts, whatever its calling context holds, and the
@@ -16753,6 +18089,17 @@ def _default_spawn(
         # THE FAIL-CLOSED BACKSTOP, at the launch boundary and before egress, so an egress
         # failure cannot pre-empt its code. Every seat leg reaches it, staged tree or not.
         _refuse_unless_executed_remotely(mode, executed_remotely=False)
+        # Grok tool-surface contract §4.6: a grok leg whose form rests on a frozen-basis
+        # receipt runs in the grok-review proxy-only namespace, held for the whole leg in
+        # place of any slirp namespace, with no fallback. Every other leg, and a grok leg on
+        # a listing receipt, keeps the egress below byte for byte.
+        grok_frozen = (
+            leg == "grok" and not jailed and agy_capture is None and capture_stage is None
+            and _grok_leg_on_frozen_basis(
+                brokered=(mode == "review" and review_authorization is not None
+                          and not _has_injected_review_execution_seam(leg=leg)),
+                model=model, effort=effort, env=env, review_dir=review_dir, out_dir=out_dir)
+        )
         if sandbox_root_choice is not None:
             # ORDER IS THE POINT. A refusal on the merits of the REQUEST -- a staged tree
             # the authorization never approved, artifact bytes that no longer bind -- must
@@ -16795,7 +18142,9 @@ def _default_spawn(
                     logging.getLogger(__name__).warning(
                         "seat %s: egress layer unavailable (%s)", leg, exc)
                     raise _seat_jail.SeatSandboxRefused(exc.code) from exc
-            egress_ctx = _sandbox_egress.isolated_network(
+            egress_ctx = _grok_board_leg_egress(
+                timeout_s=None if review_monitor is not None else float(_LEG_TIMEOUT_MAX_S) + 300.0,
+            ) if grok_frozen else _sandbox_egress.isolated_network(
                 # Outlive the leg: the namespace must not expire under a long review.
                 timeout_s=None if review_monitor is not None else float(_LEG_TIMEOUT_MAX_S) + 300.0,
                 **({"seat_uid_map": True, "required": True} if jailed else {}),
@@ -16826,7 +18175,7 @@ def _default_spawn(
             sandbox_enforcement = _sandbox_egress.enforcement_report(
                 applied=bool(egress_prefix),
             )
-            if gemini_egress is not None and egress_prefix:
+            if (gemini_egress is not None or grok_frozen) and egress_prefix:
                 # What the proxy-only namespace enforced, not the shared policy's allowlist.
                 # The proxy's own record goes in the leg's evidence (`egress`).
                 sandbox_enforcement = {
@@ -16853,6 +18202,14 @@ def _default_spawn(
                 seat_notices.append("seat_sandbox_root_unapplied")
             if not jailed and leg in ("codex", "grok") and sandbox_usable_by(leg, brokered=True):
                 seat_notices.append("seat_filesystem_unconfined")
+        elif grok_frozen:
+            # The sealed and unbrokered review forms stage no tree, so nothing above holds a
+            # namespace for them: the grok-review one is held here for the leg (§4.6).
+            egress_prefix = egress_stack.enter_context(_grok_board_leg_egress(
+                timeout_s=None if review_monitor is not None else float(_LEG_TIMEOUT_MAX_S) + 300.0,
+            ))
+            egress_token = _EGRESS_LAUNCH_PREFIX.set(tuple(egress_prefix))
+            egress_stack.callback(_EGRESS_LAUNCH_PREFIX.reset, egress_token)
         capture_staged: dict[str, dict[str, object]] | None = None
         if agy_capture is not None:
             if leg == "gemini" and not seat_key:
@@ -17088,9 +18445,19 @@ def _default_spawn(
                             )
                             seat = _bind_route_qualification(seat, seat_route)
                         except _seat_jail.SeatSandboxRefused as exc:
+                            _note_exec_refusal(exc, exc.code)
                             leg_detail = _LegFailure(template=exc.code)
                             seat_notices.append(exc.code)
                             seat_notices.extend(exc.also)
+                            return "DEGRADED", ""
+                        except _JAILED_GEMINI_PROPAGATES:
+                            raise
+                        except Exception as exc:
+                            # agent-harness#1823: typed HERE, not through the broker client's
+                            # wrapper, so a refusal keeps its code and notice.
+                            leg_detail = _jailed_gemini_failure(exc)
+                            if leg_detail.template in _seat_jail.NOTICE_CODES:
+                                seat_notices.append(leg_detail.template)
                             return "DEGRADED", ""
                         try:
                             gemini_status, gemini_text = _exec_jailed_gemini_leg(
@@ -17103,7 +18470,13 @@ def _default_spawn(
                                 review_authorization=review_authorization,
                             )
                         except _seat_jail.SeatSandboxRefused as exc:
+                            _note_exec_refusal(exc, exc.code)
                             gemini_sink.append(_LegFailure(template=exc.code))
+                            gemini_status, gemini_text = "DEGRADED", ""
+                        except _JAILED_GEMINI_PROPAGATES:
+                            raise
+                        except Exception as exc:
+                            gemini_sink.append(_jailed_gemini_failure(exc))
                             gemini_status, gemini_text = "DEGRADED", ""
                         seat_notices.extend(seat.notices)
                         if gemini_status != "OK" and gemini_sink:
@@ -17137,6 +18510,7 @@ def _default_spawn(
                         # A typed seat refusal (admission, jail, egress) keeps its code and
                         # notice here exactly as off the broker (the outer handler below).
                         failure = _exception_failure(exc)
+                        _note_exec_refusal(exc, failure)
                         typed = isinstance(failure, str) and failure in _seat_jail.NOTICE_CODES
                         if typed:
                             seat_notices.append(failure)
@@ -17165,6 +18539,7 @@ def _default_spawn(
                     _cancel_parent_infer,
                     broker_latch.is_quiescent,
                 )
+                _note_exec_stage("broker")
                 response, probe = broker.run_credentialless_client(
                     adapter, deadline_s=None if review_monitor is not None else float(leg_deadline),
                     **({"cancel_event": review_monitor.cancel} if review_monitor is not None else {}),
@@ -17286,6 +18661,7 @@ def _default_spawn(
         # one call site away went to `detail` with empty text and was a WARN. Same fault,
         # two verdicts, decided by which line raised.
         failure = _exception_failure(exc)
+        _note_exec_refusal(exc, failure)
         if isinstance(failure, str) and failure in _seat_jail.NOTICE_CODES:
             seat_notices.append(failure)
         if jailed and leg == "claude":

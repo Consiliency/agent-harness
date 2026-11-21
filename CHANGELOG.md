@@ -6,6 +6,229 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Added
+
+- The grok tool probe has a second basis for builds with no `--list-tools`, which is every
+  installed build through 1.0.89 (lane L1 of the grok tool-surface plan,
+  `plans/artifacts/grok-tool-surface-contract-v1.md`). Basis selection is by the help gate
+  alone: a build that advertises the listing is still listed and never falls back. Any other
+  build takes a frozen record measured on its exact binary digest, route argv digest and
+  the literal bytes of its `--version` and `--help`, from the new shipped catalog (`data/grok_tool_surfaces.json`,
+  empty) or a host-local record, with the catalog winning and a revoked digest having no
+  record. Passing `tool_probe.v1` receipts gain an additive `basis` (`list_tools` or
+  `frozen_measurement`) and, for the frozen basis, `surface_digest`, `surface_source`,
+  `context` and `context_digest`; the gate validates them in combination and re-resolves the
+  record on every use. A frozen-basis receipt admits composition only: `launch_owned`
+  refuses it unless `grok_tool_surface.verify_launch_context` has checked the composed
+  profile against `grok_seat_context.v1` (fresh seat home, allow-listed environment, no
+  managed grok config and no Claude Code managed settings in the seat's view, no
+  tool-discovery path visible in the view the launch composes, where any overlap whose
+  absence cannot be proved refuses, the `grok-review` egress and the launch-owner review
+  composition) and marked it, and the launch's argv and cwd are the
+  ones it checked. The jailed route launches grok only on a legacy or listing receipt. No caller
+  does that yet, the catalog is empty and the `grok-review` allow-list does not ship, so
+  every grok route stays `grok_tool_surface_unverified`. `seat-window probe-tools` rows
+  gain `basis` and, for the frozen basis, `source` and `shadowed`. Legacy and listing
+  receipts keep their meaning. Pins: `seat_window.runtime_digest()` moves, so window
+  records on the previous key no longer match and affected windows need requalifying
+  (landing the grok tool-surface lanes close together needs one requalification); new
+  `host-io` rows in `tests/data/seat_launch_references.json`; one package-data entry. The
+  agy seat QCI, the agy validator closure and the seat jail profile digests do not move.
+- Vendor-only egress for a launch-owner grok launch (grok tool-surface plan, lane L2a;
+  contract `plans/artifacts/grok-tool-surface-contract-v1.md` sections 5.2 and 5.3). A new
+  `grok-review` seat egress allowlist carries only the statically known inference request
+  (`POST https://cli-chat-proxy.grok.com/v1/chat/completions`) and refuses the sign-in hosts
+  `accounts.x.ai` and `auth.x.ai`. The measurement and the board review leg will share it;
+  the `grok` allowlist id stays reserved for the jailed seat (SEATS GROK SL-1).
+  `start_proxy` takes `request_budget=N`, which can only narrow: the proxy charges each
+  allowed `POST` before forwarding it, refuses every request once the budget is spent,
+  attests the budget in its ready line, and writes an end-of-stream marker as its last
+  record only on an orderly shutdown. `completion()` and `charged_requests()` settle below
+  the full budget only on positive proof (exit 0 without a kill, the marker, matching
+  counts, no protocol error), so a kill, the shutdown-timeout kill path, a lost marker or a
+  truncated record stays charged in full. A grok `seat_profile` takes the `grok-review`
+  proxy as `egress_proxy`, which projects `HTTPS_PROXY`, the CA as a read-only
+  `SSL_CERT_FILE` in the private home and the proxy token as a redaction, and nothing else.
+  The shared helper holds the existing proxy-only namespace; `sandbox_egress` is unchanged.
+  A proxy started without a budget keeps its configuration, stream and decisions, and the
+  `codex` and `gemini` allowlist digests do not move. Nothing launches grok through this yet;
+  the measurement and the board leg are later lanes.
+  Pins: `seat_window.runtime_digest()` moves, because `proxy.mjs`, `seat_egress_proxy.py`,
+  `panel_invoker.py` and the new allowlist file are in its hash, so window
+  `qualification_keys` on the previous key no longer match, existing W1 records included.
+  Requalify affected windows before relying on them; landing lanes L1, L2a, L2b and L2c
+  together and requalifying once is the cheap order. The agy seat QCI, the validator
+  closure, `CONTAINMENT_CONTRACT_SHA256`, `SRT_TREE_SHA256` and the jail profile digests are
+  unchanged.
+- `phase-loop seat-window measure-tools --vendor grok`, the owner-gated measurement of a grok
+  build's tool surface (grok tool-surface plan, lane L2b; contract
+  `plans/artifacts/grok-tool-surface-contract-v1.md` section 5 and BA-1, BA-2 and the
+  measurement path of BA-3). One stage per invocation: `--new-grant` (with `--planned` and
+  `--retries`), `--attended --route`, `--require-measured`, `--aggregate`,
+  `--verify-probe initial|final`, `--status`, `--reprocess` and `--purge`, each re-measuring
+  `--binary` against `--expect-binary-sha256` and the grant. Each route is one launch of its
+  argv form, with only the masked slots filled, through `seat_profile` plus
+  `launch_owned(PROVIDER_REVIEW)` inside the `grok-review` proxy-only namespace, under a
+  measurement admission that `require_grok_admission` honours only for that argv, binary,
+  budgeted proxy and namespace. The grant ledger in the private record root reserves each
+  launch's whole budget before its proxy starts, settles below it only on the proxy's
+  completion proof, keeps orphaned reservations charged, is bound to the grant, host and
+  binary, and is not reset by a fresh output directory; the cap is 7 and the per-launch
+  budget 1. Result records are immutable; `--aggregate` is the only writer of the host-local
+  record and, under the per-binary publication lock, publishes a route only when a
+  cross-grant attempts register names this grant's own latest reservation for it, so an
+  older grant cannot republish a route a newer one withdrew (shipped catalog routes keep
+  their precedence). Each attempt is registered, and its route's publication cleared,
+  before the route is withdrawn and before its reservation exists; a host-local route is
+  consumed only while the register names it published from the latest attempt, so a crash
+  at any step leaves nothing stale consumable. Result records are committed with the grant
+  (temp file, then link), so every output directory reads one status and an interrupted
+  commit, reprocessing included, retries cleanly. The measurement's admission and final
+  check bind the exact live namespace holder to this launch's own proxy socket.
+  `--verify-probe initial` also runs the isolation self-check before any credential is
+  projected; `--verify-probe final` needs the grant and its own aggregate. A new hosted CI
+  job, `grok-egress-ns`, required by `suite gate`, runs the BA-3 tests on the real egress
+  layer with `PHASE_LOOP_REQUIRE_GROK_EGRESS_NS=1` and refuses any skip.
+  Contract errata 3 and 4: a measurement tolerates exactly three refused startup requests
+  (`GET cli-chat-proxy.grok.com /v1/settings`, `CONNECT x.ai`, `CONNECT
+  storage.googleapis.com`), recorded as `tolerated_refusals`; every other denial still
+  disqualifies. `start_proxy` gains a `named` keyword so the stream reports those exact
+  observations instead of `<other>`; it decides nothing, and without it the proxy is
+  unchanged. A binding `--rehearse` stage runs the pilot's exact launch under a
+  zero-budget proxy, with no model call and no charge, and no reservation is made without
+  a passing rehearsal under the current context. Records hold names, digests, counts and statuses only; raw
+  captures and provider logs stay private with 30- and 7-day deadlines. The grok context now
+  carries lane L2a's proxy projection (the CA file, `HTTPS_PROXY`, `SSL_CERT_FILE`), and
+  `seat_profile` takes a `grok_sessions` keyword that only a measurement uses. Nothing is
+  measured until the owner grants it. Pins: `seat_window.runtime_digest()` moves again
+  (`grok_tool_surface.py`, `panel_invoker.py`, `seat_window.py`); new `qualification` and
+  `host-io` rows in `tests/data/seat_launch_references.json`. The agy seat QCI, the
+  validator closure, `CONTAINMENT_CONTRACT_SHA256`, `SRT_TREE_SHA256`, the jail profile
+  digests and the egress allow-list digests do not move.
+- The board review leg consumes the frozen grok tool-surface basis (grok tool-surface plan,
+  lane L2c; contract `plans/artifacts/grok-tool-surface-contract-v1.md` section 4.6 and
+  BA-3). The leg's egress setup in `_default_spawn` makes the provisional check on the
+  form the leg will launch (`sealed` or `staged` for a brokered leg, `review` otherwise).
+  For a frozen-basis receipt it holds the `grok-review` proxy, with no request budget, and
+  its proxy-only namespace for the whole leg, in place of any slirp namespace.
+  `_run_leg_with_liveness` composes that launch with the proxy's projection, then runs
+  `verify_launch_context` on the composed profile. `launch_owned` admits the marked
+  profile only while the namespace holder behind its egress prefix bridges to that same
+  proxy, by the measurement's own check (`grok_tool_surface.bridged_to`, BA-3). A different
+  live holder or proxy refuses. Every failure is `grok_tool_surface_unverified`, with no fallback:
+  the egress layer or allow-list missing, the namespace not coming up or not bridged to its
+  proxy, a discovery path in the tree, managed config, a withdrawn record, or the
+  launch's own fallback or a slirp namespace. Other legs, and a grok leg on a legacy or
+  listing receipt, keep their egress and composition byte for byte. The board-path BA-3
+  tests (`tests/test_grok_board_leg_frozen_basis.py`) run in the hosted `grok-egress-ns` job,
+  which refuses any skip.
+  Pins: `seat_window.runtime_digest()` moves (`panel_invoker.py`, `claude_seat_transport.py`).
+  The Claude SDK proof region `panel_invoker.py::_run_leg_with_liveness`, which this lane
+  edits, moves (contract erratum 5), and so does the SDK proof file
+  `claude_seat_transport.py`, whose `SDK_PROOF_UNBOUND` now classifies the two grok-only
+  references the region gained. The dependency audit stays closed. No SDK receipt is needed
+  now, because the SDK transport is not admitted; a future admission must bind these inputs
+  as they then stand. No rows are added to
+  `tests/data/seat_launch_references.json`. The agy seat QCI, the validator closure,
+  `CONTAINMENT_CONTRACT_SHA256`, `SRT_TREE_SHA256`, the jail profile digests, the egress
+  allow-list digests and `context_digest` do not move. No record exists
+  yet, so every grok route stays `grok_tool_surface_unverified` until the owner-gated
+  measurement.
+- A Gemini seat now keeps the agy image its board preflight last admitted, so a later
+  hold can fall back to it: after the preflight admits the selected agy, its sealed image
+  is kept in the per-user qualification store under `held/` (0600 files in a 0700
+  directory). At most two are kept, by authenticated version, among files the hold can
+  actually read; a corrupt or unreadable file is removed. Writing never waits for the
+  store lock, never fails the admission, creates nothing under an unsafe directory, and
+  adds nothing to a cache too large to inspect. Not kept: spawn and heartbeat admissions,
+  held admissions, managed-release seats, denied digests, or anything with
+  `[agy] hold = false`. `phase-loop agy-qualification clear --all` also removes `held/`
+  completely and reports `held_removed`; anything it cannot remove is listed in
+  `held_not_removed` and the command fails. A plain `clear` leaves the cache. The seat QCI,
+  store keys, the catalog, records and pins are unchanged.
+
+### Changed
+
+- Gemini 4 NEON (`gemini-4-neon`) is the shipped Gemini planning, review and board
+  default. Gemini roadmap, plan and review render `gemini-4-neon-high`; the panel's
+  Gemini leg, every built-in preset's Gemini seat and the president's `gemini` rung
+  also run NEON at `high`. agy's `gemini-4-neon-xhigh` is not admitted: Gemini effort
+  stays capped at `high`. The Gemini implementer and worker stay on
+  `gemini-3.8-flash-high`. Gemini 4 Argon (`gemini-4-argon`) stays registered as an
+  explicit seat and answers to the `gemini` alias; `PHASE_LOOP_GEMINI_MODEL=gemini-4-argon`
+  restores it per host. The agy validator identity stays `agy_validator_v1`: registering
+  NEON adds admitted models without changing a verdict of the fixed corpus, so the
+  verdict vector is unchanged and only the validator source-closure pin moves (its
+  changed nodes are the model registry and the two agy model patterns). The ship
+  condition is met: brokered subscription launches of `gemini-4-neon-medium` and
+  `gemini-4-neon-high` on a locally qualified agy image both passed on 2026-11-20,
+  each with an AGREE verdict.
+- agy first-use provenance no longer stops at the newest four stable releases: any listed
+  stable release can be matched, so a host that has fallen behind can still prove where its
+  image came from. The lookup reads the release listing page by page (at most 300 entries),
+  tries the release named by the install path first (a hint taken from the path only;
+  nothing is opened or run for it), fetches at most two uncached archives per call and at
+  most twelve per store and image in any 24 h, and tries archives that recently failed to
+  parse last. Running out of either allowance refuses `unverified` with the reason
+  `budget_exhausted` or `download_cap_reached`; the next preflight continues the walk, and
+  neither counts as a transient failure. The fetch times are kept in a new store entry
+  shared by every profile; only `agy-qualification clear --all` removes it, and a tampered
+  entry counts as a reached cap. A match records whether GitHub lists an attestation for the
+  asset (`absent` or `present_unverified`), so first use now also needs the GitHub API to
+  answer that query. The upstream watch accepts any listed stable release for `--version`,
+  records the attestation status and checks the release against Google's installer
+  manifest, and stops before pushing on a mismatch or an unavailable status.
+  `verify_qualified_agy_image.py --contract` requires both statuses to be known values, and
+  `--upstream-only` takes the newest stable release from the listing and reports when it
+  was published. The seat QCI, the shipped catalog and records are unchanged; nothing needs
+  requalification.
+
+### Fixed
+
+- On Node 22 the seat egress proxy no longer exits when it refuses a request with a body.
+  - **The failure.** srt cancels a refused body while the client's bytes may still be in
+    flight. Node 22's stream adapter then threw an uncaught `ERR_INVALID_STATE`, and the
+    proxy exited 1 without its end-of-stream marker. Every grok rehearsal therefore ended
+    `observation_incomplete`, because a real client's inference request always has a body.
+  - **The fix.** `proxy.mjs` now reads a refused request's body to its end before it
+    refuses, up to 4 MiB and 5 s, and discards it. Decisions, observations and budget
+    charges are unchanged, and a crash still leaves no marker.
+  - **Diagnostics.** A rehearsal refused as `observation_incomplete` now records and
+    reports what was missing, in a closed, metadata-only `incomplete` block. It names the
+    first unmet completion condition, the marker, the last record read, the proxy's exit
+    status, a kill and EOF, from the new `seat_egress_proxy.completion_detail()`.
+  - **Pins.** `seat_window.runtime_digest()` moves with the grok entries above. The seat
+    jail qualification's live `proxy_sha256` binding moves too, as it does for lane L2a,
+    which edits the same two files.
+
+## [0.7.38] - Unreleased candidate
+
+### Added
+
+- A Gemini seat whose selected `agy` cannot be used for a reason of its own (unreadable,
+  over the size bound, not regular, not qualified, a failed record, self-qualification off,
+  an unsafe store, first use failing) now admits an already-qualified image found on the
+  host instead: a release member, or a locally qualified image, from the harness cache or
+  the vendor store `/opt/consiliency/operational-clis/agy` (the hold). Every seat admission
+  goes through one boundary, `agy_qualification.admit_seat`. The search is bounded and
+  ordered (newest authenticated version first; at most five image reads),
+  descriptor-relative and symlink-free, holds one image at a time, and rejects a file whose
+  replacement it observes during the read. A held seat runs the held image's sealed memfd;
+  its evidence carries `provider_admission_source: "lkg"`, `provider_hold_reason` and
+  `provider_subject_image_sha256`, and every seat admission now records its
+  `provider_admission_source`. `phase-loop agy-qualification status` gains a `hold` object
+  (subject class, per-route coverage, the candidate and its state; never "in use"). Not
+  covered: managed-release seats on every route, and the jailed standalone Gemini route,
+  which refuses a held admission. Today's refusals stand when nothing qualifies, and the
+  user config `[agy] hold = false` turns the hold off; `[agy] hold_deny` lists image digests
+  never held (a bad value turns the hold off, never a valid `self_qualification`). A
+  cancellation during the hold is a cancellation, never an admission or the subject's
+  refusal. `phase-loop agy-qualification run` adds `source`, and for a held image the reason
+  and the subject's digest. The help measurement's typed process-group quiescence outcome
+  now keeps its type on the heartbeat route and in first use's lookup, as it already did at
+  the seat sites. The seat QCI, store keys, the catalog, records and pins are unchanged
+  (agent-harness#2026).
+
 ### Changed
 
 - `phase-loop-runtime` now requires `consiliency-contract>=0.7.2,<0.8` (was `>=0.6.5,<0.7`).
@@ -15,15 +238,55 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `test_only` registry unless the caller opts in. phase-loop does not call the authority
   verifier, so no runtime code changes. This brings the `consiliency-contract` floor back
   in line with the latest published contract, which `phase-loop doctor --fail-on-stale`
-  checks.
+  checks (agent-harness#2022).
 
 ### Fixed
 
+- The jailed Gemini seat pins agy's agent mode to Default. Since agy 1.5.7, a headless run
+  with no saved mode starts in Auto wherever Auto is available. Auto sends commands that
+  would leave agy's terminal sandbox to a separate reviewing agent, which is a second
+  model session that the seat does not allow. The settings file that the parent writes
+  into the seat's `.gemini/antigravity-cli/` was `{}`. It is now `{"agentMode":""}`, the
+  value agy itself saves when Default is chosen. The seat's probe jail and the jail
+  qualification's seat shape write the same file. The seat argv is unchanged and still
+  passes no `--mode`. The brokered agy routes that run today (the heartbeat route,
+  advisory documents and the brokered president) pass `--mode plan` and keep their own
+  owned settings. The brokered builder can also form a staged invocation with no mode, but
+  no production Gemini route reaches it. Existing qualification pins are unchanged
+  (agent-harness#2031).
 - Seat scopes use a fixed description. `capped_popen` passes `systemd-run` a
   `--description` that names only the seat key's digest (the value already in the unit
   name), so a scope's unit metadata no longer repeats the seat's command line. The
   per-seat caps, their attestation and the launched command are unchanged
-  (agent-harness#1895).
+  (agent-harness#1895, agent-harness#2019).
+- A jailed Gemini seat's refusals reach the board typed instead of as `unknown failure; CLI
+  output not retained` (agent-harness#1823, agent-harness#2029). `_parent_infer` classifies
+  the seat's preparation and execution exceptions itself. When the adapter invocation's own
+  outcome, tracked apart from transport and cleanup errors, is the broker client's sole
+  failure (no other error, no deadline -- rechecked when the client's read completes --, no
+  cancellation, live serve thread or non-quiescent adapter, and the client's own exit,
+  observed before cleanup signals it, is its expected truncated-response exit), the client
+  raises `CredentiallessAdapterFailure` chained to it, and `_exception_failure` looks
+  through that one wrapper (bounded, exact types only, never parsing text); any other outer
+  exception keeps its own classification. A stale agy login on a dependency route (a session
+  lease or managed release, which must not renew the host login, agent-harness#1782) reports
+  the existing `gemini_credential_near_expiry` code and its renewal notice, and the
+  seat-mode preflight reports it before the board runs.
+  `seat_sandbox_refused:watch_unavailable` is now in the detail vocabulary. `leg_exec.v1`
+  gains the closed `stage` and `refusal` fields (raised and returned typed codes, or an
+  allowlisted class; `ExecutableDependencyError` codes from an exact allowlist). A leg that
+  started no provider and stopped before any launch boundary is `leg_execution_unlaunched`
+  rather than `leg_execution_failed`. The jail profile digests, the agy and seat QCI, the
+  validator closure and the Claude SDK proof inputs are unchanged; nothing needs
+  requalification.
+- A jailed Gemini or Codex seat's private `leg_exec.v1` record now says which configured
+  value its output scan matched and where (agent-harness#1823, agent-harness#2029): a closed
+  `secret_match` field with the kind and encoding of the match, the stream (or, for an
+  after-exit match across a join of the scanned streams, every stream it covers), whether it
+  was caught live or after exit, the event, step and tool of the line (read by structure at
+  fixed JSON paths, allowlisted), and the line index and byte offset. The record's `refusal`
+  carries the leg's existing detail code. The scan, its forms and the public detail codes
+  are unchanged, and the record holds no part of the matched value or the text around it.
 - The agy size bounds are defined once, in `agy_provenance`, and every reader looks them up
   there when it runs: a 512 MB image (the seat readers in `gemini_heartbeat` and
   `agy_integrity` stopped at 300 MB, with current upstream images at about 269 MB), a 256 MB
@@ -37,7 +300,39 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   admission holds one copy of the image instead of about three. On the seat path a memfd
   seal failure is the `agy_image_unqualified` refusal for a release member too. The seat
   QCI, store keys, the shipped catalog and records are unchanged; nothing needs
-  requalification.
+  requalification (agent-harness#2017).
+- agy self-qualification no longer depends on the directory it runs from, so
+  `phase-loop agy-qualification run` and first-use qualification work from any directory.
+  Each operation's board now reviews a constant one-file repository that the coordinator
+  creates for that operation and removes afterwards. It goes in a private directory of
+  the qualification store, or in `/tmp` when the store's location cannot be proven
+  private or contains a `%` (git decodes percent escapes in the `file://` URL the board
+  clones from). The repository holds one commit with a fixed identity, date and message, so
+  its object ids are fixed. Before running the board, the worker checks the repository's
+  location, ownership and mode, its exact files, objects and refs, and its index. After
+  the board, the worker checks that the staged tree is the repository's. Before, the
+  board used the caller's working directory, so a run from a directory that was not a git
+  repository, or from a repository with no tracked file, stopped before agy started and
+  counted as a transient attempt. When an operation ends before the provider is observed,
+  `failure.json` now also records the worker's terminal status and detail as
+  `worker_terminal`. The validator, seat QCI, store keys, the shipped catalog and records
+  are unchanged; nothing needs requalification (agent-harness#2021).
+- When a jailed Gemini seat's tooled stream is refused with
+  `gemini_seat_subagent_or_unknown_event`, its private `leg_exec.v1` record now says what
+  kind of line was refused (agent-harness#1823, agent-harness#2029). The new closed
+  `stream_rejection` field gives the reason (`unknown_event`, `bad_step_type` or
+  `subagent_info`, in the parser's own order), the line's index, its event, step type, tool
+  name and step state, which keys the line, its step and any `subagent_info` carry,
+  per-event, per-step-type and per-tool counts for the whole stream, and the init event's
+  keys and mode values. Every name comes from a fixed allowlist, with `other` for anything
+  outside it, and the record holds no line text, value or provider text. The descriptor is
+  computed by a new helper that re-reads the retained output after the parser has refused
+  it; the parser itself is unchanged. A leg that exited 0 but ended in one of a jailed
+  seat's explicit refusals (a stream, verdict, leak or token refusal) is now recorded as
+  `leg_execution_refused` rather than `leg_execution_completed`; a clean exit that fails
+  ordinary review classification without such a refusal keeps its outcome. The public detail
+  codes, the agy validator closure, the agy and seat QCI, the jail profile digests and the
+  Claude SDK proof inputs are unchanged; nothing needs requalification.
 - The placement process request and response decoders refuse a JSON value that nests arrays
   or objects more than 64 deep as `input_invalid_json`, checked before decoding. This is an
   implementation resource safeguard, not a rule of the frozen schema's `x-cli.input`. The
@@ -59,7 +354,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   pins the changed source and test and needs re-stamping. See
   `docs/placement-process-cli.md`.
 
-## [0.7.37] - Unreleased candidate
+## [0.7.37] - 2026-11-20
 
 ### Changed
 

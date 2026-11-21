@@ -1,9 +1,10 @@
 """Admission of qualified provider entry images.
 
 Release-qualified images are admitted statically, by digest. With the caller's env,
-``check`` also admits a locally self-qualified image through
-``agy_qualification.lookup``, which may run ``agy --help`` from a sealed memfd to
-measure the help digest (agent-harness#1331). It never qualifies an image."""
+``check`` is the seat admission boundary, ``agy_qualification.admit_seat`` (AGYFRESH §2.2):
+it also admits a locally self-qualified image through ``agy_qualification.lookup``, which may
+run ``agy --help`` from a sealed memfd to measure the help digest (agent-harness#1331), and,
+for a subject-side refusal, a held image (HOLD). It never qualifies an image."""
 
 from contextlib import contextmanager
 import os
@@ -20,46 +21,43 @@ class AgyImageUnqualified(RuntimeError):
     pass
 
 
-def _locally_qualified(image, source, env, evidence=None):
-    """The image's local self-qualification admission (agent-harness#1076), else refuse.
+def _admitted_for_seat(path, env, evidence=None):
+    """``agy_qualification.admit_seat(first_use=False)`` for a seat, else refuse.
 
-    Same lookup as ``gemini_heartbeat.admit`` step 2: opt-out, failed entry, provenance,
-    then the qualified entry for this host and runtime. Lookup only; it never qualifies.
-    ``image`` is the sealed memfd of the single read; lookup owns and closes it."""
+    What runs is the admitted image's sealed memfd, never the path. A refusal is the typed
+    ``agy_image_unqualified``; the help measurement's own typed outcomes keep their type, so
+    each reaches its handler: a seat refusal its code (agent-harness#1333 PR1), a quiescence
+    failure the leg's quiescence path, a jail refusal its notice (agent-harness#1350
+    president). They precede the broad mapping below, so the ``AgyCanaryEvidenceError`` BASE
+    (a real memfd seal failure) is still the typed refusal."""
     from . import agy_qualification
     from .panel_invoker import ProviderProcessGroupQuiescenceError
     from .sandbox_egress import EgressUnavailable
     from .seat_jail import SeatSandboxRefused
     try:
-        admission = agy_qualification.lookup(dict(env), image, str(source))
-        if evidence is not None:
-            evidence.update(provider_admission_class=admission.admission_class,
-                            provider_image_sha256=admission.image.sha256)
-        return admission.image
-    except gemini_heartbeat.AdmissionMiss as miss:
-        miss.image.close()
-        raise AgyImageUnqualified("agy_image_unqualified") from None
+        admission = agy_qualification.admit_seat(dict(env), path, first_use=False)
     except (EgressUnavailable, gemini_heartbeat.GeminiQuiescenceError,
             ProviderProcessGroupQuiescenceError, SeatSandboxRefused):
-        # The help measurement's own typed outcomes keep their type, so each reaches its
-        # handler: a seat refusal its code (agent-harness#1333 PR1), a quiescence failure the
-        # leg's quiescence path, a jail refusal its notice (agent-harness#1350 president).
-        # This precedes the broad mapping below, so the AgyCanaryEvidenceError BASE (a real
-        # memfd seal failure) is still the typed refusal.
         raise
     except (OSError, ValueError, RuntimeError) as exc:
-        # Opt-out, a failed record, an unsafe store, an unreadable image or a seal failure.
+        # Opt-out, a failed record, an unsafe store, an unreadable image or a seal failure,
+        # with no held image: the subject's refusal.
         raise AgyImageUnqualified("agy_image_unqualified") from exc
+    if evidence is not None:
+        evidence.update(admission.evidence())
+    return admission.image
 
 
 def check(path, env=None, *, evidence=None):
-    """Admit a release-qualified agy image. With ``env``, also admit a locally
-    self-qualified one, so the seat probe and launch honour the same admission as the
-    heartbeat route (agent-harness#1331). Without ``env`` (canary evidence) only
-    release-qualified images are admitted.
+    """Admit a release-qualified agy image. With ``env``, the seat admission boundary
+    (``_admitted_for_seat``), so the seat probe and launch honour the same admission as the
+    heartbeat route (agent-harness#1331), the hold included. Without ``env`` (the executor
+    and canary) only release-qualified images are admitted, and nothing is ever held.
 
     The image is read once, streamed into one sealed memfd (AGYFRESH §1.2), within
     ``agy_provenance.MAX_MEMBER_BYTES`` read at call time."""
+    if env is not None:
+        return _admitted_for_seat(path, env, evidence)
     descriptor = image = None
     try:
         source = Path(path).resolve(strict=True)
@@ -75,10 +73,7 @@ def check(path, env=None, *, evidence=None):
         os.close(descriptor)
         descriptor = None
         if image.sha256 not in gemini_heartbeat.QUALIFIED_IMAGES:
-            if env is None:
-                raise AgyImageUnqualified("agy_image_unqualified")
-            local, image = image, None  # lookup owns it from here
-            return _locally_qualified(local, source, env, evidence)
+            raise AgyImageUnqualified("agy_image_unqualified")
         if evidence is not None:
             evidence.update(provider_admission_class="release_qualified",
                             provider_image_sha256=image.sha256)
@@ -98,7 +93,8 @@ def admit_for_seat(path, env, *, evidence=None):
 
     ``check`` with the seat's env, from one read: a release member is admitted offline
     before any config or store read, otherwise a ``locally_qualified`` image through
-    ``agy_qualification.lookup`` (agent-harness#1331); what runs is the sealed memfd of
+    ``agy_qualification.lookup`` (agent-harness#1331), otherwise, for a subject-side
+    refusal, a held image (HOLD, AGYFRESH §2.2); what runs is the sealed memfd of
     those bytes, never the path. On the local-qualification path (an image that is not a
     release member), a miss, the opt-out, a failed record, an unsafe store, an unreadable
     image or a memfd-seal failure is the typed refusal. What the help measurement raises with
