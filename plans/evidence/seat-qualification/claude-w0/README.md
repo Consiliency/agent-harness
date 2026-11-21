@@ -37,6 +37,9 @@ amendment fixes the following. The 18-run plan and its six blocks do not change.
     section and a current GL-2 worker receipt;
   - records of this or a later session already here;
   - for session 2, session 1's records not complete here;
+  - a private file (ledger, salt, comparison identity, security notes, control-file list)
+    that exists but is not a readable regular file, checked without blocking, or an
+    existing salt that is not the kit's, in either session;
   - a private ledger that is not this session's starting point;
   - for session 2, a different bundle, model, effort or board from session 1's.
 

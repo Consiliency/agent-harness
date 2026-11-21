@@ -223,8 +223,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   - Control files must report the run plan's model. Each must be a regular file, not a
     link, modified after its block's brief, and given only once per window by device and
     inode.
-  - An unreadable private ledger, salt, identity or security note refuses with a
-    diagnostic.
+  - A private ledger, salt, identity, security note or control-file list that exists but
+    is not a readable regular file (a FIFO, socket, device, directory or link) refuses
+    with a diagnostic, without blocking. An existing salt must also have the kit's shape,
+    in session 1 as well.
 
 - The agy upstream watch is now the rolling catalog job (AGYROLL ROLLJOB). It runs every
   hour and makes no git write. Each tick checks its keys and the new `agy-watch` extra
