@@ -571,10 +571,10 @@ requires its evidence.
 ## §8 Amendments to the TS contract (ruling 1)
 
 Applied by one pointer erratum, **erratum 9**. **Writer:** the coordinator's planning
-delegate, as a plan amendment under `claude-plan-phase` (not a lane, and not SL-7), in one
-planning-only commit after erratum 8 merges: it adds erratum 9 to the TS contract and re-pins
-the TS contract in the plan's frozen inputs and its manifest row. SL-3 and SL-4 are not
-dispatched until that commit is on their base.
+delegate, as a plan amendment under `claude-plan-phase` (not a lane, and not SL-7), after
+erratum 8 merges: it adds erratum 9 to the TS contract and re-pins the TS contract in the
+plan's frozen inputs and its manifest row. SL-3 and SL-4 are not dispatched until their base
+contains erratum 9 and those matching pins, however many planning-only commits deliver them.
 
 | TS contract section | Amendment |
 |---|---|

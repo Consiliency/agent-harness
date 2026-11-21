@@ -4,7 +4,7 @@ phase: GROK
 roadmap: specs/phase-plans-seats-v1.md
 roadmap_sha256: b91c98ad7b9097ba411ca21f39cf390878dabac449e59d6fdfd1750915c16a09
 automation:
-  suite_command: ["timeout", "600", "env", "PYTHONDONTWRITEBYTECODE=1", "PYTEST_ADDOPTS=", "uv", "run", "--group", "test", "--python", "/usr/bin/python3", "-m", "pytest", "-p", "no:cacheprovider", "-p", "no:xdist", "-q", "phase-loop-runtime/tests/test_grok_seat_vocabulary.py", "phase-loop-runtime/tests/test_grok_seat_credential.py", "phase-loop-runtime/tests/test_grok_seat_egress.py", "phase-loop-runtime/tests/test_grok_seat_profile.py", "phase-loop-runtime/tests/test_seat_profiles.py", "phase-loop-runtime/tests/test_grok_jail_surface.py", "phase-loop-runtime/tests/test_grok_seat_jail.py", "phase-loop-runtime/tests/test_grok_jail_measure.py", "phase-loop-runtime/tests/test_grok_seat_provider_free.py", "phase-loop-runtime/tests/test_grok_jail_catalog.py", "phase-loop-runtime/tests/test_grok_seat_renewal.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
+  suite_command: ["timeout", "600", "env", "PYTHONDONTWRITEBYTECODE=1", "PYTEST_ADDOPTS=", "uv", "run", "--project", "phase-loop-runtime", "--group", "test", "--python", "/usr/bin/python3", "-m", "pytest", "-p", "no:cacheprovider", "-p", "no:xdist", "-q", "phase-loop-runtime/tests/test_grok_seat_vocabulary.py", "phase-loop-runtime/tests/test_grok_seat_credential.py", "phase-loop-runtime/tests/test_grok_seat_egress.py", "phase-loop-runtime/tests/test_grok_seat_profile.py", "phase-loop-runtime/tests/test_seat_profiles.py", "phase-loop-runtime/tests/test_grok_jail_surface.py", "phase-loop-runtime/tests/test_grok_seat_jail.py", "phase-loop-runtime/tests/test_grok_jail_measure.py", "phase-loop-runtime/tests/test_grok_seat_provider_free.py", "phase-loop-runtime/tests/test_grok_jail_catalog.py", "phase-loop-runtime/tests/test_grok_seat_renewal.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
 ---
 
 # GROK: Grok Seat in the Jail
@@ -21,7 +21,7 @@ window-kit decisions (jail contract §15). The roadmap text is unchanged.
 **Frozen inputs (pinned).**
 
 - `plans/artifacts/grok-jail-tool-surface-contract-v1.md` at sha256
-  `3312514dc6ad8572f83d75ac5178998ffd18d00dd75986fd4a6312467428b884` ("the jail contract"). This plan cites its sections.
+  `be46a86a442971c5b617a31806e743494b1b301f3dbd630baf857955695ee3a2` ("the jail contract"). This plan cites its sections.
 - `plans/artifacts/grok-tool-surface-contract-v1.md` at sha256
   `9c56fc68e164d9ae7abbeb4969ee860c6844355c3d80569e4bb4600a3e6355d4` (agent-harness#2033
   through erratum 7: the **historical base**). The effective input is that file once erratum
@@ -365,9 +365,10 @@ Edit scope: `readiness_rows`'s expiry literal and `renewal_record` only; K-1 als
   asked after SL-0..SL-4 and erratum 8's lanes are installed as one release, BA-J1 has passed
   and the masked-projection confirmation is recorded.
 - **Re-pin gate.** Writer: the coordinator's planning delegate, as a `claude-plan-phase`
-  amendment (not a lane). After erratum 8 merges, one planning-only commit adds erratum 9 (jail
-  contract §8) to the TS contract and re-pins it here and in the manifest row; SL-3 and SL-4
-  are not dispatched until it is on their base. The roadmap moved on `main` after this base
+  amendment (not a lane). After erratum 8 merges, the amendment adds erratum 9 (jail contract
+  §8) to the TS contract and re-pins it here and in the manifest row; SL-3 and SL-4 are not
+  dispatched until their base contains erratum 9 and those matching pins, however many
+  planning-only commits deliver them. The roadmap moved on `main` after this base
   (OD-5, agent-harness#2052); `roadmap_sha256` is re-pinned against the merge base when this
   amendment lands.
 - **Installs and pins.** Jail contract §10: only SL-2 moves the qualification validator; Train
@@ -423,8 +424,8 @@ Edit scope: `readiness_rows`'s expiry literal and `renewal_record` only; K-1 als
 
 ## Verification
 
-`P` is `timeout 600 env PYTHONDONTWRITEBYTECODE=1 PYTEST_ADDOPTS= uv run --group test
---python /usr/bin/python3 -m pytest -p no:cacheprovider -p no:xdist -q`, paths under
+`P` is `timeout 600 env PYTHONDONTWRITEBYTECODE=1 PYTEST_ADDOPTS= uv run --project phase-loop-runtime
+--group test --python /usr/bin/python3 -m pytest -p no:cacheprovider -p no:xdist -q`, paths under
 `phase-loop-runtime/tests/`, one run at a time after the headroom check. New files are absent
 on this plan-only checkout, so these are pending selectors. `VL`, `VL2` and `VJ` are required
 gates beside `suite_command`.

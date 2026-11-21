@@ -14930,7 +14930,7 @@
       "file": "plans/phase-plan-v1-seats-GROK.md",
       "frozen_inputs": {
         "plans/artifacts/grok-jail-tool-surface-contract-v1.md": {
-          "sha256": "3312514dc6ad8572f83d75ac5178998ffd18d00dd75986fd4a6312467428b884"
+          "sha256": "be46a86a442971c5b617a31806e743494b1b301f3dbd630baf857955695ee3a2"
         },
         "plans/artifacts/grok-tool-surface-contract-v1.md": {
           "sha256": "9c56fc68e164d9ae7abbeb4969ee860c6844355c3d80569e4bb4600a3e6355d4"
