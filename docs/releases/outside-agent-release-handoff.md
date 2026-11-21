@@ -5,6 +5,50 @@ outside-agent conformance runtime. It is metadata-only: the document itself did
 not publish a package, create a tag, dispatch a workflow, edit governed-pipeline,
 or make production merge enforcement live.
 
+## 0.7.38 release preparation
+
+Expected, unpublished artifacts: `phase_loop_runtime-0.7.38-py3-none-any.whl`
+and `phase_loop_runtime-0.7.38.tar.gz`.
+
+Candidate only: no tag, publication or installation is claimed. The candidate is
+based on merged main after the published 0.7.37 release. It carries the
+`consiliency-contract>=0.7.2,<0.8` requirement (agent-harness#2022), seat scopes
+with a fixed description (agent-harness#1895, agent-harness#2019), agy size
+bounds defined once with the seat image streamed into its sealed memfd
+(agent-harness#2017), agy self-qualification that no longer depends on the
+caller's working directory (agent-harness#2021), and typed jailed-seat refusals
+with closed `leg_exec.v1` diagnostics (agent-harness#1823, agent-harness#2029).
+It also adds one seat admission boundary for Gemini seats with a hold: when a
+seat's selected agy cannot be used for a reason of its own, the seat admits an
+already-qualified image found on the host instead (agent-harness#2026). The hold
+does not cover managed-release seats or the jailed standalone Gemini route, and
+`[agy] hold = false` turns it off. The jailed Gemini seat's agy settings now pin
+Default mode (`{"agentMode":""}`), so agy 1.5.7 and later headless runs do not
+start in Auto (agent-harness#2031). The pin is covered by tests; the next real
+board run after release confirms it live, and existing qualification pins are
+unchanged. Roadmap, plan, evidence and test-only changes also landed
+(agent-harness#2016, agent-harness#2020, agent-harness#2023, agent-harness#2027,
+agent-harness#2028, agent-harness#2030). The 0.7.38 changelog section lists the
+scope. The published 0.7.37 package remains unchanged. The package still
+requires Python 3.12 or newer.
+
+Live routes stay disabled. This candidate does not lift sandbox activation holds
+or grant installed-provider qualification. The agy seat QCI, the validator
+closure, store keys, the shipped catalog and its records, the jail profile
+digests and the Claude SDK proof inputs are unchanged from 0.7.37, so nothing
+needs requalification. The hold admits only images that are already qualified (a
+catalog release member or a locally qualified image), so it qualifies no new agy
+image. A host that runs an agy release outside the catalog still needs its own
+live self-qualification after installation. The strict hermetic agy release gate
+still runs its own conformance suite and verifies the vendor archive at
+publication.
+
+Before publication, required candidate checks, standalone-wheel Gate A and the
+strict hermetic agy release gate must pass, and publication authority must be
+granted. Recording these gates does not authorize dispatch. After publication,
+verify registry artifacts, GitHub Release assets and the managed installation
+separately.
+
 ## 0.7.37 release preparation
 
 Expected, unpublished artifacts: `phase_loop_runtime-0.7.37-py3-none-any.whl`
