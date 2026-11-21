@@ -9,15 +9,19 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 ### Added
 
 - Live W1 can run under an owner grant, and stays closed until a reviewed change sets one.
-  - **What opens it.** `seat_window.OWNER_W1_GRANT_SHA256` names, by sha256, one private
-    `w1-grant.json` (`seat_window_w1_grant.v1`) that the operator mints on the designated
-    host. The grant binds the host digest, `not_before` and `not_after`, vendor `gemini`,
-    host class `standard`, `max_attempts` (1 or 2), the approved packet's digest and a nonce.
-  - **What `qualify` admits.** Only the Gemini window in the standard context. An attempt
-    must start no later than `W1_COMPLETION_MARGIN_S` (9000 s) before the earlier of the
-    grant's end and `OWNER_W1_APPROVED_UNTIL` (2026-12-04T00:00Z).
-  - **Attempts.** Each one durably claims a `w1-attempt-<nonce>-<n>.json` slot before
-    preflight, and a claimed slot is never released.
+  - **What opens it.** `seat_window.OWNER_W1_GRANT_SHA256` and `OWNER_W1_PACKET_SHA256`
+    name, by sha256, the first line of one private `w1-grant.jsonl`
+    (`seat_window_w1_grant.v1`) and the approved packet. `seat_window.mint_w1_grant` writes
+    the grant on the designated host in a fixed admission directory under the account's
+    passwd home. The grant binds the host digest, `not_before` and `not_after`, vendor
+    `gemini`, host class `standard`, `max_attempts` (1 or 2), the packet digest and a nonce.
+  - **What `qualify` admits.** Only the Gemini window in the standard context, and the CLI
+    refuses `--model`, `--record` and `--peer-record` for a live run. An attempt must start
+    no later than `W1_COMPLETION_MARGIN_S` (10800 s) before the earlier of the grant's end
+    and `OWNER_W1_APPROVED_UNTIL` (2026-12-04T00:00Z).
+  - **Attempts.** Under an exclusive lock, each attempt appends a hash-chained line to the
+    grant file and writes an independent `w1-attempt-<nonce>-<n>.json` witness before
+    preflight. Missing or disagreeing journal and witnesses refuse further attempts.
   - **Unchanged.** Composition preflight, `--attended`, the recorded EC-EXECFIND-2 pass and
     the egress-layer check.
   - **Pins.** `seat_window.runtime_digest()` moves. No jail profile, allow-list, agy QCI,

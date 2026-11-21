@@ -2,17 +2,24 @@
 
 `seat-window qualify` implements the frozen I-15 production orchestration. Its live W1
 owner gate opens only under an owner grant:
-- **The approval.** A reviewed source change sets `seat_window.OWNER_W1_GRANT_SHA256` to the
-  digest of the private `w1-grant.json`, which the operator mints in the private
-  `agent-harness/seat-records` directory on the designated host.
+- **The approval.** A reviewed source change sets `seat_window.OWNER_W1_GRANT_SHA256` and
+  `OWNER_W1_PACKET_SHA256`. The grant digest names the first line of the private
+  `w1-grant.jsonl`, which the operator mints with `seat_window.mint_w1_grant` in the fixed
+  `agent-harness/w1-admission` directory under the account's passwd home (never the state
+  root) on the designated host. Setting the constants proves nothing by itself: the review
+  of that change checks the owner's approval of the named packet.
 - **What the grant binds.** Schema `seat_window_w1_grant.v1`, `host_digest`, `not_before`,
   `not_after`, `vendor` `gemini`, `host_class` `standard`, `max_attempts` 1 or 2,
   `packet_sha256` and `nonce`.
 - **Time.** No start is allowed at or after `OWNER_W1_APPROVED_UNTIL` (2026-12-04T00:00Z),
-  nor later than `W1_COMPLETION_MARGIN_S` (9000 s) before the earlier of the grant's end
+  nor later than `W1_COMPLETION_MARGIN_S` (10800 s) before the earlier of the grant's end
   and the cutoff.
-- **Attempts.** Each attempt claims a slot (`w1-attempt-<nonce>-<n>.json`) before preflight,
-  and a claimed slot is never released.
+- **Attempts.** Under an exclusive lock, each attempt appends a hash-chained line to the
+  grant file and writes a witness `w1-attempt-<nonce>-<n>.json` to the private record root,
+  before preflight. A claimed attempt is never released. Missing or disagreeing journal and
+  witnesses (a removed or moved state root, a rolled-back journal) refuse further attempts.
+- **The trust boundary.** The guard protects the installed reviewed release under a
+  trusted operator. It does not stop an operator who restores both stores from a copy.
 - **Otherwise,** including a team context or another vendor, `qualify` returns
   `window_owner_approval_required` before preflight, authentication, storage or any
   provider launch.
