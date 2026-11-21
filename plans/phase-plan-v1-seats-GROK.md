@@ -176,7 +176,7 @@ Raw logs stay private. `containment.json` holds record ids and digests only.
 Edit scope: in `seat_profiles.py`, the Grok entry only, including its `window` data. In the
 readiness doc, the Grok row only. In `panel_invoker.py`, the Grok leg and
 `grok_runtime_forms`. `seat_window.py` is not edited; the kit reads the profile's `window`.
-K-1: the leg calls the `plans/artifacts/seats-window-kit-k1-contract.md` §5.4 hook.
+K-1: the jailed branch uses `_window_bracket` if it is on SL-2's base, else K-1 SL-5 adds it.
 The three kit and notice test files change only in their Grok expectations.
 `test_seats_teamhost_doctor.py` gains one additive agreement row (agent-harness#1882).
 
@@ -260,13 +260,9 @@ row and records the launch-reference inventory decision.
 - **S-1 (resolved).** JAILCORE's merged vendor rule (contract §1) lets a vendor phase add its
   own `<leg>_seat_*` codes, each with one additive `OD10_CLASSES` entry, and its window rows
   as profile data. SL-1 and SL-2 use exactly that and nothing more.
-- **S-2 (resolved in source).** The kit's named exceptions are a code literal
-  in `seat_window.readiness_rows()` that still lists Grok as `unconfined`. Registration ends
-  the exception in effect, because L1 finds the profile (EC-JAILCORE-5). Under the data-only
-  rule, though, no GROK lane may remove the literal, so the kit row would keep showing an
-  exception that expires 2026-12-04. Proposed fix: omit `unconfined` only when a profile is registered, and `open egress` only
-  when its profile has an allowlist. CODEX and CLAUDENET need those respective rules. Until S-2 is settled,
-  SL-2.3 records the exception's end in the readiness doc only.
+- **S-2 (resolved in source; recorded 2026-11-21).** `seat_window.readiness_rows()`
+  drops `unconfined` once a Grok profile is registered, so SL-2's registration ends the
+  exception in the matrix itself, and SL-2.3 does not wait on the kit.
 - **Other STOP conditions.** In each case, report the exact sentence. The row stays on its
   exception, and then OD-9 applies. Do not register the profile.
   - The pinned CLI cannot run through the TLS-terminating proxy (EC-JAILCORE-3).

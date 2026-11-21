@@ -2,78 +2,87 @@
 phase_loop_plan_version: 1
 phase: FIRSTSEAT
 roadmap: specs/phase-plans-seats-v1.md
-roadmap_sha256: b91c98ad7b9097ba411ca21f39cf390878dabac449e59d6fdfd1750915c16a09
+roadmap_sha256: 2f26635bfcb5119967735cf5d5966f1ce39695a8331d2543eb9e11c07d187018
 automation:
-  suite_command: ["timeout", "900", "env", "PYTEST_ADDOPTS=", "python3", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_seat_window_vendor_neutral.py", "phase-loop-runtime/tests/test_seat_window_supply_codex.py", "phase-loop-runtime/tests/test_seat_qualification_host_context.py", "phase-loop-runtime/tests/test_seat_jail_qualification_entry.py", "phase-loop-runtime/tests/test_seat_profile_codex.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py", "phase-loop-runtime/tests/test_agy_qci.py"]
+  suite_command: ["bash", "-lc", "cd phase-loop-runtime && timeout 900 env PYTEST_ADDOPTS= python3 -m pytest -p no:cacheprovider -q tests/test_seat_window_vendor_neutral.py tests/test_seat_window_supply_codex.py tests/test_seat_qualification_host_context.py tests/test_seat_jail_qualification_entry.py tests/test_seat_profile_codex.py tests/test_seat_reference_inventory.py tests/test_agy_qci.py"]
 ---
 
 # FIRSTSEAT amendment K-1: one window kit for every vendor
 
 ## Context
 
-This amends `plans/phase-plan-v1-seats-FIRSTSEAT.md` (roadmap Phase 0). Its lane E
-(SL-4) delivered IF-0-FIRSTSEAT-2 for Gemini only, so EC-FIRSTSEAT-6 is not yet met for a
-second vendor, and no Codex, Claude or Grok row window can run (principle 5). This
-amendment adds the lanes that close that gap. It changes no roadmap text and no EC.
+This amends `plans/phase-plan-v1-seats-FIRSTSEAT.md` (roadmap Phase 0). Its lane E (SL-4)
+delivered IF-0-FIRSTSEAT-2 for Gemini only, so EC-FIRSTSEAT-6 is unmet for every other vendor,
+and no Codex, Claude or Grok row window can run (principle 5). This amendment adds the lanes
+that close the gap. It changes no roadmap text and no EC.
 
-**Owner.** FIRSTSEAT owns the vendor-parametric window kit. The roadmap already gives it
-IF-0-FIRSTSEAT-2 and EC-FIRSTSEAT-6, whose falsifier is a vendor needing its own procedure,
-and FIRSTSEAT lane E owns `seat_window.py` and `cli.py`. Gemini's digests are also
-FIRSTSEAT's (principle 4), so the one lane that refactors the Gemini path is under the
-phase that owns them. JAILCORE SL-3.5 supplied the profile-sourced `WindowRows` seam only.
-Vendor phases supply data and run their own windows. Contract §1 has the table.
+**Owner: FIRSTSEAT.** FIRSTSEAT owns the vendor-parametric window kit, for these reasons:
+- The roadmap assigns IF-0-FIRSTSEAT-2 and EC-FIRSTSEAT-6 to FIRSTSEAT.
+- Its lane E owns `seat_window.py`, which `cli.py` only delegates to.
+- Gemini's digests are FIRSTSEAT's (principle 4).
+- JAILCORE SL-3.5 supplied only the profile-sourced `WindowRows` seam.
 
-**Why one owner and not a vendor phase.** If CODEX, CLAUDENET or GROK owned the kit, the
-other two would wait on that phase's lanes, which is a window joining vendors in all but
-name. A JAILCORE erratum would reopen a phase whose lanes have landed, for code that
-JAILCORE's plan never scoped.
+Vendor phases supply data and run and record their own windows. If a vendor phase owned the
+kit, the other vendors would wait on its lanes. A JAILCORE erratum would reopen a phase whose
+lanes have landed.
 
-**Records-only amendments made with this plan.** These correct the plans that mis-assign
-the kit. Each is a dated note, and none changes a lane's files or an EC:
+**Records-only notes in other plans.** Each note is dated, and none changes a lane's files or
+an EC:
+- CODEX: the ruling names FIRSTSEAT as the kit owner.
+- JAILCORE: SL-3.5 delivered the profile rows only.
+- CLAUDENET: names the extended kit and its Claude lane. The open item about the exception
+  literal is now a dated resolution.
+- GROK: S-2 is resolved in source, and the jailed Grok branch uses the board-leg bracket.
+- FIRSTSEAT: SL-4 points here.
 
-- CODEX: the "Coordinator rulings" sentence now names FIRSTSEAT (this amendment) as the
-  kit owner, and Interfaces consumed names the kit as extended here.
-- JAILCORE: SL-3.5 and Interfaces provided record that SL-3.5 delivered the profile rows
-  only.
-- CLAUDENET: Interfaces consumed names the extended kit and this amendment's Claude lane.
-  The "Open with JAILCORE (GROK plan S-2)" item is resolved in source, where
-  `readiness_rows()` already drops `open egress` once the profile has an allowlist.
-- GROK: S-2 is resolved in source in the same way. SL-2's jailed launch site calls the
-  board-leg hook of contract §5.4.
-- FIRSTSEAT: SL-4 has a dated ownership note pointing here.
+**Design.** The design is frozen in `plans/artifacts/seats-window-kit-k1-contract.md`, r2 (the
+**contract**, sha256 `f8493a6c8ec18c0a1ce48fe58797fc327d3e01b4460ffbdab0a72302b4e2e6cf`). This
+plan cites the contract and does not restate it:
 
-**Design.** It is frozen in `plans/artifacts/seats-window-kit-k1-contract.md` (the
-**contract**, sha256 `a284085cad9a72c036d3490d16cc5563c568d88e6e61017fcafc6cea77f8d4df`), which this plan cites and does not restate.
-In summary:
+| Topic | Contract |
+|---|---|
+| Supplier protocol, the closed supplier table and discovery | §3, §4 |
+| Launch, credential-seam, bracket and terminal deltas to I-11, I-12 and I-15 | §5 |
+| The run binding | §6 |
+| Reducer rules R1–R10 (only a vendor's own record changes that vendor's row, using the full key and snapshot-based expiry) | §7 |
+| Grants and the CLI | §8 |
+| The launch envelope and the login precondition | §9 |
+| Per-vendor appendices | §10 |
+| Pins, sequencing and falsifiers F1–F16 | §11–§13 |
 
-- a supplier protocol and a closed supplier table (§4);
-- the launch-control and board deltas to I-11, I-12 and I-15 (§5);
-- reducer rules R1 to R8, so that only a vendor's own record can qualify that vendor's
-  row (§6);
-- `qualify --vendor` (§7) and live grants closed per vendor (§8);
-- per-window launch caps (§9);
-- per-vendor appendices, with Codex frozen and Claude and Grok tied to their phases'
-  interfaces (§10);
-- the pin table (§11), sequencing with W1 (§12) and falsifiers F1 to F12 (§13).
+**Owner decisions (2026-11-21).** Each is recorded in the owner's wording and implemented by
+SL-5:
 
-**Inputs** are the four digests pinned in contract §0. Nothing in this plan pins a commit.
+- **O-1, expiry.** "Approve, with launch snapshot (Recommended)". A record fails only on its
+  own vendor's expired exception, or on a co-seat's exception that had already expired when it
+  ran; that exception is recorded at launch and checked against the run time. Gemini's first
+  window keeps verifying after 12-04, and the other freshness and key checks are unchanged.
+  Implemented in contract §7 R6, including its legacy-W1 rule.
+- **O-2, grants.** "Same binding, 1 attempt (Recommended)". Each vendor window gets its own
+  grant, bound to host, context, time window, packet and launch budget. It allows ONE attempt
+  by default, and a second needs the owner's explicit OK. A wrong host, replayed or corrupted
+  state, or a duplicate run is refused before any login is used. Implemented in contract §8,
+  which reuses W1's journal and witnesses and separates eligibility from the atomic claim.
+- **Logins.** "Keep the full board (Recommended)". Each vendor window runs the real four-seat
+  board. The owner keeps all four logins current on the designated host, and windows are
+  batched per session. Implemented in contract §9.3.
 
-**Skill.** `claude-plan-phase`, in amendment form (the `plans/amendments/` pattern). The
-work has several lanes with disjoint files, interface freezes and content gates, and it
-amends a pipeline phase. `claude-plan-detailed` covers one bounded change outside the
-pipeline, so it does not fit.
+**Inputs.** The digests in the contract's opening table and the content inputs it lists.
+Nothing here pins a commit.
+
+**Skill.** `claude-plan-phase`, in amendment form (the `plans/amendments/` precedent). The work
+has several lanes, an interface freeze and content gates, and it amends a pipeline phase.
 
 ## Interface Freeze Gates
 
-- [ ] IF-0-FIRSTSEAT-6 — the K-1 kit interfaces: `WindowVendorData` v2 and its registration
-  checks (contract §3), the supplier protocol and `seat_window_supply.SUPPLIERS` (§4), the
-  `WindowLaunchSpec.leg`, `WindowBoardSpec.leg` and generic `WindowBoardResult` fields, and
-  `window_board_for` (§5), reducer rules R1 to R8 (§6), the CLI (§7), `WINDOW_GRANTS` (§8)
-  and the launch ledger (§9).
+- [ ] IF-0-FIRSTSEAT-6 — contract §3 to §9: `WindowVendorData` v2, the supplier protocol,
+  `SUPPLIERS` and discovery, the launch and board deltas, the credential seam,
+  `_window_bracket`, the terminal classes, the run binding, R1–R10, `WINDOW_GRANTS` with
+  eligibility and claim, the CLI and the launch envelope.
 
 ## Lane Index & Dependencies
 
-SL-5 — K1-KIT: vendor-neutral kit, reducer, CLI and launcher
+SL-5 — K1-KIT: vendor-neutral kit, grants, reducer, CLI and launcher
   Depends on: (none)
   Blocks: SL-6, SL-7, SL-8, SL-9
   Parallel-safe: no
@@ -98,186 +107,203 @@ SL-9 — Documentation & spec reconciliation
   Blocks: (none)
   Parallel-safe: no
 
-**Content gates** (checked on the lane's base tree, never by commit):
+**Content gates.** Each is checked on the lane's base tree, never by commit.
+- **SL-5:** the base holds the contract's content inputs (the W1 grant, the stage-bound read
+  receipt and its producer, the row-only reducer and Gemini's co-seats) and main's Grok
+  `status` action. SL-5 merges after the W1 release is cut (contract §12).
+- **SL-6:** may be written against IF-0-FIRSTSEAT-6 while SL-5 is in review, and lands after
+  it.
+- **SL-7:** contract §10.C's gate.
+- **SL-8:** contract §10.D's gate.
 
-- **SL-5** starts when its base holds the W1 fixes and the W1-opening change, as contract
-  §12 lists them. It merges after the W1 release has been cut, or earlier only as contract
-  §12 allows.
-- **SL-6** may be written against IF-0-FIRSTSEAT-6 while SL-5 is in review, and lands after
-  it. Codex's row window becomes runnable when SL-5 and SL-6 are in an installed release.
-- **SL-7** starts when its base holds IF-0-CLAUDENET-1 to IF-0-CLAUDENET-3 and the
-  `claude-credential-scope` receipt (contract §10.C).
-- **SL-8** starts when its base holds IF-0-GROK-1 and IF-0-GROK-2, with the jailed Grok
-  launch site calling `window_board_for("grok", ...)`, and `probe-tools` passes on the
-  measured surface (contract §10.D).
-
-Order and rough size: SL-5 (large), then SL-6 (medium), SL-9 (small), then SL-7 (medium,
-after CLAUDENET), then SL-8 (medium, after GROK's measured surface).
+**Order and rough size:** SL-5 (large), SL-6 (medium), SL-9 (small), then SL-7 (medium, after
+CLAUDENET), then SL-8 (medium, after GROK's measured surface). Codex's row window can run once
+SL-5 and SL-6 are in an installed release and the Codex grant is set.
 
 ## Lanes
 
-### SL-5 — K1-KIT: vendor-neutral kit, reducer, CLI and launcher
+Test commands run from `phase-loop-runtime/`.
 
-- **Scope**: Make the kit vendor-neutral on both sides of the frozen interface, with Gemini
-  behaviour byte-identical, plus the Codex board-leg hook and the per-vendor grants.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_window.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_window_supply.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_window_supply_gemini.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`, `phase-loop-runtime/tests/test_seat_profiles.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/tests/test_seat_window_vendor_neutral.py`, `phase-loop-runtime/tests/data/seat_window_gemini_k1_golden.json`, `phase-loop-runtime/tests/test_seat_qualification_host_context.py`, `phase-loop-runtime/tests/test_seat_jail_qualification_entry.py`, `phase-loop-runtime/tests/test_panel_invoker.py`, `phase-loop-runtime/tests/data/seat_launch_references.json`, `phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py`
+### SL-5 — K1-KIT: vendor-neutral kit, grants, reducer, CLI and launcher
+
+- **Scope**: Contract §2 to §9, on both sides of the frozen interface. Gemini W1 production and
+  admission stay byte-identical.
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_window.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_window_supply.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_window_supply_gemini.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`, `phase-loop-runtime/tests/test_seat_profiles.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/tests/test_seat_window_vendor_neutral.py`, `phase-loop-runtime/tests/test_seat_window_grants.py`, `phase-loop-runtime/tests/data/seat_window_gemini_k1_golden.json`, `phase-loop-runtime/tests/test_seat_qualification_host_context.py`, `phase-loop-runtime/tests/test_seat_jail_qualification_entry.py`, `phase-loop-runtime/tests/test_panel_invoker.py`, `phase-loop-runtime/tests/data/seat_launch_references.json`, `phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py`
 - **Interfaces provided**: IF-0-FIRSTSEAT-6
-- **Interfaces consumed**: IF-0-FIRSTSEAT-2 (pre-existing), I-11, I-12 and I-15 (pre-existing), `WindowRows` from IF-0-JAILCORE-1 (pre-existing), `jail_profile_digest` (pre-existing), `allowlist_ref` (pre-existing), the W1 fixes and the W1-opening change (pre-existing on the base, contract §12)
+- **Interfaces consumed**: IF-0-FIRSTSEAT-2 (pre-existing), I-11, I-12 and I-15 (pre-existing), IF-0-JAILCORE-1 to IF-0-JAILCORE-3 (pre-existing), the contract's content inputs (pre-existing on the base)
 - **Parallel-safe**: no
-- **Named parts.** `seat_profiles.py`: `WindowVendorData`, `register_window_data` and
-  `GEMINI_WINDOW_DATA` only. `panel_invoker.py`: the window section of contract §1, plus
-  the `window_board=` parameter and its three calls in `_exec_jailed_codex_leg`, and the
-  argument in `_parent_infer`'s Codex branch. `test_panel_invoker.py`: the
-  `seats_firstseat_exec_record_window_*` tests, edited only for the renamed result fields.
-  The two inventories take entries for this lane's sites, entry by entry.
-- **Stop rules.** Stop and report if the Gemini golden cannot be kept byte-identical; if any
-  lane change touches `seat_jail_qualification.py`, `agy_qualification.py`, `gemini_heartbeat.py`,
-  `panel_invoker.terminal_verdict` or the prompt and stream helpers it reaches;
-  if `tests/test_agy_qci.py` or `tests/data/seat_profile_digests_jailcore.json` would
-  change; or if a seat-jail builder, filter or allowlist file would change.
+- **Named parts.**
+  - `seat_profiles.py`: `WindowVendorData`, `register_window_data` and `GEMINI_WINDOW_DATA`.
+  - `panel_invoker.py`, in the kit section: the `credential_mode` and `copy_transform`
+    keywords of `_prepare_jailed_codex`, default `live`; and `_window_bracket` wraps in
+    `_parent_infer`'s Codex and Claude branches, and in its Grok branch when that branch is on
+    the base.
+  - `test_panel_invoker.py`: the `seats_firstseat_exec_record_window_*` tests, edited only for
+    the renamed result fields.
+  - Inventories: entry by entry.
+- **Proof checkpoints**, as separately reviewable commits, in order:
+  1. the golden and R1–R10;
+  2. grants and the run binding;
+  3. the launcher, board, credential seam and bracket;
+  4. the CLI and discovery.
+- **Stop rules.** Stop and report if:
+  - the golden (F10) or the W1 grant behaviour cannot stay byte-identical;
+  - a change touches `seat_jail_qualification.py`, `agy_qualification.py`,
+    `gemini_heartbeat.py`, or `terminal_verdict` and its helpers;
+  - `tests/test_agy_qci.py` or `tests/data/seat_profile_digests_jailcore.json` would change;
+  - a jail builder, filter or allowlist file would change;
+  - any source file owned by CLAUDE, CLAUDENET, CODEX or GROK would need an edit.
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-5.1 | test | (none) | `tests/data/seat_window_gemini_k1_golden.json` | the golden | `pytest tests/test_seat_window_vendor_neutral.py -k golden` |
-| SL-5.2 | test | SL-5.1 | `tests/test_seat_window_vendor_neutral.py` | F1–F12 (contract §13), using a synthetic second vendor registered in a fixture | `pytest tests/test_seat_window_vendor_neutral.py` |
-| SL-5.3 | impl | SL-5.2 | `seat_profiles.py`, `seat_window_supply.py`, `seat_window_supply_gemini.py`, `seat_window.py` | (none) | `pytest tests/test_seat_window_vendor_neutral.py tests/test_seat_qualification_host_context.py` |
+| SL-5.1 | test | (none) | `tests/data/seat_window_gemini_k1_golden.json`, `tests/test_seat_window_vendor_neutral.py` | the golden and its test (F10), captured from the base at a fixed clock | `pytest tests/test_seat_window_vendor_neutral.py -k golden` |
+| SL-5.2 | test | SL-5.1 | `tests/test_seat_window_vendor_neutral.py`, `tests/test_seat_window_grants.py` | F1–F9 and F11–F15 with a synthetic vendor registered in a fixture; F15 in a fresh process | `pytest tests/test_seat_window_vendor_neutral.py tests/test_seat_window_grants.py` |
+| SL-5.3 | impl | SL-5.2 | `seat_profiles.py`, `seat_window_supply.py`, `seat_window_supply_gemini.py`, `seat_window.py` | (none) | `pytest tests/test_seat_window_vendor_neutral.py tests/test_seat_window_grants.py tests/test_seat_qualification_host_context.py` |
 | SL-5.4 | impl | SL-5.3 | `panel_invoker.py`, `tests/test_panel_invoker.py`, inventories | (none) | `pytest tests/test_panel_invoker.py -k "window or codex" tests/test_seat_window_vendor_neutral.py` |
-| SL-5.5 | verify | SL-5.4 | all lane files | all | the frontmatter `suite_command` without the SL-6 file, `tests/test_agy_qci.py`, `tests/test_seat_launch_helpers_trusted.py` and `tests/test_seat_profiles.py` |
+| SL-5.5 | verify | SL-5.4 | lane files | all | the frontmatter `suite_command` with `tests/test_seat_launch_helpers_trusted.py` and `tests/test_seat_profiles.py` |
 
 ### SL-6 — K1-CODEX: Codex supplier adapter
 
-- **Scope**: Implement contract §10.B as `seat_window_supply_codex.py`, which registers
-  Codex's `WindowVendorData`, so that `qualify --window row --vendor codex` runs end to end
-  offline against fixtures.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_window_supply_codex.py`, `phase-loop-runtime/tests/test_seat_window_supply_codex.py`
+- **Scope**: Contract §10.B as `seat_window_supply_codex.py`, which registers Codex's window
+  data, plus the provider-free proof of assumption A-C1.
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_window_supply_codex.py`, `phase-loop-runtime/tests/test_seat_window_supply_codex.py`, `phase-loop-runtime/tests/test_seat_window_codex_provider_free.py`
 - **Interfaces provided**: the Codex window supplier
-- **Interfaces consumed**: IF-0-FIRSTSEAT-6 (SL-5), IF-0-CODEX-1 to IF-0-CODEX-5 (pre-existing), `seat_jail_qualification` shared primitives (pre-existing)
+- **Interfaces consumed**: IF-0-FIRSTSEAT-6 (SL-5), IF-0-CODEX-1 to IF-0-CODEX-5 (pre-existing), the provider-free loopback harness of `tests/test_seat_codex_provider_free.py` (pre-existing)
 - **Parallel-safe**: yes
-- **Stop rules.** Stop if the adapter needs an edit to any CODEX-owned file
-  (`seat_profile_codex.py`, `seat_codex_*.py`, `codex-allowlist.json`), if Codex's profile
-  digest or allowlist digest would change, or if the Codex CLI's help or JSON stream cannot
-  yield contract §10.B's facts without a new launch kind.
+- **Stop rules.** Stop if:
+  - A-C1 fails;
+  - a file owned by CODEX would need an edit;
+  - Codex's profile or allowlist digest would change;
+  - contract §10.B's facts need a new launch kind.
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-6.1 | test | (none) | `tests/test_seat_window_supply_codex.py` | registration; launch kinds and argv per kind; stream facts; scope, expired-copy and refresh outcomes; the fixture context end to end through `seat_window.qualify` with launchers stubbed at `window_control_launch`; F2, F3 and F9 with real Codex data | `pytest tests/test_seat_window_supply_codex.py` |
-| SL-6.2 | impl | SL-6.1 | `seat_window_supply_codex.py` | (none) | `pytest tests/test_seat_window_supply_codex.py tests/test_seat_profile_codex.py` |
-| SL-6.3 | verify | SL-6.2 | lane files | all | the frontmatter `suite_command` |
+| SL-6.1 | test | (none) | `tests/test_seat_window_supply_codex.py` | registration, kinds, argv, stream facts, scope and refresh outcomes, and F16 through the real `_prepare_jailed_codex` with the provider stubbed at its spawn boundary; one fixture context through `cli_main` to a record that `verify --vendor codex --window row` passes and that changes only `vendor:codex` | `pytest tests/test_seat_window_supply_codex.py` |
+| SL-6.2 | test | SL-6.1 | `tests/test_seat_window_codex_provider_free.py` | A-C1: on the aged copy, the pinned binary in the jail, under the loopback harness, requests the token endpoint before any model request | `pytest tests/test_seat_window_codex_provider_free.py` |
+| SL-6.3 | impl | SL-6.2 | `seat_window_supply_codex.py` | (none) | `pytest tests/test_seat_window_supply_codex.py tests/test_seat_profile_codex.py` |
+| SL-6.4 | verify | SL-6.3 | lane files | all | the frontmatter `suite_command` and `tests/test_seat_window_codex_provider_free.py` |
 
 ### SL-7 — K1-CLAUDE: Claude supplier adapter
 
-- **Scope**: Implement contract §10.C as `seat_window_supply_claude.py`, plus the
-  `window_board_for("claude", ...)` call at the jailed transport launch.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_window_supply_claude.py`, `phase-loop-runtime/tests/test_seat_window_supply_claude.py`, `phase-loop-runtime/src/phase_loop_runtime/claude_seat_transport.py`
+- **Scope**: Contract §10.C as `seat_window_supply_claude.py`.
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_window_supply_claude.py`, `phase-loop-runtime/tests/test_seat_window_supply_claude.py`
 - **Interfaces provided**: the Claude window supplier
-- **Interfaces consumed**: IF-0-FIRSTSEAT-6 (SL-5), IF-0-CLAUDENET-1 to IF-0-CLAUDENET-3 (content gate), IF-0-CLAUDE-1 (pre-existing), OD-3b's default (pre-existing on the base)
+- **Interfaces consumed**: IF-0-FIRSTSEAT-6 (SL-5), IF-0-CLAUDENET-1 to IF-0-CLAUDENET-3 (content gate), IF-0-CLAUDE-1 (pre-existing), `seat_claude_containment.refreshed_in_jail` (content gate)
 - **Parallel-safe**: yes
-- **Named part.** `claude_seat_transport.py`: the hook call only, for the default
-  transport. The lane runs the jailed Claude transport's `audit-order` check.
-- **Stop rules.** Stop if the hook needs any other edit to `claude_seat_transport.py`, or any
-  edit to `claude_seat_sdk.py`, the SDK worker contract or its receipt verifier; if Claude's
-  profile digest would change; or if OD-3b has not recorded a default.
+- **Stop rules.** Stop if:
+  - the bracket order cannot be shown for the default transport;
+  - any Claude, SDK or CLAUDENET file would need an edit;
+  - OD-3b has recorded no default.
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-7.1 | test | (none) | `tests/test_seat_window_supply_claude.py` | as SL-6.1 for Claude, plus a transport other than the default refused, and the hook reached only for the Claude window | `pytest tests/test_seat_window_supply_claude.py` |
-| SL-7.2 | impl | SL-7.1 | adapter, transport hook | (none) | `pytest tests/test_seat_window_supply_claude.py tests/test_seat_profile_claude_egress.py` |
-| SL-7.3 | verify | SL-7.2 | lane files | all | the frontmatter `suite_command`, `tests/test_seat_window_supply_claude.py` and `audit-order` |
+| SL-7.1 | test | (none) | `tests/test_seat_window_supply_claude.py` | as SL-6.1 for Claude, plus the bracket order with the transport spawn stubbed, a refused non-default transport, and the key's `variant` | `pytest tests/test_seat_window_supply_claude.py` |
+| SL-7.2 | impl | SL-7.1 | adapter | (none) | `pytest tests/test_seat_window_supply_claude.py tests/test_seat_claude_containment.py` |
+| SL-7.3 | verify | SL-7.2 | lane files | all | the frontmatter `suite_command`, then, from the repository root, `PYTHONPATH=phase-loop-runtime/src python3 -m phase_loop_runtime.claude_seat_transport audit-order --repo . --base origin/main` |
 
 ### SL-8 — K1-GROK: Grok supplier adapter
 
-- **Scope**: Implement contract §10.D as `seat_window_supply_grok.py`.
+- **Scope**: Contract §10.D as `seat_window_supply_grok.py`.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_window_supply_grok.py`, `phase-loop-runtime/tests/test_seat_window_supply_grok.py`
 - **Interfaces provided**: the Grok window supplier
 - **Interfaces consumed**: IF-0-FIRSTSEAT-6 (SL-5), IF-0-GROK-1 and IF-0-GROK-2 (content gate), `probe_grok_tools` (pre-existing)
 - **Parallel-safe**: yes
-- **Stop rules.** Stop if the jailed Grok launch site lacks the hook call (GROK adds it), if a
-  window launch cannot run without the route's retry, or if Grok's profile digest would
-  change.
+- **Stop rules.** Stop if:
+  - the Grok branch is unbracketed;
+  - a window launch needs the route's retry;
+  - no refused-intended signature is measured;
+  - Grok's profile digest would change.
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-8.1 | test | (none) | `tests/test_seat_window_supply_grok.py` | as SL-6.1 for Grok, plus a window launch with an unmeasured tool surface refused before the board | `pytest tests/test_seat_window_supply_grok.py` |
+| SL-8.1 | test | (none) | `tests/test_seat_window_supply_grok.py` | as SL-6.1 for Grok, plus an unmeasured tool surface refused before the board | `pytest tests/test_seat_window_supply_grok.py` |
 | SL-8.2 | impl | SL-8.1 | adapter | (none) | `pytest tests/test_seat_window_supply_grok.py tests/test_grok_tool_surface.py` |
 | SL-8.3 | verify | SL-8.2 | lane files | all | the frontmatter `suite_command` and `tests/test_seat_window_supply_grok.py` |
 
 ### SL-9 — Documentation & spec reconciliation
 
-- **Scope**: Document the vendor-neutral kit and the Codex row window. Record SL-7 and SL-8
-  as pending their content gates. Update the plan manifest.
+- **Scope**: Document the kit, the Codex row window, grants, the envelope and the login
+  precondition. Record SL-7, SL-8 and the Pi revision as pending, and update the manifest.
 - **Owned files**: `plans/evidence/seat-qualification/README.md`, `docs/review-seats-readiness.md`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md`, `docs/advisor-board-capabilities-card.md`, `CHANGELOG.md`, `plans/manifest.json`
 - **Interfaces provided**: (none)
 - **Interfaces consumed**: IF-0-FIRSTSEAT-6 (SL-5), the Codex window supplier (SL-6)
 - **Parallel-safe**: no
-- **Notes**: The kit text, the per-vendor commands and files, the launch caps and the grant
-  rule. Readiness rows change only in their kit sentences, and no row's status changes.
-  SL-7 and SL-8 make no docs change and are not producers for this lane: their vendor
-  phase's records PR states the adapter's landing, so this reducer does not wait for them.
+- **Notes**: SL-7 and SL-8 are not producers for this reducer. It records them as pending and
+  never claims they are complete; their vendor phase's records PR reports their landing. No
+  row status changes here.
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-9.1 | test | (none) | (none) | (none) | `pytest tests/test_seat_reference_inventory.py phase-loop-runtime/tests/test_legible_roadmap_contract.py` |
-| SL-9.2 | docs | SL-9.1 | lane files | (none) | `python skills-src/claude/claude-plan-phase/scripts/validate_plan_doc.py plans/amendments/seats-FIRSTSEAT-K1-window-kit.md` |
+| SL-9.1 | test | (none) | (none) | (none) | `pytest tests/test_seat_reference_inventory.py tests/test_legible_roadmap_contract.py` |
+| SL-9.2 | docs | SL-9.1 | lane files | (none) | `python ../skills-src/claude/claude-plan-phase/scripts/validate_plan_doc.py ../plans/amendments/seats-FIRSTSEAT-K1-window-kit.md` |
 
-## What each vendor phase still adds once K-1 lands
+## The owner's window packet, and what each vendor phase still adds
 
-| Phase | Code | Live and records |
+**Per-window packet.**
+- **Grant.** One grant per `(vendor, window)`, for one attempt (contract §8).
+- **Envelope.** The model-capable starts of contract §9.2: 14 for a Gemini, Codex or Claude
+  context, 13 for Grok. On top of that, line items A1–A7 are each capped; the grant's
+  `launch_envelope` binds them.
+- **Logins.** All four board logins must be current on the designated host. The operator runs
+  `seat-window ready` first (§9.3).
+- **Spent attempts.** A composition refusal after the claim spends the attempt.
+
+| Phase | Code still to add | Live work and records |
 |---|---|---|
-| CODEX | Nothing. | An owner-approved grant change for `("codex", "row")` (contract §8), landed by the kit owner. A release carrying SL-5 and SL-6 installed on the designated host, with the EC-EXECFIND-2 pass for the current Codex profile digest. LA-2 logins for all four board vendors under the operator account. LA-3 runs `qualify --window row --vendor codex`. A reviewed records PR adds the export and the Codex readiness row (CODEX SL-docs.3, EC-CODEX-4). |
-| CLAUDENET | SL-2 sets `window=CLAUDE_WINDOW_ROWS` (IF-0-CLAUDENET-1, already planned). SL-3 exports the scope-measurement and refresh-detection functions behind its receipts, for the adapter to call. | After SL-7: the grant, release, LA-2, LA-3 and the records PR (SL-docs.3, EC-CLAUDENET-4). |
-| GROK | SL-2's jailed launch site calls `window_board_for("grok", ...)` (contract §5.4) and registers the profile with its window rows. The measured surface. | After SL-8: the grant, release, LA-2, LA-3 and the records PR (EC-GROK-4). |
-| PI | Blocked on a contract revision for board composition (contract §10.E). | — |
+| CODEX | Nothing. | The owner-approved grant change for `("codex","row")`, landed by the kit owner; a release with SL-5 and SL-6 installed, with its EC-EXECFIND-2 pass on the current key; LA-2 for all four vendors; LA-3; the records PR (CODEX SL-docs.3, EC-CODEX-4). |
+| CLAUDENET | Nothing beyond IF-0-CLAUDENET-1 to IF-0-CLAUDENET-3, which are already planned. | After SL-7: grant, release, LA-2, LA-3 and the records PR (EC-CLAUDENET-4). |
+| GROK | SL-2 registers the profile with its window rows. Its jailed branch uses `_window_bracket` when that helper is on its base; otherwise SL-5 adds the wrap. The measured surface. | After SL-8: grant, release, LA-2, LA-3 and the records PR (EC-GROK-4). |
+| PI | It waits on the contract's Pi revision (§10.E), which FIRSTSEAT owns. | — |
 
 ## Verification
 
-Per lane, the commands in its table. Whole amendment: the frontmatter `suite_command`.
-Each code PR also runs the launch and inventory checks (`tests/test_agent_cli_scratch_inventory_1147.py`,
-`tests/test_seat_launch_helpers_trusted.py`, `tests/test_seat_reference_inventory.py` and a
-Gate A-shaped tree from an installed wheel). SL-7 runs `audit-order`. Shared-host rule: the
-listed files only, serially without `-n`, under `timeout`, after the headroom check; never a
-full suite. No lane makes a live provider call, launches a seat or runs anything on a seat
-host. The live row windows are owner actions (LA-3) outside this plan.
+Run each lane's own table. For the whole amendment, run the frontmatter `suite_command`. Each
+code PR also runs `tests/test_agent_cli_scratch_inventory_1147.py`,
+`tests/test_seat_launch_helpers_trusted.py` and `tests/test_seat_reference_inventory.py`, and a
+Gate A-shaped tree built from an installed wheel. Shared-host rule: only the listed files,
+serially without `-n`, under `timeout`, after the headroom check; never a full suite.
+
+Lanes stop at code and records. These are owner actions outside this plan (validator warning
+N): cutting and installing a release, minting a grant, the grant change, and every live window.
+No lane makes a live provider call or runs on a seat host. SL-6.2 is provider-free.
 
 ## Execution Notes
 
-- **One PR per lane.** SL-5 lands first. SL-6 and SL-9 follow, and Codex becomes runnable
-  when both are released and installed. SL-7 and SL-8 land when their content gates open.
-  They may land after FIRSTSEAT exits; they stay this amendment's lanes under the kit owner
-  (open question O-3).
-- **Single-writer files.** `panel_invoker.py`, `seat_profiles.py` and
-  `test_panel_invoker.py` are shared with TEAMHOST, CODEX, GROK, PI, CLAUDENET and v11
-  PANELSPLIT. In this amendment only SL-5 writes them, in its named parts. Whichever lands
-  second rebases. If PANELSPLIT has moved the window section, SL-5 edits the successor and
-  records the path. `claude_seat_transport.py`: SL-7's named part only.
-- **In-flight work.** SL-5's base must hold the W1 fixes and the W1-opening change
-  (contract §12). The W0 two-session change edits `claude_bakeoff.py` and the CLAUDE plan,
-  which no lane here touches.
-- **Requalification.** None, by contract §11: no profile, allowlist, containment-contract,
-  Gemini-binding, agy-QCI, EC-EXECFIND-2 or Claude-SDK input moves. Only `runtime_digest`
-  moves, and it is recorded, not compared. A completed W1 stays valid, and the Gemini golden
-  (F10) proves it.
-- **Launch caps** for the owner's window packet: contract §9.2.
-- **Open questions** (coordinator or owner):
-  - O-1: R6 narrows when an expired exception invalidates a record. This is an owner
-    decision, because it also lets W1 verify after 2026-12-04.
-  - O-2: whether a per-vendor grant must also bind the host and the attempt, beyond a
-    cutoff.
-  - O-3: SL-7 and SL-8 staying under FIRSTSEAT after its exit.
-  - O-4: the Claude hook's place in `claude_seat_transport.py`.
-  - O-5: Pi's board composition.
-- **Stall rule.** This is FIRSTSEAT's amendment for K-1. A second K-1 amendment, or one
-  that edits a frozen contract, stops for a diagnosis (principle 6).
-- **Known destructive changes**: `WindowBoardResult.canonical_gemini` and `.gemini` are
-  removed (contract §5.3). Every reader is in SL-5's files.
-- **Rollback.** Revert the lane. The W1 records and the golden are unaffected.
+- **One PR per lane.** SL-5 lands first, then SL-6 and SL-9. SL-7 and SL-8 land when their
+  gates open.
+- **EC-FIRSTSEAT-6 coverage.** This amendment's acceptance items prove its kit, Gemini and
+  Codex parts. The EC closes only when SL-7, SL-8 and the Pi revision have landed, and
+  FIRSTSEAT stays open on it until then. Nothing transfers after FIRSTSEAT exits.
+- **Single-writer files.** `panel_invoker.py`, `seat_profiles.py` and `test_panel_invoker.py`
+  are shared with TEAMHOST, CODEX, GROK, PI, CLAUDENET and v11 PANELSPLIT. Here only SL-5
+  writes them, in its named parts. Whichever lands second rebases. If PANELSPLIT has moved the
+  window section, SL-5 edits the successor and records the path.
+- **Rebase.**
+  - SL-5's base must hold the content of the W1 kit fixes (the stage-bound read receipt and
+    its producer, the row-only reducer, the co-seats), the content of the W1 opening (the
+    grant, journal and witnesses), and main's Grok `status` action.
+  - W0's two-session change re-stamps the roadmap pin and touches `CHANGELOG.md`,
+    `seat_launch_references.json` and the edited phase plans' frontmatter. Whichever lands
+    second re-stamps this file's frontmatter, and the inventories are union-resolved. The
+    contract does not pin the roadmap.
+- **Requalification.** None, by contract §11. Only `runtime_digest` moves, and W1 record
+  verification changes only as that table's last row states.
+- **Open questions for the coordinator.**
+  - Q-1: confirm that FIRSTSEAT stays open on EC-FIRSTSEAT-6 until SL-7, SL-8 and the Pi
+    revision land.
+  - Q-2: confirm that the provenance limit in contract §6 and §8 (an operator who controls all
+    local state) is accepted, as it is for W1.
+- **Stall rule.** This is FIRSTSEAT's K-1 amendment, revised once after review. The Pi revision
+  is planned. Any further revision stops for a diagnosis (principle 6).
+- **Known destructive changes**: `WindowBoardResult.canonical_gemini` and `.gemini` are removed
+  (contract §5.3). Every reader is in SL-5's files.
+- **Rollback.** Revert the lane. The W1 records, the W1 grant and the golden are unaffected.
 
 ## Acceptance Criteria
 
-Test paths are under `phase-loop-runtime/`.
-
-- [ ] EC-FIRSTSEAT-6 — one kit, one record per vendor: proven by `pytest tests/test_seat_window_vendor_neutral.py` (F1–F9, F11, F12) through `seat_window.qualify`, `verify_records`, `reduce_readiness`, `export_records` and `cli_main`, with a fixture vendor registered only through `register_window_data`; falsified by a passing record of one vendor changing any row other than its own, by a failing vendor blocking another vendor's row, by a vendor needing a kit-code branch, or by a grant for one vendor opening another. Path-entered control: `cli_main` with `--vendor`, reading real retained source files from a 0700 fixture directory.
-- [ ] EC-FIRSTSEAT-6 — Codex runs the same command: proven by `pytest tests/test_seat_window_supply_codex.py`, whose fixture context runs `qualify --window row --vendor codex` to a record that `verify --vendor codex` passes and that changes only `vendor:codex`; falsified by a Codex record carrying Gemini's profile, allowlist or contract digest passing, or by a window launch that retries. Path-entered control: `seat_window.run_native_window` with the production Codex supplier and launchers stubbed only at `window_control_launch` and `window_board_launch`.
-- [ ] EC-FIRSTSEAT-7 — W1 evidence is kept: proven by `pytest tests/test_seat_window_vendor_neutral.py -k golden`, in which a W1 record set made by the pre-K-1 producer verifies, reduces and exports to the golden bytes, and `tests/test_agy_qci.py` and the profile-digest receipt are unchanged; falsified by any golden byte, Gemini argv or binding digest differing. Path-entered control: the real Gemini window data and its `seat_window_supply_gemini` supplier over the unedited `seat_jail_qualification`.
+- [ ] EC-FIRSTSEAT-6 — proven by `pytest tests/test_seat_window_vendor_neutral.py tests/test_seat_window_grants.py` (F1–F9, F11–F15), entered through `cli_main`, `qualify`, `verify_records`, `reduce_readiness` and `export_records`, with a fixture vendor registered only through `register_window_data` and F15 run in a fresh process; falsified by any of: a passing record changing another vendor's row; a failing partition blocking another; a grant opening another pair, or one claimed after an auth call; a stale key part passing; an expired snapshot entry passing; a relabelled, replayed or restamped record passing. Path-entered control: real retained source files in a 0700 fixture directory, and the real grant journal and witnesses.
+- [ ] EC-FIRSTSEAT-6 — Codex, proven by `pytest tests/test_seat_window_supply_codex.py tests/test_seat_window_codex_provider_free.py`; falsified by any of: a Codex record carrying Gemini's profile, allowlist or contract digest passing; a window launch retrying; `refused_intended` assigned to an incomplete stream or to a jail or proxy failure; the production `_prepare_jailed_codex` path changing. Path-entered control: the real `_prepare_jailed_codex` with the provider stubbed at its spawn boundary, and the real pinned binary under the loopback harness.
+- [ ] EC-FIRSTSEAT-7 — proven by `pytest tests/test_seat_window_vendor_neutral.py -k "golden or legacy or registry_change"` (F10, F12's legacy cases, F14), with `tests/test_agy_qci.py` and the profile-digest receipt unchanged; falsified by any golden byte, Gemini argv or binding digest differing, by W1 refusing after a candidate row is added, or by the legacy rule applying without its journal. Path-entered control: the real Gemini window data and its supplier over the unedited `seat_jail_qualification`.
 
 ## Spec Closeout Plan
 - schema: `spec_delta_closeout.v1`
@@ -285,4 +311,4 @@ Test paths are under `phase-loop-runtime/`.
 - target surfaces: `plans/phase-plan-v1-seats-FIRSTSEAT.md`, `plans/phase-plan-v1-seats-CODEX.md`, `plans/phase-plan-v1-seats-JAILCORE.md`, `plans/phase-plan-v1-seats-CLAUDENET.md`, `plans/phase-plan-v1-seats-GROK.md`, `plans/evidence/seat-qualification/README.md`, `docs/review-seats-readiness.md`
 - evidence paths: `phase-loop-runtime/tests/test_seat_window_vendor_neutral.py`, `phase-loop-runtime/tests/data/seat_window_gemini_k1_golden.json`
 - redaction posture: `metadata_only`
-- downstream handling: none; the roadmap is unchanged, and the plan amendments listed in Context land with this plan
+- downstream handling: none; the roadmap is unchanged, and the plan notes listed in Context land with this plan

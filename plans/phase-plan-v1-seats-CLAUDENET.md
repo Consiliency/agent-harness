@@ -259,16 +259,12 @@ that one selection profile-driven. Nothing else.
   worktree produces commits that destroy peer-lane work on `--no-ff` merge.
 - **Batching.** If TEAMHOST SL-8's switch-on also returns the Claude row to `candidate`, one
   row window requalifies both changes. Neither waits for the other.
-- **Open with JAILCORE (GROK plan S-2).** `seat_window.readiness_rows()` still names Claude
-  `open egress`, and only the kit's owner may change that. Until the kit omits `open egress`
-  for a profile with an allowlist, SL-4 records the exception's end in the readiness doc only.
-  The first window, before 2026-12-04, does not need this fix. A Claude requalification after
-  that date does.
-  *Amendment (2026-11-21, K-1, records only):* resolved in source. `readiness_rows()` already
-  drops `open egress` once the registered Claude profile has an allowlist. The kit's owner is
-  FIRSTSEAT (K-1). For the Claude adapter SL-3 exports the functions behind its
-  `claude-credential-scope` and `claude-refresh-detection` receipts. SL-2's
-  `CLAUDE_WINDOW_ROWS` is unchanged.
+- **Exception literal (GROK plan S-2), resolved in source (recorded 2026-11-21, K-1).**
+  `seat_window.readiness_rows()` drops `open egress` once the registered Claude profile has an
+  allowlist, so SL-2 ends the exception in the matrix itself. The kit's owner is FIRSTSEAT
+  (`plans/amendments/seats-FIRSTSEAT-K1-window-kit.md`). Its Claude adapter consumes
+  IF-0-CLAUDENET-1 to IF-0-CLAUDENET-3 and SL-1's `claude-credential-scope` receipt as planned
+  here, and needs no new interface from this phase.
 - **Single writers.** `seat_jail.py`, `seat_route_contract.py`, `seat_profiles.py` and
   `panel_invoker.py` are shared with CODEX, GROK, PI, TEAMHOST and v11 PANELSPLIT, and the
   first two take additive rows only. Whichever lands second rebases. In either landing order,
