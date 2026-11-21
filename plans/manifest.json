@@ -15915,6 +15915,77 @@
       "task_summary": null,
       "type": "phase",
       "updated_at": "2026-11-21T01:01:08Z"
+    },
+    {
+      "acceptance_criteria_count": 5,
+      "created_at": "2026-11-20T15:45:00Z",
+      "file": ".consiliency/plans/detailed-grok-tool-surface-frozen-basis-20261120-1545.md",
+      "handoff_ref": ".dev-skills/handoffs/claude-plan-detailed/latest.md",
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-11-20T15:45:00Z",
+          "by": "claude-plan-detailed",
+          "metadata": {
+            "artifact": "plans/artifacts/grok-tool-surface-contract-v1.md",
+            "run_id": "20261120T154500Z-grok-tool-surface"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-11-20T18:00:00Z",
+          "by": "claude-plan-detailed",
+          "metadata": {
+            "reason": "plan review ACCEPT-WITH-CHANGES: four required changes and coordinator rulings D1-D6 adopted",
+            "revision": "r2",
+            "run_id": "20261120T180000Z-grok-tool-surface-r2"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-11-20T19:15:00Z",
+          "by": "claude-plan-detailed",
+          "metadata": {
+            "reason": "r2 re-review ACCEPT-WITH-CHANGES: durable grant ledger, consumable basis wired into the board review leg, paste-safe owner procedure",
+            "revision": "r3",
+            "run_id": "20261120T191500Z-grok-tool-surface-r3"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-11-20T20:30:00Z",
+          "by": "claude-plan-detailed",
+          "metadata": {
+            "reason": "r3 review: three implementation proofs added as binding acceptance criteria (contract section 10)",
+            "revision": "r4",
+            "run_id": "20261120T203000Z-grok-tool-surface-r4"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-11-20T18:56:49Z",
+          "by": "claude-execute-detailed",
+          "metadata": {
+            "artifact": ".consiliency/plans/detailed-grok-tool-surface-frozen-basis-20261120-1545.md",
+            "branch": "t3/grok-ts-l1",
+            "contract": "plans/artifacts/grok-tool-surface-contract-v1.md",
+            "lane": "L1",
+            "note": "lane L1 only; L2a, L2b, L2c, the owner-gated measurement and L3 remain",
+            "run_id": "20261120T-grok-ts-l1"
+          },
+          "transition": "executing"
+        }
+      ],
+      "owner_skill": "claude-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "detailed-grok-tool-surface-frozen-basis-20261120-1545",
+      "status": "executing",
+      "task_summary": "Grok seat tool-surface verification for builds with no --list-tools: frozen measured surface per binary digest and argv digest, valid in one enforced launch context and consumed by the board review leg; code fails closed; owner-gated vendor-only measurement on the measurement host.",
+      "type": "detailed",
+      "updated_at": "2026-11-20T18:56:49Z"
     }
   ],
   "schema_version": 1

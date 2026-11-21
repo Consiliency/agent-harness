@@ -1,0 +1,7 @@
+error: unexpected argument '--list-tools' found
+
+  tip: to pass '--list-tools' as a value, use '-- --list-tools'
+
+Usage: grok [OPTIONS] [PROMPT] [COMMAND]
+
+For more information, try '--help'.

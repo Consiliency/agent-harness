@@ -36,6 +36,38 @@ if (!Number.isInteger(FRONT_IDLE_MS) || FRONT_IDLE_MS < 1 || FRONT_IDLE_MS > 300
 const rules = config.allow;
 const hosts = new Set(rules.map(rule => rule.host.toLowerCase()));
 
+// The per-launch request budget (grok tool-surface contract v1, section 5.3). Absent unless
+// the configuration carries one, and then it can only narrow: a request the rules refuse is
+// refused whatever the budget. A counted request is one the rules allow whose method is POST.
+// It is charged in the same synchronous step that decides it, before srt forwards it, so
+// concurrent requests can never share a unit. Once the budget is spent, or shutdown has
+// begun, every request is refused and observed.
+const MAX_REQUEST_BUDGET = 1000;
+const BUDGET = config.request_budget;
+if (BUDGET !== undefined && (!Number.isInteger(BUDGET) || BUDGET < 0
+    || BUDGET > MAX_REQUEST_BUDGET)) {
+  process.stderr.write('request budget is invalid\n');
+  process.exit(3);
+}
+let remaining = BUDGET === undefined ? null : BUDGET;
+
+// Observations named verbatim (grok tool-surface contract v1, erratum 3): exact
+// [method, host, path-or-null] entries the measurement must tell apart from `<other>`. They
+// name an observation and never decide one. Absent unless the configuration carries them.
+const NAMED = config.named ?? [];
+if (!Array.isArray(NAMED) || NAMED.length > 16 || !NAMED.every(entry => Array.isArray(entry)
+    && entry.length === 3 && typeof entry[0] === 'string' && typeof entry[1] === 'string'
+    && (entry[2] === null || typeof entry[2] === 'string'))) {
+  process.stderr.write('named observations are invalid\n');
+  process.exit(3);
+}
+function named(method, host, path) {
+  return NAMED.some(([m, h, p]) => m === method && h === host && p === path);
+}
+let ending = false;
+let ended = false;
+let observedRequests = 0;
+
 function allowed(method, host, path) {
   return rules.some(rule => rule.host === host && rule.method === method
     && (rule.path !== undefined ? path === rule.path : path.startsWith(rule.path_prefix)));
@@ -48,17 +80,59 @@ function innerHost(request, url) {
   return named === '' || named === url.hostname.toLowerCase();
 }
 
+// A refused request's body. srt hands this callback one branch of a tee of the request body
+// and, when the callback refuses without reading it, cancels both branches while the
+// client's bytes may still be in flight. Node 22's stream adapter then throws an uncaught
+// ERR_INVALID_STATE ("Controller is already closed") and the proxy dies with no end-of-stream
+// marker, so every refused request with a body ended the observation incomplete. Reading the
+// branch to its end first leaves srt nothing in flight to cancel. The read is bounded in
+// bytes and time and its bytes are discarded: never forwarded, observed or recorded. Past
+// either bound the branch is left unread, and still never cancelled here. It runs after the
+// decision, its observation and any budget charge, which stay synchronous and unchanged.
+const REFUSED_BODY_MAX_BYTES = 4 * 1024 * 1024;
+const REFUSED_BODY_MAX_MS = 5000;
+async function refuseRequest(request, reason) {
+  const body = request.body;
+  if (body) {
+    const deadline = Date.now() + REFUSED_BODY_MAX_MS;
+    let read = 0;
+    let timer;
+    try {
+      const reader = body.getReader();
+      while (read <= REFUSED_BODY_MAX_BYTES) {
+        const left = deadline - Date.now();
+        if (left <= 0) break;
+        const step = await Promise.race([reader.read(), new Promise(resolve => {
+          timer = setTimeout(resolve, left, null);
+          timer.unref();
+        })]);
+        clearTimeout(timer);
+        if (step === null || step.done) break;
+        read += step.value ? step.value.byteLength : 0;
+      }
+    } catch { /* the client went away: nothing is left in flight */ }
+  }
+  return { action: 'deny', reason };
+}
+
 async function filterRequest(request) {
   const url = new URL(request.url);
   if (!innerHost(request, url)) {
-    observe(request.method, url.hostname, url.pathname, 'deny');
-    return { action: 'deny', reason: 'the inner Host does not name the tunnel host' };
+    observe(request.method, url.hostname, url.pathname, 'deny', 'inner_host');
+    return refuseRequest(request, 'the inner Host does not name the tunnel host');
   }
   if (!allowed(request.method, url.hostname, url.pathname)) {
-    observe(request.method, url.hostname, url.pathname, 'deny');
-    return { action: 'deny', reason: 'not on the seat request allowlist' };
+    observe(request.method, url.hostname, url.pathname, 'deny', 'rules');
+    return refuseRequest(request, 'not on the seat request allowlist');
   }
-  observe(request.method, url.hostname, url.pathname, 'allow');
+  if (remaining !== null) {
+    if (ending || remaining === 0) {
+      observe(request.method, url.hostname, url.pathname, 'deny', ending ? 'shutdown' : 'budget');
+      return refuseRequest(request, 'the seat request budget is spent');
+    }
+    if (request.method === 'POST') remaining -= 1;
+  }
+  observe(request.method, url.hostname, url.pathname, 'allow', 'allowed');
   return { action: 'allow' };
 }
 
@@ -88,12 +162,21 @@ function observedPath(host, path) {
   return path.startsWith('/oauth2/') ? '/oauth2/*' : '<other>';
 }
 
-function observe(method, host, path, decision) {
+// `cause` (grok tool-surface contract v1, errata 3 and 4) says which check decided, in a
+// closed vocabulary: allowed, budget, shutdown, rules, inner_host, front. Only a budgeted
+// proxy writes it, so a budgetless stream is what it was. `port` is the CONNECT authority's:
+// a named observation is the exact authority, port 443 included.
+function observe(method, host, path, decision, cause, port = 443) {
+  if (ended) return; // the end-of-stream marker is the last record
   const name = String(host || '').toLowerCase();
+  const verb = METHODS.has(method) ? method : '<other>';
+  const exact = port === 443 && named(verb, name, path);
   process.stdout.write(JSON.stringify({
-    event: 'request', method: METHODS.has(method) ? method : '<other>',
-    host: observedHost(name), path: observedPath(name, path), decision,
+    event: 'request', method: verb, host: exact ? name : observedHost(name),
+    path: exact ? path : observedPath(name, path), decision,
+    ...(remaining !== null ? { cause } : {}),
   }) + '\n');
+  observedRequests += 1;
   quietFrom = Date.now();
 }
 
@@ -102,7 +185,7 @@ function activity() { quietFrom = Date.now(); }
 // A fence is acknowledged once no front client and no socket to srt is open and nothing
 // has been observed for QUIET_MS. It never closes the front or touches a decision.
 function checkFence() {
-  if (pendingFence === null) return;
+  if (pendingFence === null || ended) return;
   if (openFront === 0 && openSrt === 0 && Date.now() - quietFrom >= QUIET_MS) {
     const id = pendingFence;
     pendingFence = null;
@@ -282,7 +365,9 @@ const front = createServer(client => {
       }
       const m = /^CONNECT[ \t]+([^\s:]+):(\d+)[ \t]/i.exec(line);
       if (!m || m[2] !== '443' || !hosts.has(m[1].toLowerCase())) {
-        observe(m ? 'CONNECT' : line.split(/[ \t]/)[0].toUpperCase(), m ? m[1] : '', null, 'deny');
+        observe(m ? 'CONNECT' : line.split(/[ \t]/)[0].toUpperCase(), m ? m[1] : '', null, 'deny',
+                // The port as written: only the literal "443" is that authority (0443 is not).
+                'front', m && m[2] === '443' ? 443 : 0);
         return refuse(client, '403 Forbidden');
       }
       target = m[1].toLowerCase();
@@ -298,7 +383,7 @@ const front = createServer(client => {
     if (sni === 'need-more') {
       if (buf.length > FRONT_MAX_HELLO_BYTES) { // never grow unbounded; fail closed
         phase = 'refused';
-        observe('CONNECT', target, null, 'deny');
+        observe('CONNECT', target, null, 'deny', 'front');
         client.destroy();
       }
       return;
@@ -309,7 +394,7 @@ const front = createServer(client => {
       spliceToSrt(client, target, buf);
     } else {
       phase = 'refused';
-      observe('CONNECT', target, null, 'deny');
+      observe('CONNECT', target, null, 'deny', 'front');
       client.destroy(); // not a positively-inspected allowed-SNI ClientHello: no bytes upstream
     }
   }
@@ -320,6 +405,7 @@ front.listen(frontSocket, () => {
   process.stdout.write(JSON.stringify({
     socket: frontSocket, token, tls_inspection: true,
     inner_sni_check: Boolean(config.inner_sni_check), fail_closed_front: true,
+    ...(remaining !== null ? { request_budget: BUDGET } : {}),
   }) + '\n');
 });
 front.unref();
@@ -341,7 +427,15 @@ process.stdin.on('data', chunk => {
 });
 process.stdin.resume();
 process.stdin.on('end', async () => {
+  ending = true;
   try { front.close(); } catch { /* closing */ }
   await SandboxManager.reset();
-  process.exit(0);
+  if (remaining === null) process.exit(0);
+  // A budgeted proxy's orderly shutdown, and nothing else, writes the end-of-stream marker
+  // (contract section 5.3): the last record, with this instance's own counts, and the exit
+  // waits for it to be flushed. A crash, a kill or a failed write leaves no marker.
+  ended = true;
+  process.stdout.write(JSON.stringify({
+    event: 'end', requests: observedRequests, counted: BUDGET - remaining, budget: BUDGET,
+  }) + '\n', err => process.exit(err ? 4 : 0));
 });

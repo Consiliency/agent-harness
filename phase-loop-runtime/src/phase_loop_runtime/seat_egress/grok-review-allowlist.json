@@ -1,0 +1,12 @@
+{
+  "schema": "phase_loop_seat_egress_allowlist.v1",
+  "leg": "grok-review",
+  "measured": "grok 1.0.89 (sha256 a3dface51d9bdc71fd121e0481dd02d9b46a721f7a6b892f756480e9666eba1f) on Linux, 2026-11-20 (grok tool-surface contract v1 section 5.2): the inference row is the statically known one, from the documentation bundled in the binary (default backend chat_completions on https://cli-chat-proxy.grok.com/v1); offline, credential-free and in a namespace with no uplink, the sign-in and updater clients honoured HTTPS_PROXY and trusted the CA named by SSL_CERT_FILE, and the device-code sign-in posted to auth.x.ai; a headless turn makes no request without a credential, so the pilot is the first confirmation of the inference request and fails closed",
+  "allow": [
+    {"host": "cli-chat-proxy.grok.com", "port": 443, "method": "POST", "path": "/v1/chat/completions"}
+  ],
+  "measured_and_refused": [
+    "accounts.x.ai",
+    "auth.x.ai"
+  ]
+}

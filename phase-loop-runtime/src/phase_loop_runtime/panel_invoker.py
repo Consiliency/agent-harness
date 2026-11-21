@@ -131,6 +131,7 @@ from .advisor_board.schema import (
     Seat,
     identify_host_leg,
 )
+from . import grok_tool_surface as _grok_surface
 from . import review_stage as _review_stage
 from . import sandbox_egress as _sandbox_egress
 from . import sandbox_placement as _sandbox_placement
@@ -4944,6 +4945,10 @@ class SeatProfile:
     evidence: Mapping[str, object] = field(default_factory=dict)
     dependency: object | None = field(default=None, repr=False)
     dependency_projection_digest: str = ""
+    #: A grok launch on a frozen-basis receipt (grok tool-surface contract §4.4): the
+    #: ``ProvisionalContext`` its composition stamps, or the ``LaunchContext`` mark that
+    #: ``grok_tool_surface.verify_launch_context`` gives it. ``None`` otherwise.
+    grok_launch_context: object | None = field(default=None, repr=False, compare=False)
 
 
 _OWNED_LAUNCH = ContextVar("owned_provider_launch", default=False)
@@ -5005,6 +5010,9 @@ def _blank_refresh_token(value):
 #: it) and an ``OPENAI_API_KEY`` in API-key mode: neither can refresh the login, and both are
 #: redacted from the seat's output like every copied secret.
 _SEAT_CREDENTIAL_SHAPE = {"codex": "blank_refresh", "grok": "access_only", "opencode": "access_only"}
+#: Where a grok seat's egress CA certificate sits in its private home (contract grok
+#: tool-surface v1, section 5.2): outside ``.grok/``, read-only.
+_SEAT_EGRESS_CA_RELATIVE = ".phase-loop-seat-egress-ca.pem"
 
 
 def _seat_secret_values(value):
@@ -5436,11 +5444,30 @@ def _require_dependency_profile_composition(dependency, harness, env, *, gemini_
 @contextmanager
 def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=(),
                  broker_socket=None, gemini_profile=None, role=SeatLaunchRole.PROVIDER_REVIEW,
-                 writable_trees=(), needs_login=True, dependency=None):
+                 writable_trees=(), needs_login=True, dependency=None, grok_sessions=None,
+                 egress_proxy=None):
     """Copy declared subscription state into a per-launch private home.
 
     ``needs_login`` is False only for a launch that makes no provider request
-    (:func:`_gemini_launch_needs_login`): the freshness of the login is then not asked."""
+    (:func:`_gemini_launch_needs_login`): the freshness of the login is then not asked.
+
+    ``egress_proxy`` (grok tool-surface contract v1, section 5.2) is the ``grok-review``
+    proxy this launch owns; only a grok profile takes one. It adds the proxy projection and
+    nothing else: the proxy's address in :data:`seat_egress_proxy.SEAT_PROXY_ENV`, its CA
+    certificate as a read-only file in the private home named by
+    :data:`seat_egress_proxy.SEAT_CA_ENV` (the seat's whole trust bundle), and the proxy's
+    session token among the redactions. Without it the profile is composed as before.
+
+    ``grok_sessions`` (grok tool-surface contract v1, section 5.1) is the grok measurement's
+    scratch sessions directory, bound read-write at ``.grok/sessions``: the one host-backed
+    path a measurement's private home holds. Only a grok profile takes one; without it the
+    profile is composed byte-identically."""
+    if grok_sessions is not None and harness != "grok":
+        raise ValueError("only a grok profile takes a measurement sessions directory")
+    if egress_proxy is not None and (
+            harness != "grok"
+            or getattr(egress_proxy, "allowlist_id", None) != _seat_egress_proxy.GROK_REVIEW_ALLOWLIST):
+        raise ValueError("only a grok profile takes the grok-review egress proxy")
     if (
         dependency is None
         and gemini_profile is None
@@ -5587,6 +5614,34 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
         elif harness == "grok":
             credential(".grok/auth.json", shape=_SEAT_CREDENTIAL_SHAPE["grok"])
             data_file(".grok/agent_id", _seat_credential(home, ".grok/agent_id"))
+            if egress_proxy is not None:
+                # The same projection at measurement and at use (contract section 5.2).
+                ca_destination = private_home + "/" + _SEAT_EGRESS_CA_RELATIVE
+                descriptor = os.memfd_create("seat-profile", os.MFD_CLOEXEC)
+                stack.callback(os.close, descriptor)
+                os.write(descriptor, _seat_egress_proxy.ca_certificate(egress_proxy))
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                pass_fds.add(descriptor)
+                mounts.extend(("--perms", "0444", "--ro-bind-data", str(descriptor),
+                               ca_destination))
+                profile_env[_seat_egress_proxy.SEAT_PROXY_ENV] = egress_proxy.proxy_url
+                profile_env[_seat_egress_proxy.SEAT_CA_ENV] = ca_destination
+                proxy_token = urllib.parse.urlsplit(egress_proxy.proxy_url).password
+                if proxy_token:
+                    redactions.append(proxy_token)
+                    observation = _EXEC_OBSERVATION.get()
+                    if observation is not None:
+                        observation["scan_secrets"] = tuple(item.encode() for item in redactions)
+                evidence.update(
+                    seat_egress_allowlist_id=egress_proxy.allowlist_id,
+                    seat_egress_allowlist_digest=egress_proxy.allowlist_digest,
+                    seat_egress_ca_sha256=egress_proxy.ca_sha256,
+                )
+            if grok_sessions is not None:
+                # The measurement reads the session's tool_definitions.json from here; the
+                # rest of the home stays the tmpfs (contract section 5.1).
+                mounts.extend(("--bind", _seat_bind_source(grok_sessions, tree=True),
+                               private_home + "/" + _grok_surface.SESSIONS_RELATIVE))
         elif harness == "gemini":
             credential(".gemini/antigravity-cli/antigravity-oauth-token", access_only=True)
             if gemini_profile is None:
@@ -5808,8 +5863,13 @@ def _precreate_seat_output(path):
 @contextmanager
 def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None,
                           gemini_profile=None, role=SeatLaunchRole.PROVIDER_REVIEW,
-                          readonly_paths=(), replaceable_outputs=()):
+                          readonly_paths=(), replaceable_outputs=(), grok_egress_proxy=None):
     """The owned seat's command and profile for one launch.
+
+    ``grok_egress_proxy`` is the ``grok-review`` proxy a board leg holds for a grok leg on a
+    frozen-basis receipt (grok tool-surface contract v1, section 4.6); the profile then
+    carries that proxy's projection (``seat_profile(egress_proxy=...)``). Without it the
+    profile is composed exactly as before.
 
     ``outputs`` are bound in place: each is one precreated host file, shared live with the
     seat, which can write it but not replace it (a bound file is a mount point).
@@ -5839,9 +5899,15 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
     else:
         harness, executable = "gemini", gemini_profile.executable
         dependency = current_dependency_for_provider(harness)
-    if (harness == "grok" and not _grok_admin_command(command)
-            and not grok_tool_gate(command, env)):
-        raise _seat_jail.SeatSandboxRefused("grok_tool_surface_unverified")
+    frozen_basis = False
+    if harness == "grok" and not _grok_admin_command(command):
+        admitted, basis = _grok_gate_with_basis(command, env)
+        if not admitted:
+            raise _seat_jail.SeatSandboxRefused("grok_tool_surface_unverified")
+        # For a frozen-basis receipt the gate above is the provisional step: it admits this
+        # composition, never a launch. The profile says so, and launch_owned refuses it
+        # until verify_launch_context has marked it (grok tool-surface contract §4.4).
+        frozen_basis = basis == "frozen_measurement"
     _require_dependency_profile_composition(
         dependency, harness, env, gemini_profile=gemini_profile,
         needs_login=_gemini_launch_needs_login(command, gemini_profile), role=role,
@@ -5929,9 +5995,13 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
             gemini_profile=gemini_profile, role=role,
             writable_trees=tuple(writable),
             needs_login=_gemini_launch_needs_login(command, gemini_profile),
-            dependency=dependency))
+            dependency=dependency,
+            **({"egress_proxy": grok_egress_proxy} if grok_egress_proxy is not None else {})))
         profile = replace(profile, output_dirs=tuple(
             (source, directory) for directory, source in private.items()))
+        if frozen_basis:
+            profile = replace(profile, grok_launch_context=_grok_surface.ProvisionalContext(
+                tuple(command)))
         owned_command = [provider, *command[1:]]
         if transcript_path is not None:
             slug = re.sub(r"[^A-Za-z0-9.-]", "-", str(cwd))
@@ -5994,6 +6064,136 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
                 raise failure
 
 
+@contextlib.contextmanager
+def _grok_review_egress(*, timeout_s: float | None, request_budget: int | None = None,
+                        named: tuple = ()):
+    """The vendor-only egress of one launch-owner grok launch (contract grok tool-surface
+    v1, section 5.2), shared by the measurement and the board review leg: one proxy under
+    the ``grok-review`` allowlist, owned by this launch, then the proxy-only namespace
+    bridged to it, with no uplink. Yields ``(proxy, prefix)``; the caller holds ``prefix``
+    as the launch's egress prefix.
+
+    The launch-owner composition runs as the operator, whom the proxy-only holder maps to
+    uid 0 exactly as the slirp holder does; before it yields, the holder's own bridge check
+    shows a child under the prefix reaching the proxy and no public address. ``sandbox_egress``
+    is therefore not extended. Everything refuses before any launch -- the egress layer or the
+    allowlist missing (:class:`seat_egress_proxy.EgressLayerUnavailable`), the namespace not
+    coming up or yielding nothing (:class:`sandbox_egress.EgressUnavailable`) -- and there is
+    no fallback to a broader namespace."""
+    with contextlib.ExitStack() as stack:
+        proxy = stack.enter_context(_seat_egress_proxy.start_proxy(
+            allowlist_id=_seat_egress_proxy.GROK_REVIEW_ALLOWLIST,
+            request_budget=request_budget,
+            # Only a measurement names observations (erratum 3); every other call is as it was.
+            **({"named": tuple(named)} if named else {})))
+        prefix = tuple(stack.enter_context(_sandbox_egress.isolated_network(
+            timeout_s=timeout_s, required=True, seat_uid_map=True,
+            proxy_socket=proxy.socket, proxy_port=_seat_egress_proxy.SEAT_PROXY_PORT,
+        )))
+        if not prefix:
+            raise _sandbox_egress.EgressUnavailable(
+                "the grok-review proxy-only namespace yielded an empty launch prefix")
+        yield proxy, prefix
+
+
+#: The ``grok-review`` egress a board leg holds for a grok leg on a frozen-basis receipt
+#: (grok tool-surface contract v1, section 4.6): ``(proxy, prefix)``, set only by
+#: :func:`_grok_board_leg_egress` for the life of the leg.
+_GROK_LEG_EGRESS: ContextVar["tuple[_seat_egress_proxy.SeatEgressProxy, tuple[str, ...]] | None"] = (
+    ContextVar("_GROK_LEG_EGRESS", default=None))
+
+
+@contextlib.contextmanager
+def _grok_board_leg_egress(*, timeout_s: float | None):
+    """The egress of a board review leg whose grok form rests on a frozen-basis receipt (grok
+    tool-surface contract v1, section 4.6): the ``grok-review`` proxy, with no request
+    budget, and the proxy-only namespace bridged to it, held for the whole leg in place of
+    any slirp namespace. Yields the launch prefix and holds ``(proxy, prefix)`` as
+    ``_GROK_LEG_EGRESS``, which the leg's launches compose with and check against.
+
+    Any failure to set it up -- the egress layer or the allow-list missing, the namespace not
+    coming up, the namespace not bridged to its own proxy -- is ``grok_tool_surface_unverified``,
+    and nothing falls back to a broader namespace. The binding is the measurement's own
+    (``grok_tool_surface.bridged_to``, BA-3): one check serves both paths."""
+    stack = contextlib.ExitStack()
+    try:
+        proxy, prefix = stack.enter_context(_grok_review_egress(timeout_s=timeout_s))
+        prefix = tuple(prefix)
+        if not _grok_surface.bridged_to(prefix, proxy):
+            raise _sandbox_egress.EgressUnavailable(
+                "the grok-review namespace is not bridged to its own proxy")
+    except Exception as exc:  # noqa: BLE001 - every failure is the one public refusal
+        stack.close()
+        logging.getLogger(__name__).warning(
+            "seat grok: the grok-review egress is unavailable (%s: %s)", type(exc).__name__, exc)
+        raise _seat_jail.SeatSandboxRefused("grok_tool_surface_unverified") from exc
+    with stack:
+        token = _GROK_LEG_EGRESS.set((proxy, prefix))
+        try:
+            yield prefix
+        finally:
+            _GROK_LEG_EGRESS.reset(token)
+
+
+def _grok_leg_on_frozen_basis(*, brokered: bool, model, effort, env, review_dir, out_dir) -> bool:
+    """The provisional step (grok tool-surface contract v1, section 4.4) at the board leg's
+    egress setup: does the grok form this leg will launch rest on a frozen-basis receipt? The
+    form is built as ``_exec_leg`` builds it -- the ``sealed`` or ``staged`` form, on the
+    brokered model, for a brokered leg, the ``review`` form otherwise -- with only its masked
+    prompt slot left empty, so its argv digest is the launch's. Anything that cannot be
+    decided is ``False``: the leg then keeps today's egress, and its own gates refuse a frozen
+    basis there."""
+    try:
+        if brokered:
+            model = harden_subscription_model("grok", model or DEFAULT_LEG_MODELS["grok"], effort)
+        grok_effort_args = render_seat_invocation(
+            "grok", model or DEFAULT_LEG_MODELS["grok"], effort or "high").effort_args
+        if brokered:
+            command = _brokered_grok_command(
+                model=model, out_dir=out_dir, grok_effort_args=grok_effort_args,
+                staged_tree=_sandbox_in(review_dir))
+            gate_env = _broker_subscription_env(env)
+        else:
+            command = _grok_review_form(model=model, review_dir=review_dir, prompt="",
+                                        grok_effort_args=grok_effort_args)
+            gate_env = scrub_subscription_env(os.environ) if env is None else dict(env)
+        admitted, basis = _grok_gate_with_basis(command, gate_env)
+    except Exception:  # noqa: BLE001 - undecidable: today's egress, and the leg's gates refuse
+        return False
+    return admitted and basis == "frozen_measurement"
+
+
+def _grok_leg_launch_egress(cmd) -> "tuple[_seat_egress_proxy.SeatEgressProxy, tuple[str, ...]] | None":
+    """The ``grok-review`` egress this launch runs in, when its board leg holds one. While
+    one is held only the leg's own grok form launches, and only under that egress's prefix."""
+    held = _GROK_LEG_EGRESS.get()
+    if held is None:
+        return None
+    if (not cmd or Path(cmd[0]).name != "grok" or _grok_admin_command(cmd)
+            or tuple(_EGRESS_LAUNCH_PREFIX.get()) != held[1]):
+        raise _seat_jail.SeatSandboxRefused("grok_tool_surface_unverified")
+    return held
+
+
+def _grok_leg_final_check(profile, egress, *, env, cwd):
+    """The final step of a board leg's frozen-basis grok launch (grok tool-surface contract
+    v1, sections 4.4 and 4.6), after composition: the profile was composed for a frozen-basis
+    receipt with the projection of the ``grok-review`` proxy its leg holds, that proxy is the
+    one the leg's namespace holder bridges to (``grok_tool_surface.bridged_to``), and
+    ``verify_launch_context`` checks every launch-context condition against the composed
+    profile and marks it. A frozen-basis receipt with no such egress (the fallback
+    namespace), and that egress held for a receipt no longer on the frozen basis, each
+    refuse: there is no fallback either way."""
+    context = getattr(profile, "grok_launch_context", None)
+    if egress is None or not isinstance(context, _grok_surface.ProvisionalContext):
+        raise _seat_jail.SeatSandboxRefused("grok_tool_surface_unverified")
+    proxy, prefix = egress
+    if not _grok_surface.bridged_to(prefix, proxy):
+        raise _seat_jail.SeatSandboxRefused("grok_tool_surface_unverified")
+    return _grok_surface.verify_launch_context(
+        profile, env=env, cwd=cwd, role=SeatLaunchRole.PROVIDER_REVIEW, proxy=proxy)
+
+
 def _filtered_holder_namespace() -> int:
     prefix = _EGRESS_LAUNCH_PREFIX.get()
     try:
@@ -6011,8 +6211,12 @@ def _filtered_holder_namespace() -> int:
 def launch_owned(argv, *, role, profile: SeatProfile, supervisor=None,
                  seat_caps: str | None = None, **kwargs):
     role = SeatLaunchRole(role)
-    if require_grok_admission(argv, kwargs.get("env")) and role is SeatLaunchRole.EXECUTOR_TRUSTED:
+    grok_context = getattr(profile, "grok_launch_context", None)
+    if (require_grok_admission(argv, kwargs.get("env"), context=grok_context)
+            and role is SeatLaunchRole.EXECUTOR_TRUSTED):
         argv = [_grok_binary_identity(argv, kwargs.get("env"))[0], *argv[1:]]
+    _require_grok_launch_context(profile, role, argv=argv, cwd=kwargs.get("cwd", os.getcwd()),
+                                 env=kwargs.get("env"))
     if role is SeatLaunchRole.EXECUTOR_TRUSTED:
         from .executable_dependency_startup import refuse_unwired_dependency_route
         refuse_unwired_dependency_route("direct executor")
@@ -6187,10 +6391,24 @@ def _child_scratch_kwargs(kwargs: dict, decision: str) -> None:
         kwargs["env"] = _sandbox_policy.child_scratch_env(kwargs["env"], decision)
 
 
+def _caps_spawn_hook(hook: "Callable[[], None]") -> "Callable[[], None]":
+    """``hook`` for ``capped_popen``'s spawn boundary: any refusal it raises surfaces as the
+    ``OSError`` that ``capped_popen`` cleans up after (it releases its seat parent)."""
+    def call() -> None:
+        try:
+            hook()
+        except OSError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - one refusal type at that boundary
+            raise OSError("the launch's spawn hook refused it") from exc
+    return call
+
+
 def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None, dependency=None,
                     probe_pass_fds=(), seat_caps: str | None = None,
                     child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE,
                     trace_output: str | None = None,
+                    spawn_hook: "Callable[[], None] | None" = None,
                     **kwargs) -> "subprocess.Popen[bytes]":
     """THE one place a review provider process is started. Popen form.
 
@@ -6222,6 +6440,12 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
     handed to the child passes :func:`sandbox_policy.child_scratch_env` with
     ``child_scratch``, so a new seam cannot skip the decision. The only other value is
     ``CHILD_SCRATCH_PRIVATE_TMP``, for a child jailed with its own private ``/tmp``.
+
+    ``spawn_hook`` (grok tool-surface contract v1, erratum 4) is called once, at the spawn
+    boundary itself: after every check and every argument of the launch is settled -- the
+    seat-identity probe, the bwrap witness's arguments, the capped launch's preflight -- and
+    immediately before ``subprocess.Popen``. A refusal anywhere before it creates no process
+    and never calls it. Only the grok rehearsal passes one.
     """
     # A jailed seat's jail IS its owner (agent-harness#1132); every other provider start
     # comes through `launch_owned`. Any word of the argv naming a provider counts, so a
@@ -6266,7 +6490,9 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
             if trace_output is not None else [*prefix, *argv]
         )
         jailed_process = capped_popen(
-            capped_command, seat_key=seat_caps or "", **kwargs,
+            capped_command, seat_key=seat_caps or "",
+            **({"before_spawn": _caps_spawn_hook(spawn_hook)} if spawn_hook is not None else {}),
+            **kwargs,
         )
         _require_launch_proof(jailed_process)
         # A jailed provider is a local provider spawn like any other (agent-harness#896's
@@ -6296,8 +6522,10 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
         try:
             command = [*prefix, *argv] if witness is None else [
                 *_with_bwrap_lifecycle_fds(prefix, witness.info_fd, witness.block_fd), *argv]
-            process = subprocess.Popen(
-                command, **(kwargs if witness is None else witness.popen_kwargs(kwargs)))
+            spawn_kwargs = kwargs if witness is None else witness.popen_kwargs(kwargs)
+            if spawn_hook is not None:
+                spawn_hook()  # the spawn boundary: every argument above is settled
+            process = subprocess.Popen(command, **spawn_kwargs)
         except BaseException:
             if witness is not None:
                 witness.abandon()
@@ -6308,7 +6536,10 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
             _tree_proof.attach(process, _tree_proof.TreeProof.pending())
     else:
         from .seat_resource_caps import capped_popen
-        process = capped_popen([*prefix, *argv], seat_key=seat_caps, **kwargs)
+        process = capped_popen(
+            [*prefix, *argv], seat_key=seat_caps,
+            **({"before_spawn": _caps_spawn_hook(spawn_hook)} if spawn_hook is not None else {}),
+            **kwargs)
         _require_launch_proof(process)
     # Counted once the process exists: a launch that fails to exec is not a spawn.
     _count_provider_spawn()
@@ -9776,6 +10007,14 @@ def _run_leg_with_liveness(
         if review_monitor is not None and review_monitor.cancel.is_set():
             raise _ReviewOperationCancelled("review_operation_cancelled")
         if seat_jail is not None:
+            # The jailed route is not the composition a frozen tool surface was measured in
+            # (grok tool-surface contract §4.4). A grok argv launches here only on a positive
+            # decision of the gate itself, on a legacy or listing receipt: a frozen-basis
+            # receipt, or one withdrawn or unreadable since the leg's early gate, refuses.
+            if Path(cmd[0]).name == "grok":
+                admitted, basis = _grok_gate_with_basis(cmd, env)
+                if not admitted or basis != "list_tools":
+                    raise _seat_jail.SeatSandboxRefused("grok_tool_surface_unverified")
             # The jail is the owner (agent-harness#1132): `launch_provider` replaces the cwd,
             # environment and descriptors with the jail's declared ones.
             proc = launch_provider(
@@ -9786,12 +10025,21 @@ def _run_leg_with_liveness(
                 trace_output=trace_output, seat_caps=seat_caps,
             )
             return proc
+        # A grok leg on a frozen-basis receipt launches only under the grok-review egress its
+        # board leg holds, composed with that proxy's projection (grok tool-surface contract
+        # §4.6). Every other launch composes exactly as before.
+        grok_egress = _grok_leg_launch_egress(cmd)
         # The request's own refusals (an unavailable profile) come before the host's.
         owned_command, profile = profile_stack.enter_context(_seat_command_profile(
             cmd, env=env, cwd=cwd, gemini_profile=gemini_profile,
+            **({"grok_egress_proxy": grok_egress[0]} if grok_egress is not None else {}),
         ))
         if broker_evidence is not None:
             broker_evidence.update(profile.evidence)
+        if grok_egress is not None or getattr(profile, "grok_launch_context", None) is not None:
+            # The final step, after composition and before any fallback namespace: a frozen
+            # basis outside the grok-review egress refuses here, launching nothing.
+            profile = _grok_leg_final_check(profile, grok_egress, env=env, cwd=cwd)
         if not _EGRESS_LAUNCH_PREFIX.get():
             # An owned review launch runs only in the filtered namespace. A leg outside any
             # board leg (the agy --help measurement) holds none: it holds one for this
@@ -16103,13 +16351,62 @@ def _grok_probe_identity(command, env):
     return str(resolved), digest.hexdigest(), state
 
 
-def require_grok_admission(argv, env=None) -> bool:
-    """The shared Grok launch gate. True when ``argv`` is a Grok launch it admitted."""
+def require_grok_admission(argv, env=None, *, context=None) -> bool:
+    """The shared Grok launch gate. True when ``argv`` is a Grok launch it admitted.
+
+    A frozen-basis receipt admits a launch only with ``context``: the mark
+    ``grok_tool_surface.verify_launch_context`` gave the composed profile (grok tool-surface
+    contract §4.4). A caller that passes none is ineligible for that basis. Listing receipts
+    are unaffected.
+
+    While a measurement admission is held (contract §5.1) it alone decides: it admits the
+    receipt-less argv of the one measurement launch it was issued for, and only inside the
+    proxy-only namespace of that launch's own budgeted proxy. Without one the gate behaves
+    exactly as before."""
     if not argv or Path(argv[0]).name != "grok" or _grok_admin_command(argv):
         return False
-    if not grok_tool_gate(argv, env):
+    admission = _grok_surface.measurement_admission()
+    if admission is not None:
+        if not _grok_surface.measurement_admits(admission, argv, env):
+            raise _seat_jail.SeatSandboxRefused("grok_tool_surface_unverified")
+        return True
+    admitted, basis = _grok_gate_with_basis(argv, env)
+    if admitted and basis == "frozen_measurement":
+        admitted = _grok_surface.is_issued(context) and _grok_tool_gate(argv, env, context=context)
+    if not admitted:
         raise _seat_jail.SeatSandboxRefused("grok_tool_surface_unverified")
     return True
+
+
+def _require_grok_launch_context(profile, role, *, argv, cwd, env) -> None:
+    """The final step of a frozen-basis grok launch (grok tool-surface contract §4.4).
+
+    A profile its composition stamped launches only with the mark verify_launch_context
+    gave it, and only while that mark still matches this launch: the launch-owner review
+    role, the argv it judged (everything after the executable, which composition rewrites,
+    so the ``--cwd`` and ``--add-dir`` its discovery check saw), the same profile, the same
+    cwd, the egress prefix held now, a live proxy that the namespace holder behind that
+    prefix bridges to (BA-3: a different live holder or proxy refuses), and the record
+    re-resolved against the running context digest. A digest or a non-empty egress prefix
+    alone never satisfies it. Profiles with no frozen basis pass untouched."""
+    context = getattr(profile, "grok_launch_context", None)
+    if context is None:
+        return
+    try:
+        admitted = (_grok_surface.is_issued(context)
+                    and role is SeatLaunchRole.PROVIDER_REVIEW
+                    and list(argv[1:]) == list(context.command[1:])
+                    and context.profile_fingerprint == _grok_surface.profile_fingerprint(profile)
+                    and context.cwd == os.path.abspath(cwd)
+                    and bool(context.egress_prefix)
+                    and tuple(_EGRESS_LAUNCH_PREFIX.get()) == context.egress_prefix
+                    and context.proxy.process.poll() is None
+                    and _grok_surface.bridged_to(context.egress_prefix, context.proxy)
+                    and _grok_tool_gate(list(context.command), env, context=context))
+    except (OSError, ValueError, TypeError, AttributeError, RuntimeError):
+        admitted = False
+    if not admitted:
+        raise _seat_jail.SeatSandboxRefused("grok_tool_surface_unverified")
 
 
 def _grok_admin_command(command):
@@ -16147,10 +16444,14 @@ def _grok_argv_digest(command):
 
 
 def record_tool_probe(command, definitions, *, allowed_tools, version="unavailable", env=None,
-                      probed=None):
+                      probed=None, frozen=None):
     """Write the tool-probe receipt. ``probed`` is the ``_grok_probe_identity`` the probe
     measured: the receipt certifies that digest, never one chosen afresh here, and a fresh
-    measurement that differs from it at publication refuses."""
+    measurement that differs from it at publication refuses.
+
+    A passing receipt names its ``basis`` (grok tool-surface contract §4.2): ``list_tools``,
+    or ``frozen_measurement`` when ``frozen`` (the ``grok_tool_surface.FrozenSurface`` the
+    definitions came from) is given, with that record's four binding fields."""
     from .president_adapter import write_private_record
     # Without a bound dependency lease the binary is found on ``env``'s PATH; the operator
     # CLI has neither a lease nor a launch env, so it defaults to this process's.
@@ -16178,6 +16479,9 @@ def record_tool_probe(command, definitions, *, allowed_tools, version="unavailab
     if passed:
         record["tools"] = sorted(set(offered))
         record["version_digest"] = sha256(version.encode()).hexdigest()
+        record["basis"] = "list_tools" if frozen is None else "frozen_measurement"
+        if frozen is not None:
+            record.update(frozen.receipt_fields())
     name = "grok-probe-" + binary + "-" + record["argv_digest"] + ".json"
     try:
         from .president_adapter import private_record_root
@@ -16200,45 +16504,131 @@ def record_tool_probe(command, definitions, *, allowed_tools, version="unavailab
     return record
 
 
-def grok_tool_gate(command, env=None) -> bool:
+#: What the last real ``grok_tool_gate`` call in this context admitted: ``(argv, basis)``.
+#: Read by the two callers that must know the basis, so the receipt is read once per check.
+_GROK_ADMITTED_BASIS: ContextVar["tuple[tuple[str, ...], str] | None"] = ContextVar(
+    "grok_admitted_basis", default=None)
+
+
+def _is_sha256(value) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
+def _read_grok_receipt(command, env=None):
+    """``(binary digest, argv digest, receipt)`` for ``command``'s binary and form, read with
+    the descriptor checks the gate has always applied; ``None`` when they refuse it."""
     from .president_adapter import private_record_root
+    _, binary = _grok_binary_identity(command, env)
+    argv_digest = _grok_argv_digest(command)
+    root = private_record_root()
+    directory = _seat_jail.open_dir_nofollow(root)
     try:
-        _, binary = _grok_binary_identity(command, env)
-        argv_digest = _grok_argv_digest(command)
-        root = private_record_root()
-        directory = _seat_jail.open_dir_nofollow(root)
+        info = os.fstat(directory)
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            return None
+        name = "grok-probe-" + binary + "-" + argv_digest + ".json"
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
         try:
-            info = os.fstat(directory)
-            if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
-                return False
-            name = "grok-probe-" + binary + "-" + argv_digest + ".json"
-            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
-            try:
-                info = os.fstat(fd)
-                if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600 or not stat.S_ISREG(info.st_mode):
-                    return False
-                record = json.loads(os.read(fd, 16385))
-            finally:
-                os.close(fd)
+            info = os.fstat(fd)
+            if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600 or not stat.S_ISREG(info.st_mode):
+                return None
+            record = json.loads(os.read(fd, 16385))
         finally:
-            os.close(directory)
-        return (record.get("schema") == "tool_probe.v1" and record.get("passed") is True
+            os.close(fd)
+    finally:
+        os.close(directory)
+    return binary, argv_digest, record
+
+
+def _grok_frozen_receipt_current(command, binary, argv_digest, record, context) -> bool:
+    """A ``frozen_measurement`` receipt (grok tool-surface contract §4.2-§4.4)."""
+    if not (_is_sha256(record.get("surface_digest")) and _is_sha256(record.get("context_digest"))
+            and record.get("surface_source") in _grok_surface.SURFACE_SOURCES
+            and record.get("context") == _grok_surface.GROK_SEAT_CONTEXT):
+        return False
+    # The receipt caches a record, so the record is re-resolved on every consumption: a
+    # revoked digest, a withdrawn or replaced host-local record, a catalog route that now
+    # shadows it, and a changed context each invalidate it (§4.3).
+    resolved = _grok_surface.frozen_surface(binary, argv_digest)
+    current = _grok_surface.context_digest()
+    if (resolved is None or resolved.surface_digest != record["surface_digest"]
+            or resolved.source != record["surface_source"]
+            or resolved.surface["context_digest"] != record["context_digest"]
+            or record["context_digest"] != current
+            or resolved.surface["version_sha256"] != record["version_digest"]
+            or resolved.tools != record["tools"]):
+        return False
+    if context is None:
+        return True  # the provisional step: composition, never a launch (§4.4)
+    return (_grok_surface.is_issued(context) and context.context_digest == current
+            and _grok_argv_digest(list(context.command)) == argv_digest
+            and list(command[1:]) == list(context.command[1:]))
+
+
+def _grok_tool_gate(command, env=None, *, context=None) -> bool:
+    try:
+        read = _read_grok_receipt(command, env)
+        if read is None:
+            return False
+        binary, argv_digest, record = read
+        if not (record.get("schema") == "tool_probe.v1" and record.get("passed") is True
                 and record.get("binary_digest") == binary and record.get("argv_digest") == argv_digest
                 and _grok_tools_admitted(command, record.get("tools"))
-                and isinstance(record.get("version_digest"), str)
-                and re.fullmatch(r"[0-9a-f]{64}", record["version_digest"]) is not None)
+                and _is_sha256(record.get("version_digest"))):
+            return False
+        frozen_fields = [key for key in _grok_surface.RECEIPT_FIELDS if key in record]
+        if "basis" not in record or record["basis"] == "list_tools":
+            # Written before the basis field, or a listing receipt: today's checks only.
+            admitted = not frozen_fields
+            basis = "list_tools"
+        elif record["basis"] == "frozen_measurement":
+            admitted = _grok_frozen_receipt_current(command, binary, argv_digest, record, context)
+            basis = "frozen_measurement"
+        else:
+            return False
     except (OSError, ValueError, TypeError, AttributeError, IndexError, RuntimeError):
         return False
+    if admitted:
+        _GROK_ADMITTED_BASIS.set((tuple(command), basis))
+    return admitted
+
+
+def grok_tool_gate(command, env=None, *, context=None) -> bool:
+    """The tool-probe receipt check every grok launch path runs first.
+
+    With no ``context`` a frozen-basis receipt passes only the provisional step of the grok
+    tool-surface contract (§4.4): §4.2 and §4.3 hold, which admits composition and never a
+    launch. With ``context``, the mark a verified launch context issued, it is the final
+    step. Listing receipts are checked as they always were."""
+    return _grok_tool_gate(command, env, context=context)
+
+
+def _grok_gate_with_basis(command, env=None) -> "tuple[bool, str | None]":
+    """``grok_tool_gate(command, env)`` and the basis of the receipt it admitted."""
+    token = _GROK_ADMITTED_BASIS.set(None)
+    try:
+        admitted = grok_tool_gate(command, env)
+        seen = _GROK_ADMITTED_BASIS.get()
+    finally:
+        _GROK_ADMITTED_BASIS.reset(token)
+    basis = seen[1] if admitted and seen is not None and seen[0] == tuple(command) else None
+    return admitted, basis
 
 
 def probe_grok_tools(command, *, allowed_tools, runner=None):
-    """Definition-only introspection, with no staged tree or model turn."""
+    """Definition-only introspection, with no staged tree or model turn.
+
+    The basis is chosen by the help gate alone (grok tool-surface contract §4.1). A build
+    that advertises ``--list-tools`` is listed and never falls back. Any other build that
+    answers ``--help`` and ``--version`` cleanly takes the frozen record measured on exactly
+    this binary, argv form and the literal bytes of ``--version`` and ``--help`` under the
+    running launch context, if there is one; otherwise the receipt fails."""
     if runner is None:
         runner = lambda argv, **kw: run_provider(argv,
             child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE, **kw)
     definitions = None
     version = "unavailable"
-    env = probed = None
+    env = probed = frozen = None
     try:
         # The binary is resolved on the same environment it is run with.
         env = _subscription_env()
@@ -16265,14 +16655,41 @@ def probe_grok_tools(command, *, allowed_tools, runner=None):
                         and not version_result.stderr and version_result.stdout.strip()):
                     definitions = json.loads(result.stdout)
                     version = version_result.stdout
+            elif help_result.returncode == 0 and not help_result.stderr:
+                # A record binds the literal bytes the build prints, which text mode would
+                # normalise (universal newlines): both outputs are read again as bytes.
+                literal = dict(options, text=False)
+                help_bytes = runner([binary, "--help"], **literal)
+                version_bytes = runner([binary, "--version"], **literal)
+                if (help_bytes.returncode == 0 and help_bytes.stderr == b""
+                        and type(help_bytes.stdout) is bytes
+                        and not (b"--list-tools" in help_bytes.stdout and
+                                 b"Print tool definitions without running a model" in help_bytes.stdout)
+                        and version_bytes.returncode == 0 and version_bytes.stderr == b""
+                        and type(version_bytes.stdout) is bytes and version_bytes.stdout.strip()):
+                    frozen = _grok_surface.frozen_surface(
+                        probed[1], _grok_argv_digest(command),
+                        version_sha256=sha256(version_bytes.stdout).hexdigest(),
+                        help_sha256=sha256(help_bytes.stdout).hexdigest())
+                    if (frozen is not None
+                            and frozen.surface["context_digest"] == _grok_surface.context_digest()):
+                        definitions = {"tools": frozen.tools, "diagnostics": []}
+                        # The receipt's version digest is of these same bytes.
+                        version = version_bytes.stdout.decode("utf-8")
         if _grok_probe_identity(command, env) != probed:
             definitions = None
-    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+    except (OSError, ValueError, TypeError, AttributeError, RuntimeError, subprocess.SubprocessError):
         definitions = None
     if probed is None:
         return {"passed": False, "public_code": "grok_tool_surface_unverified"}
-    return record_tool_probe(command, definitions, allowed_tools=allowed_tools, version=version,
-                             env=env, probed=probed)
+    if definitions is None:
+        frozen = None
+    receipt = record_tool_probe(command, definitions, allowed_tools=allowed_tools, version=version,
+                                env=env, probed=probed, frozen=frozen)
+    if frozen is not None and frozen.shadowed and receipt.get("passed") is True:
+        # Reported, never persisted: the catalog route won over a different host-local one.
+        receipt = {**receipt, "shadowed": frozen.shadowed}
+    return receipt
 
 
 @_retained_leg_exec
@@ -17672,6 +18089,17 @@ def _default_spawn(
         # THE FAIL-CLOSED BACKSTOP, at the launch boundary and before egress, so an egress
         # failure cannot pre-empt its code. Every seat leg reaches it, staged tree or not.
         _refuse_unless_executed_remotely(mode, executed_remotely=False)
+        # Grok tool-surface contract §4.6: a grok leg whose form rests on a frozen-basis
+        # receipt runs in the grok-review proxy-only namespace, held for the whole leg in
+        # place of any slirp namespace, with no fallback. Every other leg, and a grok leg on
+        # a listing receipt, keeps the egress below byte for byte.
+        grok_frozen = (
+            leg == "grok" and not jailed and agy_capture is None and capture_stage is None
+            and _grok_leg_on_frozen_basis(
+                brokered=(mode == "review" and review_authorization is not None
+                          and not _has_injected_review_execution_seam(leg=leg)),
+                model=model, effort=effort, env=env, review_dir=review_dir, out_dir=out_dir)
+        )
         if sandbox_root_choice is not None:
             # ORDER IS THE POINT. A refusal on the merits of the REQUEST -- a staged tree
             # the authorization never approved, artifact bytes that no longer bind -- must
@@ -17714,7 +18142,9 @@ def _default_spawn(
                     logging.getLogger(__name__).warning(
                         "seat %s: egress layer unavailable (%s)", leg, exc)
                     raise _seat_jail.SeatSandboxRefused(exc.code) from exc
-            egress_ctx = _sandbox_egress.isolated_network(
+            egress_ctx = _grok_board_leg_egress(
+                timeout_s=None if review_monitor is not None else float(_LEG_TIMEOUT_MAX_S) + 300.0,
+            ) if grok_frozen else _sandbox_egress.isolated_network(
                 # Outlive the leg: the namespace must not expire under a long review.
                 timeout_s=None if review_monitor is not None else float(_LEG_TIMEOUT_MAX_S) + 300.0,
                 **({"seat_uid_map": True, "required": True} if jailed else {}),
@@ -17745,7 +18175,7 @@ def _default_spawn(
             sandbox_enforcement = _sandbox_egress.enforcement_report(
                 applied=bool(egress_prefix),
             )
-            if gemini_egress is not None and egress_prefix:
+            if (gemini_egress is not None or grok_frozen) and egress_prefix:
                 # What the proxy-only namespace enforced, not the shared policy's allowlist.
                 # The proxy's own record goes in the leg's evidence (`egress`).
                 sandbox_enforcement = {
@@ -17772,6 +18202,14 @@ def _default_spawn(
                 seat_notices.append("seat_sandbox_root_unapplied")
             if not jailed and leg in ("codex", "grok") and sandbox_usable_by(leg, brokered=True):
                 seat_notices.append("seat_filesystem_unconfined")
+        elif grok_frozen:
+            # The sealed and unbrokered review forms stage no tree, so nothing above holds a
+            # namespace for them: the grok-review one is held here for the leg (§4.6).
+            egress_prefix = egress_stack.enter_context(_grok_board_leg_egress(
+                timeout_s=None if review_monitor is not None else float(_LEG_TIMEOUT_MAX_S) + 300.0,
+            ))
+            egress_token = _EGRESS_LAUNCH_PREFIX.set(tuple(egress_prefix))
+            egress_stack.callback(_EGRESS_LAUNCH_PREFIX.reset, egress_token)
         capture_staged: dict[str, dict[str, object]] | None = None
         if agy_capture is not None:
             if leg == "gemini" and not seat_key:

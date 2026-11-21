@@ -6,6 +6,135 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Added
+
+- The grok tool probe has a second basis for builds with no `--list-tools`, which is every
+  installed build through 1.0.89 (lane L1 of the grok tool-surface plan,
+  `plans/artifacts/grok-tool-surface-contract-v1.md`). Basis selection is by the help gate
+  alone: a build that advertises the listing is still listed and never falls back. Any other
+  build takes a frozen record measured on its exact binary digest, route argv digest and
+  the literal bytes of its `--version` and `--help`, from the new shipped catalog (`data/grok_tool_surfaces.json`,
+  empty) or a host-local record, with the catalog winning and a revoked digest having no
+  record. Passing `tool_probe.v1` receipts gain an additive `basis` (`list_tools` or
+  `frozen_measurement`) and, for the frozen basis, `surface_digest`, `surface_source`,
+  `context` and `context_digest`; the gate validates them in combination and re-resolves the
+  record on every use. A frozen-basis receipt admits composition only: `launch_owned`
+  refuses it unless `grok_tool_surface.verify_launch_context` has checked the composed
+  profile against `grok_seat_context.v1` (fresh seat home, allow-listed environment, no
+  managed grok config and no Claude Code managed settings in the seat's view, no
+  tool-discovery path visible in the view the launch composes, where any overlap whose
+  absence cannot be proved refuses, the `grok-review` egress and the launch-owner review
+  composition) and marked it, and the launch's argv and cwd are the
+  ones it checked. The jailed route launches grok only on a legacy or listing receipt. No caller
+  does that yet, the catalog is empty and the `grok-review` allow-list does not ship, so
+  every grok route stays `grok_tool_surface_unverified`. `seat-window probe-tools` rows
+  gain `basis` and, for the frozen basis, `source` and `shadowed`. Legacy and listing
+  receipts keep their meaning. Pins: `seat_window.runtime_digest()` moves, so window
+  records on the previous key no longer match and affected windows need requalifying
+  (landing the grok tool-surface lanes close together needs one requalification); new
+  `host-io` rows in `tests/data/seat_launch_references.json`; one package-data entry. The
+  agy seat QCI, the agy validator closure and the seat jail profile digests do not move.
+- Vendor-only egress for a launch-owner grok launch (grok tool-surface plan, lane L2a;
+  contract `plans/artifacts/grok-tool-surface-contract-v1.md` sections 5.2 and 5.3). A new
+  `grok-review` seat egress allowlist carries only the statically known inference request
+  (`POST https://cli-chat-proxy.grok.com/v1/chat/completions`) and refuses the sign-in hosts
+  `accounts.x.ai` and `auth.x.ai`. The measurement and the board review leg will share it;
+  the `grok` allowlist id stays reserved for the jailed seat (SEATS GROK SL-1).
+  `start_proxy` takes `request_budget=N`, which can only narrow: the proxy charges each
+  allowed `POST` before forwarding it, refuses every request once the budget is spent,
+  attests the budget in its ready line, and writes an end-of-stream marker as its last
+  record only on an orderly shutdown. `completion()` and `charged_requests()` settle below
+  the full budget only on positive proof (exit 0 without a kill, the marker, matching
+  counts, no protocol error), so a kill, the shutdown-timeout kill path, a lost marker or a
+  truncated record stays charged in full. A grok `seat_profile` takes the `grok-review`
+  proxy as `egress_proxy`, which projects `HTTPS_PROXY`, the CA as a read-only
+  `SSL_CERT_FILE` in the private home and the proxy token as a redaction, and nothing else.
+  The shared helper holds the existing proxy-only namespace; `sandbox_egress` is unchanged.
+  A proxy started without a budget keeps its configuration, stream and decisions, and the
+  `codex` and `gemini` allowlist digests do not move. Nothing launches grok through this yet;
+  the measurement and the board leg are later lanes.
+  Pins: `seat_window.runtime_digest()` moves, because `proxy.mjs`, `seat_egress_proxy.py`,
+  `panel_invoker.py` and the new allowlist file are in its hash, so window
+  `qualification_keys` on the previous key no longer match, existing W1 records included.
+  Requalify affected windows before relying on them; landing lanes L1, L2a, L2b and L2c
+  together and requalifying once is the cheap order. The agy seat QCI, the validator
+  closure, `CONTAINMENT_CONTRACT_SHA256`, `SRT_TREE_SHA256` and the jail profile digests are
+  unchanged.
+- `phase-loop seat-window measure-tools --vendor grok`, the owner-gated measurement of a grok
+  build's tool surface (grok tool-surface plan, lane L2b; contract
+  `plans/artifacts/grok-tool-surface-contract-v1.md` section 5 and BA-1, BA-2 and the
+  measurement path of BA-3). One stage per invocation: `--new-grant` (with `--planned` and
+  `--retries`), `--attended --route`, `--require-measured`, `--aggregate`,
+  `--verify-probe initial|final`, `--status`, `--reprocess` and `--purge`, each re-measuring
+  `--binary` against `--expect-binary-sha256` and the grant. Each route is one launch of its
+  argv form, with only the masked slots filled, through `seat_profile` plus
+  `launch_owned(PROVIDER_REVIEW)` inside the `grok-review` proxy-only namespace, under a
+  measurement admission that `require_grok_admission` honours only for that argv, binary,
+  budgeted proxy and namespace. The grant ledger in the private record root reserves each
+  launch's whole budget before its proxy starts, settles below it only on the proxy's
+  completion proof, keeps orphaned reservations charged, is bound to the grant, host and
+  binary, and is not reset by a fresh output directory; the cap is 7 and the per-launch
+  budget 1. Result records are immutable; `--aggregate` is the only writer of the host-local
+  record and, under the per-binary publication lock, publishes a route only when a
+  cross-grant attempts register names this grant's own latest reservation for it, so an
+  older grant cannot republish a route a newer one withdrew (shipped catalog routes keep
+  their precedence). Each attempt is registered, and its route's publication cleared,
+  before the route is withdrawn and before its reservation exists; a host-local route is
+  consumed only while the register names it published from the latest attempt, so a crash
+  at any step leaves nothing stale consumable. Result records are committed with the grant
+  (temp file, then link), so every output directory reads one status and an interrupted
+  commit, reprocessing included, retries cleanly. The measurement's admission and final
+  check bind the exact live namespace holder to this launch's own proxy socket.
+  `--verify-probe initial` also runs the isolation self-check before any credential is
+  projected; `--verify-probe final` needs the grant and its own aggregate. A new hosted CI
+  job, `grok-egress-ns`, required by `suite gate`, runs the BA-3 tests on the real egress
+  layer with `PHASE_LOOP_REQUIRE_GROK_EGRESS_NS=1` and refuses any skip.
+  Contract errata 3 and 4: a measurement tolerates exactly three refused startup requests
+  (`GET cli-chat-proxy.grok.com /v1/settings`, `CONNECT x.ai`, `CONNECT
+  storage.googleapis.com`), recorded as `tolerated_refusals`; every other denial still
+  disqualifies. `start_proxy` gains a `named` keyword so the stream reports those exact
+  observations instead of `<other>`; it decides nothing, and without it the proxy is
+  unchanged. A binding `--rehearse` stage runs the pilot's exact launch under a
+  zero-budget proxy, with no model call and no charge, and no reservation is made without
+  a passing rehearsal under the current context. Records hold names, digests, counts and statuses only; raw
+  captures and provider logs stay private with 30- and 7-day deadlines. The grok context now
+  carries lane L2a's proxy projection (the CA file, `HTTPS_PROXY`, `SSL_CERT_FILE`), and
+  `seat_profile` takes a `grok_sessions` keyword that only a measurement uses. Nothing is
+  measured until the owner grants it. Pins: `seat_window.runtime_digest()` moves again
+  (`grok_tool_surface.py`, `panel_invoker.py`, `seat_window.py`); new `qualification` and
+  `host-io` rows in `tests/data/seat_launch_references.json`. The agy seat QCI, the
+  validator closure, `CONTAINMENT_CONTRACT_SHA256`, `SRT_TREE_SHA256`, the jail profile
+  digests and the egress allow-list digests do not move.
+- The board review leg consumes the frozen grok tool-surface basis (grok tool-surface plan,
+  lane L2c; contract `plans/artifacts/grok-tool-surface-contract-v1.md` section 4.6 and
+  BA-3). The leg's egress setup in `_default_spawn` makes the provisional check on the
+  form the leg will launch (`sealed` or `staged` for a brokered leg, `review` otherwise).
+  For a frozen-basis receipt it holds the `grok-review` proxy, with no request budget, and
+  its proxy-only namespace for the whole leg, in place of any slirp namespace.
+  `_run_leg_with_liveness` composes that launch with the proxy's projection, then runs
+  `verify_launch_context` on the composed profile. `launch_owned` admits the marked
+  profile only while the namespace holder behind its egress prefix bridges to that same
+  proxy, by the measurement's own check (`grok_tool_surface.bridged_to`, BA-3). A different
+  live holder or proxy refuses. Every failure is `grok_tool_surface_unverified`, with no fallback:
+  the egress layer or allow-list missing, the namespace not coming up or not bridged to its
+  proxy, a discovery path in the tree, managed config, a withdrawn record, or the
+  launch's own fallback or a slirp namespace. Other legs, and a grok leg on a legacy or
+  listing receipt, keep their egress and composition byte for byte. The board-path BA-3
+  tests (`tests/test_grok_board_leg_frozen_basis.py`) run in the hosted `grok-egress-ns` job,
+  which refuses any skip.
+  Pins: `seat_window.runtime_digest()` moves (`panel_invoker.py`, `claude_seat_transport.py`).
+  The Claude SDK proof region `panel_invoker.py::_run_leg_with_liveness`, which this lane
+  edits, moves (contract erratum 5), and so does the SDK proof file
+  `claude_seat_transport.py`, whose `SDK_PROOF_UNBOUND` now classifies the two grok-only
+  references the region gained. The dependency audit stays closed. No SDK receipt is needed
+  now, because the SDK transport is not admitted; a future admission must bind these inputs
+  as they then stand. No rows are added to
+  `tests/data/seat_launch_references.json`. The agy seat QCI, the validator closure,
+  `CONTAINMENT_CONTRACT_SHA256`, `SRT_TREE_SHA256`, the jail profile digests, the egress
+  allow-list digests and `context_digest` do not move. No record exists
+  yet, so every grok route stays `grok_tool_surface_unverified` until the owner-gated
+  measurement.
+
 ### Changed
 
 - Gemini 4 NEON (`gemini-4-neon`) is the shipped Gemini planning, review and board
@@ -41,6 +170,24 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `--upstream-only` takes the newest stable release from the listing and reports when it
   was published. The seat QCI, the shipped catalog and records are unchanged; nothing needs
   requalification.
+
+### Fixed
+
+- On Node 22 the seat egress proxy no longer exits when it refuses a request with a body.
+  - **The failure.** srt cancels a refused body while the client's bytes may still be in
+    flight. Node 22's stream adapter then threw an uncaught `ERR_INVALID_STATE`, and the
+    proxy exited 1 without its end-of-stream marker. Every grok rehearsal therefore ended
+    `observation_incomplete`, because a real client's inference request always has a body.
+  - **The fix.** `proxy.mjs` now reads a refused request's body to its end before it
+    refuses, up to 4 MiB and 5 s, and discards it. Decisions, observations and budget
+    charges are unchanged, and a crash still leaves no marker.
+  - **Diagnostics.** A rehearsal refused as `observation_incomplete` now records and
+    reports what was missing, in a closed, metadata-only `incomplete` block. It names the
+    first unmet completion condition, the marker, the last record read, the proxy's exit
+    status, a kill and EOF, from the new `seat_egress_proxy.completion_detail()`.
+  - **Pins.** `seat_window.runtime_digest()` moves with the grok entries above. The seat
+    jail qualification's live `proxy_sha256` binding moves too, as it does for lane L2a,
+    which edits the same two files.
 
 ## [0.7.38] - Unreleased candidate
 

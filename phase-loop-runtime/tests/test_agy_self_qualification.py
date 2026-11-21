@@ -1674,10 +1674,27 @@ _CHILD = textwrap.dedent('''
     from pathlib import Path
     sys.path.insert(0, sys.argv[1])
     from phase_loop_runtime import agy_qualification as q, agy_provenance as prov, gemini_heartbeat as gh
+    from phase_loop_runtime import agy_attestation as att
     tmp = Path(sys.argv[2]); mode = sys.argv[3]
     q.read_machine_id = lambda path="/etc/machine-id": "a" * 32
     prov.detect_platform = lambda **_: prov.HostPlatform("linux", "x64", "glibc")
     gh.QUALIFIED_IMAGES = {"f" * 64: "e" * 64}
+    class NoAttestation:
+        """The autouse ``upstream_channel`` fixture does not reach a child process: as there,
+        GitHub lists no attestation (404), and no other upstream request is expected, so
+        nothing here reaches the network."""
+        status = 404
+        def open(self, url, *, accept):
+            from urllib.parse import urlsplit
+            parts = urlsplit(url)
+            if parts.hostname == prov.API_HOST and "/attestations/" in parts.path:
+                return self
+            raise AssertionError(f"unexpected upstream-channel request {url}")
+        def read(self, n=-1):
+            return b""
+        def close(self):
+            pass
+    att._Opener = lambda **_: NoAttestation()
     image = (tmp / "bin" / "agy").read_bytes()
     class T:
         def __init__(self):
