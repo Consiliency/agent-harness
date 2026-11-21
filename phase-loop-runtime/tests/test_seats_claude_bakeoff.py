@@ -275,7 +275,7 @@ def test_a_shared_meter_ref_fails(repo, tmp_path):
 
 def test_an_sdk_record_whose_head_lacks_4b_fails(repo, tmp_path):
     sdk = native(repo, block=3, arm="sdk", activation_section_sha256="f" * 64)
-    directory = write(tmp_path / "w0", native(repo), control(repo), sdk)
+    directory = write(tmp_path / "w0", *_session1(repo), sdk)
     assert bk.validate_directory(directory, repo=repo, tui_digest=TUI) == [
         "w0-b3-r1: its W0 head lacks the section its activation names"]
 
@@ -285,7 +285,7 @@ def test_an_sdk_record_whose_head_has_4b_passes_that_check(repo, tmp_path):
     _git(repo, "-c", "commit.gpgsign=false", "commit", "-qam", "4b")
     _publish(repo)
     record = native(repo, block=3, arm="sdk")
-    directory = write(tmp_path / "w0", native(repo), control(repo), record)
+    directory = write(tmp_path / "w0", *_session1(repo), record)
     assert validate(directory, repo, "--tui-digest", TUI) == 0
 
 
@@ -320,8 +320,25 @@ def _od3b(letter: str, digest: str, *, value: str = "`print`", sessions: str | N
     return "\n".join(lines)
 
 
+def _session1(repo: Path) -> list[dict]:
+    return ([native(repo, n=n) for n in (1, 2, 3)]
+            + [control(repo, block=2, n=n) for n in (1, 2, 3)])
+
+
+def _session2(repo: Path) -> list[dict]:
+    """Complete session-2 records, at a head carrying the OD-3a section the sdk records need."""
+    if SDK_4B not in (repo / ct.DECISION_RECORD).read_text():
+        (repo / ct.DECISION_RECORD).write_text(RECORD_4A + SDK_4B)
+        _git(repo, "-c", "commit.gpgsign=false", "commit", "-qam", "4b")
+        _publish(repo)
+    sdk = {"dependency_projection_digest": "e" * 64}
+    return ([native(repo, block=b, n=n, arm="sdk", **sdk) for b in (3, 4) for n in (1, 2, 3)]
+            + [control(repo, block=5, n=n) for n in (1, 2, 3)]
+            + [native(repo, block=6, n=n) for n in (1, 2, 3)])
+
+
 def test_an_od3b_section_must_cite_the_evidence_digest(repo, tmp_path):
-    directory = write(tmp_path / "w0", native(repo))
+    directory = write(tmp_path / "w0", *_session1(repo))
     digest = bk.evidence_digest(directory)
     wrong = RECORD_4A + _od3b("4c", "0" * 64)
     right = wrong.replace("0" * 64, digest)
@@ -1180,7 +1197,8 @@ def test_session_one_needs_neither_sdk_admission_nor_its_section(repo, tmp_path,
 
 
 @pytest.mark.parametrize("case", ["no-session", "session-3", "no-session-1", "partial-session-1",
-                                  "session-2-again", "session-1-again", "sdk-not-admitted"])
+                                  "partial-control", "session-2-again", "session-1-again",
+                                  "sdk-not-admitted"])
 def test_a_session_refuses_before_any_reading(repo, tmp_path, monkeypatch, case):
     if case not in {"no-session", "session-3", "no-session-1"}:
         first, _calls = _window(repo, tmp_path, monkeypatch=monkeypatch,
@@ -1190,6 +1208,9 @@ def test_a_session_refuses_before_any_reading(repo, tmp_path, monkeypatch, case)
     if case == "partial-session-1":
         for path in (tmp_path / "w0").glob("w0-b2-*.json"):
             path.unlink()
+    if case == "partial-control":  # two of block 2's three control records lost
+        for name in ("w0-b2-r2.json", "w0-b2-r3.json"):
+            (tmp_path / "w0" / name).unlink()
     if case == "session-2-again":
         second, _calls = _window(repo, tmp_path, monkeypatch=monkeypatch, session=2,
                                  native_outcomes=[_ok(dependency_projection_digest="e" * 64)] * 6
@@ -1217,38 +1238,132 @@ def test_the_run_cli_requires_a_session(tmp_path):
 
 def test_session_two_records_without_session_one_fail_v7(repo, tmp_path):
     directory = write(tmp_path / "w0", control(repo, block=5))
-    assert "session 2 records without session 1's" in bk.validate_directory(
-        directory, repo=repo, tui_digest=TUI)
-    write(directory, control(repo, block=2))
+    without = "session 2 records without session 1's complete records"
+    assert without in bk.validate_directory(directory, repo=repo, tui_digest=TUI)
+    write(directory, control(repo, block=2))  # one control record is not session 1
+    assert without in bk.validate_directory(directory, repo=repo, tui_digest=TUI)
+    write(directory, *_session1(repo))
     assert bk.validate_directory(directory, repo=repo, tui_digest=TUI) == []
 
 
+def test_validate_names_an_incomplete_session(repo, tmp_path, capsys):
+    directory = write(tmp_path / "w0", *_session1(repo)[:-1])
+    capsys.readouterr()
+    assert validate(directory, repo, "--tui-digest", TUI) == 0  # shape only; coverage is named
+    out = capsys.readouterr().out
+    assert "session 1 INCOMPLETE (block 2: 2 of 3 runs)" in out
+    assert "interim set" not in out
+
+
+@pytest.mark.parametrize(("change", "complete"), [
+    ("none", True), ("drop-control-r3", False), ("drop-print-r1", False),
+    ("security-stop-r2", True), ("security-stop-r1-not-last", False),
+    ("wrong-arm", False), ("run-id-gap", False),
+])
+def test_session_coverage_checks_planned_arms_blocks_and_run_ids(repo, change, complete):
+    records = {r["run_id"]: r for r in _session1(repo)}
+    if change == "drop-control-r3":
+        del records["w0-b2-r3"]
+    elif change == "drop-print-r1":
+        del records["w0-b1-r1"]
+    elif change == "security-stop-r2":
+        del records["w0-b1-r3"]
+        records["w0-b1-r2"] = {**records["w0-b1-r2"], "security_outcome": "withheld_private"}
+    elif change == "security-stop-r1-not-last":
+        records["w0-b1-r1"] = {**records["w0-b1-r1"], "security_outcome": "withheld_private"}
+    elif change == "run-id-gap":  # three runs, numbered r1, r2, r4
+        records["w0-b1-r3"] = {**records["w0-b1-r3"], "run_id": "w0-b1-r4"}
+    elif change == "wrong-arm":
+        records["w0-b2-r1"] = {**records["w0-b1-r1"], "run_id": "w0-b2-r1", "block": 2}
+    assert (bk.complete_sessions(list(records.values())) == (1,)) is complete
+
+
+def test_a_stopped_arm_leaves_its_later_block_empty_and_the_session_complete(repo):
+    first = _session1(repo)
+    first[2] = {**first[2], "security_outcome": "withheld_private"}  # print stopped at w0-b1-r3
+    later = [r for r in _session2(repo) if r["block"] != 6]
+    assert bk.complete_sessions(first + later) == (1, 2)
+    assert bk.complete_sessions(first + _session2(repo)) == (1,)  # print ran after its stop
+
+
 def test_only_the_latest_od3b_section_answers_for_the_directory(repo, tmp_path):
-    directory = write(tmp_path / "w0", native(repo), control(repo))
+    directory = write(tmp_path / "w0", *_session1(repo))
     interim = bk.evidence_digest(directory)
-    write(directory, control(repo, block=5))
+    write(directory, *_session2(repo))
     full = bk.evidence_digest(directory)
+    assert bk.evidence_digest(directory, sessions=(1,)) == interim
 
     def problems(text: str) -> list[str]:
         return bk.validate_directory(directory, repo=repo, record_text=text.encode(),
                                      tui_digest=TUI)
 
-    history = RECORD_4A + _od3b("4c", interim) + _od3b("4d", full, sessions="1 and 2")
-    assert problems(history) == []  # the interim section is history, not re-checked
+    history = (RECORD_4A + _od3b("4c", "0" * 64, value="`sdk`", sessions=None)
+               + _od3b("4d", full, sessions="1 and 2"))
+    assert problems(history) == []  # earlier sections are history, not re-checked
     assert problems(RECORD_4A + _od3b("4c", full, sessions="1 and 2")
-                    + _od3b("4d", interim)) != []
+                    + _od3b("4d", "0" * 64)) != []
+
+
+def test_session_two_records_land_beside_a_landed_interim_od3b(repo, tmp_path):
+    """G2 for session 2 lands after GL-5's interim section, and the later section after it."""
+    directory = write(tmp_path / "w0", *_session1(repo))
+    interim = RECORD_4A + _od3b("4c", bk.evidence_digest(directory))
+
+    def problems(text: str) -> list[str]:
+        return bk.validate_directory(directory, repo=repo, record_text=text.encode(),
+                                     tui_digest=TUI)
+
+    assert problems(interim) == []
+    write(directory, *_session2(repo))
+    assert problems(interim) == []  # the interim section still verifies its session-1 subset
+    assert bk.main(["digest", str(directory), "--through-session", "1"]) == 0
+    later = interim + _od3b("4d", bk.evidence_digest(directory), value="`sdk`",
+                            sessions="1 and 2")
+    assert problems(later) == []
+    stale = interim + _od3b("4d", bk.evidence_digest(directory, sessions=(1,)),
+                            sessions="1 and 2")
+    assert problems(stale) != []
+    (directory / "w0-b1-r1.json").unlink()  # the interim section's subset changed
+    assert problems(interim) != []
 
 
 @pytest.mark.parametrize(("value", "sessions", "ok"), [
-    ("`print`", "1", True), ("none admitted", "1", True), ("`tui`", "1", True),
+    ("`print`", "1", True), ("none admitted", "1", True), ("`tui`", "1", False),
     ("`print`", "1 and 2", False), ("`print`", None, False), ("`sdk`", "1", False),
 ])
 def test_an_interim_od3b_section_says_session_one_and_names_only_what_it_measured(
         repo, tmp_path, value, sessions, ok):
-    directory = write(tmp_path / "w0", native(repo), control(repo))
+    directory = write(tmp_path / "w0", *_session1(repo))
     text = RECORD_4A + _od3b("4c", bk.evidence_digest(directory), value=value, sessions=sessions)
     found = bk.validate_directory(directory, repo=repo, record_text=text.encode(), tui_digest=TUI)
     assert (found == []) is ok, found
+    if value == "`sdk`":
+        assert any("is interim (session 1)" in problem for problem in found), found
+
+
+@pytest.mark.parametrize("contradiction", ["two-defaults", "no-default", "two-digests",
+                                           "two-sessions-lines", "malformed-default"])
+def test_an_od3b_section_with_contradictory_declarations_fails(repo, tmp_path, contradiction):
+    directory = write(tmp_path / "w0", *_session1(repo))
+    digest = bk.evidence_digest(directory)
+    section = _od3b("4c", digest)
+    if contradiction == "two-defaults":  # the first declares sdk, the second print
+        section = section.replace("**Jailed Claude default:** `print`",
+                                  "**Jailed Claude default:** `sdk`\n\n"
+                                  "**Jailed Claude default:** `print`")
+    elif contradiction == "no-default":
+        section = section.replace("**Jailed Claude default:** `print`\n", "")
+    elif contradiction == "two-digests":
+        section += f"\n**W0 evidence digest:** `{'0' * 64}`\n"
+    elif contradiction == "two-sessions-lines":
+        section += "\n**W0 sessions:** 1 and 2\n"
+    elif contradiction == "malformed-default":
+        section = section.replace("`print`", "print")
+    assert bk.validate_directory(directory, repo=repo, record_text=(RECORD_4A + section).encode(),
+                                 tui_digest=TUI) != []
+    assert bk.validate_directory(directory, repo=repo,
+                                 record_text=(RECORD_4A + _od3b("4c", digest)).encode(),
+                                 tui_digest=TUI) == []
 
 
 # --------------------------------------------------------------------------------------

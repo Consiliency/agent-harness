@@ -320,10 +320,18 @@ def _request_set_problems(value: object) -> list[str]:
     return problems
 
 
-def evidence_digest(directory: Path | str) -> str:
+def evidence_digest(directory: Path | str, *, sessions: Sequence[int] | None = None) -> str:
     """sha256 over the sorted bytes of every record in ``directory``: independent of file
-    order and names. An OD-3b section cites this value."""
-    blobs = sorted(path.read_bytes() for path in Path(directory).glob("*.json"))
+    order and names. An OD-3b section cites this value over the sessions it names
+    (``sessions``; default every file), so later sessions' records can land beside it."""
+    paths = []
+    for path in Path(directory).glob("*.json"):
+        if sessions is not None:
+            found = _RUN_ID.fullmatch(path.name[:-5])
+            if found is None or _session_or_none(int(found["block"])) not in sessions:
+                continue
+        paths.append(path)
+    blobs = sorted(path.read_bytes() for path in paths)
     digest = hashlib.sha256()
     for blob in blobs:
         digest.update(len(blob).to_bytes(8, "big"))
@@ -444,9 +452,11 @@ def validate_directory(directory: Path | str, *, repo: Path | str = ".",
     code; a head whose digest cannot be derived fails."""
     directory, repo = Path(directory), Path(repo)
     records, problems = load_records(directory)
-    held = sessions_held(records)
-    if 2 in held and 1 not in held:
-        problems.append("session 2 records without session 1's")
+    gaps = coverage_gaps(records)
+    for session in sorted(gaps):
+        if session > 1 and gaps.get(session - 1, ["absent"]):
+            problems.append(f"session {session} records without session {session - 1}'s "
+                            "complete records")
     arms_by_block: dict[int, set[str]] = {}
     heads_by_block: dict[int, set[str]] = {}
     for obj in records:
@@ -491,7 +501,7 @@ def validate_directory(directory: Path | str, *, repo: Path | str = ".",
     if record_text is None:
         current = repo / _transport.DECISION_RECORD
         record_text = current.read_bytes() if current.exists() else b""
-    problems += od3b_problems(record_text, evidence_digest(directory), records)
+    problems += od3b_problems(record_text, directory, records)
     return list(dict.fromkeys(problems))
 
 
@@ -518,12 +528,18 @@ def load_records(directory: Path) -> tuple[list[dict], list[str]]:
     return records, problems
 
 
-def od3b_problems(record_text: bytes, digest: str, records: Sequence[Mapping[str, object]]
-                  ) -> list[str]:
+def _marked(body: str, marker: str) -> list[str]:
+    return [line for line in body.splitlines() if line.startswith(marker)]
+
+
+def od3b_problems(record_text: bytes, directory: Path,
+                  records: Sequence[Mapping[str, object]]) -> list[str]:
     """OQ-4: only the latest OD-3b section, by letter, answers for this directory; earlier ones
-    are history. It cites ``digest``, its ``**W0 sessions:**`` line names exactly the sessions
-    the records hold, and a native transport it names has records here, so a section over
-    session 1 alone says ``1`` and cannot name ``sdk``."""
+    are history. It carries exactly one default, one digest and one sessions line. The sessions
+    it names (``1`` or ``1 and 2``) are complete here, and the digest is over their records
+    alone, so a later session's records can land beside it before the next section does. It
+    picks ``print``, ``sdk`` or "none admitted"; a section over session 1 alone picks only
+    ``print`` or "none admitted", and a transport it picks has records in its sessions."""
     od3b = sorted(sid for sid, (heading, _d) in _transport.record_sections(record_text).items()
                   if _OD3B_HEADING.match(heading))
     if not od3b:
@@ -531,18 +547,34 @@ def od3b_problems(record_text: bytes, digest: str, records: Sequence[Mapping[str
     sid = od3b[-1]
     body = (_transport.section_bytes(record_text, sid) or b"").decode("utf-8", "replace")
     problems = []
-    if digest not in {m["digest"] for m in _OD3B_DIGEST.finditer(body)}:
-        problems.append(f"OD-3b section {sid} does not cite this directory's evidence digest")
-    named = [m["sessions"] for m in _OD3B_SESSIONS.finditer(body)]
-    if named != [sessions_label(sessions_held(records))]:
-        problems.append(f"OD-3b section {sid} does not name the W0 sessions this directory holds")
-    value = None
-    for line in body.splitlines():
-        found = _transport.DEFAULT_LINE.match(line)
-        if found is not None:
-            value = found.group("value")
-    if value in NATIVE_ARMS and not any(obj["arm"] == value for obj in records):
-        problems.append(f"OD-3b section {sid} names `{value}`, which has no record here")
+    defaults = _marked(body, "**Jailed Claude default:**")
+    picked = _transport.DEFAULT_LINE.match(defaults[0]) if len(defaults) == 1 else None
+    if picked is None:
+        problems.append(f"OD-3b section {sid} needs exactly one well-formed default line")
+    elif picked.group("value") == "tui":
+        problems.append(f"OD-3b section {sid} may pick only print, sdk or none admitted")
+    lines = _marked(body, "**W0 sessions:**")
+    found = _OD3B_SESSIONS.fullmatch(lines[0]) if len(lines) == 1 else None
+    if found is None:
+        problems.append(f"OD-3b section {sid} needs exactly one `**W0 sessions:**` line")
+        return problems
+    named = SESSIONS[:2] if found["sessions"] == "1 and 2" else SESSIONS[:1]
+    gaps = coverage_gaps(records)
+    if any(gaps.get(session, ["absent"]) for session in named):
+        problems.append(f"OD-3b section {sid} names a W0 session that is not complete here")
+    digests = _marked(body, "**W0 evidence digest:**")
+    cited = _OD3B_DIGEST.fullmatch(digests[0].rstrip()) if len(digests) == 1 else None
+    if cited is None or cited["digest"] != evidence_digest(directory, sessions=named):
+        problems.append(f"OD-3b section {sid} does not cite exactly the evidence digest of "
+                        "the sessions it names")
+    value = picked.group("value") if picked is not None else None
+    if named == SESSIONS[:1] and value == "sdk":
+        problems.append(f"OD-3b section {sid} is interim (session 1) and may pick only print "
+                        "or none admitted")
+    elif value in NATIVE_ARMS and not any(
+            obj["arm"] == value and session_of(int(obj["block"])) in named  # type: ignore[call-overload]
+            for obj in records):
+        problems.append(f"OD-3b section {sid} names `{value}`, which has no record in its sessions")
     return problems
 
 
@@ -577,12 +609,66 @@ def session_of(block: int) -> int:
 
 
 def sessions_held(records: Iterable[Mapping[str, object]]) -> tuple[int, ...]:
-    return tuple(sorted({session_of(int(obj["block"])) for obj in records}))  # type: ignore[call-overload]
+    return tuple(sorted({s for obj in records  # type: ignore[call-overload]
+                         if (s := _session_or_none(int(obj["block"]))) is not None}))
 
 
 def sessions_label(held: Sequence[int]) -> str:
     """How an OD-3b section names the sessions its evidence holds."""
     return " and ".join(str(session) for session in held)
+
+
+def _session_or_none(block: int) -> int | None:
+    try:
+        return session_of(block)
+    except ValueError:
+        return None
+
+
+def coverage_gaps(records: Iterable[Mapping[str, object]]) -> dict[int, list[str]]:
+    """Each session that has any record, with what keeps it from being complete (``[]`` when
+    complete). A block is complete with runs ``r1`` to ``r3`` of its planned arm; a security
+    stop may end it early, but only on its last run; and a block whose arm stopped earlier
+    has no record at all. Records of an unplanned block make their session incomplete."""
+    by_block: dict[int, list[Mapping[str, object]]] = {}
+    for obj in records:
+        by_block.setdefault(int(obj["block"]), []).append(obj)  # type: ignore[call-overload]
+    gaps: dict[int, list[str]] = {}
+    stopped: set[str] = set()
+    for session, blocks in enumerate(EXECUTION_NOTES.session_blocks, start=1):
+        found: list[str] = []
+        for block in blocks:
+            arm = EXECUTION_NOTES.blocks[block - 1]
+            runs = sorted(by_block.get(block, []),
+                          key=lambda obj: int(str(obj["run_id"]).rsplit("-r", 1)[1]))
+            numbers = [int(str(obj["run_id"]).rsplit("-r", 1)[1]) for obj in runs]
+            withheld = [obj["security_outcome"] == "withheld_private" for obj in runs]
+            if any(obj["arm"] != arm for obj in runs):
+                found.append(f"block {block}: not the planned arm")
+            if arm in stopped:
+                if runs:
+                    found.append(f"block {block}: records after its arm stopped")
+                continue
+            if numbers != list(range(1, len(numbers) + 1)):
+                found.append(f"block {block}: runs are not r1 to r{len(numbers)}")
+            elif any(withheld[:-1]) or not (
+                    len(numbers) == EXECUTION_NOTES.runs_per_block
+                    or (numbers and withheld[-1] and len(numbers) < EXECUTION_NOTES.runs_per_block)):
+                found.append(f"block {block}: {len(numbers)} of "
+                             f"{EXECUTION_NOTES.runs_per_block} runs")
+            if any(withheld):
+                stopped.add(arm)
+        if any(block in by_block for block in blocks):
+            gaps[session] = found
+    extra = sorted(block for block in by_block if _session_or_none(block) is None)
+    if extra:
+        gaps.setdefault(0, []).append("records of an unplanned block")
+    return gaps
+
+
+def complete_sessions(records: Iterable[Mapping[str, object]]) -> tuple[int, ...]:
+    return tuple(session for session, found in sorted(coverage_gaps(records).items())
+                 if session and not found)
 
 
 def session_arms(session: int) -> tuple[str, ...]:
@@ -619,10 +705,11 @@ def session_problems(session: object, directory: Path,
     held = sessions_held(records)
     if any(later >= int(session) for later in held):
         problems.append(f"evidence: session {session}'s or a later session's records are here")
-    have = {int(obj["block"]) for obj in records}  # type: ignore[call-overload]
+    gaps = coverage_gaps(records)
     for earlier in range(1, int(session)):
-        if not set(EXECUTION_NOTES.session_blocks[earlier - 1]) <= have:
-            problems.append(f"evidence: session {session} needs session {earlier}'s records here")
+        if gaps.get(earlier, ["absent"]):
+            problems.append(f"evidence: session {session} needs session {earlier}'s complete "
+                            "records here")
     return problems
 
 #: Fields of a run-plan file that the kit takes from the operator (not plan constants). A W0
@@ -1717,6 +1804,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                                "without running its code)")
     digest = sub.add_parser("digest", help="the W0 evidence digest an OD-3b section cites")
     digest.add_argument("directory", nargs="?", default=EVIDENCE_DIR)
+    digest.add_argument("--through-session", type=int, choices=SESSIONS, default=None,
+                        help="digest only the records of sessions 1 to N (what an OD-3b "
+                             "section naming those sessions cites)")
     run = sub.add_parser("run", help="run W0 (an owner action)")
     run.add_argument("--plan", required=True)
     run.add_argument("--repo", default=".")
@@ -1736,11 +1826,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not problems:
             records = load_records(directory)[0]
             print(f"claude-bakeoff validate: OK ({len(records)} record(s)"
-                  f"{coverage_note(sessions_held(records))})")
+                  f"{coverage_note(records)})")
         return 1 if problems else 0
     if args.command == "digest":
-        print(evidence_digest(args.directory))
-        note = coverage_note(sessions_held(load_records(Path(args.directory))[0]))
+        through = SESSIONS[:args.through_session] if args.through_session else None
+        print(evidence_digest(args.directory, sessions=through))
+        note = coverage_note(load_records(Path(args.directory))[0])
         if note:
             print(f"claude-bakeoff digest: note: {note.removeprefix('; ')}", file=sys.stderr)
         return 0
@@ -1751,14 +1842,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     return _run_window(plan, Path(args.repo), args.window, args.session)
 
 
-def coverage_note(held: Sequence[int]) -> str:
-    """What the directory's sessions mean: session 1 alone is never the complete bake-off."""
-    if not held:
-        return ""
+def coverage_note(records: Sequence[Mapping[str, object]]) -> str:
+    """What the directory's sessions mean: only complete sessions count, and session 1 alone is
+    never the complete bake-off."""
+    gaps = coverage_gaps(records)
+    notes = [f"session {session} INCOMPLETE ({'; '.join(found)})"
+             for session, found in sorted(gaps.items()) if found]
+    held = complete_sessions(records)
     if tuple(held) == SESSIONS:
-        return "; sessions " + sessions_label(held)
-    return (f"; session {sessions_label(held)} of {len(SESSIONS)} only: an interim set, "
-            "not the complete bake-off")
+        notes.insert(0, "sessions " + sessions_label(held) + " complete")
+    elif held:
+        notes.insert(0, f"session {sessions_label(held)} of {len(SESSIONS)} only: an interim "
+                        "set, not the complete bake-off")
+    return "".join(f"; {note}" for note in notes)
 
 
 def _run_window(plan: Mapping[str, object], repo: Path, window: str,
