@@ -1,11 +1,12 @@
-# K-1 window-kit contract: one kit for every vendor's row window (r3)
+# K-1 window-kit contract: one kit for every vendor's row window (r4)
 
 This file is the frozen input of `plans/amendments/seats-FIRSTSEAT-K1-window-kit.md`, which
 pins it by SHA-256. No lane edits it. A change is a plan amendment, and results bound to an
 earlier digest do not count. It extends IF-0-FIRSTSEAT-2 (principle 5, EC-FIRSTSEAT-6).
 `plans/seats-firstseat-containment-contract.md` and
 `plans/artifacts/seats-firstseat-interfaces.md` stay byte-identical, and §5 lists the only
-deltas this contract makes to their interfaces I-11, I-12 and I-15. r3 replaces r2. It records
+deltas this contract makes to their interfaces I-11, I-12 and I-15. r4 adds §15's acceptance
+tests and gates to r3 and changes no design text above §15 except the §14 condition. It records
 the owner's decisions of 2026-11-21 (§7 R6, §8, §9.3) and does not widen them.
 
 Pinned inputs (content digests, not history). The roadmap is pinned by the plan's frontmatter
@@ -753,7 +754,8 @@ frontmatter. `CHANGELOG.md` and `seat_launch_references.json` are union-resolved
 
 ## 14. Degraded Grok co-seat (answer for the GROK amendment)
 
-**Yes.** A non-Grok row window can pass with a degraded Grok co-seat, under these conditions:
+**Yes, on condition of gate K1-G3 (§15).** A non-Grok row window can pass with a degraded Grok
+co-seat, under these conditions:
 
 - **Composition.** Grok is available and signed in, so the four-seat plan-tier composition is
   admitted (§9.3).
@@ -770,3 +772,132 @@ frontmatter. `CHANGELOG.md` and `seat_launch_references.json` are union-resolved
 
 If Grok is unavailable or signed out, composition refuses before launch. Grok's admission (GROK
 SL-6) is therefore not on other vendors' paths, but a current Grok login is.
+
+## 15. Acceptance tests and start gates (r4, convergence)
+
+Each r3 finding is a named test, owned by one lane. The test is written red before the lane's
+implementation and turns green only through the production path. Code review of that lane
+checks it. Where a statement below is more specific than the prose above, it governs the
+lane's code. Paths are under `phase-loop-runtime/tests/`.
+
+### 15.1 Acceptance tests
+
+**K1-T1: grant-module grammar.** Lane SL-5, test file `test_seat_window_grants.py`.
+- *Given* `seat_window_grants.py` is anything other than exactly one assignment to each of
+  the plain names `ROW_GRANTS` and `RETIRED_ROW_GRANTS`, with no other statement or target,
+  *then* `window_grant`, `claim_window_attempt` and verification refuse it. This includes a
+  literal-only file outside the grammar.
+- *Given* a table key that is not a table vendor, or a duplicate key, *then* they refuse.
+- *Given* a pin that is not a `(64-hex, 64-hex, timezone-aware ISO time)` tuple, *then* they
+  refuse.
+- The values used are the ones parsed from the checked bytes; the module is never imported
+  separately.
+- A retired entry admits nothing. It serves verification only.
+
+**K1-T2: legacy W1 attempt linkage.** Lane SL-5, test file `test_seat_window_vendor_neutral.py`.
+- *Given* a legacy W1 record whose context ID is not linked to the matching journal attempt
+  by contemporaneous private evidence, *then* the relaxed R6 rule does not apply and the
+  conservative rule does. That evidence is a private record written by the W1 run that names
+  both the context ID and the attempt.
+- This includes a second record with a different context inside the same unique interval.
+- The journal's first line is compared by `sha256(first line + "\n") ==
+  OWNER_W1_GRANT_SHA256`, as on the base tree, never by literal equality.
+
+**K1-T3: ledger propagation into board workers.** Lane SL-5, test file
+`test_seat_window_vendor_neutral.py`.
+- *Given* a row window whose envelope allows exactly one Grok start, run through the real
+  board fan-out (the board pool and the broker copy), *then* the second Grok start is
+  refused before spawn.
+- *Given* a board worker inside a window with no ledger in its context, *then* it is refused
+  as `window_unbudgeted_start`. It is never treated as a non-window call.
+- The attempt's single shared ledger is passed explicitly into each worker.
+
+**K1-T4: the issuer request.** Lane SL-5, test file `test_seat_window_vendor_neutral.py`.
+- *Given* an A5 allowance of 0, *then* the Gemini issuer token-info POST is not sent.
+- *Given* an allowance of 1, *then* the request is reserved in the kit-owned caller
+  immediately before it is made, and debited once.
+
+**K1-T5: reservations versus dispatches.** Lane SL-5, test file
+`test_seat_window_vendor_neutral.py`.
+- A bulk reservation, such as the agy first-use reservation before preflight, debits the
+  budget but is never recorded as a dispatch.
+- Only an actual start records a route and a launch time for R6.
+- An uncertain start still debits.
+- Each counted operation is debited exactly once across the wrapper and the provider
+  boundary.
+- *Given* an unused reservation of an expired route, *then* the record still verifies.
+
+**K1-T6: the A-C1 image pin.** Lane SL-6. This is a start gate for SL-6.3.
+- `test_seat_window_codex_provider_free.py` carries a reviewed literal: the expected native
+  Codex image digest and its source, which is the release image of the pinned CLI version,
+  named by version and sha256.
+- *Given* any launched image whose actual digest differs, *then* the test fails hard.
+- The SL-6 implementation task does not start until this literal has been reviewed and the
+  test is red for the right reason.
+
+**K1-T7: A-C1 fixture isolation.** Lane SL-6, test file `test_seat_window_codex_provider_free.py`.
+- The real prepare path runs with an isolated fixture `HOME` and `CODEX_HOME` and a synthetic
+  login only, the margin re-check included.
+- *Given* any credential or config lookup outside the fixture, *then* the test fails closed.
+- The proxy denies by default and has no upstream.
+- *Given* the fresh control, *then* it completes its local model request.
+- *Given* the aged copy, *then* it ends `refused_intended`.
+- *Given* the not-ready variant, *then* it ends `not_ready`.
+- Every gate and command runs the test with `PHASE_LOOP_REQUIRE_LIVE_JAIL=1`. A skip fails.
+- If A-C1 fails, SL-6 stops (Q-D, below).
+
+**K1-T8: hook ownership, in three parts.**
+- **SL-5:** dispatch routing (`window_board=` reaches only the window leg) and the order
+  assertions for the existing Gemini and Codex legs.
+- **SL-8, a start gate:** exactly one production Grok call site. It runs when GROK SL-3 is on
+  the base, at SL-8 entry or on whichever of GROK SL-3 and K-1 SL-5 lands second.
+- **SL-7, a start gate:** the Claude order assertion, through the print-path observer.
+
+SL-5 does not require Grok or Claude call sites to land.
+
+**K1-T9: mixed-validity duplicates.** Lane SL-5, test file `test_seat_window_vendor_neutral.py`.
+- *Given* one valid standard record and one classified but invalid standard record in the
+  same partition, *then* that partition fails with `window_duplicate_records`.
+- The cardinality of standard records is counted before validity, as on the base W1 tree.
+- A healthy different partition still reduces in the same run.
+
+### 15.2 Start gates (not tests in this plan; each is checked on the gated lane's base)
+
+**K1-G1: Grok's measured-input binding.** This gates SL-8.
+- The Grok supplier's measured fixture and its `measured_input_sha256` binding, as the GROK
+  contract (`grok-jail-tool-surface-contract-v1.md`) defines them, are on the base.
+- SL-8 binds them. It does not substitute its own input.
+
+**K1-G2: Grok's installed admission.** This gates the first Grok row grant.
+- `staged_admission()` holds on the installed release with all five conditions of the GROK
+  contract.
+- This is live readiness on the designated host, kept separate from SL-8 consuming the code
+  interfaces.
+
+**K1-G3: provider-free confirmation of §14.** This gates the first post-Train-A row grant for
+any vendor. It runs as SL-5's provider-free board test, `test_seat_window_vendor_neutral.py
+-k degraded_grok`. The confirmation is a full four-seat board with:
+- an authenticated Grok co-seat that returns its L6 refusal without a credentialed start;
+- its exec evidence retained;
+- a verified snapshot;
+- the president completing;
+- only the subject row changing.
+
+If K1-G3 fails, §14's answer is withdrawn, and no non-Grok row grant is issued until GROK SL-6
+admits Grok.
+
+**K1-G4: F17 sequencing.** As in K1-T8.
+
+**K1-G5: the A-C1 pin.** As in K1-T6.
+
+### 15.3 Recorded rulings
+
+**Q-C(b) (coordinator ruling, 2026-11-21).**
+- `print` is the recorded default.
+- The Claude observer lands on the print path, owned by CLAUDE.
+- SL-7 qualifies `print` only. SDK is not qualified by this amendment.
+- If OD-3b's record ever names a default other than `print`, SL-7 stops.
+
+**Q-D: a contingency stop.** If K1-T7's aged case fails, SL-6 stops. No replacement control is
+authorized.
+

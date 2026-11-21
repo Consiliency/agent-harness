@@ -35,8 +35,8 @@ an EC:
 - GROK: S-2 is resolved in source, and the jailed Grok branch uses the board-leg bracket.
 - FIRSTSEAT: SL-4 points here.
 
-**Design.** The design is frozen in `plans/artifacts/seats-window-kit-k1-contract.md`, r3 (the
-**contract**, sha256 `4ac890917040bf4f6522a8b46b7c6e7cc30f023ec88a19489fc52e9448db602d`). This
+**Design.** The design is frozen in `plans/artifacts/seats-window-kit-k1-contract.md`, r4 (the
+**contract**, sha256 `3d44bfdfca9544af721bd63240858aa4d2e03a2039424df9915595f833bbd22f`). This
 plan cites the contract and does not restate it:
 
 | Topic | Contract |
@@ -49,6 +49,7 @@ plan cites the contract and does not restate it:
 | The launch envelope, enforced before dispatch, and the login precondition | §9 |
 | Per-vendor appendices, including the Codex A-C1 gate | §10 |
 | A degraded Grok co-seat on another vendor's window | §14 |
+| Acceptance tests K1-T1–T9, start gates K1-G1–G5, rulings Q-C(b) and Q-D | §15 |
 | Pins, sequencing and falsifiers F1–F16 | §11–§13 |
 
 **Owner decisions (2026-11-21).** Each is recorded in the owner's wording and implemented by
@@ -153,7 +154,7 @@ Test commands run from `phase-loop-runtime/`.
   fail red. Each checkpoint turns its own subset green:
   1. golden and R1–R10: F1–F7, F10–F12, F14;
   2. grants, run binding and completion receipt: F8, F13;
-  3. launcher, board, seam, hooks and ledger: F9, F16, F17;
+  3. launcher, board, seam, hooks and ledger: F9, F16, K1-T3–T5, K1-T8 (SL-5 part);
   4. CLI and discovery: F15.
 - **Stop rules.** Stop and report if:
   - the golden (F10) or the W1 grant behaviour cannot stay byte-identical;
@@ -166,7 +167,7 @@ Test commands run from `phase-loop-runtime/`.
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
 | SL-5.1 | test | (none) | `tests/data/seat_window_gemini_k1_golden.json`, `tests/test_seat_window_vendor_neutral.py` | the golden and its test (F10), captured from the base at a fixed clock | `pytest tests/test_seat_window_vendor_neutral.py -k golden` |
-| SL-5.2 | test | SL-5.1 | `tests/test_seat_window_vendor_neutral.py`, `tests/test_seat_window_grants.py` | F1–F9 and F11–F17, with a synthetic vendor registered in a fixture; F15 runs in a fresh process | `pytest tests/test_seat_window_vendor_neutral.py tests/test_seat_window_grants.py` |
+| SL-5.2 | test | SL-5.1 | `tests/test_seat_window_vendor_neutral.py`, `tests/test_seat_window_grants.py` | F1–F9, F11–F16, K1-T1–T5, K1-T8 (SL-5 part), K1-T9 and K1-G3, with a synthetic vendor registered in a fixture; F15 runs in a fresh process | `pytest tests/test_seat_window_vendor_neutral.py tests/test_seat_window_grants.py` |
 | SL-5.3 | impl | SL-5.2 | `seat_profiles.py`, `seat_window_supply.py`, `seat_window_supply_gemini.py`, `seat_window.py` | (none) | `pytest tests/test_seat_window_vendor_neutral.py tests/test_seat_window_grants.py tests/test_seat_qualification_host_context.py` |
 | SL-5.4 | impl | SL-5.3 | `panel_invoker.py`, `tests/test_panel_invoker.py`, inventories | (none) | `pytest tests/test_panel_invoker.py -k "window or codex" tests/test_seat_window_vendor_neutral.py` |
 | SL-5.5 | verify | SL-5.4 | lane files | all | the frontmatter `suite_command` with `tests/test_seat_launch_helpers_trusted.py` and `tests/test_seat_profiles.py` |
@@ -188,9 +189,9 @@ Test commands run from `phase-loop-runtime/`.
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
 | SL-6.1 | test | (none) | `tests/test_seat_window_supply_codex.py` | registration, kinds, argv, stream facts, scope and refresh outcomes, and F16 through the real `_prepare_jailed_codex` with the provider stubbed at its spawn boundary; one fixture context through `cli_main` to a record that `verify --vendor codex --window row` passes and that changes only `vendor:codex` | `pytest tests/test_seat_window_supply_codex.py` |
-| SL-6.2 | test | SL-6.1 | `tests/test_seat_window_codex_provider_free.py` | A-C1, the offline acceptance gate of contract §10.B: the pinned image digest; the production copy shape; fresh and aged copies; the not-ready variant; proxy-stream order. A skip, a wrong digest or missing fixture proof fails the test. | `PHASE_LOOP_REQUIRE_LIVE_JAIL=1 pytest tests/test_seat_window_codex_provider_free.py` |
+| SL-6.2 | test | SL-6.1 | `tests/test_seat_window_codex_provider_free.py` | K1-T6 (start gate for SL-6.3) and K1-T7 | `PHASE_LOOP_REQUIRE_LIVE_JAIL=1 pytest tests/test_seat_window_codex_provider_free.py` |
 | SL-6.3 | impl | SL-6.2 | `seat_window_supply_codex.py` | (none) | `pytest tests/test_seat_window_supply_codex.py tests/test_seat_profile_codex.py` |
-| SL-6.4 | verify | SL-6.3 | lane files | all | the frontmatter `suite_command` and `tests/test_seat_window_codex_provider_free.py` |
+| SL-6.4 | verify | SL-6.3 | lane files | all | the frontmatter `suite_command` and `PHASE_LOOP_REQUIRE_LIVE_JAIL=1 pytest tests/test_seat_window_codex_provider_free.py` |
 
 ### SL-7 — K1-CLAUDE: Claude supplier adapter
 
@@ -200,8 +201,7 @@ Test commands run from `phase-loop-runtime/`.
 - **Interfaces consumed**: IF-0-FIRSTSEAT-6 (SL-5), IF-0-CLAUDENET-1 to IF-0-CLAUDENET-3 (content gate), IF-0-CLAUDE-1 (pre-existing), `seat_claude_containment.refreshed_in_jail` (content gate), the transport observer of question Q-C (content gate)
 - **Parallel-safe**: yes
 - **Stop rules.** Stop if:
-  - Q-C is unresolved, or the observer cannot show the contract §5.4 order on the default
-    transport;
+  - start gate K1-T8 (Claude part, through the print-path observer) is not green;
   - any Claude, SDK or CLAUDENET file would need an edit;
   - OD-3b has recorded no default.
 
@@ -219,7 +219,7 @@ Test commands run from `phase-loop-runtime/`.
 - **Interfaces consumed**: IF-0-FIRSTSEAT-6 (SL-5), IF-0-GROK-1 (pre-existing; content gate), IF-0-GROK-2 (pre-existing; content gate), IF-0-GROK-3 (pre-existing; content gate: GROK SL-3's leg with its hook call), the measured jailed surface from GROK SL-6 (pre-existing; content gate)
 - **Parallel-safe**: yes
 - **Stop rules.** Stop if:
-  - the Grok leg lacks its own hook call (GROK SL-3 adds it);
+  - start gates K1-G1 or K1-T8 (Grok part) are not met;
   - a window launch needs the route's retry;
   - no refused-intended signature is measured;
   - Grok's profile digest would change.
@@ -258,14 +258,14 @@ Test commands run from `phase-loop-runtime/`.
 - **Logins.** The board still needs all four logins, as approved; each must be current on the
   designated host. The operator runs `seat-window ready` first (§9.3). A degraded Grok
   co-seat does not block another vendor's window, but a missing Grok login does
-  (contract §14).
+  (contract §14), subject to gate K1-G3 before the first post-Train-A grant.
 - **Spent attempts.** A composition refusal after the claim spends the attempt.
 
 | Phase | Code still to add | Live work and records |
 |---|---|---|
 | CODEX | Nothing. | The owner-approved grant change for `("codex","row")`, landed by the kit owner; a release with SL-5 and SL-6 installed, with its EC-EXECFIND-2 pass on the current key; LA-2 for all four vendors; LA-3; the records PR (CODEX SL-docs.3, EC-CODEX-4). |
-| CLAUDENET | Nothing beyond IF-0-CLAUDENET-1 to IF-0-CLAUDENET-3, which are already planned. The transport observer is question Q-C. | After SL-7: grant, release, LA-2, LA-3 and the records PR (EC-CLAUDENET-4). |
-| GROK | SL-3: the jailed leg calls the `window_board=` hook inside itself, in Gemini's order. SL-6: the measured jailed surface. K-1 registers Grok's window data. | After SL-8: grant, release, LA-2, LA-3 and the records PR (EC-GROK-4). |
+| CLAUDENET | Nothing beyond IF-0-CLAUDENET-1 to IF-0-CLAUDENET-3, which are already planned. The print-path observer is CLAUDE's (Q-C(b)). | After SL-7: grant, release, LA-2, LA-3 and the records PR (EC-CLAUDENET-4). |
+| GROK | SL-3: the jailed leg calls the `window_board=` hook inside itself, in Gemini's order. SL-6: the measured jailed surface. K-1 registers Grok's window data. K1-G2 gates the first Grok grant. | After SL-8: grant, release, LA-2, LA-3 and the records PR (EC-GROK-4). |
 | PI | It waits on the contract's Pi revision (§10.E), which FIRSTSEAT owns. | — |
 
 ## Verification
@@ -310,30 +310,18 @@ No lane makes a live provider call or runs on a seat host. SL-6.2 is provider-fr
     dependency: JAILCORE's lanes have already landed, so the roadmap's note placing JAILCORE
     after FIRSTSEAT's exit is spent.
   - Q-2: the trust boundary in contract §1 is accepted, as for W1.
-- **Open, one question each.**
-  - Q-C (CLAUDE owner): who provides the Claude transport observer of contract §5.4? It needs
-    `spawning(argv)` and `before_teardown()` on every path, and the kit can only call it.
-    The options:
-    - (a) CLAUDE adds it to `launch_jailed`, `claude_seat_print` and `claude_seat_sdk`. The SDK
-      proof is renewed per EC-CLAUDE-3.
-    - (b) CLAUDE adds it to the `print` path only, and the Claude row window is limited to
-      `print`.
-    - (c) The Claude row window waits.
-
-    SL-7 waits on the answer.
-  - Q-D (owner): if A-C1 fails (contract §10.B notes that it may), what replaces the Codex
-    expired-copy control? Deciding this would be a fourth amendment, so it stops for a
-    diagnosis (principle 6).
-- **Stall rule.** This is FIRSTSEAT's K-1 amendment, now in its third round. The Pi revision
-  is planned. Any further revision stops for a diagnosis (principle 6).
+- **Rulings (contract §15.3).** Q-C(b): `print` is the recorded default, and CLAUDE's observer
+  lands on the print path. Q-D is a contingency stop on SL-6.
+- **Stall rule.** The diagnosis after r3 binds: r4 is the convergence round. Later findings go to
+  the code review of the lane that owns the test (contract §15).
 - **Known destructive changes**: `WindowBoardResult.canonical_gemini` and `.gemini` are removed
   (contract §5.3). Every reader is in SL-5's files.
 - **Rollback.** Revert the lane. The W1 records, the W1 grant and the golden are unaffected.
 
 ## Acceptance Criteria
 
-- [ ] EC-FIRSTSEAT-6 — proven by `pytest tests/test_seat_window_vendor_neutral.py tests/test_seat_window_grants.py` (F1–F9, F11–F15, F17), entered through `cli_main`, `qualify`, `verify_records`, `reduce_readiness` and `export_records`, with a fixture vendor registered only through `register_window_data` and F15 run in a fresh process; falsified by any of: a passing record changing another vendor's row; a failing partition blocking another; a grant opening another pair, or one claimed after an auth call; a stale key part passing; an expired snapshot entry passing; a relabelled, replayed or restamped record passing. Path-entered control: real retained source files in a 0700 fixture directory, and the real grant journal and witnesses.
-- [ ] EC-FIRSTSEAT-6 — Codex, proven by `pytest tests/test_seat_window_supply_codex.py tests/test_seat_window_codex_provider_free.py`; falsified by any of: a Codex record carrying Gemini's profile, allowlist or contract digest passing; a window launch retrying; `refused_intended` assigned to an incomplete stream or to a jail or proxy failure; the production `_prepare_jailed_codex` path changing. Path-entered control: the real `_prepare_jailed_codex` with the provider stubbed at its spawn boundary, and the real pinned binary under the loopback harness.
+- [ ] EC-FIRSTSEAT-6 — proven by `pytest tests/test_seat_window_vendor_neutral.py tests/test_seat_window_grants.py` (F1–F9, F11–F15, K1-T1–T5, K1-T8 SL-5 part, K1-T9), entered through `cli_main`, `qualify`, `verify_records`, `reduce_readiness` and `export_records`, with a fixture vendor registered only through `register_window_data` and F15 run in a fresh process; falsified by any of: a passing record changing another vendor's row; a failing partition blocking another; a grant opening another pair, or one claimed after an auth call; a stale key part passing; an expired snapshot entry passing; a relabelled, replayed or restamped record passing. Path-entered control: real retained source files in a 0700 fixture directory, and the real grant journal and witnesses.
+- [ ] EC-FIRSTSEAT-6 — Codex, proven by `pytest tests/test_seat_window_supply_codex.py` and `PHASE_LOOP_REQUIRE_LIVE_JAIL=1 pytest tests/test_seat_window_codex_provider_free.py` (K1-T6, K1-T7); falsified by any of: a Codex record carrying Gemini's profile, allowlist or contract digest passing; a window launch retrying; `refused_intended` assigned to an incomplete stream or to a jail or proxy failure; the production `_prepare_jailed_codex` path changing. Path-entered control: the real `_prepare_jailed_codex` with the provider stubbed at its spawn boundary, and the real pinned binary under the loopback harness.
 - [ ] EC-FIRSTSEAT-7 — proven by `pytest tests/test_seat_window_vendor_neutral.py -k "golden or legacy or registry_change"` (F10, F12's legacy cases, F14), with `tests/test_agy_qci.py` and the profile-digest receipt unchanged; falsified by any golden byte, Gemini argv or binding digest differing, by W1 refusing after a candidate row is added, or by the legacy rule applying without its journal. Path-entered control: the real Gemini window data and its supplier over the unedited `seat_jail_qualification`.
 
 ## Spec Closeout Plan
