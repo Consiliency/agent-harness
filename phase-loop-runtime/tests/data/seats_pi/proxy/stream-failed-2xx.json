@@ -1,0 +1,25 @@
+{
+ "allowed_inference_count": 1,
+ "connects": [
+  {
+   "decision": "terminated_locally",
+   "target": "chatgpt.com:443"
+  }
+ ],
+ "launch": "L8",
+ "other_records": 0,
+ "pi_inference_count": 1,
+ "requests": [
+  {
+   "host": "chatgpt.com",
+   "method": "POST",
+   "origin": "pi",
+   "path": "/backend-api/codex/responses",
+   "response_body_sha256": null,
+   "response_id": "resp_stream_failed_1",
+   "seq": 1,
+   "status_sent": 200
+  }
+ ],
+ "schema": "pi_seat_fixture_proxy.v1"
+}

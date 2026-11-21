@@ -1,0 +1,58 @@
+{
+ "admitted_models": {
+  "gpt-6.1-sol": [
+   "gpt-6.1-sol"
+  ]
+ },
+ "allowlist_id": "pi",
+ "allowlist_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+ "auth_type": "oauth",
+ "claims": {
+  "account_claim": "chatgpt_account_id",
+  "aud": [
+   "fixture-audience"
+  ],
+  "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
+  "iss": "https://fixture.invalid/",
+  "scopes": [
+   "openid",
+   "profile",
+   "email",
+   "offline_access"
+  ]
+ },
+ "expiry_unit": "ms",
+ "kept_fields": [
+  "type",
+  "access",
+  "expires"
+ ],
+ "leg": "pi",
+ "lifetime_ceiling_s": 950400,
+ "min_validity_ms": 300000,
+ "named_observations": [
+  [
+   "CONNECT",
+   "auth.openai.com",
+   null
+  ]
+ ],
+ "pi_version": "1.6.0",
+ "provider": "openai-codex",
+ "request_budget": 8,
+ "schema": "pi_seat_route.v1",
+ "settings": {
+  "cacheWarming": "off",
+  "retry": {
+   "enabled": false,
+   "maxRetries": 0,
+   "provider": {
+    "maxRetries": 0
+   }
+  },
+  "transport": "sse"
+ },
+ "skew_ms": 300000,
+ "synthetic": true,
+ "witness_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+}

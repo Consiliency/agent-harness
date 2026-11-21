@@ -1,0 +1,4 @@
+{
+ "openai-codex": {"type": "oauth", "access": {"$fixture_jwt": {"claims": {}}}, "refresh": "", "expires": 1},
+ "openai-codex": {"type": "oauth", "access": {"$fixture_jwt": {"claims": {}}}, "refresh": "", "expires": 2}
+}

@@ -1,0 +1,29 @@
+{
+ "openai-codex": {
+  "access": {
+   "$fixture_jwt": {
+    "claims": {
+     "aud": [
+      "fixture-audience"
+     ],
+     "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
+     "exp": 1795864000,
+     "https://api.openai.com/auth": {
+      "chatgpt_account_id": "acct_FIXTURE_B"
+     },
+     "iat": 1794999940,
+     "iss": "https://fixture.invalid/",
+     "scp": [
+      "openid",
+      "profile",
+      "email",
+      "offline_access"
+     ]
+    }
+   }
+  },
+  "expires": 1795864000000,
+  "refresh": "",
+  "type": "oauth"
+ }
+}

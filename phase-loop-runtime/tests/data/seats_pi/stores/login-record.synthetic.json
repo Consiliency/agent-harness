@@ -1,0 +1,7 @@
+{
+ "account_id": "acct_FIXTURE_A",
+ "provider": "openai-codex",
+ "recorded_on": "2026-11-21",
+ "schema": "pi_seat_login.v1",
+ "synthetic": true
+}

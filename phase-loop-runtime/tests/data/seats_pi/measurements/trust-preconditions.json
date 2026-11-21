@@ -1,0 +1,43 @@
+{
+ "channel": {
+  "family": "AF_UNIX",
+  "named": false,
+  "type": "SOCK_STREAM"
+ },
+ "forged_witness_records": 0,
+ "launch": "L2",
+ "node": "v24.22.3",
+ "pi_version": "1.6.0",
+ "positive_control_own_child": {
+  "PTRACE_SEIZE_child": "OK",
+  "pidfd_getfd_child": "OK",
+  "proc_mem_rdwr_child": "OK",
+  "reopen_socket_child": "ENXIO"
+ },
+ "preconditions": {
+  "no_ancestor_write": {
+   "proc_mem_rdwr": "EACCES",
+   "process_vm_readv": "EPERM",
+   "ptrace_attach": "EPERM",
+   "ptrace_seize": "EPERM"
+  },
+  "no_inheritance": {
+   "intermediate_shell_holds_witness": false,
+   "tool_holds_witness": false
+  },
+  "no_reopen": {
+   "pidfd_getfd": "EPERM",
+   "proc_fd_reopen_wronly": "ENXIO"
+  }
+ },
+ "schema": "pi_seat_trust_measurement.v1",
+ "tool_cap_eff": "0000000000000000",
+ "tool_path": [
+  "pi",
+  "bash",
+  "python3"
+ ],
+ "where": "dev0, outside the jail, offline",
+ "witness_records_received": 2,
+ "yama_ptrace_scope": 1
+}
