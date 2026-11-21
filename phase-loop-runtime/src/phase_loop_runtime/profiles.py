@@ -44,11 +44,14 @@ OPENCODE_OPENAI_HEAVY_MODEL = "openai/gpt-5.6-sol"
 OPENCODE_OPENAI_IMPLEMENTER_MODEL = "openai/gpt-5.6-terra"
 GEMINI_PRO_ROUTED_MODEL = "pro"
 GEMINI_AUTO_ROUTED_MODEL = "auto"
-# Gemini planning/review (heavy tier): Gemini 4 Argon, GA 2026-10-13 and listed by `agy models`
-# as gemini-4-argon-{low,medium,high}. It replaced the `pro` alias, whose
-# "Gemini 3.1 Pro (High)" label agy no longer accepts. Argon has no dated snapshot, so the
-# matrix marks the heavy cell volatile. Hoisted here so EXECUTOR_MODEL_OVERRIDES can reference it.
-GEMINI_HEAVY_MODEL = "gemini-4-argon"
+# Gemini planning/review (heavy tier): Gemini 4 NEON, GA 2026-11-18 and listed by `agy models`
+# as gemini-4-neon-{low,medium,high,xhigh}. The shipped effort policy clamps Gemini at
+# `high`, so the rendered id is `gemini-4-neon-high`; `xhigh` is not admitted. NEON
+# replaced Gemini 4 Argon (`gemini-4-argon`, GA 2026-10-13), which stays registered as an
+# explicit seat and is selectable with PHASE_LOOP_GEMINI_MODEL=gemini-4-argon. NEON has no
+# dated snapshot, so the matrix marks the heavy cell volatile. Hoisted here so
+# EXECUTOR_MODEL_OVERRIDES can reference it.
+GEMINI_HEAVY_MODEL = "gemini-4-neon"
 # Gemini implementer (regular tier) — the CANONICAL agy model id from `agy models`
 # (authoritative list), NOT a display label. CR round-5 finding B: the operator asked us
 # to adopt the newest gemini light/medium models; `agy models` exposes the Flash family
@@ -124,7 +127,7 @@ EXECUTOR_MODEL_OVERRIDES = {
     # alias — _gemini_cli_model('auto') collapses to the Pro (HEAVY) argv, so the
     # delegated-child / harness-lane seams were launching implementation on Pro while
     # the main seam launched Flash. execute/repair → the validated Flash implementer
-    # name (== the class map), planning/review → the heavy Argon id (agrees with the class map).
+    # name (== the class map), planning/review → the heavy NEON id (agrees with the class map).
     "gemini": {
         "roadmap": GEMINI_HEAVY_MODEL,
         "plan": GEMINI_HEAVY_MODEL,
@@ -186,7 +189,7 @@ CLAUDE_IMPLEMENTER_MODEL = CLAUDE_REGULAR_MODEL
 OPENAI_WORKER_MODEL = "gpt-5.6-luna"
 # OPENCODE_OPENAI_IMPLEMENTER_MODEL is hoisted near OPENCODE_OPENAI_HEAVY_MODEL (top).
 OPENCODE_OPENAI_WORKER_MODEL = "openai/gpt-5.6-luna"
-# Gemini authoring/review uses the base heavy `gemini-4-argon` id. Implementation uses the
+# Gemini authoring/review uses the base heavy `gemini-4-neon` id. Implementation uses the
 # base `gemini-3.8-flash` id on both class and executor paths; the adapter appends
 # the policy-normalized effort. Worker (lite) uses the canonical agy 3.8 Flash id at
 # high (maintainer, 2026-10-14; it was 3.5 Flash high): `agy models` exposes NO
@@ -471,7 +474,7 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 # implementation on grok-4.7 (its HEAVY cell) — NAMED above; the taxonomy's grok-4.3 regular
 # target is not yet live. There are TWO named model disagreements (grok single-model; gemini
 # LITE aspirational — agy exposes no flash-lite), not one. Panel/advisor legs
-# (panel_invoker.DEFAULT_LEG_MODELS = opus-5-5 / gpt-6.2-astra / 3.8-flash-high / grok-4.7) are a SEPARATE
+# (panel_invoker.DEFAULT_LEG_MODELS = claude-opus-5-5 / gpt-6.2-astra / gemini-4-neon-high / grok-4.7) are a SEPARATE
 # model-bearing surface (review-only), NOT a phase-executor resolution seam — their defaults
 # are the ultra-else-heavy reviewer set, tier-correct and not a routing bypass.
 # Effort is bound by shipped action policy and recorded at requested, policy,

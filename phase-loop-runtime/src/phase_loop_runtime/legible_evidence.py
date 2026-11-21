@@ -1820,7 +1820,9 @@ def _validate_operational_sections(
     except json.JSONDecodeError:
         return "artifacts: implementation panel is malformed"
     gemini_model = panel_invoker.DEFAULT_LEG_MODELS["gemini"]
-    gemini_aliases = {gemini_model, gemini_model.removesuffix("-medium")}
+    # The board records either the rendered agy id or its base model; strip the agy
+    # effort suffix rather than one effort word, so the alias tracks the shipped tier.
+    gemini_aliases = {gemini_model, re.sub(r"-(?:low|medium|high|thinking)$", "", gemini_model)}
     required_models = {
         panel_invoker.DEFAULT_LEG_MODELS[leg]
         for leg in ("claude", "codex", "grok")

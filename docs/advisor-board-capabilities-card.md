@@ -105,6 +105,7 @@ actionable message, before any subprocess is spawned. Source of truth:
 | `claude-fable-5-1` | claude      | `claude`     | claude            | max            |
 | `claude-fable-5` | claude        | `claude`     | claude            | max            |
 | `Gemini 3.1 Pro` | gemini        | `gemini`     | gemini            | max            |
+| `gemini-4-neon`  | gemini        | `gemini`     | gemini            | high           |
 | `gemini-4-argon` | gemini        | `gemini`     | gemini            | high           |
 | `gemini-3.8-flash` | gemini      | `gemini`     | gemini            | high           |
 | `gemini-3.7-flash` | gemini      | `gemini`     | gemini            | high           |
@@ -117,7 +118,7 @@ actionable message, before any subprocess is spawned. Source of truth:
 
 `gpt-6-sol` is an explicit seat (launch-tested on `codex` only). It answers to the `sol` alias, so it cannot fill a governed review's `grok` seat.
 
-`gemini-4-argon` (Gemini 4 Argon) is the Gemini default seat. `gemini-3.8-flash`, the prior default, stays registered and answers to the `gemini` alias, so explicit boards and user configs that name it keep working. A president ladder rung that names the exact id `gemini-3.8-flash` (rather than the `gemini` alias) resolves only on a board that seats that model.
+`gemini-4-neon` (Gemini 4 NEON) is the Gemini default seat and renders to `gemini-4-neon-high`. agy also lists `gemini-4-neon-xhigh`, which is not admitted: Gemini effort stays capped at `high`. `gemini-4-argon` (Gemini 4 Argon), the prior default, and `gemini-3.8-flash`, an earlier default, stay registered and answer to the `gemini` alias, so explicit boards and user configs that name them keep working. A president ladder rung that names the exact id `gemini-3.8-flash` (rather than the `gemini` alias) resolves only on a board that seats that model.
 
 `gpt-6.1-sol` is likewise an explicit seat, not a default: it answers to the `sol` alias, so a governed policy requiring `sol` accepts a board that seats it. It is launch-tested on `codex` only; the `opencode` pair is registered by vendor family and is not launch-verified. No board default or preset names it; it was the codex regular tier (the codex implementer model) from the 0.7.27 implementer roster until `gpt-6.2-sol` replaced it. The production review entry points (`phase-loop advisor-board`, the governed review gate, run-train) compose `code-review` with `compose_review_board()` and do not read the user board file, so today a user `[[boards]]` entry cannot move their codex seat; the shipped default moves through the model roster (agent-harness#1171).
 
@@ -126,19 +127,20 @@ actionable message, before any subprocess is spawned. Source of truth:
 **Effort is model-first `{model, effort}`**, split out of the model name and mapped
 per harness by `render_seat_invocation`: `claude` → `--effort <level>`, `codex` →
 `-c model_reasoning_effort=<xhigh|high|…>`, `gemini` → effort baked into the model
-token (`gemini-4-argon-high`; legacy display names such as
+token (`gemini-4-neon-high`; legacy display names such as
 `"Gemini 3.1 Pro (High)"` remain accepted). Canonical effort levels: `low, medium, high, max`.
 
 The `grok` lane maps effort to `--reasoning-effort <level>`.
 
 Built-in presets use one lower canonical effort level than their previous defaults:
 `max` becomes `high`, `high` becomes `medium`, and `medium` becomes `low`.
-The default and availability-composed code-review boards use `high` for Claude,
-Codex and Grok, and `medium` for Gemini. Explicit per-seat `effort` remains authoritative;
+The default and availability-composed code-review boards use `high` for every seat.
+The Gemini NEON seat runs at `high` on every built-in preset, including the
+`medium` brainstorm boards. Explicit per-seat `effort` remains authoritative;
 the invocation mappings still support the full effort scale.
 
 Set `PHASE_LOOP_GEMINI_MODEL=gemini-4-argon` in your local shell or service
-environment to select Argon for Gemini executor/class defaults and composed
+environment to select Argon (the prior default) for Gemini executor/class defaults and composed
 review boards. The value must be a registered canonical base model; do not append
 an effort suffix. This preference keeps each action or seat's existing effort,
 subscription authentication and sandbox admission. Explicit task `--model`,
@@ -197,7 +199,7 @@ on any host other than Claude Code through the subscription TUI adapter (amended
 direct HTTP call, gateway backing or alternate endpoint; a native fill counts only once its
 verdict is bound.
 
-| host ↓ / seat vendor → | Anthropic (`claude-opus-5-5` / Fable) | OpenAI (`gpt-6.2-astra`) | Google (`gemini-4-argon`) | xAI (`grok-4.7`) |
+| host ↓ / seat vendor → | Anthropic (`claude-opus-5-5` / Fable) | OpenAI (`gpt-6.2-astra`) | Google (`gemini-4-neon`) | xAI (`grok-4.7`) |
 |---|---|---|---|---|
 | Claude Code | native sub-agent (emit → fill → invoke) | `codex` CLI | `agy` CLI | `grok` CLI |
 | `codex` | TUI adapter (self-PTY) | native `codex` subagent | `agy` CLI | `grok` CLI |
@@ -219,14 +221,14 @@ the matrix at load time).
 
 | Preset                  | Purpose               | Seats (model · effort · harness · lens) |
 | ----------------------- | --------------------- | ---------------------------------------- |
-| `default`               | premerge-review       | gpt-6.2-astra · high · codex · red-team ; gemini-4-argon · medium · gemini · alternative-approach ; claude-opus-5-5 · high · claude · correctness ; grok-4.7 · high · grok · adversarial |
-| `code-review`           | code-review           | grok-4.7 · high · grok · adversarial ; claude-opus-5-5 · high · claude · correctness ; gpt-6.2-astra · high · codex · red-team ; gemini-4-argon · medium · gemini · alternative-approach |
-| `brainstorm`            | brainstorm            | claude-sonnet-5 · medium · claude · adversarial ; gpt-6.2-astra · medium · codex · supportive ; gemini-4-argon · medium · gemini · lateral |
+| `default`               | premerge-review       | gpt-6.2-astra · high · codex · red-team ; gemini-4-neon · high · gemini · alternative-approach ; claude-opus-5-5 · high · claude · correctness ; grok-4.7 · high · grok · adversarial |
+| `code-review`           | code-review           | grok-4.7 · high · grok · adversarial ; claude-opus-5-5 · high · claude · correctness ; gpt-6.2-astra · high · codex · red-team ; gemini-4-neon · high · gemini · alternative-approach |
+| `brainstorm`            | brainstorm            | claude-sonnet-5 · medium · claude · adversarial ; gpt-6.2-astra · medium · codex · supportive ; gemini-4-neon · high · gemini · lateral |
 | `doc-edit`              | doc-edit              | claude-sonnet-5 · low · claude · copyedit ; gpt-6.2-astra · low · codex · structure |
-| `legal-review`          | legal-review          | gpt-6.2-astra · high · codex · opposing-counsel ; gemini-4-argon · medium · gemini · risk-liability ; claude-opus-5-5 · high · claude · authority-verification |
-| `legal-strategy-review` | legal-strategy-review | gpt-6.2-astra · high · codex · red-team ; gemini-4-argon · medium · gemini · alternatives ; claude-opus-5-5 · high · claude · downside-ethics |
-| `legal-brainstorm`      | legal-brainstorm      | claude-sonnet-5 · medium · claude · aggressive ; gpt-6.2-astra · medium · codex · conservative ; gemini-4-argon · medium · gemini · creative |
-| `general`               | general               | gpt-6.2-astra · high · codex · adversarial ; gemini-4-argon · medium · gemini · alternative ; claude-opus-5-5 · high · claude · completeness |
+| `legal-review`          | legal-review          | gpt-6.2-astra · high · codex · opposing-counsel ; gemini-4-neon · high · gemini · risk-liability ; claude-opus-5-5 · high · claude · authority-verification |
+| `legal-strategy-review` | legal-strategy-review | gpt-6.2-astra · high · codex · red-team ; gemini-4-neon · high · gemini · alternatives ; claude-opus-5-5 · high · claude · downside-ethics |
+| `legal-brainstorm`      | legal-brainstorm      | claude-sonnet-5 · medium · claude · aggressive ; gpt-6.2-astra · medium · codex · conservative ; gemini-4-neon · high · gemini · creative |
+| `general`               | general               | gpt-6.2-astra · high · codex · adversarial ; gemini-4-neon · high · gemini · alternative ; claude-opus-5-5 · high · claude · completeness |
 | `solo`                  | general               | claude-opus-5-5 · high · claude · completeness |
 
 **Catch-alls for unmodeled tasks.** `general` (top-tier cross-vendor panel) and
@@ -259,7 +261,7 @@ citation-verification treatment is a documented deep-seat follow-on
 The explicit `PANEL_LEGS == (codex, gemini, claude)` and `invoke_panel` API stay
 separately frozen for legacy callers (proven in `tests/test_advisor_board_golden.py`).
 
-The president availability ladder is Fable (the Anthropic seat — Opus 5.5 by default) → Sol → Grok 4.7 → Gemini 4 Argon
+The president availability ladder is Fable (the Anthropic seat — Opus 5.5 by default) → Sol → Grok 4.7 → Gemini 4 NEON
 (`Sol` is the GPT seat alias, not the Sol product: `gpt-6.2-astra` by default; `gpt-6.2-sol`, `gpt-6-astra`, `gpt-6.1-sol` and `gpt-5.6-sol` are accepted as explicit ids).
 It advances only on typed unavailability, not on disagreement or a blocking ruling.
 `requires_president` landing policies execute it (`invoke_board(president_invoke=)`)
