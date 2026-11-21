@@ -123,6 +123,10 @@ def grammar_problem(text):
         return "aborted"
     if events[-2]["type"] != "agent_end":
         return "no_agent_end"
+    ends = [i for i, ev in enumerate(events)
+            if ev["type"] == "message_end" and ev["message"].get("role") == "assistant"]
+    if ends and any(ev["type"] == "message_start" for ev in events[ends[-1] + 1:]):
+        return "unfinished_message"
     final = final_assistant(events)
     if final is None or final.get("stopReason") != "stop" or final.get("errorMessage"):
         return "final_not_clean"
@@ -267,6 +271,16 @@ def test_recorded_error_streams_end_in_an_assistant_error_with_aborted_false(nam
 ])
 def test_derived_streams_give_their_stated_grammar_result(name, reason):
     assert grammar_problem((DATA / "events" / "derived" / f"{name}.jsonl").read_text()) == reason
+
+
+@pytest.mark.parametrize("role", ["assistant", "user"])
+def test_a_message_started_after_the_final_assistant_response_is_unfinished(role):
+    # An earlier completed response must not satisfy the terminal grammar once another message
+    # has started and not ended before agent_end.
+    lines = (DATA / "events" / "derived" / "tooled-verdict-eligible.jsonl").read_text().splitlines()
+    end = next(i for i, line in enumerate(lines) if json.loads(line)["type"] == "agent_end")
+    lines.insert(end, json.dumps({"type": "message_start", "message": {"role": role, "content": []}}))
+    assert grammar_problem("\n".join(lines) + "\n") == "unfinished_message"
 
 
 @pytest.mark.parametrize("name", SUCCESS + ERRORS)
