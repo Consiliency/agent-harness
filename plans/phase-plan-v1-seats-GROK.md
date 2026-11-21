@@ -176,6 +176,7 @@ Raw logs stay private. `containment.json` holds record ids and digests only.
 Edit scope: in `seat_profiles.py`, the Grok entry only, including its `window` data. In the
 readiness doc, the Grok row only. In `panel_invoker.py`, the Grok leg and
 `grok_runtime_forms`. `seat_window.py` is not edited; the kit reads the profile's `window`.
+K-1: the leg calls the `plans/artifacts/seats-window-kit-k1-contract.md` §5.4 hook.
 The three kit and notice test files change only in their Grok expectations.
 `test_seats_teamhost_doctor.py` gains one additive agreement row (agent-harness#1882).
 
@@ -259,7 +260,7 @@ row and records the launch-reference inventory decision.
 - **S-1 (resolved).** JAILCORE's merged vendor rule (contract §1) lets a vendor phase add its
   own `<leg>_seat_*` codes, each with one additive `OD10_CLASSES` entry, and its window rows
   as profile data. SL-1 and SL-2 use exactly that and nothing more.
-- **S-2 (open; affects only the row window).** The kit's named exceptions are a code literal
+- **S-2 (resolved in source).** The kit's named exceptions are a code literal
   in `seat_window.readiness_rows()` that still lists Grok as `unconfined`. Registration ends
   the exception in effect, because L1 finds the profile (EC-JAILCORE-5). Under the data-only
   rule, though, no GROK lane may remove the literal, so the kit row would keep showing an
