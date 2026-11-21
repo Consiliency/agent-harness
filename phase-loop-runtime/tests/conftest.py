@@ -215,11 +215,16 @@ def _isolate_host_state(monkeypatch, tmp_path):
 @pytest.fixture(autouse=True)
 def _no_real_agy_vendor_store(monkeypatch):
     """AGYFRESH HOLD: a seat refused for a subject-side reason searches the host's agy vendor
-    store for a held image. No test reads the developer's real store; a test of the hold
-    builds its own vendor store and sets ``agy_hold.VENDOR_STORES`` to it."""
+    store for a held image, and a preflight keeps its admitted image in the harness cache
+    (``held/``). No test reads the developer's real vendor store, and no test's hold reads
+    or writes a cache unless it opts in: the anchor walk root names a directory no store
+    lies under, so every anchor walk fails the same way on every host, whatever its temp
+    directory. A test of the hold builds its own stores and sets ``agy_hold.VENDOR_STORES``
+    and ``agy_hold._WALK_ROOT`` itself."""
     from phase_loop_runtime import agy_hold
 
     monkeypatch.setattr(agy_hold, "VENDOR_STORES", ())
+    monkeypatch.setattr(agy_hold, "_WALK_ROOT", Path("/nonexistent/agy-hold-anchor-off"))
 
 
 @pytest.fixture(autouse=True)

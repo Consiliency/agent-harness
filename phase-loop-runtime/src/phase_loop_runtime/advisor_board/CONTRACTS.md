@@ -2478,6 +2478,57 @@ W1 set; all unexercised rows retain `candidate` (remote rows retain `remote-pend
 - **Not changed.** The seat QCI, store keys, the shipped catalog, records and pins; no jail,
   projection or authority path; `seat_subject.py`. Rollback: `[agy] hold = false`.
 
+## HOLD-CACHE — the harness cache · `agy_hold.py`, `agy_qualification.py` (AGYFRESH §2.5, §2.8)
+
+- **What is kept.** After `admit_seat(first_use=True)` (the board preflight and
+  `agy-qualification run`) admits the **subject**, its sealed image is kept as
+  `<Store.host_dir>/held/<image sha256>`: a 0600 file in a 0700 directory, owned by the
+  euid. The hold reads it as a cache candidate. Not kept: an admission on a spawn or
+  heartbeat route (`first_use=False`), a held admission, a managed-release subject, a digest
+  in `[agy] hold_deny`, and anything with the hold off.
+- **How it is written.** `agy_hold.retain(image, store)` is best effort: it never raises
+  and leaves the admission's image open. Before anything is created it validates the
+  store directory's existing ancestry (no symlink, owned by root or the euid, not group-
+  or other-writable); an absent store is then created. It opens `Store.host_dir` through
+  that walk (and requires the euid's 0700) **before** any lock, then takes the store lock
+  without waiting (a busy lock skips retention this time), opened relative to that same
+  verified directory. An existing `held/` must be the euid's 0700, or nothing is written.
+  If the file exists it returns. Nothing is added unless `held/` has room: its names plus
+  the new one (whose temp file counts too) must stay within `MAX_DIR_ENTRIES` (1,024), the
+  most the reader lists, so a write never makes the cache unreadable. Otherwise the sealed image is
+  streamed in 1 MiB chunks to a temp file (`O_CREAT|O_EXCL|O_NOFOLLOW`, 0600), `fsync`ed,
+  re-hashed, and renamed into place, all relative to the opened `held/` directory. Its
+  traced Python allocation stays within the 2 MiB overhead of AGYFRESH §1.2.
+- **Pruning.** At most `HELD_KEEP` (2) images: the one just retained, always, and the
+  highest authenticated versions among the rest (a catalog member's version, or a MAC-valid
+  provenance entry's), ranked **only among files the hold's reader would admit**: a regular
+  file owned by root or the euid, not group- or other-writable, within the member bound,
+  whose content hashes to its name. A file the reader would refuse, and a file with no
+  authenticated version, a `failed` entry or a denied digest, is unlinked and never kept
+  over a usable one; so is a regular file the reader cannot open at all (mode 000, say);
+  a temp file left by an interrupted retain is unlinked. A name is unlinked only if it still
+  names the inode that was judged; a symlink is neither followed nor unlinked. A removal
+  that fails is logged as a warning naming the file. Pruning is by version, never by mtime.
+- **Clearing.** `phase-loop agy-qualification clear` leaves the cache (and, as before, the
+  fetch ledger). `clear --all` also removes `held/` completely, under the store lock,
+  through the verified store directory: nested entries through checked no-follow
+  descriptors, and a `held` that is itself a symlink is removed without being traversed,
+  whatever the store's own status (a store missing its key still has its cache). It
+  reports `held_removed`; anything it could not remove is listed in `held_not_removed` and
+  the command exits 1, so nothing is left silently. When cleanup cannot safely proceed (no
+  safe path to the store directory, a path it cannot even check, a refused store lock, a
+  directory that cannot be listed) the part left is reported the same way. An error
+  removing the store's entries does not skip the cache step: its result is printed, then
+  that error is raised as `clear` has always raised it.
+- **Safety.** The writers open `Store.host_dir` by the readers' component walk and also
+  require it to be the euid's 0700 directory; the store lock is opened relative to it.
+  Every mutation takes the store lock and works by `dir_fd`. `Store.status()` stays `ok` with `held/` present, and store entries ignore it.
+  A cache file that is pruned or cleared while the hold reads it is rejected, and the hold
+  goes on to the next candidate (with none, the subject's refusal stands). The cache is
+  never bound into a jail.
+- **Disk.** At most `HELD_KEEP` × `MAX_MEMBER_BYTES` in steady state, plus one temp file
+  while retaining. Rollback: `clear --all`, or removing `held/`.
+
 ## PROVFWD — forward provenance for any stable release · `agy_provenance.py`, `agy_attestation.py`, `agy_watch.py`, `agy_qualification.py` (AGYROLL §1)
 
 - **No window.** `find_provenance` examines every listed stable release; a release's position
