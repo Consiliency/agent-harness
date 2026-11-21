@@ -1,7 +1,8 @@
 # W0 bake-off records (SEATS CLAUDE, EC-CLAUDE-5)
 
 One `claude-bakeoff-record.v1` record per W0 run, `<run_id>.json`, written by
-`python -m phase_loop_runtime.claude_bakeoff run` in the owner's W0 window and landed in a
+`python -m phase_loop_runtime.claude_bakeoff run --plan PLAN --session 1` (later
+`--session 2`) in the owner's W0 window and landed in a
 reviewed records PR (G2). The schema is closed and metadata-only: meter readings and raw
 request captures stay in the operator's private storage, and a record carries their
 digests. `python -m phase_loop_runtime.claude_bakeoff validate` is the shape check (V7);
@@ -24,29 +25,74 @@ capture run and 3 control runs on `ai`'s Claude login. It produces the records t
 lockdown needs. The SDK session follows once that route is admitted." This records-only
 amendment fixes the following. The 18-run plan and its six blocks do not change.
 
-- **Sessions.** `run --session 1` runs blocks 1 and 2 (print, control). Its preflight checks
-  only those arms, so it does not need `sdk`. `run --session 2` runs blocks 3 to 6 (sdk,
-  sdk, control, print). It refuses before any reading until `sdk` is admitted and session
-  1's records are in this directory. An arm stopped on a security outcome in session 1 stays
-  stopped in session 2. Neither session overwrites a record that is already here.
-- **Meter.** Each session opens with a reading, and each block closes with one: three
-  readings in session 1 and five in session 2, eight in all (`meter_readings: 8`,
-  `sessions: 2`). A block's bracket is the reading before it in its own session, so block
-  3 opens on session 2's first reading and never on block 2's closing one. Each reading
-  covers subscription usage and extra-usage spend, plus API spend if the account has an API
-  organization. A block that moves extra usage or API spend sets `billing` for all its
-  records, and an ambiguous block records `unknown`.
-- **Interim, never complete.** Session 1's records are an interim set. `validate` names the
-  sessions the directory holds, and with session 1 alone it says the set is not the
-  complete bake-off. EC-CLAUDE-5 is proven only by the records PR that completes session 2.
-  Its run count was fixed before the window and is unchanged.
-- **OD-3b (V7).** Only the latest OD-3b section, by letter, is checked against this
-  directory, and earlier sections are history. The latest section must cite this
-  directory's `evidence_digest` on its `**W0 evidence digest:**` line, and its
-  `**W0 sessions:**` line must name exactly the sessions held here, as `1` or `1 and 2`. A
-  native transport it names must have records here. So an interim section after session 1
-  says `1` and can name only `print` or "none admitted". After session 2's records land, a
-  later section with the next free letter cites the new digest, says `1 and 2`, and may
-  switch the pick through GL-5 and GL-6. Records of session 2 without session 1's fail V7.
+- **Commands.** Run `python -m phase_loop_runtime.claude_bakeoff run --plan PLAN --session 1`
+  for blocks 1 and 2 (print, control), and later `... --session 2` for blocks 3 to 6 (sdk,
+  sdk, control, print). Use the same `--window` (default `w0`) for both, and do not
+  archive its private directory between them.
+- **Gate.** A session holds a lock on this directory from before its gate to its end, so a
+  second session, under any `--window`, refuses. Before any private directory, credential,
+  CA or reading, the gate refuses in these cases:
+  - an arm of the session that is not admitted;
+  - for `sdk`, one that is not ready: it needs its capture twin, the ratified OD-3a
+    section and a current GL-2 worker receipt;
+  - records of this or a later session already here;
+  - for session 2, session 1's records not complete here;
+  - a private ledger that is not this session's starting point;
+  - for session 2, a different bundle, model, effort or board from session 1's.
+
+  Session 1 checks only its own arms, so it does not need `sdk`. Records are created
+  exclusively and never replaced.
+- **Coverage.** A session is complete when every block holds runs `r1` to `r3` of its
+  planned arm. A security stop may end a block early, but only on its last run, and a
+  block whose arm stopped earlier holds no record. `validate` names the complete sessions
+  and any incomplete one. Session 1 alone is an interim set and never the complete
+  bake-off. EC-CLAUDE-5 is proven only by the records PR that completes session 2. Its
+  run count was fixed before the window and is unchanged.
+- **Meter.** Each session opens with a reading, and each block closes with one after the
+  5-minute settle. Openings have no settle. That gives three readings in session 1 and five
+  in session 2, eight in all (`meter_readings: 8`, `sessions: 2`), at fixed private
+  positions filled once and in order. A block's bracket is the reading before it in its
+  own session, so block 3 opens on session 2's first reading.
+  - Each reading has three values: subscription usage, extra-usage spend, and API spend.
+  - A value is a number (`12%`, `$3.40`), `none` (the account has no such meter) or
+    `unavailable`. A blank or malformed answer is asked again, then recorded `unavailable`.
+  - A block whose API spend rose is `api`, then one whose extra-usage spend rose is
+    `extra_usage`, then one whose subscription usage rose is `subscription`.
+  - A spend that cannot be resolved (unavailable, a meter on one side only, or lower at the
+    close) makes the block `unknown`, and so does a block where nothing rose.
+  - Session 2 starts only on session 1's ledger and salt. Those must still reproduce every
+    session-1 record's `meter_digest`.
+- **Security stops.** A security outcome is written to the private
+  `security-outcomes.txt` the moment it is seen, before any reading or record. A later
+  session keeps that arm stopped, as it does for a published `withheld_private` record.
+  Report the outcome privately (OD-10) before any rerun.
+- **OD-3b (V7).** Only the latest OD-3b section, by letter, is checked here. Earlier
+  sections are history. The latest section needs exactly one line of each of these:
+  - `**Jailed Claude default:**`, naming `print`, `sdk` or `none admitted`;
+  - `**W0 sessions:**`, naming `1` or `1 and 2`, all of which must be complete here;
+  - `**W0 evidence digest:**`, which must equal
+    `python -m phase_loop_runtime.claude_bakeoff digest --through-session N` over those
+    sessions alone.
+
+  A section over session 1 may pick only `print` or `none admitted`, and a transport it
+  picks must have records in its sessions.
+- **Landing order.**
+  1. Session 1's records PR (G2).
+  2. Optionally an interim OD-3b section (GL-5) citing session 1. It is provisional: it
+     does not prove EC-CLAUDE-5, and it closes EC-CLAUDE-6 only for the current setting.
+  3. Session 2's records PR. V7 keeps verifying the interim section against session 1's
+     records, which stay unchanged.
+  4. A later OD-3b section with the next free letter. It cites `--through-session 2`, says
+     `1 and 2`, and may switch the pick through GL-5 and GL-6.
 - **EC-CLAUDE-6.** It is satisfied by the latest section. An interim section meets it
   while `sdk` is unadmitted, because it picks among the admitted transports.
+- **Reviewing records before G2.** V7 checks shape, not meaning.
+  - Read every slug a record carries, such as a control `claude_code_entrypoint` or a
+    request host, for private meaning before approving.
+  - A `withheld_private` record keeps its block's request set, which came from the
+    block's capture twin and not from the withheld run.
+  - The twin's output is discarded and its success taken from its exit status. Its request
+    set is a measurement, never a board result.
+  - Control records are self-reported. The kit checks that each control file reports the
+    run plan's model and that each file is fresh and given once. It cannot observe the
+    control's launches or account.

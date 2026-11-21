@@ -455,8 +455,8 @@ activation and live SDK twins wait for GL-2.
 - **GL-6.** After GL-5 merges, SL-1's owner lands the switch PR. It edits only
   `JAILED_CLAUDE_DEFAULT` and `JAILED_DEFAULT_AUTHORITY` and carries SL-6's card statement.
   With "none admitted" there is no switch.
-- **Interim OD-3b (OQ-4).** An OD-3b section may cite session 1 alone; a later one may
-  switch after session 2.
+- **Interim OD-3b (OQ-4).** A provisional OD-3b section may cite session 1 alone; a later
+  one may switch after session 2 (README "Sessions").
 
 Before asking for any gated merge, the landing agent re-runs `audit-order` against `main`'s
 tip, because `base.sha` can lag it.
@@ -489,7 +489,7 @@ owner answers OQ-1 to OQ-5 otherwise before this plan merges.
 1. Answer OQ-1 to OQ-5, or accept the defaults. Pick the W0 host and account, with LA-1 and
    LA-2 done there.
 2. Pause all other Claude use on that account for each block, then run
-   `python -m phase_loop_runtime.claude_bakeoff run --session 1|2` on the W0 head.
+   `python -m phase_loop_runtime.claude_bakeoff run --plan PLAN --session 1` (later `2`) on the W0 head.
 3. Read the usage meter at each of the eight prompts.
 4. At each of the two control blocks, paste the kit's brief into a T3 Code thread.
 5. Review the kit's redacted records, and approve the records PR (G2).
@@ -498,12 +498,11 @@ owner answers OQ-1 to OQ-5 otherwise before this plan merges.
 **Owner questions.** Each lists the recommended default first.
 - **OQ-1, runs per block.** Three, for 18 records. The alternative is five per arm in a
   single pass, with no control for order.
-- **OQ-2, meter cadence.** Per block: eight readings over two sessions, each after a 5-minute settle. Reading
-  per run would take 19 readings.
+- **OQ-2, meter cadence.** Eight readings: one opens each session, one closes each block after a
+  5-minute settle. Per-run readings would take 20.
 - **OQ-3, per-run timeout.** 30 minutes.
-- **OQ-4, sessions.** Decided 2026-11-21 (records-only amendment): early session.
-  `plans/evidence/seat-qualification/claude-w0/README.md` "Sessions" holds the owner's
-  words and the session rules.
+- **OQ-4, sessions.** Decided 2026-11-21: early session. The claude-w0 README's "Sessions"
+  holds the owner's words and the rules.
 - **OQ-5, capture twins.** One per native block, run unjailed with tools under the owner's
   login (principle 5). One per run doubles native runs for the same set.
 - **OQ-6, the `print` landing, before SL-2 merges.** Accept the content check in place of
