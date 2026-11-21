@@ -891,14 +891,60 @@ def write_private(path: Path, data: bytes) -> None:
 
 
 _READING_NAMES = ("subscription_usage", "extra_usage_spend", "api_spend")
+#: A value the owner could not read is ``unavailable``; a spend the account has no meter for
+#: (no API organization, no extra usage) is ``none``. Anything else is a number.
+UNAVAILABLE = "unavailable"
+_PERCENT = re.compile(r"(?P<n>[0-9]{1,3}(?:\.[0-9]{1,2})?) ?%")
+_MONEY = re.compile(r"\$? ?(?P<n>[0-9]{1,7}(?:\.[0-9]{1,2})?)")
+_STORED = re.compile(r"[0-9]{1,7}\.[0-9]{2}")
+#: Prompts per value before it is recorded ``unavailable``.
+READING_ATTEMPTS = 3
+
+
+def normalize_reading(name: str, answer: str) -> str | None:
+    """The stored form of one meter value, or ``None`` when ``answer`` is not one: a blank, a
+    word, or a number in another unit never stands for a reading."""
+    from decimal import Decimal
+
+    text = answer.strip().lower()
+    if text == UNAVAILABLE:
+        return UNAVAILABLE
+    if name != "subscription_usage" and text == "none":
+        return "none"
+    found = (_PERCENT if name == "subscription_usage" else _MONEY).fullmatch(text)
+    if found is None:
+        return None
+    return str(Decimal(found["n"]).quantize(Decimal("0.01")))
+
+
+def _stored_reading(item: object) -> bool:
+    return isinstance(item, dict) and set(item) == set(_READING_NAMES) and all(
+        isinstance(value, str) and (value == UNAVAILABLE or _STORED.fullmatch(value)
+                                    or (name != "subscription_usage" and value == "none"))
+        for name, value in item.items())
+
+
+def _movement(before: str, after: str) -> str:
+    """``moved``, ``same`` or ``unresolved`` (a value unavailable on either side, a meter on one
+    side only, or a reading that went backwards)."""
+    from decimal import Decimal
+
+    if before == after == "none":
+        return "same"
+    if UNAVAILABLE in (before, after) or "none" in (before, after):
+        return "unresolved"
+    old, new = Decimal(before), Decimal(after)
+    return "moved" if new > old else "same" if new == old else "unresolved"
 
 
 @dataclass
 class MeterLedger:
     """The owner's account usage meter readings, kept privately at fixed positions: one opens
     each session and one closes each block, after the settle interval (OQ-2, OQ-4). Session 2
-    keeps session 1's readings. A record carries only its block's ``meter_ref`` and the salted
-    digest of the two readings that bracket it (:func:`bracket_positions`)."""
+    keeps session 1's readings and salt. A record carries only its block's ``meter_ref`` and
+    the salted digest of the two readings that bracket it (:func:`bracket_positions`).
+    Readings fill their positions in order, each once; a value is a number, ``none`` or
+    ``unavailable``, re-asked when it is not."""
 
     root: Path
     prompt: Callable[[str], str] = input
@@ -917,21 +963,31 @@ class MeterLedger:
         except ValueError:
             kept = None
         if (isinstance(kept, list) and len(kept) == size
-                and all(item is None or (isinstance(item, dict) and set(item) == set(_READING_NAMES))
-                        for item in kept)):
+                and all(item is None or _stored_reading(item) for item in kept)):
             self.readings = kept
         else:
             self.readings = [None] * size
             self.problem = "meter: the private ledger is not this run plan's; archive it first"
 
     def read(self, position: int, *, settle_s: float) -> dict:
+        if self.readings[position] is not None:
+            raise ValueError(f"meter: reading {position + 1} is already taken")
+        openings = {opening_position(session) for session in SESSIONS}
+        if position not in openings and self.readings[position - 1] is None:
+            raise ValueError(f"meter: reading {position + 1} is out of order")
         if settle_s:
             self.sleep(settle_s)
         reading = {}
         for name in _READING_NAMES:
-            answer = self.prompt(f"meter reading {position + 1} of {len(self.readings)}: "
-                                 f"{name} (as shown, or 'none'): ").strip()
-            reading[name] = answer[:64]
+            value = None
+            for _attempt in range(READING_ATTEMPTS):
+                answer = self.prompt(
+                    f"meter reading {position + 1} of {len(self.readings)}: {name} (a number as "
+                    f"shown, 'none' if the account has no such meter, or '{UNAVAILABLE}'): ")
+                value = normalize_reading(name, answer)
+                if value is not None:
+                    break
+            reading[name] = value or UNAVAILABLE
         self.readings[position] = reading
         write_private(self.root / "meter.json", json.dumps(self.readings, indent=2).encode())
         return reading
@@ -942,24 +998,49 @@ class MeterLedger:
             write_private(path, os.urandom(32).hex().encode())
         return path.read_bytes()
 
-    def digest(self, block: int) -> str:
+    def _digest(self, block: int, salt: bytes) -> str:
         bracket = [self.readings[position] for position in bracket_positions(block)]
-        return hashlib.sha256(self.salt() + json.dumps(bracket, sort_keys=True).encode()).hexdigest()
+        return hashlib.sha256(salt + json.dumps(bracket, sort_keys=True).encode()).hexdigest()
 
-    def billing(self, block: int, moved: Callable[[str, str], bool] | None = None) -> str:
-        """Where the block's runs landed: ``extra_usage`` or ``api`` when that spend moved
-        across the block, ``subscription`` when only subscription usage moved, otherwise
-        ``unknown``."""
+    def digest(self, block: int) -> str:
+        return self._digest(block, self.salt())
+
+    def session_problems(self, session: int, records: Sequence[Mapping[str, object]]
+                         ) -> list[str]:
+        """Session 1 starts on an empty ledger. Session 2 starts only on the ledger session 1
+        wrote: its readings filled, the rest empty, and the same salt, which together still
+        give every session-1 record's ``meter_digest``. Nothing is created to check this."""
+        first = opening_position(session)
+        if any(slot is not None for slot in self.readings[first:]):
+            return [f"meter: session {session}'s readings are already taken; archive the ledger"]
+        if session == 1:
+            return []
+        if any(slot is None for slot in self.readings[:first]):
+            return ["meter: the private ledger lacks the earlier sessions' readings "
+                    "(another --window, or a lost ledger)"]
+        path = self.root / "meter.salt"
+        salt = path.read_bytes() if path.is_file() else None
+        earlier = [obj for obj in records if session_of(int(obj["block"])) < session]  # type: ignore[call-overload]
+        if salt is None or any(obj["meter_digest"] != self._digest(int(obj["block"]), salt)  # type: ignore[call-overload]
+                               for obj in earlier):
+            return ["meter: the private ledger does not give the earlier sessions' meter digests"]
+        return []
+
+    def billing(self, block: int) -> str:
+        """Where the block's runs landed: ``api`` or ``extra_usage`` when that spend rose across
+        the block, ``subscription`` when only subscription usage rose. A spend that cannot be
+        resolved (unavailable, on one side only, or gone backwards) leaves ``unknown`` rather
+        than letting a lower-ranked meter decide, and so does a block where nothing rose."""
         before, after = (self.readings[position] for position in bracket_positions(block))
         if before is None or after is None:
             return "unknown"
-        changed = moved or (lambda a, b: a != b)
-        if changed(before["api_spend"], after["api_spend"]):
-            return "api"
-        if changed(before["extra_usage_spend"], after["extra_usage_spend"]):
-            return "extra_usage"
-        if changed(before["subscription_usage"], after["subscription_usage"]):
-            return "subscription"
+        for name, label in (("api_spend", "api"), ("extra_usage_spend", "extra_usage"),
+                            ("subscription_usage", "subscription")):
+            movement = _movement(before[name], after[name])
+            if movement == "moved":
+                return label
+            if movement == "unresolved":
+                return "unknown"
         return "unknown"
 
 
@@ -1699,6 +1780,9 @@ class Window:
         problems += session_problems(self.session, self.out_dir)
         if self.ledger.problem:
             problems.append(self.ledger.problem)
+        elif self.session in SESSIONS:
+            records = load_records(self.out_dir)[0] if self.out_dir.exists() else []
+            problems += self.ledger.session_problems(int(self.session), records)  # type: ignore[arg-type]
         problems += composition_problems(self.plan)
         head = str(self.plan.get("w0_head", ""))
         if _HEX40.fullmatch(head):
@@ -1864,10 +1948,14 @@ def _run_window(plan: Mapping[str, object], repo: Path, window: str,
     from . import panel_invoker, seat_credentials, seat_egress_proxy, seat_jail
 
     gate = session_problems(session, repo / EVIDENCE_DIR)
-    if gate:  # before any credential, CA or reading
+    root = private_root(window)
+    ledger = MeterLedger(root)  # reads only; nothing is created before the gate passes
+    if not gate:
+        gate = [ledger.problem] if ledger.problem else ledger.session_problems(
+            session, load_records(repo / EVIDENCE_DIR)[0])
+    if gate:  # before any credential, CA, private directory or reading
         print("claude-bakeoff run: REFUSED: " + "; ".join(gate), file=sys.stderr)
         return 1
-    root = private_root(window)
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(root, 0o700)
     ca_dir = root / "twin-ca"
@@ -1910,7 +1998,7 @@ def _run_window(plan: Mapping[str, object], repo: Path, window: str,
                           observations=root / "observations.jsonl",
                           expected=replace(expected, arm=arm), timeout_s=timeout)
 
-    window_run = Window(plan=plan, out_dir=repo / EVIDENCE_DIR, ledger=MeterLedger(root),
+    window_run = Window(plan=plan, out_dir=repo / EVIDENCE_DIR, ledger=ledger,
                         token=credential.token, repo=repo, native=native, control=control,
                         twin=twin, cli_version=cli_version, session=session)
     try:

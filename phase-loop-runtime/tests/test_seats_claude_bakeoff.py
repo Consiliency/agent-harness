@@ -1106,8 +1106,9 @@ def test_every_arm_and_the_lineup_are_checked_before_the_first_meter_reading(
         first, _calls = _window(repo, tmp_path, monkeypatch=monkeypatch,
                                 native_outcomes=[_ok()] * 3)
         first.run()
-        (tmp_path / "private" / "meter.json").unlink()
         monkeypatch.undo()
+    meter = tmp_path / "private" / "meter.json"
+    before = meter.read_bytes() if meter.exists() else None
     window, calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[],
                             admit_sdk=miss != "sdk-not-admitted", session=session)
     if miss == "no-4b":
@@ -1125,7 +1126,7 @@ def test_every_arm_and_the_lineup_are_checked_before_the_first_meter_reading(
     assert len(window.preflight()) == 1, miss  # the one miss under test, nothing else
     with pytest.raises(ValueError, match="refused before any run"):
         window.run()
-    assert calls == [] and not (tmp_path / "private" / "meter.json").exists()
+    assert calls == [] and (meter.read_bytes() if meter.exists() else None) == before
 
 
 @pytest.mark.parametrize(("changed_on", "message", "native_calls"), [
@@ -1173,6 +1174,83 @@ def test_billing_follows_the_meter_bracket(tmp_path):
     assert bk.MeterLedger(root=tmp_path / "p").problem is not None
 
 
+@pytest.mark.parametrize(("name", "answer", "stored"), [
+    ("api_spend", "$0", "0.00"), ("api_spend", "0", "0.00"), ("api_spend", "$12.5", "12.50"),
+    ("api_spend", "none", "none"), ("api_spend", "", None), ("api_spend", "free", None),
+    ("api_spend", "12%", None), ("subscription_usage", "10%", "10.00"),
+    ("subscription_usage", "none", None), ("subscription_usage", "$3", None),
+    ("extra_usage_spend", "Unavailable", "unavailable"),
+])
+def test_a_meter_value_is_a_number_none_or_unavailable(name, answer, stored):
+    assert bk.normalize_reading(name, answer) == stored
+
+
+def _ledger(root, answers):
+    return bk.MeterLedger(root=root, prompt=lambda _q: answers.pop(0), sleep=lambda _s: None)
+
+
+@pytest.mark.parametrize(("closing", "billing"), [
+    (["20%", "$0", "", "$0"], "subscription"),            # a blank API value is asked again
+    (["20%", "$0", "", "", ""], "unknown"),               # never answered: unavailable
+    (["20%", "$0", "0.00"], "subscription"),              # another format of the same value
+    (["5%", "$0", "$0"], "unknown"),                      # a reading that went backwards
+    (["20%", "$0", "unavailable"], "unknown"),            # an unresolved API spend
+    (["20%", "none", "$0"], "unknown"),                   # a meter on one side only
+    (["10%", "$0", "$0"], "unknown"),                     # nothing moved
+])
+def test_billing_never_comes_from_a_blank_or_unresolved_reading(tmp_path, closing, billing):
+    ledger = _ledger(tmp_path / "p", ["10%", "$0", "$0", *closing])
+    ledger.read(0, settle_s=0)
+    ledger.read(1, settle_s=300)
+    assert ledger.billing(1) == billing
+
+
+def test_readings_fill_their_positions_once_and_in_order(tmp_path):
+    ledger = _ledger(tmp_path / "p", ["10%", "$0", "$0"] * 3)
+    with pytest.raises(ValueError, match="out of order"):
+        ledger.read(1, settle_s=0)
+    ledger.read(0, settle_s=0)
+    with pytest.raises(ValueError, match="already taken"):
+        ledger.read(0, settle_s=0)
+    ledger.read(3, settle_s=0)  # a session opening needs no earlier slot
+    (tmp_path / "p" / "meter.json").write_text(json.dumps(
+        [{"subscription_usage": "10%", "extra_usage_spend": "$0", "api_spend": ""}] + [None] * 7))
+    assert bk.MeterLedger(root=tmp_path / "p").problem is not None  # untyped values refuse
+
+
+def _first_session(repo, tmp_path, monkeypatch):
+    window, _calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[_ok()] * 3)
+    window.run()
+    return bk.load_records(tmp_path / "w0")[0]
+
+
+@pytest.mark.parametrize("loss", ["none", "fresh-window", "meter-file", "salt", "reading",
+                                  "session-2-taken"])
+def test_session_two_starts_only_on_session_ones_private_ledger(repo, tmp_path, monkeypatch, loss):
+    records = _first_session(repo, tmp_path, monkeypatch)
+    root = tmp_path / "private"
+    if loss == "fresh-window":
+        root = tmp_path / "another-window"
+    elif loss == "meter-file":
+        (root / "meter.json").unlink()
+    elif loss == "salt":
+        (root / "meter.salt").unlink()
+    elif loss == "reading":
+        kept = json.loads((root / "meter.json").read_text())
+        kept[1]["subscription_usage"] = "99.00"
+        (root / "meter.json").write_text(json.dumps(kept))
+    elif loss == "session-2-taken":
+        kept = json.loads((root / "meter.json").read_text())
+        kept[3] = kept[2]
+        (root / "meter.json").write_text(json.dumps(kept))
+    problems = bk.MeterLedger(root=root).session_problems(2, records)
+    assert (problems == []) is (loss == "none"), problems
+    if loss in {"fresh-window", "meter-file"}:
+        assert "lacks the earlier sessions' readings" in problems[0]
+    assert not (tmp_path / "another-window").exists()  # checking creates nothing
+    assert bk.MeterLedger(root=tmp_path / "private").session_problems(1, records) != []
+
+
 def test_the_sessions_partition_the_blocks_and_fix_the_readings():
     notes = bk.EXECUTION_NOTES
     assert [b for blocks in notes.session_blocks for b in blocks] == list(
@@ -1198,7 +1276,7 @@ def test_session_one_needs_neither_sdk_admission_nor_its_section(repo, tmp_path,
 
 @pytest.mark.parametrize("case", ["no-session", "session-3", "no-session-1", "partial-session-1",
                                   "partial-control", "session-2-again", "session-1-again",
-                                  "sdk-not-admitted"])
+                                  "sdk-not-admitted", "lost-ledger"])
 def test_a_session_refuses_before_any_reading(repo, tmp_path, monkeypatch, case):
     if case not in {"no-session", "session-3", "no-session-1"}:
         first, _calls = _window(repo, tmp_path, monkeypatch=monkeypatch,
@@ -1208,6 +1286,8 @@ def test_a_session_refuses_before_any_reading(repo, tmp_path, monkeypatch, case)
     if case == "partial-session-1":
         for path in (tmp_path / "w0").glob("w0-b2-*.json"):
             path.unlink()
+    if case == "lost-ledger":
+        (tmp_path / "private" / "meter.json").unlink()
     if case == "partial-control":  # two of block 2's three control records lost
         for name in ("w0-b2-r2.json", "w0-b2-r3.json"):
             (tmp_path / "w0" / name).unlink()

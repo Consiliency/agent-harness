@@ -1410,6 +1410,7 @@
   {"count": 1, "function": "validate_directory", "module": "claude_bakeoff", "primitive": "io.read_bytes", "role": "operator-out-of-scope"},
   {"count": 1, "function": "load_records", "module": "claude_bakeoff", "primitive": "io.read_bytes", "role": "operator-out-of-scope"},
   {"count": 1, "function": "MeterLedger.__post_init__", "module": "claude_bakeoff", "primitive": "io.read_bytes", "role": "operator-out-of-scope"},
+  {"count": 1, "function": "MeterLedger.session_problems", "module": "claude_bakeoff", "primitive": "io.read_bytes", "role": "operator-out-of-scope"},
   {"count": 1, "function": "write_private", "module": "claude_bakeoff", "primitive": "io.open", "role": "operator-out-of-scope"},
   {"count": 1, "function": "_directory_entries", "module": "claude_bakeoff", "primitive": "io.lstat", "role": "operator-out-of-scope"},
   {"count": 2, "function": "checkout_problems", "module": "claude_bakeoff", "primitive": "subprocess.run", "role": "operator-out-of-scope"},
