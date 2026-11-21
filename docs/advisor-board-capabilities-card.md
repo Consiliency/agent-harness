@@ -961,8 +961,12 @@ under the leg's private 0700 scratch directory and the leg carries
 president rows. The shared `qualify`, `verify` and reviewed `export` commands
 use the [window kit](../plans/evidence/seat-qualification/README.md). `qualify`
 implements the frozen control, measured, expired-copy and board order and derives
-containment only from the frozen reducer. The live owner gate remains closed and
-returns `window_owner_approval_required` before preflight or any provider call.
+containment only from the frozen reducer. The live gate opens only under an owner grant:
+reviewed digests of a private grant line and the approved packet. The grant binds the
+designated host, a start window ending no later than 10800 s before 2026-12-04T00:00Z,
+Gemini, the standard context, and exactly one attempt recorded in its own hash-chained
+journal plus a witness beside it. Otherwise it returns `window_owner_approval_required` before preflight or
+any provider call.
 A verified W1 set, one `standard` context, changes only the window vendor's row;
 co-seat, president and unobserved rows remain `candidate`. W1 has not run. Owner host preparation, logins, attendance
 and reviewed evidence remain required. `bounded` president attempts have durable

@@ -18,9 +18,17 @@ team fields and peer observations, no reducer path emits that status, and no EC,
 gate or window requires it.
 
 `seat-window qualify` now implements the frozen per-context launch, board and
-containment-reduction sequence. Live use remains closed: it returns
-`window_owner_approval_required` before preflight or a provider call until an
-owner-approved source change opens W1. No W1 evidence has been collected. LA-1,
+containment-reduction sequence. Live use opens only under an owner grant. A reviewed
+source change sets `seat_window.OWNER_W1_GRANT_SHA256` and `OWNER_W1_PACKET_SHA256`. The
+grant digest names the first line of one private grant file, which the operator mints on the
+designated host in a fixed admission directory (`mint_w1_grant`). That line binds the host,
+a start window, the Gemini vendor, the `standard` context, exactly one attempt and the
+approved packet. No start is allowed at or after 2026-12-04T00:00Z, nor later than 10800 s
+before the grant or the cutoff ends. The attempt appends a hash-chained line to the grant
+file under a lock and writes a witness beside it before preflight; a preflight refusal still
+uses it. Missing or disagreeing attempt evidence refuses further attempts. Without
+a usable grant, `qualify` returns `window_owner_approval_required` before preflight or a
+provider call, and today no grant digest is set. No W1 evidence has been collected. LA-1,
 LA-2 and LA-3 remain owner gates.
 Runtime and profile digests must come from the installed runtime on the
 designated seat host; source-checkout tests do not establish host readiness.

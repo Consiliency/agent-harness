@@ -28,6 +28,26 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
+- Live W1 can run under an owner grant, and stays closed until a reviewed change sets one.
+  - **What opens it.** `seat_window.OWNER_W1_GRANT_SHA256` and `OWNER_W1_PACKET_SHA256`
+    name, by sha256, the first line of one private `w1-grant.jsonl`
+    (`seat_window_w1_grant.v1`) and the approved packet. `seat_window.mint_w1_grant` writes
+    the grant on the designated host in a fixed admission directory under the account's
+    passwd home. The grant binds the host digest, `not_before` and `not_after`, vendor
+    `gemini`, host class `standard`, `max_attempts` 1 (W1 is one attempt), the packet digest
+    and a nonce.
+  - **What `qualify` admits.** Only the Gemini window in the standard context, and the CLI
+    refuses `--model`, `--record` and `--peer-record` for a live run. An attempt must start
+    no later than `W1_COMPLETION_MARGIN_S` (10800 s) before the earlier of the grant's end
+    and `OWNER_W1_APPROVED_UNTIL` (2026-12-04T00:00Z).
+  - **Attempts.** Under an exclusive lock, the one attempt appends a hash-chained line to
+    the grant file and writes a `w1-attempt-<nonce>-1.json` witness beside it, before
+    preflight; a preflight refusal still uses it. Missing or disagreeing journal and witness
+    refuse further attempts.
+  - **Unchanged.** Composition preflight, `--attended`, the recorded EC-EXECFIND-2 pass and
+    the egress-layer check.
+  - **Pins.** `seat_window.runtime_digest()` moves. No jail profile, allow-list, agy QCI,
+    containment contract or frozen interface digest moves.
 - `phase-loop seat-window status --vendor grok`, a read-only answer to "is this grok build
   measured, and should a host move onto an update?" (GROKROLL lane SL-0,
   `plans/artifacts/grokroll-v1-contract.md` §1-§3 and §5.1; Consiliency/agent-harness#2047).

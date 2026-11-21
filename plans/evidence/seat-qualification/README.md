@@ -1,11 +1,32 @@
 # Seat window kit — IF-0-FIRSTSEAT-2
 
-`seat-window qualify` implements the frozen I-15 production orchestration, but its
-live W1 owner gate is deliberately closed. Until a reviewed source change records
-owner approval, it returns `window_owner_approval_required` before preflight,
-authentication, storage or any provider launch. Matrix, offline verification,
-reviewed export and probe-tools are implemented; no fixture or source-checkout run
-opens the live gate.
+`seat-window qualify` implements the frozen I-15 production orchestration. Its live W1
+owner gate opens only under an owner grant:
+- **The approval.** A reviewed source change sets `seat_window.OWNER_W1_GRANT_SHA256` and
+  `OWNER_W1_PACKET_SHA256`. The grant digest names the first line of the private
+  `w1-grant.jsonl`, which the operator mints with `seat_window.mint_w1_grant` in the fixed
+  `agent-harness/w1-admission` directory under the account's passwd home (never the state
+  root) on the designated host. Setting the constants proves nothing by itself: the review
+  of that change checks the owner's approval of the named packet.
+- **What the grant binds.** Schema `seat_window_w1_grant.v1`, `host_digest`, `not_before`,
+  `not_after`, `vendor` `gemini`, `host_class` `standard`, `max_attempts` 1 (only),
+  `packet_sha256` and `nonce`.
+- **Time.** No start is allowed at or after `OWNER_W1_APPROVED_UNTIL` (2026-12-04T00:00Z),
+  nor later than `W1_COMPLETION_MARGIN_S` (10800 s) before the earlier of the grant's end
+  and the cutoff.
+- **Attempts.** W1 is one attempt. Under an exclusive lock, the attempt appends a
+  hash-chained line to the grant file and writes a witness `w1-attempt-<nonce>-1.json` beside
+  it in the same admission directory, before preflight. It is never released: a preflight
+  refusal still uses it. A removed witness or a rolled-back journal refuses further attempts,
+  and no environment variable moves either store.
+- **The trust boundary.** The guard protects the installed reviewed release under a
+  trusted operator. It does not stop an operator who restores both stores from a copy.
+- **Otherwise,** including a team context or another vendor, `qualify` returns
+  `window_owner_approval_required` before preflight, authentication, storage or any
+  provider launch.
+
+Matrix, offline verification, reviewed export and probe-tools are implemented. No fixture
+or source-checkout run opens the live gate.
 
 W1 is an attended owner window, not a source-checkout test. Do not execute it
 until LA-1 host administration and managed release, LA-2 logins under the
