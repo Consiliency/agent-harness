@@ -649,9 +649,12 @@ catalogs (§3.1 descriptor rules) and fails closed:
 - `inputs` gains the additive key `catalog_gate`, with the value `attested`, `unattested`
   or `invalid`. The gate state is not a row-1 input of §5.1: an `invalid` or `unattested`
   gate withholds membership but does not turn every decision into `inputs_invalid`.
-- Readers of package data and of explicit trees follow no link in any component from
-  their anchor down. They take only regular files, never block, and read with a bound. A
-  link, FIFO, directory or other special file is `invalid`. `check_tree` takes an explicit
+- The readers of the release catalog, the gate file and the surface catalog, in package
+  data and in explicit trees, follow no link in any component from their anchor down. They
+  take only regular files, never block, and read with a bound. A link, FIFO, directory or
+  other special file is `invalid`. This promise covers those three files only. The packaged
+  `grok-review` context allow-list is still read by the existing reader in
+  `seat_egress_proxy.py`, which is a hashed runtime file outside this phase's scope (§8). `check_tree` takes an explicit
   checkout `anchor`, and the files are read from `phase-loop-runtime/src/phase_loop_runtime/data`
   below it. With only a data directory, that directory itself must not be a link. In the
   gate, `attested_at` must name a real calendar time. `workflow_ref` must be a ref that
@@ -673,17 +676,33 @@ is classified `invalid` in each of these cases:
   `argv_digest`, `passed` and a non-empty string `public_code`. A malformed failed
   receipt is never positive absence.
 
-The admission gate is not changed and admits a listing receipt with an unknown or
-repeated key. That is a third intended difference of conformance 3, alongside the two in
-§3.1: it is excluded from the implication and tested as a named exception.
+The admission gate is not changed. It admits, with basis `list_tools`, a listing receipt
+that has an unknown key, a repeated key, an omitted `public_code` or a non-null
+`public_code` (for example `"grok_tool_surface_unverified"`), all of which the query
+classifies `invalid`, so a decision on that build holds. These four cases are one strict
+receipt-shape exception: a third intended difference of conformance 3, alongside the two
+in §3.1. They are excluded from the implication and tested as a named exception, which
+exercises both oracles for each case.
 
 **E3 — withdrawal (§3.2 step 3, §5.1, EC-GROKROLL-1, EC-GROKROLL-3).** The first-match
-table stands as written. A withdrawn frozen publication contributes no usable evidence. A
-valid listing receipt is independent evidence, and it still makes the route `usable`
-(basis `list_tools`) when the frozen record was withdrawn. A withdrawn route with no valid
-listing receipt holds: it is `withdrawn`, the build is `partial`, and the build is never a
-target. Read "a withdrawn host-local route is never `usable`" (§3.2) as "never `usable`
-on the strength of its frozen record".
+table and listing precedence stand as written. A withdrawn frozen publication contributes
+no usable evidence. A valid listing receipt is independent evidence, and it still makes
+the route `usable` (basis `list_tools`) when the frozen record was withdrawn.
+
+A build is `partial` when a required route's first-match evidence resolves to
+`withdrawn`, subject to the higher-priority build states (`unresolved`, `invalid`,
+`revoked`). A `partial` build is never a target. Two consequences:
+
+- a required route with a superseded frozen publication and a malformed receipt is
+  `invalid`, not `withdrawn`, because malformed evidence matches first. The build is
+  `invalid`, and a candidate holds with `candidate_evidence_invalid`;
+- a route that is not required can be `withdrawn` while the required routes carry valid
+  evidence. The build is then `measured` and may be a target.
+
+Read "a withdrawn host-local route is never `usable`" (§3.2) as "never `usable` on the
+strength of its frozen record". Read EC-GROKROLL-1's "a withdrawn host-local route
+reported `usable`" and EC-GROKROLL-3's "a target whose host-local route is withdrawn" as
+referring to a route whose first-match evidence is `withdrawn` and which is required.
 
 **E4 — version grammar (§1, §3).** A canonical version is three unsigned decimal
 components of at most nine digits each, with no leading zero, `0` excepted. A longer
@@ -692,7 +711,8 @@ triples and is far beyond any version the vendor publishes.
 
 **E5 — `context_unavailable` (§3.3).** It is an additive detail of `status_unavailable`
 (exit 3), for the case where the running `grok_seat_context.v1` digest cannot be computed
-because its `grok-review` allow-list cannot be read. It is pinned by the golden table.
+because its `grok-review` allow-list cannot be read. It is pinned by the golden table and
+by a CLI-boundary test: exit 3 and exactly the three-key `status_unavailable` object.
 
 **E6 — the evidence count (§3.3).** "The seven values of §3.2 step 3" counts table rows.
 There are six distinct values: `invalid`, `usable`, `refused`, `withdrawn`, `stale` and
