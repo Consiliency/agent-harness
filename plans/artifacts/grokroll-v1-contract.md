@@ -314,9 +314,15 @@ tests keep the typed readers honest, each with its own oracle:
    otherwise. This conformance says nothing about fields.
 3. **Admission**, oracle `grok_tool_gate` at its provisional step: whenever the gate
    admits a form, §3.2 reports that route `usable` with the same basis; and whenever §3.2
-   reports `usable` with basis `list_tools`, the gate admits. The one intended difference:
-   §3.2 reports a frozen route `usable` from the record alone, where the gate also needs
-   the receipt that `probe-tools` writes at no cost.
+   reports `usable` with basis `list_tools`, the gate admits. Two intended differences,
+   both where the query is stricter or reads less than the gate, are excluded from the
+   implication and tested as named exceptions:
+   - §3.2 reports a frozen route `usable` from the record alone, where the gate also needs
+     the receipt that `probe-tools` writes at no cost.
+   - Where the gate admits a form from a valid listing receipt while a host-local record,
+     the attempt register or a catalog beside it is corrupt, §3.2 reports `invalid`. The
+     gate does not consult that evidence for a listing receipt; the query refuses to
+     advance on any invalid input.
 
 `inputs` in the output reports `surface_catalog` and `release_catalog` (`ok` or `invalid`)
 and `host_records` (`ok`, `absent` when there is no record directory, `invalid` when the

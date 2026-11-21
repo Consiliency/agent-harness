@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: GROKROLL
 roadmap: specs/phase-plans-grokroll-v1.md
-roadmap_sha256: d99671cc8f98d892b4911abe4726e5e0a924e5f60e4747e1d940bc82ef1aaef6
+roadmap_sha256: 601da0d37970df8caf5f2df6cd16d79e43b06cac55d89008739b737403f9dc11
 automation:
   suite_command: ["bash", "-lc", "cd phase-loop-runtime && PYTHONPATH=$PWD/src:$PWD/tests timeout 600 .venv/bin/python -m pytest -q -p no:cacheprovider tests/test_grok_release_catalog.py tests/test_grok_evidence.py tests/test_grok_seat_status.py tests/test_grok_release_provenance.py tests/test_verify_grok_release.py tests/test_grok_catalog_workflows.py tests/test_ci_grok_measure_issue.py tests/test_grok_tool_surface.py"]
 ---
