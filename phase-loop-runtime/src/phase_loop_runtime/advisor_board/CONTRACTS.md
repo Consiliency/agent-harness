@@ -2339,7 +2339,7 @@ separate private records. The owner summary is never verified or exported.
 Live W1 remains hard-disabled until a reviewed owner-approval source change. The
 default command returns `window_owner_approval_required` before composition preflight,
 authentication, storage or provider launch. Missing frozen producers also fail closed.
-The matrix reducer changes only rows observed in every context of a complete verified
+The matrix reducer changes only the window vendor's row, observed in the one standard context of a verified
 W1 set; all unexercised rows retain `candidate` (remote rows retain `remote-pending`).
 
 ## RESTORE — agy size bounds and the streaming seat reader · `agy_provenance.py`, `gemini_heartbeat.py`, `agy_integrity.py` (AGYFRESH §1)

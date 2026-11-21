@@ -15357,22 +15357,37 @@ def window_board_launch(spec: WindowBoardSpec) -> WindowBoardResult:
     gemini_legs = [leg for leg in panel.legs if leg.leg == "gemini"]
     gemini = gemini_legs[0] if len(gemini_legs) == 1 else None
     canonical = bool(gemini is not None and gemini.usable)
+    # The staged tree the board's Gemini leg read is the one its launch binding names.
+    tree_digest = getattr(getattr(run, "binding", None), "stage_manifest_sha256", None)
+    if not (isinstance(tree_digest, str) and re.fullmatch(r"[0-9a-f]{64}", tree_digest)):
+        tree_digest = None
     staged_read = bool(
         run is not None and run.watch is not None
         and getattr(run.watch, "read_marker_opened", False)
         and run.tool_steps is not None and run.tool_steps > 0
+        and tree_digest is not None
     )
     read_receipt = {
         "schema": "seat_window_read.v1", "access_observed": staged_read,
         "tool_observed": bool(run is not None and run.tool_steps and run.tool_steps > 0),
-        "input_sha256": input_sha256,
+        "input_sha256": input_sha256, "tree_digest": tree_digest,
     }
+    tool_receipt_sha256 = None
+    if staged_read:
+        # The retained source the offline verifier reconciles (``window-read-<digest>``).
+        from .president_adapter import write_private_record
+        try:
+            tool_receipt_sha256 = _window_json_digest(read_receipt)
+            write_private_record(f"window-read-{tool_receipt_sha256}.json", read_receipt)
+        except (OSError, ValueError, TypeError):
+            tool_receipt_sha256 = None
+            staged_read = False
     return WindowBoardResult(
         composition="admitted", board_outcome=integrated_board_outcome(panel),
         canonical_gemini=canonical, staged_read=staged_read,
         board_sha256=_window_board_digest(board),
         exec_record_sha256=records.get("gemini"),
-        tool_receipt_sha256=_window_json_digest(read_receipt) if staged_read else None,
+        tool_receipt_sha256=tool_receipt_sha256,
         delivered_turn_sha256=(
             sha256(gemini.text.encode("utf-8", errors="strict")).hexdigest()
             if canonical and gemini is not None else None

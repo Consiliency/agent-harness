@@ -963,8 +963,8 @@ use the [window kit](../plans/evidence/seat-qualification/README.md). `qualify`
 implements the frozen control, measured, expired-copy and board order and derives
 containment only from the frozen reducer. The live owner gate remains closed and
 returns `window_owner_approval_required` before preflight or any provider call.
-Verified reduction changes only rows observed in all three W1 contexts; unobserved
-rows remain `candidate`. W1 has not run. Owner host preparation, logins, attendance
+A verified W1 set, one `standard` context, changes only the window vendor's row;
+co-seat, president and unobserved rows remain `candidate`. W1 has not run. Owner host preparation, logins, attendance
 and reviewed evidence remain required. `bounded` president attempts have durable
 start/terminal records and a finite no-output bound; `heartbeat_only` keeps its
 no-silence-kill policy.

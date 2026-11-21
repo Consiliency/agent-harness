@@ -339,6 +339,20 @@ def _private_observation_valid(observation):
              or _is_digest(observation["delivered_copy_sha256"])))
 
 
+READ_RECEIPT_FIELDS = ("schema", "access_observed", "tool_observed", "input_sha256",
+                       "tree_digest")
+
+
+def _read_receipt_valid(read, record) -> bool:
+    """The board's retained staged-read receipt: a tool read observed in a named staged tree,
+    for exactly the board input the record binds."""
+    return (type(read) is dict and set(read) == set(READ_RECEIPT_FIELDS)
+            and read["schema"] == "seat_window_read.v1"
+            and read["access_observed"] is True and read["tool_observed"] is True
+            and _is_digest(read["tree_digest"])
+            and read["input_sha256"] == record["board_input_digest"])
+
+
 def _reconcile_sources(record, *, root=None):
     try:
         data = _window_data_for_record(record)
@@ -362,9 +376,7 @@ def _reconcile_sources(record, *, root=None):
             or execution["exit_code"] != 0 or execution.get("outcome") != "leg_execution_completed"
             or execution.get("model_turn") is not True or execution.get("verdict") is not True):
             return False
-        if (read.get("schema") != "seat_window_read.v1"
-            or read.get("access_observed") is not True or read.get("tool_observed") is not True
-            or not _is_digest(read.get("tree_digest"))):
+        if not _read_receipt_valid(read, record):
             return False
         if (not _private_observation_valid(observation)
             or not _containment_outcomes_valid(record["containment_outcomes"], data)
@@ -483,7 +495,14 @@ def reduce_readiness(records, *, now=None, source_root=None) -> list[dict]:
     # A team context never sets a row status, and no path here emits `done-team`.
     records = _standard_records(records)
     evidence = digest(sorted(record["record_digest"] for record in records))
+    # A window qualifies only its own vendor's row: the record's containment, egress,
+    # profile and allow-list evidence are that vendor's. A co-seat's exec record shows
+    # only that its leg ran on the board (degraded or not), never that its row qualified.
+    window_rows = {f"vendor:{data.vendor}" for record in records
+                   if (data := _window_data_for_record(record)) is not None}
     for row in rows:
+        if row["id"] not in window_rows:
+            continue
         observed = []
         for record in records:
             match = next((item for item in record["row_observations"] if item["id"] == row["id"]), None)

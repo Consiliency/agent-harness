@@ -6,6 +6,22 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Fixed
+
+- A W1 window record can now verify. The board's Gemini leg retains its staged-read
+  receipt as a private `window-read-<digest>.json` record, naming the staged tree it read
+  (`tree_digest`, from the leg's launch binding) and the board input. The offline verifier
+  requires exactly those fields and that the receipt's input is the record's board input.
+  Before this, the board hashed a receipt it never wrote, so verification always failed.
+- The Gemini window expects every other plan-tier seat as a co-seat (Claude, Codex and
+  Grok). The plan-tier policy always seats Claude, so a terminated W1 board never matched
+  the old Codex-and-Grok set.
+- The readiness reducer moves only the window vendor's own row to `done-local`. A co-seat
+  that left an exec record on the board, degraded or not, keeps its row `candidate`
+  instead of taking the Gemini row's evidence and digests.
+- Pins: `seat_window.runtime_digest()` moves. No jail profile, allow-list, agy QCI,
+  containment contract or frozen interface digest moves.
+
 ### Added
 
 - The grok tool probe has a second basis for builds with no `--list-tools`, which is every
