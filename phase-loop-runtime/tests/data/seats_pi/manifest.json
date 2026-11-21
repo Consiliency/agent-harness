@@ -1,0 +1,634 @@
+{
+ "command": [
+  "pi",
+  "--offline",
+  "--provider",
+  "openai-codex",
+  "--model",
+  "gpt-6.1-sol",
+  "--thinking",
+  "low",
+  "--mode",
+  "json",
+  "--print",
+  "--no-session",
+  "--no-approve",
+  "--no-context-files",
+  "--no-mcp",
+  "--no-skills",
+  "--no-prompt-templates",
+  "--no-themes",
+  "--no-extensions",
+  "--extension",
+  "WITNESS",
+  "--tools",
+  "read,grep,find,ls,bash"
+ ],
+ "files": [
+  {
+   "case": "session header twice",
+   "derived_from": "events/tooled-success.jsonl",
+   "kind": "event_stream",
+   "path": "events/derived/duplicate-session.jsonl",
+   "provenance": "derived",
+   "sha256": "ffb5dd8fa76bb0511dce01c76d844f3d2549e304b88a428be93e84b070e28259"
+  },
+  {
+   "case": "agent_settled twice",
+   "derived_from": "events/tooled-success.jsonl",
+   "kind": "event_stream",
+   "path": "events/derived/duplicate-settled.jsonl",
+   "provenance": "derived",
+   "sha256": "0537f75d54ac08826d9a567bd9b217012da4f39441cf722d60556829327bff05"
+  },
+  {
+   "case": "one event line truncated mid-object",
+   "derived_from": "events/tooled-success.jsonl",
+   "kind": "event_stream",
+   "path": "events/derived/malformed-line.jsonl",
+   "provenance": "derived",
+   "sha256": "d911522f61224a36d39385b62f86e3622a1f5fd97afd350414b5c489027cf66b"
+  },
+  {
+   "case": "stream ends before agent_settled (incomplete)",
+   "derived_from": "events/tooled-success.jsonl",
+   "kind": "event_stream",
+   "path": "events/derived/missing-settled.jsonl",
+   "provenance": "derived",
+   "sha256": "212da331c5580d8b1b167a72165364364154b304bebd52185c74b02d56cd2265"
+  },
+  {
+   "case": "first event is not the session header",
+   "derived_from": "events/tooled-success.jsonl",
+   "kind": "event_stream",
+   "path": "events/derived/no-session-header.jsonl",
+   "provenance": "derived",
+   "sha256": "446ece770f1bbb52084f2c63d3b1c6831f4474cd084e7799f0013e664cc286dc"
+  },
+  {
+   "case": "an event after agent_settled",
+   "derived_from": "events/tooled-success.jsonl",
+   "kind": "event_stream",
+   "path": "events/derived/post-terminal.jsonl",
+   "provenance": "derived",
+   "sha256": "0b50792221eaec57d23d944763b824e6757897591c331e3a68d0359f913d13ce"
+  },
+  {
+   "case": "agent_settled{aborted:true}",
+   "derived_from": "events/tooled-success.jsonl",
+   "kind": "event_stream",
+   "path": "events/derived/settled-aborted.jsonl",
+   "provenance": "derived",
+   "sha256": "83927b4760b1c6d2ffdbdffa6c20817a70130070c474df82ef85ac06093100ef"
+  },
+  {
+   "case": "tool_execution_* names a tool outside read,grep,find,ls,bash",
+   "derived_from": "events/tooled-success.jsonl",
+   "kind": "event_stream",
+   "path": "events/derived/unknown-tool.jsonl",
+   "provenance": "derived",
+   "sha256": "3465208cf6025fc34cead438d05d54f8563d87f64c59994a256f64017b80ccd0"
+  },
+  {
+   "case": "401 with the shared error body (assistant error alongside aborted:false)",
+   "kind": "event_stream",
+   "launch": "L3",
+   "path": "events/http-401.jsonl",
+   "pi_exit_code": 0,
+   "provenance": "recorded",
+   "raw_sha256": "1d50e87f211969ccdcb6901b8c9b072505809f6262797af27f9055c55d05318a",
+   "sanitization": "evidence and release path prefixes replaced (/seat, /opt/pi-release)",
+   "sha256": "edbe86e5e4fcb033a591877231b7eddac3732b5ddf4844949bf316ee101091a3"
+  },
+  {
+   "case": "403 with the shared error body",
+   "kind": "event_stream",
+   "launch": "L4",
+   "path": "events/http-403.jsonl",
+   "pi_exit_code": 0,
+   "provenance": "recorded",
+   "raw_sha256": "0917145ed19dd7e495e3e772b0e23d6cfb4905896b9a9a50096431a8a7db4998",
+   "sanitization": "evidence and release path prefixes replaced (/seat, /opt/pi-release)",
+   "sha256": "322694d500f3d600ae3b330f7587be783d9a5430a6764f17daff61baece30fe0"
+  },
+  {
+   "case": "429 with the shared error body",
+   "kind": "event_stream",
+   "launch": "L5",
+   "path": "events/http-429.jsonl",
+   "pi_exit_code": 0,
+   "provenance": "recorded",
+   "raw_sha256": "84e5d9f08f19ae74f712debed9d7c1f110f247f88af9fbe8b1c830f6dbfc8d7c",
+   "sanitization": "evidence and release path prefixes replaced (/seat, /opt/pi-release)",
+   "sha256": "1c6be7a7d45b7dc6d825f3b103895dc1b5362638f7f63a31f7e6af98582166fb"
+  },
+  {
+   "case": "500 (5xx) with the shared error body",
+   "kind": "event_stream",
+   "launch": "L6",
+   "path": "events/http-500.jsonl",
+   "pi_exit_code": 0,
+   "provenance": "recorded",
+   "raw_sha256": "b95d96afe6aa72908137dca1670bbeb0dbbde9745bbe85d035daac6017acb4c6",
+   "sanitization": "evidence and release path prefixes replaced (/seat, /opt/pi-release)",
+   "sha256": "e26109c76340e905bbed79a1aa05a9a032f4fa27f643c3ee855f0fe4a960cde8"
+  },
+  {
+   "case": "2xx response whose stream carries response.failed",
+   "kind": "event_stream",
+   "launch": "L8",
+   "path": "events/stream-failed-2xx.jsonl",
+   "pi_exit_code": 0,
+   "provenance": "recorded",
+   "raw_sha256": "78d0add7d4a5119842824a1cdebc16ac2ceeaaff75c1cb70920de9cc1958286b",
+   "sanitization": "evidence and release path prefixes replaced (/seat, /opt/pi-release)",
+   "sha256": "be887e1f5d4869ad4b07370c271dc7485a478747403cf46368d37df146c8068c"
+  },
+  {
+   "case": "tooled success whose final response reports a differing upstream model; the tool ran the trust-precondition probe",
+   "kind": "event_stream",
+   "launch": "L2",
+   "path": "events/tooled-probe-differing-model.jsonl",
+   "pi_exit_code": 0,
+   "provenance": "recorded",
+   "raw_sha256": "c3207d58da2449c22ab3c598e18cab152c7e5ffead632333ebb73aa457dda201",
+   "sanitization": "evidence and release path prefixes replaced (/seat, /opt/pi-release)",
+   "sha256": "42937fdf11799d87ae47b06f9c29d215f58b76d3a93d6904b77d40c898ab9d8e"
+  },
+  {
+   "case": "tooled success with several message_end events and a tool-originated POST",
+   "kind": "event_stream",
+   "launch": "L1",
+   "path": "events/tooled-success.jsonl",
+   "pi_exit_code": 0,
+   "provenance": "recorded",
+   "raw_sha256": "98f1b6de8714c975030caa2a1868c9e01cdbdd46e14f6c5be075dd7398ffa58e",
+   "sanitization": "evidence and release path prefixes replaced (/seat, /opt/pi-release)",
+   "sha256": "ddf51122b29b6a774a179e46489c059f24216f55028a0c2f77d864befdfa558b"
+  },
+  {
+   "case": "transport reset after response.created",
+   "kind": "event_stream",
+   "launch": "L7",
+   "path": "events/transport-reset.jsonl",
+   "pi_exit_code": 0,
+   "provenance": "recorded",
+   "raw_sha256": "6edff6f1bcb47009ec0e576fa0c4143253636e5b5bedda66e80cc396df38b706",
+   "sanitization": "evidence and release path prefixes replaced (/seat, /opt/pi-release)",
+   "sha256": "845c66154e4f15ce5cf3ed61a74e2c0b86e8efe9b51e671843b94226b5e55323"
+  },
+  {
+   "kind": "measurement",
+   "launch": "L2",
+   "path": "measurements/trust-preconditions.json",
+   "provenance": "recorded",
+   "sha256": "aefc0932385463942374b9f09174de8958533e6ec6b86f481fb42a5dbbb9063a"
+  },
+  {
+   "kind": "proxy_log",
+   "launch": "L3",
+   "note": "metadata from the per-launch loopback recording proxy",
+   "path": "proxy/http-401.json",
+   "provenance": "recorded",
+   "sha256": "1cc0d054e73722ce9b5fe666fbef8bac1e5c6f6cfe590384affdbd9d461b9739"
+  },
+  {
+   "kind": "proxy_log",
+   "launch": "L4",
+   "note": "metadata from the per-launch loopback recording proxy",
+   "path": "proxy/http-403.json",
+   "provenance": "recorded",
+   "sha256": "077fc799ef20d3958b39a87cdefa50bb3511b28f063e6bbbaa6bdaa45a5a26b6"
+  },
+  {
+   "kind": "proxy_log",
+   "launch": "L5",
+   "note": "metadata from the per-launch loopback recording proxy",
+   "path": "proxy/http-429.json",
+   "provenance": "recorded",
+   "sha256": "b23cb0414ec140838b04643068e88b19e26d24227cfff0e6cd890c18ee216f95"
+  },
+  {
+   "kind": "proxy_log",
+   "launch": "L6",
+   "note": "metadata from the per-launch loopback recording proxy",
+   "path": "proxy/http-500.json",
+   "provenance": "recorded",
+   "sha256": "6ae754bfc79ff9e3796b79e5419d79847ff22813a92b095a74db351c6381d14b"
+  },
+  {
+   "kind": "proxy_log",
+   "launch": "L8",
+   "note": "metadata from the per-launch loopback recording proxy",
+   "path": "proxy/stream-failed-2xx.json",
+   "provenance": "recorded",
+   "sha256": "33cb985b9bf1bf60a5a2d032e4148f310e587e6f151021b47c78e102091fd24e"
+  },
+  {
+   "kind": "proxy_log",
+   "launch": "L2",
+   "note": "metadata from the per-launch loopback recording proxy",
+   "path": "proxy/tooled-probe-differing-model.json",
+   "provenance": "recorded",
+   "sha256": "ec4ed23b692b532faa7b31bd56bca98b56dec638c2c73563f979c225e36eaea4"
+  },
+  {
+   "kind": "proxy_log",
+   "launch": "L1",
+   "note": "metadata from the per-launch loopback recording proxy",
+   "path": "proxy/tooled-success.json",
+   "provenance": "recorded",
+   "sha256": "7f318950781df6d706f7a18fcfd1ad3f603d5296f0b84ff8c6c0daf916b717e8"
+  },
+  {
+   "kind": "proxy_log",
+   "launch": "L7",
+   "note": "metadata from the per-launch loopback recording proxy",
+   "path": "proxy/transport-reset.json",
+   "provenance": "recorded",
+   "sha256": "e808f606935fbb6e9e87a2b7e458063e371b657897ac693abd1466183d8d5f8b"
+  },
+  {
+   "kind": "route_record",
+   "note": "every value marked to-measure in contract \u00a72 is a placeholder until SL-3.6",
+   "path": "routes/route-record.synthetic.json",
+   "provenance": "synthetic",
+   "sha256": "8322b51cf4345032405b9a59948b17672ac5a386915c02a50da3491e6d30c2e5"
+  },
+  {
+   "expected_refusal": "duplicate_key",
+   "kind": "store",
+   "path": "stores/duplicate-key.json",
+   "provenance": "synthetic",
+   "sha256": "2fbf77eb050804e2e625cffc89841bd4b09bf29d2e7cc5ee5f54c1b4a9fb5aaf",
+   "validity": "invalid"
+  },
+  {
+   "expected_refusal": "expiry_not_credible",
+   "kind": "store",
+   "path": "stores/expires-exp-mismatch.json",
+   "provenance": "synthetic",
+   "sha256": "8f1f3f7fca0e0bf94031d7cf3c6904ef35c4eea2f5346b79530492db18bc7508",
+   "validity": "invalid"
+  },
+  {
+   "expected_refusal": "expiry_not_credible",
+   "kind": "store",
+   "path": "stores/expires-not-integer.json",
+   "provenance": "synthetic",
+   "sha256": "f87d1b1b2044c0cd263e403b5828e2312da7ae0f7fa3e1cda97f881c906988db",
+   "validity": "invalid"
+  },
+  {
+   "expected_refusal": "expiry_not_credible",
+   "kind": "store",
+   "path": "stores/future-iat.json",
+   "provenance": "synthetic",
+   "sha256": "c8338383c97b49146d900f90336854b5dd5ea121081adbef5d5af2edbbfc9b13",
+   "validity": "invalid"
+  },
+  {
+   "expected_refusal": "expiry_not_credible",
+   "kind": "store",
+   "path": "stores/lifetime-over-ceiling.json",
+   "provenance": "synthetic",
+   "sha256": "4ebbc2b0fb7e78b230b8beabb2bc6d6b5b2a4decb1c514f8e5b76db36f6fd10b",
+   "validity": "invalid"
+  },
+  {
+   "kind": "login_record",
+   "path": "stores/login-record.synthetic.json",
+   "provenance": "synthetic",
+   "sha256": "ee8943f7534e4ac684e20583dc417e330e3627aa800db7af83ea9d657ca149cd"
+  },
+  {
+   "expected_refusal": "claim_mismatch",
+   "kind": "store",
+   "path": "stores/missing-account.json",
+   "provenance": "synthetic",
+   "sha256": "556ae17981f8762e992951f983c493a69c19d9b87a9dd94e2f70a314ac4d57f0",
+   "validity": "invalid"
+  },
+  {
+   "expected_refusal": "expiry_not_credible",
+   "kind": "store",
+   "path": "stores/missing-exp.json",
+   "provenance": "synthetic",
+   "sha256": "85246c6b803cbc10501c32dcac6f3d221e1fffbb8e22e15b9099f46ff7559b2c",
+   "validity": "invalid"
+  },
+  {
+   "expected_refusal": "expiry_not_credible",
+   "kind": "store",
+   "path": "stores/missing-iat.json",
+   "provenance": "synthetic",
+   "sha256": "5158d6f2c26e8714a30ecf45a35a62c58a7c242acc63ee4e82f6b32542f2ea71",
+   "validity": "invalid"
+  },
+  {
+   "expected_refusal": "claim_mismatch",
+   "kind": "store",
+   "path": "stores/narrower-scope.json",
+   "provenance": "synthetic",
+   "sha256": "bc6702a78ed8f1e6219c03681541142ee1d5d7b7831eb8328e67f59b391e03b9",
+   "validity": "invalid"
+  },
+  {
+   "expected_refusal": "refresh_not_empty",
+   "kind": "store",
+   "path": "stores/refresh-present.json",
+   "provenance": "synthetic",
+   "sha256": "930fd0bf90c629341dbc0da88c11727747a13ad7cb5dc8b0945ae41bb79a8207",
+   "validity": "invalid"
+  },
+  {
+   "expected_refusal": "second_entry",
+   "kind": "store",
+   "path": "stores/second-entry.json",
+   "provenance": "synthetic",
+   "sha256": "7d71db84ca6ff48dc8d9781a767f038a25ef8544e213d0880f56d8a48c54e7d5",
+   "validity": "invalid"
+  },
+  {
+   "expected_refusal": "unlisted_field",
+   "kind": "store",
+   "path": "stores/unlisted-field.json",
+   "provenance": "synthetic",
+   "sha256": "7978c1f7a586cb7315cb16223f7d7cf01f2a684d2063680950a9869cfee6514c",
+   "validity": "invalid"
+  },
+  {
+   "expected_refusal": null,
+   "kind": "store",
+   "path": "stores/valid.json",
+   "provenance": "synthetic",
+   "sha256": "868fe88c72224d2cacb19856f9239df167488f60a5869074c2ea5ffdf603d0f0",
+   "validity": "valid"
+  },
+  {
+   "expected_refusal": "scope_excess",
+   "kind": "store",
+   "path": "stores/wider-scope.json",
+   "provenance": "synthetic",
+   "sha256": "e71d766594fc579c01b74b6484ecb07aecb67163a804d5f7d56efa04ed2e42d3",
+   "validity": "invalid"
+  },
+  {
+   "expected_refusal": "claim_mismatch",
+   "kind": "store",
+   "path": "stores/wrong-account.json",
+   "provenance": "synthetic",
+   "sha256": "1516a52522be0f8cc30e823fb0ff1814574bf2ad84675cc1d64bc526a50f4356",
+   "validity": "invalid"
+  },
+  {
+   "expected_refusal": "claim_mismatch",
+   "kind": "store",
+   "path": "stores/wrong-aud.json",
+   "provenance": "synthetic",
+   "sha256": "3d72dc99b312e68878f83cc5f18429e70bc4f698f088990474bd1aceaed5a4fb",
+   "validity": "invalid"
+  },
+  {
+   "expected_refusal": "claim_mismatch",
+   "kind": "store",
+   "path": "stores/wrong-client.json",
+   "provenance": "synthetic",
+   "sha256": "f9f9214a21c4eb09f20465d9f5000e1869541412a08b5934e336b7e4790cd11e",
+   "validity": "invalid"
+  },
+  {
+   "expected_refusal": "claim_mismatch",
+   "kind": "store",
+   "path": "stores/wrong-iss.json",
+   "provenance": "synthetic",
+   "sha256": "fe7af19a8eaf51dce91e95a0829ce36d78d4760cd412a7a8aaecf5a688c3ef2a",
+   "validity": "invalid"
+  },
+  {
+   "expected_refusal": "wrong_provider",
+   "kind": "store",
+   "path": "stores/wrong-provider.json",
+   "provenance": "synthetic",
+   "sha256": "df8267f34d44cca1783e24f94bb50ab5c6b70ac508671b89631880f308c4ccd4",
+   "validity": "invalid"
+  },
+  {
+   "expected_refusal": "wrong_type",
+   "kind": "store",
+   "path": "stores/wrong-type.json",
+   "provenance": "synthetic",
+   "sha256": "71d0ba98ba9ca9ba818bd488139a4b293d3cedb1bc5ec57b91fef6890657aac0",
+   "validity": "invalid"
+  },
+  {
+   "kind": "witness",
+   "launch": "L3",
+   "note": "written by the SL-1.0 stub witness from real after_provider_response and provider_stream_event calls; SL-1.2's witness.mjs re-records these",
+   "path": "witness/http-401.jsonl",
+   "provenance": "stub_witness",
+   "sha256": "33b15b9468e938b4f5f8ef5a6487a8c718da08afd058d95fda0f17727b1715e9",
+   "validity": "valid"
+  },
+  {
+   "kind": "witness",
+   "launch": "L4",
+   "note": "written by the SL-1.0 stub witness from real after_provider_response and provider_stream_event calls; SL-1.2's witness.mjs re-records these",
+   "path": "witness/http-403.jsonl",
+   "provenance": "stub_witness",
+   "sha256": "8487f1e3717847e8465d6bb44fdf3bbcc2ec590ad6d4fbaae9023072c126575c",
+   "validity": "valid"
+  },
+  {
+   "kind": "witness",
+   "launch": "L5",
+   "note": "written by the SL-1.0 stub witness from real after_provider_response and provider_stream_event calls; SL-1.2's witness.mjs re-records these",
+   "path": "witness/http-429.jsonl",
+   "provenance": "stub_witness",
+   "sha256": "e9d27a56290eda3ccbb068301cd0c2e7ee951716ed2ed3d2a0259d928e83eb3c",
+   "validity": "valid"
+  },
+  {
+   "kind": "witness",
+   "launch": "L6",
+   "note": "written by the SL-1.0 stub witness from real after_provider_response and provider_stream_event calls; SL-1.2's witness.mjs re-records these",
+   "path": "witness/http-500.jsonl",
+   "provenance": "stub_witness",
+   "sha256": "0cd2f1c4418831241992cf1e88e394e6f2b253c95c1624a2bc5794f46c236059",
+   "validity": "valid"
+  },
+  {
+   "kind": "witness",
+   "launch": "L8",
+   "note": "written by the SL-1.0 stub witness from real after_provider_response and provider_stream_event calls; SL-1.2's witness.mjs re-records these",
+   "path": "witness/stream-failed-2xx.jsonl",
+   "provenance": "stub_witness",
+   "sha256": "ac9d53fbe269f8d0e6bd309868dd05c2071b025e97fd07626427ba90f190421e",
+   "validity": "valid"
+  },
+  {
+   "derived_from": "witness/tooled-success.jsonl",
+   "expected_refusal": "record_after_settled",
+   "kind": "witness",
+   "path": "witness/synthetic/after-settled.jsonl",
+   "provenance": "synthetic",
+   "settled_after_ordinal": 2,
+   "sha256": "82f1efa01980a87e9440e4e1990b52c1ceb96122d860127c1b633a8497107c18",
+   "validity": "invalid"
+  },
+  {
+   "derived_from": "witness/tooled-success.jsonl",
+   "expected_refusal": "schema",
+   "kind": "witness",
+   "path": "witness/synthetic/completed-non-2xx.jsonl",
+   "provenance": "synthetic",
+   "sha256": "db2579b85bb742e4e5a4af18641e2332bb0b8b7e8b86d6d480dfe13a76882b4f",
+   "validity": "invalid"
+  },
+  {
+   "derived_from": "witness/tooled-success.jsonl",
+   "expected_refusal": "schema",
+   "kind": "witness",
+   "path": "witness/synthetic/completed-without-digest.jsonl",
+   "provenance": "synthetic",
+   "sha256": "4d8d8e8aed4c4c46e96be5b26f38e527ae79ddc3388d993fd0b07d35d555bfe3",
+   "validity": "invalid"
+  },
+  {
+   "derived_from": "witness/tooled-success.jsonl",
+   "expected_refusal": "duplicate_ordinal",
+   "kind": "witness",
+   "path": "witness/synthetic/duplicate-ordinal.jsonl",
+   "provenance": "synthetic",
+   "sha256": "bec31135d02441fc83088b836ef1357017fca6c961d1123d96d63cf13e4467e9",
+   "validity": "invalid"
+  },
+  {
+   "derived_from": "witness/tooled-success.jsonl",
+   "expected_refusal": "duplicate_response_id",
+   "kind": "witness",
+   "path": "witness/synthetic/duplicate-response-id.jsonl",
+   "provenance": "synthetic",
+   "sha256": "c16ca0bc268b0d9b44ca487896d2caeeab5eade380eb4237380b2644379371b4",
+   "validity": "invalid"
+  },
+  {
+   "derived_from": "witness/tooled-success.jsonl",
+   "expected_refusal": "schema",
+   "kind": "witness",
+   "path": "witness/synthetic/extra-field.jsonl",
+   "provenance": "synthetic",
+   "sha256": "ae03749e12fa0548fc98734833bbc4d3d4f2b560cb867deb0bfb3194512732c8",
+   "validity": "invalid"
+  },
+  {
+   "derived_from": "witness/tooled-success.jsonl",
+   "expected_refusal": "ordinal_gap",
+   "kind": "witness",
+   "path": "witness/synthetic/first-ordinal-not-one.jsonl",
+   "provenance": "synthetic",
+   "sha256": "28a6cb41b3602137aaa6a071202683f344d5827b08af25c2310c7f095bfc8240",
+   "validity": "invalid"
+  },
+  {
+   "derived_from": "witness/tooled-success.jsonl",
+   "expected_refusal": "ordinal_gap",
+   "kind": "witness",
+   "path": "witness/synthetic/ordinal-gap.jsonl",
+   "provenance": "synthetic",
+   "sha256": "482d98494e34fd344bd0c4ad27b16dc807a1fb887cd7e613534af87bdda04085",
+   "validity": "invalid"
+  },
+  {
+   "derived_from": "witness/tooled-success.jsonl",
+   "expected_refusal": "unparseable",
+   "kind": "witness",
+   "path": "witness/synthetic/unparseable.jsonl",
+   "provenance": "synthetic",
+   "sha256": "3f2691500edc64114a97dc1fecf6a0d531e3f7fd9b86ffd9028d439822176bf9",
+   "validity": "invalid"
+  },
+  {
+   "derived_from": "witness/tooled-success.jsonl",
+   "expected_refusal": "schema",
+   "kind": "witness",
+   "path": "witness/synthetic/wrong-schema.jsonl",
+   "provenance": "synthetic",
+   "sha256": "fe0e998825605eb235459f040a4034fcf21a031ef9294f599238307df2118296",
+   "validity": "invalid"
+  },
+  {
+   "kind": "witness",
+   "launch": "L2",
+   "note": "written by the SL-1.0 stub witness from real after_provider_response and provider_stream_event calls; SL-1.2's witness.mjs re-records these",
+   "path": "witness/tooled-probe-differing-model.jsonl",
+   "provenance": "stub_witness",
+   "sha256": "3e4327c7a5223221afb76f06f2f06c09b625cd37a441ee496164f50cbe37696c",
+   "validity": "valid"
+  },
+  {
+   "kind": "witness",
+   "launch": "L1",
+   "note": "written by the SL-1.0 stub witness from real after_provider_response and provider_stream_event calls; SL-1.2's witness.mjs re-records these",
+   "path": "witness/tooled-success.jsonl",
+   "provenance": "stub_witness",
+   "sha256": "bc27a079abea2e7da8870851457171d7418a261b8219b3e7e469a8412aa8cefd",
+   "validity": "valid"
+  },
+  {
+   "kind": "witness",
+   "launch": "L7",
+   "note": "written by the SL-1.0 stub witness from real after_provider_response and provider_stream_event calls; SL-1.2's witness.mjs re-records these",
+   "path": "witness/transport-reset.jsonl",
+   "provenance": "stub_witness",
+   "sha256": "7de69d9c9ec3cd27134052143ebd633f0efc2b915baf70afaf89ea4e10fcbe0a",
+   "validity": "valid"
+  }
+ ],
+ "fixture_now_ms": 1795000000000,
+ "node": {
+  "binary_sha256": "a7ec1b37e6ff9d187e4198c5b6df9a4eb1c74dd31804fb3bac55cc4ceca1ac01",
+  "version": "v24.22.3"
+ },
+ "owed": [
+  {
+   "by": "SL-1.2",
+   "case": "witness records from SL-1.2 witness.mjs",
+   "why": "the records here come from the SL-1.0 stub witness"
+  },
+  {
+   "by": "SL-2 projection",
+   "case": "the agent-toolkit TOOLSET extension in the command",
+   "why": "not projected on the recording host; recorded without it"
+  },
+  {
+   "by": "SL-3.6",
+   "case": "route record and store values",
+   "why": "to-measure facts need the authenticated seat-host measurement"
+  }
+ ],
+ "pi": {
+  "cli_bundle_sha256": "e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774",
+  "package": "@earendil-works/pi-coding-agent",
+  "version": "1.6.0"
+ },
+ "schema": "pi_seat_fixtures.v1",
+ "settings": {
+  "cacheWarming": "off",
+  "retry": {
+   "enabled": false,
+   "maxRetries": 0,
+   "provider": {
+    "maxRetries": 0
+   }
+  },
+  "transport": "sse"
+ },
+ "witness_channel": {
+  "creation": "socketpair",
+  "descriptor_env": "PHASE_LOOP_PI_WITNESS_FD",
+  "family": "AF_UNIX",
+  "framing": "one JSON object per line, UTF-8",
+  "type": "SOCK_STREAM"
+ }
+}

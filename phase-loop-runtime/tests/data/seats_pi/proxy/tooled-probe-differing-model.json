@@ -1,0 +1,46 @@
+{
+ "allowed_inference_count": 3,
+ "connects": [
+  {
+   "decision": "terminated_locally",
+   "target": "chatgpt.com:443"
+  },
+  {
+   "decision": "terminated_locally",
+   "target": "chatgpt.com:443"
+  }
+ ],
+ "launch": "L2",
+ "other_records": 0,
+ "pi_inference_count": 2,
+ "requests": [
+  {
+   "host": "chatgpt.com",
+   "method": "POST",
+   "origin": "pi",
+   "path": "/backend-api/codex/responses",
+   "response_id": "resp_tooled_probe_differing_model_1",
+   "seq": 1,
+   "status_sent": 200
+  },
+  {
+   "host": "chatgpt.com",
+   "method": "POST",
+   "origin": "tool_descendant",
+   "path": "/backend-api/codex/responses",
+   "response_id": "resp_tool_originated",
+   "seq": 2,
+   "status_sent": 200
+  },
+  {
+   "host": "chatgpt.com",
+   "method": "POST",
+   "origin": "pi",
+   "path": "/backend-api/codex/responses",
+   "response_id": "resp_tooled_probe_differing_model_2",
+   "seq": 3,
+   "status_sent": 200
+  }
+ ],
+ "schema": "pi_seat_fixture_proxy.v1"
+}
