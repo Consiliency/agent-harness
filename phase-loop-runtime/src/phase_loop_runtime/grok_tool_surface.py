@@ -12,6 +12,8 @@ contract"); each section below names the one it implements.
   host-local measurement record, both strict and fail-closed: any refusal is "no record".
 - Resolution (§3.2, §4.1): a revoked digest has no record; a catalog route wins; the
   host-local route is used only when the catalog has none for the key.
+- The seat config (erratum 8): the pinned ``.grok/config.toml`` a grok seat's home holds
+  under the ``grok-review`` proxy, its sealed descriptor, and its one projection mode.
 - The launch context ``grok_seat_context.v1`` (§4.4): its digest, and the final check that
   marks a composed profile. Nothing in this lane calls that check, so no profile is ever
   marked and a frozen-basis receipt never admits a launch: lane L2c wires the board review
@@ -108,6 +110,22 @@ TOLERATED_REFUSALS = (
 )
 EGRESS_ALLOWLIST_ID = "grok-review"
 COMPOSITION = "panel_invoker.seat_profile+launch_owned:provider-review"
+#: Erratum 8: the seat config, the one file besides the projection that a grok seat's private
+#: home holds under the ``grok-review`` proxy. Harness-written and byte-exact: a pinned local
+#: entry for the measurement model, and the client's own remote catalog fetch switched off.
+#: :func:`seat_config` composes the bytes; this is their digest, and a build whose constants
+#: no longer compose them projects nothing.
+SEAT_CONFIG_RELATIVE = ".grok/config.toml"
+SEAT_CONFIG_SHA256 = "2984e0c368943bb6c1627146e413995df12cca5820e782adffcb052a9b761780"
+SEAT_CONFIG_MODE = "0600"
+#: The client's default backend; its endpoint is the path of the one ``grok-review`` allow row.
+SEAT_CONFIG_API_BACKEND = "chat_completions"
+#: The effort rows the entry declares; without them the client ignores ``--reasoning-effort``.
+SEAT_CONFIG_EFFORTS = ("low", "medium", "high")
+#: The seals the config's descriptor carries: F_SEAL_SEAL, F_SEAL_SHRINK, F_SEAL_GROW and
+#: F_SEAL_WRITE (``fcntl``'s values on Linux, spelled out for an interpreter without them).
+_F_ADD_SEALS, _F_GET_SEALS = 1033, 1034
+_CONFIG_SEALS = 0x1 | 0x2 | 0x4 | 0x8
 
 _ISSUER = object()
 
@@ -353,10 +371,74 @@ def egress_allowlist_digest() -> str:
     return seat_egress_proxy.allowlist_ref(EGRESS_ALLOWLIST_ID).content_digest
 
 
+def _seat_config_bytes() -> bytes:
+    """The seat config as this build composes it (erratum 8, item 1): the table key and
+    ``model`` from :data:`MEASUREMENT_MODEL`, ``base_url`` from :data:`INFERENCE_HOST`, the
+    default backend, the effort rows, and ``remote_fetch`` off."""
+    model = MEASUREMENT_MODEL
+    lines = [f'[model."{model}"]', f'model = "{model}"', f'name = "{model} (pinned local entry)"',
+             f'base_url = "https://{INFERENCE_HOST}/v1"',
+             f'api_backend = "{SEAT_CONFIG_API_BACKEND}"', ""]
+    for effort in SEAT_CONFIG_EFFORTS:
+        lines += [f'[[model."{model}".reasoning_efforts]]', f'value = "{effort}"',
+                  f'label = "{effort.capitalize()} Effort"', ""]
+    lines += ["[features]", "remote_fetch = false", ""]
+    return "\n".join(lines).encode("ascii")
+
+
+def seat_config() -> bytes:
+    """The pinned seat config: the composed bytes, only while they are the pinned ones and
+    the measurement effort is one the entry declares."""
+    data = _seat_config_bytes()
+    _require(sha256(data).hexdigest() == SEAT_CONFIG_SHA256
+             and MEASUREMENT_EFFORT in SEAT_CONFIG_EFFORTS)
+    return data
+
+
+def seat_config_descriptor() -> int:
+    """A close-on-exec memfd holding the pinned seat config, sealed against write, grow,
+    shrink and further sealing, positioned at its start: the bytes behind the projection
+    cannot change after this returns. A build that no longer composes the pinned bytes gets
+    no descriptor (``grok_tool_surface_unverified``)."""
+    import fcntl
+
+    from .seat_jail import SeatSandboxRefused
+
+    try:
+        data = seat_config()
+    except _Refused as exc:
+        raise SeatSandboxRefused("grok_tool_surface_unverified") from exc
+    descriptor = os.memfd_create("seat-config", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
+    try:
+        view = memoryview(data)
+        while view:
+            view = view[os.write(descriptor, view):]
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        fcntl.fcntl(descriptor, getattr(fcntl, "F_ADD_SEALS", _F_ADD_SEALS), _CONFIG_SEALS)
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def seat_config_projection(descriptor: int) -> tuple[str, ...]:
+    """The projection mode: the mount arguments that put the seat config in the seat's home
+    from ``descriptor``. ``seat_profile`` composes exactly these and the home check admits
+    exactly these, so the mode is decided here and nowhere else.
+
+    PLACEHOLDER, PENDING ERRATUM 8 REVISION 2. This is revision 1's form: a file copied
+    into the tmpfs home, which the seat can write. The revision decides the mode; do not
+    build on this one."""
+    return ("--perms", SEAT_CONFIG_MODE, "--file", str(int(descriptor)),
+            PRIVATE_HOME + "/" + SEAT_CONFIG_RELATIVE)
+
+
 def context_document(allowlist_digest: str) -> dict[str, object]:
     return {
         "schema": GROK_SEAT_CONTEXT,
         "home": PRIVATE_HOME,
+        "seat_config": {"path": SEAT_CONFIG_RELATIVE,
+                        "sha256": sha256(_seat_config_bytes()).hexdigest()},
         "projected_paths": sorted((*PROJECTED_PATHS, *PROXY_PROJECTED_PATHS)),
         "environment": {"allowed": sorted((*ENVIRONMENT, *PROXY_ENVIRONMENT)),
                         "forbidden_prefixes": list(FORBIDDEN_ENVIRONMENT_PREFIXES)},
@@ -445,14 +527,35 @@ def _inside(path: str, root: str) -> bool:
     return path == root or path.startswith(root.rstrip("/") + "/")
 
 
+def _config_mount(mounts) -> tuple[str, ...]:
+    """The one operation at the seat config's path, with the ``--perms`` before it,
+    flattened as ``seat_profile`` composed them. A missing or second operation refuses."""
+    destination = PRIVATE_HOME + "/" + SEAT_CONFIG_RELATIVE
+    found = [index for index, (operation, operands) in enumerate(mounts)
+             if operation != "--perms" and operands[-1] == destination]
+    _require(len(found) == 1 and found[0] >= 1 and mounts[found[0] - 1][0] == "--perms")
+    (index,) = found
+    return (*(word for mount in mounts[index - 1:index + 1] for word in (mount[0], *mount[1])),)
+
+
+def _config_descriptor(composed: tuple[str, ...]) -> int:
+    """The descriptor a composed config mount names, as its canonical decimal spelling."""
+    _require(len(composed) == 5)
+    text = composed[3]
+    _require(text.isascii() and text.isdigit() and str(int(text)) == text)
+    return int(text)
+
+
 def _check_home(profile: Any, sessions: str | None = None) -> None:
     """Home: nothing in the fresh private home but the projection (§4.4): the credential
-    files, the proxy projection's read-only CA file and, for a measurement only, its one
+    files, the proxy projection's read-only CA file, the seat config of erratum 8 in the
+    one mode :func:`seat_config_projection` composes and, for a measurement only, its one
     scratch sessions directory (§5.1), bound from ``sessions``."""
     home = PRIVATE_HOME
     credentials = {home + "/" + relative for relative in PROJECTED_PATHS}
     projected = {home + "/" + relative for relative in PROXY_PROJECTED_PATHS}
-    files = credentials | projected
+    config = home + "/" + SEAT_CONFIG_RELATIVE
+    files = credentials | projected | {config}
     directories = {home + "/.config", home + "/.cache", home + "/.local", home + "/.local/share"}
     for path in files:
         parent = os.path.dirname(path)
@@ -461,6 +564,8 @@ def _check_home(profile: Any, sessions: str | None = None) -> None:
             parent = os.path.dirname(parent)
     mounts = _mounts(profile.mount_args)
     _require(bool(mounts) and mounts[0] == ("--tmpfs", (home,)))
+    composed = _config_mount(mounts)
+    _require(composed == seat_config_projection(_config_descriptor(composed)))
     seen: list[str] = []
     bound: list[tuple[str, ...]] = []
     for operation, operands in mounts[1:]:
@@ -472,7 +577,9 @@ def _check_home(profile: Any, sessions: str | None = None) -> None:
             raise _Refused("a second tmpfs")
         if not _inside(destination, home):
             continue
-        if operation == "--dir":
+        if destination == config:
+            seen.append(destination)  # its one mode was judged above
+        elif operation == "--dir":
             _require(destination in directories)
         elif operation == "--file":
             _require(destination in credentials)
@@ -492,6 +599,23 @@ def _check_home(profile: Any, sessions: str | None = None) -> None:
     _require(env.get("HOME") == home and env.get("XDG_CONFIG_HOME") == home + "/.config"
              and env.get("XDG_CACHE_HOME") == home + "/.cache"
              and env.get("XDG_DATA_HOME") == home + "/.local/share")
+
+
+def _check_seat_config(profile: Any) -> None:
+    """The seat config's bytes, before the launch (erratum 8): the descriptor the profile's
+    one config mount names is passed to the launch, is a sealed memfd that nothing can
+    change any more (asking for the seals of anything else fails), stands at its start, and
+    holds exactly the pinned config, whose digest is ``SEAT_CONFIG_SHA256``. The bytes are
+    read at an offset, so the launch still finds the descriptor at its start."""
+    import fcntl
+
+    descriptor = _config_descriptor(_config_mount(_mounts(profile.mount_args)))
+    _require(descriptor in tuple(profile.pass_fds))
+    seals = fcntl.fcntl(descriptor, getattr(fcntl, "F_GET_SEALS", _F_GET_SEALS))
+    _require(seals & _CONFIG_SEALS == _CONFIG_SEALS)
+    _require(os.lseek(descriptor, 0, os.SEEK_CUR) == 0)
+    pinned = seat_config()
+    _require(os.pread(descriptor, len(pinned) + 1, 0) == pinned)
 
 
 def _check_environment(env: Mapping[str, str]) -> None:
@@ -701,6 +825,7 @@ def _check_context(panel: Any, profile: Any, *, cwd, command, role, proxy, jaile
     _require(panel.SeatLaunchRole(role) is panel.SeatLaunchRole.PROVIDER_REVIEW)
     current = context_digest()
     _check_home(profile, sessions)
+    _check_seat_config(profile)
     _check_environment(profile.env)
     cwd = os.path.abspath(cwd)
     mounts = _effective_mounts(panel, profile, cwd)

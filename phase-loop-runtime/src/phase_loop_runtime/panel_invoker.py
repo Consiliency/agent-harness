@@ -5452,11 +5452,13 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
     (:func:`_gemini_launch_needs_login`): the freshness of the login is then not asked.
 
     ``egress_proxy`` (grok tool-surface contract v1, section 5.2) is the ``grok-review``
-    proxy this launch owns; only a grok profile takes one. It adds the proxy projection and
-    nothing else: the proxy's address in :data:`seat_egress_proxy.SEAT_PROXY_ENV`, its CA
-    certificate as a read-only file in the private home named by
-    :data:`seat_egress_proxy.SEAT_CA_ENV` (the seat's whole trust bundle), and the proxy's
-    session token among the redactions. Without it the profile is composed as before.
+    proxy this launch owns; only a grok profile takes one. It adds the proxy projection, the
+    pinned seat config of that contract's erratum 8, and nothing else: the proxy's address
+    in :data:`seat_egress_proxy.SEAT_PROXY_ENV`, its CA certificate as a read-only file in
+    the private home named by :data:`seat_egress_proxy.SEAT_CA_ENV` (the seat's whole trust
+    bundle), the proxy's session token among the redactions, and
+    ``grok_tool_surface.SEAT_CONFIG_RELATIVE`` from sealed bytes. Without it the profile is
+    composed as before, with no config.
 
     ``grok_sessions`` (grok tool-surface contract v1, section 5.1) is the grok measurement's
     scratch sessions directory, bound read-write at ``.grok/sessions``: the one host-backed
@@ -5615,6 +5617,13 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
             credential(".grok/auth.json", shape=_SEAT_CREDENTIAL_SHAPE["grok"])
             data_file(".grok/agent_id", _seat_credential(home, ".grok/agent_id"))
             if egress_proxy is not None:
+                # The pinned seat config, only together with this proxy (contract erratum
+                # 8): sealed bytes, in the one mode grok_tool_surface decides.
+                config_descriptor = _grok_surface.seat_config_descriptor()
+                stack.callback(os.close, config_descriptor)
+                directory(str(Path(private_home, _grok_surface.SEAT_CONFIG_RELATIVE).parent))
+                pass_fds.add(config_descriptor)
+                mounts.extend(_grok_surface.seat_config_projection(config_descriptor))
                 # The same projection at measurement and at use (contract section 5.2).
                 ca_destination = private_home + "/" + _SEAT_EGRESS_CA_RELATIVE
                 descriptor = os.memfd_create("seat-profile", os.MFD_CLOEXEC)
