@@ -149,6 +149,21 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Changed
 
+- The grok tool-surface measurement's tolerated refusals are keyed by binary image (lane E8-B
+  of `plans/artifacts/grok-tool-surface-contract-v1.md`, erratum 8, item 2).
+  `TOLERATED_REFUSALS_BY_IMAGE` replaces `TOLERATED_REFUSALS`. grok 1.0.89 keeps erratum 3's
+  three entries. grok 1.0.92 tolerates four startup GETs on the inference host and its
+  pre-turn `POST /v1/responses`. An image with no entry tolerates nothing. An entry counts
+  only as the refusal of the check that owns it: `rules` for a request inside the tunnel,
+  `front` for 1.0.89's two updater `CONNECT`s. A `POST` to the inference host counts only
+  before the launch's inference request. One predicate drives classification, rehearsal,
+  the recorded counts and the record validators, each against the record's own image. A
+  rehearsal record retains observed methods, hosts and paths only from a closed vocabulary
+  and writes `<other>` for anything else. Its reader applies the same bound. A new test
+  shows that the client's own log, which holds a token suffix, reaches no retained
+  measurement, rehearsal or board-leg path. Pins: `seat_window.runtime_digest()` moves for
+  every qualification that uses it, Gemini's included. `context_digest`, the allow-list
+  digests, `proxy_sha256`, the agy QCI and the jail profile digests are unchanged.
 - The agy upstream watch is now the rolling catalog job (AGYROLL ROLLJOB). It runs every
   hour and makes no git write. Each tick checks its keys and the new `agy-watch` extra
   before any live operation. It renews the Gemini login only with an image that seat
