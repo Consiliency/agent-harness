@@ -90,8 +90,13 @@ def request(method, path):
     context = ssl.create_default_context(cafile=os.environ["SSL_CERT_FILE"])
     context.verify_flags &= ~getattr(ssl, "VERIFY_X509_STRICT", 0)
     with context.wrap_socket(raw, server_hostname=host) as tls:
-        tls.sendall(f"{method} {path} HTTP/1.1\r\nHost: {host}\r\nContent-Length: 2\r\n"
-                    "Connection: close\r\n\r\n{}".encode())
+        # A body only on a POST, as grok sends: a GET carries none. (A GET with a declared
+        # body is teed by srt but reaches the filter bodyless, so the refusal cannot drain
+        # it, and on Node 22 the cancelled in-flight branch ends the proxy.)
+        body = "{}" if method == "POST" else ""
+        framing = f"Content-Length: {len(body)}\r\n" if body else ""
+        tls.sendall(f"{method} {path} HTTP/1.1\r\nHost: {host}\r\n{framing}"
+                    f"Connection: close\r\n\r\n{body}".encode())
         reply = b""
         while True:
             chunk = tls.recv(65536)
