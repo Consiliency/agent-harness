@@ -1550,6 +1550,7 @@ def test_the_run_cli_refuses_a_fifo_private_input_before_any_effect(
                               (seat_egress_proxy, "verify_install"), (bk, "create_window_ca"),
                               (bk, "bundle_artifact")):
         monkeypatch.setattr(module, attribute, sentinel)
+    monkeypatch.setattr(bk, "MeterLedger", sentinel)  # refused before the ledger is loaded
     root = bk.private_root("w0")
     root.mkdir(parents=True)
     os.mkfifo(root / name)
@@ -1592,6 +1593,78 @@ def test_a_control_file_given_by_an_earlier_kit_is_still_refused_by_path(tmp_pat
     assert rows[0] == str(out) and rows[1].endswith(f"\t{other}")
 
 
+@pytest.mark.parametrize("entry", ["fifo", "symlink", "directory"])
+def test_a_private_write_never_blocks_or_follows_a_substituted_entry(tmp_path, entry):
+    import os
+
+    root = tmp_path / "private"
+    root.mkdir()
+    target = root / "control-files.txt"
+    outside = tmp_path / "outside.txt"
+    outside.write_text("kept")
+    if entry == "fifo":  # e.g. swapped in after the last checked read
+        os.mkfifo(target)
+    elif entry == "symlink":
+        target.symlink_to(outside)
+    else:
+        target.mkdir()
+    with pytest.raises(bk.PrivateInputError, match="control files: the private list cannot"):
+        _within(lambda: bk.write_private(target, b"row"))
+    assert outside.read_text() == "kept"
+    assert issubclass(bk.PrivateInputError, ValueError)  # a late refusal ends the session
+
+
+def test_a_private_write_creates_or_replaces_a_regular_0600_file(tmp_path):
+    target = tmp_path / "private" / "meter.json"
+    bk.write_private(target, b"first, and longer")
+    bk.write_private(target, b"second")
+    assert target.read_bytes() == b"second"
+    assert target.stat().st_mode & 0o777 == 0o600
+
+
+def test_a_ledger_entry_swapped_for_a_fifo_mid_session_refuses_without_blocking(tmp_path):
+    import os
+
+    root = tmp_path / "private"
+    ledger = _ledger(root, ["10%", "$0", "$0"] * 2)
+    ledger.read(0, settle_s=0)
+    (root / "meter.json").unlink()
+    os.mkfifo(root / "meter.json")
+    with pytest.raises(ValueError, match="meter: the private ledger cannot be read"):
+        _within(lambda: ledger.read(1, settle_s=0))
+
+
+def test_control_rows_keep_paths_with_tabs_and_earlier_formats(tmp_path):
+    import os
+
+    tabbed = tmp_path / "a\tb.json"
+    tabbed.write_text("{}")
+    files = bk.ControlFiles(root=tmp_path / "private", since=0.0)
+    answers = [str(tabbed)]
+    files.prompt = lambda _q: answers.pop(0)
+    assert files.accept(2, 1) == b"{}"
+    assert files.problem(tabbed) == "already given for another run"
+    alias = tmp_path / "alias.json"
+    os.link(tabbed, alias)
+    assert files.problem(alias) == "already given for another run"
+    # Rows an earlier kit wrote: a bare identity, and a bare path containing a tab.
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    by_identity = tmp_path / "by-identity.json"
+    by_identity.write_text("{}")
+    info = by_identity.stat()
+    by_path = tmp_path / "c\td.json"
+    by_path.write_text("{}")
+    (legacy / "control-files.txt").write_text(f"{info.st_dev}:{info.st_ino}\n{by_path}\n")
+    old = bk.ControlFiles(root=legacy, since=0.0)
+    assert old.problem(by_identity) == "already given for another run"
+    assert old.problem(by_path) == "already given for another run"
+    fresh = tmp_path / "fresh.json"
+    fresh.write_text("{}")
+    assert old.problem(fresh) is None
+    assert files.problem(Path(str(tmp_path) + "/x\ny.json")) == "give a path without a line break"
+
+
 def test_a_unicode_line_separator_in_prose_is_not_a_heading(repo, tmp_path):
     directory = write(tmp_path / "w0", *_session1(repo))
     digest = bk.evidence_digest(directory)
@@ -1630,6 +1703,8 @@ def test_the_run_cli_refuses_before_any_credential_ca_or_private_directory(
                          (seat_egress_proxy, "verify_install"), (bk, "create_window_ca"),
                          (bk, "bundle_artifact")):
         monkeypatch.setattr(module, name, sentinel)
+    if case != "ledger-taken":  # a refusal before the ledger gate never loads the ledger
+        monkeypatch.setattr(bk, "MeterLedger", sentinel)
     session = "2" if case == "no-session-1" else "1"
     root = bk.private_root("w0")
     if case == "ledger-taken":

@@ -921,41 +921,69 @@ def private_root(window: str, env: Mapping[str, str] | None = None) -> Path:
     return base / "phase-loop" / "claude-w0" / window
 
 
-def write_private(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(path.parent, 0o700)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
-    with os.fdopen(fd, "wb") as handle:
-        handle.write(data)
-    os.chmod(path, 0o600)
-
-
-class PrivateInputError(OSError):
-    """A private input that exists but is not a readable regular file."""
+class PrivateInputError(OSError, ValueError):
+    """A private file that exists but is not a regular file the kit can use. It is a
+    ``ValueError`` too, so a late refusal ends a session through its refusal handler."""
 
 
 #: Private kit files are small; a larger one is not the kit's.
 _PRIVATE_CAP = 1 << 20
 
 
+def _private_diagnostic(path: Path) -> str:
+    return dict(PRIVATE_INPUTS).get(path.name, f"{path.name}: not a regular private file")
+
+
+def _open_pinned_regular(path: Path, flags: int) -> int:
+    """Open the regular file at ``path`` with ``flags``, never anything else: the entry is
+    pinned first with ``O_PATH | O_NOFOLLOW`` (no I/O, so no device or FIFO side effect and
+    no wait), type-checked on that pin, and only then reopened through it, so a path
+    swapped after the check is not what gets opened. ``FileNotFoundError`` passes through."""
+    pin = os.open(path, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        pinned = os.fstat(pin)
+        if not stat.S_ISREG(pinned.st_mode):
+            raise PrivateInputError(_private_diagnostic(path))
+        fd = os.open(f"/proc/self/fd/{pin}", flags | os.O_NONBLOCK | os.O_CLOEXEC)
+    finally:
+        os.close(pin)
+    opened = os.fstat(fd)
+    if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (
+            pinned.st_dev, pinned.st_ino):
+        os.close(fd)
+        raise PrivateInputError(_private_diagnostic(path))
+    return fd
+
+
+def write_private(path: Path, data: bytes) -> None:
+    """Create or replace a private 0600 regular file without ever blocking: a new file is
+    created exclusively; an existing entry must be a regular file, pinned before it is
+    opened. A FIFO, socket, device, directory or link refuses with the file's diagnostic."""
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(path.parent, 0o700)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_NONBLOCK
+                     | os.O_CLOEXEC, 0o600)
+    except FileExistsError:
+        fd = _open_pinned_regular(path, os.O_WRONLY)
+    with os.fdopen(fd, "wb") as handle:
+        os.ftruncate(handle.fileno(), 0)
+        handle.write(data)
+        handle.flush()
+        os.fchmod(handle.fileno(), 0o600)
+
+
 def read_private_regular(path: Path, *, cap: int = _PRIVATE_CAP) -> bytes | None:
     """The bytes of a private regular file, ``None`` when nothing is at ``path``, and
     :class:`PrivateInputError` (or the ``OSError`` of an unreadable file) for anything else.
-    It never blocks: the entry is checked with ``lstat`` before opening, opened without
-    following a link and without blocking, and the descriptor must still be that regular
-    file, so a FIFO, socket, device, directory or link is refused, never waited on."""
+    It never blocks: the entry is pinned and type-checked before it is opened
+    (:func:`_open_pinned_regular`), so a FIFO, socket, device, directory or link is refused,
+    never opened or waited on."""
     try:
-        info = os.lstat(path)
+        fd = _open_pinned_regular(path, os.O_RDONLY)
     except FileNotFoundError:
         return None
-    if not stat.S_ISREG(info.st_mode):
-        raise PrivateInputError(f"{path.name}: not a regular file")
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
     try:
-        opened = os.fstat(fd)
-        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (
-                info.st_dev, info.st_ino):
-            raise PrivateInputError(f"{path.name}: not the regular file it was")
         chunks, size = [], 0
         while size <= cap:
             chunk = os.read(fd, 65536)
@@ -1677,6 +1705,8 @@ def identity_problems(root: Path, plan: Mapping[str, object], repo: Path,
     return []
 
 
+#: The ``<device>:<inode>`` that starts a control-file row.
+_IDENTITY_ROW = re.compile(r"[0-9]+:[0-9]+")
 #: A control output file is a few hundred bytes; anything past this is not one.
 _CONTROL_CAP = 1 << 20
 
@@ -1694,7 +1724,8 @@ class ControlFiles:
     since: float = 0.0
 
     def _given(self) -> list[str]:
-        """Rows ``<device>:<inode>\t<path>``; a row from an earlier kit is a bare path."""
+        """Rows ``<device>:<inode>\t<path>``, the path intact after the first tab. Earlier
+        kits wrote a bare path or a bare ``<device>:<inode>``; both still count."""
         try:
             raw = read_private_regular(self.root / "control-files.txt")
         except OSError:
@@ -1703,8 +1734,14 @@ class ControlFiles:
 
     def _already_given(self, identity: str, path: Path) -> bool:
         for row in self._given():
-            given_identity, _sep, given_path = row.rpartition("\t")
-            if given_identity == identity or (given_path or row) == str(path):
+            head, tab, rest = row.partition("\t")
+            if tab and _IDENTITY_ROW.fullmatch(head):
+                given_identity, given_path = head, rest
+            elif _IDENTITY_ROW.fullmatch(row):
+                given_identity, given_path = row, None
+            else:
+                given_identity, given_path = None, row
+            if given_identity == identity or given_path == str(path):
                 return True
         return False
 
@@ -1712,6 +1749,8 @@ class ControlFiles:
         """``(problem, bytes, identity)``; ``problem`` is ``None`` when the file is acceptable."""
         if not path.is_absolute():
             return "give an absolute path", b"", ""
+        if "\n" in str(path) or "\r" in str(path):
+            return "give a path without a line break", b"", ""
         try:
             fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
         except OSError:
@@ -2289,14 +2328,21 @@ def _run_claimed(plan: Mapping[str, object], repo: Path, window: str,
 
     from . import panel_invoker, seat_credentials, seat_egress_proxy, seat_jail
 
-    gate = session_problems(session, repo / EVIDENCE_DIR, repo=repo)
     root = private_root(window)
-    if not gate:  # every private input is a readable regular file, checked without blocking
-        gate = private_input_problems(root)
+
+    def refused(problems: Sequence[str]) -> int:
+        print("claude-bakeoff run: REFUSED: " + "; ".join(problems), file=sys.stderr)
+        return 1
+
+    gate = session_problems(session, repo / EVIDENCE_DIR, repo=repo)
+    if gate:  # before any private file is read
+        return refused(gate)
+    gate = private_input_problems(root)  # every private input, checked without blocking
+    if gate:  # before the ledger is loaded
+        return refused(gate)
     ledger = MeterLedger(root)  # reads only; nothing is created before the gate passes
-    if not gate:
-        gate = [ledger.problem] if ledger.problem else ledger.session_problems(
-            session, load_records(repo / EVIDENCE_DIR)[0])
+    gate = [ledger.problem] if ledger.problem else ledger.session_problems(
+        session, load_records(repo / EVIDENCE_DIR)[0])
     if not gate:
         gate = identity_problems(root, plan, repo, session)
     if not gate:
@@ -2305,8 +2351,7 @@ def _run_claimed(plan: Mapping[str, object], repo: Path, window: str,
         except ValueError as exc:
             gate = [str(exc)]
     if gate:  # before any credential, CA, private directory or reading
-        print("claude-bakeoff run: REFUSED: " + "; ".join(gate), file=sys.stderr)
-        return 1
+        return refused(gate)
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(root, 0o700)
     ca_dir = root / "twin-ca"
