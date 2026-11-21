@@ -549,10 +549,9 @@ The Gemini extension (agent-harness#905) admits only a closed set of qualified
 `agy` Linux x64 entry images, `gemini_heartbeat.QUALIFIED_IMAGES`, loaded from the shipped
 package data `phase_loop_runtime/data/agy_catalog.json`:
 1.5.3 (SHA256 `7ca212748ca0dfda718efbc39a776a104472e7e9344d4b6ea147c543684f96a3`).
-A host on an older release self-qualifies it only while it is among the newest four stable
-upstream releases (`agy_provenance.RECENCY_WINDOW`). Today that excludes every retired
-release, so such a host refuses with `gemini_heartbeat_provenance_unverified` until agy is
-updated.
+A host on an older release can self-qualify it from any listed stable upstream release
+(forward provenance, AGYROLL PROVFWD); a host far behind may need several calls, each
+bounded by a per-call download budget and a daily cap.
 It requires sealed memfd/pidfd support in the running Python/kernel. It uses
 literal `--print-timeout 0`, stdin input (one event when the sealed prompt fits one
 chunk, acknowledged chunks otherwise; agent-harness#1175), deny-all settings and no

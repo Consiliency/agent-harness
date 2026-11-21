@@ -451,7 +451,7 @@ def build_parser() -> argparse.ArgumentParser:
     agy_qual_sub.add_argument("--repo", help="watch: the agent-harness checkout to prepare a branch in")
     agy_qual_sub.add_argument("--dry-run", dest="watch_dry_run", action="store_true",
                               help="watch: qualify and verify, open no PR")
-    agy_qual_sub.add_argument("--version", help="watch: a specific in-window stable release instead of the newest")
+    agy_qual_sub.add_argument("--version", help="watch: any listed stable release instead of the newest")
     agy_qual_sub.add_argument("--base-ref", default="origin/main", help="watch --dry-run only: the tree to prepare from")
     seat_egress_sub = subparsers.add_parser(
         "seat-egress",

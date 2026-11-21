@@ -132,7 +132,7 @@ red when breached.
 
 | Input | Pin |
 | --- | --- |
-| AGYROLL contract | `plans/artifacts/agyroll-v1-contract.md`, sha256 `a1bc1771467b68539faaa5c3d0f76d76afc04c4dca69c6d6471407521034f310` (repinned by AGYFRESH: §1.2 archive bounds, §6.1 R6′, §6.2 tick frequency, §6.3 warning) |
+| AGYROLL contract | `plans/artifacts/agyroll-v1-contract.md`, sha256 `eaa438944f8422f610bab426f5681f35e19363b050a5e8a9ebf36f13aa2abcae` (repinned by AGYFRESH: §1.2 archive bounds, §6.1 R6′, §6.2 tick frequency, §6.3 warning; repinned by PROVFWD: §1.2 candidate order and total bound) |
 | AGYFRESH contract (RESTORE, HOLD, ROLLJOB additions, R6′) | `plans/artifacts/agyfresh-contract.md`, sha256 `a8c1616a13dca51c70cd8aeb22abf744882a20641d435d501d7f962383505ad9` |
 | TEAMHOST contract §5 (agy key, `requalify_once` call sites) | `plans/seats-teamhost-contract.md`, sha256 `3ca3d3a57346acca8bf4e16e50304f00e3e2e19bc5bcd20b1831b4f837c3b1b1`. **REQUAL amends §5.** The amendment adds the runner and canary preflight call sites, and names `seat_qci()` as the `qualified` key. Its value equals `agy_profile_digest()` at `agy_validator_v1`, so no entry drops, and §5 stays correct after a validator bump. The repin lands in REQUAL's docs lane. |
 | Q10 and (G) promotion rules | `.consiliency/plans/detailed-lkg-cli-qualification-1602-20261014-0359.md` §(G) and the Q10 ruling |
@@ -410,7 +410,11 @@ Decompose into 3 lanes plus docs:
 - **Attestation and second channel:** a new `agy_attestation.py`.
 - **Callers:** the `agy_watch.py` listing caller and the verifier's `--upstream-only` fetch.
 
-`agy_qualification.py` is not touched; REQUAL passes the hint. Implements R4 and R5 (approved).
+PROVFWD also owns one serialized edit to `agy_qualification.py`, after HOLD's core lane: the
+store's fetch ledger, the hint and ledger at the first-use call site, and release of the
+once-per-key entry on the two retryable reasons. R4's total bound is a condition of removing
+the window, so the resolver does not ship without it (coordinator ruling, 2026-11-20).
+Implements R4 and R5 (approved).
 
 **Non-goals**
 
@@ -421,7 +425,9 @@ Admission tiers, the preflight, and attestation verification before upstream pub
 - `phase-loop-runtime/src/phase_loop_runtime/agy_provenance.py`
 - `phase-loop-runtime/src/phase_loop_runtime/agy_attestation.py`
 - `phase-loop-runtime/src/phase_loop_runtime/agy_watch.py`
+- `phase-loop-runtime/src/phase_loop_runtime/agy_qualification.py`
 - `phase-loop-runtime/tests/test_agy_provenance_forward.py`
+- `phase-loop-runtime/tests/test_agy_provenance_wiring.py`
 
 **Depends on**
 
@@ -661,6 +667,9 @@ AGYFRESH: the early slice now carries EC-REQUAL-5 and EC-REQUAL-8 and lands afte
 the next writer of `agy_qualification.py`; it needs HOLD but not PROVFWD. The rest of REQUAL
 needs both.
 
+The hint, the fetch ledger and the retryable release landed with PROVFWD; REQUAL's preflight
+inherits them.
+
 **Non-goals**
 
 Executor and canary admission tiers (EXECADMIT).
@@ -857,13 +866,16 @@ evidence paths: `plans/evidence/agyroll-activate.json`;
 ## Phase Dependency DAG
 
 ```
-RECBIND ─┬─> RESTORE ──> HOLD ──> REQUAL(early slice) ─┐
-         └─> PROVFWD ─┬─> REQUAL(rest) ──> EXECADMIT ──┼──> ACTIVATE
-                      └─> ROLLJOB ─────────────────────┘
+RECBIND ─┬─> RESTORE ──> HOLD ──> REQUAL(early slice) ──────────────────────────────────────┐
+         │               │                                                                  │
+         │               └─(core lane)──┐                                                   │
+         └─> PROVFWD lanes ─────────────┴─> PROVFWD merge ─┬─> REQUAL(rest) ──> EXECADMIT ──┼──> ACTIVATE
+                                                           └─> ROLLJOB ─────────────────────┘
 ```
 
-- AGYFRESH: RESTORE and HOLD run beside PROVFWD. REQUAL's early slice follows HOLD; the rest
-  of REQUAL follows PROVFWD and, as the next writer of `agy_qualification.py`, HOLD.
+- AGYFRESH: PROVFWD's resolver and attestation lanes run beside RESTORE and HOLD; its wiring
+  lane and its merge follow HOLD's core lane. REQUAL's early slice follows HOLD; the rest of
+  REQUAL follows PROVFWD and, as the next writer of `agy_qualification.py`, HOLD.
 
 - ROLLJOB follows PROVFWD for two reasons:
   - it consumes the `attestation`/`second_channel` fields;
@@ -890,7 +902,7 @@ RECBIND ─┬─> RESTORE ──> HOLD ──> REQUAL(early slice) ─┐
   roadmap. Operational steps need their grants: O1 release (D1), O2 restore (D2, after O1),
   O3 R9 prerequisites (D7, setup only).
 - **Single-writer files across phases:**
-  - `agy_qualification.py`: RECBIND → HOLD → REQUAL.
+  - `agy_qualification.py`: RECBIND → HOLD → PROVFWD (ledger and call site) → REQUAL.
   - `verify_qualified_agy_image.py`: RECBIND → RESTORE → PROVFWD (`--upstream-only` fetch) → ROLLJOB.
   - `agy_provenance.py`: RECBIND → RESTORE → PROVFWD → ROLLJOB. PROVFWD's first lane lands
     after RESTORE's caps lane merges; it does not wait for EC-RESTORE-1.

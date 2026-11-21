@@ -13,10 +13,10 @@ never forces a requalification. For the newest stable release not yet pinned on 
    help with THAT tree's owned profile and runs the manual qualification (the shim) from
    that tree, handing the image over as a sealed fd (``--image-fd``, the worker's seal
    check applies). The tree's own catalog satisfies the worker gate, so each v2 record is
-   bound to the tree's seat QCI -- what ``--contract`` requires -- and never depends on the
-   recency window. Every catalog member is still requalified on the prepared tree: each
-   existing member's image is re-fetched from its own release and must match its record's
-   asset and image digests;
+   bound to the tree's seat QCI -- what ``--contract`` requires -- and never depends on a
+   release's position in the listing. Every catalog member is still requalified on the
+   prepared tree: each existing member's image is re-fetched from its own release and must
+   match its record's asset and image digests;
 4. pushes a FRESH, unique branch ``agy-watch/<version>-<utc>-<random>`` with create-only
    semantics (``--force-with-lease=refs/heads/<name>:``, an empty expected value, to a
    fully qualified destination) and opens a DRAFT PR from it that names, but does not
@@ -27,6 +27,11 @@ never forces a requalification. For the newest stable release not yet pinned on 
 
 Only the release route (Linux x64 glibc; ``qualified_agy_catalog.v3`` has only that
 route) is proposed; any other platform reports and opens nothing.
+
+Each record carries two statuses (AGYROLL §1.3, ``agy_attestation``): a fresh
+``attestation`` for every member, and for the new member the ``second_channel`` check against
+Google's installer manifest. A second-channel mismatch, or either status unavailable, ends
+the tick with exit 2 before anything is pushed.
 """
 from __future__ import annotations
 
@@ -42,6 +47,7 @@ import subprocess
 import sys
 import tempfile
 
+from . import agy_attestation
 from . import agy_provenance
 from . import gemini_heartbeat as gh
 
@@ -326,16 +332,24 @@ def _pinned_member(tree: Path, member: dict, host, transport):
 
 
 def summarize(tree: Path, series: Path, asset, image_sha256: str, help_sha256: str, *,
-              qci: str, qualified_under: str, template_name: str | None = None) -> dict:
+              qci: str, qualified_under: str, template_name: str | None = None,
+              attestation: str = "not_checked", second_channel: str | None = "not_checked") -> dict:
     """The redacted record, in the shape of a committed record (see the release process's
     regeneration rule): each operation row is its receipt restricted to the template row's
     keys. A requalified member is its own template; a new one takes the newest other. The
     record is v2 (AGYROLL §3.2): bound to the tree's seat QCI, with no source pins and, until
-    ROLLJOB, no signatures."""
+    ROLLJOB, no signatures.
+
+    ``attestation`` and ``second_channel`` go into ``upstream``. ``second_channel=None`` keeps
+    the committed value, so only a requalified member (its own template) may pass it."""
     members = _catalog_members(tree)
     if template_name is None:
+        if second_channel is None:
+            raise ValueError("agy watch: a new member's second channel must be checked, not kept")
         template_name = next(m["record"] for m in reversed(members) if m["release_version"] != asset.version)
     template = json.loads((tree / "plans/evidence" / template_name).read_text())
+    if second_channel is None:
+        second_channel = template["upstream"]["second_channel"]
 
     def restrict(value, shape):
         if isinstance(shape, dict):
@@ -370,7 +384,7 @@ def summarize(tree: Path, series: Path, asset, image_sha256: str, help_sha256: s
         "validator": {"validated": 3, "operations": ["cancel", "completion", "owner-loss"], "route_qualified": True},
         "qci": qci, "qualified_under": qualified_under,
         "upstream": {"asset_sha256": asset.digest, "release_url": release_url,
-                     "attestation": "not_checked", "second_channel": "not_checked"},
+                     "attestation": attestation, "second_channel": second_channel},
         "signatures": [],
     })
     return record
@@ -385,9 +399,9 @@ def _tree_python(tree: Path, python: str, args, *, image_fd: int, runner, env):
 
 def main(*, repo=None, dry_run=False, runner=subprocess.run, host=None, transport=None,
          python=sys.executable, workdir=None, out=print, version=None, base_ref="origin/main") -> int:
-    """One watch tick. ``version`` selects a specific in-window stable release instead of
-    the newest (an operator re-run, or a dry run against a non-pinned build). ``base_ref``
-    is for a dry run only: a published tick always prepares from ``origin/main``."""
+    """One watch tick. ``version`` selects any listed stable release instead of the newest
+    (an operator re-run, or a dry run against a non-pinned build). ``base_ref`` is for a dry
+    run only: a published tick always prepares from ``origin/main``."""
     if base_ref != "origin/main" and not dry_run:
         raise ValueError("agy watch: --base-ref is only for --dry-run")
     host = host or agy_provenance.detect_platform()
@@ -396,9 +410,10 @@ def main(*, repo=None, dry_run=False, runner=subprocess.run, host=None, transpor
         return 0
     repo = Path(repo or ".").resolve()
     transport = transport or agy_provenance._Transport()
-    releases = agy_provenance.stable_releases(transport, window=1 if version is None else agy_provenance.RECENCY_WINDOW)
-    if version is not None:
-        releases = [r for r in releases if r.get("tag_name") == version]
+    if version is None:
+        releases = agy_provenance.stable_releases(transport, limit=1)
+    else:
+        releases = [r for r in agy_provenance.stable_releases(transport) if r.get("tag_name") == version]
     if not releases:
         out(json.dumps({"agy_watch": "no_stable_release"}))
         return 0
@@ -433,11 +448,26 @@ def main(*, repo=None, dry_run=False, runner=subprocess.run, host=None, transpor
             out(json.dumps({"agy_watch": "up_to_date", "version": asset.version}))
             return 0
         member_sha256, member = agy_provenance.fetch_member(transport, asset, keep_bytes=True)
+        try:
+            statuses = {asset.version: (agy_attestation.attestation_status(asset),
+                                        agy_attestation.second_channel_status(asset, member_sha256, host=host))}
+        except agy_provenance.ProvenanceError as exc:
+            # A second-channel mismatch or an unavailable status: nothing is pushed.
+            out(json.dumps({"agy_watch": str(exc), "version": asset.version}))
+            return 2
         images = {asset.version: (asset, gh.VerifiedImage.from_bytes(member), None)}
         del member
         try:
             for existing_member in _catalog_members(tree):
                 images[existing_member["release_version"]] = _pinned_member(tree, existing_member, host, transport)
+            try:
+                for version_key, (member_asset, _, _) in images.items():
+                    if version_key != asset.version:
+                        # A requalified member: a fresh attestation; its committed second channel stays.
+                        statuses[version_key] = (agy_attestation.attestation_status(member_asset), None)
+            except agy_provenance.ProvenanceError as exc:
+                out(json.dumps({"agy_watch": str(exc), "version": asset.version}))
+                return 2
             env = dict(os.environ)
             new_image = images[asset.version][1]
             new_member = {"version": asset.version, "image_sha256": new_image.sha256, "asset_sha256": asset.digest,
@@ -474,9 +504,11 @@ def main(*, repo=None, dry_run=False, runner=subprocess.run, host=None, transpor
                      env={**env, "PYTHONPATH": str(tree / "phase-loop-runtime/src")})
                 member_help = sha256(help_paths[version_key].read_bytes()).hexdigest()
                 record_name = f"agy-{version_key}-linux-x64-qualification.json"
+                attestation, second_channel = statuses[version_key]
                 record = summarize(tree, series, member_asset, image.sha256, member_help,
                                    qci=base, qualified_under=qualified_under,
-                                   template_name=None if version_key == asset.version else record_name)
+                                   template_name=None if version_key == asset.version else record_name,
+                                   attestation=attestation, second_channel=second_channel)
                 (tree / "plans/evidence" / record_name).write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
             _run(runner, [python, str(tree / "phase-loop-runtime/scripts/verify_qualified_agy_image.py"),
                           "--contract"], cwd=tree)

@@ -22,6 +22,25 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   condition is met: brokered subscription launches of `gemini-4-neon-medium` and
   `gemini-4-neon-high` on a locally qualified agy image both passed on 2026-11-20,
   each with an AGREE verdict.
+- agy first-use provenance no longer stops at the newest four stable releases: any listed
+  stable release can be matched, so a host that has fallen behind can still prove where its
+  image came from. The lookup reads the release listing page by page (at most 300 entries),
+  tries the release named by the install path first (a hint taken from the path only;
+  nothing is opened or run for it), fetches at most two uncached archives per call and at
+  most twelve per store and image in any 24 h, and tries archives that recently failed to
+  parse last. Running out of either allowance refuses `unverified` with the reason
+  `budget_exhausted` or `download_cap_reached`; the next preflight continues the walk, and
+  neither counts as a transient failure. The fetch times are kept in a new store entry
+  shared by every profile; only `agy-qualification clear --all` removes it, and a tampered
+  entry counts as a reached cap. A match records whether GitHub lists an attestation for the
+  asset (`absent` or `present_unverified`), so first use now also needs the GitHub API to
+  answer that query. The upstream watch accepts any listed stable release for `--version`,
+  records the attestation status and checks the release against Google's installer
+  manifest, and stops before pushing on a mismatch or an unavailable status.
+  `verify_qualified_agy_image.py --contract` requires both statuses to be known values, and
+  `--upstream-only` takes the newest stable release from the listing and reports when it
+  was published. The seat QCI, the shipped catalog and records are unchanged; nothing needs
+  requalification.
 
 ## [0.7.38] - Unreleased candidate
 

@@ -1082,7 +1082,8 @@ def run_operation(operation, root, help_evidence, extra_helpers=(), *, image, ex
 # ------------------------------------------------------------------------------- store
 
 _ENTRY_SCHEMA = "agy_qualification_entry.v1"
-_ENTRY_TYPES = ("provenance", "qualified", "failed", "member_cache", "transient", "watch_push")
+_ENTRY_TYPES = ("provenance", "qualified", "failed", "member_cache", "transient", "watch_push",
+                "fetch_ledger")
 # After this many CONSECUTIVE transient attempts for one key, the image is refused with a
 # failed entry (claude N2 on agent-harness#1130 r1): a deterministic incompatibility must not
 # re-run help and a real completion on every board forever. The count resets when the key
@@ -1276,20 +1277,34 @@ class Store:
 
     def get(self, entry_type, name_context, context):
         """The entry's payload iff its MAC verifies against the LIVE context; else None."""
+        return self._entry(entry_type, name_context, context)[1]
+
+    def _entry(self, entry_type, name_context, context):
+        """``("valid", payload)``, ``("absent", None)`` or ``("invalid", None)``.
+
+        ``get`` reads both failures as None. The fetch ledger must not: an entry that exists
+        but does not verify is a tampered ledger, never an empty one."""
         if self.status() != "ok":
-            return None
+            return "invalid", None
         try:
-            raw = json.loads(self._read(self._path(entry_type, name_context)))
+            data = self._read(self._path(entry_type, name_context))
+        except FileNotFoundError:
+            return "absent", None
+        except (OSError, ValueError):
+            return "invalid", None
+        try:
+            raw = json.loads(data)
             if raw.get("schema") != _ENTRY_SCHEMA or raw.get("type") != entry_type:
-                return None
+                return "invalid", None
             payload, mac = raw["payload"], raw["mac"]
             if not isinstance(payload, dict) or not isinstance(mac, str):
-                return None
+                return "invalid", None
             if not hmac.compare_digest(mac, self._mac(self._key(), entry_type, context, payload)):
-                return None
-            return payload
-        except (OSError, ValueError, KeyError, TypeError, AttributeError):
-            return None
+                return "invalid", None
+            return "valid", payload
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError):
+            # RecursionError: a deeply nested document is not an entry (json recurses per level).
+            return "invalid", None
 
     def remove(self, entry_types):
         removed = 0
@@ -1341,11 +1356,15 @@ class Store:
         return {**payload, "written_under": __version__}
 
     def put_provenance(self, prov, profile_digest):
+        # The two recorded statuses ride in the payload (AGYROLL §1.3); the MAC context is
+        # unchanged, so entries written before them still verify.
         context = {**self._base(prov.image_sha256, prov.platform, profile_digest),
                    "asset": prov.asset.name}
         self.put("provenance", context, context,
                  self._reported({"release_version": prov.asset.version,
-                                 "asset_sha256": prov.asset.digest}))
+                                 "asset_sha256": prov.asset.digest,
+                                 "attestation": getattr(prov, "attestation", "not_checked"),
+                                 "second_channel": getattr(prov, "second_channel", "not_checked")}))
 
     def get_provenance(self, image_sha256, host, profile_digest):
         context = {**self._base(image_sha256, host.name, profile_digest), "asset": host.asset}
@@ -1421,6 +1440,101 @@ class Store:
                            self._member_context(asset, host, profile_digest))
         value = payload.get("member_sha256") if payload else None
         return value if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) else None
+
+    # -- the fetch ledger (AGYROLL §1.2 total bound; PROVFWD-detail §1.3) -------------------
+    # One MAC-bound entry per (store, image, platform): no profile, help or runtime digest in
+    # its key, so every profile and runtime using this store shares one allowance per image.
+    # First use calls these under the store's one lock, so the cap is read, compared and
+    # charged before a fetch starts with no release in between. A pass (``reset_transients``)
+    # and ``agy-qualification clear`` leave it; ``clear --all`` removes it.
+    @staticmethod
+    def _ledger_context(image_sha256, host):
+        return {"image_sha256": image_sha256, "platform": host.name}
+
+    @staticmethod
+    def _ledger_shape(payload):
+        times = payload.get("fetches")
+        rejected = payload.get("rejected")
+        quarantined_at = payload.get("quarantined_at")
+        number = (int, float)
+        if (not isinstance(times, list) or not all(type(t) in number for t in times)
+                or not isinstance(rejected, dict)
+                or not all(isinstance(d, str) and re.fullmatch(r"[0-9a-f]{64}", d) and isinstance(v, list)
+                           and all(type(t) in number for t in v) for d, v in rejected.items())
+                or (quarantined_at is not None and type(quarantined_at) not in number)):
+            return None
+        return {"fetches": list(times), "rejected": {d: list(v) for d, v in rejected.items()},
+                "quarantined_at": quarantined_at}
+
+    def _ledger_read(self, image_sha256, host, now):
+        """``(ledger, quarantined_now)``. A ledger that exists but does not verify (a bad MAC,
+        unreadable, undecodable or the wrong shape) is replaced, when first seen, by an
+        authenticated quarantine of ``TOTAL_DOWNLOAD_CAP`` fetch times at that moment: it
+        counts as a reached cap for the next 24 h, then expires like any fetch, and a new
+        ``Store`` reads the same quarantine. It is never read as empty."""
+        context = self._ledger_context(image_sha256, host)
+        state, payload = self._entry("fetch_ledger", context, context)
+        if state == "absent":
+            return {"fetches": [], "rejected": {}, "quarantined_at": None}, False
+        ledger = self._ledger_shape(payload) if state == "valid" else None
+        if ledger is not None:
+            return ledger, False
+        quarantine = {"fetches": [now] * agy_provenance.TOTAL_DOWNLOAD_CAP, "rejected": {}, "quarantined_at": now}
+        self._put_ledger(image_sha256, host, quarantine, now)
+        return quarantine, True
+
+    def _ledger(self, image_sha256, host, now):
+        return self._ledger_read(image_sha256, host, now)[0]
+
+    def _put_ledger(self, image_sha256, host, ledger, now):
+        """Write the ledger, dropping what is older than 24 h: at most ``TOTAL_DOWNLOAD_CAP``
+        fetch times and ``MAX_LISTED`` rejected digests are kept. A quarantine marker is kept
+        for as long as the quarantine lasts."""
+        cutoff = now - agy_provenance.TOTAL_DOWNLOAD_WINDOW_S
+        fetches = sorted(t for t in ledger["fetches"] if t > cutoff)[-agy_provenance.TOTAL_DOWNLOAD_CAP:]
+        rejected = {digest: sorted(t for t in times if t > cutoff) for digest, times in ledger["rejected"].items()}
+        rejected = {digest: times for digest, times in rejected.items() if times}
+        if len(rejected) > agy_provenance.MAX_LISTED:
+            kept = sorted(rejected, key=lambda digest: rejected[digest][-1])[-agy_provenance.MAX_LISTED:]
+            rejected = {digest: rejected[digest] for digest in kept}
+        payload = {"fetches": fetches, "rejected": rejected}
+        quarantined_at = ledger.get("quarantined_at")
+        if quarantined_at is not None and quarantined_at > cutoff:
+            payload["quarantined_at"] = quarantined_at
+        context = self._ledger_context(image_sha256, host)
+        self.put("fetch_ledger", context, context, self._reported(payload))
+
+    def fetch_times(self, image_sha256, host):
+        """The recorded fetch times for this image; a tampered ledger reads as a full one."""
+        return tuple(self._ledger(image_sha256, host, _ledger_clock())["fetches"])
+
+    def note_fetch(self, image_sha256, host, at):
+        """Charge one fetch, or refuse it. The charge reads the ledger again; if that read finds
+        it invalid (now quarantined) or already full, nothing is written and the fetch is
+        refused with the retryable ``download_cap_reached``, so the fetch never starts and a
+        quarantine is never overwritten."""
+        ledger, quarantined = self._ledger_read(image_sha256, host, at)
+        cutoff = at - agy_provenance.TOTAL_DOWNLOAD_WINDOW_S
+        if quarantined or sum(1 for t in ledger["fetches"] if t > cutoff) >= agy_provenance.TOTAL_DOWNLOAD_CAP:
+            raise agy_provenance.ProvenanceError(agy_provenance.UNVERIFIED, agy_provenance.DOWNLOAD_CAP_REACHED)
+        self._put_ledger(image_sha256, host, {**ledger, "fetches": [*ledger["fetches"], at]}, at)
+
+    def rejected_assets(self, image_sha256, host, *, now):
+        """Asset digest -> how often its archive refused ``unverified`` in the last 24 h."""
+        cutoff = now - agy_provenance.TOTAL_DOWNLOAD_WINDOW_S
+        counts = {digest: sum(1 for t in times if t > cutoff)
+                  for digest, times in self._ledger(image_sha256, host, now)["rejected"].items()}
+        return {digest: count for digest, count in counts.items() if count}
+
+    def note_rejected(self, image_sha256, host, asset_sha256, at):
+        ledger = self._ledger(image_sha256, host, at)
+        rejected = {**ledger["rejected"], asset_sha256: [*ledger["rejected"].get(asset_sha256, ()), at]}
+        self._put_ledger(image_sha256, host, {**ledger, "rejected": rejected}, at)
+
+
+def _ledger_clock():
+    """The fetch ledger's clock (tests replace it)."""
+    return time.time()
 
 
 # ---------------------------------------------------------------------------- admission
@@ -1592,13 +1706,21 @@ def requalify_once(env, *, cancel_event=None, heartbeat=None, subject_path=None)
         # A repeat preflight is lookup only, with gh.admit's refusal mapping; it can still
         # reach the hold, which observes the caller's cancellation (AGYFRESH §2.2).
         return gh.admit(env, subject_path=subject_path, cancel_event=cancel_event)
+
+    def release(_reason=None):
+        # The key is released so the next preflight runs first use again: after a
+        # cancellation, and after a retryable provenance refusal (``budget_exhausted``,
+        # ``download_cap_reached``; AGYROLL §1.2), even when a hold admitted another image,
+        # so a host far behind continues its forward walk.
+        with _REQUALIFIED_LOCK:
+            _REQUALIFIED.discard(key)
+
     try:
         return ensure_admitted(
-            env, cancel_event, heartbeat, store=store, subject_path=subject_path)
+            env, cancel_event, heartbeat, store=store, subject_path=subject_path, on_retryable=release)
     except ValueError as exc:
         if str(exc) == CANCELLED:  # a cancelled preflight used no attempt
-            with _REQUALIFIED_LOCK:
-                _REQUALIFIED.discard(key)
+            release()
         raise
 
 
@@ -1711,16 +1833,18 @@ def lookup(env, data, path, *, store=None):
 
 
 def ensure_admitted(env, cancel_event=None, heartbeat=None, *, store=None, transport=None,
-                    qualify=None, subject_path=None):
+                    qualify=None, subject_path=None, on_retryable=None):
     """The seat admission boundary with first use (AGYFRESH §2.2): ``admit_seat(first_use=True)``.
 
     Called only by the whole-board preflight and by ``agy-qualification run``. The
     qualification worker's candidate token is admitted through ``gh.admit``, as before.
+    ``on_retryable`` is passed to ``admit_seat``.
     """
     if gh._CANDIDATE is not None:
         return gh.admit(env, subject_path=subject_path)
     return admit_seat(env, subject_path, first_use=True, cancel_event=cancel_event,
-                      heartbeat=heartbeat, store=store, transport=transport, qualify=qualify)
+                      heartbeat=heartbeat, store=store, transport=transport, qualify=qualify,
+                      on_retryable=on_retryable)
 
 
 # ------------------------------------------------- the seat admission boundary (AGYFRESH §2.2)
@@ -1733,6 +1857,19 @@ HOLD_REASONS = (
     "subject_failed", "subject_unqualified", "store_unsafe",
     "provenance_unverified", "provenance_unavailable", "first_use_failed", "first_use_unavailable",
 )
+#: The two retryable provenance reasons (AGYROLL §1.2): the per-call budget and the daily cap.
+RETRYABLE_PROVENANCE_REASONS = frozenset({agy_provenance.BUDGET_EXHAUSTED, agy_provenance.DOWNLOAD_CAP_REACHED})
+
+
+def provenance_refusal(exc: agy_provenance.ProvenanceError) -> ValueError:
+    """First use's provenance refusal: a plain ``ValueError`` whose ``str()`` is the code, as
+    before, with ``reason`` kept as an attribute. Its type stays exactly ``ValueError``, because
+    with nothing held the hold handler re-raises the original refusal unchanged (AGYFRESH §2.2)."""
+    refusal = ValueError(str(exc))
+    refusal.reason = exc.reason
+    return refusal
+
+
 # First use's refusals by their code. Any other code (a cancellation, an unsupported
 # platform) is not the subject's and propagates unchanged.
 _FIRST_USE_REASONS = {
@@ -1805,7 +1942,7 @@ def _read_subject(path, resolved):
 
 
 def admit_seat(env, subject_path, *, first_use=False, cancel_event=None, heartbeat=None,
-               store=None, transport=None, qualify=None) -> gh.Admission:
+               store=None, transport=None, qualify=None, on_retryable=None) -> gh.Admission:
     """The only place a seat image is admitted (AGYFRESH §2.2).
 
     Stages, in order: the never-eligible conditions at their own sites (local
@@ -1820,6 +1957,11 @@ def admit_seat(env, subject_path, *, first_use=False, cancel_event=None, heartbe
     ``gh.admit`` and ``agy_integrity.check`` (with an env) call this with
     ``first_use=False`` and map its refusals as they always have; ``ensure_admitted`` calls
     it with ``first_use=True``.
+
+    ``on_retryable(reason)`` is called when the subject's provenance stage refuses with
+    ``budget_exhausted`` or ``download_cap_reached`` (AGYROLL §1.2), before the hold, so it
+    is called whether the caller then raises or a hold admits another image. Such a refusal
+    stays hold-eligible as ``provenance_unverified`` and counts no transient.
     """
     try:
         gh._local_capabilities()
@@ -1833,7 +1975,8 @@ def admit_seat(env, subject_path, *, first_use=False, cancel_event=None, heartbe
     resolved = Path(os.path.realpath(path))
     try:
         return _admit_subject(env, path, resolved, first_use=first_use, cancel_event=cancel_event,
-                              heartbeat=heartbeat, store=store, transport=transport, qualify=qualify)
+                              heartbeat=heartbeat, store=store, transport=transport, qualify=qualify,
+                              on_retryable=on_retryable)
     except _SubjectNotAdmitted as refused:
         not_admitted = refused
     return _hold_or_refuse(env, not_admitted, resolved, store=store, cancel_event=cancel_event,
@@ -1841,7 +1984,7 @@ def admit_seat(env, subject_path, *, first_use=False, cancel_event=None, heartbe
 
 
 def _admit_subject(env, path, resolved, *, first_use, cancel_event, heartbeat, store, transport,
-                   qualify):
+                   qualify, on_retryable=None):
     """Stages 2 to 6 of ``admit_seat`` for the subject only. Every subject image is closed or
     handed on exactly once (H1)."""
     image = _read_subject(path, resolved)
@@ -1892,6 +2035,8 @@ def _admit_subject(env, path, resolved, *, first_use, cancel_event, heartbeat, s
         reason = _FIRST_USE_REASONS.get(str(exc))
         if reason is None:
             raise
+        if on_retryable is not None and getattr(exc, "reason", None) in RETRYABLE_PROVENANCE_REASONS:
+            on_retryable(exc.reason)
         raise _SubjectNotAdmitted(reason, exc, digest) from None
 
 
@@ -2127,7 +2272,8 @@ def _first_use_subject(env, image, path, *, cancel_event=None, heartbeat=None, s
     Phase 1 (provenance, nothing executes) writes a provenance entry; phase 2 measures help
     and runs the three live operations from the same sealed memfd, then writes the qualified
     entry. Operation failures write a typed failed entry; transients, cancellation and fetch
-    failures write nothing. Owns ``image``: it is closed unless handed on in the admission.
+    failures write no verdict entry. Every archive fetch is charged to the fetch ledger before
+    it starts. Owns ``image``: it is closed unless handed on in the admission.
     """
     try:
         store = store or Store()
@@ -2153,14 +2299,23 @@ def _first_use_subject(env, image, path, *, cancel_event=None, heartbeat=None, s
                 if heartbeat is not None:
                     heartbeat("agy_qualification_provenance")
                 try:
+                    # The hint orders the walk; the ledger (keyed on this store, image and
+                    # platform, shared by every profile) bounds it to TOTAL_DOWNLOAD_CAP
+                    # fetches a day, checked and charged here under the store lock.
                     prov = agy_provenance.find_provenance(
                         image.sha256, host=host, transport=transport,
                         cached_member=lambda asset: store.get_member(asset, host, profile_digest),
                         remember_member=lambda asset, member: store.put_member(
                             asset, member, host, profile_digest),
+                        hint=agy_provenance.version_hint(path),
+                        fetch_times=lambda: store.fetch_times(image.sha256, host),
+                        note_fetch=lambda at: store.note_fetch(image.sha256, host, at),
+                        rejected=lambda: store.rejected_assets(image.sha256, host, now=_ledger_clock()),
+                        note_rejected=lambda digest, at: store.note_rejected(image.sha256, host, digest, at),
+                        now=lambda: _ledger_clock(),
                     )
                 except agy_provenance.ProvenanceError as exc:
-                    raise ValueError(str(exc)) from exc
+                    raise provenance_refusal(exc) from exc
                 store.put_provenance(prov, profile_digest)
             provenance = store.get_provenance(image.sha256, host, profile_digest)
             if provenance is None:
