@@ -4,7 +4,7 @@ phase: FIRSTSEAT
 roadmap: specs/phase-plans-seats-v1.md
 roadmap_sha256: 2f26635bfcb5119967735cf5d5966f1ce39695a8331d2543eb9e11c07d187018
 automation:
-  suite_command: ["bash", "-lc", "cd phase-loop-runtime && timeout 900 env PYTEST_ADDOPTS= python3 -m pytest -p no:cacheprovider -q tests/test_seat_window_vendor_neutral.py tests/test_seat_window_supply_codex.py tests/test_seat_qualification_host_context.py tests/test_seat_jail_qualification_entry.py tests/test_seat_profile_codex.py tests/test_seat_reference_inventory.py tests/test_agy_qci.py"]
+  suite_command: ["bash", "-lc", "cd phase-loop-runtime && timeout 900 env PYTEST_ADDOPTS= python3 -m pytest -p no:cacheprovider -q tests/test_seat_window_vendor_neutral.py tests/test_seat_window_grants.py tests/test_seat_window_supply_codex.py tests/test_seat_qualification_host_context.py tests/test_seat_jail_qualification_entry.py tests/test_seat_profile_codex.py tests/test_seat_reference_inventory.py tests/test_agy_qci.py"]
 ---
 
 # FIRSTSEAT amendment K-1: one window kit for every vendor
@@ -198,7 +198,7 @@ Test commands run from `phase-loop-runtime/`.
 - **Scope**: Contract §10.C as `seat_window_supply_claude.py`.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_window_supply_claude.py`, `phase-loop-runtime/tests/test_seat_window_supply_claude.py`
 - **Interfaces provided**: the Claude window supplier
-- **Interfaces consumed**: IF-0-FIRSTSEAT-6 (SL-5), IF-0-CLAUDENET-1 to IF-0-CLAUDENET-3 (content gate), IF-0-CLAUDE-1 (pre-existing), `seat_claude_containment.refreshed_in_jail` (content gate), the transport observer of question Q-C (content gate)
+- **Interfaces consumed**: IF-0-FIRSTSEAT-6 (SL-5), IF-0-CLAUDENET-1 to IF-0-CLAUDENET-3 (content gate), IF-0-CLAUDE-1 (pre-existing), `seat_claude_containment.refreshed_in_jail` (content gate), the Q-C(b) print-path transport observer (content gate)
 - **Parallel-safe**: yes
 - **Stop rules.** Stop if:
   - start gate K1-T8 (Claude part, through the print-path observer) is not green;
