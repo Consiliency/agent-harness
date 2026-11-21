@@ -2258,8 +2258,10 @@ def test_a_rehearsals_session_artifact_is_never_a_capture(bench):
     assert code == 0 and report["result"] == "passed"
     (record,) = [json.loads(p.read_text()) for p in (bench.grant_dir() / "rehearsals").glob("????-????????????????.json")]
     assert record["observed"] == [
-        {"method": "GET", "host": gts.INFERENCE_HOST, "path": "/v1/settings", "decision": "deny"},
-        {"method": "POST", "host": gts.INFERENCE_HOST, "path": INFERENCE_PATH, "decision": "deny"}]
+        {"method": "GET", "host": gts.INFERENCE_HOST, "path": "/v1/settings", "decision": "deny",
+         "cause": "rules"},
+        {"method": "POST", "host": gts.INFERENCE_HOST, "path": INFERENCE_PATH, "decision": "deny",
+         "cause": "budget"}]
     assert record["tolerated_refusals"] == [
         {"method": "GET", "host": gts.INFERENCE_HOST, "path": "/v1/settings", "count": 1}]
     assert not list(bench.output.rglob("tool_definitions.json"))  # nothing copied out
@@ -3037,15 +3039,69 @@ PLANTED = [
 ]
 
 
-def test_the_diagnostic_paths_are_pinned_and_apart_from_the_tolerated_map():
-    assert gts.DIAGNOSTIC_PATHS == ("/v1/settings", "/v1/models")
-    for path in gts.DIAGNOSTIC_PATHS:  # named in a record, never tolerated for 1.0.92
-        assert ("GET", gts.INFERENCE_HOST, path) not in gts.tolerated_refusals(GROK_1_0_92)
-    _methods, hosts, paths = gts._retained_vocabulary()
-    assert "/v1/models" in paths and "/v1/chat/completions" in paths and "<other>" in paths
-    assert gts.INFERENCE_HOST in hosts and "x.ai" in hosts
-    assert gts.retained_observation("GET", gts.INFERENCE_HOST, "/v1/models", "deny") == {
-        "method": "GET", "host": gts.INFERENCE_HOST, "path": "/v1/models", "decision": "deny"}
+#: Erratum 8 r3, item 3: the closed diagnostic labels lane E8-C defines in
+#: ``seat_egress_proxy.DIAGNOSTIC_LABELS``, each with its fixed method and host.
+R3_DIAGNOSTIC_LABELS = {"<diag:settings>": ("GET", "cli-chat-proxy.grok.com"),
+                        "<diag:models>": ("GET", "cli-chat-proxy.grok.com")}
+
+
+@pytest.fixture
+def labels(monkeypatch):
+    """The E8-C labels, as its owner will define them, for a build that does not have them."""
+    if not hasattr(seat_egress_proxy, "DIAGNOSTIC_LABELS"):
+        monkeypatch.setattr(seat_egress_proxy, "DIAGNOSTIC_LABELS", R3_DIAGNOSTIC_LABELS,
+                            raising=False)
+    return gts.diagnostic_labels()
+
+
+def test_the_labels_are_imported_from_their_owner_and_from_nowhere_else():
+    """The projection keeps no label vocabulary of its own: it reads
+    ``seat_egress_proxy.DIAGNOSTIC_LABELS`` (E8-C) and, until that lands, retains none."""
+    owned = getattr(seat_egress_proxy, "DIAGNOSTIC_LABELS", None)
+    if owned is None:
+        assert dict(gts.diagnostic_labels()) == {}
+    else:
+        assert gts.diagnostic_labels() is owned and dict(owned) == R3_DIAGNOSTIC_LABELS
+    assert not hasattr(gts, "DIAGNOSTIC_PATHS")
+
+
+@pytest.mark.parametrize("image,path,kept", [
+    (GROK_1_0_89, "/v1/settings", "/v1/settings"), (GROK_1_0_92, "/v1/settings", "<other>"),
+    (GROK_1_0_89, "/v1/models", "<other>"), (GROK_1_0_92, "/v1/models", "<other>"),
+    (None, "/v1/settings", "<other>"), (GROK_1_0_89, "/v1/bundle/archive", "<other>"),
+    (GROK_1_0_92, "/v1/bundle/archive", "/v1/bundle/archive")])
+def test_a_raw_path_is_retained_only_as_the_records_own_images_entry(image, path, kept):
+    """Raw ``/v1/settings`` is retained only as 1.0.89's named entry, never on a 1.0.92 or
+    unknown-image record; ``/v1/models`` never; and no image's entry on another's record."""
+    assert gts.retained_observation("GET", gts.INFERENCE_HOST, path, "deny", "rules",
+                                    binary_sha256=image) == {
+        "method": "GET", "host": gts.INFERENCE_HOST, "path": kept, "decision": "deny",
+        "cause": "rules"}
+    for never in ("/v1/settings", "/v1/models"):
+        assert ("GET", gts.INFERENCE_HOST, never) not in gts.tolerated_refusals(GROK_1_0_92)
+
+
+@pytest.mark.parametrize("label", sorted(R3_DIAGNOSTIC_LABELS))
+@pytest.mark.parametrize("method,host,decision,cause,kept", [
+    ("GET", gts.INFERENCE_HOST, "deny", "rules", True),
+    ("POST", gts.INFERENCE_HOST, "deny", "rules", False),
+    ("GET", "x.ai", "deny", "rules", False),
+    ("GET", gts.INFERENCE_HOST, "allow", "rules", False),
+    ("GET", gts.INFERENCE_HOST, "deny", "inner_host", False),
+    ("GET", gts.INFERENCE_HOST, "deny", None, False)],
+    ids=["fixed", "method", "host", "allowed", "cause", "no-cause"])
+def test_a_label_is_retained_only_with_its_fixed_method_host_and_a_rules_denial(
+        labels, label, method, host, decision, cause, kept):
+    retained = gts.retained_observation(method, host, label, decision, cause,
+                                        binary_sha256=GROK_1_0_92)
+    assert retained["path"] == (label if kept else "<other>")
+
+
+def test_without_the_owners_labels_a_label_is_not_retained():
+    if hasattr(seat_egress_proxy, "DIAGNOSTIC_LABELS"):
+        pytest.skip("lane E8-C has landed its labels")
+    assert gts.retained_observation("GET", gts.INFERENCE_HOST, "<diag:settings>", "deny",
+                                    "rules", binary_sha256=GROK_1_0_92)["path"] == "<other>"
 
 
 @pytest.mark.parametrize("planted", PLANTED, ids=["segment", "templated", "post", "host"])
@@ -3083,7 +3139,8 @@ def test_a_measurement_retains_totals_and_tolerated_tuples_only(bench92):
 
 @pytest.mark.parametrize("field,value", [
     ("path", f"/v1/{PLANTED_WORD}"), ("host", f"{PLANTED_WORD}.example"),
-    ("method", PLANTED_WORD.upper()), ("decision", "forwarded")])
+    ("method", PLANTED_WORD.upper()), ("decision", "forwarded"), ("cause", "bogus"),
+    ("cause", None)])
 def test_a_rehearsal_record_naming_text_outside_the_vocabulary_is_refused(bench92, field, value):
     """The reader holds the producer's bound: a stored rehearsal whose observation names a
     value outside the vocabulary is no rehearsal, so the pilot cannot reserve on it."""
@@ -3521,3 +3578,43 @@ def test_results_of_another_runtime_or_context_refuse_even_beside_a_fresh_rehear
     code, report = bench.cli("--aggregate")
     assert (code, report["code"]) == (1, "context_mismatch"), report
     assert bench.host_record() is None
+
+
+@pytest.mark.parametrize("label", sorted(R3_DIAGNOSTIC_LABELS))
+def test_a_diagnostic_label_is_named_by_the_rehearsal_and_held_on_reload(bench92, labels,
+                                                                        label):
+    """Both labels through a rehearsal of 1.0.92: never tolerated (``unlisted_request``),
+    retained verbatim with its cause in the saved record and the CLI's report, and accepted
+    on reload only with its fixed method and host, ``deny`` and ``cause`` ``rules``. A record
+    entry without ``cause`` is stale."""
+    observed = ("GET", gts.INFERENCE_HOST, label, "deny", "rules")
+    code, report = _rehearse(bench92, [*_TABLE[:-1], observed, BUDGET_DENIED])
+    assert (code, report["reason"]) == (1, "unlisted_request"), report
+    assert label not in json.dumps(report["tolerated_refusals"])
+    path = _rehearsal_record(bench92)
+    record = json.loads(path.read_text())
+    assert record["observed"][6] == {"method": "GET", "host": gts.INFERENCE_HOST, "path": label,
+                                     "decision": "deny", "cause": "rules"}
+    assert label.encode() in path.read_bytes()
+    gts.check_rehearsal_keys(record)
+    for field, value in (("host", "x.ai"), ("method", "POST"), ("decision", "allow"),
+                         ("cause", "inner_host"), ("cause", "budget")):
+        broken = json.loads(json.dumps(record))
+        broken["observed"][6][field] = value
+        with pytest.raises(gts._Refused):
+            gts.check_rehearsal_keys(broken)
+    stale = json.loads(json.dumps(record))
+    del stale["observed"][6]["cause"]
+    with pytest.raises(gts._Refused):
+        gts.check_rehearsal_keys(stale)
+
+
+def test_on_1_0_89_the_named_settings_entry_wins_over_its_label(bench, labels):
+    """A named entry wins: on a 1.0.89 grant ``/v1/settings`` is the image's own entry,
+    retained verbatim and tolerated, not recorded as a label."""
+    code, report = _rehearse(bench, [(*SETTINGS, "rules"), BUDGET_DENIED])
+    assert (code, report["reason"]) == (0, "passed"), report
+    record = json.loads(_rehearsal_record(bench).read_text())
+    assert record["observed"][0]["path"] == "/v1/settings"
+    assert gts.retained_observation("GET", gts.INFERENCE_HOST, "/v1/settings", "deny", "rules",
+                                    binary_sha256=bench.digest)["path"] == "/v1/settings"

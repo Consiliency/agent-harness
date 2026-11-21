@@ -1660,7 +1660,7 @@ REHEARSAL_KEYS = frozenset({"schema", "grant", "rehearsal", "route", "argv_diges
                             "status", "reason",
                             "exit_code", "observation", "incomplete", "budget_denials",
                             "tolerated_refusals", "observed", "at"})
-_OBSERVED_KEYS = frozenset({"method", "host", "path", "decision"})
+_OBSERVED_KEYS = frozenset({"method", "host", "path", "decision", "cause"})
 _OBSERVED_CAP = 256
 #: What an ``observation_incomplete`` rehearsal records about what was missing: the first
 #: unmet condition of BA-1's completion proof (``missing``) and the proxy's own metadata,
@@ -1693,8 +1693,10 @@ def check_rehearsal_keys(document: Mapping[str, Any]) -> None:
     observed = document["observed"]
     _require(type(observed) is list and len(observed) <= _OBSERVED_CAP
              and all(type(item) is dict and set(item) == _OBSERVED_KEYS
-                     and item["decision"] in ("allow", "deny")
-                     and retained_observation(**item) == item for item in observed))
+                     and item["decision"] in ("allow", "deny") and item["cause"] is not None
+                     and retained_observation(
+                         **item, binary_sha256=document["binary_sha256"]) == item
+                     for item in observed))
 
 
 def _read_rehearsal_attempts(directory: int) -> tuple[str, ...]:
@@ -2294,44 +2296,59 @@ def _tolerated(events, binary_sha256: object) -> list[tuple | None]:
     return [tolerated(binary_sha256, event, index, first) for index, event in enumerate(events)]
 
 
-#: Erratum 8, item 3, held to a closed vocabulary: the paths a retained observation may name.
-#: Diagnostics, kept apart from the tolerated map and never read for tolerance or charging:
-#: the remote-settings and model-list fetches whose appearance means the pinned seat config
-#: was not honoured. Pinned by a test.
-DIAGNOSTIC_PATHS = ("/v1/settings", "/v1/models")
+#: Erratum 8, item 3: until lane E8-C defines ``seat_egress_proxy.DIAGNOSTIC_LABELS`` (each
+#: closed label mapped to its fixed ``(method, host)``), there are none, and no label is
+#: retained. The projection keeps no label vocabulary of its own.
+_NO_DIAGNOSTIC_LABELS: Mapping[str, tuple[str, str]] = MappingProxyType({})
 
 
-def _retained_vocabulary() -> tuple[frozenset, frozenset, frozenset]:
-    """The closed ``(methods, hosts, paths)`` a retained observation may name: the proxy's
-    own method vocabulary, and only hosts and paths this module and the allow-list spell out
-    -- the allow-list's rows, every image's tolerated entries, :data:`DIAGNOSTIC_PATHS` and the
-    proxy's fixed templates. Nothing in it is text a client supplied."""
+def diagnostic_labels() -> Mapping[str, tuple[str, str]]:
+    """The proxy's closed diagnostic labels, ``{label: (method, host)}``, imported from their
+    owner, :mod:`seat_egress_proxy` (lane E8-C). The one import seam: empty until it lands."""
+    from . import seat_egress_proxy
+
+    return getattr(seat_egress_proxy, "DIAGNOSTIC_LABELS", _NO_DIAGNOSTIC_LABELS)
+
+
+def retained_observation(method: object, host: object, path: object, decision: object,
+                         cause: object, *, binary_sha256: object) -> dict[str, Any]:
+    """One proxy event as a rehearsal record retains it (erratum 8, item 3), for the grant's
+    image ``binary_sha256``. Each value is kept only where this module, the allow-list or
+    the proxy's own tables spell it out, and anything else becomes ``<other>``:
+
+    - a host of an allow-list row, a token-endpoint host, or a host of the image's rows;
+    - a path of an allow-list row on its own host, the proxy's fixed token-endpoint
+      templates, the path of one of the image's ``(method, host, path)`` identities (so a
+      named entry is verbatim, as 1.0.89's ``/v1/settings``; no other image's are), or a
+      :func:`diagnostic_labels` label, only with its fixed method and host, ``deny`` and
+      ``cause`` ``rules``.
+
+    ``cause`` is kept when it is one of :data:`seat_egress_proxy.EVENT_CAUSES`, else
+    ``None``, which the reader refuses. The producer and the reader share this one bound,
+    so a client-chosen word never reaches the grant record, however it was observed."""
     from . import seat_egress_proxy
 
     rules = seat_egress_proxy.allowlist_ref(EGRESS_ALLOWLIST_ID).request_set
-    entries = [entry for listed in TOLERATED_REFUSALS_BY_IMAGE.values() for entry in listed]
-    methods = frozenset(seat_egress_proxy._EVENT_METHODS)
-    hosts = frozenset({"<other>", *seat_egress_proxy.TOKEN_ENDPOINT_HOSTS,
-                       *(rule["host"] for rule in rules), *(entry[1] for entry in entries)})
-    paths = frozenset({None, "<other>", "/oauth2/*", *DIAGNOSTIC_PATHS,
-                       *(rule["path"] if "path" in rule else rule["path_prefix"] + "*"
-                         for rule in rules),
-                       *(entry[2] for entry in entries)})
-    return methods, hosts, paths
-
-
-def retained_observation(method: object, host: object, path: object, decision: object
-                         ) -> dict[str, Any]:
-    """One proxy event as a record may retain it (erratum 8, item 3): each value
-    the closed vocabulary of :func:`_retained_vocabulary` holds is kept, and anything else --
-    a host, or a path template that a later proxy builds from the request's own segments --
-    becomes ``<other>``. The producer and the reader share this one bound, so a client-chosen
-    word never reaches the grant record, however it was observed."""
-    methods, hosts, paths = _retained_vocabulary()
-    return {"method": method if method in methods else "<other>",
-            "host": host if host in hosts else "<other>",
-            "path": path if path in paths else "<other>",
-            "decision": decision if decision in ("allow", "deny") else "<other>"}
+    identities = tolerated_refusals(binary_sha256)
+    hosts = {"<other>", *seat_egress_proxy.TOKEN_ENDPOINT_HOSTS,
+             *(rule["host"] for rule in rules), *(entry[1] for entry in identities)}
+    method = method if method in seat_egress_proxy._EVENT_METHODS else "<other>"
+    host = host if host in hosts else "<other>"
+    decision = decision if decision in ("allow", "deny") else "<other>"
+    cause = cause if cause in seat_egress_proxy.EVENT_CAUSES else None
+    paths = {None, "<other>", "/oauth2/*", "/oauth2/v2/userinfo",
+             *(rule["path"] if "path" in rule else rule["path_prefix"] + "*"
+               for rule in rules if rule["host"] == host)}
+    labels = diagnostic_labels()
+    if (method, host, path) in identities:
+        kept = path
+    elif path in labels:
+        kept = path if (labels[path] == (method, host) and decision == "deny"
+                        and cause == "rules") else "<other>"
+    else:
+        kept = path if path in paths else "<other>"
+    return {"method": method, "host": host, "path": kept, "decision": decision,
+            "cause": cause}
 
 
 def _check_tolerated(entries: object, binary_sha256: object) -> None:
@@ -3172,7 +3189,9 @@ def rehearse(stage: _Stage, route: str) -> dict[str, Any]:
         "tolerated_refusals": tolerated_summary(events or (), stage.grant.binary_sha256),
         # Recorded for an erratum: the proxy's metadata-only observation.
         # Its paths are the closed vocabulary only (erratum 8, item 3).
-        "observed": [retained_observation(event.method, event.host, event.path, event.decision)
+        "observed": [retained_observation(event.method, event.host, event.path, event.decision,
+                                          getattr(event, "cause", None),
+                                          binary_sha256=stage.grant.binary_sha256)
                      for event in (events or ())][:_OBSERVED_CAP],
         "at": _utc_now()}
     check_rehearsal_keys(record)
