@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import hashlib
 import ipaddress
 import json
@@ -46,7 +47,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Callable, Iterable, Mapping, Sequence
+from typing import Callable, Iterable, Iterator, Mapping, Sequence
 
 from . import claude_seat_transport as _transport
 from . import seat_uid as _seat_uid
@@ -1478,8 +1479,50 @@ def write_record(directory: Path, record: Mapping[str, object], *, token: bytes)
         raise ValueError("record refused: it carries the live credential")
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{record['run_id']}.json"
-    path.write_bytes(data)
+    try:  # never replaces a record: two sessions cannot both publish one run id
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                     0o644)
+    except FileExistsError:
+        raise ValueError(f"record refused: {path.name} already exists") from None
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)
     return path
+
+
+class EvidenceClaimed(ValueError):
+    pass
+
+
+@contextlib.contextmanager
+def claim_evidence(directory: Path) -> Iterator[None]:
+    """Hold the evidence directory for one effectful session: an exclusive, non-blocking lock
+    on the directory itself, so a second session (under any ``--window``) refuses before its
+    first effect instead of racing this one to the same run ids. The lock leaves no file."""
+    import fcntl
+
+    directory.mkdir(parents=True, exist_ok=True)
+    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise EvidenceClaimed("evidence: another W0 session holds this directory") from None
+        yield
+    finally:
+        os.close(fd)
+
+
+SECURITY_NOTES = "security-outcomes.txt"
+
+
+def private_stopped_arms(root: Path) -> set[str]:
+    """Arms the private security-outcome notes stop, so an interrupted session that never
+    wrote its withheld record still keeps the arm stopped."""
+    path = root / SECURITY_NOTES
+    if not path.is_file():
+        return set()
+    lines = path.read_bytes().decode("utf-8", "replace").splitlines()
+    return {line.split(" ", 1)[0] for line in lines if line.split(" ", 1)[0] in ARMS}
 
 
 # --------------------------------------------------------------------------------------
@@ -1768,6 +1811,8 @@ class Window:
     compose: Callable[[], Sequence[str]] = effective_composition
     cli_version: str = "unknown"
     session: int | None = None
+    #: True when the caller already holds :func:`claim_evidence` on ``out_dir``.
+    claimed: bool = False
     stopped_arms: set[str] = field(default_factory=set)
     private_notes: list[str] = field(default_factory=list)
 
@@ -1818,6 +1863,22 @@ class Window:
         return found[1]
 
     def run(self) -> list[Path]:
+        if self.claimed:
+            return self._run()
+        with claim_evidence(self.out_dir):
+            return self._run()
+
+    def _note_security(self, arm: str, block: int, code: str) -> None:
+        """Persist a security outcome privately the moment it is seen (OD-10), before any
+        reading or record, so an interrupted session still leaves it and keeps the arm
+        stopped."""
+        self.stopped_arms.add(arm)
+        self.private_notes.append(f"{arm} block {block}: {code}")
+        path = self.ledger.root / SECURITY_NOTES
+        kept = path.read_bytes().decode("utf-8", "replace").splitlines() if path.is_file() else []
+        write_private(path, "\n".join(dict.fromkeys(kept + self.private_notes)).encode())
+
+    def _run(self) -> list[Path]:
         problems = self.preflight()
         if problems:
             raise ValueError("W0 refused before any run: " + "; ".join(problems))
@@ -1825,6 +1886,7 @@ class Window:
         records, _found = load_records(self.out_dir) if self.out_dir.exists() else ([], [])
         self.stopped_arms |= {str(obj["arm"]) for obj in records
                               if obj["security_outcome"] == "withheld_private"}
+        self.stopped_arms |= private_stopped_arms(self.ledger.root)
         written: list[Path] = []
         self.ledger.read(opening_position(session), settle_s=0)
         for block in EXECUTION_NOTES.session_blocks[session - 1]:
@@ -1852,8 +1914,7 @@ class Window:
                     outcome = self.native(arm, EXECUTION_NOTES.timeout_s)  # type: ignore[misc]
                     outcomes.append(outcome)
                     if _transport.od10_class(outcome.code) == _transport.SECURITY:
-                        self.stopped_arms.add(arm)
-                        self.private_notes.append(f"{arm} block {block}: {outcome.code}")
+                        self._note_security(arm, block, outcome.code)
                         break
                 changed = checkout_problems(self.repo, str(self.plan["w0_head"]))
                 if changed:
@@ -1867,9 +1928,6 @@ class Window:
                     billing=billing, meter_digest=self.ledger.digest(block),
                     request_set=request_set, activation_section_sha256=self.activation(arm))
                 written.append(write_record(self.out_dir, record, token=self.token))
-        if self.private_notes:
-            write_private(self.ledger.root / "security-outcomes.txt",
-                          "\n".join(self.private_notes).encode())
         return written
 
 
@@ -1941,8 +1999,18 @@ def coverage_note(records: Sequence[Mapping[str, object]]) -> str:
     return "".join(f"; {note}" for note in notes)
 
 
-def _run_window(plan: Mapping[str, object], repo: Path, window: str,
-                session: int) -> int:  # pragma: no cover
+def _run_window(plan: Mapping[str, object], repo: Path, window: str, session: int) -> int:
+    """One session, holding the evidence directory from before its gate to its end."""
+    try:
+        with claim_evidence(repo / EVIDENCE_DIR):
+            return _run_claimed(plan, repo, window, session)
+    except EvidenceClaimed as exc:
+        print(f"claude-bakeoff run: REFUSED: {exc}", file=sys.stderr)
+        return 1
+
+
+def _run_claimed(plan: Mapping[str, object], repo: Path, window: str,
+                 session: int) -> int:  # pragma: no cover - past its gate, an owner window
     import shutil
 
     from . import panel_invoker, seat_credentials, seat_egress_proxy, seat_jail
@@ -2000,7 +2068,7 @@ def _run_window(plan: Mapping[str, object], repo: Path, window: str,
 
     window_run = Window(plan=plan, out_dir=repo / EVIDENCE_DIR, ledger=ledger,
                         token=credential.token, repo=repo, native=native, control=control,
-                        twin=twin, cli_version=cli_version, session=session)
+                        twin=twin, cli_version=cli_version, session=session, claimed=True)
     try:
         written = window_run.run()
     except ValueError as exc:

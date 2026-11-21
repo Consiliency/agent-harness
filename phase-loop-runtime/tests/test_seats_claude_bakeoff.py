@@ -1248,7 +1248,54 @@ def test_session_two_starts_only_on_session_ones_private_ledger(repo, tmp_path, 
     if loss in {"fresh-window", "meter-file"}:
         assert "lacks the earlier sessions' readings" in problems[0]
     assert not (tmp_path / "another-window").exists()  # checking creates nothing
-    assert bk.MeterLedger(root=tmp_path / "private").session_problems(1, records) != []
+    if loss == "none":  # session 1 never restarts on a ledger it already wrote
+        assert bk.MeterLedger(root=tmp_path / "private").session_problems(1, records) != []
+
+
+def test_a_record_is_never_replaced(repo, tmp_path):
+    record = native(repo)
+    bk.write_record(tmp_path / "w0", record, token=TOKEN)
+    with pytest.raises(ValueError, match="already exists"):
+        bk.write_record(tmp_path / "w0", {**record, "billing": "api"}, token=TOKEN)
+    assert json.loads((tmp_path / "w0" / "w0-b1-r1.json").read_text())["billing"] == "subscription"
+
+
+def test_a_second_session_on_the_same_evidence_refuses_before_any_effect(
+        repo, tmp_path, monkeypatch):
+    window, calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[_ok()] * 3)
+    with bk.claim_evidence(tmp_path / "w0"):  # another session, under any --window, holds it
+        with pytest.raises(bk.EvidenceClaimed):
+            window.run()
+    assert calls == [] and not (tmp_path / "private" / "meter.json").exists()
+    assert len(window.run()) == 6  # released, it runs
+    assert [p.name for p in (tmp_path / "w0").iterdir()] != []
+
+
+def test_a_security_stop_is_private_before_the_closing_reading(repo, tmp_path, monkeypatch):
+    leak = _ok(canonical_output="refused", code="claude_seat_token_in_output")
+    window, calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[leak])
+    asked: list[str] = []
+
+    def interrupted(question):
+        asked.append(question)
+        if len(asked) > 3:  # the session is interrupted at block 1's closing reading
+            raise EOFError
+        return ["10%", "none", "none"][len(asked) - 1]
+
+    window.ledger.prompt = interrupted
+    with pytest.raises(EOFError):
+        window.run()
+    assert not list((tmp_path / "w0").glob("*.json"))  # no withheld record was written
+    notes = tmp_path / "private" / bk.SECURITY_NOTES
+    assert "claude_seat_token_in_output" in notes.read_text()
+    assert notes.stat().st_mode & 0o777 == 0o600
+    assert bk.private_stopped_arms(tmp_path / "private") == {"print"}
+    # A rerun on an archived ledger that kept the note launches no print board.
+    (tmp_path / "private" / "meter.json").unlink()
+    monkeypatch.undo()
+    rerun, rerun_calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[])
+    rerun.run()
+    assert rerun_calls == []
 
 
 def test_the_sessions_partition_the_blocks_and_fix_the_readings():
