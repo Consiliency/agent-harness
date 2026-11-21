@@ -1219,36 +1219,42 @@ recorded here, because that would pin an output against a moving `main`.
 
 Nothing else in the contract changes.
 
-### Erratum 8 (2026-11-21) — grok 1.0.92: a pinned seat config, per-image tolerated refusals, templated path observation
+### Erratum 8 (2026-11-21, revision r2) — grok 1.0.92: an immutable seat config, per-image tolerated refusals, closed path diagnostics
 
-Source: the coordinator's ruling choosing a pinned local model entry. It rests on three pieces of evidence, and none of them involved a live call:
+Source: the coordinator's ruling choosing a pinned local model entry, revised (r2) after plan review. None of the evidence below involved a live call:
 - the D4 rehearsal of grok 1.0.92 under a budget-0 proxy, which was refused `unlisted_request` with nothing forwarded;
-- one screened read of that rehearsal's record and client log;
-- an offline, credential-free observation of the same binary: six launches in a network namespace with no route out, through a local recorder that forwarded nothing. These are in the engagement's review records, `grok-offline-catalog-test/`.
+- one screened read of that rehearsal's record and its `provider.log` (the child's stdout and stderr). This is not the client's own log of item 5;
+- an offline, credential-free observation of the same binary: seven launches in a network namespace with no route out, through a local recorder that forwarded nothing and answered 403 to every request. Launches 1–6 used a plain writable config file; launch 7 used the read-only projection of item 1. A separate launch with no grok proved the projection's mount behaviour. All are in the engagement's review records, `grok-offline-catalog-test/`.
 
 The image is grok 1.0.92, sha256 `add4d201dbf2c0bd6077a36feb55a76939de30bae48dbb06f16b2307d38ceacb`.
 
-**Notation.** Each claim below is marked as one of two kinds:
+**Notation.** Each claim below is marked as one of three kinds:
 - **[observed]:** seen in the offline launches or the rehearsal record;
-- **[documented]:** taken from the documentation bundled in the 1.0.92 binary.
+- **[documented]:** taken from the documentation bundled in the 1.0.92 binary;
+- **[inferred]:** concluded from what was observed, but not itself observed.
 
-For each [documented] claim, the list at the end names the single offline launch that would confirm it. None of those launches has been run.
+The list at the end covers the untested material claims. For each one it names the single offline launch that would confirm it. None of those launches has been run.
 
 **What the evidence shows.**
 
 - **Blocking [observed].** Without a local entry, 1.0.92 fetches its model list (`GET /v1/models`, twice). With that fetch refused, its catalog holds only the two built-in models. `grok-4.7` is not among them, so the client exits 1 with `unknown model id` before making any POST. That is why the rehearsal saw no inference request.
-- **The rehearsal's six `<other>` GETs [observed, by replay].**
-  - The six are `/v1/models` ×2, `/v1/bundle/archive`, `/`, `/v1/subagents/bundle` and `/v1/feedback/config`, all on `cli-chat-proxy.grok.com`. They came alongside `/v1/settings` ×3 (the rehearsal saw 2).
-  - Only the model list blocks. Every request except `GET /` carries `authorization` and identity headers.
-- **With the seat config of item 1 [observed].**
+- **The rehearsal's six `<other>` GETs.**
+  - The rehearsal record names no paths. The offline baseline (no local entry) made six GETs other than `/v1/settings`: `/v1/models` ×2, `/v1/bundle/archive`, `/`, `/v1/subagents/bundle` and `/v1/feedback/config`, all on `cli-chat-proxy.grok.com` [observed]. They are consistent with the record's six, but they cannot recover its original paths [inferred].
+  - Only the model list blocks. Every request except `GET /` carries `authorization` and identity headers [observed].
+- **With the seat config of item 1 (launches 6 and 7) [observed].**
   - There is no `/v1/settings` and no `/v1/models` request.
-  - The effort is honoured.
-  - The client reaches `POST /v1/chat/completions` with model `grok-4.7` and a `reasoning_effort` field.
-  - The remaining refused requests are four GETs and two `POST /v1/responses` on model `grok-4.6`, both before the inference request. The client went on past each of them.
+  - The effort warning is gone, and the inference body carries a `reasoning_effort` key. Its value was not logged.
+  - The client reaches `POST /v1/chat/completions`, with model `grok-4.7`.
+  - The remaining refused requests are four GETs and two `POST /v1/responses` on model `grok-4.6`. All came before the inference request, and the client went on past each of them.
+  - **The order of the four GETs varied:** `/` came second in launch 6 and third in launch 7. The two POSTs came after all four GETs both times, and the inference request came last.
+- **Two limits on this evidence.**
+  - The recorder always answered 403, and the launches used the `review` argv. That a board launch behaves the same way is an expectation [inferred].
+  - The two POSTs carry `input`, `tools` and `tool_choice` (key names observed), so they may carry content derived from the prompt. Their purpose and actual content are [inferred].
 
-**1. The seat config (amends §4.4 "Home" and §5.1; adds a context input).**
+**1. The seat config and the fixed inputs (amends §4.4 "Home" and §5.1; adds a context input; lane E8-A).**
 
-- **Content.** The grok seat's private home gets a harness-written `.grok/config.toml` holding exactly these 424 bytes, with sha256 `2984e0c368943bb6c1627146e413995df12cca5820e782adffcb052a9b761780` (`SEAT_CONFIG_SHA256`), and nothing else:
+*1a. Content.*
+- The grok seat's private home gets a harness-written `.grok/config.toml` holding exactly these 424 bytes, with sha256 `2984e0c368943bb6c1627146e413995df12cca5820e782adffcb052a9b761780` (`SEAT_CONFIG_SHA256`), and nothing else:
 
   ```toml
   [model."grok-4.7"]
@@ -1273,238 +1279,359 @@ For each [documented] claim, the list at the end names the single offline launch
   remote_fetch = false
   ```
 
-  Its parsed TOML value equals that of the fragment the offline launch ran with (the tested file differed only by comments and table order).
-- **Frozen fields and where each comes from.** A test pins each one.
-  - **The table key and `model`:** `grok-4.7`, equal to `MEASUREMENT_MODEL` (ruling D6), which is the board leg's model (§4.6).
-  - **`base_url`:** `https://` + `INFERENCE_HOST` + `/v1`. It is the client's documented default proxy base, and its host is the only `grok-review` allow row's.
-  - **`api_backend`:** `chat_completions`. It is the documented default, and its endpoint is the allow row's path, `/v1/chat/completions`.
-  - **`reasoning_efforts`:** low, medium and high, as tested; `high` equals `MEASUREMENT_EFFORT`. Without these rows the client ignores `--reasoning-effort high` [observed].
-  - **`name`:** display text only, as tested.
-  - **`[features] remote_fetch = false`:** documented as "allow optional online model-catalog fetches (default: true; set false for firewalled/air-gapped deployments)".
-- **When it is projected.** `seat_profile` (grok branch) projects the config only when it composes with the `grok-review` egress proxy: the measurement, the rehearsal and the frozen-basis board leg. Every other grok profile composes byte-identically.
-- **How it is projected.** It uses the existing `data_file` pattern, the one the codex seat's `.codex/config.toml` uses: `--perms 0600 --file` from a memfd. Unlike today's data files, this memfd is created with sealing allowed and is sealed against write, grow, shrink and further sealing once the bytes are written.
-- **Why it stays writable.** The file is writable inside the tmpfs because the client rewrites it: every launch appended `[marketplace] default_skills_installs_purged = true` [observed]. The append lands in the tmpfs and is destroyed with it. A read-only projection is untested, and this erratum does not allow one.
-- **The digest is taken before launch.** The final context check (§4.4 step 2, and `verify_measurement_context` for a measurement or rehearsal) reads the sealed memfd behind that one mount and requires its sha256 to equal `SEAT_CONFIG_SHA256`. That happens before the launch, so the client's own rewrite never reaches the digest.
-- **The home rule, amended.** §4.4 "Home" read "nothing but the projected `.grok/auth.json` and `.grok/agent_id`, plus the egress proxy projection of §5.2". It now reads "…plus the egress proxy projection of §5.2 and the seat config of erratum 8, and nothing else".
-  - **Refused**, each as `grok_tool_surface_unverified`: a missing config, a second one, differing bytes, an unsealed descriptor, a bind or read-only bind at that path, or any other added path.
-  - **No other config can reach the seat.**
-    - The operator's own `~/.grok/config.toml` is never copied: only `auth.json` and `agent_id` are, unchanged.
-    - A project `.grok/config.toml` is already refused by the discovery set (`.grok`).
-    - `GROK_CONFIG` and `GROK_CONFIG_PATH` are refused by the `GROK_*` rule.
-- **`context_digest` changes.**
-  - `grok_seat_context.v1` gains one field: `"seat_config": {"path": ".grok/config.toml", "sha256": "<SEAT_CONFIG_SHA256>"}`. The schema name is unchanged, as with erratum 2, so the digest value changes.
-  - No record, receipt or catalog entry exists under the earlier value, so nothing is re-measured.
-  - The argv forms and their digests do not change, since the config is home content, not argv.
-- **Falsifiers (lane E8-A).** Each refusal must refuse alone, at the final check and at the measurement check, with no launch:
+- **These exact bytes ran in launch 7 [observed].** Launch 6 ran a fragment whose parsed TOML value is equal; it differed only by comments and table order.
+
+*Frozen fields and where each comes from.* A test pins each one.
+- **The table key and `model`:** `grok-4.7`, equal to `MEASUREMENT_MODEL` (ruling D6), which is the board leg's model (§4.6).
+- **`base_url`:** `https://` + `INFERENCE_HOST` + `/v1`. It is the client's documented default proxy base, and its host is that of the only `grok-review` allow row.
+- **`api_backend`:** `chat_completions`. It is the documented default, and its endpoint is the allow row's path, `/v1/chat/completions`.
+- **`reasoning_efforts`:** low, medium and high, as tested; `high` equals `MEASUREMENT_EFFORT`. Without these rows the client ignores `--reasoning-effort high` [observed].
+- **`name`:** display text only.
+- **`[features] remote_fetch = false`:** documented as "allow optional online model-catalog fetches (default: true; set false for firewalled/air-gapped deployments)".
+
+*When it is projected.* `seat_profile` (grok branch) projects the config only when the profile composes with the `grok-review` egress proxy: the measurement, the rehearsal and the frozen-basis board leg. Every other grok profile composes byte-identically: the same mount arguments, environment and descriptors.
+
+*1b. The projection is immutable (replaces r1's writable `--file`).*
+- **The descriptor.** The bytes go into a sealed memfd from the existing helper `seat_jail.memfd_with`. It is called, not edited, and its SDK-bound region does not change. It is created with sealing allowed, written in full, sealed against write, grow, shrink and further sealing, and rewound to offset 0.
+- **The mount.** The profile projects the memfd with exactly one triple: `--perms 0444 --ro-bind-data <fd> /home/phase-loop-seat/.grok/config.toml`. bubblewrap reads the descriptor while it sets up and bind-mounts the result read-only, so the child sees a read-only mount point. The CA file of §5.2 is already projected this way.
+- **What the boundary refuses [observed in the launch without grok, from an unprivileged child under the same bwrap form].**
+  - An append fails with `EACCES`.
+  - A truncation and a `chmod` fail with `EROFS`.
+  - A rename over the file, and an unlink of it, fail with `EBUSY`, even though the parent `.grok/` is writable.
+  - `umount` is refused.
+  - The bytes were unchanged afterwards.
+  - Because a mount point cannot be replaced through its parent directory, a writable parent does not weaken it.
+- **What the client does with it [observed, launch 7, with a file-call trace].**
+  - Each launch, the client rewrites its config. In launch 7 it wrote a temporary file in `.grok/`, and `rename` of that file over `config.toml` returned `EBUSY`. The client removed the temporary file and went on: it reached the inference request with no `/v1/settings` and no `/v1/models`, exactly as in launch 6.
+  - So the failed rewrite is not fatal. The `[marketplace]` line that r1 saw appended lands nowhere.
+- **The client re-reads its policy layers throughout a launch [observed].** In a launch of about one second it opened `.grok/config.toml` 469 times, `.grok/requirements.toml` 555 times and `.grok/managed_config.toml` 440 times. With the config immutable, every one of those reads returns the pinned bytes.
+- **Binding the descriptor bubblewrap consumes.** The final context check (§4.4 step 2) and `verify_measurement_context` (both retained) locate the one `--ro-bind-data` triple for `.grok/config.toml` in the composed mount arguments, and check the descriptor named there:
+  - it is a memfd whose `F_GET_SEALS` is exactly those four seals;
+  - its `fstat` size is 424;
+  - its sha256, read with `os.pread`, equals `SEAT_CONFIG_SHA256`. The read must not consume the descriptor: a read that leaves the offset at EOF would hand bubblewrap an empty file, and a test refuses that helper;
+  - its offset is 0 at handoff;
+  - it is in the profile's `pass_fds` and not in its `keep_fds`;
+  - it is owned by the profile's exit stack, so it stays open until the launch has exited and is closed after.
+- **Mount normalisation.**
+  - The destination must be exactly that string, and absolute and normalised (`posixpath.normpath` returns it unchanged).
+  - No other mount operation of any kind may have a normalised destination equal to it or below it. That covers bind, ro-bind, dev-bind, file, bind-data, ro-bind-data, tmpfs, dir, symlink, remount-ro, chmod and the overlay forms.
+  - Above it, only the home tmpfs and the `--dir` for `.grok` are allowed. No bind, tmpfs, symlink or overlay may be placed over `.grok/` or the home.
+  - The home exception therefore admits this one mount and nothing else.
+- **The digest is the effective configuration.** The file cannot change after the check, so the pre-launch digest is the configuration in force for the whole launch, re-reads included.
+- **The home rule, amended.** §4.4 "Home" read "nothing but the projected `.grok/auth.json` and `.grok/agent_id`, plus the egress proxy projection of §5.2". It now reads "…plus the egress proxy projection of §5.2 and the read-only seat config of erratum 8, and nothing else".
+  - **Refused**, each as `grok_tool_surface_unverified`: a missing config; a second mount at that path; differing bytes; an unsealed descriptor or wrong seals; a non-zero offset; a writable `--file` or a host bind at that path; a mount above it; an un-normalised destination; or any other added path.
+
+*1c. The fixed inputs (`SEAT_FIXED_INPUTS`).*
+
+These are the inputs that decide the inference route and body, the policy, and the offered tools. They must not change during a launch.
+- **Derivation.** E8-A derives the tuple from the documentation bundled in 1.0.92 and from launch 7's file-call trace, records the derivation in the test that pins it, and starts from at least the entries below. Paths are relative to the seat home unless absolute.
+- **Policy layers.**
+  - `.grok/config.toml`;
+  - `.grok/managed_config.toml` and `.grok/requirements.toml`;
+  - `/etc/grok/managed_config.toml` and `/etc/grok/requirements.toml`;
+  - `/etc/claude-code/managed-settings.json`. Erratum 1's exclusion of it from the child's view is preserved;
+  - the managed-sync state: `.grok/managed_config_cache.json`, `.grok/managed_config.sig.json`, `.grok/managed_identity.sig.json` and `.grok/staged/managed_config_refresh.json`. Launch 7 shows the client reading or unlinking each [observed];
+  - client caches that can carry configuration: `.grok/models_cache.json`, `.grok/experiments_state.json` and `.grok/campaigns_state.json` [observed read].
+- **Discovery sources in the home.**
+  - `.grok/` `skills`, `agents`, `plugins`, `installed-plugins`, `hooks`, `hooks-paths`, `disabled-hooks`, `workflows`, `lsp.json`, `sandbox.toml`, `trusted-plugins`, `trusted-hook-projects`, `trusted_folders.toml`, `mcp_preferences.json`, `mcp_credentials.json` and `settings.json`;
+  - `.claude.json`, `.claude/`, `.cursor/`, `.agents/`, `.mcp.json` and `.config/grove/`.
+- **Project discovery.** The pinned discovery set at the cwd, each `--add-dir` and their visible ancestors (§4.4), unchanged.
+- **Environment and argv.** These are fixed by `exec` and cannot change.
+- **Why project config cannot change the model mapping [documented].** A project `.grok/config.toml` contributes only `[mcp_servers]`, `[plugins]`, `[env]` and `[permission]`, so the model mapping can come only from the policy layers above.
+
+*1d. How the boundary holds, by form.*
+- **`.grok/config.toml`:** immutable in every form (1b).
+- **`/etc` paths:** absent on the host at launch and outside every writable mount of the seat (§4.4, unchanged).
+- **The other fixed inputs, in `review` and `sealed`: change is ruled out by the measured tool surface.**
+  - Frozen-basis eligibility at use requires the receipt's admitted names to be a subset of the closed tuple `NON_MUTATING_TOOLS` = (`read_file`, `list_dir`, `grep`, `search_tool`). The empty set qualifies, which is `sealed`'s `--tools ""`.
+  - Under such a surface the only writer in the seat is the client.
+  - **Launch 7's trace shows the client's own writes in the home [observed]:**
+    - the refused config rename;
+    - three empty lock files (`.config-init.lock`, `managed_config.lock`, `installed-plugins/registry.lock`);
+    - unlinks of the absent managed-sync files, which returned `ENOENT`;
+    - its docs, sessions, log and worktree database.
+
+    None of these adds content to a fixed input.
+  - **Residual:** client writes after a *successful* model response were not observable offline. They are limited by egress: every non-inference request is refused, so no remote settings or managed sync can load.
+- **The other fixed inputs, in `staged`: not bounded by this erratum, so `staged` is ineligible for the frozen basis at use.**
+  - Its run and write tools can create any fixed-input path in the writable home and the staged tree. The client re-reads its policy layers continuously [observed], and it documents hot reload of skills, of project MCP configuration (watches on `<cwd>/` and `<cwd>/.grok/`) and of configuration.
+  - Masking each creatable path with an immutable empty mount point is the candidate, but it is not adopted. The client unlinks its managed files at start [observed], and how it treats a read-only placeholder is untested.
+  - So the §4.4 consumer audit gains a row: a board leg on the `staged` form, holding a frozen-basis receipt, is **ineligible**. It is refused `grok_tool_surface_unverified` at the final check.
+  - `staged` may still be **measured**. The definitions artifact is written before the inference request [observed], and item 2's order rule disqualifies any later inference POST.
+  - Admitting `staged` at use needs a later erratum, resting on an approved, no-egress launch of the masked projection.
+- **Confirmation before a credentialed launch.** Launch 7 (authorised, no egress, the pinned bytes under `--ro-bind-data`, the `review` argv) settles the client's tolerance of the read-only projection. The remaining difference from production is composition: the tmpfs home, the CA file and the launch-owner composition. The hosted stand-in test of 1f closes it, and so does any binding rehearsal, which stops before a counted request.
+- **No reload behaviour is relied on.** The design relies on immutability (`config.toml`) and on the absence of any writing tool (`review`, `sealed`), never on the client not reloading.
+
+*1e. `context_digest` changes.*
+- `grok_seat_context.v1` gains one field: `"seat_config": {"path": ".grok/config.toml", "sha256": "<SEAT_CONFIG_SHA256>", "projection": "ro-bind-data"}`, plus the `SEAT_FIXED_INPUTS` tuple and `NON_MUTATING_TOOLS`. The schema name is unchanged, as with erratum 2, so the digest value changes.
+- Private history is not presumed empty. The failed D4 rehearsal exists, and any earlier frozen record is stale under the new value. It is never reused: its context and its runtime both differ.
+- The argv forms and their digests do not change.
+
+*1f. Falsifiers (lane E8-A).* Each refusal must refuse alone, at the final check and at the measurement check, with no launch.
+- **Refusals:**
   - a profile with no config;
-  - a config with one byte changed;
-  - a second `--file` at the same path;
-  - an unsealed memfd;
-  - a host bind at `.grok/config.toml`;
-  - a frozen-basis profile composed without the proxy.
-
-  Also:
+  - one byte changed;
+  - a second mount at the path;
+  - a writable `--file` at the path;
+  - a host bind at the path;
+  - a `--bind`, `--tmpfs` or `--symlink` over `.grok/`;
+  - `.grok/./config.toml` and `//` forms;
+  - an unsealed memfd, or one missing one seal;
+  - a descriptor at EOF, or a hash helper that consumes it;
+  - a wrong size;
+  - a descriptor absent from `pass_fds`, or a different descriptor number;
+  - a frozen-basis profile composed without the proxy;
+  - a home holding `.grok/managed_config.toml` or `.grok/requirements.toml`;
+  - a `staged` board leg on a frozen-basis receipt;
+  - a `review` or `sealed` receipt whose admitted names leave `NON_MUTATING_TOOLS`.
+- **Also:**
   - an ordinary grok profile (no egress proxy) is byte-identical to `main`'s;
-  - `context_document` carries the field, and `context_digest()` changes when any config byte changes;
-  - the board-leg stand-in test of §4.6 still completes `sealed`, `staged` and `review`, with the child's home holding the projection plus this file.
+  - `context_document` carries the fields, and `context_digest()` changes when any config byte changes;
+  - **a hosted stand-in test through the real launcher (bubblewrap), part of BA-3.** A stand-in grok attempts an append, a truncation, a rename-over, an unlink and a `chmod` of `.grok/config.toml`, and reports each errno. It reads the sha256 at start and at exit, and both equal `SEAT_CONFIG_SHA256`. The board-leg stand-in of §4.6 still completes `sealed` and `review` with the child's home holding the projection plus this file.
 
-**2. Per-image tolerated refusals (amends erratum 3, item 1).**
+**2. Per-image tolerated refusals, by cause and order (amends erratum 3, item 1; lane E8-B).**
 
-- **A map keyed by image.** `TOLERATED_REFUSALS` becomes a closed map keyed by binary sha256, `TOLERATED_REFUSALS_BY_IMAGE`.
+- **A map keyed by image.** `TOLERATED_REFUSALS` becomes `TOLERATED_REFUSALS_BY_IMAGE`: a closed map from binary sha256 to a tuple of entries `(method, host, path, cause, order)`.
   - The key is the grant's pinned binary sha256 (§5.3), which every stage re-measures.
   - An image not in the map tolerates nothing.
   - The map is pinned by a test, and an entry needs an erratum here.
-- **Entries.**
-  - `a3dface51d9bdc71fd121e0481dd02d9b46a721f7a6b892f756480e9666eba1f` (1.0.89) keeps erratum 3's three entries, unchanged.
-  - `add4d201dbf2c0bd6077a36feb55a76939de30bae48dbb06f16b2307d38ceacb` (1.0.92) has exactly these five:
+  - Within one image each `(method, host, path)` has exactly one entry, so it names one cause and one order.
+- **1.0.89 (`a3dface51d9bdc71fd121e0481dd02d9b46a721f7a6b892f756480e9666eba1f`)** keeps erratum 3's three entries, with the causes the proxy has always written for them:
 
-    | Observation at the proxy, denied by the allow-list | What it is |
-    |---|---|
-    | `GET` `cli-chat-proxy.grok.com` `/v1/bundle/archive` | not identified; credentialed |
-    | `GET` `cli-chat-proxy.grok.com` `/` | not identified; carries no `authorization` |
-    | `GET` `cli-chat-proxy.grok.com` `/v1/subagents/bundle` | subagent definitions, judging by its name; credentialed |
-    | `GET` `cli-chat-proxy.grok.com` `/v1/feedback/config` | the feedback system, judging by its name; credentialed |
-    | `POST` `cli-chat-proxy.grok.com` `/v1/responses` | two pre-turn calls, on model `grok-4.6` |
+  | method | host | path | `cause` | order |
+  |---|---|---|---|---|
+  | `GET` | `cli-chat-proxy.grok.com` | `/v1/settings` | `rules` | any |
+  | `CONNECT` | `x.ai` | — | `front` | any |
+  | `CONNECT` | `storage.googleapis.com` | — | `front` | any |
 
+  The two updater `CONNECT`s are refused at the tunnel front, by the proxy's CONNECT-authority check, which writes `cause` `front`. r1's blanket `rules` would have failed their existing updater controls.
+- **1.0.92 (`add4d201…`)** has exactly these five:
+
+  | method | host | path | `cause` | order | what it is |
+  |---|---|---|---|---|---|
+  | `GET` | `cli-chat-proxy.grok.com` | `/v1/bundle/archive` | `rules` | any | not identified; credentialed |
+  | `GET` | `cli-chat-proxy.grok.com` | `/` | `rules` | any | not identified; no `authorization` |
+  | `GET` | `cli-chat-proxy.grok.com` | `/v1/subagents/bundle` | `rules` | any | subagent definitions, by its name [inferred]; credentialed |
+  | `GET` | `cli-chat-proxy.grok.com` | `/v1/feedback/config` | `rules` | any | the feedback system, by its name [inferred]; credentialed |
+  | `POST` | `cli-chat-proxy.grok.com` | `/v1/responses` | `rules` | pre-inference | two calls on model `grok-4.6` |
+
+- **Never tolerated, for either image.**
+  - Any other cause: `inner_host`, `budget`, `shutdown`, or `front` for a non-CONNECT entry.
+  - A `CONNECT` whose authority is not exactly `<host>:443`. The proxy's named channel matches only the literal port 443, so `0443` or another port is recorded under `<other>`.
+  - Any `<other>` host or path, and any diagnostic label of item 3.
+  - For 1.0.92: `/v1/settings`, `/v1/models` and both updater `CONNECT`s.
+- **Order is defined by the proxy's decisions.**
+  - An event's position is its place in the proxy's own event stream, which is the order the proxy wrote its decisions. It is not the client's send time.
+  - "Pre-inference" means before the first allowed counted POST in a measurement, and before the first budget denial in a rehearsal.
+  - A `POST /v1/responses` at or after that point disqualifies, as erratum 3 says of any further POST. The reason is that a later model call may rewrite the definitions artifact.
+  - **The cost [inferred].** A reversal in the rehearsal costs zero requests. A reversed or extra post-turn POST in the pilot costs its one request and disqualifies it.
+- **One predicate everywhere.** `tolerated(image, event, position)` is the only test, and these all use it:
+  - `_classify`;
+  - `_rehearsal_reason`;
+  - `tolerated_summary`, which counts only events that pass it, so a late POST is never summarised as tolerated;
+  - `_check_tolerated`, which now takes the image and validates a saved record against the map entry of that record's own `binary_sha256`;
+  - result reload and aggregation.
+
+  The record entry shape is unchanged (`method`, `host`, `path`, `count`), because one image's tuple fixes cause and order.
 - **Refused only.**
-  - Each entry is tolerated only when the allow-list denied it (`cause` `rules`). None is ever allowed or forwarded, and none is a counted request (§5.3 counts allowed POSTs only).
-  - Nothing is added to the allow-list.
-  - The entries reach the proxy through its existing `named` channel (at most 16), so a match is verbatim.
-- **The two POSTs carry prompt content and use another model.**
-  - They carry `input`, `tools` and `tool_choice` (key names observed), so they very probably carry content derived from the prompt. They name `grok-4.6`, the documented default model, not the measured one.
-  - **Refusing them is the point.** Forwarding them would send review content to a second inference route that is neither measured nor counted.
-- **The POST entry is tolerated only before the inference request:** before the counted request in a measurement, and before the first budget denial in a rehearsal.
-  - After that point, any POST to the inference host still disqualifies, as erratum 3 says, because a later model call may rewrite the artifact.
-  - Offline, both POSTs came 5 ms before the inference request, and the definitions artifact was written 3 ms before it [observed].
-  - If the order flips, the launch fails closed.
-- **What stays untolerated for `add4d201…`.**
-  - **`/v1/settings` and `/v1/models`.** With the seat config they do not occur [observed]. If either appears, the config was not honoured, or a managed setting overrode it (item 4), and the launch is disqualified: `unlisted_request` in a rehearsal, `egress_refused` in a measurement. No new reason code is added; item 3 makes the record name the path.
-  - **The updater's `CONNECT`s** (`x.ai`, `storage.googleapis.com`). Neither was observed for this image.
-- **An `<other>` observation, of host or path, is never tolerated.**
+  - None of these entries is ever allowed or forwarded, and none is a counted request (§5.3 counts allowed POSTs only). Nothing is added to the allow-list.
+  - The proxy's `named` list for a grant is exactly that image's `(method, host, path)` entries (at most 16), so a match is verbatim.
+- **Why the two POSTs are refused.** Forwarding them would send content that may derive from the prompt to a second inference route, which is neither measured nor counted.
+- **Residual of normalised identity.** An entry matches the method, the host and the normalised URL `pathname`; the query is omitted.
+  - So it cannot tell apart raw targets that normalise to the same pathname, or different purposes at the same method, host and path.
+  - This affects classification only. The request is always denied, its body is discarded, and it has no effect on charging.
 - **Counts.** Any number of each entry is tolerated, as in erratum 3, and recorded as `tolerated_refusals`, metadata only.
 - **Not in the context.** The map is not part of `context_digest`, as erratum 3 said of its list: it qualifies a measurement and constrains no launch.
-- **A board launch** meets the same refusals and continues past them [observed offline: none blocked].
-- **Falsifiers (lane E8-B), on a recording runner:**
-  - the map is pinned, and each image's `named` list equals its entries;
-  - an image absent from the map tolerates nothing;
-  - for `add4d201…`, a rehearsal and a measurement each refuse on `/v1/settings`, on `/v1/models`, on a `CONNECT x.ai`, on an `<other>` path on the inference host, and on a `POST /v1/responses` after the inference request;
-  - a 1.0.89 grant still tolerates erratum 3's three, and a 1.0.92 grant does not;
-  - a pilot with the five entries before its one allowed counted request is `measured`.
+- **Falsifiers (lane E8-B).** Each runs for both images and for an unknown image, through the proxy's `named` list, the classifier, the rehearsal, the result, aggregation and reload.
+  - The map is pinned, and each image's `named` list equals its entries.
+  - An unknown image tolerates nothing.
+  - On 1.0.89, the updater `CONNECT` denied with `front` is tolerated. The same authority on port `0443`, or carrying another cause, is not. `/v1/settings` denied with `inner_host` is not.
+  - A 1.0.92 grant does not tolerate 1.0.89's entries, and a 1.0.89 grant does not tolerate 1.0.92's.
+  - For 1.0.92, a rehearsal and a measurement each refuse on `/v1/settings`, `/v1/models`, `CONNECT x.ai`, an `<other>` path on the inference host, a diagnostic label, and a `POST /v1/responses` at or after the inference request. The late POST is absent from `tolerated_refusals`.
+  - Mixed order: a GET after the inference request is tolerated, and a POST is not.
+  - A saved 1.0.92 result validated against the 1.0.89 entry refuses.
+  - A pilot with the five entries before its one allowed counted request is `measured`.
 
-**3. Templated path observation (amends the proxy's closed vocabulary, §5.2 and erratum 3).**
+**3. Closed path diagnostics (replaces r1's templated paths; amends §5.2 and erratum 3; lane E8-C).**
 
-- **Today.** A refused request on an allow-listed host whose path matches no rule is recorded as `<other>` (`observedPath` in `proxy.mjs`). That is why the D4 rehearsal record could not name its six GETs.
-- **New.** On a **budgeted** proxy only (the measurement and the rehearsal), such a request's path is recorded as a template instead:
-  - **Source.** The template is built from the request's `pathname`. No query string or fragment is read, as today.
-  - **Limits.** The `pathname` may be at most 128 characters and 6 segments, split on `/`.
-  - **Segments.** A segment is kept verbatim only if it matches `[a-z]{1,24}` or `v[0-9]{1,2}`; otherwise it is replaced by `<seg>`.
-  - **What stays `<other>`.** An empty segment (other than the bare root `/`), or a path over the limits.
-  - **Examples:** `/v1/bundle/archive` stays itself, and `/v1/users/AbC123/token` becomes `/v1/users/<seg>/token`.
-- **Why it cannot leak a secret.**
-  - A kept segment is lowercase letters only (or a short version tag) and at most 24 long. No digits, dots, `@`, `%`, `=` or capitals survive, so no UUID, numeric id, email, token or encoded value does.
-  - **The residual is a word-like identifier**, such as an all-letter slug. It is accepted because the record never leaves the host: rehearsal and result records are private (§5.9), and `tool-surface.json` carries no path other than the tolerated entries.
-- **Scope.**
-  - Only events whose host is the host of an allow-list rule get a template. Every other host stays `<other>`, and the token-endpoint table is unchanged.
-  - A budgetless stream (every board leg, and the gemini and codex seats) is byte-identical, which is the §8 guard.
-  - A template can never equal a rule path, or a named entry, for a different raw path, since kept segments are verbatim.
-- **The reader.** `seat_egress_proxy._valid_request_event` accepts the grammar for a budgeted stream's events on a listed host, and nothing more.
-- **Falsifiers (lane E8-C):**
-  - each grammar case;
-  - a query string never appears in the record;
-  - a budgetless proxy's stream is byte-identical for the same requests;
-  - the existing gemini and codex egress tests pass unedited, and their allow-list digests are unchanged;
-  - a reader fed a template from a budgetless stream, or for an unlisted host, refuses the stream.
+- **No client-supplied path text.** r1's segment grammar is withdrawn. A lowercase segment can be a customer identifier, a credential fragment or prompt text. Every path on an allow-listed host that matches no rule, no named entry and no diagnostic stays `<other>`, as today.
+- **A closed diagnostic table.** It is held identically in `seat_egress/proxy.mjs` and `seat_egress_proxy.py`, and a test compares the two. It is keyed by allow-list id. For `grok-review` it has exactly two rows:
 
-**4. Managed policy (confirms §4.4 "Managed config"; no rule change).**
+  | method | host | path | recorded as |
+  |---|---|---|---|
+  | `GET` | `cli-chat-proxy.grok.com` | `/v1/settings` | `<diag:settings>` |
+  | `GET` | `cli-chat-proxy.grok.com` | `/v1/models` | `<diag:models>` |
 
-- **Why it matters.** A managed grok setting overrides the user file for `remote_fetch` [documented: "Managed wins over the user file when both set"; requirements can pin it].
-- **The existing context already closes every source grok 1.0.92 documents [documented]:**
-  - **`/etc/grok/managed_config.toml` and `/etc/grok/requirements.toml`:** they must be absent on the host and invisible to the child (`_check_managed_config`).
-  - **`$GROK_HOME/managed_config.toml` and `$GROK_HOME/requirements.toml`:** `GROK_HOME` is unset (`GROK_*` is forbidden), so it is the seat's `~/.grok`. That lies in the fresh tmpfs home, which holds nothing but the projection (item 1).
-  - **Console-synced managed config (`features.managed_config`):** it would need a request, and any such request is refused and untolerated.
-  - **Fleet settings from `/v1/settings`:** not fetched with `remote_fetch = false` [observed]; untolerated if fetched (item 2).
-  - **`GROK_CONFIG`, `GROK_CONFIG_PATH` and `GROK_*` variables:** forbidden.
+- **Bounds, identical for the producer and the reader.**
+  - **Budgeted proxies only:** the measurement and the rehearsal. The label is written only for a denial with `cause` `rules`, and the event's `cause` is required.
+  - **A named entry wins.** On a 1.0.89 grant, `/v1/settings` is named and is recorded verbatim, as today.
+  - **The reader** (`seat_egress_proxy._valid_request_event`) accepts `<diag:LABEL>` only on a budgeted stream, for that row's host and method, with decision `deny` and `cause` `rules`. In a budgetless stream it refuses the stream.
+- **A diagnostic decides nothing.**
+  - It is not a path, and it can never equal a rule path or a named entry, since it begins with `<`.
+  - It is in no tolerated map, and it never changes a status or a charge.
+  - The same normalised-identity residual as item 2 applies.
+- **Which record gets it.**
+  - The rehearsal record's `observed` list does. That list is host-local in the grant directory, capped at 256 entries, and returned by the CLI.
+  - **The measurement result record is unchanged.** It keeps its totals and tolerated entries only, so a disqualified pilot is `egress_refused` and names no path. No pilot field is added, and the aggregate is unaffected.
+  - The rehearsal precedes the pilot and costs nothing, so the request is named there.
+- **Scope.** Diagnostic rows exist only for an allow-listed host. A budgetless stream (every board leg, and the gemini and codex seats) is byte-identical, which is the §8 guard. The token-endpoint table is unchanged.
+- **Falsifiers (lane E8-C).**
+  - Each table row.
+  - A planted all-letter path (`/v1/plantedwordzz`) and a planted segment (`/v1/users/plantedwordzz/token`) are recorded `<other>`. The test asserts that `plantedwordzz` is absent from the proxy stream, the rehearsal record's bytes and the CLI's captured output.
+  - A query string never appears.
+  - A budgetless proxy's stream is byte-identical for the same requests.
+  - The reader refuses a label in a budgetless stream, for another host or method, on an allowed event, or without `cause`.
+  - The existing gemini and codex egress tests pass unedited, and their allow-list digests are unchanged.
+
+**4. Managed policy (confirms §4.4 "Managed config"; adds the home layers to item 1).**
+
+- **Why it matters.** A managed grok setting overrides the user file for `remote_fetch` [documented: "Managed wins over the user file when both set"; requirements can pin it]. Of the three, this precedence and requirements pinning are untested. The native Linux paths match the bundled reference [documented].
+- **The sources, and what closes each.**
+  - **`/etc/grok/managed_config.toml` and `/etc/grok/requirements.toml`:** absent on the host and invisible to the child (`_check_managed_config`, unchanged).
+  - **`$GROK_HOME/managed_config.toml` and `$GROK_HOME/requirements.toml`:** `GROK_HOME` is unset (`GROK_*` is forbidden), so these are in the seat's `.grok/`. They are fixed inputs (item 1c): absent at the final check, and not creatable in a form admitted at use (item 1d).
+  - **Console-synced managed config (`features.managed_config`):** its route was not observed. Every request other than the inference POST is refused, so no remote policy can load whatever route it uses. If it uses a separate route, it is untolerated. If it shares a tolerated tuple, it cannot be told apart, but the 403 still loads nothing.
+  - **Fleet settings from `/v1/settings`:** not fetched with `remote_fetch = false` [observed], and untolerated if fetched.
+  - **`GROK_CONFIG`, `GROK_CONFIG_PATH` and every other `GROK_*` variable:** forbidden.
   - **A project `.grok/config.toml`:** the discovery set.
   - **macOS device management:** not present on a Linux seat.
-
-  So no path is added, and `context_digest` moves for item 1 only.
-- **Staging on the measurement host** is read-only, 0 calls, and done before the grant opens:
-  - `test ! -e /etc/grok/managed_config.toml && test ! -e /etc/grok/requirements.toml`;
-  - record whether `/etc/claude-code/managed-settings.json` exists. That is allowed; the final check proves it hidden.
-
-  The binding check is still the code's. The rehearsal's own context check refuses with `context_refused` before the launch, so no request is made.
-- **Falsifier (lane E8-A).** A profile whose home gains `.grok/managed_config.toml` or `.grok/requirements.toml` refuses. The existing `/etc/grok` rows stay.
+- **Staging on the measurement host** is read-only, makes 0 calls, and is done before the grant opens.
+  - It mirrors the launch guard's `lstat` semantics: a path counts as absent only on `FileNotFoundError` or `NotADirectoryError`. A dangling symlink, or any other access error, is treated as present and stops the staging.
+  - It checks both `/etc/grok` files that way, and records whether `/etc/claude-code/managed-settings.json` exists. That file is allowed on the host; the final check proves it is hidden from the child.
+  - The staging check is preliminary, and the code's launch check binds.
+- **Falsifier (lane E8-A).** A dangling symlink at either `/etc/grok` path refuses, at staging and at launch. The existing `/etc/grok` rows stay, and the home rows are in 1f.
 
 **5. The client log.**
 
-- **What it holds [observed].** `~/.grok/logs/unified.jsonl` records `key_prefix`, which is the token's **last** 12 characters, 4–5 times per launch. stderr does not carry it, and no session file holds it or the identity fields.
-- **Handling:**
-  - **It lives only in the tmpfs home, which is destroyed at teardown.** `.grok/logs` is never host-backed. The home check already refuses any host path in the home other than the measurement's one sessions bind at `.grok/sessions`; a test now names `.grok/logs`.
-  - **Nothing of the home is copied out except the definitions artifact** (§5.9, unchanged). The log is never retained, published or attached to evidence.
-  - **This rests on exclusion, not on the secret scanner.** The registered secret values (`_seat_secret_values`, the exec record scan) are the full token values, and they do not match a 12-character suffix. The scanner is not changed.
-- **Falsifier (lane E8-B).** A stand-in grok writes a planted credential's 12-character suffix into `$HOME/.grok/logs/unified.jsonl`, and nowhere else.
-  - After a measurement launch and after a rehearsal, no file under the output directory, the grant directory, the host-local record root or the evidence contains that suffix.
-  - The sessions directory is removed.
-  - A variant that binds `.grok/logs` from the host refuses at the context check.
+- **What it holds [observed].** `.grok/logs/unified.jsonl` records `key_prefix`, the token's **last** 12 characters, 4–5 times per launch. stderr does not carry it, and no session file holds it or the identity fields.
+- **The collector guarantee.**
+  - No harness collector opens `unified.jsonl` or copies `.grok/logs`.
+  - `.grok/logs` is never host-backed. The home check refuses any mount at or above `.grok/logs` other than the home tmpfs. The measurement's one sessions bind is the sibling `.grok/sessions`.
+- **The redistribution control (the claim covers it).** A seat process can copy log text into a retained channel. `review` has `read_file`, so the model can read the log and echo it, and `staged` has a shell.
+  - **Registration (E8-A, one insertion in the grok branch of `seat_profile`, which it owns).** For each copied credential value of at least 24 characters, the profile also registers its last 12 characters in the redactions and `scan_secrets`. That registration does not change the profile's mounts, environment or descriptors.
+  - **The retained paths, and what covers each:**
+    - **`provider.log`** (the child's stdout and stderr, written raw to a descriptor) is retained on a failed measurement or rehearsal. It is classified secret-bearing already (§5.9): private, mode 0600, with an expiry sidecar, never parsed or published, and deleted on a measured route or a passed rehearsal. A suffix in it does not change its class.
+    - **The board's private leg logs, returned text and outputs** are redacted through the seat redactions, which now include the suffix. The `leg_exec.v1` record's scan includes it.
+    - **The definitions artifact.** The measurement scans the raw bytes for every registered value, full or suffix, before it retains or extracts them. A hit is refused with a new measurement status, `artifact_refused` (E8-B): nothing is retained and no name is extracted. It is a host-local and evidence route status, not a public detail code.
+    - **The writable host-backed sessions bind** is removed by the measurement's `finally` cleanup and by the existing abandoned-scratch purge.
+- **Falsifier (lane E8-B), through real composed launches of a stand-in grok.** The stand-in writes a planted credential's 12-character suffix into `$HOME/.grok/logs/unified.jsonl`, and, in variants, copies it to stdout, stderr, a declared output, the definitions artifact and a file under `.grok/sessions`.
+  - **A failed rehearsal, so `provider.log` is retained:** the suffix appears in `provider.log` only. A passed rehearsal deletes `provider.log` first, so it alone proves nothing.
+  - **A measurement whose definitions carry the copy:** `artifact_refused`, with no raw copy.
+  - **A measurement without that copy:** `measured`, and the suffix is absent from the output root, the grant directory, the host-local record root and the evidence.
+  - **A board leg:** the suffix is absent from the private leg log, returned text, outputs, board artifacts and the `leg_exec.v1` record.
+  - **Cleanup:** ordinary teardown removes the sessions scratch, and the abandoned-scratch purge removes a planted one. The writable board output and scratch trees are scanned too.
+  - **A host bind:** a variant binding `.grok/logs` from the host refuses at the context check.
 
 **6. Untested switches (not adopted).** These are documented but untested, so they are **not** added to the seat config. Each is a candidate for a later erratum, and each needs its own approved offline launch: the seat config plus the switch, expecting the named request to vanish.
 - `features.feedback = false`, for `GET /v1/feedback/config`.
-- `subagents.enabled = false`, for `GET /v1/subagents/bundle`. This one rests on the request's name only. The `--no-subagents` flag would change the frozen argv.
+- `subagents.enabled = false`, for `GET /v1/subagents/bundle`. This rests on the request's name only. The `--no-subagents` flag would change the frozen argv.
 
 No switch was found for `GET /v1/bundle/archive`, `GET /` or the `POST /v1/responses` pair.
 
-**7. The rehearsal (erratum 4; unchanged in substance).**
+**7. The rehearsal (erratum 4; amended for order, cause and runtime).**
 
-The rehearsal must still see the budget's own denial of the inference POST, and nothing else outside the tolerated entries. For `add4d201…` with the seat config under a budget-0 proxy, the expected observation is:
+For `add4d201…` with the seat config under a budget-0 proxy, the expected observation is below. The rows are in the proxy's decision order; the four GETs may come in any order [observed].
 
 | method | host | path | decision | `cause` | expected count |
 |---|---|---|---|---|---|
-| `GET` | `cli-chat-proxy.grok.com` | `/v1/bundle/archive` | deny | `rules` | 1 |
-| `GET` | `cli-chat-proxy.grok.com` | `/` | deny | `rules` | 1 |
-| `GET` | `cli-chat-proxy.grok.com` | `/v1/subagents/bundle` | deny | `rules` | 1 |
-| `GET` | `cli-chat-proxy.grok.com` | `/v1/feedback/config` | deny | `rules` | 1 |
-| `POST` | `cli-chat-proxy.grok.com` | `/v1/responses` | deny | `rules` | 2, both before the row below |
-| `POST` | `cli-chat-proxy.grok.com` | `/v1/chat/completions` | deny | `budget` | at least 1 (observed 1; the client did not retry) |
+| `GET` | `cli-chat-proxy.grok.com` | `/v1/bundle/archive` | deny | `rules` | 0 or more (observed 1) |
+| `GET` | `cli-chat-proxy.grok.com` | `/` | deny | `rules` | 0 or more (observed 1) |
+| `GET` | `cli-chat-proxy.grok.com` | `/v1/subagents/bundle` | deny | `rules` | 0 or more (observed 1) |
+| `GET` | `cli-chat-proxy.grok.com` | `/v1/feedback/config` | deny | `rules` | 0 or more (observed 1) |
+| `POST` | `cli-chat-proxy.grok.com` | `/v1/responses` | deny | `rules` | 0 or more, all before the first budget denial (observed 2) |
+| `POST` | `cli-chat-proxy.grok.com` | `/v1/chat/completions` | deny | `budget` | at least 1 (observed 1) |
 
-- **Nothing else may appear.** Nothing allowed, no `/v1/settings`, no `/v1/models`, no `CONNECT`, no sign-in host, no `<other>`.
-- **Completion and exit.** The observation must be complete, with BA-1's proof. The client's exit status does not matter (expected 1). The reason is `passed`.
-- **Counts.** A tolerated row may occur any number of times, including 0; its count is recorded.
+- **It passes only when all of these hold:**
+  - at least one denial of the exact allowed inference tuple with `cause` `budget`. Retries of it after a budget denial remain valid (erratum 4);
+  - zero allowed events;
+  - a complete observation with BA-1's proof;
+  - every other event is a qualifying tolerated refusal (item 2).
+- **Anything else fails it:** `/v1/settings`, `/v1/models`, `<other>`, a diagnostic label, a `CONNECT` (including 1.0.92's updater), a sign-in host, or a late POST. The client's exit status does not matter (expected 1).
+- **Which failure is reported.** The reason is decided in this order, and the first that applies wins: an early refusal; `identity_changed`; `observation_incomplete`; `unlisted_request` (any allowed event, or any non-qualifying denial); `no_model_request`; `passed`. So a rehearsal missing its budget denial that also holds an unlisted request reports `unlisted_request`.
+- **Runtime binding (E8-B).**
+  - The rehearsal record gains `runtime_digest`.
+  - `rehearsed()` requires it to equal the running `seat_window.runtime_digest()`, besides the image, the context and the route. A record without the field is stale, never `passed`.
+  - Measurement results already carry `runtime_digest`, and aggregation requires one value (`_SHARED`). So the checkout and runtime are frozen from the rehearsal through aggregation, and drift stops the grant.
+- **Falsifiers (lane E8-B).**
+  - A missing budget denial (`no_model_request`).
+  - The correct tuple denied by the wrong check, `inner_host` (`unlisted_request`).
+  - A late auxiliary POST.
+  - Mixed order.
+  - Each disqualifier above.
+  - A runtime change after a passed rehearsal makes it stale.
 - **Limit.** A request the client makes only after a *successful* model response, such as a title refresh, cannot be seen offline or in a rehearsal. In the pilot it is either a tolerated GET or it disqualifies (`egress_refused`), at the cost of the pilot's one request.
 
 **8. Pins, re-proof, lanes and stop rules.**
 
-These pins move. The values are lane outputs, recorded after the fact as erratum 6 did, never targets here:
+These pins move. The values are lane outputs, recorded after the fact as erratum 6 did, never targets here.
 
 | Pin | E8-A | E8-B | E8-C |
 |---|---|---|---|
 | this contract | this erratum only; the manifest pins no digest of it | — | — |
-| `seat_window.runtime_digest()`, and with it the window `qualification_keys` | moves (`grok_tool_surface.py`, `panel_invoker.py`) | moves (`grok_tool_surface.py`) | moves (`proxy.mjs`, `seat_egress_proxy.py`) |
-| `context_digest` (§4.4) | moves (`seat_config`) | does not move: the map is not in it | does not move |
+| `seat_window.runtime_digest()` (every runtime source, all vendors) | moves | moves | moves |
+| `context_digest` (§4.4) | moves (`seat_config`, `SEAT_FIXED_INPUTS`, `NON_MUTATING_TOOLS`) | does not move | does not move |
+| window containment binding `proxy_sha256` (`seat_jail_qualification._PROXY_IMPLEMENTATION_SHA256`, both proxy files) | — | — | moves, as it did for lane L2a |
+| measurement status vocabulary (`STATUSES`) | — | gains `artifact_refused` | — |
 | `grok-review` allow-list content digest | does not move | does not move | does not move; a test holds it |
-| seat jail qualification `proxy_sha256` (`seat_jail_qualification._PROXY_IMPLEMENTATION_SHA256`, both proxy files) | — | — | moves, as it did for lane L2a |
 | `tests/data/seat_launch_references.json` | rows only if the projection adds a detected call site | none expected | none expected |
-| Claude SDK proof inputs | no proof region is expected to move: `seat_profile` is not one, and `grok_tool_surface.py` is not a proof file. If a name a proof region reaches must be classified, a pure insertion into `SDK_PROOF_UNBOUND` moves `claude_seat_transport.py` (whole file), as in erratum 6 | as E8-A | none expected: neither proxy file is a proof file |
-| `tool_probe.v1` receipt, the five forms and their argv digests, the public detail codes | do not move | do not move | do not move |
+| Claude SDK proof inputs | none expected: `memfd_with` is called, not edited; `seat_profile` is not a proof region; a needed `SDK_PROOF_UNBOUND` insertion moves `claude_seat_transport.py` (whole file), as in erratum 6, and the lane determines whether a retained SDK proof needs refreshing | as E8-A | none expected |
+| `tool_probe.v1` receipt schema, the five forms and their argv digests, the public detail codes | do not move | do not move | do not move |
 
-- **Re-proven on the merged head of the three lanes:**
-  - **hosted BA-3**, executed with no skipped case under `PHASE_LOOP_REQUIRE_GROK_EGRESS_NS=1`;
-  - **window requalification:** the grok seat windows (`runtime_digest`), and every jailed-seat window that binds `proxy_sha256` (E8-C). Land the three lanes close together and requalify once;
-  - **the SDK proof binding tests** (`tests/test_seats_claude_order.py`, `tests/test_gemini_seat_mode_pin.py`), passing unedited. Any `SDK_PROOF_UNBOUND` insertion is recorded in that lane's report;
-  - **§8's must-not-move guards**, unedited.
-- **Lanes.** Each is code, with no live call; each adds a CHANGELOG entry naming the pins it moves.
-  - **E8-A — the seat config and the context.**
-    - It owns `grok_tool_surface.py`'s launch-context region (the constants through `verify_measurement_context`, **except** `TOLERATED_REFUSALS`), the `seat_profile` grok branch in `panel_invoker.py`, and its tests in `tests/test_grok_tool_surface.py` and `tests/test_grok_board_leg_frozen_basis.py`.
-    - It also updates `docs/review-seats-readiness.md`: the Grok row's home now holds a seat config.
-  - **E8-B — per-image tolerated refusals, the rehearsal and the log falsifier.**
-    - It owns `TOLERATED_REFUSALS` and the measurement region of `grok_tool_surface.py`: `_classify`, `_rehearsal_reason`, the `named=` arguments of both proxy starts, and the `tolerated_refusals` accounting.
-    - Its tests are in `tests/test_grok_tool_surface_measure.py`.
-  - **E8-C — templated path observation.**
-    - It owns `seat_egress/proxy.mjs` and `seat_egress_proxy.py`, with tests in `tests/test_grok_measure_egress.py`.
-    - It also runs, one at a time, `tests/test_gemini_seat_egress_1170.py` and `tests/test_seat_egress_allowlist_codex.py`, unedited.
-  - **Order.** The three are independent and may run in parallel. E8-A and E8-B share `grok_tool_surface.py` in disjoint regions, so whichever lands second rebases.
-  - **Another plan holds a pin E8-A moves.** GROKROLL (`plans/phase-plan-v1-grokroll-GROKROLL.md`) lists `grok_tool_surface.context_digest()` as must-not-move for its own lanes (EC-GROKROLL-8, judged against its phase base), and its lanes may not edit `grok_tool_surface.py`. E8-A moves that digest on `main`. So one of two things must happen, and the coordinator decides which:
-    - E8-A lands while no GROKROLL lane is in flight;
-    - or a GROKROLL lane re-takes its phase base after rebasing onto E8-A.
+Frozen receipt *content* changes with the new context.
 
-    E8-B and E8-C move no pin GROKROLL holds.
+**What each pin move costs, by vendor.** At this base, the only registered window is Gemini's W1 (`seat_profiles.GEMINI_WINDOW_DATA`). Its record carries both `runtime_digest` and the containment binding's `proxy_sha256`.
+- **Gemini:** every lane makes its W1 record stale (`runtime_digest`), and E8-C does so a second time (`proxy_sha256`). The W1 window is requalified on the integrated head. That needs its own authority, and it cannot use any grok grant's budget.
+- **Grok:** no window is registered. Every measurement record carries `runtime_digest`, so the new grant runs wholly on the integrated head (item 7). Earlier grant records are stale and never reused.
+- **Codex:** no W1 registration exists at this base, so there is nothing to requalify. A later Codex W1 binds the head it is qualified on. Jail-qualification passes recorded by `seat_jail_qualification.qualify` are keyed by their own qualification key, which carries neither value [inferred from a code read; E8-C's report confirms it by test].
+- **Claude:** jail-qualification passes, as for Codex [inferred; same confirmation]. SDK proof as in the table.
+- **The historical reader is not a rollout gate.** The window record reader checks a record's coherence, which does not show that its evidence is current. The coordinator gates on each live record's `runtime_digest` and `proxy_sha256` against the integrated head's.
+
+**Batching recommendation.**
+- Land E8-A, E8-B and E8-C consecutively in one window.
+- Then requalify Gemini W1 once, then open the next grok grant (item 9), on that same head.
+- Any runtime-moving merge between the requalification and the grant's aggregation repeats the requalification and stops the grant.
+
+**Re-proven on the merged head of the three lanes:**
+- **hosted BA-3**, executed with no skipped case under `PHASE_LOOP_REQUIRE_GROK_EGRESS_NS=1` and recorded through `--hosted-check` with its run reference. It asserts the projected bytes through the real same-child board path, alongside the direct-denial and fixture-upstream checks, and it includes 1f's stand-in boundary test. BA-3 uses a stand-in;
+- **the SDK proof binding tests** (`tests/test_seats_claude_order.py`, `tests/test_gemini_seat_mode_pin.py`), passing unedited. Any `SDK_PROOF_UNBOUND` insertion is recorded in that lane's report;
+- **§8's must-not-move guards**, unedited.
+
+**Lanes.** Each lane is code, with no live call. Each adds a CHANGELOG entry naming the pins it moves.
+- **E8-A — the seat config, the fixed inputs and the context.**
+  - **Code:** `grok_tool_surface.py`'s launch-context region (the constants through `verify_measurement_context`, **except** the tolerated map), the `seat_profile` grok branch in `panel_invoker.py` (projection and suffix registration), and the consumer-audit gate.
+  - **Docs:** `docs/review-seats-readiness.md` (the Grok row's home holds a read-only seat config; `staged` is ineligible at use).
+  - **Tests:** `tests/test_grok_tool_surface.py`, `tests/test_grok_board_leg_frozen_basis.py`, and two named sections in other lanes' files. In `tests/test_grok_measure_egress.py` it owns `test_the_grok_profile_carries_the_proxy_projection_and_nothing_else` and BA-3's exact-mount expectation. In `tests/test_grok_tool_surface_measure.py` it owns `test_the_sessions_keyword_adds_one_bind_and_nothing_else` and the bench's home-composition assertions. With the old exact-argv assertion, the new mount fails hosted BA-3.
+- **E8-B — per-image tolerated refusals, the rehearsal, the runtime binding and the log falsifier.**
+  - **Code:** the tolerated map and the measurement region of `grok_tool_surface.py`: `_classify`, `_rehearsal_reason`, `tolerated_summary`, `_check_tolerated`, the `named=` arguments of both proxy starts, the rehearsal record and `rehearsed()`, `STATUSES` and the definitions scan.
+  - **Tests:** the rest of `tests/test_grok_tool_surface_measure.py`, plus a new `tests/test_grok_seat_log_retention.py`.
+- **E8-C — closed path diagnostics.**
+  - **Code:** `seat_egress/proxy.mjs` and `seat_egress_proxy.py`.
+  - **Tests:** the rest of `tests/test_grok_measure_egress.py`. It also runs, one at a time, `tests/test_gemini_seat_egress_1170.py` and `tests/test_seat_egress_allowlist_codex.py`, unedited.
+- **Order.**
+  - **Development:** the three may proceed in parallel against these interfaces: the `tolerated(...)` predicate, the diagnostic table and the suffix registration.
+  - **Landing:** E8-A, then E8-B, then E8-C. Each rebases onto the previous, with `CHANGELOG.md` union-resolved: main's text kept verbatim, and the lane's entry added above it.
+- **Another plan holds a pin E8-A moves.** GROKROLL (`plans/phase-plan-v1-grokroll-GROKROLL.md`) lists `grok_tool_surface.context_digest()` as must-not-move for its own lanes (EC-GROKROLL-8, judged against its phase base), and its lanes may not edit `grok_tool_surface.py`.
+  - Finish GROKROLL SL-0 (agent-harness#2050) before E8-A lands, if practical.
+  - Otherwise the coordinator records the agreed comparison base for the remaining GROKROLL lanes. A branch rebase alone does not update that base. GROKROLL's forbidden-file diff and its context guard must still pass.
+  - E8-B and E8-C move no pin GROKROLL holds, but they do move the global runtime keys.
 - **Stop rules.** Any one of these stops the lane, and it reports:
   - a §8 must-not-move guard moves;
   - the `grok-review` allow-list digest moves;
   - `SDK_PROOF_REGIONS`, `SDK_PROOF_FILES` or `SDK_PROOF_ALIASES` changes, or an SDK proof region moves;
   - an ordinary grok profile composes differently;
-  - the client needs a read-only config, a different config, or any other untested variant (that needs a new offline approval, not a code change);
+  - the design needs a client behaviour that was not observed: a different config, a placeholder mount, or reliance on reload (that needs a new offline approval and an erratum, not a code change);
   - a test would need a live call or a real grok launch;
   - plan amendments start to outnumber implementation.
 
   Shared-host test limits apply: targeted files, serial, with a timeout. Full runs are left to hosted CI.
 
-**9. The new owner grant (to put to the owner after the lanes merge and BA-3 passes).**
+**9. The next owner grant** is specified by the jailed contract (`plans/artifacts/grok-jail-tool-surface-contract-v1.md`, `grok_jail_context.v1`), which targets the jailed composition. It is not specified here.
 
-- **Shape: as D4.**
-  - **The image:** one release image by sha256, `add4d201dbf2c0bd6077a36feb55a76939de30bae48dbb06f16b2307d38ceacb`, at the path the grant names. `--verify-probe initial` must find the probe resolving `grok` to that digest.
-  - **A new grant id.** One rehearsal per grant, and a rehearsal after an erratum is a new grant (erratum 4).
-  - **One rehearsal** of the `review` pilot, budget 0, binding.
-  - **3 planned launches:** `review`, then `sealed` and `staged` after inspection.
-  - **At most 2 retries,** transport-only and manual, each with the coordinator's agreement. A credential failure is never retried.
-  - **Budget 1 per launch,** so at most 5 counted requests. The cap of 7 stays the ledger's ceiling and is not granted.
-  - **The ask names this erratum** and the `add4d201…` tolerated entries of item 2.
-- **Preconditions:**
-  - erratum 8 accepted by plan review, and lanes E8-A, E8-B and E8-C implemented, reviewed and merged;
-  - hosted BA-3 passed with no skips on that merged head; it is recorded through `--hosted-check`;
-  - the grok seat windows, and the jailed-seat windows bound to `proxy_sha256`, requalified;
-  - **a fresh grok sign-in by the owner on the measurement host.** The token used by the D4 rehearsal has expired. The token must stay valid until the slot's hard end plus 5 minutes of clock skew, and that is re-read immediately before the first counted launch;
-  - item 4's staging check;
-  - a new quiet slot agreed with the host's coordinators, both shared-compute locks, the memory-PSI gate, and `MemorySwapMax=0` scopes, as for D4.
-- **What stops the procedure.**
-  - The rehearsal passes only on item 7's observation. Anything else stops before the pilot, with no request spent, and the record names the request.
-  - The pilot must be `measured` before `sealed` and `staged` run (§5.10 step 7).
+**The untested material claims, and the single offline launch that would confirm each (not run).** Some documented defaults already have corroborating observations, such as `remote_fetch` removing the fetches together with the effort rows. Those are not listed.
 
-**What rests on documentation, and the single offline launch that would confirm each (not run).**
-
-- **That `remote_fetch = false`, rather than the effort rows, removes `/v1/settings` and `/v1/models`.** The one observation changed both at once. Confirming launch: the seat config without `[features]`, expecting both requests to return.
-- **That a managed `remote_fetch = true` overrides it (item 4).** Confirming launch: the seat config plus `$GROK_HOME/managed_config.toml` setting it true, expecting both requests to return. The guard refuses that home either way.
-- **That `features.managed_config` sync makes a request.** No launch is needed: any such request is refused and untolerated.
+- **That `remote_fetch = false`, rather than the effort rows, removes `/v1/settings` and `/v1/models`.** The observation changed both at once. Confirming launch: the seat config without `[features]`, expecting both requests to return. Isolating the two changes is not an implementation prerequisite: the pinned file is exactly what was observed.
+- **That a managed `remote_fetch = true` overrides it (item 4).** Confirming launch: the seat config plus `$GROK_HOME/managed_config.toml` setting it true, expecting both requests to return. The guard refuses that home either way, so this is not a prerequisite.
+- **That read-only placeholder mounts at the creatable fixed inputs are tolerated (item 1d, `staged`).** Confirming launch: the seat config plus an empty read-only mount at each creatable path of `SEAT_FIXED_INPUTS`, expecting the inference request to be reached. It is a prerequisite only for a later erratum admitting `staged` at use.
 - **The two switches of item 6:** one launch each, as stated there.
-- **Not documentation, but a gap:** the projection by `bwrap --file` from a sealed memfd was not part of the offline launches, which used a plain writable file. The rehearsal itself confirms it: no `/v1/settings`, and the inference request reached.
+- **Console sync (item 4):** deliberately given no confirming launch. It is refused whatever its route.
 
 Nothing else in the contract changes.
