@@ -209,15 +209,15 @@ Stop: an SDK proof region (not the whole `seat_route_contract.py` file) moves.
 
 ### SL-1 — CRED: credential staging and egress adoption (roadmap lane B)
 
-- **Scope**: Build `seat_grok_credential` with memfd delivery, scan values and a positive subscription discriminator; prove the `grok-review` adoption offline.
+- **Scope**: Build `seat_grok_credential` with staged read-only directory delivery (mode 0444 files in the 0555 `<review_dir>/grok-config/`, jail contract §2.3), scan values and a positive subscription discriminator; prove the `grok-review` adoption offline.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_grok_credential.py`, `phase-loop-runtime/tests/test_grok_seat_credential.py`, `phase-loop-runtime/tests/test_grok_seat_egress.py`, `plans/evidence/seat-grok/containment.json`
 - **Interfaces provided**: IF-0-GROK-1 (credential, egress)
-- **Interfaces consumed**: IF-0-GROK-1 codes (SL-0); `_access_token_only`, `_seat_secret_values`, `contains_secret`, `memfd_with`, `allowlist_ref`, `start_proxy` (pre-existing)
+- **Interfaces consumed**: IF-0-GROK-1 codes (SL-0); `_access_token_only`, `_seat_secret_values`, `contains_secret`, `allowlist_ref`, `start_proxy` (pre-existing)
 - **Parallel-safe**: yes
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-1.1 | test | — | `phase-loop-runtime/tests/test_grok_seat_credential.py`, `phase-loop-runtime/tests/test_grok_seat_egress.py` | (a) fixtures: subscription, API-key, ambiguous-marker, unparseable-expiry, expired, inside-margin, link, foreign-owner and oversize stores each give their code; nothing is written to disk. (b) memfds are sealed (four seals), offset 0, sized; the config digest equals the pin. (c) `scan_values` hold each secret value and its last 12 characters for a short and a long credential shape, and are not serialisable. (d) the after-check fires on a new credential-shaped file. (e) through the real `proxy.mjs`: an allowed inference request reaches a fixture upstream; unlisted, Gemini, Codex and unlisted-path requests and a direct connection are refused; allow-list digests equal their base values; nothing requires `allowlist_id == leg`. | `V1` |
+| SL-1.1 | test | — | `phase-loop-runtime/tests/test_grok_seat_credential.py`, `phase-loop-runtime/tests/test_grok_seat_egress.py` | (a) fixtures: subscription, API-key, ambiguous-marker, unparseable-expiry, expired, inside-margin, link, foreign-owner and oversize stores each give their code; nothing is written to disk. (b) the staged `grok-config/` directory is 0555 and its `auth.json`, `agent_id` and config files are 0444 regular files owned by the operator, with no other entries; the config digest equals the pin. (c) `scan_values` hold each secret value and its last 12 characters for a short and a long credential shape, and are not serialisable. (d) the after-check fires on a new credential-shaped file. (e) through the real `proxy.mjs`: an allowed inference request reaches a fixture upstream; unlisted, Gemini, Codex and unlisted-path requests and a direct connection are refused; allow-list digests equal their base values; nothing requires `allowlist_id == leg`. | `V1` |
 | SL-1.2 | impl | SL-1.1 | `phase-loop-runtime/src/phase_loop_runtime/seat_grok_credential.py`, `plans/evidence/seat-grok/containment.json` | — | — |
 | SL-1.3 | verify | SL-1.2 | SL-1 files | all SL-1 tests | `V1`, `V9` |
 
