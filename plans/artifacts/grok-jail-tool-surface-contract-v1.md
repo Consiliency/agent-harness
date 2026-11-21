@@ -11,8 +11,8 @@ bound to an earlier digest of this file does not count. §15 lists what r2 chang
 Inputs. Their content digests are pinned once, in the plan's frozen inputs and its manifest
 row, not repeated here: the roadmap `specs/phase-plans-seats-v1.md`;
 `plans/seats-jailcore-route-contract.md`; `plans/artifacts/grok-tool-surface-contract-v1.md`
-("the TS contract"; pinned at erratum 7 as the historical base, re-pinned by SL-7 when
-erratum 8 merges and erratum 9 is added, §8); and, read for coordination only,
+("the TS contract"; pinned at erratum 7 as the historical base, re-pinned by the planning
+amendment of §8 when erratum 8 merges and erratum 9 is added); and, read for coordination only,
 `plans/artifacts/grokroll-v1-contract.md`.
 
 Gating inputs not merged yet, named by role, never by a future digest: **erratum 8, final at
@@ -74,14 +74,27 @@ constants and `grok_tool_surface.context_digest()` are not edited by any GROK la
 - `launch_digest`: sha256 of the normalised actual owner argv and filter of a production
   jailed launch (§2.1), per architecture. Recorded in the measurement and compared at every
   spawn. It is the bridge the review asked for between the canonical policy and the composed
-  launch: two launches with the same `jail_profile_digest` but a different projection, mask
-  or config file differ here. Normalisation replaces only the per-launch directory paths
-  (projection directory, tree copy, seat-home, seat-out, sink) by their placeholders; the
-  file digests of §2.3 are part of the normalised form.
+  launch: two launches with the same `jail_profile_digest` but a different mount policy or
+  seat config differ here. **It is a shared digest** (r4): honest launches of the same image
+  and policy on different hosts, with different credentials, CAs and per-launch objects, must
+  produce the same value, because conditions 3 and 4 and the catalog compare it across hosts.
+  - **Normalised to role placeholders:** every per-launch directory (tree copy, seat-home,
+    seat-out, sink, and the config, credential and CA source operands, whatever projection
+    is settled), every descriptor operand (`<bundle-fd>`, `<instructions-fd>`, `<token-fd>`,
+    `<seccomp-fd>`, as `jail_profile_digest` already normalises them), and the proxy address
+    and port operands (`<egress-proxy>`).
+  - **Included:** the ordered mount policy, the environment names, the argv digest, and the
+    pinned `SEAT_CONFIG_SHA256` (the seat config's bytes are policy, identical everywhere).
+  - **Excluded:** the credential bytes, `agent_id` and the CA bytes. They are verified per
+    launch against their own digests (§4.4 check 3), never in the shared digest.
 - The record key stays `(binary_sha256, argv_digest)`; `context`, `jail_context_digest` and
   `launch_digest` are record fields checked at use.
 
 ### §2.3 Projections, the ordered mount list and the scan values
+
+> **r4: the projection-directory design below is withdrawn** (coordinator ruling,
+> 2026-11-21). Its replacement is open question Q-r4 (§17). The scan-value rules of this
+> section stand.
 
 **Delivery (no descriptor handoff).** `build_seat_jail` passes only its own descriptors, and
 `owner_binds` emits arguments but owns none, so the jailed seat uses **path** binds and no new
@@ -156,6 +169,10 @@ the settled charge stands; `--require-measured` fails; the result and evidence r
 the status.
 
 ### §2.4 Fixed-input masks: why `staged` is eligible in the jail
+
+> **r4: the mask inventory and mechanism below are withdrawn** (coordinator ruling). The
+> five-condition gate, its ordering and its evidence records stand; condition 2's protected
+> set and the mask mechanism await Q-r4 (§17).
 
 Erratum 8 r2 item 1d leaves `staged` ineligible because a tool can create a fixed input. In the
 jail no tool can:
@@ -273,14 +290,20 @@ spawned. `mode` is `board` or `measurement`.
 
 **Common checks (both modes).**
 
-1. **Binary.** The bound source is the subject `_resolved_jail_subject` returned; it passes
-   `seat_subject`'s root-owned pin walk, so no operator-UID process can change it in place or
-   replace its path; its sha256, read now, equals the record's (board) or the grant's image
+1. **Binary.** The bound source is the actual executable `_resolved_jail_subject` returned,
+   standalone subjects included. SL-3 checks its whole ownership chain itself: every path
+   component, from `/` to the executable, is owned by root and not group- or other-writable,
+   with `seat_subject`'s existing owned-directory check (the one its pin walk applies to
+   `MANAGED_AUTHORITY_PIN`) applied to each component; resolving the subject alone does not
+   discharge this. Its sha256, read now, equals the record's (board) or the grant's image
    (measurement). `_read_grok_receipt`'s host-path resolution is not used.
 2. **Owner argv.** The actual argv's normalised `launch_digest` equals the expected production
    value; any dependency projection refuses.
-3. **Projections and masks.** §2.3's integrity check; the actual mount list equals §2.3's
-   ordered list with §2.4's reduced masks; no shadow mount; no symlink component.
+3. **Projections and masks.** The mount policy as §2.3 and §2.4 settle it; no shadow mount; no
+   symlink component. **Per-launch bytes (local, not in the shared digest):** the projected
+   credential and `agent_id` equal `GrokSeatCredential.digest` of the exact staged copy; the
+   projected CA equals the CA digest of the proxy this launch owns
+   (`seat_egress_proxy`); the projected config equals `SEAT_CONFIG_SHA256`. A mismatch refuses.
 4. **Cwd and argv.** cwd exactly `/seat/tree`; argv digest equals `staged`'s; production model
    and effort.
 5. **Proxy and holder.** The proxy is this launch's and live, with the holder pid, network
@@ -592,7 +615,7 @@ Retiring the id would move both contexts' digests; it is not done.
   `seat_profiles.py` (window data), `panel_invoker.py` (the window section vs. SL-3's leg),
   `seat_window.py` (kit vs. SL-8), this plan and the manifest. Erratum 8: E8-A shares
   `panel_invoker.py` with SL-3, E8-B shares `grok_tool_surface.py` with SL-4, and both share the
-  TS contract with SL-7's erratum 9. The second lander rebases.
+  TS contract with the §8 planning amendment's erratum 9. The second lander rebases.
 
 ## §11 Critical path to 2026-12-04T00:00Z
 
@@ -636,6 +659,11 @@ Retiring the id would move both contexts' digests; it is not done.
   holder or network namespace, a proxy with the wrong allow-list or budget, a withdrawn record,
   a different cwd, and each eligibility condition removed alone. The mark cannot be built
   outside `verify_jail_launch_context`.
+- **BA-J2a (SL-3) — the shared digest is stable.** One positive comparison: a stand-in launch
+  and a production-shaped fixture launch, with different credentials, `agent_id`, CA bytes,
+  descriptor numbers, proxy ports and per-launch directories, produce the same
+  `launch_digest`. A launch whose projected credential differs from its staged copy, or whose
+  projected CA differs from its proxy's, refuses at check 3.
 - **BA-J3 (SL-3) — receipts.** Unjailed frozen, legacy and listing receipts refuse at the jailed
   spawn; a jailed receipt refuses in `launch_owned`; a jailed probe does not overwrite an
   unjailed receipt.
@@ -765,3 +793,43 @@ Review `review-amendment-r2-sol.md` (CHANGES REQUIRED), required items only:
   and installed-catalog checks), §8 (re-pin writer named).
 - Dispositions: R2's operational correction → §11; erratum 8 r3 requirement 3 → §7.
 - Degraded co-seat → assumption A-1 with a K-1 confirmation point (§13).
+
+## §17 Revision r4 (convergence, 2026-11-21)
+
+Review `review-amendment-r3.md` and the coordinator's ruling `DIAGNOSIS-r3.md`.
+
+- **C2 closed.** §2.2: `launch_digest` is a shared digest, with role placeholders for
+  per-launch directories, descriptors and proxy operands; it keeps the ordered policy and
+  `SEAT_CONFIG_SHA256` and excludes credential, `agent_id` and CA bytes. §4.4 check 3 verifies
+  those bytes per launch against their own digests; check 1 has SL-3 check the executable's
+  whole ownership chain. BA-J2a gives the positive cross-fixture comparison and the
+  projected-byte refusal.
+- **Stale attribution struck.** Erratum 9 and the TS re-pin belong to the §8 planning
+  amendment, not SL-7.
+- **C1 and C3 stopped on one question (Q-r4).** The ruling adopts E8-A's sealed memfd
+  `--ro-bind-data` config and `SEAT_FIXED_INPUTS` treatment by reference. Read against the
+  code, neither main nor E8-A implements two things the jailed `staged` seat needs:
+  1. **a descriptor handoff into the seat jail.** E8-A's memfd projection is in the unjailed
+     `seat_profile` composition (`panel_invoker.py`); `seat_jail.build_seat_jail` passes only
+     the bundle, instructions, token, dependency and seccomp descriptors, and `owner_binds`
+     owns none. Main's implemented jailed-config projection is Gemini's: a staged host
+     directory bound read-only over the config dotdir, writable children bound over named
+     entries, and the CA by read-only path bind (`seat_jail._gemini_binds`);
+  2. **protection of creatable inputs while a writing tool runs.** E8-A's treatment for every
+     fixed input except the config is "absent from the seat's view at the final check", with
+     `staged` never eligible because nothing then stops a tool creating one. Masks over the
+     home's other inputs and over the writable tree's discovery paths exist in neither.
+
+  **Q-r4.** Which mechanism does GROK adopt for the jailed `staged` seat?
+  - **A (recommended):** main's jailed-config pattern for the config, credential and home
+    inputs (a staged `.grok` directory bound read-only, holding E8-A's 424 bytes under
+    `SEAT_CONFIG_SHA256` and the access-only copy; writable children bound over named entries,
+    as Gemini's; the CA by read-only path bind), plus one new step for the tree: pre-created
+    mount points in the per-launch copy with read-only empty binds over the discovery paths.
+    No builder edit. The config is delivered as a read-only file, not a memfd.
+  - **B:** E8-A's memfd literally: add a Grok descriptor to `build_seat_jail`'s `pass_fds` (a
+    shared-builder edit that moves the SDK proof region `build_seat_jail` and needs the pin
+    table amended), plus the same tree step.
+  - **C:** E8-A's absence rule only: jailed `staged` stays closed; the jailed seat then admits
+    only non-mutating forms, and EC-GROK-1's tool write needs a roadmap amendment.
+  - **D:** pause GROK until E8-A and E8-B merge, then amend against merged code.
