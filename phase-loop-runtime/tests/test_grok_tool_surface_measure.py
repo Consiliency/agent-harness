@@ -2984,7 +2984,7 @@ def test_a_stored_record_with_another_images_entry_is_not_read_back(bench92):
     assert (code, report["status"]) == (1, "interrupted")
 
 
-# ------------------------------- erratum 8, review finding 3: no client path text retained
+# ----------------------------------------- erratum 8, item 3: no client path text retained
 
 #: An all-letter word a client could put in a path segment: a slug, a customer name, a
 #: prompt word. A templating proxy (lane E8-C) keeps such a segment verbatim in its event.
@@ -3062,7 +3062,7 @@ def test_a_rehearsal_record_naming_text_outside_the_vocabulary_is_refused(bench9
     assert (code, report["status"]) == (1, "interrupted")
 
 
-# ------------------------------------ erratum 8, item 5 (review finding 4): the client log
+# -------------------------------------------------------- erratum 8, item 5: the client log
 
 #: The collector guarantee this falsifier tests: no collector of the harness opens the
 #: client's own log, ``~/.grok/logs/unified.jsonl``, which records the token's last 12
