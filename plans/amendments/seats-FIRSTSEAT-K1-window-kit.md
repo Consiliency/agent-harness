@@ -36,7 +36,7 @@ an EC:
 - FIRSTSEAT: SL-4 points here.
 
 **Design.** The design is frozen in `plans/artifacts/seats-window-kit-k1-contract.md`, r4 (the
-**contract**, sha256 `3d44bfdfca9544af721bd63240858aa4d2e03a2039424df9915595f833bbd22f`). This
+**contract**, sha256 `12a7d96e639846c2f3868434ca1faca837113614ca138c866f2b69592c20c3b2`). This
 plan cites the contract and does not restate it:
 
 | Topic | Contract |

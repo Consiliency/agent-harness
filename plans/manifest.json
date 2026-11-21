@@ -16080,7 +16080,7 @@
       "file": "plans/amendments/seats-FIRSTSEAT-K1-window-kit.md",
       "frozen_inputs": {
         "plans/artifacts/seats-window-kit-k1-contract.md": {
-          "sha256": "3d44bfdfca9544af721bd63240858aa4d2e03a2039424df9915595f833bbd22f"
+          "sha256": "12a7d96e639846c2f3868434ca1faca837113614ca138c866f2b69592c20c3b2"
         },
         "plans/seats-firstseat-containment-contract.md": {
           "sha256": "a57d46f722e22973f0522a8bc254856e6224d50b1b67893cab2b80522c4942a6"

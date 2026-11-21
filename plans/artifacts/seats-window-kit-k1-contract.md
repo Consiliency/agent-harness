@@ -900,4 +900,3 @@ admits Grok.
 
 **Q-D: a contingency stop.** If K1-T7's aged case fails, SL-6 stops. No replacement control is
 authorized.
-
