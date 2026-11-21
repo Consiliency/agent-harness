@@ -4,342 +4,424 @@ phase: GROK
 roadmap: specs/phase-plans-seats-v1.md
 roadmap_sha256: b91c98ad7b9097ba411ca21f39cf390878dabac449e59d6fdfd1750915c16a09
 automation:
-  suite_command: ["timeout", "900", "env", "PYTEST_ADDOPTS=", "python3", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_grok_seat_containment.py", "phase-loop-runtime/tests/test_seat_credentials.py", "phase-loop-runtime/tests/test_seat_route_contract.py", "phase-loop-runtime/tests/test_seat_notices.py", "phase-loop-runtime/tests/test_grok_seat_jail.py", "phase-loop-runtime/tests/test_grok_sandbox_seat_approval.py", "phase-loop-runtime/tests/test_seat_profiles.py", "phase-loop-runtime/tests/test_seat_jail_qualification_entry.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
+  suite_command: ["timeout", "600", "env", "PYTHONDONTWRITEBYTECODE=1", "PYTEST_ADDOPTS=", "uv", "run", "--group", "test", "--python", "/usr/bin/python3", "-m", "pytest", "-p", "no:cacheprovider", "-p", "no:xdist", "-q", "phase-loop-runtime/tests/test_grok_seat_vocabulary.py", "phase-loop-runtime/tests/test_grok_seat_credential.py", "phase-loop-runtime/tests/test_grok_seat_egress.py", "phase-loop-runtime/tests/test_grok_seat_profile.py", "phase-loop-runtime/tests/test_seat_profiles.py", "phase-loop-runtime/tests/test_grok_jail_surface.py", "phase-loop-runtime/tests/test_grok_seat_jail.py", "phase-loop-runtime/tests/test_grok_jail_measure.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
 ---
 
 # GROK: Grok Seat in the Jail
 
 ## Context
 
-This plan covers roadmap Phase 7 (GROK) of `specs/phase-plans-seats-v1.md`, tracked by
-agent-harness#1820. Its exit criteria are EC-GROK-1 to EC-GROK-5, cited by ID only. The roadmap
-is registered non-active (OD-1), so lanes land as governed PRs under principle 2. JAILCORE's
-plan and contract are on main (agent-harness#1852).
+Roadmap Phase 7 (GROK) of `specs/phase-plans-seats-v1.md`, tracked by agent-harness#1820.
+Exit criteria EC-GROK-1 to EC-GROK-5, cited by ID only. This is the 2026-11-21 amendment of
+the plan landed by agent-harness#1857. It closes the currency check's A-1 to A-9 (mapped in
+Execution Notes) under the coordinator's four rulings. The roadmap text is unchanged, so
+`roadmap_sha256` is unchanged.
 
 **Frozen inputs (pinned).**
 
+- `plans/artifacts/grok-jail-tool-surface-contract-v1.md` at sha256
+  `3286f58cb255383df902c89003048ce955da9ab267f4283a7e3bb0ac7d652316` ("the jail contract"):
+  the jailed launch context, records, gate, measurement, closed-gate registration, owner
+  grant, allow-list ruling, pins and critical path. This plan cites its sections.
+- `plans/artifacts/grok-tool-surface-contract-v1.md` at sha256
+  `9c56fc68e164d9ae7abbeb4969ee860c6844355c3d80569e4bb4600a3e6355d4` (agent-harness#2033,
+  through erratum 7; "the TS contract"). The jail contract §8 lists every section it amends.
 - `plans/seats-jailcore-route-contract.md` at sha256
-  `235f1faded1d7f15d0ff69668b6a451cee7167e6438d258da57257faf7bdae81`. It defines
-  IF-0-JAILCORE-1 (§1–§4), IF-0-JAILCORE-2 (§7) and IF-0-JAILCORE-3 (§5–§6). This plan cites
-  sections and does not restate them. §1's vendor rule lets a vendor phase add one
-  `JailProfile`, one allowlist, its own `<leg>_seat_*` codes (each with one additive
-  `OD10_CLASSES` entry) and its window rows as data on the profile.
-- IF-0-FIRSTSEAT-1 (the readiness row), IF-0-FIRSTSEAT-2 (the row-window kit) and
-  IF-0-FIRSTSEAT-3 (the exec record and the Grok parent auth adapter).
-- The Grok admission gate on main (FIRSTSEAT L4): `require_grok_admission`, `grok_tool_gate`,
-  `probe_grok_tools`, `record_tool_probe`, `grok_runtime_forms`,
-  `phase-loop seat-window probe-tools --vendor grok` and the code
-  `grok_tool_surface_unverified`. A receipt binds the resolved binary digest and the argv
-  digest, and every launch path fails closed. GROK consumes the gate unchanged.
-- TEAMHOST publishes no interface (roadmap Phase 4, "Produces: (none)"). GROK consumes only
-  its exits EC-TEAMHOST-1 and EC-TEAMHOST-2, and calls no TEAMHOST symbol.
+  `235f1faded1d7f15d0ff69668b6a451cee7167e6438d258da57257faf7bdae81`: IF-0-JAILCORE-1 to
+  IF-0-JAILCORE-3. §1's vendor rule lets a vendor phase add one `JailProfile`, its own
+  `<leg>_seat_*` codes with additive `OD10_CLASSES` entries and window rows as data.
+- IF-0-FIRSTSEAT-1 to IF-0-FIRSTSEAT-3, and the FIRSTSEAT Grok gate **as agent-harness#2033
+  left it**: `require_grok_admission`, `grok_tool_gate` and `probe_grok_tools` take a
+  launch `context=`; receipts carry a basis (`list_tools` or `frozen_measurement`); the
+  jailed spawn admits `list_tools` only (jail contract §1).
+- Gating, unmerged, named by role (no digest): TS contract **erratum 8** as merged (seat
+  `config.toml`, mounted immutably; per-image tolerated refusals; client log exclusion), and
+  the **K-1** window kit (`plans/amendments/seats-FIRSTSEAT-K1-window-kit.md`).
 
-**Base.** After JAILCORE, the core builders and `seat_route.resolve` contain no leg branch.
-A Grok seat with a staged tree takes L1's named `unconfined` exception, which the matrix
-says expires 2026-12-04 UTC. The brokered argv (`_grok_brokered_form`, `staged`) and the
-access-only credential copy (`_SEAT_CREDENTIAL_SHAPE["grok"]`) live in `panel_invoker.py`.
+**Base.** `origin/main` as the 2026-11-21 currency check read it. Registering a Grok profile drops the `unconfined`
+exception (`seat_window.readiness_rows`) and stops L1's exception path; S-2 is closed in
+source. No Grok code, profile, credential module or `grok_seat_*` code exists yet.
 
-**Execution gate.** Plan now. Execute after JAILCORE and TEAMHOST exit (roadmap DAG).
+**Execution gate.** JAILCORE and TEAMHOST code is on main (agent-harness#1890,
+agent-harness#1904) and CODEX executed against the same gate (agent-harness#1916); the
+coordinator treats the gate as met.
 
 ## Interface Freeze Gates
 
-- [ ] IF-0-GROK-1 — Grok containment surface, provided by SL-1.
-  - **Allowlist.** `seat_egress/grok-allowlist.json`, with schema
-    `phase_loop_seat_egress_allowlist.v1`, `leg: "grok"` and id `grok`.
-    - `allow` holds only requests in the set measured in SL-1.2.
-    - `measured_and_refused` holds every other host observed there.
-    - `measured` names the CLI version, the date and the method.
-    - Every rule traces to a measured request.
-    - It is consumed only through `allowlist_ref("grok")` and
-      `start_proxy(allowlist_id="grok")` (contract §7).
-  - **Credential** (`seat_credentials`):
-    - `grok_seat_credential_present() -> bool`. True when the operator's Grok login store
-      exists. It reads no secret.
-    - `stage_grok_seat_credential(dest: Path, *, margin_s: float) -> GrokSeatCredential`.
-      - Writes the access-only copy of the store, plus `agent_id`, as `0600` files in a fresh
-        `0700` directory beside seat-home.
-      - Opens the store with `O_NOFOLLOW` under the operator's ownership. An unsafe store
-        refuses with `seat_profile_unavailable`, as main's brokered route does.
-      - Raises `GrokCredentialRefused(code)` with `grok_seat_credential_missing`,
-        `grok_seat_credential_refused` (not a subscription login, judged by the store marker
-        SL-1.2 measures) or `grok_seat_token_expired` (remaining lifetime below `margin_s`).
-    - `GrokSeatCredential(secrets: tuple[bytes, ...], digest: str, expires_at: datetime | None)`.
-    - `grok_seat_credential_after(dest: Path, delivered: GrokSeatCredential) -> str | None`.
-      Returns `grok_seat_token_refreshed_in_jail` if the delivered bytes changed or any
-      credential-shaped file appeared under the seat's `.grok`. Otherwise `None`.
-  - **Codes.** Each is a `seat_jail.NOTICES` entry with what, why and fix, classified in
-    `OD10_CLASSES` (contract §1 vendor rule). All are terminal (contract §3 default rule). No fix line names
-    `XAI_API_KEY`, a key-based credential, or a sealed or inline route.
+- [ ] IF-0-GROK-1 — Grok containment surface, provided by SL-0 (codes) and SL-1 (the rest).
+  - **Codes.** Five `seat_jail.NOTICES` entries with what, why and fix, each classified in
+    `OD10_CLASSES`, all terminal. No fix line names `XAI_API_KEY`, a key credential, or a
+    sealed or inline route.
 
     | Code | Class | Fix line (gist) |
     |---|---|---|
-    | `grok_seat_credential_missing` | ordinary | sign in with `grok login` (`--device-code` on a headless host), then re-run |
-    | `grok_seat_credential_refused` | ordinary | sign in with `grok login` to the subscription account; seats use only that login |
-    | `grok_seat_token_expired` | ordinary | the operator renews the login with `grok login`; a seat never renews it (agent-harness#1289) |
-    | `grok_seat_token_in_output` | security | sign out and in again with `grok logout` and `grok login`; report privately |
+    | `grok_seat_credential_missing` | ordinary | sign in with `grok login` (`--device-code` headless), re-run |
+    | `grok_seat_credential_refused` | ordinary | sign in to the subscription account; seats use only that login |
+    | `grok_seat_token_expired` | ordinary | the operator renews with `grok login`; a seat never renews (agent-harness#1289) |
+    | `grok_seat_token_in_output` | security | sign out and in again; report privately |
     | `grok_seat_token_refreshed_in_jail` | security | report privately; re-run the containment probe |
 
-- [ ] IF-0-GROK-2 — The Grok `JailProfile`, provided by SL-2 and registered through
-  `seat_profiles.register` (contract §1):
+  - **Credential and seat config** (`seat_grok_credential`, a new module, as Codex's):
+    - `grok_seat_credential_present() -> bool`, reading no secret.
+    - `stage_grok_seat_credential(dest, *, margin_s) -> GrokSeatCredential`: in a fresh 0700
+      directory beside seat-home, writes 0400 the access-only `.grok/auth.json` (main's
+      `_access_token_only` shape), `agent_id`, and `config.toml` with the erratum 8 seat
+      config bytes, whose sha256 is the pinned input
+      `2984e0c368943bb6c1627146e413995df12cca5820e782adffcb052a9b761780`. Opens the store
+      `O_NOFOLLOW` under the operator's ownership; unsafe stores refuse
+      `seat_profile_unavailable`. Raises `GrokCredentialRefused(code)` with
+      `grok_seat_credential_missing`, `grok_seat_credential_refused` (no subscription
+      login shape) or `grok_seat_token_expired` (remaining lifetime below `margin_s`).
+    - `GrokSeatCredential(secrets, digest, expires_at)`; `grok_seat_credential_after(dest,
+      delivered) -> str | None` returns `grok_seat_token_refreshed_in_jail` when delivered
+      bytes changed or a credential-shaped file appeared under the seat's `.grok`.
+    - `margin_s` is the leg deadline plus 300 s.
+  - **Egress.** The profile adopts the existing `grok-review` allow-list (jail contract §9).
+    No allow-list file is added or edited.
+
+- [ ] IF-0-GROK-2 — The Grok `JailProfile`, provided by SL-2: `seat_profile_grok.register_grok()`,
+  called from `seat_profiles.py`, also calls `seat_subject.register_provider_executable("grok",
+  "grok")` and `seat_admission.register("grok", …)`, as `seat_profile_codex` does.
 
   | Field | Value |
   |---|---|
-  | `leg`, `vendor` | `grok`, `grok`. This matches the unique `kind="vendor"` readiness row (contract §2). |
-  | `argv` | Main's `staged` form, with `--cwd /seat/tree` and `--prompt-file /dev/stdin`, plus only the config-closing flags SL-2.1 measures. It keeps `--disable-web-search`, `--no-memory`, `--no-subagents`, the `--tools` allow-list, `--disallowed-tools` and the approving permission mode. If its `_grok_argv_digest` differs from `staged`, SL-2 adds `grok_runtime_forms()["jailed"]`. |
-  | `owner_binds` | The staged credential files, read-only at `/seat/home/.grok/`. The egress CA, read-only at `/seat/egress-ca.pem`. |
-  | `env` | The per-seat proxy variables and the CA-trust variable(s) the CLI honours (measured in SL-2.1). No provider key variable. |
+  | `leg`, `vendor` | `grok`, `grok` |
+  | `argv` | main's `staged` form with `--cwd /seat/tree`, prompt on stdin; same `_grok_argv_digest` as `staged` (no new route form) |
+  | `owner_binds` | read-only: the three staged files at `/seat/home/.grok/auth.json`, `agent_id`, `config.toml`; the egress CA at `/seat/egress-ca.pem`. Tmpfs: `/seat/home/.grok/logs`, `/seat/home/.grok/sessions` (jail contract §2.3) |
+  | `env` | proxy variables and `SSL_CERT_FILE`; no `GROK_*`, `XAI_*` or key variable |
   | `home_dirs` | `(".grok",)` |
-  | `digest_placeholders`, `mount_points` | The credential directory as `<grok-credential>`; the CA as `<egress-ca>`; the two credential file mount points |
-  | `new_session`, `token_fd` | `True`, `False` |
-  | `projection` | `"optional"` |
-  | `credential` | `CredentialDelivery("home_file", <scope evidence id>)` |
+  | `digest_placeholders`, `mount_points` | `<grok-credential>`, `<egress-ca>`; the staged-file and tmpfs mount points |
+  | `new_session`, `token_fd`, `projection` | `True`, `False`, `"optional"` |
+  | `credential` | `CredentialDelivery("home_file", "grok-credential-scope")` |
   | `credential_present`, `credential_missing_code` | `grok_seat_credential_present`, `grok_seat_credential_missing` |
-  | `preconditions` | `(Precondition("tool_surface", …),)`. It runs main's `grok_tool_gate` on the jailed form against the resolved host binary, and yields `grok_tool_surface_unverified`. |
-  | `recorded_stop`, `variant` | `None`, `None` |
-  | `config_surface` | `ConfigSurface(True, planted_paths)`. `planted_paths` is every tree path the pinned CLI reads as project settings, hooks, MCP servers or provider overrides (measured in SL-2.1). |
-  | `window` | `WindowRows` data, with field spellings as JAILCORE publishes them. Route literal `jailed`. Plant locations: `tree` is `/seat/tree`, backed by the per-launch copy; `home` is `/seat/home`, backed by seat-home; `provider_config` is `/seat/home/.grok`, backed by seat-home `.grok`. No separate `workdir` row, because the Grok working directory is the tree, and no two rows may share a host path. The read-only credential binds are never plant targets. Tree rows: `planted_paths`, each with its role and SL-2.1 evidence in the FIRSTSEAT containment contract §2 vocabulary. Record fields: the kit's vendor-neutral fields with `vendor="grok"`. |
-  | `auth_probe` | The Grok parent adapter on main (IF-0-FIRSTSEAT-3), unchanged |
+  | `preconditions` | `(Precondition("tool_surface", …),)`: main's `grok_tool_gate` on the `staged` form, yielding `grok_tool_surface_unverified`; SL-3 makes that gate accept only jailed-context frozen receipts once a profile is registered (jail contract §4.2) |
+  | `config_surface` | `ConfigSurface(True, planted_paths)`, `planted_paths` = the pinned discovery set plus every project-config path the 1.0.92 bundled documentation names |
+  | `window` | `WindowRows` data, route `jailed`; plants `tree` = `/seat/tree`, `home` = `/seat/home`, `provider_config` = `/seat/home/.grok`; credential binds are never plant targets |
+  | `auth_probe` | the Grok parent adapter on main (IF-0-FIRSTSEAT-3) |
   | `output_secret_code` | `grok_seat_token_in_output` |
-  | `containment` | `ContainmentEvidence(scope, refresh, unlisted, None)`, naming record ids in `plans/evidence/seat-grok/containment.json` |
-  | `allowlist_id`, `notice_codes` | `"grok"`; the five IF-0-GROK-1 codes plus `grok_tool_surface_unverified` |
+  | `containment` | `ContainmentEvidence("grok-credential-scope", "grok-refresh-detection", "grok-unlisted-refusal", None)` |
+  | `allowlist_id`, `notice_codes` | `"grok-review"`; the five IF-0-GROK-1 codes and `grok_tool_surface_unverified` |
 
-  The launch site has four invariants:
-  - **Tree.** `/seat/tree` is a per-launch copy of the authorized stage. It is checked equal
-    to `staged_tree_sha256` before launch (otherwise `seat_sandbox_refused:stage_changed`),
-    passed as `build_seat_jail(tree=…)` and writable by the seat. It is removed when the leg
-    ends. Neither the authorized stage nor another seat's tree is bound into a Grok jail.
-  - **Gate.** Immediately before spawn, main's unchanged `require_grok_admission` checks the
-    exact final provider argv and resolved host binary bound at `/seat/bin/grok`; neither may
-    change afterward. A non-pass ends the leg with `grok_tool_surface_unverified` before any
-    process starts.
-  - **Output and refresh.** Seat output is scanned for every `GrokSeatCredential.secrets`
-    value in each `contains_secret` encoding. A hit yields `grok_seat_token_in_output`. Then
-    `grok_seat_credential_after` runs.
-  - **Egress.** One `start_proxy(allowlist_id="grok")` per seat.
+  It also adds one Grok branch to `seat_jail_qualification.py` that delegates to
+  `seat_profile_grok.qualification_shape(seat_dir)` (CA and proxy placeholders, as Codex's).
+
+- [ ] IF-0-GROK-3 — Jailed launch site and context, provided by SL-3: `grok_jail_surface`
+  (`GROK_JAIL_CONTEXT`, `jail_context_digest()`, `verify_jail_launch_context`,
+  `JailLaunchContext`, jailed record loaders), the context-aware `grok_tool_gate` and
+  `probe_grok_tools`, the jailed Grok leg in `panel_invoker.py` and its jailed measurement
+  entry (jail contract §2–§4, §5.1).
+- [ ] IF-0-GROK-4 — Jailed measurement, provided by SL-4: `measure-tools --vendor grok` in
+  the jailed context once a profile is registered, the three launches, the agreement rule and
+  jailed publication (jail contract §5, §7.1).
 
 ## Lane Index & Dependencies
 
-SL-1 — Grok egress, credential and codes (roadmap lane B)
+SL-0 — VOCAB: Grok codes (roadmap lane B)
   Depends on: (none)
-  Blocks: SL-2, SL-3
+  Blocks: SL-1, SL-2
   Parallel-safe: yes
 
-SL-2 — Grok profile, tree and launch (roadmap lane A)
-  Depends on: SL-1
-  Blocks: SL-3
+SL-1 — CRED: credential and seat-config staging, egress adoption (roadmap lane B)
+  Depends on: SL-0
+  Blocks: SL-2
+  Parallel-safe: yes
+
+SL-2 — PROFILE: Grok profile registered with the gate closed (roadmap lane A)
+  Depends on: SL-0, SL-1
+  Blocks: SL-3, SL-5, SL-8
   Parallel-safe: no
 
-SL-3 — Documentation reducer (SL-docs)
-  Depends on: SL-1, SL-2
+SL-3 — LAUNCH: jailed launch site, jailed context and gate (roadmap lanes A and B)
+  Depends on: SL-2
+  Blocks: SL-4
+  Parallel-safe: no
+
+SL-4 — MEASURE: jailed measurement (roadmap lane B)
+  Depends on: SL-3
+  Blocks: SL-6
+  Parallel-safe: no
+
+SL-5 — CANDIDATE: provider-free qualification evidence (roadmap lane A)
+  Depends on: SL-2
+  Blocks: SL-7
+  Parallel-safe: yes
+
+SL-6 — SURFACE: granted measurement data (roadmap lane B)
+  Depends on: SL-4
+  Blocks: SL-7
+  Parallel-safe: no
+
+SL-8 — RENEW: per-vendor expiry, fallback only
+  Depends on: SL-2
+  Blocks: SL-7
+  Parallel-safe: no
+
+SL-7 — Documentation reducer (SL-docs)
+  Depends on: SL-0, SL-1, SL-2, SL-3, SL-4, SL-5, SL-6, SL-8
   Blocks: (none)
   Parallel-safe: no
 
+SL-8 runs only on the jail contract §11 trigger; otherwise SL-7 records it closed as not
+needed.
+
 ## Lanes
 
-### SL-1 — Grok egress, credential and codes (roadmap lane B)
+Every lane: targeted test files, serial, `timeout 600`; no live provider call and no `grok`
+execution; every new guard mutation-checked; `uvx ruff@0.15.5 check .` before committing;
+CHANGELOG, readiness-doc and launch-inventory entries ride in the lane's PR as SL-7 tasks.
 
-- **Scope**: Measure and add the Grok allowlist, stage and check the Grok credential, and add and classify the Grok codes (IF-0-GROK-1). The profile is not registered here.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_egress/grok-allowlist.json`, `phase-loop-runtime/src/phase_loop_runtime/seat_credentials.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_route_contract.py`, `phase-loop-runtime/tests/test_grok_seat_containment.py`, `phase-loop-runtime/tests/test_seat_credentials.py`, `phase-loop-runtime/tests/test_seat_route_contract.py`, `phase-loop-runtime/tests/test_seat_jail.py`, `plans/evidence/seat-grok/containment.json`
-- **Interfaces provided**: IF-0-GROK-1
-- **Interfaces consumed**: from IF-0-JAILCORE-1 and IF-0-JAILCORE-2: `allowlist_ref` (pre-existing), `start_proxy` (pre-existing), `OD10_CLASSES` (pre-existing), `mode_line_codes` (pre-existing). From main: `_access_token_only` (pre-existing), `contains_secret` (pre-existing)
+### SL-0 — VOCAB: Grok codes (roadmap lane B)
+
+- **Scope**: Add and classify the five IF-0-GROK-1 codes.
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_jail.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_route_contract.py`, `phase-loop-runtime/tests/test_grok_seat_vocabulary.py`, `phase-loop-runtime/tests/test_seat_notices.py`, `phase-loop-runtime/tests/test_seat_jail.py`, `phase-loop-runtime/tests/test_seat_route_contract.py`
+- **Interfaces provided**: IF-0-GROK-1 (codes)
+- **Interfaces consumed**: `NOTICES`, `OD10_CLASSES`, `mode_line_codes` (pre-existing)
 - **Parallel-safe**: yes
 
-Edit scope: in `seat_jail.py`, Grok `NOTICES` entries only. In `seat_route_contract.py`,
-additive `OD10_CLASSES` entries for those codes only (contract §1 vendor rule).
+Edit scope: Grok `NOTICES` entries and additive `OD10_CLASSES` entries only.
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-1.1 | test | — | `phase-loop-runtime/tests/test_grok_seat_containment.py` | (a) Allowlist schema, leg and id; `allowlist_ref("grok")` content digest and probe rows. (b) A proxy started for `grok` refuses an unlisted host and a host listed only in `gemini-allowlist.json`, path-entered through the real `proxy.mjs`. (c) The staged copy carries no refresh or id keys, has modes 0600 and 0700, and refuses a link, a foreign owner or an oversize store with `seat_profile_unavailable`. A missing store gives `grok_seat_credential_missing`; a non-subscription store, `grok_seat_credential_refused`; an expiry inside the margin, `grok_seat_token_expired`. (d) The after-check returns the refresh code for a changed delivered file and for a new credential-shaped file, and `None` for an untouched home. (e) Each new code has non-empty what/why/fix and its IF-0-GROK-1 class, and no fix line matches `XAI_API_KEY`, "API key", "sealed" or "inline". | `V1` |
-| SL-1.2 | impl | SL-1.1 | `plans/evidence/seat-grok/containment.json` | — | — |
-| SL-1.3 | impl | SL-1.2 | `phase-loop-runtime/src/phase_loop_runtime/seat_egress/grok-allowlist.json`, `phase-loop-runtime/src/phase_loop_runtime/seat_credentials.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_route_contract.py`, `phase-loop-runtime/tests/test_seat_route_contract.py`, `phase-loop-runtime/tests/test_seat_jail.py` | — | — |
-| SL-1.4 | verify | SL-1.3 | SL-1 files | all SL-1 tests | `V1`, `V4` |
+| SL-0.1 | test | — | `phase-loop-runtime/tests/test_grok_seat_vocabulary.py` | each code has non-empty what/why/fix and its class; no fix line matches `XAI_API_KEY`, "API key", "sealed" or "inline"; existing codes and classes byte-identical. Falsifier: removing one classification fails it. | `V0` |
+| SL-0.2 | impl | SL-0.1 | `phase-loop-runtime/src/phase_loop_runtime/seat_jail.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_route_contract.py`, `phase-loop-runtime/tests/test_seat_notices.py` | — | — |
+| SL-0.3 | verify | SL-0.2 | SL-0 files | `V0`, the SDK binding tests unedited | `V0`, `VS` |
 
-**SL-1.2 measurement.** This runs on a developer host under the developer's own login
-(principle 5; not a window). It uses the CLI version SL-2 pins, a fresh home holding only
-the access-only copy, and the TLS-terminating proxy with every request logged. It records
-four things:
-- the request set;
-- the store field that marks a subscription login;
-- the credential's actual lifetime;
-- its scope, meaning which provider endpoints accept the copy.
+Stop: an SDK proof region (not the whole `seat_route_contract.py` file) moves.
 
-Raw logs stay private. `containment.json` holds record ids and digests only.
+### SL-1 — CRED: credential and seat-config staging, egress adoption (roadmap lane B)
 
-### SL-2 — Grok profile, tree and launch (roadmap lane A)
+- **Scope**: Build `seat_grok_credential`, prove the `grok-review` adoption offline, record offline containment evidence.
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_grok_credential.py`, `phase-loop-runtime/tests/test_grok_seat_credential.py`, `phase-loop-runtime/tests/test_grok_seat_egress.py`, `plans/evidence/seat-grok/containment.json`
+- **Interfaces provided**: IF-0-GROK-1 (credential, seat config, egress)
+- **Interfaces consumed**: IF-0-GROK-1 codes (SL-0); `_access_token_only`, `contains_secret`, `allowlist_ref`, `start_proxy` (pre-existing)
+- **Parallel-safe**: yes
 
-- **Scope**: Build the IF-0-GROK-2 profile, with its window rows, and the jailed launch site. Prove the tree, argv, gate, config and output behaviour, then register the profile and update the Grok doc row together when enabling the route.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `docs/review-seats-readiness.md`, `phase-loop-runtime/tests/test_grok_seat_jail.py`, `phase-loop-runtime/tests/test_grok_sandbox_seat_approval.py`, `phase-loop-runtime/tests/test_panel_invoker.py`, `phase-loop-runtime/tests/test_seat_profiles.py`, `phase-loop-runtime/tests/test_seat_jail_qualification_entry.py`, `phase-loop-runtime/tests/test_seat_qualification_host_context.py`, `phase-loop-runtime/tests/test_seat_notices.py`, `phase-loop-runtime/tests/test_seats_teamhost_doctor.py`, `phase-loop-runtime/tests/data/seat_launch_references.json`, `plans/evidence/seat-grok/write-confinement.json`, `plans/evidence/seat-grok/tool-surface.json`, `plans/evidence/seat-grok/provider-free.json`
+| Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
+|---|---|---|---|---|---|
+| SL-1.1 | test | — | `phase-loop-runtime/tests/test_grok_seat_credential.py`, `phase-loop-runtime/tests/test_grok_seat_egress.py` | (a) staged files carry no refresh or id keys, modes 0400/0700; a link, foreign owner or oversize store refuses `seat_profile_unavailable`; missing, non-subscription and inside-margin stores give their codes. (b) `config.toml` bytes hash to the pinned digest. (c) the after-check fires on a changed file and on a new credential-shaped file, `None` otherwise. (d) a proxy for `grok-review` refuses an unlisted host and hosts listed only for `gemini` or `codex`, through the real `proxy.mjs`; `grok-review`, `gemini` and `codex` digests equal their base values; nothing requires `allowlist_id == leg`. | `V1` |
+| SL-1.2 | impl | SL-1.1 | `phase-loop-runtime/src/phase_loop_runtime/seat_grok_credential.py`, `plans/evidence/seat-grok/containment.json` | — | — |
+| SL-1.3 | verify | SL-1.2 | SL-1 files | all SL-1 tests | `V1`, `V9` |
+
+`containment.json` holds ids and digests only: `grok-refresh-detection` and
+`grok-unlisted-refusal` from these offline tests. Stop: a JAILCORE invariant refuses
+`allowlist_id="grok-review"`; any allow-list digest moves.
+
+### SL-2 — PROFILE: Grok profile registered with the gate closed (roadmap lane A)
+
+- **Scope**: Register IF-0-GROK-2 with its window rows, subject, admission gate and qualification branch, so the installed runtime drops the `unconfined` exception while every launch stops at L6.
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_profile_grok.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail_qualification.py`, `phase-loop-runtime/tests/test_grok_seat_profile.py`, `phase-loop-runtime/tests/test_seat_profiles.py`, `phase-loop-runtime/tests/data/seat_profile_digests_jailcore.json`, `phase-loop-runtime/tests/test_seat_jail_qualification_entry.py`, `phase-loop-runtime/tests/test_seat_qualification_host_context.py`, `phase-loop-runtime/tests/test_seats_teamhost_doctor.py`
 - **Interfaces provided**: IF-0-GROK-2
-- **Interfaces consumed**: IF-0-GROK-1 (SL-1). From IF-0-JAILCORE-1 to IF-0-JAILCORE-3: `JailProfile` (pre-existing), `register` (pre-existing), `seat_route.resolve` (pre-existing), `build_seat_jail` (pre-existing), `start_proxy` (pre-existing), `key_for_launch` (pre-existing). From FIRSTSEAT: `grok_tool_gate` (pre-existing), `grok_runtime_forms` (pre-existing), `probe_grok_tools` (pre-existing), `readiness_rows` (pre-existing)
+- **Interfaces consumed**: IF-0-GROK-1 (SL-0, SL-1); `JailProfile`, `register`, `seat_route.resolve`, `register_provider_executable`, `seat_admission.register`, `readiness_rows`, `jail_profile_digest`, `grok_runtime_forms`, `grok_tool_gate` (pre-existing)
 - **Parallel-safe**: no
 
-Edit scope: in `seat_profiles.py`, the Grok entry only, including its `window` data. In the
-readiness doc, the Grok row only. In `panel_invoker.py`, the Grok leg and
-`grok_runtime_forms`. `seat_window.py` is not edited; the kit reads the profile's `window`.
-The three kit and notice test files change only in their Grok expectations.
-`test_seats_teamhost_doctor.py` gains one additive agreement row (agent-harness#1882).
+Edit scope: one import and call in `seat_profiles.py`; one delegating branch in
+`seat_jail_qualification.py`; `panel_invoker.py`, `seat_window.py`, `seat_subject.py` and
+`seat_jail.py` unedited.
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-2.1 | test | — | `phase-loop-runtime/tests/test_grok_seat_jail.py`, `plans/evidence/seat-grok/tool-surface.json` | Record the "SL-2.1 measurement", then write the "SL-2.1 cases". | `V2`, `VL` |
-| SL-2.2 | impl | SL-2.1 | `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py` | — | — |
-| SL-2.3 | impl | SL-2.2 | `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`, `docs/review-seats-readiness.md`, `phase-loop-runtime/tests/data/seat_launch_references.json`, `phase-loop-runtime/tests/test_seat_notices.py`, `phase-loop-runtime/tests/test_seat_jail_qualification_entry.py`, `phase-loop-runtime/tests/test_seat_qualification_host_context.py`, `phase-loop-runtime/tests/test_seats_teamhost_doctor.py` | — | — |
-| SL-2.4 | verify | SL-2.3 | SL-2 files, `plans/evidence/seat-grok/write-confinement.json`, `plans/evidence/seat-grok/provider-free.json` | all SL-2 tests | `V2`, `V3`, `V4`, `VL`, `VD`, `VK` |
+| SL-2.1 | test | — | `phase-loop-runtime/tests/test_grok_seat_profile.py` | (a) JAILCORE invariants hold; vendor matches the unique row; the no-branch scan passes. (b) BA-J6: registered with no receipt, the route stops at L6 `grok_tool_surface_unverified` (L5 code without a credential), starts no proxy, never reaches L8, spawns nothing; a planted unjailed frozen receipt spawns nothing; no Grok route reaches `MODE_UNCONFINED`. (c) the readiness row reads `jailed`, no exception, no expiry, `grok-review`, `candidate`. (d) `register_window_data` is not called for Grok (K-1's adapter owns it). (e) the staged argv digest equals `staged`'s. Falsifier: deleting the precondition makes (b) fail. | `V2` |
+| SL-2.2 | impl | SL-2.1 | `phase-loop-runtime/src/phase_loop_runtime/seat_profile_grok.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail_qualification.py` | — | — |
+| SL-2.3 | impl | SL-2.2 | `phase-loop-runtime/tests/test_seat_profiles.py`, `phase-loop-runtime/tests/data/seat_profile_digests_jailcore.json`, `phase-loop-runtime/tests/test_seat_jail_qualification_entry.py`, `phase-loop-runtime/tests/test_seat_qualification_host_context.py`, `phase-loop-runtime/tests/test_seats_teamhost_doctor.py` | golden gains `grok` rows, other rows byte-identical; doctor agreement row `refuses` with `grok_tool_surface_unverified`; Grok qualification shape | `V2`, `V3q` |
+| SL-2.4 | verify | SL-2.3 | SL-2 files | all SL-2 tests | `V2`, `V3q`, `V9`, `VS` |
 
-**SL-2.1 measurement**, on the pinned CLI version:
-- the project-config read set, and the flag or seat-home setting that keeps it from loading;
-- the proxy and CA-trust variables the CLI honours;
-- whether the bound binary runs without a projected closure;
-- the tool-definition probe (`VK`) on the jailed form.
+Stop: the jailed argv digest differs from `staged`; a shared builder edit would move another
+leg's `jail_profile_digest`; the profile cannot express the tmpfs mounts as its own owner
+arguments; a Gemini or Codex qualification shape changes.
 
-Publish tool-surface metadata only for a passing receipt. Any other result stays private
-under FIRSTSEAT's gate rules.
+### SL-3 — LAUNCH: jailed launch site, jailed context and gate (roadmap lanes A and B)
 
-**SL-2.1 cases.** Each case is path-entered through `_seat_route_for_spawn` and the real
-Grok launch site, with recording runners unless marked `live_jail` (VL) or `live_provider`
-(VD).
+- **Scope**: Build the jailed Grok leg and IF-0-GROK-3; open the jailed spawn only on a jailed-context record plus a matching mark.
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/grok_jail_surface.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/src/phase_loop_runtime/claude_seat_transport.py`, `phase-loop-runtime/tests/test_grok_jail_surface.py`, `phase-loop-runtime/tests/test_grok_seat_jail.py`, `plans/evidence/seat-grok/write-confinement.json`
+- **Interfaces provided**: IF-0-GROK-3
+- **Interfaces consumed**: IF-0-GROK-1, IF-0-GROK-2; `build_seat_jail` (pre-existing), `start_proxy` (pre-existing), `stage_review_tree` (pre-existing), `_grok_gate_with_basis` (pre-existing), `DISCOVERY_PATHS` (pre-existing), `SEAT_CONFIG_SHA256` (pre-existing once erratum 8's E8-A merges), `window_board_for` (pre-existing once the K-1 kit lane merges; used only if on the base)
+- **Parallel-safe**: no
 
-- (a) **Registration.** The JAILCORE invariants hold for the Grok profile. The vendor matches
-  the readiness row. JAILCORE's no-branch scan still passes.
-- (b) **Argv.** The provider argv has `--cwd /seat/tree` and no host path (agent-harness#1460).
-  It keeps the retained flags. Its argv digest equals the probed runtime form's digest.
-- (c) **Tree.** A copy that differs from `staged_tree_sha256` refuses before launch. In
-  `live_jail`, a probe write lands in the copy only, and the authorized stage hash and a
-  sibling seat's tree are unchanged (agent-harness#1686).
-- (d) **Gate.** The outer argv starts at bwrap. The test asserts unchanged
-  `require_grok_admission` receives that exact final provider argv and binary immediately
-  before spawn, with no later mutation. Each of these ends with
-  `grok_tool_surface_unverified` and spawns nothing:
-  - no receipt;
-  - a receipt for another binary digest;
-  - a receipt for another argv digest;
-  - a receipt whose offered tools include one outside `--tools`.
+Edit scope: in `panel_invoker.py`, the new jailed Grok leg, its dispatch, the jailed branch of
+the spawn check, the context rule in `grok_tool_gate` and `probe_grok_tools`, and the jailed
+measurement admission in `require_grok_admission`; in `claude_seat_transport.py`, `SDK_PROOF_UNBOUND` insertions only.
+The unjailed board leg and `grok_seat_context.v1` stay byte-identical.
 
-  A passing receipt spawns.
-- (e) **Route.** With every step passing, the mode is `jailed`. Missing credential gives L5
-  `grok_seat_credential_missing`. Missing receipt gives L6 `grok_tool_surface_unverified`. A
-  missing allowlist file gives `seat_egress_allowlist_missing`. Once the profile is
-  registered, no Grok seat reaches `MODE_UNCONFINED` (EC-JAILCORE-5).
-- (f) **Output and refresh.** A planted delivered credential in each `contains_secret`
-  encoding yields `grok_seat_token_in_output`, and the exec record omits the output. A
-  mutated delivered file yields `grok_seat_token_refreshed_in_jail`.
-- (g) **Config** (`live_jail`). Each `planted_paths` marker, staged through
-  `stage_review_tree`, does not load.
-- (h) **Egress** (`live_jail`). A tool command in the jail is refused for an unlisted host and
-  for Gemini's listed host.
-- (i) **Approval** (`live_provider`). A jailed turn that runs a compound shell command in the
-  copy completes, and the turn is not cancelled (agent-harness#1091).
-- (j) **Window.** The Grok `window` rows reach `seat_window`'s vendor gate and path rows with
-  no kit-code edit. The kit's Grok row reads route `jailed` and allowlist `grok`, and the
-  readiness doc's Grok row agrees. Gemini's kit records stay byte-identical.
-- (k) **Agreement row** (SL-2.3). A Grok case with an unverified tool surface: the doctor
-  `refuses` with `grok_tool_surface_unverified`, never `admits`.
+| Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
+|---|---|---|---|---|---|
+| SL-3.1 | test | — | `phase-loop-runtime/tests/test_grok_jail_surface.py`, `phase-loop-runtime/tests/test_grok_seat_jail.py` | Path-entered through `_seat_route_for_spawn` and the real leg, recording runners unless `live_jail`: (a) argv has `--cwd /seat/tree`, no host path (agent-harness#1460). (b) a tree copy differing from `staged_tree_sha256` refuses before launch; `live_jail`: a stand-in's write lands only in the copy, stage and sibling trees unchanged (agent-harness#1686). (c) spawn refuses with no receipt, another binary or argv digest, an out-of-list tool, a seat-context receipt, a jailed record without a mark, and a mark for another jail, proxy, argv or cwd (BA-J2, BA-J3); a valid jailed record plus mark spawns the stand-in. (d) output carrying a delivered secret in each `contains_secret` encoding gives `grok_seat_token_in_output` and the exec record omits it; a mutated delivered file gives the refresh code. (e) BA-J4 and BA-J5. (f) `live_jail` (h): a jailed tool command reaches neither an unlisted host nor Gemini's or Codex's listed host. (g) BA-J1. (h) `context_digest()` unchanged; `jail_context_digest()` moves with each of its inputs. | `V3`, `VL` |
+| SL-3.2 | impl | SL-3.1 | `phase-loop-runtime/src/phase_loop_runtime/grok_jail_surface.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/src/phase_loop_runtime/claude_seat_transport.py` | — | — |
+| SL-3.3 | verify | SL-3.2 | SL-3 files, `plans/evidence/seat-grok/write-confinement.json` | all SL-3 tests; unjailed suites unedited | `V3`, `VL`, `V9`, `VS`, `VU` |
 
-**SL-2.3 enables the route.** It consumes IF-0-GROK-1 and runs only after `VK` passes on
-the pinned version. It registers the profile with its `window` data, updates the Grok doc
-row and records the launch-reference inventory decision.
+The K-1 hook: if the K-1 kit lane is on SL-3's base, the leg calls `window_board_for("grok",
+…)` in `_exec_jailed_gemini_leg`'s order with a test; otherwise K-1's Grok adapter lane adds
+that call as its named part. Stop: an unjailed Grok test needs an edit; an SDK proof region
+other than `_run_leg_with_liveness` moves; erratum 8's immutable projection is unavailable.
 
-### SL-3 — Documentation reducer (SL-docs)
+### SL-4 — MEASURE: jailed measurement (roadmap lane B)
 
-- **Scope**: Single writer of shared docs and the plan manifest. Its tasks ride in each producer's landing PR, and a final sweep runs after SL-2.
-- **Owned files**: `docs/advisor-board-capabilities-card.md`, `CHANGELOG.md`, `.doc-decisions.json`, `.claude/docs-catalog.json`, `plans/manifest.json`
+- **Scope**: Implement IF-0-GROK-4 and the paste-safe jailed procedure.
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/grok_tool_surface.py`, `phase-loop-runtime/tests/test_grok_jail_measure.py`, `docs/ops/grok-jail-measurement.md`
+- **Interfaces provided**: IF-0-GROK-4
+- **Interfaces consumed**: IF-0-GROK-3 (SL-3); the TS contract ledger, rehearsal and aggregation (pre-existing); erratum 8's per-image map (pre-existing once E8-B merges)
+- **Parallel-safe**: no
+
+Edit scope: `grok_tool_surface.py`'s measurement region only (grant `context`, jailed
+stages, agreement rule, jailed publication names). No CLI flag is added, so `seat_window.py`
+is not edited.
+
+| Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
+|---|---|---|---|---|---|
+| SL-4.1 | test | — | `phase-loop-runtime/tests/test_grok_jail_measure.py` | recording runner: a jailed grant refuses a seat-context stage and vice versa; the unjailed measurement refuses once a profile is registered; a passing jailed rehearsal; the pilot refused without it; three agreeing launches publish to the jailed record; a disagreeing or missing launch publishes nothing (`surface_unstable`); BA-1 and BA-2 hold for jailed grants; the procedure script runs end to end against the recording runner. | `V4` |
+| SL-4.2 | impl | SL-4.1 | `phase-loop-runtime/src/phase_loop_runtime/grok_tool_surface.py`, `docs/ops/grok-jail-measurement.md` | — | — |
+| SL-4.3 | verify | SL-4.2 | SL-4 files | all SL-4 tests; TS contract measurement suites unedited | `V4`, `VU`, `V9` |
+
+Stop: the unjailed measurement's behaviour before registration, or a TS contract test,
+changes; the procedure needs a new CLI flag (that is a `seat_window.py` edit and an
+amendment).
+
+### SL-5 — CANDIDATE: provider-free qualification evidence (roadmap lane A)
+
+- **Scope**: After Train A is installed (jail contract §10.1), record the provider-free Grok qualification on the designated seat host (EC-GROK-4 `candidate`).
+- **Owned files**: `plans/evidence/seat-grok/provider-free.json`, `phase-loop-runtime/tests/test_grok_seat_provider_free.py`
+- **Interfaces provided**: evidence id `grok-provider-free`
+- **Interfaces consumed**: IF-0-GROK-2 (SL-2)
+- **Parallel-safe**: yes
+
+| Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
+|---|---|---|---|---|---|
+| SL-5.1 | test | — | `phase-loop-runtime/tests/test_grok_seat_provider_free.py` | the record is metadata only and its profile digest equals `jail_profile_digest("grok")`; skips when the file is absent (Gate A clean room) | `V7` |
+| SL-5.2 | impl | SL-5.1 | `plans/evidence/seat-grok/provider-free.json` | — | — |
+| SL-5.3 | verify | SL-5.2 | SL-5 files | — | `V7`, `VK` |
+
+### SL-6 — SURFACE: granted measurement data (roadmap lane B)
+
+- **Scope**: After the jail contract §7 grant runs, land the jailed aggregate, the catalog entry and EC-GROK-5's records.
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/data/grok_jail_tool_surfaces.json`, `phase-loop-runtime/pyproject.toml`, `phase-loop-runtime/tests/test_grok_jail_catalog.py`, `plans/evidence/seat-grok/tool-surface.json`, `plans/evidence/seat-grok/credential-scope.json`
+- **Interfaces provided**: evidence ids `grok-credential-scope`, the jailed surface
+- **Interfaces consumed**: IF-0-GROK-4 (SL-4)
+- **Parallel-safe**: no
+
+| Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
+|---|---|---|---|---|---|
+| SL-6.1 | test | — | `phase-loop-runtime/tests/test_grok_jail_catalog.py` | catalog parity per context; every profile evidence id resolves; no record carries a path, prompt, id or suffix | `V6` |
+| SL-6.2 | impl | SL-6.1 | `phase-loop-runtime/src/phase_loop_runtime/data/grok_jail_tool_surfaces.json`, `phase-loop-runtime/pyproject.toml`, `plans/evidence/seat-grok/tool-surface.json`, `plans/evidence/seat-grok/credential-scope.json` | — | — |
+| SL-6.3 | verify | SL-6.2 | SL-6 files | — | `V6`, `VK`, `V9` |
+
+Stop: the aggregate is not `measured` and `admitted` for `staged` (EC-GROK-2 then stays open,
+the leg degraded); the store has no subscription marker.
+
+### SL-8 — RENEW: per-vendor expiry, fallback only
+
+- **Scope**: On the jail contract §11 trigger, replace the shared expiry constant with a per-vendor map, renewing Grok's entry under the owner's record.
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_window.py`, `phase-loop-runtime/tests/test_grok_seat_renewal.py`
 - **Interfaces provided**: (none)
-- **Interfaces consumed**: IF-0-GROK-1 (SL-1), IF-0-GROK-2 (SL-2)
+- **Interfaces consumed**: `readiness_rows` (pre-existing); the owner's renewal record
+- **Parallel-safe**: no
+
+Edit scope: `readiness_rows`'s exception expiry literal and `renewal_record` only.
+`seat_window.py` is also GROKROLL SL-0's (agent-harness#2050) and K-1's; the second lander
+rebases.
+
+| Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
+|---|---|---|---|---|---|
+| SL-8.1 | test | — | `phase-loop-runtime/tests/test_grok_seat_renewal.py` | Grok's expiry is the renewed one, Claude's and Codex's unchanged; the route admits Grok's exception only before it; `renewal_record` names the record | `V8` |
+| SL-8.2 | impl | SL-8.1 | `phase-loop-runtime/src/phase_loop_runtime/seat_window.py` | — | — |
+| SL-8.3 | verify | SL-8.2 | SL-8 files | — | `V8`, `V9` |
+
+### SL-7 — Documentation reducer (SL-docs)
+
+- **Scope**: Single writer of shared docs, inventories and the manifest; its tasks ride in each producer's PR, then a final sweep.
+- **Owned files**: `docs/review-seats-readiness.md`, `docs/advisor-board-capabilities-card.md`, `CHANGELOG.md`, `.doc-decisions.json`, `.claude/docs-catalog.json`, `plans/manifest.json`, `phase-loop-runtime/tests/data/seat_launch_references.json`
+- **Interfaces provided**: (none)
+- **Interfaces consumed**: IF-0-GROK-1, IF-0-GROK-2, IF-0-GROK-3, IF-0-GROK-4, `grok-provider-free`, `grok-credential-scope`
 - **Parallel-safe**: no (terminal)
 
 | Task ID | Type | Depends on | Files in scope | Action |
 |---|---|---|---|---|
-| SL-docs.1 | docs | — | `.claude/docs-catalog.json` | Rescan with `python3 "$(git rev-parse --show-toplevel)/.claude/skills/_shared/scaffold_docs_catalog.py" --rescan`. If the helper is absent, record "manual catalog audit". |
-| SL-docs.2 | docs | SL-docs.1 | per catalog | Each landing adds an `[Unreleased]` CHANGELOG entry. After SL-2, the card states that the Grok seat runs jailed with tools, provider-only egress and a staged access-only credential, and lists its codes and fix lines. |
-| SL-docs.3 | docs | SL-docs.2 | `plans/phase-plan-v1-seats-GROK.md` | Append `### Post-execution amendments` only if a freeze proved wrong, by freeze ID and date. |
-| SL-docs.4 | verify | SL-docs.3 | — | `V5` and the hosted docs-freshness audit. |
+| SL-docs.1 | docs | — | `.claude/docs-catalog.json` | rescan, or record "manual catalog audit" |
+| SL-docs.2 | docs | SL-docs.1 | per catalog | each PR: a CHANGELOG entry naming the pins it moves; SL-2: the Grok readiness row (`jailed`, no exception); SL-3: launch-inventory rows and the jailed probe paragraph; SL-4: the measurement row (`qualification`); after SL-6: the card's Grok entry and codes |
+| SL-docs.3 | docs | SL-docs.2 | `plans/phase-plan-v1-seats-GROK.md` | `### Post-execution amendments` only if a freeze proved wrong |
+| SL-docs.4 | verify | SL-docs.3 | — | `V5` and the hosted docs-freshness audit |
 
 ## Execution Notes
 
-- **S-1 (resolved).** JAILCORE's merged vendor rule (contract §1) lets a vendor phase add its
-  own `<leg>_seat_*` codes, each with one additive `OD10_CLASSES` entry, and its window rows
-  as profile data. SL-1 and SL-2 use exactly that and nothing more.
-- **S-2 (open; affects only the row window).** The kit's named exceptions are a code literal
-  in `seat_window.readiness_rows()` that still lists Grok as `unconfined`. Registration ends
-  the exception in effect, because L1 finds the profile (EC-JAILCORE-5). Under the data-only
-  rule, though, no GROK lane may remove the literal, so the kit row would keep showing an
-  exception that expires 2026-12-04. Proposed fix: omit `unconfined` only when a profile is registered, and `open egress` only
-  when its profile has an allowlist. CODEX and CLAUDENET need those respective rules. Until S-2 is settled,
-  SL-2.3 records the exception's end in the readiness doc only.
-- **Other STOP conditions.** In each case, report the exact sentence. The row stays on its
-  exception, and then OD-9 applies. Do not register the profile.
-  - The pinned CLI cannot run through the TLS-terminating proxy (EC-JAILCORE-3).
-  - No flag or seat-home setting keeps planted tree config from loading.
-  - The store has no subscription marker, so `grok_seat_credential_refused` cannot be
-    decided.
-  - `VK` does not pass on the pinned version. The leg then stays degraded per
-    EC-FIRSTSEAT-4, with results on its private route.
-- **Expiry.** The Grok `unconfined` exception expires 2026-12-04 UTC. If SL-2.3 has not landed
-  by then, Grok resolves degraded (EC-JAILCORE-5) unless an owner record in the matrix renews
-  the exception.
-- **Single writers.**
-  - `panel_invoker.py` is also written by TEAMHOST lane A, CODEX, PI, CLAUDENET and v11
-    PANELSPLIT. Whichever lands second rebases. If PANELSPLIT has moved the seat-launch
-    code, SL-2 edits the successor module and records the move in its PR.
-  - CODEX and PI also edit `seat_profiles.py` (profile and window data), `seat_jail.NOTICES`,
-    `OD10_CLASSES` and the readiness doc, each for its own entries only. Whichever lands
-    second rebases.
-- **Row window (EC-GROK-4).** SL-2.4 records the provider-free qualification on the designated seat host, and
-  the row reads `candidate`. The next row window (LA-2, LA-3) runs the IF-0-FIRSTSEAT-2 kit.
-  Its reviewed PR edits only the Grok row and `plans/evidence/seat-qualification/`.
-- **Known destructive changes**: none. **Expected add/add conflicts**: none.
-- **SL-0 re-exports**: none; no preamble lane is needed, because the two lanes own disjoint
-  files.
-- **Worktree naming**: allocated by the executor.
+- **A-1 to A-9.** A-1: jail contract §2–§5 (ruling 1), lanes SL-3, SL-4, SL-6. A-2: §9,
+  adopt `grok-review` (ruling 4), SL-1. A-3: subject, admission, qualification branch in
+  SL-2; `WindowVendorData` by K-1's Grok adapter. A-4: S-2 closed in source; no doc-only
+  fallback. A-5: IF-0-GROK-2 `owner_binds`, jail contract §2.3, BA-J4. A-6: codes in SL-0.
+  A-7: Frozen inputs above. A-8: below. A-9: jail contract §7 (the image rule).
+- **Gate closed (ruling 2).** Jail contract §6 states what registration does to the route,
+  the matrix and other vendors' records; it is necessary but not sufficient to protect
+  Gemini's records after 2026-12-04 (Claude's exception).
+- **Owner grant (ruling 3).** Jail contract §7; asked only after SL-0 to SL-4 and erratum 8's
+  lanes are merged, released and installed, and BA-J1 passed.
+- **Pins and batching.** Jail contract §10: only SL-2 moves the qualification validator;
+  Train A (SL-0..SL-2) and Train B (SL-3, SL-4); never installed between Gemini W1's first
+  launch and its export.
+- **Critical path and fallback.** Jail contract §11. SL-2 merges by 2026-11-30 12:00Z; Train
+  A installed on every seat host by 2026-12-02 12:00Z; SL-8 pre-staged by 2026-12-01.
+- **Window (EC-GROK-4).** After SL-6 and K-1's Grok adapter: the owner's grant for the Grok
+  row window, the release, LA-2, LA-3 and the records PR. The window's measured launch and
+  board leg also prove EC-GROK-1's real-CLI write and EC-GROK-2's uncancelled tool turn
+  (agent-harness#1091); no separate live test runs.
+- **Coordination.** Erratum 8: SL-3 waits for E8-A, SL-4 for E8-B; SL-0..SL-2 touch none of
+  its files. K-1: confirmed (jail contract §13); K-1's SL-8 gate should read IF-0-GROK-1 to
+  IF-0-GROK-3 plus a measured jailed surface, and K-1's two edits to this plan are subsumed.
+  GROKROLL: no GROK lane moves a GROKROLL pin; only SL-6 (`pyproject.toml`) and SL-8
+  (`seat_window.py`) touch GROKROLL SL-0's files (agent-harness#2050), each rebasing after it;
+  a GROK lane landing during a GROKROLL lane forces that lane to re-take its phase base.
+- **Single writers.** `panel_invoker.py` (TEAMHOST, CODEX, PI, CLAUDENET, erratum 8 E8-A):
+  second lander rebases. `seat_profiles.py`, `NOTICES`, `OD10_CLASSES`: own entries only.
+  `grok_tool_surface.py`: E8-A and E8-B own other regions.
+- **Roadmap.** No text change; lanes map onto roadmap lanes A and B as labelled, and lane B's
+  probe work (SL-3, SL-4) opens the route only after lane A registers it.
+- **Gate A clean room.** A new test reading `plans/evidence/` skips when absent or is added
+  to the sparse list.
+- **OD-10.** Containment findings go to private state, never to a PR, commit, comment or test
+  name.
 - **Stale-base guidance** (verbatim): Lane teammates working in isolated worktrees do not see
   sibling-lane merges automatically. If a lane finds its worktree base is pre-<first upstream
   dependency's merge>, it MUST stop and report rather than committing — the orchestrator will
   re-spawn or rebase. Silent `git reset --hard` or `git checkout HEAD~N -- …` in a stale
   worktree produces commits that destroy peer-lane work on `--no-ff` merge.
-- **Shared-host limits.** Before each test command, check `uptime` and `/proc/pressure/io`.
-  Run targeted files serially, with no `-n`, under `timeout 900`, using system python3.14.4
-  for jail tests. The full suite runs only in hosted CI and Gate A.
-- **Before marking a PR ready.**
-  - Run `V4`.
-  - Run a clean-room tree check from the installed wheel. Repo-only tests skip, and the
-    allowlist JSON is declared as package data.
-  - Union-resolve `CHANGELOG.md`, `plans/manifest.json` and the `tests/data` inventories.
-  - Gate A follows current owner policy.
-- **OD-10.** A containment or security finding is reported privately under the operator's
-  private state. It never appears in a PR, commit, code comment or test name. Test names
-  state required behaviour.
-- **Skill deviations.** Reconnaissance ran in-thread. `advisor()` and `TaskCreate` were
-  unavailable, so the lane DAG is the hand-off surface. One cross-vendor review round ran.
+- **Known destructive changes**: none. **SL-0 re-exports**: none.
+- **Companions left untouched.** `tests/test_panel_invoker.py` (Grok cases live in `test_grok_seat_jail.py`; the file also holds a live agy test), `tests/test_grok_tool_surface.py` (erratum 8's; run unedited in `VU`) and `uv.lock` (a package-data line does not change the lock). No release is dispatched by this phase, so no release evidence reducer is needed.
+- **Skill deviations.** Reconnaissance ran in-thread (lane limits forbid sub-agents);
+  `TaskCreate` unavailable, so the lane DAG is the hand-off surface.
 
 ## Spec Closeout Plan
 
 - schema: `spec_delta_closeout.v1`
 - decision: `canonical_spec_update`
-- target surfaces: `docs/advisor-board-capabilities-card.md`, `docs/review-seats-readiness.md`
-- evidence paths: `plans/evidence/seat-grok/write-confinement.json`, `plans/evidence/seat-grok/tool-surface.json`, `plans/evidence/seat-grok/provider-free.json`, `plans/evidence/seat-grok/containment.json`, `plans/evidence/seat-qualification/`
+- target surfaces: `docs/advisor-board-capabilities-card.md`, `docs/review-seats-readiness.md`, `docs/ops/grok-jail-measurement.md`
+- evidence paths: `plans/evidence/seat-grok/containment.json`, `plans/evidence/seat-grok/write-confinement.json`, `plans/evidence/seat-grok/provider-free.json`, `plans/evidence/seat-grok/tool-surface.json`, `plans/evidence/seat-grok/credential-scope.json`, `plans/evidence/seat-qualification/`
 - redaction posture: `metadata_only`
 - downstream handling: `none`
 
 ## Acceptance Criteria
 
-- [ ] EC-GROK-1 — proven by `V2` cases (b), (c) and (e), and by `VL` case (c), with the result in `write-confinement.json`. Falsified by a `live_jail` probe write found outside the per-launch copy, or by a host path in the provider argv. Path-entered control: the write is issued by the real CLI's tool inside the jail built by `build_seat_jail`.
-- [ ] EC-GROK-2 — proven by `V2` case (d), by `VK` on the pinned version (`tool-surface.json`) and by `VD` case (i). Falsified by a spawn under a receipt that offers a tool outside `--tools`, or by a cancelled jailed turn. Path-entered control: the receipt enters through `record_tool_probe` and the private record store.
-- [ ] EC-GROK-3 — proven by `V1` (b) and `VL` (h). Falsified by the `grok` proxy or a jailed tool command reaching an unlisted host or Gemini's listed host. Path-entered control: requests go through the real `proxy.mjs` and the jailed tool command.
-- [ ] EC-GROK-4 — proven by `VK` qualify on the designated seat host (`provider-free.json`, row `candidate`), then by the row-window record under `plans/evidence/seat-qualification/` (row `done-local`). Falsified by a `done-local` Grok row with no window record on its current qualification key. Path-entered control: through `seat-window verify` on the retained record.
-- [ ] EC-GROK-5 — proven by `V1` (c) and (d), `V2` (e) and (f), and the scope, refresh and lifetime ids in `containment.json`. Falsified by a credential readable outside its declared delivery, an expiry with no typed code, or a refresh that goes undetected. Path-entered control: the store enters through `stage_grok_seat_credential` from a fixture operator home.
+- [ ] EC-GROK-1 — proven by `V3` (a), (b) and `VL` (b), recorded in `write-confinement.json`, then by the row window's measured launch; falsified by a write found outside the per-launch copy or a host path in the provider argv. Path-entered control: the write is issued inside the jail `build_seat_jail` builds for the real jailed Grok leg.
+- [ ] EC-GROK-2 — proven by `V3` (c), `V4`, the jailed aggregate in `tool-surface.json` (`measured`, `admitted`) on the granted image, and the window board leg's uncancelled tool turn; falsified by a spawn on a receipt offering a tool outside `--tools`, a cross-context receipt admitted, or a cancelled jailed turn. Path-entered control: receipts enter through `record_tool_probe` and the private record store, and the spawn through `_run_leg_with_liveness`.
+- [ ] EC-GROK-3 — proven by `V1` (d), `V3` (f) and (g); falsified by the `grok-review` proxy or a jailed tool command reaching an unlisted host or another vendor's listed host. Path-entered control: the real `proxy.mjs` and a command run inside the jail.
+- [ ] EC-GROK-4 — proven by `VK` on the designated seat host (`provider-free.json`, row `candidate`), then by the row-window record under `plans/evidence/seat-qualification/` (`done-local`); falsified by a `done-local` Grok row with no window record on its current qualification key. Path-entered control: `seat-window verify` on the retained record.
+- [ ] EC-GROK-5 — proven by `V1` (a), (c), `V3` (d), (e) and the ids in `containment.json` and `credential-scope.json`; falsified by a credential readable outside its declared delivery, an expiry with no typed code, an undetected refresh, or the token suffix in a retained path. Path-entered control: the store enters through `stage_grok_seat_credential` from a fixture operator home.
 
 ## Verification
 
-`P` is `timeout 900 env PYTEST_ADDOPTS= python3 -m pytest -p no:cacheprovider -q`, run with
-system python3.14.4 and paths under `phase-loop-runtime/tests/`. The new test files are absent
-on this plan-only checkout, so these are pending selectors, not receipts.
+`P` is `timeout 600 env PYTHONDONTWRITEBYTECODE=1 PYTEST_ADDOPTS= uv run --group test
+--python /usr/bin/python3 -m pytest -p no:cacheprovider -p no:xdist -q`, paths under
+`phase-loop-runtime/tests/`, one run at a time after the headroom check. New files are absent
+on this plan-only checkout, so these are pending selectors.
 
-- `V1`: `P test_grok_seat_containment.py test_seat_credentials.py test_seat_route_contract.py test_seat_notices.py test_seat_jail.py`
-- `V2`: `P test_grok_seat_jail.py test_grok_sandbox_seat_approval.py test_seat_profiles.py`, then `P test_seats_teamhost_doctor.py -k seats_teamhost_agreement`
-- `V3`: `P test_panel_invoker.py -k grok test_seat_jail_qualification_entry.py test_seat_qualification_host_context.py`
-- `V4`: `P test_agent_cli_scratch_inventory_1147.py test_seat_launch_helpers_trusted.py test_seat_reference_inventory.py`
+- `V0`: `P test_grok_seat_vocabulary.py test_seat_notices.py`
+- `V1`: `P test_grok_seat_credential.py test_grok_seat_egress.py`
+- `V2`: `P test_grok_seat_profile.py test_seat_profiles.py`, then `P test_seats_teamhost_doctor.py -k seats_teamhost_agreement`
+- `V3q`: `P test_seat_jail_qualification_entry.py test_seat_qualification_host_context.py`
+- `V3`: `P test_grok_jail_surface.py test_grok_seat_jail.py`
+- `V4`: `P test_grok_jail_measure.py`
 - `V5`: `timeout 120 phase-loop validate-roadmap --repo . --roadmap specs/phase-plans-seats-v1.md`
-- `VL`: `PHASE_LOOP_REQUIRE_LIVE_JAIL=1 P test_grok_seat_jail.py -k live_jail --junitxml=<private-receipt>`. It runs provider-free on a host class with jail prerequisites; a skip or zero collection fails.
-- `VD`: `PHASE_LOOP_GROK_LIVE=1 P test_grok_seat_jail.py -k live_provider`. It runs on a developer host under the developer's own login and is not a window.
-- `VK`: `timeout 300 phase-loop seat-window probe-tools --vendor grok`, `timeout 300 phase-loop seat-sandbox qualify` and `timeout 300 phase-loop seat-egress status`.
+- `V6`: `P test_grok_jail_catalog.py`
+- `V7`: `P test_grok_seat_provider_free.py`
+- `V8`: `P test_grok_seat_renewal.py`
+- `V9`: `P test_agent_cli_scratch_inventory_1147.py test_seat_launch_helpers_trusted.py test_seat_reference_inventory.py`
+- `VS`: `P test_seats_claude_order.py test_gemini_seat_mode_pin.py`, unedited
+- `VU`: `P test_grok_tool_surface.py test_grok_tool_surface_measure.py test_grok_board_leg_frozen_basis.py test_grok_measure_egress.py`, unedited
+- `VL`: `PHASE_LOOP_REQUIRE_LIVE_JAIL=1 P test_grok_seat_jail.py -k live_jail --junitxml=<private-receipt>`, provider-free; a skip or zero collection fails
+- `VK`: on the designated seat host's installed runtime: `timeout 300 phase-loop seat-sandbox qualify`, `timeout 300 phase-loop seat-egress status`, `timeout 300 phase-loop seat-window probe-tools --vendor grok`
 - Full suite: hosted CI and Gate A only.
