@@ -176,7 +176,7 @@ Raw logs stay private. `containment.json` holds record ids and digests only.
 Edit scope: in `seat_profiles.py`, the Grok entry only, including its `window` data. In the
 readiness doc, the Grok row only. In `panel_invoker.py`, the Grok leg and
 `grok_runtime_forms`. `seat_window.py` is not edited; the kit reads the profile's `window`.
-K-1: the jailed branch uses `_window_bracket` if it is on SL-2's base, else K-1 SL-5 adds it.
+K-1: the jailed Grok leg itself calls the `window_board=` hook (K-1 contract §5.4).
 The three kit and notice test files change only in their Grok expectations.
 `test_seats_teamhost_doctor.py` gains one additive agreement row (agent-harness#1882).
 

@@ -16080,7 +16080,7 @@
       "file": "plans/amendments/seats-FIRSTSEAT-K1-window-kit.md",
       "frozen_inputs": {
         "plans/artifacts/seats-window-kit-k1-contract.md": {
-          "sha256": "f8493a6c8ec18c0a1ce48fe58797fc327d3e01b4460ffbdab0a72302b4e2e6cf"
+          "sha256": "4ac890917040bf4f6522a8b46b7c6e7cc30f023ec88a19489fc52e9448db602d"
         },
         "plans/seats-firstseat-containment-contract.md": {
           "sha256": "a57d46f722e22973f0522a8bc254856e6224d50b1b67893cab2b80522c4942a6"
@@ -16116,7 +16116,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-11-21T22:00:00Z"
+      "updated_at": "2026-11-22T02:00:00Z"
     }
   ],
   "schema_version": 1
