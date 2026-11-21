@@ -16072,6 +16072,51 @@
       "task_summary": null,
       "type": "phase",
       "updated_at": "2026-11-21T12:48:01Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "amends": "plans/phase-plan-v1-seats-FIRSTSEAT.md",
+      "created_at": "2026-11-21T18:00:00Z",
+      "file": "plans/amendments/seats-FIRSTSEAT-K1-window-kit.md",
+      "frozen_inputs": {
+        "plans/artifacts/seats-window-kit-k1-contract.md": {
+          "sha256": "12a7d96e639846c2f3868434ca1faca837113614ca138c866f2b69592c20c3b2"
+        },
+        "plans/seats-firstseat-containment-contract.md": {
+          "sha256": "a57d46f722e22973f0522a8bc254856e6224d50b1b67893cab2b80522c4942a6"
+        },
+        "plans/artifacts/seats-firstseat-interfaces.md": {
+          "sha256": "b50a3a85e2f89d47b0d83f7a7cea117fc52ad04616e6616a7c4064816654ec79"
+        }
+      },
+      "handoff_ref": null,
+      "if_gates_produced": [
+        "IF-0-FIRSTSEAT-6"
+      ],
+      "lanes": [
+        "SL-5",
+        "SL-6",
+        "SL-7",
+        "SL-8",
+        "SL-9"
+      ],
+      "lifecycle": [],
+      "owner_skill": "claude-plan-phase",
+      "phase_alias": "FIRSTSEAT",
+      "planning_artifact_only": true,
+      "reflection_ref": null,
+      "review_status": "pending",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-seats-v1.md",
+        "slug": "phase-plans-seats-v1",
+        "status": "committed",
+        "type": "phase"
+      },
+      "slug": "seats-v1-FIRSTSEAT-amend-k1-window-kit",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-11-22T06:00:00Z"
     }
   ],
   "schema_version": 1
