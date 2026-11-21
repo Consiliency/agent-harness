@@ -1,11 +1,24 @@
 # Seat window kit — IF-0-FIRSTSEAT-2
 
-`seat-window qualify` implements the frozen I-15 production orchestration, but its
-live W1 owner gate is deliberately closed. Until a reviewed source change records
-owner approval, it returns `window_owner_approval_required` before preflight,
-authentication, storage or any provider launch. Matrix, offline verification,
-reviewed export and probe-tools are implemented; no fixture or source-checkout run
-opens the live gate.
+`seat-window qualify` implements the frozen I-15 production orchestration. Its live W1
+owner gate opens only under an owner grant:
+- **The approval.** A reviewed source change sets `seat_window.OWNER_W1_GRANT_SHA256` to the
+  digest of the private `w1-grant.json`, which the operator mints in the private
+  `agent-harness/seat-records` directory on the designated host.
+- **What the grant binds.** Schema `seat_window_w1_grant.v1`, `host_digest`, `not_before`,
+  `not_after`, `vendor` `gemini`, `host_class` `standard`, `max_attempts` 1 or 2,
+  `packet_sha256` and `nonce`.
+- **Time.** No start is allowed at or after `OWNER_W1_APPROVED_UNTIL` (2026-12-04T00:00Z),
+  nor later than `W1_COMPLETION_MARGIN_S` (9000 s) before the earlier of the grant's end
+  and the cutoff.
+- **Attempts.** Each attempt claims a slot (`w1-attempt-<nonce>-<n>.json`) before preflight,
+  and a claimed slot is never released.
+- **Otherwise,** including a team context or another vendor, `qualify` returns
+  `window_owner_approval_required` before preflight, authentication, storage or any
+  provider launch.
+
+Matrix, offline verification, reviewed export and probe-tools are implemented. No fixture
+or source-checkout run opens the live gate.
 
 W1 is an attended owner window, not a source-checkout test. Do not execute it
 until LA-1 host administration and managed release, LA-2 logins under the

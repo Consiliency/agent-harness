@@ -197,8 +197,86 @@ def preflight(*, is_available=None, auth_ok=None):
     return composed.policy_outcome("plan")
 
 
-def owner_w1_approved() -> bool:
-    """The live W1 gate. Approval requires an explicit reviewed source change."""
+#: The live W1 owner grant (owner decision 2026-11-21: agents run the windows once the owner
+#: approves one packet). The reviewed change that sets ``OWNER_W1_GRANT_SHA256`` is the
+#: approval. It names, by digest, one private grant file the operator mints on the
+#: designated host. That file binds the host, the start window, the vendor, the standard
+#: context, the attempt count and the approved packet's digest. ``None`` keeps live W1
+#: closed.
+OWNER_W1_GRANT_SHA256: str | None = None
+#: No live W1 starts at or after this instant (UTC), whatever the grant says. It is its own
+#: literal, never derived from a named exception's expiry, so renewing an exception never
+#: reopens W1.
+OWNER_W1_APPROVED_UNTIL = "2026-12-04T00:00:00+00:00"
+#: The window vendor a grant can admit, and the only context `done-local` reads.
+OWNER_W1_VENDOR = "gemini"
+OWNER_W1_HOST_CLASS = "standard"
+#: A start must leave the run's outer bound (7200 s) plus verification, review and export
+#: (1800 s) before the earlier of the grant's end and the cutoff.
+W1_COMPLETION_MARGIN_S = 9000
+W1_GRANT_NAME = "w1-grant.json"
+W1_GRANT_SCHEMA = "seat_window_w1_grant.v1"
+W1_GRANT_FIELDS = ("schema", "host_digest", "not_before", "not_after", "vendor",
+                   "host_class", "max_attempts", "packet_sha256", "nonce")
+_NONCE = re.compile(r"[0-9a-f]{32}\Z")
+
+
+def owner_w1_grant(now: dt.datetime | None = None) -> dict | None:
+    """The approved grant, when it is usable now on this host, else ``None``. Reads only."""
+    from . import president_adapter
+    if not _is_digest(OWNER_W1_GRANT_SHA256):
+        return None
+    now = _now() if now is None else now
+    seen: list[str] = []
+    try:
+        grant = _read_record(president_adapter.private_record_root() / W1_GRANT_NAME,
+                             digest_sink=seen)
+        if seen != [OWNER_W1_GRANT_SHA256] or type(grant) is not dict \
+                or set(grant) != set(W1_GRANT_FIELDS):
+            return None
+        not_before = dt.datetime.fromisoformat(grant["not_before"])
+        not_after = dt.datetime.fromisoformat(grant["not_after"])
+        cutoff = dt.datetime.fromisoformat(OWNER_W1_APPROVED_UNTIL)
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+        return None
+    if (grant["schema"] != W1_GRANT_SCHEMA or grant["vendor"] != OWNER_W1_VENDOR
+            or grant["host_class"] != OWNER_W1_HOST_CLASS
+            or grant["host_digest"] != _host_digest()
+            or type(grant["max_attempts"]) is not int or grant["max_attempts"] not in (1, 2)
+            or not _is_digest(grant["packet_sha256"])
+            or type(grant["nonce"]) is not str or _NONCE.fullmatch(grant["nonce"]) is None
+            or not_before.tzinfo is None or not_after.tzinfo is None):
+        return None
+    latest_start = min(not_after, cutoff) - dt.timedelta(seconds=W1_COMPLETION_MARGIN_S)
+    if not not_before <= now <= latest_start:
+        return None
+    return grant
+
+
+def owner_w1_approved(now: dt.datetime | None = None) -> bool:
+    """The live W1 gate: admit ONE attempt under the owner's grant.
+
+    True only when the grant is usable now (:func:`owner_w1_grant`) and one of its
+    ``max_attempts`` slots is claimed, durably and exclusively, before anything else
+    runs. Every claimed slot counts, whatever the attempt later returns; a slot is never
+    released.
+    """
+    from . import president_adapter
+    now = _now() if now is None else now
+    grant = owner_w1_grant(now)
+    if grant is None:
+        return False
+    for attempt in range(1, grant["max_attempts"] + 1):
+        try:
+            president_adapter.write_private_record(
+                f"w1-attempt-{grant['nonce']}-{attempt}.json",
+                {"schema": "seat_window_w1_attempt.v1", "nonce": grant["nonce"],
+                 "attempt": attempt, "claimed_at": now.isoformat()})
+        except FileExistsError:
+            continue
+        except (OSError, ValueError):
+            return False
+        return True
     return False
 
 
@@ -739,6 +817,13 @@ def qualify(*, window, monitoring_policy, repo=".", host_class="standard", atten
     from . import president_adapter
     if window != "W1" or monitoring_policy != "bounded":
         raise ValueError("window policy unavailable")
+    from .seat_profiles import default_window_data
+    default = default_window_data()
+    # The grant admits one vendor in the one standard context, so a team context or another
+    # window vendor never claims an attempt slot or reaches preflight.
+    if host_class != OWNER_W1_HOST_CLASS or (
+            vendor or (None if default is None else default.vendor)) != OWNER_W1_VENDOR:
+        return {"status": "candidate", "code": "window_owner_approval_required"}
     if not owner_w1_approved():
         return {"status": "candidate", "code": "window_owner_approval_required"}
     outcome = preflight()
@@ -752,6 +837,8 @@ def qualify(*, window, monitoring_policy, repo=".", host_class="standard", atten
         from .seat_profiles import default_window_data
         default = default_window_data()
         vendor = None if default is None else default.vendor
+    if vendor != OWNER_W1_VENDOR:
+        return {"status": "candidate", "code": "window_owner_approval_required"}
     profiles = [profile for leg in registered_legs()
                 if (profile := profile_for(leg)) is not None and profile.vendor == vendor]
     profile = profiles[0] if len(profiles) == 1 else None

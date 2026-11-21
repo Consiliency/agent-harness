@@ -685,6 +685,134 @@ def test_seats_firstseat_window_owner_gate_precedes_every_effect(tmp_path, monke
     assert not list(tmp_path.rglob("*.json"))
 
 
+
+
+def _mint_w1_grant(tmp_path, monkeypatch, **overrides):
+    """Mint a private grant as the operator would, and approve exactly its bytes."""
+    import datetime as dt
+    import hashlib
+    from phase_loop_runtime import seat_window as window
+    from phase_loop_runtime import president_adapter
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(window, "_host_digest", lambda: "4" * 64)
+    now = dt.datetime(2026, 11, 25, 12, tzinfo=dt.timezone.utc)
+    grant = {"schema": "seat_window_w1_grant.v1", "host_digest": "4" * 64,
+             "not_before": (now - dt.timedelta(hours=1)).isoformat(),
+             "not_after": (now + dt.timedelta(hours=6)).isoformat(),
+             "vendor": "gemini", "host_class": "standard", "max_attempts": 1,
+             "packet_sha256": "5" * 64, "nonce": "6" * 32}
+    grant.update(overrides)
+    path = president_adapter.write_private_record(window.W1_GRANT_NAME, grant)
+    monkeypatch.setattr(window, "OWNER_W1_GRANT_SHA256",
+                        hashlib.sha256(path.read_bytes()).hexdigest())
+    return now, path
+
+
+def test_seats_firstseat_window_owner_grant_literals():
+    from phase_loop_runtime import seat_window as window
+    assert window.OWNER_W1_APPROVED_UNTIL == "2026-12-04T00:00:00+00:00"
+    assert window.OWNER_W1_VENDOR == "gemini" and window.OWNER_W1_HOST_CLASS == "standard"
+    assert window.W1_COMPLETION_MARGIN_S == 9000
+    assert window.OWNER_W1_GRANT_SHA256 is None or window._is_digest(window.OWNER_W1_GRANT_SHA256)
+
+
+def test_seats_firstseat_window_owner_grant_closed_without_approved_digest(tmp_path, monkeypatch):
+    from phase_loop_runtime import seat_window as window
+    now, _path = _mint_w1_grant(tmp_path, monkeypatch)
+    monkeypatch.setattr(window, "OWNER_W1_GRANT_SHA256", None)
+    assert window.owner_w1_grant(now) is None
+    assert window.owner_w1_approved(now) is False
+    assert not list((tmp_path / "state").rglob("w1-attempt-*"))
+
+
+@pytest.mark.parametrize("attempts", [1, 2])
+def test_seats_firstseat_window_owner_grant_claims_each_attempt_once(
+        tmp_path, monkeypatch, attempts):
+    from phase_loop_runtime import seat_window as window
+    now, _path = _mint_w1_grant(tmp_path, monkeypatch, max_attempts=attempts)
+    assert [window.owner_w1_approved(now) for _ in range(attempts + 1)] == \
+        [True] * attempts + [False]
+    assert len(list((tmp_path / "state").rglob("w1-attempt-*"))) == attempts
+
+
+@pytest.mark.parametrize("change", [
+    "host", "bytes", "vendor", "host_class", "schema", "extra", "attempts_3",
+    "attempts_bool", "packet", "nonce", "naive_time",
+])
+def test_seats_firstseat_window_owner_grant_refuses_any_other_grant(tmp_path, monkeypatch, change):
+    from phase_loop_runtime import seat_window as window
+    overrides = {"vendor": {"vendor": "grok"}, "host_class": {"host_class": "team"},
+                 "schema": {"schema": "seat_window_w1_grant.v0"}, "extra": {"note": "x"},
+                 "attempts_3": {"max_attempts": 3}, "attempts_bool": {"max_attempts": True},
+                 "packet": {"packet_sha256": "nope"}, "nonce": {"nonce": "Z" * 32},
+                 "naive_time": {"not_before": "2026-11-25T11:00:00"}}.get(change, {})
+    now, path = _mint_w1_grant(tmp_path, monkeypatch, **overrides)
+    if change == "host":
+        monkeypatch.setattr(window, "_host_digest", lambda: "7" * 64)
+    elif change == "bytes":
+        path.write_bytes(path.read_bytes().replace(b'"max_attempts":1', b'"max_attempts":2'))
+    assert window.owner_w1_grant(now) is None
+    assert window.owner_w1_approved(now) is False
+    assert not list((tmp_path / "state").rglob("w1-attempt-*"))
+
+
+def test_seats_firstseat_window_owner_grant_start_window(tmp_path, monkeypatch):
+    import datetime as dt
+    from phase_loop_runtime import seat_window as window
+    now, _path = _mint_w1_grant(tmp_path, monkeypatch)
+    margin = dt.timedelta(seconds=window.W1_COMPLETION_MARGIN_S)
+    latest = now + dt.timedelta(hours=6) - margin
+    second = dt.timedelta(seconds=1)
+    assert window.owner_w1_grant(now - dt.timedelta(hours=1) - second) is None
+    assert window.owner_w1_grant(now - dt.timedelta(hours=1)) is not None
+    assert window.owner_w1_grant(latest) is not None
+    assert window.owner_w1_grant(latest + second) is None
+    # The cutoff caps a grant that ends later: the last start leaves the margin before it.
+    cutoff = dt.datetime.fromisoformat(window.OWNER_W1_APPROVED_UNTIL)
+    later, _ = _mint_w1_grant(tmp_path / "late", monkeypatch,
+                              not_before=(cutoff - dt.timedelta(days=1)).isoformat(),
+                              not_after=(cutoff + dt.timedelta(days=1)).isoformat())
+    assert window.owner_w1_grant(cutoff - margin) is not None
+    assert window.owner_w1_grant(cutoff - margin + second) is None
+    assert window.owner_w1_grant(cutoff) is None
+
+
+@pytest.mark.parametrize("scope", [{"host_class": "team"}, {"vendor": "grok"},
+                                   {"vendor": "codex"}])
+def test_seats_firstseat_window_owner_grant_scope_precedes_attempts(tmp_path, monkeypatch, scope):
+    from phase_loop_runtime import seat_window as window
+    now, _path = _mint_w1_grant(tmp_path, monkeypatch)
+    monkeypatch.setattr(window, "_now", lambda: now)
+    monkeypatch.setattr(window, "preflight", lambda: pytest.fail("preflight reached"))
+    monkeypatch.setattr(window, "run_native_window", lambda **kw: pytest.fail("launch reached"))
+    assert window.qualify(window="W1", monitoring_policy="bounded", attended=True, **scope) == {
+        "status": "candidate", "code": "window_owner_approval_required"}
+    assert not list((tmp_path / "state").rglob("w1-attempt-*"))
+
+
+def test_seats_firstseat_window_owner_grant_attempt_precedes_preflight(tmp_path, monkeypatch):
+    """A granted attempt is claimed before preflight; its refusal still spends the slot."""
+    from phase_loop_runtime import seat_window as window
+    from phase_loop_runtime.advisor_board.composition import CompositionOutcome
+    now, _path = _mint_w1_grant(tmp_path, monkeypatch)
+    monkeypatch.setattr(window, "_now", lambda: now)
+    order = []
+
+    def refused():
+        order.append(len(list((tmp_path / "state").rglob("w1-attempt-*"))))
+        return CompositionOutcome("policy_refused", "review_composition_refused", ("grok",),
+                                  "restore subscription login")
+
+    monkeypatch.setattr(window, "preflight", refused)
+    monkeypatch.setattr(window, "run_native_window", lambda **kw: pytest.fail("launch reached"))
+    assert window.qualify(window="W1", monitoring_policy="bounded", attended=True) == {
+        "status": "candidate", "code": "review_composition_refused"}
+    assert order == [1]
+    assert window.qualify(window="W1", monitoring_policy="bounded", attended=True) == {
+        "status": "candidate", "code": "window_owner_approval_required"}
+    assert order == [1]
+
+
 def _window_frozen_interface_harness(
     tmp_path,
     monkeypatch,
