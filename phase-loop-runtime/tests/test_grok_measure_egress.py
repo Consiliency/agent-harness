@@ -1316,10 +1316,12 @@ def test_the_grok_profile_carries_the_proxy_projection_and_nothing_else(tmp_path
     added = ["--perms", "0444", "--ro-bind-data", "<fd>", destination]
     normalised = _normalised(args)
     # Beside the proxy projection the profile carries the seat config of the contract's
-    # erratum 8, in the one mode grok_tool_surface composes (its own tests cover it).
-    config = grok_tool_surface.seat_config_projection(0)
-    end = normalised.index(config[-1]) + 1
-    normalised = normalised[:end - len(config)] + normalised[end:]
+    # erratum 8: exactly one read-only data mount of a descriptor, never a writable file.
+    config = ["--perms", "0444", "--ro-bind-data", "<fd>",
+              "/home/phase-loop-seat/" + grok_tool_surface.SEAT_CONFIG_RELATIVE]
+    at = [i for i in range(len(normalised)) if normalised[i:i + 5] == config]
+    assert len(at) == 1 and not [word for word in plain_args if "config.toml" in word]
+    normalised = normalised[:at[0]] + normalised[at[0] + 5:]
     start = next(i for i in range(len(normalised)) if normalised[i:i + 5] == added)
     assert normalised[:start] + normalised[start + 5:] == _normalised(plain_args)
     assert ca == (proxy.ca_cert.read_bytes(), destination)

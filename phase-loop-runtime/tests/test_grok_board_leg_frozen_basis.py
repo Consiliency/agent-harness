@@ -9,7 +9,7 @@ to the exact namespace holder and proxy the leg owns, by the measurement's own c
 falls back to a broader namespace. No test contacts the vendor or runs a model.
 
 - The end-to-end tests enter through ``_exec_leg`` for the ``sealed``, ``staged`` and
-  ``review`` forms, under the egress the board leg's setup holds
+  ``review`` forms (``staged`` refused before spawn, erratum 8 item 1d), under the egress the board leg's setup holds
   (``_grok_board_leg_egress``), over the real launch-owner composition (``seat_profile`` plus
   ``launch_owned(PROVIDER_REVIEW)``), the real ``grok-review`` proxy, the proxy-only namespace
   and a loopback fixture upstream (lane L2a's), with a stand-in ``grok`` executable. They skip
@@ -56,7 +56,8 @@ assert real_proxy_upstream and required_upstream
 REFUSED = "grok_tool_surface_unverified"
 INFERENCE_HOST = "cli-chat-proxy.grok.com"
 INFERENCE_PATH = "/v1/chat/completions"
-FORMS = ("sealed", "staged", "review")
+#: Erratum 8, item 1d: the forms a frozen-basis receipt admits at use.
+ELIGIBLE_FORMS = ("sealed", "review")
 PROJECTED_FILES = {".grok/agent_id", ".grok/auth.json", ".phase-loop-seat-egress-ca.pem"}
 #: The projection plus the seat config of the contract's erratum 8.
 HOME_FILES = PROJECTED_FILES | {gts.SEAT_CONFIG_RELATIVE}
@@ -80,7 +81,7 @@ def _prerequisites() -> None:
 # ---------------------------------------------------------------------- the leg and its host
 
 _STAND_IN = r'''#!/usr/bin/python3 -I
-import base64, hashlib, json, os, socket, ssl, sys, urllib.parse
+import base64, errno, hashlib, json, os, socket, ssl, sys, urllib.parse
 argv = sys.argv[1:]
 if argv[-1:] == ["--help"]:
     sys.stdout.buffer.write(__HELP__)
@@ -127,13 +128,60 @@ entries = []
 for root, dirs, files in os.walk(home):
     entries += [["dir", os.path.relpath(os.path.join(root, name), home)] for name in dirs]
     entries += [["file", os.path.relpath(os.path.join(root, name), home)] for name in files]
-try:
-    with open(os.path.join(home, ".grok", "config.toml"), "rb") as handle:
-        config = hashlib.sha256(handle.read()).hexdigest()
-except OSError as exc:
-    config = "error:" + type(exc).__name__
+grok = os.path.join(home, ".grok")
+path = os.path.join(grok, "config.toml")
+
+
+def digest(name):
+    try:
+        with open(name, "rb") as handle:
+            return hashlib.sha256(handle.read()).hexdigest()
+    except OSError as exc:
+        return "error:" + type(exc).__name__
+
+
+def attempt(change):
+    try:
+        change()
+        return "succeeded"
+    except OSError as exc:
+        return errno.errorcode.get(exc.errno, str(exc.errno))
+
+
+def rename_over():
+    temporary = os.path.join(grok, ".stand-in.tmp")
+    with open(temporary, "wb") as handle:
+        handle.write(b"replacement")
+    try:
+        os.rename(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+config = digest(path)
+# Erratum 8, item 1f: what the read-only mount refuses to its own process.
+boundary = {
+    "append": attempt(lambda: open(path, "ab").close()),
+    "truncate": attempt(lambda: os.truncate(path, 0)),
+    "rename_over": attempt(rename_over),
+    "unlink": attempt(lambda: os.unlink(path)),
+    "chmod": attempt(lambda: os.chmod(path, 0o666)),
+}
+config_after = digest(path)
+# The ancestor case: rename .grok itself, plant a replacement and look the path up again.
+moved = grok + "-moved"
+parent = attempt(lambda: os.rename(grok, moved))
+if parent == "succeeded":
+    os.makedirs(grok, exist_ok=True)
+    with open(path, "wb") as handle:
+        handle.write(b"replacement")
+replaced = digest(path)
+moved_config = digest(os.path.join(moved, "config.toml")) if parent == "succeeded" else None
 print(json.dumps({"proxied": proxied, "direct": direct, "home": sorted(entries),
-                  "config": config, "env": sorted(os.environ), "pid": os.getpid()}))
+                  "config": config, "boundary": boundary, "config_after": config_after,
+                  "parent_rename": {"rename": parent, "path": replaced, "moved": moved_config},
+                  "env": sorted(os.environ), "pid": os.getpid()}))
 print("AGREE")
 sys.exit(0 if proxied.startswith("HTTP/1.1 200") and direct.startswith("refused") else 3)
 '''
@@ -307,15 +355,16 @@ def _skip_unless_owned(exc: BaseException) -> None:
 
 # ------------------------------------------------- end to end through _exec_leg (contract §4.6)
 
-@pytest.mark.parametrize("form", FORMS)
+@pytest.mark.parametrize("form", ELIGIBLE_FORMS)
 def test_each_form_completes_through_exec_leg_under_the_grok_review_egress(
         board, required_upstream, owned_launches, live_seat_attempt, form):
-    """The ``sealed`` and ``staged`` brokered legs and the unbrokered ``review`` leg each
-    complete through ``_exec_leg`` on a frozen-basis receipt. BA-3: one and the same unjailed
-    child of the real launch-owner composition completes a request through the leg's own
-    ``grok-review`` proxy to the fixture upstream and fails a direct connection to a host
-    listener first shown reachable from outside the namespace; its home holds only the
-    projection."""
+    """The ``sealed`` brokered leg and the unbrokered ``review`` leg each complete through
+    ``_exec_leg`` on a frozen-basis receipt (``staged`` is refused before spawn: erratum 8,
+    item 1d). BA-3: one and the same unjailed child of the real launch-owner composition
+    completes a request through the leg's own ``grok-review`` proxy to the fixture upstream
+    and fails a direct connection to a host listener first shown reachable from outside the
+    namespace; its home holds only the projection and the seat config, which the real
+    launcher mounts read-only (erratum 8, item 1f)."""
     _prerequisites()
     upstream = required_upstream
     with _reachable_listener() as direct:
@@ -339,11 +388,47 @@ def test_each_form_completes_through_exec_leg_under_the_grok_review_egress(
     assert [(event.method, event.host, event.path, event.decision) for event in events] == [
         ("POST", INFERENCE_HOST, INFERENCE_PATH, "allow")]
     assert {path for kind, path in result["home"] if kind == "file"} == HOME_FILES
-    # The child reads the pinned bytes at the config's path, through the real launcher.
-    assert result["config"] == gts.SEAT_CONFIG_SHA256
+    # The child reads the pinned bytes at the config's path, through the real launcher, and
+    # cannot change them: the mount refuses every write, replacement and removal.
+    assert result["config"] == result["config_after"] == gts.SEAT_CONFIG_SHA256
+    boundary = result["boundary"]
+    # A write by path meets the 0444 mode first (EACCES) or the read-only mount (EROFS).
+    assert {boundary["append"], boundary["truncate"]} <= {"EACCES", "EROFS"}, boundary
+    assert boundary["chmod"] == "EROFS", boundary
+    assert (boundary["rename_over"], boundary["unlink"]) == ("EBUSY", "EBUSY"), boundary
+    # The ancestor case is recorded, not relied on: when the parent can be renamed, the
+    # mount moves with it, and the path claim holds only for forms with no writing tool.
+    parent = result["parent_rename"]
+    print("grok seat config, parent rename:", json.dumps(parent))
+    if parent["rename"] == "succeeded":
+        assert parent["moved"] == gts.SEAT_CONFIG_SHA256, parent
+    else:
+        assert parent["path"] == gts.SEAT_CONFIG_SHA256, parent
     assert {path for kind, path in result["home"] if kind == "dir"} <= HOME_DIRECTORIES
     assert {"HTTPS_PROXY", "SSL_CERT_FILE"} <= set(result["env"])
     assert not [key for key in result["env"] if key.startswith(("GROK_", "XAI_"))]
+
+
+def test_the_clean_staged_leg_is_refused_before_spawn(board, required_upstream, owned_launches,
+                                                     live_seat_attempt):
+    """Contract §4.6 as erratum 8 amends it: the clean ``staged`` leg on a frozen-basis
+    receipt, under the same egress, is an explicit refusal with no launch and no request."""
+    _prerequisites()
+    upstream = required_upstream
+    with _reachable_listener() as direct:
+        board.install(direct=direct)
+        review_dir, out_dir = board.leg("staged")
+        board.publish(_leg_command("staged", review_dir, out_dir))
+        try:
+            with _board_leg_egress() as (proxy, prefix):
+                assert gts.bridged_to(prefix, proxy)
+                outcome = _refusal(lambda: _exec_leg(board, "staged", review_dir, out_dir))
+                assert seat_egress_proxy.proxy_stream(proxy).outside_events == ()
+        except sandbox_egress.SeatIdentityUnverified as exc:
+            _skip_unless_owned(exc)
+    assert outcome == REFUSED
+    assert owned_launches == []
+    assert upstream.requests == []
 
 
 def test_a_listing_receipt_keeps_its_launch_out_of_the_grok_review_egress(board, owned_launches,

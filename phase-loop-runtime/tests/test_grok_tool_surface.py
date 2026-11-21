@@ -462,6 +462,12 @@ def test_a_matching_record_passes_the_provisional_step_and_launches_only_on_a_ma
             pi.launch_owned(owned, role=pi.SeatLaunchRole.PROVIDER_REVIEW, profile=profile,
                             cwd=str(seat.out), env=seat.env)
         assert launches == []
+        if route == "staged":
+            # Erratum 8, item 1d: ineligible at use, refused at the final check (no mark).
+            with pytest.raises(pi._seat_jail.SeatSandboxRefused) as refusal:
+                _verify(seat, profile)
+            assert refusal.value.code == REFUSED and launches == []
+            return
         marked = _verify(seat, profile)
         assert gts.is_issued(marked.grok_launch_context)
         with pytest.raises(_Launched):
@@ -540,7 +546,7 @@ def test_listing_receipts_keep_their_meaning(seat, monkeypatch, kind):
 # ---------------------------------------------------------------- the launch context (§4.4)
 
 
-def _composed(seat, route="staged"):
+def _composed(seat, route="review"):
     _publish_host(_seat_surface(seat))
     command = _form(route, seat.tree)
     assert _probe(command)["passed"]
@@ -755,6 +761,10 @@ def test_the_stock_composition_is_proved_clean(seat, route):
                     break
                 directory = os.path.dirname(directory)
         assert [path for path in checked if gts._visible(path, mounts)] == []
+        if route == "staged":  # its view is clean, but the form is ineligible at use
+            with pytest.raises(pi._seat_jail.SeatSandboxRefused):
+                _verify(seat, profile)
+            return
         assert gts.is_issued(_verify(seat, profile).grok_launch_context)
 
 
@@ -1186,7 +1196,10 @@ def test_the_context_digest_covers_every_condition(monkeypatch):
     document = gts.context_document(ALLOWLIST)
     assert document == {
         "schema": "grok_seat_context.v1", "home": "/home/phase-loop-seat",
-        "seat_config": {"path": ".grok/config.toml", "sha256": gts.SEAT_CONFIG_SHA256},
+        "seat_config": {"path": ".grok/config.toml", "sha256": gts.SEAT_CONFIG_SHA256,
+                        "projection": "ro-bind-data"},
+        "fixed_inputs": list(gts.SEAT_FIXED_INPUTS),
+        "non_mutating_tools": ["read_file", "list_dir", "grep", "search_tool"],
         "projected_paths": [".grok/agent_id", ".grok/auth.json", ".phase-loop-seat-egress-ca.pem"],
         "environment": {"allowed": sorted((*gts.ENVIRONMENT, "HTTPS_PROXY", "SSL_CERT_FILE")),
                         "forbidden_prefixes": ["GROK_", "XAI_"]},
@@ -1201,7 +1214,10 @@ def test_the_context_digest_covers_every_condition(monkeypatch):
                         ("MANAGED_CONFIG_PATHS", ()), ("CHILD_ABSENT_POLICY_PATHS", ()),
                         ("PROXY_ENVIRONMENT", ("HTTPS_PROXY",)),
                         ("PROXY_PROJECTED_PATHS", (".config/seat-egress/ca.crt",)),
-                        ("SEAT_CONFIG_RELATIVE", ".config/grok/config.toml")):
+                        ("SEAT_CONFIG_RELATIVE", ".config/grok/config.toml"),
+                        ("SEAT_CONFIG_PROJECTION", "bind-data"),
+                        ("SEAT_FIXED_INPUTS", gts.SEAT_FIXED_INPUTS[:-1]),
+                        ("NON_MUTATING_TOOLS", (*gts.NON_MUTATING_TOOLS, "write"))):
         with monkeypatch.context() as patch:
             patch.setattr(gts, name, value)
             assert gts.context_digest() != before, name
@@ -1246,7 +1262,7 @@ TESTED_VALUE = {
                               {"value": "high", "label": "High Effort"}]}},
     "features": {"remote_fetch": False},
 }
-#: ``context_digest()`` on the shipped allow-list before erratum 8 added ``seat_config``.
+#: ``context_digest()`` on the shipped allow-list before erratum 8 added its three fields.
 CONTEXT_DIGEST_BEFORE_ERRATUM_8 = "3512f988bd7078d2339cc758a1e14ca9b15cb6160067bdd3fd5c33692739afd3"
 
 
@@ -1295,13 +1311,21 @@ def test_a_build_that_composes_other_bytes_has_no_seat_config(monkeypatch, name,
     assert refusal.value.code == REFUSED
 
 
-def test_the_config_descriptor_is_sealed_at_its_start():
+def test_the_config_descriptor_is_sealed_at_its_start(monkeypatch):
+    """The descriptor comes from the existing ``seat_jail.memfd_with``, called as it is."""
+    made = []
+    real = pi._seat_jail.memfd_with
+    monkeypatch.setattr(pi._seat_jail, "memfd_with",
+                        lambda name, data: made.append((name, data)) or real(name, data))
     descriptor = _held(gts.seat_config_descriptor())
+    assert made == [("seat-config", SEAT_CONFIG)]
     assert os.pread(descriptor, 4096, 0) == SEAT_CONFIG
-    assert os.lseek(descriptor, 0, os.SEEK_CUR) == 0 and not os.get_inheritable(descriptor)
+    assert os.lseek(descriptor, 0, os.SEEK_CUR) == 0
+    assert os.readlink(f"/proc/self/fd/{descriptor}").startswith("/memfd:seat-config")
     assert fcntl.fcntl(descriptor, fcntl.F_GET_SEALS) == gts._CONFIG_SEALS == (
         fcntl.F_SEAL_SEAL | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE)
-    assert (gts._F_ADD_SEALS, gts._F_GET_SEALS) == (fcntl.F_ADD_SEALS, fcntl.F_GET_SEALS)
+    assert gts._F_GET_SEALS == fcntl.F_GET_SEALS
+    assert os.fstat(descriptor).st_size == gts.SEAT_CONFIG_SIZE == 424
     for change in (lambda: os.pwrite(descriptor, b"#", 0), lambda: os.ftruncate(descriptor, 0),
                    lambda: os.ftruncate(descriptor, 4096)):
         with pytest.raises(OSError):
@@ -1310,13 +1334,15 @@ def test_the_config_descriptor_is_sealed_at_its_start():
 
 
 def test_the_context_digest_follows_the_config_bytes(monkeypatch):
-    """``context_digest()`` moves when any config byte changes, and for erratum 8 by the
-    ``seat_config`` field alone: without the field the document is the earlier one."""
+    """``context_digest()`` moves when any config byte changes, and for erratum 8 by its
+    three fields alone: without them the document is the earlier one."""
     monkeypatch.setattr(gts, "egress_allowlist_digest", _SHIPPED_ALLOWLIST_DIGEST)
     before = gts.context_digest()
     document = gts.context_document(_SHIPPED_ALLOWLIST_DIGEST())
-    assert document["seat_config"] == {"path": ".grok/config.toml", "sha256": SEAT_CONFIG_SHA256}
-    del document["seat_config"]
+    assert document["seat_config"] == {"path": ".grok/config.toml", "sha256": SEAT_CONFIG_SHA256,
+                                       "projection": "ro-bind-data"}
+    for field in ("seat_config", "fixed_inputs", "non_mutating_tools"):
+        del document[field]
     assert sha256(gts._canonical(document)).hexdigest() == CONTEXT_DIGEST_BEFORE_ERRATUM_8 != before
     seen = {before}
     for index in range(len(SEAT_CONFIG)):
@@ -1388,13 +1414,31 @@ def _config_change(case, profile, root):
     def other_mode():
         descriptor = _memfd(SEAT_CONFIG)
         words = list(gts.seat_config_projection(descriptor))
-        words[1] = "0644" if words[1] != "0644" else "0600"
+        words[1] = "0600"
         return _swap_config(profile, *words, pass_fds=(descriptor,))
 
     def closed():
         descriptor = os.memfd_create("fixture-closed", os.MFD_CLOEXEC)
         os.close(descriptor)
         return swapped(descriptor)
+
+    arguments = list(profile.mount_args)
+    real = arguments[arguments.index(CONFIG_PATH) - 1]
+
+    def spelt(destination):
+        """The real triple, at another spelling of the config's path."""
+        return _swap_config(profile, "--perms", gts.SEAT_CONFIG_MODE, "--ro-bind-data", real,
+                            destination)
+
+    def beside(destination):
+        """A second sealed copy, at another spelling of the config's path."""
+        descriptor = _memfd(SEAT_CONFIG)
+        return added("--perms", gts.SEAT_CONFIG_MODE, "--ro-bind-data", str(descriptor),
+                     destination, pass_fds=(descriptor,))
+
+    grok = home + "/.grok"
+    empty = root / "empty-directory"
+    empty.mkdir(exist_ok=True)
 
     return {
         "missing": lambda: _swap_config(profile),
@@ -1419,13 +1463,39 @@ def _config_change(case, profile, root):
         "managed_config": lambda: data_file(".grok/managed_config.toml"),
         "requirements": lambda: data_file(".grok/requirements.toml"),
         "second_config_elsewhere": lambda: data_file(".config/grok/config.toml", SEAT_CONFIG),
+        # Erratum 8 r3, item 1b and 1f.
+        "writable_file": lambda: _swap_config(profile, "--perms", gts.SEAT_CONFIG_MODE, "--file",
+                                              real, CONFIG_PATH),
+        "fifth_seal": lambda: swapped(_memfd(SEAT_CONFIG, seals=gts._CONFIG_SEALS | 0x10)),
+        "longer_with_the_pinned_start": lambda: swapped(_memfd(SEAT_CONFIG + b"#")),
+        "kept": lambda: replace(profile, keep_fds=(*profile.keep_fds, int(real))),
+        "other_descriptor": lambda: _swap_config(
+            profile, "--perms", gts.SEAT_CONFIG_MODE, "--ro-bind-data",
+            arguments[arguments.index(home + "/.grok/auth.json") - 1], CONFIG_PATH),
+        "dot_spelling": lambda: spelt(grok + "/./config.toml"),
+        "doubled_slash_spelling": lambda: spelt(home + "//.grok/config.toml"),
+        "doubled_root_spelling": lambda: spelt("/" + CONFIG_PATH),
+        "dot_spelling_beside": lambda: beside(grok + "/./config.toml"),
+        "doubled_slash_beside": lambda: beside(grok + "//config.toml"),
+        "below_it": lambda: data_file(gts.SEAT_CONFIG_RELATIVE + "/x"),
+        "bind_over_grok": lambda: added("--bind", str(empty), grok),
+        "tmpfs_over_grok": lambda: added("--tmpfs", grok),
+        "symlink_over_grok": lambda: added("--symlink", str(empty), grok),
+        "chmod": lambda: added("--chmod", "0666", CONFIG_PATH),
+        "remount_ro": lambda: added("--remount-ro", CONFIG_PATH),
+        "overlay": lambda: added("--tmp-overlay", grok),
     }[case]()
 
 
 CONFIG_CHANGES = ("missing", "one_byte_changed", "one_byte_more", "one_byte_fewer", "empty",
                   "second_file", "unsealed", "write_seal_absent", "regular_file", "consumed",
                   "not_passed", "closed", "other_mode", "host_bind", "host_readonly_bind", "link",
-                  "bind_over_it", "managed_config", "requirements", "second_config_elsewhere")
+                  "bind_over_it", "managed_config", "requirements", "second_config_elsewhere",
+                  "writable_file", "fifth_seal", "longer_with_the_pinned_start", "kept",
+                  "other_descriptor", "dot_spelling", "doubled_slash_spelling",
+                  "doubled_root_spelling", "dot_spelling_beside", "doubled_slash_beside",
+                  "below_it", "bind_over_grok", "tmpfs_over_grok", "symlink_over_grok", "chmod",
+                  "remount_ro", "overlay")
 
 
 @pytest.mark.parametrize("case", CONFIG_CHANGES)
@@ -1458,6 +1528,24 @@ def test_the_home_holds_exactly_one_seat_config_mount():
             gts._config_mount(mounts)
     with pytest.raises(gts._Refused):
         gts._config_descriptor(("--perms", "0600", "--bind", "/host/config.toml", CONFIG_PATH))
+
+
+@pytest.mark.parametrize("other", [
+    "/home/phase-loop-seat/.grok/./config.toml", "/home/phase-loop-seat//.grok/config.toml",
+    "//home/phase-loop-seat/.grok/config.toml", "/home/phase-loop-seat/.grok/x/../config.toml",
+    "/home/phase-loop-seat/.grok/config.toml/x"])
+def test_the_config_mount_reads_every_spelling_of_its_path(other):
+    """``_config_mount`` itself, beside the home rule's own normalisation: another spelling
+    of the config's path, or a path below it, counts as a second mount; alone, it is not the
+    one mount."""
+    home_tmpfs = ("--tmpfs", gts.PRIVATE_HOME)
+    real = gts.seat_config_projection(7)
+    with pytest.raises(gts._Refused):
+        gts._config_mount(gts._mounts((*home_tmpfs, *real, "--perms", "0444", "--ro-bind-data",
+                                       "8", other)))
+    if not other.endswith("/x"):
+        with pytest.raises(gts._Refused):
+            gts._config_mount(gts._mounts((*home_tmpfs, *real[:-1], other)))
 
 
 def test_a_frozen_basis_profile_composed_without_the_proxy_refuses(seat):
@@ -1634,6 +1722,264 @@ def test_another_harness_never_carries_the_grok_config(seat, harness, files):
     with pytest.raises(ValueError):
         with pi.seat_profile(**compose, egress_proxy=_ca_proxy(seat.root)):
             pytest.fail("a profile of another harness took the grok-review projection")
+
+
+def test_the_projection_is_the_read_only_triple():
+    """Erratum 8, item 1b: exactly one triple, read-only from the descriptor; never r1's
+    writable ``--file``."""
+    assert gts.seat_config_projection(7) == (
+        "--perms", "0444", "--ro-bind-data", "7", "/home/phase-loop-seat/.grok/config.toml")
+    assert (gts.SEAT_CONFIG_MODE, gts.SEAT_CONFIG_PROJECTION) == ("0444", "ro-bind-data")
+
+
+# ----------------------------------------------- the fixed inputs (erratum 8, items 1c and 1e)
+
+def test_the_pinned_fixed_inputs():
+    """The tuple, pinned. Derivation (offline, no live call):
+
+    - policy layers: the documented user, managed and requirements files in ``$GROK_HOME``
+      (unset, so ``.grok/``) and ``/etc/grok``; Claude Code's managed settings (erratum 1);
+      the managed-sync state launch 7 read or unlinked at start; and the caches it read that
+      can carry configuration (models, experiments, campaigns);
+    - home discovery: every ``.grok/`` source the bundled 1.0.92 documentation names (skills,
+      agents, commands, plugins, hooks, workflows, LSP, sandbox, trust, MCP and settings
+      files), ``bundled/agents`` (observed read in launch 7) and ``bundled/skills`` (a
+      documented cache), and the other tools' home sources launch 7 opened (``.claude.json``,
+      ``.claude/``, ``.cursor/``, ``.config/grove/``) or the documentation names
+      (``.agents/``, ``.mcp.json``).
+
+    Launch 7's other reads in the home (``.grok/auth.json``, ``.grok/agent_id``) are the
+    exclusions, bound by the projection checks; ``.grok/rules`` is prompt text (§4.4)."""
+    assert gts.SEAT_FIXED_INPUTS == (
+        ".grok/config.toml", ".grok/managed_config.toml", ".grok/requirements.toml",
+        "/etc/grok/managed_config.toml", "/etc/grok/requirements.toml",
+        "/etc/claude-code/managed-settings.json",
+        ".grok/managed_config_cache.json", ".grok/managed_config.sig.json",
+        ".grok/managed_identity.sig.json", ".grok/staged/managed_config_refresh.json",
+        ".grok/models_cache.json", ".grok/experiments_state.json", ".grok/campaigns_state.json",
+        ".grok/skills", ".grok/agents", ".grok/bundled/agents", ".grok/bundled/skills",
+        ".grok/commands", ".grok/plugins", ".grok/installed-plugins", ".grok/hooks",
+        ".grok/hooks-paths", ".grok/disabled-hooks", ".grok/workflows", ".grok/lsp.json",
+        ".grok/sandbox.toml", ".grok/trusted-plugins", ".grok/trusted-hook-projects",
+        ".grok/trusted_folders.toml", ".grok/mcp_preferences.json", ".grok/mcp_credentials.json",
+        ".grok/settings.json",
+        ".claude.json", ".claude", ".cursor", ".agents", ".mcp.json", ".config/grove")
+    assert gts.SEAT_FIXED_INPUT_EXCLUSIONS == (".grok/agent_id", ".grok/auth.json", ".grok/rules")
+    assert gts.NON_MUTATING_TOOLS == ("read_file", "list_dir", "grep", "search_tool")
+    assert len(set(gts.SEAT_FIXED_INPUTS)) == len(gts.SEAT_FIXED_INPUTS)
+    assert not set(gts.SEAT_FIXED_INPUTS) & set(gts.SEAT_FIXED_INPUT_EXCLUSIONS)
+    assert set(gts.PROJECTED_PATHS) <= set(gts.SEAT_FIXED_INPUT_EXCLUSIONS)
+    absolute = [entry for entry in gts.SEAT_FIXED_INPUTS if entry.startswith("/")]
+    assert absolute == [*gts.MANAGED_CONFIG_PATHS, *gts.CHILD_ABSENT_POLICY_PATHS]
+    assert gts.SESSIONS_RELATIVE not in gts.SEAT_FIXED_INPUTS  # the measurement's one bind
+
+
+HOME_FIXED_INPUTS = tuple(entry for entry in gts.SEAT_FIXED_INPUTS
+                          if not entry.startswith("/") and entry != gts.SEAT_CONFIG_RELATIVE)
+
+
+@pytest.mark.parametrize("entry", HOME_FIXED_INPUTS)
+def test_a_fixed_input_in_the_seat_view_refuses(seat, entry):
+    """Each fixed input in the home must be absent from the view the launch composes; a
+    declared output or read-only path there (which the home rule does not read) refuses."""
+    command = _composed(seat)
+    path = Path(gts.PRIVATE_HOME + "/" + entry)
+    with _egress(), pi._seat_command_profile(command, env=seat.env, cwd=seat.out) as (_owned, profile):
+        stock = _projected(profile, _proxy())
+        assert gts.is_issued(_verify(seat, stock).grok_launch_context)
+        for changed in (replace(stock, outputs=(*stock.outputs, path)),
+                        replace(stock, outputs=(*stock.outputs, path / "nested"))):
+            with pytest.raises(pi._seat_jail.SeatSandboxRefused) as refusal:
+                _verify(seat, changed)
+            assert refusal.value.code == REFUSED
+
+
+def test_a_fixed_input_in_the_measurement_view_refuses(seat, monkeypatch):
+    with _measurement(seat, monkeypatch) as (profile, check):
+        assert check(profile) == gts.context_digest()
+        for entry in (".grok/managed_config.toml", ".grok/requirements.toml", ".grok/skills"):
+            with pytest.raises(pi._seat_jail.SeatSandboxRefused):
+                check(replace(profile, outputs=(Path(gts.PRIVATE_HOME + "/" + entry),)))
+
+
+@pytest.mark.parametrize("where", ["host", "staging"])
+def test_a_dangling_managed_config_link_refuses(seat, monkeypatch, tmp_path, where):
+    """Erratum 8, item 4: a dangling symlink at an ``/etc/grok`` path counts as present, at
+    the host-side check before a measurement's ledger entry and at launch."""
+    managed = tmp_path / "etc-grok" / "requirements.toml"
+    monkeypatch.setattr(gts, "MANAGED_CONFIG_PATHS", (str(managed),))
+    managed.parent.mkdir()
+    command = _composed(seat)
+    with _egress(), pi._seat_command_profile(command, env=seat.env, cwd=seat.out) as (_owned, profile):
+        assert gts.is_issued(_verify(seat, profile).grok_launch_context)
+        gts._check_managed_config(())
+        managed.symlink_to(tmp_path / "nowhere")
+        assert not managed.exists() and managed.is_symlink()
+        if where == "staging":
+            with pytest.raises(gts._Refused):
+                gts._check_managed_config(())
+        else:
+            with pytest.raises(pi._seat_jail.SeatSandboxRefused):
+                _verify(seat, profile)
+
+
+# --------------------------------------------- the forms eligible at use (erratum 8, item 1d)
+
+def test_the_forms_eligible_at_use():
+    forms = pi.grok_runtime_forms()
+    assert gts.eligible_at_use(forms["review"], ["grep", "list_dir", "read_file", "search_tool"])
+    assert gts.eligible_at_use(forms["review"], [])
+    assert gts.eligible_at_use(forms["sealed"], [])
+    # The form alone: staged's allow-list holds its run and write tools.
+    assert not gts.eligible_at_use(forms["staged"], [])
+    assert not gts.eligible_at_use(forms["staged"], ["read_file"])
+    # The admitted names alone.
+    for names in (["read_file", "write"], ["use_tool"], ["read_file", "run_terminal_command"]):
+        assert not gts.eligible_at_use(forms["review"], names)
+        assert not gts.eligible_at_use(forms["sealed"], names)
+    assert not gts.eligible_at_use(forms["workflow"], [])  # no allow-list
+    review = forms["review"]
+    at = review.index("--tools")
+    for command in (review[:at], [*review, "--tools", ""], [*review[:at], "--tools"]):
+        assert not gts.eligible_at_use(command, [])
+    for admitted in (None, ("read_file",), [7], "read_file"):
+        assert not gts.eligible_at_use(review, admitted)
+
+
+def test_a_staged_receipt_refuses_at_the_final_check_alone(seat, launches):
+    """A ``staged`` board leg on a frozen-basis receipt is refused before spawn, even when the
+    record admits only non-mutating names: the form decides. Composition still succeeds."""
+    command = _form("staged", seat.tree)
+    _publish_host(_surface(seat.digest, [_route("staged", command, ["read_file"])]))
+    assert _probe(command)["passed"]
+    with _egress(), pi._seat_command_profile(command, env=seat.env, cwd=seat.out) as (owned, profile):
+        assert profile.grok_launch_context == gts.ProvisionalContext(tuple(command))
+        with pytest.raises(pi._seat_jail.SeatSandboxRefused) as refusal:
+            _verify(seat, profile)
+        assert refusal.value.code == REFUSED
+        with pytest.raises(pi._seat_jail.SeatSandboxRefused):
+            pi.launch_owned(owned, role=pi.SeatLaunchRole.PROVIDER_REVIEW, profile=profile,
+                            cwd=str(seat.out), env=seat.env)
+    assert launches == []
+
+
+def test_a_receipt_whose_names_leave_the_non_mutating_tuple_refuses(seat, launches, monkeypatch):
+    """The admitted names are read from the receipt itself at the final check."""
+    command = _composed(seat, "review")
+    with _egress(), pi._seat_command_profile(command, env=seat.env, cwd=seat.out) as (_owned, profile):
+        assert gts.is_issued(_verify(seat, profile).grok_launch_context)
+        real = pi._read_grok_receipt
+
+        def widened(cmd, env=None):
+            binary, digest, record = real(cmd, env)
+            return binary, digest, {**record, "tools": [*record["tools"], "write"]}
+        monkeypatch.setattr(pi, "_read_grok_receipt", widened)
+        assert pi._grok_tool_gate(command, seat.env) is False  # the gate itself refuses it too
+        monkeypatch.setattr(pi, "_grok_tool_gate", lambda *a, **k: True)
+        with pytest.raises(pi._seat_jail.SeatSandboxRefused) as refusal:
+            _verify(seat, profile)
+        assert refusal.value.code == REFUSED
+    assert launches == []
+
+
+def test_staged_is_still_measured(seat, monkeypatch):
+    """The use gate never decides a measurement: the staged form's own measurement context
+    holds."""
+    monkeypatch.setattr(gts, "bridged_to", lambda prefix, proxy: True)
+    sessions = seat.root / "sessions"
+    sessions.mkdir(mode=0o700)
+    proxy = _ca_proxy(seat.root)
+    command = _form("staged", seat.tree)
+    with _egress(), pi.seat_profile(
+            harness="grok", executable=str(seat.binary), env=seat.env, cwd=seat.out,
+            role=pi.SeatLaunchRole.PROVIDER_REVIEW, egress_proxy=proxy,
+            grok_sessions=str(sessions)) as (_provider, profile):
+        assert gts.verify_measurement_context(profile, cwd=seat.out, command=command, proxy=proxy,
+                                              sessions=str(sessions)) == gts.context_digest()
+
+
+# ------------------------------------------ the delivered secrets' suffixes (erratum 8, item 5)
+
+def _grok_credential(seat, body):
+    path = seat.home / ".grok" / "auth.json"
+    path.write_text(json.dumps(body))
+    path.chmod(0o600)
+
+
+@pytest.mark.parametrize("token", ["fixture-access-token-0001", "fixture-x", "fixture-12ch",
+                                   "fixture-thirteen"])
+def test_each_delivered_secret_and_its_suffix_is_registered(seat, monkeypatch, token):
+    """From the exact copy projected (refresh tokens dropped), each secret value and, when it
+    is longer than 12 characters, its last 12; held in memory, redacted after the full value,
+    and in the execution observation's scan; ``auth.json`` is read once."""
+    _grok_credential(seat, {"access_token": token, "refresh_token": "fixture-refresh-token-0001",
+                            "short": {"key": "seven77"}})
+    reads = []
+    real = pi._seat_credential
+    monkeypatch.setattr(pi, "_seat_credential",
+                        lambda home, relative: reads.append(relative) or real(home, relative))
+    observation: dict = {}
+    marker = pi._EXEC_OBSERVATION.set(observation)
+    try:
+        with pi.seat_profile(harness="grok", executable=str(seat.binary), env=seat.env,
+                             cwd=seat.out, egress_proxy=_ca_proxy(seat.root)) as (_p, profile):
+            suffix = token[-12:]
+            expected = (token.encode(), *((suffix.encode(),) if len(token) > 12 else ()))
+            assert profile.scan_values == expected
+            assert not [value for value in profile.scan_values if b"refresh" in value]
+            assert token not in repr(profile) and "scan_values" not in repr(profile)
+            assert gts.profile_fingerprint(profile) == gts.profile_fingerprint(
+                replace(profile, scan_values=()))
+            assert pi._redact_seat_credentials(f"t={token} k={suffix}") == (
+                "t=[credential redacted] k=[credential redacted]")
+            assert set(expected) <= set(observation["scan_secrets"])
+    finally:
+        pi._EXEC_OBSERVATION.reset(marker)
+    assert reads.count(".grok/auth.json") == 1
+
+
+def test_registering_the_suffixes_changes_no_mount_environment_or_descriptor(seat):
+    compose = dict(harness="grok", executable=str(seat.binary), env=seat.env, cwd=seat.out)
+    shapes = []
+    for token in ("fixture-x", "fixture-access-token-0001"):
+        _grok_credential(seat, {"access_token": token})
+        with pi.seat_profile(**compose) as (_p, profile):
+            shapes.append((_mount_words(profile.mount_args), dict(profile.env),
+                           len(profile.pass_fds), profile.keep_fds, dict(profile.evidence)))
+            assert len(profile.scan_values) == (1 if token == "fixture-x" else 2)
+    assert shapes[0] == shapes[1]
+
+
+def test_another_harness_registers_no_scan_values(seat):
+    relative = ".codex/auth.json"
+    (seat.home / relative).parent.mkdir(parents=True, exist_ok=True)
+    (seat.home / relative).write_text('{"tokens": {"access_token": "fixture-access-token-0002"}}')
+    (seat.home / relative).chmod(0o600)
+    with pi.seat_profile(harness="codex", executable=str(seat.binary), env=seat.env,
+                         cwd=seat.out) as (_p, profile):
+        assert profile.scan_values == ()
+
+
+def test_the_measurement_launch_returns_the_profiles_scan_values(monkeypatch):
+    """The interface lane E8-B consumes: ``_launch`` hands the composed profile's
+    ``scan_values`` to the measurement frame, and nothing when nothing was composed."""
+    values = (b"fixture-secret-value-0001", b"t-value-0001")
+    composed = pi.SeatProfile(env={}, scan_values=values)
+
+    @contextlib.contextmanager
+    def seat_profile(**_kwargs):
+        yield "/run/phase-loop-seat/provider", composed
+    monkeypatch.setattr(pi, "require_grok_admission", lambda *a, **k: True)
+    monkeypatch.setattr(pi, "seat_profile", seat_profile)
+    monkeypatch.setattr(gts, "verify_measurement_context", lambda *a, **k: "0" * 64)
+    monkeypatch.setattr(pi, "launch_owned", lambda *a, **k: (_ for _ in ()).throw(OSError()))
+    stage = SimpleNamespace(identity=("/fixture/grok", "0" * 64), binary="/fixture/grok", env={})
+    options = dict(proxy=_proxy(), prefix=PREFIX, argv=["grok", "-p", ""], form=["grok", "-p", ""],
+                   argv_digest="0" * 64, cwd="/fixture", sessions="/fixture", log_fd=-1)
+    assert gts._launch(stage, **options) == ("launch_failed", None, values)
+    monkeypatch.setattr(gts, "verify_measurement_context",
+                        lambda *a, **k: (_ for _ in ()).throw(ValueError()))
+    assert gts._launch(stage, **options) == ("context_refused", None, ())
 
 
 # ------------------------------------------------------------------ catalog parity (§3.3)

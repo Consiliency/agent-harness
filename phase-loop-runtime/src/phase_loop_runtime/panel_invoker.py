@@ -4949,6 +4949,11 @@ class SeatProfile:
     #: ``ProvisionalContext`` its composition stamps, or the ``LaunchContext`` mark that
     #: ``grok_tool_surface.verify_launch_context`` gives it. ``None`` otherwise.
     grok_launch_context: object | None = field(default=None, repr=False, compare=False)
+    #: A grok profile (grok tool-surface contract, erratum 8, item 5): each secret value of
+    #: the exact credential copy it projects, and the last 12 characters of each longer one,
+    #: for the measurement's definitions scan. Held in memory only: never in ``repr``,
+    #: evidence, a fingerprint or a record.
+    scan_values: tuple[bytes, ...] = field(default=(), repr=False, compare=False)
 
 
 _OWNED_LAUNCH = ContextVar("owned_provider_launch", default=False)
@@ -5457,8 +5462,10 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
     in :data:`seat_egress_proxy.SEAT_PROXY_ENV`, its CA certificate as a read-only file in
     the private home named by :data:`seat_egress_proxy.SEAT_CA_ENV` (the seat's whole trust
     bundle), the proxy's session token among the redactions, and
-    ``grok_tool_surface.SEAT_CONFIG_RELATIVE`` from sealed bytes. Without it the profile is
-    composed as before, with no config.
+    ``grok_tool_surface.SEAT_CONFIG_RELATIVE`` as an immutable read-only mount of a sealed
+    memfd. Without it the profile is composed as before, with no config. Every grok profile
+    carries ``scan_values`` (erratum 8, item 5); registering them changes nothing it mounts,
+    sets or passes.
 
     ``grok_sessions`` (grok tool-surface contract v1, section 5.1) is the grok measurement's
     scratch sessions directory, bound read-write at ``.grok/sessions``: the one host-backed
@@ -5516,6 +5523,7 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
     pass_fds = set()
     keep_fds = set()
     redactions = []
+    scan_values: tuple[bytes, ...] = ()
     evidence = {}
     with contextlib.ExitStack() as stack:
         dependency_projection = None
@@ -5573,11 +5581,13 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
             elif shape == "blank_refresh":
                 value = _blank_refresh_token(value)
                 raw = json.dumps(value, separators=(",", ":")).encode()
-            redactions.extend(_seat_secret_values(value))
+            secret_values = list(_seat_secret_values(value))
+            redactions.extend(secret_values)
             observation = _EXEC_OBSERVATION.get()
             if observation is not None:
                 observation["scan_secrets"] = tuple(item.encode() for item in redactions)
             data_file(relative, raw)
+            return secret_values
 
         for relative in (".config", ".cache", ".local/share"):
             directory(private_home + "/" + relative)
@@ -5614,11 +5624,16 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
             # #1318, #1798), so the frontdoor's self-update suppression must be set here.
             profile_env.update(DISABLE_AUTOUPDATER="1", DISABLE_UPDATES="1")
         elif harness == "grok":
-            credential(".grok/auth.json", shape=_SEAT_CREDENTIAL_SHAPE["grok"])
+            # Each secret value of the exact copy projected, and its last 12 characters
+            # (the client logs a token's suffix; contract erratum 8, item 5). A value of 12
+            # or fewer is its own suffix. The suffixes are redacted after every full value.
+            delivered = credential(".grok/auth.json", shape=_SEAT_CREDENTIAL_SHAPE["grok"]) or []
+            suffixes = [item[-12:] for item in delivered if len(item) > 12]
+            scan_values = tuple(item.encode() for item in (*delivered, *suffixes))
             data_file(".grok/agent_id", _seat_credential(home, ".grok/agent_id"))
             if egress_proxy is not None:
                 # The pinned seat config, only together with this proxy (contract erratum
-                # 8): sealed bytes, in the one mode grok_tool_surface decides.
+                # 8): a sealed memfd, projected as an immutable read-only mount.
                 config_descriptor = _grok_surface.seat_config_descriptor()
                 stack.callback(os.close, config_descriptor)
                 pass_fds.add(config_descriptor)
@@ -5650,6 +5665,11 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
                 # rest of the home stays the tmpfs (contract section 5.1).
                 mounts.extend(("--bind", _seat_bind_source(grok_sessions, tree=True),
                                private_home + "/" + _grok_surface.SESSIONS_RELATIVE))
+            if suffixes:
+                redactions.extend(suffixes)
+                observation = _EXEC_OBSERVATION.get()
+                if observation is not None:
+                    observation["scan_secrets"] = tuple(item.encode() for item in redactions)
         elif harness == "gemini":
             credential(".gemini/antigravity-cli/antigravity-oauth-token", access_only=True)
             if gemini_profile is None:
@@ -5721,6 +5741,7 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
             dependency_projection_digest=(
                 dependency_projection.digest if dependency_projection is not None else ""
             ),
+            scan_values=scan_values,
         )
 
 
