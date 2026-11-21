@@ -3597,10 +3597,10 @@ def test_a_diagnostic_label_is_named_by_the_rehearsal_and_held_on_reload(bench92
                                      "decision": "deny", "cause": "rules"}
     assert label.encode() in path.read_bytes()
     gts.check_rehearsal_keys(record)
-    for field, value in (("host", "x.ai"), ("method", "POST"), ("decision", "allow"),
+    for key, value in (("host", "x.ai"), ("method", "POST"), ("decision", "allow"),
                          ("cause", "inner_host"), ("cause", "budget")):
         broken = json.loads(json.dumps(record))
-        broken["observed"][6][field] = value
+        broken["observed"][6][key] = value
         with pytest.raises(gts._Refused):
             gts.check_rehearsal_keys(broken)
     stale = json.loads(json.dumps(record))
