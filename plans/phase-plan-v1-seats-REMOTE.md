@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: REMOTE
 roadmap: specs/phase-plans-seats-v1.md
-roadmap_sha256: 0e04c1a178d1c1e7912644823733cac84e7e9ef48d3f92fc3ed3e4446b0b065f
+roadmap_sha256: 9d1d149a4709dbf7c67dbdbb957228ff8a06d36570e1f9cb77bcc039b96a7ac4
 automation:
   suite_command: ["timeout", "900", "env", "PYTEST_ADDOPTS=", "python3", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_seat_remote_contract.py", "phase-loop-runtime/tests/test_seat_route_contract.py", "phase-loop-runtime/tests/test_seat_remote_vectors.py", "phase-loop-runtime/tests/test_seat_remote_credentials.py", "phase-loop-runtime/tests/test_seat_remote_link.py", "phase-loop-runtime/tests/test_seat_remote_activation.py", "phase-loop-runtime/tests/test_seat_remote_invocation.py", "phase-loop-runtime/tests/test_seat_remote_rung.py", "phase-loop-runtime/tests/test_seat_remote_cli.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py", "phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py", "phase-loop-runtime/tests/test_seat_launch_helpers_trusted.py"]
 ---

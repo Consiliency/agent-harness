@@ -14887,7 +14887,7 @@
       "slug": "v1-seats-PI",
       "status": "committed",
       "type": "phase",
-      "updated_at": "2026-11-06T16:59:04Z"
+      "updated_at": "2026-11-21T17:18:29Z"
     },
     {
       "acceptance_criteria_count": null,
@@ -15459,7 +15459,7 @@
           "sha256": "60fd406574d87f512a94a373fa22cddc56f9c455147a2ec8ad0c5f398ca39102"
         },
         "plans/seats-teamhost-contract.md": {
-          "sha256": "3ca3d3a57346acca8bf4e16e50304f00e3e2e19bc5bcd20b1831b4f837c3b1b1"
+          "sha256": "91a7261323a12e2455ef8445b736a6a7749d06e162b4b34be85e525e046b1818"
         }
       },
       "gate_status": "declared_not_produced",

@@ -111,13 +111,20 @@ claude-sdk = ["claude-agent-sdk==0.2.167", "markdown-it-py==4.2.0"]
 # live operation. The qualification host installs `phase-loop-runtime[agy-watch]`. Pinned at
 # the version the lock already resolved.
 agy-watch = ["cryptography==50.0.2"]
+# GROKROLL §2.2: the grok release catalog's offline signature check (`cryptography`, ECDSA
+# P-256) and the provenance derivation's brotli expansion, both imported lazily. The status
+# query (`phase-loop seat-window status --vendor grok`) needs neither. `cryptography` is
+# pinned at the version the lock already resolved; `brotli` at an exact pin.
+grok-catalog = ["cryptography==50.0.2", "brotli==1.2.1"]
 
 [dependency-groups]
 # Keep build aligned with hosted pytest and Dagger _base. Gate A's inner
 # test environment intentionally installs unpinned tools.
 # pytest is a runtime dependency now (see [project].dependencies), so it is not repeated here.
-# The test group includes the agy-watch extra, so hosted CI runs the RS256 test, never skips it.
-test = ["build==1.6.1", "setuptools>=70.1", "pip", "phase-loop-runtime[agy-watch]"]
+# The test group includes the agy-watch and grok-catalog extras, so hosted CI runs the RS256
+# test and the grok signature vector test, never skips them.
+test = ["build==1.6.1", "setuptools>=70.1", "pip", "phase-loop-runtime[agy-watch]",
+        "phase-loop-runtime[grok-catalog]"]
 
 [project.urls]
 Homepage = "https://github.com/Consiliency/agent-harness"
@@ -207,6 +214,10 @@ phase_loop_runtime = [
     # The shipped grok tool-surface catalog (grok tool-surface contract §3.1), read only
     # through importlib.resources.
     "data/grok_tool_surfaces.json",
+    # The grok release catalog and its gate file (GROKROLL §1, §2.5), read through
+    # importlib.resources by default.
+    "data/grok_releases.json",
+    "data/grok_catalog_gate.json",
 ]
 
 # TESTDECOUPLE SL-0: the dotfiles_integration marker. Integration-bucket tests
