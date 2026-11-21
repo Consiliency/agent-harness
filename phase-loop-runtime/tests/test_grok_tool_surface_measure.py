@@ -2655,3 +2655,44 @@ def test_an_entry_is_tolerated_only_as_the_allow_lists_own_refusal(tmp_path, mon
     else:
         status, result = _pilot(bench, [(*entry, cause), ALLOWED])
         assert status == "egress_refused" and result["tolerated_refusals"] == []
+
+
+def test_the_ordering_rule_a_tolerated_post_counts_only_before_the_inference_request(
+        tmp_path, monkeypatch):
+    """THE ORDERING RULE (erratum 8, item 2), as the erratum states it. ``POST /v1/responses``
+    is tolerated only before the inference request: the counted request of a measurement,
+    the first budget denial of a rehearsal. One after it disqualifies the launch, while a
+    tolerated GET may come before or after. Relaxing the rule is one line in
+    ``grok_tool_surface._only_before_inference``; this test then fails at its ``late`` cases
+    and is the place to record the new decision."""
+    only_before = [entry for entries in SHIPPED_TOLERATED.values() for entry in entries
+                   if gts._only_before_inference(entry)]
+    assert only_before == [RESPONSES[:3]]
+
+    def bench(name):
+        root = tmp_path / name
+        root.mkdir()
+        return Bench(root, monkeypatch, image=GROK_1_0_92)
+
+    # Before the inference request: tolerated, any number of times.
+    code, report = _rehearse(bench("early-rehearsal"), [RESPONSES, RESPONSES, BUDGET_DENIED])
+    assert (code, report["reason"]) == (0, "passed"), report
+    assert report["tolerated_refusals"] == [
+        {"method": "POST", "host": gts.INFERENCE_HOST, "path": "/v1/responses", "count": 2}]
+    status, result = _pilot(bench("early-pilot"), [RESPONSES, RESPONSES, ALLOWED])
+    assert status == "measured" and result["tolerated_refusals"][0]["count"] == 2
+    # After it: the launch is disqualified, and the record does not call the late one
+    # tolerated. A tolerated GET after the inference request still is.
+    code, report = _rehearse(bench("late-rehearsal"),
+                             [RESPONSES, BUDGET_DENIED, RESPONSES, FEEDBACK])
+    assert (code, report["reason"]) == (1, "unlisted_request"), report
+    assert report["tolerated_refusals"] == [
+        {"method": "GET", "host": gts.INFERENCE_HOST, "path": "/v1/feedback/config", "count": 1},
+        {"method": "POST", "host": gts.INFERENCE_HOST, "path": "/v1/responses", "count": 1}]
+    status, result = _pilot(bench("late-pilot"), [RESPONSES, ALLOWED, RESPONSES])
+    assert status == "egress_refused"
+    assert [item["count"] for item in result["tolerated_refusals"]] == [1]
+    assert _pilot(bench("late-get"), [ALLOWED, FEEDBACK])[0] == "measured"
+    # With no inference request at all the POSTs are all "before" it, and the launch fails
+    # on the missing request, never on their order.
+    assert _rehearse(bench("no-inference"), [RESPONSES])[1]["reason"] == "no_model_request"

@@ -2022,6 +2022,23 @@ def _refusing_check(entry: tuple) -> str:
     return "front" if entry[0] == "CONNECT" else "rules"
 
 
+def _only_before_inference(entry: tuple) -> bool:
+    """THE ORDERING RULE of erratum 8, item 2: is ``entry`` tolerated only before the
+    launch's inference request? As the erratum states it, a ``POST`` to the inference host
+    is: after that request a later model call may rewrite the definitions artifact, so any
+    such ``POST`` still disqualifies, as erratum 3 said of every one. Every other entry is
+    tolerated before or after. To relax the rule, return ``False`` here."""
+    return entry[0] == "POST" and entry[1] == INFERENCE_HOST
+
+
+def _inference_request(event: Any) -> bool:
+    """The launch's inference request, as the proxy decided it: the counted request of a
+    measurement (an allowed ``POST`` to the inference host), or the budget's own refusal of
+    it (every one in a rehearsal; a second model call in a measurement)."""
+    return _budget_denial(event) or (event.decision == "allow" and event.method == "POST"
+                                     and event.host == INFERENCE_HOST)
+
+
 def _tolerated(events, binary_sha256: object) -> list[tuple | None]:
     """Per event, the entry of the image's list it is a tolerated refusal of, else ``None``.
     The one predicate the classification, the rehearsal and the recorded counts share, so a
@@ -2029,13 +2046,18 @@ def _tolerated(events, binary_sha256: object) -> list[tuple | None]:
 
     An entry is tolerated only as the allow-list's own refusal of it (erratum 8, item 2):
     the same observation refused by another check -- the inner Host check, the budget, the
-    shutdown -- is not one."""
+    shutdown -- is not one. An entry under the ordering rule (:func:`_only_before_inference`)
+    is tolerated only when the proxy decided it before the first inference request."""
     entries = tolerated_refusals(binary_sha256)
+    events = list(events)
+    first = next((index for index, event in enumerate(events) if _inference_request(event)),
+                 len(events))
     matched: list[tuple | None] = []
-    for event in events:
+    for index, event in enumerate(events):
         key = (event.method, event.host, event.path)
         matched.append(key if (event.decision == "deny" and key in entries
-                               and getattr(event, "cause", None) == _refusing_check(key))
+                               and getattr(event, "cause", None) == _refusing_check(key)
+                               and not (index > first and _only_before_inference(key)))
                        else None)
     return matched
 
