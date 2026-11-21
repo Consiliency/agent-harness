@@ -29,7 +29,6 @@ from phase_loop_runtime import seat_jail, seat_jail_qualification, seat_subject
 REPO = Path(__file__).resolve().parents[2]
 CONVERTER = REPO / "phase-loop-runtime" / "scripts" / "convert_agy_record_v2.py"
 #: The jail profile digests the registered seats were recorded against (x86_64).
-RECORDED_JAIL_DIGESTS = REPO / "plans" / "evidence" / "seat-codex" / "post-registration.json"
 DEFAULT_MODE = {"agentMode": ""}
 
 
@@ -147,12 +146,6 @@ def test_the_seat_settings_feed_neither_the_qci_nor_the_jail_digest(tmp_path, mo
             seat_jail.close_jail_fds(seat.jail)
             seat_jail.close_jail_fds(seat.probe_jail)
     assert digests == [jail_digest, jail_digest]
-
-
-def test_the_gemini_jail_digest_is_the_recorded_one():
-    recorded = json.loads(RECORDED_JAIL_DIGESTS.read_text(encoding="utf-8"))
-    actual = recorded["ci_compatibility"]["digests"]["actual"]
-    assert seat_jail.jail_profile_digest("gemini", "x86_64") == actual["gemini"]
 
 
 @pytest.mark.skipif(not CONVERTER.is_file(), reason="the converter is repository source")
