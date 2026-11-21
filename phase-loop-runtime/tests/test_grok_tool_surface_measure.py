@@ -26,7 +26,7 @@ import ssl
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
@@ -3059,3 +3059,232 @@ def test_a_rehearsal_record_naming_text_outside_the_vocabulary_is_refused(bench9
     path.chmod(0o600)
     code, report = bench92.cli("--require-rehearsed", "review")
     assert (code, report["status"]) == (1, "interrupted")
+
+
+# ------------------------------------ erratum 8, item 5 (review finding 4): the client log
+
+#: The collector guarantee this falsifier tests: no collector of the harness opens the
+#: client's own log, ``~/.grok/logs/unified.jsonl``, which records the token's last 12
+#: characters (``key_prefix``). It lives in the seat's tmpfs home. The retained paths that
+#: do carry child-derived text are the provider log a failed measurement or rehearsal keeps,
+#: the definitions artifact a measurement copies out of the host-backed sessions bind, and a
+#: board leg's private log; each is exercised below through the real launcher. A seat process
+#: that copied the suffix into its own output would put it there: that is redistribution
+#: inside the seat, which no collector can tell apart and this test does not claim.
+PLANTED_TOKEN = "fabricated-grok-bearer-e8b-" + "Qm7Rt2Vx9KpL"
+TOKEN_SUFFIX = PLANTED_TOKEN[-12:]
+assert TOKEN_SUFFIX == "Qm7Rt2Vx9KpL"
+
+_LOGGING_STAND_IN = r'''#!/usr/bin/python3 -I
+import base64, json, os, socket, ssl, sys, urllib.parse
+argv = sys.argv[1:]
+if argv[-1:] == ["--help"]:
+    sys.stdout.write(__HELP__)
+    sys.exit(0)
+if argv[-1:] == ["--version"]:
+    sys.stdout.write(__VERSION__)
+    sys.exit(0)
+if "--prompt-file" in argv:
+    sys.stdin.read()
+home = os.environ["HOME"]
+# As grok 1.0.92 does: the projected token's last 12 characters, into its own log only.
+with open(os.path.join(home, ".grok", "auth.json")) as handle:
+    node = json.load(handle)
+while isinstance(node, dict):
+    node = node["key"] if "key" in node else next(iter(node.values()))
+os.makedirs(os.path.join(home, ".grok", "logs"), exist_ok=True)
+with open(os.path.join(home, ".grok", "logs", "unified.jsonl"), "a") as handle:
+    for _ in range(5):
+        handle.write(json.dumps({"event": "auth", "key_prefix": node[-12:]}) + "\n")
+host = "cli-chat-proxy.grok.com"
+
+def request(method, path):
+    proxy = urllib.parse.urlsplit(os.environ["HTTPS_PROXY"])
+    raw = socket.create_connection((proxy.hostname, proxy.port), 10)
+    auth = base64.b64encode(f"{proxy.username}:{proxy.password}".encode()).decode()
+    raw.sendall(f"CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n"
+                f"Proxy-Authorization: Basic {auth}\r\n\r\n".encode())
+    head = b""
+    while b"\r\n\r\n" not in head:
+        chunk = raw.recv(4096)
+        if not chunk:
+            break
+        head += chunk
+    context = ssl.create_default_context(cafile=os.environ["SSL_CERT_FILE"])
+    context.verify_flags &= ~getattr(ssl, "VERIFY_X509_STRICT", 0)
+    with context.wrap_socket(raw, server_hostname=host) as tls:
+        tls.sendall(f"{method} {path} HTTP/1.1\r\nHost: {host}\r\nContent-Length: 2\r\n"
+                    "Connection: close\r\n\r\n{}".encode())
+        reply = b""
+        while True:
+            chunk = tls.recv(65536)
+            if not chunk:
+                break
+            reply += chunk
+    return reply.split(b"\r\n", 1)[0].decode("latin-1")
+
+for method, path in __BEFORE__:
+    try:
+        request(method, path)
+    except OSError:
+        pass
+try:
+    proxied = request("POST", "/v1/chat/completions")
+except OSError as exc:
+    proxied = "error:" + type(exc).__name__
+session = os.path.join(home, ".grok", "sessions", "-encoded-cwd", "session-0001")
+os.makedirs(session)
+with open(os.path.join(session, "tool_definitions.json"), "w") as handle:
+    json.dump([{"type": "function", "function": {"name": name, "parameters": {}}}
+               for name in __TOOLS__], handle)
+# Child-derived text in the retained output, and a marker that the client log was written.
+print("provider says:", proxied, "client log lines:", 5)
+print("REVIEW TEXT FROM THE CHILD", file=sys.stderr)
+sys.exit(__EXIT__)
+'''
+
+
+def _logging_stand_in(*, tools, exit_code=0, before=()):
+    return (_LOGGING_STAND_IN.replace("__HELP__", repr(HELP)).replace("__VERSION__", repr(VERSION))
+            .replace("__TOOLS__", repr(tools)).replace("__EXIT__", str(exit_code))
+            .replace("__BEFORE__", repr(list(before))))
+
+
+def _plant_token(home: Path) -> None:
+    auth = home / ".grok" / "auth.json"
+    auth.unlink()
+    auth.write_text(json.dumps({"key": PLANTED_TOKEN}))
+    auth.chmod(0o600)
+
+
+def _carrying_the_suffix(*roots: Path) -> list[Path]:
+    return [path for root in roots if root.exists() for path in _files(root)
+            if TOKEN_SUFFIX.encode() in path.read_bytes()]
+
+
+def _logging_bench(tmp_path, monkeypatch, *, image=GROK_1_0_89, **stand_in):
+    _namespace_or_skip()
+    _require_bwrap()
+    bench = Bench(tmp_path, monkeypatch, real=True)
+    _plant_token(Path(bench.env["HOME"]))
+    bench.binary.write_text(_logging_stand_in(tools=_tools("review"), **stand_in))
+    bench.binary.chmod(0o700)
+    bench.stand_for(image)
+    return bench
+
+
+@pytest.mark.parametrize("case", ["measured", "launch_failed"])
+def test_the_client_logs_token_suffix_reaches_no_retained_measurement_path(
+        required_upstream, tmp_path, monkeypatch, case):
+    """Erratum 8, item 5: a stand-in grok writes the planted token's 12-character suffix into
+    ``$HOME/.grok/logs/unified.jsonl`` and nowhere else. Through the real launcher, a passing
+    rehearsal, then a measurement that copies its definitions artifact out (``measured``) or
+    one whose provider log is retained (``launch_failed``): no file under the state home --
+    the output, raw and result copies, the aggregate evidence, the grant, the host-local
+    record -- holds the suffix, and the sessions directory is gone."""
+    bench = _logging_bench(tmp_path, monkeypatch, exit_code=0 if case == "measured" else 3)
+    bench.open_grant(planned="review")
+    try:
+        code, report = bench.measure("review")
+    except pi._sandbox_egress.SeatIdentityUnverified as exc:
+        if os.environ.get(REQUIRE_NS) == "1":
+            raise
+        pytest.skip(f"this host cannot own a seat ({exc})")
+    assert code == 0 and report["routes"][0]["status"] == case, report
+    logs = list((bench.output / "raw").rglob("provider.log"))
+    if case == "measured":
+        assert bench.cli("--aggregate")[1]["published"] == ["review"]
+        assert (bench.output / "tool-surface.json").is_file()
+        copied = [p for p in _files(bench.output / "raw") if p.name.endswith(".json")]
+        assert copied, "the definitions artifact was copied out"
+        assert logs == []
+    else:
+        (log,) = logs  # retained on failure, with the child's own text in it
+        text = log.read_text()
+        assert "REVIEW TEXT FROM THE CHILD" in text and "client log lines: 5" in text
+    assert _carrying_the_suffix(bench.state) == []
+    assert not [p for p in bench.state.rglob("sessions") if p.is_dir()]
+    assert not [p for p in bench.state.rglob("*") if p.name == "unified.jsonl"]
+
+
+def test_the_client_logs_token_suffix_reaches_no_retained_rehearsal_path(
+        required_upstream, tmp_path, monkeypatch):
+    """The same for a failed rehearsal, whose provider log is retained: grok 1.0.92 fetching
+    its remote settings disqualifies it (the pinned seat config was not honoured)."""
+    bench = _logging_bench(tmp_path, monkeypatch, image=GROK_1_0_92, exit_code=1,
+                           before=[("GET", "/v1/settings")])
+    bench.open_grant(planned="review", rehearse=False)
+    try:
+        code, report = bench.cli("--attended", "--rehearse", "--route", "review")
+    except pi._sandbox_egress.SeatIdentityUnverified as exc:
+        if os.environ.get(REQUIRE_NS) == "1":
+            raise
+        pytest.skip(f"this host cannot own a seat ({exc})")
+    assert (code, report["reason"], report["budget_denials"]) == (1, "unlisted_request", 1), report
+    (log,) = (bench.output / "raw").rglob("provider.log")
+    assert "REVIEW TEXT FROM THE CHILD" in log.read_text()
+    assert TOKEN_SUFFIX not in json.dumps(report)
+    assert _carrying_the_suffix(bench.state) == []
+    assert not [p for p in bench.state.rglob("sessions") if p.is_dir()]
+
+
+@pytest.mark.parametrize("exit_code", [0, 3], ids=["completed", "failed"])
+def test_the_client_logs_token_suffix_reaches_no_board_leg_output_or_private_log(
+        required_upstream, live_seat_attempt, tmp_path, monkeypatch, exit_code):
+    """A frozen-basis board leg through the real ``_exec_leg`` composition: its returned text,
+    its output and review directories, and -- for a failed leg -- the private leg log the
+    board writes from its raw output (``_leg_failure_detail``, ``_resolve_leg_detail``)."""
+    from test_grok_board_leg_frozen_basis import (
+        Board, _board_leg_egress, _exec_leg, _leg_command, _prerequisites, _skip_unless_owned,
+    )
+    _prerequisites()
+    board = Board(tmp_path, monkeypatch)
+    _plant_token(Path(board.env["HOME"]))
+    board.binary.write_text(_logging_stand_in(tools=_tools("review"), exit_code=exit_code))
+    board.binary.chmod(0o700)
+    review_dir, out_dir = board.leg("review")
+    board.publish(_leg_command("review", review_dir, out_dir))
+    try:
+        with _board_leg_egress():
+            rc, text, log = _exec_leg(board, "review", review_dir, out_dir)
+    except sandbox_egress.SeatIdentityUnverified as exc:
+        _skip_unless_owned(exc)
+    assert rc == exit_code and "client log lines: 5" in text + log, (rc, log[-800:])
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(mode=0o700)
+    detail = pi._resolve_leg_detail(
+        pi._leg_failure_detail("OK" if rc == 0 else "FAILED", rc, text, log), run_dir, "grok")
+    leg_logs = list((run_dir / pi._LEG_LOG_DIRNAME).glob("*.log"))
+    assert bool(leg_logs) is (rc != 0), detail
+    assert TOKEN_SUFFIX not in text + log + str(detail)
+    assert _carrying_the_suffix(run_dir, review_dir, out_dir, tmp_path / "state") == []
+
+
+def test_a_host_bind_at_the_client_log_refuses_at_the_context_check(bench, monkeypatch, tmp_path):
+    """The home check takes no host path in the home but the measurement's sessions bind:
+    ``.grok/logs`` bound from the host refuses a rehearsal and a measurement before any
+    launch."""
+    host_logs = tmp_path / "host-logs"
+    host_logs.mkdir(mode=0o700)
+    real = pi.seat_profile
+    binding = {"on": False}
+
+    @contextlib.contextmanager
+    def seat_profile(**kwargs):
+        with real(**kwargs) as (destination, profile):
+            if binding["on"]:
+                profile = replace(profile, mount_args=(
+                    *profile.mount_args, "--bind", str(host_logs),
+                    gts.PRIVATE_HOME + "/.grok/logs"))
+            yield destination, profile
+    monkeypatch.setattr(pi, "seat_profile", seat_profile)
+    bench.open_grant(planned="review", rehearse=False)
+    binding["on"] = True
+    code, report = bench.cli("--attended", "--rehearse", "--route", "review")
+    assert (code, report["status"], report["code"]) == (1, "refused", "context_refused"), report
+    assert bench.rehearsals == []
+    binding["on"] = False
+    assert bench.cli("--attended", "--rehearse", "--route", "review")[0] == 0
+    binding["on"] = True
+    code, report = bench.measure("review")
+    assert report["routes"][0]["status"] == "context_refused" and bench.launches == []
