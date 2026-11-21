@@ -12,6 +12,9 @@ contract"); each section below names the one it implements.
   host-local measurement record, both strict and fail-closed: any refusal is "no record".
 - Resolution (§3.2, §4.1): a revoked digest has no record; a catalog route wins; the
   host-local route is used only when the catalog has none for the key.
+- The seat config (erratum 8): the pinned ``.grok/config.toml`` a grok seat's home holds
+  under the ``grok-review`` proxy, as an immutable read-only mount of a sealed memfd; the
+  fixed inputs that must stay absent; and the forms eligible at use.
 - The launch context ``grok_seat_context.v1`` (§4.4): its digest, and the final check that
   marks a composed profile. Nothing in this lane calls that check, so no profile is ever
   marked and a frozen-basis receipt never admits a launch: lane L2c wires the board review
@@ -125,6 +128,60 @@ TOLERATED_REFUSALS_BY_IMAGE: Mapping[str, tuple[tuple[str, str, str | None], ...
     }))
 EGRESS_ALLOWLIST_ID = "grok-review"
 COMPOSITION = "panel_invoker.seat_profile+launch_owned:provider-review"
+#: Erratum 8: the seat config, the one file besides the projection that a grok seat's private
+#: home holds under the ``grok-review`` proxy. Harness-written and byte-exact: a pinned local
+#: entry for the measurement model, and the client's own remote catalog fetch switched off.
+#: :func:`seat_config` composes the bytes; this is their digest, and a build whose constants
+#: no longer compose them projects nothing.
+SEAT_CONFIG_RELATIVE = ".grok/config.toml"
+SEAT_CONFIG_SHA256 = "2984e0c368943bb6c1627146e413995df12cca5820e782adffcb052a9b761780"
+SEAT_CONFIG_SIZE = 424
+#: Erratum 8, item 1b: the one projection, an immutable read-only data mount (a mount point
+#: the seat can neither write, replace nor remove), from a sealed memfd.
+SEAT_CONFIG_PROJECTION = "ro-bind-data"
+SEAT_CONFIG_MODE = "0444"
+#: The client's default backend; its endpoint is the path of the one ``grok-review`` allow row.
+SEAT_CONFIG_API_BACKEND = "chat_completions"
+#: The effort rows the entry declares; without them the client ignores ``--reasoning-effort``.
+SEAT_CONFIG_EFFORTS = ("low", "medium", "high")
+#: The seals ``seat_jail.memfd_with`` puts on the config's descriptor, exactly: F_SEAL_SEAL,
+#: F_SEAL_SHRINK, F_SEAL_GROW and F_SEAL_WRITE (``fcntl``'s values on Linux, spelled out for
+#: an interpreter without them).
+_F_GET_SEALS = 1034
+_CONFIG_SEALS = 0x1 | 0x2 | 0x4 | 0x8
+#: Erratum 8, item 1c: the inputs that decide the inference route and body, the policy and
+#: the offered tools, which must not change during a launch. Relative paths are in the seat
+#: home; absolute ones are the host's. The derivation (the documentation bundled in 1.0.92 and
+#: launch 7's file-call trace) is recorded in ``tests/test_grok_tool_surface.py``
+#: (``test_the_pinned_fixed_inputs``). Project discovery is :data:`DISCOVERY_PATHS`, and the
+#: environment and argv are fixed by ``exec``. ``.grok/config.toml`` is bound by its digest;
+#: every other entry must be absent from the seat's view at the final check.
+SEAT_FIXED_INPUTS = (
+    # Policy layers.
+    ".grok/config.toml", ".grok/managed_config.toml", ".grok/requirements.toml",
+    "/etc/grok/managed_config.toml", "/etc/grok/requirements.toml",
+    "/etc/claude-code/managed-settings.json",
+    # Managed-sync state, and client caches that can carry configuration.
+    ".grok/managed_config_cache.json", ".grok/managed_config.sig.json",
+    ".grok/managed_identity.sig.json", ".grok/staged/managed_config_refresh.json",
+    ".grok/models_cache.json", ".grok/experiments_state.json", ".grok/campaigns_state.json",
+    # Discovery sources in the home.
+    ".grok/skills", ".grok/agents", ".grok/bundled/agents", ".grok/bundled/skills",
+    ".grok/commands", ".grok/plugins", ".grok/installed-plugins", ".grok/hooks",
+    ".grok/hooks-paths", ".grok/disabled-hooks", ".grok/workflows", ".grok/lsp.json",
+    ".grok/sandbox.toml", ".grok/trusted-plugins", ".grok/trusted-hook-projects",
+    ".grok/trusted_folders.toml", ".grok/mcp_preferences.json", ".grok/mcp_credentials.json",
+    ".grok/settings.json",
+    ".claude.json", ".claude", ".cursor", ".agents", ".mcp.json", ".config/grove",
+)
+#: Pinned with the tuple: read by the client but bound by another check instead. The two
+#: credential files by their own projection (:func:`_check_home`); ``.grok/rules`` (home and
+#: project) is a rules source, prompt text under §4.4's rule for rules files.
+SEAT_FIXED_INPUT_EXCLUSIONS = (".grok/agent_id", ".grok/auth.json", ".grok/rules")
+#: Erratum 8, item 1d: the tool names a frozen-basis launch may offer at use. Under such a
+#: surface the seat has no writing tool, so nothing but the client writes in the home. The
+#: empty set qualifies (``sealed``'s ``--tools ""``); ``staged`` never does.
+NON_MUTATING_TOOLS = ("read_file", "list_dir", "grep", "search_tool")
 
 _ISSUER = object()
 
@@ -370,10 +427,84 @@ def egress_allowlist_digest() -> str:
     return seat_egress_proxy.allowlist_ref(EGRESS_ALLOWLIST_ID).content_digest
 
 
+def _seat_config_bytes() -> bytes:
+    """The seat config as this build composes it (erratum 8, item 1): the table key and
+    ``model`` from :data:`MEASUREMENT_MODEL`, ``base_url`` from :data:`INFERENCE_HOST`, the
+    default backend, the effort rows, and ``remote_fetch`` off."""
+    model = MEASUREMENT_MODEL
+    lines = [f'[model."{model}"]', f'model = "{model}"', f'name = "{model} (pinned local entry)"',
+             f'base_url = "https://{INFERENCE_HOST}/v1"',
+             f'api_backend = "{SEAT_CONFIG_API_BACKEND}"', ""]
+    for effort in SEAT_CONFIG_EFFORTS:
+        lines += [f'[[model."{model}".reasoning_efforts]]', f'value = "{effort}"',
+                  f'label = "{effort.capitalize()} Effort"', ""]
+    lines += ["[features]", "remote_fetch = false", ""]
+    return "\n".join(lines).encode("ascii")
+
+
+def seat_config() -> bytes:
+    """The pinned seat config: the composed bytes, only while they are the pinned ones and
+    the measurement effort is one the entry declares."""
+    data = _seat_config_bytes()
+    _require(sha256(data).hexdigest() == SEAT_CONFIG_SHA256
+             and MEASUREMENT_EFFORT in SEAT_CONFIG_EFFORTS)
+    return data
+
+
+def seat_config_descriptor() -> int:
+    """A memfd holding the pinned seat config from ``seat_jail.memfd_with``: sealed against
+    write, grow, shrink and further sealing, positioned at its start, so the bytes behind
+    the projection cannot change after this returns. A build that no longer composes the
+    pinned bytes gets no descriptor (``grok_tool_surface_unverified``)."""
+    from .seat_jail import SeatSandboxRefused, memfd_with
+
+    try:
+        data = seat_config()
+    except _Refused as exc:
+        raise SeatSandboxRefused("grok_tool_surface_unverified") from exc
+    return memfd_with("seat-config", data)
+
+
+def seat_config_projection(descriptor: int) -> tuple[str, ...]:
+    """The one triple that projects the seat config from ``descriptor`` (erratum 8, item
+    1b): bubblewrap reads the descriptor while it sets up and bind-mounts the result
+    read-only at ``.grok/config.toml``. ``seat_profile`` composes exactly these words and
+    the home check admits exactly these."""
+    return ("--perms", SEAT_CONFIG_MODE, "--" + SEAT_CONFIG_PROJECTION, str(int(descriptor)),
+            PRIVATE_HOME + "/" + SEAT_CONFIG_RELATIVE)
+
+
+def _allow_list(command) -> list[str] | None:
+    """The names of ``command``'s one ``--tools`` allow-list; ``None`` without exactly one."""
+    words = [str(word) for word in command]
+    found = [index for index, word in enumerate(words[:-1]) if word == "--tools"]
+    if len(found) != 1 or "--tools" in words[-1:]:
+        return None
+    return [name for name in words[found[0] + 1].split(",") if name]
+
+
+def eligible_at_use(command, admitted) -> bool:
+    """Erratum 8, item 1d: may a frozen-basis receipt admit a launch of ``command`` under
+    ``grok_seat_context.v1``? Only a form whose allow-list and whose receipt's ``admitted``
+    names both stay within :data:`NON_MUTATING_TOOLS`, so no tool in the seat can write a
+    fixed input. ``staged`` (its run and write tools) is ineligible at use; it may still be
+    measured, which this never decides."""
+    allowed = _allow_list(command)
+    return (allowed is not None and isinstance(admitted, list)
+            and all(type(name) is str for name in admitted)
+            and set(allowed) <= set(NON_MUTATING_TOOLS)
+            and set(admitted) <= set(NON_MUTATING_TOOLS))
+
+
 def context_document(allowlist_digest: str) -> dict[str, object]:
     return {
         "schema": GROK_SEAT_CONTEXT,
         "home": PRIVATE_HOME,
+        "seat_config": {"path": SEAT_CONFIG_RELATIVE,
+                        "sha256": sha256(_seat_config_bytes()).hexdigest(),
+                        "projection": SEAT_CONFIG_PROJECTION},
+        "fixed_inputs": list(SEAT_FIXED_INPUTS),
+        "non_mutating_tools": list(NON_MUTATING_TOOLS),
         "projected_paths": sorted((*PROJECTED_PATHS, *PROXY_PROJECTED_PATHS)),
         "environment": {"allowed": sorted((*ENVIRONMENT, *PROXY_ENVIRONMENT)),
                         "forbidden_prefixes": list(FORBIDDEN_ENVIRONMENT_PREFIXES)},
@@ -462,14 +593,45 @@ def _inside(path: str, root: str) -> bool:
     return path == root or path.startswith(root.rstrip("/") + "/")
 
 
+def _normalised(path: str) -> str:
+    """``path`` as one spelling: absolute, with ``.``, ``..`` and repeated slashes resolved."""
+    return "/" + os.path.normpath("/" + path).lstrip("/")
+
+
+def _config_mount(mounts) -> tuple[str, ...]:
+    """The one operation at the seat config's path and the operation before it (its
+    ``--perms``), as the words ``seat_profile`` composed. A missing operation, or a second
+    one whose destination, normalised, is that path or below it, refuses; so does the one
+    operation spelt any other way."""
+    destination = PRIVATE_HOME + "/" + SEAT_CONFIG_RELATIVE
+    found = [index for index, (operation, operands) in enumerate(mounts)
+             if operation != "--perms" and _inside(_normalised(operands[-1]), destination)]
+    _require(len(found) == 1)
+    (index,) = found
+    _require(mounts[index][1][-1] == destination)
+    return tuple(word for operation, operands in mounts[max(index - 1, 0):index + 1]
+                 for word in (operation, *operands))
+
+
+def _config_descriptor(composed: tuple[str, ...]) -> int:
+    """The descriptor a composed config mount names; an operation that names none refuses."""
+    try:
+        return int(composed[-2])
+    except ValueError as exc:
+        raise _Refused("no descriptor behind the seat config") from exc
+
+
 def _check_home(profile: Any, sessions: str | None = None) -> None:
     """Home: nothing in the fresh private home but the projection (§4.4): the credential
-    files, the proxy projection's read-only CA file and, for a measurement only, its one
-    scratch sessions directory (§5.1), bound from ``sessions``."""
+    files, the proxy projection's read-only CA file, the seat config of erratum 8 in the
+    one mode :func:`seat_config_projection` composes and, for a measurement only, its one
+    scratch sessions directory (§5.1), bound from ``sessions``. Every destination is a
+    normalised absolute path, and none is the home itself or above it."""
     home = PRIVATE_HOME
     credentials = {home + "/" + relative for relative in PROJECTED_PATHS}
     projected = {home + "/" + relative for relative in PROXY_PROJECTED_PATHS}
-    files = credentials | projected
+    config = home + "/" + SEAT_CONFIG_RELATIVE
+    files = credentials | projected | {config}
     directories = {home + "/.config", home + "/.cache", home + "/.local", home + "/.local/share"}
     for path in files:
         parent = os.path.dirname(path)
@@ -478,18 +640,27 @@ def _check_home(profile: Any, sessions: str | None = None) -> None:
             parent = os.path.dirname(parent)
     mounts = _mounts(profile.mount_args)
     _require(bool(mounts) and mounts[0] == ("--tmpfs", (home,)))
+    composed = _config_mount(mounts)
+    _require(composed == seat_config_projection(_config_descriptor(composed)))
     seen: list[str] = []
     bound: list[tuple[str, ...]] = []
     for operation, operands in mounts[1:]:
         if operation == "--perms":
             continue
         destination = operands[-1]
+        # One spelling per path, so a destination is inside the home exactly when it reads
+        # so; and after the home's own tmpfs nothing is mounted at or above the home.
+        _require(destination.startswith("/") and not destination.startswith("//")
+                 and os.path.normpath(destination) == destination)
+        _require(not _inside(home, destination))
         _require(not _inside(destination, "/etc/grok"))
         if operation == "--tmpfs":
             raise _Refused("a second tmpfs")
         if not _inside(destination, home):
             continue
-        if operation == "--dir":
+        if destination == config:
+            seen.append(destination)  # its one mode was judged above
+        elif operation == "--dir":
             _require(destination in directories)
         elif operation == "--file":
             _require(destination in credentials)
@@ -509,6 +680,40 @@ def _check_home(profile: Any, sessions: str | None = None) -> None:
     _require(env.get("HOME") == home and env.get("XDG_CONFIG_HOME") == home + "/.config"
              and env.get("XDG_CACHE_HOME") == home + "/.cache"
              and env.get("XDG_DATA_HOME") == home + "/.local/share")
+
+
+def _check_seat_config(profile: Any) -> None:
+    """The descriptor bubblewrap consumes for the seat config, before the launch (erratum 8,
+    item 1b): the one it reads is the one the profile's config triple names, and it is
+    passed to the launch (not kept), a memfd carrying exactly the four seals (asking for the
+    seals of anything else fails), :data:`SEAT_CONFIG_SIZE` bytes long, at its start, and
+    holding exactly the pinned config. The bytes are read at an offset, never consumed: a
+    descriptor left at its end would hand bubblewrap an empty file."""
+    import fcntl
+
+    descriptor = _config_descriptor(_config_mount(_mounts(profile.mount_args)))
+    _require(descriptor in tuple(profile.pass_fds))
+    _require(descriptor not in tuple(profile.keep_fds))
+    # Only a memfd created to allow sealing can carry these seals; anything else either
+    # fails the request or reports F_SEAL_SEAL alone.
+    seals = fcntl.fcntl(descriptor, getattr(fcntl, "F_GET_SEALS", _F_GET_SEALS))
+    _require(seals == _CONFIG_SEALS)
+    _require(os.fstat(descriptor).st_size == SEAT_CONFIG_SIZE)
+    _require(os.lseek(descriptor, 0, os.SEEK_CUR) == 0)
+    # seat_config() refuses unless its bytes hash to SEAT_CONFIG_SHA256, so equal bytes are
+    # the digest check.
+    _require(os.pread(descriptor, SEAT_CONFIG_SIZE, 0) == seat_config())
+
+
+def _check_fixed_inputs(mounts) -> None:
+    """Erratum 8, item 1c: every fixed input but the seat config, which its digest binds, is
+    absent from the seat's view at the final check, judged on the view the launch composes,
+    so nothing the profile, its outputs or its read-only paths add can supply one."""
+    for entry in SEAT_FIXED_INPUTS:
+        if entry == SEAT_CONFIG_RELATIVE:
+            continue
+        path = entry if entry.startswith("/") else PRIVATE_HOME + "/" + entry
+        _require(not _visible(path, mounts))
 
 
 def _check_environment(env: Mapping[str, str]) -> None:
@@ -718,10 +923,12 @@ def _check_context(panel: Any, profile: Any, *, cwd, command, role, proxy, jaile
     _require(panel.SeatLaunchRole(role) is panel.SeatLaunchRole.PROVIDER_REVIEW)
     current = context_digest()
     _check_home(profile, sessions)
+    _check_seat_config(profile)
     _check_environment(profile.env)
     cwd = os.path.abspath(cwd)
     mounts = _effective_mounts(panel, profile, cwd)
     _check_managed_config(mounts)
+    _check_fixed_inputs(mounts)
     _check_discovery(mounts, cwd, command)
     prefix = _check_egress(panel, proxy)
     _check_proxy_projection(profile, proxy)
@@ -742,6 +949,10 @@ def verify_launch_context(profile: Any, *, env: Mapping[str, str], cwd, role, pr
         current, cwd, prefix = _check_context(panel, profile, cwd=cwd, command=state.command,
                                               role=role, proxy=proxy, jailed=jailed)
         _require(panel._grok_tool_gate(list(state.command), env))
+        # Erratum 8, item 1d: at use, only a form with no writing tool; `staged` is
+        # ineligible under grok_seat_context.v1 and refused here, before any spawn.
+        receipt = panel._read_grok_receipt(list(state.command), env)
+        _require(receipt is not None and eligible_at_use(state.command, receipt[2].get("tools")))
         mark = LaunchContext(command=state.command, context_digest=current, cwd=cwd,
                              egress_prefix=prefix, profile_fingerprint=profile_fingerprint(profile),
                              proxy=proxy, issuer=_ISSUER)
@@ -2549,9 +2760,11 @@ def _classify(*, early: str | None, exit_code: int | None, proof: Any, events, i
 
 def _launch(stage: _Stage, *, proxy, prefix, argv, form, argv_digest, cwd: str, sessions: str,
             log_fd: int, request_budget: int = PER_LAUNCH_BUDGET,
-            at_launch=None) -> tuple[str | None, int | None]:
+            at_launch=None) -> tuple[str | None, int | None, tuple[bytes, ...]]:
     """One launch through ``seat_profile`` plus ``launch_owned(PROVIDER_REVIEW)`` (§5.1),
-    inside the proxy-only namespace this launch owns. ``(early status, exit code)``."""
+    inside the proxy-only namespace this launch owns. ``(early status, exit code, scan
+    values)``: the last are the composed profile's ``scan_values`` (erratum 8, item 5), held
+    in memory for the definitions scan and empty when nothing was composed."""
     from . import panel_invoker as panel
 
     token = panel._EGRESS_LAUNCH_PREFIX.set(tuple(prefix))
@@ -2570,7 +2783,8 @@ def _launch(stage: _Stage, *, proxy, prefix, argv, form, argv_digest, cwd: str, 
                 verify_measurement_context(profile, cwd=cwd, command=argv, proxy=proxy,
                                            sessions=sessions)
             except Exception:  # noqa: BLE001 - no launch: the context does not hold
-                return "context_refused", None
+                return "context_refused", None, ()
+            scan_values = profile.scan_values
             stdin_prompt = _prompt_on_stdin(form)
             # The launch boundary is the spawn itself: launch_provider calls ``at_launch``
             # (``spawn_hook``) after every check and argument of the launch is settled and
@@ -2585,7 +2799,7 @@ def _launch(stage: _Stage, *, proxy, prefix, argv, form, argv_digest, cwd: str, 
                     stdout=log_fd, stderr=log_fd, start_new_session=True,
                     **({"spawn_hook": at_launch} if at_launch is not None else {}))
             except Exception:  # noqa: BLE001
-                return "launch_failed", None
+                return "launch_failed", None, scan_values
             try:
                 if stdin_prompt and process.stdin is not None:
                     with contextlib.suppress(OSError):
@@ -2595,10 +2809,10 @@ def _launch(stage: _Stage, *, proxy, prefix, argv, form, argv_digest, cwd: str, 
                 try:
                     process.wait(timeout=LAUNCH_TIMEOUT_S)
                 except subprocess.TimeoutExpired:
-                    return "launch_failed", None
+                    return "launch_failed", None, scan_values
             finally:
                 panel._terminate_process_group(process)
-            return None, process.returncode
+            return None, process.returncode, scan_values
     finally:
         panel._EGRESS_LAUNCH_PREFIX.reset(token)
 
@@ -2691,13 +2905,17 @@ def _run_reserved(stage: _Stage, reservation: Reservation, *, route, form, argv,
         proxy = None
         early: str | None = None
         exit_code: int | None = None
+        scan_values: tuple[bytes, ...] = ()
         try:
             try:
                 with panel._grok_review_egress(timeout_s=LAUNCH_TIMEOUT_S + 120.0,
                                                request_budget=PER_LAUNCH_BUDGET,
                                                named=tolerated_refusals(
                                                    stage.grant.binary_sha256)) as (proxy, prefix):
-                    early, exit_code = _launch(stage, proxy=proxy, prefix=prefix, argv=argv,
+                    # scan_values: held by this frame for the definitions reader (erratum 8,
+                    # item 5); dropped when the route returns.
+                    early, exit_code, scan_values = _launch(
+                                               stage, proxy=proxy, prefix=prefix, argv=argv,
                                                form=form, argv_digest=reservation.argv_digest,
                                                cwd=cwd, sessions=sessions, log_fd=log_fd)
             except Exception:  # noqa: BLE001 - the egress layer failed: nothing settles
@@ -2869,7 +3087,8 @@ def rehearse(stage: _Stage, route: str) -> dict[str, Any]:
                                                request_budget=0,
                                                named=tolerated_refusals(
                                                    stage.grant.binary_sha256)) as (proxy, prefix):
-                    early, exit_code = _launch(stage, proxy=proxy, prefix=prefix, argv=argv,
+                    early, exit_code, _scan_values = _launch(
+                                               stage, proxy=proxy, prefix=prefix, argv=argv,
                                                form=form, argv_digest=argv_digest, cwd=str(cwd),
                                                sessions=str(sessions), log_fd=log_fd,
                                                request_budget=0, at_launch=mark_attempt)
