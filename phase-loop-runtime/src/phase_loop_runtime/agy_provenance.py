@@ -65,8 +65,8 @@ MAX_ARCHIVE_BYTES = 256_000_000
 # Largest agy image accepted anywhere: the archive member here, the seat readers
 # (``gemini_heartbeat``, ``agy_integrity``) and, as a tested-equal script literal,
 # ``scripts/verify_qualified_agy_image.py``. Upstream's image passed 250 MB at 1.5.11
-# (268,841,672 bytes). The member is hashed in 1 MiB chunks, so here this bounds work, not
-# memory; only ``keep_bytes`` (the upstream watch) holds the member.
+# (268,841,672 bytes). The member is hashed in bounded chunks, so here this bounds work, not
+# memory; no reader holds the member (the upstream watch streams it to a sink, ROLLJOB).
 MAX_MEMBER_BYTES = 512_000_000
 # Largest decompressed tar stream read from one archive: every byte the tar parser is given
 # (headers, extension records, padding, skipped members and the member) counts, and so does
@@ -307,7 +307,10 @@ def release_asset(release: dict, host: HostPlatform) -> ReleaseAsset:
     return ReleaseAsset(tag, host.asset, url, match.group(1))
 
 
-_CHUNK_BYTES = 1024 * 1024
+# Every streaming read below takes at most one chunk. The tar parser and the decompressor each
+# hold a few chunks at a time, so a read holds about seven chunks at its peak, whatever the
+# member's size: 256 KiB keeps that under 2 MiB (EC-ROLLJOB-9: the watch streams each member).
+_CHUNK_BYTES = 256 * 1024
 
 
 class _HashingReader:
@@ -400,8 +403,22 @@ def _normalized(name: str) -> str:
     return posixpath.normpath(name.lstrip("/"))
 
 
-def read_member(stream, asset: ReleaseAsset, *, keep_bytes: bool = False) -> tuple[str, bytes | None]:
+def _write_all(sink: int, chunk: bytes) -> None:
+    view = memoryview(chunk)
+    while view:
+        written = os.write(sink, view)
+        if written <= 0:
+            raise OSError("agy member sink short write")
+        view = view[written:]
+
+
+def read_member(stream, asset: ReleaseAsset, *, sink: int | None = None) -> str:
     """Stream-hash the archive and its one ``antigravity`` member; never extract to disk.
+    Returns the member's sha256.
+
+    With ``sink`` (a writable descriptor), each member chunk is written to it as it is
+    hashed, so the caller can build a sealed image without holding the member (EC-ROLLJOB-9).
+    The archive digest still decides the result: on any refusal the caller discards the sink.
 
     Exactly one member may normalize to ``antigravity`` and it must be a regular file;
     a duplicate, a link or a device of that name refuses. The archive digest must equal
@@ -413,7 +430,7 @@ def read_member(stream, asset: ReleaseAsset, *, keep_bytes: bool = False) -> tup
     extension-record bytes and extension chains as ``_bounded_tarinfo`` says.
     """
     reader = _HashingReader(stream)
-    member_digest, member_bytes, seen, declared = None, None, 0, 0
+    member_digest, seen, declared = None, 0, 0
     try:
         with tarfile.open(fileobj=_ExpandedReader(reader), mode="r|", bufsize=_CHUNK_BYTES,
                           tarinfo=_bounded_tarinfo()) as bundle:
@@ -429,16 +446,15 @@ def read_member(stream, asset: ReleaseAsset, *, keep_bytes: bool = False) -> tup
                 handle = bundle.extractfile(member)
                 if handle is None:
                     raise ProvenanceError(UNVERIFIED)
-                h, parts, size = sha256(), [], 0
+                h, size = sha256(), 0
                 while chunk := handle.read(_CHUNK_BYTES):
                     size += len(chunk)
                     if size > MAX_MEMBER_BYTES:
                         raise ProvenanceError(UNVERIFIED)
                     h.update(chunk)
-                    if keep_bytes:
-                        parts.append(chunk)
+                    if sink is not None:
+                        _write_all(sink, chunk)
                 member_digest = h.hexdigest()
-                member_bytes = b"".join(parts) if keep_bytes else None
         reader.drain()
     except (tarfile.TarError, EOFError, zlib.error, OSError, http.client.HTTPException) as exc:
         raise ProvenanceError(UNAVAILABLE if isinstance(exc, (OSError, http.client.HTTPException)) else UNVERIFIED) from exc
@@ -446,16 +462,17 @@ def read_member(stream, asset: ReleaseAsset, *, keep_bytes: bool = False) -> tup
         raise ProvenanceError(UNVERIFIED)
     if reader.digest.hexdigest() != asset.digest:
         raise ProvenanceError(UNVERIFIED)
-    return member_digest, member_bytes
+    return member_digest
 
 
-def fetch_member(transport: _Transport, asset: ReleaseAsset, *, keep_bytes: bool = False):
+def fetch_member(transport: _Transport, asset: ReleaseAsset, *, sink: int | None = None) -> str:
+    """Download ``asset`` and return its member's sha256 (``read_member``; ``sink`` as there)."""
     try:
         response = transport.open(asset.url, accept="application/octet-stream")
     except (OSError, http.client.HTTPException) as exc:
         raise ProvenanceError(UNAVAILABLE) from exc
     try:
-        return read_member(response, asset, keep_bytes=keep_bytes)
+        return read_member(response, asset, sink=sink)
     finally:
         response.close()
 
@@ -543,7 +560,7 @@ def find_provenance(image_sha256: str, *, host: HostPlatform, transport: _Transp
             note_fetch(now())
             fetched += 1
             try:
-                member, _ = fetch_member(transport, asset)
+                member = fetch_member(transport, asset)
             except ProvenanceError as exc:
                 if str(exc) == UNAVAILABLE:
                     raise

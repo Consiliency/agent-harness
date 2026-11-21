@@ -1441,8 +1441,10 @@ A non-release `agy` image is admitted only by verifying it, never by trusting it
   live key. The qualification entries (`provenance`, `qualified`, `failed`, `member_cache`,
   `transient`) bind the image digest, platform and runtime identity, plus the asset name,
   profile id or help digest as the type requires. The `fetch_ledger` entry binds only the
-  image digest and platform (PROVFWD below). The watch's `watch_push` entry binds the
-  branch, the version and the base (the prepared tree's seat QCI).
+  image digest and platform (PROVFWD below). The watch's `watch_push` entry now holds its
+  intake receipt (ROLLJOB below): context `{"kind": "intake_receipt.v1", version, qci}`,
+  payload `{issue, record_sha256, at}`. A historical push receipt (context `{branch, version,
+  base}`, payload `{oid}`) never reads as one.
   Without a readable machine-id, self-qualification refuses; the release path is unaffected.
 - **Lock.** One `flock` per host namespace; waiters are cancellable and heartbeat (the board
   preflight writes a content-free `agy-qualification.json` progress record into the
@@ -1464,22 +1466,11 @@ A non-release `agy` image is admitted only by verifying it, never by trusting it
   Gemini leg whose admitted digest appears in the reviewed artifact is flagged
   (`gemini_seat_reviews_its_own_pin`, non-gating). Boards admit with the installed base
   runtime, never the reviewed tree.
-- **Upstream watch.** `phase-loop agy-qualification watch` (a host timer on a subscribed
-  host; see `docs/ops/agy-upstream-watch.md`) proposes only the Linux x64 glibc release
-  route, from a fresh checkout of `main`, and opens a draft PR; it never merges. Each tick
-  makes exactly one ref write (a fresh `agy-watch/<version>-<utc>-<random>` branch, pushed
-  with an empty-expected-value lease and accepted only when `--porcelain` reports that exact
-  ref as newly created) and one object create (the PR). It never updates, force-pushes,
-  adopts, closes, edits or deletes anything that existed before the tick; the new PR body
-  names the own older PRs it supersedes for a maintainer to close. It requires `origin` to
-  have exactly one push URL, pushes to the remote NAME `origin` (never to the printed URL,
-  which git would resolve again). It compares no URL strings; a `--dry-run` pre-flight
-  must print exactly one `To` block, and the real push exactly one `To` block and one `*` row
-  for exactly the new ref. Both pushes carry `--no-verify`; the bot host's git/ssh
-  configuration is trusted. It pre-flights its store, records the
-  verified pushed oid in its own `watch_push` entry, and reads both the record and the
-  created PR back (the PR body's copy is display-only). "Up to date" requires that local record, `headRefOid` and `ls-remote` to
-  agree. It refuses when it cannot prove its open-PR listing complete.
+- **Upstream watch.** `phase-loop agy-qualification watch` (an hourly user timer on the
+  qualification host; see `docs/ops/agy-upstream-watch.md`) proposes only the Linux x64
+  glibc release route. Since ROLLJOB it makes no git write: it qualifies, signs and submits
+  a record through the INTAKE App (ROLLJOB below), and a workflow on `main` authors any pull
+  request. The push, branch and pull-request code of agent-harness#1130 is removed.
 
 ## SEATJAIL — Full-permission review seats inside a per-seat jail (agent-harness#1132)
 
@@ -2382,8 +2373,8 @@ W1 set; all unexercised rows retain `candidate` (remote rows retain `remote-pend
   callers. On the seat path a memfd seal failure stays the typed `agy_image_unqualified`
   refusal, now also for a release member. `gh._read_image` remains for callers that need
   the bytes and reads the bound when it runs; `VerifiedImage.from_bytes` remains for callers
-  that already hold bytes. The upstream watch's `fetch_member(keep_bytes=True)` still joins
-  the member in memory (ROLLJOB moves it to streaming).
+  that already hold bytes. ROLLJOB removed `keep_bytes`: the upstream watch streams each
+  member to a sink (ROLLJOB below).
 - **Not changed.** The seat QCI, store keys, the shipped catalog, records and pins.
 
 ## HOLD — availability floor · `agy_qualification.admit_seat`, `agy_hold.py`, `gemini_heartbeat.py`, `agy_integrity.py` (AGYFRESH §2.1–§2.7)
@@ -2616,7 +2607,7 @@ W1 set; all unexercised rows retain `candidate` (remote rows retain `remote-pend
   `attestation` and its `second_channel`; each requalified member records a fresh
   `attestation` and keeps its committed `second_channel`. A second-channel mismatch, or
   either status unavailable, ends the tick with exit 2 and that code before anything is
-  pushed.
+  submitted (pushed, before ROLLJOB).
 - **Verifier.** `--contract` requires `upstream.attestation` in
   `absent|present_unverified|not_checked` and `upstream.second_channel` in
   `match|not_listed|not_checked`, read from the tree's own `agy_attestation`.
@@ -2625,3 +2616,94 @@ W1 set; all unexercised rows retain `candidate` (remote rows retain `remote-pend
   membership stays advisory.
 - **Not changed.** The seat QCI, the keys and MAC contexts of the existing store entries, the
   shipped catalog, records and pins. Nothing needs requalification.
+
+## ROLLJOB — the rolling catalog job · `agy_watch.py`, `agy_intake.py`, `agy_catalog_policy.py`, `agy_watch_units.py`, `scripts/verify_qualified_agy_image.py`, `ci/agy_catalog_promote.py` (AGYROLL §6, R6′, R9′)
+
+Runbook: `docs/ops/agy-upstream-watch.md`. Detail: `plans/artifacts/agyroll-ROLLJOB-detail.md`.
+
+- **Identity (R9′, confirmed by the owner on 2026-11-20).** Two organization-owned GitHub
+  Apps, each installed on this repository only. The **INTAKE App** has issues write and
+  nothing else; its key is on the qualification host and is the job's only GitHub
+  credential. The **PROMOTION App** has contents and pull-requests write; its key is a
+  secret of the Actions environment `agy-promotion`, limited to `main`. There is no fork, no
+  `pull_request_target` and no pull-request head written by untrusted code.
+- **The tick.** Platform; a local preflight before any live operation (the INTAKE key, ids
+  and the `agy-watch` extra, and the job signing key); the login, renewed only with the image
+  lookup-only `admit_seat` admits on the host (any `ValueError` from it means no admitted
+  image, `gemini_login_expired`; no `reason` is read; typed non-refusal failures
+  propagate); the newest stable release (`already_pinned`, `up_to_date`, `intake_stalled`);
+  the work set (the newest non-member plus every member at another QCI); one sealed image at
+  a time; whole-series retries classified by the prepared tree's `_classify_failure`
+  (`series_violation`, `series_unavailable`); a job signature; `--contract`; submission. Every
+  return path writes its printed status to `agy_watch_tick.v1`
+  (`<state home>/phase-loop/agy-watch/last-tick.json`), which `watch --check` reads.
+  `watch --install-units` installs the hourly user timer; neither flag creates a credential.
+- **Streaming.** `read_member(stream, asset, *, sink=None)` and `fetch_member(…, sink=)`
+  return the member digest only; with a sink, each member chunk is written as it is hashed,
+  and a refusal discards the sink. The read chunk is 256 KiB, so a member read keeps under
+  2 MiB of Python allocation whatever the member's size. `find_provenance` and every other
+  caller take the digest; the fetch ledger, its charge order and the bounds are unchanged.
+- **Submission.** An RS256 App JWT signed with `cryptography` (the optional `agy-watch`
+  extra, imported lazily) is exchanged for an installation token limited to this repository
+  and `issues: write`. A wider grant is refused. The issue body is
+  `agy-intake.v1 <version> <qci> <sha256>`, a blank line and one fenced `json` block holding
+  the record (`agy_catalog_policy.render_intake`/`parse_intake`). A lost POST response is
+  adopted, never duplicated. A failed submission keeps the signed record and the next tick
+  submits it without re-qualifying.
+- **Signer list.** `plans/evidence/agy-allowed-signers` holds only the job's key, principal
+  `agy-watch`, namespace `agy-qualification`, verified with `ssh-keygen -Y verify` over
+  `canonical_record` (the record without `signatures`, sorted, compact, ASCII). It ships with
+  no key: until one is enrolled by an ordinary pull request every submission is refused.
+  There is no owner signer.
+- **Merge rule (R6′).** On the promotion path the signer quorum is the job signature plus the
+  hosted provenance check. Only one diff class is promoted: exactly one new non-`pinned`
+  member newer than every member, plus removals aging allows (kept: `pinned`, the newest
+  three, or published under 14 days ago), and no surviving member changed
+  (`catalog_change().auto`). The workflow enforces it by writing exactly the catalog and one
+  record and re-deriving the changed paths from the commit it created. Every other change is
+  an ordinary pull request merged by a repository writer.
+- **The intake workflow** (`agy-catalog-intake.yml`, every job on `refs/heads/main` only):
+  `authenticate` (the attested INTAKE bot user id, type `Bot` and App id, or no later job
+  runs); `intake` (no secret, no write; `--intake` decides `ignored`, `refused`, `manual` or
+  `auto` from `main`'s code, signer list and the fixed upstream, with `published_at` from the
+  API); `promote` (environment `agy-promotion`, the job lock: this run's decision on the
+  current tip, one commit with the `Agy-Intake-Issue` and `Agy-Record-Sha256` trailers on
+  `agy-catalog/<version>-<run>-<attempt>`, the pull request, and auto-merge with the created
+  commit as the expected head only behind the gate); `report` (bookkeeping); and the
+  scheduled `reconcile` (one item per run, from App-authored pull requests, their head-commit
+  trailers, their build base (the head commit's sole parent, never the pull request's moving
+  `base.sha`) and this workflow's run history paged to the issue's age; never from labels;
+  `history_unavailable`, for any unreadable or non-200 page, dispatches nothing; the attempt
+  limit counts the issue's unmerged promotions from GitHub, the one being superseded
+  included, before any close or dispatch; never "update branch").
+- **The required check `agy catalog provenance`** (`agy-catalog-provenance.yml`, every pull
+  request to `main`, any author). It runs the base commit's `--catalog-pr`, reads head files
+  as git data, imports only the standard library and `agy_catalog_policy`, and installs
+  nothing. It passes at once when neither the catalog nor a record changed; otherwise every
+  added or changed member must be re-derived from the fixed upstream. It is required only
+  after it has passed on a pull request whose base contains its verifier.
+- **Attestation and the gate.** `config/agy-rollout-attestation.json`
+  (`agy_rollout_attestation.v1`, closed schema; an absent bypass list is an error) records
+  what tokens cannot read. Auto-merge is armed only when the file is attested with an empty
+  `main` bypass list and only the PROMOTION App bypassing the catalog ruleset,
+  `AGY_CATALOG_AUTOMERGE` is exactly `true`, and the live branch rules of `main` and of the
+  created branch come from the attested rulesets with strict checks and every attested check.
+- **Lag and headroom.** `--upstream-only --report` computes `ok`, `warn_inside_bound`,
+  `warn_pr_open` (an App-authored promotion younger than `IN_FLIGHT_MAX_S`; an intake issue
+  never counts) or `fail`, and changes the exit and the `agy-lag` issue
+  (`ci/agy-lag-issue.sh`) only when `AGY_LAG_ENFORCE` of the `agy-activation` environment is
+  exactly `true`. Headroom fails at 90 percent of `MAX_ARCHIVE_BYTES` or `MAX_MEMBER_BYTES`
+  regardless.
+- **Residual risk (AGYFRESH §5.1 as amended by R9′).** The workflows, the signer list, the
+  attestation file and the policy and verifier code change through ordinary pull requests by
+  repository writers; no review rule is added and CODEOWNERS is not edited. A rogue or
+  compromised writer can change them, including the provenance workflow file a pull request
+  itself can edit, and keeps GitHub's ordinary merge and auto-merge authority. "Never
+  auto-merges" limits this automation only. A compromised qualification host or job identity
+  holds only the INTAKE key and the job key: it can write issues and submit a signed record,
+  but it cannot promote bytes that are not upstream's, a `pinned` flag or a policy change.
+- **Ships inert.** No enrolled key, an unattested file, and both switches unset. What acts
+  from merge: the provenance check runs on every pull request (not required yet), and the
+  headroom alarm can fail a nightly run.
+- **Not changed.** The seat QCI and the verdict vector, the store's entry types and the MAC
+  contexts of the existing entries, the shipped catalog and its records.

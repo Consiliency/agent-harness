@@ -1,0 +1,62 @@
+name: agy-catalog-provenance
+
+# ROLLJOB-detail §4.4: the `agy catalog provenance` check. It runs on every pull request to
+# main, with no path filter, because a required check must report on every pull request. It
+# passes at once when neither the catalog nor a qualification record changed; otherwise it
+# re-derives every added or changed catalog member from the fixed upstream, whoever wrote
+# the pull request. No signature and no review is asked for here.
+#
+# It checks out the pull request's BASE commit and runs that commit's verifier. The head's
+# objects are fetched as data and read with git; no head code is checked out, installed or
+# run. The --catalog-pr mode imports only the standard library and agy_catalog_policy, so the
+# runner's own python3 runs it and nothing is installed. No third-party action is used.
+#
+# The exception (ROLLJOB-detail §4.4): GitHub takes a pull_request workflow's YAML from the
+# pull request's test merge commit, so this file is whatever the pull request makes it; the
+# verifier it runs is the base's only while this file is unchanged. That is part of the
+# stated residual risk for repository writers.
+#
+# This check becomes required only after it has passed on a pull request whose base already
+# contains its verifier (ROLLJOB-detail §7, steps 16 to 18).
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  provenance:
+    name: agy catalog provenance
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Fetch the base commit (checked out) and the head commit (data only)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPOSITORY: ${{ github.repository }}
+          SERVER: ${{ github.server_url }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git init -q base
+          cd base
+          git remote add origin "$SERVER/$REPOSITORY"
+          # The read-only token reaches git through its environment, never an argv.
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          export GIT_CONFIG_VALUE_0
+          git fetch -q --no-tags --depth=1 origin "$BASE_SHA" "$HEAD_SHA"
+          git -c advice.detachedHead=false checkout -q --detach "$BASE_SHA"
+      - name: Verify every added or changed catalog member against upstream
+        working-directory: base
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          # Read-only; authenticates the releases API reads (agent-harness#1993).
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          python3 -I phase-loop-runtime/scripts/verify_qualified_agy_image.py --catalog-pr
+          --base "$BASE_SHA" --head "$HEAD_SHA" --pr "$PR_NUMBER"

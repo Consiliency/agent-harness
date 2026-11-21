@@ -1,10 +1,11 @@
-# agent-harness#1076: run the agy upstream watch a few times a day.
+# The agy upstream watch runs every hour (ROLLJOB, AGYFRESH D9). User unit; see
+# docs/ops/agy-upstream-watch.md.
 [Unit]
 Description=agy upstream release watch timer (agent-harness#1076)
 
 [Timer]
-OnCalendar=*-*-* 01,07,13,19:17:00
-RandomizedDelaySec=15m
+OnCalendar=hourly
+RandomizedDelaySec=10m
 Persistent=true
 
 [Install]

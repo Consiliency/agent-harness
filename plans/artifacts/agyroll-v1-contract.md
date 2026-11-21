@@ -17,6 +17,11 @@ the RESTORE and HOLD phases. It changes this file in four places only: the archi
 tick frequency in §6.2 (owner decision D9), and §6.3's lag warning, which no longer awaits an
 owner signature.
 
+**R9′ amendment (2026-11-20).** §6.1's promotion path, §6.2's identity and §6.3's lag rule
+are amended: the job submits a signed record through an issues-only GitHub App, a trusted
+workflow authors the catalog pull request with a second App, and the lag rule is
+report-only until ACTIVATE.
+
 ## 0. Vocabulary
 
 - **Image.** The bytes of the `antigravity` member that `agy` resolves to on a host.
@@ -392,56 +397,114 @@ outcomes from §1.2 do not count toward that limit. Spawn stays lookup-only.
 - **Retries.** It retries the whole series up to `SERIES_RETRIES = 3` per tick, because
   Gemini non-conformance is intermittent (agent-harness#1008). An observed `violation` stops
   the tick.
-- **Promotion path.** This keeps Q10's draft promotion PR, its signer quorum and its
-  publisher digest, and (G)'s base-branch rule
-  (`.consiliency/plans/detailed-lkg-cli-qualification-1602-20261014-0359.md`). The only
-  thing R6 replaces is Q10/(G)'s "a maintainer merges", and only conditionally (see Merge
-  below):
-  1. The job signs the record with its enrolled key and opens a **draft** PR labelled
-     `agy-catalog-auto`.
-  2. CI checks out the **base** branch and runs the base's verifier, `agy-allowed-signers`
-     and merge rule. It reads only `data/agy_catalog.json` and
-     `plans/evidence/agy-*-linux-x64-qualification.json` from the PR head, as data.
-  3. A catalog PR that changes the signer list, the verifier, the merge-rule workflow or any
-     path outside those two fails the promotion check, and never auto-merges.
-  4. On a pass, CI marks the PR ready.
+- **Promotion path.** This keeps Q10's publisher digest and (G)'s base-branch rule
+  (`.consiliency/plans/detailed-lkg-cli-qualification-1602-20261014-0359.md`). Under R6′
+  and R9′ the signer quorum is the job's signature plus the hosted provenance check, there
+  is no owner signer, and there is no draft pull request: the pull request is opened by the
+  trusted workflow, already verified. R6 replaces Q10/(G)'s "a maintainer merges" only
+  conditionally (see Merge below):
+  1. The job signs the record with its enrolled key and **submits it as data**: one issue,
+     created with the INTAKE App's installation token. The job makes no git write and opens
+     no pull request.
+  2. A workflow on `main`, running `main`'s own code at its own commit, accepts only an issue
+     created by the INTAKE App. It verifies the job signature against `main`'s
+     `agy-allowed-signers`, re-fetches the release by tag, re-derives the member digest, and
+     builds the catalog change itself, aging included.
+  3. The change is one new non-`pinned` member newer than every existing member, plus
+     removals that aging allows. A record that is genuine and signed but is anything else
+     (a requalified existing member, an older version) opens no pull request; a repository
+     writer takes it into an ordinary pull request.
+  4. With the PROMOTION App's short-lived installation token, limited to this repository and
+     to contents and pull-requests write, the workflow creates a branch under `agy-catalog/`,
+     commits exactly the catalog and the new record, and opens a pull request labelled
+     `agy-catalog-auto`. `main`'s required checks run on it.
+- **Every catalog pull request, whoever wrote it.** A required check,
+  `agy catalog provenance`, runs `main`'s verifier on every pull request to `main`. If the
+  pull request changes the catalog, every member it adds or changes must be re-derived
+  from the upstream repository, which is fixed in trusted configuration and never taken
+  from the pull request. A change that is upstream's passes; nothing else is asked. The
+  check reports on every pull request, and passes at once on one that leaves the catalog
+  alone. The job signature and the R6′ diff class are required only on the promotion path.
+- **The files this trusts.** The intake and provenance workflows, `qualified-agy-image.yml`,
+  `ci/agy_catalog_promote.py`, `ci/agy-lag-issue.sh`, `config/agy-rollout-attestation.json`,
+  `plans/evidence/agy-allowed-signers`, `scripts/verify_qualified_agy_image.py` and
+  `agy_catalog_policy.py` are read from `main` at run time, with one exception: GitHub takes
+  a `pull_request` workflow's YAML from the pull request's test merge commit, so the
+  provenance workflow file is whatever the pull request makes it. They change through ordinary
+  pull requests merged by a repository writer under the `main` ruleset; no review rule is
+  added. The automated path never changes them. A rogue or compromised writer can, as with
+  any code.
+- **Attestation.** A ruleset's bypass list cannot be read by the workflow's tokens, and the
+  promoter is given no ruleset access. `config/agy-rollout-attestation.json` records the
+  ruleset ids, targets and exact bypass lists, the App identities and the
+  environment's settings. Auto-merge is armed only when that file is attested and the
+  rules that can be read live agree with it. A missing field is a refusal, never an empty
+  list.
 - **Merge [R6].** The owner **rejected** "one job signature plus green CI auto-merges" as
   written (2026-11-08) and adopted the board's alternative:
-  - **Base-branch policy.** The signer list, verifier and merge rule come from the base
-    branch (steps 2 and 3).
+  - **Base-branch policy.** The signer list, verifier and merge rule are `main`'s, read at
+    the commit the workflow runs from. The submission supplies the record only.
   - **Two distinct signers (Q10).** As ruled: the job's key and an **enrolled owner key**,
     both listed in the base branch's `agy-allowed-signers`. **Amended by R6′ below:** the
     second signer is the base branch's hosted provenance check, so no owner key is enrolled
-    and `agy-allowed-signers` lists the job key only. A PR without a valid job signature and
-    a passing provenance check never merges.
+    and `agy-allowed-signers` lists the job key only. On the promotion path, a record without
+    a valid job signature and a passing provenance check is never promoted. This binds the
+    automation. A pull request by a repository writer needs the passing provenance check and
+    no signature.
   - **Auto-merge (conditional supersession of Q10/(G)'s "a maintainer merges").** Once
     `main` has a non-bypassable ruleset, a data-only diff (`data/agy_catalog.json` plus agy
     records) auto-merges after both Q10 signers pass. Every other diff, and every PR opened
-    before that ruleset exists, is still merged by a maintainer.
+    before that ruleset exists: a repository writer merges it under the `main` ruleset.
+
+    Under R9′ the workflow enables auto-merge with the expected head commit set to the commit
+    it authored. A ruleset on `refs/heads/agy-catalog/**` lets only the PROMOTION App create,
+    update or delete those branches. `main` requires strict, up-to-date status checks; a
+    pending pull request whose base has moved is closed and rebuilt from current `main`, never
+    updated in place. The switch that enables auto-merge is a variable of the Actions
+    environment limited to `main`, not a repository variable.
   - **Today `main` has none.** The only ruleset covers `conform-evidence/*` tags. Classic
     protection requires status checks but no review, `enforce_admins` is false, and the
     `gate` check is self-certifiable (`.github/CODEOWNERS:5-9`).
   - **R6′ (owner decision D8 = B, 2026-11-20; AGYFRESH §5.1).** R6 stands except that no
     catalog PR needs an owner signature. The second Q10 signer is the base branch's hosted
-    provenance check, which re-fetches the asset by tag and re-derives the member digest. Only
-    a PR whose diff is only `data/agy_catalog.json` and
-    `plans/evidence/agy-*-linux-x64-qualification.json`, and that adds or ages non-`pinned`
-    members, auto-merges. A `pinned` change, any other path, and any change to the signer
-    list, verifier or merge-rule workflow never auto-merges: a maintainer merges it through
-    the ordinary reviewed pull request under the non-bypassable `main` ruleset.
+    provenance check, which re-fetches the asset by tag and re-derives the member digest.
+    Under R9′ the diff class is enforced by construction: the trusted workflow writes exactly
+    `data/agy_catalog.json` and one new record file, and re-derives the changed paths from the
+    commit it created before arming the merge. Only a PR whose diff is only
+    `data/agy_catalog.json` and `plans/evidence/agy-*-linux-x64-qualification.json`, and that
+    adds or ages non-`pinned` members, auto-merges. A `pinned` change, any other path, and any
+    change to the signer list, verifier or merge-rule workflow never auto-merges: a repository
+    writer merges it under the `main` ruleset.
+
+    **Scope of R6′ under R9′.** "Auto-merges" and "never auto-merges" describe what the
+    promotion automation does: it arms a merge only for the diff class above, with a valid job
+    signature. They are not a limit on repository writers, who keep GitHub's ordinary authority
+    to merge, or to enable auto-merge on, any pull request that meets the `main` ruleset.
   - **What a compromised job identity can promote under R6′:** a **genuine** upstream stable
     release recorded as having passed live qualification when it did not. It cannot promote
     non-upstream bytes, and it cannot promote a `pinned` flag or a policy change without a
-    maintainer merge. Hosted provenance re-verification proves the bytes are upstream's; it
-    does not prove the live operations passed (AGYFRESH §5.1).
+    merge by a repository writer. Hosted provenance re-verification proves the bytes are
+    upstream's; it does not prove the live operations passed (AGYFRESH §5.1).
+
+    This holds because of what the job identity is (R9′, §6.2). The key on the qualification
+    host can create, edit, label and close issues and comments in this repository, and
+    nothing else: no code, ref, pull request, workflow, variable or setting.
+
+    **What this does not cover.** Organization members have write access, and no review is
+    required. A rogue or compromised writer can change the workflows, the signer list, the
+    verifier or the attestation file, as with any code, and could then land a catalog change
+    this mechanism would refuse. R6′ and R9′ bound the job on the qualification host, not a
+    writer.
 - **Aging [R8].** Approved 2026-11-08. A member is kept while it is among the newest
   `CATALOG_KEEP = 3` or was published less than `CATALOG_MIN_AGE = 14 d` ago. A `pinned`
   member is never pruned, and pruning happens in the same PR. **Q11 is superseded for the agy
   route only.** Q11 had already superseded the 2026-10-08 Q5. Under R1 the cut re-runs
   nothing, so aging bounds the agy catalog instead of requalification. Other harnesses keep
   Q11.
-- **Unchanged.** Idempotence, oid agreement, push-destination checks and create-only writes
-  stay as in `docs/ops/agy-upstream-watch.md`.
+- **Changed by R9′.** The job no longer pushes a branch or opens a pull request, so the
+  push-destination checks and create-only ref writes of `docs/ops/agy-upstream-watch.md`
+  are retired with them. Idempotence stays: a version and QCI with a pending submission is
+  not qualified again, and a refused one is not retried for 24 h.
 
 ### 6.2 Install and observe
 
@@ -458,11 +521,24 @@ outcomes from §1.2 do not count toward that limit. Spawn stays lookup-only.
     exits non-zero, so the systemd unit enters `failed`. `watch --check` then reports
     `failed: gemini_login_expired` at once. No PR is opened. CI turns red through the lag
     rule (§6.3) once `L` passes `LAG_BOUND` with the login still expired.
-- **Identity [R9].** Approved 2026-11-08 on three conditions, all in place before ACTIVATE:
-  - The job uses a non-admin GitHub App or machine user. It is scoped to this repository
-    only, has contents and pull-requests write, and has no `workflows` permission.
-  - `main` has a non-bypassable ruleset.
+- **Identity [R9, amended as R9′ on 2026-11-20].** All in place before ACTIVATE. No GitHub
+  user account is created.
+  - **INTAKE App.** Organization-owned, installed on this repository only. Permissions:
+    issues read and write, metadata read (and contents read only if the repository is
+    private). Its private key is on the qualification host with the job.
+  - **PROMOTION App.** Organization-owned, installed on this repository only. Permissions:
+    contents and pull-requests read and write, metadata read; no `workflows`,
+    administration, secrets or variables. Its private key is a secret of an Actions
+    environment limited to `main`, and is stored nowhere else.
+  - `main` has a non-bypassable ruleset that requires strict status checks. A second
+    ruleset limits `refs/heads/agy-catalog/**` to the PROMOTION App.
+  - An issue or pull request is treated as an App's only when its author's immutable user
+    id and the attached App id both match the attestation file; a missing field refuses.
   - agent-harness#1138 is closed by that setup.
+
+  R9 as ruled on 2026-11-08 gave one identity contents and pull-requests write with no
+  `workflows` permission. R9′ splits that grant: the half that can write code never leaves
+  GitHub Actions.
 
 ### 6.3 Lag rule (bounded, and red)
 
@@ -472,6 +548,13 @@ Let `L` be the newest stable upstream release.
   `L` is not a member, and no open `agy-catalog-auto` PR for `L` exists.
 - **Warn.** It warns when such a PR has been open longer than `LAG_BOUND`, naming the awaited
   check or merge. It also warns inside the bound.
+- **Mode.** The rule is report-only until ACTIVATE. The status is always computed and
+  recorded. It fails the nightly run, and the `agy-lag` issue is opened, updated or closed,
+  only once `AGY_LAG_ENFORCE` is `true` in a `main`-only Actions environment that holds no
+  secret. ACTIVATE sets it after EC-ACTIVATE-2 is proven.
+- A pull request "for `L`" is one the PROMOTION App opened on `agy-catalog/<L>-…` less than
+  24 h ago. An intake issue does not count, so a stranded submission cannot hold the
+  status at warn.
 
 Expected lag by consumer:
 - to `main`: one tick, plus the series, plus CI, plus the merge rule;

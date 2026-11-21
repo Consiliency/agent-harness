@@ -1,37 +1,38 @@
-"""Upstream agy release watch (agent-harness#1076), run from a timer on a subscribed host.
+"""The rolling catalog job: the upstream agy release watch (agent-harness#1076, AGYROLL ROLLJOB).
 
 It is deliberately OUTSIDE the seat QCI (``agy_qualification.seat_qci()``): a watch-only fix
-never forces a requalification. For the newest stable release not yet pinned on ``main`` it:
+never forces a requalification. One tick, run hourly by a user timer on the qualification
+host (ROLLJOB-detail §2.1):
 
-1. is idempotent per version: an open, same-repository PR authored by the running
-   identity, labelled for that version with the CURRENT ``main`` seat QCI
-   (``agy-qci:<seat_qci>``), whose head is still exactly the commit on its branch, makes the
-   tick a no-op;
-2. builds a VerifiedImage from the provenance-checked archive member stream (no install);
-3. in a fresh checkout of current ``main`` with ONLY the data catalog edited
-   (``edit_catalog``: ``phase_loop_runtime/data/agy_catalog.json``, AGYROLL §3.1), measures
-   help with THAT tree's owned profile and runs the manual qualification (the shim) from
-   that tree, handing the image over as a sealed fd (``--image-fd``, the worker's seal
-   check applies). The tree's own catalog satisfies the worker gate, so each v2 record is
-   bound to the tree's seat QCI -- what ``--contract`` requires -- and never depends on a
-   release's position in the listing. Every catalog member is still requalified on the
-   prepared tree: each existing member's image is re-fetched from its own release and must
-   match its record's asset and image digests;
-4. pushes a FRESH, unique branch ``agy-watch/<version>-<utc>-<random>`` with create-only
-   semantics (``--force-with-lease=refs/heads/<name>:``, an empty expected value, to a
-   fully qualified destination) and opens a DRAFT PR from it that names, but does not
-   touch, the own older PRs it supersedes. Exactly one ref write (the new branch) and one
-   object create (the new PR) per tick; it never updates, force-pushes, adopts, closes,
-   edits or deletes anything that existed before the tick, and never merges
-   (agent-harness#1130 r3/r4).
+1. the platform check: only the release route (Linux x64 glibc) is proposed;
+2. (not a dry run) a local preflight, before any live operation: the INTAKE App's key, ids
+   and the ``agy-watch`` extra (``agy_intake.preflight``), and the job's signing key;
+3. the login (R7): a fresh login costs one file read. Otherwise the login is renewed with
+   the image seat admission admits on this host (``admit_seat``, lookup only: the host's own
+   subject, or a held image when HOLD applies; never the unqualified candidate). No admitted
+   image, or a login still not fresh after renewal, ends the tick ``gemini_login_expired``;
+4. signed records kept from a failed submission, of any version, are submitted again first,
+   without re-qualifying; the tick reports ``agy_intake_submit_failed`` until none is left.
+   Then the newest stable release: ``already_pinned`` when it is a member on ``origin/main``,
+   ``up_to_date`` when a submission for it at the tree's QCI is pending (``agy_intake``);
+5. the work set: the newest non-member release plus every member whose catalog ``qci`` is
+   not the prepared tree's ``seat_qci()``. Members whose ``qci`` matches are not fetched;
+6. per member, one at a time (EC-ROLLJOB-9): stream it to a sealed image, measure help with
+   the tree's owned profile, run the series (three operations and ``--validate``) with
+   retries, write the signed record, and close the image before the next member;
+7. ``--contract`` on the prepared tree (its local catalog edit lets the worker gate pass and
+   is never pushed; the trusted workflow builds the catalog, aging included);
+8. each signed record is submitted through the INTAKE App (``agy_intake.submit``).
 
-Only the release route (Linux x64 glibc; ``qualified_agy_catalog.v3`` has only that
-route) is proposed; any other platform reports and opens nothing.
+**The job makes no git write.** The checkout is fetched, never pushed; there is no branch,
+no commit and no pull request. Every return path prints ``{"agy_watch": <status>, ...}`` and
+writes the same status and exit code to the tick-status file that ``watch --check`` reads;
+``--dry-run`` writes no status and submits nothing.
 
 Each record carries two statuses (AGYROLL §1.3, ``agy_attestation``): a fresh
 ``attestation`` for every member, and for the new member the ``second_channel`` check against
 Google's installer manifest. A second-channel mismatch, or either status unavailable, ends
-the tick with exit 2 before anything is pushed.
+the tick with exit 2 before anything is submitted.
 """
 from __future__ import annotations
 
@@ -40,236 +41,30 @@ import json
 import os
 from pathlib import Path
 import re
-from datetime import datetime, timezone
-import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 
 from . import agy_attestation
+from . import agy_catalog_policy as policy
+from . import agy_intake
 from . import agy_provenance
 from . import gemini_heartbeat as gh
 
 RELEASE_ROUTE_PLATFORM = "linux-x64"
-BRANCH_PREFIX = "agy-watch/"
-MARKER = "agy-qci:"
-CATALOG = "phase-loop-runtime/src/phase_loop_runtime/data/agy_catalog.json"
+CATALOG = policy.CATALOG_PATH
 RECORD_SCHEMA = "agy_redacted_qualification_summary.v2"
 OPERATIONS = ("completion", "cancel", "owner-loss")
-REPO_SLUG = "Consiliency/agent-harness"
-REPO_OWNER = REPO_SLUG.split("/")[0]
 
-
-VERSION_LABEL = "agy-watch-version:"
-PUSHED_LABEL = "agy-watch-pushed-oid:"
-
-
-def _label_value(body, label):
-    """The value of ``<label> <value>`` on its own line; CRLF-tolerant (a body edited in the
-    web UI may be stored with ``\r\n``)."""
-    for line in (body or "").splitlines():
-        line = line.strip()
-        if line.startswith(label + " "):
-            return line[len(label):].strip()
-    return None
-_OPEN_PRS_QUERY = (
-    "query($owner:String!,$repo:String!,$endCursor:String){repository(owner:$owner,name:$repo){"
-    "pullRequests(states:OPEN,first:100,after:$endCursor){totalCount pageInfo{hasNextPage endCursor}"
-    "nodes{number body headRefName headRefOid isCrossRepository author{login} headRepositoryOwner{login}}}}}"
-)
-
-
-class IncompleteListing(ValueError):
-    """The open-PR listing could not be proven complete."""
-
-
-def open_prs(runner, repo: Path) -> list[dict]:
-    """EVERY open PR of this repository, paginated to the end, or IncompleteListing.
-
-    Completeness is established, not assumed: the pages must end with ``hasNextPage``
-    false and together hold exactly ``totalCount`` nodes. No fixed limit anywhere."""
-    owner, name = REPO_SLUG.split("/")
-    listed = _run(runner, ["gh", "api", "graphql", "--paginate", "-f", f"query={_OPEN_PRS_QUERY}",
-                           "-F", f"owner={owner}", "-F", f"repo={name}"], cwd=repo)
-    decoder, text, pages = json.JSONDecoder(), (listed.stdout or "").strip(), []
-    try:
-        while text:
-            page, index = decoder.raw_decode(text)
-            pages.append(page["data"]["repository"]["pullRequests"])
-            text = text[index:].strip()
-        if not pages or pages[-1]["pageInfo"]["hasNextPage"] is not False:
-            raise IncompleteListing("agy watch: PR listing did not reach its last page")
-        nodes = [node for page in pages for node in page["nodes"]]
-        totals = {page["totalCount"] for page in pages}
-        numbers = [node["number"] for node in nodes]
-        distinct = len(set(numbers))
-    except (ValueError, KeyError, TypeError, AttributeError) as exc:
-        if isinstance(exc, IncompleteListing):
-            raise
-        raise IncompleteListing("agy watch: unparseable PR listing") from exc
-    if len(totals) != 1 or distinct != len(numbers) or len(nodes) != totals.pop():
-        raise IncompleteListing("agy watch: PR listing is truncated, has duplicates or changed while paging")
-    return nodes
-
-
-def _fresh_name_re(version: str):
-    return re.compile(rf"{re.escape(BRANCH_PREFIX + version)}-\d{{8}}T\d{{6}}Z-[0-9a-f]{{8}}")
-
-
-def own_version_prs(nodes: list[dict], login: str, version: str) -> list[dict]:
-    """Open PRs the watch opened for ``version``: same repository, authored by the running
-    identity, head on a fresh ``agy-watch/<version>-<utc>-<random>`` branch, carrying the
-    version label."""
-    name = _fresh_name_re(version)
-    return [pr for pr in nodes
-            if bool(login) and pr.get("isCrossRepository") is False
-            and (pr.get("headRepositoryOwner") or {}).get("login") == REPO_OWNER
-            and (pr.get("author") or {}).get("login") == login
-            and name.fullmatch(str(pr.get("headRefName") or "")) is not None
-            and _label_value(pr.get("body"), VERSION_LABEL) == version]
-
-
-def remote_branch_head(runner, repo: Path, branch: str) -> str | None:
-    """The oid of EXACTLY ``refs/heads/<branch>`` in origin (``ls-remote`` matches refs by
-    tail pattern, so ``refs/heads/x/refs/heads/<branch>`` would also be listed). Any
-    exact-ref line counts as existing, whatever its oid format."""
-    listed = _run(runner, ["git", "-C", str(repo), "ls-remote", "origin", f"refs/heads/{branch}"])
-    for line in (listed.stdout or "").splitlines():
-        oid, _, ref = line.partition("\t")
-        if ref.strip() == f"refs/heads/{branch}":
-            return oid.strip() or "unknown"
-    return None
-
-
-def fresh_branch_name(version: str, *, now=None, token=None) -> str:
-    """A sibling of every other watch branch, never a child: ``<version>/...`` would be
-    blocked (a git directory/file ref conflict) by anyone pushing a plain
-    ``agy-watch/<version>``, including the pre-agent-harness#1130-r3 watch's own name."""
-    stamp = (now or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
-    return f"{BRANCH_PREFIX}{version}-{stamp}-{token or secrets.token_hex(4)}"
-
-
-def _push_state(store=None):
-    """The watch's OWN record of what it pushed (agent-harness#1130 r5, codex B1): an
-    HMAC-bound ``watch_push`` entry in the operator-only per-user, per-host store (0700/0600,
-    owner-checked, O_NOFOLLOW). The PR body's oid is display-only and never read back."""
-    from .agy_qualification import Store
-    return store or Store()
-
-
-def _push_context(branch: str, version: str, base: str) -> dict:
-    # The version and route-core base are bound into the MAC too (claude N3 on
-    # agent-harness#1130 r6): a body relabelled to the current base cannot reuse an old push.
-    return {"branch": branch, "version": version, "base": base}
-
-
-def ensure_push_state(store=None) -> bool:
-    """Pre-flight (claude N2 on agent-harness#1130 r6): the store must be writable and read
-    back BEFORE anything is pushed, so a verified push can always be recorded."""
-    try:
-        store = _push_state(store)
-        if store.status() == "absent":
-            store.create()
-        context = {"branch": "\0preflight", "version": "", "base": ""}
-        store.put("watch_push", context, context, {"oid": "preflight"})
-        ok = (store.get("watch_push", context, context) or {}).get("oid") == "preflight"
-        store._path("watch_push", context).unlink(missing_ok=True)
-        return ok
-    except (OSError, ValueError):
-        return False
-
-
-def record_push(branch: str, oid: str, version: str, base: str, store=None) -> None:
-    store = _push_state(store)
-    if store.status() == "absent":
-        store.create()
-    context = _push_context(branch, version, base)
-    store.put("watch_push", context, context, {"oid": oid})
-
-
-def recorded_push(branch: str, version: str, base: str, store=None) -> str | None:
-    """The oid this watch pushed to ``branch`` for ``version`` at route-core ``base``, or None
-    when missing, tampered, foreign or for another branch/version/base (then the PR is simply
-    not up to date: a duplicate PR, never adoption)."""
-    context = _push_context(branch, version, base)
-    try:
-        payload = _push_state(store).get("watch_push", context, context)
-    except (OSError, ValueError):
-        return None
-    value = payload.get("oid") if payload else None
-    return value if isinstance(value, str) and value else None
-
-
-def single_push_url(runner, tree: Path) -> str | None:
-    """``origin``'s push URL iff git lists exactly ONE push destination; display text only.
-
-    Counts git's raw output lines, blanks included (an older git keeps an empty
-    ``pushurl =`` as an entry of its own). The value is never compared with anything and
-    never passed back to git: the push goes to the remote NAME ``origin``, which git resolves
-    to exactly this list (agent-harness#1130 r7).
-    """
-    listed = _run(runner, ["git", "-C", str(tree), "remote", "get-url", "--push", "--all", "origin"], check=False)
-    if getattr(listed, "returncode", 1) != 0:
-        return None
-    lines = (listed.stdout or "").splitlines()
-    return lines[0].strip() if len(lines) == 1 and lines[0].strip() else None
-
-
-def _push_argv(tree: Path, ref: str, *, dry_run: bool) -> list:
-    # --no-verify: a pre-push hook runs even for --dry-run, and must never run here.
-    return ["git", "-C", str(tree), "push", *(["--dry-run"] if dry_run else []), "--porcelain",
-            "--no-verify", "--no-follow-tags", "--recurse-submodules=no", f"--force-with-lease={ref}:",
-            "--", "origin", f"HEAD:{ref}"]
-
-
-def _to_blocks(result) -> int:
-    return sum(1 for line in (result.stdout or "").splitlines() if line.startswith("To "))
-
-
-def publish_branch(runner, tree: Path, name: str) -> str:
-    """Create ``refs/heads/<name>`` at exactly ONE destination; ``"created"`` or a typed refusal.
-
-    Nothing is resolved twice (codex B2 on agent-harness#1130 r5-r7). ``git remote get-url
-    --push --all origin`` must list exactly one destination, and the push goes to the remote
-    NAME ``origin`` -- the same list -- never to a printed string. So no URL is compared with
-    git's display form (which rewrites scp-style and credentialed URLs): the gates are COUNTS.
-    A ``--dry-run`` pre-flight must print exactly one ``To`` block (none = unavailable), and
-    the real push exactly one ``To`` block and one row for exactly ``refs/heads/<name>``.
-
-    The lease's EMPTY expected value means "must not exist", but a zero exit is NOT proof of
-    creation (a ref already at HEAD is "up to date", exit 0): creation is read from
-    ``--porcelain`` -- flag ``*``. ``--no-follow-tags --recurse-submodules=no`` keep host
-    config from widening the push; ``--no-verify`` keeps pre-push hooks from running. The
-    bot host's own git/ssh configuration (``core.sshCommand``, ``receivepack``, remote
-    helpers) is trusted; it is read at each git invocation (docs/ops/agy-upstream-watch.md).
-    """
-    ref = f"refs/heads/{name}"
-    if single_push_url(runner, tree) is None:
-        return "refused_push_destination_ambiguous"  # zero or several push destinations: push nothing
-    preflight = _run(runner, _push_argv(tree, ref, dry_run=True), check=False)
-    blocks = _to_blocks(preflight)
-    if blocks == 0:
-        return "push_unavailable"  # auth, network or a hook failure before any status
-    if blocks != 1:
-        return "refused_push_destination_ambiguous"  # git would push to several places: push nothing
-    result = _run(runner, _push_argv(tree, ref, dry_run=False), check=False)
-    lines = [line.split("\t") for line in (result.stdout or "").splitlines() if "\t" in line]
-    rows = [row for row in lines if len(row) >= 2]
-    if _to_blocks(result) != 1 or len(rows) != 1 or rows[0][1] != f"HEAD:{ref}":
-        return "push_unavailable"  # no single row for exactly our ref at a single destination
-    flag, summary = rows[0][0].strip(), (rows[0][2] if len(rows[0]) > 2 else "")
-    if flag == "*" and getattr(result, "returncode", 1) == 0:
-        return "created"
-    if flag == "=":
-        return "refused_branch_exists"  # already there, even at our own HEAD: never adopted
-    if flag == "!" and "stale info" in summary:
-        return "refused_branch_exists"
-    if flag == "!" and "refname conflict" in summary:
-        return "refused_ref_conflict"  # a directory/file ref conflict, e.g. a plain `agy-watch`
-    if flag == "!" and "remote rejected" in summary:
-        return "refused_push_remote_rejected"  # hook, ruleset, protection
-    return "refused_push_failed"
+LOGIN_EXPIRED = "gemini_login_expired"
+SERIES_VIOLATION = "series_violation"
+SERIES_UNAVAILABLE = "series_unavailable"
+#: What the renewal raises when the login is still not usable after it: the same
+#: ``gemini_login_expired``. Any other failure of the renewal propagates.
+_RENEWAL_REFUSALS = frozenset({"gemini_credential_near_expiry", "gemini_credential_refresh_timeout",
+                               "seat_profile_unavailable"})
 
 
 def _run(runner, argv, **kwargs):
@@ -283,6 +78,11 @@ _IDENTITY_PROGRAM = ("import sys; sys.path.insert(0, sys.argv[1]); "
                      "from phase_loop_runtime import __version__; "
                      "from phase_loop_runtime.agy_qualification import seat_qci; "
                      "print(seat_qci()); print(__version__)")
+# The PREPARED tree's own classifier (``agy_qualification._classify_failure``), called, never
+# copied or changed (ROLLJOB-detail §2.3).
+_CLASSIFY_PROGRAM = ("import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); "
+                     "from phase_loop_runtime.agy_qualification import _classify_failure; "
+                     "print(_classify_failure(Path(sys.argv[2]), sys.argv[3]))")
 
 
 def tree_identity(tree: Path, *, python: str, runner) -> tuple[str, str]:
@@ -293,14 +93,24 @@ def tree_identity(tree: Path, *, python: str, runner) -> tuple[str, str]:
     return lines[0], lines[1]
 
 
+def classify_failure(tree: Path, root: Path, operation: str, *, python: str, runner) -> str:
+    """``failed`` or ``transient`` for a failed operation's directory, by the prepared tree's
+    ``_classify_failure``. Anything unreadable is ``failed`` (a violation stops the tick)."""
+    done = _run(runner, [python, "-I", "-c", _CLASSIFY_PROGRAM, str(tree / "phase-loop-runtime/src"),
+                         str(root), operation], check=False)
+    verdict = (done.stdout or "").strip() if getattr(done, "returncode", 1) == 0 else ""
+    return verdict if verdict in ("failed", "transient") else "failed"
+
+
 def pinned_versions(tree: Path) -> set[str]:
     return {member["release_version"] for member in _catalog_members(tree)}
 
 
 def edit_catalog(tree: Path, *, version: str, image_sha256: str, help_sha256: str, asset_sha256: str,
                  qci: str, published_at: str) -> None:
-    """Add (or replace) one member in the data catalog, the only file a new member edits
-    (AGYROLL §3.1). A replaced member keeps its ``pinned`` flag, which only a human sets."""
+    """Add (or replace) one member in the prepared tree's data catalog, the only file a member
+    edits (AGYROLL §3.1). A replaced member keeps its ``pinned`` flag, which only a human
+    sets. This edit is local to the prepared tree: it is never pushed."""
     path = tree / CATALOG
     catalog = json.loads(path.read_text())
     members = catalog["routes"]["linux-x64"]
@@ -318,17 +128,36 @@ def _catalog_members(tree: Path) -> list[dict]:
     return gh.parse_catalog((tree / CATALOG).read_text())
 
 
-def _pinned_member(tree: Path, member: dict, host, transport):
-    """Re-fetch an already-pinned member's image; its release asset digest and image digest
-    must equal its committed record's."""
+def stream_image(transport, asset, workdir=None) -> gh.VerifiedImage:
+    """One member as one sealed image, never held as ``bytes`` (EC-ROLLJOB-9).
+
+    The member is streamed to an anonymous file in the private work directory as it is
+    hashed (``fetch_member(..., sink=)``); a refusal discards the file. The image is built
+    from it with ``VerifiedImage.from_fd`` and its digest must be the member digest the
+    archive check returned. The file is closed before this returns."""
+    with tempfile.TemporaryFile(dir=workdir) as sink:
+        digest = agy_provenance.fetch_member(transport, asset, sink=sink.fileno())
+        os.lseek(sink.fileno(), 0, os.SEEK_SET)
+        image = gh.VerifiedImage.from_fd(sink.fileno())
+    if image.sha256 != digest:
+        image.close()
+        raise agy_provenance.ProvenanceError(agy_provenance.UNVERIFIED)
+    return image
+
+
+def _pinned_member(tree: Path, member: dict, host, transport, workdir=None):
+    """Re-fetch an existing member's image; its release asset digest and image digest must
+    equal its committed record's. Returns ``(asset, image, help_sha256)``; the caller closes
+    the image."""
     record = json.loads((tree / "plans/evidence" / member["record"]).read_text())
     asset = agy_provenance.release_asset(agy_provenance.release_by_tag(transport, member["release_version"]), host)
     if asset.digest != record["upstream_asset_sha256"]:
         raise agy_provenance.ProvenanceError(agy_provenance.UNVERIFIED)
-    digest, data = agy_provenance.fetch_member(transport, asset, keep_bytes=True)
-    if digest != member["image_sha256"] or digest != record["image_sha256"]:
+    image = stream_image(transport, asset, workdir)
+    if image.sha256 != member["image_sha256"] or image.sha256 != record["image_sha256"]:
+        image.close()
         raise agy_provenance.ProvenanceError(agy_provenance.UNVERIFIED)
-    return asset, gh.VerifiedImage.from_bytes(data), member["help_sha256"]
+    return asset, image, member["help_sha256"]
 
 
 def summarize(tree: Path, series: Path, asset, image_sha256: str, help_sha256: str, *,
@@ -337,8 +166,8 @@ def summarize(tree: Path, series: Path, asset, image_sha256: str, help_sha256: s
     """The redacted record, in the shape of a committed record (see the release process's
     regeneration rule): each operation row is its receipt restricted to the template row's
     keys. A requalified member is its own template; a new one takes the newest other. The
-    record is v2 (AGYROLL §3.2): bound to the tree's seat QCI, with no source pins and, until
-    ROLLJOB, no signatures.
+    record is v2 (AGYROLL §3.2): bound to the tree's seat QCI, with no source pins and an
+    empty ``signatures`` list, to which the tick appends the job signature (ROLLJOB-detail §2.4).
 
     ``attestation`` and ``second_channel`` go into ``upstream``. ``second_channel=None`` keeps
     the committed value, so only a requalified member (its own template) may pass it."""
@@ -397,167 +226,275 @@ def _tree_python(tree: Path, python: str, args, *, image_fd: int, runner, env):
                 pass_fds=(image_fd,))
 
 
+def _measure_help(tree, python, image, path: Path, *, runner, env) -> str:
+    fd = image.reopen()
+    try:
+        _tree_python(tree, python, ["--measure-help", "--output", str(path)], image_fd=fd, runner=runner, env=env)
+    finally:
+        os.close(fd)
+    return sha256(path.read_bytes()).hexdigest()
+
+
+def run_series(tree, python, image, help_path: Path, workdir: Path, version: str, *, runner, env):
+    """The series (the three operations, then ``--validate``) for one image, as the prepared
+    tree's shim runs it. Returns the passing series directory, or a status: a ``failed``
+    classification (or a ``--validate`` refusal) is ``series_violation`` at once; a
+    ``transient`` one retries the whole series in a fresh directory, ``SERIES_RETRIES``
+    attempts in all, after which it is ``series_unavailable``."""
+    shim = str(tree / "phase-loop-runtime/scripts/qualify_gemini_heartbeat.py")
+    for attempt in range(1, policy.SERIES_RETRIES + 1):
+        series = workdir / "series" / f"{version}-{attempt}"
+        series.mkdir(parents=True)
+        failed = None
+        try:
+            for operation in OPERATIONS:
+                failed = operation
+                fd = image.reopen()
+                try:
+                    _tree_python(tree, python, ["--operation", operation, "--output", str(series / operation),
+                                                "--help-evidence", str(help_path)],
+                                 image_fd=fd, runner=runner, env=env)
+                finally:
+                    os.close(fd)
+            failed = None
+            _run(runner, [python, shim, "--validate", str(series)], cwd=tree / "phase-loop-runtime",
+                 env={**env, "PYTHONPATH": str(tree / "phase-loop-runtime/src")})
+            return series
+        except subprocess.CalledProcessError:
+            if failed is None:
+                return SERIES_VIOLATION  # the validator refused the receipts
+            if classify_failure(tree, series / failed, failed, python=python, runner=runner) != "transient":
+                return SERIES_VIOLATION
+    return SERIES_UNAVAILABLE
+
+
+def _signing_key_safe(path) -> bool:
+    try:
+        info = os.stat(path, follow_symlinks=False) if path else None
+    except OSError:
+        return False
+    return info is not None and stat.S_ISREG(info.st_mode) and not info.st_mode & 0o077
+
+
+def _login_fresh(panel, home) -> bool:
+    try:
+        left = panel._gemini_login_left_s(home)
+    except (panel._sandbox_egress.EgressUnavailable, ValueError, OSError):
+        left = None  # no readable login file is not a fresh login
+    return left is not None and left >= panel._GEMINI_LOGIN_MIN_S
+
+
+def renew_login(home) -> bool:
+    """Whether the job's login is fresh, renewing it when it is not (R7, ROLLJOB-detail §2.1).
+
+    A fresh login costs one file read and makes no admission call. Otherwise the image that
+    lookup-only seat admission admits on this host (the subject, or a held image under
+    HOLD; never the candidate) renews it through ``_await_gemini_login`` then
+    ``_refresh_gemini_credential``. Any ``ValueError`` from admission means "no admitted
+    image" (no ``reason`` is read): ``False``, with no renewal call. A typed failure that is
+    not a refusal propagates unchanged."""
+    from . import agy_qualification
+    from . import panel_invoker as panel
+    home = Path(home)
+    if _login_fresh(panel, home):
+        return True
+    env = panel._broker_subscription_env()
+    env["HOME"] = str(home)
+    try:
+        admission = agy_qualification.admit_seat(env, None, first_use=False)
+    except ValueError:
+        return False
+    try:
+        panel._await_gemini_login(["agy", "models"], env)
+        try:
+            panel._refresh_gemini_credential(home, admission.image)
+        except panel._sandbox_egress.SeatIdentityUnverified as exc:
+            if str(exc) not in _RENEWAL_REFUSALS:
+                raise
+    finally:
+        admission.close()
+    return _login_fresh(panel, home)
+
+
 def main(*, repo=None, dry_run=False, runner=subprocess.run, host=None, transport=None,
-         python=sys.executable, workdir=None, out=print, version=None, base_ref="origin/main") -> int:
+         python=sys.executable, workdir=None, out=print, version=None, base_ref="origin/main",
+         intake_transport=None, environ=None, home=None, store=None) -> int:
     """One watch tick. ``version`` selects any listed stable release instead of the newest
-    (an operator re-run, or a dry run against a non-pinned build). ``base_ref`` is for a dry
-    run only: a published tick always prepares from ``origin/main``."""
+    (an operator re-run, which also ignores the wait after a refused submission, or a dry run
+    against a non-pinned build). ``base_ref`` is for a dry run only: a submitting tick always
+    prepares from ``origin/main``."""
     if base_ref != "origin/main" and not dry_run:
         raise ValueError("agy watch: --base-ref is only for --dry-run")
+    environ = os.environ if environ is None else environ
+
+    def finish(status, code, **extra):
+        out(json.dumps({"agy_watch": status, **extra}))
+        if not dry_run:
+            policy.write_tick_status(status, code, version=extra.get("version"), environ=environ)
+        return code
+
     host = host or agy_provenance.detect_platform()
     if host.name != RELEASE_ROUTE_PLATFORM:
-        out(json.dumps({"agy_watch": "platform_not_proposed", "platform": host.name}))
-        return 0
+        return finish("platform_not_proposed", 0, platform=host.name)
+    intake = None
+    if not dry_run:
+        try:
+            intake = agy_intake.preflight(environ)
+        except agy_intake.IntakeError as exc:
+            return finish(str(exc), 2)
+        if not _signing_key_safe(environ.get(policy.SIGNING_KEY_ENV)):
+            return finish(policy.SIGNING_UNAVAILABLE, 2)
+    if not renew_login(home or environ.get("HOME") or Path.home()):
+        return finish(LOGIN_EXPIRED, 2)
     repo = Path(repo or ".").resolve()
     transport = transport or agy_provenance._Transport()
-    if version is None:
-        releases = agy_provenance.stable_releases(transport, limit=1)
-    else:
-        releases = [r for r in agy_provenance.stable_releases(transport) if r.get("tag_name") == version]
-    if not releases:
-        out(json.dumps({"agy_watch": "no_stable_release"}))
-        return 0
-    asset = agy_provenance.release_asset(releases[0], host)
+    try:
+        if version is None:
+            releases = agy_provenance.stable_releases(transport, limit=1)
+        else:
+            releases = [r for r in agy_provenance.stable_releases(transport) if r.get("tag_name") == version]
+        if not releases:
+            return finish("no_stable_release", 0)
+        asset = agy_provenance.release_asset(releases[0], host)
+    except agy_provenance.ProvenanceError as exc:
+        return finish(str(exc), 2)
     _run(runner, ["git", "-C", str(repo), "fetch", "origin", "main"])
     workdir = Path(workdir or tempfile.mkdtemp(prefix="agy-watch-"))
     tree = workdir / "tree"
-    # Detached: the watch never creates or moves a named branch, locally or in origin,
-    # except the one fresh branch it publishes below.
+    # Detached, and never pushed: the watch creates no branch, locally or in origin.
     _run(runner, ["git", "-C", str(repo), "worktree", "add", "--force", "--detach", str(tree), base_ref])
     try:
-        if asset.version in pinned_versions(tree):
-            out(json.dumps({"agy_watch": "already_pinned", "version": asset.version}))
-            return 0
-        base, qualified_under = tree_identity(tree, python=python, runner=runner)
-        login = _run(runner, ["gh", "api", "user", "-q", ".login"], cwd=repo).stdout.strip()
-        try:
-            prs = own_version_prs(open_prs(runner, repo), login, asset.version)
-        except IncompleteListing as exc:
-            out(json.dumps({"agy_watch": "refused_incomplete_pr_listing", "reason": str(exc)}))
-            return 2
-        # Up to date only when an own PR for this version carries the CURRENT base label and
-        # its head is still exactly the commit the watch pushed: the recorded oid, GitHub's
-        # headRefOid and the branch's ls-remote oid must all agree. A maintainer push is
-        # visible in BOTH live reads, so the recorded oid is what exposes it (r4 B3).
-        # The pushed oid comes from the watch's OWN local record (r5), never the editable body.
-        if any(_label_value(pr.get("body"), MARKER) == base
-               and recorded_push(pr["headRefName"], asset.version, base) is not None
-               and recorded_push(pr["headRefName"], asset.version, base) == pr.get("headRefOid")
-               == remote_branch_head(runner, repo, pr["headRefName"])
-               for pr in prs):
-            out(json.dumps({"agy_watch": "up_to_date", "version": asset.version}))
-            return 0
-        member_sha256, member = agy_provenance.fetch_member(transport, asset, keep_bytes=True)
-        try:
-            statuses = {asset.version: (agy_attestation.attestation_status(asset),
-                                        agy_attestation.second_channel_status(asset, member_sha256, host=host))}
-        except agy_provenance.ProvenanceError as exc:
-            # A second-channel mismatch or an unavailable status: nothing is pushed.
-            out(json.dumps({"agy_watch": str(exc), "version": asset.version}))
-            return 2
-        images = {asset.version: (asset, gh.VerifiedImage.from_bytes(member), None)}
-        del member
-        try:
-            for existing_member in _catalog_members(tree):
-                images[existing_member["release_version"]] = _pinned_member(tree, existing_member, host, transport)
-            try:
-                for version_key, (member_asset, _, _) in images.items():
-                    if version_key != asset.version:
-                        # A requalified member: a fresh attestation; its committed second channel stays.
-                        statuses[version_key] = (agy_attestation.attestation_status(member_asset), None)
-            except agy_provenance.ProvenanceError as exc:
-                out(json.dumps({"agy_watch": str(exc), "version": asset.version}))
-                return 2
-            env = dict(os.environ)
-            new_image = images[asset.version][1]
-            new_member = {"version": asset.version, "image_sha256": new_image.sha256, "asset_sha256": asset.digest,
-                          "qci": base, "published_at": releases[0].get("published_at")}
-            edit_catalog(tree, help_sha256="0" * 64, **new_member)
-            help_paths = {}
-            for version_key, (member_asset, image, pinned_help) in images.items():
-                help_path = workdir / f"agy-help-{version_key}.txt"
-                fd = image.reopen()
-                try:
-                    _tree_python(tree, python, ["--measure-help", "--output", str(help_path)], image_fd=fd,
-                                 runner=runner, env=env)
-                finally:
-                    os.close(fd)
-                measured = sha256(help_path.read_bytes()).hexdigest()
-                if pinned_help is not None and measured != pinned_help:
-                    raise ValueError(f"agy watch: pinned member {version_key} help changed")
-                help_paths[version_key] = help_path
-            help_sha256 = sha256(help_paths[asset.version].read_bytes()).hexdigest()
-            edit_catalog(tree, help_sha256=help_sha256, **new_member)
-            for version_key, (member_asset, image, _) in images.items():
-                series = workdir / "series" / version_key
-                series.mkdir(parents=True)
-                for operation in OPERATIONS:
-                    fd = image.reopen()
-                    try:
-                        _tree_python(tree, python, ["--operation", operation, "--output", str(series / operation),
-                                                    "--help-evidence", str(help_paths[version_key])],
-                                     image_fd=fd, runner=runner, env=env)
-                    finally:
-                        os.close(fd)
-                _run(runner, [python, str(tree / "phase-loop-runtime/scripts/qualify_gemini_heartbeat.py"),
-                              "--validate", str(series)], cwd=tree / "phase-loop-runtime",
-                     env={**env, "PYTHONPATH": str(tree / "phase-loop-runtime/src")})
-                member_help = sha256(help_paths[version_key].read_bytes()).hexdigest()
-                record_name = f"agy-{version_key}-linux-x64-qualification.json"
-                attestation, second_channel = statuses[version_key]
-                record = summarize(tree, series, member_asset, image.sha256, member_help,
-                                   qci=base, qualified_under=qualified_under,
-                                   template_name=None if version_key == asset.version else record_name,
-                                   attestation=attestation, second_channel=second_channel)
-                (tree / "plans/evidence" / record_name).write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
-            _run(runner, [python, str(tree / "phase-loop-runtime/scripts/verify_qualified_agy_image.py"),
-                          "--contract"], cwd=tree)
-        finally:
-            for _, image, _ in images.values():
-                image.close()
-        if dry_run:
-            out(json.dumps({"agy_watch": "dry_run_verified", "version": asset.version, "tree": str(tree),
-                            "image_sha256": member_sha256}))
-            return 0
-        _run(runner, ["git", "-C", str(tree), "add", "-A"])
-        _run(runner, ["git", "-C", str(tree), "-c", "commit.gpgsign=false", "commit", "-m",
-                      f"feat(agy): qualify the {asset.version} entry image (agy watch, agent-harness#1076)\n\n"
-                      f"{MARKER} {base}"])
-        branch = fresh_branch_name(asset.version)
-        pushed = _run(runner, ["git", "-C", str(tree), "rev-parse", "HEAD"]).stdout.strip()
-        if not ensure_push_state():
-            out(json.dumps({"agy_watch": "refused_push_state_unavailable"}))
-            return 2  # nothing pushed: a push the watch could not record must never happen
-        outcome = publish_branch(runner, tree, branch)
-        if outcome != "created":
-            out(json.dumps({"agy_watch": outcome, "branch": branch}))
-            return 2
-        record_push(branch, pushed, asset.version, base)
-        if recorded_push(branch, asset.version, base) != pushed:
-            out(json.dumps({"agy_watch": "push_record_unverified", "branch": branch}))
-            return 2  # the branch is an orphan (documented); no PR is opened for it
-        supersedes = ", ".join(f"#{pr['number']}" for pr in prs)
-        body = (f"Automated upstream-watch qualification of agy {asset.version} (agent-harness#1076).\n\n"
-                f"Records produced from this branch's own tree; `verify_qualified_agy_image.py --contract` passed.\n"
-                f"Never merged by the watch.\n\n"
-                + (f"Supersedes (maintainer to close): {supersedes}\n\n" if supersedes else "")
-                + f"{VERSION_LABEL} {asset.version}\n{MARKER} {base}\n"
-                f"{PUSHED_LABEL} {pushed} (display only; the watch reads its own local record)\n")
-        # If this fails after the push, the fresh branch is left as an orphan: the watch never
-        # deletes a ref (docs/ops/agy-upstream-watch.md).
-        created = _run(runner, ["gh", "pr", "create", "--draft", "--repo", REPO_SLUG, "--base", "main",
-                                "--head", branch, "--title", f"feat(agy): qualify agy {asset.version} (upstream watch)",
-                                "--body", body], cwd=repo)
-        # Read the PR back (read-only): it must sit on exactly the commit the watch pushed.
-        url = (created.stdout or "").strip().splitlines()[-1] if (created.stdout or "").strip() else branch
-        head = _run(runner, ["gh", "pr", "view", url, "--repo", REPO_SLUG, "--json", "headRefOid",
-                             "-q", ".headRefOid"], cwd=repo, check=False)
-        if (head.stdout or "").strip() != pushed:
-            out(json.dumps({"agy_watch": "pr_head_mismatch", "branch": branch}))
-            return 2
-        out(json.dumps({"agy_watch": "draft_pr", "version": asset.version}))
-        return 0
+        return _tick(tree, workdir, asset, releases[0], finish=finish, dry_run=dry_run, runner=runner, host=host,
+                     transport=transport, python=python, intake=intake, intake_transport=intake_transport,
+                     environ=environ, store=store, operator_version=version is not None)
     finally:
         if not dry_run:
             _run(runner, ["git", "-C", str(repo), "worktree", "remove", "--force", str(tree)], check=False)
             shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _submit(records, *, finish, version, intake, intake_transport, environ, store, **extra):
+    """Submit each signed record (kept in the outbox until its receipt is written). Any failure
+    ends the tick ``agy_intake_submit_failed``; what was not submitted stays kept."""
+    app_id, installation_id, key_path = intake
+    try:
+        # A fresh token: qualification can outlast the one that checked for a pending submission.
+        token = agy_intake.installation_token(app_id, installation_id, key_path, transport=intake_transport)
+    except agy_intake.IntakeError:
+        return finish(agy_intake.SUBMIT_FAILED, 2, version=version)
+    issues = []
+    for record in records:
+        try:
+            issues.append(agy_intake.submit(record, token, transport=intake_transport, store=store, app_id=app_id))
+        except agy_intake.IntakeError:
+            return finish(agy_intake.SUBMIT_FAILED, 2, version=version)
+        agy_intake.discard(record, environ=environ)
+    return finish("submitted", 0, version=version, issues=issues, **extra)
+
+
+def _tick(tree, workdir, asset, release, *, finish, dry_run, runner, host, transport, python, intake,
+          intake_transport, environ, store, operator_version):
+    base, qualified_under = tree_identity(tree, python=python, runner=runner)
+    if not dry_run:
+        # Signed records whose submission failed, of any version, are submitted first and never
+        # re-qualified, whether or not the newest release has a pending submission: the tick
+        # reports agy_intake_submit_failed until the outbox is empty. A kept record that main
+        # already reflects (its version is a member at its qci) is discarded.
+        on_main = {(member["release_version"], member["qci"]) for member in _catalog_members(tree)}
+        leftovers = []
+        for record in agy_intake.kept(base, environ=environ):
+            if (record["release_version"], record["qci"]) in on_main:
+                agy_intake.discard(record, environ=environ)
+            else:
+                leftovers.append(record)
+        if leftovers:
+            return _submit(leftovers, finish=finish, version=asset.version, intake=intake,
+                           intake_transport=intake_transport, environ=environ, store=store, resubmitted=True)
+    if asset.version in pinned_versions(tree):
+        return finish("already_pinned", 0, version=asset.version)
+    if not dry_run:
+        app_id, installation_id, key_path = intake
+        try:
+            token = agy_intake.installation_token(app_id, installation_id, key_path, transport=intake_transport)
+            if agy_intake.pending(asset.version, base, token, transport=intake_transport, store=store,
+                                  app_id=app_id, ignore_wait=operator_version):
+                return finish("up_to_date", 0, version=asset.version)
+        except agy_intake.IntakeError as exc:
+            return finish(str(exc), 2, version=asset.version)
+    stale = [member for member in _catalog_members(tree) if member["qci"] != base]
+    env = dict(os.environ)
+    records = []
+
+    def finish_record(record):
+        if not dry_run:
+            try:
+                record = policy.sign_record(record, environ.get(policy.SIGNING_KEY_ENV))
+            except ValueError:
+                return None
+        (tree / "plans/evidence" / f"agy-{record['release_version']}-linux-x64-qualification.json").write_text(
+            json.dumps(record, indent=2, sort_keys=True) + "\n")
+        records.append(record)
+        return record
+
+    # The newest non-member, then each member whose qci is not the tree's: one image at a time.
+    try:
+        image = stream_image(transport, asset, workdir)
+    except agy_provenance.ProvenanceError as exc:
+        return finish(str(exc), 2, version=asset.version)
+    try:
+        try:
+            attestation = agy_attestation.attestation_status(asset)
+            second_channel = agy_attestation.second_channel_status(asset, image.sha256, host=host)
+        except agy_provenance.ProvenanceError as exc:
+            # A second-channel mismatch or an unavailable status: nothing is submitted.
+            return finish(str(exc), 2, version=asset.version)
+        member = {"version": asset.version, "image_sha256": image.sha256, "asset_sha256": asset.digest,
+                  "qci": base, "published_at": release.get("published_at")}
+        edit_catalog(tree, help_sha256="0" * 64, **member)
+        help_path = workdir / f"agy-help-{asset.version}.txt"
+        help_sha256 = _measure_help(tree, python, image, help_path, runner=runner, env=env)
+        edit_catalog(tree, help_sha256=help_sha256, **member)
+        series = run_series(tree, python, image, help_path, workdir, asset.version, runner=runner, env=env)
+        if isinstance(series, str):
+            return finish(series, 2, version=asset.version)
+        record = summarize(tree, series, asset, image.sha256, help_sha256, qci=base,
+                           qualified_under=qualified_under, attestation=attestation, second_channel=second_channel)
+    finally:
+        image.close()
+    if finish_record(record) is None:
+        return finish(policy.SIGNING_UNAVAILABLE, 2, version=asset.version)
+    for existing in stale:
+        try:
+            member_asset, image, pinned_help = _pinned_member(tree, existing, host, transport, workdir)
+        except agy_provenance.ProvenanceError as exc:
+            return finish(str(exc), 2, version=asset.version)
+        try:
+            try:
+                # A requalified member: a fresh attestation; its committed second channel stays.
+                attestation = agy_attestation.attestation_status(member_asset)
+            except agy_provenance.ProvenanceError as exc:
+                return finish(str(exc), 2, version=asset.version)
+            version_key = existing["release_version"]
+            help_path = workdir / f"agy-help-{version_key}.txt"
+            if _measure_help(tree, python, image, help_path, runner=runner, env=env) != pinned_help:
+                raise ValueError(f"agy watch: member {version_key} help changed")
+            edit_catalog(tree, version=version_key, image_sha256=existing["image_sha256"], help_sha256=pinned_help,
+                         asset_sha256=existing["asset_sha256"], qci=base, published_at=existing["published_at"])
+            series = run_series(tree, python, image, help_path, workdir, version_key, runner=runner, env=env)
+            if isinstance(series, str):
+                return finish(series, 2, version=asset.version)
+            record = summarize(tree, series, member_asset, image.sha256, pinned_help, qci=base,
+                               qualified_under=qualified_under, template_name=existing["record"],
+                               attestation=attestation, second_channel=None)
+        finally:
+            image.close()
+        if finish_record(record) is None:
+            return finish(policy.SIGNING_UNAVAILABLE, 2, version=asset.version)
+    _run(runner, [python, str(tree / "phase-loop-runtime/scripts/verify_qualified_agy_image.py"), "--contract"],
+         cwd=tree)
+    if dry_run:
+        return finish("dry_run_verified", 0, version=asset.version, tree=str(tree), image_sha256=records[0]["image_sha256"])
+    for record in records:
+        agy_intake.keep(record, environ=environ)
+    return _submit(records, finish=finish, version=asset.version, intake=intake, intake_transport=intake_transport,
+                   environ=environ, store=store)

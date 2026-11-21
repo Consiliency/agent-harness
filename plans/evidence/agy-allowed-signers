@@ -1,0 +1,5 @@
+# The agy-watch job's signing key (ROLLJOB-detail §4.6). One line per key:
+#   agy-watch namespaces="agy-qualification" <key type> <key>
+# A key is enrolled by an ordinary pull request after setup (ROLLJOB-detail §7, step 20). No
+# owner key is ever listed (EC-ROLLJOB-4'). Until a key is enrolled, every intake submission
+# is refused for lack of a verified signer.
