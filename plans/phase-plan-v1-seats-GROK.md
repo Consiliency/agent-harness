@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: GROK
 roadmap: specs/phase-plans-seats-v1.md
-roadmap_sha256: b91c98ad7b9097ba411ca21f39cf390878dabac449e59d6fdfd1750915c16a09
+roadmap_sha256: 2f26635bfcb5119967735cf5d5966f1ce39695a8331d2543eb9e11c07d187018
 automation:
   suite_command: ["timeout", "600", "env", "PYTHONDONTWRITEBYTECODE=1", "PYTEST_ADDOPTS=", "uv", "run", "--project", "phase-loop-runtime", "--group", "test", "--python", "/usr/bin/python3", "-m", "pytest", "-p", "no:cacheprovider", "-p", "no:xdist", "-q", "phase-loop-runtime/tests/test_grok_seat_vocabulary.py", "phase-loop-runtime/tests/test_grok_seat_credential.py", "phase-loop-runtime/tests/test_grok_seat_egress.py", "phase-loop-runtime/tests/test_grok_seat_profile.py", "phase-loop-runtime/tests/test_seat_profiles.py", "phase-loop-runtime/tests/test_grok_jail_surface.py", "phase-loop-runtime/tests/test_grok_seat_jail.py", "phase-loop-runtime/tests/test_grok_jail_measure.py", "phase-loop-runtime/tests/test_grok_seat_provider_free.py", "phase-loop-runtime/tests/test_grok_jail_catalog.py", "phase-loop-runtime/tests/test_grok_seat_renewal.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
 ---
