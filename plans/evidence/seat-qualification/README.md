@@ -18,7 +18,7 @@ board launch. A composition refusal blocks that attempt for LA-2 remediation.
 phase-loop seat-sandbox qualify
 phase-loop seat-egress install
 phase-loop seat-window probe-tools --vendor grok
-phase-loop seat-window qualify --window W1 --monitoring-policy bounded
+phase-loop seat-window qualify --window W1 --monitoring-policy bounded --attended
 phase-loop seat-window verify --window W1
 phase-loop seat-window export --window W1 --reviewed \
   --output plans/evidence/seat-qualification/W1.json

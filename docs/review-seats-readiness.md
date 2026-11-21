@@ -7,10 +7,11 @@ rung. Every row includes `id`, `vendor`, `route`, `claude_transport`,
 `live_evidence_digest`, `status`, `exception`, `expiry`, `renewal_record`,
 `end_condition` and `interim_route`. President rows also include `rung`,
 `tool_mode` and `bound_s`. The documentation reducer changes a row to
-`done-local` only when that row is observed in the `standard` context of a
-passing W1 set: one run on the designated seat host, a standard host, under its
-one operator account (OD-12). Unobserved vendor, remote and president rows retain
-their prior status. `done-local` verification, reduction and export ignore team
+`done-local` only when that row is the window vendor's own row (Gemini for W1) and is
+observed in the `standard` context of a passing W1 set: one run on the designated
+seat host, a standard host, under its one operator account (OD-12). A co-seat's exec
+record on the board never qualifies its row. Every other vendor, remote and president
+row retains its prior status. `done-local` verification, reduction and export ignore team
 contexts. `done-team` is a later status for a row also qualified on a shared team
 host under two operator accounts; a later `done-team` validator owns the retained
 team fields and peer observations, no reducer path emits that status, and no EC,
