@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: GROK
 roadmap: specs/phase-plans-seats-v1.md
-roadmap_sha256: b91c98ad7b9097ba411ca21f39cf390878dabac449e59d6fdfd1750915c16a09
+roadmap_sha256: 0e04c1a178d1c1e7912644823733cac84e7e9ef48d3f92fc3ed3e4446b0b065f
 automation:
   suite_command: ["timeout", "900", "env", "PYTEST_ADDOPTS=", "python3", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_grok_seat_containment.py", "phase-loop-runtime/tests/test_seat_credentials.py", "phase-loop-runtime/tests/test_seat_route_contract.py", "phase-loop-runtime/tests/test_seat_notices.py", "phase-loop-runtime/tests/test_grok_seat_jail.py", "phase-loop-runtime/tests/test_grok_sandbox_seat_approval.py", "phase-loop-runtime/tests/test_seat_profiles.py", "phase-loop-runtime/tests/test_seat_jail_qualification_entry.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
 ---

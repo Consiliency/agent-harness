@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: TEAMHOST
 roadmap: specs/phase-plans-seats-v1.md
-roadmap_sha256: b91c98ad7b9097ba411ca21f39cf390878dabac449e59d6fdfd1750915c16a09
+roadmap_sha256: 0e04c1a178d1c1e7912644823733cac84e7e9ef48d3f92fc3ed3e4446b0b065f
 automation:
   suite_command: ["timeout", "900", "uv", "run", "--quiet", "--project", "phase-loop-runtime", "--group", "test", "--python", "3.14", "--python-preference", "only-system", "--locked", "python", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_seats_teamhost_subject.py", "phase-loop-runtime/tests/test_seats_teamhost_accounts.py", "phase-loop-runtime/tests/test_seats_teamhost_gemini.py", "phase-loop-runtime/tests/test_seats_teamhost_integration.py", "phase-loop-runtime/tests/test_seats_teamhost_doctor.py", "phase-loop-runtime/tests/test_seats_teamhost_overlay.py", "phase-loop-runtime/tests/test_seats_teamhost_switchon.py", "phase-loop-runtime/tests/test_seat_jail_prerequisites_1357.py", "phase-loop-runtime/tests/test_agy_self_qualification.py", "phase-loop-runtime/tests/test_seat_host_uid_1098.py", "phase-loop-runtime/tests/test_sandbox_policy.py", "phase-loop-runtime/tests/test_agy_integrity_seat_admission.py", "phase-loop-runtime/tests/test_doctor_bom.py", "phase-loop-runtime/tests/test_seat_profiles.py", "phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py", "phase-loop-runtime/tests/test_seat_launch_helpers_trusted.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
 ---
