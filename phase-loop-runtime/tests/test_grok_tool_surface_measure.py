@@ -2587,3 +2587,71 @@ def test_a_witness_argument_refusal_leaves_the_rehearsal_retryable(bench, monkey
     bench = Bench(bench.root, monkeypatch)
     code, report = bench.cli("--attended", "--rehearse", "--route", "review")
     assert code == 0 and report["result"] == "passed"
+
+# ================== erratum 8: per-image tolerated refusals, the rehearsal, the client log
+
+ARCHIVE = ("GET", gts.INFERENCE_HOST, "/v1/bundle/archive", "deny")
+ROOT = ("GET", gts.INFERENCE_HOST, "/", "deny")
+SUBAGENTS = ("GET", gts.INFERENCE_HOST, "/v1/subagents/bundle", "deny")
+FEEDBACK = ("GET", gts.INFERENCE_HOST, "/v1/feedback/config", "deny")
+#: One of the two pre-turn calls on another model (grok 1.0.92).
+RESPONSES = ("POST", gts.INFERENCE_HOST, "/v1/responses", "deny")
+
+
+@pytest.fixture
+def bench92(tmp_path, monkeypatch):
+    """A bench whose stand-in binary stands for grok 1.0.92."""
+    return Bench(tmp_path, monkeypatch, image=GROK_1_0_92)
+
+
+def _rehearse(bench, requests):
+    """One rehearsal of the pilot observing ``requests``: ``(exit code, report)``."""
+    bench.open_grant(planned="review", rehearse=False)
+    bench.rehearsal = Scenario(requests=list(requests), artifact=None, exit=1)
+    return bench.cli("--attended", "--rehearse", "--route", "review")
+
+
+def _pilot(bench, requests):
+    """One measurement of the pilot observing ``requests``: ``(status, result record)``."""
+    bench.open_grant(planned="review")
+    bench.default = Scenario(requests=list(requests))
+    report = bench.measure("review")[1]
+    (result,) = bench.results().values()
+    assert result["status"] == report["routes"][0]["status"]
+    return result["status"], result
+
+
+def test_each_tolerated_entry_names_the_check_that_refuses_it():
+    """The two updater CONNECTs of 1.0.89 are refused by the front; every other entry is a
+    request the rules refuse inside a tunnel to the inference host."""
+    by_check = {}
+    for entries in SHIPPED_TOLERATED.values():
+        for entry in entries:
+            by_check.setdefault(gts._refusing_check(entry), []).append(entry)
+    assert by_check["front"] == [("CONNECT", "x.ai", None),
+                                 ("CONNECT", "storage.googleapis.com", None)]
+    assert len(by_check["rules"]) == 6 and set(by_check) == {"front", "rules"}
+    assert all(host == gts.INFERENCE_HOST and path is not None
+               for _method, host, path in by_check["rules"])
+
+
+@pytest.mark.parametrize("image,entry,cause", [
+    (GROK_1_0_89, SETTINGS, "inner_host"), (GROK_1_0_89, UPDATER, "rules"),
+    (GROK_1_0_89, ARTIFACTS, "inner_host"), (GROK_1_0_92, ARCHIVE, "inner_host"),
+    (GROK_1_0_92, ROOT, "shutdown"), (GROK_1_0_92, FEEDBACK, "front"),
+    (GROK_1_0_92, RESPONSES, "inner_host"), (GROK_1_0_92, RESPONSES, "budget"),
+], ids=["settings-inner-host", "updater-rules", "artifacts-inner-host", "archive-inner-host",
+        "root-shutdown", "feedback-front", "responses-inner-host", "responses-budget"])
+@pytest.mark.parametrize("stage", ["rehearsal", "measurement"])
+def test_an_entry_is_tolerated_only_as_the_allow_lists_own_refusal(tmp_path, monkeypatch, image,
+                                                                   entry, cause, stage):
+    """A listed observation refused by any check but its own -- the inner Host check, the
+    budget, the shutdown -- is not a tolerated refusal, in a rehearsal or a measurement."""
+    bench = Bench(tmp_path, monkeypatch, image=image)
+    if stage == "rehearsal":
+        code, report = _rehearse(bench, [(*entry, cause), BUDGET_DENIED])
+        assert (code, report["reason"]) == (1, "unlisted_request"), report
+        assert report["tolerated_refusals"] == []
+    else:
+        status, result = _pilot(bench, [(*entry, cause), ALLOWED])
+        assert status == "egress_refused" and result["tolerated_refusals"] == []

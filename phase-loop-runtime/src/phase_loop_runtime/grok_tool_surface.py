@@ -2014,15 +2014,29 @@ def tolerated_refusals(binary_sha256: object) -> tuple[tuple[str, str, str | Non
     return tuple(TOLERATED_REFUSALS_BY_IMAGE.get(binary_sha256, ()))
 
 
+def _refusing_check(entry: tuple) -> str:
+    """Which of the proxy's checks refuses a tolerated entry, as its event's ``cause`` names
+    it. A ``CONNECT`` entry names a host that is not on the allow-list, so the front refuses
+    the tunnel (``front``); every other entry is a request inside a tunnel to an
+    allow-listed host, which the request rules refuse (``rules``)."""
+    return "front" if entry[0] == "CONNECT" else "rules"
+
+
 def _tolerated(events, binary_sha256: object) -> list[tuple | None]:
     """Per event, the entry of the image's list it is a tolerated refusal of, else ``None``.
     The one predicate the classification, the rehearsal and the recorded counts share, so a
-    record never calls tolerated what disqualified its launch."""
+    record never calls tolerated what disqualified its launch.
+
+    An entry is tolerated only as the allow-list's own refusal of it (erratum 8, item 2):
+    the same observation refused by another check -- the inner Host check, the budget, the
+    shutdown -- is not one."""
     entries = tolerated_refusals(binary_sha256)
     matched: list[tuple | None] = []
     for event in events:
         key = (event.method, event.host, event.path)
-        matched.append(key if event.decision == "deny" and key in entries else None)
+        matched.append(key if (event.decision == "deny" and key in entries
+                               and getattr(event, "cause", None) == _refusing_check(key))
+                       else None)
     return matched
 
 
