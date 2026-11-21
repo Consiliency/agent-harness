@@ -16496,7 +16496,7 @@ def _require_grok_launch_context(profile, role, *, argv, cwd, env) -> None:
                     and tuple(_EGRESS_LAUNCH_PREFIX.get()) == context.egress_prefix
                     and context.proxy.process.poll() is None
                     and _grok_surface.bridged_to(context.egress_prefix, context.proxy)
-                    and _grok_tool_gate(list(context.command), env, context=context))
+                    and _grok_frozen_admission(list(context.command), env, context))
     except (OSError, ValueError, TypeError, AttributeError, RuntimeError):
         admitted = False
     if not admitted:
@@ -16600,7 +16600,8 @@ def record_tool_probe(command, definitions, *, allowed_tools, version="unavailab
 
 #: What the last real ``grok_tool_gate`` call in this context admitted: ``(argv, basis)``.
 #: Read by the two callers that must know the basis, so the receipt is read once per check.
-_GROK_ADMITTED_BASIS: ContextVar["tuple[tuple[str, ...], str] | None"] = ContextVar(
+#: A frozen-basis admission also carries ``(admitted tools, surface digest)``, else ``None``.
+_GROK_ADMITTED_BASIS: ContextVar["tuple[tuple[str, ...], str, object] | None"] = ContextVar(
     "grok_admitted_basis", default=None)
 
 
@@ -16656,7 +16657,11 @@ def _grok_frozen_receipt_current(command, binary, argv_digest, record, context) 
         return True  # the provisional step: composition, never a launch (§4.4)
     return (_grok_surface.is_issued(context) and context.context_digest == current
             and _grok_argv_digest(list(context.command)) == argv_digest
-            and list(command[1:]) == list(context.command[1:]))
+            and list(command[1:]) == list(context.command[1:])
+            # The receipt the final check judged (grok tool-surface contract, erratum 8). The
+            # surface digest covers the route's tools, which the record must equal (above),
+            # so it binds the admitted names the mark carries too.
+            and record["surface_digest"] == context.surface_digest)
 
 
 def _grok_tool_gate(command, env=None, *, context=None) -> bool:
@@ -16683,7 +16688,10 @@ def _grok_tool_gate(command, env=None, *, context=None) -> bool:
     except (OSError, ValueError, TypeError, AttributeError, IndexError, RuntimeError):
         return False
     if admitted:
-        _GROK_ADMITTED_BASIS.set((tuple(command), basis))
+        snapshot = None
+        if basis == "frozen_measurement":
+            snapshot = (tuple(record["tools"]), record["surface_digest"])
+        _GROK_ADMITTED_BASIS.set((tuple(command), basis, snapshot))
     return admitted
 
 
@@ -16707,6 +16715,33 @@ def _grok_gate_with_basis(command, env=None) -> "tuple[bool, str | None]":
         _GROK_ADMITTED_BASIS.reset(token)
     basis = seen[1] if admitted and seen is not None and seen[0] == tuple(command) else None
     return admitted, basis
+
+
+def _grok_frozen_admission(command, env, context) -> bool:
+    """The final admission of a marked profile: its receipt admits it on the frozen basis,
+    the one the mark was judged on (a listing receipt in its place does not)."""
+    token = _GROK_ADMITTED_BASIS.set(None)
+    try:
+        admitted = _grok_tool_gate(command, env, context=context)
+        seen = _GROK_ADMITTED_BASIS.get()
+    finally:
+        _GROK_ADMITTED_BASIS.reset(token)
+    return bool(admitted and seen is not None and seen[0] == tuple(command)
+                and seen[1] == "frozen_measurement")
+
+
+def _grok_frozen_snapshot(command, env=None) -> "tuple[tuple[str, ...], str] | None":
+    """The provisional gate's own validated frozen receipt for ``command``: ``(admitted
+    tools, surface digest)``, or ``None`` unless it admitted a frozen-basis receipt."""
+    token = _GROK_ADMITTED_BASIS.set(None)
+    try:
+        admitted = grok_tool_gate(command, env)
+        seen = _GROK_ADMITTED_BASIS.get()
+    finally:
+        _GROK_ADMITTED_BASIS.reset(token)
+    if not admitted or seen is None or seen[0] != tuple(command):
+        return None
+    return seen[2]  # set only for a frozen-basis receipt (_grok_tool_gate)
 
 
 def probe_grok_tools(command, *, allowed_tools, runner=None):

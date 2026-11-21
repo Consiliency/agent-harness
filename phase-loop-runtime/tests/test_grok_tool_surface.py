@@ -846,7 +846,8 @@ def test_the_egress_and_composition_conditions_each_refuse_alone(seat, monkeypat
 
 
 @pytest.mark.parametrize("change", ["profile", "cwd", "egress_prefix", "proxy_exited", "role",
-                                    "record_withdrawn", "context_drift", "forged"])
+                                    "record_withdrawn", "context_drift", "forged",
+                                    "record_remeasured", "listing_receipt"])
 def test_launch_owned_holds_the_mark_to_the_launch(seat, launches, monkeypatch, change):
     command = _composed(seat)
     alive = {"proxy": None}
@@ -867,6 +868,17 @@ def test_launch_owned_holds_the_mark_to_the_launch(seat, launches, monkeypatch, 
             (pa.private_record_root() / gts.host_record_name(seat.digest)).unlink()
         elif change == "context_drift":
             monkeypatch.setattr(gts, "egress_allowlist_digest", lambda: "b" * 64)
+        elif change == "record_remeasured":
+            # A consistent newer record and receipt, admitting fewer names: not the one the
+            # final check judged, so the mark does not carry over (erratum 8).
+            assert marked.grok_launch_context.admitted_tools == tuple(
+                sorted(pi._grok_allowed_tools(command)))
+            _publish_host(_surface(seat.digest, [_route("review", command, ["read_file"])],
+                                   measured_at="2026-11-21T12:00:00Z"))
+            assert _probe(command)["passed"] and pi.grok_tool_gate(command, seat.env)
+        elif change == "listing_receipt":
+            _receipt(seat, command, "list_tools")  # a marked profile needs its frozen basis
+            assert pi.grok_tool_gate(command, seat.env)
         elif change == "forged":
             with pytest.raises(TypeError):
                 gts.LaunchContext(command=tuple(command), context_digest=gts.context_digest(),
@@ -1436,6 +1448,16 @@ def _config_change(case, profile, root):
         return added("--perms", gts.SEAT_CONFIG_MODE, "--ro-bind-data", str(descriptor),
                      destination, pass_fds=(descriptor,))
 
+    def reused(relative, descriptor):
+        """``profile`` with the data mount at ``relative`` copying from ``descriptor``."""
+        words = list(profile.mount_args)
+        at = words.index(home + "/" + relative) - 1
+        words[at] = str(descriptor)
+        return replace(profile, mount_args=tuple(words),
+                       pass_fds=tuple(sorted({*profile.pass_fds, int(descriptor)})))
+
+    dup = str(_held(os.dup(int(real))))  # shares the config's open file and offset
+
     grok = home + "/.grok"
     empty = root / "empty-directory"
     empty.mkdir(exist_ok=True)
@@ -1484,6 +1506,15 @@ def _config_change(case, profile, root):
         "chmod": lambda: added("--chmod", "0666", CONFIG_PATH),
         "remount_ro": lambda: added("--remount-ro", CONFIG_PATH),
         "overlay": lambda: added("--tmp-overlay", grok),
+        # The config's descriptor has one consumer (review of E8-A, finding 1).
+        "config_fd_as_ca": lambda: reused(gts.PROXY_PROJECTED_PATHS[0], real),
+        "config_fd_as_credential": lambda: reused(".grok/auth.json", real),
+        "duplicate_as_ca": lambda: reused(gts.PROXY_PROJECTED_PATHS[0], dup),
+        "duplicate_passed": lambda: replace(profile, pass_fds=(*profile.pass_fds, int(dup))),
+        "reopened_passed": lambda: replace(profile, pass_fds=(*profile.pass_fds, _held(
+            os.open(f"/proc/self/fd/{real}", os.O_RDONLY | os.O_CLOEXEC)))),
+        "duplicate_kept": lambda: replace(profile, keep_fds=(*profile.keep_fds, int(dup))),
+        "terminal": lambda: replace(profile, terminal_fd=int(real)),
     }[case]()
 
 
@@ -1495,7 +1526,9 @@ CONFIG_CHANGES = ("missing", "one_byte_changed", "one_byte_more", "one_byte_fewe
                   "other_descriptor", "dot_spelling", "doubled_slash_spelling",
                   "doubled_root_spelling", "dot_spelling_beside", "doubled_slash_beside",
                   "below_it", "bind_over_grok", "tmpfs_over_grok", "symlink_over_grok", "chmod",
-                  "remount_ro", "overlay")
+                  "remount_ro", "overlay", "config_fd_as_ca", "config_fd_as_credential",
+                  "duplicate_as_ca", "duplicate_passed", "reopened_passed", "duplicate_kept",
+                  "terminal")
 
 
 @pytest.mark.parametrize("case", CONFIG_CHANGES)
@@ -1823,6 +1856,88 @@ def test_a_dangling_managed_config_link_refuses(seat, monkeypatch, tmp_path, whe
                 _verify(seat, profile)
 
 
+@pytest.fixture
+def staging(tmp_path, monkeypatch):
+    """``--verify-probe initial`` on fixture policy paths: the probe's binary resolves, the
+    isolation self-check is recorded and passes, and no route row is probed."""
+    # One parent each, so one can be made unreadable alone.
+    grok = (tmp_path / "etc-grok-1" / "managed_config.toml",
+            tmp_path / "etc-grok-2" / "requirements.toml")
+    claude = tmp_path / "etc-claude-code" / "managed-settings.json"
+    for path in (*grok, claude):
+        path.parent.mkdir(exist_ok=True)
+    monkeypatch.setattr(gts, "MANAGED_CONFIG_PATHS", tuple(str(path) for path in grok))
+    monkeypatch.setattr(gts, "CHILD_ABSENT_POLICY_PATHS", (str(claude),))
+    monkeypatch.setattr(pi, "_grok_probe_identity", lambda *a, **k: ("/fixture/grok", "e" * 64))
+    isolated = []
+    monkeypatch.setattr(gts, "isolation_check",
+                        lambda **kwargs: isolated.append(kwargs) or {"passed": True})
+    monkeypatch.setattr(gts, "_probe_rows", lambda: [])
+
+    def run():
+        return gts.verify_probe("initial", expected="e" * 64, output=-1, output_path=tmp_path)
+    return SimpleNamespace(grok=grok, claude=claude, isolated=isolated, run=run, root=tmp_path)
+
+
+@pytest.mark.parametrize("which", [0, 1], ids=["managed_config", "requirements"])
+@pytest.mark.parametrize("kind", ["dangling_link", "file", "unreadable"])
+def test_staging_stops_on_either_grok_managed_path(staging, which, kind):
+    """Erratum 8, item 4: staging (``--verify-probe initial``) uses the launch guard's
+    ``lstat`` rule, so a dangling link, a file, or a path it cannot read at either grok
+    managed path stops it, before the isolation check or any projection."""
+    path = staging.grok[which]
+    if kind == "dangling_link":
+        path.symlink_to(staging.root / "nowhere")
+        assert not path.exists()
+    elif kind == "file":
+        path.write_text("")
+    else:
+        path.parent.chmod(0o000)
+    try:
+        report = staging.run()
+    finally:
+        path.parent.chmod(0o700)
+    assert report["passed"] is False and report["code"] == "managed_config_present"
+    assert report["managed_policy"]["grok_managed_present"] == [str(path)]
+    assert staging.isolated == []
+
+
+@pytest.mark.parametrize("claude", ["absent", "file", "dangling_link"])
+def test_staging_records_claude_managed_settings_and_allows_them(staging, claude):
+    if claude == "file":
+        staging.claude.write_text("{}")
+    elif claude == "dangling_link":
+        staging.claude.symlink_to(staging.root / "nowhere")
+    report = staging.run()
+    assert report["passed"] is True and report["code"] == "probe_matches", report
+    assert report["managed_policy"] == {"passed": True, "grok_managed_present": [],
+                                        "claude_managed_settings_present": claude != "absent"}
+    assert len(staging.isolated) == 1
+
+
+def test_the_staging_rule_is_the_launch_rule(tmp_path, monkeypatch):
+    """One primitive: whatever staging counts as present, the launch guard refuses."""
+    cases = {"absent": None, "file": "file", "dangling": "link", "below_a_file": "below"}
+    for name, kind in cases.items():
+        path = tmp_path / name / "requirements.toml"
+        path.parent.mkdir()
+        if kind == "file":
+            path.write_text("")
+        elif kind == "link":
+            path.symlink_to(tmp_path / "nowhere")
+        elif kind == "below":
+            path.parent.rmdir()
+            path.parent.write_text("")
+        monkeypatch.setattr(gts, "MANAGED_CONFIG_PATHS", (str(path),))
+        present = gts.managed_policy_staging()["grok_managed_present"] != []
+        assert present == (kind in {"file", "link"}), name
+        if present:
+            with pytest.raises(gts._Refused):
+                gts._check_managed_config(())
+        else:
+            gts._check_managed_config(())
+
+
 # --------------------------------------------- the forms eligible at use (erratum 8, item 1d)
 
 def test_the_forms_eligible_at_use():
@@ -1864,21 +1979,22 @@ def test_a_staged_receipt_refuses_at_the_final_check_alone(seat, launches):
 
 
 def test_a_receipt_whose_names_leave_the_non_mutating_tuple_refuses(seat, launches, monkeypatch):
-    """The admitted names are read from the receipt itself at the final check."""
+    """Eligibility is judged on the frozen snapshot the gate itself validated: the one
+    receipt read, whose admitted names the mark then carries."""
     command = _composed(seat, "review")
     with _egress(), pi._seat_command_profile(command, env=seat.env, cwd=seat.out) as (_owned, profile):
-        assert gts.is_issued(_verify(seat, profile).grok_launch_context)
-        real = pi._read_grok_receipt
-
-        def widened(cmd, env=None):
-            binary, digest, record = real(cmd, env)
-            return binary, digest, {**record, "tools": [*record["tools"], "write"]}
-        monkeypatch.setattr(pi, "_read_grok_receipt", widened)
-        assert pi._grok_tool_gate(command, seat.env) is False  # the gate itself refuses it too
-        monkeypatch.setattr(pi, "_grok_tool_gate", lambda *a, **k: True)
+        marked = _verify(seat, profile)
+        tools, surface = pi._grok_frozen_snapshot(command, seat.env)
+        assert marked.grok_launch_context.admitted_tools == tools
+        assert marked.grok_launch_context.surface_digest == surface
+        monkeypatch.setattr(pi, "_grok_frozen_snapshot",
+                            lambda cmd, env=None: ((*tools, "write"), surface))
         with pytest.raises(pi._seat_jail.SeatSandboxRefused) as refusal:
             _verify(seat, profile)
         assert refusal.value.code == REFUSED
+        monkeypatch.setattr(pi, "_grok_frozen_snapshot", lambda cmd, env=None: None)
+        with pytest.raises(pi._seat_jail.SeatSandboxRefused):
+            _verify(seat, profile)
     assert launches == []
 
 

@@ -547,7 +547,11 @@ class LaunchContext:
     cwd: str
     egress_prefix: tuple[str, ...]
     profile_fingerprint: str
-    proxy: object = field(repr=False, compare=False)
+    #: The frozen receipt the final check judged (erratum 8, item 1d): its admitted tool
+    #: names and surface digest, which the launch's own receipt must still carry.
+    admitted_tools: tuple[str, ...] = ()
+    surface_digest: str = ""
+    proxy: object = field(default=None, repr=False, compare=False)
     issuer: object = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -579,6 +583,10 @@ def profile_fingerprint(profile: Any) -> str:
 _MOUNT_ARITY = {"--tmpfs": 1, "--perms": 1, "--dir": 1, "--file": 2, "--ro-bind": 2,
                 "--ro-bind-try": 2, "--bind": 2, "--bind-try": 2, "--ro-bind-data": 2,
                 "--bind-data": 2, "--symlink": 2}
+
+
+#: The operations that copy their file from a descriptor (the first operand).
+_DATA_OPERATIONS = frozenset({"--file", "--bind-data", "--ro-bind-data"})
 
 
 def _mounts(arguments) -> list[tuple[str, tuple[str, ...]]]:
@@ -697,9 +705,24 @@ def _check_seat_config(profile: Any) -> None:
     descriptor left at its end would hand bubblewrap an empty file."""
     import fcntl
 
-    descriptor = _config_descriptor(_config_mount(_mounts(profile.mount_args)))
+    mounts = _mounts(profile.mount_args)
+    descriptor = _config_descriptor(_config_mount(mounts))
     _require(descriptor in tuple(profile.pass_fds))
     _require(descriptor not in tuple(profile.keep_fds))
+    # One consumer: bubblewrap copies every data mount from the descriptor it names, so the
+    # config's descriptor is named by its own triple and nothing else -- by number in no
+    # other operation and not as the terminal, and no other descriptor passed or kept is
+    # the same file (a duplicate shares its offset; a reopened path shares its bytes).
+    _require(sum(1 for operation, operands in mounts if operation in _DATA_OPERATIONS
+                 and operands[0] == str(descriptor)) == 1)
+    _require(profile.terminal_fd != descriptor)
+    config_file = os.fstat(descriptor)
+    for other in {*profile.pass_fds, *profile.keep_fds} - {descriptor}:
+        try:
+            info = os.fstat(other)
+        except OSError:
+            continue  # not open here, so not this file; the launch refuses it anyway
+        _require((info.st_dev, info.st_ino) != (config_file.st_dev, config_file.st_ino))
     # Only a memfd created to allow sealing can carry these seals; anything else either
     # fails the request or reports F_SEAL_SEAL alone.
     seals = fcntl.fcntl(descriptor, getattr(fcntl, "F_GET_SEALS", _F_GET_SEALS))
@@ -853,15 +876,37 @@ def _visible(path: str, mounts) -> bool:
     return shown
 
 
+def _present(path: str) -> bool:
+    """Is anything at ``path``, read with ``lstat``? Absent only on ``FileNotFoundError`` or
+    ``NotADirectoryError``: a dangling link, and any other access error, count as present."""
+    try:
+        os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def managed_policy_staging() -> dict[str, object]:
+    """Erratum 8, item 4: the read-only staging check, before a grant opens (run by
+    ``--verify-probe initial``; it launches and reads nothing else). It uses the launch
+    guard's own rule (:func:`_present`): staging stops if either grok managed path is
+    present, a dangling link included, and it records whether Claude Code's managed
+    settings exist on the host, which is allowed (the launch check proves them hidden from
+    the child). Preliminary: the launch check binds."""
+    present = [path for path in MANAGED_CONFIG_PATHS if _present(path)]
+    return {"passed": not present, "grok_managed_present": present,
+            "claude_managed_settings_present": any(_present(path)
+                                                   for path in CHILD_ABSENT_POLICY_PATHS)}
+
+
 def _check_managed_config(mounts) -> None:
     """Managed config: grok's own is absent on the host and from the child's view; Claude's
     managed settings are absent from the child's view (§4.4)."""
     for path in MANAGED_CONFIG_PATHS:
-        try:
-            os.lstat(path)
-        except (FileNotFoundError, NotADirectoryError):
-            continue
-        raise _Refused("managed configuration is present")
+        if _present(path):
+            raise _Refused("managed configuration is present")
     for path in (*MANAGED_CONFIG_PATHS, *CHILD_ABSENT_POLICY_PATHS):
         _require(not _visible(path, mounts))
 
@@ -954,13 +999,17 @@ def verify_launch_context(profile: Any, *, env: Mapping[str, str], cwd, role, pr
         _require(isinstance(state, ProvisionalContext))
         current, cwd, prefix = _check_context(panel, profile, cwd=cwd, command=state.command,
                                               role=role, proxy=proxy, jailed=jailed)
-        _require(panel._grok_tool_gate(list(state.command), env))
+        # The one receipt read: the frozen snapshot the gate itself validated.
+        snapshot = panel._grok_frozen_snapshot(list(state.command), env)
+        _require(snapshot is not None)
+        assert snapshot is not None
+        admitted, surface = snapshot
         # Erratum 8, item 1d: at use, only a form with no writing tool; `staged` is
         # ineligible under grok_seat_context.v1 and refused here, before any spawn.
-        receipt = panel._read_grok_receipt(list(state.command), env)
-        _require(receipt is not None and eligible_at_use(state.command, receipt[2].get("tools")))
+        _require(eligible_at_use(state.command, list(admitted)))
         mark = LaunchContext(command=state.command, context_digest=current, cwd=cwd,
                              egress_prefix=prefix, profile_fingerprint=profile_fingerprint(profile),
+                             admitted_tools=admitted, surface_digest=surface,
                              proxy=proxy, issuer=_ISSUER)
     except Exception as exc:  # noqa: BLE001 - every failure is the one public refusal (§4.6)
         raise SeatSandboxRefused("grok_tool_surface_unverified") from exc
@@ -3595,7 +3644,12 @@ def verify_probe(kind: str, *, expected: str, output: int, output_path: Path,
     if resolved != expected:
         return {"passed": False, "code": "probe_binary_mismatch"}
     expected_rows: dict[str, tuple[bool, str]] = {}
+    staging = None
     if kind == "initial":
+        # Erratum 8, item 4: managed policy, read-only and before anything is projected.
+        staging = managed_policy_staging()
+        if not staging["passed"]:
+            return {"passed": False, "code": "managed_config_present", "managed_policy": staging}
         isolation = isolation_check(work_root=output_path)
         if not isolation["passed"]:
             return {"passed": False, "code": isolation["code"]}
@@ -3629,8 +3683,11 @@ def verify_probe(kind: str, *, expected: str, output: int, output_path: Path,
             expected_rows[row["route"]] = (True, "frozen_measurement") if ok else (False, "none")
     mismatches = [row["route"] for row in rows
                   if (row["passed"], row["basis"]) != expected_rows.get(row["route"])]
-    return {"passed": not mismatches, "code": "probe_matches" if not mismatches else "probe_mismatch",
-            "routes": rows, "mismatches": mismatches}
+    report = {"passed": not mismatches, "code": "probe_matches" if not mismatches else "probe_mismatch",
+              "routes": rows, "mismatches": mismatches}
+    if staging is not None:
+        report["managed_policy"] = staging
+    return report
 
 
 def _check_grant_if_present(grant_id: str, binary_sha256: str) -> None:
