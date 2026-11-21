@@ -552,7 +552,8 @@ def _check_home(profile: Any, sessions: str | None = None) -> None:
     """Home: nothing in the fresh private home but the projection (§4.4): the credential
     files, the proxy projection's read-only CA file, the seat config of erratum 8 in the
     one mode :func:`seat_config_projection` composes and, for a measurement only, its one
-    scratch sessions directory (§5.1), bound from ``sessions``."""
+    scratch sessions directory (§5.1), bound from ``sessions``. Every destination is a
+    normalised absolute path, and none is the home itself or above it."""
     home = PRIVATE_HOME
     credentials = {home + "/" + relative for relative in PROJECTED_PATHS}
     projected = {home + "/" + relative for relative in PROXY_PROJECTED_PATHS}
@@ -574,6 +575,11 @@ def _check_home(profile: Any, sessions: str | None = None) -> None:
         if operation == "--perms":
             continue
         destination = operands[-1]
+        # One spelling per path, so a destination is inside the home exactly when it reads
+        # so; and after the home's own tmpfs nothing is mounted at or above the home.
+        _require(destination.startswith("/") and not destination.startswith("//")
+                 and os.path.normpath(destination) == destination)
+        _require(not _inside(home, destination))
         _require(not _inside(destination, "/etc/grok"))
         if operation == "--tmpfs":
             raise _Refused("a second tmpfs")

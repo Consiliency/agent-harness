@@ -1449,6 +1449,17 @@ def test_each_seat_config_condition_refuses_alone_at_the_final_check(seat, launc
     assert launches == []
 
 
+def test_the_home_holds_exactly_one_seat_config_mount():
+    one = gts._mounts(("--tmpfs", gts.PRIVATE_HOME, *gts.seat_config_projection(7)))
+    assert gts._config_mount(one) == gts.seat_config_projection(7)
+    assert gts._config_descriptor(gts._config_mount(one)) == 7
+    for mounts in (one[:1], [*one, *one[1:]]):
+        with pytest.raises(gts._Refused):
+            gts._config_mount(mounts)
+    with pytest.raises(gts._Refused):
+        gts._config_descriptor(("--perms", "0600", "--bind", "/host/config.toml", CONFIG_PATH))
+
+
 def test_a_frozen_basis_profile_composed_without_the_proxy_refuses(seat):
     """Composition without the ``grok-review`` proxy carries neither the projection nor the
     config; the proxy projection without the config refuses too."""
@@ -1461,6 +1472,42 @@ def test_a_frozen_basis_profile_composed_without_the_proxy_refuses(seat):
                                           role=pi.SeatLaunchRole.PROVIDER_REVIEW, proxy=_proxy())
             assert refusal.value.code == REFUSED
         assert gts.is_issued(_verify(seat, profile).grok_launch_context)
+
+
+@pytest.mark.parametrize("case", ["dot_segment", "parent_segment", "doubled_root", "doubled_slash",
+                                  "trailing_slash", "relative", "over_the_home", "above_the_home",
+                                  "root"])
+def test_a_mount_spelled_around_the_home_rule_refuses(seat, tmp_path, case):
+    """The home rule reads destinations as written, so each is one normalised absolute
+    spelling; and nothing after the home's tmpfs is mounted at or above the home."""
+    command = _composed(seat)
+    home = gts.PRIVATE_HOME
+    empty = tmp_path / "empty"
+    empty.mkdir()
+
+    def data_file(destination):
+        return ("--perms", "0600", "--file", str(_memfd(b"")), destination)
+    extra = {
+        "dot_segment": lambda: data_file("/home/./phase-loop-seat/.grok/requirements.toml"),
+        "parent_segment": lambda: data_file("/home/x/../phase-loop-seat/.grok/requirements.toml"),
+        "doubled_root": lambda: data_file("/" + home + "/.grok/requirements.toml"),
+        "doubled_slash": lambda: data_file("/home//phase-loop-seat/.grok/requirements.toml"),
+        "trailing_slash": lambda: ("--ro-bind", str(empty), "/home/"),
+        "relative": lambda: data_file("home/phase-loop-seat/.grok/requirements.toml"),
+        "over_the_home": lambda: ("--ro-bind", str(empty), home),
+        "above_the_home": lambda: ("--ro-bind", str(empty), "/home"),
+        "root": lambda: ("--ro-bind", str(empty), "/"),
+    }[case]()
+    with _egress(), pi._seat_command_profile(command, env=seat.env, cwd=seat.out) as (_owned, profile):
+        stock = _projected(profile, _proxy())
+        assert gts.is_issued(_verify(seat, stock).grok_launch_context)
+        with pytest.raises(pi._seat_jail.SeatSandboxRefused) as refusal:
+            _verify(seat, replace(stock, mount_args=(*stock.mount_args, *extra)))
+        assert refusal.value.code == REFUSED
+        # Control: the same kind of mount beside the home, normally spelled, is admitted.
+        beside = ("--ro-bind", str(empty), "/home/phase-loop-seat-beside")
+        assert gts.is_issued(_verify(seat, replace(
+            stock, mount_args=(*stock.mount_args, *beside))).grok_launch_context)
 
 
 @contextlib.contextmanager
