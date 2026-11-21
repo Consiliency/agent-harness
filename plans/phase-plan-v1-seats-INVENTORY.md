@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: INVENTORY
 roadmap: specs/phase-plans-seats-v1.md
-roadmap_sha256: 2f26635bfcb5119967735cf5d5966f1ce39695a8331d2543eb9e11c07d187018
+roadmap_sha256: 9d1d149a4709dbf7c67dbdbb957228ff8a06d36570e1f9cb77bcc039b96a7ac4
 automation:
   suite_command:
     - timeout

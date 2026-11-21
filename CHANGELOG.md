@@ -213,6 +213,41 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Changed
 
+- The W0 bake-off kit runs in two sessions (SEATS CLAUDE OQ-4, decided 2026-11-21, agent-harness#1820):
+  `python -m phase_loop_runtime.claude_bakeoff run --session 1|2` is now required. Session 1
+  runs blocks 1-2 (print, control) and preflights only those arms, so it needs no `sdk`.
+  Session 2 runs blocks 3-6 and refuses before any credential, CA or meter reading until
+  `sdk` is admitted and session 1's records are present. Neither session overwrites records
+  already there, and an arm stopped in session 1 stays stopped. The run plan now fixes
+  `sessions: 2` and `meter_readings: 8`; each session opens with its own reading, and the
+  private ledger keeps session 1's readings for session 2. V7 checks only the latest OD-3b
+  section: it must cite the evidence digest of the sessions it names
+  (`digest --through-session N`), name them on a `**W0 sessions:**` line, and name no
+  native transport without records. Session 2 records
+  without session 1's fail. `validate` and `digest` say when only session 1 is present,
+  which is an interim set, not the complete bake-off.
+  - A session holds an exclusive lock on the evidence directory. Records are created
+    exclusively and never replaced.
+  - A security outcome is written to the private note as soon as it is seen.
+  - Meter values are typed: a number, `none` or `unavailable`. A blank is asked again. All
+    three meters are resolved before ranking, and any unresolved or backwards value makes
+    the block `unknown`.
+  - Session 2 starts only on session 1's private ledger, salt and comparison identity (the
+    bundle, model, effort and board). It also needs session 1's complete records and, for
+    `sdk`, its capture twin, G1 and a current GL-2 receipt.
+  - V7 refuses an OD-3b heading whose section id is on more than one heading. It requires
+    one default, one digest and one `**W0 sessions:**` line in the latest OD-3b section,
+    never `tui`. The digest covers the records of the sessions it names
+    (`digest --through-session N`), so session 2's records can land beside an interim
+    section.
+  - Control files must report the run plan's model. Each must be a regular file, not a
+    link, modified after its block's brief, and given only once per window by device and
+    inode.
+  - A private ledger, salt, identity, security note or control-file list that exists but
+    is not a readable regular file (a FIFO, socket, device, directory or link) refuses
+    with a diagnostic, without blocking. An existing salt must also have the kit's shape,
+    in session 1 as well.
+
 - The agy upstream watch is now the rolling catalog job (AGYROLL ROLLJOB). It runs every
   hour and makes no git write. Each tick checks its keys and the new `agy-watch` extra
   before any live operation. It renews the Gemini login only with an image that seat

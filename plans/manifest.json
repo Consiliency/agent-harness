@@ -15459,7 +15459,7 @@
           "sha256": "60fd406574d87f512a94a373fa22cddc56f9c455147a2ec8ad0c5f398ca39102"
         },
         "plans/seats-teamhost-contract.md": {
-          "sha256": "37af205d8280ee82412bcf1ead5e1603011623bab04ddcd2ae594d601fcf4186"
+          "sha256": "91a7261323a12e2455ef8445b736a6a7749d06e162b4b34be85e525e046b1818"
         }
       },
       "gate_status": "declared_not_produced",
