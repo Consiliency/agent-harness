@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from phase_loop_runtime.panel_invoker import terminal_verdict
+
 DATA = Path(__file__).parent / "data" / "seats_pi"
 UNLISTED = {"manifest.json", "README.md"}
 PROVENANCE = {"recorded", "stub_witness", "derived", "synthetic"}
@@ -132,6 +134,34 @@ def final_assistant(events):
     return ends[-1] if ends else None
 
 
+def final_text(message):
+    return "".join(block["text"] for block in message["content"] if block["type"] == "text")
+
+
+def verdict_ineligibility(stream_text, witness_records, proxy_summary, admitted_models):
+    """None when a run's verdict may count (contract §11), else the first failing input."""
+    if grammar_problem(stream_text) is not None:
+        return "grammar"
+    if proxy_summary["allowed_inference_count"] != len(witness_records):
+        return "count_mismatch"
+    final = final_assistant([json.loads(line) for line in stream_text.splitlines()])
+    rec = next((r for r in witness_records if r["response_id"] == final.get("responseId")), None)
+    if rec is None:
+        return "no_witness_for_final"
+    if rec is not witness_records[-1]:
+        return "not_final_response"
+    if not (rec["completed"] and 200 <= rec["status"] < 300):
+        return "not_completed"
+    text = final_text(final)
+    if rec["output_sha256"] != hashlib.sha256(text.encode()).hexdigest():
+        return "digest_mismatch"
+    if rec["upstream_model"] not in admitted_models.get(final.get("model"), ()):
+        return "model_not_admitted"
+    if terminal_verdict(text) is None:
+        return "no_verdict"
+    return None
+
+
 def events(name):
     return [json.loads(line) for line in (DATA / "events" / f"{name}.jsonl").read_text().splitlines()]
 
@@ -231,8 +261,11 @@ def test_recorded_error_streams_end_in_an_assistant_error_with_aborted_false(nam
     ("settled-aborted", "aborted"),
     ("unknown-tool", "unknown_tool"),
     ("no-session-header", "no_session_header"),
+    ("missing-agent-end", "no_agent_end"),
+    ("misplaced-agent-end", "no_agent_end"),
+    ("tooled-verdict-eligible", None),
 ])
-def test_derived_streams_are_refused_for_their_stated_reason(name, reason):
+def test_derived_streams_give_their_stated_grammar_result(name, reason):
     assert grammar_problem((DATA / "events" / "derived" / f"{name}.jsonl").read_text()) == reason
 
 
@@ -257,18 +290,22 @@ def test_witness_digest_and_response_id_bind_the_final_assistant_text(name):
     assert rec["output_sha256"] == hashlib.sha256(text.encode()).hexdigest()
 
 
-def test_identical_error_bodies_are_told_apart_only_by_the_witness_status():
-    names = ("http-401", "http-403", "http-500")
-    messages = {final_assistant(events(n))["errorMessage"] for n in names}
-    assert len(messages) == 1
-    assert [witness(n)[0]["status"] for n in names] == [401, 403, 500]
-    assert [proxy(n)["requests"][0]["status_sent"] for n in names] == [401, 403, 500]
+def test_identical_error_bodies_on_the_wire_are_told_apart_only_by_the_witness_status():
+    names = ("http-401", "http-403", "http-429", "http-500")
+    digests = {proxy(n)["requests"][0]["response_body_sha256"] for n in names}
+    assert len(digests) == 1 and _is_hex64(digests.pop())
+    assert [proxy(n)["requests"][0]["status_sent"] for n in names] == [401, 403, 429, 500]
+    assert [witness(n)[0]["status"] for n in names] == [401, 403, 429, 500]
+    # Pi's own text cannot carry the distinction: 401, 403 and 500 read the same, and 429 is rewritten.
+    assert len({final_assistant(events(n))["errorMessage"] for n in ("http-401", "http-403", "http-500")}) == 1
 
 
 @pytest.mark.parametrize("name", ERRORS)
-def test_disabled_retries_give_one_inference_post_per_error(name):
-    assert proxy(name)["pi_inference_count"] == 1
-    assert len(witness(name)) == 1
+def test_admitted_inference_posts_are_counted_whatever_the_response_status(name):
+    p = proxy(name)
+    assert p["pi_inference_count"] == 1 and p["allowed_inference_count"] == 1
+    [rec] = witness(name)
+    assert rec["status"] == p["requests"][0]["status_sent"]
 
 
 def test_tool_originated_post_leaves_witness_and_proxy_counts_unequal():
@@ -327,3 +364,93 @@ def test_every_invalid_store_states_its_refusal_and_the_duplicate_key_is_real():
     pairs = []
     json.loads((DATA / "stores" / "duplicate-key.json").read_text(), object_pairs_hook=lambda kv: pairs.append(kv) or dict(kv))
     assert [k for k, _ in pairs[-1]] == ["openai-codex", "openai-codex"]
+
+
+ELIGIBLE = "tooled-verdict-eligible"
+
+
+def _route_admitted():
+    return json.loads((DATA / "routes" / "route-record.synthetic.json").read_text())["admitted_models"]
+
+
+def _eligible_inputs():
+    text = (DATA / "events" / "derived" / f"{ELIGIBLE}.jsonl").read_text()
+    wit = [json.loads(line) for line in (DATA / "witness" / "derived" / f"{ELIGIBLE}.jsonl").read_text().splitlines()]
+    prox = json.loads((DATA / "proxy" / "derived" / f"{ELIGIBLE}.json").read_text())
+    return text, wit, prox
+
+
+def test_derived_eligible_tooled_verdict_satisfies_every_eligibility_input():
+    text, wit, prox = _eligible_inputs()
+    final = final_assistant([json.loads(line) for line in text.splitlines()])
+    assert prox["allowed_inference_count"] == len(wit) == 2
+    assert [r["origin"] for r in prox["requests"]] == ["pi", "pi"]
+    assert wit[-1]["response_id"] == final["responseId"] and wit[-1]["completed"] and wit[-1]["status"] == 200
+    assert wit[-1]["output_sha256"] == hashlib.sha256(final_text(final).encode()).hexdigest()
+    assert wit[-1]["upstream_model"] in _route_admitted()[final["model"]]
+    assert terminal_verdict(final_text(final)) == "AGREE"
+    assert witness_refusal((DATA / "witness" / "derived" / f"{ELIGIBLE}.jsonl").read_text()) is None
+    assert verdict_ineligibility(text, wit, prox, _route_admitted()) is None
+    meta = entry(f"events/derived/{ELIGIBLE}.jsonl")
+    assert meta["provenance"] == "derived" and len(meta["transformations"]) == 3
+
+
+@pytest.mark.parametrize(("name", "reason"), [
+    ("tooled-success", "count_mismatch"),
+    ("tooled-probe-differing-model", "count_mismatch"),
+])
+def test_recorded_tooled_runs_with_a_tool_originated_post_are_ineligible(name, reason):
+    text = (DATA / "events" / f"{name}.jsonl").read_text()
+    assert verdict_ineligibility(text, witness(name), proxy(name), _route_admitted()) == reason
+
+
+def _final_message(evs):
+    return next(ev["message"] for ev in reversed(evs)
+                if ev["type"] == "message_end" and ev["message"].get("role") == "assistant")
+
+
+def _set_final_text(evs, new):
+    for block in _final_message(evs)["content"]:
+        if block["type"] == "text":
+            block["text"] = new
+
+
+def _mutate(kind):
+    text, wit, prox = _eligible_inputs()
+    evs = [json.loads(line) for line in text.splitlines()]
+    if kind == "tool_post":
+        prox["allowed_inference_count"] += 1
+    elif kind == "changed_verdict":
+        _set_final_text(evs, final_text(_final_message(evs)).replace("AGREE", "DISAGREE"))
+    elif kind == "unknown_response_id":
+        wit[-1]["response_id"] = "resp_other"
+    elif kind == "replayed_earlier_response":
+        _final_message(evs)["responseId"] = wit[0]["response_id"]
+    elif kind == "not_completed":
+        wit[-1]["completed"] = False
+    elif kind == "upstream_model":
+        wit[-1]["upstream_model"] = "gpt-fixture-other-upstream"
+    elif kind == "no_verdict":
+        _set_final_text(evs, "No findings (offline fixture).")
+        wit[-1]["output_sha256"] = hashlib.sha256(b"No findings (offline fixture).").hexdigest()
+    text = "".join(json.dumps(ev) + "\n" for ev in evs)
+    return text, wit, prox
+
+
+@pytest.mark.parametrize(("kind", "reason"), [
+    ("tool_post", "count_mismatch"),
+    ("changed_verdict", "digest_mismatch"),
+    ("unknown_response_id", "no_witness_for_final"),
+    ("replayed_earlier_response", "not_final_response"),
+    ("not_completed", "not_completed"),
+    ("upstream_model", "model_not_admitted"),
+    ("no_verdict", "no_verdict"),
+])
+def test_one_change_to_the_eligible_case_makes_it_ineligible(kind, reason):
+    assert verdict_ineligibility(*_mutate(kind), _route_admitted()) == reason
+
+
+def test_a_stream_failing_the_grammar_is_ineligible_even_with_matching_witness_and_counts():
+    _, wit, prox = _eligible_inputs()
+    text = (DATA / "events" / "derived" / "missing-agent-end.jsonl").read_text()
+    assert verdict_ineligibility(text, wit, prox, _route_admitted()) == "grammar"
