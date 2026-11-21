@@ -1340,7 +1340,8 @@ def test_seats_firstseat_exec_record_window_board_launch(tmp_path, monkeypatch):
     assert result.gemini.input_sha256 == hashlib.sha256(pi._WINDOW_BOARD_INPUT.encode()).hexdigest()
 
 
-@pytest.mark.parametrize("change", ["kept", "absent", "changed", "unbound_tree"])
+@pytest.mark.parametrize("change", ["kept", "absent", "changed", "unbound_tree", "reused",
+                                    "squatted"])
 def test_seats_firstseat_exec_record_window_board_retains_read_receipt(
     tmp_path, monkeypatch, change,
 ):
@@ -1383,11 +1384,24 @@ def test_seats_firstseat_exec_record_window_board_retains_read_receipt(
         return pi.PanelResult(tuple(legs), president=SimpleNamespace())
 
     monkeypatch.setattr(pi, "invoke_board", invoke)
+    expected_read = {"schema": "seat_window_read.v1", "access_observed": True,
+                     "tool_observed": True,
+                     "input_sha256": hashlib.sha256(pi._WINDOW_BOARD_INPUT.encode()).hexdigest(),
+                     "tree_digest": "9" * 64}
+    if change in ("reused", "squatted"):
+        # A receipt already at the content-addressed name: reused only if it holds these values.
+        name = f"window-read-{pi._window_json_digest(expected_read)}.json"
+        held = president_adapter.write_private_record(name, expected_read)
+        if change == "squatted":
+            held.write_text(json.dumps({**expected_read, "tree_digest": "8" * 64}))
     result = pi.window_board_launch(pi.WindowBoardSpec(
         qualification_input=SimpleNamespace(repo=tmp_path, layout=SimpleNamespace()),
         monitoring_policy="bounded",
     ))
     root = president_adapter.private_record_root()
+    if change == "squatted":
+        assert not result.staged_read and result.tool_receipt_sha256 is None
+        return
     if change == "unbound_tree":
         assert not result.staged_read and result.tool_receipt_sha256 is None
         assert not list(root.glob("window-read-*.json")) if root.exists() else True
@@ -1396,14 +1410,16 @@ def test_seats_firstseat_exec_record_window_board_retains_read_receipt(
     name = f"window-read-{result.tool_receipt_sha256}.json"
     path = root / name
     assert path.is_file()
-    record = {"board_input_digest": result.gemini.input_sha256}
+    assert result.tool_receipt_sha256 == pi._window_json_digest(expected_read)
+    record = {"board_input_digest": result.gemini.input_sha256,
+              "containment_binding": {"stage_manifest_sha256": "9" * 64}}
     if change == "absent":
         path.unlink()
     elif change == "changed":
         value = json.loads(path.read_text())
         value["tree_digest"] = "8" * 64
         path.write_text(json.dumps(value))
-    if change == "kept":
+    if change in ("kept", "reused"):
         read = seat_window._source_record(name, result.tool_receipt_sha256)
         assert read["tree_digest"] == "9" * 64
         assert seat_window._read_receipt_valid(read, record)

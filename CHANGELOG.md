@@ -13,6 +13,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   (`tree_digest`, from the leg's launch binding) and the board input. The offline verifier
   requires exactly those fields and that the receipt's input is the record's board input.
   Before this, the board hashed a receipt it never wrote, so verification always failed.
+- The verifier also requires the receipt's staged tree to be the one the containment
+  binding names (the reducer binds the board leg to the reference stage). A receipt
+  already retained under its content-addressed name is reused only when it holds exactly
+  the same values; anything else there fails the staged read.
 - The Gemini window expects every other plan-tier seat as a co-seat (Claude, Codex and
   Grok). The plan-tier policy always seats Claude, so a terminated W1 board never matched
   the old Codex-and-Grok set.
