@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: FIRSTSEAT
 roadmap: specs/phase-plans-seats-v1.md
-roadmap_sha256: b91c98ad7b9097ba411ca21f39cf390878dabac449e59d6fdfd1750915c16a09
+roadmap_sha256: 2f26635bfcb5119967735cf5d5966f1ce39695a8331d2543eb9e11c07d187018
 automation:
   suite_command:
     - 'timeout'
