@@ -52,15 +52,21 @@ attribute, and its `str()` stays the code.
     `--version`.
   - It only orders candidates. Admission still requires a member-digest match.
 - **Candidate order.** First the hint. Then every other stable release in the paginated
-  listing (`per_page=100`, `MAX_LISTED = 300`), newest first.
+  listing (`per_page=100`, `MAX_LISTED = 300`), newest first. A candidate whose archive
+  refused `unverified` in the last 24 h is tried after every candidate that has not, except
+  that the hinted candidate keeps first place after a single refusal. This changes order
+  only.
 - **Per-call budget.** A candidate whose asset digest has a `member_cache` entry costs no
   download. Each call fetches at most `budget` uncached archives, with `DOWNLOAD_BUDGET = 2`.
   Each fetch writes `member_cache` before the next candidate is tried, so repeated calls make
   steady progress.
 - **Total bound.** Each (store, image) may fetch at most `TOTAL_DOWNLOAD_CAP = 12` uncached
-  archives per rolling 24 h. The fetch times ride in the MAC-bound `transient` entry. That
-  caps the worst case at 12 × `MAX_ARCHIVE_BYTES` (256 MB, AGYFRESH §1.1), about 3 GB per
-  image per day, and `member_cache` is shared across images.
+  archives per rolling 24 h. The fetch times ride in a MAC-bound `fetch_ledger` entry keyed
+  on the image and platform only, shared by every profile and runtime that uses the store.
+  Check and charge are done together under the store lock. A pass or `agy-qualification
+  clear` does not reset it; `clear --all` does. An entry whose MAC does not verify counts as
+  a reached cap. That caps the worst case at 12 × `MAX_ARCHIVE_BYTES` (256 MB, AGYFRESH
+  §1.1), about 3 GB per image per day, and `member_cache` is shared across images.
 - **Archive bounds (AGYFRESH §1.1, §6).** `MAX_MEMBER_BYTES`, `MAX_ARCHIVE_BYTES` and
   `MAX_EXPANDED_BYTES` are defined once in `agy_provenance` and read at call time.
   `read_member` refuses `unverified` when an archive's expanded bytes exceed

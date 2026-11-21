@@ -19,7 +19,8 @@ subscribed host, once.
 1. It detects the host platform. It proposes only the release route, Linux x64 glibc,
    because `qualified_provider_images.v2` has only that route. On any other platform it
    prints `platform_not_proposed` and opens nothing.
-2. It reads the newest stable release. If that version is already pinned on `origin/main`,
+2. It reads the newest stable release: the first stable entry of the release listing, one
+   request. If that version is already pinned on `origin/main`,
    the tick is a no-op. It then lists **every** open PR, paginated to the end; if it
    cannot prove the listing complete (`totalCount` against distinct nodes, and the last
    page reached), it refuses with `refused_incomplete_pr_listing` and exit 2. The tick is a
@@ -33,13 +34,25 @@ subscribed host, once.
    means "not up to date": the result is a duplicate PR, never adoption.
 3. It fetches the release asset through the pinned provenance transport, checks the
    published archive digest, and builds a sealed memfd from the archive's single
-   `antigravity` member. Nothing is installed on disk.
+   `antigravity` member. Nothing is installed on disk. It then records two statuses for the
+   release (`agy_attestation`; neither is an admission criterion):
+   - `attestation`: `absent` when GitHub lists no attestation for the asset digest,
+     `present_unverified` when it lists one (never verified);
+   - `second_channel`: the asset compared with Google's installer manifest. The manifest's
+     package must have the manifest's SHA-512 and the asset's published SHA-256 (`match`).
+     A manifest for another version gives `not_listed`, which says the second channel could
+     say nothing; it is not corroboration.
+
+   A second-channel mismatch (`agy_provenance_second_channel_mismatch`), or either status
+   unavailable (`gemini_heartbeat_provenance_unavailable`, for example a rate-limited GitHub
+   API), ends the tick with exit 2 and that code, before anything is pushed. Each requalified
+   member records a fresh `attestation` and keeps its committed `second_channel`.
 4. It works in a fresh checkout of `origin/main` with only the data catalog edited
    (`edit_catalog`: `phase_loop_runtime/data/agy_catalog.json`). From that tree it measures
    `--help` in the tree's own owned profile, then runs the three live operations through
    the tree's shim. It hands the image over as `--image-fd`, and the worker applies its
    seal check. The tree's own catalog satisfies the worker gate, so each v2 record is bound
-   to the tree's seat QCI and never depends on the recency window.
+   to the tree's seat QCI and never depends on a release's position in the listing.
    The tick still requalifies **every** catalog member on the prepared tree.
    It re-fetches each existing member's image from that member's own release and
    refuses unless the asset and image digests equal the committed record's.
@@ -133,9 +146,9 @@ systemctl --user enable --now agy-upstream-watch.timer
 
 For a dry run, which qualifies and verifies but opens no PR:
 `phase-loop agy-qualification watch --repo ~/code/agent-harness --dry-run`. A dry run
-keeps its prepared tree and prints its path. `--version <tag>` picks a specific in-window
-stable release, and `--base-ref <ref>` (dry run only) prepares from a ref other than
-`origin/main`.
+keeps its prepared tree and prints its path. `--version <tag>` picks any listed stable
+release, however far behind the newest, and `--base-ref <ref>` (dry run only) prepares from
+a ref other than `origin/main`.
 
 ## Related commands
 

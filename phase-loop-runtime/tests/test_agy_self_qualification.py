@@ -10,7 +10,7 @@ replaced by counting fakes, and store ownership / machine-id are injected.
 """
 from __future__ import annotations
 
-from hashlib import sha256
+from hashlib import sha256, sha512
 import io
 import json
 import mmap
@@ -26,11 +26,13 @@ import textwrap
 import threading
 import time
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
 q = pytest.importorskip("phase_loop_runtime.agy_qualification")
 
+from phase_loop_runtime import agy_attestation as att  # noqa: E402
 from phase_loop_runtime import agy_provenance as prov  # noqa: E402
 from phase_loop_runtime import gemini_heartbeat as gh  # noqa: E402
 
@@ -72,6 +74,48 @@ def _private_state(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(q, "read_machine_id", lambda path="/etc/machine-id": MACHINE)
 
 
+class _Answer:
+    def __init__(self, status, body):
+        self.status, self._body = status, io.BytesIO(body)
+
+    def read(self, n=-1):
+        return self._body.read(n)
+
+    def close(self):
+        pass
+
+
+class _ChannelOpener:
+    """``agy_attestation``'s opener in every test here, so nothing reaches the network: GitHub
+    lists no attestation (404), and the installer manifest names ``manifest_version`` with
+    ``package`` as its archive (by default another version, so the second channel says
+    ``not_listed``)."""
+
+    def __init__(self):
+        self.manifest_version, self.package, self.attestation, self.requests = "0.0.0", b"google package", (404, b""), []
+
+    def open(self, url, *, accept):
+        self.requests.append(url)
+        parts = urlsplit(url)
+        if parts.hostname == prov.API_HOST and "/attestations/" in parts.path:
+            return _Answer(*self.attestation)
+        if parts.hostname == att.MANIFEST_HOST:
+            return _Answer(200, json.dumps({
+                "version": self.manifest_version,
+                "url": f"{att.MANIFEST_DOWNLOAD_PREFIX}{self.manifest_version}-1/linux-x64/cli_linux_x64.tar.gz",
+                "sha512": sha512(self.package).hexdigest()}).encode())
+        if parts.hostname == att.PACKAGE_HOST:
+            return _Answer(200, self.package)
+        raise AssertionError(f"unexpected upstream-channel request {url}")
+
+
+@pytest.fixture(autouse=True)
+def upstream_channel(monkeypatch):
+    channel = _ChannelOpener()
+    monkeypatch.setattr(att, "_Opener", lambda **_: channel)
+    return channel
+
+
 def _archive(members):
     """A tar.gz of ``members``: (name, bytes | None, type) triples."""
     buffer = io.BytesIO()
@@ -111,6 +155,10 @@ class FakeTransport:
         if self.fail is not None:
             raise self.fail
         if url.startswith(f"https://{prov.API_HOST}/"):
+            query = parse_qs(urlsplit(url).query)
+            if "per_page" in query:  # the paged listing (PROVFWD-detail §1.2)
+                per_page, page = int(query["per_page"][0]), int(query.get("page", ["1"])[0])
+                return io.BytesIO(json.dumps(self.releases[(page - 1) * per_page:page * per_page]).encode())
             return io.BytesIO(json.dumps(self.releases).encode())
         return io.BytesIO(self.blobs[url])
 
@@ -204,7 +252,7 @@ def test_first_use_qualifies_once_and_later_lookups_reuse_the_record(world):
     q._HELP_MEMO.clear()
     assert _admit(world) == "locally_qualified"  # lookup only: a second board, no inference
     assert world.counter.qualify == 1
-    assert sorted(_entries(world)) == ["member_cache", "provenance", "qualified"]
+    assert sorted(_entries(world)) == ["fetch_ledger", "member_cache", "provenance", "qualified"]
 
 
 def test_a_retired_1_2_11_image_in_window_self_qualifies_on_first_use(world, monkeypatch):
@@ -220,7 +268,11 @@ def test_a_retired_1_2_11_image_in_window_self_qualifies_on_first_use(world, mon
     assert _admit(world) == "locally_qualified"
 
 
-def test_a_retired_1_2_11_image_outside_the_window_refuses_provenance(world, monkeypatch):
+def test_a_retired_1_2_11_image_outside_the_old_window_is_found_within_the_calls_its_position_needs(
+        world, monkeypatch):
+    """PROVFWD (EC-PROVFWD-1): no window. Behind four newer releases the image is the fifth
+    candidate; each call fetches at most ``DOWNLOAD_BUDGET`` archives and caches their
+    members, so the third call admits it. Mutation: restoring a slice of the listing."""
     monkeypatch.setattr(gh, "QUALIFIED_IMAGES", {
         "b5385638174a5e720e904f3a2678752534fb8414d10c2c302fa16daf56cbcfc9":
             "a12355e8fc064b330eeb25ba52de596406582752442e293083bcda6388a63b78",
@@ -229,9 +281,13 @@ def test_a_retired_1_2_11_image_outside_the_window_refuses_provenance(world, mon
     retired.add("1.2.11", world.image)
     for version in ("1.3.5", "1.4.0", "1.5.2", "1.5.3"):
         retired.add(version, f"#!/bin/sh\necho synthetic agy {version}\n".encode())
-    with pytest.raises(ValueError, match=prov.UNVERIFIED):
-        _ensure(world, transport=retired)
+    for _ in range(2):
+        with pytest.raises(ValueError, match=prov.UNVERIFIED):
+            _ensure(world, transport=retired)
     assert (world.counter.help, world.counter.qualify) == (0, 0)
+    assert _ensure(world, transport=retired)[0] == "locally_qualified"
+    downloads = [call for call in retired.calls if "/releases/download/" in call]
+    assert len(downloads) == 5 == len(set(downloads))
 
 
 def test_admission_carries_exactly_one_known_class():
@@ -2413,6 +2469,108 @@ def test_watch_base_ref_is_dry_run_only(tmp_path):
         agy_watch.main(repo=tmp_path, runner=_Runner(), host=HOST, base_ref="HEAD")
 
 
+# --------------------------------------------- PROVFWD: the unwindowed listing and two statuses
+
+def test_watch_version_selects_a_release_outside_the_old_window(tmp_path):
+    """EC-PROVFWD-6: ``--version`` takes any listed stable release. Under the window a release
+    with four newer ones was cut off and the tick said ``no_stable_release``."""
+    from phase_loop_runtime import agy_watch
+    _watch_repo(tmp_path)
+    t = FakeTransport()
+    t.add("9.9.9", b"new agy")
+    for version in ("9.9.10", "9.9.11", "9.9.12", "9.9.13"):
+        t.add(version, version.encode())
+    runner = _Runner([_page([_node(1, _label(_current_base()))])],
+                     refs={"agy-watch/9.9.9-20260101T000000Z-aaaaaaaa": "a" * 40})
+    _record("agy-watch/9.9.9-20260101T000000Z-aaaaaaaa")
+    out = []
+    assert agy_watch.main(repo=tmp_path, runner=runner, host=HOST, transport=t, workdir=tmp_path,
+                          out=out.append, version="9.9.9") == 0
+    assert json.loads(out[0]) == {"agy_watch": "up_to_date", "version": "9.9.9"}
+
+
+def test_watch_newest_release_costs_one_listing_request(tmp_path):
+    from phase_loop_runtime import agy_watch
+    tree = _watch_repo(tmp_path)
+    t = FakeTransport()
+    for i in range(150):
+        t.add(f"0.0.{i}", b"older")
+    t.add(sorted(agy_watch.pinned_versions(tree))[-1], b"already pinned")
+    out = []
+    agy_watch.main(repo=tmp_path, runner=_Runner(), host=HOST, transport=t, workdir=tmp_path, out=out.append)
+    assert "already_pinned" in out[0]
+    assert [call for call in t.calls if call.startswith(f"https://{prov.API_HOST}/")] == [
+        f"https://{prov.API_HOST}/repos/{prov.REPO}/releases?per_page=100&page=1"]
+
+
+@pytest.mark.parametrize("failure", ["mismatch", "manifest_malformed", "attestation_rate_limited"])
+def test_a_second_channel_mismatch_or_an_unavailable_status_ends_the_tick_with_no_push(
+        tmp_path, monkeypatch, upstream_channel, failure):
+    """PROVFWD-detail §3.1. Mutation: recording the status and publishing anyway."""
+    origin, _ = _bare_origin(tmp_path, [])
+    runner = _Runner(origin=origin)
+    if failure == "mismatch":
+        upstream_channel.manifest_version = "9.9.9"  # Google's package is not the GitHub asset
+    elif failure == "manifest_malformed":
+        upstream_channel.manifest_version = "9.9"
+    else:
+        upstream_channel.attestation = (403, b'{"message": "API rate limit exceeded"}')
+    code, out = _end_to_end(tmp_path, monkeypatch, runner)
+    expected = att.SECOND_CHANNEL_MISMATCH if failure == "mismatch" else prov.UNAVAILABLE
+    assert code == 2 and json.loads(out[-1]) == {"agy_watch": expected, "version": "9.9.9"}
+    assert runner.pushes() == [] and runner.created == 0 and _origin_refs(origin) == {}
+
+
+def test_the_tick_passes_both_statuses_and_a_requalified_member_keeps_its_second_channel(
+        tmp_path, monkeypatch, upstream_channel):
+    """The new member records a fresh attestation and the second channel; every requalified
+    member records a fresh attestation and keeps its committed second channel (``None``)."""
+    origin, _ = _bare_origin(tmp_path, [])
+    runner = _Runner(origin=origin)
+    t = FakeTransport()
+    t.add("9.9.9", b"new agy image")
+    upstream_channel.manifest_version = "9.9.9"
+    upstream_channel.package = t.blobs[f"{prov.DOWNLOAD_PREFIX}9.9.9/{HOST.asset}"]
+    upstream_channel.attestation = (200, json.dumps({"attestations": [{"bundle": {}}]}).encode())
+    seen = {}
+    code, out = _end_to_end(tmp_path, monkeypatch, runner, transport=t,
+                            summarize=lambda *a, **k: seen.update({a[2].version: k}) or {"synthetic": True})
+    assert code == 0 and "draft_pr" in out[-1], out
+    assert (seen["9.9.9"]["attestation"], seen["9.9.9"]["second_channel"]) == ("present_unverified", "match")
+    existing = {version: kwargs for version, kwargs in seen.items() if version != "9.9.9"}
+    assert existing and all((kwargs["attestation"], kwargs["second_channel"]) == ("present_unverified", None)
+                            for kwargs in existing.values())
+
+
+def test_summarize_writes_both_statuses_and_a_requalified_member_keeps_its_committed_second_channel(tmp_path):
+    from phase_loop_runtime import agy_watch
+    tree = _watch_repo(tmp_path)
+    existing = agy_watch._catalog_members(tree)[-1]
+    template = json.loads((tree / "plans/evidence" / existing["record"]).read_text())
+    image, help_sha = existing["image_sha256"], existing["help_sha256"]
+    series = tmp_path / "series"
+    for row in template["records"]:
+        receipt = json.loads(json.dumps(row))
+        receipt.update(image_sha256=image, help_sha256=help_sha, source_sha256={"x.py": "0" * 64},
+                       request=row["request_digests"])
+        receipt["profile"] = dict(row["profile"], image_sha256=image)
+        (series / row["operation"]).mkdir(parents=True)
+        (series / row["operation"] / "qualification.json").write_text(json.dumps(receipt))
+    new = agy_watch.summarize(tree, series, prov.ReleaseAsset("9.9.9", HOST.asset, "u", "1" * 64), image, help_sha,
+                              qci=_current_base(), qualified_under="9.0.0", attestation="absent", second_channel="match")
+    assert (new["upstream"]["attestation"], new["upstream"]["second_channel"]) == ("absent", "match")
+    again = agy_watch.summarize(tree, series, prov.ReleaseAsset(existing["release_version"], HOST.asset, "u",
+                                                                existing["asset_sha256"]),
+                                image, help_sha, qci=_current_base(), qualified_under="9.0.0",
+                                template_name=existing["record"], attestation="present_unverified",
+                                second_channel=None)
+    assert again["upstream"]["attestation"] == "present_unverified"
+    assert again["upstream"]["second_channel"] == template["upstream"]["second_channel"]
+    with pytest.raises(ValueError, match="second channel"):
+        agy_watch.summarize(tree, series, prov.ReleaseAsset("9.9.9", HOST.asset, "u", "1" * 64), image, help_sha,
+                            qci=_current_base(), qualified_under="9.0.0", second_channel=None)
+
+
 # ------------------------------------------------------------ round-1 (agent-harness#1130)
 
 def _fd_count():
@@ -2842,7 +3000,7 @@ def _origin_refs(origin):
     return {ref: oid for oid, ref in (line.split("\t") for line in out.splitlines())}
 
 
-def _end_to_end(tmp_path, monkeypatch, runner):
+def _end_to_end(tmp_path, monkeypatch, runner, *, transport=None, summarize=None):
     """A real (non-dry) watch tick: qualification faked, git real against ``runner.origin``."""
     from phase_loop_runtime import agy_watch
     layout = tmp_path / "layout"
@@ -2856,9 +3014,11 @@ def _end_to_end(tmp_path, monkeypatch, runner):
                 sha256(runner.help_bytes).hexdigest())
 
     monkeypatch.setattr(agy_watch, "_pinned_member", pinned)
-    monkeypatch.setattr(agy_watch, "summarize", lambda *a, **k: {"synthetic": True})
-    t = FakeTransport()
-    t.add("9.9.9", b"new agy image")
+    monkeypatch.setattr(agy_watch, "summarize", summarize or (lambda *a, **k: {"synthetic": True}))
+    t = transport
+    if t is None:
+        t = FakeTransport()
+        t.add("9.9.9", b"new agy image")
     out = []
     work = tmp_path / "work"
     work.mkdir()
