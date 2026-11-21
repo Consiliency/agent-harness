@@ -716,26 +716,31 @@ jobs:
             echo "::error::brotli imports in the wheel-smoke environment: the grok-catalog extra is not absent" >&2
             exit 1
           fi
+          # No grok on the search path and an unused state root, so the answer is fixed: exit
+          # 0, both catalogs readable, the shipped gate unattested, no subject, no record
+          # directory, and the state root still absent afterwards.
+          mkdir "$smoke/empty-path"
           set +e
-          (cd "$smoke" && "$smoke/venv/bin/phase-loop" seat-window status --vendor grok > "$smoke/status.json")
+          (cd "$smoke" && env PATH="$smoke/empty-path" XDG_STATE_HOME="$smoke/state" \
+            "$smoke/venv/bin/phase-loop" seat-window status --vendor grok > "$smoke/status.json")
           rc=$?
           set -e
+          test ! -e "$smoke/state"
           "$smoke/venv/bin/python" -I - "$smoke/status.json" "$rc" <<'PYEOF'
           import json, sys
           with open(sys.argv[1], encoding="utf-8") as handle:
               document = json.load(handle)
           rc = int(sys.argv[2])
+          assert rc == 0, (rc, document)
           answer = {"schema", "vendor", "context_digest", "inputs", "required_routes", "subject",
                     "candidate", "decision", "advance_to", "rollback_to"}
-          assert type(document) is dict and document.get("schema") == "grok_seat_status.v1", document
-          if rc == 0:
-              assert answer <= set(document), sorted(answer - set(document))
-          elif rc == 3:
-              assert set(document) == {"schema", "error", "detail"}, document
-              assert document["error"] == "status_unavailable", document
-          else:
-              raise SystemExit(f"seat-window status exited {rc}")
-          print("grok status from the installed wheel:", rc, document.get("inputs", document.get("detail")))
+          assert type(document) is dict and set(document) >= answer, document
+          assert document["schema"] == "grok_seat_status.v1", document
+          assert document["inputs"] == {"surface_catalog": "ok", "release_catalog": "ok",
+                                        "host_records": "absent",
+                                        "catalog_gate": "unattested"}, document["inputs"]
+          assert document["subject"] is None and document["advance_to"] is None, document
+          print("grok status from the installed wheel:", document["inputs"])
           PYEOF
 
       - name: WIRE-THE-DOCTOR — fail on a stale gating BOM target

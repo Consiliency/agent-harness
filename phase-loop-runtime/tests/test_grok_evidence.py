@@ -30,6 +30,7 @@ import pytest
 
 from phase_loop_runtime import grok_tool_surface as gts
 from phase_loop_runtime import panel_invoker as pi
+from phase_loop_runtime.grok_roll import catalog as rc
 from phase_loop_runtime.grok_roll import evidence as ev
 from phase_loop_runtime.grok_roll import status as st
 
@@ -116,7 +117,15 @@ def surface(digest: str, routes=ROUTES, *, refused=(), **overrides) -> dict:
 def catalog(monkeypatch, surfaces=(), revoked=(), raw: bytes | None = None) -> None:
     document = {"schema": gts.CATALOG_SCHEMA, "revoked": list(revoked), "surfaces": list(surfaces)}
     data = raw if raw is not None else json.dumps(document).encode()
-    monkeypatch.setattr(gts, "_catalog_bytes", lambda: data)
+    monkeypatch.setattr(gts, "_catalog_bytes", lambda: data)  # the launch-path oracles
+    serve(monkeypatch, rc.SURFACES_NAME, data)  # the query's own package-data reader
+
+
+def serve(monkeypatch, name: str, data: bytes) -> None:
+    """Package-data file ``name`` as the query's reader sees it, others unchanged."""
+    previous = rc._read_package_data
+    monkeypatch.setattr(rc, "_read_package_data",
+                        lambda wanted, limit: data if wanted == name else previous(wanted, limit))
 
 
 def host_digest() -> str:
@@ -160,6 +169,15 @@ def listing_receipt(digest: str, route: str, **overrides) -> dict:
              "argv_digest": argv_digest(route), "passed": True, "public_code": None,
              "tools": tools_for(route), "version_digest": sha256(VERSION).hexdigest(),
              "basis": "list_tools"}
+    value.update(overrides)
+    return {key: item for key, item in value.items() if item is not _DROP}
+
+
+def failed_receipt(digest: str, route: str, **overrides) -> dict:
+    """A failed receipt in exactly the shape ``record_tool_probe`` writes."""
+    value = {"schema": "tool_probe.v1", "binary_digest": digest,
+             "argv_digest": argv_digest(route), "passed": False,
+             "public_code": "grok_tool_surface_unverified"}
     value.update(overrides)
     return {key: item for key, item in value.items() if item is not _DROP}
 
@@ -481,7 +499,7 @@ def test_ec_grokroll_1_conformance_2_receipt_reading(seat, monkeypatch, case):
     if case == "legacy":
         put(seat, name, listing_receipt(seat.digest, "review", basis=_DROP))
     elif case == "failing":
-        put(seat, name, listing_receipt(seat.digest, "review", passed=False))
+        put(seat, name, failed_receipt(seat.digest, "review"))
     elif case == "missing file":
         path.unlink()
     elif case == "bad JSON":
@@ -508,7 +526,8 @@ def test_ec_grokroll_1_conformance_2_receipt_reading(seat, monkeypatch, case):
     kind, oracle = _oracle_receipt(seat)
     typed = _typed("receipt", seat)
     if oracle is not None:
-        assert typed == ev.Read(ev.OK, oracle[2]), case
+        assert (typed.result, typed.value) == (ev.OK, oracle[2]), case
+        assert typed.ambiguous is (case == "duplicate keys"), case
     else:
         missing = case in ("missing file", "missing directory")
         assert typed.result == (ev.ABSENT if missing else ev.INVALID), (case, kind)
@@ -537,9 +556,7 @@ def test_receipt_classes(seat):
     record = surface(seat.digest)
     assert _class(seat, listing_receipt(seat.digest, "review", basis=_DROP)) == "listing"
     assert _class(seat, listing_receipt(seat.digest, "review")) == "listing"
-    assert _class(seat, listing_receipt(seat.digest, "review", passed=False,
-                                        public_code="grok_tool_surface_unverified",
-                                        tools=_DROP, version_digest=_DROP, basis=_DROP)) == "none"
+    assert _class(seat, failed_receipt(seat.digest, "review")) == "none"
     assert _class(seat, frozen_receipt(seat.digest, "review", record)) == "frozen_cache"
     with sources() as found:
         assert ev.receipt_class(ev.Read(ev.ABSENT), seat.digest, argv_digest("review"),
@@ -588,7 +605,7 @@ ADMISSION = {
         seat, seat.digest, "review", listing_receipt(seat.digest, "review",
                                                      surface_source="catalog")),
     "failing": lambda seat, mp: write_receipt(
-        seat, seat.digest, "review", listing_receipt(seat.digest, "review", passed=False)),
+        seat, seat.digest, "review", failed_receipt(seat.digest, "review")),
     "frozen, record current": lambda seat, mp: (
         publish(seat, surface(seat.digest)),
         write_receipt(seat, seat.digest, "review",
@@ -724,7 +741,7 @@ def test_ec_grokroll_1_every_route_evidence_row(seat, monkeypatch, case, expecte
             seat, seat.digest, "review", frozen_receipt(seat.digest, "review", record)),
         "absent": lambda: ensure_root(seat),
         "failing receipt alone": lambda: write_receipt(
-            seat, seat.digest, "review", listing_receipt(seat.digest, "review", passed=False)),
+            seat, seat.digest, "review", failed_receipt(seat.digest, "review")),
     }
     setups[case]()
     route = evidence_of(seat.digest)
@@ -806,3 +823,66 @@ def test_partial_from_a_refused_and_from_a_withdrawn_required_route(seat):
     assert _state(seat, ("review", "sealed")) == "partial"
     publish(seat, surface(seat.digest), register="superseded")
     assert _state(seat, ("review",)) == "partial"
+
+
+# ------------------------------------------------- receipt shape: GROKROLL E2 (R2)
+
+@pytest.mark.parametrize("document", [
+    lambda seat: listing_receipt(seat.digest, "review", note="extra"),
+    lambda seat: listing_receipt(seat.digest, "review", basis=_DROP, note="extra"),
+    lambda seat: frozen_receipt(seat.digest, "review", surface(seat.digest), note="extra"),
+    lambda seat: listing_receipt(seat.digest, "review", public_code="grok_tool_surface_unverified"),
+    lambda seat: listing_receipt(seat.digest, "review", public_code=_DROP),
+    lambda seat: listing_receipt(seat.digest, "review", version_digest=_DROP),
+    lambda seat: failed_receipt(seat.digest, "review", note="extra"),
+    lambda seat: failed_receipt(seat.digest, "review", tools=["read_file"]),
+    lambda seat: failed_receipt(seat.digest, "review", public_code=None),
+    lambda seat: failed_receipt(seat.digest, "review", public_code=_DROP),
+], ids=["listing unknown key", "legacy unknown key", "frozen unknown key",
+        "passing with a public code", "passing without public_code", "passing without version",
+        "failed unknown key", "failed with tools", "failed with a null code", "failed without code"])
+def test_a_receipt_of_any_other_shape_is_invalid_never_absent(seat, document):
+    assert _class(seat, document(seat)) == "invalid"
+
+
+@pytest.mark.parametrize("raw", [
+    lambda seat: json.dumps(listing_receipt(seat.digest, "review"))[:-1] + ', "passed": true}',
+    lambda seat: json.dumps(failed_receipt(seat.digest, "review"))[:-1] + ', "passed": false}',
+    lambda seat: json.dumps(failed_receipt(seat.digest, "review")).replace(
+        '"passed": false', '"passed": true, "passed": false'),
+], ids=["repeated passed", "repeated failed passed", "conflicting passed"])
+def test_a_receipt_with_a_repeated_key_is_invalid(seat, raw):
+    assert _class(seat, raw(seat).encode()) == "invalid"
+
+
+#: Named divergence (GROKROLL E2): the status reader is stricter than the admission gate
+#: about receipt shape.
+RECEIPT_SHAPE = "a receipt with an unknown or repeated key is invalid, though the gate admits it"
+
+
+@pytest.mark.parametrize("case", ["unknown key", "repeated key"])
+def test_conformance_3_intended_difference_receipt_shape(seat, case):
+    if case == "unknown key":
+        write_receipt(seat, seat.digest, "review", listing_receipt(seat.digest, "review", note="x"))
+    else:
+        text = json.dumps(listing_receipt(seat.digest, "review"))
+        write_receipt(seat, seat.digest, "review", (text[:-1] + ', "passed": true}').encode())
+    assert _gate(seat) == (True, "list_tools")
+    assert evidence_of(seat.digest).evidence == "invalid", RECEIPT_SHAPE
+
+
+# -------------------------------------------------------------- the host identity read
+
+def test_the_machine_id_read_is_bounded_and_never_blocks(tmp_path):
+    from phase_loop_runtime import seat_window
+
+    good = tmp_path / "machine-id"
+    good.write_text("0123456789abcdef0123456789abcdef\n")
+    assert seat_window._read_machine_id(good) == "0123456789abcdef0123456789abcdef"
+    big = tmp_path / "big"
+    big.write_bytes(b"a" * 5000)
+    fifo = tmp_path / "fifo"
+    os.mkfifo(fifo)
+    for path in (big, fifo, tmp_path, tmp_path / "missing"):
+        with pytest.raises(OSError):
+            seat_window._read_machine_id(path)

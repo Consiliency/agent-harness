@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import datetime as _dt
 import json
 import os
 import re
@@ -64,7 +65,7 @@ _VERSION = re.compile(r"(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _INTEGRITY = re.compile(r"sha512-[A-Za-z0-9+/]{86}==")
 _SIGNATURE_MAX = 256
-_WORKFLOW_REF = re.compile(r"refs/(heads|tags)/[A-Za-z0-9._/-]{1,200}")
+_WORKFLOW_REF = re.compile(r"refs/(heads|tags)/([A-Za-z0-9._/-]{1,200})")
 _UTC = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 _VERSION_TOKEN = re.compile(r"(?<![0-9.])([0-9]+)\.([0-9]+)\.([0-9]+)(?![0-9.])")
 
@@ -184,17 +185,17 @@ def parse_releases(raw: bytes) -> ReleaseCatalog:
     return ReleaseCatalog(platform=document["platform"], releases=tuple(releases))
 
 
-def _read_package_data(name: str, limit: int) -> bytes:
-    resource = resources.files("phase_loop_runtime").joinpath("data", name)
-    with resource.open("rb") as source:
-        return source.read(limit + 1)
+_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+_FILE_FLAGS = (os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+               | getattr(os, "O_NOCTTY", 0))
+
+DataPath = str | os.PathLike[str]
 
 
-def _read_tree_file(data_dir: str | os.PathLike[str], name: str, limit: int) -> bytes:
-    """``name`` in ``data_dir``: a regular file, opened without following a final link and
-    without blocking, read through that one descriptor with a bound."""
-    descriptor = os.open(os.path.join(os.fspath(data_dir), name),
-                         os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+def _read_at(directory: int, name: str, limit: int) -> bytes:
+    """``name`` in the open ``directory``: a regular file, opened without following a link
+    and without blocking, read through that one descriptor with a bound."""
+    descriptor = os.open(name, _FILE_FLAGS, dir_fd=directory)
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise CatalogRefused()
@@ -210,18 +211,76 @@ def _read_tree_file(data_dir: str | os.PathLike[str], name: str, limit: int) -> 
         os.close(descriptor)
 
 
-def read_data(name: str, limit: int, data_dir: str | os.PathLike[str] | None = None) -> bytes:
-    """A data file: from ``data_dir`` when given, else the package data through
-    ``importlib.resources``."""
+def _open_below(anchor: DataPath, relative: str) -> int:
+    """The directory ``relative`` below ``anchor``, each component opened without following
+    a link. ``anchor`` is the caller's trust root (a checkout, or the installed package)."""
+    parts = [part for part in relative.split("/") if part not in ("", ".")]
+    if not parts or ".." in parts:
+        raise CatalogRefused()
+    descriptor = os.open(anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for part in parts:
+            child = os.open(part, _DIR_FLAGS, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _read_package_data(name: str, limit: int) -> bytes:
+    """A package-data file. A filesystem-backed package is read as any tree is: the ``data``
+    directory and the file must not be links, and the file must be regular. A package with
+    no filesystem path (a zip import) is read through ``importlib.resources``."""
+    package = resources.files("phase_loop_runtime")
+    if isinstance(package, Path):
+        directory = _open_below(package, "data")
+        try:
+            return _read_at(directory, name, limit)
+        finally:
+            os.close(directory)
+    with package.joinpath("data", name).open("rb") as source:  # pragma: no cover - zip
+        return source.read(limit + 1)
+
+
+def _locate(data_dir: DataPath | None, anchor: DataPath | None) -> tuple[DataPath, str]:
+    """``(anchor, relative)`` for an explicit tree. With only ``data_dir``, the anchor is
+    its parent, so a linked data directory is refused; with ``anchor``, every component
+    from it down is checked."""
+    if anchor is None:
+        assert data_dir is not None
+        absolute = os.path.abspath(os.fspath(data_dir))
+        return os.path.dirname(absolute), os.path.basename(absolute)
     if data_dir is None:
+        return anchor, DATA_RELATIVE
+    relative = os.path.relpath(os.path.abspath(os.fspath(data_dir)),
+                               os.path.abspath(os.fspath(anchor)))
+    if relative == ".." or relative.startswith("../") or relative == ".":
+        raise CatalogRefused()
+    return anchor, relative
+
+
+def read_data(name: str, limit: int, data_dir: DataPath | None = None, *,
+              anchor: DataPath | None = None) -> bytes:
+    """A data file: from the explicit tree (``data_dir`` and/or ``anchor``) when given, else
+    the installed package data."""
+    if data_dir is None and anchor is None:
         return _read_package_data(name, limit)
-    return _read_tree_file(data_dir, name, limit)
+    root, relative = _locate(data_dir, anchor)
+    directory = _open_below(root, relative)
+    try:
+        return _read_at(directory, name, limit)
+    finally:
+        os.close(directory)
 
 
-def load_releases(data_dir: str | os.PathLike[str] | None = None) -> ReleaseCatalog | None:
+def load_releases(data_dir: DataPath | None = None, *,
+                  anchor: DataPath | None = None) -> ReleaseCatalog | None:
     """The release catalog, or ``None`` on any refusal (§1: reported ``unavailable``)."""
     try:
-        return parse_releases(read_data(RELEASES_NAME, CATALOG_MAX_BYTES, data_dir))
+        return parse_releases(read_data(RELEASES_NAME, CATALOG_MAX_BYTES, data_dir,
+                                        anchor=anchor))
     except (OSError, ValueError, TypeError, RecursionError):
         return None
 
@@ -235,6 +294,32 @@ class Gate:
     ruleset_id: int | None
     workflow_ref: str | None
     attested_at: str | None
+
+
+def workflow_ref_ok(ref: object) -> bool:
+    """A full branch or tag ref that ``git check-ref-format`` accepts: ``refs/heads/`` or
+    ``refs/tags/``, then components that are non-empty, do not start with ``.``, do not end
+    with ``.lock``, with no ``..`` or ``@{`` and no trailing ``.`` or ``/``. The character
+    set already excludes space, control characters and ``~^:?*[\\``."""
+    match = _WORKFLOW_REF.fullmatch(ref) if type(ref) is str else None
+    if match is None:
+        return False
+    assert isinstance(ref, str)
+    components = match.group(2).split("/")
+    return (all(part and not part.startswith(".") and not part.endswith(".lock")
+                for part in components)
+            and ".." not in ref and "@{" not in ref and not ref.endswith("."))
+
+
+def utc_time_ok(value: object) -> bool:
+    """``YYYY-MM-DDTHH:MM:SSZ`` naming a real calendar time."""
+    if type(value) is not str or _UTC.fullmatch(value) is None:
+        return False
+    try:
+        _dt.datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return False
+    return True
 
 
 def parse_gate(raw: bytes) -> Gate:
@@ -256,9 +341,7 @@ def parse_gate(raw: bytes) -> Gate:
             scope, ruleset, ref, at = fields
             ok = (scope in ("organization", "enterprise")
                   and type(ruleset) is int and ruleset > 0
-                  and type(ref) is str and _WORKFLOW_REF.fullmatch(ref) is not None
-                  and ".." not in ref and not ref.endswith("/")
-                  and type(at) is str and _UTC.fullmatch(at) is not None)
+                  and workflow_ref_ok(ref) and utc_time_ok(at))
     _require(ok, "grok_catalog_gate_invalid")
     assert isinstance(document, dict)
     return Gate(attested=document["attested"], ruleset_scope=document["ruleset_scope"],
@@ -266,12 +349,24 @@ def parse_gate(raw: bytes) -> Gate:
                 attested_at=document["attested_at"])
 
 
-def load_gate(data_dir: str | os.PathLike[str] | None = None) -> Gate | None:
+def load_gate(data_dir: DataPath | None = None, *, anchor: DataPath | None = None) -> Gate | None:
     """The gate file, or ``None`` when it is missing or malformed."""
     try:
-        return parse_gate(read_data(GATE_NAME, GATE_MAX_BYTES, data_dir))
+        return parse_gate(read_data(GATE_NAME, GATE_MAX_BYTES, data_dir, anchor=anchor))
     except (OSError, ValueError, TypeError, RecursionError):
         return None
+
+
+GATE_STATES = ("attested", "unattested", "invalid")
+
+
+def gate_state(data_dir: DataPath | None = None, *, anchor: DataPath | None = None) -> str:
+    """``attested``, ``unattested`` or ``invalid`` (missing, linked, non-regular or
+    malformed). Only ``attested`` establishes release-catalog membership (GROKROLL E1)."""
+    gate = load_gate(data_dir, anchor=anchor)
+    if gate is None:
+        return "invalid"
+    return "attested" if gate.attested else "unattested"
 
 
 # ------------------------------------------------------------------- the signature check
@@ -342,9 +437,13 @@ def surface_version_token(version_text: object) -> str | None:
     return tokens.pop() if len(tokens) == 1 else None
 
 
-def check_tree(data_dir: str | os.PathLike[str] | None = None) -> TreeCheck:
+def check_tree(data_dir: DataPath | None = None, *, anchor: DataPath | None = None) -> TreeCheck:
     """The offline tree invariant (§2.4) over the gate file, the release catalog and the
-    surface catalog in ``data_dir`` (default: the installed package data). No network.
+    surface catalog in an explicit tree, else the installed package data. No network.
+
+    ``anchor`` is a checkout root: the files are read from ``DATA_RELATIVE`` below it (or
+    from ``data_dir`` below it), with no linked component from the anchor down. With only
+    ``data_dir``, the data directory itself must not be a link.
 
     1. the gate file is well formed;
     2. the release catalog loads, which includes the ``MAX_RELEASES`` bound;
@@ -353,11 +452,12 @@ def check_tree(data_dir: str | os.PathLike[str] | None = None) -> TreeCheck:
     5. if the gate is attested, §1 parity holds for every surface.
     """
     try:
-        gate = parse_gate(read_data(GATE_NAME, GATE_MAX_BYTES, data_dir))
+        gate = parse_gate(read_data(GATE_NAME, GATE_MAX_BYTES, data_dir, anchor=anchor))
     except (OSError, ValueError, TypeError, RecursionError):
         return TreeCheck(False, 1, "grok_catalog_gate_invalid")
     try:
-        catalog = parse_releases(read_data(RELEASES_NAME, CATALOG_MAX_BYTES, data_dir))
+        catalog = parse_releases(read_data(RELEASES_NAME, CATALOG_MAX_BYTES, data_dir,
+                                           anchor=anchor))
     except CatalogRefused as exc:
         return TreeCheck(False, 2, exc.code)
     except (OSError, ValueError, TypeError, RecursionError):
@@ -371,7 +471,7 @@ def check_tree(data_dir: str | os.PathLike[str] | None = None) -> TreeCheck:
 
         try:
             shipped = surfaces.parse_catalog(
-                read_data(SURFACES_NAME, surfaces.CATALOG_MAX_BYTES, data_dir))
+                read_data(SURFACES_NAME, surfaces.CATALOG_MAX_BYTES, data_dir, anchor=anchor))
         except (OSError, ValueError, TypeError, RecursionError):
             return TreeCheck(False, 5, "grok_surface_catalog_invalid")
         for digest, surface in shipped.surfaces.items():

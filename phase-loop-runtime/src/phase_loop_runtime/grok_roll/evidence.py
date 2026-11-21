@@ -52,6 +52,9 @@ class Read:
 
     result: str
     value: Any = None
+    #: A receipt whose JSON repeats a key at any level (its decoded value is the last one,
+    #: as the gate decodes it); classified ``invalid`` (GROKROLL E2).
+    ambiguous: bool = False
 
 
 _ABSENT = Read(ABSENT)
@@ -60,9 +63,13 @@ _INVALID = Read(INVALID)
 
 def surface_catalog() -> Read:
     """The shipped tool-surface catalog: ``ok`` or ``invalid``. A corrupt catalog hides its
-    ``revoked`` list."""
-    catalog = gts.load_catalog()
-    return _INVALID if catalog is None else Read(OK, catalog)
+    ``revoked`` list. Read through the query's own package-data reader (no link, regular
+    file, non-blocking, bounded), then validated by ``grok_tool_surface.parse_catalog``."""
+    try:
+        return Read(OK, gts.parse_catalog(
+            releases.read_data(releases.SURFACES_NAME, gts.CATALOG_MAX_BYTES)))
+    except (OSError, ValueError, TypeError, RecursionError):
+        return _INVALID
 
 
 def release_catalog() -> Read:
@@ -205,10 +212,19 @@ def receipt(directory: int, digest: str, argv_digest: str) -> Read:
         os.close(descriptor)
     if len(raw) > RECEIPT_MAX_BYTES:
         return _INVALID
+    repeated = []
+
+    def pairs(items):
+        keys = [key for key, _value in items]
+        if len(keys) != len(set(keys)):
+            repeated.append(True)
+        return dict(items)
+
     try:
-        return Read(OK, json.loads(raw))
+        value = json.loads(raw, object_pairs_hook=pairs)
     except (ValueError, RecursionError):
         return _INVALID
+    return Read(OK, value, bool(repeated))
 
 
 # ---------------------------------------------------------------- route and build states
@@ -259,6 +275,7 @@ class Sources:
 
     def __init__(self, *, context_digest: str, forms: Mapping[str, list[str]],
                  record_root: str | os.PathLike[str] | None = None) -> None:
+        self.gate = releases.gate_state()
         if record_root is None:
             from ..president_adapter import private_record_root
 
@@ -288,11 +305,22 @@ class Sources:
     @property
     def inputs(self) -> dict[str, str]:
         return {"surface_catalog": self.surfaces.result, "release_catalog": self.releases.result,
-                "host_records": self.host_records}
+                "host_records": self.host_records, "catalog_gate": self.gate}
 
     @property
     def inputs_invalid(self) -> bool:
-        return INVALID in self.inputs.values()
+        """Decision row 1. The gate state is reported but is not a row-1 input: a gate that
+        is missing, malformed or unattested only withholds catalog membership (E1)."""
+        return INVALID in (self.surfaces.result, self.releases.result, self.host_records)
+
+    @property
+    def members(self):
+        """The release catalog as a membership authority: only when it loads and the gate
+        reads attested (GROKROLL E1). ``None`` otherwise: no version resolves and no build is
+        a ``member`` or a target."""
+        if self.releases.result == OK and self.gate == "attested":
+            return self.releases.value
+        return None
 
     def record(self, digest: str) -> Read:
         if self.host_records != OK:
@@ -404,6 +432,12 @@ def _sha256_text(value: object) -> bool:
     return releases.is_digest(value)
 
 
+#: The keys ``panel_invoker.record_tool_probe`` writes: a failed receipt, and a passing one
+#: before its optional ``basis`` and, for the frozen basis, ``RECEIPT_FIELDS``.
+_FAILED_KEYS = frozenset({"schema", "binary_digest", "argv_digest", "passed", "public_code"})
+_PASSED_KEYS = _FAILED_KEYS | {"tools", "version_digest"}
+
+
 def receipt_class(read: Read, digest: str, argv_digest: str, form: list[str]) -> str:
     """§3.2 step 2: ``invalid``, ``none``, ``listing`` or ``frozen_cache``."""
     if read.result == ABSENT:
@@ -411,12 +445,23 @@ def receipt_class(read: Read, digest: str, argv_digest: str, form: list[str]) ->
     if read.result != OK:
         return INVALID
     record = read.value
+    if read.ambiguous:
+        return INVALID
     if not (type(record) is dict and record.get("schema") == "tool_probe.v1"
             and record.get("binary_digest") == digest and record.get("argv_digest") == argv_digest
             and type(record.get("passed")) is bool):
         return INVALID
     if record["passed"] is False:
-        return "none"
+        # A failed receipt is positive absence only in exactly the shape the writer leaves.
+        well_formed = (set(record) == _FAILED_KEYS and type(record["public_code"]) is str
+                       and bool(record["public_code"]))
+        return "none" if well_formed else INVALID
+    allowed = _PASSED_KEYS | {"basis"}
+    if record.get("basis") == "frozen_measurement":
+        allowed |= frozenset(gts.RECEIPT_FIELDS)
+    if not (_PASSED_KEYS <= set(record) and set(record) - allowed <= set(gts.RECEIPT_FIELDS)
+            and record["public_code"] is None):
+        return INVALID  # an unknown key, or a missing one (GROKROLL E2)
     if not (_admitted(form, record.get("tools")) and _sha256_text(record.get("version_digest"))):
         return INVALID
     frozen_fields = [key for key in gts.RECEIPT_FIELDS if key in record]

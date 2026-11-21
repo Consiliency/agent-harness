@@ -107,7 +107,26 @@ def test_ec_grokroll_2_the_wheel_smoke_installs_the_wheel_alone_in_its_own_envir
     assert install.endswith('"$smoke"/dist/*.whl') and "[" not in install
     assert '"$smoke/venv/bin/python" -I -c "import brotli"' in script
     assert '"$smoke/venv/bin/phase-loop" seat-window status --vendor grok' in script
-    assert "rc == 0" in script and "rc == 3" in script and "grok_seat_status.v1" in script
+
+
+def test_ec_grokroll_2_the_wheel_smoke_demands_the_one_deterministic_answer():
+    """No grok on the search path and an unused state root: only exit 0 with both catalogs
+    ``ok``, the shipped gate ``unattested``, no subject and the state root still absent
+    passes. An exit 3 (a missing allow-list) or an ``invalid`` catalog (missing package
+    data) fails the step."""
+    script = _wheel_smoke()["run"]
+    run = re.search(r'env PATH="\$smoke/empty-path" XDG_STATE_HOME="\$smoke/state" \\\n\s*'
+                    r'"\$smoke/venv/bin/phase-loop" seat-window status --vendor grok', script)
+    assert run is not None
+    assert 'test ! -e "$smoke/state"' in script
+    assert "assert rc == 0, (rc, document)" in script
+    assert "rc == 3" not in script
+    inputs = re.search(r'document\["inputs"\] == (\{.*?\}), document', script, re.S)
+    assert inputs is not None
+    assert ast.literal_eval(re.sub(r"\s+", " ", inputs.group(1))) == {
+        "surface_catalog": "ok", "release_catalog": "ok", "host_records": "absent",
+        "catalog_gate": "unattested"}
+    assert 'document["subject"] is None' in script
 
 
 def test_the_wheel_smoke_runs_in_the_ordinary_job_on_every_event():
@@ -118,3 +137,18 @@ def test_the_wheel_smoke_runs_in_the_ordinary_job_on_every_event():
     install = next(index for index, step in enumerate(job["steps"])
                    if SUITE_INSTALL in step.get("run", ""))
     assert install < smoke
+
+
+def test_gate_a_installs_the_extra_in_its_inner_suite_venv_after_the_base_probes():
+    """Gate A's clean-room venv is separate from the Dagger container: the base wheel is
+    probed with ``[visual]`` alone, and only the suite boundary adds ``grok-catalog``."""
+    script = (RUNTIME / "scripts" / "gate_a_cleanroom.sh").read_text().splitlines()
+    base = [index for index, line in enumerate(script) if '"${WHEEL}[visual]"' in line]
+    suite = [index for index, line in enumerate(script)
+             if '"${WHEEL}[claude-sdk,grok-catalog]"' in line and "pip install" in line]
+    skip = next(index for index, line in enumerate(script)
+                if 'PHASE_LOOP_SKIP_GATE_A_SUITE:-0}" = "1"' in line)
+    assert len(base) == 1 and len(suite) == 1
+    assert "grok-catalog" not in script[base[0]]
+    assert base[0] < skip < suite[0]
+    assert not any("grok-catalog" in line for line in script[:skip])

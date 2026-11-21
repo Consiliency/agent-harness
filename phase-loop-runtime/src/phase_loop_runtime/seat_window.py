@@ -561,9 +561,28 @@ def runtime_digest():
                    for path in sorted(files_) if path.is_file() and not path.is_symlink()})
 
 
+def _read_machine_id(path="/etc/machine-id", limit=4096) -> str:
+    """The machine id, read without blocking through one descriptor with a bound. A link is
+    followed as before (distributions ship it as one); a non-regular, oversize or non-ASCII
+    file raises ``OSError`` so the caller falls back exactly as for a missing one."""
+    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | getattr(os, "O_NOCTTY", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise OSError("machine id is not a regular file")
+        raw = os.read(descriptor, limit + 1)
+    finally:
+        os.close(descriptor)
+    if len(raw) > limit:
+        raise OSError("machine id exceeds its bound")
+    try:
+        return raw.decode("ascii").strip()
+    except UnicodeDecodeError as exc:
+        raise OSError("machine id is not ASCII") from exc
+
+
 def _host_digest():
     try:
-        identity = Path("/etc/machine-id").read_text(encoding="ascii").strip()
+        identity = _read_machine_id()
     except OSError:
         identity = os.uname().nodename
     return hashlib.sha256(("seat-window-host\0" + identity).encode()).hexdigest()

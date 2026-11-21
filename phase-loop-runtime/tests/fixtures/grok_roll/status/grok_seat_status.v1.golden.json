@@ -16,7 +16,8 @@
     "inputs": {
       "surface_catalog": {"type": "string", "enum": ["ok", "invalid"]},
       "release_catalog": {"type": "string", "enum": ["ok", "invalid"]},
-      "host_records": {"type": "string", "enum": ["ok", "absent", "invalid"]}
+      "host_records": {"type": "string", "enum": ["ok", "absent", "invalid"]},
+      "catalog_gate": {"type": "string", "enum": ["attested", "unattested", "invalid"]}
     },
     "build": {
       "binary_sha256": {"type": "hex64", "nullable": true},

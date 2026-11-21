@@ -143,7 +143,7 @@ def _selected(role: str, path, digest, version, sources: ev.Sources,
               *, default: bool) -> tuple[bool, str | None, str | None]:
     """``(present, digest, version)`` for one selector set; ``present`` is false only when
     no build is named (no candidate selector, or no grok installed)."""
-    catalog = sources.releases.value if sources.releases.result == ev.OK else None
+    catalog = sources.members  # None unless the gate is attested (GROKROLL E1)
     if path is not None:
         found = hash_path(path, role)
     elif digest is not None:
@@ -163,7 +163,7 @@ def _selected(role: str, path, digest, version, sources: ev.Sources,
 
 
 def _build_object(sources: ev.Sources, build: ev.Build, version: str | None) -> dict[str, Any]:
-    catalog = sources.releases.value if sources.releases.result == ev.OK else None
+    catalog = sources.members
     member = None if catalog is None or build.digest is None else catalog.by_digest(build.digest)
     return {"binary_sha256": build.digest, "version": version,
             "release": "member" if member is not None else "unknown", "state": build.state,
@@ -213,13 +213,13 @@ def _targets(sources: ev.Sources, required: Sequence[str],
              subject_version: str | None) -> tuple[dict | None, dict | None]:
     """``advance_to`` and ``rollback_to`` (§3.3): only members whose full evaluation is
     ``measured``; both ``null`` on an invalid input."""
-    if sources.inputs_invalid or sources.releases.result != ev.OK:
+    if sources.inputs_invalid or sources.members is None:
         return None, None
     advance = rollback = None
     floor = None
     if subject_version is not None and releases.is_version(subject_version):
         floor = releases.version_key(subject_version)
-    for entry in sources.releases.value.newest_first():
+    for entry in sources.members.newest_first():
         if advance is not None and (floor is None or rollback is not None):
             break
         if not ev.evaluate(sources, entry["binary_sha256"], required).measured:

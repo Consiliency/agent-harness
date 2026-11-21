@@ -12,6 +12,7 @@ import base64
 import builtins
 import copy
 import json
+import os
 import shutil
 import sys
 from hashlib import sha256, sha512
@@ -221,6 +222,14 @@ ATTESTED_REFUSALS = [
     ("short ref", lambda gate: gate.update(workflow_ref="main")),
     ("pull ref", lambda gate: gate.update(workflow_ref="refs/pull/1/head")),
     ("local time", lambda gate: gate.update(attested_at="2026-11-21T12:00:00+01:00")),
+    ("impossible time", lambda gate: gate.update(attested_at="2026-02-31T25:61:61Z")),
+    ("impossible day", lambda gate: gate.update(attested_at="2026-02-30T12:00:00Z")),
+    ("empty ref component", lambda gate: gate.update(workflow_ref="refs/heads//main")),
+    ("dot-leading component", lambda gate: gate.update(workflow_ref="refs/heads/.main")),
+    ("lock suffix", lambda gate: gate.update(workflow_ref="refs/heads/main.lock")),
+    ("double dot", lambda gate: gate.update(workflow_ref="refs/tags/v1..2")),
+    ("trailing slash", lambda gate: gate.update(workflow_ref="refs/heads/main/")),
+    ("trailing dot", lambda gate: gate.update(workflow_ref="refs/heads/main.")),
 ]
 
 
@@ -373,3 +382,103 @@ def test_the_version_token_is_the_single_triple():
     assert rc.surface_version_token("grok 1.0.89 built on 1.0.88") is None
     assert rc.surface_version_token("grok") is None
     assert rc.surface_version_token("1.0.89.1") is None
+
+
+def test_well_formed_refs_and_times_pass():
+    for ref in ("refs/heads/main", "refs/tags/v1.2.3", "refs/heads/release/2026-11"):
+        assert rc.workflow_ref_ok(ref), ref
+    assert rc.utc_time_ok("2028-02-29T23:59:59Z")
+    assert not rc.utc_time_ok("2026-02-29T23:59:59Z")
+
+
+# --------------------------------------------- linked trees and non-regular data (F3, F6)
+
+def _checkout(tmp_path) -> Path:
+    """A checkout holding the shipped data at its package-data path."""
+    data = tmp_path / "head" / rc.DATA_RELATIVE
+    data.mkdir(parents=True)
+    for name in (rc.GATE_NAME, rc.RELEASES_NAME, rc.SURFACES_NAME):
+        shutil.copyfile(PACKAGE_DATA / name, data / name)
+    return tmp_path / "head"
+
+
+def test_check_tree_below_an_anchor(tmp_path):
+    head = _checkout(tmp_path)
+    assert rc.check_tree(anchor=head) == rc.TreeCheck(True)
+    assert rc.check_tree(head / rc.DATA_RELATIVE, anchor=head) == rc.TreeCheck(True)
+    assert rc.check_tree(PACKAGE_DATA, anchor=head).passed is False  # outside the anchor
+
+
+def test_check_tree_refuses_a_linked_data_directory(tmp_path):
+    """A head whose ``data`` is a link to another tree's data never passes on that tree's
+    bytes, whether named directly or found below the checkout anchor."""
+    head = _checkout(tmp_path)
+    data = head / rc.DATA_RELATIVE
+    shutil.rmtree(data)
+    data.symlink_to(PACKAGE_DATA, target_is_directory=True)
+    assert rc.check_tree(data) == rc.TreeCheck(False, 1, "grok_catalog_gate_invalid")
+    assert rc.check_tree(anchor=head) == rc.TreeCheck(False, 1, "grok_catalog_gate_invalid")
+    assert rc.load_releases(data) is None and rc.gate_state(data) == "invalid"
+
+
+def test_check_tree_refuses_a_linked_component_below_the_anchor(tmp_path):
+    head = _checkout(tmp_path)
+    source = head / "phase-loop-runtime" / "src"
+    source.rename(tmp_path / "elsewhere")
+    source.symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+    assert rc.check_tree(anchor=head) == rc.TreeCheck(False, 1, "grok_catalog_gate_invalid")
+
+
+@pytest.fixture
+def package(tmp_path, monkeypatch):
+    """A filesystem-backed stand-in for the installed package, holding the shipped data."""
+    root = tmp_path / "pkg"
+    (root / "data").mkdir(parents=True)
+    for name in (rc.GATE_NAME, rc.RELEASES_NAME, rc.SURFACES_NAME):
+        shutil.copyfile(PACKAGE_DATA / name, root / "data" / name)
+    monkeypatch.setattr(rc.resources, "files", lambda _package: root)
+    return root
+
+
+def test_the_package_reader_reads_real_package_data(package):
+    assert rc.load_releases() is not None and rc.gate_state() == "unattested"
+    assert rc.check_tree().passed
+
+
+@pytest.mark.parametrize("case", ["a linked file", "a FIFO", "a directory", "a linked data directory"])
+@pytest.mark.parametrize("name", [rc.GATE_NAME, rc.RELEASES_NAME, rc.SURFACES_NAME])
+def test_the_package_reader_refuses_links_and_non_regular_files_without_blocking(
+        package, tmp_path, case, name):
+    import signal
+
+    target = package / "data" / name
+    if case == "a linked file":
+        target.rename(tmp_path / "real.json")
+        target.symlink_to(tmp_path / "real.json")
+    elif case == "a FIFO":
+        target.unlink()
+        os.mkfifo(target)
+    elif case == "a directory":
+        target.unlink()
+        target.mkdir()
+    else:
+        (package / "data").rename(tmp_path / "data-elsewhere")
+        (package / "data").symlink_to(tmp_path / "data-elsewhere", target_is_directory=True)
+
+    def expired(*_args):
+        raise AssertionError("the package reader blocked")
+    previous = signal.signal(signal.SIGALRM, expired)
+    signal.alarm(10)
+    try:
+        with pytest.raises((OSError, rc.CatalogRefused)):
+            rc.read_data(name, 4096)
+        if name == rc.GATE_NAME:
+            assert rc.gate_state() == "invalid"
+        if name == rc.RELEASES_NAME:
+            assert rc.load_releases() is None
+        from phase_loop_runtime.grok_roll import evidence as ev
+        if name == rc.SURFACES_NAME:
+            assert ev.surface_catalog().result == ev.INVALID
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)

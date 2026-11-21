@@ -34,7 +34,8 @@ from phase_loop_runtime.grok_roll import catalog as rc
 from phase_loop_runtime.grok_roll import evidence as ev
 from phase_loop_runtime.grok_roll import status as st
 from test_grok_evidence import (  # noqa: F401 - ``seat`` is a fixture
-    ROUTES, catalog, ensure_root, listing_receipt, publish, put, seat, surface, write_receipt)
+    ROUTES, catalog, ensure_root, listing_receipt, publish, put, seat, serve, surface,
+    write_receipt)
 
 GOLDEN = json.loads((Path(__file__).resolve().parent / "fixtures" / "grok_roll" / "status"
                      / "grok_seat_status.v1.golden.json").read_text())
@@ -67,14 +68,22 @@ def member(version: str, digest: str, **overrides) -> dict:
     return value
 
 
-def releases(monkeypatch, entries=(), raw: bytes | None = None) -> None:
-    """The release catalog the query loads (the shipped one is empty and unattested)."""
+ATTESTED_GATE = {"schema": "grok_catalog_gate.v1", "attested": True,
+                 "ruleset_scope": "organization", "ruleset_id": 4242,
+                 "workflow_ref": "refs/heads/main", "attested_at": "2026-11-21T12:00:00Z"}
+
+
+def releases(monkeypatch, entries=(), raw: bytes | None = None, *,
+             gate: dict | bytes | None = ATTESTED_GATE) -> None:
+    """The release catalog the query loads, and the gate beside it: attested by default,
+    since only an attested gate establishes membership (GROKROLL E1). ``gate=None`` keeps
+    the shipped, unattested gate."""
     data = raw if raw is not None else json.dumps(
         {"schema": rc.RELEASE_CATALOG_SCHEMA, "platform": rc.PLATFORM,
          "releases": list(entries)}).encode()
-    real = rc._read_package_data
-    monkeypatch.setattr(rc, "_read_package_data",
-                        lambda name, limit: data if name == rc.RELEASES_NAME else real(name, limit))
+    serve(monkeypatch, rc.RELEASES_NAME, data)
+    if gate is not None:
+        serve(monkeypatch, rc.GATE_NAME, gate if isinstance(gate, bytes) else json.dumps(gate).encode())
 
 
 def digest_of(label: str) -> str:
@@ -165,7 +174,7 @@ def test_ec_grokroll_2_the_null_answer_is_golden_too(seat):
     assert document["candidate"] is None and document["decision"] is None
     assert document["advance_to"] is None and document["rollback_to"] is None
     assert document["inputs"] == {"surface_catalog": "ok", "release_catalog": "ok",
-                                  "host_records": "absent"}
+                                  "host_records": "absent", "catalog_gate": "unattested"}
 
 
 def _mutations(document: dict):
@@ -669,3 +678,147 @@ def test_the_shipped_data_answers_inert(seat):
     code, document = run()
     assert code == 0 and document["subject"]["release"] == "unknown"
     assert document["advance_to"] is None
+
+
+# ------------------------------------------- catalog membership needs the gate (E1, R1)
+
+def _bad_signature_member(digest: str) -> dict:
+    """A structurally valid entry whose stored signature does not verify."""
+    return member("1.0.90", digest, registry_signature="MEQCIAAAAAAAAAAAAAAAAAAAAA==")
+
+
+@pytest.mark.parametrize("gate,state", [
+    (None, "unattested"), (b"", "invalid"), (b'{"schema": "grok_catalog_gate.v1"}', "invalid"),
+    (dict(ATTESTED_GATE, attested_at="2026-02-31T25:61:61Z"), "invalid"),
+], ids=["shipped unattested", "empty", "malformed", "impossible attestation time"])
+def test_ec_grokroll_3_without_an_attested_gate_no_membership_is_established(
+        seat, monkeypatch, gate, state):
+    new = digest_of("new")
+    entry = _bad_signature_member(new)
+    assert rc.verify_entry_signature(entry) is False
+    releases(monkeypatch, [entry], gate=gate)
+    publish(seat, surface(new))
+    code, document = run("--candidate-version", "1.0.90")
+    assert code == 0 and document["inputs"]["catalog_gate"] == state
+    assert document["inputs"]["release_catalog"] == "ok"
+    assert document["candidate"]["state"] == "unresolved"
+    assert document["decision"] == {"action": "hold", "reason": "candidate_unresolved"}
+    assert document["advance_to"] is None and document["rollback_to"] is None
+    code, document = run("--candidate-digest", new)
+    assert document["candidate"]["release"] == "unknown"
+    assert document["candidate"]["version"] is None
+    assert document["advance_to"] is None
+
+
+def test_ec_grokroll_3_a_missing_gate_withholds_membership(seat, monkeypatch, tmp_path):
+    package = tmp_path / "pkg"
+    (package / "data").mkdir(parents=True)
+    shipped = Path(rc.__file__).resolve().parents[1] / "data"
+    for name in (rc.RELEASES_NAME, rc.SURFACES_NAME):
+        (package / "data" / name).write_bytes((shipped / name).read_bytes())
+    (package / "data" / rc.RELEASES_NAME).write_text(json.dumps(
+        {"schema": rc.RELEASE_CATALOG_SCHEMA, "platform": rc.PLATFORM,
+         "releases": [member("1.0.89", seat.digest)]}))
+    monkeypatch.setattr(rc.resources, "files", lambda _package: package)
+    publish(seat, surface(seat.digest))
+    code, document = run("--release-version", "1.0.89")
+    assert document["inputs"]["catalog_gate"] == "invalid"
+    assert document["subject"]["state"] == "unresolved" and document["advance_to"] is None
+
+
+def test_ec_grokroll_3_an_attested_gate_establishes_membership(seat, monkeypatch):
+    new = digest_of("new")
+    releases(monkeypatch, [member("1.0.89", seat.digest), member("1.0.90", new)])
+    publish(seat, surface(seat.digest))
+    publish(seat, surface(new))
+    code, document = run("--candidate-version", "1.0.90")
+    assert document["inputs"]["catalog_gate"] == "attested"
+    assert document["candidate"]["release"] == "member"
+    assert document["decision"] == {"action": "advance", "reason": "candidate_measured"}
+    assert document["advance_to"]["version"] == "1.0.90"
+
+
+# --------------------------------------------------------- receipt shape at the CLI (E2)
+
+@pytest.mark.parametrize("case", ["unknown key", "repeated key", "malformed failed receipt"])
+def test_ec_grokroll_3_an_ill_shaped_receipt_holds_the_candidate(seat, monkeypatch, case):
+    from test_grok_evidence import failed_receipt
+
+    new = digest_of("new")
+    if case == "unknown key":
+        write_receipt(seat, new, "review", listing_receipt(new, "review", note="x"))
+    elif case == "repeated key":
+        text = json.dumps(listing_receipt(new, "review"))
+        write_receipt(seat, new, "review", (text[:-1] + ', "passed": true}').encode())
+    else:
+        write_receipt(seat, new, "review", failed_receipt(new, "review", tools=["read_file"]))
+    code, document = run("--candidate-digest", new)
+    assert document["candidate"]["state"] == "invalid"
+    assert document["decision"] == {"action": "hold", "reason": "candidate_evidence_invalid"}
+
+
+# --------------------------------------------- audit-based no-effect proof (real context)
+
+_AUDIT: dict = {"active": False, "seen": []}
+_WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+_EFFECT_EVENTS = ("socket.__new__", "socket.connect", "socket.getaddrinfo", "subprocess.Popen",
+                  "os.exec", "os.posix_spawn", "os.fork", "os.forkpty", "os.system",
+                  "os.mkdir", "os.rename", "os.replace", "os.remove", "os.rmdir", "os.symlink",
+                  "os.link", "os.chmod", "os.chown", "os.truncate", "os.utime", "shutil.copyfile",
+                  "shutil.rmtree")
+
+
+def _audit(event, args):
+    if not _AUDIT["active"]:
+        return
+    if event == "open":
+        _path, mode, flags = (tuple(args) + (None, None, None))[:3]
+        writes = (isinstance(mode, str) and any(c in mode for c in "wax+")) or (
+            isinstance(flags, int) and flags & _WRITE_FLAGS)
+        if writes:
+            _AUDIT["seen"].append((event, str(args[0])))
+    elif event in _EFFECT_EVENTS:
+        _AUDIT["seen"].append((event, repr(args)[:200]))
+
+
+_HOOK: list = []
+
+
+def test_ec_grokroll_1_an_audited_run_over_real_context_and_populated_records_has_no_effect(
+        tmp_path, monkeypatch):
+    """The real packaged ``grok-review`` allow-list (no stub), a populated record root (a
+    current host record and register, a listing receipt, a corrupt receipt) and a release
+    catalog: the run raises no write, process, socket or filesystem-mutation audit event.
+    Bytecode writing is off for the run, so "nothing written" covers a fresh source tree
+    or a ``--no-compile`` install too."""
+    from types import SimpleNamespace
+
+    if not _HOOK:
+        sys.addaudithook(_audit)
+        _HOOK.append(True)
+    bin_dir = tmp_path / "bin"
+    native = _exe(bin_dir / "grok", NATIVE)
+    digest = sha256(native.read_bytes()).hexdigest()
+    monkeypatch.setattr(pi, "_PROVIDER_SEARCH_PATH", None)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    from phase_loop_runtime import president_adapter as pa
+    fake = SimpleNamespace(root=pa.private_record_root())
+    publish(fake, surface(digest))
+    other = digest_of("other")
+    write_receipt(fake, other, "review", listing_receipt(other, "review"))
+    write_receipt(fake, digest_of("third"), "review", b"{")
+    releases(monkeypatch, [member("1.0.89", digest), member("1.0.90", other)])
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
+    before = sorted(str(path) for path in tmp_path.rglob("*"))
+    _AUDIT["seen"] = []
+    _AUDIT["active"] = True
+    try:
+        code, document = run("--candidate-version", "1.0.90", "--require-route", "review")
+    finally:
+        _AUDIT["active"] = False
+    assert _AUDIT["seen"] == []
+    assert sorted(str(path) for path in tmp_path.rglob("*")) == before
+    assert code == 0 and document["subject"]["state"] == "measured"
+    assert document["context_digest"] == gts.context_digest()  # the real allow-list
+    assert document["decision"] == {"action": "advance", "reason": "candidate_measured"}

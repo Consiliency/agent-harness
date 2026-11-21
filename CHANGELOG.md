@@ -18,22 +18,31 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `--require-route` adds routes beyond `review`; `--exit-code` turns a hold or an
   unmeasured subject into exit 1. Every evidence source (both catalogs, the host-local
   record, the attempt register, the probe receipt) is read into `ok`, `absent` or
-  `invalid`, so a corrupt source is never reported as absent or measured, a withdrawn
-  route is `partial`, a context change is `stale_context`, and a revoked digest is
-  `revoked` before any evidence. The query opens no socket, executes nothing and writes
+  `invalid`, so a corrupt source is never reported as absent or measured; a receipt with
+  an unknown or repeated key, or a failed receipt of any other shape, is `invalid`. A
+  withdrawn frozen publication contributes no usable evidence, so a withdrawn route with no
+  valid listing receipt holds (`partial`); a valid listing receipt stays independent
+  evidence. A context change is `stale_context`, and a revoked digest is `revoked` before
+  any evidence. Release-catalog membership (a version selector resolving, `release:
+  "member"`, `advance_to` and `rollback_to`) holds only while the packaged gate reads
+  attested; `inputs.catalog_gate` reports `attested`, `unattested` or `invalid`. The query opens no socket, executes nothing and writes
   nothing. A path selector must be a regular native (ELF) file and is hashed through one
   descriptor; a FIFO, a directory, a link, an oversize file, a rewrite during the read or a
   launcher the resolver does not follow fails with exit 3 and a `status_unavailable`
   detail. New, inert package data: the release catalog `data/grok_releases.json` (empty)
   and its gate `data/grok_catalog_gate.json` (unattested), with the loader, the offline
   signature check against the pinned registry key and the tree invariant `check_tree`
-  in `phase_loop_runtime.grok_roll`. A new optional extra `grok-catalog`
+  in `phase_loop_runtime.grok_roll`. Package data and explicit trees are read with no
+  linked component, as regular files, without blocking and with a bound; `check_tree` takes
+  a checkout `anchor`. A new optional extra `grok-catalog`
   (`cryptography==50.0.2`, `brotli==1.2.1`) is needed only by the signature check and the
   later provenance derivation; the hosted pytest job, `scripts/local_check.py` and the
-  Gate A suite container install `[visual,claude-sdk,grok-catalog]`, the `test` group
-  includes it, and the hosted pytest job now also installs the built wheel alone in a
-  fresh environment (brotli absent) and runs the status command from it. Pins:
-  `seat_window.runtime_digest()` moves (the `status` action is added to `seat_window.py`;
+  Gate A suite container install `[visual,claude-sdk,grok-catalog]`, Gate A's inner suite
+  venv adds it after the base-wheel probes, the `test` group includes it, and the hosted
+  pytest job now also installs the built wheel alone in a fresh environment (brotli
+  absent) and requires the one deterministic answer from it. Pins:
+  `seat_window.runtime_digest()` moves (the `status` action and a bounded, non-blocking
+  `/etc/machine-id` read, with the same host identity, are added to `seat_window.py`;
   the new `grok_roll/` package and the data files are outside the hash), so window records
   on the previous key need requalifying; new `host-io` rows in
   `tests/data/seat_launch_references.json`; two package-data entries; `uv.lock` gains
