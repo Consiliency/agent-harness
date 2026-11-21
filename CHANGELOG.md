@@ -6,15 +6,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+## [0.7.38] - Unreleased candidate
+
 ### Added
 
 - A Gemini seat whose selected `agy` cannot be used for a reason of its own (unreadable,
   over the size bound, not regular, not qualified, a failed record, self-qualification off,
   an unsafe store, first use failing) now admits an already-qualified image found on the
   host instead: a release member, or a locally qualified image, from the harness cache or
-  the vendor store `/opt/consiliency/operational-clis/agy` (the hold, AGYFRESH HOLD). Every
-  seat admission goes through one boundary, `agy_qualification.admit_seat`. The search is
-  bounded and ordered (newest authenticated version first; at most five image reads),
+  the vendor store `/opt/consiliency/operational-clis/agy` (the hold). Every seat admission
+  goes through one boundary, `agy_qualification.admit_seat`. The search is bounded and
+  ordered (newest authenticated version first; at most five image reads),
   descriptor-relative and symlink-free, holds one image at a time, and rejects a file whose
   replacement it observes during the read. A held seat runs the held image's sealed memfd;
   its evidence carries `provider_admission_source: "lkg"`, `provider_hold_reason` and
@@ -29,7 +31,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   refusal. `phase-loop agy-qualification run` adds `source`, and for a held image the reason
   and the subject's digest. The help measurement's typed process-group quiescence outcome
   now keeps its type on the heartbeat route and in first use's lookup, as it already did at
-  the seat sites. The seat QCI, store keys, the catalog, records and pins are unchanged.
+  the seat sites. The seat QCI, store keys, the catalog, records and pins are unchanged
+  (agent-harness#2026).
 
 ### Changed
 
@@ -40,7 +43,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `test_only` registry unless the caller opts in. phase-loop does not call the authority
   verifier, so no runtime code changes. This brings the `consiliency-contract` floor back
   in line with the latest published contract, which `phase-loop doctor --fail-on-stale`
-  checks.
+  checks (agent-harness#2022).
 
 ### Fixed
 
@@ -54,42 +57,41 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   passes no `--mode`. The brokered agy routes that run today (the heartbeat route,
   advisory documents and the brokered president) pass `--mode plan` and keep their own
   owned settings. The brokered builder can also form a staged invocation with no mode, but
-  no production Gemini route reaches it. Existing qualification pins are unchanged.
+  no production Gemini route reaches it. Existing qualification pins are unchanged
+  (agent-harness#2031).
 - Seat scopes use a fixed description. `capped_popen` passes `systemd-run` a
   `--description` that names only the seat key's digest (the value already in the unit
   name), so a scope's unit metadata no longer repeats the seat's command line. The
   per-seat caps, their attestation and the launched command are unchanged
-  (agent-harness#1895).
+  (agent-harness#1895, agent-harness#2019).
 - A jailed Gemini seat's refusals reach the board typed instead of as `unknown failure; CLI
-  output not retained` (agent-harness#1823). `_parent_infer` classifies the seat's
-  preparation and execution exceptions itself. When the adapter invocation's own outcome,
-  tracked apart from transport and cleanup errors, is the broker client's sole failure (no
-  other error, no deadline -- rechecked when the client's read completes --, no
+  output not retained` (agent-harness#1823, agent-harness#2029). `_parent_infer` classifies
+  the seat's preparation and execution exceptions itself. When the adapter invocation's own
+  outcome, tracked apart from transport and cleanup errors, is the broker client's sole
+  failure (no other error, no deadline -- rechecked when the client's read completes --, no
   cancellation, live serve thread or non-quiescent adapter, and the client's own exit,
   observed before cleanup signals it, is its expected truncated-response exit), the client
-  raises
-  `CredentiallessAdapterFailure` chained to it, and
-  `_exception_failure` looks through that one wrapper (bounded, exact types only, never
-  parsing text); any other outer exception keeps its own classification. A stale agy login
-  on a dependency route (a session lease or managed release, which must not renew the host
-  login, agent-harness#1782) reports the existing `gemini_credential_near_expiry` code and
-  its renewal notice, and the seat-mode preflight reports it before the board runs.
+  raises `CredentiallessAdapterFailure` chained to it, and `_exception_failure` looks
+  through that one wrapper (bounded, exact types only, never parsing text); any other outer
+  exception keeps its own classification. A stale agy login on a dependency route (a session
+  lease or managed release, which must not renew the host login, agent-harness#1782) reports
+  the existing `gemini_credential_near_expiry` code and its renewal notice, and the
+  seat-mode preflight reports it before the board runs.
   `seat_sandbox_refused:watch_unavailable` is now in the detail vocabulary. `leg_exec.v1`
   gains the closed `stage` and `refusal` fields (raised and returned typed codes, or an
-  allowlisted class; `ExecutableDependencyError` codes from an exact allowlist). A leg
-  that started no provider and stopped before any launch boundary is
-  `leg_execution_unlaunched` rather than `leg_execution_failed`. The jail profile digests,
-  the agy and seat QCI, the validator closure and the Claude SDK proof inputs are
-  unchanged; nothing needs requalification.
+  allowlisted class; `ExecutableDependencyError` codes from an exact allowlist). A leg that
+  started no provider and stopped before any launch boundary is `leg_execution_unlaunched`
+  rather than `leg_execution_failed`. The jail profile digests, the agy and seat QCI, the
+  validator closure and the Claude SDK proof inputs are unchanged; nothing needs
+  requalification.
 - A jailed Gemini or Codex seat's private `leg_exec.v1` record now says which configured
-  value its output scan matched and where (agent-harness#1823): a closed `secret_match`
-  field with the kind and encoding of the match, the stream (or, for an after-exit match
-  across a join of the scanned streams, every stream it covers), whether it was caught
-  live or after exit, the event, step and tool of the line (read by structure at fixed
-  JSON paths, allowlisted), and the line index and byte offset. The record's `refusal`
-  carries the leg's existing detail code. The scan,
-  its forms and the public detail codes are unchanged, and the record holds no part of the
-  matched value or the text around it.
+  value its output scan matched and where (agent-harness#1823, agent-harness#2029): a closed
+  `secret_match` field with the kind and encoding of the match, the stream (or, for an
+  after-exit match across a join of the scanned streams, every stream it covers), whether it
+  was caught live or after exit, the event, step and tool of the line (read by structure at
+  fixed JSON paths, allowlisted), and the line index and byte offset. The record's `refusal`
+  carries the leg's existing detail code. The scan, its forms and the public detail codes
+  are unchanged, and the record holds no part of the matched value or the text around it.
 - The agy size bounds are defined once, in `agy_provenance`, and every reader looks them up
   there when it runs: a 512 MB image (the seat readers in `gemini_heartbeat` and
   `agy_integrity` stopped at 300 MB, with current upstream images at about 269 MB), a 256 MB
@@ -103,7 +105,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   admission holds one copy of the image instead of about three. On the seat path a memfd
   seal failure is the `agy_image_unqualified` refusal for a release member too. The seat
   QCI, store keys, the shipped catalog and records are unchanged; nothing needs
-  requalification.
+  requalification (agent-harness#2017).
 - agy self-qualification no longer depends on the directory it runs from, so
   `phase-loop agy-qualification run` and first-use qualification work from any directory.
   Each operation's board now reviews a constant one-file repository that the coordinator
@@ -119,26 +121,25 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   counted as a transient attempt. When an operation ends before the provider is observed,
   `failure.json` now also records the worker's terminal status and detail as
   `worker_terminal`. The validator, seat QCI, store keys, the shipped catalog and records
-  are unchanged; nothing needs requalification.
+  are unchanged; nothing needs requalification (agent-harness#2021).
 - When a jailed Gemini seat's tooled stream is refused with
   `gemini_seat_subagent_or_unknown_event`, its private `leg_exec.v1` record now says what
-  kind of line was refused (agent-harness#1823). The new closed `stream_rejection` field
-  gives the reason (`unknown_event`, `bad_step_type` or `subagent_info`, in the parser's own
-  order), the line's index,
-  its event, step type, tool name and step state, which keys the line, its step and any
-  `subagent_info` carry, per-event, per-step-type and per-tool counts for the whole stream,
-  and the init event's keys and mode values. Every name comes from a fixed allowlist, with
-  `other` for anything outside it, and the record holds no line text, value or provider
-  text. The descriptor is computed by a new helper that re-reads the retained output after
-  the parser has refused it; the parser itself is unchanged. A leg that exited 0 but ended
-  in one of a jailed seat's explicit refusals (a stream, verdict, leak or token refusal) is
-  now recorded as `leg_execution_refused` rather than `leg_execution_completed`; a clean exit
-  that fails ordinary review classification without such a refusal keeps its outcome. The
-  public detail codes, the agy validator closure,
-  the agy and seat QCI, the jail profile digests and the Claude SDK proof inputs are
-  unchanged; nothing needs requalification.
+  kind of line was refused (agent-harness#1823, agent-harness#2029). The new closed
+  `stream_rejection` field gives the reason (`unknown_event`, `bad_step_type` or
+  `subagent_info`, in the parser's own order), the line's index, its event, step type, tool
+  name and step state, which keys the line, its step and any `subagent_info` carry,
+  per-event, per-step-type and per-tool counts for the whole stream, and the init event's
+  keys and mode values. Every name comes from a fixed allowlist, with `other` for anything
+  outside it, and the record holds no line text, value or provider text. The descriptor is
+  computed by a new helper that re-reads the retained output after the parser has refused
+  it; the parser itself is unchanged. A leg that exited 0 but ended in one of a jailed
+  seat's explicit refusals (a stream, verdict, leak or token refusal) is now recorded as
+  `leg_execution_refused` rather than `leg_execution_completed`; a clean exit that fails
+  ordinary review classification without such a refusal keeps its outcome. The public detail
+  codes, the agy validator closure, the agy and seat QCI, the jail profile digests and the
+  Claude SDK proof inputs are unchanged; nothing needs requalification.
 
-## [0.7.37] - Unreleased candidate
+## [0.7.37] - 2026-11-20
 
 ### Changed
 
