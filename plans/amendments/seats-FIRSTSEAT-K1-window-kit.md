@@ -137,8 +137,10 @@ Test commands run from `phase-loop-runtime/`.
 - **Named parts.**
   - `seat_profiles.py`: `WindowVendorData`, `register_window_data` and `GEMINI_WINDOW_DATA`.
   - `panel_invoker.py`, in the kit section (contract §5 and §9.1):
-    - the `credential_mode` and `copy_transform` keywords of `_prepare_jailed_codex`, default
-      `live`;
+    - the `credential_mode` and `copy_transform` keywords of `_prepare_jailed_codex` and
+      `_prepare_jailed_claude`, default `live`, with production behaviour unchanged at the
+      default. SL-5 owns the Claude seam because the plan validator's ownership check (D)
+      refuses two lanes owning `panel_invoker.py`;
     - the hook calls inside `_exec_jailed_codex_leg`, in Gemini's order;
     - `window_board=` routing in `_parent_infer`, and the reservation at the jailed Claude
       dispatch;
@@ -162,15 +164,18 @@ Test commands run from `phase-loop-runtime/`.
     `gemini_heartbeat.py`, or `terminal_verdict` and its helpers;
   - `tests/test_agy_qci.py` or `tests/data/seat_profile_digests_jailcore.json` would change;
   - a jail builder, filter or allowlist file would change;
-  - any source file owned by CLAUDE, CLAUDENET, CODEX or GROK would need an edit.
+  - any source file owned by CLAUDE, CLAUDENET, CODEX or GROK would need an edit;
+  - a `claude_seat_transport.SDK_PROOF_REGIONS` entry other than `_prepare_jailed_claude`
+    (the seam) and `launch_provider` (the ledger reservation) would change, or `audit-order`
+    fails after the change.
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
 | SL-5.1 | test | (none) | `tests/data/seat_window_gemini_k1_golden.json`, `tests/test_seat_window_vendor_neutral.py` | the golden and its test (F10), captured from the base at a fixed clock | `pytest tests/test_seat_window_vendor_neutral.py -k golden` |
-| SL-5.2 | test | SL-5.1 | `tests/test_seat_window_vendor_neutral.py`, `tests/test_seat_window_grants.py` | F1–F9, F11–F16, K1-T1–T5, K1-T8 (SL-5 part), K1-T9 and K1-G3, with a synthetic vendor registered in a fixture; F15 runs in a fresh process | `pytest tests/test_seat_window_vendor_neutral.py tests/test_seat_window_grants.py` |
+| SL-5.2 | test | SL-5.1 | `tests/test_seat_window_vendor_neutral.py`, `tests/test_seat_window_grants.py` | F1–F9, F11–F16, K1-T1–T5, K1-T8 (SL-5 part), K1-T9 and K1-G3, with a synthetic vendor registered in a fixture; F15 runs in a fresh process. The Claude seam goes through the real `_prepare_jailed_claude`, with the provider stubbed at its spawn boundary: `live` is byte-for-byte production, `none` builds no credential, and `expired` applies the transform. | `pytest tests/test_seat_window_vendor_neutral.py tests/test_seat_window_grants.py` |
 | SL-5.3 | impl | SL-5.2 | `seat_profiles.py`, `seat_window_supply.py`, `seat_window_supply_gemini.py`, `seat_window.py` | (none) | `pytest tests/test_seat_window_vendor_neutral.py tests/test_seat_window_grants.py tests/test_seat_qualification_host_context.py` |
 | SL-5.4 | impl | SL-5.3 | `panel_invoker.py`, `tests/test_panel_invoker.py`, inventories | (none) | `pytest tests/test_panel_invoker.py -k "window or codex" tests/test_seat_window_vendor_neutral.py` |
-| SL-5.5 | verify | SL-5.4 | lane files | all | the frontmatter `suite_command` with `tests/test_seat_launch_helpers_trusted.py` and `tests/test_seat_profiles.py` |
+| SL-5.5 | verify | SL-5.4 | lane files | all | the frontmatter `suite_command` with `tests/test_seat_launch_helpers_trusted.py` and `tests/test_seat_profiles.py`, then, from the repository root, `PYTHONPATH=phase-loop-runtime/src python3 -m phase_loop_runtime.claude_seat_transport audit-order --repo . --base origin/main` |
 
 ### SL-6 — K1-CODEX: Codex supplier adapter
 
@@ -202,7 +207,8 @@ Test commands run from `phase-loop-runtime/`.
 - **Parallel-safe**: yes
 - **Stop rules.** Stop if:
   - start gate K1-T8 (Claude part, through the print-path observer) is not green;
-  - any Claude, SDK or CLAUDENET file would need an edit;
+  - any Claude, SDK or CLAUDENET file would need an edit. The `_prepare_jailed_claude`
+    credential seam is SL-5's (IF-0-FIRSTSEAT-6), and SL-7 consumes it;
   - OD-3b has recorded no default.
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
@@ -299,6 +305,11 @@ No lane makes a live provider call or runs on a seat host. SL-6.2 is provider-fr
     `seat_launch_references.json` and the edited phase plans' frontmatter. Whichever lands
     second re-stamps this file's frontmatter, and the inventories are union-resolved. The
     contract does not pin the roadmap.
+- **Pin accounting: the Claude SDK proof binding.** SL-5's edits to `_prepare_jailed_claude`
+  (the seam) and `launch_provider` (the ledger) are inside
+  `claude_seat_transport.SDK_PROOF_REGIONS`, so the SDK proof-input binding moves with SL-5.
+  `claude_seat_sdk.ADMITTED` is `False`, so no SDK receipt is renewed. SL-5.5's `audit-order`
+  run must pass after the move, and so must SL-7.3's.
 - **Requalification.** None, by contract §11, on the conditions it states: the `live`
   defaults, the hook call sites, the legacy W1 check and the stop rules hold. Only
   `runtime_digest` and `release_identity` move.
