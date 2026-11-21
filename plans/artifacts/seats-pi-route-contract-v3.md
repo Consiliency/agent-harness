@@ -1,7 +1,7 @@
-# SEATS PI: route, credential and attribution contract v2
+# SEATS PI: route, credential and attribution contract v3
 
-Frozen detail for `plans/phase-plan-v1-seats-PI.md`, which cites this file by section. v2
-replaces v1. It covers the subscription route (`pi`, `openai-codex`). The paid DeepSeek route is
+Frozen detail for `plans/phase-plan-v1-seats-PI.md`, which cites this file by section. v3
+replaces v2, applying the president's conditions P1, P4, C2, C4 and C5. It covers the subscription route (`pi`, `openai-codex`). The paid DeepSeek route is
 the separate design in §13 and has no production registration. Exit criteria are cited by ID only.
 
 **Labels.**
@@ -71,8 +71,7 @@ A different projected Pi version is a new input.
 - whether Pi needs `accountId`;
 - read-only operation;
 - the POST count per leg;
-- whether tool processes inherit the witness descriptor (§7);
-- the in-seat ptrace scope.
+- the three witness trust preconditions (§7).
 
 ## 3. Route record, trust anchor and snapshot
 
@@ -207,14 +206,18 @@ pi --offline --provider openai-codex --model M --thinking E --mode json --print 
 There is no trailing `--`. The prompt goes on stdin.
 
 **Private directory.** The agent directory holds the credential (§8) and a harness-written
-`settings.json` with only the record's `settings`. The CA is `.phase-loop-seat-egress-ca.pem`,
+`settings.json` with only the record's `settings`. Those settings are `transport: "sse"`,
+the retry setting, and `cacheWarming: "off"` (C2; Pi's default is `idle`). The CA is `.phase-loop-seat-egress-ca.pem`,
 mounted read-only, with the trust variables SL-1.1 proves. `.config`, `.cache` and
 `.local/share` are private and removed at teardown.
 
 **Witness.** `phase_loop_runtime/data/pi_seat/witness.mjs` is pinned by `witness_sha256` and
-projected read-only. It observes the adapter's `onResponse` and the terminal response, and
-writes one validated metadata record per inference response to a descriptor that only the Pi
-process holds. Each record holds:
+projected read-only. It observes two Pi extension hooks: `after_provider_response` (status and
+headers) and `provider_stream_event` (raw provider events, for response id, upstream model and
+completion).
+
+The channel is an AF_UNIX socket passed to Pi. It is never a pipe or a file. The witness writes
+one validated metadata record per inference response to that socket. Each record holds:
 
 - an ordinal;
 - the HTTP status;
@@ -223,14 +226,34 @@ process holds. Each record holds:
 - the upstream model;
 - the sha256 of the final output text.
 
-It holds no body and no header values beyond those fields. The witness can be trusted only on
-two measured preconditions:
+It holds no body and no header values beyond those fields.
 
-- tool processes do not inherit the descriptor;
-- the seat's ptrace scope stops a tool from writing into its ancestor Pi.
+**Trust preconditions.** The witness can be trusted only on three preconditions:
 
-If either fails, that is the S1 alternative: a proxy-side response witness, which changes the
-shared proxy and so is a STOP.
+1. tool processes do not inherit the socket descriptor;
+2. a tool cannot reopen it through `/proc/<pid>/fd` or take it with `pidfd_getfd`;
+3. a tool cannot write into the ancestor Pi, by ptrace or through `/proc/<pid>/mem`.
+
+**When they are measured.**
+
+- First, credential-free, in SL-1.0 and SL-1.1, with the projected Node and a stub witness.
+- Again inside the jail in SL-2.3.
+- Again on the seat host in SL-3.6.
+
+**Per-launch check.** `ptrace_scope >= 1` is checked at every launch, in `pi_containment` or the
+admission gate, because the J14 seccomp filter does not deny ptrace. A lower value refuses the
+launch.
+
+**Failure.** A failed precondition is the S1 STOP: a proxy-side response witness, which changes
+the shared proxy. It is resolved by narrowing with the owner's agreement, not by a new witness
+design.
+
+**Witness parser (C1).** Each of these is `pi_seat_containment_unproven`:
+
+- a duplicate ordinal or response id;
+- a gap in ordinals;
+- a record after `agent_settled`;
+- a record that does not parse.
 
 **Cross-check.** The witness count must equal the proxy's allowed inference count. A
 tool-originated allowed POST leaves the counts unequal and gives
@@ -279,16 +302,22 @@ verification.
 - The account claim must equal the expected account in the operator-private
   `pi_seat_login.v1` record. The owner writes that record at LA-2 sign-in with
   `phase-loop seat-sandbox pi-login-record`, which records the account id and the date, never a
-  token.
-- A missing or ambiguous claim, or any mismatch, is `pi_seat_token_scope_excess`. A missing
-  login record is `pi_seat_credential_missing`.
+  token. The record binds the account id captured at the LA-2 sign-in. That binding detects a
+  later substitution. It is not an independent identity.
+- A scope set wider than the record's is `pi_seat_token_scope_excess`.
+- A missing or ambiguous claim, or any other claim mismatch, is
+  `pi_seat_credential_route_mismatch`.
+- A missing login record is `pi_seat_credential_missing`.
 
-**Mount.** Both paths keep the file read-only.
+**Mount (C4).** The only mount path is `--perms 0444 --ro-bind-data` of the sealed memfd at
+`.pi/agent/auth.json`.
 
-- **Preferred:** `--ro-bind-fd` of the sealed memfd at `.pi/agent/auth.json`, which preserves
-  identity. Whether the qualified launcher supports it is to measure.
-- **Otherwise:** `--ro-bind-data`. Before exec, the parent records the mounted file's own device
-  and inode and verifies its bytes equal the sealed bytes.
+- **Pre-exec check.** It runs through the existing `--info-fd` and `--block-fd` launch. The parent
+  stats and reads the mounted file through `/proc/<pid>/root` and records the file's own device
+  and inode. It verifies the bytes equal the sealed bytes, and only then releases exec.
+- **Anchor.** The parent keeps an O_PATH anchor for teardown.
+- **Not used.** `--ro-bind-fd` of a memfd is not used, because it fails on bwrap 0.11.1. Any new
+  mount grammar in `seat_jail` is a JAILCORE STOP.
 
 **Ancestors.**
 
@@ -376,23 +405,21 @@ A failed, rejected, unrelated or tool-originated POST cannot satisfy this. Other
 **Consumers.**
 
 - `composition.board_independence`;
-- `governed_review.select_reviewer_pool`, `governed_planning_gate` and `governed_board_gate`;
-- `author_vendor_for_executor` and `author_vendor_for_model`;
+- `governed_review.select_reviewer_pool` and `author_vendor_for_model`;
 - `panel_invoker._validate_review_board_policy`, with `(harness, model)` keys;
 - `president_adapter.seat_for_rung`.
 
-**Author provenance.**
+**Seat authorship rule (P1).**
 
-- `author_vendor_for_executor("pi")` returns `pi:unknown` unless a trusted `pi_author_route.v1`
-  record binds the authoring run and review subject to a provider.
-- `runner._phase_author_vendors` keeps non-empty values, so `pi:unknown` survives mixed-author
-  aggregation.
-- Both governed gates hold with `unknown_author` when any author is `pi:unknown`. That routes
-  through the existing non-human hold and the T3 handoff.
-- Tests: a mixed Claude and unknown-Pi author holds. A known Pi author (synthetic record)
-  reviewed by a native codex seat is refused as same-vendor.
-- The production producer of `pi_author_route.v1` belongs to the Pi LANE-executor plan, which
-  owns `launcher.py` (S7).
+- A phase whose authors include a Pi executor excludes the `pi` review leg, on every backing.
+  Its authors include a Pi executor when any dispatch has `selected_executor == "pi"`, as
+  aggregated by `runner._phase_author_vendors`.
+- After SL-1.5, the leg's route-intent reviewer vendor is `codex`, so a codex author also
+  excludes it.
+- `author_vendor_for_executor("pi")`, `vendor_of_harness("pi")` before SL-1.5, and both governed
+  gates are unchanged.
+- A native reviewer of a Pi-executor author whose provider is unknown is an existing gap. It is
+  outside PI and is filed for v11 ROUTE (EC-ROUTE-4).
 
 ## 12. Shared surfaces and stops
 
@@ -411,9 +438,6 @@ A failed, rejected, unrelated or tool-originated POST cannot satisfy this. Other
 - **S5.** No window-kit function and no frozen JAILCORE or TEAMHOST artifact changes.
 - **S6.** `seat_jail_qualification.py` is not edited. It feeds the Gemini watch and validator
   digests.
-- **S7.** Treating Pi authorship as unknown changes governed gating for every Pi-executor phase.
-  Today `pi` counts as its own vendor. The coordinator accepts the hold, or the Pi
-  LANE-executor plan supplies `pi_author_route.v1` first.
 
 ## 13. Paid route (design only, not registered)
 
