@@ -333,6 +333,26 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   ordinary review classification without such a refusal keeps its outcome. The public detail
   codes, the agy validator closure, the agy and seat QCI, the jail profile digests and the
   Claude SDK proof inputs are unchanged; nothing needs requalification.
+- The placement process request and response decoders refuse a JSON value that nests arrays
+  or objects more than 64 deep as `input_invalid_json`, checked before decoding. This is an
+  implementation resource safeguard, not a rule of the frozen schema's `x-cli.input`. The
+  outcome no longer depends on the interpreter: Python 3.14's decoder accepts depths that
+  3.12's raises on. The limit can be selected with the environment variable
+  `PHASE_LOOP_PLACEMENT_MAX_INPUT_DEPTH`, read on every decode. It accepts only a plain ASCII
+  base-10 integer from 3 to 256: no sign, whitespace, underscore or leading zero. The minimum
+  is the deepest schema-valid message. The maximum keeps input at the limit inside the
+  recursion limit on Python 3.12 and 3.14. An invalid value never falls back to 64. It
+  fails closed: every wire body that passes the size and UTF-8 checks is refused as
+  `input_invalid_json`. The setting is not a protocol field. It adds no message member,
+  diagnostic or exit class, and the schema digest is unchanged. Deep input inside an object no longer escapes as an internal failure
+  (`placement_internal`). Schema-valid messages nest at most 3 deep, so no valid request or
+  response changes outcome. A deep wire value that also breaks another input rule (a
+  duplicate key, an unsafe or non-finite number) now reports `input_invalid_json`. Client
+  configuration parsing has no depth limit and ignores the setting, so an opaque `launch`
+  object of any accepted depth still loads; nesting too deep to decode or walk is refused as invalid instead of
+  raising. The protocol schema, vectors and CLI fixtures are unchanged; the PLACECLI receipt
+  pins the changed source and test and needs re-stamping. See
+  `docs/placement-process-cli.md`.
 
 ## [0.7.37] - 2026-11-20
 

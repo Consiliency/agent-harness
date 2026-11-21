@@ -7,8 +7,9 @@ Its SHA-256 is the wire identity a client checks with ``version``.
 
 Decoding is side-effect free. Input bytes are captured once, checked against the input rules
 of ``x-cli.input`` (UTF-8, one JSON object, no duplicate keys, no non-finite or unsafe
-numbers, no trailing data, at most 65536 bytes), validated against the message definition
-for the verb, and only then turned into immutable records. Every failure is a
+numbers, no trailing data, at most 65536 bytes) and against the decoders' nesting safeguard
+(:func:`input_depth_limit`, default :data:`MAX_INPUT_DEPTH`), validated against the message
+definition for the verb, and only then turned into immutable records. Every failure is a
 :class:`ProtocolError` whose ``code`` is one closed diagnostic; no input value, exception
 chain or path reaches it.
 """
@@ -21,6 +22,7 @@ import hashlib
 from importlib import resources
 import json
 import math
+import os
 import re
 from types import MappingProxyType
 from typing import Any, Mapping, Union
@@ -34,6 +36,9 @@ __all__ = [
     "CLIENTS",
     "CLIENT_WORKLOADS",
     "MAX_INPUT_BYTES",
+    "MAX_INPUT_DEPTH",
+    "MAX_INPUT_DEPTH_ENV",
+    "MAX_INPUT_DEPTH_SETTING_RANGE",
     "PROTOCOL_DIAGNOSTICS",
     "VERBS",
     "BridgeDescriptor",
@@ -58,6 +63,7 @@ __all__ = [
     "decode_response",
     "encode_response",
     "exit_class",
+    "input_depth_limit",
     "load_strict_object",
     "protocol_schema_sha256",
     "require_empty_version_input",
@@ -67,6 +73,26 @@ __all__ = [
 
 SCHEMA_RESOURCE = "contracts/placement/process-v1.schema.json"
 MAX_INPUT_BYTES = 65536
+#: The default deepest array/object nesting :func:`decode_request` and :func:`decode_response`
+#: accept (see :func:`input_depth_limit` for the setting). This is an implementation resource
+#: safeguard, not a rule of the frozen ``x-cli.input``: every schema-valid message nests at
+#: most 3 deep, and deeper wire input is refused as ``input_invalid_json`` before decoding, so
+#: the outcome never depends on the interpreter's recursion limit or JSON decoder. Because the
+#: check runs first, a deep value that also breaks another input rule (a duplicate key, an
+#: unsafe or non-finite number) reports ``input_invalid_json``. :func:`load_strict_object`
+#: applies no such limit: it also parses client configurations, whose uninterpreted
+#: ``launch`` object has no depth bound.
+MAX_INPUT_DEPTH = 64
+#: The environment variable that selects the wire decoders' nesting limit. It is a local
+#: decoder setting, not a protocol field: it adds no message member, diagnostic or exit
+#: class, and the packaged schema and its digest are unchanged.
+MAX_INPUT_DEPTH_ENV = "PHASE_LOOP_PLACEMENT_MAX_INPUT_DEPTH"
+#: The inclusive range a set :data:`MAX_INPUT_DEPTH_ENV` must fall in. The minimum is the
+#: deepest schema-valid message (3), so no accepted setting refuses a valid request or
+#: response, or a journaled response on replay. The maximum keeps the decoder and the
+#: recursive encodability walk far below the recursion limit on every supported interpreter,
+#: so input at the limit is always decoded and walked, never refused by a ``RecursionError``.
+MAX_INPUT_DEPTH_SETTING_RANGE: tuple[int, int] = (3, 256)
 VERBS: tuple[str, ...] = ("reserve", "release", "reap", "version")
 CLIENTS: tuple[str, ...] = ("agent-harness", "agent-toolkit")
 #: ``x-identity-inventories``: the workloads each client may reserve.
@@ -104,6 +130,9 @@ _RESPONSE_DEFS = MappingProxyType({
 })
 _SAFE_INTEGER = 2 ** 53 - 1
 _JSON_WHITESPACE = " \t\n\r"
+_STRUCTURE = re.compile(r'["\[\]{}]')
+_STRING_STOP = re.compile(r'["\\]')
+_DEPTH_SETTING = re.compile(r"[1-9][0-9]{0,2}")  # ASCII digits only, unlike \d
 _DATE_TIME = re.compile(
     r"[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])[Tt]([01][0-9]|2[0-3]):[0-5][0-9]:"
     r"([0-5][0-9]|60)(\.[0-9]+)?([Zz]|[+-]([01][0-9]|2[0-3]):[0-5][0-9])"
@@ -226,8 +255,68 @@ def _encodable(value: object) -> bool:
     return True
 
 
-def _load_object(raw: bytes) -> dict[str, Any]:
-    """Capture once and parse under the input rules; raise a closed :class:`ProtocolError`."""
+def _too_deep(text: str, start: int, limit: int) -> bool:
+    """Whether the first JSON value at ``start`` nests deeper than ``limit``.
+
+    One linear scan over the value: brackets inside strings (escapes included) do not count,
+    and the scan stops where the value ends, so trailing data is still the decoder's to
+    report. An unterminated string stops the scan; the decoder then refuses the input.
+    """
+    if start >= len(text) or text[start] not in "[{":
+        return False
+    depth = 0
+    position = start
+    while True:
+        found = _STRUCTURE.search(text, position)
+        if found is None:
+            return False
+        char = found.group()
+        position = found.end()
+        if char == '"':
+            while True:
+                stop = _STRING_STOP.search(text, position)
+                if stop is None:
+                    return False
+                position = stop.end()
+                if stop.group() == '"':
+                    break
+                position += 1  # the escaped character, whatever it is
+        elif char in "[{":
+            depth += 1
+            if depth > limit:
+                return True
+        else:
+            depth -= 1
+            if depth == 0:
+                return False
+
+
+def input_depth_limit() -> int | None:
+    """The wire decoders' nesting limit, read from :data:`MAX_INPUT_DEPTH_ENV` on every call.
+
+    Unset, it is :data:`MAX_INPUT_DEPTH`. Set, the value must be a plain ASCII base-10
+    integer with no sign, whitespace, underscore or leading zero, inside
+    :data:`MAX_INPUT_DEPTH_SETTING_RANGE`. Any other value, the empty string included, is
+    invalid and returns ``None``: :func:`decode_request` and :func:`decode_response` then
+    refuse every input that passes the byte-level checks as ``input_invalid_json``. An
+    invalid setting never falls back to the default."""
+    value = os.environ.get(MAX_INPUT_DEPTH_ENV)
+    if value is None:
+        return MAX_INPUT_DEPTH
+    if _DEPTH_SETTING.fullmatch(value) is None:
+        return None
+    limit = int(value)
+    low, high = MAX_INPUT_DEPTH_SETTING_RANGE
+    if not low <= limit <= high:
+        return None
+    return limit
+
+
+def _load_object(raw: bytes, *, wire: bool = False) -> dict[str, Any]:
+    """Capture once and parse under the input rules; raise a closed :class:`ProtocolError`.
+
+    For ``wire`` input, a first value nesting deeper than :func:`input_depth_limit` is
+    refused before decoding, and so is every input while the setting is invalid."""
     if not isinstance(raw, (bytes, bytearray, memoryview)):
         raise ProtocolError("input_not_bytes")
     captured = bytes(raw)
@@ -244,6 +333,10 @@ def _load_object(raw: bytes) -> dict[str, Any]:
         parse_float=_finite_float, parse_int=_safe_int,
     )
     start = len(text) - len(text.lstrip(_JSON_WHITESPACE))
+    if wire:
+        limit = input_depth_limit()
+        if limit is None or _too_deep(text, start, limit):
+            raise ProtocolError("input_invalid_json")
     try:
         value, end = decoder.raw_decode(text, start)
     except ProtocolError:
@@ -254,13 +347,21 @@ def _load_object(raw: bytes) -> dict[str, Any]:
         raise ProtocolError("input_trailing_data")
     if not isinstance(value, dict):
         raise ProtocolError("input_not_object")
-    if not _encodable(value):
+    try:
+        encodable = _encodable(value)
+    except RecursionError:
+        raise ProtocolError("input_invalid_json") from None
+    if not encodable:
         raise ProtocolError("input_not_utf8")
     return value
 
 
 def load_strict_object(raw: bytes) -> dict[str, Any]:
-    """Parse one JSON object under the protocol's input rules (no schema)."""
+    """Parse one JSON object under the protocol's input rules (no schema).
+
+    This is also the client-configuration parser, so it does not apply the wire decoders'
+    nesting safeguard and ignores :data:`MAX_INPUT_DEPTH_ENV`; nesting the interpreter cannot
+    decode or walk is still refused as ``input_invalid_json``."""
     return _load_object(raw)
 
 
@@ -638,7 +739,7 @@ def decode_request(verb: str, raw: bytes) -> PlacementRequestMessage:
     definition = _REQUEST_DEFS.get(verb) if isinstance(verb, str) else None
     if definition is None:
         raise ProtocolError("verb_unknown")
-    value = _load_object(raw)
+    value = _load_object(raw, wire=True)
     if not _valid(definition, value):
         raise ProtocolError("schema_invalid")
     try:
@@ -672,7 +773,7 @@ def decode_response(verb: str, raw: bytes) -> PlacementResponseMessage:
         raise ProtocolError("verb_unknown")
     if not isinstance(raw, (bytes, bytearray)) or not bytes(raw).endswith(b"\n"):
         raise ProtocolError("input_trailing_data")
-    value = _load_object(bytes(raw)[:-1])
+    value = _load_object(bytes(raw)[:-1], wire=True)
     if not _valid(definition, value):
         raise ProtocolError("schema_invalid")
     try:

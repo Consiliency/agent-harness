@@ -135,6 +135,12 @@ def refused(verb: str, data: bytes) -> str:
     return caught.value.code
 
 
+@pytest.fixture(autouse=True)
+def no_ambient_depth_setting(monkeypatch):
+    """The decoders read the nesting setting on every call; no ambient value reaches a test."""
+    monkeypatch.delenv(contract.MAX_INPUT_DEPTH_ENV, raising=False)
+
+
 def response_refused(verb: str, value) -> None:
     with pytest.raises(contract.ProtocolError):
         contract.decode_response(verb, line(value))
@@ -257,6 +263,299 @@ def test_the_64_kib_bound_is_exact():
     assert len(padded) == contract.MAX_INPUT_BYTES
     assert contract.decode_request("reap", padded).request_id == "reap-1"
     assert refused("reap", padded + b" ") == "input_too_large"
+
+
+def nested(depth: int) -> bytes:
+    """A JSON object whose arrays and objects nest exactly ``depth`` deep."""
+    return b'{"a":' * (depth - 1) + b"{}" + b"}" * (depth - 1)
+
+
+def test_the_nesting_bound_is_exact():
+    limit = contract.MAX_INPUT_DEPTH
+    assert refused("reap", nested(limit)) == "schema_invalid"  # past the input rules
+    assert refused("reap", nested(limit + 1)) == "input_invalid_json"
+    response = b'{"a":' * (limit - 1) + b"{}" + b"}" * (limit - 1)
+    with pytest.raises(contract.ProtocolError) as caught:
+        contract.decode_response("reap", response + b"\n")
+    assert caught.value.code == "schema_invalid"
+    with pytest.raises(contract.ProtocolError) as caught:
+        contract.decode_response("reap", b'{"a":' + response + b"}\n")
+    assert caught.value.code == "input_invalid_json"
+    arrays = b"[" * limit + b"]" * limit  # inside one object: limit + 1 deep
+    assert refused("reap", b'{"a":' + arrays[1:-1] + b"}") == "schema_invalid"
+    assert refused("reap", b'{"a":' + arrays + b"}") == "input_invalid_json"
+    assert refused("reap", b"[]" + b"[" * (limit + 1)) == "input_trailing_data"
+
+
+def test_brackets_inside_strings_do_not_count_toward_the_nesting_bound():
+    note = "[" * 100 + '\\"' + "{" * 100 + "\\"  # an escaped quote, then a final escaped backslash
+    decoded = contract.decode_request("reap", raw(reap_request(caller_context={"note": note})))
+    assert decoded.caller_context == {"note": note}
+    closers = json.dumps("]" * 100 + '\\"' + "}" * 100 + "\\").encode()
+    deep = b"[" * contract.MAX_INPUT_DEPTH + b"]" * contract.MAX_INPUT_DEPTH
+    assert refused("reap", b'{"a":' + closers + b',"b":' + deep + b"}") == "input_invalid_json"
+    assert refused("reap", b'{"a":' + closers + b',"b":' + deep[1:-1] + b"}") == "schema_invalid"
+
+
+def test_the_nesting_bound_is_for_wire_messages_not_the_strict_object_parser():
+    """``load_strict_object`` also parses client configurations, whose opaque ``launch``
+    object has no depth bound, so it keeps accepting nesting the wire decoders refuse."""
+    for depth in (contract.MAX_INPUT_DEPTH + 1, 200):
+        assert isinstance(contract.load_strict_object(nested(depth)), dict)
+        assert refused("reap", nested(depth)) == "input_invalid_json"
+    with pytest.raises(contract.ProtocolError) as caught:  # beyond what can be decoded or walked
+        contract.load_strict_object(b'{"a":' + b"[" * 30000 + b"]" * 30000 + b"}")
+    assert caught.value.code == "input_invalid_json"
+
+
+def deep_launch(depth: int) -> dict:
+    launch: dict = {}
+    for _ in range(depth):
+        launch = {"x": launch}
+    return launch
+
+
+def test_a_deep_opaque_launch_object_is_still_an_accepted_client_configuration(tmp_path):
+    from phase_loop_runtime import sandbox_policy
+
+    root = tmp_path / "placement"
+    root.mkdir(mode=0o700)
+    for depth in (contract.MAX_INPUT_DEPTH, 200):
+        launch = deep_launch(depth)
+        path = root / "agent-toolkit.json"
+        path.write_text(json.dumps({"schema": "placement.client-config.v1",
+                                    "client": "agent-toolkit", "launch": launch}))
+        path.chmod(0o600)
+        config = sandbox_policy.load_placement_client_config(
+            "agent-toolkit", config_root=root, seat_caps_sha256="0" * 64)
+        assert config.launch == launch
+        assert json.loads(config.canonical)["launch"] == launch
+    # The same object on the wire is refused by the decoder's nesting safeguard.
+    assert refused("reserve", raw(reserve_request(launch=deep_launch(contract.MAX_INPUT_DEPTH)))) \
+        == "input_invalid_json"
+
+
+def test_a_deep_value_takes_precedence_over_other_input_rules_on_the_wire():
+    """The nesting check runs before decoding, so a deep value that also breaks another
+    input rule reports ``input_invalid_json``; the strict object parser reports the other."""
+    deep = b"[" * (contract.MAX_INPUT_DEPTH + 1) + b"]" * (contract.MAX_INPUT_DEPTH + 1)
+    for first, code in ((b'"x":NaN', "input_non_finite_number"),
+                        (b'"x":9007199254740992', "input_unsafe_number"),
+                        (b'"x":{"k":1,"k":2}', "input_duplicate_key")):
+        data = b"{" + first + b',"y":' + deep + b"}"
+        assert refused("reap", data) == "input_invalid_json"
+        with pytest.raises(contract.ProtocolError) as caught:
+            contract.load_strict_object(data)
+        assert caught.value.code == code
+
+
+@pytest.mark.parametrize("data,code", [
+    pytest.param(b'{"a":[1,2}', "input_invalid_json", id="mismatched-closer"),
+    pytest.param(b'{"a":1]}', "input_invalid_json", id="extra-closer"),
+    pytest.param(b"]", "input_invalid_json", id="lone-closer"),
+    pytest.param(b'{"a":"\\x"}', "input_invalid_json", id="invalid-escape"),
+    pytest.param(b'{"a":"\\u12"}', "input_invalid_json", id="short-unicode-escape"),
+    pytest.param(b'{"a":"abc', "input_invalid_json", id="unterminated-string"),
+    pytest.param(b'{"a":"\\"}', "input_invalid_json", id="escaped-final-quote"),
+    pytest.param(b'{"a":tru}', "input_invalid_json", id="invalid-literal"),
+    pytest.param(b'{"a":"\\\\"}', "schema_invalid", id="escaped-backslash"),
+    pytest.param(b'{"a":"\\""}', "schema_invalid", id="escaped-quote"),
+    pytest.param(b'{"a":"\\u005b]]]"}', "schema_invalid", id="unicode-escaped-bracket"),
+    pytest.param(b'{"a":"]]]}}}"}', "schema_invalid", id="closers-in-string"),
+    pytest.param(b"{}]", "input_trailing_data", id="trailing-closer"),
+    pytest.param(b'{} "x"', "input_trailing_data", id="trailing-string"),
+    pytest.param(b"{} 1", "input_trailing_data", id="trailing-number"),
+    pytest.param(b'"[[[["', "input_not_object", id="top-level-string"),
+    pytest.param(b"1", "input_not_object", id="top-level-number"),
+])
+def test_shallow_malformed_input_keeps_its_decoder_classification(data, code):
+    assert refused("reap", data) == code
+    if code == "schema_invalid":
+        assert isinstance(contract.load_strict_object(data), dict)
+    else:
+        with pytest.raises(contract.ProtocolError) as caught:
+            contract.load_strict_object(data)
+        assert caught.value.code == code
+
+
+# -- the nesting-limit setting ----------------------------------------------------------------
+
+def refused_response(verb: str, data: bytes) -> str:
+    with pytest.raises(contract.ProtocolError) as caught:
+        contract.decode_response(verb, data)
+    assert str(caught.value) in contract.PROTOCOL_DIAGNOSTICS
+    return caught.value.code
+
+
+def nested_arrays(depth: int) -> bytes:
+    """A JSON object holding arrays, nesting exactly ``depth`` deep in total."""
+    return b'{"a":' + b"[" * (depth - 1) + b"]" * (depth - 1) + b"}"
+
+
+def schema_depth(node, defs, seen=()) -> int:
+    """The deepest array/object nesting a value valid under ``node`` can have."""
+    if "$ref" in node:
+        name = node["$ref"].rsplit("/", 1)[-1]
+        assert name not in seen, "a recursive definition has no depth bound"
+        return schema_depth(defs[name], defs, (*seen, name))
+    best = max((schema_depth(sub, defs, seen) for key in ("oneOf", "anyOf", "allOf")
+                for sub in node.get(key, ())), default=0)
+    kinds = node.get("type") if isinstance(node.get("type"), list) else [node.get("type")]
+    if "object" in kinds or "properties" in node:
+        assert node.get("additionalProperties", True) is not True, "an open object"
+        extra = node.get("additionalProperties")
+        members = [*node.get("properties", {}).values(), *([extra] if isinstance(extra, dict) else [])]
+        best = max(best, 1 + max((schema_depth(m, defs, seen) for m in members), default=0))
+    if "array" in kinds or "items" in node:
+        items = node.get("items")
+        best = max(best, 1 + (schema_depth(items, defs, seen) if isinstance(items, dict) else 0))
+    return best
+
+
+def test_the_nesting_setting_is_one_named_environment_variable_with_a_closed_range():
+    assert contract.MAX_INPUT_DEPTH_ENV == "PHASE_LOOP_PLACEMENT_MAX_INPUT_DEPTH"
+    assert contract.MAX_INPUT_DEPTH == 64
+    assert contract.MAX_INPUT_DEPTH_SETTING_RANGE == (3, 256)
+    assert contract.input_depth_limit() == 64  # unset: the default
+
+
+def test_the_setting_minimum_is_the_deepest_schema_valid_message(monkeypatch):
+    """No accepted setting can refuse a schema-valid request or response."""
+    schema = json.loads(contract.schema_bytes())
+    deepest = max(schema_depth(schema["$defs"][name], schema["$defs"]) for name in (
+        "ReserveRequest", "ReleaseRequest", "ReapRequest", "ReserveResponse", "ReleaseResponse",
+        "ReapResponse", "VersionResponse"))
+    low = contract.MAX_INPUT_DEPTH_SETTING_RANGE[0]
+    assert deepest == low == 3
+    monkeypatch.setenv(contract.MAX_INPUT_DEPTH_ENV, str(low))
+    assert contract.decode_request("release", raw(release_request())).to_json() == release_request()
+    for verb, body in (("reserve", reserve_response()), ("release", release_response()),
+                       ("reap", reap_response()), ("version", version_response())):
+        assert contract.encode_response(contract.decode_response(verb, line(body))) == line(body)
+    monkeypatch.setenv(contract.MAX_INPUT_DEPTH_ENV, str(low - 1))  # below the range
+    assert refused("release", raw(release_request())) == "input_invalid_json"
+
+
+@pytest.mark.parametrize("setting", [None, "3", "4", "17", "64", "255", "256"])
+def test_a_selected_limit_is_exact_for_requests_and_responses(monkeypatch, setting):
+    if setting is not None:
+        monkeypatch.setenv(contract.MAX_INPUT_DEPTH_ENV, setting)
+    limit = contract.MAX_INPUT_DEPTH if setting is None else int(setting)
+    assert contract.input_depth_limit() == limit
+    for make in (nested, nested_arrays):
+        assert refused("reap", make(limit)) == "schema_invalid"  # at the limit: past the input rules
+        assert refused("reap", make(limit + 1)) == "input_invalid_json"  # one over: refused
+        assert refused_response("reap", make(limit) + b"\n") == "schema_invalid"
+        assert refused_response("reap", make(limit + 1) + b"\n") == "input_invalid_json"
+
+
+def test_the_largest_setting_still_decodes_input_at_the_limit_from_a_deep_caller(monkeypatch):
+    """The maximum leaves recursion headroom: input exactly at it is decoded and walked, not
+    refused through a ``RecursionError``, even from 200 frames down (on 3.12 and 3.14 the walk
+    takes two frames per level, so a maximum of 512 would fail here at any caller depth)."""
+    high = contract.MAX_INPUT_DEPTH_SETTING_RANGE[1]
+    monkeypatch.setenv(contract.MAX_INPUT_DEPTH_ENV, str(high))
+
+    def from_depth(frames: int) -> str:
+        return from_depth(frames - 1) if frames else refused("reap", nested(high))
+
+    assert from_depth(200) == "schema_invalid"
+    assert refused("reap", nested_arrays(high)) == "schema_invalid"
+
+
+INVALID_SETTINGS = [
+    pytest.param("", id="empty"),
+    pytest.param("abc", id="non-numeric"),
+    pytest.param("64abc", id="numeric-prefix"),
+    pytest.param("-1", id="negative"),
+    pytest.param("-64", id="negative-default"),
+    pytest.param("0", id="zero"),
+    pytest.param("1", id="below-minimum-1"),
+    pytest.param("2", id="below-minimum-2"),
+    pytest.param("257", id="above-maximum"),
+    pytest.param("999", id="three-digits-above"),
+    pytest.param("1000", id="four-digits"),
+    pytest.param("18446744073709551616", id="huge"),
+    pytest.param(" 64", id="leading-space"),
+    pytest.param("64 ", id="trailing-space"),
+    pytest.param("\t64", id="leading-tab"),
+    pytest.param("64\n", id="trailing-newline"),
+    pytest.param("+64", id="leading-plus"),
+    pytest.param("6_4", id="underscore"),
+    pytest.param("064", id="leading-zero"),
+    pytest.param("0x40", id="hex"),
+    pytest.param("64.0", id="decimal-point"),
+    pytest.param("1e2", id="exponent"),
+    pytest.param("\u0666\u0664", id="arabic-indic-digits"),  # int() accepts these
+    pytest.param("\uff16\uff14", id="fullwidth-digits"),
+    pytest.param("1\u0664", id="mixed-script-digits"),  # an ASCII digit, then a non-ASCII one
+]
+
+
+@pytest.mark.parametrize("setting", INVALID_SETTINGS)
+def test_an_invalid_setting_refuses_every_wire_input_and_never_falls_back(monkeypatch, setting):
+    monkeypatch.setenv(contract.MAX_INPUT_DEPTH_ENV, setting)
+    assert contract.input_depth_limit() is None
+    # Valid messages, shallow ones and non-objects alike are refused, never decoded under 64.
+    assert refused("reap", raw(reap_request())) == "input_invalid_json"
+    assert refused("release", raw(release_request())) == "input_invalid_json"
+    assert refused("reap", b"{}") == "input_invalid_json"
+    assert refused("reap", b"1") == "input_invalid_json"
+    assert refused_response("reap", line(reap_response())) == "input_invalid_json"
+    assert refused_response("version", line(version_response())) == "input_invalid_json"
+    # Checks that come before decoding keep their diagnostics; so does empty version input.
+    assert refused("reap", b" " * (contract.MAX_INPUT_BYTES + 1)) == "input_too_large"
+    assert refused("reap", b"\xff") == "input_not_utf8"
+    assert refused_response("reap", line(reap_response())[:-1]) == "input_trailing_data"
+    with pytest.raises(contract.ProtocolError) as caught:
+        contract.decode_request("bogus", raw(reap_request()))
+    assert caught.value.code == "verb_unknown"
+    assert contract.require_empty_version_input(b"") is None
+
+
+@pytest.mark.parametrize("setting", ["3", "256", "", "garbage"])
+def test_the_setting_never_applies_to_client_configurations(monkeypatch, tmp_path, setting):
+    from phase_loop_runtime import sandbox_policy
+
+    monkeypatch.setenv(contract.MAX_INPUT_DEPTH_ENV, setting)
+    for depth in (4, 257, 300):
+        assert isinstance(contract.load_strict_object(nested(depth)), dict)
+    root = tmp_path / "placement"
+    root.mkdir(mode=0o700)
+    launch = deep_launch(200)
+    path = root / "agent-toolkit.json"
+    path.write_text(json.dumps({"schema": "placement.client-config.v1",
+                                "client": "agent-toolkit", "launch": launch}))
+    path.chmod(0o600)
+    config = sandbox_policy.load_placement_client_config(
+        "agent-toolkit", config_root=root, seat_caps_sha256="0" * 64)
+    assert config.launch == launch
+
+
+@pytest.mark.parametrize("setting", [None, "256"])
+def test_nesting_the_decoder_parses_but_the_walk_cannot_is_refused_not_raised(monkeypatch, setting):
+    """1000 deep decodes on 3.12 and 3.14 alike but exhausts the recursive encodability walk;
+    the strict parser refuses it as ``input_invalid_json`` instead of raising, whatever the
+    setting, and the wire decoders refuse it before decoding."""
+    if setting is not None:
+        monkeypatch.setenv(contract.MAX_INPUT_DEPTH_ENV, setting)
+    with pytest.raises(contract.ProtocolError) as caught:
+        contract.load_strict_object(nested(1000))
+    assert caught.value.code == "input_invalid_json"
+    assert refused("reap", nested(1000)) == "input_invalid_json"
+
+
+def test_the_setting_is_read_on_every_call(monkeypatch):
+    assert refused("reap", nested(contract.MAX_INPUT_DEPTH + 1)) == "input_invalid_json"
+    monkeypatch.setenv(contract.MAX_INPUT_DEPTH_ENV, "3")
+    assert refused("reap", nested(4)) == "input_invalid_json"
+    monkeypatch.setenv(contract.MAX_INPUT_DEPTH_ENV, "256")
+    assert refused("reap", nested(contract.MAX_INPUT_DEPTH + 1)) == "schema_invalid"
+    monkeypatch.setenv(contract.MAX_INPUT_DEPTH_ENV, "nonsense")
+    assert refused("reap", raw(reap_request())) == "input_invalid_json"
+    monkeypatch.delenv(contract.MAX_INPUT_DEPTH_ENV)
+    assert contract.decode_request("reap", raw(reap_request())).max_items == 10
+    assert refused("reap", nested(contract.MAX_INPUT_DEPTH + 1)) == "input_invalid_json"
 
 
 def test_a_trailing_newline_is_whitespace_not_data():
