@@ -82,7 +82,7 @@ red when breached.
                                                                    |
         custody:  shipped catalog (package data)   |   host_user store (euid boundary)
                          ^
-   ai: watch (timer) -- signed v2 record, one member/tick --> draft PR -> base-branch policy CI
+   ai: watch (timer) -- signed v2 record, one member/tick --> intake issue -> `main` workflow verifies, authors the PR
                                                               -> job + owner signatures -> main
                                                (R6′, all catalog PRs: job + base provenance check)
                                                                    |
@@ -132,8 +132,8 @@ red when breached.
 
 | Input | Pin |
 | --- | --- |
-| AGYROLL contract | `plans/artifacts/agyroll-v1-contract.md`, sha256 `eaa438944f8422f610bab426f5681f35e19363b050a5e8a9ebf36f13aa2abcae` (repinned by AGYFRESH: §1.2 archive bounds, §6.1 R6′, §6.2 tick frequency, §6.3 warning; repinned by PROVFWD: §1.2 candidate order and total bound) |
-| AGYFRESH contract (RESTORE, HOLD, ROLLJOB additions, R6′) | `plans/artifacts/agyfresh-contract.md`, sha256 `a8c1616a13dca51c70cd8aeb22abf744882a20641d435d501d7f962383505ad9` |
+| AGYROLL contract | `plans/artifacts/agyroll-v1-contract.md`, sha256 `79a50a21c087cc3b7a1a176f66e2f7ae3cd944798cc4159472bca8d136122e56` (repinned by AGYFRESH: §1.2 archive bounds, §6.1 R6′, §6.2 tick frequency, §6.3 warning; repinned by PROVFWD: §1.2 candidate order and total bound; repinned for R9′) |
+| AGYFRESH contract (RESTORE, HOLD, ROLLJOB additions, R6′) | `plans/artifacts/agyfresh-contract.md`, sha256 `0ff821471a7bbb2aa1bd6068c967fce6354c1343d381dfa159074bdffa717c62` (repinned for R9′) |
 | TEAMHOST contract §5 (agy key, `requalify_once` call sites) | `plans/seats-teamhost-contract.md`, sha256 `3ca3d3a57346acca8bf4e16e50304f00e3e2e19bc5bcd20b1831b4f837c3b1b1`. **REQUAL amends §5.** The amendment adds the runner and canary preflight call sites, and names `seat_qci()` as the `qualified` key. Its value equals `agy_profile_digest()` at `agy_validator_v1`, so no entry drops, and §5 stays correct after a validator bump. The repin lands in REQUAL's docs lane. |
 | Q10 and (G) promotion rules | `.consiliency/plans/detailed-lkg-cli-qualification-1602-20261014-0359.md` §(G) and the Q10 ruling |
 | Upstream provenance surface | the GitHub releases API for `google-antigravity/antigravity-cli`: per-asset `digest`; the attestations endpoint returned 404 on 2026-11-08 |
@@ -201,11 +201,14 @@ condition stops and routes an amendment.
     re-fetches the asset by tag and re-derives the member digest. Only a PR whose diff is only
     `data/agy_catalog.json` and `plans/evidence/agy-*-linux-x64-qualification.json`, and that
     adds or ages non-`pinned` members, auto-merges. A `pinned` change, any other path, and any
-    change to the signer list, verifier or merge-rule workflow never auto-merges: a maintainer
-    merges it through the ordinary reviewed pull request under the non-bypassable `main`
-    ruleset. The owner's words: "Whatever the solution is it should not involve me signing
-    anything. It needs to be automated." The residual risk is stated in AGYFRESH §5.1 and
-    AGYROLL §6.1.
+    change to the signer list, verifier or merge-rule workflow never auto-merges: a repository
+    writer merges it under the `main` ruleset. The owner's words: "Whatever the solution is it
+    should not involve me signing anything. It needs to be automated." The residual risk is
+    stated in AGYFRESH §5.1 and AGYROLL §6.1.
+  - **Scope of R6′ under R9′.** "Auto-merges" and "never auto-merges" describe what the
+    promotion automation does: it arms a merge only for the diff class above, with a valid job
+    signature. They are not a limit on repository writers, who keep GitHub's ordinary authority
+    to merge, or to enable auto-merge on, any pull request that meets the `main` ruleset.
   - **Implemented by:** ROLLJOB.
 - **R7 — APPROVED with conditions.** The `ai` job renews its own Gemini login, outside any
   seat.
@@ -228,6 +231,18 @@ condition stops and routes an amendment.
     - a non-admin GitHub App or machine user;
     - no `workflows` permission;
     - a non-bypassable `main` ruleset.
+  - **Amended 2026-11-20, as R9′.** No GitHub user account is created. The job on the
+    qualification host holds an issues-only GitHub App and submits its signed record as data.
+    A workflow on `main` verifies it and authors the catalog pull request with a second App
+    whose key exists only in GitHub Actions (AGYROLL §6.1, §6.2). The non-bypassable `main`
+    ruleset condition stands, and now also requires strict status checks. No review rule is
+    added and CODEOWNERS is unchanged: the files this mechanism trusts change through
+    ordinary pull requests by repository writers, who are trusted for them as for any code. A
+    required check re-derives upstream provenance for every catalog change, whoever wrote it.
+    The existing automation account's access is unchanged. Reason: with write access on the
+    qualification host, R6′'s statement about a compromised job identity would hold for the
+    promotion path only. Confirmed by the owner: 2026-11-20T17:39:31Z, in answer to a direct
+    question: "Confirm as described (Recommended)".
   - **Implemented by:** ACTIVATE (with agent-harness#1138).
 
 ## Owner Decisions (2026-11-20, AGYFRESH)
@@ -245,8 +260,8 @@ The owner decided these for the AGYFRESH amendment. Values live in the cited sec
 - **D5** — keep the last two admitted images on disk (§2.8; EC-HOLD-10).
 - **D6** — minimal dotfiles change: a refused agy no longer fails the tooling build (§2.10;
   EC-HOLD-11).
-- **D7** — start R9's prerequisites now: bot identity, non-bypassable `main` ruleset, and the
-  job's signing key. The owner creates and enrols no key (R6′). Setup only; ACTIVATE still
+- **D7** — start R9's prerequisites now: the two GitHub Apps (R9′), non-bypassable `main`
+  ruleset, and the job's signing key. The owner creates and enrols no key (R6′). Setup only; ACTIVATE still
   needs EXECADMIT and ROLLJOB.
 - **D8** — B: amend R6 (R6′ above).
 - **D9** — hourly watch tick (AGYROLL §6.2).
@@ -765,13 +780,13 @@ member, through Q10/(G) promotion. A breach of the lag bound turns CI red (goals
 
 **Exit criteria**
 
-- [ ] EC-ROLLJOB-1 — A tick qualifies only the newest non-member release, retries the whole series up to `SERIES_RETRIES`, signs the record and opens a draft `agy-catalog-auto` PR; other members change only when their `qci` differs.
+- [ ] EC-ROLLJOB-1 — A tick qualifies only the newest non-member release, retries the whole series up to `SERIES_RETRIES`, signs the record and opens a draft `agy-catalog-auto` PR; other members change only when their `qci` differs. Under R9′, 'opens a draft `agy-catalog-auto` PR' reads 'submits the signed record through the INTAKE App; the trusted workflow opens the `agy-catalog-auto` PR'.
 - [ ] EC-ROLLJOB-2 — `watch --install-units` and `--check` install and report the timer and the last tick's status line.
-- [ ] EC-ROLLJOB-3 — Nightly `--upstream-only` fails under the AGYROLL §6.3 lag rule, and warns inside the bound or while a PR awaits approval.
-- [ ] EC-ROLLJOB-4 — Promotion CI runs the base branch's verifier, signer list and merge rule, and reads only the catalog and agy records from the PR head; a PR touching any other path or the policy fails and never auto-merges; under R6 (rejected as written, alternative adopted), a PR merges only with valid job and enrolled-owner signatures, and auto-merges only for a data-only diff once `main` has a non-bypassable ruleset. Under R6′ (D8 = B), for every catalog PR, "valid job and enrolled-owner signatures" is replaced by "a valid job signature and a passing base-branch provenance check that re-fetches the asset by tag and re-derives the member digest"; auto-merge stays limited to the diff class in R6′, and any other diff never auto-merges and is merged by a maintainer under the non-bypassable `main` ruleset.
+- [ ] EC-ROLLJOB-3 — Nightly `--upstream-only` fails under the AGYROLL §6.3 lag rule, and warns inside the bound or while a PR awaits approval. Under R9′ the rule is report-only until ACTIVATE sets `AGY_LAG_ENFORCE`; before that a failing status is recorded and warned, and the run's exit is unaffected by lag.
+- [ ] EC-ROLLJOB-4 — Promotion CI runs the base branch's verifier, signer list and merge rule, and reads only the catalog and agy records from the PR head; a PR touching any other path or the policy fails and never auto-merges; under R6 (rejected as written, alternative adopted), a PR merges only with valid job and enrolled-owner signatures, and auto-merges only for a data-only diff once `main` has a non-bypassable ruleset. Under R6′ (D8 = B), for every promotion by the automation, "valid job and enrolled-owner signatures" is replaced by "a valid job signature and a passing base-branch provenance check that re-fetches the asset by tag and re-derives the member digest"; auto-merge stays limited to the diff class in R6′, and any other diff never auto-merges and a repository writer merges it under the `main` ruleset. Under R9′, 'reads only the catalog and agy records from the PR head' reads 'reads only the submitted record, as data', and 'a PR touching any other path or the policy fails' is enforced, for promotion by the automation, by the trusted workflow writing exactly those two paths. The job signature and the diff-class limits bind that path only. Separately, the required check `agy catalog provenance` reports on every pull request to `main`, passes at once when the catalog is untouched, and otherwise re-derives each added or changed member from upstream. 'Never auto-merges' limits this automation; repository writers keep GitHub's ordinary merge and auto-merge authority.
 - [ ] EC-ROLLJOB-5 — Aging keeps the newest `CATALOG_KEEP` members or those younger than `CATALOG_MIN_AGE`, and never prunes a `pinned` member (R8).
-- [ ] EC-ROLLJOB-6 — An expired login ends the tick with `gemini_login_expired` and a non-zero exit, opens no PR, and makes `watch --check` report `failed: gemini_login_expired`; falsified by an expired-login tick that exits 0, opens a PR, or leaves `--check` reporting `installed`, or by nightly `--upstream-only` passing once the newest release exceeds `LAG_BOUND` while the login stays expired.
-- [ ] EC-ROLLJOB-7 — When the lag rule fails, the nightly workflow creates or updates exactly one open issue labelled `agy-lag`, and closes it on the next pass.
+- [ ] EC-ROLLJOB-6 — An expired login ends the tick with `gemini_login_expired` and a non-zero exit, opens no PR, and makes `watch --check` report `failed: gemini_login_expired`; falsified by an expired-login tick that exits 0, opens a PR, or leaves `--check` reporting `installed`, or by nightly `--upstream-only` passing once the newest release exceeds `LAG_BOUND` while the login stays expired. The final clause, about nightly `--upstream-only` passing, applies once the lag rule is enforced.
+- [ ] EC-ROLLJOB-7 — When the lag rule fails, the nightly workflow creates or updates exactly one open issue labelled `agy-lag`, and closes it on the next pass. This applies once the lag rule is enforced; in report-only mode the workflow creates, updates and closes no issue.
 - [ ] EC-ROLLJOB-8 — Nightly `--upstream-only` measures the newest upstream archive and member and warns at 80%, fails at 90%, of `MAX_ARCHIVE_BYTES` or `MAX_MEMBER_BYTES`.
 - [ ] EC-ROLLJOB-9 — The watch streams each member to a sealed descriptor and holds one member image at a time.
 
@@ -786,6 +801,10 @@ Implements R6 as amended by R6′, R7 and R8, plus D9's hourly tick (AGYROLL §6
 EC-ROLLJOB-7..9 come from AGYFRESH §5; EC-ROLLJOB-9 retires the `fetch_member(keep_bytes=True)`
 join (AGYFRESH §1.2). Auto-merge stays disabled until a `main` ruleset exists.
 
+Under R9′ the job submits through the INTAKE App and makes no git write; the `main`
+workflow builds the catalog change, aging included, and opens the pull request with the
+PROMOTION App. The lag rule is report-only until ACTIVATE.
+
 **Non-goals**
 
 A runtime catalog fetch, other harnesses, and enabling auto-merge before a `main` ruleset
@@ -799,6 +818,11 @@ exists.
 - `docs/ops/agy-upstream-watch/agy-upstream-watch.service`
 - `plans/evidence/agy-allowed-signers`
 - `docs/ops/agy-upstream-watch.md`
+- `.github/workflows/agy-catalog-intake.yml`
+- `.github/workflows/agy-catalog-provenance.yml`
+- `ci/agy_catalog_promote.py`
+- `config/agy-rollout-attestation.json`
+- `phase-loop-runtime/src/phase_loop_runtime/agy_intake.py`
 
 **Depends on**
 
@@ -826,8 +850,8 @@ release and a release cut both pass with no hand step. Then close agent-harness#
 
 **Exit criteria**
 
-- [ ] EC-ACTIVATE-1 — Before install, the R9 identity (non-admin, no `workflows` permission) and a non-bypassable `main` ruleset exist; then `watch --check` on `ai` reports `installed`; both are recorded in `plans/evidence/agyroll-activate.json`.
-- [ ] EC-ACTIVATE-2 — The newest stable upstream release at activation reaches `main` through an `agy-catalog-auto` PR with no hand step.
+- [ ] EC-ACTIVATE-1 — Before install, the R9 identity (non-admin, no `workflows` permission) and a non-bypassable `main` ruleset exist; then `watch --check` on `ai` reports `installed`; both are recorded in `plans/evidence/agyroll-activate.json`. Under R9′, 'the R9 identity (non-admin, no `workflows` permission)' reads 'the two R9′ Apps with their stated permissions, each installed on this repository only', and both rulesets are recorded in the attested `config/agy-rollout-attestation.json`.
+- [ ] EC-ACTIVATE-2 — The newest stable upstream release at activation reaches `main` through an `agy-catalog-auto` PR with no hand step. This is proven only by a pull request opened after auto-merge was enabled and merged by the PROMOTION App, with no review and no human merge or branch update. A pull request created while auto-merge was off is superseded by a fresh verified one; a hand merge never counts.
 - [ ] EC-ACTIVATE-3 — The first release cut after RECBIND passes strict conformance and `--release` with no hand live run.
 - [ ] EC-ACTIVATE-4 — An executor lane and a canary capture on `ai` admit a current release, neither 1.3.5 nor 1.1.13, through their preflights, and exec the memfd.
 - [ ] EC-ACTIVATE-5 — agent-harness#1008 closes with that evidence linked.

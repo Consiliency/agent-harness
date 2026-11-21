@@ -170,7 +170,12 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
         NOT_AGENT, "runner default: the pmcp capability probe"),
     ("advisor_board/research.py", "materialize_research_run"): (
         NOT_AGENT, "runner default, handed to probe_research_capability"),
-    ("agy_watch.py", "main"): (NOT_AGENT, "runner default: gh / git and the qualification script"),
+    ("agy_watch.py", "main"): (NOT_AGENT, "runner default: git and the prepared tree's qualification scripts"),
+    ("agy_watch_units.py", "install_units"): (NOT_AGENT, "runner default: systemctl --user"),
+    ("agy_watch_units.py", "check_state"): (NOT_AGENT, "runner default: systemctl --user"),
+    ("agy_watch_units.py", "main"): (NOT_AGENT, "runner default, handed to install_units / check_state"),
+    ("agy_catalog_policy.py", "sign_record"): (NOT_AGENT, "runner default: ssh-keygen -Y sign"),
+    ("agy_catalog_policy.py", "verified_signers"): (NOT_AGENT, "runner default: ssh-keygen -Y verify"),
     ("convergence/broker/credsep.py", "resolve_git_origin_url"): (NOT_AGENT, "runner default: git"),
     ("convergence/broker/credsep.py", "resolve_broker_repo_identity"): (
         NOT_AGENT, "runner default: git"),

@@ -149,6 +149,27 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Changed
 
+- The agy upstream watch is now the rolling catalog job (AGYROLL ROLLJOB). It runs every
+  hour and makes no git write. Each tick checks its keys and the new `agy-watch` extra
+  before any live operation. It renews the Gemini login only with an image that seat
+  admission admits on the host, and qualifies only the newest non-member release plus any
+  member at another QCI, one sealed image at a time, retrying a series that fails for a
+  transient reason. It signs each record with the job's key and submits it as an issue
+  through an issues-only GitHub App (the INTAKE App). A new workflow on `main`
+  (`agy-catalog-intake.yml`) authenticates the issue, verifies the record with the new
+  `verify_qualified_agy_image.py --intake` mode, opens the catalog pull request with a
+  second App (the PROMOTION App, whose key stays in a `main`-only environment), and arms
+  auto-merge only behind an attested gate. A scheduled reconcile picks up stale, stranded or
+  stalled work. The new check `agy catalog provenance` (`--catalog-pr`), made required after
+  post-merge verification, re-derives every catalog member a pull request adds or changes,
+  whoever wrote it, and passes at once when the catalog is untouched. The nightly check now
+  reports catalog lag, report-only until `AGY_LAG_ENFORCE` is set, and fails at 90 percent
+  of an agy size bound. `agy-qualification watch` gains `--install-units` and `--check`.
+  `read_member` and `fetch_member` take a `sink` and return only the digest; `keep_bytes` is
+  removed. Everything ships inert: no signing key is enrolled,
+  `config/agy-rollout-attestation.json` is unattested, and both switches are off. The owner
+  setup that makes it live is listed in `docs/ops/agy-upstream-watch.md`. The seat QCI,
+  store keys, the catalog and its records are unchanged.
 - Gemini 4 NEON (`gemini-4-neon`) is the shipped Gemini planning, review and board
   default. Gemini roadmap, plan and review render `gemini-4-neon-high`; the panel's
   Gemini leg, every built-in preset's Gemini seat and the president's `gemini` rung

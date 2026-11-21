@@ -453,6 +453,11 @@ def build_parser() -> argparse.ArgumentParser:
                               help="watch: qualify and verify, open no PR")
     agy_qual_sub.add_argument("--version", help="watch: any listed stable release instead of the newest")
     agy_qual_sub.add_argument("--base-ref", default="origin/main", help="watch --dry-run only: the tree to prepare from")
+    agy_watch_units = agy_qual_sub.add_mutually_exclusive_group()
+    agy_watch_units.add_argument("--install-units", action="store_true",
+                                 help="watch: install and enable the hourly user timer from --repo's unit files")
+    agy_watch_units.add_argument("--check", action="store_true",
+                                 help="watch: report whether the timer is installed and the last tick passed")
     seat_egress_sub = subparsers.add_parser(
         "seat-egress",
         help="The jailed-seat egress proxy: status, or install the pinned srt (agent-harness#1170)",
@@ -1363,6 +1368,10 @@ def main(argv: list[str] | None = None) -> int:
     if command in {"run", "execute", "advisor-board"} and not args.dry_run:
         configured_sweep()
     if command == "agy-qualification":
+        if getattr(args, "install_units", False) or getattr(args, "check", False):
+            from .agy_watch_units import main as _agy_watch_units_main
+
+            return _agy_watch_units_main(args)
         from .agy_qualification import cli_main as _agy_qualification_main
 
         return _agy_qualification_main(args)

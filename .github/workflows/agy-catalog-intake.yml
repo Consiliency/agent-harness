@@ -1,0 +1,178 @@
+name: agy-catalog-intake
+
+# ROLLJOB-detail §4.3: turn a signed qualification record, submitted as an issue by the
+# INTAKE App (issues write only; its key is on the qualification host), into a catalog pull
+# request authored by the PROMOTION App (contents and pull-requests write; its key is a
+# secret of the `agy-promotion` environment, limited to main), and arm its merge behind the
+# gate of §4.5. No fork, no pull_request_target, no pull-request head written by untrusted code.
+#
+# - Every job runs only on refs/heads/main (a dispatch can name another ref).
+# - Issue fields and the dispatch input reach steps only as environment variables.
+# - `authenticate` runs first and lets nothing else run for an issue its App did not create.
+# - Only `promote` and `reconcile` take the job lock and name `agy-promotion`.
+# - Third-party actions are pinned by full commit SHA; no cache is restored; the only
+#   artifact downloaded is this run's own.
+# - Nothing reads a label, a title or a body as authority: an issue is linked to its pull
+#   request by the head commit's trailers, and failures by this workflow's run history.
+run-name: >-
+  ${{ github.event_name == 'schedule' && 'agy-catalog-reconcile'
+  || format('agy-intake-{0}', github.event.issue.number || inputs.issue) }}
+
+on:
+  issues:
+    types: [opened]
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: The intake issue number
+        required: true
+        type: number
+  schedule:
+    - cron: '*/30 * * * *'
+
+permissions: {}
+
+jobs:
+  authenticate:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: read
+    outputs:
+      authenticated: ${{ steps.author.outputs.authenticated }}
+      issue: ${{ steps.author.outputs.issue }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+      - id: author
+        name: Authenticate the issue's author as the attested INTAKE App
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I ci/agy_catalog_promote.py authenticate --issue "$ISSUE_NUMBER"
+
+  intake:
+    needs: authenticate
+    if: github.ref == 'refs/heads/main' && needs.authenticate.outputs.authenticated == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: read
+    outputs:
+      class: ${{ steps.decision.outputs.class }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install uv
+        run: |
+          python3 -m venv "$RUNNER_TEMP/tools"
+          "$RUNNER_TEMP/tools/bin/python" -m pip install uv
+          echo "$RUNNER_TEMP/tools/bin" >> "$GITHUB_PATH"
+      - name: Verify the submission (the only step that parses it)
+        working-directory: phase-loop-runtime
+        env:
+          ISSUE_NUMBER: ${{ needs.authenticate.outputs.issue }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: uv run --locked python scripts/verify_qualified_agy_image.py --intake "$ISSUE_NUMBER" --out "$RUNNER_TEMP/agy-intake"
+      - id: decision
+        name: Record the decided class
+        run: python3 -I ci/agy_catalog_promote.py decision-class --decision-dir "$RUNNER_TEMP/agy-intake"
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882  # v4.4.3
+        with:
+          name: agy-intake
+          path: ${{ runner.temp }}/agy-intake
+          retention-days: 7
+          if-no-files-found: error
+
+  promote:
+    needs: [authenticate, intake]
+    if: >-
+      github.ref == 'refs/heads/main' && needs.authenticate.outputs.authenticated == 'true'
+      && needs.intake.outputs.class == 'auto'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: agy-promotion
+    concurrency:
+      group: agy-catalog-promotion
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16  # v4.1.8
+        with:
+          name: agy-intake
+          path: ${{ runner.temp }}/agy-intake
+      - name: Install uv
+        run: |
+          python3 -m venv "$RUNNER_TEMP/tools"
+          "$RUNNER_TEMP/tools/bin/python" -m pip install uv
+          echo "$RUNNER_TEMP/tools/bin" >> "$GITHUB_PATH"
+      - name: Author the catalog pull request and arm its merge behind the gate
+        env:
+          AGY_PROMOTION_APP_ID: ${{ vars.AGY_PROMOTION_APP_ID }}
+          AGY_PROMOTION_APP_PRIVATE_KEY: ${{ secrets.AGY_PROMOTION_APP_PRIVATE_KEY }}
+          AGY_CATALOG_AUTOMERGE: ${{ vars.AGY_CATALOG_AUTOMERGE }}
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          uv run --locked --project phase-loop-runtime --extra agy-watch
+          python ci/agy_catalog_promote.py promote --decision-dir "$RUNNER_TEMP/agy-intake"
+
+  report:
+    needs: [authenticate, intake, promote]
+    if: always() && github.ref == 'refs/heads/main' && needs.authenticate.outputs.authenticated == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16  # v4.1.8
+        continue-on-error: true  # no artifact when the intake job failed: nothing to report
+        with:
+          name: agy-intake
+          path: ${{ runner.temp }}/agy-intake
+      - name: Comment the class; close refused and manual issues
+        env:
+          ISSUE_NUMBER: ${{ needs.authenticate.outputs.issue }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I ci/agy_catalog_promote.py report --decision-dir "$RUNNER_TEMP/agy-intake" --issue "$ISSUE_NUMBER"
+
+  reconcile:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: agy-promotion
+    concurrency:
+      group: agy-catalog-promotion
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+      actions: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install uv
+        run: |
+          python3 -m venv "$RUNNER_TEMP/tools"
+          "$RUNNER_TEMP/tools/bin/python" -m pip install uv
+          echo "$RUNNER_TEMP/tools/bin" >> "$GITHUB_PATH"
+      - name: Reconcile the oldest item that needs work
+        env:
+          AGY_PROMOTION_APP_ID: ${{ vars.AGY_PROMOTION_APP_ID }}
+          AGY_PROMOTION_APP_PRIVATE_KEY: ${{ secrets.AGY_PROMOTION_APP_PRIVATE_KEY }}
+          AGY_CATALOG_AUTOMERGE: ${{ vars.AGY_CATALOG_AUTOMERGE }}
+          GH_TOKEN: ${{ github.token }}
+        run: uv run --locked --project phase-loop-runtime --extra agy-watch python ci/agy_catalog_promote.py reconcile

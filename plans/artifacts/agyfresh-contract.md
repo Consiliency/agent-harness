@@ -699,7 +699,8 @@ contract for §1.2 (archive bound; expanded-bytes rule) and, per D8/D9, §6.1/§
 **ROLLJOB adds:**
 
 - EC-ROLLJOB-7 — When the lag rule fails, the nightly workflow creates or updates exactly
-  one open issue labelled `agy-lag`, and closes it on the next pass.
+  one open issue labelled `agy-lag`, and closes it on the next pass. This applies once the lag
+  rule is enforced (AGYROLL §6.3, Mode).
 - EC-ROLLJOB-8 — Nightly `--upstream-only` measures the newest upstream archive and member
   and warns at 80%, fails at 90%, of `MAX_ARCHIVE_BYTES` or `MAX_MEMBER_BYTES`.
 - EC-ROLLJOB-9 — The watch streams each member to a sealed descriptor and holds one member
@@ -715,7 +716,7 @@ contract for §1.2 (archive bound; expanded-bytes rule) and, per D8/D9, §6.1/§
 | Owner choice | Roadmap and contract | Lane A0 | Lane L6 |
 |---|---|---|---|
 | **D8-A: keep R6 as ruled** (also the default if no choice is made) | unchanged | edits nothing in §6.1, R6, EC-ROLLJOB-4, EC-ACTIVATE-2 | implements AGYROLL §6.1 exactly as written: job key **and** enrolled owner key on every catalog PR |
-| **D8-B: amend R6** | replaced by the text below | lands the text below | implements the text below |
+| **D8-B: amend R6** | replaced by the text below | lands the text below | implements the text below as amended by R9′ (AGYROLL §6.1, §6.2) |
 
 Text landed **only under D8-B**:
 
@@ -724,27 +725,41 @@ Text landed **only under D8-B**:
   re-derives the member digest. Only a PR whose diff is only `data/agy_catalog.json` and
   `plans/evidence/agy-*-linux-x64-qualification.json`, and that adds or ages non-`pinned`
   members, auto-merges. A `pinned` change, any other path, and any change to the signer list,
-  verifier or merge-rule workflow never auto-merges: a maintainer merges it through the
-  ordinary reviewed pull request under the non-bypassable `main` ruleset.
+  verifier or merge-rule workflow never auto-merges: a repository writer merges it under the
+  `main` ruleset.
+
+  **Scope of R6′ under R9′.** "Auto-merges" and "never auto-merges" describe what the
+  promotion automation does: it arms a merge only for the diff class above, with a valid job
+  signature. They are not a limit on repository writers, who keep GitHub's ordinary authority
+  to merge, or to enable auto-merge on, any pull request that meets the `main` ruleset.
 - *EC-ROLLJOB-4′.* As EC-ROLLJOB-4, with "valid job and enrolled-owner signatures" replaced by
   "a valid job signature and a passing base-branch provenance check that re-fetches the asset
-  by tag and re-derives the member digest", for every catalog PR. Auto-merge stays limited to
-  the diff class in R6′; any other diff never auto-merges and is merged by a maintainer under
-  the non-bypassable `main` ruleset. No owner key is enrolled: `agy-allowed-signers` lists the
-  job key only.
+  by tag and re-derives the member digest", for every promotion by the automation. Auto-merge
+  stays limited to the diff class in R6′; any other diff never auto-merges and a repository
+  writer merges it under the `main` ruleset. No owner key is enrolled: `agy-allowed-signers`
+  lists the job key only.
+
+  The job signature and the diff-class limits bind the promotion path only. Separately, the
+  required check `agy catalog provenance` reports on every pull request to `main` and, where
+  one changes the catalog, re-derives each added or changed member from upstream; a writer's
+  pull request needs that check and no signature.
 - *EC-ACTIVATE-2′.* The newest stable upstream release at activation reaches `main` through
   an `agy-catalog-auto` PR with no hand step.
 
 Under either option: signatures are over the canonical record minus `signatures`, namespace
 `agy-qualification`; the record binds `release_version`, `image_sha256`, `asset_sha256` and
 `qci`, so a signature cannot be replayed onto another image or another contract identity,
-and a stale-QCI record fails `--contract`. The verifier, signer list and merge rule are read
-from the **base** branch; the PR head supplies data only.
+and a stale-QCI record fails `--contract`. The verifier, signer list and merge rule are `main`'s.
+Under R9′ the submitted record supplies data only, and the pull request head is written by the
+trusted workflow.
 
 What a compromised job identity can promote: under D8-A, nothing by itself. Under D8-B, a
 **genuine** upstream stable release recorded as having passed live qualification when it did
 not. It cannot promote non-upstream bytes, and it cannot promote a `pinned` flag or a policy
-change without a maintainer merge. Hosted provenance re-verification proves the bytes are
+change without a merge by a repository writer. That depends on the job identity being able to
+write issues only (R9′, AGYROLL §6.2). It is a statement about the job on the qualification
+host. It is not a statement about repository writers, who can change the trusted files as they
+can any code. Hosted provenance re-verification proves the bytes are
 upstream's; it does not prove the live operations passed. The seat jail contains a misbehaving
 binary; it is not a substitute for that attestation.
 

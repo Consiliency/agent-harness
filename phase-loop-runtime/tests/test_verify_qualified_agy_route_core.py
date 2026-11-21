@@ -227,10 +227,11 @@ def test_the_full_pin_scope_script_and_old_catalog_are_deleted():
     assert not (REPO / "plans" / "evidence" / "qualified-provider-images.json").exists()
 
 
-def test_the_verifier_has_exactly_the_three_modes():
+def test_the_verifier_has_exactly_the_five_modes():
     text = (SCRIPTS / "verify_qualified_agy_image.py").read_text()
-    for flag in ("--contract", "--release", "--upstream-only", "--conformance-report"):
+    for flag in ("--contract", "--release", "--upstream-only", "--intake", "--catalog-pr", "--conformance-report"):
         assert f'"{flag}"' in text
+    assert text.count("mode.add_argument(") == 5
     for flag in ("--source-only", "--route-core"):
         assert f'"{flag}"' not in text
 
@@ -402,4 +403,4 @@ def test_only_the_verifier_unit_receives_the_read_only_token():
         assert "github.token" not in gate["run"] and "$GITHUB_TOKEN" not in gate["run"]
     upstream = yaml.safe_load(QUALIFIED.read_text())["jobs"]["upstream"]
     (step,) = [s for s in upstream["steps"] if "--upstream-only" in s.get("run", "")]
-    assert step["env"] == {"GITHUB_TOKEN": "${{ github.token }}"}
+    assert step["env"] == {"GITHUB_TOKEN": "${{ github.token }}", "AGY_LAG_ENFORCE": "${{ vars.AGY_LAG_ENFORCE }}"}

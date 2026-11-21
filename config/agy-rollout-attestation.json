@@ -1,0 +1,29 @@
+{
+  "schema": "agy_rollout_attestation.v1",
+  "status": "unattested",
+  "intake_app": {"app_id": 0, "bot_user_id": 0},
+  "promotion_app": {"app_id": 0, "bot_user_id": 0},
+  "main_ruleset": {
+    "id": 0,
+    "target": "refs/heads/main",
+    "enforcement": "active",
+    "bypass_actors": [],
+    "strict_required_status_checks": true,
+    "required_checks": []
+  },
+  "catalog_ruleset": {
+    "id": 0,
+    "target": "refs/heads/agy-catalog/**",
+    "enforcement": "active",
+    "rules": ["creation", "update", "deletion"],
+    "bypass_actors": [{"actor_type": "Integration", "actor_id": 0, "bypass_mode": "always"}]
+  },
+  "promotion_environment": {
+    "name": "agy-promotion",
+    "branches": ["main"],
+    "required_reviewers": 0,
+    "admin_bypass": false
+  },
+  "attested_by": "",
+  "attested_at": ""
+}

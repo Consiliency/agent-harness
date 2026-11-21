@@ -300,6 +300,7 @@ PYEOF
       /plans/evidence/seat-qualification/claude-w0/README.md \
       /phase-loop-runtime/images/review-runner/Containerfile \
       /plans/detailed-remote-seat-placement-896-20261010.md \
+      /config/agy-rollout-attestation.json \
       /.agent-harness/advisor-boards.toml \
       /CHANGELOG.md
     git -C "$STANDALONE_ROOT" checkout --quiet --detach "$SOURCE_HEAD"

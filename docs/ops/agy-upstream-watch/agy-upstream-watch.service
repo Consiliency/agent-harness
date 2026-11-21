@@ -1,4 +1,7 @@
-# agent-harness#1076: the agy upstream watch. User unit; see docs/ops/agy-upstream-watch.md.
+# The agy upstream watch: one tick qualifies the newest release and submits a signed record
+# as an intake issue (ROLLJOB). User unit; see docs/ops/agy-upstream-watch.md. No secret is in
+# this file: the keys are files the job account owns (0600), and intake.env holds the INTAKE
+# App's id and installation id.
 [Unit]
 Description=agy upstream release watch (agent-harness#1076)
 Wants=network-online.target
@@ -8,4 +11,7 @@ After=network-online.target
 Type=oneshot
 WorkingDirectory=%h/code/agent-harness
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+Environment=AGY_WATCH_SIGNING_KEY=%h/.config/phase-loop/agy-watch/signing_key
+Environment=AGY_INTAKE_APP_KEY=%h/.config/phase-loop/agy-watch/intake_app_key.pem
+EnvironmentFile=-%h/.config/phase-loop/agy-watch/intake.env
 ExecStart=%h/.local/bin/phase-loop agy-qualification watch --repo %h/code/agent-harness

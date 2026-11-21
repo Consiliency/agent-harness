@@ -106,12 +106,18 @@ visual = ["Pillow>=10,<13"]
 # (plans/seats-claude-sdk-worker-contract.md). It installs the SDK as a test oracle only:
 # the worker runs from its own sealed, hash-verified install (`claude_seat_sdk seal`).
 claude-sdk = ["claude-agent-sdk==0.2.167", "markdown-it-py==4.2.0"]
+# AGYROLL ROLLJOB: the upstream watch signs its INTAKE App JWT (RS256) with `cryptography`,
+# imported lazily; without this extra the tick ends `agy_intake_dependency_missing` before any
+# live operation. The qualification host installs `phase-loop-runtime[agy-watch]`. Pinned at
+# the version the lock already resolved.
+agy-watch = ["cryptography==50.0.2"]
 
 [dependency-groups]
 # Keep build aligned with hosted pytest and Dagger _base. Gate A's inner
 # test environment intentionally installs unpinned tools.
 # pytest is a runtime dependency now (see [project].dependencies), so it is not repeated here.
-test = ["build==1.6.1", "setuptools>=70.1", "pip"]
+# The test group includes the agy-watch extra, so hosted CI runs the RS256 test, never skips it.
+test = ["build==1.6.1", "setuptools>=70.1", "pip", "phase-loop-runtime[agy-watch]"]
 
 [project.urls]
 Homepage = "https://github.com/Consiliency/agent-harness"

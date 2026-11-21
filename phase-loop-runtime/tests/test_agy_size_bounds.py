@@ -142,7 +142,7 @@ def test_read_member_member_boundary(monkeypatch, offset, passes):
     archive = _archive([("antigravity", image, tarfile.REGTYPE)])
     monkeypatch.setattr(prov, "MAX_MEMBER_BYTES", len(image) + offset)
     if passes:
-        assert _read(archive) == (sha256(image).hexdigest(), None)
+        assert _read(archive) == sha256(image).hexdigest()
     else:
         with pytest.raises(prov.ProvenanceError, match=prov.UNVERIFIED):
             _read(archive)
@@ -156,7 +156,7 @@ def test_read_member_compressed_archive_boundary(monkeypatch, offset, passes):
     archive = _archive([("antigravity", image, tarfile.REGTYPE)])
     monkeypatch.setattr(prov, "MAX_ARCHIVE_BYTES", len(archive) + offset)
     if passes:
-        assert _read(archive)[0] == sha256(image).hexdigest()
+        assert _read(archive) == sha256(image).hexdigest()
     else:
         with pytest.raises(prov.ProvenanceError, match=prov.UNVERIFIED):
             _read(archive)
@@ -183,7 +183,7 @@ def test_read_member_expanded_boundary(monkeypatch, offset, passes):
     assert expanded > len(image) + 3000  # headers and padding count, not only payloads
     monkeypatch.setattr(prov, "MAX_EXPANDED_BYTES", expanded + offset)
     if passes:
-        assert _read(archive)[0] == sha256(image).hexdigest()
+        assert _read(archive) == sha256(image).hexdigest()
     else:
         with pytest.raises(prov.ProvenanceError, match=prov.UNVERIFIED):
             _read(archive)
@@ -256,7 +256,7 @@ def test_extension_record_bytes_boundary(monkeypatch):
     for limit, passes in ((record + 1, True), (record, True), (record - 1, False)):
         monkeypatch.setattr(prov, "MAX_ARCHIVE_METADATA_BYTES", limit)
         if passes:
-            assert _read(archive)[0] == sha256(_image(4096)).hexdigest()
+            assert _read(archive) == sha256(_image(4096)).hexdigest()
         else:
             with pytest.raises(prov.ProvenanceError, match=prov.UNVERIFIED):
                 _read(archive)
@@ -268,7 +268,7 @@ def test_extension_records_are_summed_across_the_archive(monkeypatch):
                         ("antigravity", _image(4096), tarfile.REGTYPE)])
     total = sum(len(name) + 1 for name in names)
     monkeypatch.setattr(prov, "MAX_ARCHIVE_METADATA_BYTES", total)
-    assert _read(archive)[0]
+    assert _read(archive)
     monkeypatch.setattr(prov, "MAX_ARCHIVE_METADATA_BYTES", total - 1)
     with pytest.raises(prov.ProvenanceError, match=prov.UNVERIFIED):
         _read(archive)
@@ -280,7 +280,7 @@ def test_header_entries_boundary(monkeypatch):
     for limit, passes in ((6, True), (5, True), (4, False)):
         monkeypatch.setattr(prov, "MAX_ARCHIVE_ENTRIES", limit)
         if passes:
-            assert _read(archive)[0]
+            assert _read(archive)
         else:
             with pytest.raises(prov.ProvenanceError, match=prov.UNVERIFIED):
                 _read(archive)
@@ -289,7 +289,7 @@ def test_header_entries_boundary(monkeypatch):
 def test_extension_headers_count_as_entries(monkeypatch):
     archive = _archive([("e" * 300, b"x", tarfile.REGTYPE), ("antigravity", _image(4096), tarfile.REGTYPE)])
     monkeypatch.setattr(prov, "MAX_ARCHIVE_ENTRIES", 3)  # long-name header, its member, agy
-    assert _read(archive)[0]
+    assert _read(archive)
     monkeypatch.setattr(prov, "MAX_ARCHIVE_ENTRIES", 2)
     with pytest.raises(prov.ProvenanceError, match=prov.UNVERIFIED):
         _read(archive)
@@ -302,7 +302,7 @@ def test_consecutive_extension_headers_are_bounded(monkeypatch):
     archive = _archive([(info, _image(4096))], format=tarfile.PAX_FORMAT,
                        pax_headers={"comment": "global"})
     monkeypatch.setattr(prov, "MAX_EXTENSION_CHAIN", 2)
-    assert _read(archive)[0]
+    assert _read(archive)
     monkeypatch.setattr(prov, "MAX_EXTENSION_CHAIN", 1)
     with pytest.raises(prov.ProvenanceError, match=prov.UNVERIFIED):
         _read(archive)
@@ -365,9 +365,32 @@ def test_an_ordinary_archive_still_reads_and_hashes_every_compressed_byte():
     image = os.urandom(300 * 1024)
     archive = _archive([("README", b"readme", tarfile.REGTYPE), ("./antigravity", image, tarfile.REGTYPE)])
     assert prov.read_member(io.BytesIO(archive + b"trailing"), _asset(archive + b"trailing")) == (
-        sha256(image).hexdigest(), None)
-    assert prov.read_member(io.BytesIO(archive), _asset(archive), keep_bytes=True) == (
-        sha256(image).hexdigest(), image)
+        sha256(image).hexdigest())
+
+
+def test_a_sink_receives_exactly_the_member_as_it_is_hashed(tmp_path):
+    """ROLLJOB-detail §2.2: ``keep_bytes`` is gone; the member is written to a sink as it is
+    hashed and nothing is returned but its digest."""
+    image = os.urandom(3 * 1024 * 1024 + 17)
+    archive = _archive([("README", b"readme", tarfile.REGTYPE), ("./antigravity", image, tarfile.REGTYPE)])
+    with open(tmp_path / "sink", "w+b") as sink:
+        assert prov.read_member(io.BytesIO(archive), _asset(archive), sink=sink.fileno()) == sha256(image).hexdigest()
+        sink.seek(0)
+        assert sink.read() == image
+    import inspect
+    assert "keep_bytes" not in inspect.signature(prov.read_member).parameters
+    assert "keep_bytes" not in inspect.signature(prov.fetch_member).parameters
+    assert "keep_bytes" not in Path(prov.__file__).read_text()
+
+
+def test_a_refused_archive_still_refuses_with_a_sink(tmp_path):
+    """The archive digest decides: a member streamed to the sink is still refused when the
+    archive does not match its published digest (the caller then discards the sink)."""
+    image = os.urandom(64 * 1024)
+    archive = _archive([("antigravity", image, tarfile.REGTYPE)])
+    wrong = prov.ReleaseAsset("1.2.99", HOST.asset, "u", "0" * 64)
+    with open(tmp_path / "sink", "w+b") as sink, pytest.raises(prov.ProvenanceError, match=prov.UNVERIFIED):
+        prov.read_member(io.BytesIO(archive), wrong, sink=sink.fileno())
 
 
 # ----------------------------------------------------------------------- the verifier
