@@ -3402,3 +3402,122 @@ def test_a_measurement_with_no_values_to_scan_with_refuses_the_artifact(bench, m
     bench.open_grant(planned="review")
     monkeypatch.setattr(pi, "seat_profile", unscanned)
     assert bench.measure("review")[1]["routes"][0]["status"] == "artifact_refused"
+
+
+# ------------------ erratum 8, item 7 (review of E8-B): the runtime binding and publication
+
+def _rehearsal_record(bench):
+    (path,) = (bench.grant_dir() / "rehearsals").glob("????-????????????????.json")
+    return path
+
+
+def test_a_rehearsal_records_the_running_runtime_and_is_stale_once_it_moves(bench,
+                                                                           monkeypatch):
+    """The rehearsal carries ``runtime_digest``. A runtime change after it passed makes it
+    stale: the pilot's reservation is refused and ``--require-rehearsed`` fails, while the
+    record itself still reads."""
+    bench.open_grant(planned="review")
+    record = json.loads(_rehearsal_record(bench).read_text())
+    assert record["runtime_digest"] == seat_window.runtime_digest()
+    assert bench.cli("--require-rehearsed", "review")[0] == 0
+    monkeypatch.setattr(seat_window, "runtime_digest", lambda: "c" * 64)
+    code, report = bench.cli("--require-rehearsed", "review")
+    assert (code, report["status"], report["reason"]) == (1, "not_rehearsed", "passed"), report
+    code, report = bench.measure("review")
+    assert report["routes"][0]["code"] == "rehearsal_required", report
+    assert bench.launches == [] and bench.status()["charged"] == 0
+
+
+def test_a_rehearsal_record_without_its_runtime_is_no_rehearsal(bench):
+    bench.open_grant(planned="review")
+    path = _rehearsal_record(bench)
+    record = json.loads(path.read_text())
+    for value in (None, "C" * 64, "c" * 63, 7):
+        with pytest.raises(gts._Refused):
+            gts.check_rehearsal_keys({**record, "runtime_digest": value})
+    del record["runtime_digest"]
+    with pytest.raises(gts._Refused):
+        gts.check_rehearsal_keys(record)
+    path.chmod(0o600)
+    path.unlink()
+    path.write_text(json.dumps(record))
+    path.chmod(0o600)
+    assert bench.cli("--require-rehearsed", "review")[0] == 1
+    assert bench.measure("review")[1]["routes"][0]["code"] == "rehearsal_required"
+
+
+@pytest.mark.parametrize("drift", ["runtime", "context"])
+def test_drift_after_the_last_launch_refuses_publication_and_removes_the_record(
+        bench, monkeypatch, drift):
+    """The publication gate: every result and the grant's passed rehearsal must carry the
+    running runtime and context. A coherent set from before a drift refuses with
+    ``context_mismatch`` and removes the host record an earlier aggregation published;
+    the historical readers still read the same records."""
+    bench.open_grant(planned="review")
+    bench.measure("review")
+    code, report = bench.cli("--aggregate")
+    assert code == 0 and report["published"] == ["review"] and bench.host_record() is not None
+    if drift == "runtime":
+        monkeypatch.setattr(seat_window, "runtime_digest", lambda: "c" * 64)
+    else:
+        monkeypatch.setattr(gts, "context_digest", lambda: "d" * 64)
+    code, report = bench.cli("--aggregate")
+    assert (code, report["code"]) == (1, "context_mismatch"), report
+    assert bench.host_record() is None and not bench.probe("review")["passed"]
+    # Historical reads are unchanged by the gate.
+    status = bench.status()
+    assert _route_rows(status)["review"]["status"] == "measured"
+    (result,) = bench.results().values()
+    gts.check_result_keys(result)
+    assert json.loads(_rehearsal_record(bench).read_text())["status"] == "passed"
+
+
+def test_publication_needs_a_rehearsal_of_the_running_runtime(bench, monkeypatch):
+    """Results of the running runtime are not enough: the grant's passed rehearsal must be
+    of it too."""
+    bench.open_grant(planned="review")
+    path = _rehearsal_record(bench)
+    record = json.loads(path.read_text())
+    real = gts._read_rehearsals
+    monkeypatch.setattr(gts, "_read_rehearsals", lambda directory, grant: tuple(
+        {**item, "runtime_digest": "e" * 64} for item in real(directory, grant)))
+    monkeypatch.setattr(gts, "_plan_reservation", _unrehearsed_plan(gts._plan_reservation))
+    assert bench.measure("review")[1]["routes"][0]["status"] == "measured"
+    code, report = bench.cli("--aggregate")
+    assert (code, report["code"]) == (1, "context_mismatch"), report
+    assert bench.host_record() is None and record["status"] == "passed"
+
+
+def _unrehearsed_plan(real):
+    """``_plan_reservation`` with the rehearsal gate satisfied, so that only aggregation's
+    own check of the rehearsal is under test."""
+    def plan(ledger, route, argv_digest, context):
+        class Rehearsed:
+            def __getattr__(self, name):
+                return getattr(ledger, name)
+
+            def rehearsed(self, *args, **kwargs):
+                return True
+        return real(Rehearsed(), route, argv_digest, context)
+    return plan
+
+
+@pytest.mark.parametrize("drift", ["runtime", "context"])
+def test_results_of_another_runtime_or_context_refuse_even_beside_a_fresh_rehearsal(
+        bench, monkeypatch, drift):
+    """Each half of the gate on its own: the rehearsal is of the running code, but the
+    results are not."""
+    bench.open_grant(planned="review")
+    bench.measure("review")
+    key, value = ("runtime_digest", "c" * 64) if drift == "runtime" else ("context_digest",
+                                                                           "d" * 64)
+    real = gts._read_rehearsals
+    monkeypatch.setattr(gts, "_read_rehearsals", lambda directory, grant: tuple(
+        {**item, key: value} for item in real(directory, grant)))
+    if drift == "runtime":
+        monkeypatch.setattr(seat_window, "runtime_digest", lambda: value)
+    else:
+        monkeypatch.setattr(gts, "context_digest", lambda: value)
+    code, report = bench.cli("--aggregate")
+    assert (code, report["code"]) == (1, "context_mismatch"), report
+    assert bench.host_record() is None

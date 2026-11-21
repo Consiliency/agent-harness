@@ -1506,11 +1506,14 @@ class Ledger:
         recorded = {item["rehearsal"] for item in self.rehearsals}
         return tuple(item for item in self.rehearsal_attempts if item not in recorded)
 
-    def rehearsed(self, context: str, route: str | None = None) -> bool:
+    def rehearsed(self, context: str, route: str | None = None, *, runtime: str) -> bool:
         """Erratum 4: has this grant a passing rehearsal of ``route`` (by default its pilot,
-        the first planned route) for its binary and the context the code now enforces?"""
+        the first planned route) for its binary, the context the code now enforces and
+        (erratum 8, item 7) the runtime now running? A rehearsal of another runtime is
+        stale: it authorizes nothing."""
         route = self.grant.planned[0] if route is None else route
         return any(item["status"] == "passed" and item["context_digest"] == context
+                   and item["runtime_digest"] == runtime
                    and item["binary_sha256"] == self.grant.binary_sha256
                    and item["route"] == route for item in self.rehearsals)
 
@@ -1653,7 +1656,8 @@ _REHEARSAL_NAME = re.compile(r"(\d{4})-([0-9a-f]{16})\.json")
 _ATTEMPT_NAME = re.compile(r"(\d{4})-([0-9a-f]{16})\.attempt\.json")
 REHEARSAL_ATTEMPT_SCHEMA = "grok_tool_surface_rehearsal_attempt.v1"
 REHEARSAL_KEYS = frozenset({"schema", "grant", "rehearsal", "route", "argv_digest",
-                            "binary_sha256", "context_digest", "egress", "status", "reason",
+                            "binary_sha256", "context_digest", "runtime_digest", "egress",
+                            "status", "reason",
                             "exit_code", "observation", "incomplete", "budget_denials",
                             "tolerated_refusals", "observed", "at"})
 _OBSERVED_KEYS = frozenset({"method", "host", "path", "decision"})
@@ -1671,7 +1675,9 @@ def check_rehearsal_keys(document: Mapping[str, Any]) -> None:
              and set(document["observation"]) == _OBSERVATION_KEYS
              and document["status"] in ("passed", "failed")
              and document["reason"] in REHEARSAL_REASONS
-             and (document["status"] == "passed") == (document["reason"] == "passed"))
+             and (document["status"] == "passed") == (document["reason"] == "passed")
+             and type(document["runtime_digest"]) is str
+             and _HEX64.fullmatch(document["runtime_digest"]) is not None)
     incomplete = document["incomplete"]
     _require((incomplete is None) == (document["reason"] != "observation_incomplete"))
     if incomplete is not None:
@@ -1737,8 +1743,9 @@ def _plan_reservation(ledger: Ledger, route: str, argv_digest: str, context: str
     if route not in grant.planned:
         raise _refuse("route_not_planned")
     # Erratum 4: no reservation without the grant's passing rehearsal of its pilot (the
-    # pilot's own route) for this binary and the context the code now enforces.
-    if not ledger.rehearsed(context):
+    # pilot's own route) for this binary, the context the code now enforces and (erratum 8,
+    # item 7) the runtime now running.
+    if not ledger.rehearsed(context, runtime=running_binding()[0]):
         raise _refuse("rehearsal_required")
     if ledger.format_stop():
         raise _refuse("format_unrecognised_unresolved")
@@ -3157,7 +3164,7 @@ def rehearse(stage: _Stage, route: str) -> dict[str, Any]:
     record = {
         "schema": REHEARSAL_SCHEMA, "grant": stage.grant.id, "rehearsal": rehearsal_id,
         "route": route, "argv_digest": argv_digest, "binary_sha256": stage.identity[1],
-        "context_digest": context,
+        "context_digest": context, "runtime_digest": running_binding()[0],
         "egress": {"allowlist_id": EGRESS_ALLOWLIST_ID, "allowlist_sha256": allowlist_digest},
         "status": "passed" if reason == "passed" else "failed", "reason": reason,
         "exit_code": exit_code, "observation": observation, "incomplete": incomplete,
@@ -3236,6 +3243,16 @@ def _route_state(ledger: Ledger, local: Mapping[tuple[str, int], str], route: st
 
 # ------------------------------------------------------------- aggregation (§5.7, §5.8)
 
+def running_binding() -> tuple[str, str]:
+    """``(runtime_digest, context_digest)`` of the code running now (erratum 8, item 7): what
+    a rehearsal must carry to authorize a reservation, and what every result and the passed
+    rehearsal must carry to be published. The one seam a later context (the jailed
+    contract's ``jail_context_digest``) replaces."""
+    from .seat_window import runtime_digest
+
+    return runtime_digest(), context_digest()
+
+
 _SHARED = ("binary_sha256", "version", "version_sha256", "help_sha256", "model", "effort",
            "context_digest", "host_digest", "runtime_digest")
 
@@ -3270,6 +3287,13 @@ def aggregate(stage: _Stage, *, host_class: str) -> dict[str, Any]:
                 document["egress"] != first["egress"] for document in documents):
             raise _refuse("context_mismatch")
         if first["binary_sha256"] != binary or first["host_digest"] != _host_digest():
+            raise _refuse("context_mismatch")
+        # Erratum 8, item 7, the publication gate: the results and the grant's passed
+        # rehearsal must be of the runtime and context running now, so the checkout is frozen
+        # from the rehearsal through publication and drift stops the grant.
+        runtime, current = running_binding()
+        if first["runtime_digest"] != runtime or first["context_digest"] != current \
+                or not ledger.rehearsed(current, runtime=runtime):
             raise _refuse("context_mismatch")
     except MeasurementRefused:
         with _publication(binary) as root:
@@ -3723,9 +3747,9 @@ def _run_stage(stage: _Stage, stage_name: str, args, report: dict[str, Any]
         # Erratum 4, step 5: the grant's passing rehearsal of this route, for its binary and
         # the context the code now enforces, or a non-zero exit and no pilot.
         route = args.require_rehearsed
-        current = context_digest()
+        runtime, current = running_binding()
         records = [item for item in ledger.rehearsals if item["route"] == route]
-        rehearsed = ledger.rehearsed(current, route)
+        rehearsed = ledger.rehearsed(current, route, runtime=runtime)
         report.update(route=route, status="rehearsed" if rehearsed else (
             "not_rehearsed" if records else
             "interrupted" if ledger.rehearsal_unresolved() else "no_rehearsal"),
