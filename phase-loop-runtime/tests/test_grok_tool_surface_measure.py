@@ -2696,3 +2696,289 @@ def test_the_ordering_rule_a_tolerated_post_counts_only_before_the_inference_req
     # With no inference request at all the POSTs are all "before" it, and the launch fails
     # on the missing request, never on their order.
     assert _rehearse(bench("no-inference"), [RESPONSES])[1]["reason"] == "no_model_request"
+
+
+def _on_the_allow_list(method, host, path):
+    rules = seat_egress_proxy.allowlist_ref(gts.EGRESS_ALLOWLIST_ID).request_set
+    if path is None:  # a CONNECT: is a tunnel to this host admitted at all?
+        return any(rule["host"] == host for rule in rules)
+    return any(rule["host"] == host and rule["method"] == method
+               and (path == rule["path"] if "path" in rule else path.startswith(rule["path_prefix"]))
+               for rule in rules)
+
+
+def test_the_tolerated_map_is_the_closed_map_of_erratum_8():
+    """Erratum 8, item 2: the map, exactly. An entry or an image needs an erratum."""
+    host = "cli-chat-proxy.grok.com"
+    assert dict(SHIPPED_TOLERATED) == {
+        GROK_1_0_89: (("GET", host, "/v1/settings"), ("CONNECT", "x.ai", None),
+                      ("CONNECT", "storage.googleapis.com", None)),
+        GROK_1_0_92: (("GET", host, "/v1/bundle/archive"), ("GET", host, "/"),
+                      ("GET", host, "/v1/subagents/bundle"), ("GET", host, "/v1/feedback/config"),
+                      ("POST", host, "/v1/responses"))}
+    assert host == gts.INFERENCE_HOST and not hasattr(gts, "TOLERATED_REFUSALS")
+    with pytest.raises(TypeError):
+        SHIPPED_TOLERATED["f" * 64] = ()  # closed: not a table a caller can extend
+    for image, entries in SHIPPED_TOLERATED.items():
+        assert gts.tolerated_refusals(image) == entries
+        assert len(entries) <= 16  # the proxy's named channel
+        # Refused only: nothing tolerated is on the allow-list, so nothing is ever forwarded
+        # or counted, and adding an entry adds nothing to the allow-list.
+        assert not any(_on_the_allow_list(*entry) for entry in entries), image
+    # What stays untolerated for 1.0.92: the settings and model-list fetches (the pinned seat
+    # config was not honoured if either appears) and the 1.0.89 updater's CONNECTs.
+    for never in (("GET", host, "/v1/settings"), ("GET", host, "/v1/models"),
+                  ("CONNECT", "x.ai", None), ("CONNECT", "storage.googleapis.com", None),
+                  ("GET", host, "<other>"), ("POST", host, "<other>"), ("GET", "<other>", "<other>")):
+        assert never not in gts.tolerated_refusals(GROK_1_0_92), never
+    # Not part of the context digest: it qualifies a measurement and constrains no launch.
+    assert "tolerated" not in json.dumps(gts.context_document("a" * 64))
+
+
+@pytest.mark.parametrize("image", ["f" * 64, GROK_1_0_92.upper(), GROK_1_0_92[:-1], "", None, 7,
+                                   (GROK_1_0_92,)])
+def test_an_image_the_map_does_not_hold_has_no_entries(image):
+    assert gts.tolerated_refusals(image) == ()
+    event = seat_egress_proxy.RequestEvent(method="GET", host=gts.INFERENCE_HOST,
+                                           path="/v1/bundle/archive", decision="deny", cause="rules")
+    assert gts._tolerated([event], image) == [None] and gts.tolerated_summary([event], image) == []
+    assert gts._tolerated([event], GROK_1_0_92) == [ARCHIVE[:3]]
+
+
+@pytest.mark.parametrize("image", [GROK_1_0_89, GROK_1_0_92, None], ids=["1.0.89", "1.0.92", "absent"])
+def test_each_launch_names_exactly_its_images_entries_to_the_proxy(tmp_path, monkeypatch, image):
+    """The rehearsal's proxy and the measurement's are both started with the entries of the
+    image the grant pins, and with nothing for an image the map does not hold."""
+    bench = Bench(tmp_path, monkeypatch, image=image)
+    bench.open_grant(planned="review")
+    assert bench.status()["grant"]["binary_sha256"] == bench.digest  # the key: the grant's pin
+    assert bench.measure("review")[1]["routes"][0]["status"] == "measured"
+    expected = () if image is None else SHIPPED_TOLERATED[image]
+    assert [(proxy.request_budget, proxy.named) for proxy in bench.proxies] == [
+        (0, expected), (1, expected)]
+
+
+def test_the_proxy_names_the_entries_of_1_0_92_and_nothing_else(fake_srt):
+    """Erratum 8 at the proxy (offline, the real ``proxy.mjs`` over lane L2a's fake srt): the
+    five entries are observed verbatim, each refused by the rules; the settings and
+    model-list fetches stay ``<other>``; no decision changes, and nothing but the inference
+    request is allowed."""
+    fake = fake_srt()
+    named = SHIPPED_TOLERATED[GROK_1_0_92]
+    paths = ["/v1/bundle/archive", "/", "/v1/subagents/bundle", "/v1/feedback/config",
+             "/v1/settings", "/v1/models"]
+    with seat_egress_proxy.start_proxy(allowlist_id="grok-review", request_budget=1,
+                                       named=named) as proxy:
+        verdicts = fake.decide(
+            [{"method": "GET", "url": f"https://{gts.INFERENCE_HOST}{path}"} for path in paths]
+            + [{"method": "POST", "url": f"https://{gts.INFERENCE_HOST}/v1/responses"}] * 2
+            + [{"method": "POST", "url": f"https://{gts.INFERENCE_HOST}{INFERENCE_PATH}"},
+               {"method": "POST", "url": f"https://{gts.INFERENCE_HOST}/v1/responses"}])
+    assert verdicts == ["deny"] * 8 + ["allow", "deny"]
+    stream = seat_egress_proxy.proxy_stream(proxy).outside_events
+    other = ("GET", gts.INFERENCE_HOST, "<other>", "deny")
+    assert [(e.method, e.host, e.path, e.decision) for e in stream] == [
+        ARCHIVE, ROOT, SUBAGENTS, FEEDBACK, other, other, RESPONSES, RESPONSES, ALLOWED, RESPONSES]
+    assert [e.cause for e in stream] == ["rules"] * 8 + ["allowed", "rules"]
+    assert json.loads(fake.config_copy.read_text())["named"] == [list(e) for e in named]
+    assert seat_egress_proxy.completion(proxy).complete
+    # The same predicate reads the real stream: the two fetches and the late POST are not
+    # tolerated, and the counts say so.
+    assert gts._tolerated(stream, GROK_1_0_92) == [
+        ARCHIVE[:3], ROOT[:3], SUBAGENTS[:3], FEEDBACK[:3], None, None, RESPONSES[:3],
+        RESPONSES[:3], None, None]
+    assert [item["count"] for item in gts.tolerated_summary(stream, GROK_1_0_92)] == [1, 1, 1, 1, 2]
+
+
+#: Erratum 8, item 7: what a rehearsal of grok 1.0.92 (``add4d201...``) with the pinned seat
+#: config is expected to observe under a budget-0 proxy -- four GETs once each, the two
+#: pre-turn POSTs, then the inference request refused by the budget -- in the order of the
+#: offline launch. ``(method, host, path, decision, cause)``.
+EXPECTED_REHEARSAL_1_0_92 = (
+    (*ARCHIVE, "rules"), (*ROOT, "rules"), (*SUBAGENTS, "rules"), (*FEEDBACK, "rules"),
+    (*RESPONSES, "rules"), (*RESPONSES, "rules"), BUDGET_DENIED)
+
+
+def _tolerated_counts(report):
+    return {(item["method"], item["path"]): item["count"] for item in report["tolerated_refusals"]}
+
+
+def test_the_rehearsal_of_1_0_92_passes_on_the_tabled_observation(bench92):
+    """Erratum 8, item 7, the table as a fixture: nothing allowed, only tolerated refusals,
+    and the budget's own denial of the inference request. The client's exit status (1) does
+    not matter; a passing rehearsal lets the pilot reserve."""
+    assert [row[:3] for row in EXPECTED_REHEARSAL_1_0_92[:-1]] == [
+        *SHIPPED_TOLERATED[GROK_1_0_92], RESPONSES[:3]]
+    code, report = _rehearse(bench92, EXPECTED_REHEARSAL_1_0_92)
+    assert (code, report["result"], report["reason"]) == (0, "passed", "passed"), report
+    assert report["budget_denials"] == 1
+    assert report["observation"] == {"complete": True, "reason": "complete", "requests": 7,
+                                     "counted": 0, "denied": 7}
+    assert _tolerated_counts(report) == {
+        ("GET", "/v1/bundle/archive"): 1, ("GET", "/"): 1, ("GET", "/v1/subagents/bundle"): 1,
+        ("GET", "/v1/feedback/config"): 1, ("POST", "/v1/responses"): 2}
+    (record,) = [json.loads(p.read_text()) for p in
+                 (bench92.grant_dir() / "rehearsals").glob("????-????????????????.json")]
+    gts.check_rehearsal_keys(record)
+    assert record["binary_sha256"] == bench92.digest and record["exit_code"] == 1
+    assert [(item["method"], item["host"], item["path"], item["decision"])
+            for item in record["observed"]] == [row[:4] for row in EXPECTED_REHEARSAL_1_0_92]
+    assert bench92.cli("--require-rehearsed", "review")[0] == 0
+    assert bench92.rehearsals[-1].proxy.request_budget == 0 and bench92.status()["charged"] == 0
+    bench92.default = Scenario(requests=[*EXPECTED_REHEARSAL_1_0_92[:-1], ALLOWED])
+    assert bench92.measure("review")[1]["routes"][0]["status"] == "measured"
+
+
+_TABLE = list(EXPECTED_REHEARSAL_1_0_92)
+_OTHER_GET = ("GET", gts.INFERENCE_HOST, "<other>", "deny")
+#: What must fail a launch of grok 1.0.92 although the rest of the table is there. A request
+#: the proxy is not told to name arrives folded (``<other>``); the verbatim spelling is here
+#: too, so naming one later could not make it tolerated.
+NEVER_TOLERATED_1_0_92 = {
+    "settings": ("GET", gts.INFERENCE_HOST, "/v1/settings", "deny"),
+    "models": ("GET", gts.INFERENCE_HOST, "/v1/models", "deny"),
+    "other-path": _OTHER_GET,
+    "other-post": ("POST", gts.INFERENCE_HOST, "<other>", "deny"),
+    "updater-connect": UPDATER,
+    "artifact-connect": ARTIFACTS,
+    "other-host": ("CONNECT", "<other>", None, "deny"),
+    "sign-in-host": ("CONNECT", "accounts.x.ai", None, "deny"),
+    "other-host-and-path": ("GET", "<other>", "<other>", "deny"),
+}
+
+
+@pytest.mark.parametrize("name", list(NEVER_TOLERATED_1_0_92))
+@pytest.mark.parametrize("where", ["before", "after"])
+def test_a_rehearsal_of_1_0_92_fails_on_anything_outside_its_entries(bench92, name, where):
+    """Erratum 8, items 2 and 7: with the rest of the table present, one request outside the
+    image's entries fails the rehearsal, before or after the inference request. For the
+    settings and model-list fetches that means the pinned seat config was not honoured."""
+    extra = NEVER_TOLERATED_1_0_92[name]
+    requests = [extra, *_TABLE] if where == "before" else [*_TABLE, extra]
+    code, report = _rehearse(bench92, requests)
+    assert (code, report["reason"]) == (1, "unlisted_request"), report
+    assert report["budget_denials"] == 1 and sum(_tolerated_counts(report).values()) == 6
+    assert bench92.measure("review")[1]["routes"][0]["code"] == "rehearsal_required"
+
+
+@pytest.mark.parametrize("requests,reason", [
+    (_TABLE[:-1], "no_model_request"),                      # the budget's own denial is required
+    ([*_TABLE[:-1], INNER_HOST_DENIED], "unlisted_request"),  # refused, but not by the budget
+    # Nothing may be allowed: a budget-0 proxy that counted one fails its own proof first.
+    ([*_TABLE[:-1], ALLOWED], "observation_incomplete"),
+    ([*_TABLE, RESPONSES], "unlisted_request"),              # a late POST: the ordering rule
+    ([BUDGET_DENIED], "passed"),                             # a tolerated row may occur 0 times
+    ([*_TABLE, BUDGET_DENIED, FEEDBACK], "passed"),          # client retries; a late GET
+    ([ARCHIVE] * 3 + _TABLE, "passed"),                      # any number of a tolerated row
+], ids=["no-budget-denial", "inner-host-denial", "an-allowed-request", "late-responses",
+        "only-the-budget-denial", "retries-and-a-late-get", "repeats"])
+def test_the_rehearsal_of_1_0_92_still_requires_the_budgets_own_denial(bench92, requests, reason):
+    code, report = _rehearse(bench92, requests)
+    assert report["reason"] == reason and (code == 0) is (reason == "passed"), report
+
+
+@pytest.mark.parametrize("name", list(NEVER_TOLERATED_1_0_92))
+@pytest.mark.parametrize("where", ["before", "after"])
+def test_a_measurement_of_1_0_92_is_refused_on_anything_outside_its_entries(bench92, name, where):
+    extra = NEVER_TOLERATED_1_0_92[name]
+    pilot = [*_TABLE[:-1], ALLOWED]
+    status, result = _pilot(bench92, [extra, *pilot] if where == "before" else [*pilot, extra])
+    assert status == "egress_refused"
+    assert result["tools"] is None and result["definitions_sha256"] is None  # never read
+    assert sum(item["count"] for item in result["tolerated_refusals"]) == 6
+
+
+def test_a_pilot_of_1_0_92_with_the_five_entries_before_its_counted_request_is_measured(bench92):
+    status, result = _pilot(bench92, [*_TABLE[:-1], ALLOWED, FEEDBACK])
+    assert status == "measured" and result["admitted"] is True
+    assert result["observation"] == {"complete": True, "reason": "complete", "requests": 8,
+                                     "counted": 1, "denied": 7}
+    assert _tolerated_counts(result) == {
+        ("GET", "/v1/bundle/archive"): 1, ("GET", "/"): 1, ("GET", "/v1/subagents/bundle"): 1,
+        ("GET", "/v1/feedback/config"): 2, ("POST", "/v1/responses"): 2}
+    assert bench92.status()["charged"] == 1  # the tolerated POSTs are never counted
+    bench92.cli("--aggregate")
+    evidence = json.loads((bench92.output / "tool-surface.json").read_text())
+    gts.check_evidence_keys(evidence)
+    assert evidence["routes"][0]["tolerated_refusals"] == result["tolerated_refusals"]
+    # A second model call still disqualifies, tolerated entries or not.
+    assert gts._classify(early=None, exit_code=0, identity_ok=True, binary_sha256=GROK_1_0_92,
+                         proof=SimpleNamespace(complete=True, counted=1), events=[
+        seat_egress_proxy.RequestEvent(method=m, host=h, path=p, decision=d, cause=c)
+        for m, h, p, d, c in [(*RESPONSES, "rules"), (*ALLOWED, "allowed"), BUDGET_DENIED]
+    ]) == "budget_exhausted"
+
+
+@pytest.mark.parametrize("image,foreign", [
+    (GROK_1_0_92, SETTINGS), (GROK_1_0_92, UPDATER), (GROK_1_0_92, ARTIFACTS),
+    (GROK_1_0_89, ARCHIVE), (GROK_1_0_89, ROOT), (GROK_1_0_89, SUBAGENTS),
+    (GROK_1_0_89, FEEDBACK), (GROK_1_0_89, RESPONSES),
+    *[(None, entry) for entry in (SETTINGS, UPDATER, ARTIFACTS, ARCHIVE, ROOT, SUBAGENTS, FEEDBACK,
+                                  RESPONSES)],
+])
+@pytest.mark.parametrize("stage", ["rehearsal", "measurement"])
+def test_an_image_tolerates_only_its_own_entries(tmp_path, monkeypatch, image, foreign, stage):
+    """A 1.0.92 grant does not tolerate erratum 3's three, a 1.0.89 grant does not tolerate
+    erratum 8's five, and an image the map does not hold tolerates none of the eight."""
+    bench = Bench(tmp_path, monkeypatch, image=image)
+    if stage == "rehearsal":
+        code, report = _rehearse(bench, [foreign, BUDGET_DENIED])
+        assert (code, report["reason"], report["tolerated_refusals"]) == (1, "unlisted_request", [])
+    else:
+        status, result = _pilot(bench, [foreign, ALLOWED])
+        assert status == "egress_refused" and result["tolerated_refusals"] == []
+
+
+def test_a_record_holds_only_its_own_images_tolerated_entries(bench92):
+    """The validators of the result, the aggregate and the rehearsal read the record's own
+    image: an entry of another image's list, or any entry under an image the map does not
+    hold, refuses the record."""
+    foreign = {"method": "GET", "host": gts.INFERENCE_HOST, "path": "/v1/settings", "count": 1}
+    status, result = _pilot(bench92, [ARCHIVE, RESPONSES, ALLOWED])
+    assert status == "measured" and len(result["tolerated_refusals"]) == 2
+    gts.check_result_keys(result)
+    for change in ({"tolerated_refusals": [foreign]}, {"binary_sha256": "f" * 64},
+                   {"binary_sha256": GROK_1_0_89}):
+        with pytest.raises(gts._Refused):
+            gts.check_result_keys({**result, **change})
+    bench92.cli("--aggregate")
+    evidence = json.loads((bench92.output / "tool-surface.json").read_text())
+    gts.check_evidence_keys(evidence)
+    for change in ({"routes": [{**evidence["routes"][0], "tolerated_refusals": [foreign]}]},
+                   {"binary_sha256": "f" * 64}):
+        with pytest.raises(gts._Refused):
+            gts.check_evidence_keys({**evidence, **change})
+    (record,) = [json.loads(p.read_text()) for p in
+                 (bench92.grant_dir() / "rehearsals").glob("????-????????????????.json")]
+    gts.check_rehearsal_keys(record)
+    for change in ({"tolerated_refusals": [foreign]},
+                   {"tolerated_refusals": result["tolerated_refusals"], "binary_sha256": "f" * 64}):
+        with pytest.raises(gts._Refused):
+            gts.check_rehearsal_keys({**record, **change})
+
+
+def test_a_stored_record_with_another_images_entry_is_not_read_back(bench92):
+    """On reload: a stored rehearsal that calls another image's entry tolerated is no
+    rehearsal, so the pilot is refused; a stored result that does is unreadable, so nothing
+    aggregates and the host-local record goes."""
+    foreign = {"method": "GET", "host": gts.INFERENCE_HOST, "path": "/v1/settings", "count": 1}
+
+    def rewrite(path, change):
+        document = {**json.loads(path.read_text()), **change}
+        path.unlink()
+        path.write_text(json.dumps(document))
+        path.chmod(0o600)
+
+    status, _result = _pilot(bench92, [ARCHIVE, ALLOWED])
+    assert status == "measured" and bench92.cli("--aggregate")[1]["published"] == ["review"]
+    assert bench92.host_record() is not None
+    (committed,) = (bench92.grant_dir() / "results").glob("*.json")
+    rewrite(committed, {"tolerated_refusals": [foreign]})
+    assert bench92.status()["unreadable_results"] == 1
+    code, report = bench92.cli("--aggregate")
+    assert (code, report["code"]) == (1, "ledger_unreadable") and bench92.host_record() is None
+    (rehearsal,) = (bench92.grant_dir() / "rehearsals").glob("????-????????????????.json")
+    assert bench92.cli("--require-rehearsed", "review")[0] == 0
+    rewrite(rehearsal, {"tolerated_refusals": [foreign]})
+    code, report = bench92.cli("--require-rehearsed", "review")
+    assert (code, report["status"]) == (1, "interrupted")
