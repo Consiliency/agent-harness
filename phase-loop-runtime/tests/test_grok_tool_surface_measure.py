@@ -3024,7 +3024,8 @@ def test_a_client_chosen_path_word_reaches_no_rehearsal_record_or_output(bench92
         for path in _files(root):
             assert PLANTED_WORD.encode() not in path.read_bytes(), path
     # The tabled rows are kept, verbatim.
-    assert [tuple(item.values()) for item in record["observed"][:6]] == [
+    assert [(item["method"], item["host"], item["path"], item["decision"])
+            for item in record["observed"][:6]] == [
         ARCHIVE, ROOT, SUBAGENTS, FEEDBACK, RESPONSES, RESPONSES]
 
 
