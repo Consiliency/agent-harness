@@ -122,6 +122,16 @@ class DecisionContractTest(unittest.TestCase):
         r = docs_audit.evaluate(["pyproject.toml", "CHANGELOG.md"], {})
         self.assertEqual(r.docs_freshness, "passed")
 
+    def test_changelog_fragment_satisfies_like_a_changelog_entry(self):
+        for surface in ("pyproject.toml", ".github/workflows/test.yml", "uv.lock"):
+            r = docs_audit.evaluate([surface, "changelog.d/1702.ci.md"], {})
+            self.assertEqual(r.docs_freshness, "passed", surface)
+            self.assertEqual(r.surfaces["docs"], ["changelog.d/1702.ci.md"], surface)
+
+    def test_changelog_fragment_readme_is_not_an_entry(self):
+        r = docs_audit.evaluate(["pyproject.toml", "changelog.d/README.md"], {})
+        self.assertEqual(r.docs_freshness, "blocked")
+
     def test_release_surface_irrelevant_doc_still_blocks(self):
         # docs/guide.md is not pyproject's required doc (CHANGELOG) → relevance binding holds.
         r = docs_audit.evaluate(["pyproject.toml", "docs/guide.md"], {})
@@ -243,6 +253,23 @@ class BaseResolutionTest(unittest.TestCase):
             r = docs_audit.run_audit(self.repo, base=None)
             # the release bump is in c1 (below the tip) → caught only because we diff c0..HEAD
             self.assertEqual(r.docs_freshness, "blocked")
+
+    def test_merge_group_base_sha_diffs_the_queued_pr_alone(self):
+        # docs-audit.yml feeds github.event.merge_group.base_sha through the push input.
+        # base_sha..<queue merge commit> is the queued PR, never what landed before it.
+        c0 = _commit(self.repo, "c0", {"a.txt": "1\n"})
+        branch = _git(self.repo, "rev-parse", "--abbrev-ref", "HEAD")
+        _git(self.repo, "checkout", "-q", "-b", "pr", c0)
+        _commit(self.repo, "pr", {"pyproject.toml": 'version = "0.2.0"\n', "changelog.d/7.fix.md": "### x\n"})
+        _git(self.repo, "checkout", "-q", branch)
+        base_sha = _commit(self.repo, "landed earlier, no changelog", {"setup.cfg": "[x]\n"})
+        _git(self.repo, "merge", "-q", "--no-ff", "-m", "queue merge", "pr")
+        with _env(GITHUB_BASE_REF=None, GITHUB_REF="refs/heads/gh-readonly-queue/main/pr-7-abc",
+                  DOCS_AUDIT_PUSH_BEFORE=base_sha):
+            r = docs_audit.run_audit(self.repo, base=None)
+        self.assertEqual(r.evidence["base"], base_sha)
+        self.assertEqual(r.surfaces["release"], ["pyproject.toml"])
+        self.assertEqual(r.docs_freshness, "passed")
 
     def test_first_push_all_zeros_falls_back(self):
         _commit(self.repo, "root", {"a.txt": "1\n"})
