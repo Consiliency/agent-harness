@@ -7682,6 +7682,50 @@ _GEMINI_BROKER_DETAILS = frozenset({
 #: is its own step type (``subagent``, with ``subagent_info``); anything else is unrecorded.
 _JAILED_GEMINI_STEP_TYPES = frozenset({"user_input", "agent_response", "tool"})
 _JAILED_GEMINI_UNKNOWN_EVENT = "gemini_seat_subagent_or_unknown_event"
+#: The fixed set of agy 1.5.13 tool names the tooled parser refuses in the retained stream,
+#: compared after `_jailed_gemini_tool_refusal` canonicalises a name. agy's own descriptions
+#: name them as its subagent, browser-subagent, agent-message and swarm tools. agy reports a
+#: browser subagent as a plain ``tool`` step without ``subagent_info``.
+_JAILED_GEMINI_REFUSED_TOOLS = frozenset({
+    "invoke_subagent", "define_subagent", "manage_subagents", "agent", "browser_subagent",
+    "send_message", "swarm", "post_message", "read_board", "swarm_wait",
+})
+#: agy 1.5.13's fallback names for a step whose tool it could not name: ``generic`` for a
+#: generic tool call without a name, ``call_mcp_tool`` for an MCP call without one.
+_JAILED_GEMINI_UNNAMED_TOOLS = frozenset({"generic", "call_mcp_tool"})
+_JAILED_GEMINI_TOOL_NAME_MAX = 128
+
+
+def _jailed_gemini_tool_refusal(step: Mapping) -> str | None:
+    """Why the tooled parser refuses a recorded step's tool name, or ``None``.
+
+    A ``tool`` step, and any step carrying a ``tool_name`` key, needs a name that is a string
+    of ASCII characters only, judged on the raw value: any non-ASCII character anywhere,
+    including a Unicode space or a zero-width character, makes it ``bad_tool_name``. Outer
+    ASCII whitespace is then stripped, and what remains must be non-empty, printable, free of
+    whitespace and at most ``_JAILED_GEMINI_TOOL_NAME_MAX`` characters. Its canonical form is
+    the part after the last ``:`` (agy itself reads ``default_api:<name>`` this way),
+    casefolded. The canonical form must be a letter followed by letters, digits or ``_``. A
+    name that fails this, or that is one of agy's fallbacks for an unnamed tool, is
+    ``bad_tool_name``; a canonical form in `_JAILED_GEMINI_REFUSED_TOOLS` is
+    ``refused_tool``. It never raises."""
+    if step.get("step_type") != "tool" and "tool_name" not in step:
+        return None
+    name = step.get("tool_name")
+    if not isinstance(name, str) or not name.isascii():
+        return "bad_tool_name"
+    name = name.strip(" \t\n\r\x0b\x0c")
+    if (not name or len(name) > _JAILED_GEMINI_TOOL_NAME_MAX or not name.isprintable()
+            or any(c.isspace() for c in name)):
+        return "bad_tool_name"
+    canonical = name.rpartition(":")[2].casefold()
+    if (not canonical or not canonical[0].isalpha()
+            or not all(c.isalnum() or c == "_" for c in canonical)
+            or canonical in _JAILED_GEMINI_UNNAMED_TOOLS):
+        return "bad_tool_name"
+    if canonical in _JAILED_GEMINI_REFUSED_TOOLS:
+        return "refused_tool"
+    return None
 
 
 def _broker_gemini_stream_result(
@@ -7689,9 +7733,10 @@ def _broker_gemini_stream_result(
 ) -> tuple[int, str, str, dict[str, object]]:
     """Accept acknowledged ingestion turns and one no-tool terminal response.
 
-    ``tooled`` (the jailed Gemini seat, agent-harness#1170) also accepts tool steps; a
-    subagent or any step or event P3 did not record ends the leg with
-    ``gemini_seat_subagent_or_unknown_event``."""
+    ``tooled`` (the jailed Gemini seat, agent-harness#1170) also accepts tool steps. It
+    refuses, with ``gemini_seat_subagent_or_unknown_event``: a subagent; a step or event P3
+    did not record; and a step whose tool name `_jailed_gemini_tool_refusal` refuses (a
+    missing or invalid name, or a name in `_JAILED_GEMINI_REFUSED_TOOLS`)."""
     results: list[Mapping[str, object]] = []
     conversation_ids: set[str] = set()
     tool_steps = 0
@@ -7738,6 +7783,9 @@ def _broker_gemini_stream_result(
                     if step.get("step_type") not in _JAILED_GEMINI_STEP_TYPES or "subagent_info" in step:
                         diagnostic = _JAILED_GEMINI_UNKNOWN_EVENT
                         raise ValueError("subagent or unrecorded activity observed")
+                    if _jailed_gemini_tool_refusal(step) is not None:
+                        diagnostic = _JAILED_GEMINI_UNKNOWN_EVENT
+                        raise ValueError("refused or invalid tool name")
                     if step.get("step_type") == "tool":
                         tool_steps += 1
                 elif step.get("step_type") == "tool" or "tool_info" in step or "subagent_info" in step:
@@ -15338,8 +15386,8 @@ def window_board_launch(spec: WindowBoardSpec) -> WindowBoardResult:
 # agent-harness#1823: when the tooled stream refuses a well-formed line as
 # `gemini_seat_subagent_or_unknown_event`, the leg's private `leg_exec.v1` record says what kind
 # of line it was, in the closed `stream_rejection` field. The parser is a validator-closure entry
-# point and stays untouched: `_jailed_gemini_stream_rejection` re-reads the stdout the leg
-# already holds, with the same three rules, after the parser has refused it. Every string it
+# point and is not edited for it: `_jailed_gemini_stream_rejection` re-reads the stdout the leg
+# already holds, with the parser's own rules, after the parser has refused it. Every string it
 # records is a name from one of the fixed sets below (``other`` outside them), every other
 # value is a count or a position; it never copies a line, a value or provider text.
 _STREAM_REJECTION_OTHER = "other"
@@ -15347,20 +15395,32 @@ _STREAM_REJECTION_ABSENT = "absent"        # a step count's label for a step wit
 _STREAM_REJECTION_UNPARSED = "unparsed"    # an event count's label for a line that is not JSON
 _STREAM_REJECTION_MALFORMED = "malformed"  # ... for JSON that is not an event object
 _STREAM_REJECTION_EMPTY = "empty"          # a mode key present with an empty string
-_STREAM_REJECTION_REASONS = frozenset({"unknown_event", "bad_step_type", "subagent_info"})
+_STREAM_REJECTION_REASONS = frozenset({
+    "unknown_event", "bad_step_type", "subagent_info", "refused_tool", "bad_tool_name",
+})
 _STREAM_REJECTION_EVENTS = frozenset({
     "init", "step_update", "result", "error", "warning", "notice", "message", "user",
     "system", "progress", "usage",
 })
+#: Labels only: naming a step type here never admits it. agy's own closed ``step_type``
+#: vocabulary (the same from agy 1.3.5 to 1.5.13) is ``user_input``, ``agent_response``,
+#: ``tool``, ``subagent``, ``system_message``, ``checkpoint``, ``error_message``, ``finish``
+#: and ``unknown``, agy's label for every step kind it does not classify.
 _STREAM_REJECTION_STEPS = _JAILED_GEMINI_STEP_TYPES | frozenset({
     "subagent", "browser", "system_message", "thinking", "plan", "checkpoint", "compaction",
-    "error", "workflow", "background_task", "finish", "notification",
+    "error", "workflow", "background_task", "finish", "notification", "error_message",
+    "unknown",
 })
-_STREAM_REJECTION_TOOLS = frozenset({
+#: Includes every name in agy 1.5.13's own tool-name tables, every refused tool name and
+#: agy's fallback names for an unnamed tool.
+_STREAM_REJECTION_TOOLS = _JAILED_GEMINI_REFUSED_TOOLS | _JAILED_GEMINI_UNNAMED_TOOLS | frozenset({
     "run_command", "view_file", "list_dir", "grep_search", "find_by_name", "write_to_file",
     "replace_file_content", "command_status", "manage_task", "invoke_subagent",
     "define_subagent", "manage_subagents", "send_message", "browser_subagent", "search_web",
-    "read_url_content",
+    "read_url_content", "code_search", "moma_search", "multi_replace_file_content",
+    "write_file", "edit_file", "notebook_edit", "generate_image", "schedule", "skill_search",
+    "manage_inbox", "read_file", "send_command_input", "list_resources", "read_resource",
+    "open_browser_url", "read_browser_page", "wait", "wait_5_seconds",
 })
 _STREAM_REJECTION_STATES = frozenset({
     "ACTIVE", "DONE", "ERROR", "PENDING", "WAITING", "CANCELED", "CANCELLED",
@@ -15369,9 +15429,11 @@ _STREAM_REJECTION_LINE_KEYS = frozenset({
     "event", "conversation_id", "init", "step_update", "result", "error", "message",
     "timestamp", "session_id", "type",
 })
+#: Includes every key of agy 1.5.13's ``step_update`` payload (``duration_seconds`` and
+#: ``usage`` can appear on any step that ends DONE or ERROR).
 _STREAM_REJECTION_STEP_KEYS = frozenset({
     "conversation_id", "step_index", "state", "status", "step_type", "tool_name", "tool_info",
-    "subagent_info", "text_delta", "text", "type_name", "error",
+    "subagent_info", "text_delta", "text", "type_name", "error", "duration_seconds", "usage",
 })
 _STREAM_REJECTION_SUBAGENT_KEYS = frozenset({
     "conversation_id", "log_uri", "name", "agent_name", "model", "spec", "status",
@@ -15479,11 +15541,14 @@ def _stream_rejection_walk(raw: str) -> dict[str, object] | None:
                 ended = True
                 continue
             # The parser's own order: an unrecorded step type refuses the line before the
-            # `subagent_info` key is looked at. Key presence stays in `step_keys`.
+            # `subagent_info` key is looked at, and that key before the tool name, which
+            # is judged by the parser's own helper. Key presence stays in `step_keys`.
             if not recorded:
                 reason = "bad_step_type"
             elif "subagent_info" in step:
                 reason = "subagent_info"
+            else:
+                reason = _jailed_gemini_tool_refusal(step)
         elif name == "result":
             if not isinstance(event.get("result"), dict):
                 ended = True

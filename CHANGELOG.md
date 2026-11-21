@@ -170,6 +170,25 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `--upstream-only` takes the newest stable release from the listing and reports when it
   was published. The seat QCI, the shipped catalog and records are unchanged; nothing needs
   requalification.
+- The jailed Gemini seat's tooled stream parser checks the tool name of each step in the
+  retained stream. It refuses a step whose canonical tool name is one of `invoke_subagent`,
+  `define_subagent`, `manage_subagents`, `agent`, `browser_subagent`, `send_message`,
+  `swarm`, `post_message`, `read_board` or `swarm_wait`. The canonical name is the text
+  after the last `:`, with outer ASCII whitespace stripped, casefolded. The parser also
+  refuses a `tool` step, or any step carrying a `tool_name`, whose name is missing, holds
+  any non-ASCII character (judged before stripping), is not printable without inner
+  whitespace, is longer than 128 characters, is not a letter followed
+  by letters, digits or `_` once canonical, or one of agy's fallback names for an unnamed
+  tool (`generic`, `call_mcp_tool`). Such a step ends the leg with
+  `gemini_seat_subagent_or_unknown_event`. Every other valid tool name is accepted as
+  before. The parser still accepts only `user_input`, `agent_response` and `tool` steps.
+  The seat's private `stream_rejection` record names the reason (`refused_tool` or
+  `bad_tool_name`). It also names more of agy's own vocabulary instead of recording
+  `other`: the step types `error_message` and `unknown`, the step keys `duration_seconds`
+  and `usage`, and agy 1.5.13's tool names. Naming a step type does not admit it. The agy
+  validator identity stays `agy_validator_v1` and the fixed-corpus verdict vector is
+  unchanged; only the validator source-closure pin moves, because the stream parser and its
+  tool-name helper and constants are closure nodes.
 
 ### Fixed
 

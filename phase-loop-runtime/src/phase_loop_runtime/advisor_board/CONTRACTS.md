@@ -1561,8 +1561,18 @@ are recorded on agent-harness#1132.
   copy and is read-only except `bin`, `cache` and `log`; its read-only ancestor `.gemini` is a
   mount point the seat cannot rename, so the config cannot be made writable through its parent
   (only agy's own `.gemini/config` runtime state is writable). Its cwd is an empty workspace and
-  the tree is never an `--add-dir`, so agy loads no workspace file from the tree (P3); a subagent
-  or any event P3 did not record ends the leg with `gemini_seat_subagent_or_unknown_event`. Its
+  the tree is never an `--add-dir`, so agy loads no workspace file from the tree (P3). In the
+  retained stream, a subagent step, any step or event P3 did not record, and a step that the
+  parser's tool-name rule refuses end the leg with `gemini_seat_subagent_or_unknown_event`.
+  The rule refuses a canonical tool name in a fixed set: `invoke_subagent`, `define_subagent`,
+  `manage_subagents`, `agent`, `browser_subagent`, `send_message`, `swarm`, `post_message`,
+  `read_board` and `swarm_wait`. The canonical name is the text after the last `:`, outer
+  ASCII whitespace stripped, casefolded. It also refuses a `tool` step, or any step carrying a
+  `tool_name`, without a valid name: ASCII only, judged before stripping (any Unicode space or
+  zero-width character is invalid), then printable with no inner whitespace, at most
+  128 characters, a letter then letters, digits or `_` once canonical, and not agy's
+  unnamed-tool fallback `generic` or `call_mcp_tool`. The rule judges the stream after the
+  provider exits; it is not an execution-time control. Its
   network namespace has no uplink: one loopback port is bridged to a fail-closed front over srt's
   TLS-terminating proxy on the host (`@anthropic-ai/sandbox-runtime`, pinned by version, integrity
   and installed-file digest, the installed tree rejected if it holds any unexpected symlink). The
@@ -2282,16 +2292,17 @@ or the provider text around it.
 When the tooled Gemini stream refuses a well-formed line as
 `gemini_seat_subagent_or_unknown_event`, the closed `stream_rejection` field says what
 kind of line it was: the reason, in the parser's own order (`bad_step_type` for an
-unrecorded step type, else `subagent_info` for a step carrying that key, or
-`unknown_event`), the line index, the line count and how many lines the same rules
+unrecorded step type, else `subagent_info` for a step carrying that key, else
+`refused_tool` for a refused canonical tool name or `bad_tool_name` for a missing or
+invalid one, or `unknown_event`), the line index, the line count and how many lines the same rules
 refuse; the line's event, step type, tool name and step state; which keys the line, its
 step and the step's `subagent_info` carry; per-event, per-step-type and per-tool counts
 for the whole stream; and the init event's keys and its mode values (`permission_mode`,
 `agent_mode`, `agentMode`, `mode`). Every name comes from a fixed allowlist (`other`
 outside it, null for an absent key) and every other value is a count or a position; it
 never carries a line, a value or provider text. It is computed from the retained stdout
-after the parser has refused it, so the parser and the agy validator closure are
-unchanged. A later line that does not decode, including one nested past the decoder's
+after the parser has refused it, so computing it changes neither the parser nor the agy
+validator closure. A later line that does not decode, including one nested past the decoder's
 bound, is counted as `unparsed` and does not lose the refusal; a value that is not
 closed is never recorded, and the field is null.
 The provider wrapper preserves the record identity through board delivery.

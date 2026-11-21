@@ -73,6 +73,8 @@ def _descriptor(raw):
      "bad_step_type", "step_update", "subagent"),
     (_step(step_type="agent_response", subagent_info=None), "subagent_info",
      "step_update", "agent_response"),
+    (_step(step_type="tool", state="DONE", tool_name="browser_subagent"), "refused_tool",
+     "step_update", "tool"),
 ])
 def test_each_reason_is_recorded(line, reason, event, step_type):
     found = _descriptor(_stream(_TOOL, line, _TEXT))
@@ -221,6 +223,56 @@ def test_no_init_line_records_null_init_fields():
 
 
 # ---------------------------------------------------------------------------------------
+# agy 1.5.13's own vocabulary is named, and naming a step type never admits it.
+# ---------------------------------------------------------------------------------------
+
+#: agy's closed ``step_type`` vocabulary outside the three recorded step types.
+_AGY_UNRECORDED_STEP_TYPES = ("subagent", "system_message", "checkpoint", "error_message",
+                              "finish", "unknown")
+
+
+@pytest.mark.parametrize("step_type", _AGY_UNRECORDED_STEP_TYPES)
+def test_each_agy_step_type_is_named_and_still_refused(step_type):
+    line = _step(step_index=27, state="DONE", step_type=step_type, duration_seconds=1.5,
+                 usage={"input_tokens": 1})
+    found = _descriptor(_stream(_TOOL, line, _TEXT))  # `_descriptor` asserts the refusal
+    assert (found["reason"], found["step_type"], found["line_index"]) == (
+        "bad_step_type", step_type, 2)
+    assert found["step_counts"] == {"agent_response": 1, step_type: 1, "tool": 1}
+    assert found["step_keys"] == ["conversation_id", "duration_seconds", "state",
+                                  "step_index", "step_type", "usage"]
+
+
+def test_the_recorded_step_types_are_unchanged():
+    assert pi._JAILED_GEMINI_STEP_TYPES == frozenset({"user_input", "agent_response", "tool"})
+    assert not pi._JAILED_GEMINI_STEP_TYPES & set(_AGY_UNRECORDED_STEP_TYPES)
+    assert set(_AGY_UNRECORDED_STEP_TYPES) <= pi._STREAM_REJECTION_STEPS
+
+
+@pytest.mark.parametrize("tool_name", [
+    "code_search", "moma_search", "multi_replace_file_content", "write_file", "edit_file",
+    "notebook_edit", "generate_image", "schedule", "skill_search", "manage_inbox",
+])
+def test_agys_own_tool_names_are_named(tool_name):
+    raw = _stream(_step(step_type="tool", tool_name=tool_name), _step(step_type="unknown"))
+    found = _descriptor(raw)
+    assert found["tool_counts"] == {tool_name: 1}
+    assert found["step_counts"] == {"tool": 1, "unknown": 1}
+
+
+def test_an_unlisted_step_type_and_tool_name_stay_other():
+    # A valid, unlisted tool name passes the parser and is counted as `other`; the unlisted
+    # step type after it is the refused line. Neither value is recorded.
+    unlisted_tool = "zq7_sentinel_tool"
+    raw = _stream(_step(step_type="tool", tool_name=unlisted_tool), _step(step_type=SENTINEL))
+    found = _descriptor(raw)
+    assert found["step_type"] == "other"
+    assert found["tool_counts"] == {"other": 1}
+    assert found["step_counts"] == {"other": 1, "tool": 1}
+    assert SENTINEL not in json.dumps(found) and unlisted_tool not in json.dumps(found)
+
+
+# ---------------------------------------------------------------------------------------
 # Positions and whole-stream counts.
 # ---------------------------------------------------------------------------------------
 
@@ -248,6 +300,7 @@ _PARITY = [
     _stream(_TOOL, _TEXT),                                                  # accepted
     _stream({"event": "error"}),
     _stream(_step(step_type="browser")),
+    _stream(_TOOL, _step(step_type="tool", tool_name="send_message")),     # a refused tool
     _stream(_step(step_type="tool", subagent_info={})),
     _stream("{not json", {"event": "error"}),                               # malformed JSON first
     _stream("", {"event": "error"}),                                        # an empty line first
