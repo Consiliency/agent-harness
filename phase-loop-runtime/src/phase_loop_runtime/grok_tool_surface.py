@@ -1468,7 +1468,9 @@ def check_rehearsal_keys(document: Mapping[str, Any]) -> None:
     _check_tolerated(document["tolerated_refusals"], document["binary_sha256"])
     observed = document["observed"]
     _require(type(observed) is list and len(observed) <= _OBSERVED_CAP
-             and all(type(item) is dict and set(item) == _OBSERVED_KEYS for item in observed))
+             and all(type(item) is dict and set(item) == _OBSERVED_KEYS
+                     and item["decision"] in ("allow", "deny")
+                     and retained_observation(**item) == item for item in observed))
 
 
 def _read_rehearsal_attempts(directory: int) -> tuple[str, ...]:
@@ -2060,6 +2062,46 @@ def _tolerated(events, binary_sha256: object) -> list[tuple | None]:
                                and not (index > first and _only_before_inference(key)))
                        else None)
     return matched
+
+
+#: Erratum 8, item 3 as its plan review bounds it: the paths a retained observation may name.
+#: Diagnostics, kept apart from the tolerated map and never read for tolerance or charging:
+#: the remote-settings and model-list fetches whose appearance means the pinned seat config
+#: was not honoured. Pinned by a test.
+DIAGNOSTIC_PATHS = ("/v1/settings", "/v1/models")
+
+
+def _retained_vocabulary() -> tuple[frozenset, frozenset, frozenset]:
+    """The closed ``(methods, hosts, paths)`` a retained observation may name: the proxy's
+    own method vocabulary, and only hosts and paths this module and the allow-list spell out
+    -- the allow-list's rows, every image's tolerated entries, :data:`DIAGNOSTIC_PATHS` and the
+    proxy's fixed templates. Nothing in it is text a client supplied."""
+    from . import seat_egress_proxy
+
+    rules = seat_egress_proxy.allowlist_ref(EGRESS_ALLOWLIST_ID).request_set
+    entries = [entry for listed in TOLERATED_REFUSALS_BY_IMAGE.values() for entry in listed]
+    methods = frozenset(seat_egress_proxy._EVENT_METHODS)
+    hosts = frozenset({"<other>", *seat_egress_proxy.TOKEN_ENDPOINT_HOSTS,
+                       *(rule["host"] for rule in rules), *(entry[1] for entry in entries)})
+    paths = frozenset({None, "<other>", "/oauth2/*", *DIAGNOSTIC_PATHS,
+                       *(rule["path"] if "path" in rule else rule["path_prefix"] + "*"
+                         for rule in rules),
+                       *(entry[2] for entry in entries)})
+    return methods, hosts, paths
+
+
+def retained_observation(method: object, host: object, path: object, decision: object
+                         ) -> dict[str, Any]:
+    """One proxy event as a record may retain it (review finding 3 of erratum 8): each value
+    the closed vocabulary of :func:`_retained_vocabulary` holds is kept, and anything else --
+    a host, or a path template that a later proxy builds from the request's own segments --
+    becomes ``<other>``. The producer and the reader share this one bound, so a client-chosen
+    word never reaches the grant record, however it was observed."""
+    methods, hosts, paths = _retained_vocabulary()
+    return {"method": method if method in methods else "<other>",
+            "host": host if host in hosts else "<other>",
+            "path": path if path in paths else "<other>",
+            "decision": decision if decision in ("allow", "deny") else "<other>"}
 
 
 def _check_tolerated(entries: object, binary_sha256: object) -> None:
@@ -2881,8 +2923,9 @@ def rehearse(stage: _Stage, route: str) -> dict[str, Any]:
         "budget_denials": sum(1 for event in events or () if _budget_denial(event)),
         "tolerated_refusals": tolerated_summary(events or (), stage.grant.binary_sha256),
         # Recorded for an erratum: the proxy's metadata-only observation.
-        "observed": [{"method": event.method, "host": event.host, "path": event.path,
-                      "decision": event.decision} for event in (events or ())][:_OBSERVED_CAP],
+        # Its paths are the closed vocabulary only (erratum 8, review finding 3).
+        "observed": [retained_observation(event.method, event.host, event.path, event.decision)
+                     for event in (events or ())][:_OBSERVED_CAP],
         "at": _utc_now()}
     check_rehearsal_keys(record)
     try:

@@ -2982,3 +2982,80 @@ def test_a_stored_record_with_another_images_entry_is_not_read_back(bench92):
     rewrite(rehearsal, {"tolerated_refusals": [foreign]})
     code, report = bench92.cli("--require-rehearsed", "review")
     assert (code, report["status"]) == (1, "interrupted")
+
+
+# ------------------------------- erratum 8, review finding 3: no client path text retained
+
+#: An all-letter word a client could put in a path segment: a slug, a customer name, a
+#: prompt word. A templating proxy (lane E8-C) keeps such a segment verbatim in its event.
+PLANTED_WORD = "zqxvplantedslugword"
+PLANTED = [
+    ("GET", gts.INFERENCE_HOST, f"/v1/{PLANTED_WORD}", "deny"),
+    ("GET", gts.INFERENCE_HOST, f"/v1/users/<seg>/{PLANTED_WORD}", "deny"),
+    ("POST", gts.INFERENCE_HOST, f"/{PLANTED_WORD}", "deny"),
+    ("GET", f"{PLANTED_WORD}.example", "/", "deny"),
+]
+
+
+def test_the_diagnostic_paths_are_pinned_and_apart_from_the_tolerated_map():
+    assert gts.DIAGNOSTIC_PATHS == ("/v1/settings", "/v1/models")
+    for path in gts.DIAGNOSTIC_PATHS:  # named in a record, never tolerated for 1.0.92
+        assert ("GET", gts.INFERENCE_HOST, path) not in gts.tolerated_refusals(GROK_1_0_92)
+    _methods, hosts, paths = gts._retained_vocabulary()
+    assert "/v1/models" in paths and "/v1/chat/completions" in paths and "<other>" in paths
+    assert gts.INFERENCE_HOST in hosts and "x.ai" in hosts
+    assert gts.retained_observation("GET", gts.INFERENCE_HOST, "/v1/models", "deny") == {
+        "method": "GET", "host": gts.INFERENCE_HOST, "path": "/v1/models", "decision": "deny"}
+
+
+@pytest.mark.parametrize("planted", PLANTED, ids=["segment", "templated", "post", "host"])
+def test_a_client_chosen_path_word_reaches_no_rehearsal_record_or_output(bench92, planted):
+    """A path or host spelling outside the closed vocabulary is retained as ``<other>``: the
+    grant's rehearsal record, every file under the output, grant and host-record roots, and
+    the CLI's report carry no trace of it. The launch still fails, as any unlisted request."""
+    code, report = _rehearse(bench92, [*_TABLE[:-1], planted, BUDGET_DENIED])
+    assert (code, report["reason"]) == (1, "unlisted_request"), report
+    assert PLANTED_WORD not in json.dumps(report)
+    (record,) = [json.loads(p.read_text()) for p in
+                 (bench92.grant_dir() / "rehearsals").glob("????-????????????????.json")]
+    retained = record["observed"][6]
+    assert retained["method"] == planted[0] and "<other>" in (retained["host"], retained["path"])
+    for root in (bench92.output, bench92.grant_dir(), pa.private_record_root()):
+        for path in _files(root):
+            assert PLANTED_WORD.encode() not in path.read_bytes(), path
+    # The tabled rows are kept, verbatim.
+    assert [tuple(item.values()) for item in record["observed"][:6]] == [
+        ARCHIVE, ROOT, SUBAGENTS, FEEDBACK, RESPONSES, RESPONSES]
+
+
+def test_a_measurement_retains_totals_and_tolerated_tuples_only(bench92):
+    """The pilot writer keeps no path of its own: a planted word in a refused request
+    reaches neither the result, the aggregate, the host record nor the report."""
+    status, result = _pilot(bench92, [*_TABLE[:-1], PLANTED[0], ALLOWED])
+    assert status == "egress_refused"
+    bench92.cli("--aggregate")
+    for root in (bench92.output, bench92.grant_dir(), pa.private_record_root()):
+        for path in _files(root):
+            assert PLANTED_WORD.encode() not in path.read_bytes(), path
+    assert PLANTED_WORD not in json.dumps(bench92.status())
+
+
+@pytest.mark.parametrize("field,value", [
+    ("path", f"/v1/{PLANTED_WORD}"), ("host", f"{PLANTED_WORD}.example"),
+    ("method", PLANTED_WORD.upper()), ("decision", "forwarded")])
+def test_a_rehearsal_record_naming_text_outside_the_vocabulary_is_refused(bench92, field, value):
+    """The reader holds the producer's bound: a stored rehearsal whose observation names a
+    value outside the vocabulary is no rehearsal, so the pilot cannot reserve on it."""
+    code, _report = _rehearse(bench92, _TABLE)
+    assert code == 0
+    (path,) = (bench92.grant_dir() / "rehearsals").glob("????-????????????????.json")
+    record = json.loads(path.read_text())
+    gts.check_rehearsal_keys(record)
+    record["observed"][0][field] = value
+    with pytest.raises(gts._Refused):
+        gts.check_rehearsal_keys(record)
+    path.unlink()
+    path.write_text(json.dumps(record))
+    path.chmod(0o600)
+    code, report = bench92.cli("--require-rehearsed", "review")
+    assert (code, report["status"]) == (1, "interrupted")
