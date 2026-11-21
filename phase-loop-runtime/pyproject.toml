@@ -123,7 +123,8 @@ grok-catalog = ["cryptography==50.0.2", "brotli==1.2.1"]
 # pytest is a runtime dependency now (see [project].dependencies), so it is not repeated here.
 # The test group includes the agy-watch and grok-catalog extras, so hosted CI runs the RS256
 # test and the grok signature vector test, never skips them.
-test = ["build==1.6.1", "setuptools>=70.1", "pip", "phase-loop-runtime[agy-watch,grok-catalog]"]
+test = ["build==1.6.1", "setuptools>=70.1", "pip", "phase-loop-runtime[agy-watch]",
+        "phase-loop-runtime[grok-catalog]"]
 
 [project.urls]
 Homepage = "https://github.com/Consiliency/agent-harness"
