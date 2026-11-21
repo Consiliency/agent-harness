@@ -857,18 +857,35 @@ def test_a_receipt_with_a_repeated_key_is_invalid(seat, raw):
 
 #: Named divergence (GROKROLL E2): the status reader is stricter than the admission gate
 #: about receipt shape.
-RECEIPT_SHAPE = "a receipt with an unknown or repeated key is invalid, though the gate admits it"
+RECEIPT_SHAPE = ("a receipt with an unknown or repeated key, or a passing receipt whose"
+                 " public_code is missing or non-null, is invalid, though the gate admits it")
 
 
-@pytest.mark.parametrize("case", ["unknown key", "repeated key"])
+@pytest.mark.parametrize("case", ["unknown key", "repeated key", "public_code omitted",
+                                  "public_code non-null"])
 def test_conformance_3_intended_difference_receipt_shape(seat, case):
+    """Named exception (GROKROLL E2), both oracles: the legacy admission gate admits the
+    receipt with basis ``list_tools``; the status query reports the route ``invalid`` and
+    the build ``invalid``, so a decision on it holds."""
     if case == "unknown key":
         write_receipt(seat, seat.digest, "review", listing_receipt(seat.digest, "review", note="x"))
-    else:
+    elif case == "repeated key":
         text = json.dumps(listing_receipt(seat.digest, "review"))
         write_receipt(seat, seat.digest, "review", (text[:-1] + ', "passed": true}').encode())
+    elif case == "public_code omitted":
+        write_receipt(seat, seat.digest, "review",
+                      listing_receipt(seat.digest, "review", public_code=_DROP))
+    else:
+        write_receipt(seat, seat.digest, "review", listing_receipt(
+            seat.digest, "review", public_code="grok_tool_surface_unverified"))
     assert _gate(seat) == (True, "list_tools")
     assert evidence_of(seat.digest).evidence == "invalid", RECEIPT_SHAPE
+    with sources() as found:
+        build = ev.evaluate(found, seat.digest, ev.REQUIRED_ROUTES)
+    assert build.state == "invalid"
+    decision = st.decide(inputs_invalid=False, subject=None,
+                         candidate={"state": build.state, "binary_sha256": seat.digest})
+    assert decision == {"action": "hold", "reason": "candidate_evidence_invalid"}
 
 
 # -------------------------------------------------------------- the host identity read

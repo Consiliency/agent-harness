@@ -19,10 +19,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   unmeasured subject into exit 1. Every evidence source (both catalogs, the host-local
   record, the attempt register, the probe receipt) is read into `ok`, `absent` or
   `invalid`, so a corrupt source is never reported as absent or measured; a receipt with
-  an unknown or repeated key, or a failed receipt of any other shape, is `invalid`. A
-  withdrawn frozen publication contributes no usable evidence, so a withdrawn route with no
-  valid listing receipt holds (`partial`); a valid listing receipt stays independent
-  evidence. A context change is `stale_context`, and a revoked digest is `revoked` before
+  an unknown or repeated key, a passing receipt whose `public_code` is missing or non-null,
+  or a failed receipt of any other shape, is `invalid`. A withdrawn frozen publication
+  contributes no usable evidence; a valid listing receipt stays independent evidence. A
+  build is `partial` when a required route's first-match evidence resolves to `withdrawn`,
+  unless a higher-priority state applies (a malformed receipt beside it makes the build
+  `invalid`); a withdrawn route that is not required does not stop a build from being
+  measured or a target. A context change is `stale_context`, and a revoked digest is `revoked` before
   any evidence. Release-catalog membership (a version selector resolving, `release:
   "member"`, `advance_to` and `rollback_to`) holds only while the packaged gate reads
   attested; `inputs.catalog_gate` reports `attested`, `unattested` or `invalid`. The query opens no socket, executes nothing and writes

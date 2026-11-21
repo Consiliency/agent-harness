@@ -822,3 +822,54 @@ def test_ec_grokroll_1_an_audited_run_over_real_context_and_populated_records_ha
     assert code == 0 and document["subject"]["state"] == "measured"
     assert document["context_digest"] == gts.context_digest()  # the real allow-list
     assert document["decision"] == {"action": "advance", "reason": "candidate_measured"}
+
+
+# ---------------------------------------------------- withdrawal as E3 states it
+
+def test_e3_a_withdrawn_required_route_with_a_malformed_receipt_is_invalid(seat, monkeypatch):
+    """Counterexample (a): a superseded frozen publication on the required route beside a
+    malformed receipt is ``invalid``, not ``partial`` (malformed evidence comes first)."""
+    new = digest_of("new")
+    releases(monkeypatch, [member("1.0.90", new)])
+    publish(seat, surface(new), register="superseded")
+    write_receipt(seat, new, "review", b"{")
+    code, document = run("--candidate-digest", new)
+    review = next(route for route in document["candidate"]["routes"] if route["route"] == "review")
+    assert review["evidence"] == "invalid"
+    assert document["candidate"]["state"] == "invalid"
+    assert document["decision"] == {"action": "hold", "reason": "candidate_evidence_invalid"}
+    assert document["advance_to"] is None
+
+
+def test_e3_a_withdrawn_optional_route_does_not_stop_a_target(seat, monkeypatch):
+    """Counterexample (b): ``staged`` withdrawn but not required, and a valid listing
+    receipt on the required ``review`` route: the build is measured and is a target."""
+    new = digest_of("new")
+    releases(monkeypatch, [member("1.0.90", new)])
+    publish(seat, surface(new), register="superseded")
+    write_receipt(seat, new, "review", listing_receipt(new, "review"))
+    code, document = run("--candidate-digest", new)
+    routes = {route["route"]: route for route in document["candidate"]["routes"]}
+    assert routes["staged"]["evidence"] == "withdrawn"
+    assert (routes["review"]["evidence"], routes["review"]["basis"]) == ("usable", "list_tools")
+    assert document["candidate"]["state"] == "measured"
+    assert document["advance_to"]["binary_sha256"] == new
+    code, document = run("--candidate-digest", new, "--require-route", "staged")
+    assert document["candidate"]["state"] == "partial"  # required now: withdrawn holds
+    assert document["advance_to"] is None
+
+
+# ----------------------------------------------------- E5 at the CLI boundary
+
+def test_e5_a_missing_allow_list_is_context_unavailable_at_the_cli(tmp_path, monkeypatch):
+    from phase_loop_runtime import seat_egress_proxy
+
+    real_path = seat_egress_proxy._data_path
+    monkeypatch.setattr(seat_egress_proxy, "_data_path", lambda name: (
+        real_path(name).with_name("absent-" + name) if name.startswith("grok-review")
+        else real_path(name)))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    code, document = run()
+    assert code == 3
+    assert document == {"schema": "grok_seat_status.v1", "error": "status_unavailable",
+                        "detail": "context_unavailable"}
