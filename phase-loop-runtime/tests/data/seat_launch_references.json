@@ -1413,6 +1413,7 @@
   {"count": 1, "function": "claim_evidence", "module": "claude_bakeoff", "primitive": "io.open", "role": "operator-out-of-scope"},
   {"count": 1, "function": "write_record", "module": "claude_bakeoff", "primitive": "io.open", "role": "operator-out-of-scope"},
   {"count": 1, "function": "write_private", "module": "claude_bakeoff", "primitive": "io.open", "role": "operator-out-of-scope"},
+  {"count": 1, "function": "write_private", "module": "claude_bakeoff", "primitive": "io.lstat", "role": "operator-out-of-scope"},
   {"count": 1, "function": "_directory_entries", "module": "claude_bakeoff", "primitive": "io.lstat", "role": "operator-out-of-scope"},
   {"count": 2, "function": "checkout_problems", "module": "claude_bakeoff", "primitive": "subprocess.run", "role": "operator-out-of-scope"},
   {"count": 1, "function": "cli_version_beside", "module": "claude_bakeoff", "primitive": "io.read_text", "role": "operator-out-of-scope"},

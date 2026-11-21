@@ -1665,6 +1665,91 @@ def test_control_rows_keep_paths_with_tabs_and_earlier_formats(tmp_path):
     assert files.problem(Path(str(tmp_path) + "/x\ny.json")) == "give a path without a line break"
 
 
+@pytest.mark.parametrize(("existing", "swap"), [
+    (True, "fifo"), (True, "regular"), (True, "gone"), (False, "fifo"), (False, "regular"),
+])
+def test_a_private_write_swapped_after_its_pin_is_refused_not_reported(
+        tmp_path, monkeypatch, existing, swap):
+    import os
+
+    root = tmp_path / "private"
+    root.mkdir()
+    target = root / "meter.json"
+    if existing:
+        target.write_bytes(b"old")
+    real = os.ftruncate
+
+    def swapped(fd, length):  # the entry changes after the kit holds its descriptor
+        target.rename(root / "moved-away")
+        if swap == "fifo":
+            os.mkfifo(target)
+        elif swap == "regular":
+            target.write_bytes(b"someone else's")
+        return real(fd, length)
+
+    monkeypatch.setattr(bk.os, "ftruncate", swapped)
+    with pytest.raises(bk.PrivateInputError, match="meter: the private ledger cannot be read"):
+        _within(lambda: bk.write_private(target, b"new reading"))
+
+
+def test_a_ledger_reading_whose_file_was_swapped_is_refused(tmp_path, monkeypatch):
+    import os
+
+    root = tmp_path / "private"
+    ledger = _ledger(root, ["10%", "$0", "$0"] * 2)
+    ledger.read(0, settle_s=0)
+    real = os.ftruncate
+
+    def swapped(fd, length):
+        (root / "meter.json").rename(root / "moved-away")
+        (root / "meter.json").write_bytes(b"[]")
+        return real(fd, length)
+
+    monkeypatch.setattr(bk.os, "ftruncate", swapped)
+    with pytest.raises(ValueError, match="meter: the private ledger cannot be read"):
+        ledger.read(1, settle_s=0)
+
+
+def test_a_failed_dropped_host_list_never_masks_the_outcome(repo, tmp_path, capsys):
+    import os
+
+    root = tmp_path / "private"
+    root.mkdir()
+    os.mkfifo(root / "dropped-hosts.txt")
+    evidence = write(tmp_path / "w0", *_session1(repo))
+    note = _within(lambda: bk.keep_dropped_hosts(root, ["x.example"], session=1,
+                                                 evidence=evidence))
+    assert note is not None and "6 record(s) of session 1 are already" in note
+    assert bk.keep_dropped_hosts(root, [], session=1, evidence=evidence) is None
+    capsys.readouterr()
+    assert bk.session_outcome(1, refusal="W0 stopped: x", written=None, note=note) == 1
+    err = capsys.readouterr().err.splitlines()
+    assert err[0].startswith("claude-bakeoff run: REFUSED: W0 stopped: x")
+    assert err[1] == note  # beside the refusal, not in its place
+    assert bk.session_outcome(1, refusal=None, written=[Path("a")] * 6, note=note) == 0
+    captured = capsys.readouterr()
+    assert "session 1 wrote 6 record(s)" in captured.out and note in captured.err
+
+
+@pytest.mark.parametrize("character", ["\u2028", "\x1c", "\r", "\x85"])
+def test_a_control_path_with_any_non_newline_separator_stays_one_row(tmp_path, character):
+    out = tmp_path / f"a{character}b.json"
+    out.write_text("{}")
+    files = bk.ControlFiles(root=tmp_path / "private", since=0.0)
+    answers = [str(out)]
+    files.prompt = lambda _q: answers.pop(0)
+    assert files.accept(2, 1) == b"{}"
+    assert files.problem(out) == "already given for another run"
+    # A fresh file installed at the same name is still refused by the stored path.
+    out.unlink()
+    out.write_text("{}")
+    assert files.problem(out) == "already given for another run"
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    (legacy / "control-files.txt").write_text(f"{out}\n", newline="")
+    assert bk.ControlFiles(root=legacy, since=0.0).problem(out) == "already given for another run"
+
+
 def test_a_unicode_line_separator_in_prose_is_not_a_heading(repo, tmp_path):
     directory = write(tmp_path / "w0", *_session1(repo))
     digest = bk.evidence_digest(directory)

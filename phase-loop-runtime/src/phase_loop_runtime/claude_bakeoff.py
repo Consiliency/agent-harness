@@ -971,6 +971,16 @@ def write_private(path: Path, data: bytes) -> None:
         handle.write(data)
         handle.flush()
         os.fchmod(handle.fileno(), 0o600)
+        # The write counts only if the path still names the inode written: an entry swapped
+        # after the pin (or after the exclusive create) leaves the data off the path.
+        written = os.fstat(handle.fileno())
+        try:
+            now = os.lstat(path)
+        except FileNotFoundError:
+            now = None
+        if now is None or not stat.S_ISREG(now.st_mode) or (now.st_dev, now.st_ino) != (
+                written.st_dev, written.st_ino):
+            raise PrivateInputError(_private_diagnostic(path))
 
 
 def read_private_regular(path: Path, *, cap: int = _PRIVATE_CAP) -> bytes | None:
@@ -1730,7 +1740,8 @@ class ControlFiles:
             raw = read_private_regular(self.root / "control-files.txt")
         except OSError:
             raise ValueError("control files: the private list cannot be read") from None
-        return (raw or b"").decode("utf-8", "replace").splitlines()
+        # Rows end in "\n" alone; no other character, Unicode or control, ends a row.
+        return [row for row in (raw or b"").decode("utf-8", "surrogateescape").split("\n") if row]
 
     def _already_given(self, identity: str, path: Path) -> bool:
         for row in self._given():
@@ -1749,7 +1760,7 @@ class ControlFiles:
         """``(problem, bytes, identity)``; ``problem`` is ``None`` when the file is acceptable."""
         if not path.is_absolute():
             return "give an absolute path", b"", ""
-        if "\n" in str(path) or "\r" in str(path):
+        if "\n" in str(path):  # the row delimiter; every other character is kept in a row
             return "give a path without a line break", b"", ""
         try:
             fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
@@ -1779,8 +1790,9 @@ class ControlFiles:
                                     "output file: ").strip())
             problem, raw, identity = self.take(path)
             if problem is None:
+                rows = [*self._given(), f"{identity}\t{path}"]
                 write_private(self.root / "control-files.txt",
-                              "\n".join([*self._given(), f"{identity}\t{path}"]).encode())
+                              "\n".join(rows).encode("utf-8", "surrogateescape"))
                 return raw
             self.report(f"control block {block} run {n}: {problem}; give another file")
         raise ValueError(f"W0 stopped: no acceptable control file for block {block} run {n}")
@@ -2312,6 +2324,42 @@ def coverage_note(records: Sequence[Mapping[str, object]]) -> str:
     return "".join(f"; {note}" for note in notes)
 
 
+def keep_dropped_hosts(root: Path, dropped: Sequence[str], *, session: int,
+                       evidence: Path) -> str | None:
+    """Keep the private dropped-host list. It never raises: a failure comes back as a note
+    saying how many of this session's records are already in the evidence directory, so a
+    cleanup failure never hides or replaces the session's outcome."""
+    if not dropped:
+        return None
+    try:
+        write_private(root / "dropped-hosts.txt", "\n".join(sorted(set(dropped))).encode())
+        return None
+    except (OSError, ValueError) as exc:
+        try:
+            held = [obj for obj in load_records(evidence)[0]
+                    if session_of(int(obj["block"])) == session]  # type: ignore[call-overload]
+            count = f"{len(held)} record(s) of session {session} are already"
+        except (OSError, ValueError):
+            count = f"an unknown number of session {session}'s records may already be"
+        return (f"claude-bakeoff run: NOTE: the private dropped-host list was not kept ({exc}); "
+                f"{count} in the evidence directory")
+
+
+def session_outcome(session: int, *, refusal: str | None, written: Sequence[Path] | None,
+                    note: str | None) -> int:
+    """Print the session's outcome first, then any cleanup note beside it, never in its place."""
+    if refusal is not None:
+        print(f"claude-bakeoff run: REFUSED: {refusal}", file=sys.stderr)
+        code = 1
+    else:
+        print(f"claude-bakeoff run: session {session} wrote {len(written or [])} record(s); "
+              "review them before the records PR")
+        code = 0
+    if note:
+        print(note, file=sys.stderr)
+    return code
+
+
 def _run_window(plan: Mapping[str, object], repo: Path, window: str, session: int) -> int:
     """One session, holding the evidence directory from before its gate to its end."""
     try:
@@ -2402,19 +2450,21 @@ def _run_claimed(plan: Mapping[str, object], repo: Path, window: str,
                         token=credential.token, repo=repo, native=native, control=control,
                         twin=twin, cli_version=cli_version, session=session, claimed=True,
                         on_brief=on_brief)
+    written: list[Path] | None = None
+    refusal: str | None = None
+    note: str | None = None
     try:
-        written = window_run.run()
-    except ValueError as exc:
-        print(f"claude-bakeoff run: REFUSED: {exc}", file=sys.stderr)
-        return 1
+        try:
+            written = window_run.run()
+        except ValueError as exc:
+            refusal = str(exc)
     finally:
         if ca_created:
             shutil.rmtree(ca_dir, ignore_errors=True)  # this window's CA ends with it
-        if dropped:
-            write_private(root / "dropped-hosts.txt", "\n".join(sorted(set(dropped))).encode())
-    print(f"claude-bakeoff run: session {session} wrote {len(written)} record(s); "
-          "review them before the records PR")
-    return 0
+        note = keep_dropped_hosts(root, dropped, session=session, evidence=repo / EVIDENCE_DIR)
+        if note and written is None and refusal is None:  # another exception is propagating
+            print(note, file=sys.stderr)
+    return session_outcome(session, refusal=refusal, written=written, note=note)
 
 
 if __name__ == "__main__":
