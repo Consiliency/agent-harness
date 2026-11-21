@@ -53,9 +53,9 @@ constants and `grok_tool_surface.context_digest()` are not edited by any GROK la
 |---|---|
 | Composition | `seat_jail.build_seat_jail` under the registered Grok `JailProfile`, route `jailed`, the jail's proxy-only namespace, one `start_proxy(allowlist_id="grok-review")` owned by this launch. |
 | Owner argv | the **actual** composed bwrap argv and seccomp filter, normalised by the profile's digest placeholders, hash to the record's `launch_digest` (§2.2). It is computed from the argv that is spawned, not from the registered profile. A dependency projection is refused: the Grok profile declares `projection="none"`. |
-| Binary | the bytes bound at `/seat/bin/grok` come from a descriptor held from hashing to spawn (§4.4); their sha256 is the record's `binary_sha256`. |
+| Binary | the bytes bound at `/seat/bin/grok` are the resolved subject's, from a source that passes `seat_subject`'s root-owned pin walk (every component owned by root and not group- or other-writable), hashed at the spawn boundary (§4.4); their sha256 is the record's `binary_sha256`. |
 | Argv | the `staged` form of `grok_runtime_forms()` for the production model and effort, with only argv0 and the `--cwd` value replaced (`--cwd /seat/tree`, prompt on stdin); `_grok_argv_digest(launch) == _grok_argv_digest(staged)`, and the launch's cwd is exactly `/seat/tree`. |
-| Seat home | the per-launch fresh `seat-home`. At spawn it holds only the immutable projections of §2.3, the masks of §2.4 and the two tmpfs mounts of §2.3. |
+| Seat home | the per-launch fresh `seat-home`. At spawn its mount list is exactly the ordered list of §2.3. |
 | Environment | the profile's allow-listed environment plus `HTTPS_PROXY` and `SSL_CERT_FILE`; no `GROK_*` or `XAI_*` variable. |
 | Managed config | the two `/etc/grok` paths absent on the host and in the jail view; `/etc/claude-code/managed-settings.json` absent from the jail view (TS contract erratum 1). |
 | Fixed inputs | every path of erratum 8's `SEAT_FIXED_INPUTS` (as of r3), and every project discovery path at `/seat/tree` and its visible ancestors, is immutable in the actual mount view (§2.4). |
@@ -67,105 +67,147 @@ constants and `grok_tool_surface.context_digest()` are not edited by any GROK la
 - `jail_context_digest()`: sha256 of the canonical JSON (keys sorted, separators `,` and `:`,
   ASCII, no trailing newline) of `{schema: "grok_jail_context.v1", composition:
   "seat_jail.build_seat_jail+profile:grok", home: "/seat/home", seat_config: {path,
-  sha256: SEAT_CONFIG_SHA256, projection: "ro-bind-data"}, immutable_projections: [sorted
-  paths], ephemeral: [".grok/logs", ".grok/sessions"], fixed_inputs: [SEAT_FIXED_INPUTS],
-  discovery: {policy: "masked", paths: [the per-image discovery inventory]}, environment:
+  sha256: SEAT_CONFIG_SHA256, projection: "ro-bind"}, mounts: [the ordered list of §2.3],
+  protected_set: {image_sha256, home: [...], tree: [...]}, environment:
   {allowed, forbidden_prefixes}, managed_config, child_absent_policy, egress: {allowlist_id:
   "grok-review", content_digest}}`. It moves with any of those inputs.
 - `launch_digest`: sha256 of the normalised actual owner argv and filter of a production
   jailed launch (§2.1), per architecture. Recorded in the measurement and compared at every
   spawn. It is the bridge the review asked for between the canonical policy and the composed
   launch: two launches with the same `jail_profile_digest` but a different projection, mask
-  or config descriptor differ here.
+  or config file differ here. Normalisation replaces only the per-launch directory paths
+  (projection directory, tree copy, seat-home, seat-out, sink) by their placeholders; the
+  file digests of §2.3 are part of the normalised form.
 - The record key stays `(binary_sha256, argv_digest)`; `context`, `jail_context_digest` and
   `launch_digest` are record fields checked at use.
 
-### §2.3 Projections and ephemeral paths (readable by the dropped seat UID)
+### §2.3 Projections, the ordered mount list and the scan values
 
-- **Immutable projections.** `.grok/config.toml` (erratum 8's 424 bytes),
-  `.grok/auth.json` (the access-only copy) and `.grok/agent_id` are each a sealed memfd
-  (write, grow, shrink and seal sealed; offset 0 at handoff) projected with
-  `--perms 0444 --ro-bind-data <fd> <path>`, held by the launch's exit stack, in `pass_fds`,
-  closed after exit. No credential byte is written to disk. The egress CA is projected the
-  same way. Mode 0444 makes them readable by the dropped seat UID without a chown; the jail
-  holds only the seat. The descriptor checks of erratum 8 r2 item 1b (seals, size, `pread`
-  digest without consuming, offset, `pass_fds`, lifetime, normalised destination, nothing
-  mounted at or below it, nothing over `.grok/` but `--dir`) apply to all four.
-- **`.grok` itself is a mount.** `.grok` is a `--perms 1777 --tmpfs` mount (the mode the builder
-  already uses for `/tmp`), so the client can write its locks, docs and worktree database, and
-  the directory cannot be renamed away (`EBUSY`) to plant a replacement `.grok/config.toml`
-  (erratum 8 r3 item 1f's ancestor-rename case). The projections, masks and ephemeral mounts
-  sit inside it. **Ancestor rule:** no projection or mask has an ancestor below the home mount
-  that is not itself a mount point (so `.config` is a tmpfs mount for `.config/grove/`).
-- **Ephemeral paths.** `.grok/logs` (the client log carries the token's last 12 characters) and
-  `.grok/sessions` are each `--perms 1777 --tmpfs`, so the dropped UID can write them; both
-  vanish with the jail. During a measurement only, `.grok/sessions` is the reservation's
-  private sink (§5.2).
-- **Suffix scan (erratum 8 r3 item 5).** The launch registers, from the exact projected
-  credential copy (after shaping, never a reread of the store), every secret value of
-  `_seat_secret_values` (at least 8 characters) and each value's last 12 characters as scan
-  values, held in memory only (the jail profile's equivalent of `SeatProfile.scan_values`,
-  never serialised). Seat output, the exec record, retained logs and, in a measurement, the
-  definitions artifact are scanned for them **before** any retention or extraction. A hit is
-  `grok_seat_token_in_output` at use and `artifact_refused` in a measurement (no retention, no
-  extraction, no reprocessing or publication; the charge stands). The tmpfs log is the
-  stricter sink as well, not a substitute.
-- If the profile cannot express these as its own owner arguments without editing the shared
-  `_owner_argv` builder or `seat_uid`, SL-2 STOPs (an edit there moves every leg's digests).
+**Delivery (no descriptor handoff).** `build_seat_jail` passes only its own descriptors, and
+`owner_binds` emits arguments but owns none, so the jailed seat uses **path** binds and no new
+descriptor. Per launch, the launch site (SL-3; for the provider-free qualification,
+`seat_profile_grok.qualification_shape`, SL-2) creates a fresh **projection directory**:
+operator-owned, mode 0700, outside seat-home, seat-out and the tree. It holds, each mode 0444
+and written once with `O_CREAT|O_EXCL|O_NOFOLLOW`: `config.toml` (erratum 8's 424 bytes),
+`auth.json` (the access-only copy), `agent_id`, `egress-ca.pem`, and `empty` (zero bytes); and
+`empty.d/`, an empty directory, mode 0555. The profile's `owner_binds(paths)` binds them by
+path through the `<grok-projection>` placeholder. Inside the jail a read-only bind mount point
+cannot be written, replaced, renamed or unlinked (`EROFS`/`EBUSY`), and mode 0444 or 0555
+makes it readable by the dropped seat UID without any ownership handoff. The directory is
+removed in `finally`, and by the existing abandoned-scratch purge after a crash. The builder
+and `seat_uid` are not edited. This differs from erratum 8's unjailed `--ro-bind-data` projection;
+erratum 8's launch 7 observed the client tolerating a read-only mount point at the config path,
+and condition 3's confirmation (§2.4) is taken under this exact path-bind projection. If the dropped UID cannot read a bound file or write a tmpfs
+(BA-J4), SL-2 STOPs and the plan is amended before execution.
+
+**Integrity at spawn.** The final check (§4.4) opens each projection file `O_NOFOLLOW`,
+requires a regular file, mode 0444, owner the operator, size and sha256 equal to the expected
+bytes, and the directory to be mode 0700, owned by the operator and to hold exactly those
+entries. A same-UID writer can still change a file after the check; that is the TS contract's
+D1 trust model (an operator-UID writer can forge a receipt too), stated here, not hidden.
+
+**The ordered mount list (supersedes erratum 8 r2 item 1b's "nothing over `.grok/` but
+`--dir`" for the jailed context only).** After the builder's `--bind <tree> /seat/tree`,
+`--bind <home> /seat/home` and `--bind <out> /seat/out`, the profile appends exactly, in this
+order:
+
+1. `--perms 1777 --tmpfs /seat/home/.grok` and `--perms 1777 --tmpfs /seat/home/.config`;
+2. `--ro-bind <grok-projection>/config.toml /seat/home/.grok/config.toml`, then `auth.json`
+   and `agent_id` the same way, and `--ro-bind <grok-projection>/egress-ca.pem
+   /seat/egress-ca.pem`;
+3. the home masks of §2.4, in protected-set order;
+4. `--perms 1777 --tmpfs /seat/home/.grok/logs` and `--perms 1777 --tmpfs
+   /seat/home/.grok/sessions` (during a measurement, the sink bind of §5.1 in place of the
+   second);
+5. the tree masks of §2.4, in protected-set order.
+
+No other mount may have a normalised destination equal to, below or above (between the home
+or tree mount and) any protected path, projection or ephemeral mount, and none may follow
+the list (no shadow mount). Every destination is absolute, `posixpath.normpath`-stable and
+has no symlink component in the jail view.
+
+**Ancestor rule, home and tree.** Every ancestor of a protected path, between it and the
+`/seat/home` or `/seat/tree` bind, is itself a mount point (`.grok`, `.config`), so it
+cannot be renamed away to plant a replacement (erratum 8 r3 item 1f). Above `/seat/tree`,
+`/seat` and `/` are read-only (`--remount-ro /`), so a visible project ancestor cannot be
+written or renamed.
+
+**Ephemeral paths.** `.grok/logs` (the client log carries the token's last 12 characters) and
+`.grok/sessions` vanish with the jail.
+
+**Scan values and their handoff (erratum 8 r3 item 5).** `stage_grok_seat_credential` derives,
+from the exact projected bytes (never a reread of the store), every secret value of
+`_seat_secret_values` (at least 8 characters) and each value's last 12 characters, held only
+in memory on `GrokSeatCredential.scan_values`. At use, the launch site passes them to the
+output scan before the exec record, returned text or any log is retained. In a measurement,
+SL-3's `prepare_measurement` returns a `JailedMeasurementLaunch` carrying them; SL-4's reader
+receives that object, scans before it retains or extracts anything, and drops it once the
+result record is written. Retained channels and their rule:
+
+| Channel | Jailed rule |
+|---|---|
+| seat output, returned text, the exec record | scanned before retention; a hit is `grok_seat_token_in_output`, nothing retained |
+| provider stdout and stderr of a **failed** measurement (TS contract §5.9's private `provider.log`, the r3 raw-failure exception) | stricter than the TS contract: scanned before it is written; on a hit it is not written; otherwise kept private with the 7-day expiry |
+| the definitions artifact and the sessions sink | scanned before retention or extraction; a hit is `artifact_refused` |
+| `.grok/logs`, `.grok/sessions` (use) | tmpfs, never retained |
+
+`artifact_refused` follows erratum 8 r3: no retention, extraction, reprocessing or publication;
+the settled charge stands; `--require-measured` fails; the result and evidence readers accept
+the status.
 
 ### §2.4 Fixed-input masks: why `staged` is eligible in the jail
 
 Erratum 8 r2 item 1d leaves `staged` ineligible because a tool can create a fixed input. In the
 jail no tool can:
 
-- **Home.** Every `SEAT_FIXED_INPUTS` path under the seat home other than the four
-  projections is an **immutable mask**: an empty sealed memfd with `--perms 0444
-  --ro-bind-data` for a file entry, an empty read-only directory (`--perms 0555 --dir` then
-  `--remount-ro`, or a read-only bind of an empty private directory) for a directory entry.
-  A mount point cannot be created over, renamed over or unlinked (`EBUSY`), and nothing can
-  be created inside a read-only directory (`EROFS`), whatever the parent's mode (erratum 8 r2
-  item 1b, observed).
-- **Tree.** Every path of the per-image discovery inventory at `/seat/tree` and at each
-  ancestor visible in the jail is masked the same way, over the per-launch copy. The rest of
-  the copy stays writable; that is EC-GROK-1's clone.
-- **Inventory.** The protected set for the granted image is erratum 8 r3's `SEAT_FIXED_INPUTS`
-  (policy layers including `.grok/requirements.toml` and `.grok/managed_config.toml`, the
-  managed-sync state and caches, and the home discovery sources including `bundled/agents`,
-  `bundled/skills` and `commands`) less `SEAT_FIXED_INPUT_EXCLUSIONS` (`auth.json` and
-  `agent_id`, which are projections here; `.grok/rules`, prompt-only), plus the project
-  discovery inventory: `grok_tool_surface.DISCOVERY_PATHS` and every project-config path the
-  image's bundled documentation names (a project `.grok/config.toml` contributes
-  `[mcp_servers]`, `[plugins]`, `[env]` and `[permission]`). SL-3 pins it per image, with the
-  derivation in its test.
-- **Refused construction.** Overlapping mask paths, a mask path that already exists in the
-  stage as a symlink or a non-matching type, and any mask whose normalised destination
-  differs from the inventory entry refuse `grok_tool_surface_unverified` before launch. A
-  stage that already holds a discovery path is masked, not rewritten; its bytes stay in the
-  authorised stage.
+- **Masks.** A file entry is `--ro-bind <grok-projection>/empty <path>`; a directory entry is
+  `--ro-bind <grok-projection>/empty.d <path>`. Nothing can be created inside, over or in
+  place of a read-only mount point (erratum 8 r2 item 1b, observed for the config file).
+- **Protected set: a complete input for SL-2.** `seat_profile_grok.PROTECTED_SETS` is a literal
+  keyed by image sha256, landed by SL-2. For `add4d201…` (1.0.92) it is transcribed from the
+  frozen text of erratum 8 r3 item 1c: `SEAT_FIXED_INPUTS` less `SEAT_FIXED_INPUT_EXCLUSIONS`
+  (`auth.json` and `agent_id` are projections here; `.grok/rules` is prompt-only) for the home,
+  and `grok_tool_surface.DISCOVERY_PATHS` (`.agents`, `.claude`, `.cursor`, `.grok`,
+  `.mcp.json`) for the tree. Once E8-A merges, SL-3 asserts the home set equals E8-A's
+  constants for that image; a mismatch STOPs SL-3. An image with no entry has no eligible
+  `staged`.
+- **Canonical coverage.** Each set is reduced before use: an entry with an ancestor in the same
+  set is dropped as covered, so no mask is mounted inside another. A tree entry `.grok` covers
+  a project `.grok/config.toml`. Home `.grok` is the writable tmpfs, not a mask, so home
+  entries below it are masked one by one. The reduced list, not the raw one, is in the digest.
+- **Tree mount points.** Before the jail is built, after the copy's `staged_tree_sha256`
+  check, the launch site creates, in the per-launch copy, an empty file or directory of the
+  entry's type at each absent tree entry, so the bind has a target. An entry that exists as a
+  symlink, as a different type, or under a symlinked component refuses. An entry that exists
+  is covered as it stands; its bytes stay in the authorised stage. These stubs are excluded,
+  by name, from EC-GROK-1's "everything else unchanged" comparison.
 - **Residuals, stated.** Discovery from directories nested below the cwd is not bound; the
-  client watches `<cwd>/` and `<cwd>/.grok/` only [erratum 8 r2, documented]. A run tool can
-  start `/seat/bin/grok` again with other flags; that child's requests are bounded by the same
-  egress policy and account, and the snapshot says nothing about it (TS contract §4.4, "what
-  the snapshot is evidence of").
-- **Exactly when jailed `staged` is eligible.** At a spawn only if all hold; otherwise jailed
-  `staged` stays closed (L6 refuses, and the spawn boundary refuses):
-  1. the installed release carries SL-3, whose final check enforces §2.3 and §2.4 on the actual
-     mount list (ancestor rule included);
-  2. the protected set is pinned for the resolved image;
-  3. the masked-projection confirmation below is recorded for that image;
-  4. the hosted real-launcher boundary check (BA-J5, with the ancestor-rename attempt) passed on
-     the installed release's head;
-  5. a jailed record exists for the image and `staged` argv digest, `measured` and `admitted`,
-     whose `jail_context_digest` equals the running one.
-- **Confirmation before any credentialed launch.** Whether grok 1.0.92 tolerates read-only
-  masks at paths it unlinks at start (the managed-sync files) is untested (erratum 8 r2 item
-  1d). An approved, credential-free, no-egress offline launch of the granted image under the
-  exact jailed projection (immutable config, masks, tmpfs, CA) must reach the inference
-  request with no `/v1/settings` or `/v1/models` and record the masks unchanged. It is a
-  precondition of the §7 grant. If the client fails, SL-3 STOPs and the owner chooses
-  between (a) a roadmap amendment admitting a non-mutating jailed form
-  (`NON_MUTATING_TOOLS`), which gives up EC-GROK-1's tool write, and (b) waiting for a
-  later image or erratum.
+  client watches `<cwd>/` and `<cwd>/.grok/` only [erratum 8, documented]. A run tool can start
+  `/seat/bin/grok` again with other flags; that child is bounded by the same egress and
+  account, and the snapshot says nothing about it (TS contract §4.4).
+
+**The five eligibility conditions, each a checked gate.** `grok_jail_surface.eligibility(binary_sha256)`
+returns the first failing condition or `None`. It is called before `--new-grant` and
+`--rehearse` (conditions 1 to 4 must pass), and at L6 and at the final spawn of a board
+launch (all five must pass). Any failure is `grok_tool_surface_unverified`.
+
+| # | Condition | Evidence and check | Authority, binding |
+|---|---|---|---|
+| 1 | SL-3's enforcement is installed | `grok_jail_surface.ENFORCEMENT` is importable from the installed package and names the §2.3 list revision | the installed release |
+| 2 | the protected set is pinned for the image | `PROTECTED_SETS[binary_sha256]` exists | SL-2's reviewed source |
+| 3 | the masked-projection confirmation is recorded | a record `grok-jail-confirmation-<binary_sha256>.json`, schema `grok_jail_confirmation.v1`, under the private record root (TS contract §3.2 file checks), or the same object in the jailed catalog entry; fields: image sha256, `launch_digest` per architecture, `jail_context_digest`, the observed outcome (inference request reached; no `/v1/settings`, no `/v1/models`; masks and config unchanged), the owner's approval id and date | the owner's approval of the offline, credential-free, no-egress launch; bound to the image, `launch_digest` and `jail_context_digest` |
+| 4 | the real-launcher boundary check passed | a record `grok-jail-boundary-<launch_digest>.json`, schema `grok_jail_boundary.v1`, or the same object in the catalog entry; fields: hosted run id, head, `launch_digest`, `jail_context_digest`, BA-J5 result `passed` with no skipped case | the hosted CI run, recorded with `--hosted-check`; bound to `launch_digest` and `jail_context_digest` |
+| 5 | an admitted jailed record exists | §3 record for the image and `staged` argv digest, `measured`, `admitted`, its `jail_context_digest` and `launch_digest` equal the running values | §5 measurement, catalog or host-local |
+
+**Carry-forward.** Conditions 3 and 4 bind `launch_digest` and `jail_context_digest`, not
+`runtime_digest`. A release that changes neither (SL-6's catalog-only release, whose files are
+outside the runtime hash and outside the jail argv) keeps them valid; SL-6 copies both objects
+into the catalog entry. A release that changes either needs a new confirmation or boundary
+run.
+
+**If the confirmation fails.** SL-3 stops, and the owner chooses between (a) a roadmap
+amendment admitting a non-mutating jailed form (`NON_MUTATING_TOOLS`), which gives up
+EC-GROK-1's tool write, and (b) waiting for a later image or erratum.
 
 ## §3 Records
 
@@ -201,9 +243,9 @@ jail no tool can:
 
 ### §4.2 Opened (SL-3)
 
-- **Provisional, L6.** `grok_jail_surface.precondition_code()` passes only on a jailed record
-  (catalog or host-local) for the resolved binary and the `staged` argv digest whose
-  `jail_context_digest` equals the running code's, and on a jailed receipt that matches it.
+- **Provisional, L6.** `grok_jail_surface.precondition_code()` passes only if
+  `eligibility()` (§2.4) finds all five conditions, and on a jailed receipt that matches the
+  record.
   A `list_tools` receipt does **not** pass: a listing cannot bind the fixed inputs; a future
   listing build needs its own jailed erratum.
 - **Final, at the spawn boundary**: §4.4.
@@ -217,37 +259,53 @@ jail no tool can:
 |---|---|
 | the jailed Grok leg, profile registered | eligible under `grok_jail_context.v1` only, through §4.2 and §4.4 |
 | the window kit's Grok adapter | reads admission through `grok_jail_surface.staged_admission(binary_sha256)` |
-| `seat-window probe-tools --vendor grok` | inspection only: its rows use the context the leg would launch in (jailed once registered); its aggregate exit is unchanged and is not a gate |
-| `measure-tools --verify-probe final` | the installed admission check (§7.1) |
+| `seat-window probe-tools --vendor grok` | inspection. `seat_window.py` is unchanged; it calls `panel_invoker.probe_grok_tools`, which SL-3 extends: when a Grok profile is registered and `grok_jail_surface` is installed, the `staged` row resolves the jailed subject through `grok_jail_surface.resolve_subject()`, reads and writes only the jailed receipt store and reports the jailed basis; every other form reports refused. Its aggregate exit is unchanged and is not a gate. |
+| `measure-tools --verify-probe final --grant <id>` | the grant-backed check after `--aggregate` (§7.1) |
+| the installed-catalog check | after SL-6 (§7.1) |
 | every other row of the TS contract §4.4 table | unchanged |
 
-### §4.4 Spawn-boundary identity
+### §4.4 One final verifier, two modes
 
-Checked inside the jailed `_popen` branch of `_run_leg_with_liveness`, after every other jail
-probe (including the pre-Popen probe) and immediately before `launch_provider`, against the
-exact objects about to be spawned:
+`verify_jail_launch_context(jail, *, mode, proxy, holder, cwd, command)` runs inside the jailed
+`_popen` branch of `_run_leg_with_liveness`, after every other jail probe (including the
+pre-Popen probe) and immediately before `launch_provider`, against the objects about to be
+spawned. `mode` is `board` or `measurement`.
 
-1. **Binary.** The provider bound into the jail comes from the held seat subject
-   (`_resolved_jail_subject`), opened once; its bytes are hashed through that descriptor and
-   bound from it (`/proc/self/fd/N`, or the subject's own held-authority mechanism). A
-   release replacement of the host path after the gate cannot change what is bound. The
-   receipt is looked up by that digest; `_read_grok_receipt`'s host-path resolution is not
-   used for the jailed leg.
-2. **Owner argv.** The actual argv's `launch_digest` equals the record's; any dependency
-   projection refuses.
-3. **Projections and masks.** Each descriptor of §2.3 and §2.4 passes the erratum 8 r2 item
-   1b checks; every mask destination, type, read-only status and the inventory coverage
-   match the actual mount list.
-4. **Cwd and argv.** cwd exactly `/seat/tree`; argv digest equals `staged`'s; model and
-   effort are the production values.
-5. **Proxy and holder.** The proxy is this launch's, live, with the holder pid and socket the
-   egress prefix names (TS contract §4.6 binding).
-6. **Receipt and record.** Re-resolved now; a withdrawn record, a replaced catalog route or a
-   moved digest refuses.
+**Common checks (both modes).**
 
-`verify_jail_launch_context` issues a `JailLaunchContext` mark binding (1)–(6); the spawn
-admits only that mark for that exact argv and jail. Every failure is
-`grok_tool_surface_unverified`, before any process starts.
+1. **Binary.** The bound source is the subject `_resolved_jail_subject` returned; it passes
+   `seat_subject`'s root-owned pin walk, so no operator-UID process can change it in place or
+   replace its path; its sha256, read now, equals the record's (board) or the grant's image
+   (measurement). `_read_grok_receipt`'s host-path resolution is not used.
+2. **Owner argv.** The actual argv's normalised `launch_digest` equals the expected production
+   value; any dependency projection refuses.
+3. **Projections and masks.** §2.3's integrity check; the actual mount list equals §2.3's
+   ordered list with §2.4's reduced masks; no shadow mount; no symlink component.
+4. **Cwd and argv.** cwd exactly `/seat/tree`; argv digest equals `staged`'s; production model
+   and effort.
+5. **Proxy and holder.** The proxy is this launch's and live, with the holder pid, network
+   namespace and socket the egress prefix names (TS contract §4.6), its effective allow-list
+   is `grok-review` with the expected content digest, and its budget is none (board), 0
+   (rehearsal) or 1 (counted launch).
+
+**Board mode** additionally requires all five eligibility conditions and a jailed receipt that
+matches the record, re-resolved now (a withdrawn record, a replaced catalog route or a moved
+digest refuses).
+
+**Measurement mode** replaces the record with the reservation: it requires conditions 1 to 4,
+and **atomically consumes** the reservation's admission by creating `admission-<reservation
+id>` with `O_CREAT|O_EXCL` in the grant directory, immediately before spawn. The admission
+binds the grant id, the reservation id, the image sha256, the `staged` argv digest and cwd,
+the projection directory's device and inode, the sink's device and inode, the holder's pid
+and network-namespace inode, the proxy socket and the stage budget. Its two declared
+differences are verified on the actual objects: the sink is a fresh, empty, 0700 directory
+under the private record root, writable by the dropped UID (proven by a probe write and read
+in the jail before the provider starts), and removed in `finally` and by the abandoned-scratch
+purge; the proxy is the reservation's budgeted proxy. The admission cannot be consumed twice.
+
+The function issues a `JailLaunchContext` mark binding these objects; the spawn admits only
+that mark for that exact argv and jail. Every failure is `grok_tool_surface_unverified`
+before any process starts.
 
 ## §5 Measurement through the jail
 
@@ -266,9 +324,13 @@ The measurement does not enter `seat_route.resolve`'s L6 and gains no general by
      private record root (never a discovery path), instead of the tmpfs;
    - the proxy is the reservation's budgeted proxy (`request_budget`), instead of the
      budgetless one;
-4. issues a single-use measurement admission bound to (reservation id, jail fingerprint,
-   proxy, holder). `require_grok_admission` honours it for that spawn only; replaying it
-   against another launch, another proxy or a second spawn refuses.
+4. records the admission of §4.4 (not yet consumed). Only §4.4's measurement mode consumes it,
+   at the real spawn; replaying it against another launch, proxy, sink or a second spawn
+   refuses.
+5. **Restart.** A reservation whose admission was consumed and that has no settlement is an
+   unresolved settlement: charged in full (BA-1), never resumed and never reusable as a retry.
+   A retry is a new reservation, refused while any reservation of the grant is live or
+   unresolved.
 
 ### §5.2 Egress, budget and ledger
 
@@ -309,15 +371,17 @@ budget denies the inference POST.
 - The artifact is read from the reservation's sink with TS contract §5.5–§5.6 rules; the sink
   is removed in `finally`.
 - **Agreement.** `staged` is published only if `pilot`, `planted` and `confirm` are each
-  `measured` with identical `tools` and `definitions_sha256`; otherwise nothing is published
-  (`surface_unstable`).
+  `measured` with identical `tools` and `definitions_sha256`, and the passed rehearsal and
+  every label record the same normalised **production** `launch_digest`; otherwise nothing is
+  published (`surface_unstable`).
 - **Publication gate (erratum 8 r3 item 7).** `--aggregate` refuses with `context_mismatch`, and
   removes any jailed host-local record for the binary, unless every result and the passed
   rehearsal carry the running `runtime_digest` and the running `jail_context_digest`. A
   release installed between the last launch and the aggregate therefore publishes nothing.
 - `admitted` is `_grok_tools_admitted(staged, tools)`; a measured, not admitted surface is
   evidence only.
-- Redaction, retention, the purge and the publication lock: TS contract §5.7 and §5.9.
+- Redaction, retention, the purge and the publication lock: TS contract §5.7 and §5.9, with
+  §2.3's stricter rule for a failed launch's stdout and stderr.
 
 ## §6 What Train A does
 
@@ -365,13 +429,17 @@ defers to this section.
 - **Preconditions:** this contract and the plan accepted; SL-0 to SL-4 and erratum 8's lanes
   merged, released and installed on the seat host; hosted BA-J1 executed with no skips on
   that merged head (`PHASE_LOOP_REQUIRE_GROK_JAIL_NS=1`), recorded through `--hosted-check`;
-  the §2.4 masked-projection confirmation recorded; `VL` and `VL2` passed on the seat host;
+  `eligibility()` conditions 1 to 4 passing on the installed release (checked by
+  `--new-grant` and `--rehearse`); `VL` and `VL2` passed on the seat host; where a Gemini
+  window refresh is required, it is separately authorised and completed first, on the same
+  installed release;
   the provider-free Grok qualification (`seat-sandbox qualify --leg grok`) current for the
   production key; erratum 8 item 4's staging check; a quiet slot, both shared-compute locks,
   the memory-PSI gate and `MemorySwapMax=0` scopes, as for D4.
 - **Stops.** The rehearsal passes only on the expected observation; anything else stops before
   the pilot with no request spent. The runtime stop and publication gate of erratum 8 r3 item 7
-  and §5.4 apply.
+  and §5.4 apply; a runtime drift during the grant stops it, and the Gemini refresh is
+  repeated on the new release before any resumption.
 - **Briefing facts the owner authorises against (erratum 8 r3 item 9).**
   - Two outcomes can leave the board gate closed after requests are spent: a pilot that is
     `measured` with `admitted: false`, and measured results that disagree (`surface_unstable`).
@@ -389,11 +457,18 @@ defers to this section.
 - TS contract §5.10's script with `--planned pilot,planted,confirm` and `--route staged` per
   launch. Step 0 (0 calls): `phase-loop seat-window matrix` on the installed runtime shows the
   Grok row `jailed`, and `phase-loop seat-sandbox qualify --leg grok` reports a current pass
-  naming leg `grok` and its qualification key. The final step is
-  `measure-tools --verify-probe final`, which passes only if, in the jailed context, `staged`
-  is `frozen_measurement` and admitted and every other form is refused.
-- SL-4 ships the script as `docs/ops/grok-jail-measurement.md` with a test that runs it against
-  a recording runner.
+  naming leg `grok` and its qualification key.
+- **Grant-backed check**, after `--aggregate`: `measure-tools --verify-probe final --grant <id>`
+  reads this host's grant and aggregate and passes only if the jailed `staged` row is
+  `frozen_measurement`, admitted and sourced from the host-local jailed record, and every
+  other form is refused.
+- **Installed-catalog check**, after SL-6, with no grant: `phase-loop seat-window probe-tools
+  --vendor grok` on a host with no jailed host-local record; the `staged` row must read
+  `passed: true`, `basis: frozen_measurement`, `source: catalog`. Its exit status is not the
+  gate; the row is.
+- Both checks are exercised through the installed entry points (`phase-loop`), by SL-4 against a
+  recording runner and by SL-6 against the shipped catalog.
+- SL-4 ships the script as `docs/ops/grok-jail-measurement.md`.
 
 ### §7.2 EC-GROK-5 records (0 extra calls)
 
@@ -411,25 +486,31 @@ The Grok row window is separately granted by the owner (one attempt by default),
 five-request surface grant. K-1's Grok adapter implements this fixture; GROK's closeout
 requires its evidence.
 
-- **Fixture.** The adapter stages a tree with a fresh random canary path that does not exist,
-  and a prompt that asks the CLI to create that file with given content using its write tool
-  and then run one named shell command in the clone.
-- **Assertions, by the parent after the leg:** the canary exists only in the per-launch copy
-  with exactly the requested bytes; the authorised stage's hash, every other tree path and a
-  sibling seat's tree are unchanged; the stream facts show at least one write tool step and
-  one run tool step, a terminal model turn and no cancellation (agent-harness#1091).
-- **Binding.** The record names the installed release, the image digest and the admitted
-  `staged` argv digest and `jail_context_digest`.
+- **Where the fixture is delivered.** K-1 keeps the board input unchanged, so the canary is not
+  on the board. It is the Grok supplier's **measured** launch input:
+  `seat_window_supply_grok.build_qualification_input(layout, base)` returns a fixture that
+  stages a fresh random canary path, absent beforehand, and an instruction to create that file
+  with given bytes using the write tool and then run one named shell command in the clone. Its
+  digest is the record binding's `measured_input_sha256`.
+- **Assertions, by the parent after the measured launch:** the canary exists only in the
+  per-launch copy with exactly the requested bytes; the authorised stage's hash, every other
+  tree path (stubs of §2.4 excluded by name) and a sibling seat's tree are unchanged; the
+  stream facts show at least one write tool step and one run tool step, a terminal model turn
+  and no cancellation (agent-harness#1091). The board leg proves the leg runs in the window
+  composition.
+- **Binding.** The record names the installed release, the image digest, the admitted `staged`
+  argv digest, `jail_context_digest` and `measured_input_sha256`.
 - **Fails.** A no-tool reply, a read-only run, a missing or altered canary, a canary outside
-  the copy, or a cancelled turn each fail the relevant assertion. The surface prompt ("Do not
-  call any tool") cannot supply this evidence.
+  the copy, or a cancelled turn each fail the relevant assertion. The surface prompt cannot
+  supply this evidence.
 
 ## §8 Amendments to the TS contract (ruling 1)
 
-Applied by one pointer erratum, **erratum 9**, added to the TS contract by SL-7 in a
-planning-only commit after erratum 8 merges; the same commit re-pins the TS contract in the
-plan's frozen inputs and its manifest row. SL-3 and SL-4 start only on a base holding that
-re-pin.
+Applied by one pointer erratum, **erratum 9**. **Writer:** the coordinator's planning
+delegate, as a plan amendment under `claude-plan-phase` (not a lane, and not SL-7), in one
+planning-only commit after erratum 8 merges: it adds erratum 9 to the TS contract and re-pins
+the TS contract in the plan's frozen inputs and its manifest row. SL-3 and SL-4 are not
+dispatched until that commit is on their base.
 
 | TS contract section | Amendment |
 |---|---|
@@ -445,8 +526,11 @@ Erratum 9 text:
 
 > **Erratum 9 (jailed context).** A second launch context, `grok_jail_context.v1`, is defined
 > by `plans/artifacts/grok-jail-tool-surface-contract-v1.md`. In it the `staged` form is
-> eligible because every fixed input is immutable (its §2.4); everywhere else erratum 8's
-> item 1d stands. It amends §3.1–§3.3, §4.1–§4.4, §5.1, §5.3, §5.4, §5.7, §5.8, §5.10 and §10
+> eligible only while all five conditions of its §2.4 hold, each a checked gate: its
+> enforcement installed, the protected set pinned for the image, the masked-projection
+> confirmation and the real-launcher boundary check recorded for the image's launch digest,
+> and an admitted jailed record; otherwise it stays closed. Everywhere else erratum 8's item
+> 1d stands, including the unjailed frozen-basis `staged` refusal. It amends §3.1–§3.3, §4.1–§4.4, §5.1, §5.3, §5.4, §5.7, §5.8, §5.10 and §10
 > as its §8 lists. `grok_seat_context.v1` and `context_digest()` are unchanged.
 
 ## §9 Allow-list: adopt `grok-review` (ruling 4)
@@ -521,8 +605,8 @@ Retiring the id would move both contexts' digests; it is not done.
 | 2026-11-28 | owner decides the Grok renewal record (signed, or declined); K-1 snapshot expiry rule merged | owner, FIRSTSEAT |
 | 2026-11-30 12:00 | SL-2 merged, with its dropped-UID check (`VL2`) passed on a jail-capable host | lane |
 | 2026-12-01 | Train A cut: SL-2 if merged, else SL-8 under the signed record | release owner |
-| 2026-12-02 12:00 | Train A and the K-1 snapshot rule installed on every seat host; coverage recorded per host: `seat-window matrix` shows Grok `jailed` with no exception (or the renewed expiry) | host owner |
-| 2026-12-03 | `seat-sandbox qualify --leg grok` on the designated host (SL-5) | host owner |
+| 2026-12-02 12:00 | Train A installed on every seat host, and the K-1 snapshot rule installed on every **verifying** host; coverage recorded per host: `seat-window matrix` shows Grok `jailed` with no exception (or the renewed expiry), and the installed verifier is the snapshot one | host owner |
+| 2026-12-03 | only if Train A carried SL-2: `seat-sandbox qualify --leg grok` on the designated host (SL-5) | host owner |
 | 2026-12-04 00:00 | expiry; the exception is absent or renewed on every installed host | — |
 
 - **Fallback, without a second build.** SL-8 depends on nothing and rides Train A in SL-2's
@@ -530,8 +614,11 @@ Retiring the id would move both contexts' digests; it is not done.
   signed date, no later than 2026-12-18; others unchanged) and fills `renewal_record`. If the
   owner declines the renewal and SL-2 misses the cut, Grok's exception expires; windows
   launched after the expiry then fail on the Grok snapshot until a recovery install lands.
-- **Install miss.** If Train A cannot be installed on a host by 2026-12-03T12:00Z, no window
-  launches on that host until it is; existing records are protected by the snapshot rule.
+- **Install miss.** If Train A or the snapshot verifier cannot be installed on a host by
+  2026-12-03T12:00Z, no window launches or verifies on that host until it is. Existing records
+  are protected by the snapshot rule only where that verifier is installed; a legacy W1
+  record's expiry relief also needs K-1's journal and witness (K-1 contract, legacy-record
+  rule). Other exceptions keep their original expiry.
 - **Gemini on both sides of the boundary.** SL-2's and SL-8's tests verify a fixture Gemini
   record observed before 2026-12-04 at a clock before and after the boundary, under the
   snapshot rule, with Grok registered (SL-2) and renewed (SL-8).
@@ -543,10 +630,12 @@ Retiring the id would move both contexts' digests; it is not done.
   connection to a host-reachable listener (first proven reachable). Mandatory hosted check
   under `PHASE_LOOP_REQUIRE_GROK_JAIL_NS=1`; a missing prerequisite fails.
 - **BA-J2 (SL-3) — spawn-boundary substitutions.** Each of these, applied after the gate and
-  before spawn, refuses with nothing spawned: a different binary at the host path, a swapped
-  config descriptor, a dependency projection, a removed or retyped mask, another proxy or
-  holder, a withdrawn record, a different cwd. The mark cannot be built outside
-  `verify_jail_launch_context`.
+  before spawn, refuses with nothing spawned: a provider source failing the root-owned pin
+  walk, a binary whose digest differs, a changed or extra projection file, a dependency
+  projection, a removed, retyped or shadowed mask, a symlinked destination, another proxy,
+  holder or network namespace, a proxy with the wrong allow-list or budget, a withdrawn record,
+  a different cwd, and each eligibility condition removed alone. The mark cannot be built
+  outside `verify_jail_launch_context`.
 - **BA-J3 (SL-3) — receipts.** Unjailed frozen, legacy and listing receipts refuse at the jailed
   spawn; a jailed receipt refuses in `launch_owned`; a jailed probe does not overwrite an
   unjailed receipt.
@@ -556,9 +645,13 @@ Retiring the id would move both contexts' digests; it is not done.
   write both tmpfs mounts and `.grok` itself, cannot create inside a mask; a planted
   12-character suffix written to `.grok/logs` and the credential bytes are absent from
   seat-out, the review dir, the grant, the output directory, the record root and the evidence
-  after teardown. SL-3 adds: a stand-in that copies the suffix into its stdout and into the
-  definitions artifact is caught by the scan before retention, for a short and a long
-  credential shape (`grok_seat_token_in_output`, `artifact_refused`).
+  after teardown. SL-3 adds, through the real composed jail with a stand-in, for a short and a
+  long credential shape: the suffix copied into stdout and returned text at use
+  (`grok_seat_token_in_output`, nothing retained); into a failed measurement's stdout and
+  stderr (no `provider.log` written); into the definitions artifact and the sessions sink
+  (`artifact_refused`, `--require-measured` fails, the charge stands, both readers accept the
+  record); and a crash after spawn (the projection directory and the sink are gone after the
+  abandoned-scratch purge, and no retained path holds the suffix).
 - **BA-J5 (SL-3) — masks, through the real launcher.** In `live_jail` and as a hosted check,
   with the `planted` tree: every protected path is an immutable mask; creating
   `.grok/requirements.toml`, `.grok/managed_config.toml`, an MCP, skill, agent, hook or command
@@ -569,9 +662,14 @@ Retiring the id would move both contexts' digests; it is not done.
   unjailed frozen, a legacy and a listing receipt: the same L6 refusal, zero proxies, zero
   qualification runs, zero provider spawns. Mutation: replacing the fixed refusal with
   `grok_tool_gate` fails this test.
-- **BA-J7 (SL-4) — measurement flow.** With no receipt, a full rehearsal and first launch run
-  through `prepare_measurement`; a swapped sink, a swapped proxy, a missing reservation and a
-  replayed admission each refuse.
+- **BA-J7 (SL-3 verifier, SL-4 flow) — measurement admission.** With no receipt, a full
+  rehearsal and first launch run through `prepare_measurement` and the measurement mode of
+  §4.4; each of these refuses with nothing spawned: a swapped, non-empty, pre-existing or
+  unwritable sink; a swapped proxy, holder or budget (0 for the rehearsal, 1 for a counted
+  launch); a missing reservation; an admission consumed twice or replayed against another
+  launch; a retry while a reservation is live or unresolved; and after a restart, reuse of a
+  consumed, unsettled reservation. Publication refuses when the rehearsal and labels disagree
+  on the production `launch_digest`.
 
 ## §13 Coordination
 
@@ -583,15 +681,34 @@ Retiring the id would move both contexts' digests; it is not done.
   _WindowBoardLegRuntime | None` (pre-existing class) and calls `start`, `finish` and
   `finalize_proxy` in `_exec_jailed_gemini_leg`'s order. Delivering the runtime to the Grok
   leg (`_parent_infer` or `window_board_for`) is K-1's kit code. K-1's Grok adapter starts
-  after GROK SL-3 and SL-6, implements §7.3, and registers Grok's `WindowVendorData`. K-1's
-  §5.4 table and §10.D need that wording; its two edits to this plan are subsumed.
+  after GROK SL-3 and SL-6, implements §7.3, and registers Grok's `WindowVendorData`. **Gate:**
+  before K-1's kit lane or Grok adapter lane starts, K-1 aligns these sections (requested text):
+  - contract §5.4, Grok row: "grok — the jailed Grok leg calls `start`, `finish` and
+    `finalize_proxy` itself (GROK SL-3); the kit delivers the runtime to it";
+  - contract §5.2–§5.3: the board input stays unchanged; the Grok fixture is the supplier's
+    `measured` input, bound by `measured_input_sha256` (§7.3 here);
+  - contract §10.D and the amendment's SL-8 prerequisite: replace "a measured tool surface …
+    so `probe-tools` passes on the designated host" with "`grok_jail_surface.staged_admission`
+    true on the installed release (jail contract §2.4, all five conditions)"; the adapter
+    starts after GROK SL-3 and SL-6;
+  - the amendment's GROK coordination rows (hook in GROK SL-2 or the kit): replace by the
+    split above; its two edits to the GROK plan are subsumed by this amendment.
+- **Assumption A-1: a degraded Grok co-seat.** Until SL-6, Grok resolves degraded at L6 on
+  every board. This plan assumes another vendor's four-seat row window can still pass with
+  Grok present in the admitted composition and refused at L6, if the president completes
+  (the composer requires the seat's availability and auth, and the reducer requires retained
+  records and a completed president, not a model turn from each leg; inference from source).
+  **Confirmation point:** a K-1 provider-free end-to-end assertion (full composition, Grok
+  retained L6 refusal, the subject passes, valid president result and snapshot, only the
+  subject's row changes), frozen in K-1 before the first post-Train-A row-window grant. If it
+  fails, Grok admission (SL-6) is on every row window's path and the schedule is
+  re-planned.
 - **GROKROLL.** No GROKROLL pin moves. Its status query reads the unjailed catalog only;
   teaching it the jailed catalog is a GROKROLL follow-up.
 
 ## §14 Open questions
 
-1. Whether a degraded Grok co-seat lets another vendor's four-seat row window pass before SL-6
-   admits Grok. If it does not, Grok admission is on every row window's path.
+1. Assumption A-1 (§13) awaits its K-1 confirmation point.
 2. The masked-projection confirmation (§2.4) is the largest technical risk to the grant; it
    should be requested as soon as SL-3's projection is reviewable.
 3. One attempt per row window by default: the Grok adapter's fixture should be dry-run with a
@@ -607,7 +724,7 @@ Review `review-amendment-sol.md` (ACCEPT-WITH-CHANGES) and new inputs:
 - R3 → §2.1, §2.2, §4.4, BA-J2: actual-launch identity at the spawn boundary.
 - R4 → §5.1, §5.2, BA-J7: reservation-scoped flow, two declared differences, per-label
   ledger, hard cap 5; one hosted flag name.
-- R5 → §2.3, BA-J4: memfd projections at 0444 and 1777 tmpfs, proven in the dropped child.
+- R5 → §2.3, BA-J4: memfd projections at 0444 and 1777 tmpfs, proven in the dropped child (memfds superseded in r3 by path binds, §16).
 - R6 → §7.3: the adapter's canary write and tool-turn evidence.
 - R7 → §8, §13: one hook owner per piece; TS contract re-pin at erratum 9.
 - R8 → §4.3, §7.1: `seat-sandbox qualify --leg grok`; `--verify-probe final`; separate receipt
@@ -623,3 +740,28 @@ Review `review-amendment-sol.md` (ACCEPT-WITH-CHANGES) and new inputs:
   scan carried, plus the tmpfs sink → §2.3, BA-J4; (3) one installed release baseline, W1
   refreshed per installed digest → §7, §10; (4) owner terms and briefing facts → §7. The
   aggregate's `context_mismatch` gate binds `jail_context_digest()` → §5.4.
+
+## §16 Revision r3 (2026-11-21)
+
+Review `review-amendment-r2-sol.md` (CHANGES REQUIRED), required items only:
+
+- C1 builder and SL-2 input → §2.3 (path binds from a per-launch 0700 projection directory, no
+  descriptor handoff, no builder or `seat_uid` edit; the ordered mount list), §2.4 (SL-2 lands
+  `PROTECTED_SETS` from erratum 8 r3's frozen text: a complete input; SL-3 asserts equality
+  with E8-A). The validator/SDK pin table of §10 is unchanged.
+- C2 final launcher → §4.4 (one verifier, board and measurement modes, common checks, atomic
+  admission consumption at the real spawn, sink and proxy identity and budget, root-owned
+  source immutability), §5.1 items 4–5 (restart), §5.4 (production `launch_digest` agreement),
+  BA-J2, BA-J7.
+- C3 masks and eligibility → §2.3 (ordered list superseding erratum 8's `.grok` rule for the
+  jail, no shadow mount, ancestor and no-symlink rule for home and tree), §2.4 (canonical
+  coverage, tree stubs, the five conditions as `eligibility()` with evidence formats,
+  authority and binding; 1–4 before grant and rehearsal, all five at L6 and board spawn;
+  carry-forward), §7 preconditions, erratum 9 text (§8).
+- C4 suffix scan → §2.3 (handoff object, channel table, the failed-measurement stdout and
+  stderr rule, `artifact_refused` semantics), BA-J4.
+- C5 K-1 and CLI → §13 (gate with the exact K-1 sections), §7.3 (fixture as the `measured`
+  input), §4.3 (probe seam in `probe_grok_tools`, no `seat_window.py` edit), §7.1 (grant-backed
+  and installed-catalog checks), §8 (re-pin writer named).
+- Dispositions: R2's operational correction → §11; erratum 8 r3 requirement 3 → §7.
+- Degraded co-seat → assumption A-1 with a K-1 confirmation point (§13).
