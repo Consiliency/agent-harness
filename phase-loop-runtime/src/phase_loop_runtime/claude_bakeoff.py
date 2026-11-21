@@ -541,6 +541,15 @@ def od3b_problems(record_text: bytes, directory: Path,
     alone, so a later session's records can land beside it before the next section does. It
     picks ``print``, ``sdk`` or "none admitted"; a section over session 1 alone picks only
     ``print`` or "none admitted", and a transport it picks has records in its sessions."""
+    headings = [line for line in record_text.decode("utf-8", "replace").splitlines()
+                if line.startswith("## ")]
+    ids = [found.group(1) for line in headings
+           if (found := re.match(r"## (\d+[a-z]?)\. ", line)) is not None]
+    od3b_ids = {found.group(1) for line in headings if _OD3B_HEADING.match(line)
+                and (found := re.match(r"## (\d+[a-z]?)\. ", line)) is not None}
+    ambiguous = sorted(sid for sid in od3b_ids if ids.count(sid) > 1)
+    if ambiguous:  # the section parser keeps one heading per id; never let it pick
+        return [f"OD-3b section {sid} has more than one heading with its id" for sid in ambiguous]
     od3b = sorted(sid for sid, (heading, _d) in _transport.record_sections(record_text).items()
                   if _OD3B_HEADING.match(heading))
     if not od3b:
@@ -1059,19 +1068,20 @@ class MeterLedger:
 
     def billing(self, block: int) -> str:
         """Where the block's runs landed: ``api`` or ``extra_usage`` when that spend rose across
-        the block, ``subscription`` when only subscription usage rose. A spend that cannot be
-        resolved (unavailable, on one side only, or gone backwards) leaves ``unknown`` rather
-        than letting a lower-ranked meter decide, and so does a block where nothing rose."""
+        the block, ``subscription`` when only subscription usage rose. Any value that cannot be
+        resolved (unavailable, on one side only, or gone backwards), on any meter, leaves
+        ``unknown`` before any ranking, and so does a block where nothing rose."""
         before, after = (self.readings[position] for position in bracket_positions(block))
         if before is None or after is None:
             return "unknown"
-        for name, label in (("api_spend", "api"), ("extra_usage_spend", "extra_usage"),
-                            ("subscription_usage", "subscription")):
-            movement = _movement(before[name], after[name])
-            if movement == "moved":
+        ranked = (("api_spend", "api"), ("extra_usage_spend", "extra_usage"),
+                  ("subscription_usage", "subscription"))
+        movements = {name: _movement(before[name], after[name]) for name, _label in ranked}
+        if "unresolved" in movements.values():  # resolve every meter before ranking any
+            return "unknown"
+        for name, label in ranked:
+            if movements[name] == "moved":
                 return label
-            if movement == "unresolved":
-                return "unknown"
         return "unknown"
 
 

@@ -1198,6 +1198,8 @@ def _ledger(root, answers):
     (["20%", "$0", "unavailable"], "unknown"),            # an unresolved API spend
     (["20%", "none", "$0"], "unknown"),                   # a meter on one side only
     (["10%", "$0", "$0"], "unknown"),                     # nothing moved
+    (["20%", "", "", "", "$1"], "unknown"),               # API rose, extra usage unresolved
+    (["20%", "$0", "$1"], "api"),                         # API rose, every meter resolved
 ])
 def test_billing_never_comes_from_a_blank_or_unresolved_reading(tmp_path, closing, billing):
     ledger = _ledger(tmp_path / "p", ["10%", "$0", "$0", *closing])
@@ -1623,7 +1625,8 @@ def test_an_interim_od3b_section_says_session_one_and_names_only_what_it_measure
 
 
 @pytest.mark.parametrize("contradiction", ["two-defaults", "no-default", "two-digests",
-                                           "two-sessions-lines", "malformed-default"])
+                                           "two-sessions-lines", "malformed-default",
+                                           "duplicate-section-id", "id-shared-with-another"])
 def test_an_od3b_section_with_contradictory_declarations_fails(repo, tmp_path, contradiction):
     directory = write(tmp_path / "w0", *_session1(repo))
     digest = bk.evidence_digest(directory)
@@ -1640,6 +1643,10 @@ def test_an_od3b_section_with_contradictory_declarations_fails(repo, tmp_path, c
         section += "\n**W0 sessions:** 1 and 2\n"
     elif contradiction == "malformed-default":
         section = section.replace("`print`", "print")
+    elif contradiction == "duplicate-section-id":  # a second 4c, picking sdk, hidden by the parser
+        section += _od3b("4c", digest, value="`sdk`")
+    elif contradiction == "id-shared-with-another":  # an earlier non-OD-3b heading takes 4c
+        section = "\n## 4c. Notes\n\nx\n" + section
     assert bk.validate_directory(directory, repo=repo, record_text=(RECORD_4A + section).encode(),
                                  tui_digest=TUI) != []
     assert bk.validate_directory(directory, repo=repo,
