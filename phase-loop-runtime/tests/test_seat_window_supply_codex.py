@@ -446,6 +446,59 @@ def test_sl6_a_cli_failing_before_its_credential_path_is_not_ready(codex_supplie
     assert codex_supplier.terminal(observation) == "not_ready"
 
 
+#: A-C1 run 3's recorded not-ready leg window (the CLI with no copy, 0.167.0): 32 denied
+#: CONNECTs to unnamed hosts and one to the named ``ab.chatgpt.com``, in that order.
+_RUN3_NOT_READY = (
+    *(("CONNECT", "<other>", None, "deny"),) * 27, ("CONNECT", "ab.chatgpt.com", None, "deny"),
+    *(("CONNECT", "<other>", None, "deny"),) * 5)
+#: Run 3's fresh-case window shape: allowlisted account checks and denied other paths.
+_RUN3_ACCOUNT_CHECKS = (
+    ("GET", MODEL_HOST, "<other>", "deny"),
+    ("GET", MODEL_HOST, "/backend-api/wham/accounts/check", "allow"),
+    ("POST", MODEL_HOST, "<other>", "deny"))
+
+
+def _run3(events, **changes):
+    return _observation(**{"stream": _stream(*(_event(*row) for row in events)), **changes})
+
+
+@pytest.mark.parametrize("status", ["NONE", "FAILURE"])
+def test_sl6_run3_not_ready_window_is_not_ready(codex_supplier, status):
+    """Ruling 3: denied CONNECTs to non-token, non-model hosts are not the credential
+    path; with no token-host event, no model request and no allowed request the CLI that
+    ended by itself failed before its credential path."""
+    assert len(_RUN3_NOT_READY) == 33
+    observation = _run3(_RUN3_NOT_READY, status=status, model_turn=None)
+    assert codex_supplier.terminal(observation) == "not_ready"
+
+
+def test_sl6_run3_not_ready_window_that_timed_out_stays_timeout(codex_supplier):
+    observation = _run3(_RUN3_NOT_READY, status="NONE", model_turn=None, timed_out=True)
+    assert codex_supplier.terminal(observation) == "timeout"
+
+
+@pytest.mark.parametrize("kind,expected", [("expired_copy", "refused_intended"),
+                                           ("measured", "auth_refused")])
+def test_sl6_a_denied_token_host_among_other_denials_is_the_credential_path(
+        codex_supplier, kind, expected):
+    events = (*_RUN3_NOT_READY[:3], ("CONNECT", TOKEN_HOST, None, "deny"), *_RUN3_NOT_READY[3:6])
+    assert codex_supplier.terminal(_run3(events, kind=kind)) == expected
+
+
+@pytest.mark.parametrize("status", ["NONE", "FAILURE"])
+def test_sl6_an_allowed_request_is_never_not_ready(codex_supplier, status):
+    """Run 3's fresh shape: an allowed account check means the CLI used its credential."""
+    observation = _run3(_RUN3_ACCOUNT_CHECKS, status=status)
+    assert codex_supplier.terminal(observation) not in {"not_ready", "refused_intended"}
+
+
+@pytest.mark.parametrize("status", ["NONE", "FAILURE"])
+def test_sl6_a_model_request_is_never_not_ready(codex_supplier, status):
+    observation = _run3((*_RUN3_NOT_READY[:2], ("POST", MODEL_HOST, MODEL_PATH, "deny")),
+                        status=status)
+    assert codex_supplier.terminal(observation) != "not_ready"
+
+
 def test_sl6_refused_intended_is_only_the_expired_copy_kind(codex_supplier):
     assert codex_supplier.terminal(_observation(kind="measured")) != "refused_intended"
 
@@ -673,9 +726,26 @@ def test_sl6_f16_control_launches_through_the_real_prepare(
     assert result.binding.input_sha256 == hashlib.sha256(expected.encode()).hexdigest()
     # The binding names the image the jail actually bound, never "None".
     assert result.binding.image_sha256 == seen["image_sha256"] != "None"
+    assert result.binding.admission_class == "None"  # pinned unset (code review rules)
     # The allowlist's own refused hosts are named, and naming moves no allowlist digest.
     assert seen["named"] == [panel._window_named_refusals("codex")]
     assert ("CONNECT", TOKEN_HOST, None) in seen["named"][0]
+
+
+def test_sl6_admission_class_is_pinned_unset(tmp_path, monkeypatch):
+    """SL-6 ruling 5 / A-C1 ruling 6: Codex's admission gate returns a verdict and no
+    class, so a window seat's ``admission_class`` stays unset (the binding records
+    ``str(None)``). This pins today's value so a code-review ruling that changes it shows."""
+    from phase_loop_runtime import panel_invoker as panel
+    from test_seat_window_vendor_neutral import _codex_prepare_stubs
+    seen = _codex_prepare_stubs(monkeypatch, tmp_path)
+    seat = panel._window_prepare_leg(
+        "codex", tmp_path / "review", tmp_path / "seat", SimpleNamespace(
+            staged_tree_sha256="c" * 64), 1, 2, ("artifact", "instructions"),
+        SimpleNamespace(ca_cert=b"ca", proxy_url="http://p"), credential_mode="none",
+        copy_transform=None)
+    assert seat.admission_class is None and str(seat.admission_class) == "None"
+    assert seat.image_sha256 == seen["image_sha256"]
 
 
 def test_sl6_f16_help_has_no_input(codex_supplier, tmp_path, monkeypatch):
