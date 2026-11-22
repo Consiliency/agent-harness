@@ -3401,7 +3401,8 @@ def run_loop(
                 json_output=json_output,
                 bypass_approvals=bypass_approvals,
             )
-            selection = request.model_selection
+            if jevdrill_adapter is not None:
+                selection = request.model_selection
             spec = build_launch_spec(request)
             if not spec.available and (not dry_run or spec.executor == "command"):
                 classifications[alias] = "blocked"
@@ -5521,7 +5522,8 @@ def launch_delegated_child(
         json_output=json_output,
         bypass_approvals=bypass_approvals,
     )
-    selection = launch_request.model_selection
+    if jevdrill_adapter is not None:
+        selection = launch_request.model_selection
     spec = build_launch_spec(launch_request)
     _launcher_module.refuse_unwired_executor_spec(spec, dry_run=dry_run)
     artifacts = run_artifacts(repo, parent_phase.upper(), request.product_action, 1, spec)
@@ -6231,7 +6233,8 @@ def launch_harness_lane_work_unit(
         json_output=json_output,
         bypass_approvals=bypass_approvals,
     )
-    selection = request.model_selection
+    if jevdrill_adapter is not None:
+        selection = request.model_selection
     spec = build_launch_spec(request)
     _launcher_module.refuse_unwired_executor_spec(spec, dry_run=dry_run)
     artifacts = run_artifacts(repo, assignment.phase, action, 1, spec)
