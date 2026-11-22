@@ -386,10 +386,60 @@ def assert_expired_margin(copy, *, launch_clock: float) -> None:
         pytest.fail("A-C1: the expired copy's access exp is outside the refresh window")
 
 
-def not_ready_erratum_holds(terminal: str, events) -> bool:
-    """K1-T7 (r5 erratum): ``not_ready``, or ``timeout`` at the CLI's own deadline, with no
-    token-host event, no model request and no allowed request."""
-    return (terminal in {"not_ready", "timeout"}
+def cli_process_failure(*, timed_out: bool, exit_code, stderr: str) -> str | None:
+    """How the CLI ended, when that was not its own exit or the launch's own 120 s deadline
+    (``TimeoutExpired``): a signal (a negative status, or 128 + N from a wrapper), the
+    liveness stall kill, or an unknown status. Each is a process failure, never a verdict."""
+    if timed_out:
+        return None
+    if "[leg-liveness] stalled" in (stderr or ""):
+        return "cli_stalled"
+    if type(exit_code) is not int:
+        return "cli_exit_unknown"
+    if exit_code < 0 or exit_code >= 128:
+        return "cli_signalled"
+    return None
+
+
+def complete_leg(stream) -> bool:
+    """A complete stream with exactly one fenced leg window: final, no protocol error, no
+    event outside the window, both fences acknowledged."""
+    if stream is None or not stream.final or stream.protocol_error or stream.outside_events:
+        return False
+    windows = tuple(stream.windows)
+    return (len(windows) == 1 and windows[0].label == "leg" and windows[0].start_acked
+            and windows[0].end_acked)
+
+
+def hard_failures(*, stream, fenced: bool, bridge_exited, process_failure,
+                  readback_error) -> list:
+    """§15.4's hard failures, each with its reason: no pass and no verdict."""
+    reasons = []
+    if not complete_leg(stream):
+        reasons.append("stream_incomplete")
+    if not fenced:
+        reasons.append("unfenced")
+    if bridge_exited is not True:
+        reasons.append("bridge_not_exited")
+    if process_failure is not None:
+        reasons.append(process_failure)
+    if readback_error is not None:
+        reasons.append("credential_readback_failed")
+    return reasons
+
+
+def model_bearers_hold(model_events: int, digests, expected) -> bool:
+    """Every model event has exactly one recorded ``Authorization`` digest, each equal to the
+    installed bearer's; at least one model request (the fresh case)."""
+    return (model_events > 0 and len(digests) == model_events
+            and all(digest == expected for digest in digests))
+
+
+def not_ready_erratum_holds(terminal: str, events, stream) -> bool:
+    """K1-T7 (r5 erratum): ``not_ready``, or ``timeout`` at the CLI's own deadline, in a
+    complete fenced stream with no token-host event, no model request and no allowed
+    request."""
+    return (terminal in {"not_ready", "timeout"} and complete_leg(stream)
             and not any(getattr(event, "host", None) == TOKEN_HOST for event in events)
             and not any(getattr(event, "method", None) == "POST"
                         and getattr(event, "host", None) == MODEL_HOST
@@ -734,14 +784,17 @@ def _a_c1(tmp_path, monkeypatch, codex_upstream, *, case):
                     bridge = sandbox_egress.wait_bridge_exit(prefix)
                     end = seat_egress_proxy.fence(proxy, "end", "leg") if bridge else None
                     # The pre-teardown read (r5.2 §10.B): did the seat's copy change?
+                    readback_error = None
                     if installed is not None:
                         try:
                             observed = seat_uid.read_in_h(
                                 seat.holder_pid, str(seat.seat_dir / seat_jail.HOST_HOME_DIRNAME),
                                 cred.SEAT_AUTH_RELPATH, cred.AUTH_CAP_BYTES)
-                        except Exception:
-                            observed = b""  # unreadable counts as changed
-                        tokens_changed = cred.tokens_changed(installed, observed)
+                            tokens_changed = cred.tokens_changed(installed, observed)
+                        except seat_uid.SeatObjectMissing:
+                            tokens_changed = True  # the CLI removed its copy: a credential event
+                        except Exception as exc:  # no proof either way: a hard failure
+                            readback_error, tokens_changed = type(exc).__name__, None
                     else:
                         tokens_changed = None
                 finally:
@@ -754,10 +807,15 @@ def _a_c1(tmp_path, monkeypatch, codex_upstream, *, case):
                        if installed is not None else None)
     expected_bearer = bearer_sha256(installed_token) if installed_token else None
     model_digests = model_bearer_digests(upstream.auth_records)
+    process_failure = cli_process_failure(timed_out=timed_out, exit_code=exit_code,
+                                          stderr=stderr)
+    fenced = bool(start.acknowledged and end is not None and end.acknowledged)
+    reasons = hard_failures(stream=stream, fenced=fenced, bridge_exited=bridge,
+                            process_failure=process_failure, readback_error=readback_error)
     observation = SimpleNamespace(
         kind=kind, status=status, model_turn=model_turn, tool_steps=tools,
-        subagent_steps=subagents, timed_out=timed_out, error=None, quiescent=True,
-        bridge_exited=bridge, stream=stream,
+        subagent_steps=subagents, timed_out=timed_out, error=process_failure,
+        exit_code=exit_code, quiescent=True, bridge_exited=bridge, stream=stream,
         scan={"refresh": ("unavailable" if tokens_changed is None else
                           "codex_seat_token_refreshed_in_jail" if tokens_changed else "pass")},
         # The loopback fixture's bearer proof (r5.2 §10.B; fixture only).
@@ -765,11 +823,25 @@ def _a_c1(tmp_path, monkeypatch, codex_upstream, *, case):
     events = [event for window in stream.windows if window.label == "leg"
               for event in window.events]
     terminal = supplier.terminal(observation)
+    breaches = [reason for reason, holds in (
+        ("image_not_pinned", bool(evidence.images) and all(
+            digest == EXPECTED_CODEX_IMAGE["sha256"] for _src, digest in evidence.images)),
+        ("bound_image_not_pinned", bound_image == EXPECTED_CODEX_IMAGE["sha256"]),
+        ("host_run_not_pinned", all(digest == EXPECTED_CODEX_IMAGE["sha256"]
+                                    for _src, digest in evidence.host_runs)),
+        ("decoy_lookup", not hits),
+        ("decoy_bearer_presented", decoy["bearer"] not in "".join(upstream.bearers)),
+    ) if not holds]
+    if upstream.problems:
+        reasons.append("responder_problem")
+    outcome = "bound_breach" if breaches else "hard_failure" if reasons else "verdict"
     _write_evidence(case, {
+        "outcome": outcome, "hard_failure_reasons": reasons, "bound_breaches": breaches,
+        "process_failure": process_failure, "credential_readback_error": readback_error,
         "case": case, "kind": kind, "credential_mode": mode, "terminal": terminal,
         "status": status, "model_turn": model_turn, "tool_steps": tools,
         "timed_out": timed_out, "exit_code": exit_code, "bridge_exited": bridge,
-        "fenced": bool(start.acknowledged and end is not None and end.acknowledged),
+        "fenced": fenced,
         "stream_final": stream.final, "protocol_error": stream.protocol_error,
         "events": [[e.method, e.host, e.path, e.decision] for e in events],
         "outside_events": len(stream.outside_events),
@@ -788,16 +860,16 @@ def _a_c1(tmp_path, monkeypatch, codex_upstream, *, case):
         "bound_image": bound_image,
         "stdout": _redact(stdout, login), "stderr_tail": _redact(stderr[-2000:], login),
     })
-    assert start.acknowledged and end is not None and end.acknowledged, "unfenced launch"
+    # §15.4 precedence, before any case verdict: a bounds breach, then a hard failure.
+    if breaches:
+        pytest.fail(f"A-C1 §7(b) BREACH (stop and ask the owner): {breaches}")
     assert_pinned_image(evidence.images)  # K1-T6, from the spawn evidence
-    assert bound_image == EXPECTED_CODEX_IMAGE["sha256"]  # the binding names it (ruling 5)
-    assert all(digest == EXPECTED_CODEX_IMAGE["sha256"] for _src, digest in evidence.host_runs)
-    assert hits == [], f"K1-T7: a lookup reached the decoy or the real home: {hits}"
-    assert decoy["bearer"] not in "".join(upstream.bearers)
-    assert not upstream.problems
+    if reasons:
+        pytest.fail(f"A-C1 HARD FAILURE (§15.4: no pass, no verdict): {reasons}")
     return SimpleNamespace(observation=observation, events=events, upstream=upstream,
                            login=login, terminal=terminal, expected_bearer=expected_bearer,
                            model_digests=model_digests, tokens_changed=tokens_changed,
+                           stream=stream,
                            token_events=[e for e in events if supplier.token_endpoint(e)],
                            model_events=[e for e in events if (e.method, e.host, e.path)
                                          == ("POST", MODEL_HOST, MODEL_PATH)])
@@ -815,8 +887,8 @@ def test_k1_t7_a_c1_fresh_copy_completes_its_local_model_request(
     posts = [event for event in run.events if event.method == "POST"]
     assert posts and posts[0] == run.model_events[0], run.events  # the first POST
     assert run.upstream.bodies, "the loopback responder answered no model request"
-    assert run.model_digests and all(
-        digest == run.expected_bearer for digest in run.model_digests), run.model_digests
+    assert model_bearers_hold(len(run.model_events), run.model_digests, run.expected_bearer), (
+        len(run.model_events), run.model_digests)
     assert run.terminal == "completed", (run.observation, run.events)
 
 
@@ -848,4 +920,5 @@ def test_k1_t7_a_c1_not_ready_variant_is_never_refused_intended(
     """K1-T7 (r5 erratum): not_ready, or timeout at the CLI's own 120 s deadline, with
     no token-host, model or allowed request; never refused_intended."""
     run = _a_c1(tmp_path, monkeypatch, codex_upstream, case="not_ready")
-    assert not_ready_erratum_holds(run.terminal, run.events), (run.observation, run.events)
+    assert not_ready_erratum_holds(run.terminal, run.events, run.stream), (
+        run.observation, run.events)

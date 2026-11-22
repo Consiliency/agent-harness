@@ -621,6 +621,9 @@ def test_sl6_an_ordinary_exit_or_the_own_deadline_keeps_its_class(codex_supplier
     deadline = _observation(stream=_stream(_NAMED_DENIAL), status="NONE", timed_out=True)
     deadline.exit_code = None  # the launch's own 120 s deadline: no exit status
     assert codex_supplier.terminal(deadline) == "refused_intended"
+    # The launch's own deadline kill may leave a signal status; it stays the own mechanism.
+    deadline.exit_code = -9
+    assert codex_supplier.terminal(deadline) == "refused_intended"
 
 
 def test_sl6_r52_run3_aged_shape_is_not_refused_intended(codex_supplier):

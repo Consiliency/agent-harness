@@ -269,6 +269,11 @@ def terminal(observation) -> str:
     """§5.5's closed class for one launch result."""
     error = getattr(observation, "error", None)
     timed_out = bool(getattr(observation, "timed_out", False))
+    # A CLI ended by a signal (not the launch's own deadline) is a process failure: it never
+    # reaches refused_intended or not_ready, whatever its stream shows.
+    exit_code = getattr(observation, "exit_code", None)
+    if not timed_out and type(exit_code) is int and (exit_code < 0 or exit_code >= 128):
+        return "other_failure"
     # r5.2 / E2: the expired leg's stream decides first, whatever the CLI's exit, a stop at
     # the launch's own deadline (the kit records it as ``launch_failed``) included. A jail
     # or proxy failure, an incomplete stream or any other error never reaches it.
