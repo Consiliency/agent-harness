@@ -116,18 +116,25 @@ versioning; the release tag, the package `version`, and this file are kept in lo
       expired copy changes only the access token's `exp`, setting it an hour into the past;
     - Codex's rows and host paths;
     - the scope, refresh and secret-scan outcomes;
-    - the bracket.
-
-    Its containment watch and reducer refuse for now, so no Codex row record can pass.
+    - its own bracket, with rows ported from `codex-unlisted-endpoint`: the token POST to
+      `auth.openai.com`, the refused hosts and paths, and the proxy's tunnel, front and
+      direct-egress refusals aimed at `chatgpt.com`;
+    - its own containment watch, definition probe and reducer, with its own
+      `ContextBinding` and `ContainmentInputs`. The reducer needs the production `codex`
+      allowlist digest on every credentialed launch, the expired leg included; that one
+      seam is what the OI-1 fence edits. Refresh is detected by a credential change or an
+      allowed token-endpoint request. An `admission_class` of `"None"` means no class, so
+      such a record is not admitted.
   - A-C1 passed on the owner's ruling of 2026-11-22. The single provider-free run ended as
     a harness hard failure, whose cause is now fixed in the tests: Codex 0.167.0
     zstd-compresses its model requests, and the loopback responder could not read them.
   - A Codex row window is held. `qualify --window row --vendor codex` refuses with
     `codex_expired_leg_unfenced` before any claim, jail or proxy, until the OI-1 fence lands.
-  - The kit's non-Gemini control launches now do three things:
+  - The kit's non-Gemini control launches now do four things:
     - name the allowlist's refused hosts;
     - deliver the kit's input on stdin, bound as `input_sha256`;
-    - record the image the jail binds.
+    - record the image the jail binds;
+    - record the help launch's output digest, `help_sha256`.
   - Tests: `tests/test_seat_window_supply_codex.py` and
     `tests/test_seat_window_codex_provider_free.py` (K1-T6 and K1-T7). The A-C1 live cases
     run only with `PHASE_LOOP_REQUIRE_LIVE_JAIL=1`, and under that opt-in a skip fails.

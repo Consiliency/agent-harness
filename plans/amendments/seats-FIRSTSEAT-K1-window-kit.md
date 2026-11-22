@@ -348,12 +348,14 @@ No lane makes a live provider call or runs on a seat host. SL-6.2 is provider-fr
   - `panel_invoker.py`: `_open_window_launch` (its non-Gemini `start_proxy` gets `named=`
     from the new `_window_named_refusals`), `_window_prepare_leg` (the bound image, from the
     new `_window_bound_image_sha256`), `_window_control_launch_leg` and
-    `_run_window_leg_process` (the kit's input on stdin, bound as `input_sha256`);
+    `_run_window_leg_process` (the kit's input on stdin, bound as `input_sha256`), and
+    `_window_control_launch_leg`'s help branch (`help_sha256`, as the Gemini branch takes it);
   - `tests/test_seat_window_vendor_neutral.py`: `register_fixture_vendor` (hides the real
     Codex registration), `_codex_prepare_stubs` (a provider file), `_codex_open_stubs`
     (`named=`), and F15's invalid-pair case (the first table vendor with no supplier);
   - `tests/data/seat_launch_references.json`: one entry each for `_window_bound_image_sha256`
-    and the supplier's `_head_commit`;
+    and the supplier's `_head_commit`, `_implementation_digests` and its watch's
+    `ctypes` inotify handle;
   - `seat_window.py`: `_row_ready_codes` returns a supplier's `ROW_WINDOW_HOLD` before any
     claim, which is how SL-6 makes the hold mechanical (contract §10.B, `codex_expired_leg_unfenced`);
   - `CHANGELOG.md`: SL-6's `[Unreleased]` entry, which SL-9 finalizes.
