@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: CLAUDENET
 roadmap: specs/phase-plans-seats-v1.md
-roadmap_sha256: 2f26635bfcb5119967735cf5d5966f1ce39695a8331d2543eb9e11c07d187018
+roadmap_sha256: 9d1d149a4709dbf7c67dbdbb957228ff8a06d36570e1f9cb77bcc039b96a7ac4
 automation:
   suite_command: ["timeout", "900", "env", "PYTEST_ADDOPTS=", "uv", "run", "--quiet", "--project", "phase-loop-runtime", "--group", "test", "--python", "/usr/bin/python3", "--python-preference", "only-system", "--locked", "python", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_seat_egress_allowlist_claude.py", "phase-loop-runtime/tests/test_seat_claude_credential_scope.py", "phase-loop-runtime/tests/test_seat_profile_claude_egress.py", "phase-loop-runtime/tests/test_seat_claude_containment.py", "phase-loop-runtime/tests/test_seat_profiles.py", "phase-loop-runtime/tests/test_seat_notices.py", "phase-loop-runtime/tests/test_seat_route_contract.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py", "phase-loop-runtime/tests/test_seat_egress_allowlists_jailcore.py", "phase-loop-runtime/tests/test_seat_jail.py", "phase-loop-runtime/tests/test_seat_route.py", "phase-loop-runtime/tests/test_panel_invoker.py", "phase-loop-runtime/tests/test_seat_claude_provider_free.py", "phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py", "phase-loop-runtime/tests/test_seat_launch_helpers_trusted.py"]
 ---

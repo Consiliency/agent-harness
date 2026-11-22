@@ -1293,6 +1293,7 @@ def test_window_board_sentinel_inherits_the_live_board_seat_key(monkeypatch):
 def test_seats_firstseat_exec_record_window_board_launch(tmp_path, monkeypatch):
     from phase_loop_runtime import panel_invoker as pi
     from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     qualification = _install_firstseat_supplier_double(monkeypatch)
     report = SimpleNamespace(
         board=DEFAULT_BOARD,
@@ -1315,7 +1316,7 @@ def test_seats_firstseat_exec_record_window_board_launch(tmp_path, monkeypatch):
         run = pi._registered_window_board(kwargs["review_authorization"])
         run.watch = SimpleNamespace(read_marker_opened=True)
         run.stream = SimpleNamespace(final=True)
-        run.binding = SimpleNamespace(image_sha256="a" * 64)
+        run.binding = SimpleNamespace(image_sha256="a" * 64, stage_manifest_sha256="9" * 64)
         run.tool_steps = 1
         legs = []
         for seat in board.seats:
@@ -1337,6 +1338,94 @@ def test_seats_firstseat_exec_record_window_board_launch(tmp_path, monkeypatch):
         result.leg_exec_records["gemini"] = None
     assert result.gemini.watch.read_marker_opened and result.gemini.stream.final
     assert result.gemini.input_sha256 == hashlib.sha256(pi._WINDOW_BOARD_INPUT.encode()).hexdigest()
+
+
+@pytest.mark.parametrize("change", ["kept", "absent", "changed", "unbound_tree", "reused",
+                                    "squatted"])
+def test_seats_firstseat_exec_record_window_board_retains_read_receipt(
+    tmp_path, monkeypatch, change,
+):
+    """The real board producer retains the staged-read receipt the offline verifier reads."""
+    from phase_loop_runtime import panel_invoker as pi
+    from phase_loop_runtime import president_adapter, seat_window
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    _install_firstseat_supplier_double(monkeypatch)
+    report = SimpleNamespace(
+        board=DEFAULT_BOARD,
+        policy_outcome=lambda tier: SimpleNamespace(status="admitted"),
+    )
+    monkeypatch.setattr(
+        "phase_loop_runtime.advisor_board.composition.compose_review_board_report",
+        lambda: report,
+    )
+    authorization = SimpleNamespace(staged_tree_sha256="c" * 64)
+    monkeypatch.setattr(pi, "prepare_review_isolation_authorization", lambda *a, **k: authorization)
+    monkeypatch.setattr(pi, "set_review_instruction_digest", lambda value: object())
+    monkeypatch.setattr(pi, "reset_review_instruction_digest", lambda token: None)
+    monkeypatch.setattr(
+        "phase_loop_runtime.president_adapter.build_president_invoke", lambda *a, **k: object())
+    monkeypatch.setattr(pi._sandbox_policy, "staging_root", lambda: tmp_path)
+
+    def invoke(board, artifact, **kwargs):
+        run = pi._registered_window_board(kwargs["review_authorization"])
+        run.watch = SimpleNamespace(read_marker_opened=True)
+        run.stream = SimpleNamespace(final=True)
+        run.binding = SimpleNamespace(
+            image_sha256="a" * 64,
+            stage_manifest_sha256=None if change == "unbound_tree" else "9" * 64,
+        )
+        run.tool_steps = 1
+        legs = []
+        for seat in board.seats:
+            leg = pi.PanelLegResult(seat.harness, "OK", "review\nAGREE", seat_key=seat.seat_key)
+            object.__setattr__(leg, "_leg_exec_metadata", {"record_digest": "e" * 64})
+            legs.append(leg)
+        return pi.PanelResult(tuple(legs), president=SimpleNamespace())
+
+    monkeypatch.setattr(pi, "invoke_board", invoke)
+    expected_read = {"schema": "seat_window_read.v1", "access_observed": True,
+                     "tool_observed": True,
+                     "input_sha256": hashlib.sha256(pi._WINDOW_BOARD_INPUT.encode()).hexdigest(),
+                     "tree_digest": "9" * 64}
+    if change in ("reused", "squatted"):
+        # A receipt already at the content-addressed name: reused only if it holds these values.
+        name = f"window-read-{pi._window_json_digest(expected_read)}.json"
+        held = president_adapter.write_private_record(name, expected_read)
+        if change == "squatted":
+            held.write_text(json.dumps({**expected_read, "tree_digest": "8" * 64}))
+    result = pi.window_board_launch(pi.WindowBoardSpec(
+        qualification_input=SimpleNamespace(repo=tmp_path, layout=SimpleNamespace()),
+        monitoring_policy="bounded",
+    ))
+    root = president_adapter.private_record_root()
+    if change == "squatted":
+        assert not result.staged_read and result.tool_receipt_sha256 is None
+        return
+    if change == "unbound_tree":
+        assert not result.staged_read and result.tool_receipt_sha256 is None
+        assert not list(root.glob("window-read-*.json")) if root.exists() else True
+        return
+    assert result.staged_read
+    name = f"window-read-{result.tool_receipt_sha256}.json"
+    path = root / name
+    assert path.is_file()
+    assert result.tool_receipt_sha256 == pi._window_json_digest(expected_read)
+    record = {"board_input_digest": result.gemini.input_sha256,
+              "containment_binding": {"stage_manifest_sha256": "9" * 64}}
+    if change == "absent":
+        path.unlink()
+    elif change == "changed":
+        value = json.loads(path.read_text())
+        value["tree_digest"] = "8" * 64
+        path.write_text(json.dumps(value))
+    if change in ("kept", "reused"):
+        read = seat_window._source_record(name, result.tool_receipt_sha256)
+        assert read["tree_digest"] == "9" * 64
+        assert seat_window._read_receipt_valid(read, record)
+    else:
+        with pytest.raises((OSError, ValueError)):
+            seat_window._source_record(name, result.tool_receipt_sha256)
 
 
 def test_seats_firstseat_exec_record_window_board_refusal(tmp_path, monkeypatch):

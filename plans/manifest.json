@@ -14928,20 +14928,40 @@
       "acceptance_criteria_count": null,
       "created_at": "2026-11-06T16:59:58Z",
       "file": "plans/phase-plan-v1-seats-GROK.md",
+      "frozen_inputs": {
+        "plans/artifacts/grok-jail-tool-surface-contract-v1.md": {
+          "sha256": "be46a86a442971c5b617a31806e743494b1b301f3dbd630baf857955695ee3a2"
+        },
+        "plans/artifacts/grok-tool-surface-contract-v1.md": {
+          "sha256": "9c56fc68e164d9ae7abbeb4969ee860c6844355c3d80569e4bb4600a3e6355d4"
+        },
+        "plans/seats-jailcore-route-contract.md": {
+          "sha256": "235f1faded1d7f15d0ff69668b6a451cee7167e6438d258da57257faf7bdae81"
+        }
+      },
       "handoff_ref": null,
       "if_gates_produced": [
         "IF-0-GROK-1",
-        "IF-0-GROK-2"
+        "IF-0-GROK-2",
+        "IF-0-GROK-3",
+        "IF-0-GROK-4"
       ],
       "lanes": [
+        "SL-0",
         "SL-1",
         "SL-2",
-        "SL-3"
+        "SL-3",
+        "SL-4",
+        "SL-5",
+        "SL-6",
+        "SL-7",
+        "SL-8"
       ],
       "lifecycle": [],
       "owner_skill": "claude-plan-phase",
       "phase_alias": "GROK",
       "reflection_ref": null,
+      "review_status": "pending",
       "roadmap_ref": {
         "file": "specs/phase-plans-seats-v1.md",
         "slug": "phase-plans-seats-v1",
@@ -14952,7 +14972,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-11-06T16:59:58Z"
+      "updated_at": "2026-11-22T06:00:00Z"
     },
     {
       "acceptance_criteria_count": null,
@@ -15459,7 +15479,7 @@
           "sha256": "60fd406574d87f512a94a373fa22cddc56f9c455147a2ec8ad0c5f398ca39102"
         },
         "plans/seats-teamhost-contract.md": {
-          "sha256": "37af205d8280ee82412bcf1ead5e1603011623bab04ddcd2ae594d601fcf4186"
+          "sha256": "91a7261323a12e2455ef8445b736a6a7749d06e162b4b34be85e525e046b1818"
         }
       },
       "gate_status": "declared_not_produced",

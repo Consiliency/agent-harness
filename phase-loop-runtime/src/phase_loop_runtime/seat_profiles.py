@@ -324,7 +324,9 @@ GEMINI_WINDOW_DATA = register_window_data(WindowVendorData(
     board_launcher="window_board_launch",
     model_leg="gemini",
     dependency_provider="gemini",
-    co_seats=frozenset({"codex", "grok"}),
+    # Every other seat of the plan-tier board (I-12 `co_seats`): the policy requires
+    # fable, sol, gemini and grok, so a terminated W1 board always carries all three.
+    co_seats=frozenset({"claude", "codex", "grok"}),
     qualification_candidate_code="gemini_seat_qualification_candidate",
     default=True,
 ))

@@ -1,0 +1,25 @@
+{
+ "allowed_inference_count": 1,
+ "connects": [
+  {
+   "decision": "terminated_locally",
+   "target": "chatgpt.com:443"
+  }
+ ],
+ "launch": "L6",
+ "other_records": 0,
+ "pi_inference_count": 1,
+ "requests": [
+  {
+   "host": "chatgpt.com",
+   "method": "POST",
+   "origin": "pi",
+   "path": "/backend-api/codex/responses",
+   "response_body_sha256": "f93ee6ebb1d4fbba2b13e1735358500369144ee1908178a3fd17eb67c9a106ad",
+   "response_id": null,
+   "seq": 1,
+   "status_sent": 500
+  }
+ ],
+ "schema": "pi_seat_fixture_proxy.v1"
+}
