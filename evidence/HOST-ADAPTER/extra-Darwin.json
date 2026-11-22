@@ -1,0 +1,122 @@
+{
+  "sanitized": {
+    "derived_from": "evidence/HOST-ADAPTER/extra-Darwin.json@git-blob:422f6a70dc0f485f11b4277d8591d8e89010098c",
+    "redactions": [
+      "local paths"
+    ],
+    "note": "Sanitized derivative: local account paths replaced with <home>/<workspace>/<worktrees> placeholders; every digest, exit code and outcome is retained unchanged from the original (digests cover the unredacted original)."
+  },
+  "schema_version": 1,
+  "phase": "HOST-ADAPTER",
+  "os": "Darwin",
+  "input_digest": "da6662580a4aa7a7e3ea4716348eb01d3cef0718d1c4088ce2fd90ffa2f9ef5f",
+  "source_stable": true,
+  "command": [
+    "<home>/workspace/verification/jevdrill-host-20261009/host-fixture/vendor/phase-loop-runtime/.venv/bin/python",
+    "-m",
+    "pytest",
+    "-q",
+    "tests/test_windows_locking.py",
+    "tests/test_launcher_liveness.py",
+    "--junitxml=/tmp/host-extra-zfra1h7p/tests.xml"
+  ],
+  "command_sha256": "6dd11accd64895ccdd498ee92ec5f819ad755fbf15d05e19a95101b038c2e6a9",
+  "output_sha256": "e28f2ffddbfc7be59a4afbe734b526139941e6856ba22260a90ba7d067ff697d",
+  "exit_code": 0,
+  "assertions": [
+    {
+      "node_id": "tests/test_launcher_liveness.py::test_cpu_active_quiet_child_is_not_torn_down_for_stale_output_only",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_launcher_liveness.py::test_launch_without_log_closes_stdin_when_no_payload",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_launcher_liveness.py::test_macos_leased_execution_rejects_before_spawn",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_launcher_liveness.py::test_observed_launch_closes_stdin_when_no_payload",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_launcher_liveness.py::test_process_group_cpu_activity_prevents_stale_cleanup",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_launcher_liveness.py::test_stale_cpu_idle_child_is_torn_down_and_marked_stalled",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_launcher_liveness.py::test_stale_cpu_unknown_child_is_torn_down_after_grace",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_launcher_liveness.py::test_timeout_launch_records_salvage_snapshot",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_launcher_liveness.py::test_unobserved_child_still_stall_detected_via_ephemeral_monitor",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_launcher_liveness.py::test_unobserved_child_without_ephemeral_monitor_uses_bare_run",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_locking.py::test_blocking_contender_waits_for_release",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_locking.py::test_broker_nested_lock_preserves_outer_ownership",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_locking.py::test_contention_preserves_bytes_and_offset[]",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_locking.py::test_contention_preserves_bytes_and_offset[{\"generation\":\"unchanged\"}\\n]",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_locking.py::test_dispatch_explicit_identity_reenters_and_competitor_is_rejected",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_locking.py::test_generation_lease_access_error_is_not_contention",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_locking.py::test_generation_lease_duplicate_retains_ownership",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_locking.py::test_generation_lease_explicit_child_handoff",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_locking.py::test_invalid_descriptor_is_not_contention",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_locking.py::test_process_death_releases_ownership[lease]",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_locking.py::test_process_death_releases_ownership[record]",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_locking.py::test_production_imports",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_locking.py::test_unsupported_qualification_cannot_admit",
+      "outcome": "passed"
+    }
+  ],
+  "assertions_sha256": "6f5879a979ab3fd6b2af99592a03c75f0475d576f5a214a760dbdcdd6a5a2c3d",
+  "duration_seconds": 6.164
+}

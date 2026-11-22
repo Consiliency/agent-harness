@@ -1,0 +1,1190 @@
+[
+  {
+    "id": "discovery-valid",
+    "contract": "DiscoveryInputs",
+    "payload": {
+      "schema_version": "1",
+      "envelope": {
+        "created_at": "2026-09-28T00:00:00Z",
+        "execution_target_id": "fixture",
+        "extensions": {},
+        "harness_id": "fixture",
+        "idempotency_key": "fixture",
+        "operation": "discover",
+        "project_id": "00000000-0000-4000-8000-000000000001",
+        "request_id": "00000000-0000-4000-8000-000000000001",
+        "schema_version": "1",
+        "workspace_id": "00000000-0000-4000-8000-000000000001"
+      },
+      "work_objective_id": "00000000-0000-4000-8000-000000000020",
+      "work_objective_text": "alpha",
+      "authorized_context": "Synthetic public context.",
+      "attachment_refs": [],
+      "hard_constraints": {
+        "allowed_providers": [],
+        "context_token_limit": 32768,
+        "governing_instruction_refs": [],
+        "local_only": false,
+        "max_attempts": 1,
+        "spending_ceiling": null,
+        "total_deadline_ms": 5000
+      },
+      "acceptance_requirements": [],
+      "required_guidance": [],
+      "catalog": {
+        "schema_version": "1",
+        "revision": "fixture",
+        "resources": [
+          {
+            "resource_id": "alpha",
+            "revision": "v1",
+            "content_hash": "4d61589b4fcfa76029a09a068c59707b465bfade806fcf61bdba685cd09ab8ae",
+            "rights": "synthetic-owned",
+            "admission": "explicitly_enabled",
+            "source_occurrences": [
+              "synthetic"
+            ],
+            "aliases": [
+              "shared",
+              "alpha alias"
+            ],
+            "domain": "alpha",
+            "specialty": "alpha specialty",
+            "task_family": "implementation",
+            "facets": [],
+            "benchmark_protocol": null,
+            "benchmark_split": null,
+            "benchmark_effort": null,
+            "instructions": "Synthetic alpha instructions.",
+            "conflicts": []
+          },
+          {
+            "resource_id": "beta",
+            "revision": "v1",
+            "content_hash": "d83697bc6cba54c3757bf1474bc82a933e4f78085166e3066aa4b98127304d21",
+            "rights": "synthetic-owned",
+            "admission": "explicitly_enabled",
+            "source_occurrences": [
+              "synthetic"
+            ],
+            "aliases": [
+              "shared",
+              "beta alias"
+            ],
+            "domain": "beta",
+            "specialty": "beta specialty",
+            "task_family": "implementation",
+            "facets": [],
+            "benchmark_protocol": null,
+            "benchmark_split": null,
+            "benchmark_effort": null,
+            "instructions": "Synthetic beta instructions.",
+            "conflicts": []
+          }
+        ]
+      },
+      "taxonomy_revision": "taxonomy-v1",
+      "content_revision": "content-v1",
+      "descriptions": [
+        {
+          "resource_id": "alpha",
+          "revision": "v1",
+          "content_hash": "4d61589b4fcfa76029a09a068c59707b465bfade806fcf61bdba685cd09ab8ae",
+          "description_revision": "v1",
+          "description": "Human-authored guidance for alpha objectives."
+        },
+        {
+          "resource_id": "beta",
+          "revision": "v1",
+          "content_hash": "d83697bc6cba54c3757bf1474bc82a933e4f78085166e3066aa4b98127304d21",
+          "description_revision": "v1",
+          "description": "Human-authored guidance for beta objectives."
+        }
+      ],
+      "settings_layers": [],
+      "judgment_policy": {
+        "enabled": true,
+        "cloud_allowed": true,
+        "provider": "typesafeai",
+        "max_calls": 100,
+        "max_candidates": 100,
+        "max_input_tokens": 32768,
+        "output_planning_reservation": 10,
+        "hard_output_token_limit": null,
+        "spending_ceiling": null,
+        "rates": null,
+        "model_revision": "jev-latest",
+        "function_revision": "ObserveDiscoveryOption-v1",
+        "token_counter_revision": "<jev-token-counter-revision>"
+      },
+      "limits": {
+        "max_rounds": 100,
+        "active_branch_width": 2,
+        "max_candidates": 100,
+        "max_calls": 100,
+        "max_input_tokens": 32768,
+        "output_planning_reservation": 10,
+        "hard_output_token_limit": null,
+        "spending_ceiling": null,
+        "max_description_utf8_bytes": 2048
+      }
+    },
+    "accepted": true
+  },
+  {
+    "id": "wrong-operation",
+    "contract": "DiscoveryInputs",
+    "payload": {
+      "schema_version": "1",
+      "envelope": {
+        "created_at": "2026-09-28T00:00:00Z",
+        "execution_target_id": "fixture",
+        "extensions": {},
+        "harness_id": "fixture",
+        "idempotency_key": "fixture",
+        "operation": "route",
+        "project_id": "00000000-0000-4000-8000-000000000001",
+        "request_id": "00000000-0000-4000-8000-000000000001",
+        "schema_version": "1",
+        "workspace_id": "00000000-0000-4000-8000-000000000001"
+      },
+      "work_objective_id": "00000000-0000-4000-8000-000000000020",
+      "work_objective_text": "alpha",
+      "authorized_context": "Synthetic public context.",
+      "attachment_refs": [],
+      "hard_constraints": {
+        "allowed_providers": [],
+        "context_token_limit": 32768,
+        "governing_instruction_refs": [],
+        "local_only": false,
+        "max_attempts": 1,
+        "spending_ceiling": null,
+        "total_deadline_ms": 5000
+      },
+      "acceptance_requirements": [],
+      "required_guidance": [],
+      "catalog": {
+        "schema_version": "1",
+        "revision": "fixture",
+        "resources": [
+          {
+            "resource_id": "alpha",
+            "revision": "v1",
+            "content_hash": "4d61589b4fcfa76029a09a068c59707b465bfade806fcf61bdba685cd09ab8ae",
+            "rights": "synthetic-owned",
+            "admission": "explicitly_enabled",
+            "source_occurrences": [
+              "synthetic"
+            ],
+            "aliases": [
+              "shared",
+              "alpha alias"
+            ],
+            "domain": "alpha",
+            "specialty": "alpha specialty",
+            "task_family": "implementation",
+            "facets": [],
+            "benchmark_protocol": null,
+            "benchmark_split": null,
+            "benchmark_effort": null,
+            "instructions": "Synthetic alpha instructions.",
+            "conflicts": []
+          },
+          {
+            "resource_id": "beta",
+            "revision": "v1",
+            "content_hash": "d83697bc6cba54c3757bf1474bc82a933e4f78085166e3066aa4b98127304d21",
+            "rights": "synthetic-owned",
+            "admission": "explicitly_enabled",
+            "source_occurrences": [
+              "synthetic"
+            ],
+            "aliases": [
+              "shared",
+              "beta alias"
+            ],
+            "domain": "beta",
+            "specialty": "beta specialty",
+            "task_family": "implementation",
+            "facets": [],
+            "benchmark_protocol": null,
+            "benchmark_split": null,
+            "benchmark_effort": null,
+            "instructions": "Synthetic beta instructions.",
+            "conflicts": []
+          }
+        ]
+      },
+      "taxonomy_revision": "taxonomy-v1",
+      "content_revision": "content-v1",
+      "descriptions": [
+        {
+          "resource_id": "alpha",
+          "revision": "v1",
+          "content_hash": "4d61589b4fcfa76029a09a068c59707b465bfade806fcf61bdba685cd09ab8ae",
+          "description_revision": "v1",
+          "description": "Human-authored guidance for alpha objectives."
+        },
+        {
+          "resource_id": "beta",
+          "revision": "v1",
+          "content_hash": "d83697bc6cba54c3757bf1474bc82a933e4f78085166e3066aa4b98127304d21",
+          "description_revision": "v1",
+          "description": "Human-authored guidance for beta objectives."
+        }
+      ],
+      "settings_layers": [],
+      "judgment_policy": {
+        "enabled": true,
+        "cloud_allowed": true,
+        "provider": "typesafeai",
+        "max_calls": 100,
+        "max_candidates": 100,
+        "max_input_tokens": 32768,
+        "output_planning_reservation": 10,
+        "hard_output_token_limit": null,
+        "spending_ceiling": null,
+        "rates": null,
+        "model_revision": "jev-latest",
+        "function_revision": "ObserveDiscoveryOption-v1",
+        "token_counter_revision": "<jev-token-counter-revision>"
+      },
+      "limits": {
+        "max_rounds": 100,
+        "active_branch_width": 2,
+        "max_candidates": 100,
+        "max_calls": 100,
+        "max_input_tokens": 32768,
+        "output_planning_reservation": 10,
+        "hard_output_token_limit": null,
+        "spending_ceiling": null,
+        "max_description_utf8_bytes": 2048
+      }
+    },
+    "accepted": false
+  },
+  {
+    "id": "wrong-policy",
+    "contract": "DiscoveryInputs",
+    "payload": {
+      "schema_version": "1",
+      "envelope": {
+        "created_at": "2026-09-28T00:00:00Z",
+        "execution_target_id": "fixture",
+        "extensions": {},
+        "harness_id": "fixture",
+        "idempotency_key": "fixture",
+        "operation": "discover",
+        "project_id": "00000000-0000-4000-8000-000000000001",
+        "request_id": "00000000-0000-4000-8000-000000000001",
+        "schema_version": "1",
+        "workspace_id": "00000000-0000-4000-8000-000000000001"
+      },
+      "work_objective_id": "00000000-0000-4000-8000-000000000020",
+      "work_objective_text": "alpha",
+      "authorized_context": "Synthetic public context.",
+      "attachment_refs": [],
+      "hard_constraints": {
+        "allowed_providers": [],
+        "context_token_limit": 32768,
+        "governing_instruction_refs": [],
+        "local_only": false,
+        "max_attempts": 1,
+        "spending_ceiling": null,
+        "total_deadline_ms": 5000
+      },
+      "acceptance_requirements": [],
+      "required_guidance": [],
+      "catalog": {
+        "schema_version": "1",
+        "revision": "fixture",
+        "resources": [
+          {
+            "resource_id": "alpha",
+            "revision": "v1",
+            "content_hash": "4d61589b4fcfa76029a09a068c59707b465bfade806fcf61bdba685cd09ab8ae",
+            "rights": "synthetic-owned",
+            "admission": "explicitly_enabled",
+            "source_occurrences": [
+              "synthetic"
+            ],
+            "aliases": [
+              "shared",
+              "alpha alias"
+            ],
+            "domain": "alpha",
+            "specialty": "alpha specialty",
+            "task_family": "implementation",
+            "facets": [],
+            "benchmark_protocol": null,
+            "benchmark_split": null,
+            "benchmark_effort": null,
+            "instructions": "Synthetic alpha instructions.",
+            "conflicts": []
+          },
+          {
+            "resource_id": "beta",
+            "revision": "v1",
+            "content_hash": "d83697bc6cba54c3757bf1474bc82a933e4f78085166e3066aa4b98127304d21",
+            "rights": "synthetic-owned",
+            "admission": "explicitly_enabled",
+            "source_occurrences": [
+              "synthetic"
+            ],
+            "aliases": [
+              "shared",
+              "beta alias"
+            ],
+            "domain": "beta",
+            "specialty": "beta specialty",
+            "task_family": "implementation",
+            "facets": [],
+            "benchmark_protocol": null,
+            "benchmark_split": null,
+            "benchmark_effort": null,
+            "instructions": "Synthetic beta instructions.",
+            "conflicts": []
+          }
+        ]
+      },
+      "taxonomy_revision": "taxonomy-v1",
+      "content_revision": "content-v1",
+      "descriptions": [
+        {
+          "resource_id": "alpha",
+          "revision": "v1",
+          "content_hash": "4d61589b4fcfa76029a09a068c59707b465bfade806fcf61bdba685cd09ab8ae",
+          "description_revision": "v1",
+          "description": "Human-authored guidance for alpha objectives."
+        },
+        {
+          "resource_id": "beta",
+          "revision": "v1",
+          "content_hash": "d83697bc6cba54c3757bf1474bc82a933e4f78085166e3066aa4b98127304d21",
+          "description_revision": "v1",
+          "description": "Human-authored guidance for beta objectives."
+        }
+      ],
+      "settings_layers": [],
+      "judgment_policy": {
+        "enabled": true,
+        "cloud_allowed": true,
+        "provider": "typesafeai",
+        "max_calls": 100,
+        "max_candidates": 100,
+        "max_input_tokens": 32768,
+        "output_planning_reservation": 10,
+        "hard_output_token_limit": null,
+        "spending_ceiling": null,
+        "rates": null,
+        "model_revision": "jev-latest",
+        "function_revision": "JudgeCandidate-v1",
+        "token_counter_revision": "<jev-token-counter-revision>"
+      },
+      "limits": {
+        "max_rounds": 100,
+        "active_branch_width": 2,
+        "max_candidates": 100,
+        "max_calls": 100,
+        "max_input_tokens": 32768,
+        "output_planning_reservation": 10,
+        "hard_output_token_limit": null,
+        "spending_ceiling": null,
+        "max_description_utf8_bytes": 2048
+      }
+    },
+    "accepted": false
+  },
+  {
+    "id": "coerced-call-count",
+    "contract": "DiscoveryInputs",
+    "payload": {
+      "schema_version": "1",
+      "envelope": {
+        "created_at": "2026-09-28T00:00:00Z",
+        "execution_target_id": "fixture",
+        "extensions": {},
+        "harness_id": "fixture",
+        "idempotency_key": "fixture",
+        "operation": "discover",
+        "project_id": "00000000-0000-4000-8000-000000000001",
+        "request_id": "00000000-0000-4000-8000-000000000001",
+        "schema_version": "1",
+        "workspace_id": "00000000-0000-4000-8000-000000000001"
+      },
+      "work_objective_id": "00000000-0000-4000-8000-000000000020",
+      "work_objective_text": "alpha",
+      "authorized_context": "Synthetic public context.",
+      "attachment_refs": [],
+      "hard_constraints": {
+        "allowed_providers": [],
+        "context_token_limit": 32768,
+        "governing_instruction_refs": [],
+        "local_only": false,
+        "max_attempts": 1,
+        "spending_ceiling": null,
+        "total_deadline_ms": 5000
+      },
+      "acceptance_requirements": [],
+      "required_guidance": [],
+      "catalog": {
+        "schema_version": "1",
+        "revision": "fixture",
+        "resources": [
+          {
+            "resource_id": "alpha",
+            "revision": "v1",
+            "content_hash": "4d61589b4fcfa76029a09a068c59707b465bfade806fcf61bdba685cd09ab8ae",
+            "rights": "synthetic-owned",
+            "admission": "explicitly_enabled",
+            "source_occurrences": [
+              "synthetic"
+            ],
+            "aliases": [
+              "shared",
+              "alpha alias"
+            ],
+            "domain": "alpha",
+            "specialty": "alpha specialty",
+            "task_family": "implementation",
+            "facets": [],
+            "benchmark_protocol": null,
+            "benchmark_split": null,
+            "benchmark_effort": null,
+            "instructions": "Synthetic alpha instructions.",
+            "conflicts": []
+          },
+          {
+            "resource_id": "beta",
+            "revision": "v1",
+            "content_hash": "d83697bc6cba54c3757bf1474bc82a933e4f78085166e3066aa4b98127304d21",
+            "rights": "synthetic-owned",
+            "admission": "explicitly_enabled",
+            "source_occurrences": [
+              "synthetic"
+            ],
+            "aliases": [
+              "shared",
+              "beta alias"
+            ],
+            "domain": "beta",
+            "specialty": "beta specialty",
+            "task_family": "implementation",
+            "facets": [],
+            "benchmark_protocol": null,
+            "benchmark_split": null,
+            "benchmark_effort": null,
+            "instructions": "Synthetic beta instructions.",
+            "conflicts": []
+          }
+        ]
+      },
+      "taxonomy_revision": "taxonomy-v1",
+      "content_revision": "content-v1",
+      "descriptions": [
+        {
+          "resource_id": "alpha",
+          "revision": "v1",
+          "content_hash": "4d61589b4fcfa76029a09a068c59707b465bfade806fcf61bdba685cd09ab8ae",
+          "description_revision": "v1",
+          "description": "Human-authored guidance for alpha objectives."
+        },
+        {
+          "resource_id": "beta",
+          "revision": "v1",
+          "content_hash": "d83697bc6cba54c3757bf1474bc82a933e4f78085166e3066aa4b98127304d21",
+          "description_revision": "v1",
+          "description": "Human-authored guidance for beta objectives."
+        }
+      ],
+      "settings_layers": [],
+      "judgment_policy": {
+        "enabled": true,
+        "cloud_allowed": true,
+        "provider": "typesafeai",
+        "max_calls": 100,
+        "max_candidates": 100,
+        "max_input_tokens": 32768,
+        "output_planning_reservation": 10,
+        "hard_output_token_limit": null,
+        "spending_ceiling": null,
+        "rates": null,
+        "model_revision": "jev-latest",
+        "function_revision": "ObserveDiscoveryOption-v1",
+        "token_counter_revision": "<jev-token-counter-revision>"
+      },
+      "limits": {
+        "max_rounds": 100,
+        "active_branch_width": 2,
+        "max_candidates": 100,
+        "max_calls": "2",
+        "max_input_tokens": 32768,
+        "output_planning_reservation": 10,
+        "hard_output_token_limit": null,
+        "spending_ceiling": null,
+        "max_description_utf8_bytes": 2048
+      }
+    },
+    "accepted": false
+  },
+  {
+    "id": "negative-calls",
+    "contract": "DiscoveryInputs",
+    "payload": {
+      "schema_version": "1",
+      "envelope": {
+        "created_at": "2026-09-28T00:00:00Z",
+        "execution_target_id": "fixture",
+        "extensions": {},
+        "harness_id": "fixture",
+        "idempotency_key": "fixture",
+        "operation": "discover",
+        "project_id": "00000000-0000-4000-8000-000000000001",
+        "request_id": "00000000-0000-4000-8000-000000000001",
+        "schema_version": "1",
+        "workspace_id": "00000000-0000-4000-8000-000000000001"
+      },
+      "work_objective_id": "00000000-0000-4000-8000-000000000020",
+      "work_objective_text": "alpha",
+      "authorized_context": "Synthetic public context.",
+      "attachment_refs": [],
+      "hard_constraints": {
+        "allowed_providers": [],
+        "context_token_limit": 32768,
+        "governing_instruction_refs": [],
+        "local_only": false,
+        "max_attempts": 1,
+        "spending_ceiling": null,
+        "total_deadline_ms": 5000
+      },
+      "acceptance_requirements": [],
+      "required_guidance": [],
+      "catalog": {
+        "schema_version": "1",
+        "revision": "fixture",
+        "resources": [
+          {
+            "resource_id": "alpha",
+            "revision": "v1",
+            "content_hash": "4d61589b4fcfa76029a09a068c59707b465bfade806fcf61bdba685cd09ab8ae",
+            "rights": "synthetic-owned",
+            "admission": "explicitly_enabled",
+            "source_occurrences": [
+              "synthetic"
+            ],
+            "aliases": [
+              "shared",
+              "alpha alias"
+            ],
+            "domain": "alpha",
+            "specialty": "alpha specialty",
+            "task_family": "implementation",
+            "facets": [],
+            "benchmark_protocol": null,
+            "benchmark_split": null,
+            "benchmark_effort": null,
+            "instructions": "Synthetic alpha instructions.",
+            "conflicts": []
+          },
+          {
+            "resource_id": "beta",
+            "revision": "v1",
+            "content_hash": "d83697bc6cba54c3757bf1474bc82a933e4f78085166e3066aa4b98127304d21",
+            "rights": "synthetic-owned",
+            "admission": "explicitly_enabled",
+            "source_occurrences": [
+              "synthetic"
+            ],
+            "aliases": [
+              "shared",
+              "beta alias"
+            ],
+            "domain": "beta",
+            "specialty": "beta specialty",
+            "task_family": "implementation",
+            "facets": [],
+            "benchmark_protocol": null,
+            "benchmark_split": null,
+            "benchmark_effort": null,
+            "instructions": "Synthetic beta instructions.",
+            "conflicts": []
+          }
+        ]
+      },
+      "taxonomy_revision": "taxonomy-v1",
+      "content_revision": "content-v1",
+      "descriptions": [
+        {
+          "resource_id": "alpha",
+          "revision": "v1",
+          "content_hash": "4d61589b4fcfa76029a09a068c59707b465bfade806fcf61bdba685cd09ab8ae",
+          "description_revision": "v1",
+          "description": "Human-authored guidance for alpha objectives."
+        },
+        {
+          "resource_id": "beta",
+          "revision": "v1",
+          "content_hash": "d83697bc6cba54c3757bf1474bc82a933e4f78085166e3066aa4b98127304d21",
+          "description_revision": "v1",
+          "description": "Human-authored guidance for beta objectives."
+        }
+      ],
+      "settings_layers": [],
+      "judgment_policy": {
+        "enabled": true,
+        "cloud_allowed": true,
+        "provider": "typesafeai",
+        "max_calls": 100,
+        "max_candidates": 100,
+        "max_input_tokens": 32768,
+        "output_planning_reservation": 10,
+        "hard_output_token_limit": null,
+        "spending_ceiling": null,
+        "rates": null,
+        "model_revision": "jev-latest",
+        "function_revision": "ObserveDiscoveryOption-v1",
+        "token_counter_revision": "<jev-token-counter-revision>"
+      },
+      "limits": {
+        "max_rounds": 100,
+        "active_branch_width": 2,
+        "max_candidates": 100,
+        "max_calls": -1,
+        "max_input_tokens": 32768,
+        "output_planning_reservation": 10,
+        "hard_output_token_limit": null,
+        "spending_ceiling": null,
+        "max_description_utf8_bytes": 2048
+      }
+    },
+    "accepted": false
+  },
+  {
+    "id": "excess-width",
+    "contract": "DiscoveryInputs",
+    "payload": {
+      "schema_version": "1",
+      "envelope": {
+        "created_at": "2026-09-28T00:00:00Z",
+        "execution_target_id": "fixture",
+        "extensions": {},
+        "harness_id": "fixture",
+        "idempotency_key": "fixture",
+        "operation": "discover",
+        "project_id": "00000000-0000-4000-8000-000000000001",
+        "request_id": "00000000-0000-4000-8000-000000000001",
+        "schema_version": "1",
+        "workspace_id": "00000000-0000-4000-8000-000000000001"
+      },
+      "work_objective_id": "00000000-0000-4000-8000-000000000020",
+      "work_objective_text": "alpha",
+      "authorized_context": "Synthetic public context.",
+      "attachment_refs": [],
+      "hard_constraints": {
+        "allowed_providers": [],
+        "context_token_limit": 32768,
+        "governing_instruction_refs": [],
+        "local_only": false,
+        "max_attempts": 1,
+        "spending_ceiling": null,
+        "total_deadline_ms": 5000
+      },
+      "acceptance_requirements": [],
+      "required_guidance": [],
+      "catalog": {
+        "schema_version": "1",
+        "revision": "fixture",
+        "resources": [
+          {
+            "resource_id": "alpha",
+            "revision": "v1",
+            "content_hash": "4d61589b4fcfa76029a09a068c59707b465bfade806fcf61bdba685cd09ab8ae",
+            "rights": "synthetic-owned",
+            "admission": "explicitly_enabled",
+            "source_occurrences": [
+              "synthetic"
+            ],
+            "aliases": [
+              "shared",
+              "alpha alias"
+            ],
+            "domain": "alpha",
+            "specialty": "alpha specialty",
+            "task_family": "implementation",
+            "facets": [],
+            "benchmark_protocol": null,
+            "benchmark_split": null,
+            "benchmark_effort": null,
+            "instructions": "Synthetic alpha instructions.",
+            "conflicts": []
+          },
+          {
+            "resource_id": "beta",
+            "revision": "v1",
+            "content_hash": "d83697bc6cba54c3757bf1474bc82a933e4f78085166e3066aa4b98127304d21",
+            "rights": "synthetic-owned",
+            "admission": "explicitly_enabled",
+            "source_occurrences": [
+              "synthetic"
+            ],
+            "aliases": [
+              "shared",
+              "beta alias"
+            ],
+            "domain": "beta",
+            "specialty": "beta specialty",
+            "task_family": "implementation",
+            "facets": [],
+            "benchmark_protocol": null,
+            "benchmark_split": null,
+            "benchmark_effort": null,
+            "instructions": "Synthetic beta instructions.",
+            "conflicts": []
+          }
+        ]
+      },
+      "taxonomy_revision": "taxonomy-v1",
+      "content_revision": "content-v1",
+      "descriptions": [
+        {
+          "resource_id": "alpha",
+          "revision": "v1",
+          "content_hash": "4d61589b4fcfa76029a09a068c59707b465bfade806fcf61bdba685cd09ab8ae",
+          "description_revision": "v1",
+          "description": "Human-authored guidance for alpha objectives."
+        },
+        {
+          "resource_id": "beta",
+          "revision": "v1",
+          "content_hash": "d83697bc6cba54c3757bf1474bc82a933e4f78085166e3066aa4b98127304d21",
+          "description_revision": "v1",
+          "description": "Human-authored guidance for beta objectives."
+        }
+      ],
+      "settings_layers": [],
+      "judgment_policy": {
+        "enabled": true,
+        "cloud_allowed": true,
+        "provider": "typesafeai",
+        "max_calls": 100,
+        "max_candidates": 100,
+        "max_input_tokens": 32768,
+        "output_planning_reservation": 10,
+        "hard_output_token_limit": null,
+        "spending_ceiling": null,
+        "rates": null,
+        "model_revision": "jev-latest",
+        "function_revision": "ObserveDiscoveryOption-v1",
+        "token_counter_revision": "<jev-token-counter-revision>"
+      },
+      "limits": {
+        "max_rounds": 100,
+        "active_branch_width": 33,
+        "max_candidates": 100,
+        "max_calls": 100,
+        "max_input_tokens": 32768,
+        "output_planning_reservation": 10,
+        "hard_output_token_limit": null,
+        "spending_ceiling": null,
+        "max_description_utf8_bytes": 2048
+      }
+    },
+    "accepted": false
+  },
+  {
+    "id": "bad-description-limit",
+    "contract": "DiscoveryInputs",
+    "payload": {
+      "schema_version": "1",
+      "envelope": {
+        "created_at": "2026-09-28T00:00:00Z",
+        "execution_target_id": "fixture",
+        "extensions": {},
+        "harness_id": "fixture",
+        "idempotency_key": "fixture",
+        "operation": "discover",
+        "project_id": "00000000-0000-4000-8000-000000000001",
+        "request_id": "00000000-0000-4000-8000-000000000001",
+        "schema_version": "1",
+        "workspace_id": "00000000-0000-4000-8000-000000000001"
+      },
+      "work_objective_id": "00000000-0000-4000-8000-000000000020",
+      "work_objective_text": "alpha",
+      "authorized_context": "Synthetic public context.",
+      "attachment_refs": [],
+      "hard_constraints": {
+        "allowed_providers": [],
+        "context_token_limit": 32768,
+        "governing_instruction_refs": [],
+        "local_only": false,
+        "max_attempts": 1,
+        "spending_ceiling": null,
+        "total_deadline_ms": 5000
+      },
+      "acceptance_requirements": [],
+      "required_guidance": [],
+      "catalog": {
+        "schema_version": "1",
+        "revision": "fixture",
+        "resources": [
+          {
+            "resource_id": "alpha",
+            "revision": "v1",
+            "content_hash": "4d61589b4fcfa76029a09a068c59707b465bfade806fcf61bdba685cd09ab8ae",
+            "rights": "synthetic-owned",
+            "admission": "explicitly_enabled",
+            "source_occurrences": [
+              "synthetic"
+            ],
+            "aliases": [
+              "shared",
+              "alpha alias"
+            ],
+            "domain": "alpha",
+            "specialty": "alpha specialty",
+            "task_family": "implementation",
+            "facets": [],
+            "benchmark_protocol": null,
+            "benchmark_split": null,
+            "benchmark_effort": null,
+            "instructions": "Synthetic alpha instructions.",
+            "conflicts": []
+          },
+          {
+            "resource_id": "beta",
+            "revision": "v1",
+            "content_hash": "d83697bc6cba54c3757bf1474bc82a933e4f78085166e3066aa4b98127304d21",
+            "rights": "synthetic-owned",
+            "admission": "explicitly_enabled",
+            "source_occurrences": [
+              "synthetic"
+            ],
+            "aliases": [
+              "shared",
+              "beta alias"
+            ],
+            "domain": "beta",
+            "specialty": "beta specialty",
+            "task_family": "implementation",
+            "facets": [],
+            "benchmark_protocol": null,
+            "benchmark_split": null,
+            "benchmark_effort": null,
+            "instructions": "Synthetic beta instructions.",
+            "conflicts": []
+          }
+        ]
+      },
+      "taxonomy_revision": "taxonomy-v1",
+      "content_revision": "content-v1",
+      "descriptions": [
+        {
+          "resource_id": "alpha",
+          "revision": "v1",
+          "content_hash": "4d61589b4fcfa76029a09a068c59707b465bfade806fcf61bdba685cd09ab8ae",
+          "description_revision": "v1",
+          "description": "Human-authored guidance for alpha objectives."
+        },
+        {
+          "resource_id": "beta",
+          "revision": "v1",
+          "content_hash": "d83697bc6cba54c3757bf1474bc82a933e4f78085166e3066aa4b98127304d21",
+          "description_revision": "v1",
+          "description": "Human-authored guidance for beta objectives."
+        }
+      ],
+      "settings_layers": [],
+      "judgment_policy": {
+        "enabled": true,
+        "cloud_allowed": true,
+        "provider": "typesafeai",
+        "max_calls": 100,
+        "max_candidates": 100,
+        "max_input_tokens": 32768,
+        "output_planning_reservation": 10,
+        "hard_output_token_limit": null,
+        "spending_ceiling": null,
+        "rates": null,
+        "model_revision": "jev-latest",
+        "function_revision": "ObserveDiscoveryOption-v1",
+        "token_counter_revision": "<jev-token-counter-revision>"
+      },
+      "limits": {
+        "max_rounds": 100,
+        "active_branch_width": 2,
+        "max_candidates": 100,
+        "max_calls": 100,
+        "max_input_tokens": 32768,
+        "output_planning_reservation": 10,
+        "hard_output_token_limit": null,
+        "spending_ceiling": null,
+        "max_description_utf8_bytes": 2049
+      }
+    },
+    "accepted": false
+  },
+  {
+    "id": "unsupported-version",
+    "contract": "DiscoveryInputs",
+    "payload": {
+      "schema_version": "2",
+      "envelope": {
+        "created_at": "2026-09-28T00:00:00Z",
+        "execution_target_id": "fixture",
+        "extensions": {},
+        "harness_id": "fixture",
+        "idempotency_key": "fixture",
+        "operation": "discover",
+        "project_id": "00000000-0000-4000-8000-000000000001",
+        "request_id": "00000000-0000-4000-8000-000000000001",
+        "schema_version": "1",
+        "workspace_id": "00000000-0000-4000-8000-000000000001"
+      },
+      "work_objective_id": "00000000-0000-4000-8000-000000000020",
+      "work_objective_text": "alpha",
+      "authorized_context": "Synthetic public context.",
+      "attachment_refs": [],
+      "hard_constraints": {
+        "allowed_providers": [],
+        "context_token_limit": 32768,
+        "governing_instruction_refs": [],
+        "local_only": false,
+        "max_attempts": 1,
+        "spending_ceiling": null,
+        "total_deadline_ms": 5000
+      },
+      "acceptance_requirements": [],
+      "required_guidance": [],
+      "catalog": {
+        "schema_version": "1",
+        "revision": "fixture",
+        "resources": [
+          {
+            "resource_id": "alpha",
+            "revision": "v1",
+            "content_hash": "4d61589b4fcfa76029a09a068c59707b465bfade806fcf61bdba685cd09ab8ae",
+            "rights": "synthetic-owned",
+            "admission": "explicitly_enabled",
+            "source_occurrences": [
+              "synthetic"
+            ],
+            "aliases": [
+              "shared",
+              "alpha alias"
+            ],
+            "domain": "alpha",
+            "specialty": "alpha specialty",
+            "task_family": "implementation",
+            "facets": [],
+            "benchmark_protocol": null,
+            "benchmark_split": null,
+            "benchmark_effort": null,
+            "instructions": "Synthetic alpha instructions.",
+            "conflicts": []
+          },
+          {
+            "resource_id": "beta",
+            "revision": "v1",
+            "content_hash": "d83697bc6cba54c3757bf1474bc82a933e4f78085166e3066aa4b98127304d21",
+            "rights": "synthetic-owned",
+            "admission": "explicitly_enabled",
+            "source_occurrences": [
+              "synthetic"
+            ],
+            "aliases": [
+              "shared",
+              "beta alias"
+            ],
+            "domain": "beta",
+            "specialty": "beta specialty",
+            "task_family": "implementation",
+            "facets": [],
+            "benchmark_protocol": null,
+            "benchmark_split": null,
+            "benchmark_effort": null,
+            "instructions": "Synthetic beta instructions.",
+            "conflicts": []
+          }
+        ]
+      },
+      "taxonomy_revision": "taxonomy-v1",
+      "content_revision": "content-v1",
+      "descriptions": [
+        {
+          "resource_id": "alpha",
+          "revision": "v1",
+          "content_hash": "4d61589b4fcfa76029a09a068c59707b465bfade806fcf61bdba685cd09ab8ae",
+          "description_revision": "v1",
+          "description": "Human-authored guidance for alpha objectives."
+        },
+        {
+          "resource_id": "beta",
+          "revision": "v1",
+          "content_hash": "d83697bc6cba54c3757bf1474bc82a933e4f78085166e3066aa4b98127304d21",
+          "description_revision": "v1",
+          "description": "Human-authored guidance for beta objectives."
+        }
+      ],
+      "settings_layers": [],
+      "judgment_policy": {
+        "enabled": true,
+        "cloud_allowed": true,
+        "provider": "typesafeai",
+        "max_calls": 100,
+        "max_candidates": 100,
+        "max_input_tokens": 32768,
+        "output_planning_reservation": 10,
+        "hard_output_token_limit": null,
+        "spending_ceiling": null,
+        "rates": null,
+        "model_revision": "jev-latest",
+        "function_revision": "ObserveDiscoveryOption-v1",
+        "token_counter_revision": "<jev-token-counter-revision>"
+      },
+      "limits": {
+        "max_rounds": 100,
+        "active_branch_width": 2,
+        "max_candidates": 100,
+        "max_calls": 100,
+        "max_input_tokens": 32768,
+        "output_planning_reservation": 10,
+        "hard_output_token_limit": null,
+        "spending_ceiling": null,
+        "max_description_utf8_bytes": 2048
+      }
+    },
+    "accepted": false
+  },
+  {
+    "id": "spoofed-description-hash",
+    "contract": "DiscoveryInputs",
+    "payload": {
+      "schema_version": "1",
+      "envelope": {
+        "created_at": "2026-09-28T00:00:00Z",
+        "execution_target_id": "fixture",
+        "extensions": {},
+        "harness_id": "fixture",
+        "idempotency_key": "fixture",
+        "operation": "discover",
+        "project_id": "00000000-0000-4000-8000-000000000001",
+        "request_id": "00000000-0000-4000-8000-000000000001",
+        "schema_version": "1",
+        "workspace_id": "00000000-0000-4000-8000-000000000001"
+      },
+      "work_objective_id": "00000000-0000-4000-8000-000000000020",
+      "work_objective_text": "alpha",
+      "authorized_context": "Synthetic public context.",
+      "attachment_refs": [],
+      "hard_constraints": {
+        "allowed_providers": [],
+        "context_token_limit": 32768,
+        "governing_instruction_refs": [],
+        "local_only": false,
+        "max_attempts": 1,
+        "spending_ceiling": null,
+        "total_deadline_ms": 5000
+      },
+      "acceptance_requirements": [],
+      "required_guidance": [],
+      "catalog": {
+        "schema_version": "1",
+        "revision": "fixture",
+        "resources": [
+          {
+            "resource_id": "alpha",
+            "revision": "v1",
+            "content_hash": "4d61589b4fcfa76029a09a068c59707b465bfade806fcf61bdba685cd09ab8ae",
+            "rights": "synthetic-owned",
+            "admission": "explicitly_enabled",
+            "source_occurrences": [
+              "synthetic"
+            ],
+            "aliases": [
+              "shared",
+              "alpha alias"
+            ],
+            "domain": "alpha",
+            "specialty": "alpha specialty",
+            "task_family": "implementation",
+            "facets": [],
+            "benchmark_protocol": null,
+            "benchmark_split": null,
+            "benchmark_effort": null,
+            "instructions": "Synthetic alpha instructions.",
+            "conflicts": []
+          },
+          {
+            "resource_id": "beta",
+            "revision": "v1",
+            "content_hash": "d83697bc6cba54c3757bf1474bc82a933e4f78085166e3066aa4b98127304d21",
+            "rights": "synthetic-owned",
+            "admission": "explicitly_enabled",
+            "source_occurrences": [
+              "synthetic"
+            ],
+            "aliases": [
+              "shared",
+              "beta alias"
+            ],
+            "domain": "beta",
+            "specialty": "beta specialty",
+            "task_family": "implementation",
+            "facets": [],
+            "benchmark_protocol": null,
+            "benchmark_split": null,
+            "benchmark_effort": null,
+            "instructions": "Synthetic beta instructions.",
+            "conflicts": []
+          }
+        ]
+      },
+      "taxonomy_revision": "taxonomy-v1",
+      "content_revision": "content-v1",
+      "descriptions": [
+        {
+          "resource_id": "alpha",
+          "revision": "v1",
+          "content_hash": "bad",
+          "description_revision": "v1",
+          "description": "Human-authored guidance for alpha objectives."
+        },
+        {
+          "resource_id": "beta",
+          "revision": "v1",
+          "content_hash": "d83697bc6cba54c3757bf1474bc82a933e4f78085166e3066aa4b98127304d21",
+          "description_revision": "v1",
+          "description": "Human-authored guidance for beta objectives."
+        }
+      ],
+      "settings_layers": [],
+      "judgment_policy": {
+        "enabled": true,
+        "cloud_allowed": true,
+        "provider": "typesafeai",
+        "max_calls": 100,
+        "max_candidates": 100,
+        "max_input_tokens": 32768,
+        "output_planning_reservation": 10,
+        "hard_output_token_limit": null,
+        "spending_ceiling": null,
+        "rates": null,
+        "model_revision": "jev-latest",
+        "function_revision": "ObserveDiscoveryOption-v1",
+        "token_counter_revision": "<jev-token-counter-revision>"
+      },
+      "limits": {
+        "max_rounds": 100,
+        "active_branch_width": 2,
+        "max_candidates": 100,
+        "max_calls": 100,
+        "max_input_tokens": 32768,
+        "output_planning_reservation": 10,
+        "hard_output_token_limit": null,
+        "spending_ceiling": null,
+        "max_description_utf8_bytes": 2048
+      }
+    },
+    "accepted": false
+  }
+]

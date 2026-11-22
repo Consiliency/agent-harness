@@ -1,0 +1,1081 @@
+{
+  "$defs": {
+    "AcceptanceRequirement": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "evaluator_ref": {
+          "title": "Evaluator Ref",
+          "type": "string"
+        },
+        "requirement_id": {
+          "title": "Requirement Id",
+          "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "const": "user",
+              "type": "string"
+            },
+            {
+              "const": "task_family",
+              "type": "string"
+            },
+            {
+              "const": "inferred",
+              "type": "string"
+            }
+          ],
+          "title": "Source"
+        }
+      },
+      "required": [
+        "description",
+        "evaluator_ref",
+        "requirement_id",
+        "source"
+      ],
+      "title": "AcceptanceRequirement",
+      "type": "object"
+    },
+    "AttachmentReference": {
+      "additionalProperties": false,
+      "properties": {
+        "authorized": {
+          "title": "Authorized",
+          "type": "boolean"
+        },
+        "modality": {
+          "anyOf": [
+            {
+              "const": "image",
+              "type": "string"
+            },
+            {
+              "const": "audio",
+              "type": "string"
+            },
+            {
+              "const": "video",
+              "type": "string"
+            },
+            {
+              "const": "document",
+              "type": "string"
+            }
+          ],
+          "title": "Modality"
+        },
+        "reference": {
+          "title": "Reference",
+          "type": "string"
+        },
+        "representation_source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Representation Source"
+        },
+        "text_representation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Text Representation"
+        }
+      },
+      "required": [
+        "authorized",
+        "modality",
+        "reference",
+        "representation_source",
+        "text_representation"
+      ],
+      "title": "AttachmentReference",
+      "type": "object"
+    },
+    "CatalogResource": {
+      "additionalProperties": false,
+      "properties": {
+        "admission": {
+          "anyOf": [
+            {
+              "const": "policy_admitted",
+              "type": "string"
+            },
+            {
+              "const": "explicitly_enabled",
+              "type": "string"
+            },
+            {
+              "const": "unadmitted",
+              "type": "string"
+            }
+          ],
+          "title": "Admission"
+        },
+        "aliases": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Aliases",
+          "type": "array"
+        },
+        "benchmark_effort": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Benchmark Effort"
+        },
+        "benchmark_protocol": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Benchmark Protocol"
+        },
+        "benchmark_split": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Benchmark Split"
+        },
+        "conflicts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Conflicts",
+          "type": "array"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "domain": {
+          "title": "Domain",
+          "type": "string"
+        },
+        "facets": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Facets",
+          "type": "array"
+        },
+        "instructions": {
+          "title": "Instructions",
+          "type": "string"
+        },
+        "resource_id": {
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "revision": {
+          "title": "Revision",
+          "type": "string"
+        },
+        "rights": {
+          "title": "Rights",
+          "type": "string"
+        },
+        "source_occurrences": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Occurrences",
+          "type": "array"
+        },
+        "specialty": {
+          "title": "Specialty",
+          "type": "string"
+        },
+        "task_family": {
+          "title": "Task Family",
+          "type": "string"
+        }
+      },
+      "required": [
+        "admission",
+        "aliases",
+        "benchmark_effort",
+        "benchmark_protocol",
+        "benchmark_split",
+        "conflicts",
+        "content_hash",
+        "domain",
+        "facets",
+        "instructions",
+        "resource_id",
+        "revision",
+        "rights",
+        "source_occurrences",
+        "specialty",
+        "task_family"
+      ],
+      "title": "CatalogResource",
+      "type": "object"
+    },
+    "CatalogSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "resources": {
+          "items": {
+            "$ref": "#/$defs/CatalogResource"
+          },
+          "title": "Resources",
+          "type": "array"
+        },
+        "revision": {
+          "title": "Revision",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "1",
+          "title": "Schema Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resources",
+        "revision",
+        "schema_version"
+      ],
+      "title": "CatalogSnapshot",
+      "type": "object"
+    },
+    "DiscoveryDescription": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "description_revision": {
+          "minLength": 1,
+          "title": "Description Revision",
+          "type": "string"
+        },
+        "resource_id": {
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "revision": {
+          "title": "Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "content_hash",
+        "description",
+        "description_revision",
+        "resource_id",
+        "revision"
+      ],
+      "title": "DiscoveryDescription",
+      "type": "object"
+    },
+    "DiscoveryEnvelope": {
+      "additionalProperties": false,
+      "properties": {
+        "created_at": {
+          "format": "date-time",
+          "pattern": "Z$",
+          "title": "Created At",
+          "type": "string"
+        },
+        "execution_target_id": {
+          "title": "Execution Target Id",
+          "type": "string"
+        },
+        "extensions": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Extensions",
+          "type": "object"
+        },
+        "harness_id": {
+          "minLength": 1,
+          "title": "Harness Id",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "minLength": 1,
+          "title": "Idempotency Key",
+          "type": "string"
+        },
+        "operation": {
+          "const": "discover",
+          "title": "Operation",
+          "type": "string"
+        },
+        "project_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Project Id",
+          "type": "string"
+        },
+        "request_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Request Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "workspace_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Workspace Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "created_at",
+        "execution_target_id",
+        "extensions",
+        "harness_id",
+        "idempotency_key",
+        "operation",
+        "project_id",
+        "request_id",
+        "schema_version",
+        "workspace_id"
+      ],
+      "title": "DiscoveryEnvelope",
+      "type": "object"
+    },
+    "DiscoveryJudgmentPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "cloud_allowed": {
+          "title": "Cloud Allowed",
+          "type": "boolean"
+        },
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "function_revision": {
+          "const": "ObserveDiscoveryOption-v1",
+          "title": "Function Revision",
+          "type": "string"
+        },
+        "hard_output_token_limit": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "minimum": 1,
+          "title": "Hard Output Token Limit"
+        },
+        "max_calls": {
+          "minimum": 0,
+          "title": "Max Calls",
+          "type": "integer"
+        },
+        "max_candidates": {
+          "minimum": 0,
+          "title": "Max Candidates",
+          "type": "integer"
+        },
+        "max_input_tokens": {
+          "minimum": 0,
+          "title": "Max Input Tokens",
+          "type": "integer"
+        },
+        "model_revision": {
+          "title": "Model Revision",
+          "type": "string"
+        },
+        "output_planning_reservation": {
+          "minimum": 0,
+          "title": "Output Planning Reservation",
+          "type": "integer"
+        },
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        },
+        "rates": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RateCard"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "spending_ceiling": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "token_counter_revision": {
+          "title": "Token Counter Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "cloud_allowed",
+        "enabled",
+        "function_revision",
+        "hard_output_token_limit",
+        "max_calls",
+        "max_candidates",
+        "max_input_tokens",
+        "model_revision",
+        "output_planning_reservation",
+        "provider",
+        "rates",
+        "spending_ceiling",
+        "token_counter_revision"
+      ],
+      "title": "DiscoveryJudgmentPolicy",
+      "type": "object"
+    },
+    "DiscoveryLimits": {
+      "additionalProperties": false,
+      "properties": {
+        "active_branch_width": {
+          "maximum": 32,
+          "minimum": 1,
+          "title": "Active Branch Width",
+          "type": "integer"
+        },
+        "hard_output_token_limit": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "minimum": 1,
+          "title": "Hard Output Token Limit"
+        },
+        "max_calls": {
+          "minimum": 0,
+          "title": "Max Calls",
+          "type": "integer"
+        },
+        "max_candidates": {
+          "minimum": 0,
+          "title": "Max Candidates",
+          "type": "integer"
+        },
+        "max_description_utf8_bytes": {
+          "maximum": 2048,
+          "minimum": 1,
+          "title": "Max Description Utf8 Bytes",
+          "type": "integer"
+        },
+        "max_input_tokens": {
+          "minimum": 0,
+          "title": "Max Input Tokens",
+          "type": "integer"
+        },
+        "max_rounds": {
+          "minimum": 0,
+          "title": "Max Rounds",
+          "type": "integer"
+        },
+        "output_planning_reservation": {
+          "minimum": 0,
+          "title": "Output Planning Reservation",
+          "type": "integer"
+        },
+        "spending_ceiling": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "active_branch_width",
+        "hard_output_token_limit",
+        "max_calls",
+        "max_candidates",
+        "max_description_utf8_bytes",
+        "max_input_tokens",
+        "max_rounds",
+        "output_planning_reservation",
+        "spending_ceiling"
+      ],
+      "title": "DiscoveryLimits",
+      "type": "object"
+    },
+    "ExecutionTokenLimits": {
+      "additionalProperties": false,
+      "properties": {
+        "input_tokens": {
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "output_tokens": {
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "input_tokens",
+        "output_tokens"
+      ],
+      "title": "ExecutionTokenLimits",
+      "type": "object"
+    },
+    "GuidanceRevision": {
+      "additionalProperties": false,
+      "properties": {
+        "admission": {
+          "anyOf": [
+            {
+              "const": "policy_admitted",
+              "type": "string"
+            },
+            {
+              "const": "explicitly_enabled",
+              "type": "string"
+            }
+          ],
+          "title": "Admission"
+        },
+        "authority": {
+          "title": "Authority",
+          "type": "string"
+        },
+        "content_hash": {
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "resource_id": {
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "revision": {
+          "title": "Revision",
+          "type": "string"
+        },
+        "role": {
+          "title": "Role",
+          "type": "string"
+        },
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "token_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Token Count"
+        }
+      },
+      "required": [
+        "admission",
+        "authority",
+        "content_hash",
+        "resource_id",
+        "revision",
+        "role",
+        "task_id",
+        "token_count"
+      ],
+      "title": "GuidanceRevision",
+      "type": "object"
+    },
+    "HardConstraints": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_providers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed Providers",
+          "type": "array"
+        },
+        "context_token_limit": {
+          "minimum": 1,
+          "title": "Context Token Limit",
+          "type": "integer"
+        },
+        "execution_token_limits": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutionTokenLimits"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "governing_instruction_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Governing Instruction Refs",
+          "type": "array"
+        },
+        "local_only": {
+          "title": "Local Only",
+          "type": "boolean"
+        },
+        "max_attempts": {
+          "minimum": 1,
+          "title": "Max Attempts",
+          "type": "integer"
+        },
+        "spending_ceiling": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "total_deadline_ms": {
+          "minimum": 1,
+          "title": "Total Deadline Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "allowed_providers",
+        "context_token_limit",
+        "governing_instruction_refs",
+        "local_only",
+        "max_attempts",
+        "spending_ceiling",
+        "total_deadline_ms"
+      ],
+      "title": "HardConstraints",
+      "type": "object"
+    },
+    "Money": {
+      "additionalProperties": false,
+      "properties": {
+        "amount": {
+          "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+          "title": "Amount",
+          "type": "string"
+        },
+        "currency": {
+          "pattern": "^[A-Z]{3}$",
+          "title": "Currency",
+          "type": "string"
+        }
+      },
+      "required": [
+        "amount",
+        "currency"
+      ],
+      "title": "Money",
+      "type": "object"
+    },
+    "RateCard": {
+      "additionalProperties": false,
+      "properties": {
+        "currency": {
+          "pattern": "^[A-Z]{3}$",
+          "title": "Currency",
+          "type": "string"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "pattern": "Z$",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "input_rate": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+          "title": "Input Rate"
+        },
+        "output_rate": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+          "title": "Output Rate"
+        },
+        "revision": {
+          "title": "Revision",
+          "type": "string"
+        },
+        "subscription_multiplier": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+          "title": "Subscription Multiplier"
+        },
+        "verified_at": {
+          "format": "date-time",
+          "pattern": "Z$",
+          "title": "Verified At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "currency",
+        "expires_at",
+        "input_rate",
+        "output_rate",
+        "revision",
+        "subscription_multiplier",
+        "verified_at"
+      ],
+      "title": "RateCard",
+      "type": "object"
+    },
+    "SettingsLayer": {
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "anyOf": [
+            {
+              "const": "product",
+              "type": "string"
+            },
+            {
+              "const": "user",
+              "type": "string"
+            },
+            {
+              "const": "project",
+              "type": "string"
+            },
+            {
+              "const": "directory",
+              "type": "string"
+            },
+            {
+              "const": "personal_project",
+              "type": "string"
+            },
+            {
+              "const": "request",
+              "type": "string"
+            }
+          ],
+          "title": "Source"
+        },
+        "values": {
+          "$ref": "#/$defs/SettingsOverride"
+        }
+      },
+      "required": [
+        "source",
+        "values"
+      ],
+      "title": "SettingsLayer",
+      "type": "object"
+    },
+    "SettingsOverride": {
+      "additionalProperties": false,
+      "properties": {
+        "default_plan_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Default Plan Id"
+        },
+        "excluded_paths": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Excluded Paths"
+        },
+        "experiment_enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Experiment Enabled"
+        },
+        "local_analysis_enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Local Analysis Enabled"
+        },
+        "max_description_utf8_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "maximum": 2048,
+          "minimum": 1,
+          "title": "Max Description Utf8 Bytes"
+        },
+        "model_analysis_enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Model Analysis Enabled"
+        },
+        "retain_raw_outputs": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Retain Raw Outputs"
+        },
+        "retain_raw_tasks": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Retain Raw Tasks"
+        },
+        "routing_cost_basis": {
+          "anyOf": [
+            {
+              "const": "raw",
+              "type": "string"
+            },
+            {
+              "const": "adjusted",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Routing Cost Basis"
+        },
+        "routing_deadline_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "minimum": 1,
+          "title": "Routing Deadline Ms"
+        }
+      },
+      "required": [],
+      "title": "SettingsOverride",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "acceptance_requirements": {
+      "items": {
+        "$ref": "#/$defs/AcceptanceRequirement"
+      },
+      "title": "Acceptance Requirements",
+      "type": "array"
+    },
+    "attachment_refs": {
+      "items": {
+        "$ref": "#/$defs/AttachmentReference"
+      },
+      "title": "Attachment Refs",
+      "type": "array"
+    },
+    "authorized_context": {
+      "title": "Authorized Context",
+      "type": "string"
+    },
+    "catalog": {
+      "$ref": "#/$defs/CatalogSnapshot"
+    },
+    "content_revision": {
+      "minLength": 1,
+      "title": "Content Revision",
+      "type": "string"
+    },
+    "descriptions": {
+      "items": {
+        "$ref": "#/$defs/DiscoveryDescription"
+      },
+      "title": "Descriptions",
+      "type": "array"
+    },
+    "envelope": {
+      "$ref": "#/$defs/DiscoveryEnvelope"
+    },
+    "hard_constraints": {
+      "$ref": "#/$defs/HardConstraints"
+    },
+    "judgment_policy": {
+      "$ref": "#/$defs/DiscoveryJudgmentPolicy"
+    },
+    "limits": {
+      "$ref": "#/$defs/DiscoveryLimits"
+    },
+    "required_guidance": {
+      "items": {
+        "$ref": "#/$defs/GuidanceRevision"
+      },
+      "title": "Required Guidance",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "settings_layers": {
+      "items": {
+        "$ref": "#/$defs/SettingsLayer"
+      },
+      "title": "Settings Layers",
+      "type": "array"
+    },
+    "taxonomy_revision": {
+      "minLength": 1,
+      "title": "Taxonomy Revision",
+      "type": "string"
+    },
+    "work_objective_id": {
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "title": "Work Objective Id",
+      "type": "string"
+    },
+    "work_objective_text": {
+      "title": "Work Objective Text",
+      "type": "string"
+    }
+  },
+  "required": [
+    "acceptance_requirements",
+    "attachment_refs",
+    "authorized_context",
+    "catalog",
+    "content_revision",
+    "descriptions",
+    "envelope",
+    "hard_constraints",
+    "judgment_policy",
+    "limits",
+    "required_guidance",
+    "schema_version",
+    "settings_layers",
+    "taxonomy_revision",
+    "work_objective_id",
+    "work_objective_text"
+  ],
+  "title": "DiscoveryInputs",
+  "type": "object"
+}

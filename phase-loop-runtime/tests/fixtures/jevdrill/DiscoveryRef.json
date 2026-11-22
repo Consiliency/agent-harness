@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "discovery_id": {
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "title": "Discovery Id",
+      "type": "string"
+    },
+    "trace_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Trace Digest",
+      "type": "string"
+    },
+    "work_objective_id": {
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "title": "Work Objective Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "discovery_id",
+    "trace_digest",
+    "work_objective_id"
+  ],
+  "title": "DiscoveryRef",
+  "type": "object"
+}

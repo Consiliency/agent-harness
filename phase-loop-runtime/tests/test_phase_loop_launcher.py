@@ -1,5 +1,4 @@
 import io
-import fcntl
 import json
 import os
 import subprocess
@@ -35,6 +34,9 @@ from test_phase_worktree_executor import require_sched_red
 
 import pytest
 
+if os.name != "nt":
+    import fcntl
+
 # TESTDECOUPLE SL-1 (overlay-dependent): builds a skill/adoption bundle or runs the
 # runtime execute path, which resolves the dotfiles skill-source / profile overlay
 # (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
@@ -65,7 +67,7 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         selection = resolve_profile("plan")
         bundle = build_prompt("plan", Path("/repo/specs/phase-plans-v1.md"), phase="RUNNER")
         command = build_codex_command(Path("/repo"), selection, bundle.render_prompt(), json_output=True)
-        self.assertEqual(command[:4], ["codex", "exec", "--cd", "/repo"])
+        self.assertEqual(command[:4], ["codex", "exec", "--cd", str(Path("/repo"))])
         self.assertIn('model_reasoning_effort="high"', command)
         self.assertIn("--json", command)
         self.assertIn("plans/phase-plan-v1-RUNNER.md", bundle.render_prompt())
@@ -409,7 +411,7 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         self.assertEqual(spec.auth_preflight_probes, ("claude --version", "claude --help", "claude auth status"))
         self.assertEqual(spec.output_capture_format, "terminal_summary")
         self.assertEqual(spec.command[-1], CLAUDE_CONTEXT_PLACEHOLDER)
-        self.assertEqual(spec.wrapped_cwd, "/repo")
+        self.assertEqual(spec.wrapped_cwd, str(Path("/repo")))
         with tempfile.TemporaryDirectory() as td:
             result = launch_with_spec(spec, dry_run=True, log_path=Path(td) / "output.log")
         self.assertTrue(result.dry_run)
@@ -427,7 +429,7 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         )
         self.assertEqual(result.auth_preflight_mode, "metadata_only")
         self.assertEqual(result.terminal_summary_artifact, "terminal-summary.json")
-        self.assertEqual(spec.prompt_bundle.workflow_command, "claude-plan-phase /repo/specs/phase-plans-v1.md RUNNER")
+        self.assertEqual(spec.prompt_bundle.workflow_command, f"claude-plan-phase {Path('/repo/specs/phase-plans-v1.md')} RUNNER")
         self.assertIn("execution mode", bundle.body)
         self.assertNotIn("## Skill:", spec.prompt_bundle.render_context())
         self.assertEqual(spec.command[:5], ["claude", "-p", "--verbose", "--output-format", "stream-json"])
@@ -441,7 +443,7 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         self.assertIn("acceptEdits", spec.command)
         self.assertIn("Read the workflow command", result.command[-1])
         self.assertIn("context.md", result.command[-1])
-        self.assertTrue(any(part.endswith("/claude-bundle/plugin") for part in result.command))
+        self.assertTrue(any(Path(part).parts[-2:] == ("claude-bundle", "plugin") for part in result.command))
         self.assertTrue(any(part.startswith("{") and part.endswith("}") for part in result.command))
 
     def test_claude_execute_uses_noninteractive_bash_permission_mode(self):
@@ -565,7 +567,7 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         spec = build_launch_spec(request)
         with patch("phase_loop_runtime.launcher.launch", return_value=LaunchResult(command=spec.command, returncode=0)) as mocked:
             launch_with_spec(spec, log_path=Path("/tmp/output.log"))
-        self.assertEqual(mocked.call_args.kwargs["cwd"], "/repo")
+        self.assertEqual(mocked.call_args.kwargs["cwd"], str(Path("/repo")))
 
     def test_claude_auth_preflight_reduces_missing_login_to_typed_blocker(self):
         selection = resolve_profile("execute")
@@ -960,6 +962,11 @@ class PhaseLoopLauncherTest(unittest.TestCase):
             self.assertIn("quiet_level", result.heartbeat_summary)
 
     def test_launch_without_log_closes_stdin_when_no_payload(self):
+        if os.name == "nt":
+            result = launch([sys.executable, "-c", "import sys; print(repr(sys.stdin.read()))"], timeout_seconds=5)
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.output.strip(), "''")
+            return
         class Completed:
             returncode = 0
             stdout = "ok\n"
@@ -973,6 +980,13 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         self.assertNotIn("input", mocked.call_args.kwargs)
 
     def test_observed_launch_closes_stdin_when_no_payload(self):
+        if os.name == "nt":
+            with tempfile.TemporaryDirectory() as td:
+                log_path = Path(td) / "output.log"
+                result = launch([sys.executable, "-c", "import sys; print(repr(sys.stdin.read()))"], log_path=log_path, timeout_seconds=5)
+                self.assertEqual(result.returncode, 0)
+                self.assertEqual(log_path.read_text(encoding="utf-8").strip(), "''")
+            return
         captured_kwargs = {}
 
         class FakeProcess:
@@ -1020,9 +1034,12 @@ class PhaseLoopLauncherTest(unittest.TestCase):
             self.assertTrue(result.timed_out)
             self.assertIsNotNone(result.cleanup_evidence)
             self.assertEqual(result.cleanup_evidence["reason"], "timeout")
-            self.assertIn("SIGTERM", result.cleanup_evidence["signals_sent"])
             self.assertFalse(result.cleanup_evidence["process_alive_after_cleanup"])
-            self.assertIsNotNone(result.process_group_id)
+            if os.name == "nt":
+                self.assertEqual(result.cleanup_evidence["job_active_processes"], 0)
+            else:
+                self.assertIn("SIGTERM", result.cleanup_evidence["signals_sent"])
+                self.assertIsNotNone(result.process_group_id)
             self.assertIn("salvage_snapshot", result.cleanup_evidence)
             self.assertEqual(result.cleanup_evidence["salvage_snapshot"]["reason"], "timeout")
             self.assertEqual(result.cleanup_evidence["salvage_snapshot"]["log_path"], str(log_path))
@@ -1077,7 +1094,11 @@ class PhaseLoopLauncherTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0)
             self.assertFalse(result.stalled)
             self.assertFalse(result.timed_out)
-            self.assertIsNone(result.cleanup_evidence)
+            if os.name == "nt":
+                self.assertEqual(result.cleanup_evidence["reason"], "complete")
+                self.assertEqual(result.cleanup_evidence["job_active_processes"], 0)
+            else:
+                self.assertIsNone(result.cleanup_evidence)
 
     def test_launch_contract_blocker_maps_stall_to_stalled_child_observation(self):
         from phase_loop_runtime.runner import _launch_contract_blocker
@@ -1225,7 +1246,7 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         self.assertTrue(spec.available)
         self.assertEqual(spec.delivery_mode, "context_file")
         self.assertEqual(spec.command_adapter_name, "wrapped-cli")
-        self.assertEqual(spec.wrapped_cwd, "/repo")
+        self.assertEqual(spec.wrapped_cwd, str(Path("/repo")))
         self.assertIn("--context-file", spec.command)
         self.assertIn("__PHASE_LOOP_CONTEXT_FILE__", " ".join(spec.command))
         self.assertIn("--model", spec.command)
@@ -1257,7 +1278,7 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         # v46 EXEC: the gemini executor drives agy (headless skip-permissions + add-dir).
         self.assertEqual(
             spec.command[:6],
-            ["agy", "--model", "Gemini 3.1 Pro (High)", "--dangerously-skip-permissions", "--add-dir", "/repo"],
+            ["agy", "--model", "Gemini 3.1 Pro (High)", "--dangerously-skip-permissions", "--add-dir", str(Path("/repo"))],
         )
         self.assertEqual(spec.command[6], "-p")
         self.assertIn("__PHASE_LOOP_CONTEXT_FILE__", spec.command[-1])
@@ -1332,7 +1353,7 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         self.assertEqual(spec.selected_model, "openai/gpt-5.6-sol")
         self.assertEqual(
             spec.command[:10],
-            ["opencode", "run", spec.command[2], "--dir", "/repo", "--agent", "build", "--model", "openai/gpt-5.6-sol", "--format"],
+            ["opencode", "run", spec.command[2], "--dir", str(Path("/repo")), "--agent", "build", "--model", "openai/gpt-5.6-sol", "--format"],
         )
         self.assertIn("__PHASE_LOOP_CONTEXT_FILE__", spec.command[2])
         result = launch_with_spec(spec, dry_run=True, log_path=Path("/tmp/opencode/output.log"))
@@ -1377,7 +1398,7 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         self.assertEqual(spec.selected_effort, "medium")
         self.assertEqual(spec.profile_source, "pi_default")
         self.assertEqual(spec.override_reason, "pi live adapter default model alias")
-        self.assertEqual(spec.command[:4], ["pi-agent-watch", "--repo", "/repo", "--prompt-file"])
+        self.assertEqual(spec.command[:4], ["pi-agent-watch", "--repo", str(Path("/repo")), "--prompt-file"])
         self.assertIn("__PHASE_LOOP_CONTEXT_FILE__", spec.command)
         result = launch_with_spec(spec, dry_run=True, log_path=Path("/tmp/pi/output.log"))
         self.assertTrue(result.dry_run)
@@ -1771,17 +1792,16 @@ def test_supervised_launch_drains_retained_stdout_before_returning():
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        lease_fd = os.open(root / "phase.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        from phase_loop_runtime.file_lock import open_generation_lease
+        from phase_loop_runtime.phase_worktree_executor import LeaseAuthority
+        lease_path = root / "phase.lock"
+        lease_fd = open_generation_lease(lease_path)
+        stat = os.fstat(lease_fd)
+        authority = LeaseAuthority(lease_path, lease_fd, f"stdout-drain:{stat.st_dev}:{stat.st_ino}")
         marker_path = root / "executor.pid"
         heartbeat_path = root / "executor.heartbeat.json"
         completed = threading.Event()
         outcome = {}
-
-        class LeaseAuthority:
-            generation = "stdout-drain"
-
-            def fileno(self):
-                return lease_fd
 
         helper = (
             "import os, sys\n"
@@ -1793,34 +1813,15 @@ def test_supervised_launch_drains_retained_stdout_before_returning():
 
         def run_launch():
             try:
-                import phase_loop_runtime.launcher as launcher
-
                 command = [sys.executable, "-c", helper, str(marker_path)]
-                supervised_launch = getattr(launcher, "_launch_with_lease_supervisor", None)
-                if callable(supervised_launch):
-                    outcome["result"] = supervised_launch(
-                        command,
-                        lease_authority=LeaseAuthority(),
-                        log_path=root / "executor.log",
-                        stdin_text=None,
-                        cwd=None,
-                        env=dict(os.environ),
-                        stream_output=False,
-                        heartbeat_path=heartbeat_path,
-                        heartbeat_interval_seconds=0,
-                        quiet_warning_seconds=600,
-                        quiet_blocker_seconds=1800,
-                        timeout_seconds=None,
-                    )
-                else:
-                    outcome["result"] = launch(
-                        command,
-                        log_path=root / "executor.log",
-                        heartbeat_path=heartbeat_path,
-                        heartbeat_interval_seconds=0,
-                        stream_output=False,
-                        lease_authority=LeaseAuthority(),
-                    )
+                outcome["result"] = launch(
+                    command,
+                    log_path=root / "executor.log",
+                    heartbeat_path=heartbeat_path,
+                    heartbeat_interval_seconds=0,
+                    stream_output=False,
+                    lease_authority=authority,
+                )
             except BaseException as exc:
                 outcome["error"] = exc
             finally:
@@ -1833,6 +1834,16 @@ def test_supervised_launch_drains_retained_stdout_before_returning():
             assert time.monotonic() < deadline, "supervised executor never reached its stdout write"
             time.sleep(0.01)
         try:
+            if sys.platform == "darwin":
+                assert completed.wait(2)
+                assert "error" not in outcome
+                result = outcome["result"]
+                assert not result.available
+                assert result.unavailable_reason == "native_macos_leased_execution_requires_linux_worker"
+                assert not marker_path.exists()
+                assert not heartbeat_path.exists()
+                assert authority.is_open()
+                return
             assert marker_path.exists(), outcome.get("error")
             assert completed.wait(2), "launch did not return to drain the executor's stdout"
             assert "error" not in outcome
@@ -1847,7 +1858,7 @@ def test_supervised_launch_drains_retained_stdout_before_returning():
                 except ProcessLookupError:
                     pass
                 completed.wait(5)
-            os.close(lease_fd)
+            authority.close()
 
 
 @require_sched_red
@@ -1855,10 +1866,91 @@ def test_launcher_accepts_explicit_nonserialized_lease_authority():
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         lease_path = root / "phase.lock"
+        if os.name == "nt":
+            from phase_loop_runtime.file_lock import open_generation_lease
+            from phase_loop_runtime.phase_worktree_executor import LeaseAuthority
+            from phase_loop_runtime.windows_process import process_is_live
+
+            fd = open_generation_lease(lease_path)
+            stat = os.fstat(fd)
+            authority = LeaseAuthority(lease_path, fd, f"g-launch:{stat.st_dev}:{stat.st_ino}")
+            marker = root / "custody.json"
+            finish = root / "finish"
+            heartbeat = root / "heartbeat.json"
+            result_box = {}
+            helper = (
+                "import json, os, subprocess, sys, time\n"
+                "from pathlib import Path\n"
+                "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], creationflags=8)\n"
+                "Path(sys.argv[1]).write_text(json.dumps({'executor': os.getpid(), 'child': child.pid}), encoding='utf-8')\n"
+                "while not Path(sys.argv[2]).exists(): time.sleep(0.01)\n"
+            )
+
+            def run_native():
+                try:
+                    result_box["result"] = launch(
+                        [sys.executable, "-c", helper, str(marker), str(finish)],
+                        lease_authority=authority, log_path=root / "executor.log",
+                        heartbeat_path=heartbeat, heartbeat_interval_seconds=0,
+                        timeout_seconds=15,
+                    )
+                except BaseException as error:
+                    result_box["error"] = error
+
+            launched = threading.Thread(target=run_native, daemon=True)
+            launched.start()
+            try:
+                deadline = time.monotonic() + 8
+                while not marker.exists() and launched.is_alive():
+                    assert time.monotonic() < deadline, "executor was never admitted"
+                    time.sleep(0.02)
+                assert marker.exists(), result_box
+                custody = json.loads(marker.read_text(encoding="utf-8"))
+                assert process_is_live(custody["executor"])
+                assert process_is_live(custody["child"])
+                authority.close()
+                with pytest.raises(BlockingIOError):
+                    open_generation_lease(lease_path)
+                finish.touch()
+                launched.join(timeout=10)
+                assert not launched.is_alive(), "guardian did not finish cleanup"
+                assert "error" not in result_box
+                result = result_box["result"]
+                assert result.returncode == 0
+                assert result.supervisor_receipt["receipt_binding"] == authority.identity
+                assert result.supervisor_receipt["generation"] == "g-launch"
+                assert result.supervisor_receipt["quiescent"] is True
+                assert result.cleanup_evidence["job_active_processes"] == 0
+                assert not process_is_live(custody["executor"])
+                assert not process_is_live(custody["child"])
+                assert heartbeat.exists()
+                contender = open_generation_lease(lease_path)
+                os.close(contender)
+            finally:
+                finish.touch()
+                launched.join(timeout=20)
+                authority.close()
+            return
         launch_lease_fd = os.open(lease_path, os.O_RDWR | os.O_CREAT, 0o600)
         fcntl.flock(launch_lease_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         launch_custody_path = root / "launch-custody.json"
         heartbeat_path = root / "executor.heartbeat.json"
+
+        if sys.platform == "darwin":
+            try:
+                result = launch(
+                    [sys.executable, "-c", "raise SystemExit('must not run')"],
+                    lease_authority=object(), heartbeat_path=heartbeat_path,
+                )
+                assert not result.available
+                assert result.unavailable_reason == "native_macos_leased_execution_requires_linux_worker"
+                assert "Linux" in result.output
+                assert result.supervisor_receipt is None
+                assert not heartbeat_path.exists()
+                os.fstat(launch_lease_fd)
+            finally:
+                os.close(launch_lease_fd)
+            return
 
         class InjectedLockedDescriptor:
             generation = "g-launch"

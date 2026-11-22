@@ -1,5 +1,27 @@
 from __future__ import annotations
 
+from .jevdrill_adapter import build_jevdrill_request, launch_jevdrill
+
+
+def discover_jevdrill_work_units(adapter, inputs, *, plan_objective):
+    """Discover guidance, then consume an ordinary host-produced lane plan."""
+    from uuid import UUID, uuid5
+    from .plan_ir import parse_phase_plan_ir
+    from .jevdrill_adapter import JevDrillUnavailable
+
+    result = adapter.discover_objective(inputs)
+    plan = plan_objective(result)
+    ir = parse_phase_plan_ir(plan)
+    if ir.diagnostics or not ir.lanes:
+        raise JevDrillUnavailable("Host planning did not produce valid task lanes")
+    details = result["details"]
+    ref = {key: details[key] for key in ("discovery_id", "work_objective_id", "trace_digest")}
+    tasks = tuple({"task_id": str(uuid5(UUID(inputs["work_objective_id"]), lane.lane_id)),
+                   "assignment": HarnessLaneAssignment(phase=inputs["work_objective_id"],
+                        lane_id=lane.lane_id, work_unit_kind="lane_execute", owned_files=lane.owned_files),
+                   "discovery_ref": ref.copy()} for lane in ir.lanes)
+    return result, tasks
+
 import hashlib
 import inspect
 import json
@@ -1297,7 +1319,10 @@ def run_loop(
     allow_cross_phase_dirty_reason: str | None = None,
     allow_unowned_reason: str | None = None,
     run_mode: str = "autonomous",
+    jevdrill_adapter: object | None = None,
 ) -> tuple[StateSnapshot, list[LaunchResult]]:
+    if jevdrill_adapter is not None and (parallel_dispatch or phase_scheduler_mode != "off"):
+        raise ValueError("JEV Drill integration requires serial phase dispatch")
     if closeout_mode not in CLOSEOUT_MODES:
         raise ValueError(f"invalid closeout mode: {closeout_mode}")
     if phase_scheduler_mode not in PHASE_SCHEDULER_MODES:
@@ -3342,7 +3367,8 @@ def run_loop(
                 _exec_repo = repo
                 _exec_roadmap = roadmap
                 _exec_plan = plan
-            request = build_launch_request(
+            request = build_jevdrill_request(
+                jevdrill_adapter, build_launch_request, mode="main", dry_run=dry_run,
                 executor=resolved_executor,
                 action=launch_action,
                 repo=_exec_repo,
@@ -3357,6 +3383,7 @@ def run_loop(
                 json_output=json_output,
                 bypass_approvals=bypass_approvals,
             )
+            selection = request.model_selection
             spec = build_launch_spec(request)
             if not spec.available and (not dry_run or spec.executor == "command"):
                 classifications[alias] = "blocked"
@@ -4703,8 +4730,8 @@ def run_loop(
             outcome, prep = _prepare_phase_launch()
             if outcome is not None:
                 return outcome
-            result = launch_with_spec(
-                prep.spec,
+            result = launch_jevdrill(
+                jevdrill_adapter, launch_with_spec, prep.spec,
                 dry_run=dry_run,
                 log_path=prep.artifacts.get("log"),
                 heartbeat_path=prep.artifacts.get("heartbeat") if heartbeat_enabled else None,
@@ -5153,6 +5180,7 @@ def launch_delegated_child(
     heartbeat_interval_seconds: int = 30,
     quiet_warning_seconds: int = 600,
     quiet_blocker_seconds: int = 1800,
+    jevdrill_adapter: object | None = None,
 ) -> dict[str, object]:
     decision = validate_delegation_request(
         repo,
@@ -5261,7 +5289,8 @@ def launch_delegated_child(
         delegation_request=request,
         parent_child_metadata=parent_child,
     )
-    launch_request = build_launch_request(
+    launch_request = build_jevdrill_request(
+        jevdrill_adapter, build_launch_request, mode="delegated", dry_run=dry_run,
         executor=decision.selected_executor or request.target_executor,
         action=request.product_action,
         repo=repo,
@@ -5276,6 +5305,7 @@ def launch_delegated_child(
         json_output=json_output,
         bypass_approvals=bypass_approvals,
     )
+    selection = launch_request.model_selection
     spec = build_launch_spec(launch_request)
     artifacts = run_artifacts(repo, parent_phase.upper(), request.product_action, 1, spec)
     parent_child = ParentChildRunMetadata(
@@ -5367,8 +5397,8 @@ def launch_delegated_child(
             "launch_metadata": launch_metadata,
             "terminal_summary": terminal_summary,
         }
-    result = launch_with_spec(
-        spec,
+    result = launch_jevdrill(
+        jevdrill_adapter, launch_with_spec, spec,
         dry_run=dry_run,
         log_path=artifacts["log"],
         heartbeat_path=artifacts["heartbeat"],
@@ -5919,6 +5949,7 @@ def launch_harness_lane_work_unit(
     json_output: bool = False,
     bypass_approvals: bool = False,
     command_adapter: CommandAdapterConfig | None = None,
+    jevdrill_adapter: object | None = None,
 ) -> dict[str, object]:
     diagnostic = pipeline_execution_plan_diagnostic(repo, plan, phase=assignment.phase, roadmap=roadmap)
     if diagnostic is not None:
@@ -5967,7 +5998,8 @@ def launch_harness_lane_work_unit(
         injection_mode_override="context_file" if executor == "command" else None,
         harness_lane_assignment=assignment,
     )
-    request = build_launch_request(
+    request = build_jevdrill_request(
+        jevdrill_adapter, build_launch_request, mode="lane", dry_run=dry_run,
         executor=executor,
         action=action,
         repo=repo,
@@ -5981,6 +6013,7 @@ def launch_harness_lane_work_unit(
         json_output=json_output,
         bypass_approvals=bypass_approvals,
     )
+    selection = request.model_selection
     spec = build_launch_spec(request)
     artifacts = run_artifacts(repo, assignment.phase, action, 1, spec)
     identity = WorkUnitIdentity(
@@ -6023,7 +6056,8 @@ def launch_harness_lane_work_unit(
             "terminal_summary": blocked_summary,
             "artifacts": {key: str(value) for key, value in artifacts.items()},
         }
-    result = launch_with_spec(spec, dry_run=dry_run, log_path=artifacts.get("log"))
+    result = launch_jevdrill(jevdrill_adapter, launch_with_spec, spec,
+                            dry_run=dry_run, log_path=artifacts.get("log"))
     terminal_summary = build_terminal_summary(
         terminal_status="complete" if dry_run else "executing",
         terminal_blocker=None,

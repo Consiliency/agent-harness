@@ -1,0 +1,107 @@
+{
+  "sanitized": {
+    "derived_from": "evidence/HOST-ADAPTER/closeout.json@git-blob:05fe00d4eb517c7a3d346e18f0eddd33020a3484",
+    "redactions": [
+      "local paths"
+    ],
+    "note": "Sanitized derivative: local account paths replaced with <home>/<workspace>/<worktrees> placeholders; every digest, exit code and outcome is retained unchanged from the original (digests cover the unredacted original)."
+  },
+  "schema": "host_adapter_execution_closeout.v1",
+  "timestamp": "2026-10-09T11:02:17Z",
+  "phase": "HOST-ADAPTER",
+  "repo_root": "<worktrees>/agent-harness-jevdrill-discovery-host",
+  "branch": "codex/jevdrill-discovery-host",
+  "plan": "plans/detailed-jevdrill-discovery-host.md",
+  "status": "executed",
+  "terminal_status": "awaiting_phase_closeout",
+  "verification_status": "passed",
+  "upstream_verification_artifact": "<worktrees>/jevdrill-route-discovery/evidence/HOST/verification.json",
+  "input_digest": "da6662580a4aa7a7e3ea4716348eb01d3cef0718d1c4088ce2fd90ffa2f9ef5f",
+  "native_verification": [
+    {
+      "os": "Darwin",
+      "duration_seconds": 216.064,
+      "proof_cost_target_exceeded": false,
+      "jev_tests": {
+        "total": 440,
+        "skipped": 0,
+        "failures": 0,
+        "errors": 0
+      },
+      "companion_direct_tests": 130,
+      "companion_discovery_tests": 14,
+      "python_version": "3.13.7",
+      "bridge_version": "0.20.1",
+      "compiler_version": "baml-cli 0.20.1",
+      "receipt": "evidence/HOST/platforms/Darwin-3.13.json"
+    },
+    {
+      "os": "Linux",
+      "duration_seconds": 301.543,
+      "proof_cost_target_exceeded": true,
+      "jev_tests": {
+        "total": 440,
+        "skipped": 0,
+        "failures": 0,
+        "errors": 0
+      },
+      "companion_direct_tests": 266,
+      "companion_discovery_tests": 14,
+      "python_version": "3.13.15",
+      "bridge_version": "0.20.1",
+      "compiler_version": "baml-cli 0.20.1",
+      "receipt": "evidence/HOST/platforms/Linux-3.13.json"
+    },
+    {
+      "os": "Windows",
+      "duration_seconds": 313.599,
+      "proof_cost_target_exceeded": true,
+      "jev_tests": {
+        "total": 440,
+        "skipped": 0,
+        "failures": 0,
+        "errors": 0
+      },
+      "companion_direct_tests": 130,
+      "companion_discovery_tests": 14,
+      "python_version": "3.13.15",
+      "bridge_version": "0.20.1",
+      "compiler_version": "baml-cli 0.20.1",
+      "receipt": "evidence/HOST/platforms/Windows-3.13.json"
+    }
+  ],
+  "extra_verification": [
+    {
+      "os": "Darwin",
+      "tests": 23,
+      "exit_code": 0,
+      "source_stable": true,
+      "input_digest": "da6662580a4aa7a7e3ea4716348eb01d3cef0718d1c4088ce2fd90ffa2f9ef5f",
+      "receipt": "evidence/HOST/companion/extra-Darwin.json"
+    },
+    {
+      "os": "Linux",
+      "tests": 23,
+      "exit_code": 0,
+      "source_stable": true,
+      "input_digest": "da6662580a4aa7a7e3ea4716348eb01d3cef0718d1c4088ce2fd90ffa2f9ef5f",
+      "receipt": "evidence/HOST/companion/extra-Linux.json"
+    },
+    {
+      "os": "Windows",
+      "tests": 59,
+      "exit_code": 0,
+      "source_stable": true,
+      "input_digest": "da6662580a4aa7a7e3ea4716348eb01d3cef0718d1c4088ce2fd90ffa2f9ef5f",
+      "receipt": "evidence/HOST/companion/extra-Windows.json"
+    }
+  ],
+  "generated_output_audit_exit_code": 0,
+  "reflection": "<home>/.codex/skills/codex-execute-phase/reflections/3783ec253f1bec57/codex--jevdrill-discovery-host/host-adapter-execute-20261009.md",
+  "publication_performed": false,
+  "runtime_installation_changed": false,
+  "performance_claims": "insufficient_evidence",
+  "produced_if_gates": [],
+  "issue_inventory": [],
+  "issue_dispositions": []
+}

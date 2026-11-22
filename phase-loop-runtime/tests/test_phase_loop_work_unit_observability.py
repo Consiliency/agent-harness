@@ -1,9 +1,10 @@
 import tempfile
 import unittest
+from contextlib import chdir
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
-from phase_loop_runtime.closeout import build_phase_loop_closeout
+from phase_loop_runtime.closeout import build_phase_loop_closeout, phase_loop_closeout_diagnostic
 from phase_loop_runtime.events import append_work_unit_event, read_events
 from phase_loop_runtime.handoff import render_tui_handoff
 from phase_loop_runtime.models import StateSnapshot, WorkUnitCloseout, WorkUnitEventMetadata, WorkUnitIdentity, WorkUnitState, utc_now
@@ -266,17 +267,19 @@ class PhaseLoopWorkUnitObservabilityTest(unittest.TestCase):
             plan.parent.mkdir(parents=True, exist_ok=True)
             plan.write_text("# RUNNER\n", encoding="utf-8")
             identity = WorkUnitIdentity(phase="RUNNER", kind="lane_execute", lane_id="SL-0", attempt=1)
-            closeout = build_phase_loop_closeout(
-                phase_alias="RUNNER",
-                plan_path=plan,
-                terminal_summary={
-                    "terminal_status": "complete",
-                    "verification_status": "passed",
-                    "evidence_refs": ({"path": "vendor/phase-loop-runtime/tests/fixtures/phase_loop_pipeline_bridge/dfbundlecloseout_complete.json", "sha256": "a" * 64},),
-                },
-                automation={"status": "complete", "verification_status": "passed"},
-                changed_paths=("vendor/phase-loop-runtime/src/phase_loop_runtime/events.py",),
-            )
+            with chdir(repo):
+                closeout = build_phase_loop_closeout(
+                    phase_alias="RUNNER",
+                    plan_path=plan.relative_to(repo),
+                    terminal_summary={
+                        "terminal_status": "complete",
+                        "verification_status": "passed",
+                        "evidence_refs": ({"path": "vendor/phase-loop-runtime/tests/fixtures/phase_loop_pipeline_bridge/dfbundlecloseout_complete.json", "sha256": "a" * 64},),
+                    },
+                    automation={"status": "complete", "verification_status": "passed"},
+                    changed_paths=("vendor/phase-loop-runtime/src/phase_loop_runtime/events.py",),
+                )
+            self.assertIsNone(phase_loop_closeout_diagnostic(closeout))
             work_unit = WorkUnitCloseout(
                 identity=identity,
                 status="complete",

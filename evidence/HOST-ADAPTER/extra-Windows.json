@@ -1,0 +1,268 @@
+{
+  "sanitized": {
+    "derived_from": "evidence/HOST-ADAPTER/extra-Windows.json@git-blob:9a839a6e63012c64a88641679cfcc7101a4ff633",
+    "redactions": [
+      "local paths"
+    ],
+    "note": "Sanitized derivative: local account paths replaced with <home>/<workspace>/<worktrees> placeholders; every digest, exit code and outcome is retained unchanged from the original (digests cover the unredacted original)."
+  },
+  "schema_version": 1,
+  "phase": "HOST-ADAPTER",
+  "os": "Windows",
+  "input_digest": "da6662580a4aa7a7e3ea4716348eb01d3cef0718d1c4088ce2fd90ffa2f9ef5f",
+  "source_stable": true,
+  "command": [
+    "<home>\\workspace\\verification\\jevdrill-host-20261009\\host-fixture\\vendor\\phase-loop-runtime\\.venv\\Scripts\\python.exe",
+    "-m",
+    "pytest",
+    "-q",
+    "tests/test_windows_locking.py",
+    "tests/test_launcher_liveness.py",
+    "tests/test_windows_processes.py",
+    "tests/test_windows_storage.py",
+    "--junitxml=<home>\\AppData\\Local\\Temp\\host-extra-qbh3muf5\\tests.xml"
+  ],
+  "command_sha256": "9eb47997da1b05287070b87f2ff89bfb7fa53deaee8f37673e0a46c3b60c9cf7",
+  "output_sha256": "534baeaf4aa8df3349a1c8a5eb7629268c9358af8be23c236827f101b697d47d",
+  "exit_code": 0,
+  "assertions": [
+    {
+      "node_id": "tests/test_launcher_liveness.py::test_cpu_active_quiet_child_is_not_torn_down_for_stale_output_only",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_launcher_liveness.py::test_launch_without_log_closes_stdin_when_no_payload",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_launcher_liveness.py::test_macos_leased_execution_rejects_before_spawn",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_launcher_liveness.py::test_observed_launch_closes_stdin_when_no_payload",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_launcher_liveness.py::test_process_group_cpu_activity_prevents_stale_cleanup",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_launcher_liveness.py::test_stale_cpu_idle_child_is_torn_down_and_marked_stalled",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_launcher_liveness.py::test_stale_cpu_unknown_child_is_torn_down_after_grace",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_launcher_liveness.py::test_timeout_launch_records_salvage_snapshot",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_launcher_liveness.py::test_unobserved_child_still_stall_detected_via_ephemeral_monitor",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_launcher_liveness.py::test_unobserved_child_without_ephemeral_monitor_uses_bare_run",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_locking.py::test_blocking_contender_waits_for_release",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_locking.py::test_broker_nested_lock_preserves_outer_ownership",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_locking.py::test_contention_preserves_bytes_and_offset[]",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_locking.py::test_contention_preserves_bytes_and_offset[{\"generation\":\"unchanged\"}\\n]",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_locking.py::test_dispatch_explicit_identity_reenters_and_competitor_is_rejected",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_locking.py::test_generation_lease_access_error_is_not_contention",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_locking.py::test_generation_lease_duplicate_retains_ownership",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_locking.py::test_generation_lease_explicit_child_handoff",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_locking.py::test_invalid_descriptor_is_not_contention",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_locking.py::test_process_death_releases_ownership[lease]",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_locking.py::test_process_death_releases_ownership[record]",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_locking.py::test_production_imports",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_locking.py::test_unsupported_qualification_cannot_admit",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_processes.py::test_assignment_failure_never_admits_executor",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_processes.py::test_bounded_output_and_blocked_stdin",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_processes.py::test_guardian_holds_lease_and_preserves_uncertain_generation[False]",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_processes.py::test_guardian_holds_lease_and_preserves_uncertain_generation[True]",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_processes.py::test_invalid_entry_point_and_large_input_do_not_run",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_processes.py::test_leased_launcher_timeout_and_stall_confirm_cleanup[False]",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_processes.py::test_leased_launcher_timeout_and_stall_confirm_cleanup[True]",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_processes.py::test_leased_storage_contention_obeys_launch_deadline_before_executor",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_processes.py::test_liveness_probe_preserves_process_and_cpu_unknown",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_processes.py::test_nested_job_ownership",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_processes.py::test_normal_execution_unicode_stdin_and_output",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_processes.py::test_normal_exit_kills_detached_descendant_and_retained_pipe",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_processes.py::test_output_callback_failure_cannot_report_success",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_processes.py::test_owner_death_closes_job_and_kills_tree",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_processes.py::test_production_launcher_streams_stdin_and_reuses_completed_lease[False]",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_processes.py::test_production_launcher_streams_stdin_and_reuses_completed_lease[True]",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_processes.py::test_timeout_and_cancel_kill_descendants[False]",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_processes.py::test_timeout_and_cancel_kill_descendants[True]",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_processes.py::test_unqualified_production_launch_fails_closed",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_storage.py::test_broker_atomic_write_uses_private_nested_storage",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_storage.py::test_event_log_repairs_torn_tail_and_replays_after_restart",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_storage.py::test_event_writer_waits_for_other_process_binding",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_storage.py::test_existing_inherited_acl_is_rejected_without_mutation",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_storage.py::test_failed_flush_never_reports_success",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_storage.py::test_handle_bound_replacement_and_failed_rename",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_storage.py::test_held_ancestor_cannot_be_renamed_or_deleted",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_storage.py::test_invalid_names_do_not_write[../escape]",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_storage.py::test_invalid_names_do_not_write[bad\\\\name]",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_storage.py::test_invalid_names_do_not_write[stream:alternate]",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_storage.py::test_invalid_names_do_not_write[trailing.]",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_storage.py::test_junction_is_rejected_without_external_write",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_storage.py::test_namespace_flush_failure_is_not_acknowledged",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_storage.py::test_pinned_directory_rejects_reparse_mutation",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_storage.py::test_private_directory_record_acl_and_restart",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_storage.py::test_reclamation_requires_protected_completion_record[False]",
+      "outcome": "passed"
+    },
+    {
+      "node_id": "tests/test_windows_storage.py::test_reclamation_requires_protected_completion_record[True]",
+      "outcome": "passed"
+    }
+  ],
+  "assertions_sha256": "c4d4514b8a3962154d39d882aa4b8a4adfe061320d8ae0cd971475f4535bb187",
+  "duration_seconds": 17.712
+}

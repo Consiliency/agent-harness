@@ -1,4 +1,5 @@
 import io
+import os
 import subprocess
 import sys
 import tempfile
@@ -10,7 +11,26 @@ from phase_loop_runtime.launcher import launch
 
 
 class LauncherLivenessTest(unittest.TestCase):
+    def test_macos_leased_execution_rejects_before_spawn(self):
+        with tempfile.TemporaryDirectory() as td:
+            marker = Path(td) / "must-not-exist"
+            with (
+                patch("phase_loop_runtime.launcher.sys.platform", "darwin"),
+                patch("phase_loop_runtime.launcher.subprocess.Popen", side_effect=AssertionError("must not spawn")),
+                patch("phase_loop_runtime.launcher.subprocess.run", side_effect=AssertionError("must not spawn")),
+            ):
+                result = launch([sys.executable, "-c", f"from pathlib import Path; Path({str(marker)!r}).touch()"], lease_authority=object())
+            self.assertFalse(result.available)
+            self.assertEqual(result.unavailable_reason, "native_macos_leased_execution_requires_linux_worker")
+            self.assertIn("Linux worker", result.output)
+            self.assertFalse(marker.exists())
+
     def test_launch_without_log_closes_stdin_when_no_payload(self):
+        if os.name == "nt":
+            result = launch([sys.executable, "-c", "import sys; assert sys.stdin.read() == ''; print('ok')"])
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.output.strip(), "ok")
+            return
         class Completed:
             returncode = 0
             stdout = "ok\n"
@@ -24,6 +44,13 @@ class LauncherLivenessTest(unittest.TestCase):
         self.assertNotIn("input", mocked.call_args.kwargs)
 
     def test_observed_launch_closes_stdin_when_no_payload(self):
+        if os.name == "nt":
+            with tempfile.TemporaryDirectory() as td:
+                log = Path(td) / "output.log"
+                result = launch([sys.executable, "-c", "import sys; assert sys.stdin.read() == ''; print('ok')"], log_path=log)
+                self.assertEqual(result.returncode, 0)
+                self.assertEqual(log.read_text().strip(), "ok")
+            return
         captured_kwargs = {}
 
         class FakeProcess:
@@ -71,7 +98,10 @@ class LauncherLivenessTest(unittest.TestCase):
             self.assertTrue(result.timed_out)
             self.assertIsNotNone(result.cleanup_evidence)
             self.assertEqual(result.cleanup_evidence["reason"], "timeout")
-            self.assertIn("SIGTERM", result.cleanup_evidence["signals_sent"])
+            if os.name == "nt":
+                self.assertEqual(result.cleanup_evidence["job_active_processes"], 0)
+            else:
+                self.assertIn("SIGTERM", result.cleanup_evidence["signals_sent"])
             self.assertFalse(result.cleanup_evidence["process_alive_after_cleanup"])
             self.assertEqual(result.cleanup_evidence["salvage_snapshot"]["reason"], "timeout")
             self.assertEqual(result.cleanup_evidence["salvage_snapshot"]["log_path"], str(log_path))
@@ -148,7 +178,10 @@ class LauncherLivenessTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0)
             self.assertFalse(result.stalled)
             self.assertFalse(result.timed_out)
-            self.assertIsNone(result.cleanup_evidence)
+            if os.name == "nt":
+                self.assertEqual(result.cleanup_evidence["job_active_processes"], 0)
+            else:
+                self.assertIsNone(result.cleanup_evidence)
 
     def test_unobserved_child_still_stall_detected_via_ephemeral_monitor(self):
         # #61/#86: a --no-observe executor child (log_path=None) must NOT fall to the
@@ -176,6 +209,13 @@ class LauncherLivenessTest(unittest.TestCase):
         self.assertIsNone(result.terminal_path)
 
     def test_unobserved_child_without_ephemeral_monitor_uses_bare_run(self):
+        if os.name == "nt":
+            result = launch([sys.executable, "-c", "print('ok')"])
+            self.assertEqual(result.returncode, 0)
+            self.assertFalse(result.stalled)
+            self.assertIsNone(result.log_path)
+            self.assertEqual(result.cleanup_evidence["job_active_processes"], 0)
+            return
         # Guard the opt-in boundary: default log_path=None (no ephemeral_monitor)
         # still uses the bare subprocess.run path (probes / non-executor callers).
         class Completed:
@@ -212,7 +252,10 @@ class LauncherLivenessTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0)
             self.assertFalse(result.stalled)
             self.assertFalse(result.timed_out)
-            self.assertIsNone(result.cleanup_evidence)
+            if os.name == "nt":
+                self.assertEqual(result.cleanup_evidence["job_active_processes"], 0)
+            else:
+                self.assertIsNone(result.cleanup_evidence)
 
 
 if __name__ == "__main__":

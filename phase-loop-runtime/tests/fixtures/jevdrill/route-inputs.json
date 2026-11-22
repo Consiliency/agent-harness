@@ -1,0 +1,520 @@
+[
+  {
+    "id": "inventory-valid",
+    "digest": "98adbfb3df4a86959744a4351b05c383be959ac02f0e5a83def520c8f7759a8f",
+    "contract": "InventorySnapshot",
+    "payload": {
+      "schema_version": "1",
+      "revision": "fixture",
+      "target": "fixture",
+      "source_version": "synthetic-v1",
+      "verified_at": "2026-01-01T00:00:00Z",
+      "expires_at": "2099-01-01T00:00:00Z",
+      "candidates": [
+        {
+          "candidate_id": "candidate-a",
+          "model_id": "model-a",
+          "resolved_model_revision": "model-a-v1",
+          "provider": "local",
+          "access_route": "synthetic",
+          "local": true,
+          "native_effort": {
+            "kind": "provider_default"
+          },
+          "supported_efforts": [],
+          "declared_capabilities": [
+            "text"
+          ],
+          "runtime_capabilities": [
+            "text"
+          ],
+          "required_capabilities": [
+            "text"
+          ],
+          "verified_at": "2026-01-01T00:00:00Z",
+          "expires_at": "2099-01-01T00:00:00Z",
+          "source": "synthetic-host",
+          "context_token_limit": 32768,
+          "output_token_limit": 1024,
+          "token_counter_revision": "<jev-token-counter-revision>",
+          "quality_sufficient": true,
+          "satisfied_requirements": [],
+          "completion_time_ms": 1000,
+          "evidence_strength": "measured",
+          "evidence_refs": [
+            "synthetic-measurement"
+          ],
+          "rates": {
+            "revision": "rates-v1",
+            "currency": "USD",
+            "input_rate": "0.000001",
+            "output_rate": "0.000002",
+            "verified_at": "2026-01-01T00:00:00Z",
+            "expires_at": "2099-01-01T00:00:00Z",
+            "subscription_multiplier": null
+          },
+          "default": false,
+          "guidance_options": [],
+          "addresses_failures": []
+        }
+      ]
+    },
+    "accepted": true
+  },
+  {
+    "id": "settings-valid",
+    "digest": "c85ec2f17a0a663c9baf63402f821404b00b0364406886d8593e69a1ea67e989",
+    "contract": "SettingsLayer",
+    "payload": {
+      "source": "project",
+      "values": {
+        "retain_raw_tasks": false,
+        "routing_deadline_ms": 5000
+      }
+    },
+    "accepted": true
+  },
+  {
+    "id": "inspect-valid",
+    "digest": "44acac6e8f5397ed7ec82db46fffed82de82ed7119227b83ab16a9c2e9a64e51",
+    "contract": "InspectRequest",
+    "payload": {
+      "schema_version": "1",
+      "scope": {
+        "project_id": "00000000-0000-4000-8000-000000000001",
+        "workspace_id": "00000000-0000-4000-8000-000000000001",
+        "producer": "fixture",
+        "operation": "route"
+      },
+      "decision_id": "00000000-0000-4000-8000-000000000001",
+      "replay": true
+    },
+    "accepted": true
+  },
+  {
+    "id": "delete-valid",
+    "digest": "388b5a69e120590dda8356bc2a73b2a4c267c477e6a06e0c49084441c0e40fed",
+    "contract": "DeleteRequest",
+    "payload": {
+      "schema_version": "1",
+      "scope": {
+        "project_id": "00000000-0000-4000-8000-000000000001",
+        "workspace_id": "00000000-0000-4000-8000-000000000001",
+        "producer": "fixture",
+        "operation": "route"
+      },
+      "task_id": "00000000-0000-4000-8000-000000000001"
+    },
+    "accepted": true
+  },
+  {
+    "id": "inventory-unknown-field",
+    "contract": "InventorySnapshot",
+    "payload": {
+      "schema_version": "1",
+      "revision": "fixture",
+      "target": "fixture",
+      "source_version": "synthetic-v1",
+      "verified_at": "2026-01-01T00:00:00Z",
+      "expires_at": "2099-01-01T00:00:00Z",
+      "candidates": [
+        {
+          "candidate_id": "candidate-a",
+          "model_id": "model-a",
+          "resolved_model_revision": "model-a-v1",
+          "provider": "local",
+          "access_route": "synthetic",
+          "local": true,
+          "native_effort": {
+            "kind": "provider_default"
+          },
+          "supported_efforts": [],
+          "declared_capabilities": [
+            "text"
+          ],
+          "runtime_capabilities": [
+            "text"
+          ],
+          "required_capabilities": [
+            "text"
+          ],
+          "verified_at": "2026-01-01T00:00:00Z",
+          "expires_at": "2099-01-01T00:00:00Z",
+          "source": "synthetic-host",
+          "context_token_limit": 32768,
+          "output_token_limit": 1024,
+          "token_counter_revision": "<jev-token-counter-revision>",
+          "quality_sufficient": true,
+          "satisfied_requirements": [],
+          "completion_time_ms": 1000,
+          "evidence_strength": "measured",
+          "evidence_refs": [
+            "synthetic-measurement"
+          ],
+          "rates": {
+            "revision": "rates-v1",
+            "currency": "USD",
+            "input_rate": "0.000001",
+            "output_rate": "0.000002",
+            "verified_at": "2026-01-01T00:00:00Z",
+            "expires_at": "2099-01-01T00:00:00Z",
+            "subscription_multiplier": null
+          },
+          "default": false,
+          "guidance_options": [],
+          "addresses_failures": []
+        }
+      ],
+      "secret": "synthetic"
+    },
+    "accepted": false
+  },
+  {
+    "id": "inventory-wrong-version",
+    "contract": "InventorySnapshot",
+    "payload": {
+      "schema_version": "2",
+      "revision": "fixture",
+      "target": "fixture",
+      "source_version": "synthetic-v1",
+      "verified_at": "2026-01-01T00:00:00Z",
+      "expires_at": "2099-01-01T00:00:00Z",
+      "candidates": [
+        {
+          "candidate_id": "candidate-a",
+          "model_id": "model-a",
+          "resolved_model_revision": "model-a-v1",
+          "provider": "local",
+          "access_route": "synthetic",
+          "local": true,
+          "native_effort": {
+            "kind": "provider_default"
+          },
+          "supported_efforts": [],
+          "declared_capabilities": [
+            "text"
+          ],
+          "runtime_capabilities": [
+            "text"
+          ],
+          "required_capabilities": [
+            "text"
+          ],
+          "verified_at": "2026-01-01T00:00:00Z",
+          "expires_at": "2099-01-01T00:00:00Z",
+          "source": "synthetic-host",
+          "context_token_limit": 32768,
+          "output_token_limit": 1024,
+          "token_counter_revision": "<jev-token-counter-revision>",
+          "quality_sufficient": true,
+          "satisfied_requirements": [],
+          "completion_time_ms": 1000,
+          "evidence_strength": "measured",
+          "evidence_refs": [
+            "synthetic-measurement"
+          ],
+          "rates": {
+            "revision": "rates-v1",
+            "currency": "USD",
+            "input_rate": "0.000001",
+            "output_rate": "0.000002",
+            "verified_at": "2026-01-01T00:00:00Z",
+            "expires_at": "2099-01-01T00:00:00Z",
+            "subscription_multiplier": null
+          },
+          "default": false,
+          "guidance_options": [],
+          "addresses_failures": []
+        }
+      ]
+    },
+    "accepted": false
+  },
+  {
+    "id": "inventory-missing-resolved-model",
+    "contract": "InventorySnapshot",
+    "payload": {
+      "schema_version": "1",
+      "revision": "fixture",
+      "target": "fixture",
+      "source_version": "synthetic-v1",
+      "verified_at": "2026-01-01T00:00:00Z",
+      "expires_at": "2099-01-01T00:00:00Z",
+      "candidates": [
+        {
+          "candidate_id": "candidate-a",
+          "model_id": "model-a",
+          "provider": "local",
+          "access_route": "synthetic",
+          "local": true,
+          "native_effort": {
+            "kind": "provider_default"
+          },
+          "supported_efforts": [],
+          "declared_capabilities": [
+            "text"
+          ],
+          "runtime_capabilities": [
+            "text"
+          ],
+          "required_capabilities": [
+            "text"
+          ],
+          "verified_at": "2026-01-01T00:00:00Z",
+          "expires_at": "2099-01-01T00:00:00Z",
+          "source": "synthetic-host",
+          "context_token_limit": 32768,
+          "output_token_limit": 1024,
+          "token_counter_revision": "<jev-token-counter-revision>",
+          "quality_sufficient": true,
+          "satisfied_requirements": [],
+          "completion_time_ms": 1000,
+          "evidence_strength": "measured",
+          "evidence_refs": [
+            "synthetic-measurement"
+          ],
+          "rates": {
+            "revision": "rates-v1",
+            "currency": "USD",
+            "input_rate": "0.000001",
+            "output_rate": "0.000002",
+            "verified_at": "2026-01-01T00:00:00Z",
+            "expires_at": "2099-01-01T00:00:00Z",
+            "subscription_multiplier": null
+          },
+          "default": false,
+          "guidance_options": [],
+          "addresses_failures": []
+        }
+      ]
+    },
+    "accepted": false
+  },
+  {
+    "id": "inventory-coerced-boolean",
+    "contract": "InventorySnapshot",
+    "payload": {
+      "schema_version": "1",
+      "revision": "fixture",
+      "target": "fixture",
+      "source_version": "synthetic-v1",
+      "verified_at": "2026-01-01T00:00:00Z",
+      "expires_at": "2099-01-01T00:00:00Z",
+      "candidates": [
+        {
+          "candidate_id": "candidate-a",
+          "model_id": "model-a",
+          "resolved_model_revision": "model-a-v1",
+          "provider": "local",
+          "access_route": "synthetic",
+          "local": true,
+          "native_effort": {
+            "kind": "provider_default"
+          },
+          "supported_efforts": [],
+          "declared_capabilities": [
+            "text"
+          ],
+          "runtime_capabilities": [
+            "text"
+          ],
+          "required_capabilities": [
+            "text"
+          ],
+          "verified_at": "2026-01-01T00:00:00Z",
+          "expires_at": "2099-01-01T00:00:00Z",
+          "source": "synthetic-host",
+          "context_token_limit": 32768,
+          "output_token_limit": 1024,
+          "token_counter_revision": "<jev-token-counter-revision>",
+          "quality_sufficient": true,
+          "satisfied_requirements": [],
+          "completion_time_ms": 1000,
+          "evidence_strength": "measured",
+          "evidence_refs": [
+            "synthetic-measurement"
+          ],
+          "rates": {
+            "revision": "rates-v1",
+            "currency": "USD",
+            "input_rate": "0.000001",
+            "output_rate": "0.000002",
+            "verified_at": "2026-01-01T00:00:00Z",
+            "expires_at": "2099-01-01T00:00:00Z",
+            "subscription_multiplier": null
+          },
+          "default": "true",
+          "guidance_options": [],
+          "addresses_failures": []
+        }
+      ]
+    },
+    "accepted": false
+  },
+  {
+    "id": "inventory-negative-price",
+    "contract": "InventorySnapshot",
+    "payload": {
+      "schema_version": "1",
+      "revision": "fixture",
+      "target": "fixture",
+      "source_version": "synthetic-v1",
+      "verified_at": "2026-01-01T00:00:00Z",
+      "expires_at": "2099-01-01T00:00:00Z",
+      "candidates": [
+        {
+          "candidate_id": "candidate-a",
+          "model_id": "model-a",
+          "resolved_model_revision": "model-a-v1",
+          "provider": "local",
+          "access_route": "synthetic",
+          "local": true,
+          "native_effort": {
+            "kind": "provider_default"
+          },
+          "supported_efforts": [],
+          "declared_capabilities": [
+            "text"
+          ],
+          "runtime_capabilities": [
+            "text"
+          ],
+          "required_capabilities": [
+            "text"
+          ],
+          "verified_at": "2026-01-01T00:00:00Z",
+          "expires_at": "2099-01-01T00:00:00Z",
+          "source": "synthetic-host",
+          "context_token_limit": 32768,
+          "output_token_limit": 1024,
+          "token_counter_revision": "<jev-token-counter-revision>",
+          "quality_sufficient": true,
+          "satisfied_requirements": [],
+          "completion_time_ms": 1000,
+          "evidence_strength": "measured",
+          "evidence_refs": [
+            "synthetic-measurement"
+          ],
+          "rates": {
+            "revision": "rates-v1",
+            "currency": "USD",
+            "input_rate": "-1",
+            "output_rate": "0.000002",
+            "verified_at": "2026-01-01T00:00:00Z",
+            "expires_at": "2099-01-01T00:00:00Z",
+            "subscription_multiplier": null
+          },
+          "default": false,
+          "guidance_options": [],
+          "addresses_failures": []
+        }
+      ]
+    },
+    "accepted": false
+  },
+  {
+    "id": "inventory-invalid-time",
+    "contract": "InventorySnapshot",
+    "payload": {
+      "schema_version": "1",
+      "revision": "fixture",
+      "target": "fixture",
+      "source_version": "synthetic-v1",
+      "verified_at": "2026-01-01T00:00:00Z",
+      "expires_at": "tomorrow",
+      "candidates": [
+        {
+          "candidate_id": "candidate-a",
+          "model_id": "model-a",
+          "resolved_model_revision": "model-a-v1",
+          "provider": "local",
+          "access_route": "synthetic",
+          "local": true,
+          "native_effort": {
+            "kind": "provider_default"
+          },
+          "supported_efforts": [],
+          "declared_capabilities": [
+            "text"
+          ],
+          "runtime_capabilities": [
+            "text"
+          ],
+          "required_capabilities": [
+            "text"
+          ],
+          "verified_at": "2026-01-01T00:00:00Z",
+          "expires_at": "2099-01-01T00:00:00Z",
+          "source": "synthetic-host",
+          "context_token_limit": 32768,
+          "output_token_limit": 1024,
+          "token_counter_revision": "<jev-token-counter-revision>",
+          "quality_sufficient": true,
+          "satisfied_requirements": [],
+          "completion_time_ms": 1000,
+          "evidence_strength": "measured",
+          "evidence_refs": [
+            "synthetic-measurement"
+          ],
+          "rates": {
+            "revision": "rates-v1",
+            "currency": "USD",
+            "input_rate": "0.000001",
+            "output_rate": "0.000002",
+            "verified_at": "2026-01-01T00:00:00Z",
+            "expires_at": "2099-01-01T00:00:00Z",
+            "subscription_multiplier": null
+          },
+          "default": false,
+          "guidance_options": [],
+          "addresses_failures": []
+        }
+      ]
+    },
+    "accepted": false
+  },
+  {
+    "id": "settings-unknown-field",
+    "contract": "SettingsLayer",
+    "payload": {
+      "source": "project",
+      "values": {
+        "retain_raw_tasks": false,
+        "routing_deadline_ms": 5000,
+        "enable_all": true
+      }
+    },
+    "accepted": false
+  },
+  {
+    "id": "inspect-invalid-identity",
+    "contract": "InspectRequest",
+    "payload": {
+      "schema_version": "1",
+      "scope": {
+        "project_id": "00000000-0000-4000-8000-000000000001",
+        "workspace_id": "00000000-0000-4000-8000-000000000001",
+        "producer": "fixture",
+        "operation": "route"
+      },
+      "decision_id": "not-a-uuid",
+      "replay": true
+    },
+    "accepted": false
+  },
+  {
+    "id": "delete-invalid-scope",
+    "contract": "DeleteRequest",
+    "payload": {
+      "schema_version": "1",
+      "scope": {
+        "project_id": "00000000-0000-4000-8000-000000000001",
+        "workspace_id": 12,
+        "producer": "fixture",
+        "operation": "route"
+      },
+      "task_id": "00000000-0000-4000-8000-000000000001"
+    },
+    "accepted": false
+  }
+]

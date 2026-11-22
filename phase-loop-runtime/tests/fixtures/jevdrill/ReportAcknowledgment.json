@@ -1,0 +1,164 @@
+{
+  "$defs": {
+    "ReportAccepted": {
+      "additionalProperties": false,
+      "properties": {
+        "durable": {
+          "const": true,
+          "title": "Durable",
+          "type": "boolean"
+        },
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "status": {
+          "const": "accepted",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "durable",
+        "event_id",
+        "schema_version",
+        "status"
+      ],
+      "title": "ReportAccepted",
+      "type": "object"
+    },
+    "ReportConflict": {
+      "additionalProperties": false,
+      "properties": {
+        "durable": {
+          "const": false,
+          "title": "Durable",
+          "type": "boolean"
+        },
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "status": {
+          "const": "conflict",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "durable",
+        "event_id",
+        "reason",
+        "schema_version",
+        "status"
+      ],
+      "title": "ReportConflict",
+      "type": "object"
+    },
+    "ReportDuplicate": {
+      "additionalProperties": false,
+      "properties": {
+        "durable": {
+          "const": true,
+          "title": "Durable",
+          "type": "boolean"
+        },
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "status": {
+          "const": "duplicate",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "durable",
+        "event_id",
+        "schema_version",
+        "status"
+      ],
+      "title": "ReportDuplicate",
+      "type": "object"
+    },
+    "ReportRejected": {
+      "additionalProperties": false,
+      "properties": {
+        "durable": {
+          "const": false,
+          "title": "Durable",
+          "type": "boolean"
+        },
+        "event_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Event Id"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "status": {
+          "const": "rejected",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "durable",
+        "event_id",
+        "reason",
+        "schema_version",
+        "status"
+      ],
+      "title": "ReportRejected",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/ReportAccepted"
+    },
+    {
+      "$ref": "#/$defs/ReportDuplicate"
+    },
+    {
+      "$ref": "#/$defs/ReportConflict"
+    },
+    {
+      "$ref": "#/$defs/ReportRejected"
+    }
+  ]
+}

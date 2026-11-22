@@ -26,8 +26,8 @@ participates in merge-back.
 """
 from __future__ import annotations
 
-import fcntl
 import hashlib
+import json
 import os
 import stat
 import subprocess
@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Callable
 
 from .runtime_paths import lane_worktree_path
+from .file_lock import open_generation_lease
 
 
 @dataclass(frozen=True)
@@ -259,8 +260,7 @@ def _generation_marker(repo: Path, target_branch: str, phase: str) -> Path:
 
 def _new_lease(repo: Path, generation: str) -> LeaseAuthority:
     path = _lease_path(repo, generation)
-    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
-    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    fd = open_generation_lease(path)
     lease_stat = os.fstat(fd)
     identity = f"{generation}:{lease_stat.st_dev}:{lease_stat.st_ino}"
     return LeaseAuthority(path, fd, identity, generation)
@@ -305,6 +305,13 @@ def _supports_safe_reclamation(path: Path) -> bool:
     lock semantics we cannot establish here.
     """
 
+    if os.name == "nt":
+        from .windows_storage import BoundDirectory
+        try:
+            with BoundDirectory(path):
+                return True
+        except OSError:
+            return False
     if os.name != "posix" or not all(
         hasattr(os, attribute) for attribute in ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")
     ):
@@ -351,6 +358,10 @@ def _stat_snapshot(file_stat: os.stat_result) -> tuple[int, int, int, int, int, 
 
 
 def _inventory_entry(path: Path, raw_path: bytes, status_code: str) -> tuple[object, ...]:
+    if os.name == "nt":
+        # Preserve every changed native Windows generation until protected
+        # changed-file inventory is qualified. Never read it through POSIX APIs.
+        raise OSError("Native Windows changed-file inventory is not qualified")
     rendered, parts = _relative_inventory_path(raw_path)
     parent_fd, name = _open_inventory_parent(path, parts)
     try:
@@ -468,16 +479,29 @@ def reclaim_phase_worktree(repo: Path, handle: PhaseWorktreeHandle) -> WorktreeR
     if not _supports_safe_reclamation(handle.worktree_path):
         return WorktreeReclamationResult(False, "unsupported_filesystem")
     try:
-        fd = os.open(lease_path, os.O_RDWR | os.O_CREAT, 0o600)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fd = open_generation_lease(lease_path)
         except BlockingIOError:
-            os.close(fd)
             return WorktreeReclamationResult(False, "live_lease")
         try:
             lease_stat = os.fstat(fd)
             if f"{handle.generation}:{lease_stat.st_dev}:{lease_stat.st_ino}" != handle.lease_identity:
                 return WorktreeReclamationResult(False, "lease_identity_drift")
+            if os.name == "nt":
+                from .windows_storage import BoundDirectory
+                marker = lease_path.with_name(lease_path.name + ".supervision")
+                try:
+                    with BoundDirectory(marker) as bound:
+                        bound.security.verify(bound.handles[-1])
+                        pending = json.loads(bound.read_record("pending.json"))
+                        complete = json.loads(bound.read_record("complete.json"))
+                        if (set(pending) != {"identity", "nonce"}
+                                or pending["identity"] != handle.lease_identity
+                                or not isinstance(pending["nonce"], str) or not pending["nonce"]
+                                or complete != {**pending, "quiescent": True}):
+                            return WorktreeReclamationResult(False, "supervision_unproven")
+                except (OSError, ValueError, TypeError):
+                    return WorktreeReclamationResult(False, "supervision_unproven")
             inventory_reason = _empty_stable_inventory(handle.worktree_path, handle.base_sha)
             if inventory_reason is not None:
                 return WorktreeReclamationResult(False, inventory_reason)

@@ -14,7 +14,6 @@ import argparse
 import contextlib
 import ctypes
 from dataclasses import replace
-import fcntl
 from hashlib import sha256
 import hmac
 import json
@@ -36,6 +35,7 @@ import time
 from . import __version__
 from . import agy_provenance
 from . import gemini_heartbeat as gh
+from .file_lock import acquire_exclusive
 
 # The files an installed wheel runs the qualified route from (agent-harness#1076 D2).
 # The local record key and the CI ``--route-core`` gate hash exactly these files;
@@ -477,6 +477,8 @@ def _network_owner_pid(pid):
     network namespace. Since agent-harness#1052 an ordinary owned provider runs in a nested
     user namespace with no capabilities, so entering the PROVIDER's user namespace cannot
     read the holder's egress rules; the owner's user namespace can."""
+    if sys.platform != "linux":
+        raise QualificationFailure(SELF_QUALIFICATION_UNAVAILABLE)
     import fcntl
     net_fd = os.open(f"/proc/{pid}/ns/net", os.O_RDONLY | os.O_CLOEXEC)
     try:
@@ -934,6 +936,8 @@ class Store:
     def lock(self, cancel_event=None, heartbeat=None, *, poll_s=0.1):
         """Once per key per user per host (I3): a flock on a CLOEXEC fd; waiters stay
         cancellable and emit heartbeats."""
+        if sys.platform != "linux":
+            raise ValueError(SELF_QUALIFICATION_UNAVAILABLE)
         fd = os.open(self.host_dir / "lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
         try:
             info = self._fstat(fd)
@@ -943,7 +947,7 @@ class Store:
                 if cancel_event is not None and cancel_event.is_set():
                     raise ValueError(CANCELLED)
                 try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquire_exclusive(fd, blocking=False)
                     break
                 except BlockingIOError:
                     if heartbeat is not None:
@@ -1100,6 +1104,8 @@ def lookup(env, data, path, *, store=None):
     against the live key (5.1 option (b)); the qualified entry is then verified against the
     full live key, including the measured help. A miss raises ``AdmissionMiss``.
     """
+    if sys.platform != "linux":
+        raise ValueError(SELF_QUALIFICATION_UNAVAILABLE)
     if not self_qualification_enabled():
         raise ValueError(gh._CAPABILITY)
     image = gh.VerifiedImage.from_bytes(data, path)
@@ -1137,6 +1143,8 @@ def ensure_admitted(env, cancel_event=None, heartbeat=None, *, store=None, trans
     entry. Operation failures write a typed failed entry; transients, cancellation and
     fetch failures write nothing.
     """
+    if sys.platform != "linux":
+        raise ValueError(SELF_QUALIFICATION_UNAVAILABLE)
     try:
         return gh.admit(env, keep_miss=True)
     except gh.AdmissionMiss as miss:
@@ -1401,6 +1409,9 @@ def verified_fd_image(fd):
     made before it was added can still change the bytes. Any cross-process hand-off of
     an image memfd must go through this check (claude §2 on agent-harness#1118).
     """
+    if sys.platform != "linux":
+        raise QualificationFailure(SELF_QUALIFICATION_UNAVAILABLE)
+    import fcntl
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
@@ -1429,6 +1440,8 @@ def provenance_gate(image_sha256, *, store=None):
 
 
 def _set_parent_death_signal():
+    if sys.platform != "linux":
+        raise QualificationFailure(SELF_QUALIFICATION_UNAVAILABLE)
     try:
         libc = ctypes.CDLL(None, use_errno=True)
         if libc.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0) != 0:
