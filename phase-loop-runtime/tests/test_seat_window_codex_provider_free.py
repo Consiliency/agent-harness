@@ -447,26 +447,86 @@ def not_ready_erratum_holds(terminal: str, events, stream) -> bool:
             and not any(getattr(event, "decision", None) == "allow" for event in events))
 
 
+#: The most a recorded request body may decode to (each decoder path enforces it).
+ZSTD_MAX_OUTPUT = 1 << 24
+
+
+def _zstd_bounded(output: bytes) -> bytes:
+    if len(output) > ZSTD_MAX_OUTPUT:
+        raise ValueError("zstd body exceeds the decode bound")
+    return bytes(output)
+
+
 def zstd_decoder():
-    """A zstd decoder for request bodies: ``compression.zstd`` (Python 3.14+), else the
-    ``zstandard`` package, else the trusted ``/usr/bin/zstd``; ``None`` when there is none."""
+    """A zstd decoder for request bodies, bounded to :data:`ZSTD_MAX_OUTPUT` on every path:
+    ``compression.zstd`` (Python 3.14+), else the ``zstandard`` package, else the trusted
+    ``/usr/bin/zstd``; ``None`` when there is none. A body that would decode past the bound,
+    or that ends inside a frame, raises."""
     try:
         from compression import zstd as _zstd  # type: ignore[import-not-found]
-        return _zstd.decompress
     except ImportError:
-        pass
+        _zstd = None
+    if _zstd is not None:
+        def decode_stdlib(data: bytes) -> bytes:
+            output, rest = bytearray(), bytes(data)
+            while rest:
+                decompressor = _zstd.ZstdDecompressor()
+                output += decompressor.decompress(
+                    rest, max_length=ZSTD_MAX_OUTPUT + 1 - len(output))
+                _zstd_bounded(output)
+                if not decompressor.eof:  # truncated, or stopped at the bound
+                    raise ValueError("zstd body is incomplete or exceeds the decode bound")
+                rest = decompressor.unused_data
+            return bytes(output)
+        return decode_stdlib
     try:
         import zstandard  # type: ignore[import-not-found]
-        return lambda data: zstandard.ZstdDecompressor().decompress(data, max_output_size=1 << 24)
     except ImportError:
-        pass
+        zstandard = None
+    if zstandard is not None:
+        def decode_package(data: bytes) -> bytes:
+            reader = zstandard.ZstdDecompressor().stream_reader(data, read_across_frames=True)
+            output = bytearray()
+            while True:
+                chunk = reader.read(ZSTD_MAX_OUTPUT + 1 - len(output))
+                if not chunk:
+                    return _zstd_bounded(output)
+                output += chunk
+                _zstd_bounded(output)
+        return decode_package
     if os.path.isfile("/usr/bin/zstd") and os.access("/usr/bin/zstd", os.X_OK):
         import subprocess
+        import threading
 
-        def decode(data: bytes) -> bytes:
-            return subprocess.run(["/usr/bin/zstd", "-d", "-q", "-c"], input=data,
-                                  capture_output=True, check=True, timeout=30).stdout
-        return decode
+        def decode_cli(data: bytes) -> bytes:
+            process = subprocess.Popen(["/usr/bin/zstd", "-d", "-q", "-c"],
+                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                       stderr=subprocess.DEVNULL)
+
+            def feed():
+                try:
+                    process.stdin.write(data)
+                except OSError:
+                    pass
+                finally:
+                    process.stdin.close()
+            writer = threading.Thread(target=feed, daemon=True)
+            writer.start()
+            try:
+                output = process.stdout.read(ZSTD_MAX_OUTPUT + 1)
+                if len(output) > ZSTD_MAX_OUTPUT:
+                    raise ValueError("zstd body exceeds the decode bound")
+                code = process.wait(timeout=30)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+                process.stdout.close()
+                writer.join(timeout=5)
+            if code != 0:
+                raise subprocess.CalledProcessError(code, "zstd")
+            return output
+        return decode_cli
     return None
 
 
@@ -726,6 +786,74 @@ def test_k1_t7_the_responder_answers_a_zstd_compressed_model_request():
     assert sink.sent.startswith(b"HTTP/1.1 200 OK"), sink.sent[:80]
     assert b"shell_command" in sink.sent and b"response.completed" in sink.sent
     assert json.loads(responder.bodies[0])["model"] == "gpt-fixture"
+
+
+def test_k1_t7_every_zstd_decoder_path_is_bounded(monkeypatch):
+    """Review N2: each decoder path refuses a body that decodes past ZSTD_MAX_OUTPUT. The
+    stdlib and package paths are driven through stand-in modules whose "frame" is the
+    decimal decoded size; the CLI path through the trusted /usr/bin/zstd, if present."""
+    import subprocess
+    import types
+    over = ZSTD_MAX_OUTPUT + 1
+
+    class _Decompressor:
+        def __init__(self):
+            self.eof, self.unused_data = False, b""
+
+        def decompress(self, data, max_length=-1):
+            size = int(data.decode())
+            produced = size if max_length < 0 else min(size, max_length)
+            self.eof = produced == size
+            return b"\0" * produced
+
+    stdlib = types.ModuleType("compression.zstd")
+    stdlib.ZstdDecompressor = _Decompressor
+    package = types.ModuleType("compression")
+    package.zstd = stdlib
+    monkeypatch.setitem(sys.modules, "compression", package)
+    monkeypatch.setitem(sys.modules, "compression.zstd", stdlib)
+    decode = zstd_decoder()
+    assert decode(b"5") == b"\0" * 5
+    with pytest.raises(ValueError):
+        decode(str(over).encode())
+
+    class _Reader:
+        def __init__(self, size):
+            self.left = size
+
+        def read(self, size):
+            produced = min(size, self.left, 1 << 20)
+            self.left -= produced
+            return b"\0" * produced
+
+    class _Package:
+        def stream_reader(self, data, read_across_frames=False):
+            assert read_across_frames is True
+            return _Reader(int(data.decode()))
+
+    zstandard = types.ModuleType("zstandard")
+    zstandard.ZstdDecompressor = _Package
+    monkeypatch.setitem(sys.modules, "compression", None)
+    monkeypatch.setitem(sys.modules, "compression.zstd", None)
+    monkeypatch.setitem(sys.modules, "zstandard", zstandard)
+    decode = zstd_decoder()
+    assert decode(b"7") == b"\0" * 7
+    with pytest.raises(ValueError):
+        decode(str(over).encode())
+
+    monkeypatch.setitem(sys.modules, "zstandard", None)
+    if not os.access("/usr/bin/zstd", os.X_OK):
+        assert zstd_decoder() is None
+        return
+    decode = zstd_decoder()
+    small = subprocess.run(["/usr/bin/zstd", "-q", "-c"], input=b"body", capture_output=True,
+                           check=True, timeout=30).stdout
+    assert decode(small) == b"body"
+    bomb = subprocess.run(["/usr/bin/zstd", "-q", "-c"], input=b"\0" * over,
+                          capture_output=True, check=True, timeout=30).stdout
+    assert len(bomb) < 4096
+    with pytest.raises(ValueError):
+        decode(bomb)
 
 
 def test_k1_t7_an_identity_body_is_unchanged_and_an_unknown_encoding_is_a_problem():
