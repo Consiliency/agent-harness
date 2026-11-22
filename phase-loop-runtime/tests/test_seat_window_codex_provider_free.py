@@ -31,6 +31,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import re
 import secrets
 import stat
 import sys
@@ -408,7 +409,12 @@ def _write_evidence(case: str, document: dict) -> None:
         pytest.fail("the A-C1 evidence directory must be private")
     document = {**document, "opt_in": os.environ.get(OPT_IN),
                 "native": os.environ.get("PHASE_LOOP_CODEX_FIXTURE_NATIVE")}
-    fd = os.open(os.path.join(directory, f"a-c1-{case}.json"),
+    # Each run names its own files (``PHASE_LOOP_A_C1_EVIDENCE_PREFIX``); none is ever
+    # overwritten (``O_EXCL``).
+    prefix = os.environ.get("PHASE_LOOP_A_C1_EVIDENCE_PREFIX", "a-c1")
+    if re.fullmatch(r"a-c1(-run[0-9]+)?", prefix) is None:
+        pytest.fail("the A-C1 evidence prefix is malformed")
+    fd = os.open(os.path.join(directory, f"{prefix}-{case}.json"),
                  os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w") as handle:
         json.dump(document, handle, indent=2, sort_keys=True)
