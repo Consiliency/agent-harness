@@ -14933,7 +14933,7 @@
           "sha256": "be46a86a442971c5b617a31806e743494b1b301f3dbd630baf857955695ee3a2"
         },
         "plans/artifacts/grok-tool-surface-contract-v1.md": {
-          "sha256": "9c56fc68e164d9ae7abbeb4969ee860c6844355c3d80569e4bb4600a3e6355d4"
+          "sha256": "5b929cb588e4bb555ce8374311432376fe4c04e8a851fd511e6c44682736b27c"
         },
         "plans/seats-jailcore-route-contract.md": {
           "sha256": "235f1faded1d7f15d0ff69668b6a451cee7167e6438d258da57257faf7bdae81"
@@ -14972,7 +14972,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-11-22T06:00:00Z"
+      "updated_at": "2026-11-22T18:00:00Z"
     },
     {
       "acceptance_criteria_count": null,

@@ -23,17 +23,18 @@ window-kit decisions (jail contract §15). The roadmap text is unchanged.
 - `plans/artifacts/grok-jail-tool-surface-contract-v1.md` at sha256
   `be46a86a442971c5b617a31806e743494b1b301f3dbd630baf857955695ee3a2` ("the jail contract"). This plan cites its sections.
 - `plans/artifacts/grok-tool-surface-contract-v1.md` at sha256
-  `9c56fc68e164d9ae7abbeb4969ee860c6844355c3d80569e4bb4600a3e6355d4` (agent-harness#2033
-  through erratum 7: the **historical base**). The effective input is that file once erratum
-  8 has merged and erratum 9 is added; a planning-only amendment re-pins it (Execution Notes,
-  "Re-pin gate").
+  `5b929cb588e4bb555ce8374311432376fe4c04e8a851fd511e6c44682736b27c` (the **effective
+  input**: agent-harness#2033 through erratum 7, erratum 8 r3 as merged with E8-A
+  agent-harness#2061, and erratum 9 added by the re-pin gate amendment; Execution Notes,
+  "Re-pin gate"). The historical base through erratum 7 was
+  `9c56fc68e164d9ae7abbeb4969ee860c6844355c3d80569e4bb4600a3e6355d4`.
 - `plans/seats-jailcore-route-contract.md` at sha256
   `235f1faded1d7f15d0ff69668b6a451cee7167e6438d258da57257faf7bdae81`: IF-0-JAILCORE-1 to
   IF-0-JAILCORE-3, including §1's vendor rule.
 - IF-0-FIRSTSEAT-1 to IF-0-FIRSTSEAT-3, and the FIRSTSEAT Grok gate as agent-harness#2033
   left it (gates take a launch `context=`; receipts carry `list_tools` or
   `frozen_measurement`; the jailed spawn admits `list_tools` only).
-- Gating, unmerged, named by role: erratum 8; the K-1 window kit with the owner's 2026-11-21
+- Gating, unmerged, named by role: the K-1 window kit with the owner's 2026-11-21
   decisions (jail contract header).
 
 **Base.** `origin/main` with GROKROLL SL-0 (agent-harness#2050) merged. Registering a Grok
@@ -370,7 +371,9 @@ Edit scope: `readiness_rows`'s expiry literal and `renewal_record` only; K-1 als
   dispatched until their base contains erratum 9 and those matching pins, however many
   planning-only commits deliver them. The roadmap moved on `main` after this base
   (OD-5, agent-harness#2052); `roadmap_sha256` is re-pinned against the merge base when this
-  amendment lands.
+  amendment lands. **Applied (2026-11-22):** erratum 8 merged (E8-A agent-harness#2061, E8-B
+  agent-harness#2064); erratum 9 is in the TS contract and the frozen inputs and manifest row
+  pin it; `roadmap_sha256` was checked against the landing base.
 - **Installs and pins.** Jail contract §10: only SL-2 moves the qualification validator; Train
   A, the K-1 snapshot rule, Train B and the catalog install; none between Gemini's first-window
   launch and its export; a Gemini window is refreshed per installed digest it relies on.
