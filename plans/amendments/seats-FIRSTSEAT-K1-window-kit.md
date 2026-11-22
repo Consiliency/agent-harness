@@ -35,8 +35,8 @@ an EC:
 - GROK: S-2 is resolved in source, and the jailed Grok branch uses the board-leg bracket.
 - FIRSTSEAT: SL-4 points here.
 
-**Design.** The design is frozen in `plans/artifacts/seats-window-kit-k1-contract.md`, r5 (the
-**contract**, sha256 `9f9bd97c3495473d143f3d0144d070daa63ad5f94b98a861054ce63185a5af34`). This
+**Design.** The design is frozen in `plans/artifacts/seats-window-kit-k1-contract.md`, r5.1 (the
+**contract**, sha256 `c3da17476bd32b15aaa7072b05f7fa3c07aae619186efc7772557aaf745eb35a`). This
 plan cites the contract and does not restate it:
 
 | Topic | Contract |
@@ -82,9 +82,11 @@ K1-T7 not-ready erratum (SL-6 A-C1 ruling item 3). It is contract r5:
 - Q-D (§15.3);
 - the single-run authority (§15.4).
 
-The copy transform is the same in the fixture and in production (§10.B). That is point R5-1
-for the plan reviewer and the president: in a production window, the CLI may present the
-edited, invalid bearer to the vendor after its refresh is refused.
+r5.1 answers the r5 plan review. R5-1 is resolved as a fence: a production expired leg never
+contacts the provider (§10.B). The fence cannot be built in SL-6's files without a
+proxy-rule change, so it is **open item OI-1 for the president and the owner**. Until OI-1 is
+ruled, the production expired leg is unqualified and no Codex row grant is issued. The
+provider-free A-C1 run does not wait on it.
 
 **Inputs.** The digests in the contract's opening table and the content inputs it lists.
 Nothing here pins a commit.
@@ -203,8 +205,11 @@ Test commands run from `phase-loop-runtime/`.
 - **Interfaces consumed**: IF-0-FIRSTSEAT-6 (SL-5), IF-0-CODEX-1 to IF-0-CODEX-5 (pre-existing), the provider-free loopback harness of `tests/test_seat_codex_provider_free.py` (pre-existing)
 - **Parallel-safe**: yes
 - **Stop rules.** Stop if:
-  - A-C1 fails, which is Q-D (r5): Codex is withdrawn from K-1;
-  - the single §15.4 run is spent without a pass, or a second run would be needed;
+  - the §15.4 run returns a failing verdict, which is Q-D (r5.1): Codex is withdrawn from K-1;
+  - the run ends in a §7(b) breach or a hard failure after launch: stop and ask the owner,
+    with no rerun (contract §15.4);
+  - the production expired-leg fence (OI-1) would need an edit to an allowlist, a named set,
+    a jail profile or the proxy's rules before OI-1 is ruled;
   - a file owned by CODEX would need an edit;
   - Codex's profile or allowlist digest would change;
   - contract §10.B's facts need a new launch kind.
@@ -212,9 +217,11 @@ Test commands run from `phase-loop-runtime/`.
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
 | SL-6.1 | test | (none) | `tests/test_seat_window_supply_codex.py` | registration, kinds, argv, stream facts, scope and refresh outcomes, §10.B's `expired_access_copy` (only the access `exp` differs, the signature segment and `last_refresh` are kept, `refresh_token` is `""`, `tokens_sha256` and `secrets` are recomputed and `expires_at` is kept) and its `refused_intended` rule, and F16 through the real `_prepare_jailed_codex` with the provider stubbed at its spawn boundary; one fixture context through `cli_main` to a record that `verify --vendor codex --window row` passes and that changes only `vendor:codex` | `pytest tests/test_seat_window_supply_codex.py` |
-| SL-6.2 | test | SL-6.1 | `tests/test_seat_window_codex_provider_free.py` | K1-T6 (start gate for SL-6.3) and K1-T7 (r5: the expired case, the fresh-margin assertion, the not-ready erratum). The three A-C1 cases launch only in SL-6.4's single run. | `PHASE_LOOP_REQUIRE_LIVE_JAIL=1 pytest -n 0 tests/test_seat_window_codex_provider_free.py -k "not a_c1"` |
-| SL-6.3 | impl | SL-6.2 | `seat_window_supply_codex.py` | (none) | `pytest tests/test_seat_window_supply_codex.py tests/test_seat_profile_codex.py` |
-| SL-6.4 | verify | SL-6.3 | lane files | all | the frontmatter `suite_command`, then the single run of contract §15.4: `PHASE_LOOP_REQUIRE_LIVE_JAIL=1 pytest -n 0 tests/test_seat_window_codex_provider_free.py` |
+| SL-6.2 | test | SL-6.1 | `tests/test_seat_window_codex_provider_free.py` | K1-T6 (start gate for SL-6.3) and K1-T7 (r5.1: the expired case with the named denial and bearer digests, the fresh-margin and clock assertions, the not-ready erratum). The three A-C1 cases launch only in SL-6.4's single run. | `PHASE_LOOP_REQUIRE_LIVE_JAIL=1 pytest -n 0 tests/test_seat_window_codex_provider_free.py -k "not a_c1"` |
+| SL-6.3 | impl | SL-6.2 | `seat_window_supply_codex.py` | (none). This is the A-C1 surface of contract §10.B only. | `pytest tests/test_seat_window_supply_codex.py tests/test_seat_profile_codex.py` |
+| SL-6.4 | verify | SL-6.3 | (none) | the A-C1 cases | the single A-C1 run, through contract §15.4's launcher only. Its outcome is read in §15.4's precedence. |
+| SL-6.5 | impl | SL-6.4 (a pass) | `seat_window_supply_codex.py` | (none) | `pytest tests/test_seat_window_supply_codex.py tests/test_seat_profile_codex.py` |
+| SL-6.6 | verify | SL-6.5 | lane files | all offline | the frontmatter `suite_command`. The live cases are not run again, and the PR cites SL-6.4's evidence. |
 
 ### SL-7 — K1-CLAUDE: Claude supplier adapter
 
@@ -262,7 +269,7 @@ Test commands run from `phase-loop-runtime/`.
 - **Interfaces provided**: (none)
 - **Interfaces consumed**: IF-0-FIRSTSEAT-6 (SL-5), the Codex window supplier (SL-6)
 - **Parallel-safe**: no
-- **Notes**: If Q-D (r5) withdraws Codex, SL-9 consumes no Codex supplier and records the
+- **Notes**: If Q-D (r5.1) withdraws Codex, SL-9 consumes no Codex supplier and records the
   withdrawal, with the run evidence and D1.
 - SL-7 and SL-8 are not producers for this reducer. It records them as pending and
   never claims they are complete; their vendor phase's records PR reports their landing. No
@@ -345,7 +352,7 @@ No lane makes a live provider call or runs on a seat host. SL-6.2 is provider-fr
     after FIRSTSEAT's exit is spent.
   - Q-2: the trust boundary in contract §1 is accepted, as for W1.
 - **Rulings (contract §15.3).** Q-C(b): `print` is the recorded default, and CLAUDE's observer
-  lands on the print path. Q-D (r5) withdraws Codex from K-1 if the single A-C1 run fails.
+  lands on the print path. Q-D (r5.1) withdraws Codex from K-1 on a failing A-C1 verdict. OI-1, the production expired-leg fence, is open for the president and the owner.
 - **Stall rule.** The diagnosis after r3 binds: r4 is the convergence round. Later findings go to
   the code review of the lane that owns the test (contract §15). r5 is the owner's single
   authorized exception (2026-11-22), and no further K-1 amendment is authorized.
@@ -361,7 +368,7 @@ No lane makes a live provider call or runs on a seat host. SL-6.2 is provider-fr
 ## Acceptance Criteria
 
 - [ ] EC-FIRSTSEAT-6 — proven by `pytest tests/test_seat_window_vendor_neutral.py tests/test_seat_window_grants.py` (F1–F9, F11–F15, K1-T1–T5, K1-T8 SL-5 part, K1-T9), entered through `cli_main`, `qualify`, `verify_records`, `reduce_readiness` and `export_records`, with a fixture vendor registered only through `register_window_data` and F15 run in a fresh process; falsified by any of: a passing record changing another vendor's row; a failing partition blocking another; a grant opening another pair, or one claimed after an auth call; a stale key part passing; an expired snapshot entry passing; a relabelled, replayed or restamped record passing. Path-entered control: real retained source files in a 0700 fixture directory, and the real grant journal and witnesses.
-- [ ] EC-FIRSTSEAT-6 — Codex, proven by `pytest tests/test_seat_window_supply_codex.py` and `PHASE_LOOP_REQUIRE_LIVE_JAIL=1 pytest tests/test_seat_window_codex_provider_free.py` (K1-T6, K1-T7); falsified by any of: a Codex record carrying Gemini's profile, allowlist or contract digest passing; a window launch retrying; `refused_intended` assigned to an incomplete stream or to a jail or proxy failure; `refused_intended` assigned to a run with a model request before its first token-host event, an allowed token-endpoint request, changed seat tokens or a bearer other than the installed expired token; the production `_prepare_jailed_codex` path changing. Path-entered control: the real `_prepare_jailed_codex` with the provider stubbed at its spawn boundary, and the real pinned binary under the loopback harness.
+- [ ] EC-FIRSTSEAT-6 — Codex, proven by `pytest tests/test_seat_window_supply_codex.py`, plus SL-6.4's single A-C1 run through contract §15.4's launcher (K1-T6, K1-T7); falsified by any of: a Codex record carrying Gemini's profile, allowlist or contract digest passing; a window launch retrying; `refused_intended` assigned to an incomplete stream or to a jail or proxy failure; `refused_intended` assigned to a run without the named `auth.openai.com` CONNECT denial before any model request, or with a request event to the token host, a credential change, or a model request whose recorded bearer is missing or not the installed expired token; a production expired leg dialing upstream; the production `_prepare_jailed_codex` path changing. Path-entered control: the real `_prepare_jailed_codex` with the provider stubbed at its spawn boundary, and the real pinned binary under the loopback harness.
 - [ ] EC-FIRSTSEAT-7 — proven by `pytest tests/test_seat_window_vendor_neutral.py -k "golden or legacy or registry_change"` (F10, F12's legacy cases, F14), with `tests/test_agy_qci.py` and the profile-digest receipt unchanged; falsified by any golden byte, Gemini argv or binding digest differing, by W1 refusing after a candidate row is added, or by the legacy rule applying without its journal. Path-entered control: the real Gemini window data and its supplier over the unedited `seat_jail_qualification`.
 
 ## Spec Closeout Plan
