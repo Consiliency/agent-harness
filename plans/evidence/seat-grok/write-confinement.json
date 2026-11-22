@@ -8,10 +8,11 @@
   "jail_context_digest": {
     "add4d201dbf2c0bd6077a36feb55a76939de30bae48dbb06f16b2307d38ceacb": "96d6485dea907a36b44a06934f53ac750199e66d8c0182d0f1e41d994346c458"
   },
-  "jail_profile_digest": {
-    "x86_64": "4b3238fa4a80b3aedf5cd49996f7cb46ae20e3d1a14648b5249e115a7eee005a",
-    "aarch64": "e40dfaace014651f2b6db75107a779639dc84919d929153ad6fe858c4b8b9777"
+  "jail_profile_digest_fixed_mounts": {
+    "x86_64": "ddd919a167539fb6ec0890b4695656ad0342e085906e563adbec391ada5ee96f",
+    "aarch64": "558b6e0d73347f4a0b850bba4dd6afbbc13690a9599aeb4c561e035e1b1c503f"
   },
+  "jail_profile_digest_basis": "seat_jail.jail_profile_digest('grok', arch) with the fixed system mounts of tests/data/seat_profile_digests_jailcore.json (host-independent); a host's own digest also binds its system mounts",
   "evidence": [
     {
       "evidence_id": "grok-write-confinement",

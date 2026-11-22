@@ -739,17 +739,27 @@ def test_jail_ns_ba_j1_one_child_allowed_through_the_proxy_and_refused_direct(
 EVIDENCE = REPO / "plans" / "evidence" / "seat-grok" / "write-confinement.json"
 
 
-def test_the_write_confinement_record_holds_ids_and_current_digests():
+def test_the_write_confinement_record_holds_ids_and_current_digests(monkeypatch):
     if not EVIDENCE.exists():
         pytest.skip("plans/evidence is outside this checkout (Gate A clean room)")
+    # The record binds the host-independent profile digests: the golden's fixed system
+    # mounts, never this runner's (which a host's own digest also binds).
+    monkeypatch.setattr(seat_jail, "_system_mounts", lambda: [
+        "--ro-bind", "/fixed/usr", "/usr", "--perms", "0755", "--dir", "/etc",
+        "--ro-bind", "/fixed/etc/hosts", "/etc/hosts",
+    ])
+    golden = json.loads((Path(__file__).parent / "data/seat_profile_digests_jailcore.json")
+                        .read_text(encoding="utf-8"))
     record = json.loads(EVIDENCE.read_text(encoding="utf-8"))
     assert record["schema"] == "phase_loop_seat_grok_write_confinement.v1"
     assert record["redaction"] == "metadata_only" and record["provider_turns"] == 0
     assert record["context"] == gjs.JAIL_CONTEXT
     assert record["jail_context_digest"] == {
         grok.GROK_1_0_92_SHA256: gjs.jail_context_digest(grok.GROK_1_0_92_SHA256)}
-    assert record["jail_profile_digest"] == {
-        arch: seat_jail.jail_profile_digest("grok", arch) for arch in ("x86_64", "aarch64")}
+    assert "jail_profile_digest" not in record
+    assert record["jail_profile_digest_fixed_mounts"] == {
+        arch: seat_jail.jail_profile_digest("grok", arch) for arch in ("x86_64", "aarch64")} == {
+        arch: golden[arch]["grok"] for arch in ("x86_64", "aarch64")}
     ids = [item["evidence_id"] for item in record["evidence"]]
     assert ids == ["grok-write-confinement", "grok-mask-protection", "grok-jailed-egress"]
     for item in record["evidence"]:
