@@ -25,6 +25,12 @@ def _load():
     return module
 
 
+# Gate A's standalone-from-wheel clean room checks out tests/ without the repository's
+# CI scripts and workflows; this CI-side classifier is tested only in the repository.
+if not SCRIPT.is_file():
+    pytest.skip("repository source absent from the standalone-from-wheel layout",
+                allow_module_level=True)
+
 R = _load()
 
 BOTH = frozenset(R.JEVDRILL_VARIABLES)
