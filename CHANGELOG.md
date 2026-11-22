@@ -182,6 +182,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- The Codex board-composition probe (`codex login status`) now reads the login that
+  `$CODEX_HOME` names, as the CLI and the seat's admission gate do
+  (Consiliency/agent-harness#2078). Before, `seat_profile` copied `auth.json` from
+  `$HOME/.codex` alone. A login kept only in `$CODEX_HOME` was refused as
+  `board_seat_probe_failed`, and with two logins the probe checked the other account.
+  The copy now comes from `seat_codex_credential.auth_path(env)`. The same link and
+  ownership checks apply, the refresh-free shape is unchanged, and a missing login (file or
+  directory) is still skipped for the provider-admin probe. With `CODEX_HOME` unset the
+  read is unchanged. Pins: none move. The launch reference inventory, SDK proof bindings
+  and jail profile digests are unchanged.
+
 - A seat process on a Node 22 host can no longer kill its own egress proxy with a refused
   request that declares a body (Consiliency/agent-harness#2067). srt tees a GET, HEAD or
   OPTIONS that declares a body (`Content-Length` or `Transfer-Encoding`) and hands the filter a
