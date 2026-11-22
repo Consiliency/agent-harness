@@ -182,6 +182,25 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- A jailed Gemini seat's tooled stream now accepts agy's bare `system_message` steps.
+  A long tooled review on agy 1.5.14 (0.7.39, dev0) was refused with
+  `gemini_seat_subagent_or_unknown_event` (`reason=bad_step_type`). The cause was three
+  `system_message` steps carrying only `conversation_id`, `step_index`, `state`,
+  `step_type` and `duration_seconds`, while every tool step passed. The tooled parser and
+  the private `stream_rejection` record share one helper:
+  - A `system_message` is admitted only when every key is in that fixed set.
+  - Admitted steps are counted as `provider_stream_system_steps`. That metadata is emitted on
+    the tooled route only.
+  - A `system_message` carrying `tool_name`, `tool_info`, `subagent_info`, `usage`, text or
+    any other key is still refused. So are `error_message`, `unknown`, `subagent` and every
+    other unrecorded step type.
+
+  The recorded step types (`_JAILED_GEMINI_STEP_TYPES`) and the no-tool (qualification)
+  route are unchanged. Pins: only the agy validator source-closure pin moves, from 76242fdf
+  (136 nodes) to 4a2c65ba (138 nodes). The validator identity stays `agy_validator_v1`, and
+  the fixed-corpus verdict vector, the seat QCI and the jail profile digests are unchanged.
+  No agy requalification is needed.
+
 - The Codex board-composition probe (`codex login status`) now reads the login that
   `$CODEX_HOME` names, as the CLI and the seat's admission gate do
   (Consiliency/agent-harness#2078). Before, `seat_profile` copied `auth.json` from

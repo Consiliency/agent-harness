@@ -7761,6 +7761,20 @@ _JAILED_GEMINI_REFUSED_TOOLS = frozenset({
 #: generic tool call without a name, ``call_mcp_tool`` for an MCP call without one.
 _JAILED_GEMINI_UNNAMED_TOOLS = frozenset({"generic", "call_mcp_tool"})
 _JAILED_GEMINI_TOOL_NAME_MAX = 128
+#: The only keys an inert agy ``system_message`` step may carry on the tooled route: exactly
+#: the bare shape agy 1.5.14 emitted in a long tooled review. No tool, subagent or text key.
+_JAILED_GEMINI_SYSTEM_STEP_KEYS = frozenset({
+    "conversation_id", "step_index", "state", "step_type", "duration_seconds",
+})
+
+
+def _jailed_gemini_inert_system_step(step: Mapping) -> bool:
+    """Whether a tooled step is agy's bare ``system_message``: that exact step type and no key
+    outside `_JAILED_GEMINI_SYSTEM_STEP_KEYS`, so never a ``tool_name``, ``tool_info`` or
+    ``subagent_info``. It is admitted without widening `_JAILED_GEMINI_STEP_TYPES`, so any
+    other ``system_message`` is still an unrecorded step. It never raises."""
+    return (type(step.get("step_type")) is str and step["step_type"] == "system_message"
+            and all(type(key) is str and key in _JAILED_GEMINI_SYSTEM_STEP_KEYS for key in step))
 
 
 def _jailed_gemini_tool_refusal(step: Mapping) -> str | None:
@@ -7800,19 +7814,22 @@ def _broker_gemini_stream_result(
 ) -> tuple[int, str, str, dict[str, object]]:
     """Accept acknowledged ingestion turns and one no-tool terminal response.
 
-    ``tooled`` (the jailed Gemini seat, agent-harness#1170) also accepts tool steps. It
-    refuses, with ``gemini_seat_subagent_or_unknown_event``: a subagent; a step or event P3
-    did not record; and a step whose tool name `_jailed_gemini_tool_refusal` refuses (a
-    missing or invalid name, or a name in `_JAILED_GEMINI_REFUSED_TOOLS`)."""
+    ``tooled`` (the jailed Gemini seat, agent-harness#1170) also accepts tool steps, and agy's
+    bare ``system_message`` steps (`_jailed_gemini_inert_system_step`), counted as
+    ``provider_stream_system_steps``. It refuses, with ``gemini_seat_subagent_or_unknown_event``:
+    a subagent; any other step or event P3 did not record; and a step whose tool name
+    `_jailed_gemini_tool_refusal` refuses (a missing or invalid name, or a name in
+    `_JAILED_GEMINI_REFUSED_TOOLS`)."""
     results: list[Mapping[str, object]] = []
     conversation_ids: set[str] = set()
     tool_steps = 0
+    system_steps = 0
 
     def metadata(
         outcome: str, *, acknowledgements_verified: bool = False,
         final_no_truncation: bool = False,
     ) -> dict[str, object]:
-        return {
+        fields: dict[str, object] = {
             "provider_stream_protocol": protocol.protocol,
             "provider_stream_chunk_count": len(protocol.chunk_sha256),
             "provider_stream_chunk_sha256": protocol.chunk_sha256,
@@ -7827,6 +7844,9 @@ def _broker_gemini_stream_result(
             "provider_stream_final_no_truncation": final_no_truncation,
             "provider_stream_tool_steps": tool_steps,
         }
+        if tooled:  # the no-tool (qualification) route's metadata is unchanged
+            fields["provider_stream_system_steps"] = system_steps
+        return fields
 
     diagnostic = "Gemini broker stream rejected: malformed JSON"
     try:
@@ -7846,7 +7866,9 @@ def _broker_gemini_stream_result(
                 step_conversation = step.get("conversation_id")
                 if isinstance(step_conversation, str) and step_conversation:
                     conversation_ids.add(step_conversation)
-                if tooled:
+                if tooled and _jailed_gemini_inert_system_step(step):
+                    system_steps += 1
+                elif tooled:
                     if step.get("step_type") not in _JAILED_GEMINI_STEP_TYPES or "subagent_info" in step:
                         diagnostic = _JAILED_GEMINI_UNKNOWN_EVENT
                         raise ValueError("subagent or unrecorded activity observed")
@@ -16177,6 +16199,8 @@ def _stream_rejection_walk(raw: str) -> dict[str, object] | None:
                   or _STREAM_REJECTION_ABSENT] += 1
             if "tool_name" in step:
                 tools[_stream_label(step["tool_name"], _STREAM_REJECTION_TOOLS)] += 1
+            if _jailed_gemini_inert_system_step(step):
+                continue  # the parser admits agy's bare system_message first
             try:
                 recorded = step.get("step_type") in _JAILED_GEMINI_STEP_TYPES
             except TypeError:  # an unhashable step type: the parser's malformed event

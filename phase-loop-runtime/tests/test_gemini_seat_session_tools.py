@@ -156,13 +156,95 @@ def test_a_step_without_a_tool_name_key_that_is_not_a_tool_step_passes():
     assert _parse(_stream(_tool("run_command"), _TEXT))[0] == 0
 
 
-@pytest.mark.parametrize("step_type", ["error_message", "system_message", "unknown"])
+#: agy's bare ``system_message`` step, exactly as the dev0 0.7.39 / agy 1.5.14 run recorded it:
+#: these five keys and nothing else.
+def _system(**fields):
+    return _step(step_index=9, state="DONE", step_type="system_message",
+                 duration_seconds=0.0, **fields)
+
+
+@pytest.mark.parametrize("step_type", ["error_message", "unknown", "subagent"])
 def test_agys_other_step_types_stay_refused(step_type):
     assert _refused(_stream(_tool("run_command"), _step(step_type=step_type, state="DONE")))
 
 
+def test_a_bare_system_message_passes_on_the_tooled_route():
+    rc, text, detail, metadata = _parse(_stream(_tool("run_command"), _system(), _TEXT))
+    assert (rc, detail) == (0, "") and text.endswith("AGREE")
+    assert metadata["provider_stream_system_steps"] == 1
+    assert metadata["provider_stream_tool_steps"] == 1
+
+
+@pytest.mark.parametrize("state", ["DONE", "ACTIVE", "ERROR"])
+def test_a_system_message_with_only_allowlisted_keys_passes(state):
+    line = _step(step_index=3, state=state, step_type="system_message")
+    assert _parse(_stream(line, _TEXT))[0] == 0
+
+
+@pytest.mark.parametrize("extra", [
+    {"subagent_info": {}},
+    {"subagent_info": None},
+    {"tool_name": "run_command"},
+    {"tool_name": "send_message"},
+    {"tool_name": None},
+    {"tool_info": {"name": "run_command", "parameters": {}}},
+    {"tool_info": None},
+    {"usage": {"input_tokens": 1}},
+    {"status": "DONE"},
+    {"text": "x"},
+    {"text_delta": "x"},
+    {"error": "x"},
+    {"type_name": "x"},
+    {"zq7_unlisted": 1},
+], ids=lambda extra: next(iter(extra)) + "=" + repr(next(iter(extra.values()))))
+def test_a_system_message_with_any_other_key_is_refused(extra):
+    assert _refused(_stream(_tool("run_command"), _system(**extra), _TEXT))
+    found = _record(_stream(_tool("run_command"), _system(**extra), _TEXT))
+    assert (found["reason"], found["step_type"], found["line_index"]) == (
+        "bad_step_type", "system_message", 2)
+
+
+@pytest.mark.parametrize("step_type", [" system_message", "System_Message", "system_messages"])
+def test_only_the_exact_system_message_label_is_admitted(step_type):
+    line = _step(step_index=3, state="DONE", step_type=step_type)
+    assert _refused(_stream(line, _TEXT))
+
+
+def test_a_dev0_shaped_stream_ends_ok():
+    # The refused dev0 run's shape: a tool loop with three bare system_message steps in it,
+    # agent_response steps between, then the terminal result.
+    tools = [_tool("read_file")] * 20 + [_tool("run_command")] * 2
+    lines = [_step(step_index=0, state="DONE", step_type="user_input"), *tools[:10],
+             _system(), _TEXT, *tools[10:16], _system(), _system(), _TEXT, *tools[16:], _TEXT]
+    rc, text, detail, metadata = _parse(_stream(*lines))
+    assert (rc, detail, metadata["provider_stream_outcome"]) == (0, "", "accepted")
+    assert text.endswith("AGREE")
+    assert (metadata["provider_stream_tool_steps"], metadata["provider_stream_system_steps"]) == (
+        22, 3)
+    assert pi._jailed_gemini_stream_rejection(_stream(*lines)) is None
+
+
+def test_widening_the_recorded_step_types_instead_fails(monkeypatch):
+    # A mutant that admits system_message by widening `_JAILED_GEMINI_STEP_TYPES` would let a
+    # system_message carrying a valid tool name, tool_info or an unlisted key through.
+    monkeypatch.setattr(pi, "_JAILED_GEMINI_STEP_TYPES",
+                        pi._JAILED_GEMINI_STEP_TYPES | {"system_message"})
+    widened = [_stream(_system(**extra), _TEXT) for extra in (
+        {"tool_name": "run_command"}, {"tool_info": {}}, {"usage": {}}, {"zq7_unlisted": 1})]
+    assert any(not _refused(raw) for raw in widened)  # the mutant is observable ...
+    monkeypatch.undo()
+    assert all(_refused(raw) for raw in widened)       # ... and the real rule refuses all
+
+
 def test_the_no_tool_route_is_unchanged():
     rc, _text, detail, _ = _parse(_stream(_tool("run_command")), tooled=False)
+    assert (rc, detail) == (1, "Gemini broker stream rejected: tool or subagent activity observed")
+    # A system_message never had a no-tool rule of its own: it passes as before, and the
+    # no-tool metadata gains no key.
+    rc, _text, detail, metadata = _parse(_stream(_system(), _TEXT), tooled=False)
+    assert (rc, detail) == (0, "")
+    assert "provider_stream_system_steps" not in metadata
+    rc, _text, detail, _ = _parse(_stream(_system(subagent_info={}), _TEXT), tooled=False)
     assert (rc, detail) == (1, "Gemini broker stream rejected: tool or subagent activity observed")
 
 
@@ -246,6 +328,7 @@ def test_the_rule_is_in_the_validator_closure_and_named_by_the_record():
     spec.loader.exec_module(converter)
     table = converter.validator_closure(Path(pi.__file__).resolve().parent)
     for node in ("_broker_gemini_stream_result", "_jailed_gemini_tool_refusal",
+                 "_jailed_gemini_inert_system_step", "_JAILED_GEMINI_SYSTEM_STEP_KEYS",
                  "_JAILED_GEMINI_REFUSED_TOOLS", "_JAILED_GEMINI_UNNAMED_TOOLS",
                  "_JAILED_GEMINI_TOOL_NAME_MAX"):
         assert f"panel_invoker:{node}" in table

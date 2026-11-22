@@ -226,9 +226,10 @@ def test_no_init_line_records_null_init_fields():
 # agy 1.5.13's own vocabulary is named, and naming a step type never admits it.
 # ---------------------------------------------------------------------------------------
 
-#: agy's closed ``step_type`` vocabulary outside the three recorded step types.
-_AGY_UNRECORDED_STEP_TYPES = ("subagent", "system_message", "checkpoint", "error_message",
-                              "finish", "unknown")
+#: agy's closed ``step_type`` vocabulary outside the three recorded step types and the bare
+#: ``system_message`` (admitted only in its inert shape: see
+#: ``test_gemini_seat_session_tools.py``).
+_AGY_UNRECORDED_STEP_TYPES = ("subagent", "checkpoint", "error_message", "finish", "unknown")
 
 
 @pytest.mark.parametrize("step_type", _AGY_UNRECORDED_STEP_TYPES)
@@ -247,6 +248,30 @@ def test_the_recorded_step_types_are_unchanged():
     assert pi._JAILED_GEMINI_STEP_TYPES == frozenset({"user_input", "agent_response", "tool"})
     assert not pi._JAILED_GEMINI_STEP_TYPES & set(_AGY_UNRECORDED_STEP_TYPES)
     assert set(_AGY_UNRECORDED_STEP_TYPES) <= pi._STREAM_REJECTION_STEPS
+    assert "system_message" in pi._STREAM_REJECTION_STEPS
+    assert pi._JAILED_GEMINI_SYSTEM_STEP_KEYS == frozenset({
+        "conversation_id", "step_index", "state", "step_type", "duration_seconds"})
+
+
+def test_a_non_inert_system_message_is_named_and_still_refused():
+    # The shape `test_each_agy_step_type_is_named_and_still_refused` used before: `usage` is
+    # outside the inert allowlist, so the step is refused and recorded as before.
+    line = _step(step_index=27, state="DONE", step_type="system_message", duration_seconds=1.5,
+                 usage={"input_tokens": 1})
+    found = _descriptor(_stream(_TOOL, line, _TEXT))
+    assert (found["reason"], found["step_type"], found["line_index"]) == (
+        "bad_step_type", "system_message", 2)
+    assert found["step_keys"] == ["conversation_id", "duration_seconds", "state",
+                                  "step_index", "step_type", "usage"]
+
+
+def test_a_bare_system_message_records_no_rejection_and_is_counted_on_a_later_refusal():
+    bare = _step(step_index=27, state="DONE", step_type="system_message", duration_seconds=1.5)
+    assert pi._jailed_gemini_stream_rejection(_stream(_TOOL, bare, _TEXT)) is None
+    found = _descriptor(_stream(_TOOL, bare, _step(step_type="subagent"), _TEXT))
+    assert (found["line_index"], found["rejected_lines"], found["step_type"]) == (3, 1, "subagent")
+    assert found["step_counts"] == {"agent_response": 1, "subagent": 1, "system_message": 1,
+                                    "tool": 1}
 
 
 @pytest.mark.parametrize("tool_name", [
@@ -311,6 +336,9 @@ _PARITY = [
     _stream({"event": "result", "result": "x"}, {"event": "error"}),       # a malformed result
     _stream({"event": "error"}, "{not json"),                               # refused, then garbage
     _stream(_TOOL, init=None, result=None),                                 # accepted lines, no result
+    _stream(_TOOL, _step(step_type="system_message", state="DONE"), _TEXT),  # inert: accepted
+    _stream(_step(step_type="system_message", tool_name="run_command")),    # not inert
+    _stream(_step(step_type="system_message", subagent_info={})),
 ]
 
 
