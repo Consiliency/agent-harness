@@ -353,6 +353,8 @@ No lane makes a live provider call or runs on a seat host. SL-6.2 is provider-fr
     Codex registration), `_codex_prepare_stubs` (a provider file), `_codex_open_stubs`
     (`named=`), and F15's invalid-pair case (the first table vendor with no supplier);
   - `tests/data/seat_launch_references.json`: one entry for `_window_bound_image_sha256`;
+  - `seat_window.py`: `_row_ready_codes` returns a supplier's `ROW_WINDOW_HOLD` before any
+    claim, which is how SL-6 makes the hold mechanical (contract §10.B, `codex_expired_leg_unfenced`);
   - `CHANGELOG.md`: SL-6's `[Unreleased]` entry, which SL-9 finalizes.
 - **Pin accounting: the Claude SDK proof binding.** SL-5's edits to `_prepare_jailed_claude`
   (the seam) and `launch_provider` (the ledger) are inside
