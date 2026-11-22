@@ -1555,6 +1555,10 @@ are recorded on agent-harness#1132.
   the tree is never an `--add-dir`, so agy loads no workspace file from the tree (P3). In the
   retained stream, a subagent step, any step or event P3 did not record, and a step that the
   parser's tool-name rule refuses end the leg with `gemini_seat_subagent_or_unknown_event`.
+  The one unrecorded step it admits is agy's bare `system_message`: that exact step type
+  with no key outside `conversation_id`, `step_index`, `state`, `step_type` and
+  `duration_seconds`, counted as `provider_stream_system_steps`. A `system_message` with a
+  `tool_name`, `tool_info`, `subagent_info` or any other key is still refused.
   The rule refuses a canonical tool name in a fixed set: `invoke_subagent`, `define_subagent`,
   `manage_subagents`, `agent`, `browser_subagent`, `send_message`, `swarm`, `post_message`,
   `read_board` and `swarm_wait`. The canonical name is the text after the last `:`, outer
