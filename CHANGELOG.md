@@ -133,12 +133,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
-- Tests: four hosted-load flakes are deterministic (Consiliency/agent-harness#2049,
-  Consiliency/agent-harness#2063, Consiliency/agent-harness#2072,
-  Consiliency/agent-harness#2073). The capture controls that need a finished child get a
-  5 s budget and report a timeout as one. The placement replay test owns its operation
-  deadlines. The snapshot-restart test gets a 30 s operation budget, with snapshot age on
-  its own clock. The stall test counts one warning per notice episode. Test code only.
+- Tests: three hosted-load flakes are deterministic (Consiliency/agent-harness#2049,
+  Consiliency/agent-harness#2072, Consiliency/agent-harness#2073). The capture controls
+  that need a finished child get a 5 s budget and report a timeout as one. The
+  snapshot-restart test gets a 30 s operation budget, with snapshot age on its own clock.
+  The stall test counts one warning per notice episode, and cancels only after the retry is
+  observed. Test code only.
 
 ## [0.7.39] - Unreleased candidate
 

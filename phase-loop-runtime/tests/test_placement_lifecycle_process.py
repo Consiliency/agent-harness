@@ -790,17 +790,9 @@ class Interrupted(BaseException):
     """A process interruption injected at one step of an admission."""
 
 
-def _interrupt_reserve(env, monkeypatch, point, *, lifecycle=None, live_deadline_s=None,
-                       **reserve_kwargs):
-    """Run one reserve that is interrupted at ``point``; return the attempt's commit.
-
-    ``live_deadline_s`` replaces the setup reserve's own monotonic deadline with a test-owned
-    one; the journaled ``deadline_ms`` (and so the body and the settle bound) is unchanged.
-    A short request deadline must not let a loaded runner time the setup out before it
-    reaches ``point`` (agent-harness#2063)."""
+def _interrupt_reserve(env, monkeypatch, point, *, lifecycle=None, **reserve_kwargs):
+    """Run one reserve that is interrupted at ``point``; return the attempt's commit."""
     lifecycle = lifecycle if lifecycle is not None else env.lifecycle()
-    if live_deadline_s is not None:
-        _own_operation_deadline(monkeypatch, live_deadline_s)
     if point == "after-bridge":
         bridge = lifecycle.bridge
         original_open = bridge.open
@@ -827,12 +819,6 @@ def _interrupt_reserve(env, monkeypatch, point, *, lifecycle=None, live_deadline
     record = json.loads((env.state / lifecycle.client / "attempts" / "req-1.json").read_text())
     assert record["settled"] is False and record["pending"] == []
     return record["commit"]
-
-
-def _own_operation_deadline(monkeypatch, seconds):
-    """Every lifecycle operation started from here gets ``seconds`` of monotonic time,
-    whatever its request says: a test-owned deadline instead of the request's wall clock."""
-    monkeypatch.setattr(sp._Deadline, "after", classmethod(lambda cls, _seconds: cls(sp._monotonic() + seconds)))
 
 
 def _attempt(env, client="agent-toolkit"):
@@ -1104,17 +1090,11 @@ def _replay_request(cancelled=None, deadline_ms=300):
 
 @pytest.mark.parametrize("case", ["lock-held", "slow-reconciliation", "cancelled", "bound-reached"])
 def test_a_replay_that_runs_out_of_time_or_is_cancelled_publishes_nothing(env, monkeypatch, case):
-    commit = _interrupt_reserve(env, monkeypatch, "before-publish", deadline_ms=300, live_deadline_s=30)
+    commit = _interrupt_reserve(env, monkeypatch, "before-publish", deadline_ms=300)
     rid = commit["reservation"]["reservation_id"]
     env.clock.now += 5
     request, cancelled = _replay_request()
     fd = None
-    # Only the lock-held and slow-reconciliation cases are about the replay's own 300 ms
-    # deadline. The cancelled and bound-reached cases get a deadline the replay cannot reach,
-    # so only the cancel (or the bound) can end it (agent-harness#2063).
-    timed = case in ("lock-held", "slow-reconciliation")
-    if not timed:
-        _own_operation_deadline(monkeypatch, 30)
 
     def reconcile(record, timeout_s):
         if case == "slow-reconciliation":
@@ -1129,8 +1109,7 @@ def test_a_replay_that_runs_out_of_time_or_is_cancelled_publishes_nothing(env, m
     try:
         started = time.monotonic()
         response = env.lifecycle(reconcile=reconcile).reserve(request, cancelled=cancelled)
-        # Timed cases end at their deadline; the others end long before theirs.
-        assert time.monotonic() - started < (0.3 + 0.4 if timed else 10)
+        assert time.monotonic() - started < 0.3 + 0.4
     finally:
         if fd is not None:
             os.close(fd)
