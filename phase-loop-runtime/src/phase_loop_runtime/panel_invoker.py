@@ -14713,6 +14713,43 @@ def _window_host_paths(qualification, seat: _JailedSeat, *, credential: bool) ->
     )
 
 
+def _window_named_refusals(allowlist_id: str) -> tuple[tuple[str, str, None], ...]:
+    """K-1 §10 (A-C1): the leg allowlist's own measured-and-refused hosts, as named CONNECT
+    observations, so a control's stream reports them verbatim instead of as ``<other>``.
+    Naming only labels events: it never allows, refuses or counts anything."""
+    ref = _seat_egress_proxy.allowlist_ref(allowlist_id)
+    refused = _seat_egress_proxy.allowlist(allowlist_id).get("measured_and_refused", ())
+    named = tuple(("CONNECT", row["host"], None) for row in ref.probe_rows
+                  if row.get("decision") == "refuse" and row.get("method") == "CONNECT"
+                  and row.get("host") in refused)
+    if len(named) > 16:
+        raise ValueError("contract_bug")
+    return named
+
+
+def _window_bound_image_sha256(seat: _JailedSeat) -> str:
+    """The projected subject digest of the image a non-Gemini seat's jail binds: the
+    dependency's recorded subject digest, else the digest of the host file the builder bound
+    as the provider (never re-resolved)."""
+    dependency = getattr(seat.jail, "dependency", None)
+    recorded = getattr(dependency, "subject_sha256", None) if dependency is not None else None
+    if recorded is not None:
+        return str(recorded)
+    source = getattr(seat.jail, "provider_path", "")
+    if not source:
+        raise _seat_jail.SeatSandboxRefused("seat_provider_unavailable")
+    fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("identity"))
+        digest = sha256()
+        while chunk := os.read(fd, 1 << 20):
+            digest.update(chunk)
+        return digest.hexdigest()
+    finally:
+        os.close(fd)
+
+
 def _window_prepare_leg(
     leg: str, review_dir: Path, seat_dir: Path, authorization, seat_id: int, holder_pid: int,
     prompt_parts: tuple[str, str], egress, *, credential_mode: str, copy_transform,
@@ -14722,10 +14759,13 @@ def _window_prepare_leg(
     from . import seat_window_supply
     with seat_window_supply.item_scope("codex_admission_gate"):
         if leg == "codex":
-            return _prepare_jailed_codex(
+            seat = _prepare_jailed_codex(
                 review_dir, seat_dir, authorization, seat_id, holder_pid, prompt_parts, egress,
                 credential_mode=credential_mode, copy_transform=copy_transform,
             )
+            # K-1 §10.B: the binding names the image the jail actually binds. The production
+            # prepare sets no image digest; Codex's admission path has no admission class.
+            return replace(seat, image_sha256=_window_bound_image_sha256(seat))
         if leg == "claude":
             return _prepare_jailed_claude(
                 review_dir, seat_dir, authorization, seat_id, holder_pid, prompt_parts,
@@ -14838,6 +14878,7 @@ def _open_window_launch(spec: WindowLaunchSpec):
             and spec.kind not in _WINDOW_CREDENTIAL_KINDS,
         ) if supplier is None else _seat_egress_proxy.start_proxy(
             allowlist_id=profile.allowlist_id, refuse_all=credential_mode == "none",
+            named=_window_named_refusals(profile.allowlist_id),
         ))
         prefix = tuple(stack.enter_context(_sandbox_egress.isolated_network(
             timeout_s=max(float(spec.timeout_s), 1.0) + 300.0,
@@ -15385,16 +15426,27 @@ def _window_control_launch_leg(spec: WindowLaunchSpec) -> WindowLaunchResult:
                 error = "fence_unacknowledged"
             commands: list[tuple[str, ...]] = []
             outputs: list[_WindowProcess] = []
+            input_value = prompt = None
             if error is None:
                 commands = list(supplier.launch_command(
                     spec.kind, qualification_input=spec.qualification_input,
                     model=spec.model, plugin_paths=()))
+                if spec.kind not in {"help", "plugin_validation"}:
+                    # The kit's own control input, on stdin, exactly as the Gemini branch.
+                    input_value = (_WINDOW_CONTROL_INPUT if spec.kind in _WINDOW_CONTROL_KINDS
+                                   else _WINDOW_MEASURED_INPUT)
+                    prompt = _render_broker_pointer_prompt(
+                        "", input_value, source_commit=spec.qualification_input.commit,
+                        staged_tree_sha256=str(session.authorization.staged_tree_sha256),
+                        model_only_network=True,
+                    )
                 secrets = tuple(supplier.scan_secrets(session.seat))
                 for command in commands:
                     with _window_subject_dispatch(
                             spec.kind, str(session.authorization.staged_tree_sha256)):
                         outputs.append(_run_window_leg_process(
-                            session, command, secrets, timeout_s=spec.timeout_s))
+                            session, command, secrets, timeout_s=spec.timeout_s,
+                            input_text=prompt))
                     if outputs[-1].timed_out:
                         break
                 values["timed_out"] = any(item.timed_out for item in outputs)
@@ -15432,7 +15484,8 @@ def _window_control_launch_leg(spec: WindowLaunchSpec) -> WindowLaunchResult:
                 admission_class=str(session.seat.admission_class),
                 stage_manifest_sha256=str(session.authorization.staged_tree_sha256),
                 argv_sha256=_window_json_digest([list(command) for command in commands]),
-                input_sha256=None, jail_profile_sha256=session.seat.jail.profile_digest,
+                input_sha256=sha256(input_value.encode()).hexdigest() if input_value else None,
+                jail_profile_sha256=session.seat.jail.profile_digest,
                 allowlist_sha256=proxy.allowlist_sha256,
             )
             session.cleanup()
@@ -15451,7 +15504,7 @@ def _window_control_launch_leg(spec: WindowLaunchSpec) -> WindowLaunchResult:
 
 def _run_window_leg_process(
     session: _WindowLaunchSession, command: Sequence[str], secrets: tuple[bytes, ...], *,
-    timeout_s: float,
+    timeout_s: float, input_text: str | None = None,
 ) -> _WindowProcess:
     carry = b""
     longest = max((len(secret) for secret in secrets), default=1)
@@ -15468,7 +15521,8 @@ def _run_window_leg_process(
         try:
             done = _run_leg_with_liveness(
                 list(command), cwd="/seat/home/workspace", env=dict(session.seat.jail.env),
-                deadline_s=float(timeout_s), stdout_guard=_guard, stderr_guard=_guard,
+                deadline_s=float(timeout_s), input_text=input_text,
+                stdout_guard=_guard, stderr_guard=_guard,
                 quiescence_latch=session.quiescence_latch,
                 seat_jail=session.seat.jail, probe_jail=session.seat.probe_jail,
             )
