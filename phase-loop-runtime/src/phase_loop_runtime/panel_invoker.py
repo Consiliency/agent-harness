@@ -15450,6 +15450,12 @@ def _window_control_launch_leg(spec: WindowLaunchSpec) -> WindowLaunchResult:
                     if outputs[-1].timed_out:
                         break
                 values["timed_out"] = any(item.timed_out for item in outputs)
+                # WindowLaunchResult carries no exit code, so a CLI ended by a signal (a
+                # negative or >= 128 status that is not the launch's own deadline, which
+                # stays ``timed_out``) becomes a launch failure here, before any reduction.
+                if any(not item.timed_out and type(item.exit_code) is int
+                       and (item.exit_code < 0 or item.exit_code >= 128) for item in outputs):
+                    error = error or "launch_failed"
                 raw = outputs[0].stdout if outputs else ""
                 status, model_turn, tool_steps, subagent_steps = supplier.stream_facts(raw)
                 if spec.kind == "help":

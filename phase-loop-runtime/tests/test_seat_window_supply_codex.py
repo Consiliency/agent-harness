@@ -1118,6 +1118,59 @@ def test_sl6_f16_expired_copy_is_refused_intended(codex_supplier, tmp_path, monk
     assert codex_supplier.terminal(expired) == "refused_intended"
 
 
+@pytest.mark.parametrize("returncode", [-9, -15, 137, 143])
+def test_sl6_f16_a_signalled_expired_cli_is_never_refused_intended(
+        codex_supplier, tmp_path, monkeypatch, returncode):
+    """Review thread (agent-harness#2082): through the real window_control_launch and
+    WindowLaunchResult, an expired-copy CLI ended by a signal after the named denial (a
+    complete fenced stream that would otherwise be refused_intended) is a launch failure,
+    never refused_intended. The launch's own deadline keeps its E2 reading."""
+    from phase_loop_runtime import panel_invoker as panel
+    seen = _control_world(monkeypatch, tmp_path, codex_supplier, stdout=_FAILED,
+                          stream=_stream(_NAMED_DENIAL))
+    spawn = panel._run_leg_with_liveness
+
+    def killed(command, **kwargs):
+        done = spawn(command, **kwargs)
+        return SimpleNamespace(returncode=returncode, stdout=done.stdout)
+    monkeypatch.setattr(panel, "_run_leg_with_liveness", killed)
+    expired = panel.window_control_launch(_codex_spec("expired_copy", tmp_path))
+    assert len(seen["provider_spawned"]) == 1
+    assert expired.timed_out is False and expired.error == "launch_failed"
+    assert codex_supplier.terminal(expired) == "other_failure"
+    context = _context(codex_supplier)
+    reduction = codex_supplier.reduce_containment(dataclasses.replace(
+        context, expired_copy=dataclasses.replace(
+            context.expired_copy, error=expired.error, timed_out=expired.timed_out)))
+    assert reduction.owner_summary.expired_copy_control == "unavailable"
+    assert reduction.containment["refresh_detection"] == "unavailable"
+
+
+@pytest.mark.parametrize("returncode", [0, 1])
+def test_sl6_f16_an_ordinary_expired_exit_stays_refused_intended(
+        codex_supplier, tmp_path, monkeypatch, returncode):
+    from phase_loop_runtime import panel_invoker as panel
+    _control_world(monkeypatch, tmp_path, codex_supplier, stdout=_FAILED,
+                   stream=_stream(_NAMED_DENIAL))
+    spawn = panel._run_leg_with_liveness
+    monkeypatch.setattr(panel, "_run_leg_with_liveness", lambda command, **kwargs: (
+        SimpleNamespace(returncode=returncode, stdout=spawn(command, **kwargs).stdout)))
+    expired = panel.window_control_launch(_codex_spec("expired_copy", tmp_path))
+    assert expired.error is None
+    assert codex_supplier.terminal(expired) == "refused_intended"
+
+
+def test_sl6_f16_the_expired_legs_own_deadline_keeps_its_e2_reading(
+        codex_supplier, tmp_path, monkeypatch):
+    from phase_loop_runtime import panel_invoker as panel
+    _control_world(monkeypatch, tmp_path, codex_supplier,
+                   stdout=panel.subprocess.TimeoutExpired(["codex"], 5, output=_FAILED),
+                   stream=_stream(_NAMED_DENIAL))
+    expired = panel.window_control_launch(_codex_spec("expired_copy", tmp_path))
+    assert expired.timed_out is True and expired.error == "launch_failed"
+    assert codex_supplier.terminal(expired) == "refused_intended"
+
+
 def test_sl6_f16_none_launches_with_no_copy_and_refuses_without_one(
         codex_supplier, tmp_path, monkeypatch):
     """``none``: no copy is built or installed, and a model-capable launch without a copy

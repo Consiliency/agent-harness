@@ -349,7 +349,9 @@ No lane makes a live provider call or runs on a seat host. SL-6.2 is provider-fr
     from the new `_window_named_refusals`), `_window_prepare_leg` (the bound image, from the
     new `_window_bound_image_sha256`), `_window_control_launch_leg` and
     `_run_window_leg_process` (the kit's input on stdin, bound as `input_sha256`), and
-    `_window_control_launch_leg`'s help branch (`help_sha256`, as the Gemini branch takes it);
+    `_window_control_launch_leg`'s help branch (`help_sha256`, as the Gemini branch takes it)
+    and its signalled-exit guard (a CLI ended by a signal, not the launch's own deadline, is
+    `launch_failed`, because `WindowLaunchResult` carries no exit code);
   - `tests/test_seat_window_vendor_neutral.py`: `register_fixture_vendor` (hides the real
     Codex registration), `_codex_prepare_stubs` (a provider file), `_codex_open_stubs`
     (`named=`), and F15's invalid-pair case (the first table vendor with no supplier);
