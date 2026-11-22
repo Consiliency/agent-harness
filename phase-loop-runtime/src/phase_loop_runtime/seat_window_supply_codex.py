@@ -4,25 +4,32 @@ It registers Codex's window data on import (§4.2) and supplies the §4.1 protoc
 for a Codex row window. Codex code is imported, never edited: the profile, rows, argv,
 credential copy and stream vocabulary are CODEX's (IF-0-CODEX-1 to IF-0-CODEX-5).
 
-The expired-copy control ages only the copy's unsigned ``last_refresh``. Its intended
-refusal (§10) is the CLI's token-endpoint attempt, denied at the earliest point the
-production ``codex`` allowlist permits (a named ``CONNECT auth.openai.com`` deny, or the
-stricter POST form), before any model request, in a complete fenced stream, with the CLI
-ending in a typed refusal.
+The expired-copy control (contract r5.2 §10.B, the Codex exception to §10) edits exactly
+one field of the production copy: the access token's ``exp``, set an hour into the past.
+0.167.0 refreshes on that ``exp`` alone, and the production ``codex`` allowlist refuses the
+refresh at ``CONNECT auth.openai.com``. Its intended refusal is that named denial, before any
+model request, in a complete fenced stream, with no token-host request, no allowed request
+(in the loopback fixture: every later model request carrying the installed expired bearer)
+and no credential change, whatever the CLI's exit.
+
+Until the OI-1 fence lands, a Codex row window is held (:data:`ROW_WINDOW_HOLD`).
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import dataclasses
-import datetime as dt
 import json
+import re
+import time
 from types import MappingProxyType
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from .seat_profiles import WINDOW_BOARD_FIELDS, WindowVendorData, register_window_data
 
 #: The K-1 contract (``plans/artifacts/seats-window-kit-k1-contract.md``), as the amendment
 #: pins it. Every non-Gemini vendor binds this file (§3).
-K1_CONTRACT_SHA256 = "12a7d96e639846c2f3868434ca1faca837113614ca138c866f2b69592c20c3b2"
+K1_CONTRACT_SHA256 = "aa30ce0a2f947fd004476ac62f1c964c57a1e6554cc273e16366c92a2088e967"
 
 LAUNCH_KINDS = frozenset({
     "help", "tree_control", "runtime_control", "credentialed_tree_control",
@@ -33,8 +40,11 @@ CREDENTIAL_KINDS = frozenset({
 })
 _NONE_KINDS = frozenset({"help", "tree_control", "runtime_control"})
 _TREE_KINDS = frozenset({"tree_control", "credentialed_tree_control"})
-#: §10.B's fixture: the copy's ``last_refresh`` is set this many days in the past.
-AGED_REFRESH_DAYS = 60
+#: r5.2 §10.B: the expired copy's access ``exp`` is the transform clock minus this.
+EXPIRED_ACCESS_MARGIN_S = 3600
+#: r5.2 §10.B (B1): the typed row-ready code every Codex row window refuses with, before
+#: any claim, preflight, jail or proxy, until the OI-1 fence lane lands and lifts it.
+ROW_WINDOW_HOLD = "codex_expired_leg_unfenced"
 
 TOKEN_HOST, TOKEN_PATH = "auth.openai.com", "/oauth/token"
 MODEL_HOST, MODEL_PATH = "chatgpt.com", "/backend-api/codex/responses"
@@ -73,7 +83,8 @@ plugin_forms = ("nested",)
 
 
 # --------------------------------------------------------------------------------------
-# The A-C1 surface: kinds, the aged copy, argv, stream facts, terminal, token endpoint.
+# The A-C1 surface: kinds, the expired access copy, argv, stream facts, terminal, token
+# endpoint.
 # --------------------------------------------------------------------------------------
 
 def credential_mode(kind: str) -> str:
@@ -84,22 +95,39 @@ def credential_mode(kind: str) -> str:
     return "none" if kind in _NONE_KINDS else "live"
 
 
-def aged_copy(copy):
-    """§10.B's expired copy: the production copy with only ``last_refresh`` moved
-    :data:`AGED_REFRESH_DAYS` into the past. The JWT and the empty refresh token are kept."""
-    from .seat_codex_credential import CodexSeatCopy
+def expired_access_copy(copy, *, now: int | None = None):
+    """r5.2 §10.B: the production copy with exactly one field changed, the access token's
+    ``exp``, set to the transform's UTC clock (integer Unix seconds) minus
+    :data:`EXPIRED_ACCESS_MARGIN_S`. The header and signature segments are kept byte for
+    byte and the payload is re-encoded as unpadded base64url. The ID token, ``last_refresh``
+    and the empty ``refresh_token`` are unchanged. ``tokens_sha256`` is recomputed over the
+    edited tokens, ``secrets`` gains the edited access token, ``expires_at`` is kept."""
+    from .seat_codex_credential import CodexSeatCopy, _tokens_sha256
     if not isinstance(copy, CodexSeatCopy):
         raise TypeError("copy must be a CodexSeatCopy")
-    document = json.loads(copy.data)
-    if not isinstance(document, dict) or "last_refresh" not in document:
+    try:
+        document = json.loads(copy.data)
+        tokens = document["tokens"]
+        header, payload, signature = tokens["access_token"].split(".")
+        claims = json.loads(base64.urlsafe_b64decode(
+            payload + "=" * (-len(payload) % 4)).decode("utf-8"))
+    except (TypeError, KeyError, ValueError, binascii.Error, UnicodeDecodeError) as exc:
+        raise ValueError("contract_bug") from exc
+    if not isinstance(claims, dict) or type(claims.get("exp")) is not int:
         raise ValueError("contract_bug")
-    aged = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=AGED_REFRESH_DAYS)
-    document["last_refresh"] = aged.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    clock = int(time.time()) if now is None else int(now)
+    claims["exp"] = clock - EXPIRED_ACCESS_MARGIN_S
+    edited_payload = base64.urlsafe_b64encode(
+        json.dumps(claims, separators=(",", ":")).encode("utf-8")).rstrip(b"=").decode("ascii")
+    edited = ".".join((header, edited_payload, signature))
+    tokens = {**tokens, "access_token": edited}
+    document = {**document, "tokens": tokens}
     return dataclasses.replace(
-        copy, data=json.dumps(document, sort_keys=True, indent=2).encode("utf-8"))
+        copy, data=json.dumps(document, sort_keys=True, indent=2).encode("utf-8"),
+        secrets=(*copy.secrets, edited.encode("utf-8")), tokens_sha256=_tokens_sha256(tokens))
 
 
-copy_transform = aged_copy
+copy_transform = expired_access_copy
 
 
 def launch_command(kind: str, *, qualification_input=None, model: str,
@@ -180,6 +208,52 @@ def _model_request(event) -> bool:
             and getattr(event, "path", None) == MODEL_PATH)
 
 
+def _named_denial(event) -> bool:
+    """The production named observation of the refused refresh (r5.2 §10.B)."""
+    return (getattr(event, "method", None) == "CONNECT"
+            and getattr(event, "host", None) == TOKEN_HOST
+            and getattr(event, "path", "") is None
+            and getattr(event, "decision", None) == "deny")
+
+
+_DIGEST = re.compile(r"[0-9a-f]{64}")
+
+
+def _expired_refused(observation, events) -> bool:
+    """r5.2 §10.B and the president's E2 ruling: the expired leg's ``refused_intended``,
+    decided on its complete fenced stream whatever the CLI's exit:
+
+    * every token-host event is the named ``CONNECT`` denial (any request event to the token
+      host means the CONNECT was tunnelled), and there is at least one;
+    * no model request comes before the first denial;
+    * the pre-teardown read shows no credential change (``scan["refresh"] == "pass"``);
+    * production (no bearer proof): no allowed request of any kind;
+    * the loopback fixture (``bearer_proof``): every model request was allowed and answered
+      with a recorded ``Authorization`` sha256 equal to the installed expired bearer's."""
+    tokens = [index for index, event in enumerate(events)
+              if getattr(event, "host", None) == TOKEN_HOST]
+    if not tokens or not all(_named_denial(events[index]) for index in tokens):
+        return False
+    models = [index for index, event in enumerate(events) if _model_request(event)]
+    if any(index < tokens[0] for index in models):
+        return False
+    scan = getattr(observation, "scan", None)
+    if not isinstance(scan, Mapping) or scan.get("refresh") != "pass":
+        return False
+    proof = getattr(observation, "bearer_proof", None)
+    if proof is None:
+        return not any(event.decision == "allow" for event in events)
+    if not isinstance(proof, Mapping):
+        return False
+    expected, digests = proof.get("expected_sha256"), proof.get("model_requests")
+    if not isinstance(expected, str) or _DIGEST.fullmatch(expected) is None:
+        return False
+    if not isinstance(digests, (list, tuple)) or len(digests) != len(models):
+        return False
+    return (all(events[index].decision == "allow" for index in models)
+            and all(digest == expected for digest in digests))
+
+
 def _leg_events(stream):
     """The leg window's events of a complete stream, else ``None``."""
     if stream is None or not getattr(stream, "final", False) or getattr(
@@ -194,7 +268,16 @@ def _leg_events(stream):
 def terminal(observation) -> str:
     """§5.5's closed class for one launch result."""
     error = getattr(observation, "error", None)
-    if getattr(observation, "timed_out", False):
+    timed_out = bool(getattr(observation, "timed_out", False))
+    # r5.2 / E2: the expired leg's stream decides first, whatever the CLI's exit, a stop at
+    # the launch's own deadline (the kit records it as ``launch_failed``) included. A jail
+    # or proxy failure, an incomplete stream or any other error never reaches it.
+    if (getattr(observation, "kind", None) == "expired_copy"
+            and (error is None or (error == "launch_failed" and timed_out))):
+        events = _leg_events(getattr(observation, "stream", None))
+        if events is not None and _expired_refused(observation, events):
+            return "refused_intended"
+    if timed_out:
         return "timeout"
     if error in {"proxy_unavailable", "fence_unacknowledged"}:
         return "proxy_failure"
@@ -222,8 +305,8 @@ def terminal(observation) -> str:
         if getattr(observation, "model_turn", None) is True and not tokens:
             return "completed"
         return "other_failure"
-    if (tokens and not models and all(event.decision == "deny" for event in tokens)
+    if (getattr(observation, "kind", None) != "expired_copy" and tokens and not models
+            and all(event.decision == "deny" for event in tokens)
             and getattr(observation, "model_turn", None) is not True):
-        return ("refused_intended" if getattr(observation, "kind", None) == "expired_copy"
-                else "auth_refused")
+        return "auth_refused"
     return "other_failure"
