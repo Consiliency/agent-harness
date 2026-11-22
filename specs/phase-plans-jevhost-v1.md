@@ -31,7 +31,7 @@ separately installed JEV Drill. With no adapter, every harness path behaves exac
 
 | Input | Pin |
 | --- | --- |
-| JEVHOST contract | `plans/artifacts/jevhost-v1-contract.md`, sha256 `8fc704a64d570d01d9f3ca2ee4a0a8b29e7fc71ac722acf1cf4a585b6b5330b9` |
+| JEVHOST contract | `plans/artifacts/jevhost-v1-contract.md`, sha256 `0c6a44e19f1909933dc664ab0d944c62b9320428132c5bf3796a542f85efe892` |
 | Draft commit | agent-harness#2071 head `784d1595a08f42519862ae5f9336f20186d83c4b`, base `56dce95a52625a58cd08911f8f623c637bf52e44` |
 | jevdrill contract commit | `Consiliency/jevdrill` `998912b1e0195464e6f3aa048c5421c2bed57491` (JEVHOST §5 SHA rule) |
 
@@ -42,8 +42,13 @@ future implementation commit, a commit count or a landing topology.
 
 - **EXT-JEV.** jevdrill `main` stays at or after the pinned commit. A change to its
   `schemas/` or the three fixtures before the merge triggers the re-sync rule of JEVHOST §5.
-- **EXT-WRITERS.** K-1 SL-6, the OI-1 fence lane and agent-harness#2078 write no file of
-  this phase (JEVHOST §11). Shared files are rebased, not sequenced.
+- **EXT-WRITERS.** K-1 SL-6 (agent-harness#2082) also writes
+  `tests/data/seat_launch_references.json`. Whichever lands second rebases and
+  regenerates its own rows. The OI-1 fence lane and agent-harness#2081 write no file of
+  this phase (JEVHOST §11).
+- **EXT-JEVQ.** Two questions are open with JEV Drill: acceptance of the
+  `jevdrill_installed` marker, and the exact Python 3.14 target. Each has a stated
+  fallback (JEVHOST §14), so neither blocks execution.
 
 ## Non-Goals
 
@@ -84,7 +89,7 @@ so jevdrill can pin one accepted commit.
 - [ ] EC-JEVHOST-2 — (R2) The 14 schema copies are byte-identical to jevdrill's at the commit the pull request names, the 3 fixtures equal jevdrill's after the JEVHOST §5 substitution, and `digests.json` recomputes.
 - [ ] EC-JEVHOST-3 — With no adapter, `main` behaviour is preserved under JEVHOST §2, and the semantic rules S1 to S6 of JEVHOST §4 hold.
 - [ ] EC-JEVHOST-4 — (R3) The twelve files pass, with the installed-JEV tests not skipped, in the companion workflow on hosted Linux at the merge commit. The dispatched macOS, Windows and Python 3.14 legs are run once, and any leg not done or failing is disclosed.
-- [ ] EC-JEVHOST-5 — (R4) No test in the seven R4 files, nor the two nominated launcher tests, carries `dotfiles_integration`, and no selected test needs a secret or a private repository.
+- [ ] EC-JEVHOST-5 — (R4) jevdrill's eight named controls (JEVHOST §1) are collected and selected under `-m "not dotfiles_integration"`; none of them, and no test in the seven R4 files, carries `dotfiles_integration`; exactly the four installed controls carry `jevdrill_installed`, per test and never by module (or, under JEVHOST §14 Q1's fallback, are the four fixture-keyed deselections); and no selected test needs a secret or a private repository.
 - [ ] EC-JEVHOST-6 — (R5) Every R5 name imports at the merge commit; there is no rename.
 - [ ] EC-JEVHOST-7 — (R6) The pull request states the sync command and the CI Python, and the dispatched matrix runs that command on hosted Linux, macOS and Windows.
 - [ ] EC-JEVHOST-8 — The outgoing diff passes `gitleaks` and the disclosure grep of JEVHOST §9, and no existing required check is weakened.
@@ -108,6 +113,8 @@ Everything under Non-Goals above.
 - `phase-loop-runtime/tests/fixtures/jevdrill/**`
 - `phase-loop-runtime/tests/conftest.py`
 - `phase-loop-runtime/pyproject.toml`
+- `phase-loop-runtime/tests/data/seat_launch_references.json`
+- `phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py`
 - `.github/workflows/jevdrill-companion.yml`
 - `docs/jevdrill-integration.md`
 
