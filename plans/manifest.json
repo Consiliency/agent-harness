@@ -14930,7 +14930,7 @@
       "file": "plans/phase-plan-v1-seats-GROK.md",
       "frozen_inputs": {
         "plans/artifacts/grok-jail-tool-surface-contract-v1.md": {
-          "sha256": "be46a86a442971c5b617a31806e743494b1b301f3dbd630baf857955695ee3a2"
+          "sha256": "bc8e289c4d94799f6cd5f75de7d3dbd57a97b363d665a476787a41cad46c0ef9"
         },
         "plans/artifacts/grok-tool-surface-contract-v1.md": {
           "sha256": "5b929cb588e4bb555ce8374311432376fe4c04e8a851fd511e6c44682736b27c"
@@ -14972,7 +14972,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-11-22T18:00:00Z"
+      "updated_at": "2026-11-22T18:30:00Z"
     },
     {
       "acceptance_criteria_count": null,

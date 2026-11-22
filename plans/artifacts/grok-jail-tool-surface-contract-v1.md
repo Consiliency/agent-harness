@@ -314,7 +314,7 @@ EC-GROK-1's tool write, and (b) waiting for a later image or erratum.
 |---|---|
 | the jailed Grok leg, profile registered | eligible under `grok_jail_context.v1` only, through §4.2 and §4.4 |
 | the window kit's Grok adapter | reads admission through `grok_jail_surface.staged_admission(binary_sha256)` |
-| `seat-window probe-tools --vendor grok` | inspection. `seat_window.py` is unchanged; it calls `panel_invoker.probe_grok_tools`, which SL-3 extends: when a Grok profile is registered and `grok_jail_surface` is installed, the `staged` row resolves the jailed subject through `grok_jail_surface.resolve_subject()`, reads and writes only the jailed receipt store and reports the jailed basis; every other form reports refused. Its aggregate exit is unchanged and is not a gate. |
+| `seat-window probe-tools --vendor grok` | inspection. `seat_window.py` is unchanged; it calls `panel_invoker.probe_grok_tools`, which SL-3 extends. When `grok_jail_surface.resolve_subject()` resolves and `grok_jail_surface.staged_admission(binary_sha256)` holds for that subject (all five §2.4 conditions), the `staged` row resolves the jailed subject, reads and writes only the jailed receipt store and reports the jailed basis, and every other form reports refused. Otherwise the probe's result is identical to the unjailed probe's, and the TS contract suites stay unedited. SL-3's own tests show both branches, including each §2.4 condition removed alone giving the unjailed result. Its aggregate exit is unchanged and is not a gate. |
 | `measure-tools --verify-probe final --grant <id>` | the grant-backed check after `--aggregate` (§7.1) |
 | the installed-catalog check | after SL-6 (§7.1) |
 | every other row of the TS contract §4.4 table | unchanged |
@@ -585,6 +585,7 @@ contains erratum 9 and those matching pins, however many planning-only commits d
 | §4.4 third row; erratum 8 r2 item 1d (`staged` ineligible) | jailed `staged` eligible under §2.4 only; unjailed `staged` stays ineligible |
 | §5.1, §5.3, §5.4, §5.7, §5.8, §5.10 | §5 and §7.1 here |
 | §10 BA-3 | BA-J1 here |
+| erratum 8 r3 item 1b (delivery, normalisation and ancestor rules; the §4.4 "Home" rule as amended there) and item 1f's falsifiers | under `grok_jail_context.v1`, the staged read-only `.grok` directory, its writable entries, the CA bind and the masks of §2.3–§2.4, checked by §4.4 check 3; no memfd is used. Under `grok_seat_context.v1`, items 1b and 1f stand and E8-A's falsifiers stay unedited |
 
 Erratum 9 text:
 
@@ -898,3 +899,18 @@ The coordinator ruled option A on Q-r4.
   rule and coverage are stated; SL-3 guards drift against E8-A.
 - **C2** stays closed (§17).
 - The r4 banners are removed; Q-r4 is answered.
+
+## §19 Revision r6 (president ruling, 2026-11-22)
+
+The presiding reviewer's ruling on the re-pin gate (agent-harness#2089) and on SL-3's flagged
+items (agent-harness#2088) supplies this revision's text verbatim; no erratum 9 or TS contract
+text changes, since erratum 9 takes §8 by reference.
+
+- **Flagged item 1 (interpretation).** §8 gains a row: TS erratum 8 r3 item 1b's delivery,
+  normalisation and ancestor rules, the §4.4 "Home" rule as 1b amends it, and item 1f's
+  falsifiers govern `grok_seat_context.v1` only. Under `grok_jail_context.v1`, §2.3–§2.4 and
+  §4.4 check 3 govern.
+- **Flagged item 3 (erratum).** §4.3 row 3: `probe_grok_tools` stays SL-3's extension, but
+  switches to the jailed basis only when `grok_jail_surface.staged_admission(...)` holds for the
+  resolved subject; otherwise its result is identical to the unjailed probe's, so the TS contract
+  suites stay unedited.

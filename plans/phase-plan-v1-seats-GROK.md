@@ -21,7 +21,7 @@ window-kit decisions (jail contract §15). The roadmap text is unchanged.
 **Frozen inputs (pinned).**
 
 - `plans/artifacts/grok-jail-tool-surface-contract-v1.md` at sha256
-  `be46a86a442971c5b617a31806e743494b1b301f3dbd630baf857955695ee3a2` ("the jail contract"). This plan cites its sections.
+  `bc8e289c4d94799f6cd5f75de7d3dbd57a97b363d665a476787a41cad46c0ef9` ("the jail contract"). This plan cites its sections.
 - `plans/artifacts/grok-tool-surface-contract-v1.md` at sha256
   `5b929cb588e4bb555ce8374311432376fe4c04e8a851fd511e6c44682736b27c` (the **effective
   input**: agent-harness#2033 through erratum 7, erratum 8 r3 as merged with E8-A
