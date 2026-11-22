@@ -27,6 +27,20 @@ Root, binding; §1.1). Each change is tagged in place:
 - The lanes are re-sequenced (§13 Owner): the adapter lane now precedes the launcher lane,
   so the probe tests run in the lane that owns `launcher.py`.
 
+**Revision 3.1 (2026-11-22).** This revision applies the president's ruling on
+agent-harness#2083 r3:
+- [P2] The usage probe never runs on a review launch (S2, L4, §13).
+- [N-RC] Binding implementer note 1: the receipt classifier rejects an empty or partial
+  run (§8).
+- [N-PF] Non-gating notes: the preflight matches the `usage: jevdrill` prefix and checks
+  that both variables come from one install (§6). The ruling settled the contract-mismatch
+  question: JEV Drill's CLI at the pin has no schema or version command.
+- [N-TH] Both tree hashes are recorded for the dispatch-equality rule (§8).
+- [N-RD] The redo trigger includes `panel_invoker.py` (§11).
+- [N-ENV] The JEV CLI environment allowlist is deferred to agent-harness#2084 (§13).
+- The §2 caption nit is fixed.
+- P1 and P3 are plan-only changes.
+
 ## §0 Inputs
 
 | Input | Value |
@@ -128,13 +142,13 @@ Each lane brings in only the draft paths it owns:
   Conflicts are resolved by §3, and the semantic rules of §4 are then applied.
 - **Excluded paths** are not brought in (§9).
 
-Classification of the draft's 59 paths:
+Classification of the draft's 59 paths, plus the harness paths this contract adds:
 
 | Class | Paths |
 | --- | --- |
 | New, verbatim | `src/phase_loop_runtime/{file_lock,windows_process,windows_storage,jevdrill_adapter,jevdrill_queue}.py`; `tests/test_jevdrill_{diagnostics,input,queue,usage}.py`; `tests/test_windows_{locking,processes,storage}.py`; `tests/jevdrill_fixture_values.py` |
 | New, then amended | `tests/test_jevdrill_discovery.py` (per-test markers, the preflight, §6); `tests/test_jevdrill_adapter.py` (the route test's own skip removed, its marker and preflight, [C1]); `docs/jevdrill-integration.md` (SL-5) |
-| Modified, harness test infrastructure ([B5]) | `tests/launch_audit_hook.py` and `tests/conftest.py`: the Windows guards (S5), and the marker rules (§6) |
+| Harness paths added by this contract, not in the draft ([B5]) | `tests/launch_audit_hook.py` and `tests/conftest.py`: the Windows guards (S5), and the marker rules (§6) |
 | New, then re-synced (§5) | the 18 files under `tests/fixtures/jevdrill/` |
 | Modified, conflicting (§3) | `agy_qualification.py`, `launcher.py`, `runner.py`, `tests/test_launcher_liveness.py`, `tests/test_phase_loop_launcher.py` |
 | Modified, clean textual merge (§4 applies) | `agy_provenance.py`, `convergence/broker/live.py`, `convergence/event_log.py`, `convergence/fencing.py`, `dispatch_lock.py`, `observability.py`, `phase_worktree_executor.py`, `prompts.py`, `tests/phase_loop_test_utils.py`, `tests/test_phase_loop_work_unit_observability.py` |
@@ -162,7 +176,7 @@ Hunks are named by the trial merge's conflict markers, in file order.
 | L1 `launch_with_spec` preamble | executable-dependency admission and `_refuse_unwired_executor_spec` | `launch_started = time.monotonic()` | `launch_started` first, then `main`'s block unchanged. |
 | L2 before `launch(` | `dependency.validate_command(command, …)` immediately before the process boundary | timeout budget, Codex input manifest, usage-version probe, observer | Union under §4 S2: validate before the draft's block, and again as the last statement before `launch(`. |
 | L3 supervised-run signature | `action: str, review_profile: object | None` | `_codex_usage_observer=None, _launch_deadline=None` | Both, `main`'s first. |
-| L4 `launch` signature | `action: str = "execute", _review_profile=None` | the same two draft keywords | Both, `main`'s first. `main`'s review recursion inside `launch()` also forwards `_codex_usage_observer` and `_launch_deadline`, so usage capture is not lost on a Codex review. |
+| L4 `launch` signature | `action: str = "execute", _review_profile=None` | the same two draft keywords | Both, `main`'s first. [P2] The review recursion inside `launch()` still forwards `_launch_deadline`. `_codex_usage_observer` is forwarded too, and is `None` on review. |
 | L5 supervised call-through | passes `action`, `review_profile` | passes the two draft keywords | Pass all four. |
 | L6 live line loop | `redact_seat(line)`, then append, log, stream | `consume(line)` | Keep `consume(line)`. Move `main`'s redaction into `consume` (§4 S3). |
 | L7 final drain loop | the same as L6 | `consume(line)` | The same as L6. |
@@ -203,6 +217,14 @@ Hunks are named by the trial merge's conflict markers, in file order.
     sees the owned marker. Without it, the hook raises "provider launch lacks the owned
     launch marker", and every probe test in `test_jevdrill_usage.py` errors.
   - S2's ordering is a precondition of the probe. It is not its classification (§13).
+  - [P2] The probe runs only when `action != "review"`.
+    - For a review launch, no probe starts and no observer is created. The result carries
+      the draft's existing diagnostic,
+      `{"capture": "disabled", "reason": "unsupported_path_or_probe"}`.
+    - A review provider start is never made under `EXECUTOR_TRUSTED`.
+    - On native Windows, S3's review refusal comes first, before any usage logic.
+    - Consequence: JEV Drill's usage record for a review launch is `unknown`. SL-5
+      discloses this.
 - **S3. Redaction reaches every sink, and review does not run on native Windows.**
   - **POSIX.** In `consume`, `rendered = redact_seat(rendered)` comes before the usage
     observer, `output_parts`, the log and the stream. Redaction stays per line, as on
@@ -341,13 +363,19 @@ re-sync. Either way the name stays `998912b1e` or later.
   naming the variable and the reason:
   - a set or derived path that does not exist or is not executable;
   - an interpreter that cannot `import jevdrill` (run as `-I -c`);
-  - a CLI that does not answer a non-mutating call: `--help` exits 0 and names `jevdrill`;
+  - a CLI that does not answer a non-mutating call: `--help` must exit 0 with output
+    starting with the literal prefix `usage: jevdrill` [N-PF]. JEV Drill's parser is
+    `prog="jevdrill"`, so a tool that echoes its argv fails;
+  - [N-PF] with both variables set, a mixed pair: the CLI's sibling interpreter and
+    `JEVDRILL_TEST_PYTHON` must report the same `sys.prefix`;
   - a contract mismatch.
-    - SL-3 establishes which non-mutating command JEV's CLI at the R2 pin exposes for its
-      schemas or version. If one exists, the preflight compares its answer with
-      `tests/fixtures/jevdrill/digests.json`.
-    - If none exists, the PR says so, and the installed CI leg's checkout comparison (§8)
-      carries the pin check.
+    - The president's ruling settled this. JEV Drill's CLI at the R2 pin has no schema,
+      version or digest command, and its wheel ships no `schemas/`.
+    - The installed CI leg's checkout comparison (§8) therefore carries the pin check, and
+      the PR says so.
+    - Best-effort only, never a skip path: when `jevdrill.__file__` resolves inside a
+      source tree that has `schemas/` (an editable install), the preflight compares those
+      digests with `tests/fixtures/jevdrill/digests.json`.
 
   `tests/test_jevdrill_install_preflight.py` drives these through `pytester`: a missing
   path, a non-executable file and a non-JEV executable, with each variable alone and both
@@ -485,7 +513,18 @@ and the test-module names of R5. It fails on any missing name.
 
   `tests/test_jevdrill_receipt.py` unit-tests the classifier on synthetic junit: each of
   the four reasons passes only on its allowed legs; an unknown reason fails; an installed
-  skip with a variable set fails; and a missing expected node fails. The allowlist is a
+  skip with a variable set fails; and a missing expected node fails.
+  - [N-RC] **Binding:** the classifier also rejects an empty or partial run.
+    - On the receipt leg, each of the twelve files must contribute at least one testcase.
+    - The eight controls of §1 must appear by node ID: the four non-installed controls
+      passed, and the four installed controls skipped with §6's fixed reason.
+    - A pytest exit code of 2, 4 or 5 (interrupted, usage error, no tests) fails the leg,
+      whatever the classifier says.
+    - `test_jevdrill_receipt.py` covers each of these.
+    - The installed set stays "as collected": it includes the parametrized
+      `test_entered_linked_launch_rejections` and `test_installed_discovery_status_gates_planning`,
+      so it is never hard-coded.
+  - The allowlist is a
   single constant in the classifier, which the shape test reads. `tests/test_python_floor_1546.py`
   must still pass.
 - **`pyproject.toml` and `uv.lock`.** The draft needs no new dependency: `jsonschema` and
@@ -498,6 +537,8 @@ and the test-module names of R5. It fails on any missing name.
   - SL-5's executor dispatches the workflow once on the integration branch head, so macOS
     and Windows evidence exists before the merge. It dispatches again after the merge only
     if the merge commit's tree differs from that head.
+  - [N-TH] The PR records both tree hashes (`git rev-parse <sha>^{tree}`) of the
+    dispatched head and of the merge commit, so the equality can be audited.
   - After the merge the pull request links the `push` run.
   - Any leg not run, or failing, is disclosed with its reason. Under R3 that is a fallback
     jevdrill accepts, not a reason to hold the merge.
@@ -550,9 +591,13 @@ A lane stops and reports, rather than proceeding, if:
 Every package `.py` edit moves `runtime_digest()` and `release_identity()`. Window
 records keyed to the old value need requalification after any of these writers lands, as
 after any runtime edit. JEVHOST adds no pin to either. Immediately before merging, the
-integration pull request is rebased onto `main`. If any of the five conflict files, §4's
-files or `conftest.py` changed on `main` since a lane's base, that lane's per-file merge
-and verify are redone.
+integration pull request is rebased onto `main`. That lane's per-file merge and verify are
+redone if any of these changed on `main` since a lane's base:
+- the five conflict files;
+- §4's files;
+- `conftest.py`;
+- [N-RD] `panel_invoker.py`, because SL-4 consumes `launch_owned`, `SeatProfile` and
+  `_redact_seat_credentials`.
 
 ## §12 What this phase may not claim
 
@@ -588,10 +633,10 @@ security decisions, ruled per the round-2 sign-off. The pull request lists every
 | --- | --- |
 | [N10] `windows_process`: the guardian `subprocess.Popen` in `run_owned` and in `run_leased`; `_admitted_child`'s `subprocess.run` of the executor; the Job Object and handle `ctypes` calls; `process_is_live` (also used by `observability`) | `supervisor`. This is process-tree management of an executor, the Windows counterpart of `lease_supervisor`'s `supervise` / `_exec_executor` rows. It is *not* a counterpart of `launcher`'s executor start, which is `launch_owned` and `owned`. |
 | `windows_storage` and `file_lock` IO, `ctypes` and locking | `host-io` |
-| `jevdrill_adapter` JEV CLI spawn | `host-helper`. `jevdrill` is not in `PROVIDERS`. The argv comes from configuration, with `shell=False`, and is bounded by schema, size and deadline. The row records that the spawn inherits the full parent environment, as in the draft. |
+| `jevdrill_adapter` JEV CLI spawn | `host-helper`. `jevdrill` is not in `PROVIDERS`. The argv comes from configuration, with `shell=False`, and is bounded by schema, size and deadline. The row records that the spawn inherits the full parent environment, as in the draft. [N-ENV] A minimal-environment allowlist, agreed with JEV Drill, is deferred to agent-harness#2084, which does not gate this phase. |
 | `jevdrill_adapter` `git check-ignore` | `operator-out-of-scope`, as `runner._gitignored_paths` |
 | `jevdrill_adapter` and `jevdrill_queue` file and SQLite IO | `host-io` |
-| [B4] `launcher._codex_usage_version` | `owned`: the row is `launcher _codex_usage_version launch_owned`. S2's validation is its precondition. A 1147 `INVENTORY` entry is added only if that scan requires one, and it states that reason. |
+| [B4] [P2] `launcher._codex_usage_version` | `owned`, on execute only (`launch_owned`, `EXECUTOR_TRUSTED`). It never runs on review. The row is `launcher _codex_usage_version launch_owned`. S2's validation is its precondition. A 1147 `INVENTORY` entry is added only if that scan requires one, and it states that reason. |
 | new rows in `launcher` or `phase_worktree_executor` IO | `host-io`, as their existing rows |
 | any site that starts a provider or agent CLI outside an owned seam, or without S2's validation | none: **stop** (§10) |
 

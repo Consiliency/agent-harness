@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: JEVHOST
 roadmap: specs/phase-plans-jevhost-v1.md
-roadmap_sha256: 8763b4ba3cfcd4e4937f3bc8239164a251f1c21090647833e111efeeb2ea6342
+roadmap_sha256: 79dae858f5b456625b4cb72e751fb91085d9280e7dfa87b6125d2d3b6dfc4ee7
 automation:
   suite_command: ["bash", "-lc", "cd phase-loop-runtime && PHASE_LOOP_TDD_EXPECT_SCHED=1 PYTHONPATH=$PWD/src:$PWD/tests timeout 1800 .venv/bin/python -m pytest -q -p no:cacheprovider -m 'not dotfiles_integration' tests/test_jevdrill_selection.py tests/test_jevdrill_install_preflight.py tests/test_jevdrill_runner_lanes.py tests/test_jevdrill_launch_merge.py tests/test_jevdrill_companion_workflow.py tests/test_jevdrill_receipt.py tests/test_jevdrill_adapter.py tests/test_jevdrill_diagnostics.py tests/test_jevdrill_discovery.py tests/test_jevdrill_input.py tests/test_jevdrill_queue.py tests/test_jevdrill_usage.py tests/test_launcher_liveness.py tests/test_phase_loop_launcher.py tests/test_phase_loop_work_unit_observability.py tests/test_windows_locking.py tests/test_windows_processes.py tests/test_windows_storage.py tests/test_launch_audit_inventory.py tests/test_seat_reference_inventory.py tests/test_agent_cli_scratch_inventory_1147.py"]
 ---
@@ -34,6 +34,16 @@ president's clarification. Each change carries its tag in the contract.
   `launcher.py`. SL-4 stays the inventory reducer.
 - r3 goes to a president ruling, not a third review round.
 
+**Revision 3.1 (2026-11-22).** It applies the president's ruling (merge-ready after three
+in-place fixes):
+- [P1] SL-3 only collects the adapter and discovery tests, because they need SL-4's
+  launcher surface. SL-4 runs them.
+- [P2] The usage probe never runs on review (contract S2). SL-4 adds an eighth test case,
+  and EC-JEVHOST-3 gains a falsifier.
+- [P3] The coordinator dispatches Gate A on the exact head before the merge.
+- The binding classifier note, the tree hashes, the `panel_invoker.py` redo trigger and the
+  deferred env allowlist (agent-harness#2084) are folded in.
+
 **Frozen input.** JEVHOST (`plans/artifacts/jevhost-v1-contract.md`, pinned by sha256 in
 the roadmap's External Inputs) holds every procedure, resolution and rule this plan cites.
 It is read-only during execution.
@@ -57,7 +67,9 @@ It is read-only during execution.
 **Shared-host rule.** Only the files a lane lists, serially without `-n`, with
 `-p no:cacheprovider`, under `timeout`, after a headroom check (`free -h`,
 `/proc/loadavg`, `/proc/pressure/memory`). Defer to hosted CI if headroom is short. No
-full suite, no Gate A and no dispatch from a shared host. Do not run
+full suite runs locally on a shared host. [P3] Dispatches are different: a `gh workflow run`
+dispatch executes on hosted runners, not on the shared host. Gate A and the companion
+dispatch of SL-5 are therefore required, not forbidden. Do not run
 `tests/test_panel_invoker.py` or any test that launches a provider.
 
 ## Interface Freeze Gates
@@ -162,10 +174,10 @@ Source paths are under `phase-loop-runtime/src/phase_loop_runtime/`. Test paths 
     - under the default `lane_scheduler_mode`, an adapter run enters `prepare` once and `launch` once, never `execute_lane_waves`, and records one `lane_scheduler` event with reason `jevdrill_adapter`;
     - with no adapter, the lane-wave path is as on `main`.
   - test: [C2] `test_jevdrill_install_preflight.py` uses `pytester`. A missing path, a non-executable file and a non-JEV executable, for each variable alone and both together, each report **failed**. Neither variable set reports skipped with the fixed reason.
-  - test: restore the three test files and `jevdrill_fixture_values.py`. Mark the installed-JEV tests per test. [C1] Remove the route test's own `pytest.skip` and derive its CLI per JEVHOST §6. Route the fixture and the route test through `resolve_install()`. Three-way merge `phase_loop_test_utils.py`. Update any count or v1-only assertion SL-1's sync moves, and report each one.
-  - impl: restore `jevdrill_adapter.py` and `jevdrill_queue.py` verbatim. Write `jevdrill_install.py` [C2], establishing which non-mutating JEV CLI command the preflight's contract check uses. Do the three-way merge of `runner.py` with R1, then S4.
-  - verify: `timeout 1200 .venv/bin/python -m pytest -q -p no:cacheprovider -m "not dotfiles_integration" tests/test_jevdrill_runner_lanes.py tests/test_jevdrill_install_preflight.py tests/test_jevdrill_adapter.py tests/test_jevdrill_discovery.py tests/test_jevdrill_queue.py tests/test_lane_wave_executor.py` (installed tests skip with the fixed reason), then `timeout 1200 .venv/bin/python -m pytest -q -p no:cacheprovider tests/test_phase_loop_runner.py`.
-  - verify (installed, optional locally, only with headroom): a jevdrill checkout at the synced SHA in a scratch directory under `$HOME`, `uv sync --locked --python cpython-3.14` there, and both variables set. Rerun the discovery and adapter tests with zero skips. Otherwise defer to SL-2's installed leg.
+  - test: restore the three test files and `jevdrill_fixture_values.py`. They must collect clean here and run in SL-4 [P1]. Mark the installed-JEV tests per test. [C1] Remove the route test's own `pytest.skip` and derive its CLI per JEVHOST §6. Route the fixture and the route test through `resolve_install()`. Three-way merge `phase_loop_test_utils.py`. Update any count or v1-only assertion SL-1's sync moves, and report each one.
+  - impl: restore `jevdrill_adapter.py` and `jevdrill_queue.py` verbatim. Write `jevdrill_install.py` [C2] with the `usage: jevdrill` prefix check and the same-install check. Per the ruling, there is no schema or version command at the pin. Do the three-way merge of `runner.py` with R1, then S4.
+  - verify: `timeout 1200 .venv/bin/python -m pytest -q -p no:cacheprovider -m "not dotfiles_integration" tests/test_jevdrill_runner_lanes.py tests/test_jevdrill_install_preflight.py tests/test_jevdrill_queue.py tests/test_lane_wave_executor.py`, then `timeout 1200 .venv/bin/python -m pytest -q -p no:cacheprovider tests/test_phase_loop_runner.py`.
+  - verify (collect only) [P1]: `timeout 300 .venv/bin/python -m pytest -q -p no:cacheprovider --collect-only tests/test_jevdrill_adapter.py tests/test_jevdrill_discovery.py`. This proves the imports, the per-test markers and both collection errors. These two files need SL-4's launcher surface (`codex_usage_capture`, `result.jevdrill_usage`, `launcher._codex_executor_input_manifest`), so SL-4 runs them.
 
 ### SL-4 — LAUNCH: launcher conflicts, launcher and usage tests, selection and the source inventories
 
@@ -175,14 +187,15 @@ Source paths are under `phase-loop-runtime/src/phase_loop_runtime/`. Test paths 
 - **Interfaces consumed**: SL-0's `windows_process` interfaces and marker rules; SL-3's `adapter_fixture` and `resolve_install`; `panel_invoker.launch_owned`, `SeatLaunchRole`, `SeatProfile`, `_redact_seat_credentials` (pre-existing); `executable_dependency_startup.current_dependency_for_provider` (pre-existing)
 - **Parallel-safe**: no
 - **Tasks**:
-  - test: [N9] `test_jevdrill_launch_merge.py`, seven cases, red before the impl task:
+  - test: [N9] `test_jevdrill_launch_merge.py`, eight cases, red before the impl task:
     - S2: `validate_command` runs before the probe and again as the last call before `launch`;
     - S2: a mismatched binary is never probed;
     - [B4] with `main`'s audit hook active, the probe runs through `launch_owned` with `role=EXECUTOR_TRUSTED`, with the owned marker set;
     - S3: a seat-credential line is redacted before every sink;
     - S3: with `_native_windows()` patched true, `launch(action="review")` raises `review_unsupported_on_windows` before any spawn;
     - S3: with that seam patched true, a non-review `ephemeral_monitor` launch forwards `action`, `_review_profile` and both usage keywords;
-    - L4: the review recursion forwards the usage keywords.
+    - L4: the review recursion forwards `_launch_deadline`, and forwards `_codex_usage_observer` as `None`;
+    - [P2] a Codex `exec --json` spec with `product_action="review"` and `codex_usage_capture=True` starts no probe and records `{"capture": "disabled", "reason": "unsupported_path_or_probe"}`, with `launch_owned` and `Popen` patched to fail on `--version`.
   - test: restore `test_jevdrill_usage.py`, `test_jevdrill_diagnostics.py` and `test_jevdrill_input.py` verbatim. Apply the T1 and T2 merges and the draft's edits to `test_phase_loop_work_unit_observability.py`.
   - test: `test_jevdrill_selection.py` (JEVHOST §6, §7) asserts:
     - the eight control node IDs exactly, with the installed split;
@@ -194,10 +207,17 @@ Source paths are under `phase-loop-runtime/src/phase_loop_runtime/`. Test paths 
   - test: run the five inventory tests of JEVHOST §13. They are red where new sites are unlisted.
   - impl: the per-file three-way merge of `launcher.py`, with L1 to L7, S2 including the owned probe [B4], S3 and the `_native_windows()` seam. Then S6 across the lane's tests.
   - impl: reconcile `seat_launch_references.json` and the 1147 `INVENTORY` for every site of SL-0, SL-3 and SL-4, by the role table of JEVHOST §13, including the [N10] `windows_process` rows. List each added row with its role for the PR. A site the table does not cover is a stop.
-  - verify: `timeout 1500 .venv/bin/python -m pytest -q -p no:cacheprovider -m "not dotfiles_integration" tests/test_jevdrill_launch_merge.py tests/test_jevdrill_usage.py tests/test_jevdrill_diagnostics.py tests/test_jevdrill_input.py tests/test_jevdrill_selection.py tests/test_launcher_liveness.py tests/test_phase_loop_launcher.py tests/test_phase_loop_work_unit_observability.py tests/test_launcher_exec_supervisor.py tests/test_seat_reference_inventory.py tests/test_agent_cli_scratch_inventory_1147.py tests/test_seat_resource_caps.py tests/test_seat_launch_helpers_trusted.py tests/test_gate_fail_open_visibility.py`.
+  - verify: `timeout 1800 .venv/bin/python -m pytest -q -p no:cacheprovider -m "not dotfiles_integration" tests/test_jevdrill_adapter.py tests/test_jevdrill_discovery.py tests/test_jevdrill_launch_merge.py tests/test_jevdrill_usage.py tests/test_jevdrill_diagnostics.py tests/test_jevdrill_input.py tests/test_jevdrill_selection.py tests/test_launcher_liveness.py tests/test_phase_loop_launcher.py tests/test_phase_loop_work_unit_observability.py tests/test_launcher_exec_supervisor.py tests/test_seat_reference_inventory.py tests/test_agent_cli_scratch_inventory_1147.py tests/test_seat_resource_caps.py tests/test_seat_launch_helpers_trusted.py tests/test_gate_fail_open_visibility.py`.
     - Deselect any `real_seat_caps` or `host_seat_credentials` test.
     - Then run `timeout 120 python3 scripts/check_model_id_sources.py`.
-    - Then run the receipt classifier over a junit of the twelve files from this lane's tree, with neither variable set.
+    - Then run the receipt classifier over a junit of the twelve files from this lane's tree, with neither variable set. It must pass, including the [N-RC] completeness rules.
+  - verify (installed, optional locally, only with headroom) [P1]:
+    - check out jevdrill at the synced SHA into a scratch directory under `$HOME`;
+    - run `uv sync --locked --python cpython-3.14` there;
+    - set both variables;
+    - rerun the discovery and adapter tests with zero skips.
+
+    Otherwise defer to SL-2's installed leg.
 
 ### SL-5 — DOCS: integration page, changelog, dispatch and the pull request's disclosure
 
@@ -222,7 +242,9 @@ Source paths are under `phase-loop-runtime/src/phase_loop_runtime/`. Test paths 
     - the dropped October evidence.
 
     Add a `CHANGELOG.md` entry.
-  - impl: dispatch the workflow once on the integration head, with the synced SHA, from a hosted context rather than a shared host.
+  - impl: once, on the exact integration head, dispatch the companion workflow with the synced SHA. [P3] Alongside it, the coordinator dispatches Gate A: `gh workflow run test.yml --ref <branch> -f chronology=false`. Both run on hosted runners.
+    - If GitHub refuses the companion dispatch because the workflow is not yet registered, §8's "leg not run" disclosure applies, and the post-merge dispatch on `main` is the evidence.
+    - [N-TH] Record the dispatched head's tree hash (`git rev-parse <sha>^{tree}`).
   - impl: the PR body states:
     - each of R1 to R6 with its evidence, linking the pre-merge receipt and installed runs;
     - the required suite's skip of the four installed controls, reversing the draft's no-skip assertion;
@@ -233,9 +255,14 @@ Source paths are under `phase-loop-runtime/src/phase_loop_runtime/`. Test paths 
     - the sync command and the 3.12/CPython-3.14 pairing;
     - [C9] that if the installed leg is not run or fails, JEV HOST runs the pairing first;
     - every leg not run;
+    - [P3] the Gate A run link;
+    - [P2] that JEV Drill's usage record on review launches is `unknown`;
+    - that JEV Drill's CLI at the pin has no schema or version command, so the installed leg's checkout comparison carries the pin check;
+    - [N-TH] both tree hashes, of the dispatched head and the merge commit;
+    - [N-ENV] the deferred env allowlist, agent-harness#2084;
     - the dropped paths;
     - that agent-harness#2071 is superseded.
-  - impl (post-dispatch): back-fill the merge SHA and each leg's result into a closing PR comment and the report to Root. Dispatch again only if the merge tree differs from the dispatched head. No committed file carries a placeholder.
+  - impl (post-dispatch): back-fill the merge SHA, its tree hash and each leg's result into a closing PR comment and the report to Root. Dispatch the companion again only if the merge commit's tree hash differs from the dispatched head's. Close agent-harness#2071 as superseded only after the merge, with a link. No committed file carries a placeholder.
   - verify: `git diff --stat origin/main` shows no excluded path. Run the JEVHOST §9 disclosure grep over the diff and `git log origin/main..HEAD`; the only expected hit is the attribution trailer.
 
 ## Execution Notes
@@ -256,9 +283,11 @@ Source paths are under `phase-loop-runtime/src/phase_loop_runtime/`. Test paths 
 - **Concurrent writers** (JEVHOST §11). agent-harness#2082 shares
   `seat_launch_references.json`, and whichever lands second regenerates its own rows. If
   that is JEVHOST, SL-4 does it. The OI-1 fence lane and agent-harness#2081 are disjoint.
-  Rebase onto `main` immediately before the merge, and redo any lane whose files changed.
+  Rebase onto `main` immediately before the merge. Redo any lane whose files changed, or
+  SL-4 if `panel_invoker.py` changed [N-RD].
 - **Hosted evidence.** The required checks gate the merge. Both Linux legs run on the PR and
-  on the merge push. The single dispatch gives macOS and Windows evidence before the merge.
+  on the merge push. The single companion dispatch gives macOS and Windows evidence before
+  the merge. [P3] Gate A runs on the same exact head.
 - **Requalification.** Package edits move `runtime_digest()`. Window records keyed to the
   old value need requalification.
 
@@ -268,7 +297,7 @@ Test paths are under `phase-loop-runtime/`.
 
 - [ ] EC-JEVHOST-1 — proven by `test_jevdrill_selection.py` (R5 imports from the checkout's `src`), both Linux legs' sync steps on the PR and the merge push, and `git ls-tree` of the merge commit listing the R1 paths and none of JEVHOST §9's; falsified by a missing module, test, helper or fixture, or a `uv sync --locked` failure. Path-entered control: the workflow's `uv sync … --locked` on a fresh hosted runner.
 - [ ] EC-JEVHOST-2 — proven by SL-1's check script and the installed leg's checkout comparison; falsified by one changed schema byte, a removed fixture row or a stale `digests.json` value. Path-entered control: jevdrill's raw files fetched by SHA.
-- [ ] EC-JEVHOST-3 — proven by SL-0's, SL-3's and SL-4's verify commands with `main`'s companion tests unedited, the five inventory tests and `test_launch_audit_inventory.py` green, and `test_jevdrill_launch_merge.py` and `test_jevdrill_runner_lanes.py`; falsified by an unredacted credential at any sink, a review launch on native Windows, a probe outside `launch_owned` [B4], an unlisted launch site, an adapter run entering `execute_lane_waves`, or a module-level `fcntl` reference. Path-entered control: `launch_with_spec` and `run_loop` with production constructors, under `main`'s audit hook.
+- [ ] EC-JEVHOST-3 — proven by SL-0's, SL-3's and SL-4's verify commands with `main`'s companion tests unedited, the five inventory tests and `test_launch_audit_inventory.py` green, and `test_jevdrill_launch_merge.py` and `test_jevdrill_runner_lanes.py`; falsified by an unredacted credential at any sink, a review launch on native Windows, a probe outside `launch_owned` [B4], a usage probe on a review launch [P2], an unlisted launch site, an adapter run entering `execute_lane_waves`, or a module-level `fcntl` reference. Path-entered control: `launch_with_spec` and `run_loop` with production constructors, under `main`'s audit hook.
 - [ ] EC-JEVHOST-4 — [C5] proven by the receipt leg's classifier (`scripts/jevdrill_receipt.py`, unit-tested by `test_jevdrill_receipt.py`) passing with every skip inside the four-reason allowlist, and by the installed leg passing every collected `jevdrill_installed` item by node ID with both variables from one CPython-3.14 install of the R2 pin, on the PR and at the merge commit; falsified by any failure or error, a skip with an unlisted reason, or an installed item skipped, missing or failing. Path-entered control: the twelve files run by the workflow, with junit read by the classifier.
 - [ ] EC-JEVHOST-5 — proven by `test_jevdrill_selection.py`: the eight node IDs with the split, the static LEARN rule [C6] and name stability [C7]; and by the dispatched `windows-2025` legs passing every test of the four LEARN files [B5]; falsified by `dotfiles_integration` on any control or R4-file test, a module-level `jevdrill_installed`, a marked non-installed control, a dropped node ID, a skip mark in a cross-platform LEARN file, or an unlisted rename. Path-entered control: pytest collection with `-m "not dotfiles_integration"`.
 - [ ] EC-JEVHOST-6 — proven by `test_jevdrill_selection.py`; falsified by removing any R5 name. Path-entered control: import from the checkout.
@@ -278,8 +307,12 @@ Test paths are under `phase-loop-runtime/`.
 ## Verification
 
 Per lane: the commands above. Whole phase, locally and serially after a headroom check:
-the frontmatter `suite_command`. Hosted: the required checks, then both Linux legs on the
-PR, then one dispatch on the integration head, then both Linux legs on the merge push. No
+the frontmatter `suite_command`. Hosted, in order:
+1. the required checks;
+2. both Linux legs on the PR;
+3. on the exact integration head, one companion dispatch, and [P3] Gate A
+   (`gh workflow run test.yml --ref <branch> -f chronology=false`);
+4. both Linux legs on the merge push. No
 step makes a provider call or runs on a non-hosted machine.
 
 ## Spec Closeout Plan

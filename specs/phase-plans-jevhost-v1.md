@@ -31,7 +31,7 @@ separately installed JEV Drill. With no adapter, every harness path behaves exac
 
 | Input | Pin |
 | --- | --- |
-| JEVHOST contract | `plans/artifacts/jevhost-v1-contract.md`, sha256 `999e0ebe733bd90af6df1aca989483cc6059802320bc19adc5e63eb3d819132c` |
+| JEVHOST contract | `plans/artifacts/jevhost-v1-contract.md`, sha256 `1fa957afc8f7b3a324a8f048695b3d2ebf1009336a1d49407d33dfc1b36f4e1d` |
 | Draft commit | agent-harness#2071 head `784d1595a08f42519862ae5f9336f20186d83c4b`, base `56dce95a52625a58cd08911f8f623c637bf52e44` |
 | jevdrill contract commit | `Consiliency/jevdrill` `998912b1e0195464e6f3aa048c5421c2bed57491` (JEVHOST §5 SHA rule) |
 
