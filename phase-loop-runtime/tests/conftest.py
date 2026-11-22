@@ -234,6 +234,10 @@ def _no_real_agy_vendor_store(monkeypatch):
     lies under, so every anchor walk fails the same way on every host, whatever its temp
     directory. A test of the hold builds its own stores and sets ``agy_hold.VENDOR_STORES``
     and ``agy_hold._WALK_ROOT`` itself."""
+    if os.name != "posix":
+        # JEVHOST [B5]: agy_hold uses os.O_DIRECTORY at import, which native Windows lacks;
+        # no agy seat image exists there, so there is no vendor store to keep tests off.
+        return
     from phase_loop_runtime import agy_hold
 
     monkeypatch.setattr(agy_hold, "VENDOR_STORES", ())
