@@ -1384,6 +1384,7 @@
   {"count": 1, "function": "_tree_quiescent", "module": "panel_invoker", "primitive": "subprocess.Popen", "role": "host-helper"},
   {"count": 1, "function": "_window_receipt_matches", "module": "panel_invoker", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_window_bound_image_sha256", "module": "panel_invoker", "primitive": "io.open", "role": "host-io"},
+  {"count": 2, "function": "_head_commit", "module": "seat_window_supply_codex", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "export_records", "module": "seat_window", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_read_record", "module": "seat_window", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "account_isolation", "module": "seat_window", "primitive": "io.open", "role": "host-io"},

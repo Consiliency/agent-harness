@@ -418,10 +418,22 @@ def build_qualification_input(layout, base):
     jailq._git(repo, "init", "-q")
     jailq._git(repo, "add", "-A")
     jailq._git(repo, "commit", "-qm", "qualification input")
-    import subprocess
-    commit = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True,
-                            capture_output=True, text=True).stdout.strip()
-    return jailq.QualificationInput(repo=repo, commit=commit, layout=layout)
+    return jailq.QualificationInput(repo=repo, commit=_head_commit(repo), layout=layout)
+
+
+def _head_commit(repo) -> str:
+    """The fresh repository's HEAD commit, read from its own ``.git`` (HEAD, then the loose
+    branch ref the commit just wrote); no further process is started."""
+    git = repo / ".git"
+    head = (git / "HEAD").read_text(encoding="ascii").strip()
+    if head.startswith("ref: "):
+        ref = head.removeprefix("ref: ").strip()
+        if not ref.startswith("refs/heads/") or ".." in ref:
+            raise ValueError("stage_refused")
+        head = (git / ref).read_text(encoding="ascii").strip()
+    if re.fullmatch(r"[0-9a-f]{40}([0-9a-f]{24})?", head) is None:
+        raise ValueError("stage_refused")
+    return head
 
 
 @dataclasses.dataclass(frozen=True, slots=True, kw_only=True)

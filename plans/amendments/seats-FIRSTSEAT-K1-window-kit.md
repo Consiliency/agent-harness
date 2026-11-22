@@ -352,7 +352,8 @@ No lane makes a live provider call or runs on a seat host. SL-6.2 is provider-fr
   - `tests/test_seat_window_vendor_neutral.py`: `register_fixture_vendor` (hides the real
     Codex registration), `_codex_prepare_stubs` (a provider file), `_codex_open_stubs`
     (`named=`), and F15's invalid-pair case (the first table vendor with no supplier);
-  - `tests/data/seat_launch_references.json`: one entry for `_window_bound_image_sha256`;
+  - `tests/data/seat_launch_references.json`: one entry each for `_window_bound_image_sha256`
+    and the supplier's `_head_commit`;
   - `seat_window.py`: `_row_ready_codes` returns a supplier's `ROW_WINDOW_HOLD` before any
     claim, which is how SL-6 makes the hold mechanical (contract §10.B, `codex_expired_leg_unfenced`);
   - `CHANGELOG.md`: SL-6's `[Unreleased]` entry, which SL-9 finalizes.
