@@ -148,7 +148,8 @@ class SpawnEvidence:
         run_provider = pi.run_provider
 
         def host_run(argv, *args, **kwargs):  # the admission gate's host-side starts
-            self.host_runs.append((str(argv[0]), _file_sha256(str(argv[0]))))
+            if os.path.basename(str(argv[0])) == "codex":
+                self.host_runs.append((str(argv[0]), _file_sha256(str(argv[0]))))
             return run_provider(argv, *args, **kwargs)
         monkeypatch.setattr(pi, "run_provider", host_run)
 
@@ -431,7 +432,10 @@ def _a_c1(tmp_path, monkeypatch, codex_upstream, *, case):
     monkeypatch.setattr(seat_jail, "pass_record_verdict", lambda _digest: (True, "pass"))
     fixture_home = tmp_path / "fixture-home"
     (fixture_home / ".codex").mkdir(parents=True, mode=0o700)
-    login = synthetic_login("acct-fixture-" + secrets.token_hex(4))
+    # The responder's accounts/check reply routes exactly this account (the consumed
+    # CODEX fixture's); any other id leaves the workspace out of routing discovery.
+    from test_seat_egress_allowlist_codex import _ACCOUNTS_CHECK_REPLY
+    login = synthetic_login(json.loads(_ACCOUNTS_CHECK_REPLY)["default_account_id"])
     auth = fixture_home / ".codex" / "auth.json"
     auth.write_text(json.dumps(login))
     auth.chmod(0o600)
