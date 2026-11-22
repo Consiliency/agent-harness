@@ -228,19 +228,33 @@ def test_live_but_progressless_seat_is_surfaced_not_killed(tmp_path, monkeypatch
     monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "t", 0, threading.Event(),
                                    stall_notice_s=.3)
     notices: list[dict] = []
-    # The stalled rows of the current notice episode. Genuine progress ends an episode. Under
-    # load, a slow start-up can stall the seat before its first progress, which is an episode
-    # of its own (agent-harness#2073), so the test waits for a steady episode, not a time.
+    # Genuine progress ends a notice episode. Under load, a slow start-up can stall the seat
+    # before its first progress, an episode of its own (agent-harness#2073). Such rows are
+    # kept in ``notices`` but never trigger the cancel: only stalled rows observed after the
+    # host has read the provider's journaled retry count, so the cancel always lands in the
+    # live mid-retry stall this test is about.
+    retry_seen = threading.Event()
     episode: list[dict] = []
     steady: list[dict] = []
+    outcome = panel._claude_transcript_outcome
+
+    def read_outcome(path, *args, data=None, **kwargs):
+        raw = data if data is not None else (path.read_bytes() if path is not None and path.exists() else b"")
+        if b'"uuid": "r-1"' in raw:  # the resume(1) record: the provider is mid-retry
+            retry_seen.set()
+        return outcome(path, *args, data=data, **kwargs)
+
+    monkeypatch.setattr(panel, "_claude_transcript_outcome", read_outcome)
     observe = monitor.observe
 
     def capture(*args, **kwargs):
+        after_retry = retry_seen.is_set()  # read before this observation is made
         observe(*args, **kwargs)
         row = json.loads(monitor.path.read_text())
         if row["progress_notice"] == "seat_progress_stalled":
             notices.append(row)
-            episode.append(row)
+            if after_retry and row["last_genuine_progress_age_s"] is not None:
+                episode.append(row)
             if len(episode) >= 5 and not steady:  # well past the window, still waiting: cancel
                 steady.extend(episode)
                 monitor.cancel.set()
@@ -266,11 +280,13 @@ def test_live_but_progressless_seat_is_surfaced_not_killed(tmp_path, monkeypatch
     assert notices[0]["progress_notice_count"] == 1
     assert notices[0]["stall_notice_s"] == .3
     assert notices[0]["provider_terminal_state"] is None
+    assert retry_seen.is_set() and steady, "no steady stall after the host observed the retry"
     # One notice per episode: the steady episode's five observations never count it again.
     assert len(steady) == 5 and {row["progress_notice_count"] for row in steady} == {steady[0]["progress_notice_count"]}
     warnings = [r.getMessage() for r in caplog.records if "seat_progress_stalled" in r.getMessage()]
     assert len(warnings) == steady[0]["progress_notice_count"], warnings
-    assert "Thinking" not in warnings[0] and "Please perform" not in warnings[0]
+    for warning in warnings:  # every warning, start-up episodes included
+        assert "Thinking" not in warning and "Please perform" not in warning, warning
 
 
 @pytest.mark.usefixtures("owned_review_network")
