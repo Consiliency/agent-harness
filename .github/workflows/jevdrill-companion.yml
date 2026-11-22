@@ -111,6 +111,14 @@ jobs:
           root="${WORKSPACE}${slash}phase-loop-runtime"
           echo "PYTHONPATH=${root}${slash}src${sep}${root}${slash}tests" >> "$GITHUB_ENV"
 
+      - name: S3 review refusal on native Windows, unpatched (JEVHOST §4 S3, S5)
+        if: runner.os == 'Windows'
+        working-directory: phase-loop-runtime
+        run: |
+          junit="$RUNNER_TEMP/jevdrill-windows-review-refusal.xml"
+          uv run --no-sync python -m pytest -q -rA -p no:cacheprovider --junitxml="$junit" tests/test_jevdrill_windows_review_refusal.py
+          uv run --no-sync python -c "import sys, xml.etree.ElementTree as E; s = E.parse(sys.argv[1]).getroot(); s = s if s.tag == 'testsuite' else s[0]; c = {k: int(s.get(k, 0)) for k in ('tests', 'failures', 'errors', 'skipped')}; print(c); sys.exit(0 if c == {'tests': 1, 'failures': 0, 'errors': 0, 'skipped': 0} else 1)" "$junit"
+
       - name: Run the twelve files and classify the receipt
         working-directory: phase-loop-runtime
         env:
@@ -221,6 +229,14 @@ jobs:
           if [ "$HOST_OS" = "Windows" ]; then sep=';'; slash="\\"; else sep=':'; slash='/'; fi
           root="${WORKSPACE}${slash}phase-loop-runtime"
           echo "PYTHONPATH=${root}${slash}src${sep}${root}${slash}tests" >> "$GITHUB_ENV"
+
+      - name: S3 review refusal on native Windows, unpatched (JEVHOST §4 S3, S5)
+        if: runner.os == 'Windows'
+        working-directory: phase-loop-runtime
+        run: |
+          junit="$RUNNER_TEMP/jevdrill-windows-review-refusal.xml"
+          uv run --no-sync python -m pytest -q -rA -p no:cacheprovider --junitxml="$junit" tests/test_jevdrill_windows_review_refusal.py
+          uv run --no-sync python -c "import sys, xml.etree.ElementTree as E; s = E.parse(sys.argv[1]).getroot(); s = s if s.tag == 'testsuite' else s[0]; c = {k: int(s.get(k, 0)) for k in ('tests', 'failures', 'errors', 'skipped')}; print(c); sys.exit(0 if c == {'tests': 1, 'failures': 0, 'errors': 0, 'skipped': 0} else 1)" "$junit"
 
       - name: Run the twelve files against the installed JEV Drill and classify
         working-directory: phase-loop-runtime
