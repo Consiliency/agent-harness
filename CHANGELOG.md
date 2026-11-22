@@ -109,6 +109,35 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   - **Pins.** `runtime_digest()` and the Claude SDK proof-input binding move
     (`_prepare_jailed_claude`, `launch_provider` and the `seat_profiles.py` input). No jail
     profile, allow-list, agy QCI, containment contract or W1 grant digest moves.
+- Codex's window supplier (FIRSTSEAT amendment K-1, lane SL-6; contract r5.2 §10.B). SL-9
+  finalizes this entry.
+  - `seat_window_supply_codex` registers Codex's window data. It supplies:
+    - the A-C1 surface: kinds, argv, stream facts, `terminal` and `expired_access_copy`. The
+      expired copy changes only the access token's `exp`, setting it an hour into the past;
+    - Codex's rows and host paths;
+    - the scope, refresh and secret-scan outcomes;
+    - its own bracket, with rows ported from `codex-unlisted-endpoint`: the token POST to
+      `auth.openai.com`, the refused hosts and paths, and the proxy's tunnel, front and
+      direct-egress refusals aimed at `chatgpt.com`;
+    - its own containment watch, definition probe and reducer, with its own
+      `ContextBinding` and `ContainmentInputs`. The reducer needs the production `codex`
+      allowlist digest on every credentialed launch, the expired leg included; that one
+      seam is what the OI-1 fence edits. Refresh is detected by a credential change or an
+      allowed token-endpoint request. An `admission_class` of `"None"` means no class, so
+      such a record is not admitted.
+  - A-C1 passed on the owner's ruling of 2026-11-22. The single provider-free run ended as
+    a harness hard failure, whose cause is now fixed in the tests: Codex 0.167.0
+    zstd-compresses its model requests, and the loopback responder could not read them.
+  - A Codex row window is held. `qualify --window row --vendor codex` refuses with
+    `codex_expired_leg_unfenced` before any claim, jail or proxy, until the OI-1 fence lands.
+  - The kit's non-Gemini control launches now do four things:
+    - name the allowlist's refused hosts;
+    - deliver the kit's input on stdin, bound as `input_sha256`;
+    - record the image the jail binds;
+    - record the help launch's output digest, `help_sha256`.
+  - Tests: `tests/test_seat_window_supply_codex.py` and
+    `tests/test_seat_window_codex_provider_free.py` (K1-T6 and K1-T7). The A-C1 live cases
+    run only with `PHASE_LOOP_REQUIRE_LIVE_JAIL=1`, and under that opt-in a skip fails.
 - A grok seat composed with the `grok-review` egress proxy now holds a pinned
   `.grok/config.toml` in its private home (grok tool-surface contract, erratum 8 r3, lane
   E8-A; `plans/artifacts/grok-tool-surface-contract-v1.md`). The file is harness-written

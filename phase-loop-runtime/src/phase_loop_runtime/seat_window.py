@@ -2192,6 +2192,11 @@ class _RowRun:
 
 def _row_ready_codes(vendor):
     from . import seat_window_supply
+    # K-1 r5.2 §10.B (B1): a supplier may hold its vendor's row window with a typed
+    # row-ready code; it refuses before any claim, preflight, jail or proxy.
+    hold = getattr(seat_window_supply.load(vendor), "ROW_WINDOW_HOLD", None)
+    if hold is not None:
+        return str(hold), None
     data = _window_data_for(vendor)
     if (seat_window_supply.available(vendor) is None or data is None
             or ROW_WINDOW not in data.windows):

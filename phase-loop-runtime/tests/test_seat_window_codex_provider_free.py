@@ -1,0 +1,1198 @@
+"""K-1 SL-6.2: assumption A-C1, provider-free, against the real pinned Codex binary.
+
+K1-T6 (start gate K1-G5 for SL-6.3) and K1-T7 of contract r4 §15, for §10.B's A-C1:
+
+* K1-T6. :data:`EXPECTED_CODEX_IMAGE` is the reviewed literal: the native image of the
+  pinned CLI version, named by version and sha256, with its source. The digest compared is
+  the one of the binary actually launched, read from the spawn evidence: the host file
+  bound at the jail's runtime destination in the spawned argv, hashed at spawn time. The
+  test's own on-disk pin is never what is compared.
+* K1-T7. The real ``_prepare_jailed_codex`` and production auth path run with an isolated
+  fixture ``HOME`` and ``CODEX_HOME`` and a synthetic login only. A decoy home with a
+  planted credential is the process's own ``HOME`` and ``CODEX_HOME``; an audit hook fails
+  the test on any lookup under it (or under the account's real ``.codex``), its directory
+  is unreadable to children, and the bearer the loopback upstream receives must be the
+  synthetic one. The proxy is the production ``codex`` allowlist, deny-by-default, with no
+  upstream but the loopback responder; the CLI runs the production argv with no provider or
+  config override.
+
+Opt-in: the live cases need ``PHASE_LOOP_REQUIRE_LIVE_JAIL=1`` on a jail-capable host.
+Under the opt-in every missing prerequisite and every skip fails. Without it the live cases
+are skipped and A-C1 is NOT proven; that is the hosted-CI posture, never a gate's.
+"""
+
+from __future__ import annotations
+
+import base64
+import contextlib
+import functools
+import hashlib
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import secrets
+import stat
+import sys
+import time
+from types import MappingProxyType, SimpleNamespace
+
+import pytest
+
+from test_seat_egress_allowlist_codex import (  # noqa: F401 - requested after the jail gate
+    codex_front as _codex_front,
+)
+
+_SUPPLIER = "phase_loop_runtime.seat_window_supply_codex"
+
+
+@pytest.fixture(autouse=True)
+def _restore_codex_registration():
+    """The supplier registers Codex's window data on import (§4.2). Restore the window
+    registry, ``sys.modules`` and the package attribute exactly after each test here, so an
+    import in this file never leaks a Codex registration into another file's tests."""
+    import phase_loop_runtime
+    from phase_loop_runtime import seat_profiles
+    name = _SUPPLIER.rsplit(".", 1)[1]
+    registry = seat_profiles._WINDOW_DATA
+    entries = dict(registry)
+    had_module, module = _SUPPLIER in sys.modules, sys.modules.get(_SUPPLIER)
+    had_attr, attr = hasattr(phase_loop_runtime, name), getattr(phase_loop_runtime, name, None)
+    try:
+        yield
+    finally:
+        registry.clear()
+        registry.update(entries)
+        seat_profiles._WINDOW_DATA = registry
+        if had_module:
+            sys.modules[_SUPPLIER] = module
+        else:
+            sys.modules.pop(_SUPPLIER, None)
+        if had_attr:
+            setattr(phase_loop_runtime, name, attr)
+        elif hasattr(phase_loop_runtime, name):
+            delattr(phase_loop_runtime, name)
+
+
+#: K1-T6's reviewed literal. The source is the CLI's own Linux x64 platform release of the
+#: pinned version (the version every CODEX measurement names), read from an installed copy
+#: of that release without running it. The npm tarball line is the registry's own digest
+#: of the archive the member came from.
+EXPECTED_CODEX_IMAGE = MappingProxyType({
+    "cli_version": "0.167.0",
+    "target": "x86_64-unknown-linux-musl",
+    "member": "vendor/x86_64-unknown-linux-musl/bin/codex",
+    "release": "npm @openai/codex@0.167.0-linux-x64",
+    "release_tarball_sha512":
+        "FNc7danfUng9Sp6w+Fh7kofNHHZpA6VMyNKWsWrS3OwHly69gywTWeiuwrUPXpJSho8Df4xqRsHfHRPzj7zYQg==",
+    "sha256": "cdcb45aaa01d0f14e298985e09465aebccd47f64ecd298aea44814af7b62bbda",
+})
+
+OPT_IN = "PHASE_LOOP_REQUIRE_LIVE_JAIL"
+TOKEN_HOST, TOKEN_PATH = "auth.openai.com", "/oauth/token"
+MODEL_HOST, MODEL_PATH = "chatgpt.com", "/backend-api/codex/responses"
+_BIND_FLAGS = frozenset({"--ro-bind", "--bind", "--ro-bind-try", "--bind-try"})
+EVIDENCE = Path(__file__).resolve().parents[2] / "plans" / "evidence" / "seat-codex"
+
+
+def _opted_in() -> bool:
+    return os.environ.get(OPT_IN) == "1"
+
+
+def _no_skip(function):
+    """K1-T7: under the opt-in a skip is a failure (a gate run never passes by skipping)."""
+    @functools.wraps(function)
+    def wrapper(*args, **kwargs):
+        try:
+            return function(*args, **kwargs)
+        except pytest.skip.Exception as exc:
+            if _opted_in():
+                pytest.fail(f"A-C1 under {OPT_IN}=1 may not skip: {exc}")
+            raise
+    return wrapper
+
+
+def _require_live_jail() -> None:
+    if not _opted_in():
+        pytest.skip(f"A-C1 not proven by this run: set {OPT_IN}=1 on a jail-capable host")
+    from test_seat_egress_allowlist_codex import _live_jail_or_fail
+    _live_jail_or_fail()  # missing prerequisites fail, they never skip
+
+
+# --------------------------------------------------------------------------------------
+# K1-T6: the launched image, from the spawn evidence.
+# --------------------------------------------------------------------------------------
+
+def _file_sha256(path: str) -> str:
+    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("the launched image is not a regular file")
+        digest = hashlib.sha256()
+        while chunk := os.read(fd, 1 << 20):
+            digest.update(chunk)
+        return digest.hexdigest()
+    finally:
+        os.close(fd)
+
+
+def launched_image(argv) -> tuple[str, str]:
+    """``(host source, sha256)`` of the Codex image a spawned argv launches: the one host
+    file bound at the runtime's ``bin/codex`` destination. Called at spawn time, before the
+    child exists, so the digest is the launched bytes'."""
+    from phase_loop_runtime.seat_codex_runtime import CODEX_RUNTIME_DESTINATIONS
+    argv = [str(arg) for arg in argv]
+    sources = [argv[i + 1] for i in range(len(argv) - 2)
+               if argv[i] in _BIND_FLAGS and argv[i + 2] == CODEX_RUNTIME_DESTINATIONS[0]]
+    if len(sources) != 1:
+        raise ValueError("the spawn evidence binds no single Codex image")
+    return sources[0], _file_sha256(sources[0])
+
+
+def assert_pinned_image(evidence) -> None:
+    """K1-T6: every launched image is the reviewed literal; anything else fails hard."""
+    if not evidence:
+        pytest.fail("K1-T6: no spawn evidence of a launched Codex image")
+    for source, digest in evidence:
+        if digest != EXPECTED_CODEX_IMAGE["sha256"]:
+            pytest.fail(f"K1-T6: the launched image {source} is {digest}, not the reviewed "
+                        f"{EXPECTED_CODEX_IMAGE['cli_version']} image "
+                        f"{EXPECTED_CODEX_IMAGE['sha256']}")
+
+
+class SpawnEvidence:
+    """Wraps the seat spawn boundary (``seat_resource_caps.capped_popen``) and hashes the
+    Codex image each provider start binds, before the start."""
+
+    def __init__(self, monkeypatch):
+        from phase_loop_runtime import seat_resource_caps
+        self.images: list[tuple[str, str]] = []
+        self.host_runs: list[tuple[str, str]] = []
+        inner = seat_resource_caps.capped_popen
+
+        def capped(command, **kwargs):
+            if any(str(arg).endswith("/codex-runtime/bin/codex") for arg in command):
+                self.images.append(launched_image(command))
+            return inner(command, **kwargs)
+        monkeypatch.setattr(seat_resource_caps, "capped_popen", capped)
+        from phase_loop_runtime import panel_invoker as pi
+        run_provider = pi.run_provider
+
+        def host_run(argv, *args, **kwargs):  # the admission gate's host-side starts
+            if os.path.basename(str(argv[0])) == "codex":
+                self.host_runs.append((str(argv[0]), _file_sha256(str(argv[0]))))
+            return run_provider(argv, *args, **kwargs)
+        monkeypatch.setattr(pi, "run_provider", host_run)
+
+
+def test_k1_t6_the_literal_is_a_reviewed_version_and_digest():
+    image = EXPECTED_CODEX_IMAGE
+    assert len(image["sha256"]) == 64 and set(image["sha256"]) <= set("0123456789abcdef")
+    assert image["member"].endswith(image["target"] + "/bin/codex")
+    assert base64.b64decode(image["release_tarball_sha512"], validate=True)
+    # The pinned version is the one every CODEX measurement names.
+    scope = EVIDENCE / "credential-scope.json"
+    if scope.is_file():
+        assert json.loads(scope.read_text())["codex_cli_version"] == image["cli_version"]
+
+
+def test_k1_t6_the_digest_comes_from_the_spawned_bind_not_the_pin(tmp_path):
+    from phase_loop_runtime.seat_codex_runtime import CODEX_RUNTIME_DESTINATIONS
+    image = tmp_path / "codex"
+    image.write_bytes(b"not the pinned image")
+    argv = ["bwrap", "--ro-bind", str(image), CODEX_RUNTIME_DESTINATIONS[0],
+            "--", CODEX_RUNTIME_DESTINATIONS[0], "exec"]
+    # Other binds in the same argv are not the image.
+    argv[1:1] = ["--ro-bind", "/etc/hosts", "/etc/hosts", "--ro-bind", str(tmp_path),
+                 "/seat/home"]
+    source, digest = launched_image(argv)
+    assert source == str(image) and digest == hashlib.sha256(image.read_bytes()).hexdigest()
+    # A launched image whose actual digest differs fails hard, whatever the pin says.
+    with pytest.raises(pytest.fail.Exception, match="K1-T6"):
+        assert_pinned_image([(source, digest)])
+    with pytest.raises(pytest.fail.Exception, match="no spawn evidence"):
+        assert_pinned_image([])
+    for bad in (argv[:1], [*argv, "--ro-bind", str(image), CODEX_RUNTIME_DESTINATIONS[0]]):
+        with pytest.raises(ValueError):
+            launched_image(bad)
+
+
+# --------------------------------------------------------------------------------------
+# K1-T7: the fixture is the only credential and config source.
+# --------------------------------------------------------------------------------------
+
+_GUARD: dict[str, object] = {"roots": (), "hits": []}
+_HOOKED = False
+
+
+def _audit(event, args):
+    roots = _GUARD["roots"]
+    if not roots or event not in {"open", "os.listdir", "os.scandir", "os.chdir"}:
+        return
+    if not args:
+        return
+    path = args[0]
+    if isinstance(path, int) or path is None:
+        return
+    try:
+        text = os.fsdecode(path)
+    except (TypeError, ValueError):
+        return
+    # The audit event carries no ``dir_fd``: a relative name is read against the cwd.
+    absolute = os.path.normpath(os.path.join(os.getcwd(), text)) if not text.startswith("/") \
+        else os.path.normpath(text)
+    if any(absolute == root or absolute.startswith(root + os.sep) for root in roots):
+        _GUARD["hits"].append((event, absolute))
+
+
+@contextlib.contextmanager
+def decoy_guard(*roots: Path):
+    """Record every open or listing under ``roots`` (audit hooks cannot be removed, so one
+    process-wide hook is armed only inside this block)."""
+    global _HOOKED
+    if not _HOOKED:
+        sys.addaudithook(_audit)
+        _HOOKED = True
+    _GUARD["roots"] = tuple(os.path.normpath(str(root)) for root in roots)
+    _GUARD["hits"] = []
+    try:
+        yield _GUARD["hits"]
+    finally:
+        _GUARD["roots"] = ()
+
+
+def _part(value: dict) -> str:
+    raw = json.dumps(value, separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+
+def synthetic_login(account: str) -> dict:
+    """A subscription-shaped login whose token values are assembled at run time, unsigned,
+    inside the scope baseline the host checks. None is a credential."""
+    from phase_loop_runtime import seat_codex_credential as cred
+    expires = int(time.time()) + 3600
+    auth = {"chatgpt_plan_type": "pro", "chatgpt_account_id": account}
+    claims = {"exp": expires, "scp": sorted(cred.CODEX_SCOPE_CEILING),
+              "https://api.openai.com/auth": auth}
+
+    def token(body):
+        return ".".join((_part({"alg": "none", "typ": "JWT"}), _part(body),
+                         secrets.token_urlsafe(12)))
+    return {
+        "auth_mode": "chatgpt", "OPENAI_API_KEY": None,
+        "last_refresh": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "tokens": {"id_token": token({**claims, "email": "fixture@example.invalid"}),
+                   "access_token": token(claims), "refresh_token": "", "account_id": account},
+    }
+
+
+def plant_decoy(root: Path, monkeypatch) -> dict:
+    """A decoy home with a planted credential and config, made the process's own ``HOME``
+    and ``CODEX_HOME``; its ``.codex`` is unreadable to every child once planted."""
+    codex = root / ".codex"
+    codex.mkdir(parents=True, mode=0o700)
+    login = synthetic_login("acct-decoy-" + secrets.token_hex(4))
+    (codex / "auth.json").write_text(json.dumps(login))
+    (codex / "config.toml").write_text('model_provider = "decoy"\n')
+    for path in codex.iterdir():
+        path.chmod(0o600)
+    # The proxy's own install (srt, its CA) is found through the data home, which defaults to
+    # ``$HOME``; it is not a Codex lookup, so it stays where it was before the decoy.
+    from phase_loop_runtime import seat_egress_proxy
+    monkeypatch.setenv("XDG_DATA_HOME", str(seat_egress_proxy._data_home()))
+    monkeypatch.setenv("HOME", str(root))
+    monkeypatch.setenv("CODEX_HOME", str(codex))
+    codex.chmod(0o000)
+    return {"root": root, "codex": codex, "bearer": login["tokens"]["access_token"]}
+
+
+def forbidden_roots(decoy: dict) -> tuple[Path, ...]:
+    real = Path(pwd.getpwuid(os.geteuid()).pw_dir) / ".codex"
+    return (decoy["codex"], real)
+
+
+def test_k1_t7_the_decoy_guard_sees_a_planted_read(tmp_path, monkeypatch):
+    """The isolation assertion is not vacuous: a read of the decoy is recorded."""
+    decoy = plant_decoy(tmp_path / "decoy", monkeypatch)
+    decoy["codex"].chmod(0o700)
+    from phase_loop_runtime import seat_codex_credential as cred
+    with decoy_guard(*forbidden_roots(decoy)) as hits:
+        cred.read_auth()  # the ambient lookup: HOME and CODEX_HOME are the decoy's
+    assert any(path.startswith(str(decoy["codex"])) for _event, path in hits), hits
+    with decoy_guard(*forbidden_roots(decoy)) as hits:
+        fixture = tmp_path / "fixture" / ".codex"
+        fixture.mkdir(parents=True)
+        auth = fixture / "auth.json"
+        auth.write_text(json.dumps(synthetic_login("acct-fixture")))
+        auth.chmod(0o600)
+        cred.read_auth({"HOME": str(fixture.parent), "CODEX_HOME": str(fixture)})
+    assert hits == []
+
+
+@pytest.mark.parametrize("opt_in", [None, "0"])
+def test_k1_t7_opting_out_skips_before_any_host_probe(monkeypatch, opt_in):
+    from phase_loop_runtime import sandbox_egress, seat_egress_proxy, seat_uid
+    if opt_in is None:
+        monkeypatch.delenv(OPT_IN, raising=False)
+    else:
+        monkeypatch.setenv(OPT_IN, opt_in)
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("an opted-out A-C1 run reached host or proxy setup")
+    for module, name in ((seat_uid, "seat_uid_available"),
+                         (sandbox_egress, "egress_isolation_available"),
+                         (seat_egress_proxy, "unavailable_reason")):
+        monkeypatch.setattr(module, name, unexpected)
+    with pytest.raises(pytest.skip.Exception, match="A-C1 not proven"):
+        _require_live_jail()
+
+
+def test_k1_t7_under_the_opt_in_missing_prerequisites_and_skips_fail(monkeypatch):
+    from phase_loop_runtime import sandbox_egress, seat_egress_proxy, seat_uid
+    monkeypatch.setenv(OPT_IN, "1")
+    monkeypatch.setattr(seat_uid, "seat_uid_available", lambda: False)
+    monkeypatch.setattr(sandbox_egress, "egress_isolation_available", lambda: False)
+    monkeypatch.setattr(seat_egress_proxy, "unavailable_reason", lambda: "fixture missing srt")
+
+    @_no_skip
+    def skipping():
+        pytest.skip("anything")
+    for call, expected in ((_require_live_jail, "live jail unavailable"),
+                           (skipping, "may not skip")):
+        # A skip escaping here would itself pass a gate run, so it is caught and failed.
+        try:
+            call()
+        except pytest.fail.Exception as exc:
+            assert expected in str(exc)
+        except pytest.skip.Exception:
+            pytest.fail(f"under {OPT_IN}=1 {call.__name__} skipped instead of failing")
+        else:
+            pytest.fail(f"under {OPT_IN}=1 {call.__name__} neither failed nor skipped")
+
+
+# --------------------------------------------------------------------------------------
+# A-C1: the live cases.
+# --------------------------------------------------------------------------------------
+
+#: r5.2 §10.B: the fresh copy's access ``exp`` must clear the launch clock by this much
+#: (0.167.0 refreshes at ``exp <= now + 300``; the A-C1 deadline is 120 s).
+FRESH_ACCESS_MARGIN_S = 900
+REFRESH_WINDOW_S = 300
+_MODEL_TARGET = "/backend-api/codex/responses"
+
+
+def bearer_sha256(access_token: str) -> str:
+    """The sha256 of the ``Authorization`` value a copy's access token presents."""
+    return hashlib.sha256(("Bearer " + access_token).encode("utf-8")).hexdigest()
+
+
+def authorization_sha256(headers) -> str | None:
+    """The sha256 of a request's ``Authorization`` header, or ``None`` when it is absent."""
+    value = headers.get("authorization") if headers else None
+    return hashlib.sha256(value.encode("latin-1")).hexdigest() if value else None
+
+
+def model_bearer_digests(records) -> list:
+    """The recorded ``Authorization`` digest of each model request the responder answered."""
+    return [digest for method, target, digest in records
+            if method == "POST" and target.split("?", 1)[0] == _MODEL_TARGET]
+
+
+def access_exp(data: bytes) -> int:
+    token = json.loads(data)["tokens"]["access_token"]
+    payload = token.split(".")[1]
+    return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))["exp"]
+
+
+def assert_fresh_margin(copy, *, launch_clock: float) -> None:
+    """r5.2 §10.B, checked before the fresh case spawns."""
+    if access_exp(copy.data) < launch_clock + FRESH_ACCESS_MARGIN_S:
+        pytest.fail("A-C1: the fresh copy's access exp is inside the 900 s launch margin")
+
+
+def assert_expired_margin(copy, *, launch_clock: float) -> None:
+    """r5.2 §10.B: the expired copy is inside 0.167.0's refresh window for the whole run."""
+    if access_exp(copy.data) + REFRESH_WINDOW_S > launch_clock:
+        pytest.fail("A-C1: the expired copy's access exp is outside the refresh window")
+
+
+def cli_process_failure(*, timed_out: bool, exit_code, stderr: str) -> str | None:
+    """How the CLI ended, when that was not its own exit or the launch's own 120 s deadline
+    (``TimeoutExpired``): a signal (a negative status, or 128 + N from a wrapper), the
+    liveness stall kill, or an unknown status. Each is a process failure, never a verdict."""
+    if timed_out:
+        return None
+    if "[leg-liveness] stalled" in (stderr or ""):
+        return "cli_stalled"
+    if type(exit_code) is not int:
+        return "cli_exit_unknown"
+    if exit_code < 0 or exit_code >= 128:
+        return "cli_signalled"
+    return None
+
+
+def complete_leg(stream) -> bool:
+    """A complete stream with exactly one fenced leg window: final, no protocol error, no
+    event outside the window, both fences acknowledged."""
+    if stream is None or not stream.final or stream.protocol_error or stream.outside_events:
+        return False
+    windows = tuple(stream.windows)
+    return (len(windows) == 1 and windows[0].label == "leg" and windows[0].start_acked
+            and windows[0].end_acked)
+
+
+def hard_failures(*, stream, fenced: bool, bridge_exited, process_failure,
+                  readback_error) -> list:
+    """§15.4's hard failures, each with its reason: no pass and no verdict."""
+    reasons = []
+    if not complete_leg(stream):
+        reasons.append("stream_incomplete")
+    if not fenced:
+        reasons.append("unfenced")
+    if bridge_exited is not True:
+        reasons.append("bridge_not_exited")
+    if process_failure is not None:
+        reasons.append(process_failure)
+    if readback_error is not None:
+        reasons.append("credential_readback_failed")
+    return reasons
+
+
+def model_bearers_hold(model_events: int, digests, expected) -> bool:
+    """Every model event has exactly one recorded ``Authorization`` digest, each equal to the
+    installed bearer's; at least one model request (the fresh case)."""
+    return (model_events > 0 and len(digests) == model_events
+            and all(digest == expected for digest in digests))
+
+
+def not_ready_erratum_holds(terminal: str, events, stream) -> bool:
+    """K1-T7 (r5 erratum): ``not_ready``, or ``timeout`` at the CLI's own deadline, in a
+    complete fenced stream with no token-host event, no model request and no allowed
+    request."""
+    return (terminal in {"not_ready", "timeout"} and complete_leg(stream)
+            and not any(getattr(event, "host", None) == TOKEN_HOST for event in events)
+            and not any(getattr(event, "method", None) == "POST"
+                        and getattr(event, "host", None) == MODEL_HOST
+                        and getattr(event, "path", None) == MODEL_PATH for event in events)
+            and not any(getattr(event, "decision", None) == "allow" for event in events))
+
+
+#: The most a recorded request body may decode to (each decoder path enforces it).
+ZSTD_MAX_OUTPUT = 1 << 24
+
+
+def _zstd_bounded(output: bytes) -> bytes:
+    if len(output) > ZSTD_MAX_OUTPUT:
+        raise ValueError("zstd body exceeds the decode bound")
+    return bytes(output)
+
+
+def zstd_decoder():
+    """A zstd decoder for request bodies, bounded to :data:`ZSTD_MAX_OUTPUT` on every path:
+    ``compression.zstd`` (Python 3.14+), else the ``zstandard`` package, else the trusted
+    ``/usr/bin/zstd``; ``None`` when there is none. A body that would decode past the bound,
+    or that ends inside a frame, raises."""
+    try:
+        from compression import zstd as _zstd  # type: ignore[import-not-found]
+    except ImportError:
+        _zstd = None
+    if _zstd is not None:
+        def decode_stdlib(data: bytes) -> bytes:
+            output, rest = bytearray(), bytes(data)
+            while rest:
+                decompressor = _zstd.ZstdDecompressor()
+                output += decompressor.decompress(
+                    rest, max_length=ZSTD_MAX_OUTPUT + 1 - len(output))
+                _zstd_bounded(output)
+                if not decompressor.eof:  # truncated, or stopped at the bound
+                    raise ValueError("zstd body is incomplete or exceeds the decode bound")
+                rest = decompressor.unused_data
+            return bytes(output)
+        return decode_stdlib
+    try:
+        import zstandard  # type: ignore[import-not-found]
+    except ImportError:
+        zstandard = None
+    if zstandard is not None:
+        def decode_package(data: bytes) -> bytes:
+            reader = zstandard.ZstdDecompressor().stream_reader(data, read_across_frames=True)
+            output = bytearray()
+            while True:
+                chunk = reader.read(ZSTD_MAX_OUTPUT + 1 - len(output))
+                if not chunk:
+                    return _zstd_bounded(output)
+                output += chunk
+                _zstd_bounded(output)
+        return decode_package
+    if os.path.isfile("/usr/bin/zstd") and os.access("/usr/bin/zstd", os.X_OK):
+        import subprocess
+        import threading
+
+        def decode_cli(data: bytes) -> bytes:
+            process = subprocess.Popen(["/usr/bin/zstd", "-d", "-q", "-c"],
+                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                       stderr=subprocess.DEVNULL)
+
+            def feed():
+                try:
+                    process.stdin.write(data)
+                except OSError:
+                    pass
+                finally:
+                    process.stdin.close()
+            writer = threading.Thread(target=feed, daemon=True)
+            writer.start()
+            try:
+                output = process.stdout.read(ZSTD_MAX_OUTPUT + 1)
+                if len(output) > ZSTD_MAX_OUTPUT:
+                    raise ValueError("zstd body exceeds the decode bound")
+                code = process.wait(timeout=30)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+                process.stdout.close()
+                writer.join(timeout=5)
+            if code != 0:
+                raise subprocess.CalledProcessError(code, "zstd")
+            return output
+        return decode_cli
+    return None
+
+
+def responder_problems_for_evidence(problems) -> list:
+    """The responder's problem list as the evidence keeps it (bounded; values only)."""
+    return [str(problem)[:500] for problem in list(problems)[:50]]
+
+
+class _BearerRecorder:
+    """Mixin for the loopback responder (an observation only; every response is the
+    consumed responder's, unchanged): the bearer each request presented, and for each
+    request answered its method, target and ``Authorization`` sha256 (``None`` if absent).
+
+    It also undoes the request's ``Content-Encoding`` before the consumed responder parses
+    the body: Codex 0.167.0's production provider zstd-compresses its Responses requests
+    under ChatGPT auth, which the consumed responder (written for a custom provider) never
+    saw. An encoding it cannot undo is recorded as a problem."""
+
+    def _drain_body(self, tls, headers, rest):
+        with self._lock:
+            self.bearers.append(headers.get("authorization", ""))
+        self._local.authorization = authorization_sha256(headers)
+        result = super()._drain_body(tls, headers, rest)
+        encoding = (headers.get("content-encoding") or "").strip().lower()
+        if encoding not in ("", "identity"):
+            decode = zstd_decoder() if encoding == "zstd" else None
+            try:
+                if decode is None:
+                    raise ValueError("no decoder")
+                self._local.body = decode(getattr(self._local, "body", b""))
+            except Exception as exc:
+                with self._lock:
+                    self.problems.append(f"content-encoding {encoding!r}: {exc}")
+                self._local.body = b""
+        return result
+
+    def _respond(self, tls, method, target):
+        with self._lock:
+            self.auth_records.append((method, target, getattr(self._local, "authorization", None)))
+        return super()._respond(tls, method, target)
+
+
+def test_k1_t7_bearer_and_authorization_digests():
+    assert bearer_sha256("tok") == hashlib.sha256(b"Bearer tok").hexdigest()
+    assert authorization_sha256({"authorization": "Bearer tok"}) == bearer_sha256("tok")
+    assert authorization_sha256({}) is None and authorization_sha256({"authorization": ""}) is None
+    records = [("GET", "/backend-api/wham/accounts/check", "a" * 64),
+               ("POST", "/backend-api/codex/responses", "b" * 64),
+               ("POST", "/backend-api/codex/responses?stream=1", None),
+               ("POST", "/backend-api/other", "c" * 64)]
+    assert model_bearer_digests(records) == ["b" * 64, None]
+
+
+def test_k1_t7_the_recorder_pairs_each_request_with_its_authorization_digest():
+    import threading
+
+    class _Base:
+        def __init__(self):
+            self._lock, self._local, self.seen = threading.Lock(), threading.local(), []
+
+        def _drain_body(self, tls, headers, rest):
+            self.seen.append("drain")
+
+        def _respond(self, tls, method, target):
+            self.seen.append(("respond", method, target))
+    recorder = type("Recorder", (_BearerRecorder, _Base), {})()
+    recorder.bearers, recorder.auth_records = [], []
+    recorder._drain_body(None, {"authorization": "Bearer tok"}, b"")
+    recorder._respond(None, "POST", "/backend-api/codex/responses")
+    recorder._drain_body(None, {}, b"")
+    recorder._respond(None, "GET", "/backend-api/wham/accounts/check")
+    assert recorder.auth_records == [("POST", "/backend-api/codex/responses", bearer_sha256("tok")),
+                                     ("GET", "/backend-api/wham/accounts/check", None)]
+    assert recorder.seen == ["drain", ("respond", "POST", "/backend-api/codex/responses"),
+                             "drain", ("respond", "GET", "/backend-api/wham/accounts/check")]
+
+
+def _copy_with_exp(exp):
+    from phase_loop_runtime import seat_codex_credential as cred
+    login = synthetic_login("acct-synthetic")
+    header, payload, signature = login["tokens"]["access_token"].split(".")
+    claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    login["tokens"]["access_token"] = ".".join((header, _part({**claims, "exp": exp}), signature))
+    copy = cred.build_seat_copy(json.dumps(login).encode()) if exp > time.time() + 2100 else None
+    return copy, login
+
+
+def test_k1_t7_fresh_access_exp_must_clear_the_launch_by_900_s():
+    now = int(time.time())
+    copy, _login = _copy_with_exp(now + 3600)
+    assert access_exp(copy.data) == now + 3600
+    assert_fresh_margin(copy, launch_clock=now + 3600 - FRESH_ACCESS_MARGIN_S)
+    with pytest.raises(pytest.fail.Exception, match="fresh"):
+        assert_fresh_margin(copy, launch_clock=now + 3600 - FRESH_ACCESS_MARGIN_S + 1)
+
+
+def test_k1_t7_expired_access_exp_must_lie_inside_the_refresh_window():
+    from phase_loop_runtime import seat_window_supply_codex as supplier
+    now = int(time.time())
+    copy, _login = _copy_with_exp(now + 3600)
+    expired = supplier.expired_access_copy(copy, now=now)
+    assert access_exp(expired.data) == now - supplier.EXPIRED_ACCESS_MARGIN_S
+    assert_expired_margin(expired, launch_clock=now)
+    with pytest.raises(pytest.fail.Exception, match="expired"):
+        assert_expired_margin(copy, launch_clock=now)  # the fresh copy is not expired
+
+
+_RUN3_NOT_READY_EVENTS = (
+    *((SimpleNamespace(method="CONNECT", host="<other>", path=None, decision="deny"),) * 27),
+    SimpleNamespace(method="CONNECT", host="ab.chatgpt.com", path=None, decision="deny"),
+    *((SimpleNamespace(method="CONNECT", host="<other>", path=None, decision="deny"),) * 5))
+
+
+@pytest.mark.parametrize("terminal,extra,expected", [
+    ("timeout", (), True), ("not_ready", (), True),
+    ("refused_intended", (), False), ("other_failure", (), False),
+    ("timeout", (SimpleNamespace(method="GET", host=MODEL_HOST,
+                                 path="/backend-api/wham/accounts/check", decision="allow"),),
+     False),
+    ("timeout", (SimpleNamespace(method="CONNECT", host=TOKEN_HOST, path=None,
+                                 decision="deny"),), False),
+    ("not_ready", (SimpleNamespace(method="POST", host=MODEL_HOST, path=MODEL_PATH,
+                                   decision="deny"),), False),
+], ids=["run3-timeout", "not-ready", "refused", "other", "allowed", "token-host", "model"])
+def test_k1_t7_the_not_ready_erratum(terminal, extra, expected):
+    """K1-T7 (r5 erratum): not_ready, or timeout at the CLI's own deadline, with no
+    token-host event, no model request and no allowed request; never refused_intended."""
+    assert not_ready_erratum_holds(terminal, (*_RUN3_NOT_READY_EVENTS, *extra),
+                                   _leg_stream()) is expected
+
+
+def _leg_stream(*, final=True, protocol_error=False, outside=(), windows=None):
+    from phase_loop_runtime.seat_egress_proxy import ProxyStream, ProxyWindow
+    windows = (ProxyWindow(label="leg", start_acked=True, end_acked=True, events=()),) \
+        if windows is None else windows
+    return ProxyStream(final=final, protocol_error=protocol_error, windows=windows,
+                       outside_events=tuple(outside), allowlist_sha256="6" * 64)
+
+
+@pytest.mark.parametrize("timed_out,exit_code,stderr,expected", [
+    (True, None, "", None),            # the launch's own 120 s deadline
+    (False, 0, "", None), (False, 1, "", None),
+    (False, -9, "", "cli_signalled"), (False, -15, "", "cli_signalled"),
+    (False, 137, "", "cli_signalled"), (False, 143, "", "cli_signalled"),
+    (False, 1, "\n[leg-liveness] stalled: no output/CPU for 180s", "cli_stalled"),
+    (False, None, "", "cli_exit_unknown"),
+], ids=["own-deadline", "exit-0", "exit-1", "sigkill", "sigterm", "137", "143", "stall",
+        "unknown"])
+def test_k1_t7_a_cli_process_failure_is_told_from_the_own_deadline(timed_out, exit_code,
+                                                                   stderr, expected):
+    assert cli_process_failure(timed_out=timed_out, exit_code=exit_code,
+                               stderr=stderr) == expected
+
+
+@pytest.mark.parametrize("stream,expected", [
+    (_leg_stream(), True), (_leg_stream(final=False), False),
+    (_leg_stream(protocol_error=True), False),
+    (_leg_stream(outside=(SimpleNamespace(method="CONNECT", host="<other>", path=None,
+                                          decision="deny"),)), False),
+    (_leg_stream(windows=()), False), (None, False),
+], ids=["complete", "not-final", "protocol-error", "outside-events", "no-window", "none"])
+def test_k1_t7_a_complete_single_leg_window(stream, expected):
+    assert complete_leg(stream) is expected
+
+
+def test_k1_t7_a_complete_window_needs_both_fences():
+    from phase_loop_runtime.seat_egress_proxy import ProxyWindow
+    for start, end in ((False, True), (True, False)):
+        window = ProxyWindow(label="leg", start_acked=start, end_acked=end, events=())
+        assert complete_leg(_leg_stream(windows=(window,))) is False
+    two = (ProxyWindow(label="leg", start_acked=True, end_acked=True, events=()),) * 2
+    assert complete_leg(_leg_stream(windows=two)) is False
+
+
+@pytest.mark.parametrize("changes,reason", [
+    ({}, None),
+    ({"stream": _leg_stream(final=False)}, "stream_incomplete"),
+    ({"fenced": False}, "unfenced"),
+    ({"bridge_exited": False}, "bridge_not_exited"),
+    ({"process_failure": "cli_signalled"}, "cli_signalled"),
+    ({"readback_error": "UnsafeSeatObject"}, "credential_readback_failed"),
+], ids=["none", "incomplete", "unfenced", "bridge", "signalled", "readback"])
+def test_k1_t7_missing_proof_is_a_hard_failure_never_a_verdict(changes, reason):
+    """Pre-run review item 3: missing proof is a §15.4 hard failure (no pass, no verdict),
+    kept apart from the expired-case verdict that triggers Q-D."""
+    inputs = {"stream": _leg_stream(), "fenced": True, "bridge_exited": True,
+              "process_failure": None, "readback_error": None, **changes}
+    reasons = hard_failures(**inputs)
+    assert reasons == ([] if reason is None else [reason])
+
+
+def test_k1_t7_the_not_ready_erratum_needs_a_complete_stream():
+    """Pre-run review item 2: both erratum outcomes need the complete single leg window."""
+    for terminal in ("timeout", "not_ready"):
+        assert not_ready_erratum_holds(terminal, _RUN3_NOT_READY_EVENTS, _leg_stream())
+        for broken in (_leg_stream(final=False), _leg_stream(protocol_error=True), None):
+            assert not not_ready_erratum_holds(terminal, _RUN3_NOT_READY_EVENTS, broken)
+
+
+@pytest.mark.parametrize("count,digests,expected", [
+    (2, ["b" * 64, "b" * 64], True), (2, ["b" * 64], False), (1, [None], False),
+    (1, ["c" * 64], False), (0, [], False), (1, ["b" * 64, "b" * 64], False),
+], ids=["all-matched", "one-unrecorded", "header-missing", "wrong-bearer", "no-model-request",
+        "extra-record"])
+def test_k1_t7_every_model_request_carries_the_installed_bearer(count, digests, expected):
+    """Pre-run review item 4: one matching recorded digest for every model event."""
+    assert model_bearers_hold(count, digests, "b" * 64) is expected
+
+
+#: A faithful synthetic Codex 0.167.0 Responses request, as the production provider sends it
+#: with ChatGPT auth: ``Content-Encoding: zstd`` (tagged source ``rust-v0.167.0``:
+#: ``core/src/client.rs`` ``responses_request_compression``; the ``enable_request_compression``
+#: feature is Stable and on by default, and applies to the built-in OpenAI provider only, so
+#: the CODEX harness's custom fixture provider never saw it). One zstd frame, level 19.
+_ZSTD_RESPONSES_REQUEST = base64.b64decode(
+    "KLUv/QRodQUA0kwjF3CtDnBmygK2IQwWAdYRoKrFoKlEAACes5hzTi+O6caz1cOni7w5nnLU79vSBZ3spFpBpkh8"
+    "4uTErdYeYjjOmWjlt+Wc7B5bxEklOu+tUzGLaeHXBc4skKwPVk7e52u4r3uIk/VRWvnO02XF+GblQ2gdEcoroWNO"
+    "l7rKbV03Ovkq92FKsHCxsvPkNUcBCwBMDTQhAWgedBVOUBak2kJXnFVafIUtTvFtZqk9KBM94g==")
+
+
+def _responder_without_a_server():
+    """The run's responder class (SL-6's recorder over the consumed CODEX responder), built
+    without its TLS server so a request can be fed through its real body and reply code."""
+    import threading
+    from fixtures.codex_fixture_provider import CodexFixtureProvider
+    responder = object.__new__(type("Responder", (_BearerRecorder, CodexFixtureProvider), {}))
+    responder._lock, responder._local = threading.Lock(), threading.local()
+    responder.bodies, responder.tool_outputs, responder.problems = [], [], []
+    responder.bearers, responder.auth_records = [], []
+    responder.command = "cat /seat/tree/window-read.txt"
+    return responder
+
+
+class _Sink:
+    def __init__(self):
+        self.sent = b""
+
+    def sendall(self, data):
+        self.sent += data
+
+    def recv(self, _n):
+        return b""
+
+
+def test_k1_t7_the_responder_answers_a_zstd_compressed_model_request():
+    """Run 4's responder_problem, red first: 0.167.0's production model request is zstd
+    compressed, and the consumed responder answered it 404 {}. Decoded, it is answered 200
+    with the scripted tool call, and nothing is recorded as a problem."""
+    if zstd_decoder() is None:
+        pytest.skip("no zstd decoder on this host")
+    responder, sink = _responder_without_a_server(), _Sink()
+    headers = {"content-encoding": "zstd", "authorization": "Bearer tok",
+               "content-length": str(len(_ZSTD_RESPONSES_REQUEST))}
+    responder._drain_body(sink, headers, _ZSTD_RESPONSES_REQUEST)
+    responder._respond(sink, "POST", "/backend-api/codex/responses")
+    assert responder.problems == []
+    assert sink.sent.startswith(b"HTTP/1.1 200 OK"), sink.sent[:80]
+    assert b"shell_command" in sink.sent and b"response.completed" in sink.sent
+    assert json.loads(responder.bodies[0])["model"] == "gpt-fixture"
+
+
+def test_k1_t7_every_zstd_decoder_path_is_bounded(monkeypatch):
+    """Review N2: each decoder path refuses a body that decodes past ZSTD_MAX_OUTPUT. The
+    stdlib and package paths are driven through stand-in modules whose "frame" is the
+    decimal decoded size; the CLI path through the trusted /usr/bin/zstd, if present."""
+    import subprocess
+    import types
+    over = ZSTD_MAX_OUTPUT + 1
+
+    class _Decompressor:
+        def __init__(self):
+            self.eof, self.unused_data = False, b""
+
+        def decompress(self, data, max_length=-1):
+            size = int(data.decode())
+            produced = size if max_length < 0 else min(size, max_length)
+            self.eof = produced == size
+            return b"\0" * produced
+
+    stdlib = types.ModuleType("compression.zstd")
+    stdlib.ZstdDecompressor = _Decompressor
+    package = types.ModuleType("compression")
+    package.zstd = stdlib
+    monkeypatch.setitem(sys.modules, "compression", package)
+    monkeypatch.setitem(sys.modules, "compression.zstd", stdlib)
+    decode = zstd_decoder()
+    assert decode(b"5") == b"\0" * 5
+    with pytest.raises(ValueError):
+        decode(str(over).encode())
+
+    class _Reader:
+        def __init__(self, size):
+            self.left = size
+
+        def read(self, size):
+            produced = min(size, self.left, 1 << 20)
+            self.left -= produced
+            return b"\0" * produced
+
+    class _Package:
+        def stream_reader(self, data, read_across_frames=False):
+            assert read_across_frames is True
+            return _Reader(int(data.decode()))
+
+    zstandard = types.ModuleType("zstandard")
+    zstandard.ZstdDecompressor = _Package
+    monkeypatch.setitem(sys.modules, "compression", None)
+    monkeypatch.setitem(sys.modules, "compression.zstd", None)
+    monkeypatch.setitem(sys.modules, "zstandard", zstandard)
+    decode = zstd_decoder()
+    assert decode(b"7") == b"\0" * 7
+    with pytest.raises(ValueError):
+        decode(str(over).encode())
+
+    monkeypatch.setitem(sys.modules, "zstandard", None)
+    if not os.access("/usr/bin/zstd", os.X_OK):
+        assert zstd_decoder() is None
+        return
+    decode = zstd_decoder()
+    small = subprocess.run(["/usr/bin/zstd", "-q", "-c"], input=b"body", capture_output=True,
+                           check=True, timeout=30).stdout
+    assert decode(small) == b"body"
+    bomb = subprocess.run(["/usr/bin/zstd", "-q", "-c"], input=b"\0" * over,
+                          capture_output=True, check=True, timeout=30).stdout
+    assert len(bomb) < 4096
+    with pytest.raises(ValueError):
+        decode(bomb)
+
+
+def test_k1_t7_an_identity_body_is_unchanged_and_an_unknown_encoding_is_a_problem():
+    responder, sink = _responder_without_a_server(), _Sink()
+    body = json.dumps({"model": "m", "input": [], "tools": [{"name": "shell_command"}]}).encode()
+    responder._drain_body(sink, {"content-length": str(len(body))}, body)
+    responder._respond(sink, "POST", "/backend-api/codex/responses")
+    assert responder.problems == [] and sink.sent.startswith(b"HTTP/1.1 200 OK")
+    responder, sink = _responder_without_a_server(), _Sink()
+    responder._drain_body(sink, {"content-encoding": "br", "content-length": "3"}, b"abc")
+    assert responder.problems and "content-encoding" in responder.problems[0]
+
+
+def test_k1_t7_responder_problems_reach_the_evidence():
+    """A future responder failure is diagnosable: the evidence keeps its problem list."""
+    assert responder_problems_for_evidence(["fixture shell tool unavailable", "x" * 900]) == [
+        "fixture shell tool unavailable", "x" * 500]
+
+
+@pytest.fixture
+def codex_upstream(request):
+    """The provider-free loopback harness of ``test_seat_codex_provider_free``: port-443
+    dials go to a local responder that trusts only its own CA. Requested only after the
+    jail gate, so an opted-out run probes nothing."""
+    _require_live_jail()
+    try:
+        return request.getfixturevalue("_codex_front")
+    except pytest.skip.Exception as exc:
+        pytest.fail(f"A-C1 under {OPT_IN}=1 may not skip: {exc}")
+
+
+def _native_subject():
+    from phase_loop_runtime import seat_subject
+    native = os.environ.get("PHASE_LOOP_CODEX_FIXTURE_NATIVE")
+    if not native:
+        pytest.fail("A-C1 needs PHASE_LOOP_CODEX_FIXTURE_NATIVE: the pinned native image")
+    subject = seat_subject.SeatSubject("codex", "standalone", Path(native).resolve(), None, None)
+    assert subject.subject_path is not None and subject.subject_path.is_file()
+    return subject
+
+
+def _stage(tmp_path):
+    from phase_loop_runtime import seat_jail
+    review = tmp_path / "review"
+    tree = review / seat_jail.HOST_TREE_DIRNAME
+    tree.mkdir(parents=True)
+    (tree / "window-read.txt").write_text("A-C1 fixture tree\n")
+    fd = seat_jail.open_dir_nofollow(tree)
+    try:
+        digest = seat_jail.tree_manifest_sha256_at(fd)
+    finally:
+        os.close(fd)
+    return review, type("Authorization", (), {"staged_tree_sha256": digest})()
+
+
+def _redact(text: str, login: dict) -> str:
+    """Synthetic values only, but none is kept verbatim in the evidence."""
+    text = (text or "")[:8000]
+    for value in (*login["tokens"].values(),):
+        if isinstance(value, str) and len(value) > 8:
+            text = text.replace(value, "<synthetic>")
+    return text
+
+
+def _write_evidence(case: str, document: dict) -> None:
+    """When ``PHASE_LOOP_A_C1_EVIDENCE_DIR`` names a private (0700, own) directory, keep
+    this case's evidence there as a 0600 file. Only an opt-in run writes it."""
+    directory = os.environ.get("PHASE_LOOP_A_C1_EVIDENCE_DIR")
+    if not directory:
+        return
+    info = os.stat(directory)
+    if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077:
+        pytest.fail("the A-C1 evidence directory must be private")
+    document = {**document, "opt_in": os.environ.get(OPT_IN),
+                "native": os.environ.get("PHASE_LOOP_CODEX_FIXTURE_NATIVE")}
+    # Each run names its own files (``PHASE_LOOP_A_C1_EVIDENCE_PREFIX``); none is ever
+    # overwritten (``O_EXCL``).
+    prefix = os.environ.get("PHASE_LOOP_A_C1_EVIDENCE_PREFIX", "a-c1")
+    if re.fullmatch(r"a-c1(-run[0-9]+)?", prefix) is None:
+        pytest.fail("the A-C1 evidence prefix is malformed")
+    fd = os.open(os.path.join(directory, f"{prefix}-{case}.json"),
+                 os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as handle:
+        json.dump(document, handle, indent=2, sort_keys=True)
+
+
+def _a_c1(tmp_path, monkeypatch, codex_upstream, *, case):
+    """One A-C1 launch through the real prepare path and the supplier's own command and
+    classification. ``case``: ``fresh`` (measured), ``expired`` (expired_copy, the r5.2
+    expired-access copy) or ``not_ready`` (expired_copy's command with no copy installed)."""
+    from phase_loop_runtime import panel_invoker as pi, sandbox_egress, seat_egress_proxy
+    from phase_loop_runtime import seat_codex_credential as cred, seat_jail, seat_uid
+    from phase_loop_runtime import seat_window_supply_codex as supplier
+    from fixtures.codex_fixture_provider import CodexFixtureProvider
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(seat_jail, "state_home", lambda: tmp_path / "state")
+    subject = _native_subject()
+    monkeypatch.setattr(pi, "_resolved_jail_subject", lambda *a: (subject, None))
+    # As in the consumed CODEX harness: a provider-free run creates no EC-EXECFIND-2 host
+    # pass, so the launch's recorded-pass check is satisfied here and nowhere else.
+    monkeypatch.setattr(seat_jail, "pass_record_verdict", lambda _digest: (True, "pass"))
+    fixture_home = tmp_path / "fixture-home"
+    (fixture_home / ".codex").mkdir(parents=True, mode=0o700)
+    # The responder's accounts/check reply routes exactly this account (the consumed
+    # CODEX fixture's); any other id leaves the workspace out of routing discovery.
+    from test_seat_egress_allowlist_codex import _ACCOUNTS_CHECK_REPLY
+    login = synthetic_login(json.loads(_ACCOUNTS_CHECK_REPLY)["default_account_id"])
+    auth = fixture_home / ".codex" / "auth.json"
+    auth.write_text(json.dumps(login))
+    auth.chmod(0o600)
+    fixture_env = {"HOME": str(fixture_home), "CODEX_HOME": str(fixture_home / ".codex"),
+                   "PATH": "/usr/bin:/bin"}
+    decoy = plant_decoy(tmp_path / "decoy-home", monkeypatch)
+    review, authorization = _stage(tmp_path)
+    evidence = SpawnEvidence(monkeypatch)
+    upstream_class = type("Responder", (_BearerRecorder, CodexFixtureProvider), {})
+
+    def responder(*args, **kwargs):
+        provider = upstream_class(*args, command="cat /seat/tree/window-read.txt", **kwargs)
+        provider.bearers, provider.auth_records = [], []
+        return provider
+    upstream = codex_upstream(hosts=[MODEL_HOST], upstream_class=responder)
+    kind = "measured" if case == "fresh" else "expired_copy"
+    mode = "none" if case == "not_ready" else supplier.credential_mode(kind)
+    (argv,) = supplier.launch_command(kind, qualification_input=None, model="gpt-fixture",
+                                      plugin_paths=())
+    # The kit's own named set and stdin input (rulings 3b and 4), never re-declared here.
+    named = pi._window_named_refusals("codex")
+    input_value = pi._WINDOW_MEASURED_INPUT
+    prompt = pi._render_broker_pointer_prompt(
+        "", input_value, source_commit="0" * 40,
+        staged_tree_sha256=str(authorization.staged_tree_sha256), model_only_network=True)
+    uids = seat_uid.subordinate_range(seat_uid.SUBUID_FILE)
+    gids = seat_uid.subordinate_range(seat_uid.SUBGID_FILE)
+    with decoy_guard(*forbidden_roots(decoy)) as hits:
+        with seat_egress_proxy.start_proxy(allowlist_id="codex", named=named) as proxy:
+            assert proxy.allowlist_digest == seat_egress_proxy.allowlist_ref("codex").content_digest
+            with seat_uid.lease_seat_id(seat_uid.seat_id_count(uids, gids)) as n, \
+                    sandbox_egress.isolated_network(
+                        timeout_s=120, required=True, seat_uid_map=True,
+                        proxy_socket=proxy.socket,
+                        proxy_port=seat_egress_proxy.SEAT_PROXY_PORT) as prefix:
+                token = pi._EGRESS_LAUNCH_PREFIX.set(tuple(prefix))
+                seat = None
+                try:
+                    seat = pi._prepare_jailed_codex(
+                        review, tmp_path / "seat", authorization, n,
+                        seat_uid.holder_pid_from_prefix(prefix), ("", ""), proxy,
+                        env=fixture_env, credential_mode=mode,
+                        copy_transform=supplier.copy_transform if mode == "expired" else None)
+                    bound_image = pi._window_bound_image_sha256(seat)
+                    installed = seat.codex_copy
+                    launch_clock = time.time()
+                    if case == "fresh":  # r5.2 §10.B, before the spawn
+                        assert_fresh_margin(installed, launch_clock=launch_clock)
+                    elif case == "expired":
+                        assert_expired_margin(installed, launch_clock=launch_clock)
+                    start = seat_egress_proxy.fence(proxy, "start", "leg")
+                    timed_out, exit_code, stderr = False, None, ""
+                    try:
+                        done = pi._run_leg_with_liveness(
+                            list(argv), cwd="/seat/home/workspace", env=dict(seat.jail.env),
+                            deadline_s=120, input_text=prompt, seat_jail=seat.jail,
+                            probe_jail=seat.probe_jail)
+                        stdout, exit_code = done.stdout, done.returncode
+                        stderr = getattr(done, "stderr", "") or ""
+                    except pi.subprocess.TimeoutExpired:
+                        timed_out, stdout = True, ""
+                    bridge = sandbox_egress.wait_bridge_exit(prefix)
+                    end = seat_egress_proxy.fence(proxy, "end", "leg") if bridge else None
+                    # The pre-teardown read (r5.2 §10.B): did the seat's copy change?
+                    readback_error = None
+                    if installed is not None:
+                        try:
+                            observed = seat_uid.read_in_h(
+                                seat.holder_pid, str(seat.seat_dir / seat_jail.HOST_HOME_DIRNAME),
+                                cred.SEAT_AUTH_RELPATH, cred.AUTH_CAP_BYTES)
+                            tokens_changed = cred.tokens_changed(installed, observed)
+                        except seat_uid.SeatObjectMissing:
+                            tokens_changed = True  # the CLI removed its copy: a credential event
+                        except Exception as exc:  # no proof either way: a hard failure
+                            readback_error, tokens_changed = type(exc).__name__, None
+                    else:
+                        tokens_changed = None
+                finally:
+                    if seat is not None:
+                        pi._cleanup_jailed_seat(seat)
+                    pi._EGRESS_LAUNCH_PREFIX.reset(token)
+        stream = seat_egress_proxy.proxy_stream(proxy)
+    status, model_turn, tools, subagents = supplier.stream_facts(stdout)
+    installed_token = (json.loads(installed.data)["tokens"]["access_token"]
+                       if installed is not None else None)
+    expected_bearer = bearer_sha256(installed_token) if installed_token else None
+    model_digests = model_bearer_digests(upstream.auth_records)
+    process_failure = cli_process_failure(timed_out=timed_out, exit_code=exit_code,
+                                          stderr=stderr)
+    fenced = bool(start.acknowledged and end is not None and end.acknowledged)
+    reasons = hard_failures(stream=stream, fenced=fenced, bridge_exited=bridge,
+                            process_failure=process_failure, readback_error=readback_error)
+    observation = SimpleNamespace(
+        kind=kind, status=status, model_turn=model_turn, tool_steps=tools,
+        subagent_steps=subagents, timed_out=timed_out, error=process_failure,
+        exit_code=exit_code, quiescent=True, bridge_exited=bridge, stream=stream,
+        scan={"refresh": ("unavailable" if tokens_changed is None else
+                          "codex_seat_token_refreshed_in_jail" if tokens_changed else "pass")},
+        # The loopback fixture's bearer proof (r5.2 §10.B; fixture only).
+        bearer_proof={"expected_sha256": expected_bearer or "", "model_requests": model_digests})
+    events = [event for window in stream.windows if window.label == "leg"
+              for event in window.events]
+    terminal = supplier.terminal(observation)
+    breaches = [reason for reason, holds in (
+        ("image_not_pinned", bool(evidence.images) and all(
+            digest == EXPECTED_CODEX_IMAGE["sha256"] for _src, digest in evidence.images)),
+        ("bound_image_not_pinned", bound_image == EXPECTED_CODEX_IMAGE["sha256"]),
+        ("host_run_not_pinned", all(digest == EXPECTED_CODEX_IMAGE["sha256"]
+                                    for _src, digest in evidence.host_runs)),
+        ("decoy_lookup", not hits),
+        ("decoy_bearer_presented", decoy["bearer"] not in "".join(upstream.bearers)),
+    ) if not holds]
+    if upstream.problems:
+        reasons.append("responder_problem")
+    outcome = "bound_breach" if breaches else "hard_failure" if reasons else "verdict"
+    _write_evidence(case, {
+        "outcome": outcome, "hard_failure_reasons": reasons, "bound_breaches": breaches,
+        "responder_problems": responder_problems_for_evidence(upstream.problems),
+        "process_failure": process_failure, "credential_readback_error": readback_error,
+        "case": case, "kind": kind, "credential_mode": mode, "terminal": terminal,
+        "status": status, "model_turn": model_turn, "tool_steps": tools,
+        "timed_out": timed_out, "exit_code": exit_code, "bridge_exited": bridge,
+        "fenced": fenced,
+        "stream_final": stream.final, "protocol_error": stream.protocol_error,
+        "events": [[e.method, e.host, e.path, e.decision] for e in events],
+        "outside_events": len(stream.outside_events),
+        "named": [list(entry) for entry in named],
+        "allowlist_digest": proxy.allowlist_digest,
+        "upstream_connections": upstream.connections, "upstream_requests": [
+            [method, target] for _sni, method, target, _host in upstream.requests],
+        "bearer_is_synthetic": all(bearer == "Bearer " + (installed_token or "")
+                                   for bearer in upstream.bearers if bearer),
+        "auth_records": [list(record) for record in upstream.auth_records],
+        "expected_bearer_sha256": expected_bearer, "model_bearer_digests": model_digests,
+        "tokens_changed": tokens_changed, "launch_clock": int(launch_clock),
+        "installed_access_exp": access_exp(installed.data) if installed is not None else None,
+        "decoy_hits": len(hits), "images": [digest for _src, digest in evidence.images],
+        "host_runs": [digest for _src, digest in evidence.host_runs],
+        "bound_image": bound_image,
+        "stdout": _redact(stdout, login), "stderr_tail": _redact(stderr[-2000:], login),
+    })
+    # §15.4 precedence, before any case verdict: a bounds breach, then a hard failure.
+    if breaches:
+        pytest.fail(f"A-C1 §7(b) BREACH (stop and ask the owner): {breaches}")
+    assert_pinned_image(evidence.images)  # K1-T6, from the spawn evidence
+    if reasons:
+        pytest.fail(f"A-C1 HARD FAILURE (§15.4: no pass, no verdict): {reasons}")
+    return SimpleNamespace(observation=observation, events=events, upstream=upstream,
+                           login=login, terminal=terminal, expected_bearer=expected_bearer,
+                           model_digests=model_digests, tokens_changed=tokens_changed,
+                           stream=stream,
+                           token_events=[e for e in events if supplier.token_endpoint(e)],
+                           model_events=[e for e in events if (e.method, e.host, e.path)
+                                         == ("POST", MODEL_HOST, MODEL_PATH)])
+
+
+@pytest.mark.host_seat_credentials  # the installed-CLI opt-in; only synthetic auth is used
+@_no_skip
+def test_k1_t7_a_c1_fresh_copy_completes_its_local_model_request(
+        tmp_path, monkeypatch, codex_upstream, live_seat_attempt):
+    """r5.2 §10.B fresh pass: no token-host event of any kind; the first POST is the
+    model request, answered by the loopback responder; every model request carries the
+    fresh bearer; the launch ends ``completed``."""
+    run = _a_c1(tmp_path, monkeypatch, codex_upstream, case="fresh")
+    assert not any(event.host == TOKEN_HOST for event in run.events), run.events
+    posts = [event for event in run.events if event.method == "POST"]
+    assert posts and posts[0] == run.model_events[0], run.events  # the first POST
+    assert run.upstream.bodies, "the loopback responder answered no model request"
+    assert model_bearers_hold(len(run.model_events), run.model_digests, run.expected_bearer), (
+        len(run.model_events), run.model_digests)
+    assert run.terminal == "completed", (run.observation, run.events)
+
+
+@pytest.mark.host_seat_credentials
+@_no_skip
+def test_k1_t7_a_c1_expired_copy_ends_refused_intended(
+        tmp_path, monkeypatch, codex_upstream, live_seat_attempt):
+    """r5.2 §10.B expired pass: the named refresh denial before any model request, no
+    request event to the token host, no credential change, and every later model request
+    (D1's cached fallback; fixture only) carrying the installed expired bearer."""
+    run = _a_c1(tmp_path, monkeypatch, codex_upstream, case="expired")
+    token_host = [i for i, e in enumerate(run.events) if e.host == TOKEN_HOST]
+    assert token_host and all((run.events[i].method, run.events[i].path,
+                               run.events[i].decision) == ("CONNECT", None, "deny")
+                              for i in token_host), run.events
+    models = [i for i, e in enumerate(run.events) if (e.method, e.host, e.path)
+              == ("POST", MODEL_HOST, MODEL_PATH)]
+    assert all(i > token_host[0] for i in models), run.events
+    assert run.tokens_changed is False
+    assert len(run.model_digests) == len(models) and all(
+        digest == run.expected_bearer for digest in run.model_digests), run.model_digests
+    assert run.terminal == "refused_intended", (run.observation, run.events)
+
+
+@pytest.mark.host_seat_credentials
+@_no_skip
+def test_k1_t7_a_c1_not_ready_variant_is_never_refused_intended(
+        tmp_path, monkeypatch, codex_upstream, live_seat_attempt):
+    """K1-T7 (r5 erratum): not_ready, or timeout at the CLI's own 120 s deadline, with
+    no token-host, model or allowed request; never refused_intended."""
+    run = _a_c1(tmp_path, monkeypatch, codex_upstream, case="not_ready")
+    assert not_ready_erratum_holds(run.terminal, run.events, run.stream), (
+        run.observation, run.events)

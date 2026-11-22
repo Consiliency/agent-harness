@@ -516,18 +516,27 @@ def fixture_vendor(monkeypatch):
 
 
 def register_fixture_vendor(monkeypatch):
-    """Register a Codex supplier and window data through ``register_window_data`` only."""
+    """Register a Codex supplier and window data through ``register_window_data`` only.
+
+    The real Codex supplier (K-1 SL-6) registers Codex's data on import. Under
+    ``monkeypatch`` it is hidden first, in every place it can be found: its registry row,
+    its ``sys.modules`` entry and the package attribute. Teardown restores all three."""
+    import phase_loop_runtime
     from phase_loop_runtime import seat_profiles
     from phase_loop_runtime.seat_route_contract import WindowRows
     module = _fixture_supplier("codex")
     monkeypatch.setitem(sys.modules, module.__name__, module)
+    monkeypatch.setattr(phase_loop_runtime, module.__name__.rsplit(".", 1)[1], module,
+                        raising=False)
     profile = seat_profiles.profile_for("codex")
     rows = WindowRows(canonical_record_field="canonical_codex", route_record_field="codex_route",
                       route_literal="jailed",
                       plant_locations=(("tree", "/seat/tree", "reviewed-tree"),),
                       tree_rows=(("AGENTS.md", "provider_overrides"),))
     monkeypatch.setitem(seat_profiles._REGISTRY, "codex", dataclasses.replace(profile, window=rows))
-    monkeypatch.setattr(seat_profiles, "_WINDOW_DATA", dict(seat_profiles._WINDOW_DATA))
+    monkeypatch.setattr(seat_profiles, "_WINDOW_DATA", {
+        vendor: data for vendor, data in seat_profiles._WINDOW_DATA.items()
+        if vendor != "codex"})
     data = seat_profiles.register_window_data(_fixture_window_data("codex"))
     return SimpleNamespace(module=module, data=data, vendor="codex")
 
@@ -724,7 +733,11 @@ def test_k1_row_world_verifies_through_the_production_reader(row_world):
 ])
 def test_k1_f5_registration_refuses_bad_window_data(monkeypatch, change):
     from phase_loop_runtime import seat_profiles
-    monkeypatch.setattr(seat_profiles, "_WINDOW_DATA", dict(seat_profiles._WINDOW_DATA))
+    # The real Codex supplier (K-1 SL-6) registers on import, and any earlier record
+    # verification loads it (§4.3), so the isolated registry starts without its row.
+    monkeypatch.setattr(seat_profiles, "_WINDOW_DATA", {
+        vendor: data for vendor, data in seat_profiles._WINDOW_DATA.items()
+        if vendor != "codex"})
     with pytest.raises(ValueError):
         seat_profiles.register_window_data(_fixture_window_data("codex", **change))
     assert seat_profiles.window_data_for("codex") is None
@@ -1617,11 +1630,18 @@ def _codex_prepare_stubs(monkeypatch, tmp_path):
                         lambda fd, value: seen["installed"].append(value))
     monkeypatch.setattr(panel, "_write_egress_ca", lambda directory, ca: directory / "ca.pem")
 
+    # The host file the stub jail binds as the provider (its digest is the bound image).
+    image = tmp_path / "codex"
+    if not image.exists():
+        image.write_bytes(b"fixture codex image")
+    seen["image_sha256"] = hashlib.sha256(image.read_bytes()).hexdigest()
+
     def build(leg, seat_dir, executable, **kwargs):
         seen["builds"].append((leg, {key: value for key, value in kwargs.items()
                                      if key not in {"egress_ca"}}))
         return SimpleNamespace(provider_argv0="/seat/bin/codex", env={}, profile_digest="7" * 64,
-                               filter_digest="8" * 64, pass_fds=(), profile_id="codex")
+                               filter_digest="8" * 64, pass_fds=(), profile_id="codex",
+                               provider_path=str(image))
     monkeypatch.setattr(panel, "_build_jail_with_owned_inputs", build)
     monkeypatch.setattr(panel._seat_jail, "open_dir_nofollow",
                         lambda path: os.open(str(tmp_path), os.O_RDONLY))
@@ -1745,10 +1765,11 @@ def _codex_open_stubs(monkeypatch, tmp_path, *, proxy_error=None):
     monkeypatch.setattr(panel._seat_uid, "holder_pid_from_prefix", lambda prefix: 99)
 
     @contextlib.contextmanager
-    def start_proxy(*, allowlist_id, refuse_all):
+    def start_proxy(*, allowlist_id, refuse_all, named=()):
         if proxy_error is not None:
             raise proxy_error
         seen["proxies"].append((allowlist_id, refuse_all))
+        seen.setdefault("named", []).append(tuple(named))
         yield SimpleNamespace(socket="sock", allowlist_sha256="6" * 64, ca_cert=b"ca",
                               proxy_url="http://proxy")
     monkeypatch.setattr(panel._seat_egress_proxy, "start_proxy", start_proxy)
@@ -2050,9 +2071,21 @@ def test_k1_f15_bare_qualify_is_gemini_w1(tmp_path):
     assert code == 1 and json.loads(out)["code"] == "window_owner_approval_required"
 
 
+def _unlanded_table_vendor():
+    """The first table vendor whose supplier module has not landed, computed now. When
+    every supplier has landed the case must be rewritten to hide a module, so it fails."""
+    import importlib.util
+    from phase_loop_runtime.seat_window_supply import SUPPLIERS
+    for vendor, name in SUPPLIERS.items():
+        if importlib.util.find_spec("phase_loop_runtime." + name) is None:
+            return vendor
+    pytest.fail("every table vendor has a landed supplier: rewrite this case to hide one")
+
+
 @pytest.mark.parametrize("argv", [["--window", "W1", "--vendor", "codex"],
-                                  ["--window", "row", "--vendor", "codex"]])
+                                  ["--window", "row", "--vendor", "<unlanded>"]])
 def test_k1_f15_an_invalid_pair_is_unavailable_before_any_claim(tmp_path, argv):
+    argv = [_unlanded_table_vendor() if arg == "<unlanded>" else arg for arg in argv]
     code, out = _fresh(tmp_path, ["seat-window", "qualify", "--attended", *argv])
     assert code == 1 and json.loads(out)["code"] == "window_vendor_unavailable"
     assert not (tmp_path / "state").exists()
