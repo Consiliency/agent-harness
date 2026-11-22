@@ -208,12 +208,16 @@ def terminal(observation) -> str:
     events = _leg_events(getattr(observation, "stream", None))
     if events is None:
         return "stream_incomplete"
-    if events == () and status != "SUCCESS":
-        return "not_ready"  # the CLI failed before its credential path: no request at all
-    if status not in {"SUCCESS", "FAILURE"}:
-        return "stream_incomplete"
     tokens = [event for event in events if token_endpoint(event)]
     models = [event for event in events if _model_request(event)]
+    if (status != "SUCCESS" and not tokens and not models
+            and not any(event.decision == "allow" for event in events)):
+        # §5.5/§10.B (SL-6 ruling 3): the CLI ended by itself (a timeout is classed above)
+        # before its credential path: no token-host event, no model request and no allowed
+        # request. Denied CONNECTs to other hosts are not the credential path.
+        return "not_ready"
+    if status not in {"SUCCESS", "FAILURE"}:
+        return "stream_incomplete"
     if status == "SUCCESS":
         if getattr(observation, "model_turn", None) is True and not tokens:
             return "completed"
