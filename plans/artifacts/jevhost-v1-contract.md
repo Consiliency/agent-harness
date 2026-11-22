@@ -16,6 +16,17 @@ agent-harness#2083:
   substitution, and the workflow details are fixed.
 - §14 gives a fallback for each of the two questions still open with JEV Drill.
 
+**Revision 3 (2026-11-22).** This revision applies the round-2 review of
+agent-harness#2083 and the JEV president's clarification of R3, R4 and R6 (relayed by Spec
+Root, binding; §1.1). Each change is tagged in place:
+- [B4] the Codex probe goes through the owned seam (S2, §13).
+- [B5] the test harness configures on native Windows (S5).
+- [C1] to [C9] are the clarification's changes (§6, §8, §14).
+- [N9] and [N10] are nits (§13; the plan).
+- §13's roles are re-ruled per the review's sign-off.
+- The lanes are re-sequenced (§13 Owner): the adapter lane now precedes the launcher lane,
+  so the probe tests run in the lane that owns `launcher.py`.
+
 ## §0 Inputs
 
 | Input | Value |
@@ -68,6 +79,29 @@ and `::test_supervised_launch_drains_retained_stdout_before_returning`. The HOST
 ruled that they add no acceptance condition here. They are not gated. §6 only reports
 whether they are selected, as information.
 
+### §1.1 The JEV president's clarification (binding, 2026-11-22)
+
+Relayed by Spec Root. It supersedes any reading of R3, R4 and R6 in this contract that
+conflicts with it.
+1. `jevdrill_installed` may skip **only** when neither `JEVDRILL_TEST_CLI` nor
+   `JEVDRILL_TEST_PYTHON` is set. A configured but missing, non-executable or wrong CLI
+   **fails**. The marker stays separate from `dotfiles_integration`.
+2. **The required Linux twelve-file receipt** has zero failures and errors, and lists each
+   skip with its reason. The allowed reasons are:
+   - `dotfiles_integration`;
+   - `jevdrill_installed` with neither variable set;
+   - the two Windows-only files;
+   - `PHASE_LOOP_TDD_EXPECT_SCHED` unset (setting it to 1 is preferred).
+
+   **The optional installed job** sets both variables to an install of the full R2 pin,
+   and runs every `jevdrill_installed` test, all of which pass.
+3. **R4** is the eight controls plus the four entire LEARN files, each passing as a whole
+   file on its applicable platform. None may carry `dotfiles_integration`. The JD-084
+   launcher tests are optional. Names stay stable, or a rename is documented.
+4. **Pairing.** JEV Drill runs on CPython 3.14. Harness pytest runs on exactly the R6
+   Python of the required receipt (3.12). A 3.14 harness run cannot substitute unless the
+   receipt and R6 both move to 3.14.
+
 **Terms.** The *five modules* are `jevdrill_adapter.py`, `jevdrill_queue.py`, `runner.py`,
 `launcher.py` and `observability.py`. The *twelve files* are the six `test_jevdrill_*.py`
 files (adapter, diagnostics, discovery, input, queue, usage), the four LEARN files,
@@ -98,8 +132,9 @@ Classification of the draft's 59 paths:
 
 | Class | Paths |
 | --- | --- |
-| New, verbatim | `src/phase_loop_runtime/{file_lock,windows_process,windows_storage,jevdrill_adapter,jevdrill_queue}.py`; `tests/test_jevdrill_{adapter,diagnostics,input,queue,usage}.py`; `tests/test_windows_{locking,processes,storage}.py`; `tests/jevdrill_fixture_values.py` |
-| New, then amended | `tests/test_jevdrill_discovery.py` (per-test markers, §6); `docs/jevdrill-integration.md` (SL-5) |
+| New, verbatim | `src/phase_loop_runtime/{file_lock,windows_process,windows_storage,jevdrill_adapter,jevdrill_queue}.py`; `tests/test_jevdrill_{diagnostics,input,queue,usage}.py`; `tests/test_windows_{locking,processes,storage}.py`; `tests/jevdrill_fixture_values.py` |
+| New, then amended | `tests/test_jevdrill_discovery.py` (per-test markers, the preflight, §6); `tests/test_jevdrill_adapter.py` (the route test's own skip removed, its marker and preflight, [C1]); `docs/jevdrill-integration.md` (SL-5) |
+| Modified, harness test infrastructure ([B5]) | `tests/launch_audit_hook.py` and `tests/conftest.py`: the Windows guards (S5), and the marker rules (§6) |
 | New, then re-synced (§5) | the 18 files under `tests/fixtures/jevdrill/` |
 | Modified, conflicting (§3) | `agy_qualification.py`, `launcher.py`, `runner.py`, `tests/test_launcher_liveness.py`, `tests/test_phase_loop_launcher.py` |
 | Modified, clean textual merge (§4 applies) | `agy_provenance.py`, `convergence/broker/live.py`, `convergence/event_log.py`, `convergence/fencing.py`, `dispatch_lock.py`, `observability.py`, `phase_worktree_executor.py`, `prompts.py`, `tests/phase_loop_test_utils.py`, `tests/test_phase_loop_work_unit_observability.py` |
@@ -155,10 +190,19 @@ Hunks are named by the trial merge's conflict markers, in file order.
   (`ioctl`, `F_GET_SEALS`) stay. Check: no module-level `fcntl.` reference remains, and
   `tests/test_agy_qci.py` and `tests/test_agy_self_qualification.py` pass with no literal
   bumped.
-- **S2. No unvalidated executable runs.** The draft's Codex usage-version probe runs
-  `command[0]`. `main` binds that path to the admitted dependency inode. So the probe runs
-  only after `dependency.validate_command`, and validation runs again immediately before
-  `launch(`.
+- **S2. No unvalidated executable runs, and the probe is an owned launch.**
+  - The draft's Codex usage-version probe runs `command[0]`. `main` binds that path to the
+    admitted dependency inode. So the probe runs only after `dependency.validate_command`,
+    and validation runs again immediately before `launch(`.
+  - [B4] The probe does not call `subprocess.Popen` directly. It starts through
+    `panel_invoker.launch_owned([executable, "--version"], role=SeatLaunchRole.EXECUTOR_TRUSTED, profile=SeatProfile(env=child_executor_env(child_env)), …)`.
+    That is the same seam and role as `launcher`'s executor start.
+  - It keeps the draft's semantics: output to files rather than pipes, `stdin=DEVNULL`, a
+    new session, the bounded timeout, and a process-group kill on timeout.
+  - So `main`'s suite-wide launch audit hook (`tests/launch_audit_hook.py`, `fail=True`)
+    sees the owned marker. Without it, the hook raises "provider launch lacks the owned
+    launch marker", and every probe test in `test_jevdrill_usage.py` errors.
+  - S2's ordering is a precondition of the probe. It is not its classification (§13).
 - **S3. Redaction reaches every sink, and review does not run on native Windows.**
   - **POSIX.** In `consume`, `rendered = redact_seat(rendered)` comes before the usage
     observer, `output_parts`, the log and the stream. Redaction stays per line, as on
@@ -200,10 +244,33 @@ Hunks are named by the trial merge's conflict markers, in file order.
   default `lane_scheduler_mode`, a planned phase with an adapter enters `prepare` once and
   `launch` once, and the event log holds one `lane_scheduler` event with reason
   `jevdrill_adapter`. With no adapter, the lane-wave path is unchanged.
-- **S5. Post-base POSIX code.** Since the draft's base, `main` added POSIX-only calls
-  (`os.uname`, `os.getuid`) to `convergence/broker/live.py`, and the Windows tests import
-  from it. Fix a call within the owned file only when a Windows test reaches it and the fix
-  is a platform guard with no change on POSIX. Otherwise record it under §8 as not done.
+- **S5. Post-base POSIX code.**
+  - Since the draft's base, `main` added POSIX-only calls (`os.uname`, `os.getuid`) to
+    `convergence/broker/live.py`, and the Windows tests import from it. Fix a call within
+    the owned file only when a Windows test reaches it and the fix is a platform guard
+    with no change on POSIX.
+  - [B5] **The test harness must configure on native Windows.** `tests/conftest.py`'s
+    `pytest_configure` installs `launch_audit_hook.install(..., fail=True)` on every run,
+    and that installer has POSIX-only parts:
+    - `os.O_NOFOLLOW`;
+    - `import _posixsubprocess` and `import pty`;
+    - the `os.fork`, `os.forkpty` and `pty.fork` wraps;
+    - the `/proc/self/fd` source rewrite.
+
+    On Windows, pytest aborts in configuration and collects nothing.
+  - **The guards.** SL-0 guards each of those parts with `os.name == "posix"`. On Windows,
+    `sys.addaudithook` and `fail=True` stay active: the `subprocess.Popen` audit event
+    still covers provider starts there. SL-0 also guards any autouse fixture in
+    `conftest.py` that calls a POSIX-only API, with the same rule.
+  - **POSIX is unchanged.** On POSIX the guarded code runs exactly as before, and
+    `tests/test_launch_audit_inventory.py` stays green.
+  - **The Windows proof** is the dispatched `windows-2025` legs of §8:
+    - pytest configures;
+    - every test of all four LEARN files passes;
+    - the S3 refusal test runs unpatched.
+  - **Otherwise.** A Windows failure that needs more than a platform guard is recorded under
+    §8 as not done. The PR discloses it, and JEV HOST's run is then the first Windows run
+    (R3).
 - **S6. Model-identifier guard.** The new tests must pass
   `scripts/check_model_id_sources.py`, which CI runs. Replace a flagged literal with the
   central constant, or with a value from the test's own fixture, without changing what the
@@ -246,40 +313,76 @@ re-sync. Either way the name stays `998912b1e` or later.
 
 ## §6 Test selection (R3, R4)
 
-- **Installed-JEV tests.** `test_jevdrill_discovery.py`'s `installed_discovery` fixture
-  fails without `JEVDRILL_TEST_CLI` or `JEVDRILL_TEST_PYTHON`, and the real-CLI route test
-  in `test_jevdrill_adapter.py` (the draft's line 365) skips without them. The required
-  suite installs no JEV Drill.
-- **The `jevdrill_installed` marker.** It is registered in `conftest.py` and in
-  `pyproject.toml` `[tool.pytest.ini_options] markers`.
-  - **Granularity.** The marker is applied per test, as a decorator, to each test that
-    uses `installed_discovery` and to the adapter's real-CLI route test. It is **never** a
-    module-level `pytestmark` or a class mark. A module mark would suppress the four
-    controls that run without JEV Drill.
-  - **Skip rule.** `conftest.py` skips a marked item only when neither variable is set, as
-    it already does for `dotfiles_integration`.
+- **Installed-JEV tests.** These are `test_jevdrill_discovery.py`'s users of the
+  `installed_discovery` fixture, and the real-CLI route test in `test_jevdrill_adapter.py`
+  (the draft's line 365). The required suite installs no JEV Drill.
+- **The `jevdrill_installed` marker** (§1.1 item 1). It is registered in `conftest.py` and
+  in `pyproject.toml` `[tool.pytest.ini_options] markers`. It is separate from
+  `dotfiles_integration`.
+  - **Granularity.** The marker is applied per test, as a decorator, to each installed-JEV
+    test. It is **never** a module-level `pytestmark` or a class mark.
+  - **Skip rule.** `conftest.py` skips a marked item **only** when neither
+    `JEVDRILL_TEST_CLI` nor `JEVDRILL_TEST_PYTHON` is set. The fixed skip reason is
+    `jevdrill_installed: neither JEVDRILL_TEST_CLI nor JEVDRILL_TEST_PYTHON is set`.
   - **Collection errors** in `conftest.py`:
     - an item that uses `installed_discovery` without the marker;
     - an item that carries the marker, does not use `installed_discovery`, and is not the
-      adapter's real-CLI route test.
-  - The fixture's own assertion stays.
-  - jevdrill sets the variable, so nothing skips there, and its rule of no other skip
-    holds.
-- **The reversal.** The draft asserted "Installed JEV CLI is required; discovery cannot be
-  skipped". Under this rule, harness `main`'s required suite **skips** the four installed
-  controls of §1, because it installs no JEV Drill. The companion workflow (§8) is their
-  harness evidence. The pull request says this plainly. The marker is pending JEV's
-  acknowledgement (§14).
-- **`tests/test_jevdrill_selection.py`.** It asserts the eight control node IDs of §1
-  exactly:
-  - each is collected, and selected under `-m "not dotfiles_integration"`;
-  - none carries `dotfiles_integration`, by function, class or module mark;
-  - exactly the four marked "yes" carry `jevdrill_installed`, and the other four do not.
+      route test.
+- **[C1] No test skips on its own.** The route test's own `pytest.skip` is removed. Only
+  the conftest rule can skip it.
+  - **Deriving the CLI.** With only `JEVDRILL_TEST_PYTHON` set, the CLI argv is derived as
+    `[<python>, "-m", "jevdrill.cli"]`, the draft's native-Windows form. With only
+    `JEVDRILL_TEST_CLI` set, the interpreter is derived as the draft's fixture does: the
+    `python` (or `python.exe`) beside the CLI. With both set, both are used as given.
+  - Each derivation goes through the preflight below. A missing derived path **fails**.
+- **[C2] Preflight.** When either variable is set, a new helper `tests/jevdrill_install.py`
+  (`resolve_install()`) validates the installation before any use. The `installed_discovery`
+  fixture and the route test both call it. On any of these it **fails** with a message
+  naming the variable and the reason:
+  - a set or derived path that does not exist or is not executable;
+  - an interpreter that cannot `import jevdrill` (run as `-I -c`);
+  - a CLI that does not answer a non-mutating call: `--help` exits 0 and names `jevdrill`;
+  - a contract mismatch.
+    - SL-3 establishes which non-mutating command JEV's CLI at the R2 pin exposes for its
+      schemas or version. If one exists, the preflight compares its answer with
+      `tests/fixtures/jevdrill/digests.json`.
+    - If none exists, the PR says so, and the installed CI leg's checkout comparison (§8)
+      carries the pin check.
 
-  It also asserts that collecting the seven R4 files under `-m "not dotfiles_integration"`
-  deselects nothing. It reports, without gating, whether the two launcher tests of §1 are
-  selected. The 53 marked launcher tests are `main`'s own (`PhaseLoopLauncherTest`) and
-  stay as they are.
+  `tests/test_jevdrill_install_preflight.py` drives these through `pytester`: a missing
+  path, a non-executable file and a non-JEV executable, with each variable alone and both
+  together. Each inner run must report **failed**, never skipped. A fourth case, with
+  neither variable set, reports skipped with the fixed reason.
+- **The reversal.** The draft asserted "Installed JEV CLI is required; discovery cannot be
+  skipped". Harness `main`'s required suite **skips** the four installed controls of §1,
+  because neither variable is set there. §1.1 item 1 permits exactly that. The companion
+  workflow's installed leg (§8) is their harness evidence. The pull request says this
+  plainly.
+- **`tests/test_jevdrill_selection.py`** asserts the following.
+  - The eight control node IDs of §1, exactly. Each is collected, and selected under
+    `-m "not dotfiles_integration"`. None carries `dotfiles_integration`, by function,
+    class or module mark. Exactly the four marked "yes" carry `jevdrill_installed`, and the
+    other four do not.
+  - Collecting the seven R4 files under `-m "not dotfiles_integration"` deselects nothing.
+  - [C6] **The LEARN whole-file rule** (§1.1 item 3), statically:
+    - `test_windows_locking.py` and `test_launcher_liveness.py` carry no `skip`, `skipif`
+      or `xfail` mark and call neither `pytest.skip` nor `pytest.xfail`;
+    - in `test_windows_processes.py` and `test_windows_storage.py`, the only skip is the
+      module `skipif(os.name != "nt")`.
+
+    The runtime half is the receipt classifier (§8). On Linux and macOS every test of the
+    two cross-platform files passes. On `windows-2025` every test of all four files
+    passes.
+  - [C7] **Name stability.** The collected node IDs of the six JEV Drill files and the four
+    LEARN files equal the list in `tests/data/jevdrill_test_names.json`.
+    - SL-4 generates that list once from the draft at the §0 commit, by AST.
+    - The list applies `main`'s own T1 and T2 merges: `test_launcher_liveness.py` keeps
+      `main`'s test name (§3).
+    - Any other difference is a rename or removal. Each one is listed in the PR, and the
+      data file records it.
+  - It reports, without gating, whether the JD-084 launcher tests of §1 are selected.
+- The 53 marked launcher tests are `main`'s own (`PhaseLoopLauncherTest`) and stay as they
+  are.
 - **No secret.** None of the twelve files reads a credential, a token or the private
   dotfiles repository. The companion workflow (§8) has no `secrets` context.
 
@@ -296,68 +399,109 @@ and the test-module names of R5. It fails on any missing name.
 
 - **Required checks are not weakened.** No job, step, `-m` expression, `--ignore` or
   `needs:` of an existing workflow is changed. The twelve files run in the existing
-  `suite gate` paths (offloaded or hosted fallback) like any other test. The installed-JEV
-  subset skips there under §6, and the pull request says so.
+  `suite gate` paths like any other test. The installed-JEV subset skips there under §6,
+  and the pull request says so.
 - **New workflow `.github/workflows/jevdrill-companion.yml`.** It is not a required check.
   - Triggers: `push` to `main`, `pull_request` with a path filter (the five modules, the
     portability modules, the twelve files, the helpers, the fixtures, `conftest.py`,
-    `pyproject.toml`, `uv.lock`, the workflow itself), and `workflow_dispatch`.
+    `launch_audit_hook.py`, `pyproject.toml`, `uv.lock`, the classifier, the workflow
+    itself), and `workflow_dispatch`.
   - `permissions: contents: read`. No `secrets` reference. No `pull_request_target`.
-  - Matrix on `push` and `pull_request`: `ubuntu-24.04` only.
-  - Matrix on `workflow_dispatch`: `ubuntu-24.04`, `macos-15` and `windows-2025`, each with
-    `harness_python: "3.12"`, plus an `ubuntu-24.04` leg with `harness_python: "3.14"`.
-  - Inputs:
-    - `jevdrill_ref` must be a full 40-hex SHA, checked in the first step. Its default is
-      the SHA the pull request synced to (§5).
-    - `jev_python` defaults to `"3.14"` (§14).
-  - Steps:
-    1. `actions/checkout@v4`.
-    2. `astral-sh/setup-uv@v6`.
-    3. The sync command (below), as
-       `uv sync --project phase-loop-runtime --group test --extra visual --locked --python ${{ matrix.harness_python }}`.
-       The shape test asserts this one template string. It also asserts that
-       `harness_python` is `"3.12"` on every `push` and `pull_request` leg.
-    4. A second checkout of `Consiliency/jevdrill` at `jevdrill_ref` into a separate path,
-       with `persist-credentials: false`.
-    5. `uv sync --locked --python ${{ inputs.jev_python || '3.14' }}` in that path. JEV
-       Drill's own `requires-python` is `>=3.14`. The step writes that environment's
-       `python --version` to the job summary.
-    6. Set `JEVDRILL_TEST_CLI` to that environment's `jevdrill` script
-       (`.venv/bin/jevdrill`, or `.venv\Scripts\jevdrill.exe` on Windows).
-    7. Run the twelve files with
-       `uv run --project phase-loop-runtime --locked --no-sync python -m pytest -p no:cacheprovider -m "not dotfiles_integration" --junitxml=… <twelve files>`,
-       with `PYTHONPATH` set to the checkout's `src` and `tests` as absolute paths. The two
-       paths are joined with the OS path separator: `;` on Windows, `:` elsewhere. They are
-       computed in a `shell: bash` step from `runner.os`.
-    8. A step reads the junit file. It fails unless each of the four installed controls of
-       §1 appears **by node ID** with outcome passed. It also fails if any
-       `jevdrill_installed` test skipped. It writes every other skip, with its reason, to
-       the job summary. Platform skips
-       such as the native-Windows proofs on Linux are expected. Their per-platform lists
-       are jevdrill's to rebuild, and this workflow does not freeze them.
-    9. Upload the junit file.
-  - `tests/test_jevdrill_companion_workflow.py` asserts this shape.
-  - `tests/test_python_floor_1546.py` must still pass.
-- **Sync command (R6):**
-  `uv sync --project phase-loop-runtime --group test --extra visual --locked`, with
-  `--python 3.12` in CI. This is the command `CONTRIBUTING.md` already documents. The
-  dispatched matrix is the evidence that it works on hosted Linux, macOS and Windows.
-- **CI Python (R6):** 3.12, the floor and the only lane of the required suite
-  (agent-harness#1546). JEV Drill runs on 3.14 in its own environment. The dispatched
-  3.14 leg runs the harness itself on 3.14, in case R3's "on Python 3.14" means the
-  companion too.
+  - Input `jevdrill_ref`: a full 40-hex SHA, checked in the first step, defaulting to the
+    SHA the pull request synced to (§5).
+- **[C3] Two legs on every `push` and `pull_request`**, both on `ubuntu-24.04` with
+  harness pytest on Python 3.12, the R6 Python. Both legs run the twelve files with
+  `-m "not dotfiles_integration"` and junit output.
+  - **(a) The receipt leg** (job name `receipt (linux, py3.12)`). This is the required R3
+    Linux receipt, and the pull request links it.
+    - Neither `JEVDRILL_TEST_CLI` nor `JEVDRILL_TEST_PYTHON` is set.
+    - `PHASE_LOOP_TDD_EXPECT_SCHED=1` is set.
+    - The classifier `phase-loop-runtime/scripts/jevdrill_receipt.py` reads the junit
+      file. It fails on any failure or error. It writes every skip, with its node ID and
+      reason, to the job summary. It **fails on any skip whose reason is outside the
+      allowlist** below.
+  - **(b) The installed leg** (job name `installed (linux, py3.12 + jev cpython-3.14)`).
+    - It checks out `Consiliency/jevdrill` at `jevdrill_ref` into a separate path, with
+      `persist-credentials: false`.
+    - [C9] It runs `uv sync --locked --python cpython-3.14` there, and writes
+      `sys.implementation.name` and `sys.version` of that environment to the job summary.
+    - It sets **both** variables from that one environment:
+      `JEVDRILL_TEST_PYTHON=<env>/bin/python` (or `Scripts\python.exe`) and
+      `JEVDRILL_TEST_CLI=<env>/bin/jevdrill` (or `Scripts\jevdrill.exe`).
+    - It compares the checkout's `schemas/` and `tests/contracts/fixtures/` with the
+      harness copies under the §5 rule, and fails on any difference.
+    - It collects the expected installed set with `-m jevdrill_installed --collect-only -q`.
+      It requires every collected item to appear in the junit **by node ID, with outcome
+      passed**: the four controls of §1 plus the route test, as collected. Any skip of a
+      marked item fails the leg. Other skips go through the same allowlist as (a).
+  - The receipt leg does not depend on JEV Drill installing. An installed-leg failure is
+    disclosed and leaves the receipt standing.
+- **The allowlist** is exactly four reasons, matched by the fixed reason strings. There is
+  no other exception.
+  1. `dotfiles_integration`. Normally deselected by `-m`; listed for completeness.
+  2. `jevdrill_installed` with neither variable set: §6's fixed reason. Allowed only on
+     legs where neither variable is set.
+  3. The two Windows-only files' module `skipif` reasons, "Native Windows Job Object proof"
+     and "Native NTFS storage proof". Allowed only on non-Windows legs.
+  4. `PHASE_LOOP_TDD_EXPECT_SCHED` unset (`SCHED RED suite inactive; set
+     PHASE_LOOP_TDD_EXPECT_SCHED=1`). Allowed only on a leg that does not set it. Every
+     leg of this workflow sets it, so it never occurs here. It is listed because JEV's own
+     run may leave it unset.
+- **Dispatched legs** (`workflow_dispatch`):
+  - the receipt leg and the installed leg on `macos-15` and on `windows-2025`, harness on
+    3.12, with the same allowlist. On Windows the two Windows-only files run, and allowance
+    3 does not apply.
+  - an informational leg `informational: harness py3.14 (not R3/R6 evidence)` on
+    `ubuntu-24.04`. [C8] It is never linked as R3 or R6 evidence.
+- **Paths.** `PYTHONPATH` is the checkout's `src` and `tests` as absolute paths, joined with
+  `;` on Windows and `:` elsewhere. It is computed in a `shell: bash` step from
+  `runner.os`.
+- **The harness sync command (R6):**
+  `uv sync --project phase-loop-runtime --group test --extra visual --locked`, run in CI as
+  `… --locked --python ${{ matrix.harness_python }}`.
+  - `harness_python` is `"3.12"` on every R3 leg, and `"3.14"` only on the informational
+    leg.
+  - This is the command `CONTRIBUTING.md` already documents. The dispatched legs are the
+    evidence that it works on hosted macOS and Windows.
+- **CI Python and pairing (R6; §1.1 item 4).** The required receipt, R6 and the installed
+  evidence all use harness pytest on 3.12, paired with JEV Drill on CPython 3.14. [C8] A
+  3.14 harness run substitutes for none of them. Moving the receipt and R6 to 3.14 would
+  be a repin.
+- **[C9] If the installed leg is not run, or fails,** the pull request says so, and says
+  that JEV HOST then runs the pairing first. A failure there needs a new harness commit
+  (R3).
+- **[C4] `tests/test_jevdrill_companion_workflow.py`** asserts:
+  - both push and pull-request legs, and their job names;
+  - neither variable on the receipt leg, and both from the same environment on the
+    installed leg;
+  - `PHASE_LOOP_TDD_EXPECT_SCHED=1` on every leg;
+  - `--python cpython-3.14` for JEV Drill;
+  - the one harness sync template, and `harness_python` values as above;
+  - the dispatched matrix, with the informational label on the 3.14 harness leg;
+  - the `PYTHONPATH` separator rule;
+  - the classifier invocation;
+  - `permissions` and the absence of `secrets` and `pull_request_target`;
+  - that no existing workflow changed.
+
+  `tests/test_jevdrill_receipt.py` unit-tests the classifier on synthetic junit: each of
+  the four reasons passes only on its allowed legs; an unknown reason fails; an installed
+  skip with a variable set fails; and a missing expected node fails. The allowlist is a
+  single constant in the classifier, which the shape test reads. `tests/test_python_floor_1546.py`
+  must still pass.
 - **`pyproject.toml` and `uv.lock`.** The draft needs no new dependency: `jsonschema` and
   `PyYAML` are already runtime dependencies. Only the marker line is added.
   `uv lock --check --project phase-loop-runtime` must pass. `uv.lock` changes only if that
   check fails, and the change is then regenerated, never hand-edited.
-- **Evidence and disclosure.** Before the merge, the pull request links the companion
-  workflow's `pull_request` run at its head, on the same tree. That is the pre-merge R1
-  and R3 evidence. After the
-  merge it links the `push` run at the merge commit and, when dispatched, the
-  macOS/Windows/3.14 run. Any leg not run, or failing, is disclosed with its reason.
-  Under R3 that is a fallback jevdrill accepts, not a reason to hold the merge.
-- **Dispatch.** Only the lane executor, after the merge, dispatches the workflow, once,
-  with the synced SHA. Planning dispatches nothing.
+- **Evidence and disclosure.**
+  - Before the merge, the pull request links the `pull_request` runs of both Linux legs at
+    its head.
+  - SL-5's executor dispatches the workflow once on the integration branch head, so macOS
+    and Windows evidence exists before the merge. It dispatches again after the merge only
+    if the merge commit's tree differs from that head.
+  - After the merge the pull request links the `push` run.
+  - Any leg not run, or failing, is disclosed with its reason. Under R3 that is a fallback
+    jevdrill accepts, not a reason to hold the merge.
+  - Planning dispatches nothing.
 
 ## §9 Excluded paths and sanitization
 
@@ -431,44 +575,42 @@ The draft's new and merged modules move them.
 | `tests/test_seat_launch_helpers_trusted.py` | package helpers never launched with `-m`; trusted argv | expected unchanged. The JEV CLI is launched as the installed `jevdrill` script, or on Windows as the installed interpreter with `-m jevdrill.cli`. That is JEV's package, not a harness helper. Confirm the scan agrees, else stop. |
 | `tests/test_gate_fail_open_visibility.py` | gates that fail open are visible | expected unchanged; run it |
 
-**Owner.** SL-4 is the inventory reducer. It runs after SL-0 and SL-3, and alone it owns
-`tests/data/seat_launch_references.json`, `test_agent_cli_scratch_inventory_1147.py` and
-any edit the other three tests need. SL-0 and SL-3 do not run these five tests, because
-the tree is incomplete until SL-4. SL-4 runs all five.
+**Owner.** SL-4 is the inventory reducer. It is the last code lane: SL-0, then SL-3 (the
+adapter), then SL-4 (the launcher). Alone, it owns `tests/data/seat_launch_references.json`,
+`test_agent_cli_scratch_inventory_1147.py` and any edit the other three tests need. SL-0
+and SL-3 do not run these five tests, because the tree is incomplete until SL-4. SL-4
+runs all five.
 
 **Role rule** for each new or changed row of `seat_launch_references.json`. These are
-security decisions, and the pull request lists every added row.
+security decisions, ruled per the round-2 sign-off. The pull request lists every added row.
 
 | Site | Role |
 | --- | --- |
-| `windows_process` executor child spawn (`subprocess.Popen` or `CreateProcess` under the Job Object) and its Job and handle `ctypes` calls | `supervisor` (the Windows twin of `launcher`'s supervised `Popen`) |
+| [N10] `windows_process`: the guardian `subprocess.Popen` in `run_owned` and in `run_leased`; `_admitted_child`'s `subprocess.run` of the executor; the Job Object and handle `ctypes` calls; `process_is_live` (also used by `observability`) | `supervisor`. This is process-tree management of an executor, the Windows counterpart of `lease_supervisor`'s `supervise` / `_exec_executor` rows. It is *not* a counterpart of `launcher`'s executor start, which is `launch_owned` and `owned`. |
 | `windows_storage` and `file_lock` IO, `ctypes` and locking | `host-io` |
-| `jevdrill_adapter` JEV CLI spawn and the `git check-ignore` call | `host-helper`. JEV Drill is a separately installed host tool, not a provider. |
+| `jevdrill_adapter` JEV CLI spawn | `host-helper`. `jevdrill` is not in `PROVIDERS`. The argv comes from configuration, with `shell=False`, and is bounded by schema, size and deadline. The row records that the spawn inherits the full parent environment, as in the draft. |
+| `jevdrill_adapter` `git check-ignore` | `operator-out-of-scope`, as `runner._gitignored_paths` |
 | `jevdrill_adapter` and `jevdrill_queue` file and SQLite IO | `host-io` |
-| `launcher._codex_usage_version` (`codex --version`) | `host-helper`, admissible only under S2: it runs after `validate_command`, with `child_executor_env`, stdin closed and a bounded timeout. Its 1147 entry states that reason. |
+| [B4] `launcher._codex_usage_version` | `owned`: the row is `launcher _codex_usage_version launch_owned`. S2's validation is its precondition. A 1147 `INVENTORY` entry is added only if that scan requires one, and it states that reason. |
 | new rows in `launcher` or `phase_worktree_executor` IO | `host-io`, as their existing rows |
-| any site that launches a provider or agent CLI without S2's validation or a decided env | none: **stop** (§10) |
+| any site that starts a provider or agent CLI outside an owned seam, or without S2's validation | none: **stop** (§10) |
+
+**Precondition of the `supervisor` rows.** Under the Windows guardian, an executor start
+bypasses the owned seam, and the in-process audit hook never sees the grandchild. That is
+acceptable only because review is refused on native Windows (S3) and because no seat jail
+exists there. If that refusal is ever lifted, these rows must be re-ruled.
 
 A row the table does not cover stops the lane for a ruling, not a guess.
 
-## §14 Questions open with JEV Drill, and fallbacks
+## §14 Questions put to JEV Drill, and their state
 
-Both questions are pending through Root. This contract holds under either answer.
-
-- **Q1. Does JEV accept the `jevdrill_installed` marker?**
-  - **Yes:** §6 as written.
-  - **No:** the marker is removed, and no new marker is added. `conftest.py` instead
-    *deselects*, without skipping, the items that use `installed_discovery`, plus the
-    adapter's real-CLI route test. It does this only when neither JEV variable is set.
-    jevdrill always sets them, so jevdrill sees no marker and no deselection. The selection
-    test then asserts the same eight-control split, keyed on fixture use instead of the
-    marker.
-  - **No, and JEV objects to any harness-side deselection too:** stop and escalate to the
-    owner. The only other route is installing JEV Drill in the required suite, which
-    changes a required check (§8).
-- **Q2. What is the exact Python 3.14 target?**
-  - The workflow's `jev_python` input defaults to `"3.14"`. If JEV names an exact version
-    or a patch floor, that default and the 3.14 harness leg's `harness_python` change to
-    it. That change is allowed without a repin, and the shape test is updated with it.
-  - If JEV means the companion must also run on 3.14 in its required runs, that is the
-    dispatched 3.14 harness leg. The required suite stays on 3.12 (agent-harness#1546).
+- **Q1. Does JEV accept the `jevdrill_installed` marker?** **Answered: yes** (§1.1 item 1).
+  It may skip only when neither variable is set, and it stays separate from
+  `dotfiles_integration`. §6 implements that. The earlier fallback (fixture-keyed
+  deselection) is withdrawn.
+- **Q2. What is the exact Python 3.14 target?** **Answered: CPython 3.14** (§1.1 item 4).
+  - [C9] JEV Drill's environment is synced with `--python cpython-3.14`. If JEV later names
+    an exact version, that string changes to it. That change is allowed without a repin,
+    and the shape test is updated with it.
+  - [C8] The withdrawn bullet said a 3.14 harness leg could stand for R3. It cannot: harness
+    pytest stays on the R6 Python, 3.12.

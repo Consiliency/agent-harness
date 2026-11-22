@@ -31,7 +31,7 @@ separately installed JEV Drill. With no adapter, every harness path behaves exac
 
 | Input | Pin |
 | --- | --- |
-| JEVHOST contract | `plans/artifacts/jevhost-v1-contract.md`, sha256 `0c6a44e19f1909933dc664ab0d944c62b9320428132c5bf3796a542f85efe892` |
+| JEVHOST contract | `plans/artifacts/jevhost-v1-contract.md`, sha256 `999e0ebe733bd90af6df1aca989483cc6059802320bc19adc5e63eb3d819132c` |
 | Draft commit | agent-harness#2071 head `784d1595a08f42519862ae5f9336f20186d83c4b`, base `56dce95a52625a58cd08911f8f623c637bf52e44` |
 | jevdrill contract commit | `Consiliency/jevdrill` `998912b1e0195464e6f3aa048c5421c2bed57491` (JEVHOST §5 SHA rule) |
 
@@ -46,9 +46,9 @@ future implementation commit, a commit count or a landing topology.
   `tests/data/seat_launch_references.json`. Whichever lands second rebases and
   regenerates its own rows. The OI-1 fence lane and agent-harness#2081 write no file of
   this phase (JEVHOST §11).
-- **EXT-JEVQ.** Two questions are open with JEV Drill: acceptance of the
-  `jevdrill_installed` marker, and the exact Python 3.14 target. Each has a stated
-  fallback (JEVHOST §14), so neither blocks execution.
+- **EXT-JEVQ.** The JEV president's clarification of 2026-11-22 (JEVHOST §1.1) is binding.
+  It answers both earlier questions: the marker is accepted, and JEV Drill runs on CPython
+  3.14 (JEVHOST §14).
 
 ## Non-Goals
 
@@ -88,17 +88,17 @@ so jevdrill can pin one accepted commit.
 - [ ] EC-JEVHOST-1 — (R1) A `main` commit, merged under this repository's required checks, holds the five modules, the twelve files and their helpers, `tests/fixtures/jevdrill/`, and a `pyproject.toml` and `uv.lock` for which `uv sync --locked` succeeds; the excluded paths of JEVHOST §9 are absent.
 - [ ] EC-JEVHOST-2 — (R2) The 14 schema copies are byte-identical to jevdrill's at the commit the pull request names, the 3 fixtures equal jevdrill's after the JEVHOST §5 substitution, and `digests.json` recomputes.
 - [ ] EC-JEVHOST-3 — With no adapter, `main` behaviour is preserved under JEVHOST §2, and the semantic rules S1 to S6 of JEVHOST §4 hold.
-- [ ] EC-JEVHOST-4 — (R3) The twelve files pass, with the installed-JEV tests not skipped, in the companion workflow on hosted Linux at the merge commit. The dispatched macOS, Windows and Python 3.14 legs are run once, and any leg not done or failing is disclosed.
-- [ ] EC-JEVHOST-5 — (R4) jevdrill's eight named controls (JEVHOST §1) are collected and selected under `-m "not dotfiles_integration"`; none of them, and no test in the seven R4 files, carries `dotfiles_integration`; exactly the four installed controls carry `jevdrill_installed`, per test and never by module (or, under JEVHOST §14 Q1's fallback, are the four fixture-keyed deselections); and no selected test needs a secret or a private repository.
+- [ ] EC-JEVHOST-4 — (R3, JEVHOST §1.1 item 2) The companion workflow's receipt leg on hosted Linux, with harness pytest on 3.12, has zero failures and errors, and lists every skip with its reason, each inside the four-reason allowlist of JEVHOST §8. Its installed leg, with both variables set from one CPython-3.14 install of the R2 pin, runs and passes every `jevdrill_installed` item by node ID. Both legs run on the integration pull request and at the merge commit. The dispatched macOS and Windows legs are run, and any leg not done or failing is disclosed. A 3.14 harness leg is never R3 evidence.
+- [ ] EC-JEVHOST-5 — (R4, JEVHOST §1.1 item 3) jevdrill's eight named controls (JEVHOST §1) are collected and selected under `-m "not dotfiles_integration"`; none of them, and no test in the seven R4 files, carries `dotfiles_integration`; exactly the four installed controls carry `jevdrill_installed`, per test and never by module; the four LEARN files pass as whole files on their applicable platforms; test names are stable against the draft, or each rename is listed; and no selected test needs a secret or a private repository.
 - [ ] EC-JEVHOST-6 — (R5) Every R5 name imports at the merge commit; there is no rename.
-- [ ] EC-JEVHOST-7 — (R6) The pull request states the sync command and the CI Python, and the dispatched matrix runs that command on hosted Linux, macOS and Windows.
+- [ ] EC-JEVHOST-7 — (R6, JEVHOST §1.1 item 4) The pull request states the sync command and the CI Python, 3.12, paired with JEV Drill on CPython 3.14. The command runs on hosted Linux, macOS and Windows.
 - [ ] EC-JEVHOST-8 — The outgoing diff passes `gitleaks` and the disclosure grep of JEVHOST §9, and no existing required check is weakened.
 
 **Scope notes**
 
 Decompose into six lanes with disjoint ownership, each bringing in only its own draft
 paths (JEVHOST §2): portability modules, contract copies and the companion workflow in
-parallel first; then the launcher; then the adapter and runner; then a docs reducer.
+parallel first; then the adapter and runner; then the launcher, which also reconciles the source inventories; then a docs reducer.
 
 **Non-goals**
 
@@ -112,6 +112,8 @@ Everything under Non-Goals above.
 - `phase-loop-runtime/src/phase_loop_runtime/convergence/broker/live.py`
 - `phase-loop-runtime/tests/fixtures/jevdrill/**`
 - `phase-loop-runtime/tests/conftest.py`
+- `phase-loop-runtime/tests/launch_audit_hook.py`
+- `phase-loop-runtime/scripts/jevdrill_receipt.py`
 - `phase-loop-runtime/pyproject.toml`
 - `phase-loop-runtime/tests/data/seat_launch_references.json`
 - `phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py`
@@ -140,7 +142,8 @@ evidence paths: `phase-loop-runtime/tests/test_jevdrill_selection.py`;
 ## Phase Dependency DAG
 
 ```
-JEVHOST: {portability, contract, workflow} ──> launcher ──> adapter+runner ──> docs
+JEVHOST: {portability, contract} ──> adapter+runner ──> launcher+inventories ──> docs
+         contract ──> workflow ──> docs
 ```
 
 ## Execution Notes
