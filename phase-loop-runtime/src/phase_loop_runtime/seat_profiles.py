@@ -496,6 +496,11 @@ from .seat_profile_codex import register_codex
 
 register_codex()
 
+# GROK SL-2: registered with its tool-surface gate closed (jail contract §4.1).
+from .seat_profile_grok import register_grok
+
+register_grok()
+
 
 def _digest_receipt() -> dict[str, object]:
     from . import seat_jail

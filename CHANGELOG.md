@@ -20,6 +20,31 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   Pins: `seat_window.runtime_digest()` and the whole-file SDK proof binding of
   `seat_route_contract.py` move. No SDK proof region, jail profile digest, agy validator
   closure or QCI moves.
+- The Grok jail profile, registered with its tool-surface gate closed (SEATS GROK lane
+  SL-2, IF-0-GROK-2, `plans/artifacts/grok-jail-tool-surface-contract-v1.md` §2.3, §2.4,
+  §4.1 and §6; Consiliency/agent-harness#1820). The new `seat_profile_grok` module
+  registers the `grok` profile, its provider executable and its doctor gate. Registering it
+  retires Grok's `unconfined` exception: the readiness matrix's `vendor:grok` row reads
+  `jailed` with no exception and no expiry, and `vendor:grok` and `remote:grok` carry the
+  `grok-review` allow-list. Every Grok launch still stops at L6 with
+  `grok_tool_surface_unverified`, whatever tool-probe receipts exist, until the jailed
+  launch lane installs `grok_jail_surface`; earlier refusals (no staged tree, the host
+  checks, `grok_seat_credential_missing`) keep their codes, and nothing starts a proxy, a
+  qualification or a provider. The profile's mounts are the contract's ordered list: the
+  staged `grok-config/` directory bound read-only at `.grok`, `logs` and `sessions` as
+  tmpfs, the two lock files bound from seat-home, the CA, and read-only masks over the
+  home's `.claude.json`, `.mcp.json`, `.claude`, `.cursor`, `.agents` and `.config/grove`
+  and the tree's discovery paths. `JAIL_PROTECTION` records the protection table for grok
+  1.0.92. The argv is the `staged` form with only argv0 and `--cwd /seat/tree` replaced.
+  `phase-loop seat-sandbox qualify --leg grok` runs the provider-free qualification in that
+  shape (a stand-in, never grok) and its summary names the leg and its qualification key;
+  the bare command still qualifies Claude. Pins: `seat_window.runtime_digest()` moves; the
+  qualification validator and watch digests move (the one lane that moves them, jail
+  contract §10); the whole-file SDK proof binding of `seat_profiles.py` moves; the
+  jailcore golden gains `grok` rows. No SDK proof region, no Claude, Codex or Gemini jail
+  profile digest, the proxy digest, the agy validator closure, the QCI, an allow-list,
+  the unjailed `context_digest()` or a Grok form's argv digest moves. Installs with
+  Train A.
 - The jailed Grok seat's credential staging (SEATS GROK lane SL-1, IF-0-GROK-1 "Credential"
   and "Egress", `plans/artifacts/grok-jail-tool-surface-contract-v1.md` §2.3 and §9;
   Consiliency/agent-harness#1820). The new `seat_grok_credential` module checks the

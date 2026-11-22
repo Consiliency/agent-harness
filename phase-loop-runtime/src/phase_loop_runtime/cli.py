@@ -1129,6 +1129,9 @@ def build_parser() -> argparse.ArgumentParser:
     seat_sandbox_sub.add_argument("seat_sandbox_action",
                                   choices=("qualify", "reap", "store-token", "token-status"))
     seat_sandbox_sub.add_argument("seat_sandbox_path", metavar="PATH", nargs="?")
+    seat_sandbox_sub.add_argument(
+        "--leg", dest="seat_sandbox_leg", metavar="LEG",
+        help="qualify: the registered leg whose jail to qualify (default: claude)")
     # placement reap (agent-harness#896): the lease journal's reaper for non-local
     # placement. It contacts a backend only when a lease with a free lock names it.
     placement_sub = subparsers.add_parser(
@@ -2897,7 +2900,8 @@ def _seat_sandbox_command(args: argparse.Namespace) -> int:
         try:
             # The same host lock as a first-use run, so the two never race the store.
             with seat_jail_autoqualify.qualification_lock():
-                return seat_jail_qualification.main([])
+                leg = getattr(args, "seat_sandbox_leg", None)
+                return seat_jail_qualification.main([] if leg is None else ["--leg", leg])
         except seat_jail_qualification.QualificationError as exc:
             print(f"seat-sandbox qualify: cannot run: {exc}", file=sys.stderr)
             if seat_jail_autoqualify.classify_failure(exc) == "prerequisite_missing":

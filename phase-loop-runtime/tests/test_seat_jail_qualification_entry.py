@@ -1181,3 +1181,187 @@ def test_seats_firstseat_window_board_composition_refusal_skips_reducer_and_writ
         "status": "candidate", "code": "review_composition_refused"}
     assert not any(call[0] == "reduce" for call in harness["calls"])
     assert harness["writes"] == {}
+
+
+# --- GROK SL-2: `seat-sandbox qualify --leg grok` --------------------------------------------
+
+
+def _patched_sentinel_run(tmp_path, monkeypatch):
+    """The codex test's provider-free harness: everything but the key and the record."""
+    import json
+    import time
+    from phase_loop_runtime import falsifier
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(qualification.seat_uid, "seat_uid_available", lambda: True)
+    monkeypatch.setattr(qualification.sandbox_egress, "egress_isolation_available", lambda: True)
+    monkeypatch.setattr(qualification.review_stage, "falsifier_distribution_available", lambda _: True)
+
+    def repo(base):
+        directory = base / "fixture"
+        directory.mkdir()
+        return directory
+
+    monkeypatch.setattr(qualification, "_sentinel_repo", repo)
+    monkeypatch.setattr(qualification.review_stage, "stage_review_tree", lambda path: path)
+    monkeypatch.setattr(qualification.review_stage, "_snapshot_falsifier_dependencies", lambda *a: None)
+
+    def sentinel(*, staged, **kwargs):
+        temporary = staged / "ready.tmp"
+        temporary.write_text(json.dumps({"tcp": 1, "udp": 2, "abstract": "fixture"}))
+        temporary.rename(staged / qualification._READY)
+        deadline = time.monotonic() + 5
+        while not (staged / qualification._RELEASE).exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return 0, "", "", None, {}
+
+    monkeypatch.setattr(qualification.review_stage, "_run_bounded_falsifier_node", sentinel)
+    monkeypatch.setattr(falsifier, "_outcome_from_report", lambda *a: "green_on_head")
+    monkeypatch.setattr(qualification, "_find_host_pid", lambda *a: 42)
+
+
+def test_grok_qualification_records_a_v2_pass_on_the_route_key(tmp_path, monkeypatch):
+    import json
+    from phase_loop_runtime import seat_egress_proxy, seat_jail, seat_profile_grok, seat_profiles
+    from phase_loop_runtime.seat_qualification_key import key_for_launch
+    from phase_loop_runtime.seat_route_contract import key_digest
+
+    _patched_sentinel_run(tmp_path, monkeypatch)
+    legs = []
+    monkeypatch.setattr(qualification, "_run_probe_in_jail",
+                        lambda leg, *a: legs.append(leg) or {})
+    result = qualification.qualify("grok")
+    # The key L8 binds: the canonical digest, the grok-review allow-list, no projection.
+    key = key_for_launch(
+        seat_profiles.profile_for("grok"), variant=None, projection=None,
+        allowlist_digest=seat_egress_proxy.allowlist_ref("grok-review").content_digest)
+    assert seat_profile_grok.qualification_key() == key
+    assert legs == ["grok"]
+    assert result["result"] == "pass" and result["leg"] == "grok"
+    assert result["key_digest"] == key_digest(key)
+    assert result["profile_digest"] == seat_jail.jail_profile_digest("grok")
+    record = json.loads(Path(result["recorded_pass"]).read_text())
+    assert record["schema"] == "seat_jail_pass.v2" and record["key_digest"] == key_digest(key)
+    assert seat_jail.pass_record_verdict(key) == (True, "pass")
+
+
+def test_a_failed_grok_qualification_still_names_its_key(tmp_path, monkeypatch):
+    from phase_loop_runtime import seat_profile_grok
+    from phase_loop_runtime.seat_route_contract import key_digest
+
+    _patched_sentinel_run(tmp_path, monkeypatch)
+    monkeypatch.setattr(qualification, "_run_probe_in_jail",
+                        lambda *a: {"resolved": ["/fixture"]})
+    result = qualification.qualify("grok")
+    assert result["result"] == "fail" and "recorded_pass" not in result
+    assert result["key_digest"] == key_digest(seat_profile_grok.qualification_key())
+
+
+@pytest.mark.parametrize("launch_error", [False, True])
+def test_grok_probe_stages_before_the_build_and_stubs_after_it(tmp_path, monkeypatch,
+                                                                launch_error):
+    """President note B3: `grok-config/` and `grok-masks/` exist before `build_seat_jail`
+    (which creates seat-home itself); every seat-home stub is created after it returns and
+    before the D8 prefix, whose first step is the handoff; the 0555 staged directories are
+    removed afterwards, whatever the launch did."""
+    import contextlib
+    import subprocess
+    from types import SimpleNamespace
+    from phase_loop_runtime import panel_invoker as pi, seat_jail
+
+    order = []
+    monkeypatch.setattr(qualification.seat_uid, "subordinate_range", lambda _: SimpleNamespace(count=65536))
+    monkeypatch.setattr(qualification.seat_uid, "lease_seat_id", lambda _: contextlib.nullcontext(7))
+    monkeypatch.setattr(qualification.sandbox_egress, "isolated_network", lambda **k: contextlib.nullcontext(("fixture",)))
+    monkeypatch.setattr(qualification.seat_uid, "holder_pid_from_prefix", lambda _: 42)
+    monkeypatch.setattr(qualification.seat_uid, "teardown_in_h", lambda *a: order.append("teardown") or [])
+
+    def build(leg, directory, provider, **kwargs):
+        assert leg == "grok" and provider == Path("/usr/bin/python3")
+        assert kwargs["gemini_config"] == directory / "grok-config"
+        assert os.stat(kwargs["gemini_config"]).st_mode & 0o7777 == 0o555
+        assert sorted(os.listdir(directory / "grok-masks")) == ["empty", "empty.d"]
+        assert kwargs["egress_ca"] == directory / "egress-ca.pem"
+        assert kwargs["egress_proxy"].startswith("http://srt:")
+        assert kwargs["token_fd"] is None and "dependency" not in kwargs
+        home = directory / seat_jail.HOST_HOME_DIRNAME
+        for path in (home, directory / seat_jail.HOST_OUT_DIRNAME, home / ".tmp", home / ".grok"):
+            path.mkdir(mode=0o700)  # what the builder creates, and nothing else
+        order.append("build")
+        return SimpleNamespace(pass_fds=(kwargs["bundle_memfd"], kwargs["instructions_memfd"]),
+                               review_dir=str(directory), tree_dir=str(kwargs["tree"]))
+
+    def stubs_present(step):
+        def check(jail):
+            home = Path(jail.review_dir) / seat_jail.HOST_HOME_DIRNAME
+            assert {".grok-rw", ".claude.json", ".mcp.json", ".claude", ".cursor", ".agents",
+                    ".config"} <= set(os.listdir(home))
+            assert (Path(jail.tree_dir) / ".mcp.json").is_file()
+            order.append(step)
+            return ()
+        return check
+
+    monkeypatch.setattr(seat_jail, "build_seat_jail", build)
+    monkeypatch.setattr(seat_jail, "close_jail_fds", lambda jail: [os.close(fd) for fd in jail.pass_fds])
+    monkeypatch.setattr(pi, "_require_canonical_jail", stubs_present("canonical"))
+    monkeypatch.setattr(pi, "_compose_seat_jail_prefix", stubs_present("prefix"))
+
+    def run(*a, **kwargs):
+        order.append("launch")
+        if launch_error:
+            raise OSError("fixture launch unavailable")
+        return subprocess.CompletedProcess(a[0], 0, "{}\n", "")
+
+    monkeypatch.setattr(qualification.subprocess, "run", run)
+    base = tmp_path / "base"
+    base.mkdir()
+    if launch_error:
+        with pytest.raises(OSError, match="fixture launch unavailable"):
+            qualification._run_probe_in_jail("grok", base, {}, None, None)
+    else:
+        assert qualification._run_probe_in_jail("grok", base, {}, None, None) == {}
+    assert order == ["build", "canonical", "prefix", "launch", "teardown", "teardown"]
+    seat_dir = base / "seat" / "dirs"
+    assert not (seat_dir / "grok-config").exists() and not (seat_dir / "grok-masks").exists()
+
+
+def test_qualify_leg_grok_names_the_leg_and_its_key_and_the_bare_command_is_claude(
+        monkeypatch, capsys):
+    import json
+
+    calls = []
+
+    def qualify(*args):
+        calls.append(args)
+        return {"result": "pass", "profile_digest": "d" * 64, "leg": args[0] if args else "claude",
+                "key_digest": "k" * 64 if args else None}
+
+    monkeypatch.setattr(qualification, "qualify", qualify)
+    assert qualification.qualification_provider_capable(["--leg", "grok"])
+    assert qualification.main(["--leg", "grok"]) == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert (summary["leg"], summary["key_digest"]) == ("grok", "k" * 64)
+    assert qualification.main([]) == 0
+    bare = json.loads(capsys.readouterr().out)
+    assert "leg" not in bare and "key_digest" not in bare
+    assert calls == [("grok",), ()]
+    for argv in (["--leg", "nope"], ["--leg"], ["--leg", "grok", "--version"]):
+        with pytest.raises(SystemExit) as refused:
+            qualification.main(argv)
+        assert refused.value.code == 2
+    assert calls == [("grok",), ()]
+
+
+@pytest.mark.parametrize("argv, forwarded", [
+    (["seat-sandbox", "qualify"], []),
+    (["seat-sandbox", "qualify", "--leg", "grok"], ["--leg", "grok"]),
+])
+def test_seat_sandbox_qualify_forwards_the_leg(monkeypatch, argv, forwarded):
+    import contextlib
+    from phase_loop_runtime import cli, seat_jail_autoqualify
+
+    seen = []
+    monkeypatch.setattr(seat_jail_autoqualify, "qualification_lock", contextlib.nullcontext)
+    monkeypatch.setattr(qualification, "main", lambda args: seen.append(args) or 0)
+    assert cli.main(argv) == 0
+    assert seen == [forwarded]

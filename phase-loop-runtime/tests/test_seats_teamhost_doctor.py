@@ -460,6 +460,40 @@ def test_record_existence_mutant_breaks_agreement(state, tmp_path, monkeypatch):
     assert not _agreement_holds(doctor_verdict, launch_verdict)
 
 
+@pytest.mark.parametrize("state, code", [
+    ("gate_closed", "grok_tool_surface_unverified"),
+    ("credential_missing", "grok_seat_credential_missing"),
+    ("host_unavailable", "seat_sandbox_unavailable_tiocsti"),
+])
+def test_seats_teamhost_agreement_grok_refuses_where_its_route_does(
+        state, code, tmp_path, monkeypatch):
+    """GROK SL-2: the registered Grok profile's doctor row refuses with the code its route
+    refuses with (the closed L6 gate, jail contract §4.1, or an earlier refusal), and
+    neither starts a qualification."""
+    home = tmp_path / "home"
+    (home / ".grok").mkdir(parents=True)
+    if state != "credential_missing":
+        (home / ".grok/auth.json").write_text("{}")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(seat_jail, "seat_sandbox_capable",
+                        lambda: code if state == "host_unavailable" else None)
+    monkeypatch.setattr(
+        seat_jail_autoqualify, "_default_qualify",
+        lambda _leg: (_ for _ in ()).throw(RuntimeError("qualification must not run")),
+    )
+    env = {"HOME": str(home), "PATH": str(tmp_path)}
+    doctor_verdict = seat_admission.verdict("grok", env, execute=True)
+    assert (doctor_verdict.status, doctor_verdict.code) == ("refuses", code)
+    assert doctor_verdict.fix == seat_jail.render_notice(code, "").fix
+    panel_invoker._JAILCORE_ROUTE_CACHE.clear()
+    _route, _notices, refusal = panel_invoker._seat_route_for_spawn(
+        "grok", SimpleNamespace(staged_tree_sha256="0" * 64, instructions_sha256=None),
+        eligible=True, env=env)
+    launch_verdict = seat_admission.Verdict("grok", "refuses", code=refusal)
+    assert _agreement_holds(doctor_verdict, launch_verdict)
+
+
 def test_admission_subject_refusal_is_the_integrated_launch_refusal(monkeypatch):
     refusal = ExecutableDependencyError("authority_missing")
     profile = seat_profiles.profile_for("claude")
