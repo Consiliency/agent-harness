@@ -6,29 +6,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-### Fixed
-
-- A W1 window record can now verify. The board's Gemini leg retains its staged-read
-  receipt as a private `window-read-<digest>.json` record, naming the staged tree it read
-  (`tree_digest`, from the leg's launch binding) and the board input. The offline verifier
-  requires exactly those fields and that the receipt's input is the record's board input.
-  Before this, the board hashed a receipt it never wrote, so verification always failed.
-- The verifier also requires the receipt's staged tree to be the one the containment
-  binding names (the reducer binds the board leg to the reference stage). A receipt
-  already retained under its content-addressed name is reused only when it holds exactly
-  the same values; anything else there fails the staged read.
-- The Gemini window expects every other plan-tier seat as a co-seat (Claude, Codex and
-  Grok). The plan-tier policy always seats Claude, so a terminated W1 board never matched
-  the old Codex-and-Grok set.
-- The readiness reducer moves only the window vendor's own row to `done-local`. A co-seat
-  that left an exec record on the board, degraded or not, keeps its row `candidate`
-  instead of taking the Gemini row's evidence and digests.
-- Pins: `seat_window.runtime_digest()` moves. No jail profile, allow-list, agy QCI,
-  containment contract or frozen interface digest moves.
+## [0.7.39] - Unreleased candidate
 
 ### Added
 
-- Live W1 can run under an owner grant, and stays closed until a reviewed change sets one.
+- Live W1 can run under an owner grant, and stays closed until a reviewed change sets one
+  (agent-harness#2062).
   - **What opens it.** `seat_window.OWNER_W1_GRANT_SHA256` and `OWNER_W1_PACKET_SHA256`
     name, by sha256, the first line of one private `w1-grant.jsonl`
     (`seat_window_w1_grant.v1`) and the approved packet. `seat_window.mint_w1_grant` writes
@@ -91,7 +74,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `tests/data/seat_launch_references.json`; two package-data entries; `uv.lock` gains
   `brotli`. The grok context digest, the route argv digests, the `tool_probe.v1` receipt,
   the egress allow-list digests, the agy seat QCI and the agy validator closure do not
-  move.
+  move (agent-harness#2050).
 - The grok tool probe has a second basis for builds with no `--list-tools`, which is every
   installed build through 1.0.89 (lane L1 of the grok tool-surface plan,
   `plans/artifacts/grok-tool-surface-contract-v1.md`). Basis selection is by the help gate
@@ -117,7 +100,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   records on the previous key no longer match and affected windows need requalifying
   (landing the grok tool-surface lanes close together needs one requalification); new
   `host-io` rows in `tests/data/seat_launch_references.json`; one package-data entry. The
-  agy seat QCI, the agy validator closure and the seat jail profile digests do not move.
+  agy seat QCI, the agy validator closure and the seat jail profile digests do not move
+  (agent-harness#2033).
 - Vendor-only egress for a launch-owner grok launch (grok tool-surface plan, lane L2a;
   contract `plans/artifacts/grok-tool-surface-contract-v1.md` sections 5.2 and 5.3). A new
   `grok-review` seat egress allowlist carries only the statically known inference request
@@ -143,7 +127,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   Requalify affected windows before relying on them; landing lanes L1, L2a, L2b and L2c
   together and requalifying once is the cheap order. The agy seat QCI, the validator
   closure, `CONTAINMENT_CONTRACT_SHA256`, `SRT_TREE_SHA256` and the jail profile digests are
-  unchanged.
+  unchanged (agent-harness#2033).
 - `phase-loop seat-window measure-tools --vendor grok`, the owner-gated measurement of a grok
   build's tool surface (grok tool-surface plan, lane L2b; contract
   `plans/artifacts/grok-tool-surface-contract-v1.md` section 5 and BA-1, BA-2 and the
@@ -188,7 +172,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   (`grok_tool_surface.py`, `panel_invoker.py`, `seat_window.py`); new `qualification` and
   `host-io` rows in `tests/data/seat_launch_references.json`. The agy seat QCI, the
   validator closure, `CONTAINMENT_CONTRACT_SHA256`, `SRT_TREE_SHA256`, the jail profile
-  digests and the egress allow-list digests do not move.
+  digests and the egress allow-list digests do not move (agent-harness#2033).
 - The board review leg consumes the frozen grok tool-surface basis (grok tool-surface plan,
   lane L2c; contract `plans/artifacts/grok-tool-surface-contract-v1.md` section 4.6 and
   BA-3). The leg's egress setup in `_default_spawn` makes the provisional check on the
@@ -217,7 +201,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `CONTAINMENT_CONTRACT_SHA256`, `SRT_TREE_SHA256`, the jail profile digests, the egress
   allow-list digests and `context_digest` do not move. No record exists
   yet, so every grok route stays `grok_tool_surface_unverified` until the owner-gated
-  measurement.
+  measurement (agent-harness#2033).
 - A Gemini seat now keeps the agy image its board preflight last admitted, so a later
   hold can fall back to it: after the preflight admits the selected agy, its sealed image
   is kept in the per-user qualification store under `held/` (0600 files in a 0700
@@ -229,11 +213,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `[agy] hold = false`. `phase-loop agy-qualification clear --all` also removes `held/`
   completely and reports `held_removed`; anything it cannot remove is listed in
   `held_not_removed` and the command fails. A plain `clear` leaves the cache. The seat QCI,
-  store keys, the catalog, records and pins are unchanged.
+  store keys, the catalog, records and pins are unchanged (agent-harness#2044).
 
 ### Changed
 
-- The W0 bake-off kit runs in two sessions (SEATS CLAUDE OQ-4, decided 2026-11-21, agent-harness#1820):
+- The W0 bake-off kit runs in two sessions (SEATS CLAUDE OQ-4, decided 2026-11-21, agent-harness#1820, agent-harness#2057):
   `python -m phase_loop_runtime.claude_bakeoff run --session 1|2` is now required. Session 1
   runs blocks 1-2 (print, control) and preflights only those arms, so it needs no `sdk`.
   Session 2 runs blocks 3-6 and refuses before any credential, CA or meter reading until
@@ -288,7 +272,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   removed. Everything ships inert: no signing key is enrolled,
   `config/agy-rollout-attestation.json` is unattested, and both switches are off. The owner
   setup that makes it live is listed in `docs/ops/agy-upstream-watch.md`. The seat QCI,
-  store keys, the catalog and its records are unchanged.
+  store keys, the catalog and its records are unchanged (agent-harness#2046).
 - Gemini 4 NEON (`gemini-4-neon`) is the shipped Gemini planning, review and board
   default. Gemini roadmap, plan and review render `gemini-4-neon-high`; the panel's
   Gemini leg, every built-in preset's Gemini seat and the president's `gemini` rung
@@ -302,7 +286,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   changed nodes are the model registry and the two agy model patterns). The ship
   condition is met: brokered subscription launches of `gemini-4-neon-medium` and
   `gemini-4-neon-high` on a locally qualified agy image both passed on 2026-11-20,
-  each with an AGREE verdict.
+  each with an AGREE verdict (agent-harness#2038).
 - agy first-use provenance no longer stops at the newest four stable releases: any listed
   stable release can be matched, so a host that has fallen behind can still prove where its
   image came from. The lookup reads the release listing page by page (at most 300 entries),
@@ -321,7 +305,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `verify_qualified_agy_image.py --contract` requires both statuses to be known values, and
   `--upstream-only` takes the newest stable release from the listing and reports when it
   was published. The seat QCI, the shipped catalog and records are unchanged; nothing needs
-  requalification.
+  requalification (agent-harness#2039).
 - The jailed Gemini seat's tooled stream parser checks the tool name of each step in the
   retained stream. It refuses a step whose canonical tool name is one of `invoke_subagent`,
   `define_subagent`, `manage_subagents`, `agent`, `browser_subagent`, `send_message`,
@@ -340,11 +324,29 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   and `usage`, and agy 1.5.13's tool names. Naming a step type does not admit it. The agy
   validator identity stays `agy_validator_v1` and the fixed-corpus verdict vector is
   unchanged; only the validator source-closure pin moves, because the stream parser and its
-  tool-name helper and constants are closure nodes.
+  tool-name helper and constants are closure nodes (agent-harness#2045).
 
 ### Fixed
 
-- On Node 22 the seat egress proxy no longer exits when it refuses a request with a body.
+- A W1 window record can now verify (agent-harness#2055). The board's Gemini leg retains its staged-read
+  receipt as a private `window-read-<digest>.json` record, naming the staged tree it read
+  (`tree_digest`, from the leg's launch binding) and the board input. The offline verifier
+  requires exactly those fields and that the receipt's input is the record's board input.
+  Before this, the board hashed a receipt it never wrote, so verification always failed.
+- The verifier also requires the receipt's staged tree to be the one the containment
+  binding names (the reducer binds the board leg to the reference stage). A receipt
+  already retained under its content-addressed name is reused only when it holds exactly
+  the same values; anything else there fails the staged read.
+- The Gemini window expects every other plan-tier seat as a co-seat (Claude, Codex and
+  Grok). The plan-tier policy always seats Claude, so a terminated W1 board never matched
+  the old Codex-and-Grok set.
+- The readiness reducer moves only the window vendor's own row to `done-local`. A co-seat
+  that left an exec record on the board, degraded or not, keeps its row `candidate`
+  instead of taking the Gemini row's evidence and digests.
+- Pins: `seat_window.runtime_digest()` moves. No jail profile, allow-list, agy QCI,
+  containment contract or frozen interface digest moves.
+- On Node 22 the seat egress proxy no longer exits when it refuses a request with a body
+  (agent-harness#2033).
   - **The failure.** srt cancels a refused body while the client's bytes may still be in
     flight. Node 22's stream adapter then threw an uncaught `ERR_INVALID_STATE`, and the
     proxy exited 1 without its end-of-stream marker. Every grok rehearsal therefore ended
@@ -359,8 +361,28 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   - **Pins.** `seat_window.runtime_digest()` moves with the grok entries above. The seat
     jail qualification's live `proxy_sha256` binding moves too, as it does for lane L2a,
     which edits the same two files.
+- The placement process request and response decoders refuse a JSON value that nests arrays
+  or objects more than 64 deep as `input_invalid_json`, checked before decoding. This is an
+  implementation resource safeguard, not a rule of the frozen schema's `x-cli.input`. The
+  outcome no longer depends on the interpreter: Python 3.14's decoder accepts depths that
+  3.12's raises on. The limit can be selected with the environment variable
+  `PHASE_LOOP_PLACEMENT_MAX_INPUT_DEPTH`, read on every decode. It accepts only a plain ASCII
+  base-10 integer from 3 to 256: no sign, whitespace, underscore or leading zero. The minimum
+  is the deepest schema-valid message. The maximum keeps input at the limit inside the
+  recursion limit on Python 3.12 and 3.14. An invalid value never falls back to 64. It
+  fails closed: every wire body that passes the size and UTF-8 checks is refused as
+  `input_invalid_json`. The setting is not a protocol field. It adds no message member,
+  diagnostic or exit class, and the schema digest is unchanged. Deep input inside an object no longer escapes as an internal failure
+  (`placement_internal`). Schema-valid messages nest at most 3 deep, so no valid request or
+  response changes outcome. A deep wire value that also breaks another input rule (a
+  duplicate key, an unsafe or non-finite number) now reports `input_invalid_json`. Client
+  configuration parsing has no depth limit and ignores the setting, so an opaque `launch`
+  object of any accepted depth still loads; nesting too deep to decode or walk is refused as invalid instead of
+  raising. The protocol schema, vectors and CLI fixtures are unchanged; the PLACECLI receipt
+  pins the changed source and test and needs re-stamping (agent-harness#2018). See
+  `docs/placement-process-cli.md`.
 
-## [0.7.38] - Unreleased candidate
+## [0.7.38] - 2026-11-21
 
 ### Added
 
@@ -492,26 +514,6 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   ordinary review classification without such a refusal keeps its outcome. The public detail
   codes, the agy validator closure, the agy and seat QCI, the jail profile digests and the
   Claude SDK proof inputs are unchanged; nothing needs requalification.
-- The placement process request and response decoders refuse a JSON value that nests arrays
-  or objects more than 64 deep as `input_invalid_json`, checked before decoding. This is an
-  implementation resource safeguard, not a rule of the frozen schema's `x-cli.input`. The
-  outcome no longer depends on the interpreter: Python 3.14's decoder accepts depths that
-  3.12's raises on. The limit can be selected with the environment variable
-  `PHASE_LOOP_PLACEMENT_MAX_INPUT_DEPTH`, read on every decode. It accepts only a plain ASCII
-  base-10 integer from 3 to 256: no sign, whitespace, underscore or leading zero. The minimum
-  is the deepest schema-valid message. The maximum keeps input at the limit inside the
-  recursion limit on Python 3.12 and 3.14. An invalid value never falls back to 64. It
-  fails closed: every wire body that passes the size and UTF-8 checks is refused as
-  `input_invalid_json`. The setting is not a protocol field. It adds no message member,
-  diagnostic or exit class, and the schema digest is unchanged. Deep input inside an object no longer escapes as an internal failure
-  (`placement_internal`). Schema-valid messages nest at most 3 deep, so no valid request or
-  response changes outcome. A deep wire value that also breaks another input rule (a
-  duplicate key, an unsafe or non-finite number) now reports `input_invalid_json`. Client
-  configuration parsing has no depth limit and ignores the setting, so an opaque `launch`
-  object of any accepted depth still loads; nesting too deep to decode or walk is refused as invalid instead of
-  raising. The protocol schema, vectors and CLI fixtures are unchanged; the PLACECLI receipt
-  pins the changed source and test and needs re-stamping. See
-  `docs/placement-process-cli.md`.
 
 ## [0.7.37] - 2026-11-20
 
