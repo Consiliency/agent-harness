@@ -343,6 +343,17 @@ No lane makes a live provider call or runs on a seat host. SL-6.2 is provider-fr
     `seat_launch_references.json` and the edited phase plans' frontmatter. Whichever lands
     second re-stamps this file's frontmatter, and the inventories are union-resolved. The
     contract does not pin the roadmap.
+- **SL-6 successor edits to SL-5's landed named parts** (K-1 SL-6 rulings, 2026-11-21).
+  SL-6 makes these edits inside its own PR, under SL-5's stop rules; they add no owned file:
+  - `panel_invoker.py`: `_open_window_launch` (its non-Gemini `start_proxy` gets `named=`
+    from the new `_window_named_refusals`), `_window_prepare_leg` (the bound image, from the
+    new `_window_bound_image_sha256`), `_window_control_launch_leg` and
+    `_run_window_leg_process` (the kit's input on stdin, bound as `input_sha256`);
+  - `tests/test_seat_window_vendor_neutral.py`: `register_fixture_vendor` (hides the real
+    Codex registration), `_codex_prepare_stubs` (a provider file), `_codex_open_stubs`
+    (`named=`), and F15's invalid-pair case (the first table vendor with no supplier);
+  - `tests/data/seat_launch_references.json`: one entry for `_window_bound_image_sha256`;
+  - `CHANGELOG.md`: SL-6's `[Unreleased]` entry, which SL-9 finalizes.
 - **Pin accounting: the Claude SDK proof binding.** SL-5's edits to `_prepare_jailed_claude`
   (the seam) and `launch_provider` (the ledger) are inside
   `claude_seat_transport.SDK_PROOF_REGIONS`, so the SDK proof-input binding moves with SL-5.
