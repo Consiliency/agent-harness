@@ -15452,6 +15452,16 @@ def _window_control_launch_leg(spec: WindowLaunchSpec) -> WindowLaunchResult:
                 values["timed_out"] = any(item.timed_out for item in outputs)
                 raw = outputs[0].stdout if outputs else ""
                 status, model_turn, tool_steps, subagent_steps = supplier.stream_facts(raw)
+                if spec.kind == "help":
+                    # The help gate's facts, taken as the Gemini branch takes them: it starts
+                    # no turn, and the reducer binds the digest of what it printed.
+                    ok = bool(outputs and outputs[0].exit_code == 0 and raw)
+                    status, model_turn, tool_steps, subagent_steps = (
+                        "SUCCESS" if ok else "FAILURE"), None, None, None
+                    values["help_sha256"] = (sha256(raw.encode("utf-8", errors="replace"))
+                                             .hexdigest() if raw else None)
+                    values["help_lists_plugin"] = (
+                        bool(re.search(r"\bplugin\b", raw, re.IGNORECASE)) if ok else None)
                 values.update(status=status, model_turn=model_turn, tool_steps=tool_steps,
                               subagent_steps=subagent_steps)
                 try:
