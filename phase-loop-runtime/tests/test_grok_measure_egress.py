@@ -752,7 +752,7 @@ def _openssl(*args: str, cwd: Path) -> None:
 
 class FixtureUpstream:
     """A TLS server on loopback that answers every request 200 and records what reached it
-    (SNI, method, path, Host); it trusts nothing but its own CA."""
+    (SNI, method, path, Host, and the complete body); it trusts nothing but its own CA."""
 
     def __init__(self, directory: Path, hosts: list[str]) -> None:
         directory.mkdir(mode=0o700)
@@ -774,6 +774,9 @@ class FixtureUpstream:
         self.ca = directory / "ca.crt"
         self.connections = 0
         self.requests: list[tuple[str | None, str, str, str]] = []
+        #: Each request's complete body, in arrival order: a Content-Length body, or a
+        #: chunked entity decoded to its zero-size chunk. Read in full before the reply.
+        self.bodies: list[bytes] = []
         self._lock = threading.Lock()
         self._context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         self._context.load_cert_chain(directory / "leaf.crt", directory / "leaf.key")
@@ -819,18 +822,59 @@ class FixtureUpstream:
                 with self._lock:
                     self.requests.append((getattr(tls, "phase_loop_sni", None), method, target,
                                           headers.get("host", "")))
-                length = int(headers.get("content-length", "0") or 0)
-                while len(rest) < length:
-                    chunk = tls.recv(min(65536, length - len(rest)))
-                    if not chunk:
+                if "chunked" in headers.get("transfer-encoding", "").lower():
+                    entity = self._read_chunked(tls, rest)
+                    if entity is None:
                         return
-                    rest += chunk
+                else:
+                    length = int(headers.get("content-length", "0") or 0)
+                    while len(rest) < length:
+                        chunk = tls.recv(min(65536, length - len(rest)))
+                        if not chunk:
+                            return
+                        rest += chunk
+                    entity = rest[:length]
+                with self._lock:
+                    self.bodies.append(entity)
                 body = f"fixture-upstream {method} {target}".encode()
                 tls.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n"
                             + f"Content-Length: {len(body)}\r\n".encode()
                             + b"Connection: close\r\n\r\n" + body)
-            except (OSError, ssl.SSLError):
+            except (OSError, ssl.SSLError, ValueError):
                 return
+
+    @staticmethod
+    def _read_chunked(tls, data: bytes) -> bytes | None:
+        """The decoded entity of a chunked body, read through its zero-size chunk and the
+        trailer section; ``None`` if the connection ends first."""
+        buffer = data
+
+        def fill(ready) -> bool:
+            nonlocal buffer
+            while not ready(buffer):
+                chunk = tls.recv(65536)
+                if not chunk:
+                    return False
+                buffer += chunk
+            return True
+
+        entity = b""
+        while True:
+            if not fill(lambda b: b"\r\n" in b):
+                return None
+            line, _, buffer = buffer.partition(b"\r\n")
+            size = int(line.split(b";", 1)[0].strip(), 16)
+            if size == 0:
+                while True:
+                    if not fill(lambda b: b"\r\n" in b):
+                        return None
+                    line, _, buffer = buffer.partition(b"\r\n")
+                    if not line:
+                        return entity
+            if not fill(lambda b: len(b) >= size + 2):
+                return None
+            entity += buffer[:size]
+            buffer = buffer[size + 2:]
 
     def close(self) -> None:
         self._stop.set()
@@ -868,6 +912,58 @@ def real_proxy_upstream(tmp_path, monkeypatch):
     monkeypatch.setattr(seat_egress_proxy, "_proxy_env", proxy_env)
     yield upstream
     upstream.close()
+
+
+class ProxyDiagnostics:
+    """Test-only evidence for a proxy that dies: its stderr, kept in a private file instead
+    of the launcher's DEVNULL, and every exchange's ``OSError``. It changes no decision and
+    no launch argument but ``stderr``."""
+
+    def __init__(self, directory: Path) -> None:
+        self.directory = directory
+        self.files: list[Path] = []
+        self.errors: list[str] = []
+
+    def stderr(self) -> str:
+        return "".join(path.read_text(encoding="utf-8", errors="replace")
+                       for path in self.files)
+
+    def exchange(self, proxy, host: str, request: bytes) -> tuple[bytes, bytes]:
+        try:
+            return _exchange(proxy, host, request)
+        except OSError as exc:  # a proxy that died before its reply
+            self.errors.append(f"{type(exc).__name__}: {exc}")
+            return b"", b""
+
+    def detail(self, proxy) -> str:
+        return (f"completion_detail={seat_egress_proxy.completion_detail(proxy)} "
+                f"exchange_errors={self.errors} stderr_tail={self.stderr()[-4000:]!r}")
+
+
+@pytest.fixture
+def proxy_diagnostics(tmp_path, monkeypatch):
+    """Keep each ``proxy.mjs`` child's stderr (``seat_egress_proxy.py`` discards it)."""
+    directory = tmp_path / "proxy-stderr"
+    directory.mkdir(mode=0o700)
+    diagnostics = ProxyDiagnostics(directory)
+    real = subprocess.Popen
+
+    def popen(args, *rest, **kwargs):
+        if (isinstance(args, (list, tuple)) and len(args) > 1
+                and str(args[1]).endswith("proxy.mjs")
+                and kwargs.get("stderr") is subprocess.DEVNULL):
+            path = directory / f"proxy-{len(diagnostics.files)}.stderr"
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            diagnostics.files.append(path)
+            kwargs["stderr"] = fd
+            try:
+                return real(args, *rest, **kwargs)
+            finally:
+                os.close(fd)
+        return real(args, *rest, **kwargs)
+
+    monkeypatch.setattr(seat_egress_proxy.subprocess, "Popen", popen)
+    return diagnostics
 
 
 def _authorization(proxy) -> bytes:
@@ -1068,6 +1164,116 @@ def test_a_refused_body_is_read_only_within_its_bounds(real_proxy_upstream):
     assert [(event.decision, event.cause)
             for event in seat_egress_proxy.proxy_stream(proxy).outside_events] == [
         ("deny", "budget")] * 3
+
+
+#: The two ways a request declares a body: (header, the body as sent).
+_DECLARED_BODIES = {
+    "content-length": ("Content-Length: 2", b"{}"),
+    "chunked": ("Transfer-Encoding: chunked", b"2\r\n{}\r\n0\r\n\r\n"),
+}
+CODEX_CHECK_PATH = "/backend-api/wham/accounts/check"
+
+
+def _declaring(method: str, host: str, path: str, framing: str) -> bytes:
+    """A request of any method that declares a complete body."""
+    header, body = _DECLARED_BODIES[framing]
+    return (f"{method} {path} HTTP/1.1\r\nHost: {host}\r\n{header}\r\n"
+            "Connection: close\r\n\r\n").encode() + body
+
+
+def _chunked_post(host: str, path: str, chunks: list[bytes]) -> bytes:
+    return (f"POST {path} HTTP/1.1\r\nHost: {host}\r\nTransfer-Encoding: chunked\r\n"
+            "Connection: close\r\n\r\n").encode() + b"".join(
+        f"{len(chunk):x}\r\n".encode() + chunk + b"\r\n" for chunk in chunks) + b"0\r\n\r\n"
+
+
+def _cause_events(proxy) -> list[tuple[str, str, str | None, str, str | None]]:
+    return [(event.method, event.host, event.path, event.decision, event.cause)
+            for event in seat_egress_proxy.proxy_stream(proxy).outside_events]
+
+
+# (allowlist, budget, tunnel host, [(method, inner Host, path, framing)], observed path, cause)
+_BODY_REFUSALS = {
+    "rules": ("grok-review", 1, INFERENCE_HOST,
+              [(method, INFERENCE_HOST, "/v1/models", framing)
+               for method in ("GET", "HEAD", "OPTIONS") for framing in _DECLARED_BODIES],
+              "<other>", "rules"),
+    "inner_host": ("grok-review", 1, INFERENCE_HOST,
+                   [("GET", "auth.x.ai", "/v1/models", framing) for framing in _DECLARED_BODIES],
+                   "<other>", "inner_host"),
+    "budget": ("codex", 0, "chatgpt.com",
+               [("GET", "chatgpt.com", CODEX_CHECK_PATH, "content-length")],
+               CODEX_CHECK_PATH, "budget"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_BODY_REFUSALS))
+def test_a_refused_request_that_declares_a_body_leaves_the_real_proxy_running(
+        case, real_proxy_upstream, proxy_diagnostics):
+    """agent-harness#2067: srt tees a GET, HEAD or OPTIONS that declares a body, hands the
+    filter a bodyless request, and on refusal cancels the tee while the body's bytes are
+    still arriving. On Node 22 the stream adapter's late ``enqueue`` then threw an uncaught
+    ERR_INVALID_STATE and the proxy exited 1 with no end-of-stream marker. Each refusal --
+    by the rules, the inner Host and the spent budget -- gets its 403 from a proxy that keeps
+    running, nothing is forwarded, and the observation is complete."""
+    upstream = real_proxy_upstream
+    diagnostics = proxy_diagnostics
+    allowlist_id, budget, tunnel, requests, path, cause = _BODY_REFUSALS[case]
+    with seat_egress_proxy.start_proxy(allowlist_id=allowlist_id,
+                                       request_budget=budget) as proxy:
+        replies = [(request, diagnostics.exchange(proxy, tunnel, _declaring(*request)))
+                   for request in requests]
+    detail = diagnostics.detail(proxy)
+    proof = seat_egress_proxy.completion(proxy)
+    assert proof.complete and proxy._returncode == 0, detail
+    assert "ERR_INVALID_STATE" not in diagnostics.stderr(), detail
+    assert (proof.requests, proof.counted) == (len(requests), 0), detail
+    for request, (status, reply) in replies:
+        assert status.startswith(b"HTTP/1.1 200"), (request, status, detail)
+        assert reply.startswith(b"HTTP/1.1 403"), (request, reply[:120], detail)
+    assert upstream.requests == [], detail
+    assert _cause_events(proxy) == [(method, tunnel, path, "deny", cause)
+                                    for method, *_rest in requests], detail
+
+
+def test_an_allowed_request_with_a_body_is_forwarded_unchanged(real_proxy_upstream,
+                                                               proxy_diagnostics):
+    """agent-harness#2067: an allowed request that declares a body reaches the upstream
+    byte for byte -- a budgeted codex GET, and grok-review POSTs with an empty JSON body, a
+    256 KiB body and a three-chunk body -- and each observation is complete."""
+    upstream = real_proxy_upstream
+    diagnostics = proxy_diagnostics
+    with seat_egress_proxy.start_proxy(allowlist_id="codex", request_budget=1) as codex:
+        check = diagnostics.exchange(codex, "chatgpt.com", _declaring(
+            "GET", "chatgpt.com", CODEX_CHECK_PATH, "content-length"))
+    detail = diagnostics.detail(codex)
+    assert check[0].startswith(b"HTTP/1.1 200") and check[1].startswith(b"HTTP/1.1 200"), (
+        check, detail)
+    assert upstream.requests == [("chatgpt.com", "GET", CODEX_CHECK_PATH, "chatgpt.com")], detail
+    assert upstream.bodies == [b"{}"], detail
+    assert _cause_events(codex) == [
+        ("GET", "chatgpt.com", CODEX_CHECK_PATH, "allow", "allowed")], detail
+    proof = seat_egress_proxy.completion(codex)
+    assert proof.complete and (proof.requests, proof.counted) == (1, 0), detail
+
+    large = bytes(range(256)) * 1024  # 256 KiB
+    chunks = [b"phase-loop ", b"chunked ", b"payload"]
+    requests = [_body_post(INFERENCE_HOST, INFERENCE_PATH, b"{}"),
+                _body_post(INFERENCE_HOST, INFERENCE_PATH, large),
+                _chunked_post(INFERENCE_HOST, INFERENCE_PATH, chunks)]
+    with seat_egress_proxy.start_proxy(allowlist_id="grok-review", request_budget=3) as grok:
+        replies = [diagnostics.exchange(grok, INFERENCE_HOST, request) for request in requests]
+    detail = diagnostics.detail(grok)
+    for status, reply in replies:
+        assert status.startswith(b"HTTP/1.1 200"), (status, detail)
+        assert reply.startswith(b"HTTP/1.1 200"), (reply[:120], detail)
+    assert upstream.requests[1:] == [
+        (INFERENCE_HOST, "POST", INFERENCE_PATH, INFERENCE_HOST)] * 3, detail
+    assert upstream.bodies[1:] == [b"{}", large, b"".join(chunks)], detail
+    assert _cause_events(grok) == [
+        ("POST", INFERENCE_HOST, INFERENCE_PATH, "allow", "allowed")] * 3, detail
+    proof = seat_egress_proxy.completion(grok)
+    assert proof.complete and (proof.requests, proof.counted) == (3, 3), detail
 
 
 def test_ba1_the_real_proxy_settles_an_orderly_zero_event_shutdown_to_zero(real_proxy_upstream):
