@@ -2044,6 +2044,8 @@ def test_sl6_codex_brings_its_own_bracket(codex_supplier, monkeypatch):
 def test_sl6_codex_bracket_rows_are_codex_unlisted_endpoints(codex_supplier):
     """Every refused decision of codex-unlisted-endpoint is probed (the token host by the
     token POST), with its method, host and path, and nothing the evidence allows is."""
+    if not _EVIDENCE.is_file():
+        pytest.skip("repo-only evidence is absent on an installed wheel")
     evidence = json.loads(_EVIDENCE.read_text())
     assert evidence["evidence_id"] == "codex-unlisted-endpoint"
     targets = {(method, url) for method, url in (*codex_supplier.REFUSED_HOST_TARGETS,

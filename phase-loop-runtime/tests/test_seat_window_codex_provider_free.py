@@ -44,6 +44,37 @@ from test_seat_egress_allowlist_codex import (  # noqa: F401 - requested after t
     codex_front as _codex_front,
 )
 
+_SUPPLIER = "phase_loop_runtime.seat_window_supply_codex"
+
+
+@pytest.fixture(autouse=True)
+def _restore_codex_registration():
+    """The supplier registers Codex's window data on import (§4.2). Restore the window
+    registry, ``sys.modules`` and the package attribute exactly after each test here, so an
+    import in this file never leaks a Codex registration into another file's tests."""
+    import phase_loop_runtime
+    from phase_loop_runtime import seat_profiles
+    name = _SUPPLIER.rsplit(".", 1)[1]
+    registry = seat_profiles._WINDOW_DATA
+    entries = dict(registry)
+    had_module, module = _SUPPLIER in sys.modules, sys.modules.get(_SUPPLIER)
+    had_attr, attr = hasattr(phase_loop_runtime, name), getattr(phase_loop_runtime, name, None)
+    try:
+        yield
+    finally:
+        registry.clear()
+        registry.update(entries)
+        seat_profiles._WINDOW_DATA = registry
+        if had_module:
+            sys.modules[_SUPPLIER] = module
+        else:
+            sys.modules.pop(_SUPPLIER, None)
+        if had_attr:
+            setattr(phase_loop_runtime, name, attr)
+        elif hasattr(phase_loop_runtime, name):
+            delattr(phase_loop_runtime, name)
+
+
 #: K1-T6's reviewed literal. The source is the CLI's own Linux x64 platform release of the
 #: pinned version (the version every CODEX measurement names), read from an installed copy
 #: of that release without running it. The npm tarball line is the registry's own digest
