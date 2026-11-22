@@ -1,4 +1,4 @@
-# K-1 window-kit contract: one kit for every vendor's row window (r4)
+# K-1 window-kit contract: one kit for every vendor's row window (r5)
 
 This file is the frozen input of `plans/amendments/seats-FIRSTSEAT-K1-window-kit.md`, which
 pins it by SHA-256. No lane edits it. A change is a plan amendment, and results bound to an
@@ -8,6 +8,11 @@ earlier digest do not count. It extends IF-0-FIRSTSEAT-2 (principle 5, EC-FIRSTS
 deltas this contract makes to their interfaces I-11, I-12 and I-15. r4 adds §15's acceptance
 tests and gates to r3 and changes no design text above §15 except the §14 condition. It records
 the owner's decisions of 2026-11-21 (§7 R6, §8, §9.3) and does not widen them.
+
+r5 is the owner-authorized fourth amendment (owner decision, 2026-11-22, "Expired-token
+test"). It overrides the stall rule for this one change only. It changes only: the Codex
+exception to §10's expired-copy rule; §10.B's expired copy, its A-C1 differential and pass
+condition; K1-T7; Q-D; and §15.4, the A-C1 run authority. Every other section is r4's text.
 
 Pinned inputs (content digests, not history). The roadmap is pinned by the plan's frontmatter
 only.
@@ -555,6 +560,14 @@ never edited. A credential without such metadata gets a well-formed refused valu
 `refused_intended` is that vendor's signature below, observed before any model request, in a
 complete fenced stream, with no allowed token-endpoint request and no credential event.
 
+**The Codex exception (r5).** For Codex only, the expired copy edits the access token's
+payload: its `exp` claim. Codex 0.167.0 decodes that payload without checking the signature
+and refreshes on `exp` alone, while `last_refresh` is read only when there is no usable `exp`
+(D1, the read-only diagnosis of the tagged source, `rust-v0.167.0` at
+`login/src/auth/manager.rs:2603–2616,3528–3545` and `login/src/token_data.rs:144–161`). The
+signature segment is kept byte for byte, so the edited token is invalid to the issuer and
+carries no authority the live token lacks. The rule is unchanged for every other vendor.
+
 **10.A Gemini.** Its contract is the FIRSTSEAT containment contract, unchanged. Its window
 data:
 
@@ -579,43 +592,84 @@ data:
 - **The seam:** `_prepare_jailed_codex(credential_mode, copy_transform)`, an SL-5 named
   part.
   - `none` builds and installs no copy.
-  - `expired` applies `aged_copy` to the production copy, then installs it. The margin
-    re-check reads the live login.
-- **The fixture:** `aged_copy` changes only `last_refresh`, to 60 days in the past. The
-  production copy shape is unchanged: the JWT is intact and `refresh_token` stays `""`.
+  - `expired` applies `expired_access_copy` to the production copy, then installs it. The
+    margin re-check reads the live login.
+- **The expired copy (r5).** `expired_access_copy` is the supplier's `copy_transform`, in the
+  A-C1 fixture and in a production row window alike. From the production copy it changes
+  exactly one field, the access token's `exp` claim:
+  - **Access token.** The payload segment is decoded, `exp` is set to the transform's UTC
+    clock, in integer Unix seconds, minus `EXPIRED_ACCESS_MARGIN_S` = 3600, and the payload
+    is re-encoded as unpadded base64url. No other claim changes. The header and signature
+    segments are kept byte for byte.
+  - **ID token:** unchanged, `exp` included. 0.167.0's refresh predicate reads the access
+    token only (D1).
+  - **`last_refresh`:** unchanged, equal to the production copy's.
+  - **`refresh_token`:** stays `""`, as `build_seat_copy` writes it. A refresh POST, if one
+    were allowed, would send it verbatim (D1).
+  - **Copy metadata.** `tokens_sha256` is recomputed over the edited tokens, so
+    `tokens_changed` compares the seat's file with the copy that was installed. `secrets` adds
+    the edited access-token string to the original strings. `expires_at` keeps the live
+    login's value and is never derived from the edited token.
+  - A copy whose access token has no decodable payload or no integer `exp` refuses with
+    `contract_bug`. No CODEX file is edited, and the transform uses CODEX's copy type and
+    hash helper as they stand.
+- **Fresh-copy margin.** The fresh copy is the production copy, unedited. 0.167.0 refreshes
+  when `exp ≤ now + 300 s`, and the A-C1 deadline is 120 s. So the fresh case asserts, before
+  it spawns, that its access `exp` is at least 900 s after the launch clock (300 s + 120 s +
+  480 s of margin). The fixture login is built with `exp` 3600 s after its creation, which
+  meets this. The expired copy's `exp` lies 3600 s before the transform, at least 3900 s
+  inside the refresh window.
 - **A-C1, an offline acceptance gate** (SL-6.2). It must pass before SL-6's implementation
   task.
   - **Setup:**
     - Assert the pinned Codex image digest, which the `seat_codex_runtime` pin names.
     - Run the real `_prepare_jailed_codex` and the production auth path, with copies built
-      by `build_seat_copy` from one fixture login.
-    - The fresh and aged copies differ only in `last_refresh`.
+      by `build_seat_copy` from fixture logins of one shape.
+    - Built from one login, the fresh and expired copies differ only in the access token's
+      `exp`. The pre-launch checklist records that decoded-claim diff, and a raw diff in
+      which only `tokens.access_token` differs.
     - Use the production `codex` allowlist and no CLI provider or config override.
     - The TLS-terminating proxy runs deny-by-default and never dials an upstream, in the
       way `tests/test_seat_egress_allowlist_codex.py`'s proxy fixture observes denials.
-    - A model request is observed as an allowed-rule match. If the proxy has a test
-      responder it answers locally; otherwise the request is refused after it is recorded.
+    - A model request is observed as an allowed-rule match. The consumed test responder
+      answers it locally with 200, unchanged; a 401 or any other responder change is not
+      allowed. The responder records each presented bearer.
     - Event order comes from the proxy stream, not from `turn.started`.
   - **Pass condition:**
-    - **Aged copy:** a fenced POST to `auth.openai.com` `/oauth/token` is denied, no model
-      request comes before or after it, and the CLI ends with a typed refusal. This is
-      `refused_intended`.
-    - **Fresh copy:** the first request is the model request, and there is no OAuth POST.
-    - **Not-ready variant:** the CLI fails before its credential path and is classified
-      `not_ready`, never `refused_intended`.
+    - **Fresh copy:** no token-host event of any kind. The first POST is the model request,
+      answered by the loopback responder; every recorded bearer is the fresh access token;
+      the launch ends `completed`.
+    - **Expired copy:** in a complete fenced stream:
+      - at least one token-host event (the named `CONNECT auth.openai.com` or a POST to
+        `/oauth/token`), every one denied by the production allowlist;
+      - no model request before the first of them;
+      - no allowed token-endpoint request;
+      - `tokens_changed` false at the pre-teardown read;
+      - every bearer the responder recorded, if any, is the installed expired access token.
+
+      This is Codex's `refused_intended`, whatever the CLI's exit. D1 reads 0.167.0 as
+      returning the cached copy after a failed proactive refresh, so a model request may
+      follow the denial. It carries the unchanged expired bearer, and in a production
+      window the issuer rejects it.
+    - **Not-ready variant:** K1-T7's not-ready line.
+  - **Failure conditions.** Each is final under §15.4:
+    - fresh: a token-host event, a first POST other than the model request, a margin
+      assertion failing, a bearer other than the fresh token, or any class but `completed`;
+    - expired: no token-host event; a model request before the first token-host event; an
+      allowed token-endpoint request; `tokens_changed` true; a recorded bearer other than
+      the expired token; or any class but `refused_intended`;
+    - not-ready: anything K1-T7's not-ready line excludes.
   - **Hard failures:**
     - the jail opt-in (`PHASE_LOOP_REQUIRE_LIVE_JAIL=1`) missing;
     - a skip;
     - a wrong image digest;
     - missing fixture proof.
-  - **If A-C1 fails, SL-6 stops.** That covers no POST, and a model request before or after
-    the denial. Changing the copy shape to make it pass is not allowed. A further contract
-    revision would be the fourth amendment, so the stall rule applies (principle 6).
-  - **Known risk.** CODEX SL-1.5 measured no renewal by CLI 0.167.0 while its access token
-    was valid, at any `last_refresh` age up to 29 days (the comment on
-    `seat_codex_credential.CODEX_LOGIN_MIN_S`). Sixty days lies outside that measurement, so
-    A-C1 is genuinely open. What replaces the Codex expired-copy control if A-C1 fails is the
-    plan's question Q-D; it is not decided here.
+  - **If A-C1 fails, Q-D applies** (§15.3). Changing the copy shape, the margin, the
+    deadline or the responder after the run is not allowed.
+  - **Basis.** D1 found that `last_refresh` age cannot trigger refresh while the access
+    token's `exp` is outside the five-minute window. That is why r4's aged copy could not
+    pass, and why CODEX SL-1.5 measured no renewal while the access token was valid. The
+    expired access token is the trigger D1 locates on the path before the model request.
 - **Outcomes:**
   - scope via `scope_problem`, with no issuer call;
   - refresh via `tokens_changed` or an allowed token-endpoint request, giving
@@ -841,10 +895,12 @@ lane's code. Paths are under `phase-loop-runtime/tests/`.
 - *Given* any credential or config lookup outside the fixture, *then* the test fails closed.
 - The proxy denies by default and has no upstream.
 - *Given* the fresh control, *then* it completes its local model request.
-- *Given* the aged copy, *then* it ends `refused_intended`.
-- *Given* the not-ready variant, *then* it ends `not_ready`.
+- *Given* the expired copy (r5, §10.B), *then* it ends `refused_intended`.
+- *Given* the not-ready variant, *then* it ends `not_ready`, or `timeout` with no
+  token-host, model or allowed event; it is never `refused_intended` (r5 erratum, SL-6
+  ruling item 3). The deadline is not tuned to produce either class.
 - Every gate and command runs the test with `PHASE_LOOP_REQUIRE_LIVE_JAIL=1`. A skip fails.
-- If A-C1 fails, SL-6 stops (Q-D, below).
+- If A-C1 fails, Q-D applies (below).
 
 **K1-T8: hook ownership, in three parts.**
 - **SL-5:** dispatch routing (`window_board=` reaches only the window leg) and the order
@@ -898,5 +954,39 @@ admits Grok.
 - SL-7 qualifies `print` only. SDK is not qualified by this amendment.
 - If OD-3b's record ever names a default other than `print`, SL-7 stops.
 
-**Q-D: a contingency stop.** If K1-T7's aged case fails, SL-6 stops. No replacement control is
-authorized.
+**Q-D (r5): Codex is withdrawn on failure.** If the §15.4 run fails any §10.B failure
+condition, in any case, Codex is withdrawn from K-1:
+- SL-6 stops and lands nothing.
+- Codex registers no window data under K-1, so no Codex row grant is issued.
+- SL-9 records the withdrawal with the run evidence and D1.
+- No further run, amendment or replacement control is authorized under K-1.
+
+A Codex row window would need a new owner decision outside this contract.
+
+### 15.4 A-C1 run authority (r5)
+
+One final provider-free run is authorized, and there is none after it.
+
+- **Bounds.** These are the SL-6 rulings' §7(b) bounds, unchanged: a synthetic login, the
+  decoy guard, no upstream, no provider call, the development host only and never the seat
+  host.
+- **Preconditions.** The SL-6 A-C1 rulings' item 4 preconditions, unchanged:
+  - the hard headroom gate and the per-user admission lock;
+  - the written checklist, with its copy-diff line replaced by §10.B's one-field diff and
+    the fresh-margin check added;
+  - private evidence under `$HOME`, with a new run prefix and no overwrite;
+  - one serial run of `test_seat_window_codex_provider_free.py` under `timeout 900`,
+    `PHASE_LOOP_REQUIRE_LIVE_JAIL=1` and `-n 0`.
+- **Harness changes.** The prepared launcher is adapted only for r5's expired copy and
+  checklist lines. Allowed beyond the r4 run-4 set: `expired_access_copy`, §10.B's
+  `refused_intended` rule in `terminal`, and the provider-free test's expired and not-ready
+  assertions, each with red-first offline unit tests green beforehand. Every other item on
+  the item-4 list of changes that are not allowed stays not allowed.
+- **What does not use the run.** A deferral for headroom or admission, or a checklist abort
+  before launch.
+- **What uses the run.** Once the test has launched, the result is final:
+  - **pass:** all three cases meet §10.B, and SL-6 resumes;
+  - **fail:** Q-D applies;
+  - **a §7(b) stop-and-ask trigger:** stop and ask the owner, with no rerun;
+  - **an interruption** (an external kill or a harness timeout): it is neither a pass nor
+    retried. The evidence goes to the owner, who decides.
