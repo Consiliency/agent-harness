@@ -733,7 +733,11 @@ def test_k1_row_world_verifies_through_the_production_reader(row_world):
 ])
 def test_k1_f5_registration_refuses_bad_window_data(monkeypatch, change):
     from phase_loop_runtime import seat_profiles
-    monkeypatch.setattr(seat_profiles, "_WINDOW_DATA", dict(seat_profiles._WINDOW_DATA))
+    # The real Codex supplier (K-1 SL-6) registers on import, and any earlier record
+    # verification loads it (§4.3), so the isolated registry starts without its row.
+    monkeypatch.setattr(seat_profiles, "_WINDOW_DATA", {
+        vendor: data for vendor, data in seat_profiles._WINDOW_DATA.items()
+        if vendor != "codex"})
     with pytest.raises(ValueError):
         seat_profiles.register_window_data(_fixture_window_data("codex", **change))
     assert seat_profiles.window_data_for("codex") is None

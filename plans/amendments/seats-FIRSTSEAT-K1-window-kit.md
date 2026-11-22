@@ -354,7 +354,9 @@ No lane makes a live provider call or runs on a seat host. SL-6.2 is provider-fr
     `launch_failed`, because `WindowLaunchResult` carries no exit code);
   - `tests/test_seat_window_vendor_neutral.py`: `register_fixture_vendor` (hides the real
     Codex registration), `_codex_prepare_stubs` (a provider file), `_codex_open_stubs`
-    (`named=`), and F15's invalid-pair case (the first table vendor with no supplier);
+    (`named=`), F15's invalid-pair case (the first table vendor with no supplier), and
+    F5's registry-isolation line, which starts without the real Codex row (it registers on
+    import and any earlier §4.3 record verification loads it); F5's assertions are unchanged;
   - `tests/data/seat_launch_references.json`: one entry each for `_window_bound_image_sha256`
     and the supplier's `_head_commit`, `_implementation_digests` and its watch's
     `ctypes` inotify handle;
