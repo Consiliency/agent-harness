@@ -473,6 +473,33 @@ def test_a_proxy_that_does_not_attest_its_budget_is_refused(fake_srt, tmp_path):
     assert caught.value.code == seat_egress_proxy.START_FAILED_CODE
 
 
+def test_a_proxy_without_the_data_guard_does_not_start(fake_srt, proxy_diagnostics, tmp_path):
+    """agent-harness#2067: the start-up check attests the Readable.toWeb data guard on Node's
+    real adapter. A copy whose replacement listener is the adapter's own listener exits 3
+    with the guard diagnostic before any ready line, and the launcher refuses it."""
+    text = seat_egress_proxy._data_path("proxy.mjs").read_text(encoding="utf-8")
+    needle = "      source.on('data', guardDataListener(source, listener));\n"
+    assert text.count(needle) == 1
+    unguarded = tmp_path / "unguarded-proxy.mjs"
+    unguarded.write_text(text.replace(needle, "      source.on('data', listener);\n"),
+                         encoding="utf-8")
+    fake_srt(proxy_script=unguarded)
+    with pytest.raises(seat_egress_proxy.EgressLayerUnavailable) as caught:
+        with seat_egress_proxy.start_proxy(allowlist_id="grok-review", request_budget=1):
+            pytest.fail("a proxy without the data guard started")
+    assert caught.value.code == seat_egress_proxy.START_FAILED_CODE
+    [process] = proxy_diagnostics.processes
+    assert process.wait(timeout=15) == 3
+    assert proxy_diagnostics.stderr() == "toWeb data guard is not in force\n"
+    # Run directly: the same exit, and nothing on stdout, so no ready line.
+    node = seat_egress_proxy._node()
+    done = subprocess.run([node, str(unguarded), str(tmp_path / "unused.mjs"),
+                           str(tmp_path / "unused.json")],
+                          capture_output=True, text=True, timeout=15)
+    assert (done.returncode, done.stdout) == (3, "")
+    assert done.stderr == "toWeb data guard is not in force\n"
+
+
 def test_an_invalid_budget_in_the_configuration_stops_the_proxy(tmp_path):
     node = shutil.which("node") or _node_or_skip()
     module = tmp_path / "unused.mjs"
@@ -923,6 +950,7 @@ class ProxyDiagnostics:
         self.directory = directory
         self.files: list[Path] = []
         self.errors: list[str] = []
+        self.processes: list[subprocess.Popen] = []
 
     def stderr(self) -> str:
         return "".join(path.read_text(encoding="utf-8", errors="replace")
@@ -957,9 +985,11 @@ def proxy_diagnostics(tmp_path, monkeypatch):
             diagnostics.files.append(path)
             kwargs["stderr"] = fd
             try:
-                return real(args, *rest, **kwargs)
+                process = real(args, *rest, **kwargs)
             finally:
                 os.close(fd)
+            diagnostics.processes.append(process)
+            return process
         return real(args, *rest, **kwargs)
 
     monkeypatch.setattr(seat_egress_proxy.subprocess, "Popen", popen)
