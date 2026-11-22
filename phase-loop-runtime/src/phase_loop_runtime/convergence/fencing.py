@@ -3,13 +3,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import uuid
-import fcntl
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
 from .contracts import AdmissionRequest
+from ..file_lock import acquire_exclusive
+
+if os.name != "nt":
+    import fcntl
 
 
 _FORCED_WRITER_GENERATIONS: dict[str, str] = {}
@@ -49,7 +53,10 @@ def run_train_generation_leases(worktrees):
         for namespace_root in sorted(namespace_roots, key=str):
             namespace_root.mkdir(parents=True, exist_ok=True)
             writer_lock = stack.enter_context((namespace_root / RUN_TRAIN_WRITER_LOCK).open("a+"))
-            fcntl.flock(writer_lock, fcntl.LOCK_EX)
+            if os.name == "nt":
+                acquire_exclusive(writer_lock)
+            else:
+                fcntl.flock(writer_lock, fcntl.LOCK_EX)
         for path in paths:
             latch = WriterGenerationLatch.open(path)
             snapshot = latch.read()

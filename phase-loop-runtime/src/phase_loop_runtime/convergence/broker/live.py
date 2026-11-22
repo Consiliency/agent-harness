@@ -27,6 +27,7 @@ import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
+from phase_loop_runtime.file_lock import acquire_exclusive, release_exclusive
 
 from phase_loop_runtime.convergence.contracts import (
     AdmissionRequest,
@@ -239,7 +240,8 @@ _LOCK_DEPTH_GUARD = threading.Lock()
 
 @contextlib.contextmanager
 def _reentrant_flock(path: Path):
-    import fcntl
+    if os.name != "nt":
+        import fcntl
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -264,7 +266,14 @@ def _reentrant_flock(path: Path):
         return
 
     handle = path.open("a+", encoding="utf-8")
-    fcntl.flock(handle, fcntl.LOCK_EX)
+    try:
+        if os.name == "nt":
+            acquire_exclusive(handle)
+        else:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+    except BaseException:
+        handle.close()
+        raise
     with _LOCK_DEPTH_GUARD:
         _LOCK_DEPTH[key] = [1, handle]
     try:
@@ -276,8 +285,13 @@ def _reentrant_flock(path: Path):
                 entry[0] -= 1
                 if entry[0] <= 0:
                     _LOCK_DEPTH.pop(key, None)
-        fcntl.flock(handle, fcntl.LOCK_UN)
-        handle.close()
+        try:
+            if os.name == "nt":
+                release_exclusive(handle)
+            else:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+        finally:
+            handle.close()
 
 
 def _fresh_nonce() -> str:
@@ -298,6 +312,12 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
     The temp name carries pid + a fresh nonce: a predictable ``.<name>.tmp``
     lets two concurrent writers clobber one another's partial file.
     """
+    if os.name == "nt":
+        from ...windows_storage import BoundDirectory
+        body = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+        with BoundDirectory(path.parent, create_private=True) as bound:
+            bound.create_record(path.name, body, replace=True)
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.parent / f".{path.name}.{os.getpid()}.{_fresh_nonce()[:8]}.tmp"
     body = json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
@@ -3307,6 +3327,8 @@ def _open_namespace_root(snapshot: RepositorySnapshot) -> int | None:
     non-directory on every classification branch.  A root without a receipt must
     also be owned by the operator, like the residue inside it.
     """
+    if os.name == "nt":
+        raise LegacyCutoverConflict("Native Windows broker namespace migration is not supported")
     root = snapshot.namespace_root
     try:
         dir_fd = os.open(
@@ -3383,7 +3405,9 @@ def _exclude_live_run_trains(inventory: dict, *, resuming: bool):
     the same sealed inventory.
     """
     import errno
-    import fcntl
+
+    if os.name != "nt":
+        import fcntl
 
     rows = {
         _inventory_row_namespace_root(row).resolve(): row for row in inventory["worktrees"]
@@ -3443,7 +3467,10 @@ def _exclude_live_run_trains(inventory: dict, *, resuming: bool):
                     "owned by the operator"
                 )
             try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                if os.name == "nt":
+                    acquire_exclusive(descriptor, blocking=False)
+                else:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError as error:
                 if error.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
                     raise LegacyCutoverConflict(
@@ -3619,6 +3646,8 @@ def probe_zero_history_bootstrap(
     search_roots: Iterable[Path | str] = (),
 ) -> dict:
     """Build a read-only, byte-sealed inventory for zero-history bootstrap."""
+    if os.name == "nt":
+        raise LegacyCutoverConflict("Native Windows broker zero-history migration is not supported")
     cutover_id = _validate_cutover_id(cutover_id)
     authority = _canonical_input_path(
         authority_root or default_fabpub_authority_root(), label="authority root"
@@ -3959,6 +3988,8 @@ def bootstrap_zero_history_authority(
     inventory: dict, *, confirmed_zero_history: bool = False
 ) -> dict:
     """Apply or resume one explicitly confirmed zero-history bootstrap."""
+    if os.name == "nt":
+        raise LegacyCutoverConflict("Native Windows broker zero-history migration is not supported")
     if not confirmed_zero_history:
         raise LegacyCutoverConflict("zero-history bootstrap requires explicit confirmation")
     _validate_zero_history_inventory(inventory)
@@ -5271,7 +5302,8 @@ def rotate_blocked_partition(
     authority's ``partition-rotations/<identity>/`` drives an idempotent,
     crash-resumable sequence that ends with the atomic pointer flip.
     """
-    import fcntl
+    if os.name != "nt":
+        import fcntl
 
     cutover_id = _validate_cutover_id(cutover_id)
     snapshot = repository_snapshot(worktree)
@@ -5454,7 +5486,10 @@ def rotate_blocked_partition(
     lock_path = active / "admissions.lock"
     try:
         with lock_path.open("a+", encoding="utf-8") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+            if os.name == "nt":
+                acquire_exclusive(lock)
+            else:
+                fcntl.flock(lock, fcntl.LOCK_EX)
             try:
                 # Everything above was read WITHOUT the lock.  A ceremony that
                 # completed while this one waited (the same or another cutover_id)
@@ -5645,7 +5680,10 @@ def rotate_blocked_partition(
                 _write_active_pointer(generations, successor_generation)
                 _maybe_rotation_crash("after_pointer_flip")
             finally:
-                fcntl.flock(lock, fcntl.LOCK_UN)
+                if os.name == "nt":
+                    release_exclusive(lock)
+                else:
+                    fcntl.flock(lock, fcntl.LOCK_UN)
     except _RotationCompletedElsewhere as done:
         receipt = done.receipt
     assert receipt is not None
@@ -5722,13 +5760,17 @@ def _finish_rotation_after_flip(
     latch activation, and a forgery re-sealed in the window refuses typed
     instead of becoming the successor's authority (codex r9 P1).
     """
-    import fcntl
+    if os.name != "nt":
+        import fcntl
 
     predecessor = _rotation_predecessor_root(container, generation)
     latch = WriterGenerationLatch(snapshot.namespace_root)
     lock_path = active / "admissions.lock"
     with lock_path.open("a+", encoding="utf-8") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        if os.name == "nt":
+            acquire_exclusive(lock)
+        else:
+            fcntl.flock(lock, fcntl.LOCK_EX)
         try:
             if _read_active_generation(container) != generation:
                 raise PartitionRotationRefused(
@@ -5770,7 +5812,10 @@ def _finish_rotation_after_flip(
             latch.mark_armed()
             latch.activate()
         finally:
-            fcntl.flock(lock, fcntl.LOCK_UN)
+            if os.name == "nt":
+                release_exclusive(lock)
+            else:
+                fcntl.flock(lock, fcntl.LOCK_UN)
     return PartitionRotationOutcome(cutover_id, "ACTIVE", active, predecessor, generation, receipt)
 
 

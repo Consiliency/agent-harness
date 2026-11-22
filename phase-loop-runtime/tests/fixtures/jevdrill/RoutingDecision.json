@@ -1,0 +1,1295 @@
+{
+  "$defs": {
+    "AcceptanceRequirement": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "evaluator_ref": {
+          "title": "Evaluator Ref",
+          "type": "string"
+        },
+        "requirement_id": {
+          "title": "Requirement Id",
+          "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "const": "user",
+              "type": "string"
+            },
+            {
+              "const": "task_family",
+              "type": "string"
+            },
+            {
+              "const": "inferred",
+              "type": "string"
+            }
+          ],
+          "title": "Source"
+        }
+      },
+      "required": [
+        "description",
+        "evaluator_ref",
+        "requirement_id",
+        "source"
+      ],
+      "title": "AcceptanceRequirement",
+      "type": "object"
+    },
+    "CandidateExclusion": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_id": {
+          "title": "Candidate Id",
+          "type": "string"
+        },
+        "reasons": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reasons",
+          "type": "array"
+        }
+      },
+      "required": [
+        "candidate_id",
+        "reasons"
+      ],
+      "title": "CandidateExclusion",
+      "type": "object"
+    },
+    "CapabilityMismatch": {
+      "additionalProperties": false,
+      "properties": {
+        "affected_operations": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Affected Operations",
+          "type": "array"
+        },
+        "code": {
+          "const": "capability_mismatch",
+          "title": "Code",
+          "type": "string"
+        },
+        "declared": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Declared",
+          "type": "array"
+        },
+        "effective": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Effective",
+          "type": "array"
+        },
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "resolution_advice": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Resolution Advice",
+          "type": "array"
+        },
+        "runtime": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Runtime",
+          "type": "array"
+        }
+      },
+      "required": [
+        "affected_operations",
+        "code",
+        "declared",
+        "effective",
+        "evidence_refs",
+        "resolution_advice",
+        "runtime"
+      ],
+      "title": "CapabilityMismatch",
+      "type": "object"
+    },
+    "CloseCall": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Candidate Ids",
+          "type": "array"
+        },
+        "differing_dimensions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Differing Dimensions",
+          "type": "array"
+        },
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "uncertainty_reason": {
+          "title": "Uncertainty Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "candidate_ids",
+        "differing_dimensions",
+        "evidence_refs",
+        "uncertainty_reason"
+      ],
+      "title": "CloseCall",
+      "type": "object"
+    },
+    "ConstraintConflict": {
+      "additionalProperties": false,
+      "properties": {
+        "conflicting_requirements": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Conflicting Requirements",
+          "type": "array"
+        },
+        "details": {
+          "$ref": "#/$defs/DecisionDetails"
+        },
+        "status": {
+          "const": "constraint_conflict",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "conflicting_requirements",
+        "details",
+        "status"
+      ],
+      "title": "ConstraintConflict",
+      "type": "object"
+    },
+    "CostEstimate": {
+      "additionalProperties": false,
+      "properties": {
+        "adjusted_token_cost": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "assumptions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Assumptions",
+          "type": "array"
+        },
+        "missing_reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MissingReason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observed_cost": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rate_revision": {
+          "title": "Rate Revision",
+          "type": "string"
+        },
+        "raw_token_cost": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "adjusted_token_cost",
+        "assumptions",
+        "missing_reason",
+        "observed_cost",
+        "rate_revision",
+        "raw_token_cost"
+      ],
+      "title": "CostEstimate",
+      "type": "object"
+    },
+    "DecisionDetails": {
+      "additionalProperties": false,
+      "properties": {
+        "acceptance_rationale": {
+          "title": "Acceptance Rationale",
+          "type": "string"
+        },
+        "alternatives": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Alternatives",
+          "type": "array"
+        },
+        "capability_mismatches": {
+          "items": {
+            "$ref": "#/$defs/CapabilityMismatch"
+          },
+          "title": "Capability Mismatches",
+          "type": "array"
+        },
+        "close_calls": {
+          "items": {
+            "$ref": "#/$defs/CloseCall"
+          },
+          "title": "Close Calls",
+          "type": "array"
+        },
+        "cost_estimate": {
+          "$ref": "#/$defs/CostEstimate"
+        },
+        "created_at": {
+          "format": "date-time",
+          "pattern": "Z$",
+          "title": "Created At",
+          "type": "string"
+        },
+        "diagnostics": {
+          "items": {
+            "$ref": "#/$defs/Diagnostic"
+          },
+          "title": "Diagnostics",
+          "type": "array"
+        },
+        "discovery_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DiscoveryRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "discovery_termination": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Discovery Termination"
+        },
+        "discovery_uncertainty": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Discovery Uncertainty"
+        },
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "exclusions": {
+          "items": {
+            "$ref": "#/$defs/CandidateExclusion"
+          },
+          "title": "Exclusions",
+          "type": "array"
+        },
+        "human_summary": {
+          "title": "Human Summary",
+          "type": "string"
+        },
+        "measurements": {
+          "items": {
+            "$ref": "#/$defs/Measurement"
+          },
+          "title": "Measurements",
+          "type": "array"
+        },
+        "notices": {
+          "items": {
+            "$ref": "#/$defs/LocalNotice"
+          },
+          "title": "Notices",
+          "type": "array"
+        },
+        "optimization_objective": {
+          "$ref": "#/$defs/OptimizationObjective"
+        },
+        "request_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Request Id",
+          "type": "string"
+        },
+        "reused_decision_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Reused Decision Id"
+        },
+        "routing_decision_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Routing Decision Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "setup_proposals": {
+          "items": {
+            "$ref": "#/$defs/SetupProposal"
+          },
+          "title": "Setup Proposals",
+          "type": "array"
+        },
+        "task_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Task Id",
+          "type": "string"
+        },
+        "versions": {
+          "$ref": "#/$defs/VersionReferences"
+        }
+      },
+      "required": [
+        "acceptance_rationale",
+        "alternatives",
+        "capability_mismatches",
+        "close_calls",
+        "cost_estimate",
+        "created_at",
+        "diagnostics",
+        "evidence_refs",
+        "exclusions",
+        "human_summary",
+        "measurements",
+        "notices",
+        "optimization_objective",
+        "request_id",
+        "reused_decision_id",
+        "routing_decision_id",
+        "schema_version",
+        "setup_proposals",
+        "task_id",
+        "versions"
+      ],
+      "title": "DecisionDetails",
+      "type": "object"
+    },
+    "DefaultEffort": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "provider_default",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "DefaultEffort",
+      "type": "object"
+    },
+    "Diagnostic": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "resolution_advice": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Resolution Advice",
+          "type": "array"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "evidence_refs",
+        "resolution_advice",
+        "summary"
+      ],
+      "title": "Diagnostic",
+      "type": "object"
+    },
+    "DiscoveryRef": {
+      "additionalProperties": false,
+      "properties": {
+        "discovery_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Discovery Id",
+          "type": "string"
+        },
+        "trace_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Trace Digest",
+          "type": "string"
+        },
+        "work_objective_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Work Objective Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "discovery_id",
+        "trace_digest",
+        "work_objective_id"
+      ],
+      "title": "DiscoveryRef",
+      "type": "object"
+    },
+    "ExecutionPlan": {
+      "additionalProperties": false,
+      "properties": {
+        "access_route": {
+          "title": "Access Route",
+          "type": "string"
+        },
+        "execution_plan_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Execution Plan Id",
+          "type": "string"
+        },
+        "execution_target_id": {
+          "title": "Execution Target Id",
+          "type": "string"
+        },
+        "guidance_action": {
+          "anyOf": [
+            {
+              "const": "none",
+              "type": "string"
+            },
+            {
+              "const": "inject",
+              "type": "string"
+            }
+          ],
+          "title": "Guidance Action"
+        },
+        "harness_id": {
+          "title": "Harness Id",
+          "type": "string"
+        },
+        "model_id": {
+          "title": "Model Id",
+          "type": "string"
+        },
+        "native_effort": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExplicitEffort"
+            },
+            {
+              "$ref": "#/$defs/DefaultEffort"
+            },
+            {
+              "$ref": "#/$defs/UnsupportedEffort"
+            }
+          ],
+          "title": "Native Effort"
+        },
+        "optional_guidance": {
+          "items": {
+            "$ref": "#/$defs/GuidanceRevision"
+          },
+          "maxItems": 2,
+          "title": "Optional Guidance",
+          "type": "array"
+        },
+        "predecessor_plan_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Predecessor Plan Id"
+        },
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        },
+        "required_capabilities": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Capabilities",
+          "type": "array"
+        },
+        "required_guidance": {
+          "items": {
+            "$ref": "#/$defs/GuidanceRevision"
+          },
+          "title": "Required Guidance",
+          "type": "array"
+        },
+        "resolved_model_revision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Resolved Model Revision"
+        }
+      },
+      "required": [
+        "access_route",
+        "execution_plan_id",
+        "execution_target_id",
+        "guidance_action",
+        "harness_id",
+        "model_id",
+        "native_effort",
+        "optional_guidance",
+        "predecessor_plan_id",
+        "provider",
+        "required_capabilities",
+        "required_guidance",
+        "resolved_model_revision"
+      ],
+      "title": "ExecutionPlan",
+      "type": "object"
+    },
+    "ExplicitEffort": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "explicit",
+          "title": "Kind",
+          "type": "string"
+        },
+        "native_value": {
+          "title": "Native Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "native_value"
+      ],
+      "title": "ExplicitEffort",
+      "type": "object"
+    },
+    "GuidanceRevision": {
+      "additionalProperties": false,
+      "properties": {
+        "admission": {
+          "anyOf": [
+            {
+              "const": "policy_admitted",
+              "type": "string"
+            },
+            {
+              "const": "explicitly_enabled",
+              "type": "string"
+            }
+          ],
+          "title": "Admission"
+        },
+        "authority": {
+          "title": "Authority",
+          "type": "string"
+        },
+        "content_hash": {
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "resource_id": {
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "revision": {
+          "title": "Revision",
+          "type": "string"
+        },
+        "role": {
+          "title": "Role",
+          "type": "string"
+        },
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "token_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Token Count"
+        }
+      },
+      "required": [
+        "admission",
+        "authority",
+        "content_hash",
+        "resource_id",
+        "revision",
+        "role",
+        "task_id",
+        "token_count"
+      ],
+      "title": "GuidanceRevision",
+      "type": "object"
+    },
+    "KnownMeasurement": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "known",
+          "title": "Kind",
+          "type": "string"
+        },
+        "unit": {
+          "title": "Unit",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "number"
+        }
+      },
+      "required": [
+        "kind",
+        "unit",
+        "value"
+      ],
+      "title": "KnownMeasurement",
+      "type": "object"
+    },
+    "LocalNotice": {
+      "additionalProperties": false,
+      "properties": {
+        "automatic_action": {
+          "anyOf": [
+            {
+              "const": "archive",
+              "type": "string"
+            },
+            {
+              "const": "none",
+              "type": "string"
+            }
+          ],
+          "title": "Automatic Action"
+        },
+        "deadline": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "format": "date-time",
+          "pattern": "Z$",
+          "title": "Deadline"
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "const": "archive_prompt",
+              "type": "string"
+            },
+            {
+              "const": "failure",
+              "type": "string"
+            },
+            {
+              "const": "decision_required",
+              "type": "string"
+            }
+          ],
+          "title": "Kind"
+        },
+        "notice_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Notice Id",
+          "type": "string"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "automatic_action",
+        "deadline",
+        "kind",
+        "notice_id",
+        "summary"
+      ],
+      "title": "LocalNotice",
+      "type": "object"
+    },
+    "Measurement": {
+      "additionalProperties": false,
+      "properties": {
+        "counting_semantics": {
+          "anyOf": [
+            {
+              "const": "disjoint",
+              "type": "string"
+            },
+            {
+              "const": "subset",
+              "type": "string"
+            },
+            {
+              "const": "not_applicable",
+              "type": "string"
+            }
+          ],
+          "title": "Counting Semantics"
+        },
+        "measurement_value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/KnownMeasurement"
+            },
+            {
+              "$ref": "#/$defs/UnknownMeasurement"
+            }
+          ],
+          "title": "Measurement Value"
+        },
+        "method": {
+          "title": "Method",
+          "type": "string"
+        },
+        "metric_id": {
+          "title": "Metric Id",
+          "type": "string"
+        },
+        "metric_version": {
+          "title": "Metric Version",
+          "type": "string"
+        },
+        "parent_metric_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Parent Metric Id"
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "const": "call",
+              "type": "string"
+            },
+            {
+              "const": "run",
+              "type": "string"
+            },
+            {
+              "const": "task",
+              "type": "string"
+            },
+            {
+              "const": "experiment",
+              "type": "string"
+            }
+          ],
+          "title": "Scope"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "const": "direct",
+              "type": "string"
+            },
+            {
+              "const": "provider",
+              "type": "string"
+            },
+            {
+              "const": "host",
+              "type": "string"
+            },
+            {
+              "const": "evaluator",
+              "type": "string"
+            },
+            {
+              "const": "estimate",
+              "type": "string"
+            }
+          ],
+          "title": "Source"
+        }
+      },
+      "required": [
+        "counting_semantics",
+        "measurement_value",
+        "method",
+        "metric_id",
+        "metric_version",
+        "parent_metric_id",
+        "scope",
+        "source"
+      ],
+      "title": "Measurement",
+      "type": "object"
+    },
+    "MissingReason": {
+      "enum": [
+        "unsupported",
+        "not_reported",
+        "not_applicable",
+        "redacted",
+        "expired",
+        "incomplete"
+      ],
+      "title": "MissingReason",
+      "type": "string"
+    },
+    "Money": {
+      "additionalProperties": false,
+      "properties": {
+        "amount": {
+          "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+          "title": "Amount",
+          "type": "string"
+        },
+        "currency": {
+          "pattern": "^[A-Z]{3}$",
+          "title": "Currency",
+          "type": "string"
+        }
+      },
+      "required": [
+        "amount",
+        "currency"
+      ],
+      "title": "Money",
+      "type": "object"
+    },
+    "NeedsContext": {
+      "additionalProperties": false,
+      "properties": {
+        "details": {
+          "$ref": "#/$defs/DecisionDetails"
+        },
+        "missing_facts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Missing Facts",
+          "type": "array"
+        },
+        "status": {
+          "const": "needs_context",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "details",
+        "missing_facts",
+        "status"
+      ],
+      "title": "NeedsContext",
+      "type": "object"
+    },
+    "NoCompatiblePlan": {
+      "additionalProperties": false,
+      "properties": {
+        "details": {
+          "$ref": "#/$defs/DecisionDetails"
+        },
+        "status": {
+          "const": "no_compatible_plan",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "details",
+        "status"
+      ],
+      "title": "NoCompatiblePlan",
+      "type": "object"
+    },
+    "OptimizationObjective": {
+      "additionalProperties": false,
+      "properties": {
+        "acceptance_requirements": {
+          "items": {
+            "$ref": "#/$defs/AcceptanceRequirement"
+          },
+          "title": "Acceptance Requirements",
+          "type": "array"
+        },
+        "direction": {
+          "anyOf": [
+            {
+              "const": "minimize",
+              "type": "string"
+            },
+            {
+              "const": "maximize",
+              "type": "string"
+            }
+          ],
+          "title": "Direction"
+        },
+        "metric_id": {
+          "title": "Metric Id",
+          "type": "string"
+        },
+        "objective_id": {
+          "title": "Objective Id",
+          "type": "string"
+        },
+        "routing_cost_basis": {
+          "anyOf": [
+            {
+              "const": "raw",
+              "type": "string"
+            },
+            {
+              "const": "adjusted",
+              "type": "string"
+            }
+          ],
+          "title": "Routing Cost Basis"
+        },
+        "version": {
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "acceptance_requirements",
+        "direction",
+        "metric_id",
+        "objective_id",
+        "routing_cost_basis",
+        "version"
+      ],
+      "title": "OptimizationObjective",
+      "type": "object"
+    },
+    "ReadinessEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "checked_capabilities": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Checked Capabilities",
+          "type": "array"
+        },
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "inventory_revision": {
+          "title": "Inventory Revision",
+          "type": "string"
+        },
+        "valid_until": {
+          "format": "date-time",
+          "pattern": "Z$",
+          "title": "Valid Until",
+          "type": "string"
+        },
+        "verified_at": {
+          "format": "date-time",
+          "pattern": "Z$",
+          "title": "Verified At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "checked_capabilities",
+        "evidence_refs",
+        "inventory_revision",
+        "valid_until",
+        "verified_at"
+      ],
+      "title": "ReadinessEvidence",
+      "type": "object"
+    },
+    "Ready": {
+      "additionalProperties": false,
+      "properties": {
+        "details": {
+          "$ref": "#/$defs/DecisionDetails"
+        },
+        "execution_plan": {
+          "$ref": "#/$defs/ExecutionPlan"
+        },
+        "fallback_used": {
+          "title": "Fallback Used",
+          "type": "boolean"
+        },
+        "readiness": {
+          "$ref": "#/$defs/ReadinessEvidence"
+        },
+        "status": {
+          "const": "ready",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "details",
+        "execution_plan",
+        "fallback_used",
+        "readiness",
+        "status"
+      ],
+      "title": "Ready",
+      "type": "object"
+    },
+    "RoutingFailed": {
+      "additionalProperties": false,
+      "properties": {
+        "details": {
+          "$ref": "#/$defs/DecisionDetails"
+        },
+        "error_code": {
+          "title": "Error Code",
+          "type": "string"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        },
+        "status": {
+          "const": "routing_failed",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "details",
+        "error_code",
+        "retryable",
+        "status"
+      ],
+      "title": "RoutingFailed",
+      "type": "object"
+    },
+    "SetupProposal": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_id": {
+          "title": "Candidate Id",
+          "type": "string"
+        },
+        "missing_capabilities": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Missing Capabilities",
+          "type": "array"
+        },
+        "proposed_actions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Proposed Actions",
+          "type": "array"
+        },
+        "requires_authorization": {
+          "title": "Requires Authorization",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "candidate_id",
+        "missing_capabilities",
+        "proposed_actions",
+        "requires_authorization"
+      ],
+      "title": "SetupProposal",
+      "type": "object"
+    },
+    "UnknownMeasurement": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "unknown",
+          "title": "Kind",
+          "type": "string"
+        },
+        "reason": {
+          "$ref": "#/$defs/MissingReason"
+        }
+      },
+      "required": [
+        "kind",
+        "reason"
+      ],
+      "title": "UnknownMeasurement",
+      "type": "object"
+    },
+    "UnsupportedEffort": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "unsupported",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "UnsupportedEffort",
+      "type": "object"
+    },
+    "VersionReferences": {
+      "additionalProperties": false,
+      "properties": {
+        "catalog_revision": {
+          "title": "Catalog Revision",
+          "type": "string"
+        },
+        "context_revision": {
+          "title": "Context Revision",
+          "type": "string"
+        },
+        "evidence_revision": {
+          "title": "Evidence Revision",
+          "type": "string"
+        },
+        "policy_revision": {
+          "title": "Policy Revision",
+          "type": "string"
+        },
+        "settings_revision": {
+          "title": "Settings Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "catalog_revision",
+        "context_revision",
+        "evidence_revision",
+        "policy_revision",
+        "settings_revision"
+      ],
+      "title": "VersionReferences",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/Ready"
+    },
+    {
+      "$ref": "#/$defs/NeedsContext"
+    },
+    {
+      "$ref": "#/$defs/ConstraintConflict"
+    },
+    {
+      "$ref": "#/$defs/NoCompatiblePlan"
+    },
+    {
+      "$ref": "#/$defs/RoutingFailed"
+    }
+  ]
+}

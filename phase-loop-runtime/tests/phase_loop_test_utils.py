@@ -321,13 +321,14 @@ def make_repo(tmp_path: Path) -> Path:
         subprocess.run(["git", "config", key, value], cwd=repo, check=True)
     (repo / "specs").mkdir()
     (repo / "plans").mkdir()
-    (repo / "README.md").write_text("fixture\n")
+    (repo / "README.md").write_text("fixture\n", encoding="utf-8")
     roadmap = repo / "specs" / "phase-plans-v1.md"
     roadmap.write_text(
         "# Roadmap\n\n"
         "### Phase 0 — Contract (CONTRACT)\n\n"
         "### Phase 1 — Access (ACCESS)\n\n"
-        "### Phase 2 — Runner (RUNNER)\n"
+        "### Phase 2 — Runner (RUNNER)\n",
+        encoding="utf-8",
     )
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-m", "fixture"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
@@ -339,7 +340,7 @@ def write_named_roadmap(repo: Path, phases: tuple[tuple[str, str], ...], version
     body = "# Roadmap\n\n" + "\n\n".join(
         f"### Phase {index} - {title} ({alias})" for index, (alias, title) in enumerate(phases)
     )
-    roadmap.write_text(f"{body}\n")
+    roadmap.write_text(f"{body}\n", encoding="utf-8")
     return roadmap
 
 
@@ -510,7 +511,7 @@ def write_phase_plan(
 ) -> Path:
     plan = repo / "plans" / f"phase-plan-v1-{phase.upper()}.md"
     roadmap_hash = hashlib.sha256(roadmap.read_bytes()).hexdigest()
-    rel_roadmap = roadmap.resolve().relative_to(repo.resolve())
+    rel_roadmap = roadmap.resolve().relative_to(repo.resolve()).as_posix()
     extra = "".join(f"{key}: {value}\n" for key, value in (extra_frontmatter or {}).items())
     if not body:
         owned = "none (read-only lane)" if owned_files is None else ", ".join(f"`{item}`" for item in owned_files)
@@ -533,7 +534,8 @@ def write_phase_plan(
         f"roadmap_sha256: {roadmap_hash}\n"
         f"{extra}"
         "---\n"
-        f"{body}\n"
+        f"{body}\n",
+        encoding="utf-8",
     )
     return plan
 

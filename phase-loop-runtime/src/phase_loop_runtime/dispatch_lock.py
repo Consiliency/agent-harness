@@ -2,53 +2,20 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from .runtime_paths import ensure_phase_loop_excluded, phase_loop_dir
 from .runtime_paths import _path_slug
+from .file_lock import acquire_exclusive, release_exclusive
 
-# Platform-conditional locking primitives (issue #16).
-# POSIX uses fcntl.flock; Windows uses msvcrt.locking on a 1-byte region at
-# the file's current seek position. Both surface non-blocking exclusive lock
-# acquisition + release through the same _acquire_exclusive / _release_exclusive
-# helpers so the rest of this module stays platform-agnostic.
-if sys.platform == "win32":
-    import msvcrt
+def _acquire_exclusive(handle) -> None:
+    acquire_exclusive(handle, blocking=False)
 
-    _LOCK_REGION_BYTES = 1
 
-    def _acquire_exclusive(handle) -> None:
-        # msvcrt.locking locks a region of length _LOCK_REGION_BYTES starting
-        # at the file's current seek position. Seek to start so concurrent
-        # holders contend on the same byte. LK_NBLCK = non-blocking exclusive.
-        # Raises OSError (subclass of BlockingIOError on Py3.10+? actually
-        # raises OSError with errno EACCES) when contended; normalize to
-        # BlockingIOError to match POSIX flock semantics.
-        handle.seek(0)
-        try:
-            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, _LOCK_REGION_BYTES)
-        except OSError as exc:
-            raise BlockingIOError(str(exc)) from exc
-
-    def _release_exclusive(handle) -> None:
-        handle.seek(0)
-        try:
-            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, _LOCK_REGION_BYTES)
-        except OSError:
-            # Already released or process is exiting — let cleanup proceed.
-            pass
-
-else:
-    import fcntl
-
-    def _acquire_exclusive(handle) -> None:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-
-    def _release_exclusive(handle) -> None:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+def _release_exclusive(handle) -> None:
+    release_exclusive(handle)
 
 
 def _ppid(pid: int) -> int | None:
@@ -194,6 +161,9 @@ class DispatchLock:
                 holder_started_at=_float_or_none(holder.get("started_at")),
                 roadmap=str(holder.get("roadmap") or "") or None,
             ) from exc
+        except BaseException:
+            handle.close()
+            raise
 
         handle.seek(0)
         handle.truncate()
@@ -242,8 +212,14 @@ def dispatch_lock_path(repo: Path, roadmap: Path) -> Path:
 
 def _read_holder_metadata(handle) -> dict[str, object]:
     try:
-        handle.seek(0)
-        raw = handle.read().strip()
+        # Windows locks are mandatory. The serialized object always starts with
+        # '{'; read only the unlocked tail so stable run IDs can still re-enter.
+        if os.name == "nt":
+            handle.seek(1)
+            raw = "{" + handle.read().strip()
+        else:
+            handle.seek(0)
+            raw = handle.read().strip()
         payload = json.loads(raw) if raw else {}
     except (OSError, json.JSONDecodeError):
         return {}

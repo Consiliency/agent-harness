@@ -1,0 +1,356 @@
+{
+  "$defs": {
+    "DiscoveryConstraintConflict": {
+      "additionalProperties": false,
+      "properties": {
+        "conflicting_requirements": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Conflicting Requirements",
+          "type": "array"
+        },
+        "details": {
+          "$ref": "#/$defs/DiscoveryDetails"
+        },
+        "status": {
+          "const": "constraint_conflict",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "conflicting_requirements",
+        "details",
+        "status"
+      ],
+      "title": "DiscoveryConstraintConflict",
+      "type": "object"
+    },
+    "DiscoveryDetails": {
+      "additionalProperties": false,
+      "properties": {
+        "alternatives": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Alternatives",
+          "type": "array"
+        },
+        "assembled_instructions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Assembled Instructions",
+          "type": "array"
+        },
+        "discovery_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Discovery Id",
+          "type": "string"
+        },
+        "guidance_refs": {
+          "items": {
+            "$ref": "#/$defs/DiscoveryGuidanceRef"
+          },
+          "maxItems": 2,
+          "title": "Guidance Refs",
+          "type": "array"
+        },
+        "required_guidance": {
+          "items": {
+            "$ref": "#/$defs/GuidanceRevision"
+          },
+          "title": "Required Guidance",
+          "type": "array"
+        },
+        "revisions": {
+          "$ref": "#/$defs/DiscoveryRevisions"
+        },
+        "termination_reason": {
+          "title": "Termination Reason",
+          "type": "string"
+        },
+        "trace_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Trace Digest",
+          "type": "string"
+        },
+        "uncertainty": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Uncertainty",
+          "type": "array"
+        },
+        "work_objective_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Work Objective Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "alternatives",
+        "assembled_instructions",
+        "discovery_id",
+        "guidance_refs",
+        "required_guidance",
+        "revisions",
+        "termination_reason",
+        "trace_digest",
+        "uncertainty",
+        "work_objective_id"
+      ],
+      "title": "DiscoveryDetails",
+      "type": "object"
+    },
+    "DiscoveryFailed": {
+      "additionalProperties": false,
+      "properties": {
+        "details": {
+          "$ref": "#/$defs/DiscoveryDetails"
+        },
+        "error_code": {
+          "title": "Error Code",
+          "type": "string"
+        },
+        "status": {
+          "const": "discovery_failed",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "details",
+        "error_code",
+        "status"
+      ],
+      "title": "DiscoveryFailed",
+      "type": "object"
+    },
+    "DiscoveryGuidanceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "resource_id": {
+          "minLength": 1,
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "revision": {
+          "minLength": 1,
+          "title": "Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "content_hash",
+        "resource_id",
+        "revision"
+      ],
+      "title": "DiscoveryGuidanceRef",
+      "type": "object"
+    },
+    "DiscoveryNeedsContext": {
+      "additionalProperties": false,
+      "properties": {
+        "details": {
+          "$ref": "#/$defs/DiscoveryDetails"
+        },
+        "missing_facts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Missing Facts",
+          "type": "array"
+        },
+        "status": {
+          "const": "needs_context",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "details",
+        "missing_facts",
+        "status"
+      ],
+      "title": "DiscoveryNeedsContext",
+      "type": "object"
+    },
+    "DiscoveryRevisions": {
+      "additionalProperties": false,
+      "properties": {
+        "authorization_digest": {
+          "title": "Authorization Digest",
+          "type": "string"
+        },
+        "catalog_digest": {
+          "title": "Catalog Digest",
+          "type": "string"
+        },
+        "catalog_revision": {
+          "title": "Catalog Revision",
+          "type": "string"
+        },
+        "content_revision": {
+          "title": "Content Revision",
+          "type": "string"
+        },
+        "descriptions_digest": {
+          "title": "Descriptions Digest",
+          "type": "string"
+        },
+        "policy_digest": {
+          "title": "Policy Digest",
+          "type": "string"
+        },
+        "settings_revision": {
+          "title": "Settings Revision",
+          "type": "string"
+        },
+        "taxonomy_revision": {
+          "title": "Taxonomy Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "authorization_digest",
+        "catalog_digest",
+        "catalog_revision",
+        "content_revision",
+        "descriptions_digest",
+        "policy_digest",
+        "settings_revision",
+        "taxonomy_revision"
+      ],
+      "title": "DiscoveryRevisions",
+      "type": "object"
+    },
+    "GuidanceRevision": {
+      "additionalProperties": false,
+      "properties": {
+        "admission": {
+          "anyOf": [
+            {
+              "const": "policy_admitted",
+              "type": "string"
+            },
+            {
+              "const": "explicitly_enabled",
+              "type": "string"
+            }
+          ],
+          "title": "Admission"
+        },
+        "authority": {
+          "title": "Authority",
+          "type": "string"
+        },
+        "content_hash": {
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "resource_id": {
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "revision": {
+          "title": "Revision",
+          "type": "string"
+        },
+        "role": {
+          "title": "Role",
+          "type": "string"
+        },
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "token_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Token Count"
+        }
+      },
+      "required": [
+        "admission",
+        "authority",
+        "content_hash",
+        "resource_id",
+        "revision",
+        "role",
+        "task_id",
+        "token_count"
+      ],
+      "title": "GuidanceRevision",
+      "type": "object"
+    },
+    "NoOptionalGuidance": {
+      "additionalProperties": false,
+      "properties": {
+        "details": {
+          "$ref": "#/$defs/DiscoveryDetails"
+        },
+        "status": {
+          "const": "no_optional_guidance",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "details",
+        "status"
+      ],
+      "title": "NoOptionalGuidance",
+      "type": "object"
+    },
+    "SelectedGuidance": {
+      "additionalProperties": false,
+      "properties": {
+        "details": {
+          "$ref": "#/$defs/DiscoveryDetails"
+        },
+        "status": {
+          "const": "selected_guidance",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "details",
+        "status"
+      ],
+      "title": "SelectedGuidance",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/SelectedGuidance"
+    },
+    {
+      "$ref": "#/$defs/NoOptionalGuidance"
+    },
+    {
+      "$ref": "#/$defs/DiscoveryNeedsContext"
+    },
+    {
+      "$ref": "#/$defs/DiscoveryConstraintConflict"
+    },
+    {
+      "$ref": "#/$defs/DiscoveryFailed"
+    }
+  ]
+}

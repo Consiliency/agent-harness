@@ -23,16 +23,22 @@ unterminated final fragment can be repaired as an interrupted append.
 """
 from __future__ import annotations
 
-import fcntl
 import errno
 import json
 import os
 import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, TYPE_CHECKING
 
 from phase_loop_runtime.train_ledger import CoordinatorEvent, CoordinatorEventKind
+from phase_loop_runtime.file_lock import acquire_exclusive
+
+if os.name != "nt":
+    import fcntl
+
+if TYPE_CHECKING:
+    from phase_loop_runtime.windows_storage import BoundDirectory
 
 _MAX_RECORD_BYTES = 64 * 1024
 _LOCK = threading.Lock()
@@ -78,9 +84,17 @@ def _reject_phase_loop(path: Path) -> None:
         raise ValueError("convergence event logs cannot be stored under .phase-loop")
 
 
-def _open_log(path: Path, *, create: bool) -> tuple[int, int]:
+def _open_log(path: Path, *, create: bool) -> tuple[int, int | BoundDirectory]:
     """Bind canonical storage once; its owner must not relocate bound objects."""
-
+    if os.name == "nt":
+        from ..windows_storage import BoundDirectory
+        _reject_phase_loop(path)
+        bound = BoundDirectory(path.parent, create_private=create)
+        try:
+            return bound.open_record(path.name, create=create), bound
+        except BaseException:
+            bound.close()
+            raise
     parent = path.parent.resolve()
     if ".phase-loop" in path.parts:
         raise ValueError("convergence event logs cannot be stored under .phase-loop")
@@ -200,7 +214,10 @@ def _append(path: Path, event: CoordinatorEvent, *, require_intent: bool) -> Non
     with _LOCK:
         fd, parent_fd = _open_log(path, create=True)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            if os.name == "nt":
+                acquire_exclusive(fd)
+            else:
+                fcntl.flock(fd, fcntl.LOCK_EX)
             raw_existing = _read_all(fd)
             keep, existing = _durable_records(raw_existing)
             already_recorded = _is_already_recorded(existing, event, require_intent=require_intent)
@@ -213,10 +230,16 @@ def _append(path: Path, event: CoordinatorEvent, *, require_intent: bool) -> Non
                 return
             _write_fully(fd, raw)
             os.fsync(fd)
-            os.fsync(parent_fd)
+            if os.name == "nt":
+                parent_fd.flush()
+            else:
+                os.fsync(parent_fd)
         finally:
             os.close(fd)
-            os.close(parent_fd)
+            if os.name == "nt":
+                parent_fd.close()
+            else:
+                os.close(parent_fd)
 
 
 def _is_already_recorded(
@@ -304,7 +327,10 @@ def read_convergence_events(path: Path) -> tuple[CoordinatorEvent, ...]:
         return _durable_records(_read_all(fd))[1]
     finally:
         os.close(fd)
-        os.close(parent_fd)
+        if os.name == "nt":
+            parent_fd.close()
+        else:
+            os.close(parent_fd)
 
 
 def recover_train_state(events: Iterable[CoordinatorEvent]) -> RecoveredTrainState:

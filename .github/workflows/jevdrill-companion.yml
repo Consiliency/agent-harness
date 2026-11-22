@@ -1,0 +1,265 @@
+name: jevdrill-companion
+
+# JEV Drill companion (JEVHOST §8, agent-harness#2071). NOT a required check.
+#
+# Two Linux legs run on every push to main and every matching pull request, both with
+# harness pytest on Python 3.12 (the R6 Python):
+#   - `receipt (linux, py3.12)`: the required R3 Linux receipt. Neither JEVDRILL_TEST_CLI
+#     nor JEVDRILL_TEST_PYTHON is set; scripts/jevdrill_receipt.py classifies the junit
+#     against its four-reason skip allowlist and the completeness rules.
+#   - `installed (linux, py3.12 + jev cpython-3.14)`: JEV Drill at `jevdrill_ref`, synced
+#     on CPython 3.14, sets both variables; every collected `jevdrill_installed` item must
+#     pass by node ID.
+# A dispatch adds the same two legs on macos-15 and windows-2025, and an informational
+# harness-3.14 leg that is never R3 or R6 evidence (JEVHOST §1.1 item 4).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - phase-loop-runtime/src/phase_loop_runtime/jevdrill_adapter.py
+      - phase-loop-runtime/src/phase_loop_runtime/jevdrill_queue.py
+      - phase-loop-runtime/src/phase_loop_runtime/runner.py
+      - phase-loop-runtime/src/phase_loop_runtime/launcher.py
+      - phase-loop-runtime/src/phase_loop_runtime/observability.py
+      - phase-loop-runtime/src/phase_loop_runtime/file_lock.py
+      - phase-loop-runtime/src/phase_loop_runtime/windows_process.py
+      - phase-loop-runtime/src/phase_loop_runtime/windows_storage.py
+      - phase-loop-runtime/tests/test_jevdrill_adapter.py
+      - phase-loop-runtime/tests/test_jevdrill_diagnostics.py
+      - phase-loop-runtime/tests/test_jevdrill_discovery.py
+      - phase-loop-runtime/tests/test_jevdrill_input.py
+      - phase-loop-runtime/tests/test_jevdrill_queue.py
+      - phase-loop-runtime/tests/test_jevdrill_usage.py
+      - phase-loop-runtime/tests/test_windows_locking.py
+      - phase-loop-runtime/tests/test_launcher_liveness.py
+      - phase-loop-runtime/tests/test_windows_processes.py
+      - phase-loop-runtime/tests/test_windows_storage.py
+      - phase-loop-runtime/tests/test_phase_loop_launcher.py
+      - phase-loop-runtime/tests/test_phase_loop_work_unit_observability.py
+      - phase-loop-runtime/tests/jevdrill_fixture_values.py
+      - phase-loop-runtime/tests/phase_loop_test_utils.py
+      - phase-loop-runtime/tests/jevdrill_install.py
+      - phase-loop-runtime/tests/fixtures/jevdrill/**
+      - phase-loop-runtime/tests/conftest.py
+      - phase-loop-runtime/tests/launch_audit_hook.py
+      - phase-loop-runtime/pyproject.toml
+      - phase-loop-runtime/uv.lock
+      - phase-loop-runtime/scripts/jevdrill_receipt.py
+      - .github/workflows/jevdrill-companion.yml
+  workflow_dispatch:
+    inputs:
+      jevdrill_ref:
+        description: Full 40-hex Consiliency/jevdrill commit SHA (JEVHOST §5)
+        type: string
+        required: false
+        default: 998912b1e0195464e6f3aa048c5421c2bed57491
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('jevdrill-companion-pr-{0}', github.event.pull_request.number) || format('jevdrill-companion-{0}-{1}', github.ref, github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PHASE_LOOP_TDD_EXPECT_SCHED: "1"
+  JEVDRILL_REF: ${{ inputs.jevdrill_ref || '998912b1e0195464e6f3aa048c5421c2bed57491' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  receipt:
+    name: ${{ matrix.job_name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix: >-
+        ${{ fromJSON(github.event_name == 'workflow_dispatch' && '{"include":[{"job_name":"receipt (linux, py3.12)","runner":"ubuntu-24.04","os_label":"linux","harness_python":"3.12"},{"job_name":"receipt (macos, py3.12)","runner":"macos-15","os_label":"macos","harness_python":"3.12"},{"job_name":"receipt (windows, py3.12)","runner":"windows-2025","os_label":"windows","harness_python":"3.12"},{"job_name":"informational: harness py3.14 (not R3/R6 evidence)","runner":"ubuntu-24.04","os_label":"linux","harness_python":"3.14"}]}' || '{"include":[{"job_name":"receipt (linux, py3.12)","runner":"ubuntu-24.04","os_label":"linux","harness_python":"3.12"}]}') }}
+    steps:
+      - name: Validate jevdrill_ref
+        run: |
+          if [[ ! "$JEVDRILL_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::jevdrill_ref must be a full 40-hex commit SHA" >&2
+            exit 1
+          fi
+
+      - name: Keep checked-out bytes unconverted (CRLF on Windows breaks the §5 digests)
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Sync the harness (R6)
+        run: uv sync --project phase-loop-runtime --group test --extra visual --locked --python ${{ matrix.harness_python }}
+
+      - name: Compute PYTHONPATH
+        shell: bash
+        env:
+          HOST_OS: ${{ runner.os }}
+          WORKSPACE: ${{ github.workspace }}
+        run: |
+          if [ "$HOST_OS" = "Windows" ]; then sep=';'; slash="\\"; else sep=':'; slash='/'; fi
+          root="${WORKSPACE}${slash}phase-loop-runtime"
+          echo "PYTHONPATH=${root}${slash}src${sep}${root}${slash}tests" >> "$GITHUB_ENV"
+
+      - name: S3 review refusal on native Windows, unpatched (JEVHOST §4 S3, S5)
+        if: runner.os == 'Windows'
+        working-directory: phase-loop-runtime
+        run: |
+          junit="$RUNNER_TEMP/jevdrill-windows-review-refusal.xml"
+          uv run --no-sync python -m pytest -q -rA -p no:cacheprovider --junitxml="$junit" tests/test_jevdrill_windows_review_refusal.py
+          uv run --no-sync python -c "import sys, xml.etree.ElementTree as E; s = E.parse(sys.argv[1]).getroot(); s = s if s.tag == 'testsuite' else s[0]; c = {k: int(s.get(k, 0)) for k in ('tests', 'failures', 'errors', 'skipped')}; print(c); sys.exit(0 if c == {'tests': 1, 'failures': 0, 'errors': 0, 'skipped': 0} else 1)" "$junit"
+
+      - name: Run the twelve files and classify the receipt
+        working-directory: phase-loop-runtime
+        env:
+          LEG_OS: ${{ matrix.os_label }}
+          LEG_TITLE: ${{ matrix.job_name }}
+        run: |
+          junit="$RUNNER_TEMP/jevdrill-receipt.xml"
+          rc=0
+          uv run --no-sync python -m pytest -q -rs -p no:cacheprovider -m "not dotfiles_integration" --junitxml="$junit" tests/test_jevdrill_adapter.py tests/test_jevdrill_diagnostics.py tests/test_jevdrill_discovery.py tests/test_jevdrill_input.py tests/test_jevdrill_queue.py tests/test_jevdrill_usage.py tests/test_windows_locking.py tests/test_launcher_liveness.py tests/test_windows_processes.py tests/test_windows_storage.py tests/test_phase_loop_launcher.py tests/test_phase_loop_work_unit_observability.py || rc=$?
+          uv run --no-sync python scripts/jevdrill_receipt.py classify --leg receipt --os "$LEG_OS" --junit "$junit" --exit-code "$rc" --title "$LEG_TITLE"
+
+      - name: Upload the junit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jevdrill-receipt-${{ matrix.os_label }}-py${{ matrix.harness_python }}
+          path: ${{ runner.temp }}/jevdrill-receipt.xml
+          if-no-files-found: warn
+
+  installed:
+    name: ${{ matrix.job_name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix: >-
+        ${{ fromJSON(github.event_name == 'workflow_dispatch' && '{"include":[{"job_name":"installed (linux, py3.12 + jev cpython-3.14)","runner":"ubuntu-24.04","os_label":"linux","harness_python":"3.12"},{"job_name":"installed (macos, py3.12 + jev cpython-3.14)","runner":"macos-15","os_label":"macos","harness_python":"3.12"},{"job_name":"installed (windows, py3.12 + jev cpython-3.14)","runner":"windows-2025","os_label":"windows","harness_python":"3.12"}]}' || '{"include":[{"job_name":"installed (linux, py3.12 + jev cpython-3.14)","runner":"ubuntu-24.04","os_label":"linux","harness_python":"3.12"}]}') }}
+    steps:
+      - name: Validate jevdrill_ref
+        id: ref
+        run: |
+          if [[ ! "$JEVDRILL_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::jevdrill_ref must be a full 40-hex commit SHA" >&2
+            exit 1
+          fi
+          echo "sha=$JEVDRILL_REF" >> "$GITHUB_OUTPUT"
+
+      - name: Keep checked-out bytes unconverted (CRLF on Windows breaks the §5 digests)
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Check out JEV Drill at jevdrill_ref
+        uses: actions/checkout@v4
+        with:
+          repository: Consiliency/jevdrill
+          ref: ${{ steps.ref.outputs.sha }}
+          path: _jevdrill
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Sync the harness (R6)
+        run: uv sync --project phase-loop-runtime --group test --extra visual --locked --python ${{ matrix.harness_python }}
+
+      - name: Sync JEV Drill on CPython 3.14
+        id: jev
+        working-directory: _jevdrill
+        env:
+          HOST_OS: ${{ runner.os }}
+          WORKSPACE: ${{ github.workspace }}
+        run: |
+          uv sync --locked --python cpython-3.14
+          # Both variables come from this one environment. On Windows the path is the
+          # mixed (forward-slash) form, which both bash and the Windows API accept.
+          if [ "$HOST_OS" = "Windows" ]; then
+            venv="$(cygpath -m "$WORKSPACE")/_jevdrill/.venv"
+            python="${venv}/Scripts/python.exe"
+            cli="${venv}/Scripts/jevdrill.exe"
+          else
+            venv="${WORKSPACE}/_jevdrill/.venv"
+            python="${venv}/bin/python"
+            cli="${venv}/bin/jevdrill"
+          fi
+          "$python" -I -c 'import sys; print(sys.implementation.name); print(sys.version)' > "$RUNNER_TEMP/jev-interpreter.txt"
+          impl="$(sed -n 1p "$RUNNER_TEMP/jev-interpreter.txt" | tr -d '\r')"
+          version="$(sed -n 2p "$RUNNER_TEMP/jev-interpreter.txt" | tr -d '\r')"
+          {
+            echo "### JEV Drill environment"
+            echo ""
+            echo "- jevdrill_ref: \`$JEVDRILL_REF\`"
+            echo "- sys.implementation.name: \`$impl\`"
+            echo "- sys.version: \`$version\`"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$impl" != "cpython" ] || [[ "$version" != 3.14.* ]]; then
+            echo "::error::JEV Drill must run on CPython 3.14, got $impl $version" >&2
+            exit 1
+          fi
+          echo "python=$python" >> "$GITHUB_OUTPUT"
+          echo "cli=$cli" >> "$GITHUB_OUTPUT"
+
+      - name: Compare the jevdrill checkout with the harness copies (JEVHOST §5)
+        working-directory: phase-loop-runtime
+        env:
+          WORKSPACE: ${{ github.workspace }}
+        run: uv run --no-sync python scripts/jevdrill_receipt.py compare-contract --jevdrill "$WORKSPACE/_jevdrill" --harness tests/fixtures/jevdrill
+
+      - name: Compute PYTHONPATH
+        shell: bash
+        env:
+          HOST_OS: ${{ runner.os }}
+          WORKSPACE: ${{ github.workspace }}
+        run: |
+          if [ "$HOST_OS" = "Windows" ]; then sep=';'; slash="\\"; else sep=':'; slash='/'; fi
+          root="${WORKSPACE}${slash}phase-loop-runtime"
+          echo "PYTHONPATH=${root}${slash}src${sep}${root}${slash}tests" >> "$GITHUB_ENV"
+
+      - name: S3 review refusal on native Windows, unpatched (JEVHOST §4 S3, S5)
+        if: runner.os == 'Windows'
+        working-directory: phase-loop-runtime
+        run: |
+          junit="$RUNNER_TEMP/jevdrill-windows-review-refusal.xml"
+          uv run --no-sync python -m pytest -q -rA -p no:cacheprovider --junitxml="$junit" tests/test_jevdrill_windows_review_refusal.py
+          uv run --no-sync python -c "import sys, xml.etree.ElementTree as E; s = E.parse(sys.argv[1]).getroot(); s = s if s.tag == 'testsuite' else s[0]; c = {k: int(s.get(k, 0)) for k in ('tests', 'failures', 'errors', 'skipped')}; print(c); sys.exit(0 if c == {'tests': 1, 'failures': 0, 'errors': 0, 'skipped': 0} else 1)" "$junit"
+
+      - name: Run the twelve files against the installed JEV Drill and classify
+        working-directory: phase-loop-runtime
+        env:
+          JEVDRILL_TEST_PYTHON: ${{ steps.jev.outputs.python }}
+          JEVDRILL_TEST_CLI: ${{ steps.jev.outputs.cli }}
+          LEG_OS: ${{ matrix.os_label }}
+          LEG_TITLE: ${{ matrix.job_name }}
+        run: |
+          junit="$RUNNER_TEMP/jevdrill-installed.xml"
+          collected="$RUNNER_TEMP/jevdrill-installed-collected.txt"
+          uv run --no-sync python -m pytest -q -p no:cacheprovider --collect-only -m jevdrill_installed tests/test_jevdrill_adapter.py tests/test_jevdrill_diagnostics.py tests/test_jevdrill_discovery.py tests/test_jevdrill_input.py tests/test_jevdrill_queue.py tests/test_jevdrill_usage.py tests/test_windows_locking.py tests/test_launcher_liveness.py tests/test_windows_processes.py tests/test_windows_storage.py tests/test_phase_loop_launcher.py tests/test_phase_loop_work_unit_observability.py > "$collected"
+          cat "$collected"
+          rc=0
+          uv run --no-sync python -m pytest -q -rs -p no:cacheprovider -m "not dotfiles_integration" --junitxml="$junit" tests/test_jevdrill_adapter.py tests/test_jevdrill_diagnostics.py tests/test_jevdrill_discovery.py tests/test_jevdrill_input.py tests/test_jevdrill_queue.py tests/test_jevdrill_usage.py tests/test_windows_locking.py tests/test_launcher_liveness.py tests/test_windows_processes.py tests/test_windows_storage.py tests/test_phase_loop_launcher.py tests/test_phase_loop_work_unit_observability.py || rc=$?
+          uv run --no-sync python scripts/jevdrill_receipt.py classify --leg installed --os "$LEG_OS" --junit "$junit" --exit-code "$rc" --collected "$collected" --title "$LEG_TITLE"
+
+      - name: Upload the junit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jevdrill-installed-${{ matrix.os_label }}-py${{ matrix.harness_python }}
+          path: |
+            ${{ runner.temp }}/jevdrill-installed.xml
+            ${{ runner.temp }}/jevdrill-installed-collected.txt
+          if-no-files-found: warn

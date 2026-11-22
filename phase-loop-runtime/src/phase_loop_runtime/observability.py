@@ -1236,6 +1236,9 @@ def _format_epoch(value: float | None) -> str | None:
 def _pid_is_live(pid: int | None) -> bool:
     if not pid or pid <= 0:
         return False
+    if os.name == "nt":
+        from .windows_process import process_is_live
+        return process_is_live(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -1260,7 +1263,7 @@ def _process_tree_cpu_percent(pid: int | None, process_group_id: int | None) -> 
 
 
 def _process_cpu_percent(pid: int | None) -> float | None:
-    if not pid or pid <= 0:
+    if os.name == "nt" or not pid or pid <= 0:
         return None
     try:
         result = subprocess.run(
@@ -1284,7 +1287,7 @@ def _process_cpu_percent(pid: int | None) -> float | None:
 
 
 def _process_group_cpu_percent(process_group_id: int | None) -> float | None:
-    if not process_group_id or process_group_id <= 0:
+    if os.name == "nt" or not process_group_id or process_group_id <= 0:
         return None
     try:
         result = subprocess.run(

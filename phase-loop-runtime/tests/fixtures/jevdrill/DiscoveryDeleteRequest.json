@@ -1,0 +1,60 @@
+{
+  "$defs": {
+    "DiscoveryScope": {
+      "additionalProperties": false,
+      "properties": {
+        "operation": {
+          "const": "discover",
+          "title": "Operation",
+          "type": "string"
+        },
+        "producer": {
+          "title": "Producer",
+          "type": "string"
+        },
+        "project_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Project Id",
+          "type": "string"
+        },
+        "workspace_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Workspace Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation",
+        "producer",
+        "project_id",
+        "workspace_id"
+      ],
+      "title": "DiscoveryScope",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "scope": {
+      "$ref": "#/$defs/DiscoveryScope"
+    },
+    "work_objective_id": {
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "title": "Work Objective Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "scope",
+    "work_objective_id"
+  ],
+  "title": "DiscoveryDeleteRequest",
+  "type": "object"
+}

@@ -96,6 +96,16 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
     # (the provider interface), so they hold no raw launch of their own.
     ("lease_supervisor.py", "_exec_executor"): (
         RELOCATED, "launcher.py:launch:child_executor_env"),
+    # JEVHOST §13 [N10]: the native-Windows supervisor, the counterpart of
+    # lease_supervisor's rows. Its guardian (this package's windows_process helper, run as
+    # `python -I -S`) and the admitted child that runs the executor receive the env that
+    # `launcher.launch` decided, and add nothing to it.
+    ("windows_process.py", "run_owned"): (
+        RELOCATED, "launcher.py:launch:child_scratch_env"),
+    ("windows_process.py", "start_leased_guardian"): (
+        RELOCATED, "launcher.py:launch:child_scratch_env"),
+    ("windows_process.py", "_admitted_child"): (
+        RELOCATED, "launcher.py:launch:child_scratch_env"),
     # agent-harness#1132: the jailed seat's helper chain (probe and launch, one decided
     # env object).
     ("panel_invoker.py", "_require_jailed_seat_identity"): (
@@ -266,6 +276,12 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
     ("seat_uid.py", "scan_in_h"): (
         NOT_AGENT, "nsenter + this package's read-only seat_uid scan helper"),
     ("seat_uid.py", "teardown_in_h"): (NOT_AGENT, "nsenter + this package's seat_uid helper"),
+    # JEVHOST §13: the configured JEV Drill CLI (`jevdrill`, or the installed interpreter
+    # with `-m jevdrill.cli`), not in PROVIDERS and not an agent CLI. shell=False, bounded by
+    # schema, size and deadline. It inherits the full parent environment, as in the draft; a
+    # minimal-environment allowlist is deferred to agent-harness#2084.
+    ("jevdrill_adapter.py", "JevDrillTransport.call"): (
+        NOT_AGENT, "the JEV Drill CLI (jevdrill); full parent env, allowlist agent-harness#2084"),
     ("train_runner.py", "_live_merge_pr"): (NOT_AGENT, "gh"),
     ("verification_evidence.py", "_interpreter_minor_version"): (NOT_AGENT, "python"),
     ("verification_evidence.py", "_interpreter_full_version"): (NOT_AGENT, "python"),

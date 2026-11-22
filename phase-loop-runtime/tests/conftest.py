@@ -43,15 +43,25 @@ if os.environ.get("PHASE_LOOP_REQUIRE_SEAT_OWNER") == "1":
     os.environ.setdefault("PHASE_LOOP_LAUNCH_AUDIT_PATH", str(Path.cwd() / "seat-launch-audit.jsonl"))
     os.environ["PHASE_LOOP_LAUNCH_AUDIT_FAIL"] = "1"
 
-import _scratch_audit_hook
+#: JEVHOST [B5]: ``panel_invoker`` cannot be imported on native Windows (its import chain
+#: reaches POSIX-only module-level code), so every conftest use of it is POSIX-only. That
+#: includes the scratch audit hook, which derives its agent-CLI set from it at import.
+#: On Windows the launch audit hook (``pytest_configure``) stays active with ``fail=True``.
+_PANEL_INVOKER_HOST = os.name == "posix"
 
-# agent-harness#1147: every agent-CLI spawn the RUNTIME makes, by any API, must carry the
-# scratch decision's marker. Enforced at runtime by an audit hook, not by reading source.
-_scratch_audit_hook.install()
-_scratch_audit_hook.enabled = True
-_scratch_audit_dir = tempfile.mkdtemp(prefix="pl-scratch-audit-")
+if _PANEL_INVOKER_HOST:
+    import _scratch_audit_hook
+
+    # agent-harness#1147: every agent-CLI spawn the RUNTIME makes, by any API, must carry the
+    # scratch decision's marker. Enforced at runtime by an audit hook, not by reading source.
+    _scratch_audit_hook.install()
+    _scratch_audit_hook.enabled = True
+    _scratch_audit_dir = tempfile.mkdtemp(prefix="pl-scratch-audit-")
+    _scratch_audit_hook.log_path = os.path.join(_scratch_audit_dir, "violations.log")
+else:
+    _scratch_audit_hook = None
+    _scratch_audit_dir = None
 _scratch_audit_pid = os.getpid()
-_scratch_audit_hook.log_path = os.path.join(_scratch_audit_dir, "violations.log")
 
 
 class _CapturedLaunch:
@@ -96,7 +106,7 @@ def _carries_a_proof(process) -> bool:
 def _cleanup_scratch_audit():
     # Each xdist worker owns its directory. Forked children share the log but must
     # not remove their parent's directory when they exit.
-    if os.getpid() == _scratch_audit_pid:
+    if _scratch_audit_hook is not None and os.getpid() == _scratch_audit_pid:
         _scratch_audit_hook.log_path = None
         shutil.rmtree(_scratch_audit_dir, ignore_errors=True)
 
@@ -111,6 +121,9 @@ def pytest_unconfigure(config):
 
 @pytest.fixture(autouse=True)
 def _every_agent_spawn_has_a_scratch_decision():
+    if _scratch_audit_hook is None:
+        yield
+        return
     _scratch_audit_hook.drain()
     yield
     found = _scratch_audit_hook.drain()
@@ -221,6 +234,10 @@ def _no_real_agy_vendor_store(monkeypatch):
     lies under, so every anchor walk fails the same way on every host, whatever its temp
     directory. A test of the hold builds its own stores and sets ``agy_hold.VENDOR_STORES``
     and ``agy_hold._WALK_ROOT`` itself."""
+    if os.name != "posix":
+        # JEVHOST [B5]: agy_hold uses os.O_DIRECTORY at import, which native Windows lacks;
+        # no agy seat image exists there, so there is no vendor store to keep tests off.
+        return
     from phase_loop_runtime import agy_hold
 
     monkeypatch.setattr(agy_hold, "VENDOR_STORES", ())
@@ -312,6 +329,8 @@ def _no_long_real_gemini_login_wait(monkeypatch):
     more than 30 s to go fails here instead of sleeping; tests use a login about to expire or
     replace the sleep. A test of the sleep's cancellation takes the unguarded function as
     ``_gemini_login_sleep.real``."""
+    if not _PANEL_INVOKER_HOST:
+        return
     from phase_loop_runtime import panel_invoker
 
     real = panel_invoker._gemini_login_sleep
@@ -413,6 +432,8 @@ def _claude_sdk_route_is_provider_free(request, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _isolate_implicit_review_authority(monkeypatch):
+    if not _PANEL_INVOKER_HOST:
+        return
     from phase_loop_runtime import panel_invoker
 
     real_check = panel_invoker._govlean_authority_switched
@@ -523,7 +544,13 @@ def pytest_configure(config):
     carry pyproject.toml, so the ini registration is absent and an unregistered
     marker would emit PytestUnknownMarkWarning)."""
     from launch_audit_hook import install as install_launch_audit
-    from phase_loop_runtime.panel_invoker import _recorded_provider_hashes
+
+    if _PANEL_INVOKER_HOST:
+        from phase_loop_runtime.panel_invoker import _recorded_provider_hashes
+    else:
+        # JEVHOST [B5]: no recorded hashes, so no installed inference binary is exempt.
+        def _recorded_provider_hashes():
+            return ()
 
     audit_path = os.environ.get("PHASE_LOOP_LAUNCH_AUDIT_PATH")
     if audit_path is None:
@@ -547,6 +574,7 @@ def pytest_configure(config):
         "markers",
         "dotfiles_integration: test requires a dotfiles fleet tree (skipped standalone)",
     )
+    config.addinivalue_line("markers", _JEVDRILL_INSTALLED_MARKER_LINE)
 
     # Consiliency/agent-harness#378: abort collection with ONE actionable line if
     # the installed consiliency-contract violates this package's declared floor.
@@ -575,6 +603,57 @@ def pytest_configure(config):
     config.stash[CONTRACT_FLOOR_PREFLIGHT_RAN] = True
 
 
+# JEVHOST §6: the installed-JEV tests. They are the users of ``installed_discovery``
+# (tests/test_jevdrill_discovery.py) and the real-CLI route test below. Each carries the
+# ``jevdrill_installed`` marker per test, and only this hook may skip one: only when
+# neither variable is set. The required suite installs no JEV Drill.
+_JEVDRILL_INSTALLED_MARKER_LINE = (
+    "jevdrill_installed: test needs an installed JEV Drill (JEVDRILL_TEST_CLI or "
+    "JEVDRILL_TEST_PYTHON); skipped when neither is set"
+)
+JEVDRILL_INSTALLED_ENV = ("JEVDRILL_TEST_CLI", "JEVDRILL_TEST_PYTHON")
+JEVDRILL_INSTALLED_SKIP_REASON = (
+    "jevdrill_installed: neither JEVDRILL_TEST_CLI nor JEVDRILL_TEST_PYTHON is set"
+)
+_JEVDRILL_INSTALLED_FIXTURE = "installed_discovery"
+_JEVDRILL_ROUTE_TEST = ("test_jevdrill_adapter.py", "test_real_jevdrill_cli_route_and_durable_reports")
+
+
+def _is_jevdrill_route_test(item) -> bool:
+    path = getattr(item, "path", None)
+    name = getattr(item, "originalname", None) or getattr(item, "name", None)
+    return path is not None and (Path(path).name, name) == _JEVDRILL_ROUTE_TEST
+
+
+def _apply_jevdrill_installed_rules(items) -> None:
+    """Both collection errors of JEVHOST §6, then the one skip rule."""
+    unmarked, stray = [], []
+    for item in items:
+        get_marker = getattr(item, "get_closest_marker", None)
+        if get_marker is None:
+            continue
+        marked = get_marker("jevdrill_installed") is not None
+        uses_fixture = _JEVDRILL_INSTALLED_FIXTURE in getattr(item, "fixturenames", ())
+        if uses_fixture and not marked:
+            unmarked.append(item.nodeid)
+        elif marked and not uses_fixture and not _is_jevdrill_route_test(item):
+            stray.append(item.nodeid)
+    if unmarked or stray:
+        lines = ["jevdrill_installed collection error (JEVHOST §6):"]
+        lines += [f"  {nodeid}: uses installed_discovery without the jevdrill_installed marker"
+                  for nodeid in unmarked]
+        lines += [f"  {nodeid}: carries jevdrill_installed but does not use installed_discovery "
+                  "and is not the route test" for nodeid in stray]
+        raise pytest.UsageError("\n".join(lines))
+    if any(os.environ.get(name) is not None for name in JEVDRILL_INSTALLED_ENV):
+        return
+    skip = pytest.mark.skip(reason=JEVDRILL_INSTALLED_SKIP_REASON)
+    for item in items:
+        get_marker = getattr(item, "get_closest_marker", None)
+        if get_marker is not None and get_marker("jevdrill_installed") is not None:
+            item.add_marker(skip)
+
+
 def pytest_collection_modifyitems(config, items):
     """TESTDECOUPLE SL-0: skip ``dotfiles_integration``-marked items when no
     dotfiles fleet tree is reachable (the extracted ``agent-harness`` standalone
@@ -584,7 +663,10 @@ def pytest_collection_modifyitems(config, items):
     paths. Integration modules that read dotfiles paths at *import* time carry an
     additional module-level ``pytest.skip(..., allow_module_level=True)`` guard
     (SL-1), because markers are only consulted after a module is imported.
+
+    JEVHOST §6: the ``jevdrill_installed`` rules run first, over every collected item.
     """
+    _apply_jevdrill_installed_rules(items)
     if not dotfiles_tree_present():
         skip_marker = pytest.mark.skip(reason="requires dotfiles tree (dotfiles_integration)")
         for item in items:
