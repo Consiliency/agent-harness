@@ -172,6 +172,9 @@ BASE_OD10_CLASSES: dict[str, str] = {
     "under_claude_code": "ordinary",
 }
 
+# Later seat lanes' own code prefixes (SEATS GROK: test_grok_seat_vocabulary.py).
+LATER_SEAT_PREFIXES: tuple[str, ...] = ("grok_seat_",)
+
 # Fix-line phrases that would name a retired route or a key-based credential.
 RETIRED_ROUTE_WORDS = ("sealed", "inline", "key-based", "api key", "api-key", "apikey")
 
@@ -244,19 +247,22 @@ def test_descend_and_capacity_sets_keep_their_literal_values():
 
 def test_removing_the_codex_entries_leaves_the_base_table():
     """Without the nine codes, OD-10 classifies exactly the rest of the mode line closure,
-    and the codex entries are the only additions to the table."""
+    and the codex entries are the only additions to the table. A later seat lane's own
+    vocabulary (``LATER_SEAT_PREFIXES``) is held by that lane's test and set aside here."""
     from phase_loop_runtime import claude_seat_transport
 
+    later = {code for code in contract.OD10_CLASSES if code.startswith(LATER_SEAT_PREFIXES)}
     base = {code: cls for code, cls in contract.OD10_CLASSES.items()
-            if not code.startswith("codex_seat_")}
+            if not code.startswith("codex_seat_") and code not in later}
     assert len(BASE_OD10_CLASSES) == 129
     assert base == BASE_OD10_CLASSES
     base_closure = (
-        (set(seat_jail.NOTICE_CODES) - set(CODEX_CODES)) | set(claude_seat_transport.CODES)
+        (set(seat_jail.NOTICE_CODES) - set(CODEX_CODES) - later)
+        | set(claude_seat_transport.CODES)
         | set(contract.CODES) | {"panel_claude_route_invalid", "panel_claude_transport_not_admitted"}
     )
     assert set(base) == base_closure
-    assert set(contract.OD10_CLASSES) - set(base) == set(CODEX_CODES)
+    assert set(contract.OD10_CLASSES) - set(base) - later == set(CODEX_CODES)
     assert not contract._SECURITY_CODES & contract._ORDINARY_CODES
     contract._validate_contract()
 

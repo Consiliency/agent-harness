@@ -32,6 +32,8 @@ EXPECTED_SECURITY_CODES = frozenset({
     "gemini_seat_token_in_output",
     "gemini_seat_token_refreshed_in_jail",
     "gemini_seat_token_scope_excess",
+    "grok_seat_token_in_output",
+    "grok_seat_token_refreshed_in_jail",
     "seat_egress_integrity_failed",
     "seat_egress_tls_unterminated",
     "seat_output_retained_after_teardown",

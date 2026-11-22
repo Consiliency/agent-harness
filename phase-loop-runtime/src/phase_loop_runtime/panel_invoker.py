@@ -3375,6 +3375,9 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "network namespace did not come up; launch is UNISOLATED",
     "the namespace came up but cannot resolve a hostname; a seat here could reach raw IPs "
     "and nothing else (round-6 failure mode)",
+    # SEATS GROK, IF-0-GROK-1: the jailed Grok seat's codes (rows in seat_jail.NOTICES)
+    "grok_seat_credential_missing", "grok_seat_credential_refused", "grok_seat_token_expired",
+    "grok_seat_token_in_output", "grok_seat_token_refreshed_in_jail",
 }) | frozenset(_seat_route_contract.CODES) | _seat_jail.CODEX_SEAT_CODES  # IF-0-CODEX-5
 # Closed token sets for the parametrized harness codes (agent-harness#1102 r8: every field is
 # enumerated, an integer, or validated by its producer against the run's own values).

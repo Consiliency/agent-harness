@@ -594,6 +594,28 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "read the leg's exec record; the seat did not count as a review"),
     "codex_seat_unknown_event": (
         "leg ended", "unrecorded codex activity", "report the outcome privately"),
+    # SEATS GROK (agent-harness#1820), IF-0-GROK-1: the jailed Grok seat's own codes. Each
+    # has one OD-10 entry in `seat_route_contract.OD10_CLASSES`; all are terminal. A seat
+    # never renews the operator's login (agent-harness#1289).
+    "grok_seat_credential_missing": (
+        "seat unavailable", "the grok CLI is not signed in",
+        "sign in with `grok login` (`grok login --device-code` on a host without a browser), "
+        "then re-run"),
+    "grok_seat_credential_refused": (
+        "seat unavailable", "the grok CLI login is not a subscription sign-in",
+        "sign in to the grok CLI with your subscription account (`grok login`), then re-run; "
+        "seats use only that login"),
+    "grok_seat_token_expired": (
+        "seat unavailable", "the grok login does not last long enough for a seat",
+        "renew the login yourself with `grok login`, then re-run; a seat never renews it"),
+    "grok_seat_token_in_output": (
+        "leg rejected", "seat tried to publish its credential",
+        "sign out of the grok CLI and sign in again with `grok login`, and report the outcome "
+        "privately"),
+    "grok_seat_token_refreshed_in_jail": (
+        "leg ended", "the grok CLI renewed its login inside the jail",
+        "report the outcome privately, and re-run the grok containment probe before the seat "
+        "runs again"),
 }
 
 NOTICE_CODES: frozenset[str] = frozenset(NOTICES)
