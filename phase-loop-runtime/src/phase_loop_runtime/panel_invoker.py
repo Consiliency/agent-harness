@@ -149,6 +149,7 @@ from . import seat_uid as _seat_uid
 from . import seat_preflight as _seat_preflight
 from . import seat_route as _seat_route
 from . import seat_profiles as _seat_profiles
+from .seat_window_supply import WindowRefused as _WindowRefused
 from . import claude_seat_transport as _claude_seat_transport
 from . import seat_route_contract as _seat_route_contract
 from .executable_dependency import ExecutableDependencyError
@@ -3136,6 +3137,8 @@ def _redact_leg_text(text: str, known: Sequence[str | os.PathLike[str]] = ()) ->
 # file is never part of PanelLegResult, the verdict JSON, governed reasons or the summary.
 _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "sandbox_source_partial_clone",
+    # K-1 §9.1: a row window's typed refusals, which end a seat before anything starts.
+    "window_unbudgeted_start", "window_envelope_exceeded", "window_exception_expired",
     "grok_tool_surface_unverified", "leg_exec_record_unavailable",
     "leg_auth_signed_out", "leg_auth_unavailable", "leg_execution_failed",
     # claude TUI / Agent View route
@@ -5275,6 +5278,17 @@ def _gemini_credential_fresh(home):
 _GEMINI_REFRESH_LOCK = threading.Lock()
 
 
+def _window_renewal_scope():
+    """K-1 §9.2 A4: an attempted Gemini renewal inside a row window reserves one
+    ``agy_renewal`` unit before it starts (refused, starting nothing, when none is left)
+    and runs under that item alone, whatever scope its caller holds. A fresh credential
+    never reaches here, so it reserves nothing."""
+    from . import seat_window_supply
+    if seat_window_supply.call_site_dispatch("agy_renewal") is None:
+        return contextlib.nullcontext()
+    return seat_window_supply.item_scope("agy_renewal", prepaid=1)
+
+
 def _refresh_gemini_credential(home, image):
     with _GEMINI_REFRESH_LOCK:
         if _gemini_credential_fresh(home):
@@ -5301,7 +5315,9 @@ def _refresh_gemini_credential(home, image):
                 # second seat key in one context, which refuses before agy starts. Only a
                 # renewal outside any seat attempt gets its own key.
                 seat_key = live_seat_key() or f"cred:gemini:{uuid.uuid4().hex}"
-                with _seat_scope(seat_key):
+                # K-1 §9.2 A4: inside a row window the renewal is its own reservation,
+                # never the caller's seat or subject unit.
+                with _seat_scope(seat_key), _window_renewal_scope():
                     process = launch_provider(
                         [f"/proc/self/fd/{descriptor}", "models"], cwd=temporary, env=env,
                         pass_fds=(descriptor,), stdin=subprocess.DEVNULL,
@@ -6482,6 +6498,9 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
     if (not _OWNED_LAUNCH.get() and not isinstance(process_owner, _seat_jail.SeatJail)
             and _names_provider(argv)):
         raise _sandbox_egress.SeatIdentityUnverified("seat_launch_owner_required")
+    # K-1 §9.1: inside a row window a provider start reserves its ledger unit first.
+    from .seat_profiles import window_provider_start
+    window_provider_start(argv)
     _child_scratch_kwargs(kwargs, child_scratch)
     cwd = kwargs.get("cwd")
     prefix = _compose_launch_prefix(cwd, process_owner, retain_caps)
@@ -6607,6 +6626,9 @@ def run_provider(argv, *, child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE,
         # A seat never reads the operator's terminal: stdin is closed unless given.
         kwargs.setdefault("stdin", subprocess.DEVNULL)
     with contextlib.ExitStack() as stack:
+        # K-1 §9.1: the reservation is held for the whole start, so the `launch_provider`
+        # it reaches does not debit the same start twice.
+        stack.enter_context(_seat_profiles.window_provider_start(argv, boundary="run"))
         if executor:
             process = stack.enter_context(launch_owned(
                 argv, role=SeatLaunchRole.EXECUTOR_TRUSTED, profile=SeatProfile(env=env),
@@ -13013,6 +13035,8 @@ class WindowLaunchSpec:
     qualification_input: QualificationInput
     model: str
     timeout_s: float
+    #: K-1 §5.1: the subject leg. A non-Gemini leg runs through its window supplier.
+    leg: str = "gemini"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -13021,15 +13045,19 @@ class WindowBoardSpec:
 
     qualification_input: QualificationInput
     monitoring_policy: Literal["bounded"]
+    #: K-1 §5.2: the window leg the board observes.
+    leg: str = "gemini"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class WindowBoardResult:
-    """The frozen I-12 qualification-board result."""
+    """The I-12 qualification-board result, vendor-neutral (K-1 §5.3). Every subject field
+    comes from the ``window_leg`` leg alone."""
 
     composition: Literal["admitted", "refused"]
     board_outcome: Literal["terminated", "not_terminated"]
-    canonical_gemini: bool
+    window_leg: str
+    canonical: bool
     staged_read: bool
     board_sha256: str | None
     exec_record_sha256: str | None
@@ -13037,7 +13065,9 @@ class WindowBoardResult:
     delivered_turn_sha256: str | None
     leg_exec_records: Mapping[str, str | None]
     co_seats: tuple[str, ...]
-    gemini: BoardLegObservation
+    leg_observation: BoardLegObservation
+    board_stage_sha256: str | None
+    source_attempt: str | None
 
 
 @dataclass
@@ -13301,7 +13331,7 @@ def _prepare_jailed_claude(
     review_dir: Path, seat_dir: Path, review_authorization: "ReviewIsolationAuthorization",
     seat_id: int, holder_pid: int, prompt_parts: tuple[str, str],
     *, timeout_s: int | None = None, transport: str | None = None,
-    sdk_prepared: object | None = None,
+    sdk_prepared: object | None = None, credential_mode: str = "live", copy_transform=None,
 ) -> _JailedSeat:
     """J7 step 5, in order: the jailed transport (IF-0-CLAUDE-1), the pre-exec tree
     re-hash, the token read, the jail build (the seccomp filter included), the pre-seed and
@@ -13316,7 +13346,14 @@ def _prepare_jailed_claude(
 
     ``seat_dir`` (0700, operator-owned, beside the broker's stage rather than inside it)
     holds ``seat-home/`` and ``seat-out/``; the tree is the approved stage in
-    ``review_dir``."""
+    ``review_dir``.
+
+    K-1 §5.1 credential seam: ``live`` (the default) is production delivery, byte for byte;
+    ``none`` delivers no token (the read-only login read still runs); ``expired`` delivers
+    ``copy_transform`` of the live token."""
+    if credential_mode not in {"live", "none", "expired"} or (
+            credential_mode == "expired" and not callable(copy_transform)):
+        raise ValueError("contract_bug")
     if transport is None:
         transport, refusal = _claude_seat_transport.resolve_jailed_claude_transport()
         if refusal is not None:
@@ -13367,7 +13404,11 @@ def _prepare_jailed_claude(
             if executable is None:
                 raise _seat_jail.SeatSandboxRefused(
                     _seat_jail.refused(subject_refusal or "identity"))
-            token = credential.token
+            # ``none`` hands the builder no token at all: no token pipe is created and no
+            # descriptor reaches the jail.
+            token = (credential.token if credential_mode == "live"
+                     else None if credential_mode == "none"
+                     else copy_transform(credential.token))
             jail = _build_jail_with_owned_inputs(
                 "claude", seat_dir, executable, tree=tree,
                 artifact=artifact.encode("utf-8"), instructions=instructions.encode("utf-8"),
@@ -13403,7 +13444,8 @@ def _prepare_jailed_claude(
             except BaseException:
                 _seat_jail.close_jail_fds(jail)
                 raise
-            return _JailedSeat(jail=jail, probe_jail=probe, holder_pid=holder_pid, token=token,
+            return _JailedSeat(jail=jail, probe_jail=probe, holder_pid=holder_pid,
+                               token=b"" if token is None else token,
                                review_dir=review_dir, seat_dir=seat_dir, source=credential.source,
                                expires_at=credential.expires_at, notices=list(credential.notices),
                                sdk_prepared=sdk_prepared if transport == "sdk" else None)
@@ -13939,9 +13981,18 @@ def _prepare_jailed_codex(
     review_dir: Path, seat_dir: Path, review_authorization: "ReviewIsolationAuthorization",
     seat_id: int, holder_pid: int, prompt_parts: tuple[str, str], egress,
     *, env: Mapping[str, str] | None = None,
+    credential_mode: str = "live", copy_transform=None,
 ) -> _JailedSeat:
+    """K-1 §5.1 credential seam: ``live`` (the default) is production delivery, byte for
+    byte; ``none`` builds and installs no copy (the read-only login checks still run);
+    ``expired`` passes the production copy through ``copy_transform`` before it is
+    installed, and the margin re-check still reads the live login."""
     from . import seat_codex_credential as cred, seat_codex_runtime as runtime
     from .seat_profile_codex import codex_admission_gate, validate_codex_projection
+
+    if credential_mode not in {"live", "none", "expired"} or (
+            credential_mode == "expired" and not callable(copy_transform)):
+        raise ValueError("contract_bug")
 
     tree = _approved_stage_or_refuse(review_dir, review_authorization)
     subject, dependency = _resolved_jail_subject("codex", _broker_subscription_env(env))
@@ -13965,7 +14016,9 @@ def _prepare_jailed_codex(
             code = check(raw)
             if code:
                 raise _seat_jail.SeatSandboxRefused(code)
-        copy = cred.build_seat_copy(raw)
+        copy = cred.build_seat_copy(raw) if credential_mode != "none" else None
+        if credential_mode == "expired":
+            copy = copy_transform(copy)
         seat_dir.mkdir(mode=0o700)
         ca = _write_egress_ca(seat_dir, egress.ca_cert)
         artifact, instructions = prompt_parts
@@ -13982,7 +14035,8 @@ def _prepare_jailed_codex(
             code = cred.token_margin_problem(raw, now=time.time())
             if code:
                 raise _seat_jail.SeatSandboxRefused(code)
-            cred.install_seat_copy(home_fd, copy)
+            if copy is not None:
+                cred.install_seat_copy(home_fd, copy)
         finally:
             os.close(home_fd)
         probe_dir = seat_dir / _JAIL_PROBE_DIRNAME
@@ -13994,8 +14048,10 @@ def _prepare_jailed_codex(
         )
         jails.append(probe)
         return _JailedSeat(jail, probe, holder_pid, b"", review_dir, seat_dir,
-                           source=_seat_credentials.SOURCE_LOGIN, expires_at=copy.expires_at,
-                           delivered_copy=copy.data, codex_copy=copy)
+                           source=_seat_credentials.SOURCE_LOGIN,
+                           expires_at=copy.expires_at if copy is not None else None,
+                           delivered_copy=copy.data if copy is not None else b"",
+                           codex_copy=copy)
     except BaseException:
         for built in jails:
             _seat_jail.close_jail_fds(built)
@@ -14012,6 +14068,8 @@ def _exec_jailed_codex_leg(
     failure_detail_sink: list[_LegFailure] | None = None,
     quiescence_latch: _ProviderQuiescenceLatch | None = None,
     review_monitor: _ReviewMonitor | None = None,
+    window_board: "_WindowBoardLegRuntime | None" = None,
+    review_authorization: ReviewIsolationAuthorization | None = None,
 ) -> tuple[str, str]:
     from . import seat_codex_credential as cred, seat_codex_evidence as evidence
     from .seat_profile_codex import jailed_codex_command
@@ -14076,6 +14134,17 @@ def _exec_jailed_codex_leg(
                 **({"egress": dict(egress_evidence)} if egress_evidence is not None else {}),
             })
         _record_executable_dependency_evidence(broker_evidence, seat.jail)
+        if window_board is not None:
+            # K-1 §5.4: the board-leg hook, in Gemini's order: the exact argv spawned, after
+            # the jail and proxy are ready and before the provider spawn.
+            if quiescence_latch is None or review_authorization is None:
+                raise ValueError("qualification board launch is missing its binding")
+            if not window_board.start(
+                seat, window_board.proxy, quiescence_latch, command, prompt,
+                review_authorization,
+            ):
+                return _jailed_failure("seat_sandbox_refused:watch_unavailable",
+                                       failure_detail_sink)
         try:
             proc = _run_leg_with_liveness(
                 command, cwd="/seat/home/workspace", env=dict(seat.jail.env),
@@ -14102,7 +14171,11 @@ def _exec_jailed_codex_leg(
         except (_seat_jail.UnsafeSeatObject, OSError, subprocess.SubprocessError):
             unsafe = True
     finally:
-        _cleanup_jailed_seat(seat, primary=sys.exception())
+        try:
+            if window_board is not None and quiescence_latch is not None:
+                window_board.finish(seat, _EGRESS_LAUNCH_PREFIX.get(), quiescence_latch)
+        finally:
+            _cleanup_jailed_seat(seat, primary=sys.exception())
     if proc is not None:
         _note_exec_result(proc.returncode, command, seat.jail.env)
     parts = (("output_file", text), *(
@@ -14125,6 +14198,9 @@ def _exec_jailed_codex_leg(
         return _jailed_failure("seat_sandbox_refused:output_unsafe", failure_detail_sink)
     if broker_evidence is not None:
         broker_evidence["provider_stream_tool_steps"] = record.commands_completed
+    if window_board is not None:
+        steps = record.commands_completed
+        window_board.tool_steps = steps if type(steps) is int else None
     review = text.decode("utf-8", errors="replace")
     _note_exec_signals(model_turn=record.turn_completed, verdict=terminal_verdict(review) is not None)
     return _classify_leg(proc.returncode, review, proc.stderr, "review"), review
@@ -14634,6 +14710,68 @@ def _window_host_paths(qualification, seat: _JailedSeat, *, credential: bool) ->
     )
 
 
+def _window_prepare_leg(
+    leg: str, review_dir: Path, seat_dir: Path, authorization, seat_id: int, holder_pid: int,
+    prompt_parts: tuple[str, str], egress, *, credential_mode: str, copy_transform,
+) -> _JailedSeat:
+    """K-1 §5.1: a non-Gemini control launch calls its leg's prepare function with the
+    supplier's credential mode. Its admission-gate processes are A6 starts."""
+    from . import seat_window_supply
+    with seat_window_supply.item_scope("codex_admission_gate"):
+        if leg == "codex":
+            return _prepare_jailed_codex(
+                review_dir, seat_dir, authorization, seat_id, holder_pid, prompt_parts, egress,
+                credential_mode=credential_mode, copy_transform=copy_transform,
+            )
+        if leg == "claude":
+            return _prepare_jailed_claude(
+                review_dir, seat_dir, authorization, seat_id, holder_pid, prompt_parts,
+                credential_mode=credential_mode, copy_transform=copy_transform,
+            )
+    raise ValueError("contract_bug")
+
+
+#: A control launch's actual route: the window launcher always builds the subject's own
+#: jail (no resolver, no exception), whatever the matrix says.
+_WINDOW_CONTROL_ROUTE = MappingProxyType({"mode": "jailed", "exception": None, "expiry": None,
+                                          "code": "window_control_jail"})
+
+
+def _window_note_route(decision) -> None:
+    """K-1 R6: hand the route a board leg actually resolved to its window scope, before
+    anything starts, so its dispatch is checked against the snapshot."""
+    from . import seat_window_supply
+    exception = getattr(decision, "exception", None)
+    seat_window_supply.note_route({
+        "mode": str(decision.mode),
+        "exception": getattr(exception, "kind", None),
+        "expiry": exception.expiry.isoformat() if exception is not None else None,
+        "code": decision.code,
+    })
+
+
+def _window_subject_dispatch(kind: str, stage_sha256: str | None):
+    """K-1 §9.1: each subject launch reserves at the control launcher, before its spawn.
+    Returns the prepaid item scope (a null context outside a window)."""
+    from . import seat_window_supply
+    item = "subject" if kind in _WINDOW_CREDENTIAL_KINDS else "credential_free_subject"
+    if seat_window_supply.call_site_dispatch(item, stage_sha256=stage_sha256,
+                                             actual=_WINDOW_CONTROL_ROUTE) is None:
+        return contextlib.nullcontext()
+    return _window_prepaid_scope(item, _WINDOW_CONTROL_ROUTE)
+
+
+@contextmanager
+def _window_prepaid_scope(item: str, route: Mapping[str, object] | None):
+    """A prepaid item scope carrying the route its call site resolved, so the start that
+    consumes the unit is checked against it again (R6) without a second debit."""
+    from . import seat_window_supply
+    with seat_window_supply.item_scope(item, prepaid=1):
+        if route is not None:
+            seat_window_supply.note_route(route)
+        yield
+
+
 @contextmanager
 def _open_window_launch(spec: WindowLaunchSpec):
     """Stage, authorize and construct one fresh qualification seat."""
@@ -14680,10 +14818,23 @@ def _open_window_launch(spec: WindowLaunchSpec):
         seat_id = stack.enter_context(
             _seat_uid.lease_seat_id(_seat_uid.seat_id_count(uids, gids))
         )
+        supplier = None
+        if spec.leg != "gemini":
+            from . import seat_window_supply
+            from .seat_profiles import profile_for
+            supplier = seat_window_supply.available(spec.leg)
+            profile = profile_for(spec.leg)
+            if supplier is None or profile is None or profile.allowlist_id is None:
+                raise ValueError("contract_bug")
+            credential_mode = supplier.credential_mode(spec.kind)
+            if credential_mode not in seat_window_supply.CREDENTIAL_MODES:
+                raise ValueError("contract_bug")
         proxy = stack.enter_context(_seat_egress_proxy.start_proxy(
             allowlist_id="gemini",
             refuse_all=spec.kind in {"help", "plugin_validation", *_WINDOW_CONTROL_KINDS}
             and spec.kind not in _WINDOW_CREDENTIAL_KINDS,
+        ) if supplier is None else _seat_egress_proxy.start_proxy(
+            allowlist_id=profile.allowlist_id, refuse_all=credential_mode == "none",
         ))
         prefix = tuple(stack.enter_context(_sandbox_egress.isolated_network(
             timeout_s=max(float(spec.timeout_s), 1.0) + 300.0,
@@ -14700,11 +14851,18 @@ def _open_window_launch(spec: WindowLaunchSpec):
             else "none"
         )
         latch = _ProviderQuiescenceLatch()
-        seat = _prepare_jailed_gemini(
-            review_dir, base / "seat", authorization, seat_id,
-            _seat_uid.holder_pid_from_prefix(prefix), (artifact, ""), proxy,
-            quiescence_latch=latch, credential=credential,
-        )
+        if supplier is None:
+            seat = _prepare_jailed_gemini(
+                review_dir, base / "seat", authorization, seat_id,
+                _seat_uid.holder_pid_from_prefix(prefix), (artifact, ""), proxy,
+                quiescence_latch=latch, credential=credential,
+            )
+        else:
+            seat = _window_prepare_leg(
+                spec.leg, review_dir, base / "seat", authorization, seat_id,
+                _seat_uid.holder_pid_from_prefix(prefix), (artifact, ""), proxy,
+                credential_mode=credential_mode, copy_transform=supplier.copy_transform,
+            )
         trace_path = None
         if spec.kind in _WINDOW_CONTROL_KINDS:
             trace_path = base / _WINDOW_TRACE_FILE
@@ -14716,7 +14874,8 @@ def _open_window_launch(spec: WindowLaunchSpec):
             seat=seat, proxy=proxy, prefix=prefix,
             paths=_window_host_paths(
                 qualification, seat, credential=spec.kind in _WINDOW_CREDENTIAL_KINDS,
-            ),
+            ) if supplier is None else supplier.host_path_map(
+                seat, credential=credential_mode != "none"),
             authorization=authorization, quiescence_latch=latch, trace_path=trace_path,
         )
         yield session
@@ -14976,12 +15135,16 @@ def window_control_launch(spec: WindowLaunchSpec) -> WindowLaunchResult:
     """Run one FIRSTSEAT control launch in its own staged tree, jail and proxy (I-11)."""
     from . import seat_jail_qualification as qualification
 
+    from . import seat_window_supply
+
     if spec.kind not in _WINDOW_LAUNCH_KINDS or not isinstance(spec.timeout_s, (int, float)) \
             or not math.isfinite(float(spec.timeout_s)) or spec.timeout_s <= 0:
         raise ValueError("contract_bug")
     layout = getattr(spec.qualification_input, "layout", None)
     if layout is None:
         raise ValueError("contract_bug")
+    if spec.leg != "gemini":
+        return _window_control_launch_leg(spec)
     result = _window_result(qualification, spec)
     proxy = None
     session = None
@@ -15060,16 +15223,22 @@ def window_control_launch(spec: WindowLaunchSpec) -> WindowLaunchResult:
                                 content=session.seat.delivered_copy,
                                 sha256=sha256(session.seat.delivered_copy).hexdigest(),
                             )
+                            # A5: reserved in this caller immediately before the request.
+                            seat_window_supply.call_site_dispatch(
+                                "gemini_issuer", actual=_WINDOW_CONTROL_ROUTE)
                             issuer = qualification.measure_issuer(delivered)
                         for command in commands:
-                            outputs.append(_run_window_process(
-                                session, command, timeout_s=spec.timeout_s,
-                                input_text=protocol.transport if protocol is not None else None,
-                                trace_output=(
-                                    str(session.trace_path)
-                                    if spec.kind in _WINDOW_CONTROL_KINDS else None
-                                ),
-                            ))
+                            with _window_subject_dispatch(
+                                    spec.kind, str(session.authorization.staged_tree_sha256)):
+                                outputs.append(_run_window_process(
+                                    session, command, timeout_s=spec.timeout_s,
+                                    input_text=(protocol.transport if protocol is not None
+                                                else None),
+                                    trace_output=(
+                                        str(session.trace_path)
+                                        if spec.kind in _WINDOW_CONTROL_KINDS else None
+                                    ),
+                                ))
                             if outputs[-1].timed_out:
                                 break
                         timed_out = any(item.timed_out for item in outputs)
@@ -15157,6 +15326,8 @@ def window_control_launch(spec: WindowLaunchSpec) -> WindowLaunchResult:
             help_sha256=help_sha256, help_lists_plugin=help_lists_plugin,
             plugin_validation=plugin_validation, binding=binding,
         )
+    except seat_window_supply.WindowRefused:
+        raise
     except Exception as exc:
         try:
             failed_stream = _seat_egress_proxy.proxy_stream(proxy) if proxy is not None else None
@@ -15178,6 +15349,134 @@ def window_control_launch(spec: WindowLaunchSpec) -> WindowLaunchResult:
     return result
 
 
+def _window_control_launch_leg(spec: WindowLaunchSpec) -> WindowLaunchResult:
+    """K-1 §5.1: one control launch of a non-Gemini leg, through its supplier. It runs once
+    (no route retry, no soft-empty retry, no fallback rung), never through the leg's board
+    exec function, and reserves its ledger entry before its spawn."""
+    from . import seat_jail_qualification as qualification, seat_window_supply
+
+    supplier = seat_window_supply.available(spec.leg)
+    from .seat_profiles import window_data_for
+    data = window_data_for(spec.leg)
+    if supplier is None or data is None or spec.kind not in data.launch_kinds:
+        raise ValueError("contract_bug")
+    layout = spec.qualification_input.layout
+    proxy = session = None
+    values: dict[str, object] = {"status": "NONE", "timed_out": False}
+    error = None
+    try:
+        from .seat_resource_caps import _seat_scope
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(_seat_scope(f"window:{spec.leg}:{spec.kind}:{uuid.uuid4().hex}"))
+            session = stack.enter_context(_open_window_launch(spec))
+            proxy = session.proxy
+            if spec.kind in _WINDOW_RUNTIME_KINDS:
+                supplier.seed_runtime_plants(layout, session.paths)
+            watch_handle = supplier.arm_watch(layout, session.paths, kind=spec.kind)
+            run = _WindowJailedRun(session.seat, session.quiescence_latch)
+            values["first_jailed_launch_ns"] = time.monotonic_ns()
+            if not watch_handle.prove_sentinel(run):
+                error = "watch_unavailable"
+            start = None if error else _seat_egress_proxy.fence(proxy, "start", "leg")
+            if start is not None and not start.acknowledged:
+                error = "fence_unacknowledged"
+            commands: list[tuple[str, ...]] = []
+            outputs: list[_WindowProcess] = []
+            if error is None:
+                commands = list(supplier.launch_command(
+                    spec.kind, qualification_input=spec.qualification_input,
+                    model=spec.model, plugin_paths=()))
+                secrets = tuple(supplier.scan_secrets(session.seat))
+                for command in commands:
+                    with _window_subject_dispatch(
+                            spec.kind, str(session.authorization.staged_tree_sha256)):
+                        outputs.append(_run_window_leg_process(
+                            session, command, secrets, timeout_s=spec.timeout_s))
+                    if outputs[-1].timed_out:
+                        break
+                values["timed_out"] = any(item.timed_out for item in outputs)
+                raw = outputs[0].stdout if outputs else ""
+                status, model_turn, tool_steps, subagent_steps = supplier.stream_facts(raw)
+                values.update(status=status, model_turn=model_turn, tool_steps=tool_steps,
+                              subagent_steps=subagent_steps)
+                try:
+                    values["bridge_exited"] = _sandbox_egress.wait_bridge_exit(session.prefix)
+                except Exception:
+                    values["bridge_exited"] = False
+                end = None
+                if values["bridge_exited"]:
+                    try:
+                        end = _seat_egress_proxy.fence(proxy, "end", "leg")
+                    except Exception:
+                        end = None
+                if end is None or not end.acknowledged:
+                    error = error or "fence_unacknowledged"
+                if spec.kind in _WINDOW_CREDENTIAL_KINDS:
+                    values["scan"] = {"scope": supplier.measure_credential_scope(session.seat),
+                                      "refresh": supplier.refresh_detected(session.seat)}
+                if (spec.kind == "measured" and end is not None and end.acknowledged
+                        and session.quiescence_latch.is_quiescent()):
+                    steps = supplier.bracket_steps()
+                    values["bracket"] = qualification.run_bracket(proxy, run) \
+                        if steps is None else steps(proxy, run)
+            quiescent = session.quiescence_latch.is_quiescent()
+            try:
+                values["watch"] = watch_handle.drain_and_close(quiescent=quiescent)
+            except Exception:
+                error = error or "watch_unavailable"
+            values["binding"] = qualification.LaunchBinding(
+                image_sha256=str(session.seat.image_sha256),
+                admission_class=str(session.seat.admission_class),
+                stage_manifest_sha256=str(session.authorization.staged_tree_sha256),
+                argv_sha256=_window_json_digest([list(command) for command in commands]),
+                input_sha256=None, jail_profile_sha256=session.seat.jail.profile_digest,
+                allowlist_sha256=proxy.allowlist_sha256,
+            )
+            session.cleanup()
+    except seat_window_supply.WindowRefused:
+        raise
+    except Exception as exc:
+        error = error or _window_launch_error(exc)
+    try:
+        values["stream"] = _seat_egress_proxy.proxy_stream(proxy) if proxy is not None else None
+    except Exception:
+        values["stream"] = None
+    return _window_result(
+        qualification, spec, error=error or ("launch_failed" if values["timed_out"] else None),
+        quiescent=bool(session and session.quiescence_latch.is_quiescent()), **values)
+
+
+def _run_window_leg_process(
+    session: _WindowLaunchSession, command: Sequence[str], secrets: tuple[bytes, ...], *,
+    timeout_s: float,
+) -> _WindowProcess:
+    carry = b""
+    longest = max((len(secret) for secret in secrets), default=1)
+
+    def _guard(chunk: bytes) -> bool:
+        nonlocal carry
+        window = carry + chunk
+        found = any(_seat_jail.contains_secret(window, secret) for secret in secrets)
+        carry = window[-4 * longest:]
+        return found
+
+    observation = _EXEC_OBSERVATION.set(None)
+    try:
+        try:
+            done = _run_leg_with_liveness(
+                list(command), cwd="/seat/home/workspace", env=dict(session.seat.jail.env),
+                deadline_s=float(timeout_s), stdout_guard=_guard, stderr_guard=_guard,
+                quiescence_latch=session.quiescence_latch,
+                seat_jail=session.seat.jail, probe_jail=session.seat.probe_jail,
+            )
+        except subprocess.TimeoutExpired as exc:
+            output = exc.output if isinstance(exc.output, str) else ""
+            return _WindowProcess(None, True, output)
+    finally:
+        _EXEC_OBSERVATION.reset(observation)
+    return _WindowProcess(done.returncode, False, done.stdout)
+
+
 @dataclass
 class _WindowBoardLegRuntime:
     qualification_input: object
@@ -15189,6 +15488,28 @@ class _WindowBoardLegRuntime:
     bridge_exited: bool | None = None
     start_acked: bool = False
     tool_steps: int | None = None
+    #: K-1 §5.4: the one leg whose exec calls this runtime's hooks.
+    leg: str = "gemini"
+    #: K-1 §9.1: the attempt's single shared ledger, handed explicitly to each board worker
+    #: (the board pool does not carry context variables). ``None`` outside a row window.
+    ledger: object | None = None
+    #: Whether this board is inside a row window; a worker that finds the runtime but no
+    #: ledger is refused ``window_unbudgeted_start``, never treated as a non-window call.
+    in_window: bool = False
+    #: K-1 §5.4: the argv each ``start`` bound, in order, for the spawned-argv assertion.
+    started_argv: list = field(default_factory=list)
+    #: K-1 §6.3 check 4: what the window leg's launch itself bound, captured at ``start``:
+    #: its launch binding and the qualification key its route admitted.
+    launch: dict | None = None
+
+    def _paths(self, qualification, seat):
+        if self.leg == "gemini":
+            return qualification, _window_host_paths(qualification, seat, credential=True)
+        from . import seat_window_supply
+        supplier = seat_window_supply.available(self.leg)
+        if supplier is None:
+            raise ValueError("window_supplier_unavailable")
+        return supplier, supplier.host_path_map(seat, credential=True)
 
     def start(
         self, seat: _JailedSeat, proxy: object, latch: _ProviderQuiescenceLatch,
@@ -15197,9 +15518,9 @@ class _WindowBoardLegRuntime:
         from . import seat_jail_qualification as qualification
 
         self.proxy = proxy
-        paths = _window_host_paths(qualification, seat, credential=True)
         try:
-            self.watch_handle = qualification.arm_watch(
+            supplier, paths = self._paths(qualification, seat)
+            self.watch_handle = supplier.arm_watch(
                 self.qualification_input.layout, paths, kind="board"
             )
             run = _WindowJailedRun(seat, latch)
@@ -15209,6 +15530,7 @@ class _WindowBoardLegRuntime:
             self.start_acked = bool(start.acknowledged)
             if not self.start_acked:
                 return False
+            self.started_argv.append(tuple(command))
             self.binding = qualification.LaunchBinding(
                 image_sha256=str(seat.image_sha256),
                 admission_class=str(seat.admission_class),
@@ -15218,6 +15540,12 @@ class _WindowBoardLegRuntime:
                 jail_profile_sha256=seat.jail.profile_digest,
                 allowlist_sha256=proxy.allowlist_sha256,
             )
+            self.launch = {"leg": self.leg,
+                           "binding": {name: getattr(self.binding, name) for name in (
+                               "image_sha256", "admission_class", "stage_manifest_sha256",
+                               "argv_sha256", "input_sha256", "jail_profile_sha256",
+                               "allowlist_sha256")},
+                           "qualification_key": _window_launch_key(seat)}
             return True
         except Exception:
             return False
@@ -15262,8 +15590,10 @@ _WINDOW_BOARD_RUNS_LOCK = threading.Lock()
 @contextmanager
 def _window_board_registration(
     authorization: ReviewIsolationAuthorization, qualification_input: object,
+    *, leg: str = "gemini", ledger: object | None = None, in_window: bool = False,
 ):
-    run = _WindowBoardLegRuntime(qualification_input)
+    run = _WindowBoardLegRuntime(qualification_input, leg=leg, ledger=ledger,
+                                 in_window=in_window or ledger is not None)
     key = id(authorization)
     with _WINDOW_BOARD_RUNS_LOCK:
         if key in _WINDOW_BOARD_RUNS:
@@ -15283,6 +15613,84 @@ def _registered_window_board(
         return None
     with _WINDOW_BOARD_RUNS_LOCK:
         return _WINDOW_BOARD_RUNS.get(id(authorization))
+
+
+def _window_leg_hook(
+    authorization: ReviewIsolationAuthorization | None, leg: str,
+) -> _WindowBoardLegRuntime | None:
+    """K-1 §5.4 routing: the board's window runtime reaches only the leg it names."""
+    run = _registered_window_board(authorization)
+    # A runtime registered without a leg is the pre-K-1 shape, which served Gemini only.
+    return run if run is not None and getattr(run, "leg", "gemini") == leg else None
+
+
+@contextmanager
+def _window_worker_scope(authorization: ReviewIsolationAuthorization | None, leg: str):
+    """K-1 §9.1 and K1-T3: a board worker's window membership comes from the explicit
+    handoff (the registered runtime), and its ledger is the one that runtime carries; the
+    worker sets it, with the leg's item, for everything it starts (the broker copy
+    included). A worker in a window with no ledger is refused before anything starts."""
+    from . import seat_window_supply
+    run = _registered_window_board(authorization)
+    if run is None or not getattr(run, "in_window", False):
+        yield None
+        return
+    if getattr(run, "ledger", None) is None:
+        raise seat_window_supply.WindowRefused("window_unbudgeted_start")
+    item = seat_window_supply.seat_item(leg, getattr(run, "leg", "gemini"))
+    with seat_window_supply.ledger_scope(run.ledger), seat_window_supply.item_scope(item):
+        yield run.ledger
+
+
+def _window_call_site(item: str):
+    """K-1 §9.1's kit call-site reservation for a start that may bypass the provider
+    boundary (the jailed Claude seat and its login proof): debited here, consumed there."""
+    from . import seat_window_supply
+    if seat_window_supply.call_site_dispatch(item) is None:
+        return contextlib.nullcontext()
+    return seat_window_supply.item_scope(item, prepaid=1)
+
+
+def _window_admission_scope():
+    """A6: a jailed Codex prepare's admission-gate processes, inside a row window."""
+    from . import seat_window_supply
+    if seat_window_supply.active_ledger() is None:
+        return contextlib.nullcontext()
+    return seat_window_supply.item_scope("codex_admission_gate")
+
+
+def _window_agy_reservation(authorization):
+    """K-1 §9.1: agy first-use (3) and the cold help measurement (1), reserved in bulk
+    before ``board_preflight_requalify``. They debit the budget and record no dispatch;
+    the starts they cover consume them at the provider boundary without a second debit."""
+    from . import seat_window_supply
+    run = _registered_window_board(authorization)
+    ledger = getattr(run, "ledger", None) if run is not None else None
+    if ledger is None:
+        return contextlib.nullcontext()
+    ledger.reserve("agy_first_use", 3)
+    ledger.reserve("agy_cold_help", 1)
+
+    @contextmanager
+    def _scope():
+        with seat_window_supply.ledger_scope(ledger), \
+                seat_window_supply.item_scope("agy_first_use", prepaid=4):
+            yield
+    return _scope()
+
+
+def _window_seat_run(authorization, seat, run):
+    """K1-T3: run one board seat inside its window worker scope, in the pool worker
+    itself, so every spawn route (the provider seam or an injected spawn) carries the
+    attempt's ledger. A refused reservation starts nothing and ends the seat typed."""
+    from . import seat_window_supply
+    leg = str(seat.harness or seat.vendor_family)
+    try:
+        with _window_worker_scope(authorization, leg):
+            return run()
+    except seat_window_supply.WindowRefused as exc:
+        return PanelLegResult(leg=leg, status="DEGRADED", text="",
+                              detail=_HarnessCode(exc.code), seat_key=seat.seat_key)
 
 
 def integrated_board_outcome(
@@ -15313,9 +15721,126 @@ def _window_board_digest(board: Board) -> str:
     })
 
 
+def _window_launch_key(seat) -> dict | None:
+    """The qualification key the leg's route admitted, as bound onto its jail
+    (``_bind_route_qualification``), with this host's arch and the runtime digest."""
+    from . import seat_window
+    key = getattr(seat.jail, "qualification_key", None)
+    if key is None:
+        return None
+    return {"profile_digest": key.profile_digest, "allowlist_digest": key.allowlist_digest,
+            "falsifier_layout": key.falsifier_layout, "projection_digest": key.projection_digest,
+            "variant": key.variant, "host_identity": key.host_identity,
+            "arch": _seat_jail.host_arch(), "runtime_digest": seat_window.runtime_digest()}
+
+
+def _window_write_launch(run, attempt_id: str | None, exec_record_sha256: str | None) -> None:
+    """Retain the window leg's launch attestation beside its exec record, keyed by that
+    record's attempt and bound to its digest (``window-launch-<attempt>.json``)."""
+    if run is None or run.launch is None or attempt_id is None or exec_record_sha256 is None:
+        return
+    from .president_adapter import write_private_record
+    try:
+        write_private_record(f"window-launch-{attempt_id}.json", {
+            "schema": "seat_window_launch.v1", "attempt_id": attempt_id,
+            "exec_record_sha256": exec_record_sha256, "launch": run.launch})
+    except (OSError, ValueError, TypeError):
+        pass
+
+
+def window_board_input_sha256() -> str:
+    return sha256(_WINDOW_BOARD_INPUT.encode()).hexdigest()
+
+
+def window_reference_stage(qualification_input: object) -> str | None:
+    """K-1 §5.6: the reference stage manifest digest of one qualification input, fixed
+    before any control runs. The input is staged exactly as each launch stages it."""
+    source = Path(getattr(qualification_input, "repo", ""))
+    if not source.is_dir():
+        return None
+    base = Path(tempfile.mkdtemp(prefix="pl-window-stage-", dir=_sandbox_policy.staging_root()))
+    try:
+        staged = _review_stage.stage_review_tree(source, parent=base)
+        fd = _seat_jail.open_dir_nofollow(staged)
+        try:
+            return _seat_jail.tree_manifest_sha256_at(fd)
+        finally:
+            os.close(fd)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    finally:
+        _review_stage.remove_review_stage(base)
+
+
+def window_fable_president_route(base_env=None) -> str | None:
+    """The Fable president's route as ``PresidentInvoke`` selects it at its adapter
+    boundary: the native fill under a driving Claude Code session, else
+    ``_launch_claude`` on the transport ``_resolve_claude_transport`` admits (``None``
+    when it refuses, so nothing starts)."""
+    if _under_claude_code(base_env if base_env is not None else dict(os.environ)):
+        return "native_fill_deferred"
+    transport, refusal = _resolve_claude_transport()
+    if refusal is not None or transport is None:
+        return None
+    return f"_launch_claude:{transport}"
+
+
+def _window_board_composition_digest(board: Board) -> str:
+    """Every field of the composed board and its seats (``auth``, ``backing``,
+    ``host_leg``, ``allow_api_key_fallback``, ``research_policy`` and any later one), so a
+    same-label board with different execution inputs is a different composition."""
+    from dataclasses import asdict
+    return _window_json_digest({"board": asdict(board),
+                                "seat_keys": [str(seat.seat_key) for seat in board.seats]})
+
+
+class _WindowPresidentInvoke:
+    """K-1 §5.2 and §9.1: each president call inside a row window reserves one start for
+    its rung before it is made. The envelope budgets only Fable, so any other rung's
+    reservation refuses and the president fails typed."""
+
+    def __init__(self, invoke, ledger):
+        self._invoke = invoke
+        self._ledger = ledger
+
+    def __getattr__(self, name):
+        return getattr(self._invoke, name)
+
+    def __call__(self, model, prompt):
+        from . import seat_window_supply
+        rung = DEFAULT_REVIEW_SEAT_ALIASES.get(model, model)
+        try:
+            if rung != "fable":
+                raise seat_window_supply.WindowRefused("window_envelope_exceeded")
+            # The route the adapter will select for this call, decided exactly as it does.
+            transport = window_fable_president_route(getattr(self._invoke, "base_env", None))
+            if transport is None:
+                raise seat_window_supply.WindowRefused("window_exception_expired")
+            exception = _seat_route.load_route_policy().exceptions.get("claude")
+            actual = {
+                "mode": "president", "transport": transport,
+                "exception": getattr(exception, "kind", None),
+                "expiry": exception.expiry.isoformat() if exception is not None else None,
+                "code": None, "route_id": f"president:fable:{transport}"}
+            self._ledger.dispatch("fable_president", route=actual["route_id"], actual=actual)
+        except seat_window_supply.WindowRefused as exc:
+            return {"status": "refused", "code": exc.code}
+        with seat_window_supply.ledger_scope(self._ledger), \
+                _window_prepaid_scope("fable_president", actual):
+            return self._invoke(model, prompt)
+
+
+def _window_board_shape_ok(board: Board) -> bool:
+    """The envelope's assumptions: one seat per plan-tier vendor and Fable first."""
+    from .seat_profiles import WINDOW_PLAN_TIER_LEGS
+    legs = [str(seat.harness or "") for seat in board.seats]
+    return (len(legs) == len(set(legs)) and set(legs) == set(WINDOW_PLAN_TIER_LEGS)
+            and tuple(PRESIDENT_LADDER[:1]) == ("fable",))
+
+
 def window_board_launch(spec: WindowBoardSpec) -> WindowBoardResult:
-    """Run the plan-tier board and observe its existing jailed Gemini leg (I-12)."""
-    from . import seat_jail_qualification as qualification
+    """Run the plan-tier board and observe its window leg (I-12, K-1 §5.2)."""
+    from . import seat_jail_qualification as qualification, seat_window_supply
     from .advisor_board.composition import compose_review_board_report
     from .president_adapter import build_president_invoke
 
@@ -15324,6 +15849,8 @@ def window_board_launch(spec: WindowBoardSpec) -> WindowBoardResult:
     qualification_input = spec.qualification_input
     if not isinstance(getattr(qualification_input, "repo", None), Path):
         raise ValueError("contract_bug")
+    leg = spec.leg
+    ledger = seat_window_supply.active_ledger()
     input_sha256 = sha256(_WINDOW_BOARD_INPUT.encode()).hexdigest()
 
     def _observation(run: _WindowBoardLegRuntime | None):
@@ -15334,22 +15861,39 @@ def window_board_launch(spec: WindowBoardSpec) -> WindowBoardResult:
             binding=run.binding if run is not None else None,
         )
 
+    def _refused():
+        return WindowBoardResult(
+            composition="refused", board_outcome="not_terminated", window_leg=leg,
+            canonical=False, staged_read=False, board_sha256=None,
+            exec_record_sha256=None, tool_receipt_sha256=None,
+            delivered_turn_sha256=None,
+            leg_exec_records=MappingProxyType({}), co_seats=(),
+            leg_observation=_observation(None), board_stage_sha256=None,
+            source_attempt=None,
+        )
+
+    bound = getattr(ledger, "board", None) if ledger is not None else None
     try:
-        composition = compose_review_board_report()
-        outcome = composition.policy_outcome("plan")
+        if bound is not None:
+            # A row window runs the board it composed and bound before any launch. It is
+            # not recomposed here: that would re-run auth probes (after the auth cache's
+            # TTL) outside the window's approved envelope.
+            composition = SimpleNamespace(board=bound)
+            outcome = SimpleNamespace(status="admitted")
+        else:
+            composition = compose_review_board_report()
+            outcome = composition.policy_outcome("plan")
     except Exception:
         composition = None
         outcome = None
     if outcome is None or outcome.status != "admitted":
-        return WindowBoardResult(
-            composition="refused", board_outcome="not_terminated",
-            canonical_gemini=False, staged_read=False, board_sha256=None,
-            exec_record_sha256=None, tool_receipt_sha256=None,
-            delivered_turn_sha256=None,
-            leg_exec_records=MappingProxyType({}), co_seats=(),
-            gemini=_observation(None),
-        )
+        return _refused()
     board = composition.board
+    if ledger is not None and (
+            not _window_board_shape_ok(board)
+            or _window_board_composition_digest(board) != getattr(ledger, "composition", None)):
+        # The board must be the one the window's snapshot was written for.
+        return _refused()
     panel = PanelResult()
     run = None
     authorization = None
@@ -15375,7 +15919,10 @@ def window_board_launch(spec: WindowBoardSpec) -> WindowBoardResult:
             board, repo_dir=qualification_input.repo, stream_dir=stream_dir,
             base_env=dict(os.environ), monitoring_policy="bounded",
         )
-        with _window_board_registration(authorization, qualification_input) as run:
+        if ledger is not None:
+            president = _WindowPresidentInvoke(president, ledger)
+        with _window_board_registration(authorization, qualification_input, leg=leg,
+                                        ledger=ledger) as run:
             panel = invoke_board(
                 board, _WINDOW_BOARD_INPUT, repo_dir=qualification_input.repo,
                 mode="review", brief_ref=str(brief), max_concurrency=None,
@@ -15395,16 +15942,22 @@ def window_board_launch(spec: WindowBoardSpec) -> WindowBoardResult:
     records: dict[str, str | None] = {}
     for seat in board.seats:
         vendor = str(seat.harness or "")
-        matches = [leg for leg in panel.legs if leg.leg == vendor]
+        matches = [item for item in panel.legs if item.leg == vendor]
         metadata = getattr(matches[0], "_leg_exec_metadata", None) if len(matches) == 1 else None
         digest = metadata.get("record_digest") if isinstance(metadata, Mapping) else None
         records[vendor] = digest if isinstance(digest, str) and re.fullmatch(
             r"[0-9a-f]{64}", digest
         ) else None
-    gemini_legs = [leg for leg in panel.legs if leg.leg == "gemini"]
-    gemini = gemini_legs[0] if len(gemini_legs) == 1 else None
-    canonical = bool(gemini is not None and gemini.usable)
-    # The staged tree the board's Gemini leg read is the one its launch binding names.
+    window_legs = [item for item in panel.legs if item.leg == leg]
+    window_result = window_legs[0] if len(window_legs) == 1 else None
+    canonical = bool(window_result is not None and window_result.usable)
+    metadata = getattr(window_result, "_leg_exec_metadata", None)
+    attempt = metadata.get("attempt_id") if isinstance(metadata, Mapping) else None
+    source_attempt = attempt if isinstance(attempt, str) and re.fullmatch(
+        r"[0-9a-f]{32}", attempt) else None
+    if ledger is not None:
+        _window_write_launch(run, source_attempt, records.get(leg))
+    # The staged tree the board's window leg read is the one its launch binding names.
     tree_digest = getattr(getattr(run, "binding", None), "stage_manifest_sha256", None)
     if not (isinstance(tree_digest, str) and re.fullmatch(r"[0-9a-f]{64}", tree_digest)):
         tree_digest = None
@@ -15438,17 +15991,21 @@ def window_board_launch(spec: WindowBoardSpec) -> WindowBoardResult:
             staged_read = False
     return WindowBoardResult(
         composition="admitted", board_outcome=integrated_board_outcome(panel),
-        canonical_gemini=canonical, staged_read=staged_read,
-        board_sha256=_window_board_digest(board),
-        exec_record_sha256=records.get("gemini"),
+        window_leg=leg, canonical=canonical, staged_read=staged_read,
+        # A row window binds the full composition; W1 keeps its digest unchanged.
+        board_sha256=(_window_board_digest(board) if ledger is None
+                      else _window_board_composition_digest(board)),
+        exec_record_sha256=records.get(leg),
         tool_receipt_sha256=tool_receipt_sha256,
         delivered_turn_sha256=(
-            sha256(gemini.text.encode("utf-8", errors="strict")).hexdigest()
-            if canonical and gemini is not None else None
+            sha256(window_result.text.encode("utf-8", errors="strict")).hexdigest()
+            if canonical and window_result is not None else None
         ),
         leg_exec_records=MappingProxyType(records),
-        co_seats=tuple(leg.leg for leg in panel.legs if leg.leg != "gemini"),
-        gemini=_observation(run),
+        co_seats=tuple(item.leg for item in panel.legs if item.leg != leg),
+        leg_observation=_observation(run),
+        board_stage_sha256=tree_digest,
+        source_attempt=source_attempt,
     )
 
 
@@ -17781,6 +18338,7 @@ def _seat_route_for_spawn(
                 _JAILCORE_ROUTE_CACHE[key] = route
             _release_seat_route(previous)
     assert decision is not None
+    _window_note_route(decision)
     notices = list(decision.also)
     if decision.mode == _seat_preflight.MODE_JAILED:
         return route, notices, None
@@ -18467,9 +19025,7 @@ def _default_spawn(
                 provider_mode = mode
                 staged_bundle = (review_dir / "review-bundle.md").read_text(encoding="utf-8")
                 staged_instructions = (review_dir / "review-instructions.md").read_text(encoding="utf-8")
-                window_board = (
-                    _registered_window_board(review_authorization) if leg == "gemini" else None
-                )
+                window_board = _window_leg_hook(review_authorization, leg)
                 sealed_prompt = _render_broker_pointer_prompt(
                     staged_bundle, staged_instructions,
                     source_commit=(review_dir / _review_stage.REVIEW_STAGE_TREE_DIRNAME / ".git"
@@ -18544,21 +19100,27 @@ def _default_spawn(
 
                         def _prove() -> "_seat_credentials.LoginProof":
                             nonlocal launched
-                            proof = _jailed_claude_login_proof(seat, quiescence_latch=broker_latch)
+                            with _window_call_site("claude_login_proof"):
+                                proof = _jailed_claude_login_proof(
+                                    seat, quiescence_latch=broker_latch)
                             launched = True  # proven: whatever follows is the transport's own
                             return proof
 
                         try:
-                            claude_status, claude_text = _claude_seat_transport.launch_jailed(
-                                claude_transport, seat, prove_login=_prove,
-                                timeout_s=leg_timeout, backstop_s=int(leg_deadline),
-                                model=broker_model, effort=effort, prompt=sealed_prompt,
-                                env=env,
-                                broker_evidence=broker.evidence,
-                                failure_detail_sink=claude_sink,
-                                quiescence_latch=broker_latch, review_monitor=review_monitor,
-                                session_name=claude_session_name,
-                            )
+                            with _window_call_site("claude_seat"):
+                                claude_status, claude_text = _claude_seat_transport.launch_jailed(
+                                    claude_transport, seat, prove_login=_prove,
+                                    timeout_s=leg_timeout, backstop_s=int(leg_deadline),
+                                    model=broker_model, effort=effort, prompt=sealed_prompt,
+                                    env=env,
+                                    broker_evidence=broker.evidence,
+                                    failure_detail_sink=claude_sink,
+                                    quiescence_latch=broker_latch, review_monitor=review_monitor,
+                                    session_name=claude_session_name,
+                                )
+                        except _WindowRefused as exc:
+                            claude_sink.append(_LegFailure(template=exc.code))
+                            claude_status, claude_text = "DEGRADED", ""
                         except _seat_jail.SeatSandboxRefused as exc:
                             claude_sink.append(_LegFailure(template=exc.code))
                             claude_status, claude_text = "DEGRADED", ""
@@ -18577,12 +19139,15 @@ def _default_spawn(
                     if leg == "codex" and jailed:
                         codex_sink: list[_LegFailure] = []
                         seat = None
+                        if window_board is not None:
+                            window_board.proxy = gemini_egress
                         try:
-                            seat = _prepare_jailed_codex(
-                                review_dir, base / "seat", review_authorization, seat_id,
-                                _seat_uid.holder_pid_from_prefix(_EGRESS_LAUNCH_PREFIX.get()),
-                                (staged_bundle, staged_instructions), gemini_egress, env=env,
-                            )
+                            with _window_admission_scope():
+                                seat = _prepare_jailed_codex(
+                                    review_dir, base / "seat", review_authorization, seat_id,
+                                    _seat_uid.holder_pid_from_prefix(_EGRESS_LAUNCH_PREFIX.get()),
+                                    (staged_bundle, staged_instructions), gemini_egress, env=env,
+                                )
                             seat = _bind_route_qualification(seat, seat_route)
                             codex_status, codex_text = _exec_jailed_codex_leg(
                                 seat, deadline_s=int(leg_deadline), model=broker_model, effort=effort,
@@ -18590,7 +19155,12 @@ def _default_spawn(
                                 egress_evidence=_seat_egress_proxy.egress_evidence(gemini_egress),
                                 failure_detail_sink=codex_sink, quiescence_latch=broker_latch,
                                 review_monitor=review_monitor,
+                                window_board=window_board,
+                                review_authorization=review_authorization,
                             )
+                        except _WindowRefused as exc:
+                            codex_sink.append(_LegFailure(template=exc.code))
+                            codex_status, codex_text = "DEGRADED", ""
                         except _seat_jail.SeatSandboxRefused as exc:
                             codex_sink.append(_LegFailure(template=exc.code))
                             codex_status, codex_text = "DEGRADED", ""
@@ -19852,9 +20422,10 @@ def invoke_board(
             native_fill_requested=bool(native_leg_fills),
         )
         if monitoring_policy != "heartbeat_only" and agy_canary_capture is None:
-            board_preflight_requalify(
-                board, base_env, cancel_event, stream_dir, heartbeat=False
-            )
+            with _window_agy_reservation(review_authorization):
+                board_preflight_requalify(
+                    board, base_env, cancel_event, stream_dir, heartbeat=False
+                )
         _preflight_gemini_heartbeat(board, monitoring_policy, base_env, cancel_event, stream_dir)
     except ValueError as exc:
         refused = PanelResult(tuple(PanelLegResult(
@@ -20805,7 +21376,10 @@ def invoke_board(
             token = _BOARD_CANCEL.set(operation_cancel)
             stream_token = _SEAT_MODES_STREAM.set(Path(stream_dir) if stream_dir is not None else None)
             try:
-                return _retain_panel_leg(_run_seat_policy(item))
+                # K-1 §9.1: the window's ledger reaches this worker by explicit handoff.
+                seat = item[1] if isinstance(item, tuple) else item
+                return _retain_panel_leg(_window_seat_run(
+                    review_authorization, seat, lambda: _run_seat_policy(item)))
             finally:
                 _SEAT_MODES_STREAM.reset(stream_token)
                 _BOARD_CANCEL.reset(token)

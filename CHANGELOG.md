@@ -8,6 +8,46 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
+- One seat-window kit for every vendor's row window (FIRSTSEAT amendment K-1, lane SL-5;
+  contract `plans/artifacts/seats-window-kit-k1-contract.md`).
+  - **Suppliers.** `seat_window_supply.SUPPLIERS` is the closed vendor → module table, and
+    `load` is the kit's only dynamic import. `seat_window_supply_gemini` re-exports the
+    existing Gemini interface. `WindowVendorData` version 2 adds `supplier`,
+    `contract_sha256`, `windows`, `launch_kinds`, `credential_kinds` and `launch_cap`, and
+    `register_window_data` refuses inconsistent data.
+  - **Row windows.** `seat-window qualify --window row --vendor V` runs one vendor's window,
+    and `qualify --window row` with no vendor runs the eligible batch. Each row grant
+    (`row-grant-<vendor>-<nonce>.jsonl`, pinned in the literal-only `seat_window_grants.py`)
+    allows one attempt, claimed under a lock before preflight and so before any login.
+    `release_identity()` excludes the grants module, so a pin never moves it. `seat-window
+    ready` only reads.
+  - **Evidence.** A row window writes a run binding, a potential-route snapshot bound to
+    the full composed board (every seat and board field) and to the president route its
+    adapter selects, a dispatch ledger, the board leg's launch attestation
+    (`window-launch-<attempt>.json`, the launch binding and the qualification key its route
+    admitted, beside its exec record) and a completion receipt. A row record verifies only
+    against all of them, the grant journal and its witness.
+  - **Launch envelope.** Every start inside a row window reserves a ledger unit before it
+    happens, at the provider boundary or at the kit's call sites; an excess is refused
+    before the spawn. Each credential-bearing start is checked against the route its
+    resolver actually reached, and a disagreement with the snapshot refuses before the
+    spawn; the Fable president reserves on the transport its adapter actually selects.
+    Gemini credential renewals reserve their own A4 unit. Board seats take the
+    window's ledger in the pool worker. President fallback is refused inside a window.
+  - **Reducer.** Records reduce by `(vendor, window)` partition, and a partition changes
+    only its own vendor's row. Expiry follows the launch snapshot (owner decision O-1). A
+    read error, a duplicate or an invalid record fails only its own partition.
+  - **Credential seam.** `_prepare_jailed_codex` and `_prepare_jailed_claude` take
+    `credential_mode` (`live`, the default and unchanged; `none`; `expired`) and
+    `copy_transform`; Claude's `none` creates no token pipe. The Codex board leg calls the
+    window hook in Gemini's order.
+  - **Changed.** `WindowBoardResult.canonical_gemini` and `.gemini` are now `canonical` and
+    `leg_observation`; the result adds `window_leg`, `board_stage_sha256` and
+    `source_attempt`. `verify_records` adds an `unclassified` count. Gemini W1's production
+    path and its admission are byte-identical (a fixed-clock golden pins them).
+  - **Pins.** `runtime_digest()` and the Claude SDK proof-input binding move
+    (`_prepare_jailed_claude`, `launch_provider` and the `seat_profiles.py` input). No jail
+    profile, allow-list, agy QCI, containment contract or W1 grant digest moves.
 - A grok seat composed with the `grok-review` egress proxy now holds a pinned
   `.grok/config.toml` in its private home (grok tool-surface contract, erratum 8 r3, lane
   E8-A; `plans/artifacts/grok-tool-surface-contract-v1.md`). The file is harness-written

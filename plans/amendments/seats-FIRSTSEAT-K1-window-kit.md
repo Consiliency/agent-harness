@@ -308,8 +308,11 @@ No lane makes a live provider call or runs on a seat host. SL-6.2 is provider-fr
 - **Pin accounting: the Claude SDK proof binding.** SL-5's edits to `_prepare_jailed_claude`
   (the seam) and `launch_provider` (the ledger) are inside
   `claude_seat_transport.SDK_PROOF_REGIONS`, so the SDK proof-input binding moves with SL-5.
-  `claude_seat_sdk.ADMITTED` is `False`, so no SDK receipt is renewed. SL-5.5's `audit-order`
-  run must pass after the move, and so must SL-7.3's.
+  `seat_profiles.py` is also a whole-file SDK proof input (`SDK_PROOF_FILES`), and SL-5's
+  `WindowVendorData` v2 and its provider-boundary hook edit it, so that input moves too. It
+  is an SL-5-owned file, not a `SDK_PROOF_REGIONS` entry, so the regions stop rule does not
+  apply to it. `claude_seat_sdk.ADMITTED` is `False`, so no SDK receipt is renewed. SL-5.5's
+  `audit-order` run must pass after the move, and so must SL-7.3's.
 - **Requalification.** None, by contract §11, on the conditions it states: the `live`
   defaults, the hook call sites, the legacy W1 check and the stop rules hold. Only
   `runtime_digest` and `release_identity` move.
