@@ -16163,7 +16163,7 @@
       "status": "committed",
       "task_summary": "Seat egress proxy: a refused GET/HEAD/OPTIONS that declares a body must not crash the proxy on Node 22 (r2: guard on the Readable.toWeb data listener of a destroyed source, from a captured Node 22.12.0 stack); pin movement, requalification and sequencing (agent-harness#2067)",
       "type": "detailed",
-      "updated_at": "2026-11-22T06:42:00Z"
+      "updated_at": "2026-11-22T06:46:00Z"
     }
   ],
   "schema_version": 1

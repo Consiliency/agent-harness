@@ -5,7 +5,7 @@ automation:
 
 # Detailed plan: refused body-declaring requests must not crash the egress proxy (agent-harness#2067)
 
-Revision r2 (2026-11-22): answers the agent-harness#2075 review with a captured Node 22 stack.
+Revision r3 (2026-11-22): r2 plus the three re-review fixes, tagged [R3-1] to [R3-3].
 
 ## Task
 
@@ -27,13 +27,10 @@ pin movement, requalification and sequencing.
   - On denial, srt cancels the unread branch and destroys the upstream branch, which cancels
     the source.
 - **Captured failure (r2 evidence).**
-  - **Setup.** Pinned Node 22.12.0 (nodejs.org tarball, `SHASUMS256` verified) under a
-    private `$HOME` directory. It ran the real `proxy.mjs` over the installed srt 0.0.79 with
-    the grok-review rules, loopback only, with stderr kept.
-  - **Requests.** `GET`, `HEAD` and `OPTIONS` to `/v1/models`, each with `Content-Length: 2`
-    and `{}` or with a chunked `{}`.
-  - **Result.** Each request was observed as `deny`/`rules` and the proxy then exited 1,
-    leaving no marker. The stack:
+  - Pinned Node 22.12.0 (`SHASUMS256` verified, private `$HOME`, loopback), the real
+    `proxy.mjs` over srt 0.0.79 with grok-review rules. GET, HEAD and OPTIONS to
+    `/v1/models`, with `Content-Length: 2` `{}` or a chunked `{}`: each was observed
+    `deny`/`rules`, then the proxy exited 1 with no marker. The stack:
 
     ```
     TypeError [ERR_INVALID_STATE]: Invalid state: Controller is already closed
@@ -45,13 +42,11 @@ pin movement, requalification and sequencing.
         at resume_ (node:internal/streams/readable:1262:3)
     ```
 
-  - **What it means.** The throw is a late **`enqueue` in the adapter's `onData`**, after the
-    cancel. It is not a close: Node 22.12.0 already guards `close()` with `wasCanceled`, and
-    only Node 24.22.3 also guards `onData`.
-  - **Controls.** A POST with a body (the agent-harness#2033 drain) and a GET without one
-    survive on Node 22. All cases survive on Node 24.22.3.
-  - **Not reproduced.** Plain-stream stand-ins without the HTTP parser never crashed, so
-    none is planned.
+  - **Meaning.** A late **`enqueue` in the adapter's `onData`** after the cancel. Node
+    22.12.0 already guards `close()` with `wasCanceled`; only Node 24.22.3 also guards
+    `onData`.
+  - **Controls.** On Node 22, a POST with a body (agent-harness#2033 drain) and a bodyless
+    GET survive; Node 24.22.3 survives all. Plain-stream stand-ins never crashed.
 - **The launcher discards proxy stderr.** `seat_egress_proxy.py:942` passes
   `stderr=subprocess.DEVNULL`.
 - **Allowlists.** grok-review allows only `POST`. Codex allows
@@ -68,19 +63,14 @@ pin movement, requalification and sequencing.
 
 - **The `Readable.toWeb` listener guard — add.** Place it before `await
   import(process.argv[2])` and import `Readable` from `node:stream`.
-  - It wraps `Readable.toWeb`. srt calls it as `Readable.toWeb(shim)`, which is the same
-    static.
-  - It snapshots the source's `'data'` listeners, calls the original, and then replaces only
-    the listeners that call added. Each replacement forwards the call only while
-    `!source.destroyed`.
-  - Reason: it reproduces Node 24's `onData` `wasCanceled` check on exactly the captured
-    path. The adapter's cancel destroys the source, and a chunk emitted after that has no
-    reader.
+  - It wraps `Readable.toWeb` (srt calls this static). It snapshots the source's `'data'`
+    listeners, calls the original, and replaces only the listeners that call added; each
+    replacement forwards only while `!source.destroyed`.
+  - Reason: this is Node 24's `onData` `wasCanceled` check on the captured path. The
+    adapter's cancel destroys the source, so a later chunk has no reader.
   - It swallows no error and touches no live source, so allowed forwarding is unchanged (T2).
-  - Verified in r2 on a scratch copy under Node 22.12.0: the crashing GET, HEAD and OPTIONS
-    cases, plus a POST, return 403 with unchanged events, and the proxy exits 0. Through srt's `decideAndRespond`,
-    allowed CL, chunked and 300 KB bodies are forwarded byte-identical with and without the
-    guard.
+  - Scratch check (r2, Node 22.12.0): the crashing cases and a POST return 403 with
+    unchanged events, and the proxy exits 0. T2 makes forwarding durable evidence.
 - **A start-up structural check — add.** It replaces r1's synthetic self-test.
   - It runs `Readable.toWeb` on a probe `PassThrough`, using Node's real adapter.
   - If the adapter did not add exactly one `'data'` listener, or that listener is not the
@@ -92,14 +82,13 @@ pin movement, requalification and sequencing.
 
 ### `phase-loop-runtime/tests/test_grok_measure_egress.py` (modify)
 
-- **A `proxy_diagnostics` fixture — add.** It is test-only. It wraps
-  `seat_egress_proxy.subprocess.Popen` so that, for a `proxy.mjs` argv only, `stderr` goes to
-  a private file under `tmp_path`. Every new assertion message carries
-  `completion_detail(proxy)` and the stderr tail. Each exchange's `OSError` is caught and
-  recorded, so a crash before the status line keeps its evidence. Production launch is
-  unchanged.
-- **`FixtureUpstream._handle` — modify.** It appends each `Content-Length` body to a new
-  `self.bodies` list.
+- **A `proxy_diagnostics` fixture — add (test-only).** It wraps
+  `seat_egress_proxy.subprocess.Popen` so a `proxy.mjs` argv's `stderr` goes to a private
+  file under `tmp_path`. New assertion messages carry `completion_detail(proxy)` and the
+  stderr tail; each exchange's `OSError` is recorded, so a pre-reply crash keeps evidence.
+- **`FixtureUpstream._handle` — modify.** It appends each complete body to a new
+  `self.bodies` list: a `Content-Length` body, or a decoded `Transfer-Encoding: chunked`
+  entity read to its zero-size chunk. [R3-3]
 - **T1, `test_a_refused_request_that_declares_a_body_leaves_the_real_proxy_running` — add.**
   It uses `real_proxy_upstream` and `proxy_diagnostics`. The bodies are `Content-Length: 2`
   with `{}`, and chunked `2\r\n{}\r\n0\r\n\r\n`.
@@ -116,15 +105,21 @@ pin movement, requalification and sequencing.
   - its event's `(method, host, path, decision, cause)`;
   - `completion(proxy).complete` with the expected request count, exit status 0, and no
     `ERR_INVALID_STATE` in stderr.
-- **T2, `test_an_allowed_request_with_a_body_is_forwarded_unchanged` — add.** Real srt,
-  `Content-Length` bodies only, because the fixture reads only those.
-  - Codex `GET /backend-api/wham/accounts/check` with `{}`, no budget.
-  - grok-review `POST` to the inference path with `{}` and with 256 KiB, `request_budget=2`.
-  - It asserts a 200 status, `upstream.bodies` byte-equal to what was sent, `allow` events
-    and a complete observation.
-- **T3, `test_a_proxy_without_the_data_guard_does_not_start` — add.** It follows the
-  `unattested-proxy.mjs` pattern: a copy whose replacement listener is the original
-  listener. On the fake srt, `start_proxy` raises `START_FAILED_CODE` on any Node.
+- **T2, `test_an_allowed_request_with_a_body_is_forwarded_unchanged` — add.** Real srt.
+  - Codex `GET /backend-api/wham/accounts/check` with `Content-Length` `{}`, and
+    `request_budget=1`, since a budgetless run reports `unbudgeted`. It asserts completion
+    with requests 1 and counted 0. [R3-1]
+  - grok-review `POST` to the inference path, `request_budget=3`: `Content-Length` `{}`,
+    256 KiB, and a chunked body of three chunks whose payload is asserted exactly. [R3-3]
+  - It asserts a 200 status, `upstream.bodies` byte-equal to the sent payloads, `allow`
+    events and a complete observation.
+- **T3, `test_a_proxy_without_the_data_guard_does_not_start` — add, in the guard's commit,
+  never on the tests-only head. [R3-2]**
+  - It follows the `unattested-proxy.mjs` pattern: a copy whose replacement listener is the
+    original listener, with the needle asserted exactly once.
+  - It launches the copy on the fake srt with stderr kept, and asserts exit 3, the stderr
+    text `toWeb data guard is not in force`, and no ready line.
+  - It also asserts that `start_proxy` raises `START_FAILED_CODE`.
 
 ### `CHANGELOG.md` (modify)
 
@@ -180,12 +175,12 @@ standalone Node 22.12.0 capture (private `$HOME`, loopback). Nothing live is sch
 ## Dependencies & order
 
 1. **Draft-only red evidence.** The implementation PR stays draft while a tests-only head of
-   it runs the hosted BA-3 job on Node 22.12.0. Keep that run's link and T1's retained stderr
+   it (T1, T2 and the fixtures, no T3 [R3-2]) runs the hosted BA-3 job on Node 22.12.0. Keep that run's link and T1's retained stderr
    in the PR body.
    - A red required check, or exit 1 alone, does not confirm the mechanism. The retained
      stack must match the captured frames: `onData` in adapters, then `enqueue`.
    - That head is never merged.
-2. **Then the guard and `CHANGELOG.md`.** The final head must pass BA-3 with no skips, and
+2. **Then the guard, T3 and `CHANGELOG.md`.** The final head must pass BA-3 with no skips, and
    every required check green (`CONTRIBUTING.md` local and required checks). No red required
    check may remain at merge.
 3. **K-1 SL-6** (`t3/k1-sl6-codex`): land this fix first when it is ready. They share only
@@ -259,10 +254,10 @@ Stop and report if any of these happens:
 - [ ] T1's refusal matrix (`rules` × GET, HEAD and OPTIONS × CL and chunked; `inner_host`
   GET; codex `budget` GET) returns 403, forwards nothing, and completes with exit 0 and no
   `ERR_INVALID_STATE`. Proven by V1 (Node 24) and V4 (Node 22.12.0, final head).
-- [ ] T2: allowed codex GET and grok POST bodies, including 256 KiB, reach the upstream
-  byte-identical with 200. Proven by V1 and V4.
-- [ ] T3: a proxy whose data guard is not in force fails with `START_FAILED_CODE`. Proven by
-  V1.
+- [ ] T2: an allowed budgeted codex GET, and grok POST bodies (`{}`, 256 KiB, chunked), reach
+  the upstream byte-identical with 200, and the observation completes. Proven by V1 and V4.
+- [ ] T3, on the guard's head only: an unguarded copy exits 3 with the guard diagnostic, no
+  ready line, and `START_FAILED_CODE`. Proven by V1.
 - [ ] V4 on the draft-only tests head is red with retained stderr matching the captured
   `onData` → `enqueue` frames, and the final head passes every required check. Proven by the
   BA-3 run links in the PR body.
