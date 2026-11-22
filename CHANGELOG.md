@@ -20,6 +20,30 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   Pins: `seat_window.runtime_digest()` and the whole-file SDK proof binding of
   `seat_route_contract.py` move. No SDK proof region, jail profile digest, agy validator
   closure or QCI moves.
+- The jailed Grok seat's credential staging (SEATS GROK lane SL-1, IF-0-GROK-1 "Credential"
+  and "Egress", `plans/artifacts/grok-jail-tool-surface-contract-v1.md` §2.3 and §9;
+  Consiliency/agent-harness#1820). The new `seat_grok_credential` module checks the
+  operator's `~/.grok` store (opened without following links, operator-owned, size-capped),
+  then writes the staged read-only `<review_dir>/grok-config/` directory: mode 0555, holding
+  exactly the pinned 424-byte seat config, the access-only `auth.json`, `agent_id`, the
+  `logs/` and `sessions/` mount points and two empty lock-file mount points, every file
+  0444. A refusal writes nothing: `grok_seat_credential_missing`, `seat_profile_unavailable`
+  for an unsafe store, `grok_seat_credential_refused` unless the store shows the sign-in
+  marker (one sign-in scope holding a bearer of at least 8 characters that is not an API
+  key, no API-key field, and no repeated JSON member name),
+  and `grok_seat_token_expired` unless the expiry parses and the remaining lifetime exceeds
+  the caller's margin. The returned `GrokSeatCredential` holds the scan values (every
+  secret value and its last 12 characters, taken from the projected copy) in memory only.
+  `grok_seat_credential_after` reports `grok_seat_token_refreshed_in_jail` when a
+  credential-shaped file appears in the seat's home, or an entry there cannot be inspected
+  completely (unreadable, over the read bound, a repeated member name, or too deep).
+  Nothing calls the module yet; the profile and launch lanes will. Offline tests run the
+  `grok-review` adoption through the real `proxy.mjs`. The inference row is allowed.
+  Unlisted hosts, Gemini, Codex and sign-in hosts, an unlisted path and direct connections
+  are refused. No allow-list file or digest changes.
+  `plans/evidence/seat-grok/containment.json` records the evidence ids and digests.
+  Pins: `seat_window.runtime_digest()` and the agy `source_pins()` table move (a new runtime
+  module). No jail profile digest, SDK proof binding, agy validator closure or QCI moves.
 - One seat-window kit for every vendor's row window (FIRSTSEAT amendment K-1, lane SL-5;
   contract `plans/artifacts/seats-window-kit-k1-contract.md`).
   - **Suppliers.** `seat_window_supply.SUPPLIERS` is the closed vendor → module table, and
