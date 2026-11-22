@@ -20,6 +20,49 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   Pins: `seat_window.runtime_digest()` and the whole-file SDK proof binding of
   `seat_route_contract.py` move. No SDK proof region, jail profile digest, agy validator
   closure or QCI moves.
+- A grok seat composed with the `grok-review` egress proxy now holds a pinned
+  `.grok/config.toml` in its private home (grok tool-surface contract, erratum 8 r3, lane
+  E8-A; `plans/artifacts/grok-tool-surface-contract-v1.md`). The file is harness-written
+  and byte-exact, 424 bytes with sha256 `2984e0c3…1780` (`SEAT_CONFIG_SHA256`): a local
+  entry for the measurement model on the `grok-review` inference host with its effort
+  rows, and `[features] remote_fetch = false`. Its bytes are composed from
+  `MEASUREMENT_MODEL` and `INFERENCE_HOST`, and a build whose constants no longer compose
+  the pinned bytes composes no such profile. It is projected only with that proxy (the
+  measurement, the rehearsal and the frozen-basis board leg), as one immutable read-only
+  mount (`--perms 0444 --ro-bind-data`) of a sealed memfd from `seat_jail.memfd_with`;
+  every other grok profile, and every other harness, is composed as before. Before the
+  launch the final context check and the measurement check bind the descriptor
+  bubblewrap reads: exactly four seals, 424 bytes, offset 0, the pinned bytes read without
+  consuming it, passed and not kept, and named by no other operation (no other passed or
+  kept descriptor may be the same file). The home rule admits exactly this mount: a missing,
+  second, differing, writable, unsealed or host-backed config, any other spelling of its
+  path, a mount below it or over `.grok/`, and a mount destination that is not a
+  normalised absolute path each refuse as `grok_tool_surface_unverified`, before anything
+  is launched. The pinned `SEAT_FIXED_INPUTS` (policy layers, managed-sync state, caches
+  and home discovery sources) must be absent from the seat's view, with
+  `SEAT_FIXED_INPUT_EXCLUSIONS` pinned beside them. A frozen-basis receipt admits a launch
+  only for a form whose allow-list and admitted names stay within `NON_MUTATING_TOOLS`, so
+  the `staged` board leg is refused at the final check before spawn; `sealed` and
+  `review` still launch, and measurement is unaffected. The launch mark carries the
+  admitted tools and surface digest of the one receipt it judged, and a marked profile
+  launches only on that frozen receipt. `--verify-probe initial` now stages managed policy
+  first, read-only: a file, a dangling link or an unreadable path at either `/etc/grok`
+  path stops it (`managed_config_present`), and it reports whether Claude Code's managed
+  settings exist without blocking on them. Each secret value of the grok
+  credential copy a profile projects, and its last 12 characters, are redacted from the
+  seat's output and held in memory as `SeatProfile.scan_values`, which the measurement's
+  launch helper returns for the definitions scan.
+  Pins: `grok_tool_surface.context_digest()` moves (`seat_config` with its projection,
+  `fixed_inputs`, `non_mutating_tools`), so a frozen-basis receipt or host-local record
+  made under the earlier value is stale. `seat_window.runtime_digest()` moves
+  (`grok_tool_surface.py`, `panel_invoker.py`); it is hashed over the runtime sources as a
+  whole, so every seat window keyed on it needs requalifying, the Gemini seat's W1
+  included. The `grok-review` allow-list and its digest, the seat jail qualification's
+  `proxy_sha256`, the agy seat QCI, the jail profile digests, the five grok forms and
+  their argv digests, the `tool_probe.v1` receipt and the public detail codes do not move.
+  No Claude SDK proof input moves: `memfd_with` is called, not edited, and
+  `SDK_PROOF_UNBOUND` is unchanged. No rows are added to
+  `tests/data/seat_launch_references.json`.
 
 ## [0.7.39] - Unreleased candidate
 

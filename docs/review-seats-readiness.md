@@ -51,11 +51,17 @@ and each row reports its `basis`. A build whose `--help` advertises `--list-tool
 listed; no installed build does, 1.0.89 included. Any other build needs a frozen surface
 measured for its exact binary digest and route argv digest, from the shipped catalog or a
 host-local record, and that basis holds only inside the `grok_seat_context.v1` launch
-context: a fresh seat home, the allow-listed environment, no managed grok configuration
+context: a fresh seat home that holds, besides the projection, one harness-written
+`.grok/config.toml` with pinned bytes, mounted read-only from a sealed descriptor (a local
+entry for the measurement model, and the client's remote catalog fetch switched off;
+contract erratum 8), with none of the other pinned policy and discovery inputs in the
+seat's view, the allow-listed environment, no managed grok configuration
 and no Claude Code managed settings in the seat's view, no tool-discovery path visible in
 the reviewed tree, vendor-only `grok-review` egress and
 the launch-owner review composition. The board review leg (the `sealed`, `staged` and
-`review` forms) is wired to that context. A grok leg on a frozen-basis receipt runs in the
+`review` forms) is wired to that context. The `staged` form is ineligible at use under that
+context (its tools can write the home), so a `staged` leg on a frozen-basis receipt is
+refused before it launches; it can still be measured. A grok leg on a frozen-basis receipt runs in the
 `grok-review` proxy-only namespace its leg holds, and is checked after composition against
 that namespace and proxy. There is no fallback to a broader namespace. Until the
 owner-gated measurement has run, every grok route stays `grok_tool_surface_unverified`.
