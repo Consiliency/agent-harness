@@ -156,7 +156,7 @@ def test_an_ambiguous_marker_is_refused(operator, label, document, raw):
 
 @pytest.mark.parametrize("label,expires_at", [
     ("words", "next week"),
-    ("naive", (dt.datetime.now() + dt.timedelta(days=30)).replace(microsecond=0).isoformat()),
+    ("naive", "2999-12-31T00:00:00"),  # fixed far-future, timezone-less: refused for being naive, never expired; a fixed id keeps xdist collection stable
     ("missing", "<absent>"),
     ("bool", True),
     ("nan", float("nan")),
