@@ -5585,9 +5585,12 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
             pass_fds.add(descriptor)
             mounts.extend(("--perms", "0600", "--file", str(descriptor), destination))
 
-        def credential(relative, *, access_only=False, shape=None):
+        def credential(relative, *, access_only=False, shape=None, source=None):
+            # ``source`` is a (root, relative) pair when the CLI resolves its login
+            # elsewhere than ``home / relative``; the copy still lands at ``relative``.
+            source_root, source_relative = source if source is not None else (home, relative)
             try:
-                raw = _seat_credential(home, relative)
+                raw = _seat_credential(source_root, source_relative)
             except _sandbox_egress.SeatIdentityUnverified as exc:
                 if (SeatLaunchRole(role) is SeatLaunchRole.PROVIDER_ADMIN and
                         isinstance(getattr(exc.__cause__, "__cause__", None), FileNotFoundError)):
@@ -5613,7 +5616,17 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
         # Each seat gets the narrowest credential its CLI runs with (_SEAT_CREDENTIAL_SHAPE);
         # no seat receives a refresh token. Every secret value is redacted from its output.
         if harness == "codex":
-            credential(".codex/auth.json", shape=_SEAT_CREDENTIAL_SHAPE["codex"])
+            # The login the CLI resolves ($CODEX_HOME, else ~/.codex), as every other Codex
+            # read does (agent-harness#2078): the provider-admin probe must see the same one.
+            from .seat_codex_credential import auth_path as codex_auth_path
+
+            # Read from the login directory's parent, so a missing directory is the same
+            # missing file the provider-admin role tolerates. Unset, this is
+            # (home, ".codex/auth.json"), as before.
+            codex_dir = codex_auth_path(env).parent
+            credential(".codex/auth.json", shape=_SEAT_CREDENTIAL_SHAPE["codex"],
+                       source=(codex_dir.parent, codex_dir.name + "/auth.json")
+                       if codex_dir.name else (codex_dir, "auth.json"))
             data_file(".codex/config.toml", b'cli_auth_credentials_store = "file"\n')
             profile_env["CODEX_HOME"] = private_home + "/.codex"
         elif harness == "claude":
