@@ -315,3 +315,248 @@ def terminal(observation) -> str:
             and getattr(observation, "model_turn", None) is not True):
         return "auth_refused"
     return "other_failure"
+
+
+# --------------------------------------------------------------------------------------
+# SL-6.5: the I-4 rows and host paths, the scope, refresh and secret outcomes, the bracket.
+# FIRSTSEAT's I-4/I-13 helpers are imported, never edited; Codex's paths are its own.
+# --------------------------------------------------------------------------------------
+
+#: §10.B rows: every CODEX tree row at the tree, workdir and home locations (home less the
+#: ``.codex/`` rows, which live at ``provider_config``); the ``.codex/`` rows re-rooted at
+#: ``provider_config`` (``/seat/home/.codex``, the jail's ``CODEX_HOME``) plus
+#: ``provider_config:AGENTS.md``; and the home row ``home:.codex/config.toml``. The home row
+#: is the file the CLI's own config lives in; it is observed, never planted (it is the same
+#: host file as ``provider_config:config.toml``).
+HOME_ROW = ("home", ".codex/config.toml", "project_settings")
+_PROVIDER_CONFIG_EXTRA = (("AGENTS.md", "provider_overrides"),)
+
+
+def _layout_spec(window) -> tuple[tuple[str, str, str], ...]:
+    from .seat_profile_codex import CODEX_TREE_ROWS, CODEX_WINDOW_ROWS
+    if window is not CODEX_WINDOW_ROWS and window != CODEX_WINDOW_ROWS:
+        raise ValueError("contract_bug")
+    rows = [("tree", path, role) for path, role in CODEX_TREE_ROWS]
+    rows += [("workdir", path, role) for path, role in CODEX_TREE_ROWS]
+    rows += [("home", path, role) for path, role in CODEX_TREE_ROWS
+             if not path.startswith(".codex/")]
+    rows += [("provider_config", path.removeprefix(".codex/"), role)
+             for path, role in CODEX_TREE_ROWS if path.startswith(".codex/")]
+    rows += [("provider_config", path, role) for path, role in _PROVIDER_CONFIG_EXTRA]
+    rows.append(HOME_ROW)
+    return tuple(rows)
+
+
+def plant_layout(*, plugin_form: str, window=None):
+    """The §10.B plant layout, with FIRSTSEAT's row, nonce and canary shapes."""
+    import secrets
+    from . import seat_jail_qualification as jailq
+    from .seat_profile_codex import CODEX_WINDOW_ROWS
+    if plugin_form not in plugin_forms:
+        raise ValueError("plugin_form must be nested")
+    spec = _layout_spec(CODEX_WINDOW_ROWS if window is None else window)
+    rows, canaries = [], {surface: [] for surface in jailq._SURFACES}
+    for location, relative, role in spec:
+        nonce = secrets.token_hex(16)
+        rows.append(jailq.PlantRow(row_id=f"{location}:{relative}", location=location,
+                                   role=role, nonce=nonce))
+        if role == "mcp_servers":
+            canaries[role].append(f"{nonce}.invalid")
+    frozen = {surface: tuple(values) for surface, values in canaries.items()}
+    identity = {"rows": [[row.row_id, row.location, row.role, row.nonce] for row in rows],
+                "canary_hosts": frozen, "plugin_form": plugin_form}
+    return jailq.PlantLayout(rows=tuple(rows), canary_hosts=MappingProxyType(frozen),
+                             plugin_form=plugin_form, layout_sha256=jailq._digest(identity))
+
+
+def _layout_complete(layout) -> bool:
+    from . import seat_jail_qualification as jailq
+    from .seat_profile_codex import CODEX_WINDOW_ROWS
+    if not isinstance(layout, jailq.PlantLayout) or layout.plugin_form not in plugin_forms:
+        return False
+    expected = set(_layout_spec(CODEX_WINDOW_ROWS))
+    try:
+        observed = {(row.location, jailq._row_parts(row.row_id)[1], row.role)
+                    for row in layout.rows}
+    except (AttributeError, jailq.PlantLayoutRefused, TypeError):
+        return False
+    identity = {"rows": [[row.row_id, row.location, row.role, row.nonce] for row in layout.rows],
+                "canary_hosts": {surface: tuple(layout.canary_hosts.get(surface, ()))
+                                 for surface in jailq._SURFACES},
+                "plugin_form": layout.plugin_form}
+    return (observed == expected and len(layout.rows) == len(expected)
+            and len({row.nonce for row in layout.rows}) == len(layout.rows)
+            and layout.layout_sha256 == jailq._digest(identity))
+
+
+def build_qualification_input(layout, base):
+    """One disposable, committed tree input outside this repository, with the tree rows
+    planted by FIRSTSEAT's own plant writer."""
+    import secrets
+    from pathlib import Path
+    from . import seat_jail_qualification as jailq
+    if not _layout_complete(layout):
+        raise jailq.PlantLayoutRefused("qualification input has an incomplete plant layout")
+    base = Path(base).resolve()
+    try:
+        base.relative_to(jailq._repo_root())
+    except ValueError:
+        pass
+    else:
+        raise ValueError("qualification input must be outside this repository")
+    base.mkdir(parents=True, exist_ok=True)
+    repo = base / f"qualification-input-{secrets.token_hex(8)}"
+    repo.mkdir(mode=0o700)
+    for row in layout.rows:
+        if row.location == "tree":
+            relative = jailq._row_parts(row.row_id)[1]
+            jailq._write_plant(repo, row, relative, layout.plugin_form,
+                               command_path=f"/seat/tree/{relative}.inert")
+    (repo / jailq.WINDOW_READ_PATH).write_text(secrets.token_hex(32) + "\n", encoding="utf-8")
+    (repo / jailq.WATCH_OPEN_SENTINEL).write_text("watch sentinel\n", encoding="utf-8")
+    jailq._write_executable(repo / jailq.WATCH_EXEC_SENTINEL, secrets.token_hex(16))
+    jailq._git(repo, "init", "-q")
+    jailq._git(repo, "add", "-A")
+    jailq._git(repo, "commit", "-qm", "qualification input")
+    import subprocess
+    commit = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True,
+                            capture_output=True, text=True).stdout.strip()
+    return jailq.QualificationInput(repo=repo, commit=commit, layout=layout)
+
+
+@dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
+class CodexHostPathMap:
+    """Where a Codex seat's jailed locations live on the host."""
+
+    tree: object
+    seat_home: object
+    provider_config: object
+    seat_out: object
+    delivered_credential: object | None
+
+
+def host_path_map(seat, *, credential: bool):
+    from . import seat_codex_credential as cred, seat_jail
+    home = seat.seat_dir / seat_jail.HOST_HOME_DIRNAME
+    return CodexHostPathMap(
+        tree=seat.review_dir / seat_jail.HOST_TREE_DIRNAME, seat_home=home,
+        provider_config=home / ".codex", seat_out=seat.seat_dir / seat_jail.HOST_OUT_DIRNAME,
+        delivered_credential=home / cred.SEAT_AUTH_RELPATH if credential else None)
+
+
+def _host_target(paths, location: str, relative: str):
+    relative = relative.rstrip("/")
+    if location == "tree":
+        return paths.tree / relative, paths.tree
+    if location == "workdir":
+        return paths.seat_home / "workspace" / relative, paths.seat_home
+    if location == "provider_config":
+        return paths.provider_config / relative, paths.seat_home
+    return paths.seat_home / relative, paths.seat_home
+
+
+def _jail_root(location: str) -> str:
+    return {"tree": "/seat/tree", "workdir": "/seat/home/workspace",
+            "provider_config": "/seat/home/.codex"}.get(location, "/seat/home")
+
+
+def seed_runtime_plants(layout, paths) -> None:
+    """Plant the non-tree rows at the host paths backing their jailed locations; the home
+    row is observed, not planted."""
+    from . import seat_jail_qualification as jailq
+    if not _layout_complete(layout):
+        raise jailq.PlantLayoutRefused("runtime input has an incomplete plant layout")
+    targets, seen = [], set()
+    for row in layout.rows:
+        relative = jailq._row_parts(row.row_id)[1]
+        if row.location == "tree" or (row.location, relative, row.role) == HOME_ROW:
+            continue
+        target, boundary = _host_target(paths, row.location, relative)
+        if target in seen or not jailq._no_symlink_ancestor(target, boundary):
+            raise jailq.PlantLayoutRefused("runtime plant layout is not one-to-one")
+        seen.add(target)
+        targets.append((row, relative, target))
+    for row, relative, target in targets:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        jailq._write_plant(target.parent, row,
+                           target.name + ("/" if relative.endswith("/") else ""),
+                           layout.plugin_form,
+                           command_path=f"{_jail_root(row.location)}/{relative.rstrip('/')}.inert",
+                           form_relative=relative)
+
+
+def _proxy_secret(seat) -> tuple[bytes, ...]:
+    import urllib.parse
+    proxy = getattr(seat.jail, "env", {}).get("HTTPS_PROXY", "")
+    password = urllib.parse.urlsplit(proxy).password if proxy else None
+    return (password.encode("utf-8"),) if password else ()
+
+
+def scan_secrets(seat) -> tuple[bytes, ...]:
+    """The copy's secrets and the proxy credential; the proxy credential alone for a seat
+    with no copy (``none``)."""
+    copy = getattr(seat, "codex_copy", None)
+    return (*(copy.secrets if copy is not None else ()), *_proxy_secret(seat))
+
+
+def measure_credential_scope(seat) -> str:
+    """§10.B: the scope via ``scope_problem``, on the host, with no issuer call."""
+    from . import seat_codex_credential as cred
+    copy = getattr(seat, "codex_copy", None)
+    if copy is None:
+        return "unavailable"
+    return cred.scope_problem(copy.data) or "pass"
+
+
+def refresh_detected(seat) -> str:
+    """§10.B: the seat's copy, read back in H before teardown (as the production Codex leg
+    reads it), compared with the installed copy. A removed copy is a credential event; a
+    read that fails otherwise is ``unavailable``."""
+    from . import seat_codex_credential as cred, seat_jail, seat_uid
+    copy = getattr(seat, "codex_copy", None)
+    if copy is None:
+        return "unavailable"
+    try:
+        observed = seat_uid.read_in_h(seat.holder_pid, str(seat.seat_dir / seat_jail.HOST_HOME_DIRNAME),
+                                      cred.SEAT_AUTH_RELPATH, cred.AUTH_CAP_BYTES)
+    except seat_uid.SeatObjectMissing:
+        return "codex_seat_token_refreshed_in_jail"
+    except Exception:
+        return "unavailable"
+    return "codex_seat_token_refreshed_in_jail" if cred.tokens_changed(copy, observed) else "pass"
+
+
+def bracket_steps():
+    """The bracket for a Codex seat: FIRSTSEAT's network-refusal rows, run in the Codex jail
+    (every probed host is outside the ``codex`` allowlist)."""
+    from . import seat_jail_qualification as jailq
+    return jailq.run_bracket
+
+
+# --------------------------------------------------------------------------------------
+# The containment watch and reducer (I-13). FIRSTSEAT's are Gemini-shaped (its provider
+# config, issuer and token endpoints), so Codex does not reuse them. Until Codex's own land
+# they refuse: a Codex row window can never record a passing containment result (and the
+# B1 hold keeps any Codex row window from starting).
+# --------------------------------------------------------------------------------------
+
+def __getattr__(name: str):
+    if name in {"ContextBinding", "ContainmentInputs"}:
+        from . import seat_jail_qualification as jailq
+        return getattr(jailq, name)
+    raise AttributeError(name)
+
+
+def arm_watch(layout, paths, *, kind):
+    from . import seat_jail_qualification as jailq
+    raise jailq.WatchUnavailable("codex_containment_watch_unavailable")
+
+
+def definition_probe(layout, controls):
+    from . import seat_window_supply
+    raise seat_window_supply.WindowRefused("window_reduction_unavailable")
+
+
+def reduce_containment(inputs):
+    from . import seat_window_supply
+    raise seat_window_supply.WindowRefused("window_reduction_unavailable")
