@@ -52,9 +52,29 @@ class WindowVendorData:
     co_seats: frozenset[str]
     qualification_candidate_code: str | None = None
     default: bool = False
+    # IF-K1-1 version 2 (K-1 window-kit contract §3).
+    supplier: str | None = None
+    contract_sha256: str | None = None
+    windows: frozenset[str] = frozenset()
+    launch_kinds: frozenset[str] = frozenset()
+    credential_kinds: frozenset[str] = frozenset()
+    launch_cap: int = 0
 
 
 _WINDOW_DATA: dict[str, WindowVendorData] = {}
+
+#: I-11's closed launch kinds (the FIRSTSEAT interfaces, frozen).
+WINDOW_LAUNCH_KINDS = frozenset({
+    "help", "plugin_validation", "tree_control", "runtime_control",
+    "credentialed_tree_control", "credentialed_runtime_control", "measured", "expired_copy",
+})
+#: The board result's subject fields, the same for every vendor (§3).
+WINDOW_BOARD_FIELDS: Mapping[str, str] = MappingProxyType({
+    "canonical": "canonical", "leg": "leg_observation",
+})
+#: The plan tier's required legs: the policy's fable, sol, gemini and grok seats by vendor.
+WINDOW_PLAN_TIER_LEGS = frozenset({"claude", "codex", "gemini", "grok"})
+_WINDOW_IDS = frozenset({"W1", "row"})
 
 
 def register(profile: JailProfile) -> JailProfile:
@@ -109,11 +129,46 @@ def register_window_data(data: WindowVendorData) -> WindowVendorData:
         raise ValueError("window data outcome fields unavailable")
     if not data.co_seats or data.leg in data.co_seats:
         raise ValueError("window data co-seats unavailable")
+    _check_window_data_v2(data)
     previous = _WINDOW_DATA.get(data.vendor)
     if previous is not None and previous != data:
         raise ValueError(f"window data already registered for {data.vendor}")
     _WINDOW_DATA[data.vendor] = data
     return data
+
+
+def _check_window_data_v2(data: WindowVendorData) -> None:
+    """IF-K1-1 §3: every refusal ``register_window_data`` applies to version 2 data."""
+    import re
+    from .seat_window_supply import SUPPLIERS
+
+    names = tuple(data.record_fields.values())
+    if (len(set(names)) != len(names)
+            or any(type(name) is not str or data.vendor not in name for name in names)):
+        raise ValueError("window data record fields must name their vendor")
+    for other in _WINDOW_DATA.values():
+        if other.vendor != data.vendor and set(other.record_fields.values()) & set(names):
+            raise ValueError("window data record fields are another vendor's")
+    if dict(data.board_fields) != dict(WINDOW_BOARD_FIELDS):
+        raise ValueError("window data board fields unavailable")
+    if set(data.co_seats) != WINDOW_PLAN_TIER_LEGS - {data.leg}:
+        raise ValueError("window data co-seats are not the plan tier less this leg")
+    kinds = frozenset(data.launch_kinds)
+    if (not kinds or not kinds <= WINDOW_LAUNCH_KINDS
+            or not {"measured", "expired_copy"} <= kinds):
+        raise ValueError("window data launch kinds unavailable")
+    if not frozenset(data.credential_kinds) <= kinds:
+        raise ValueError("window data credential kinds outside its launch kinds")
+    if type(data.launch_cap) is not int or data.launch_cap != len(data.credential_kinds) + 1:
+        raise ValueError("window data launch cap unavailable")
+    if SUPPLIERS.get(data.vendor) != data.supplier:
+        raise ValueError("window data supplier is outside the table")
+    if (not isinstance(data.contract_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", data.contract_sha256) is None):
+        raise ValueError("window data contract digest unavailable")
+    windows = frozenset(data.windows)
+    if not windows or not windows <= _WINDOW_IDS or ("W1" in windows) != data.default:
+        raise ValueError("window data windows unavailable")
 
 
 def window_data_for(vendor: str) -> WindowVendorData | None:
@@ -122,6 +177,14 @@ def window_data_for(vendor: str) -> WindowVendorData | None:
 
 def registered_window_data() -> tuple[WindowVendorData, ...]:
     return tuple(_WINDOW_DATA[vendor] for vendor in sorted(_WINDOW_DATA))
+
+
+def window_provider_start(argv, *, boundary: str = "launch"):
+    """K-1 §9.1 provider boundary, reached from ``panel_invoker.launch_provider`` and
+    ``run_provider``: inside a row window a provider start reserves one unit of its scoped
+    ledger item before it happens. Outside a window it does nothing."""
+    from . import seat_window_supply
+    return seat_window_supply.provider_start(argv, boundary=boundary)
 
 
 def default_window_data() -> WindowVendorData | None:
@@ -303,10 +366,7 @@ GEMINI_WINDOW_DATA = register_window_data(WindowVendorData(
         "canonical": "canonical_gemini",
         "route": "gemini_route",
     }),
-    board_fields=MappingProxyType({
-        "canonical": "canonical_gemini",
-        "leg": "gemini",
-    }),
+    board_fields=WINDOW_BOARD_FIELDS,
     route_literal="jailed",
     containment_outcomes=MappingProxyType({
         "credential_scope": frozenset({
@@ -329,6 +389,16 @@ GEMINI_WINDOW_DATA = register_window_data(WindowVendorData(
     co_seats=frozenset({"claude", "codex", "grok"}),
     qualification_candidate_code="gemini_seat_qualification_candidate",
     default=True,
+    supplier="seat_window_supply_gemini",
+    # Gemini's own containment contract (§10.A), unchanged.
+    contract_sha256="a57d46f722e22973f0522a8bc254856e6224d50b1b67893cab2b80522c4942a6",
+    windows=frozenset({"W1", "row"}),
+    launch_kinds=WINDOW_LAUNCH_KINDS,
+    credential_kinds=frozenset({
+        "credentialed_tree_control", "credentialed_runtime_control", "measured",
+        "expired_copy",
+    }),
+    launch_cap=5,
 ))
 
 

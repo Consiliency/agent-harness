@@ -948,7 +948,7 @@ def test_seats_firstseat_exec_record_window_board_uses_fresh_gemini_seat(
     first = pi.window_board_launch(spec)
     second = pi.window_board_launch(spec)
     assert not invocation_errors
-    assert first.canonical_gemini and second.canonical_gemini
+    assert first.canonical and second.canonical
     assert board_allocations == [tmp_path / "board-1", tmp_path / "board-2"]
     assert panel_allocations == [tmp_path / "panel-1", tmp_path / "panel-2"]
     assert prepared_seats == [
@@ -1332,12 +1332,12 @@ def test_seats_firstseat_exec_record_window_board_launch(tmp_path, monkeypatch):
     ))
     assert isinstance(result, pi.WindowBoardResult)
     assert result.composition == "admitted" and result.board_outcome == "terminated"
-    assert result.canonical_gemini and result.staged_read
+    assert result.canonical and result.staged_read
     assert result.exec_record_sha256 == receipt
     with pytest.raises(TypeError):
         result.leg_exec_records["gemini"] = None
-    assert result.gemini.watch.read_marker_opened and result.gemini.stream.final
-    assert result.gemini.input_sha256 == hashlib.sha256(pi._WINDOW_BOARD_INPUT.encode()).hexdigest()
+    assert result.leg_observation.watch.read_marker_opened and result.leg_observation.stream.final
+    assert result.leg_observation.input_sha256 == hashlib.sha256(pi._WINDOW_BOARD_INPUT.encode()).hexdigest()
 
 
 @pytest.mark.parametrize("change", ["kept", "absent", "changed", "unbound_tree", "reused",
@@ -1411,7 +1411,7 @@ def test_seats_firstseat_exec_record_window_board_retains_read_receipt(
     path = root / name
     assert path.is_file()
     assert result.tool_receipt_sha256 == pi._window_json_digest(expected_read)
-    record = {"board_input_digest": result.gemini.input_sha256,
+    record = {"board_input_digest": result.leg_observation.input_sha256,
               "containment_binding": {"stage_manifest_sha256": "9" * 64}}
     if change == "absent":
         path.unlink()
@@ -1445,7 +1445,7 @@ def test_seats_firstseat_exec_record_window_board_refusal(tmp_path, monkeypatch)
         monitoring_policy="bounded",
     ))
     assert result.composition == "refused" and result.board_outcome == "not_terminated"
-    assert result.gemini.watch is None and result.gemini.stream is None
+    assert result.leg_observation.watch is None and result.leg_observation.stream is None
 
 
 

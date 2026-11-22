@@ -381,7 +381,8 @@ class _BoardLegObservation:
 class _WindowBoardResult:
     composition: str
     board_outcome: str
-    canonical_gemini: bool
+    window_leg: str
+    canonical: bool
     staged_read: bool
     board_sha256: str | None
     exec_record_sha256: str | None
@@ -389,7 +390,9 @@ class _WindowBoardResult:
     delivered_turn_sha256: str | None
     leg_exec_records: Mapping[str, str | None]
     co_seats: tuple[str, ...]
-    gemini: _BoardLegObservation
+    leg_observation: _BoardLegObservation
+    board_stage_sha256: str | None
+    source_attempt: str | None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -988,12 +991,13 @@ def _window_frozen_interface_harness(
         stream=board_stream if composition == "admitted" else None,
         input_sha256=board_input_sha256, binding=binding)
     board = _WindowBoardResult(composition=composition, board_outcome="terminated",
-        canonical_gemini=True, staged_read=True, board_sha256="3" * 64,
+        window_leg="gemini", canonical=True, staged_read=True, board_sha256="3" * 64,
         exec_record_sha256="4" * 64, tool_receipt_sha256="5" * 64,
         delivered_turn_sha256="6" * 64,
         leg_exec_records={name: value * 64 for name, value in zip(
             ("claude", "gemini", "codex", "grok"), ("7", "8", "9", "a"), strict=True)},
-        co_seats=("codex", "grok"), gemini=board_observation)
+        co_seats=("codex", "grok"), leg_observation=board_observation,
+        board_stage_sha256="d" * 64, source_attempt="f" * 32)
 
     def window_board_launch(spec):
         assert type(spec) is _WindowBoardSpec
@@ -1014,7 +1018,7 @@ def _window_frozen_interface_harness(
     def reduce_containment(inputs):
         assert type(inputs) is _ContainmentInputs
         calls.append(("reduce", tuple(item.kind for item in inputs.controls),
-                      inputs.board is board.gemini))
+                      inputs.board is board.leg_observation))
         reduction_binding = ordered({
             "image_sha256": "b" * 64, "admission_class": "release_qualified",
             "help_sha256": "c" * 64, "stage_manifest_sha256": "d" * 64,

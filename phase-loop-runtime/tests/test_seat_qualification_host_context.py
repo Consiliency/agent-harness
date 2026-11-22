@@ -459,7 +459,8 @@ def test_seats_firstseat_w1_receipt_one_standard_context_passes():
     assert len(records) == 1 and records[0]["account_isolation"] is None
     assert w.verify_records(records) == {
         "schema": "seat_window_verification.v1", "window": "W1", "passed": True,
-        "records_valid": True, "status": "done-local", "code": "window_verified"}
+        "records_valid": True, "status": "done-local", "code": "window_verified",
+        "unclassified": 0}
     rows = {row["id"]: row for row in w.reduce_readiness(records)}
     assert rows["vendor:gemini"]["status"] == "done-local"
 
@@ -517,7 +518,10 @@ def test_seats_firstseat_w1_receipt_team_defects_do_not_block_done_local(tmp_pat
     exported = w.export_records([designated], tmp_path / "alone.json", reviewed=True)
     _TEAM_DEFECTS[defect](team)
     records = [*team, designated]
-    assert w.verify_records(records) == w.verify_records([designated])
+    # K-1 §7: a non-record is counted as unclassified and fails no partition.
+    def verdict(value):
+        return {k: v for k, v in w.verify_records(value).items() if k != "unclassified"}
+    assert verdict(records) == verdict([designated])
     assert w.verify_records(records)["status"] == "done-local"
     assert w.reduce_readiness(records) == alone
     assert w.export_records(records, tmp_path / "mixed.json", reviewed=True) == exported

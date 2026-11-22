@@ -1,0 +1,513 @@
+{
+ "argv": {
+  "credentialed_runtime_control": [
+   "/usr/bin/env",
+   "--chdir=/seat/home/workspace",
+   "/seat/bin/gemini",
+   "--model",
+   "fixture-model",
+   "--dangerously-skip-permissions",
+   "--disable-slash-commands",
+   "--input-format",
+   "stream-json",
+   "--output-format",
+   "stream-json",
+   "--print=",
+   "--print-timeout",
+   "0"
+  ],
+  "credentialed_tree_control": [
+   "/usr/bin/env",
+   "--chdir=/seat/tree",
+   "/seat/bin/gemini",
+   "--model",
+   "fixture-model",
+   "--dangerously-skip-permissions",
+   "--disable-slash-commands",
+   "--input-format",
+   "stream-json",
+   "--output-format",
+   "stream-json",
+   "--print=",
+   "--print-timeout",
+   "0",
+   "--add-dir",
+   "/seat/tree"
+  ],
+  "expired_copy": [
+   "/usr/bin/env",
+   "--chdir=/seat/home/workspace",
+   "/seat/bin/gemini",
+   "--model",
+   "fixture-model",
+   "--dangerously-skip-permissions",
+   "--disable-slash-commands",
+   "--input-format",
+   "stream-json",
+   "--output-format",
+   "stream-json",
+   "--print=",
+   "--print-timeout",
+   "0"
+  ],
+  "help": [
+   "/seat/bin/gemini",
+   "--help"
+  ],
+  "measured": [
+   "/usr/bin/env",
+   "--chdir=/seat/home/workspace",
+   "/seat/bin/gemini",
+   "--model",
+   "fixture-model",
+   "--dangerously-skip-permissions",
+   "--disable-slash-commands",
+   "--input-format",
+   "stream-json",
+   "--output-format",
+   "stream-json",
+   "--print=",
+   "--print-timeout",
+   "0"
+  ],
+  "production": [
+   "/usr/bin/env",
+   "--chdir=/seat/home/workspace",
+   "/seat/bin/gemini",
+   "--model",
+   "fixture-model",
+   "--dangerously-skip-permissions",
+   "--disable-slash-commands",
+   "--input-format",
+   "stream-json",
+   "--output-format",
+   "stream-json",
+   "--print=",
+   "--print-timeout",
+   "0"
+  ],
+  "runtime_control": [
+   "/usr/bin/env",
+   "--chdir=/seat/home/workspace",
+   "/seat/bin/gemini",
+   "--model",
+   "fixture-model",
+   "--dangerously-skip-permissions",
+   "--disable-slash-commands",
+   "--input-format",
+   "stream-json",
+   "--output-format",
+   "stream-json",
+   "--print=",
+   "--print-timeout",
+   "0"
+  ],
+  "tree_control": [
+   "/usr/bin/env",
+   "--chdir=/seat/tree",
+   "/seat/bin/gemini",
+   "--model",
+   "fixture-model",
+   "--dangerously-skip-permissions",
+   "--disable-slash-commands",
+   "--input-format",
+   "stream-json",
+   "--output-format",
+   "stream-json",
+   "--print=",
+   "--print-timeout",
+   "0",
+   "--add-dir",
+   "/seat/tree"
+  ]
+ },
+ "calls": [
+  [
+   "layout",
+   "nested"
+  ],
+  [
+   "build",
+   "nested"
+  ],
+  [
+   "launch",
+   "help",
+   "nested"
+  ],
+  [
+   "launch",
+   "plugin_validation",
+   "nested"
+  ],
+  [
+   "build",
+   "nested"
+  ],
+  [
+   "launch",
+   "tree_control",
+   "nested"
+  ],
+  [
+   "launch",
+   "runtime_control",
+   "nested"
+  ],
+  [
+   "definition",
+   [
+    "tree_control",
+    "runtime_control"
+   ]
+  ],
+  [
+   "launch",
+   "credentialed_tree_control",
+   "nested"
+  ],
+  [
+   "launch",
+   "credentialed_runtime_control",
+   "nested"
+  ],
+  [
+   "launch",
+   "measured",
+   "nested"
+  ],
+  [
+   "launch",
+   "expired_copy",
+   "nested"
+  ],
+  [
+   "board",
+   "nested",
+   "bounded"
+  ],
+  [
+   "reduce",
+   [
+    "tree_control",
+    "runtime_control",
+    "credentialed_tree_control",
+    "credentialed_runtime_control"
+   ]
+  ]
+ ],
+ "qualify": {
+  "code": "window_review_required",
+  "status": "candidate"
+ },
+ "rows": [
+  {
+   "allowlist_digest": null,
+   "allowlist_id": "gemini",
+   "claude_transport": null,
+   "credential_lane": "subscription",
+   "end_condition": "row window or owning phase exit",
+   "exception": null,
+   "expiry": null,
+   "host_classes": [
+    "standard"
+   ],
+   "id": "vendor:gemini",
+   "interim_route": "degraded",
+   "kind": "vendor",
+   "live_evidence_digest": null,
+   "profile_digest": null,
+   "projection": null,
+   "qualification_record": null,
+   "renewal_record": null,
+   "route": "jailed",
+   "status": "candidate",
+   "tool_surface": null,
+   "vendor": "gemini"
+  },
+  {
+   "allowlist_digest": null,
+   "allowlist_id": "gemini",
+   "claude_transport": null,
+   "credential_lane": "subscription",
+   "end_condition": "row window or owning phase exit",
+   "exception": null,
+   "expiry": null,
+   "host_classes": [
+    "standard"
+   ],
+   "id": "remote:gemini",
+   "interim_route": "degraded",
+   "kind": "remote",
+   "live_evidence_digest": null,
+   "profile_digest": null,
+   "projection": null,
+   "qualification_record": null,
+   "renewal_record": null,
+   "route": "remote",
+   "status": "remote-pending",
+   "tool_surface": null,
+   "vendor": "gemini"
+  },
+  {
+   "allowlist_digest": null,
+   "allowlist_id": "gemini",
+   "bound_s": 300,
+   "claude_transport": null,
+   "credential_lane": "subscription",
+   "end_condition": "row window or owning phase exit",
+   "exception": null,
+   "expiry": null,
+   "host_classes": [
+    "standard"
+   ],
+   "id": "president:gemini:_launch_gemini",
+   "interim_route": "degraded",
+   "kind": "president",
+   "live_evidence_digest": null,
+   "profile_digest": null,
+   "projection": null,
+   "qualification_record": null,
+   "renewal_record": null,
+   "route": "_launch_gemini",
+   "rung": "gemini",
+   "status": "candidate",
+   "tool_mode": "sealed",
+   "tool_surface": null,
+   "vendor": "gemini"
+  }
+ ],
+ "schema": "seat_window_gemini_k1_golden.v1",
+ "writes": {
+  "owner-summary-W1-c0000000000000000000000000000001.json": {
+   "context_id": "c0000000000000000000000000000001",
+   "counted_lookups": {
+    "credentialed_runtime_control": 0,
+    "credentialed_tree_control": 0,
+    "runtime_control": 0,
+    "tree_control": 0
+   },
+   "expired_copy_control": "pass",
+   "home_row_baseline": "no_write_final",
+   "outcomes": {
+    "credential_scope": "pass",
+    "hooks": "not_loaded",
+    "mcp_servers": "not_loaded",
+    "project_settings": "not_loaded",
+    "provider_overrides": "not_loaded",
+    "refresh_detection": "pass"
+   },
+   "plugin_validation": "valid",
+   "private_route": true,
+   "schema": "seat_window_owner_summary.v1",
+   "unavailable_reasons": {
+    "credential_scope": [],
+    "hooks": [],
+    "mcp_servers": [],
+    "project_settings": [],
+    "provider_overrides": [],
+    "refresh_detection": []
+   },
+   "uncounted_home_lookups": {
+    "credentialed_runtime_control": 1,
+    "credentialed_tree_control": 1,
+    "runtime_control": 1,
+    "tree_control": 1
+   },
+   "undefined_surfaces": [],
+   "voided_controls": []
+  },
+  "window-W1-c0000000000000000000000000000001.json": {
+   "account_isolation": null,
+   "account_label": "a0000000000000000000000000000002",
+   "admission": "admitted",
+   "allowlist_digest": "6666666666666666666666666666666666666666666666666666666666666666",
+   "board_digest": "3333333333333333333333333333333333333333333333333333333333333333",
+   "board_input_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "board_outcome": "terminated",
+   "canonical_gemini": true,
+   "co_seats": [
+    "claude",
+    "codex",
+    "grok"
+   ],
+   "containment": {
+    "checks": {
+     "credential_scope": true,
+     "hooks": true,
+     "mcp_servers": true,
+     "project_settings": true,
+     "provider_overrides": true,
+     "refresh_detection": true
+    },
+    "evidence_digest": "c724495240481e47bfb6957c01828dd730d93faba2cc3a5abd23ad5d70ffbdf6",
+    "observation_digest": "3c733e9b7e0fde8af6a83510f0c7be4e237c11f27631171bb301d8b2b3a38f6b"
+   },
+   "containment_binding": {
+    "account_label": "a0000000000000000000000000000002",
+    "admission_class": "release_qualified",
+    "board_input_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "context_id": "c0000000000000000000000000000001",
+    "contract_sha256": "a57d46f722e22973f0522a8bc254856e6224d50b1b67893cab2b80522c4942a6",
+    "control_argv_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "control_input_sha256": "9999999999999999999999999999999999999999999999999999999999999999",
+    "dependency_projection_sha256": null,
+    "dependency_subject_sha256": null,
+    "help_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "image_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "jail_profile_sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+    "measured_input_sha256": "8888888888888888888888888888888888888888888888888888888888888888",
+    "plant_layout_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "production_allowlist_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+    "production_argv_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "proxy_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+    "refuse_all_allowlist_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+    "stage_manifest_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "validator_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "watch_sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+   },
+   "containment_outcomes": {
+    "credential_scope": "pass",
+    "hooks": "not_loaded",
+    "mcp_servers": "not_loaded",
+    "project_settings": "not_loaded",
+    "provider_overrides": "not_loaded",
+    "refresh_detection": "pass"
+   },
+   "context_id": "c0000000000000000000000000000001",
+   "delivered_turn_digest": "6666666666666666666666666666666666666666666666666666666666666666",
+   "egress": {
+    "checks": {
+     "allowed_proxy": true,
+     "direct_dns": true,
+     "direct_ip": true,
+     "refused_proxy": true
+    },
+    "evidence_digest": "de0778fcebf9771278ebb7f12c28c4833a43973aea672d8efc2d48f73110460a",
+    "observation_digest": "176fb613826224a7c309508a5a47a53ae3e6520edfea4f84251520c49ad0c39d"
+   },
+   "exec_record_digest": "4444444444444444444444444444444444444444444444444444444444444444",
+   "gemini_route": "jailed",
+   "host_class": "standard",
+   "host_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+   "observed_at": "2026-11-04T12:00:00+00:00",
+   "operator_id": 4242,
+   "profile_digest": "7777777777777777777777777777777777777777777777777777777777777777",
+   "qualification_keys": {
+    "allowlist_digest": "6666666666666666666666666666666666666666666666666666666666666666",
+    "profile_digest": "7777777777777777777777777777777777777777777777777777777777777777",
+    "runtime_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+   },
+   "record_digest": "6e90c12807fd53fcdeca794fe23f1c694ce2ad4f059f1d71330ecae93e3fd8c4",
+   "row_observations": [
+    {
+     "exec_record_digest": "7777777777777777777777777777777777777777777777777777777777777777",
+     "id": "vendor:claude",
+     "outcome": "observed"
+    },
+    {
+     "exec_record_digest": "8888888888888888888888888888888888888888888888888888888888888888",
+     "id": "vendor:gemini",
+     "outcome": "observed"
+    },
+    {
+     "exec_record_digest": "9999999999999999999999999999999999999999999999999999999999999999",
+     "id": "vendor:codex",
+     "outcome": "observed"
+    },
+    {
+     "exec_record_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "id": "vendor:grok",
+     "outcome": "observed"
+    },
+    {
+     "exec_record_digest": null,
+     "id": "vendor:pi",
+     "outcome": "unavailable"
+    },
+    {
+     "exec_record_digest": null,
+     "id": "president:fable:native_fill_deferred",
+     "outcome": "unavailable"
+    },
+    {
+     "exec_record_digest": null,
+     "id": "president:fable:_launch_claude:print",
+     "outcome": "unavailable"
+    },
+    {
+     "exec_record_digest": null,
+     "id": "president:fable:_launch_claude:tui",
+     "outcome": "unavailable"
+    },
+    {
+     "exec_record_digest": null,
+     "id": "president:sol:_exec_leg:codex",
+     "outcome": "unavailable"
+    },
+    {
+     "exec_record_digest": null,
+     "id": "president:grok:_exec_leg:grok",
+     "outcome": "unavailable"
+    },
+    {
+     "exec_record_digest": null,
+     "id": "president:gemini:_launch_gemini",
+     "outcome": "unavailable"
+    }
+   ],
+   "rows": [
+    "vendor:claude",
+    "vendor:gemini",
+    "vendor:codex",
+    "vendor:grok",
+    "vendor:pi",
+    "president:fable:native_fill_deferred",
+    "president:fable:_launch_claude:print",
+    "president:fable:_launch_claude:tui",
+    "president:sol:_exec_leg:codex",
+    "president:grok:_exec_leg:grok",
+    "president:gemini:_launch_gemini"
+   ],
+   "runtime_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+   "schema": "seat_window.v1",
+   "source_attempt": "ffffffffffffffffffffffffffffffff",
+   "staged_read": true,
+   "tool_receipt_digest": "5555555555555555555555555555555555555555555555555555555555555555",
+   "window": "W1"
+  },
+  "window-egress-176fb613826224a7c309508a5a47a53ae3e6520edfea4f84251520c49ad0c39d.json": {
+   "board_decisions": [
+    "allow"
+   ],
+   "board_input_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "board_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+   "context_id": "c0000000000000000000000000000001",
+   "delivered_turn_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+   "direct_without_proxy": "refused",
+   "exec_record_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+   "measured_decisions": [
+    "allow",
+    "deny"
+   ],
+   "schema": "seat_window_egress.v1",
+   "tool_receipt_sha256": "5555555555555555555555555555555555555555555555555555555555555555"
+  },
+  "window-observation-3c733e9b7e0fde8af6a83510f0c7be4e237c11f27631171bb301d8b2b3a38f6b.json": {
+   "bracket": {},
+   "canaries": [],
+   "credential_events": {},
+   "delivered_copy_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+   "home_row": {
+    "baseline": "1111111111111111111111111111111111111111111111111111111111111111",
+    "measured": "1111111111111111111111111111111111111111111111111111111111111111"
+   },
+   "issuer": {},
+   "lookups": {},
+   "manifest_differences": false,
+   "rows": {},
+   "token_endpoint_events": {},
+   "unavailable_reasons": {}
+  }
+ }
+}
