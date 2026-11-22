@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "applied_plan_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "title": "Applied Plan Id"
+    },
+    "execution_mode": {
+      "anyOf": [
+        {
+          "const": "main",
+          "type": "string"
+        },
+        {
+          "const": "delegated",
+          "type": "string"
+        },
+        {
+          "const": "dry_run",
+          "type": "string"
+        }
+      ],
+      "title": "Execution Mode"
+    },
+    "execution_run_id": {
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "title": "Execution Run Id",
+      "type": "string"
+    },
+    "prior_execution_run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "title": "Prior Execution Run Id"
+    },
+    "selected_plan_id": {
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "title": "Selected Plan Id",
+      "type": "string"
+    },
+    "substitution_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Substitution Reason"
+    },
+    "task_id": {
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "title": "Task Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "applied_plan_id",
+    "execution_mode",
+    "execution_run_id",
+    "prior_execution_run_id",
+    "selected_plan_id",
+    "substitution_reason",
+    "task_id"
+  ],
+  "title": "ExecutionRun",
+  "type": "object"
+}

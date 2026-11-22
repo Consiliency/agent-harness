@@ -1,0 +1,92 @@
+{
+  "$defs": {
+    "LocalNotice": {
+      "additionalProperties": false,
+      "properties": {
+        "automatic_action": {
+          "anyOf": [
+            {
+              "const": "archive",
+              "type": "string"
+            },
+            {
+              "const": "none",
+              "type": "string"
+            }
+          ],
+          "title": "Automatic Action"
+        },
+        "deadline": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "format": "date-time",
+          "pattern": "Z$",
+          "title": "Deadline"
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "const": "archive_prompt",
+              "type": "string"
+            },
+            {
+              "const": "failure",
+              "type": "string"
+            },
+            {
+              "const": "decision_required",
+              "type": "string"
+            }
+          ],
+          "title": "Kind"
+        },
+        "notice_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Notice Id",
+          "type": "string"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "automatic_action",
+        "deadline",
+        "kind",
+        "notice_id",
+        "summary"
+      ],
+      "title": "LocalNotice",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "notices": {
+      "items": {
+        "$ref": "#/$defs/LocalNotice"
+      },
+      "title": "Notices",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "notices",
+    "schema_version"
+  ],
+  "title": "NoticeInbox",
+  "type": "object"
+}

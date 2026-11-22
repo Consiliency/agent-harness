@@ -1,0 +1,1610 @@
+{
+  "$defs": {
+    "AcceptanceRequirement": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "evaluator_ref": {
+          "title": "Evaluator Ref",
+          "type": "string"
+        },
+        "requirement_id": {
+          "title": "Requirement Id",
+          "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "const": "user",
+              "type": "string"
+            },
+            {
+              "const": "task_family",
+              "type": "string"
+            },
+            {
+              "const": "inferred",
+              "type": "string"
+            }
+          ],
+          "title": "Source"
+        }
+      },
+      "required": [
+        "description",
+        "evaluator_ref",
+        "requirement_id",
+        "source"
+      ],
+      "title": "AcceptanceRequirement",
+      "type": "object"
+    },
+    "AttachmentReference": {
+      "additionalProperties": false,
+      "properties": {
+        "authorized": {
+          "title": "Authorized",
+          "type": "boolean"
+        },
+        "modality": {
+          "anyOf": [
+            {
+              "const": "image",
+              "type": "string"
+            },
+            {
+              "const": "audio",
+              "type": "string"
+            },
+            {
+              "const": "video",
+              "type": "string"
+            },
+            {
+              "const": "document",
+              "type": "string"
+            }
+          ],
+          "title": "Modality"
+        },
+        "reference": {
+          "title": "Reference",
+          "type": "string"
+        },
+        "representation_source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Representation Source"
+        },
+        "text_representation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Text Representation"
+        }
+      },
+      "required": [
+        "authorized",
+        "modality",
+        "reference",
+        "representation_source",
+        "text_representation"
+      ],
+      "title": "AttachmentReference",
+      "type": "object"
+    },
+    "CandidateSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "access_route": {
+          "title": "Access Route",
+          "type": "string"
+        },
+        "addresses_failures": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Addresses Failures",
+          "type": "array"
+        },
+        "candidate_id": {
+          "minLength": 1,
+          "title": "Candidate Id",
+          "type": "string"
+        },
+        "completion_time_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "minimum": 0,
+          "title": "Completion Time Ms"
+        },
+        "context_token_limit": {
+          "minimum": 1,
+          "title": "Context Token Limit",
+          "type": "integer"
+        },
+        "declared_capabilities": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Declared Capabilities",
+          "type": "array"
+        },
+        "default": {
+          "title": "Default",
+          "type": "boolean"
+        },
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "evidence_strength": {
+          "anyOf": [
+            {
+              "const": "measured",
+              "type": "string"
+            },
+            {
+              "const": "judgment",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "type": "string"
+            }
+          ],
+          "title": "Evidence Strength"
+        },
+        "execution_token_limits": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutionTokenLimits"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expires_at": {
+          "format": "date-time",
+          "pattern": "Z$",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "guidance_options": {
+          "items": {
+            "$ref": "#/$defs/GuidanceRevision"
+          },
+          "maxItems": 2,
+          "title": "Guidance Options",
+          "type": "array"
+        },
+        "local": {
+          "title": "Local",
+          "type": "boolean"
+        },
+        "model_id": {
+          "minLength": 1,
+          "title": "Model Id",
+          "type": "string"
+        },
+        "native_effort": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExplicitEffort"
+            },
+            {
+              "$ref": "#/$defs/DefaultEffort"
+            },
+            {
+              "$ref": "#/$defs/UnsupportedEffort"
+            }
+          ],
+          "title": "Native Effort"
+        },
+        "output_token_limit": {
+          "minimum": 1,
+          "title": "Output Token Limit",
+          "type": "integer"
+        },
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        },
+        "quality_sufficient": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Quality Sufficient"
+        },
+        "rates": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RateCard"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "required_capabilities": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Capabilities",
+          "type": "array"
+        },
+        "resolved_model_revision": {
+          "minLength": 1,
+          "title": "Resolved Model Revision",
+          "type": "string"
+        },
+        "runtime_capabilities": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Runtime Capabilities",
+          "type": "array"
+        },
+        "satisfied_requirements": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Satisfied Requirements",
+          "type": "array"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "supported_efforts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Supported Efforts",
+          "type": "array"
+        },
+        "token_counter_revision": {
+          "title": "Token Counter Revision",
+          "type": "string"
+        },
+        "verified_at": {
+          "format": "date-time",
+          "pattern": "Z$",
+          "title": "Verified At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "access_route",
+        "addresses_failures",
+        "candidate_id",
+        "completion_time_ms",
+        "context_token_limit",
+        "declared_capabilities",
+        "default",
+        "evidence_refs",
+        "evidence_strength",
+        "expires_at",
+        "guidance_options",
+        "local",
+        "model_id",
+        "native_effort",
+        "output_token_limit",
+        "provider",
+        "quality_sufficient",
+        "rates",
+        "required_capabilities",
+        "resolved_model_revision",
+        "runtime_capabilities",
+        "satisfied_requirements",
+        "source",
+        "supported_efforts",
+        "token_counter_revision",
+        "verified_at"
+      ],
+      "title": "CandidateSnapshot",
+      "type": "object"
+    },
+    "Capabilities": {
+      "additionalProperties": false,
+      "properties": {
+        "declared": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Declared",
+          "type": "array"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "pattern": "Z$",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "inventory_revision": {
+          "title": "Inventory Revision",
+          "type": "string"
+        },
+        "runtime": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Runtime",
+          "type": "array"
+        },
+        "verified_at": {
+          "format": "date-time",
+          "pattern": "Z$",
+          "title": "Verified At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "declared",
+        "expires_at",
+        "inventory_revision",
+        "runtime",
+        "verified_at"
+      ],
+      "title": "Capabilities",
+      "type": "object"
+    },
+    "CatalogQuery": {
+      "additionalProperties": false,
+      "properties": {
+        "domain": {
+          "title": "Domain",
+          "type": "string"
+        },
+        "facets": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Facets",
+          "type": "array"
+        },
+        "max_branches": {
+          "maximum": 32,
+          "minimum": 1,
+          "title": "Max Branches",
+          "type": "integer"
+        },
+        "specialty": {
+          "title": "Specialty",
+          "type": "string"
+        },
+        "task_family": {
+          "title": "Task Family",
+          "type": "string"
+        }
+      },
+      "required": [
+        "domain",
+        "facets",
+        "max_branches",
+        "specialty",
+        "task_family"
+      ],
+      "title": "CatalogQuery",
+      "type": "object"
+    },
+    "CatalogResource": {
+      "additionalProperties": false,
+      "properties": {
+        "admission": {
+          "anyOf": [
+            {
+              "const": "policy_admitted",
+              "type": "string"
+            },
+            {
+              "const": "explicitly_enabled",
+              "type": "string"
+            },
+            {
+              "const": "unadmitted",
+              "type": "string"
+            }
+          ],
+          "title": "Admission"
+        },
+        "aliases": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Aliases",
+          "type": "array"
+        },
+        "benchmark_effort": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Benchmark Effort"
+        },
+        "benchmark_protocol": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Benchmark Protocol"
+        },
+        "benchmark_split": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Benchmark Split"
+        },
+        "conflicts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Conflicts",
+          "type": "array"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "domain": {
+          "title": "Domain",
+          "type": "string"
+        },
+        "facets": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Facets",
+          "type": "array"
+        },
+        "instructions": {
+          "title": "Instructions",
+          "type": "string"
+        },
+        "resource_id": {
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "revision": {
+          "title": "Revision",
+          "type": "string"
+        },
+        "rights": {
+          "title": "Rights",
+          "type": "string"
+        },
+        "source_occurrences": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Occurrences",
+          "type": "array"
+        },
+        "specialty": {
+          "title": "Specialty",
+          "type": "string"
+        },
+        "task_family": {
+          "title": "Task Family",
+          "type": "string"
+        }
+      },
+      "required": [
+        "admission",
+        "aliases",
+        "benchmark_effort",
+        "benchmark_protocol",
+        "benchmark_split",
+        "conflicts",
+        "content_hash",
+        "domain",
+        "facets",
+        "instructions",
+        "resource_id",
+        "revision",
+        "rights",
+        "source_occurrences",
+        "specialty",
+        "task_family"
+      ],
+      "title": "CatalogResource",
+      "type": "object"
+    },
+    "CatalogSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "resources": {
+          "items": {
+            "$ref": "#/$defs/CatalogResource"
+          },
+          "title": "Resources",
+          "type": "array"
+        },
+        "revision": {
+          "title": "Revision",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "1",
+          "title": "Schema Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resources",
+        "revision",
+        "schema_version"
+      ],
+      "title": "CatalogSnapshot",
+      "type": "object"
+    },
+    "DefaultEffort": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "provider_default",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "DefaultEffort",
+      "type": "object"
+    },
+    "ExecutionTokenLimits": {
+      "additionalProperties": false,
+      "properties": {
+        "input_tokens": {
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "output_tokens": {
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "input_tokens",
+        "output_tokens"
+      ],
+      "title": "ExecutionTokenLimits",
+      "type": "object"
+    },
+    "ExplicitEffort": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "explicit",
+          "title": "Kind",
+          "type": "string"
+        },
+        "native_value": {
+          "title": "Native Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "native_value"
+      ],
+      "title": "ExplicitEffort",
+      "type": "object"
+    },
+    "GuidanceRevision": {
+      "additionalProperties": false,
+      "properties": {
+        "admission": {
+          "anyOf": [
+            {
+              "const": "policy_admitted",
+              "type": "string"
+            },
+            {
+              "const": "explicitly_enabled",
+              "type": "string"
+            }
+          ],
+          "title": "Admission"
+        },
+        "authority": {
+          "title": "Authority",
+          "type": "string"
+        },
+        "content_hash": {
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "resource_id": {
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "revision": {
+          "title": "Revision",
+          "type": "string"
+        },
+        "role": {
+          "title": "Role",
+          "type": "string"
+        },
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "token_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Token Count"
+        }
+      },
+      "required": [
+        "admission",
+        "authority",
+        "content_hash",
+        "resource_id",
+        "revision",
+        "role",
+        "task_id",
+        "token_count"
+      ],
+      "title": "GuidanceRevision",
+      "type": "object"
+    },
+    "HardConstraints": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_providers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed Providers",
+          "type": "array"
+        },
+        "context_token_limit": {
+          "minimum": 1,
+          "title": "Context Token Limit",
+          "type": "integer"
+        },
+        "execution_token_limits": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutionTokenLimits"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "governing_instruction_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Governing Instruction Refs",
+          "type": "array"
+        },
+        "local_only": {
+          "title": "Local Only",
+          "type": "boolean"
+        },
+        "max_attempts": {
+          "minimum": 1,
+          "title": "Max Attempts",
+          "type": "integer"
+        },
+        "spending_ceiling": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "total_deadline_ms": {
+          "minimum": 1,
+          "title": "Total Deadline Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "allowed_providers",
+        "context_token_limit",
+        "governing_instruction_refs",
+        "local_only",
+        "max_attempts",
+        "spending_ceiling",
+        "total_deadline_ms"
+      ],
+      "title": "HardConstraints",
+      "type": "object"
+    },
+    "InventorySnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "candidates": {
+          "items": {
+            "$ref": "#/$defs/CandidateSnapshot"
+          },
+          "title": "Candidates",
+          "type": "array"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "pattern": "Z$",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "revision": {
+          "title": "Revision",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source_version": {
+          "title": "Source Version",
+          "type": "string"
+        },
+        "target": {
+          "title": "Target",
+          "type": "string"
+        },
+        "verified_at": {
+          "format": "date-time",
+          "pattern": "Z$",
+          "title": "Verified At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "candidates",
+        "expires_at",
+        "revision",
+        "schema_version",
+        "source_version",
+        "target",
+        "verified_at"
+      ],
+      "title": "InventorySnapshot",
+      "type": "object"
+    },
+    "JudgmentPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "cloud_allowed": {
+          "title": "Cloud Allowed",
+          "type": "boolean"
+        },
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "function_revision": {
+          "anyOf": [
+            {
+              "const": "JudgeCandidate-v1",
+              "type": "string"
+            },
+            {
+              "const": "JudgeCandidate-v2",
+              "type": "string"
+            }
+          ],
+          "title": "Function Revision"
+        },
+        "max_calls": {
+          "minimum": 0,
+          "title": "Max Calls",
+          "type": "integer"
+        },
+        "max_candidates": {
+          "minimum": 0,
+          "title": "Max Candidates",
+          "type": "integer"
+        },
+        "max_input_tokens": {
+          "minimum": 1,
+          "title": "Max Input Tokens",
+          "type": "integer"
+        },
+        "max_output_tokens": {
+          "minimum": 1,
+          "title": "Max Output Tokens",
+          "type": "integer"
+        },
+        "model_revision": {
+          "title": "Model Revision",
+          "type": "string"
+        },
+        "rates": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RateCard"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "spending_ceiling": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "token_counter_revision": {
+          "title": "Token Counter Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "cloud_allowed",
+        "enabled",
+        "function_revision",
+        "max_calls",
+        "max_candidates",
+        "max_input_tokens",
+        "max_output_tokens",
+        "model_revision",
+        "rates",
+        "spending_ceiling",
+        "token_counter_revision"
+      ],
+      "title": "JudgmentPolicy",
+      "type": "object"
+    },
+    "Money": {
+      "additionalProperties": false,
+      "properties": {
+        "amount": {
+          "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+          "title": "Amount",
+          "type": "string"
+        },
+        "currency": {
+          "pattern": "^[A-Z]{3}$",
+          "title": "Currency",
+          "type": "string"
+        }
+      },
+      "required": [
+        "amount",
+        "currency"
+      ],
+      "title": "Money",
+      "type": "object"
+    },
+    "OptimizationObjective": {
+      "additionalProperties": false,
+      "properties": {
+        "acceptance_requirements": {
+          "items": {
+            "$ref": "#/$defs/AcceptanceRequirement"
+          },
+          "title": "Acceptance Requirements",
+          "type": "array"
+        },
+        "direction": {
+          "anyOf": [
+            {
+              "const": "minimize",
+              "type": "string"
+            },
+            {
+              "const": "maximize",
+              "type": "string"
+            }
+          ],
+          "title": "Direction"
+        },
+        "metric_id": {
+          "title": "Metric Id",
+          "type": "string"
+        },
+        "objective_id": {
+          "title": "Objective Id",
+          "type": "string"
+        },
+        "routing_cost_basis": {
+          "anyOf": [
+            {
+              "const": "raw",
+              "type": "string"
+            },
+            {
+              "const": "adjusted",
+              "type": "string"
+            }
+          ],
+          "title": "Routing Cost Basis"
+        },
+        "version": {
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "acceptance_requirements",
+        "direction",
+        "metric_id",
+        "objective_id",
+        "routing_cost_basis",
+        "version"
+      ],
+      "title": "OptimizationObjective",
+      "type": "object"
+    },
+    "RateCard": {
+      "additionalProperties": false,
+      "properties": {
+        "currency": {
+          "pattern": "^[A-Z]{3}$",
+          "title": "Currency",
+          "type": "string"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "pattern": "Z$",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "input_rate": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+          "title": "Input Rate"
+        },
+        "output_rate": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+          "title": "Output Rate"
+        },
+        "revision": {
+          "title": "Revision",
+          "type": "string"
+        },
+        "subscription_multiplier": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+          "title": "Subscription Multiplier"
+        },
+        "verified_at": {
+          "format": "date-time",
+          "pattern": "Z$",
+          "title": "Verified At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "currency",
+        "expires_at",
+        "input_rate",
+        "output_rate",
+        "revision",
+        "subscription_multiplier",
+        "verified_at"
+      ],
+      "title": "RateCard",
+      "type": "object"
+    },
+    "RequestEnvelope": {
+      "additionalProperties": false,
+      "properties": {
+        "created_at": {
+          "format": "date-time",
+          "pattern": "Z$",
+          "title": "Created At",
+          "type": "string"
+        },
+        "execution_target_id": {
+          "title": "Execution Target Id",
+          "type": "string"
+        },
+        "extensions": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_.]*$"
+          },
+          "title": "Extensions",
+          "type": "object"
+        },
+        "harness_id": {
+          "title": "Harness Id",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "title": "Idempotency Key",
+          "type": "string"
+        },
+        "operation": {
+          "anyOf": [
+            {
+              "const": "route",
+              "type": "string"
+            },
+            {
+              "const": "report",
+              "type": "string"
+            }
+          ],
+          "title": "Operation"
+        },
+        "project_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Project Id",
+          "type": "string"
+        },
+        "request_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Request Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "workspace_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Workspace Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "created_at",
+        "execution_target_id",
+        "extensions",
+        "harness_id",
+        "idempotency_key",
+        "operation",
+        "project_id",
+        "request_id",
+        "schema_version",
+        "workspace_id"
+      ],
+      "title": "RequestEnvelope",
+      "type": "object"
+    },
+    "RetryContext": {
+      "additionalProperties": false,
+      "properties": {
+        "failure_class": {
+          "anyOf": [
+            {
+              "const": "infrastructure",
+              "type": "string"
+            },
+            {
+              "const": "quality",
+              "type": "string"
+            }
+          ],
+          "title": "Failure Class"
+        },
+        "failure_summary": {
+          "title": "Failure Summary",
+          "type": "string"
+        },
+        "prior_execution_run_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Prior Execution Run Id",
+          "type": "string"
+        },
+        "prior_routing_decision_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Prior Routing Decision Id",
+          "type": "string"
+        },
+        "remaining_attempts": {
+          "minimum": 0,
+          "title": "Remaining Attempts",
+          "type": "integer"
+        },
+        "remaining_spend": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "remaining_time_ms": {
+          "minimum": 0,
+          "title": "Remaining Time Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "failure_class",
+        "failure_summary",
+        "prior_execution_run_id",
+        "prior_routing_decision_id",
+        "remaining_attempts",
+        "remaining_spend",
+        "remaining_time_ms"
+      ],
+      "title": "RetryContext",
+      "type": "object"
+    },
+    "RouteRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "active_guidance": {
+          "items": {
+            "$ref": "#/$defs/GuidanceRevision"
+          },
+          "title": "Active Guidance",
+          "type": "array"
+        },
+        "attachment_refs": {
+          "items": {
+            "$ref": "#/$defs/AttachmentReference"
+          },
+          "title": "Attachment Refs",
+          "type": "array"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/Capabilities"
+        },
+        "envelope": {
+          "$ref": "#/$defs/RequestEnvelope"
+        },
+        "execution_mode": {
+          "anyOf": [
+            {
+              "const": "main",
+              "type": "string"
+            },
+            {
+              "const": "delegated",
+              "type": "string"
+            },
+            {
+              "const": "dry_run",
+              "type": "string"
+            }
+          ],
+          "title": "Execution Mode"
+        },
+        "hard_constraints": {
+          "$ref": "#/$defs/HardConstraints"
+        },
+        "optimization_objective": {
+          "$ref": "#/$defs/OptimizationObjective"
+        },
+        "recursion_bypass": {
+          "title": "Recursion Bypass",
+          "type": "boolean"
+        },
+        "representation_source": {
+          "title": "Representation Source",
+          "type": "string"
+        },
+        "retry_context": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RetryContext"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "task_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Task Id",
+          "type": "string"
+        },
+        "task_representation": {
+          "title": "Task Representation",
+          "type": "string"
+        },
+        "versions": {
+          "$ref": "#/$defs/VersionReferences"
+        }
+      },
+      "required": [
+        "active_guidance",
+        "attachment_refs",
+        "capabilities",
+        "envelope",
+        "execution_mode",
+        "hard_constraints",
+        "optimization_objective",
+        "recursion_bypass",
+        "representation_source",
+        "retry_context",
+        "task_id",
+        "task_representation",
+        "versions"
+      ],
+      "title": "RouteRequest",
+      "type": "object"
+    },
+    "SettingsLayer": {
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "anyOf": [
+            {
+              "const": "product",
+              "type": "string"
+            },
+            {
+              "const": "user",
+              "type": "string"
+            },
+            {
+              "const": "project",
+              "type": "string"
+            },
+            {
+              "const": "directory",
+              "type": "string"
+            },
+            {
+              "const": "personal_project",
+              "type": "string"
+            },
+            {
+              "const": "request",
+              "type": "string"
+            }
+          ],
+          "title": "Source"
+        },
+        "values": {
+          "$ref": "#/$defs/SettingsOverride"
+        }
+      },
+      "required": [
+        "source",
+        "values"
+      ],
+      "title": "SettingsLayer",
+      "type": "object"
+    },
+    "SettingsOverride": {
+      "additionalProperties": false,
+      "properties": {
+        "default_plan_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Default Plan Id"
+        },
+        "excluded_paths": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Excluded Paths"
+        },
+        "experiment_enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Experiment Enabled"
+        },
+        "local_analysis_enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Local Analysis Enabled"
+        },
+        "max_description_utf8_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "maximum": 2048,
+          "minimum": 1,
+          "title": "Max Description Utf8 Bytes"
+        },
+        "model_analysis_enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Model Analysis Enabled"
+        },
+        "retain_raw_outputs": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Retain Raw Outputs"
+        },
+        "retain_raw_tasks": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Retain Raw Tasks"
+        },
+        "routing_cost_basis": {
+          "anyOf": [
+            {
+              "const": "raw",
+              "type": "string"
+            },
+            {
+              "const": "adjusted",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Routing Cost Basis"
+        },
+        "routing_deadline_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "minimum": 1,
+          "title": "Routing Deadline Ms"
+        }
+      },
+      "required": [],
+      "title": "SettingsOverride",
+      "type": "object"
+    },
+    "UnsupportedEffort": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "unsupported",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "UnsupportedEffort",
+      "type": "object"
+    },
+    "VersionReferences": {
+      "additionalProperties": false,
+      "properties": {
+        "catalog_revision": {
+          "title": "Catalog Revision",
+          "type": "string"
+        },
+        "context_revision": {
+          "title": "Context Revision",
+          "type": "string"
+        },
+        "evidence_revision": {
+          "title": "Evidence Revision",
+          "type": "string"
+        },
+        "policy_revision": {
+          "title": "Policy Revision",
+          "type": "string"
+        },
+        "settings_revision": {
+          "title": "Settings Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "catalog_revision",
+        "context_revision",
+        "evidence_revision",
+        "policy_revision",
+        "settings_revision"
+      ],
+      "title": "VersionReferences",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "catalog": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CatalogSnapshot"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "catalog_query": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CatalogQuery"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "completion_time_limit_ms": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "minimum": 1,
+      "title": "Completion Time Limit Ms"
+    },
+    "inventory": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/InventorySnapshot"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "judgment_policy": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/JudgmentPolicy"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "request": {
+      "$ref": "#/$defs/RouteRequest"
+    },
+    "schema_version": {
+      "const": "1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "settings_layers": {
+      "items": {
+        "$ref": "#/$defs/SettingsLayer"
+      },
+      "title": "Settings Layers",
+      "type": "array"
+    }
+  },
+  "required": [
+    "catalog",
+    "inventory",
+    "judgment_policy",
+    "request",
+    "schema_version",
+    "settings_layers"
+  ],
+  "title": "RouteInputs",
+  "type": "object"
+}
