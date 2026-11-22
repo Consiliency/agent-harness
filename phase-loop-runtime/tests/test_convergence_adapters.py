@@ -400,8 +400,13 @@ def _capture_source_copy(monkeypatch, control):
 def _capture_control_witness(module, control, tmp_path, monkeypatch):
     from phase_loop_runtime import panel_invoker
     event = threading.Event()
-    source, stdin, cap, duration = 'import os; os.write(1,b"x"*200); os.write(2,b"err")', b"", 100, .15
+    # Controls whose witness needs the child to run to completion get a budget interpreter
+    # start-up on a loaded runner cannot exceed (agent-harness#2049); only the controls that
+    # witness the deadline, the cancel and the group reclaim keep the short budget.
+    source, stdin, cap, duration = 'import os; os.write(1,b"x"*200); os.write(2,b"err")', b"", 100, 5.0
     before = lambda: None
+    if control in ("deadline-arm", "cancel-kill", "group-reclaim", "drain-deadline"):
+        duration = .15
     if control in ("deadline-arm", "cancel-kill", "group-reclaim"):
         source = 'import time; time.sleep(.3)'
     if control == "cancel-kill":
@@ -438,7 +443,11 @@ def _capture_control_witness(module, control, tmp_path, monkeypatch):
         tmp_path, duration, stdin, cap, environment), before_spawn=before, cancel=event)
     if control == "before-spawn":
         assert isinstance(result, module.SpawnRefused) and not count
-    elif control.startswith(("drop-", "prefix-")) or control == "allowlist":
+        return
+    if duration > 1:
+        # A child that ran out of time is reported as that, never as a wrong proposal.
+        assert result.termination == "completed", result.termination
+    if control.startswith(("drop-", "prefix-")) or control == "allowlist":
         assert result.proposal == b"absent"
     elif control == "deadline-arm":
         assert result.termination == "timed_out"
