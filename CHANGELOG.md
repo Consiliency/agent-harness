@@ -45,6 +45,29 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   profile digest, the proxy digest, the agy validator closure, the QCI, an allow-list,
   the unjailed `context_digest()` or a Grok form's argv digest moves. Installs with
   Train A.
+- The jailed Grok launch site and its gate (SEATS GROK lane SL-3, IF-0-GROK-3,
+  `plans/artifacts/grok-jail-tool-surface-contract-v1.md` §2 to §5.1;
+  Consiliency/agent-harness#1820). The new `grok_jail_surface` module defines the jailed
+  context `grok_jail_context.v1` (`jail_context_digest()`, the shared `launch_digest`), its
+  five eligibility conditions, the jailed record, catalog and receipt stores, the
+  root-owned subject walk, and `verify_jail_launch_context`, the one final verifier, in
+  board and measurement modes. `panel_invoker` gains the jailed Grok leg and its dispatch:
+  the `staged` form with `--cwd /seat/tree`, the staged read-only `.grok`, the masks and
+  their mount points, every kept byte scanned for each delivered secret and its 12-character
+  suffix before retention (`grok_seat_token_in_output`), the refresh after-check run in the
+  seat's namespace (`grok_seat_token_refreshed_in_jail`), and the window kit's `start` and
+  `finish` hooks in Gemini's order. A real seat jail now launches a `grok` argv only on the
+  verifier's mark for that jail, argv, cwd, proxy and holder; unjailed, legacy and listing
+  receipts never launch there. `probe_grok_tools` (and so `seat-window probe-tools`)
+  reports the jailed basis for `staged`, and refused for every other form, only once
+  `staged_admission` holds for the resolved subject; until then its result is the
+  unjailed probe's, byte for byte (jail contract r6, §4.3 row 3). The gate stays closed in practice: it opens only when the
+  owner's masked-projection confirmation, the hosted boundary record and an admitted jailed
+  measurement exist, and no lane writes them. Pins: `seat_window.runtime_digest()` moves;
+  the SDK proof bindings of `claude_seat_transport.py` (one `SDK_PROOF_UNBOUND` entry) and
+  `_run_leg_with_liveness` move; no other SDK region, no Claude, Codex or Gemini jail
+  profile digest, the Grok profile digest, the unjailed `context_digest()`, an allow-list
+  or a Grok form's argv digest moves. Installs with Train B.
 - The jailed Grok seat's credential staging (SEATS GROK lane SL-1, IF-0-GROK-1 "Credential"
   and "Egress", `plans/artifacts/grok-jail-tool-surface-contract-v1.md` §2.3 and §9;
   Consiliency/agent-harness#1820). The new `seat_grok_credential` module checks the

@@ -406,10 +406,14 @@ def test_an_installed_opening_check_decides(monkeypatch):
         assert grok.tool_surface_code() == answer
 
 
-def test_the_installed_package_has_no_opening_check():
+def test_the_installed_opening_check_stays_closed_without_its_records():
+    """GROK SL-3 installs ``grok_jail_surface``: the precondition now decides through its
+    opening check, which refuses while the eligibility records do not exist (jail
+    contract §2.4). Before SL-3 this asserted the module was absent."""
     import importlib.util
 
-    assert importlib.util.find_spec("phase_loop_runtime.grok_jail_surface") is None
+    assert importlib.util.find_spec("phase_loop_runtime.grok_jail_surface") is not None
+    assert grok.tool_surface_code() == REFUSED
 
 
 # --- (c) earlier refusals keep their codes --------------------------------------------------

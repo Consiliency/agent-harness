@@ -253,6 +253,9 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
     # (the jail chain launched through launch_provider, with that launch's decided env).
     ("seat_credentials.py", "read_login_store"): (
         NOT_AGENT, "macOS `security find-generic-password` (the login Keychain read)"),
+    # GROK SL-3: the jailed seat's refresh after-check, run in H as H-root.
+    ("grok_jail_surface.py", "after_check_in_h"): (
+        NOT_AGENT, "nsenter + this package's grok_jail_surface after-check helper"),
     ("seat_keyring_exec.py", "main"): (
         NOT_AGENT, "execs the jail chain it is handed; inherits the launch's decided env"),
     ("seat_uid.py", "_main"): (
