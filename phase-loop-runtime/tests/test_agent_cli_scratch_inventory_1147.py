@@ -125,6 +125,10 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
     # -- programs that are not agent CLIs (the AST cannot see the program) --------------
     # agent-harness#1222 §5/§5a: trusted host helpers resolved to absolute paths.
     ("review_stage.py", "host_git"): (NOT_AGENT, "git, the hardened host invocation"),
+    # K-1 window kit (contract §4.2): its one dynamic import, of a module the closed
+    # SUPPLIERS table names.
+    ("seat_window_supply.py", "load"): (
+        NOT_AGENT, "imports one closed-table window supplier module; starts no process"),
     ("openshell_artifacts.py", "run_process"): (
         NOT_AGENT, "bounded supervisor primitive; its only caller passes /usr/bin/git"),
     ("review_stage.py", "trusted_host_executable"): (

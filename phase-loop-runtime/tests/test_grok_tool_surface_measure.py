@@ -26,7 +26,7 @@ import ssl
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
@@ -58,6 +58,12 @@ UPDATER = ("CONNECT", "x.ai", None, "deny")
 ARTIFACTS = ("CONNECT", "storage.googleapis.com", None, "deny")
 SEAT = gts.MEASURED_ROUTES
 REFUSED = "grok_tool_surface_unverified"
+#: The two images of the tolerated map (errata 3 and 8), by binary sha256.
+GROK_1_0_89 = "a3dface51d9bdc71fd121e0481dd02d9b46a721f7a6b892f756480e9666eba1f"
+GROK_1_0_92 = "add4d201dbf2c0bd6077a36feb55a76939de30bae48dbb06f16b2307d38ceacb"
+#: The map as shipped, before any bench stands its stand-in binary for an image.
+SHIPPED_TOLERATED = gts.TOLERATED_REFUSALS_BY_IMAGE
+LEGACY_TOLERATED = gts.tolerated_refusals(GROK_1_0_89)
 #: The real BA-3 binding check, before any bench models it.
 REAL_BRIDGED_TO = gts.bridged_to
 
@@ -131,10 +137,12 @@ class Bench:
     """A host for the measurement: a stand-in grok binary on the provider path (never
     executed), a private state home, an operator HOME holding a planted sentinel credential,
     a fake transport, a recording child, and a stand-in runner for ``--help`` and
-    ``--version`` that answers with the real 1.0.89 outputs."""
+    ``--version`` that answers with the real 1.0.89 outputs. The stand-in binary stands for
+    the release image ``image`` in the tolerated map (:meth:`stand_for`)."""
 
-    def __init__(self, root: Path, patch, *, real: bool = False):
+    def __init__(self, root: Path, patch, *, real: bool = False, image: str | None = GROK_1_0_89):
         self.root = root
+        self.patch = patch
         bin_dir = root / "bin"
         bin_dir.mkdir(exist_ok=True)
         self.binary = bin_dir / "grok"
@@ -213,10 +221,22 @@ class Bench:
             patch.setattr(pi, "_filtered_holder_namespace", lambda: 1)
             patch.setattr(seat_egress_proxy, "unavailable_reason", lambda: None)
             patch.setattr(sandbox_egress, "egress_isolation_available", lambda: True)
+        self.stand_for(image)
 
     @property
     def digest(self):
         return sha256(self.binary.read_bytes()).hexdigest()
+
+    def stand_for(self, image: str | None):
+        """The stand-in binary stands for the release image ``image`` (erratum 8): its own
+        digest, which the grant pins, reads that image's entries of the tolerated map through
+        the real lookup. ``None`` leaves it an image the map does not hold. Call it again
+        after rewriting the binary."""
+        self.image = image
+        table = dict(SHIPPED_TOLERATED)
+        if image is not None:
+            table[self.digest] = SHIPPED_TOLERATED[image]
+        self.patch.setattr(gts, "TOLERATED_REFUSALS_BY_IMAGE", table)
 
     # -- the stand-ins
     def run_provider(self, argv, **options):
@@ -299,7 +319,9 @@ class Bench:
             session.mkdir(parents=True)
             target = session / "tool_definitions.json"
             if artifact == "admitted":
-                target.write_bytes(_s2(_tools(self.route), extra=SENTINEL))
+                # Clean: a definitions artifact carrying a registered value is refused
+                # (erratum 8, item 5; ``artifact_refused``).
+                target.write_bytes(_s2(_tools(self.route), extra="fixture"))
             elif artifact == "two":
                 target.write_bytes(_s2(_tools(self.route)))
                 other = sessions / "-encoded-cwd" / "session-0002"
@@ -634,6 +656,8 @@ STATUS_CASES = {
     "budget_exhausted": Scenario(requests=[ALLOWED, BUDGET_DENIED]),
     "identity_changed": Scenario(change_binary=True),
     "context_refused": Scenario(),
+    # Erratum 8, item 5: the definitions carry the planted credential's last 12 characters.
+    "artifact_refused": Scenario(artifact=_s2(_tools("review"), extra=SENTINEL[-12:])),
 }
 EXPECTED_STATUS = {
     "artifact_symlink": "artifact_ambiguous", "launch_timeout": "launch_failed",
@@ -1829,6 +1853,7 @@ def test_ba3_the_measurement_launch_proves_isolation_in_its_own_child(required_u
                                 .replace("__VERSION__", repr(VERSION))
                                 .replace("__HELP__", repr(HELP)))
         bench.binary.chmod(0o700)
+        bench.stand_for(GROK_1_0_89)
         bench.open_grant(planned="review")
         # The real rehearsal's marker was written by the hook inside the real launch_provider.
         names = sorted(p.name for p in (bench.grant_dir() / "rehearsals").iterdir())
@@ -1918,6 +1943,7 @@ def test_ba3_the_final_check_binds_the_exact_live_holder_to_this_proxy(tmp_path,
                                 .replace("__VERSION__", repr(VERSION))
                                 .replace("__HELP__", repr(HELP)))
         bench.binary.chmod(0o700)
+        bench.stand_for(GROK_1_0_89)
         bench.open_grant(planned="review")  # its rehearsal runs on a real pair of its own
 
         @contextlib.contextmanager
@@ -1965,8 +1991,8 @@ def test_the_hosted_ba3_job_is_mandatory_and_cannot_skip_green():
 
 # ======================================== erratum 3: tolerated startup refusals
 
-def test_the_tolerated_refusals_are_the_closed_list_of_erratum_3():
-    assert gts.TOLERATED_REFUSALS == (
+def test_the_tolerated_refusals_of_1_0_89_are_the_closed_list_of_erratum_3():
+    assert gts.tolerated_refusals(GROK_1_0_89) == (
         ("GET", "cli-chat-proxy.grok.com", "/v1/settings"),
         ("CONNECT", "x.ai", None),
         ("CONNECT", "storage.googleapis.com", None))
@@ -1986,7 +2012,7 @@ def test_a_tolerated_refusal_before_or_after_the_counted_request_still_measures(
     (result,) = bench.results().values()
     expected = {}
     for method, host, path, _decision in requests:
-        if (method, host, path) in gts.TOLERATED_REFUSALS:
+        if (method, host, path) in LEGACY_TOLERATED:
             expected[(method, host, path)] = expected.get((method, host, path), 0) + 1
     assert {(item["method"], item["host"], item["path"]): item["count"]
             for item in result["tolerated_refusals"]} == expected
@@ -2020,7 +2046,7 @@ def test_the_proxy_names_exactly_the_tolerated_observations(fake_srt):
     entry of ``named`` is observed verbatim, everything else keeps the closed vocabulary,
     and no decision changes."""
     fake = fake_srt()
-    named = gts.TOLERATED_REFUSALS
+    named = LEGACY_TOLERATED
     with seat_egress_proxy.start_proxy(allowlist_id="grok-review", request_budget=1,
                                        named=named) as proxy:
         verdicts = fake.decide([
@@ -2049,7 +2075,7 @@ def test_the_real_proxy_names_a_tolerated_connect_and_folds_a_sign_in_host(requi
     ``<other>``, so it can never pass for a tolerated refusal."""
     from test_grok_measure_egress import _exchange, _http
     with seat_egress_proxy.start_proxy(allowlist_id="grok-review", request_budget=1,
-                                       named=gts.TOLERATED_REFUSALS) as proxy:
+                                       named=LEGACY_TOLERATED) as proxy:
         for host in ("x.ai", "auth.x.ai", "storage.googleapis.com"):
             status, _reply = _exchange(proxy, host, _http("GET", host, "/"))
             assert status.startswith(b"HTTP/1.1 403"), (host, status)
@@ -2232,8 +2258,10 @@ def test_a_rehearsals_session_artifact_is_never_a_capture(bench):
     assert code == 0 and report["result"] == "passed"
     (record,) = [json.loads(p.read_text()) for p in (bench.grant_dir() / "rehearsals").glob("????-????????????????.json")]
     assert record["observed"] == [
-        {"method": "GET", "host": gts.INFERENCE_HOST, "path": "/v1/settings", "decision": "deny"},
-        {"method": "POST", "host": gts.INFERENCE_HOST, "path": INFERENCE_PATH, "decision": "deny"}]
+        {"method": "GET", "host": gts.INFERENCE_HOST, "path": "/v1/settings", "decision": "deny",
+         "cause": "rules"},
+        {"method": "POST", "host": gts.INFERENCE_HOST, "path": INFERENCE_PATH, "decision": "deny",
+         "cause": "budget"}]
     assert record["tolerated_refusals"] == [
         {"method": "GET", "host": gts.INFERENCE_HOST, "path": "/v1/settings", "count": 1}]
     assert not list(bench.output.rglob("tool_definitions.json"))  # nothing copied out
@@ -2314,7 +2342,7 @@ def test_the_real_proxy_reports_which_check_refused_an_inference_post(required_u
     post = _http("POST", gts.INFERENCE_HOST, INFERENCE_PATH)
     foreign = post.replace(f"Host: {gts.INFERENCE_HOST}".encode(), b"Host: elsewhere.example")
     with seat_egress_proxy.start_proxy(allowlist_id="grok-review", request_budget=1,
-                                       named=gts.TOLERATED_REFUSALS) as proxy:
+                                       named=LEGACY_TOLERATED) as proxy:
         for request in (foreign, post, post):
             _exchange(proxy, gts.INFERENCE_HOST, request)
     events = [(e.method, e.host, e.path, e.decision, e.cause)
@@ -2344,14 +2372,14 @@ def test_a_tolerated_connect_is_the_exact_authority_port_443_included(required_u
     authorities = ("x.ai:8443", "storage.googleapis.com:80", "x.ai:0443",
                    "storage.googleapis.com:0443", "x.ai:443", "storage.googleapis.com:443")
     with seat_egress_proxy.start_proxy(allowlist_id="grok-review", request_budget=1,
-                                       named=gts.TOLERATED_REFUSALS) as proxy:
+                                       named=LEGACY_TOLERATED) as proxy:
         for authority in authorities:
             assert _raw_connect(proxy, authority).startswith(b"HTTP/1.1 403"), authority
     events = seat_egress_proxy.proxy_stream(proxy).outside_events
     # Zero-padded 443 (fix round 3) is not the authority either: neither named nor tolerated.
     assert [(e.method, e.host, e.path, e.decision) for e in events] == [
         ("CONNECT", "<other>", None, "deny")] * 4 + [UPDATER, ARTIFACTS]
-    assert gts.tolerated_summary(events) == [
+    assert gts.tolerated_summary(events, GROK_1_0_89) == [
         {"method": "CONNECT", "host": "x.ai", "path": None, "count": 1},
         {"method": "CONNECT", "host": "storage.googleapis.com", "path": None, "count": 1}]
 
@@ -2565,3 +2593,1078 @@ def test_a_witness_argument_refusal_leaves_the_rehearsal_retryable(bench, monkey
     bench = Bench(bench.root, monkeypatch)
     code, report = bench.cli("--attended", "--rehearse", "--route", "review")
     assert code == 0 and report["result"] == "passed"
+
+# ================== erratum 8: per-image tolerated refusals, the rehearsal, the client log
+
+ARCHIVE = ("GET", gts.INFERENCE_HOST, "/v1/bundle/archive", "deny")
+ROOT = ("GET", gts.INFERENCE_HOST, "/", "deny")
+SUBAGENTS = ("GET", gts.INFERENCE_HOST, "/v1/subagents/bundle", "deny")
+FEEDBACK = ("GET", gts.INFERENCE_HOST, "/v1/feedback/config", "deny")
+#: One of the two pre-turn calls on another model (grok 1.0.92).
+RESPONSES = ("POST", gts.INFERENCE_HOST, "/v1/responses", "deny")
+
+
+@pytest.fixture
+def bench92(tmp_path, monkeypatch):
+    """A bench whose stand-in binary stands for grok 1.0.92."""
+    return Bench(tmp_path, monkeypatch, image=GROK_1_0_92)
+
+
+def _rehearse(bench, requests):
+    """One rehearsal of the pilot observing ``requests``: ``(exit code, report)``."""
+    bench.open_grant(planned="review", rehearse=False)
+    bench.rehearsal = Scenario(requests=list(requests), artifact=None, exit=1)
+    return bench.cli("--attended", "--rehearse", "--route", "review")
+
+
+def _pilot(bench, requests):
+    """One measurement of the pilot observing ``requests``: ``(status, result record)``."""
+    bench.open_grant(planned="review")
+    bench.default = Scenario(requests=list(requests))
+    report = bench.measure("review")[1]
+    (result,) = bench.results().values()
+    assert result["status"] == report["routes"][0]["status"]
+    return result["status"], result
+
+
+def test_each_tolerated_row_declares_the_check_that_refuses_it():
+    """Each row names its cause: the two updater CONNECTs of 1.0.89 are refused by the
+    front; every other row is a request the rules refuse inside a tunnel to the inference
+    host. Within one image an identity has exactly one row."""
+    by_check = {}
+    for rows in SHIPPED_TOLERATED.values():
+        assert len({row[:3] for row in rows}) == len(rows)
+        for row in rows:
+            by_check.setdefault(row[3], []).append(row[:3])
+    assert by_check["front"] == [("CONNECT", "x.ai", None),
+                                 ("CONNECT", "storage.googleapis.com", None)]
+    assert len(by_check["rules"]) == 6 and set(by_check) == {"front", "rules"}
+    assert all(host == gts.INFERENCE_HOST and path is not None
+               for _method, host, path in by_check["rules"])
+
+
+def test_the_predicate_reads_the_rows_declared_cause_and_order(monkeypatch):
+    """The cause and the order come from the row, not from its method or host: a row
+    declaring another cause or order changes what is tolerated, and an unknown order
+    tolerates nothing."""
+    host = gts.INFERENCE_HOST
+
+    def event(method, path, cause, decision="deny"):
+        return seat_egress_proxy.RequestEvent(method=method, host=host, path=path,
+                                              decision=decision, cause=cause)
+    get = event("GET", "/v1/feedback/config", "rules")
+    infer = event("POST", INFERENCE_PATH, "allowed", "allow")
+    for order, before, after in ((gts.ORDER_ANY, True, True),
+                                 (gts.ORDER_PRE_INFERENCE, True, False),
+                                 ("post_inference", False, False)):
+        table = {"f" * 64: (("GET", host, "/v1/feedback/config", "rules", order),)}
+        monkeypatch.setattr(gts, "TOLERATED_REFUSALS_BY_IMAGE", table)
+        assert gts._tolerated([get, infer, get], "f" * 64) == [
+            get_id if ok else None for get_id, ok in
+            ((("GET", host, "/v1/feedback/config"), before), (None, False),
+             (("GET", host, "/v1/feedback/config"), after))], order
+    table = {"f" * 64: (("GET", host, "/v1/feedback/config", "inner_host", gts.ORDER_ANY),)}
+    monkeypatch.setattr(gts, "TOLERATED_REFUSALS_BY_IMAGE", table)
+    assert gts._tolerated([get, event("GET", "/v1/feedback/config", "inner_host")], "f" * 64) == [
+        None, ("GET", host, "/v1/feedback/config")]
+
+
+@pytest.mark.parametrize("image,entry,cause", [
+    (GROK_1_0_89, SETTINGS, "inner_host"), (GROK_1_0_89, UPDATER, "rules"),
+    (GROK_1_0_89, ARTIFACTS, "inner_host"), (GROK_1_0_92, ARCHIVE, "inner_host"),
+    (GROK_1_0_92, ROOT, "shutdown"), (GROK_1_0_92, FEEDBACK, "front"),
+    (GROK_1_0_92, RESPONSES, "inner_host"), (GROK_1_0_92, RESPONSES, "budget"),
+], ids=["settings-inner-host", "updater-rules", "artifacts-inner-host", "archive-inner-host",
+        "root-shutdown", "feedback-front", "responses-inner-host", "responses-budget"])
+@pytest.mark.parametrize("stage", ["rehearsal", "measurement"])
+def test_an_entry_is_tolerated_only_as_the_allow_lists_own_refusal(tmp_path, monkeypatch, image,
+                                                                   entry, cause, stage):
+    """A listed observation refused by any check but its own -- the inner Host check, the
+    budget, the shutdown -- is not a tolerated refusal, in a rehearsal or a measurement."""
+    bench = Bench(tmp_path, monkeypatch, image=image)
+    if stage == "rehearsal":
+        code, report = _rehearse(bench, [(*entry, cause), BUDGET_DENIED])
+        assert (code, report["reason"]) == (1, "unlisted_request"), report
+        assert report["tolerated_refusals"] == []
+    else:
+        status, result = _pilot(bench, [(*entry, cause), ALLOWED])
+        assert status == "egress_refused" and result["tolerated_refusals"] == []
+
+
+def test_the_ordering_rule_a_tolerated_post_counts_only_before_the_inference_request(
+        tmp_path, monkeypatch):
+    """THE ORDERING RULE (erratum 8, item 2), as the erratum states it. ``POST /v1/responses``
+    is tolerated only before the inference request: the counted request of a measurement,
+    the first budget denial of a rehearsal. One after it disqualifies the launch, while a
+    tolerated GET may come before or after. Relaxing the rule is the row's declared
+    ``order`` in ``grok_tool_surface.TOLERATED_REFUSALS_BY_IMAGE``; this test then fails at
+    its ``late`` cases and is the place to record the new decision."""
+    only_before = [row[:3] for rows in SHIPPED_TOLERATED.values() for row in rows
+                   if row[4] == gts.ORDER_PRE_INFERENCE]
+    assert only_before == [RESPONSES[:3]]
+    assert {row[4] for rows in SHIPPED_TOLERATED.values() for row in rows} == {
+        gts.ORDER_ANY, gts.ORDER_PRE_INFERENCE}
+
+    def bench(name):
+        root = tmp_path / name
+        root.mkdir()
+        return Bench(root, monkeypatch, image=GROK_1_0_92)
+
+    # Before the inference request: tolerated, any number of times.
+    code, report = _rehearse(bench("early-rehearsal"), [RESPONSES, RESPONSES, BUDGET_DENIED])
+    assert (code, report["reason"]) == (0, "passed"), report
+    assert report["tolerated_refusals"] == [
+        {"method": "POST", "host": gts.INFERENCE_HOST, "path": "/v1/responses", "count": 2}]
+    status, result = _pilot(bench("early-pilot"), [RESPONSES, RESPONSES, ALLOWED])
+    assert status == "measured" and result["tolerated_refusals"][0]["count"] == 2
+    # After it: the launch is disqualified, and the record does not call the late one
+    # tolerated. A tolerated GET after the inference request still is.
+    code, report = _rehearse(bench("late-rehearsal"),
+                             [RESPONSES, BUDGET_DENIED, RESPONSES, FEEDBACK])
+    assert (code, report["reason"]) == (1, "unlisted_request"), report
+    assert report["tolerated_refusals"] == [
+        {"method": "GET", "host": gts.INFERENCE_HOST, "path": "/v1/feedback/config", "count": 1},
+        {"method": "POST", "host": gts.INFERENCE_HOST, "path": "/v1/responses", "count": 1}]
+    status, result = _pilot(bench("late-pilot"), [RESPONSES, ALLOWED, RESPONSES])
+    assert status == "egress_refused"
+    assert [item["count"] for item in result["tolerated_refusals"]] == [1]
+    assert _pilot(bench("late-get"), [ALLOWED, FEEDBACK])[0] == "measured"
+    # With no inference request at all the POSTs are all "before" it, and the launch fails
+    # on the missing request, never on their order.
+    assert _rehearse(bench("no-inference"), [RESPONSES])[1]["reason"] == "no_model_request"
+
+
+def _on_the_allow_list(method, host, path):
+    rules = seat_egress_proxy.allowlist_ref(gts.EGRESS_ALLOWLIST_ID).request_set
+    if path is None:  # a CONNECT: is a tunnel to this host admitted at all?
+        return any(rule["host"] == host for rule in rules)
+    return any(rule["host"] == host and rule["method"] == method
+               and (path == rule["path"] if "path" in rule else path.startswith(rule["path_prefix"]))
+               for rule in rules)
+
+
+def test_the_tolerated_map_is_the_closed_map_of_erratum_8():
+    """Erratum 8, item 2: the map, exactly. An entry or an image needs an erratum."""
+    host = "cli-chat-proxy.grok.com"
+    any_, pre = gts.ORDER_ANY, gts.ORDER_PRE_INFERENCE
+    assert (any_, pre) == ("any", "pre_inference")
+    assert dict(SHIPPED_TOLERATED) == {
+        GROK_1_0_89: (("GET", host, "/v1/settings", "rules", any_),
+                      ("CONNECT", "x.ai", None, "front", any_),
+                      ("CONNECT", "storage.googleapis.com", None, "front", any_)),
+        GROK_1_0_92: (("GET", host, "/v1/bundle/archive", "rules", any_),
+                      ("GET", host, "/", "rules", any_),
+                      ("GET", host, "/v1/subagents/bundle", "rules", any_),
+                      ("GET", host, "/v1/feedback/config", "rules", any_),
+                      ("POST", host, "/v1/responses", "rules", pre))}
+    assert host == gts.INFERENCE_HOST and not hasattr(gts, "TOLERATED_REFUSALS")
+    with pytest.raises(TypeError):
+        SHIPPED_TOLERATED["f" * 64] = ()  # closed: not a table a caller can extend
+    for image, rows in SHIPPED_TOLERATED.items():
+        entries = tuple(row[:3] for row in rows)
+        assert gts.tolerated_rows(image) == rows and gts.tolerated_refusals(image) == entries
+        assert len(entries) <= 16  # the proxy's named channel
+        # Refused only: nothing tolerated is on the allow-list, so nothing is ever forwarded
+        # or counted, and adding an entry adds nothing to the allow-list.
+        assert not any(_on_the_allow_list(*entry) for entry in entries), image
+    # What stays untolerated for 1.0.92: the settings and model-list fetches (the pinned seat
+    # config was not honoured if either appears) and the 1.0.89 updater's CONNECTs.
+    for never in (("GET", host, "/v1/settings"), ("GET", host, "/v1/models"),
+                  ("CONNECT", "x.ai", None), ("CONNECT", "storage.googleapis.com", None),
+                  ("GET", host, "<other>"), ("POST", host, "<other>"), ("GET", "<other>", "<other>")):
+        assert never not in gts.tolerated_refusals(GROK_1_0_92), never
+    # Not part of the context digest: it qualifies a measurement and constrains no launch.
+    assert "tolerated" not in json.dumps(gts.context_document("a" * 64))
+
+
+@pytest.mark.parametrize("image", ["f" * 64, GROK_1_0_92.upper(), GROK_1_0_92[:-1], "", None, 7,
+                                   (GROK_1_0_92,)])
+def test_an_image_the_map_does_not_hold_has_no_entries(image):
+    assert gts.tolerated_refusals(image) == ()
+    event = seat_egress_proxy.RequestEvent(method="GET", host=gts.INFERENCE_HOST,
+                                           path="/v1/bundle/archive", decision="deny", cause="rules")
+    assert gts._tolerated([event], image) == [None] and gts.tolerated_summary([event], image) == []
+    assert gts._tolerated([event], GROK_1_0_92) == [ARCHIVE[:3]]
+
+
+@pytest.mark.parametrize("image", [GROK_1_0_89, GROK_1_0_92, None], ids=["1.0.89", "1.0.92", "absent"])
+def test_each_launch_names_exactly_its_images_entries_to_the_proxy(tmp_path, monkeypatch, image):
+    """The rehearsal's proxy and the measurement's are both started with the entries of the
+    image the grant pins, and with nothing for an image the map does not hold."""
+    bench = Bench(tmp_path, monkeypatch, image=image)
+    bench.open_grant(planned="review")
+    assert bench.status()["grant"]["binary_sha256"] == bench.digest  # the key: the grant's pin
+    assert bench.measure("review")[1]["routes"][0]["status"] == "measured"
+    expected = () if image is None else tuple(row[:3] for row in SHIPPED_TOLERATED[image])
+    assert [(proxy.request_budget, proxy.named) for proxy in bench.proxies] == [
+        (0, expected), (1, expected)]
+
+
+def test_the_proxy_names_the_entries_of_1_0_92_and_nothing_else(fake_srt):
+    """Erratum 8 at the proxy (offline, the real ``proxy.mjs`` over lane L2a's fake srt): the
+    five entries are observed verbatim, each refused by the rules; the settings and
+    model-list fetches stay ``<other>``; no decision changes, and nothing but the inference
+    request is allowed."""
+    fake = fake_srt()
+    named = gts.tolerated_refusals(GROK_1_0_92)
+    paths = ["/v1/bundle/archive", "/", "/v1/subagents/bundle", "/v1/feedback/config",
+             "/v1/settings", "/v1/models"]
+    with seat_egress_proxy.start_proxy(allowlist_id="grok-review", request_budget=1,
+                                       named=named) as proxy:
+        verdicts = fake.decide(
+            [{"method": "GET", "url": f"https://{gts.INFERENCE_HOST}{path}"} for path in paths]
+            + [{"method": "POST", "url": f"https://{gts.INFERENCE_HOST}/v1/responses"}] * 2
+            + [{"method": "POST", "url": f"https://{gts.INFERENCE_HOST}{INFERENCE_PATH}"},
+               {"method": "POST", "url": f"https://{gts.INFERENCE_HOST}/v1/responses"}])
+    assert verdicts == ["deny"] * 8 + ["allow", "deny"]
+    stream = seat_egress_proxy.proxy_stream(proxy).outside_events
+    other = ("GET", gts.INFERENCE_HOST, "<other>", "deny")
+    assert [(e.method, e.host, e.path, e.decision) for e in stream] == [
+        ARCHIVE, ROOT, SUBAGENTS, FEEDBACK, other, other, RESPONSES, RESPONSES, ALLOWED, RESPONSES]
+    assert [e.cause for e in stream] == ["rules"] * 8 + ["allowed", "rules"]
+    assert json.loads(fake.config_copy.read_text())["named"] == [list(e) for e in named]
+    assert seat_egress_proxy.completion(proxy).complete
+    # The same predicate reads the real stream: the two fetches and the late POST are not
+    # tolerated, and the counts say so.
+    assert gts._tolerated(stream, GROK_1_0_92) == [
+        ARCHIVE[:3], ROOT[:3], SUBAGENTS[:3], FEEDBACK[:3], None, None, RESPONSES[:3],
+        RESPONSES[:3], None, None]
+    assert [item["count"] for item in gts.tolerated_summary(stream, GROK_1_0_92)] == [1, 1, 1, 1, 2]
+
+
+#: Erratum 8, item 7: what a rehearsal of grok 1.0.92 (``add4d201...``) with the pinned seat
+#: config is expected to observe under a budget-0 proxy -- four GETs once each, the two
+#: pre-turn POSTs, then the inference request refused by the budget -- in the order of the
+#: offline launch. ``(method, host, path, decision, cause)``.
+EXPECTED_REHEARSAL_1_0_92 = (
+    (*ARCHIVE, "rules"), (*ROOT, "rules"), (*SUBAGENTS, "rules"), (*FEEDBACK, "rules"),
+    (*RESPONSES, "rules"), (*RESPONSES, "rules"), BUDGET_DENIED)
+
+
+def _tolerated_counts(report):
+    return {(item["method"], item["path"]): item["count"] for item in report["tolerated_refusals"]}
+
+
+def test_the_rehearsal_of_1_0_92_passes_on_the_tabled_observation(bench92):
+    """Erratum 8, item 7, the table as a fixture: nothing allowed, only tolerated refusals,
+    and the budget's own denial of the inference request. The client's exit status (1) does
+    not matter; a passing rehearsal lets the pilot reserve."""
+    assert [row[:3] for row in EXPECTED_REHEARSAL_1_0_92[:-1]] == [
+        *gts.tolerated_refusals(GROK_1_0_92), RESPONSES[:3]]
+    code, report = _rehearse(bench92, EXPECTED_REHEARSAL_1_0_92)
+    assert (code, report["result"], report["reason"]) == (0, "passed", "passed"), report
+    assert report["budget_denials"] == 1
+    assert report["observation"] == {"complete": True, "reason": "complete", "requests": 7,
+                                     "counted": 0, "denied": 7}
+    assert _tolerated_counts(report) == {
+        ("GET", "/v1/bundle/archive"): 1, ("GET", "/"): 1, ("GET", "/v1/subagents/bundle"): 1,
+        ("GET", "/v1/feedback/config"): 1, ("POST", "/v1/responses"): 2}
+    (record,) = [json.loads(p.read_text()) for p in
+                 (bench92.grant_dir() / "rehearsals").glob("????-????????????????.json")]
+    gts.check_rehearsal_keys(record)
+    assert record["binary_sha256"] == bench92.digest and record["exit_code"] == 1
+    assert [(item["method"], item["host"], item["path"], item["decision"])
+            for item in record["observed"]] == [row[:4] for row in EXPECTED_REHEARSAL_1_0_92]
+    assert bench92.cli("--require-rehearsed", "review")[0] == 0
+    assert bench92.rehearsals[-1].proxy.request_budget == 0 and bench92.status()["charged"] == 0
+    bench92.default = Scenario(requests=[*EXPECTED_REHEARSAL_1_0_92[:-1], ALLOWED])
+    assert bench92.measure("review")[1]["routes"][0]["status"] == "measured"
+
+
+_TABLE = list(EXPECTED_REHEARSAL_1_0_92)
+_OTHER_GET = ("GET", gts.INFERENCE_HOST, "<other>", "deny")
+#: What must fail a launch of grok 1.0.92 although the rest of the table is there. A request
+#: the proxy is not told to name arrives folded (``<other>``); the verbatim spelling is here
+#: too, so naming one later could not make it tolerated.
+NEVER_TOLERATED_1_0_92 = {
+    "settings": ("GET", gts.INFERENCE_HOST, "/v1/settings", "deny"),
+    "models": ("GET", gts.INFERENCE_HOST, "/v1/models", "deny"),
+    "other-path": _OTHER_GET,
+    "other-post": ("POST", gts.INFERENCE_HOST, "<other>", "deny"),
+    "updater-connect": UPDATER,
+    "artifact-connect": ARTIFACTS,
+    "other-host": ("CONNECT", "<other>", None, "deny"),
+    "sign-in-host": ("CONNECT", "accounts.x.ai", None, "deny"),
+    "other-host-and-path": ("GET", "<other>", "<other>", "deny"),
+}
+
+
+@pytest.mark.parametrize("name", list(NEVER_TOLERATED_1_0_92))
+@pytest.mark.parametrize("where", ["before", "after"])
+def test_a_rehearsal_of_1_0_92_fails_on_anything_outside_its_entries(bench92, name, where):
+    """Erratum 8, items 2 and 7: with the rest of the table present, one request outside the
+    image's entries fails the rehearsal, before or after the inference request. For the
+    settings and model-list fetches that means the pinned seat config was not honoured."""
+    extra = NEVER_TOLERATED_1_0_92[name]
+    requests = [extra, *_TABLE] if where == "before" else [*_TABLE, extra]
+    code, report = _rehearse(bench92, requests)
+    assert (code, report["reason"]) == (1, "unlisted_request"), report
+    assert report["budget_denials"] == 1 and sum(_tolerated_counts(report).values()) == 6
+    assert bench92.measure("review")[1]["routes"][0]["code"] == "rehearsal_required"
+
+
+@pytest.mark.parametrize("requests,reason", [
+    (_TABLE[:-1], "no_model_request"),                      # the budget's own denial is required
+    ([*_TABLE[:-1], INNER_HOST_DENIED], "unlisted_request"),  # refused, but not by the budget
+    # Nothing may be allowed: a budget-0 proxy that counted one fails its own proof first.
+    ([*_TABLE[:-1], ALLOWED], "observation_incomplete"),
+    ([*_TABLE, RESPONSES], "unlisted_request"),              # a late POST: the ordering rule
+    ([BUDGET_DENIED], "passed"),                             # a tolerated row may occur 0 times
+    ([*_TABLE, BUDGET_DENIED, FEEDBACK], "passed"),          # client retries; a late GET
+    ([ARCHIVE] * 3 + _TABLE, "passed"),                      # any number of a tolerated row
+], ids=["no-budget-denial", "inner-host-denial", "an-allowed-request", "late-responses",
+        "only-the-budget-denial", "retries-and-a-late-get", "repeats"])
+def test_the_rehearsal_of_1_0_92_still_requires_the_budgets_own_denial(bench92, requests, reason):
+    code, report = _rehearse(bench92, requests)
+    assert report["reason"] == reason and (code == 0) is (reason == "passed"), report
+
+
+@pytest.mark.parametrize("name", list(NEVER_TOLERATED_1_0_92))
+@pytest.mark.parametrize("where", ["before", "after"])
+def test_a_measurement_of_1_0_92_is_refused_on_anything_outside_its_entries(bench92, name, where):
+    extra = NEVER_TOLERATED_1_0_92[name]
+    pilot = [*_TABLE[:-1], ALLOWED]
+    status, result = _pilot(bench92, [extra, *pilot] if where == "before" else [*pilot, extra])
+    assert status == "egress_refused"
+    assert result["tools"] is None and result["definitions_sha256"] is None  # never read
+    assert sum(item["count"] for item in result["tolerated_refusals"]) == 6
+
+
+def test_a_pilot_of_1_0_92_with_the_five_entries_before_its_counted_request_is_measured(bench92):
+    status, result = _pilot(bench92, [*_TABLE[:-1], ALLOWED, FEEDBACK])
+    assert status == "measured" and result["admitted"] is True
+    assert result["observation"] == {"complete": True, "reason": "complete", "requests": 8,
+                                     "counted": 1, "denied": 7}
+    assert _tolerated_counts(result) == {
+        ("GET", "/v1/bundle/archive"): 1, ("GET", "/"): 1, ("GET", "/v1/subagents/bundle"): 1,
+        ("GET", "/v1/feedback/config"): 2, ("POST", "/v1/responses"): 2}
+    assert bench92.status()["charged"] == 1  # the tolerated POSTs are never counted
+    bench92.cli("--aggregate")
+    evidence = json.loads((bench92.output / "tool-surface.json").read_text())
+    gts.check_evidence_keys(evidence)
+    assert evidence["routes"][0]["tolerated_refusals"] == result["tolerated_refusals"]
+    # A second model call still disqualifies, tolerated entries or not.
+    assert gts._classify(early=None, exit_code=0, identity_ok=True, binary_sha256=GROK_1_0_92,
+                         proof=SimpleNamespace(complete=True, counted=1), events=[
+        seat_egress_proxy.RequestEvent(method=m, host=h, path=p, decision=d, cause=c)
+        for m, h, p, d, c in [(*RESPONSES, "rules"), (*ALLOWED, "allowed"), BUDGET_DENIED]
+    ]) == "budget_exhausted"
+
+
+@pytest.mark.parametrize("image,foreign", [
+    (GROK_1_0_92, SETTINGS), (GROK_1_0_92, UPDATER), (GROK_1_0_92, ARTIFACTS),
+    (GROK_1_0_89, ARCHIVE), (GROK_1_0_89, ROOT), (GROK_1_0_89, SUBAGENTS),
+    (GROK_1_0_89, FEEDBACK), (GROK_1_0_89, RESPONSES),
+    *[(None, entry) for entry in (SETTINGS, UPDATER, ARTIFACTS, ARCHIVE, ROOT, SUBAGENTS, FEEDBACK,
+                                  RESPONSES)],
+])
+@pytest.mark.parametrize("stage", ["rehearsal", "measurement"])
+def test_an_image_tolerates_only_its_own_entries(tmp_path, monkeypatch, image, foreign, stage):
+    """A 1.0.92 grant does not tolerate erratum 3's three, a 1.0.89 grant does not tolerate
+    erratum 8's five, and an image the map does not hold tolerates none of the eight."""
+    bench = Bench(tmp_path, monkeypatch, image=image)
+    if stage == "rehearsal":
+        code, report = _rehearse(bench, [foreign, BUDGET_DENIED])
+        assert (code, report["reason"], report["tolerated_refusals"]) == (1, "unlisted_request", [])
+    else:
+        status, result = _pilot(bench, [foreign, ALLOWED])
+        assert status == "egress_refused" and result["tolerated_refusals"] == []
+
+
+def test_a_record_holds_only_its_own_images_tolerated_entries(bench92):
+    """The validators of the result, the aggregate and the rehearsal read the record's own
+    image: an entry of another image's list, or any entry under an image the map does not
+    hold, refuses the record."""
+    foreign = {"method": "GET", "host": gts.INFERENCE_HOST, "path": "/v1/settings", "count": 1}
+    status, result = _pilot(bench92, [ARCHIVE, RESPONSES, ALLOWED])
+    assert status == "measured" and len(result["tolerated_refusals"]) == 2
+    gts.check_result_keys(result)
+    for change in ({"tolerated_refusals": [foreign]}, {"binary_sha256": "f" * 64},
+                   {"binary_sha256": GROK_1_0_89}):
+        with pytest.raises(gts._Refused):
+            gts.check_result_keys({**result, **change})
+    bench92.cli("--aggregate")
+    evidence = json.loads((bench92.output / "tool-surface.json").read_text())
+    gts.check_evidence_keys(evidence)
+    for change in ({"routes": [{**evidence["routes"][0], "tolerated_refusals": [foreign]}]},
+                   {"binary_sha256": "f" * 64}):
+        with pytest.raises(gts._Refused):
+            gts.check_evidence_keys({**evidence, **change})
+    (record,) = [json.loads(p.read_text()) for p in
+                 (bench92.grant_dir() / "rehearsals").glob("????-????????????????.json")]
+    gts.check_rehearsal_keys(record)
+    for change in ({"tolerated_refusals": [foreign]},
+                   {"tolerated_refusals": result["tolerated_refusals"], "binary_sha256": "f" * 64}):
+        with pytest.raises(gts._Refused):
+            gts.check_rehearsal_keys({**record, **change})
+
+
+def test_a_stored_record_with_another_images_entry_is_not_read_back(bench92):
+    """On reload: a stored rehearsal that calls another image's entry tolerated is no
+    rehearsal, so the pilot is refused; a stored result that does is unreadable, so nothing
+    aggregates and the host-local record goes."""
+    foreign = {"method": "GET", "host": gts.INFERENCE_HOST, "path": "/v1/settings", "count": 1}
+
+    def rewrite(path, change):
+        document = {**json.loads(path.read_text()), **change}
+        path.unlink()
+        path.write_text(json.dumps(document))
+        path.chmod(0o600)
+
+    status, _result = _pilot(bench92, [ARCHIVE, ALLOWED])
+    assert status == "measured" and bench92.cli("--aggregate")[1]["published"] == ["review"]
+    assert bench92.host_record() is not None
+    (committed,) = (bench92.grant_dir() / "results").glob("*.json")
+    rewrite(committed, {"tolerated_refusals": [foreign]})
+    assert bench92.status()["unreadable_results"] == 1
+    code, report = bench92.cli("--aggregate")
+    assert (code, report["code"]) == (1, "ledger_unreadable") and bench92.host_record() is None
+    (rehearsal,) = (bench92.grant_dir() / "rehearsals").glob("????-????????????????.json")
+    assert bench92.cli("--require-rehearsed", "review")[0] == 0
+    rewrite(rehearsal, {"tolerated_refusals": [foreign]})
+    code, report = bench92.cli("--require-rehearsed", "review")
+    assert (code, report["status"]) == (1, "interrupted")
+
+
+# ----------------------------------------- erratum 8, item 3: no client path text retained
+
+#: An all-letter word a client could put in a path segment: a slug, a customer name, a
+#: prompt word. A templating proxy (lane E8-C) keeps such a segment verbatim in its event.
+PLANTED_WORD = "zqxvplantedslugword"
+PLANTED = [
+    ("GET", gts.INFERENCE_HOST, f"/v1/{PLANTED_WORD}", "deny"),
+    ("GET", gts.INFERENCE_HOST, f"/v1/users/<seg>/{PLANTED_WORD}", "deny"),
+    ("POST", gts.INFERENCE_HOST, f"/{PLANTED_WORD}", "deny"),
+    ("GET", f"{PLANTED_WORD}.example", "/", "deny"),
+]
+
+
+#: Erratum 8 r3, item 3: the closed diagnostic labels lane E8-C defines in
+#: ``seat_egress_proxy.DIAGNOSTIC_LABELS``, each with its fixed method and host.
+R3_DIAGNOSTIC_LABELS = {"<diag:settings>": ("GET", "cli-chat-proxy.grok.com"),
+                        "<diag:models>": ("GET", "cli-chat-proxy.grok.com")}
+
+
+@pytest.fixture
+def labels(monkeypatch):
+    """The E8-C labels, as its owner will define them, for a build that does not have them."""
+    if not hasattr(seat_egress_proxy, "DIAGNOSTIC_LABELS"):
+        monkeypatch.setattr(seat_egress_proxy, "DIAGNOSTIC_LABELS", R3_DIAGNOSTIC_LABELS,
+                            raising=False)
+    return gts.diagnostic_labels()
+
+
+def test_the_labels_are_imported_from_their_owner_and_from_nowhere_else():
+    """The projection keeps no label vocabulary of its own: it reads
+    ``seat_egress_proxy.DIAGNOSTIC_LABELS`` (E8-C) and, until that lands, retains none."""
+    owned = getattr(seat_egress_proxy, "DIAGNOSTIC_LABELS", None)
+    if owned is None:
+        assert dict(gts.diagnostic_labels()) == {}
+    else:
+        assert gts.diagnostic_labels() is owned and dict(owned) == R3_DIAGNOSTIC_LABELS
+    assert not hasattr(gts, "DIAGNOSTIC_PATHS")
+
+
+@pytest.mark.parametrize("image,path,kept", [
+    (GROK_1_0_89, "/v1/settings", "/v1/settings"), (GROK_1_0_92, "/v1/settings", "<other>"),
+    (GROK_1_0_89, "/v1/models", "<other>"), (GROK_1_0_92, "/v1/models", "<other>"),
+    (None, "/v1/settings", "<other>"), (GROK_1_0_89, "/v1/bundle/archive", "<other>"),
+    (GROK_1_0_92, "/v1/bundle/archive", "/v1/bundle/archive")])
+def test_a_raw_path_is_retained_only_as_the_records_own_images_entry(image, path, kept):
+    """Raw ``/v1/settings`` is retained only as 1.0.89's named entry, never on a 1.0.92 or
+    unknown-image record; ``/v1/models`` never; and no image's entry on another's record."""
+    assert gts.retained_observation("GET", gts.INFERENCE_HOST, path, "deny", "rules",
+                                    binary_sha256=image) == {
+        "method": "GET", "host": gts.INFERENCE_HOST, "path": kept, "decision": "deny",
+        "cause": "rules"}
+    for never in ("/v1/settings", "/v1/models"):
+        assert ("GET", gts.INFERENCE_HOST, never) not in gts.tolerated_refusals(GROK_1_0_92)
+
+
+@pytest.mark.parametrize("label", sorted(R3_DIAGNOSTIC_LABELS))
+@pytest.mark.parametrize("method,host,decision,cause,kept", [
+    ("GET", gts.INFERENCE_HOST, "deny", "rules", True),
+    ("POST", gts.INFERENCE_HOST, "deny", "rules", False),
+    ("GET", "x.ai", "deny", "rules", False),
+    ("GET", gts.INFERENCE_HOST, "allow", "rules", False),
+    ("GET", gts.INFERENCE_HOST, "deny", "inner_host", False),
+    ("GET", gts.INFERENCE_HOST, "deny", None, False)],
+    ids=["fixed", "method", "host", "allowed", "cause", "no-cause"])
+def test_a_label_is_retained_only_with_its_fixed_method_host_and_a_rules_denial(
+        labels, label, method, host, decision, cause, kept):
+    retained = gts.retained_observation(method, host, label, decision, cause,
+                                        binary_sha256=GROK_1_0_92)
+    assert retained["path"] == (label if kept else "<other>")
+
+
+def test_without_the_owners_labels_a_label_is_not_retained():
+    if hasattr(seat_egress_proxy, "DIAGNOSTIC_LABELS"):
+        pytest.skip("lane E8-C has landed its labels")
+    assert gts.retained_observation("GET", gts.INFERENCE_HOST, "<diag:settings>", "deny",
+                                    "rules", binary_sha256=GROK_1_0_92)["path"] == "<other>"
+
+
+@pytest.mark.parametrize("planted", PLANTED, ids=["segment", "templated", "post", "host"])
+def test_a_client_chosen_path_word_reaches_no_rehearsal_record_or_output(bench92, planted):
+    """A path or host spelling outside the closed vocabulary is retained as ``<other>``: the
+    grant's rehearsal record, every file under the output, grant and host-record roots, and
+    the CLI's report carry no trace of it. The launch still fails, as any unlisted request."""
+    code, report = _rehearse(bench92, [*_TABLE[:-1], planted, BUDGET_DENIED])
+    assert (code, report["reason"]) == (1, "unlisted_request"), report
+    assert PLANTED_WORD not in json.dumps(report)
+    (record,) = [json.loads(p.read_text()) for p in
+                 (bench92.grant_dir() / "rehearsals").glob("????-????????????????.json")]
+    retained = record["observed"][6]
+    assert retained["method"] == planted[0] and "<other>" in (retained["host"], retained["path"])
+    for root in (bench92.output, bench92.grant_dir(), pa.private_record_root()):
+        for path in _files(root):
+            assert PLANTED_WORD.encode() not in path.read_bytes(), path
+    # The tabled rows are kept, verbatim.
+    assert [(item["method"], item["host"], item["path"], item["decision"])
+            for item in record["observed"][:6]] == [
+        ARCHIVE, ROOT, SUBAGENTS, FEEDBACK, RESPONSES, RESPONSES]
+
+
+def test_a_measurement_retains_totals_and_tolerated_tuples_only(bench92):
+    """The pilot writer keeps no path of its own: a planted word in a refused request
+    reaches neither the result, the aggregate, the host record nor the report."""
+    status, result = _pilot(bench92, [*_TABLE[:-1], PLANTED[0], ALLOWED])
+    assert status == "egress_refused"
+    bench92.cli("--aggregate")
+    for root in (bench92.output, bench92.grant_dir(), pa.private_record_root()):
+        for path in _files(root):
+            assert PLANTED_WORD.encode() not in path.read_bytes(), path
+    assert PLANTED_WORD not in json.dumps(bench92.status())
+
+
+@pytest.mark.parametrize("field,value", [
+    ("path", f"/v1/{PLANTED_WORD}"), ("host", f"{PLANTED_WORD}.example"),
+    ("method", PLANTED_WORD.upper()), ("decision", "forwarded"), ("cause", "bogus"),
+    ("cause", None)])
+def test_a_rehearsal_record_naming_text_outside_the_vocabulary_is_refused(bench92, field, value):
+    """The reader holds the producer's bound: a stored rehearsal whose observation names a
+    value outside the vocabulary is no rehearsal, so the pilot cannot reserve on it."""
+    code, _report = _rehearse(bench92, _TABLE)
+    assert code == 0
+    (path,) = (bench92.grant_dir() / "rehearsals").glob("????-????????????????.json")
+    record = json.loads(path.read_text())
+    gts.check_rehearsal_keys(record)
+    record["observed"][0][field] = value
+    with pytest.raises(gts._Refused):
+        gts.check_rehearsal_keys(record)
+    path.unlink()
+    path.write_text(json.dumps(record))
+    path.chmod(0o600)
+    code, report = bench92.cli("--require-rehearsed", "review")
+    assert (code, report["status"]) == (1, "interrupted")
+
+
+# -------------------------------------------------------- erratum 8, item 5: the client log
+
+#: The collector guarantee this falsifier tests: no collector of the harness opens the
+#: client's own log, ``~/.grok/logs/unified.jsonl``, which records the token's last 12
+#: characters (``key_prefix``). It lives in the seat's tmpfs home. The retained paths that
+#: do carry child-derived text are the provider log a failed measurement or rehearsal keeps,
+#: the definitions artifact a measurement copies out of the host-backed sessions bind, and a
+#: board leg's private log; each is exercised below through the real launcher. A seat process
+#: that copied the suffix into its own output would put it there: that is redistribution
+#: inside the seat, which no collector can tell apart and this test does not claim.
+PLANTED_TOKEN = "fabricated-grok-bearer-e8b-" + "Qm7Rt2Vx9KpL"
+TOKEN_SUFFIX = PLANTED_TOKEN[-12:]
+assert TOKEN_SUFFIX == "Qm7Rt2Vx9KpL"
+
+_LOGGING_STAND_IN = r'''#!/usr/bin/python3 -I
+import base64, json, os, socket, ssl, sys, urllib.parse
+argv = sys.argv[1:]
+if argv[-1:] == ["--help"]:
+    sys.stdout.write(__HELP__)
+    sys.exit(0)
+if argv[-1:] == ["--version"]:
+    sys.stdout.write(__VERSION__)
+    sys.exit(0)
+if "--prompt-file" in argv:
+    sys.stdin.read()
+home = os.environ["HOME"]
+# As grok 1.0.92 does: the projected token's last 12 characters, into its own log only.
+with open(os.path.join(home, ".grok", "auth.json")) as handle:
+    node = json.load(handle)
+while isinstance(node, dict):
+    node = node["key"] if "key" in node else next(iter(node.values()))
+os.makedirs(os.path.join(home, ".grok", "logs"), exist_ok=True)
+with open(os.path.join(home, ".grok", "logs", "unified.jsonl"), "a") as handle:
+    for _ in range(5):
+        handle.write(json.dumps({"event": "auth", "key_prefix": node[-12:]}) + "\n")
+host = "cli-chat-proxy.grok.com"
+
+def request(method, path):
+    proxy = urllib.parse.urlsplit(os.environ["HTTPS_PROXY"])
+    raw = socket.create_connection((proxy.hostname, proxy.port), 10)
+    auth = base64.b64encode(f"{proxy.username}:{proxy.password}".encode()).decode()
+    raw.sendall(f"CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n"
+                f"Proxy-Authorization: Basic {auth}\r\n\r\n".encode())
+    head = b""
+    while b"\r\n\r\n" not in head:
+        chunk = raw.recv(4096)
+        if not chunk:
+            break
+        head += chunk
+    context = ssl.create_default_context(cafile=os.environ["SSL_CERT_FILE"])
+    context.verify_flags &= ~getattr(ssl, "VERIFY_X509_STRICT", 0)
+    with context.wrap_socket(raw, server_hostname=host) as tls:
+        # A body only on a POST, as grok sends: a GET carries none. (A GET with a declared
+        # body is teed by srt but reaches the filter bodyless, so the refusal cannot drain
+        # it, and on Node 22 the cancelled in-flight branch ends the proxy.)
+        body = "{}" if method == "POST" else ""
+        framing = f"Content-Length: {len(body)}\r\n" if body else ""
+        tls.sendall(f"{method} {path} HTTP/1.1\r\nHost: {host}\r\n{framing}"
+                    f"Connection: close\r\n\r\n{body}".encode())
+        reply = b""
+        while True:
+            chunk = tls.recv(65536)
+            if not chunk:
+                break
+            reply += chunk
+    return reply.split(b"\r\n", 1)[0].decode("latin-1")
+
+for method, path in __BEFORE__:
+    try:
+        request(method, path)
+    except OSError:
+        pass
+try:
+    proxied = request("POST", "/v1/chat/completions")
+except OSError as exc:
+    proxied = "error:" + type(exc).__name__
+session = os.path.join(home, ".grok", "sessions", "-encoded-cwd", "session-0001")
+os.makedirs(session)
+with open(os.path.join(session, "tool_definitions.json"), "w") as handle:
+    json.dump([{"type": "function", "function": {"name": name, "parameters": {}}}
+               for name in __TOOLS__], handle)
+# Child-derived text in the retained output, and a marker that the client log was written.
+print("provider says:", proxied, "client log lines:", 5)
+print("REVIEW TEXT FROM THE CHILD", file=sys.stderr)
+sys.exit(__EXIT__)
+'''
+
+
+def _logging_stand_in(*, tools, exit_code=0, before=()):
+    return (_LOGGING_STAND_IN.replace("__HELP__", repr(HELP)).replace("__VERSION__", repr(VERSION))
+            .replace("__TOOLS__", repr(tools)).replace("__EXIT__", str(exit_code))
+            .replace("__BEFORE__", repr(list(before))))
+
+
+def _plant_token(home: Path) -> None:
+    auth = home / ".grok" / "auth.json"
+    auth.unlink()
+    auth.write_text(json.dumps({"key": PLANTED_TOKEN}))
+    auth.chmod(0o600)
+
+
+def _carrying_the_suffix(*roots: Path) -> list[Path]:
+    return [path for root in roots if root.exists() for path in _files(root)
+            if TOKEN_SUFFIX.encode() in path.read_bytes()]
+
+
+def _logging_bench(tmp_path, monkeypatch, *, image=GROK_1_0_89, **stand_in):
+    _namespace_or_skip()
+    _require_bwrap()
+    bench = Bench(tmp_path, monkeypatch, real=True)
+    _plant_token(Path(bench.env["HOME"]))
+    bench.binary.write_text(_logging_stand_in(tools=_tools("review"), **stand_in))
+    bench.binary.chmod(0o700)
+    bench.stand_for(image)
+    return bench
+
+
+@pytest.mark.parametrize("case", ["measured", "launch_failed"])
+def test_the_client_logs_token_suffix_reaches_no_retained_measurement_path(
+        required_upstream, tmp_path, monkeypatch, case):
+    """Erratum 8, item 5: a stand-in grok writes the planted token's 12-character suffix into
+    ``$HOME/.grok/logs/unified.jsonl`` and nowhere else. Through the real launcher, a passing
+    rehearsal, then a measurement that copies its definitions artifact out (``measured``) or
+    one whose provider log is retained (``launch_failed``): no file under the state home --
+    the output, raw and result copies, the aggregate evidence, the grant, the host-local
+    record -- holds the suffix, and the sessions directory is gone."""
+    bench = _logging_bench(tmp_path, monkeypatch, exit_code=0 if case == "measured" else 3)
+    bench.open_grant(planned="review")
+    try:
+        code, report = bench.measure("review")
+    except pi._sandbox_egress.SeatIdentityUnverified as exc:
+        if os.environ.get(REQUIRE_NS) == "1":
+            raise
+        pytest.skip(f"this host cannot own a seat ({exc})")
+    assert code == 0 and report["routes"][0]["status"] == case, report
+    logs = list((bench.output / "raw").rglob("provider.log"))
+    if case == "measured":
+        assert bench.cli("--aggregate")[1]["published"] == ["review"]
+        assert (bench.output / "tool-surface.json").is_file()
+        copied = [p for p in _files(bench.output / "raw") if p.name.endswith(".json")]
+        assert copied, "the definitions artifact was copied out"
+        assert logs == []
+    else:
+        (log,) = logs  # retained on failure, with the child's own text in it
+        text = log.read_text()
+        assert "REVIEW TEXT FROM THE CHILD" in text and "client log lines: 5" in text
+    assert _carrying_the_suffix(bench.state) == []
+    assert not [p for p in bench.state.rglob("sessions") if p.is_dir()]
+    assert not [p for p in bench.state.rglob("*") if p.name == "unified.jsonl"]
+
+
+def test_the_client_logs_token_suffix_reaches_no_retained_rehearsal_path(
+        required_upstream, tmp_path, monkeypatch):
+    """The same for a failed rehearsal, whose provider log is retained: grok 1.0.92 fetching
+    its remote settings disqualifies it (the pinned seat config was not honoured)."""
+    bench = _logging_bench(tmp_path, monkeypatch, image=GROK_1_0_92, exit_code=1,
+                           before=[("GET", "/v1/settings")])
+    bench.open_grant(planned="review", rehearse=False)
+    try:
+        code, report = bench.cli("--attended", "--rehearse", "--route", "review")
+    except pi._sandbox_egress.SeatIdentityUnverified as exc:
+        if os.environ.get(REQUIRE_NS) == "1":
+            raise
+        pytest.skip(f"this host cannot own a seat ({exc})")
+    assert (code, report["reason"], report["budget_denials"]) == (1, "unlisted_request", 1), report
+    (log,) = (bench.output / "raw").rglob("provider.log")
+    assert "REVIEW TEXT FROM THE CHILD" in log.read_text()
+    assert TOKEN_SUFFIX not in json.dumps(report)
+    assert _carrying_the_suffix(bench.state) == []
+    assert not [p for p in bench.state.rglob("sessions") if p.is_dir()]
+
+
+@pytest.mark.parametrize("exit_code", [0, 3], ids=["completed", "failed"])
+def test_the_client_logs_token_suffix_reaches_no_board_leg_output_or_private_log(
+        required_upstream, live_seat_attempt, tmp_path, monkeypatch, exit_code):
+    """A frozen-basis board leg through the real ``_exec_leg`` composition: its returned text,
+    its output and review directories, and -- for a failed leg -- the private leg log the
+    board writes from its raw output (``_leg_failure_detail``, ``_resolve_leg_detail``)."""
+    from test_grok_board_leg_frozen_basis import (
+        Board, _board_leg_egress, _exec_leg, _leg_command, _prerequisites, _skip_unless_owned,
+    )
+    _prerequisites()
+    board = Board(tmp_path, monkeypatch)
+    _plant_token(Path(board.env["HOME"]))
+    board.binary.write_text(_logging_stand_in(tools=_tools("review"), exit_code=exit_code))
+    board.binary.chmod(0o700)
+    review_dir, out_dir = board.leg("review")
+    board.publish(_leg_command("review", review_dir, out_dir))
+    try:
+        with _board_leg_egress():
+            rc, text, log = _exec_leg(board, "review", review_dir, out_dir)
+    except sandbox_egress.SeatIdentityUnverified as exc:
+        _skip_unless_owned(exc)
+    assert rc == exit_code and "client log lines: 5" in text + log, (rc, log[-800:])
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(mode=0o700)
+    detail = pi._resolve_leg_detail(
+        pi._leg_failure_detail("OK" if rc == 0 else "FAILED", rc, text, log), run_dir, "grok")
+    leg_logs = list((run_dir / pi._LEG_LOG_DIRNAME).glob("*.log"))
+    assert bool(leg_logs) is (rc != 0), detail
+    assert TOKEN_SUFFIX not in text + log + str(detail)
+    assert _carrying_the_suffix(run_dir, review_dir, out_dir, tmp_path / "state") == []
+
+
+def test_a_host_bind_at_the_client_log_refuses_at_the_context_check(bench, monkeypatch, tmp_path):
+    """The home check takes no host path in the home but the measurement's sessions bind:
+    ``.grok/logs`` bound from the host refuses a rehearsal and a measurement before any
+    launch."""
+    host_logs = tmp_path / "host-logs"
+    host_logs.mkdir(mode=0o700)
+    real = pi.seat_profile
+    binding = {"on": False}
+
+    @contextlib.contextmanager
+    def seat_profile(**kwargs):
+        with real(**kwargs) as (destination, profile):
+            if binding["on"]:
+                profile = replace(profile, mount_args=(
+                    *profile.mount_args, "--bind", str(host_logs),
+                    gts.PRIVATE_HOME + "/.grok/logs"))
+            yield destination, profile
+    monkeypatch.setattr(pi, "seat_profile", seat_profile)
+    bench.open_grant(planned="review", rehearse=False)
+    binding["on"] = True
+    code, report = bench.cli("--attended", "--rehearse", "--route", "review")
+    assert (code, report["status"], report["code"]) == (1, "refused", "context_refused"), report
+    assert bench.rehearsals == []
+    binding["on"] = False
+    assert bench.cli("--attended", "--rehearse", "--route", "review")[0] == 0
+    binding["on"] = True
+    code, report = bench.measure("review")
+    assert report["routes"][0]["status"] == "context_refused" and bench.launches == []
+
+
+# --------------------- erratum 8, item 5 (review of E8-B): the definitions scan
+
+#: The two credential shapes of erratum 8, item 5: a secret value of 12 characters or fewer
+#: (its own suffix) and one well over 24 (a full value and a separate 12-character suffix).
+SHORT_SECRET = "Kp4Vx9Lm2Qt"  # 11
+LONG_SECRET = "fabricated-long-grok-bearer-" + "Zr8Hq3Nw6Ty1"
+
+
+def _credential(bench, secret):
+    auth = Path(bench.env["HOME"]) / ".grok" / "auth.json"
+    auth.unlink()
+    auth.write_text(json.dumps({"key": secret}))
+    auth.chmod(0o600)
+
+
+@pytest.mark.parametrize("secret,copied", [
+    (SHORT_SECRET, SHORT_SECRET), (LONG_SECRET, LONG_SECRET), (LONG_SECRET, LONG_SECRET[-12:])],
+    ids=["short-full", "long-full", "long-suffix-only"])
+def test_definitions_carrying_a_registered_value_are_refused_before_retention(bench, secret,
+                                                                             copied):
+    """The measurement scans the raw definitions for every registered value -- each full
+    secret and its last 12 characters, from the profile's own copy -- before it retains,
+    hashes or extracts them. A hit is ``artifact_refused``: the request stays settled, no
+    raw copy is kept, nothing is extracted, and the status survives reload, fails
+    ``--require-measured``, is never reprocessed and never published."""
+    _credential(bench, secret)
+    bench.open_grant(planned="review")
+    bench.default = Scenario(artifact=_s2(_tools("review"), extra=copied))
+    code, report = bench.measure("review")
+    assert code == 0 and report["routes"][0]["status"] == "artifact_refused", report
+    (result,) = bench.results().values()
+    gts.check_result_keys(result)
+    assert result["status"] == "artifact_refused"
+    assert all(result[key] is None for key in ("definitions_sha256", "definitions_bytes",
+                                               "shape", "tools", "admitted", "structure"))
+    assert not [p for p in (bench.output / "raw").rglob(gts.DEFINITIONS_NAME)]
+    for root in (bench.output, bench.grant_dir(), pa.private_record_root()):
+        for path in _files(root):
+            if path.name != "provider.log":  # private, secret-bearing (§5.9)
+                assert copied.encode() not in path.read_bytes(), path
+    assert bench.status()["charged"] == 1
+    assert _route_rows(bench.status())["review"]["status"] == "artifact_refused"
+    code, report = bench.cli("--require-measured", "review")
+    assert code == 1 and report["result"] == "artifact_refused", report
+    code, report = bench.cli("--reprocess", result["reservation"])
+    assert code == 1, report
+    code, report = bench.cli("--aggregate")
+    assert code == 0 and report["published"] == [], report
+    evidence = json.loads((bench.output / "tool-surface.json").read_text())
+    gts.check_evidence_keys(evidence)
+    assert [row["status"] for row in evidence["routes"]] == ["artifact_refused"]
+    assert bench.host_record() is None and not bench.probe("review")["passed"]
+
+
+def test_a_clean_definitions_artifact_with_the_same_credential_still_measures(bench):
+    _credential(bench, LONG_SECRET)
+    bench.open_grant(planned="review")
+    assert bench.measure("review")[1]["routes"][0]["status"] == "measured"
+
+
+def test_a_measurement_with_no_values_to_scan_with_refuses_the_artifact(bench, monkeypatch):
+    """No registered value means the scan cannot show the artifact clean: refused."""
+    real = pi.seat_profile
+
+    @contextlib.contextmanager
+    def unscanned(**kwargs):
+        with real(**kwargs) as (destination, profile):
+            yield destination, replace(profile, scan_values=())
+    bench.open_grant(planned="review")
+    monkeypatch.setattr(pi, "seat_profile", unscanned)
+    assert bench.measure("review")[1]["routes"][0]["status"] == "artifact_refused"
+
+
+# ------------------ erratum 8, item 7 (review of E8-B): the runtime binding and publication
+
+def _rehearsal_record(bench):
+    (path,) = (bench.grant_dir() / "rehearsals").glob("????-????????????????.json")
+    return path
+
+
+def test_a_rehearsal_records_the_running_runtime_and_is_stale_once_it_moves(bench,
+                                                                           monkeypatch):
+    """The rehearsal carries ``runtime_digest``. A runtime change after it passed makes it
+    stale: the pilot's reservation is refused and ``--require-rehearsed`` fails, while the
+    record itself still reads."""
+    bench.open_grant(planned="review")
+    record = json.loads(_rehearsal_record(bench).read_text())
+    assert record["runtime_digest"] == seat_window.runtime_digest()
+    assert bench.cli("--require-rehearsed", "review")[0] == 0
+    monkeypatch.setattr(seat_window, "runtime_digest", lambda: "c" * 64)
+    code, report = bench.cli("--require-rehearsed", "review")
+    assert (code, report["status"], report["reason"]) == (1, "not_rehearsed", "passed"), report
+    code, report = bench.measure("review")
+    assert report["routes"][0]["code"] == "rehearsal_required", report
+    assert bench.launches == [] and bench.status()["charged"] == 0
+
+
+def test_a_rehearsal_record_without_its_runtime_is_no_rehearsal(bench):
+    bench.open_grant(planned="review")
+    path = _rehearsal_record(bench)
+    record = json.loads(path.read_text())
+    for value in (None, "C" * 64, "c" * 63, 7):
+        with pytest.raises(gts._Refused):
+            gts.check_rehearsal_keys({**record, "runtime_digest": value})
+    del record["runtime_digest"]
+    with pytest.raises(gts._Refused):
+        gts.check_rehearsal_keys(record)
+    path.chmod(0o600)
+    path.unlink()
+    path.write_text(json.dumps(record))
+    path.chmod(0o600)
+    assert bench.cli("--require-rehearsed", "review")[0] == 1
+    assert bench.measure("review")[1]["routes"][0]["code"] == "rehearsal_required"
+
+
+@pytest.mark.parametrize("drift", ["runtime", "context"])
+def test_drift_after_the_last_launch_refuses_publication_and_removes_the_record(
+        bench, monkeypatch, drift):
+    """The publication gate: every result and the grant's passed rehearsal must carry the
+    running runtime and context. A coherent set from before a drift refuses with
+    ``context_mismatch`` and removes the host record an earlier aggregation published;
+    the historical readers still read the same records."""
+    bench.open_grant(planned="review")
+    bench.measure("review")
+    code, report = bench.cli("--aggregate")
+    assert code == 0 and report["published"] == ["review"] and bench.host_record() is not None
+    if drift == "runtime":
+        monkeypatch.setattr(seat_window, "runtime_digest", lambda: "c" * 64)
+    else:
+        monkeypatch.setattr(gts, "context_digest", lambda: "d" * 64)
+    code, report = bench.cli("--aggregate")
+    assert (code, report["code"]) == (1, "context_mismatch"), report
+    assert bench.host_record() is None and not bench.probe("review")["passed"]
+    # Historical reads are unchanged by the gate.
+    status = bench.status()
+    assert _route_rows(status)["review"]["status"] == "measured"
+    (result,) = bench.results().values()
+    gts.check_result_keys(result)
+    assert json.loads(_rehearsal_record(bench).read_text())["status"] == "passed"
+
+
+def test_publication_needs_a_rehearsal_of_the_running_runtime(bench, monkeypatch):
+    """Results of the running runtime are not enough: the grant's passed rehearsal must be
+    of it too."""
+    bench.open_grant(planned="review")
+    path = _rehearsal_record(bench)
+    record = json.loads(path.read_text())
+    real = gts._read_rehearsals
+    monkeypatch.setattr(gts, "_read_rehearsals", lambda directory, grant: tuple(
+        {**item, "runtime_digest": "e" * 64} for item in real(directory, grant)))
+    monkeypatch.setattr(gts, "_plan_reservation", _unrehearsed_plan(gts._plan_reservation))
+    assert bench.measure("review")[1]["routes"][0]["status"] == "measured"
+    code, report = bench.cli("--aggregate")
+    assert (code, report["code"]) == (1, "context_mismatch"), report
+    assert bench.host_record() is None and record["status"] == "passed"
+
+
+def _unrehearsed_plan(real):
+    """``_plan_reservation`` with the rehearsal gate satisfied, so that only aggregation's
+    own check of the rehearsal is under test."""
+    def plan(ledger, route, argv_digest, context):
+        class Rehearsed:
+            def __getattr__(self, name):
+                return getattr(ledger, name)
+
+            def rehearsed(self, *args, **kwargs):
+                return True
+        return real(Rehearsed(), route, argv_digest, context)
+    return plan
+
+
+@pytest.mark.parametrize("drift", ["runtime", "context"])
+def test_results_of_another_runtime_or_context_refuse_even_beside_a_fresh_rehearsal(
+        bench, monkeypatch, drift):
+    """Each half of the gate on its own: the rehearsal is of the running code, but the
+    results are not."""
+    bench.open_grant(planned="review")
+    bench.measure("review")
+    key, value = ("runtime_digest", "c" * 64) if drift == "runtime" else ("context_digest",
+                                                                           "d" * 64)
+    real = gts._read_rehearsals
+    monkeypatch.setattr(gts, "_read_rehearsals", lambda directory, grant: tuple(
+        {**item, key: value} for item in real(directory, grant)))
+    if drift == "runtime":
+        monkeypatch.setattr(seat_window, "runtime_digest", lambda: value)
+    else:
+        monkeypatch.setattr(gts, "context_digest", lambda: value)
+    code, report = bench.cli("--aggregate")
+    assert (code, report["code"]) == (1, "context_mismatch"), report
+    assert bench.host_record() is None
+
+
+@pytest.mark.parametrize("label", sorted(R3_DIAGNOSTIC_LABELS))
+def test_a_diagnostic_label_is_named_by_the_rehearsal_and_held_on_reload(bench92, labels,
+                                                                        label):
+    """Both labels through a rehearsal of 1.0.92: never tolerated (``unlisted_request``),
+    retained verbatim with its cause in the saved record and the CLI's report, and accepted
+    on reload only with its fixed method and host, ``deny`` and ``cause`` ``rules``. A record
+    entry without ``cause`` is stale."""
+    observed = ("GET", gts.INFERENCE_HOST, label, "deny", "rules")
+    code, report = _rehearse(bench92, [*_TABLE[:-1], observed, BUDGET_DENIED])
+    assert (code, report["reason"]) == (1, "unlisted_request"), report
+    assert label not in json.dumps(report["tolerated_refusals"])
+    path = _rehearsal_record(bench92)
+    record = json.loads(path.read_text())
+    assert record["observed"][6] == {"method": "GET", "host": gts.INFERENCE_HOST, "path": label,
+                                     "decision": "deny", "cause": "rules"}
+    assert label.encode() in path.read_bytes()
+    gts.check_rehearsal_keys(record)
+    for key, value in (("host", "x.ai"), ("method", "POST"), ("decision", "allow"),
+                         ("cause", "inner_host"), ("cause", "budget")):
+        broken = json.loads(json.dumps(record))
+        broken["observed"][6][key] = value
+        with pytest.raises(gts._Refused):
+            gts.check_rehearsal_keys(broken)
+    stale = json.loads(json.dumps(record))
+    del stale["observed"][6]["cause"]
+    with pytest.raises(gts._Refused):
+        gts.check_rehearsal_keys(stale)
+
+
+def test_on_1_0_89_the_named_settings_entry_wins_over_its_label(bench, labels):
+    """A named entry wins: on a 1.0.89 grant ``/v1/settings`` is the image's own entry,
+    retained verbatim and tolerated, not recorded as a label."""
+    code, report = _rehearse(bench, [(*SETTINGS, "rules"), BUDGET_DENIED])
+    assert (code, report["reason"]) == (0, "passed"), report
+    record = json.loads(_rehearsal_record(bench).read_text())
+    assert record["observed"][0]["path"] == "/v1/settings"
+    assert gts.retained_observation("GET", gts.INFERENCE_HOST, "/v1/settings", "deny", "rules",
+                                    binary_sha256=bench.digest)["path"] == "/v1/settings"
+
+
+@contextlib.contextmanager
+def _runtime_installed_during_the_launch(bench, monkeypatch, new="c" * 64):
+    """A runtime-only update that lands while the launch runs: from the spawn on, the
+    on-disk runtime digest is ``new``."""
+    real = bench.launch_owned
+
+    def launch_owned(*args, **kwargs):
+        monkeypatch.setattr(seat_window, "runtime_digest", lambda: new)
+        return real(*args, **kwargs)
+    monkeypatch.setattr(pi, "launch_owned", launch_owned)
+    yield new
+
+
+def test_a_rehearsal_records_the_runtime_it_launched_under(bench, monkeypatch):
+    """The rehearsal's runtime is captured before its proxy and child start: a runtime
+    installed during the launch is not stamped on the passing record, so the new runtime
+    cannot use it."""
+    before = seat_window.runtime_digest()
+    bench.open_grant(planned="review", rehearse=False)
+    with _runtime_installed_during_the_launch(bench, monkeypatch) as after:
+        code, report = bench.cli("--attended", "--rehearse", "--route", "review")
+    assert (code, report["result"]) == (0, "passed"), report
+    assert seat_window.runtime_digest() == after != before
+    record = json.loads(_rehearsal_record(bench).read_text())
+    assert record["runtime_digest"] == before
+    code, report = bench.cli("--require-rehearsed", "review")
+    assert (code, report["status"]) == (1, "not_rehearsed"), report
+    assert bench.measure("review")[1]["routes"][0]["code"] == "rehearsal_required"
+    assert bench.launches == []
+
+
+def test_a_result_records_the_runtime_it_launched_under(bench, monkeypatch):
+    """The same for a measurement: the result carries the runtime of its launch, so a
+    runtime installed during it stops publication."""
+    before = seat_window.runtime_digest()
+    bench.open_grant(planned="review")
+    with _runtime_installed_during_the_launch(bench, monkeypatch):
+        assert bench.measure("review")[1]["routes"][0]["status"] == "measured"
+    (result,) = bench.results().values()
+    assert result["runtime_digest"] == before
+    code, report = bench.cli("--aggregate")
+    assert (code, report["code"]) == (1, "context_mismatch"), report
+    assert bench.host_record() is None

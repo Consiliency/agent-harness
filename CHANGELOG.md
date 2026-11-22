@@ -44,6 +44,46 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `plans/evidence/seat-grok/containment.json` records the evidence ids and digests.
   Pins: `seat_window.runtime_digest()` and the agy `source_pins()` table move (a new runtime
   module). No jail profile digest, SDK proof binding, agy validator closure or QCI moves.
+- One seat-window kit for every vendor's row window (FIRSTSEAT amendment K-1, lane SL-5;
+  contract `plans/artifacts/seats-window-kit-k1-contract.md`).
+  - **Suppliers.** `seat_window_supply.SUPPLIERS` is the closed vendor → module table, and
+    `load` is the kit's only dynamic import. `seat_window_supply_gemini` re-exports the
+    existing Gemini interface. `WindowVendorData` version 2 adds `supplier`,
+    `contract_sha256`, `windows`, `launch_kinds`, `credential_kinds` and `launch_cap`, and
+    `register_window_data` refuses inconsistent data.
+  - **Row windows.** `seat-window qualify --window row --vendor V` runs one vendor's window,
+    and `qualify --window row` with no vendor runs the eligible batch. Each row grant
+    (`row-grant-<vendor>-<nonce>.jsonl`, pinned in the literal-only `seat_window_grants.py`)
+    allows one attempt, claimed under a lock before preflight and so before any login.
+    `release_identity()` excludes the grants module, so a pin never moves it. `seat-window
+    ready` only reads.
+  - **Evidence.** A row window writes a run binding, a potential-route snapshot bound to
+    the full composed board (every seat and board field) and to the president route its
+    adapter selects, a dispatch ledger, the board leg's launch attestation
+    (`window-launch-<attempt>.json`, the launch binding and the qualification key its route
+    admitted, beside its exec record) and a completion receipt. A row record verifies only
+    against all of them, the grant journal and its witness.
+  - **Launch envelope.** Every start inside a row window reserves a ledger unit before it
+    happens, at the provider boundary or at the kit's call sites; an excess is refused
+    before the spawn. Each credential-bearing start is checked against the route its
+    resolver actually reached, and a disagreement with the snapshot refuses before the
+    spawn; the Fable president reserves on the transport its adapter actually selects.
+    Gemini credential renewals reserve their own A4 unit. Board seats take the
+    window's ledger in the pool worker. President fallback is refused inside a window.
+  - **Reducer.** Records reduce by `(vendor, window)` partition, and a partition changes
+    only its own vendor's row. Expiry follows the launch snapshot (owner decision O-1). A
+    read error, a duplicate or an invalid record fails only its own partition.
+  - **Credential seam.** `_prepare_jailed_codex` and `_prepare_jailed_claude` take
+    `credential_mode` (`live`, the default and unchanged; `none`; `expired`) and
+    `copy_transform`; Claude's `none` creates no token pipe. The Codex board leg calls the
+    window hook in Gemini's order.
+  - **Changed.** `WindowBoardResult.canonical_gemini` and `.gemini` are now `canonical` and
+    `leg_observation`; the result adds `window_leg`, `board_stage_sha256` and
+    `source_attempt`. `verify_records` adds an `unclassified` count. Gemini W1's production
+    path and its admission are byte-identical (a fixed-clock golden pins them).
+  - **Pins.** `runtime_digest()` and the Claude SDK proof-input binding move
+    (`_prepare_jailed_claude`, `launch_provider` and the `seat_profiles.py` input). No jail
+    profile, allow-list, agy QCI, containment contract or W1 grant digest moves.
 - A grok seat composed with the `grok-review` egress proxy now holds a pinned
   `.grok/config.toml` in its private home (grok tool-surface contract, erratum 8 r3, lane
   E8-A; `plans/artifacts/grok-tool-surface-contract-v1.md`). The file is harness-written
@@ -87,6 +127,33 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   No Claude SDK proof input moves: `memfd_with` is called, not edited, and
   `SDK_PROOF_UNBOUND` is unchanged. No rows are added to
   `tests/data/seat_launch_references.json`.
+- The grok tool-surface measurement's tolerated refusals are keyed by binary image (lane E8-B
+  of `plans/artifacts/grok-tool-surface-contract-v1.md`, erratum 8 r3, items 2, 3, 5 and 7).
+  `TOLERATED_REFUSALS_BY_IMAGE` replaces `TOLERATED_REFUSALS`. Each row declares
+  `(method, host, path, cause, order)`. grok 1.0.89 keeps erratum 3's three entries, with
+  cause `rules` for `/v1/settings` and `front` for the two updater `CONNECT`s. grok 1.0.92
+  tolerates four startup GETs on the inference host and its pre-turn `POST /v1/responses`,
+  the last only strictly before the first inference request. An image with no entry
+  tolerates nothing. One predicate drives classification, rehearsal, the recorded counts and
+  the record validators, each against the record's own image. The proxy's `named` list
+  carries the identities only.
+  - **Definitions scan.** Before retaining or extracting the definitions artifact, the
+    measurement scans it for every registered credential value and its last 12 characters,
+    held in memory from the launch. A hit, or no values to scan with, gets the new status
+    `artifact_refused`: nothing is kept, and the route is never reprocessed or published.
+  - **Rehearsal binding.** The rehearsal records the running `runtime_digest`, and it
+    authorizes nothing once the runtime moves. Aggregation refuses with `context_mismatch`
+    and removes the host record unless every result and the passed rehearsal carry the
+    running runtime and context.
+  - **Rehearsal observations.** Each carries its `cause`. A raw path is kept only as the
+    record's own image's entry. A diagnostic label (from `seat_egress_proxy.DIAGNOSTIC_LABELS`,
+    lane E8-C) is kept only with its fixed method and host on a `rules` denial.
+  - **New tests** run a stand-in through the real launches. Its copies of a token suffix
+    reach only a failed launch's private provider log.
+  - **Pins.** `seat_window.runtime_digest()` moves for every qualification that uses it,
+    Gemini's included, and `STATUSES` gains `artifact_refused`. `context_digest` (beyond
+    E8-A's move), the allow-list digests, `proxy_sha256`, the agy QCI and the jail profile
+    digests are unchanged.
 
 ## [0.7.39] - Unreleased candidate
 
