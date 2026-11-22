@@ -109,6 +109,22 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   - **Pins.** `runtime_digest()` and the Claude SDK proof-input binding move
     (`_prepare_jailed_claude`, `launch_provider` and the `seat_profiles.py` input). No jail
     profile, allow-list, agy QCI, containment contract or W1 grant digest moves.
+- Acceptance tests for Codex's window supplier, written ahead of the supplier (FIRSTSEAT
+  amendment K-1, lane SL-6; contract §10.B). The supplier itself waits on start gate K1-G5.
+  - `tests/test_seat_window_supply_codex.py` covers registration, kinds, argv, stream facts,
+    terminal classes, scope and refresh outcomes, and F16 through the real
+    `_prepare_jailed_codex`. It also runs one row context through `cli_main` to a record
+    that `verify --vendor codex --window row` passes and that changes only `vendor:codex`.
+  - `tests/test_seat_window_codex_provider_free.py` covers K1-T6 and K1-T7 for assumption
+    A-C1.
+    - K1-T6 pins the reviewed Codex 0.167.0 image literal. It compares that literal with the
+      digest of the binary actually bound at spawn.
+    - K1-T7 plants a decoy home with a credential and fails on any lookup under it.
+    - The live cases run only with `PHASE_LOOP_REQUIRE_LIVE_JAIL=1`. Under that opt-in, a
+      skip counts as a failure.
+  - The amendment's SL-5.4 test filter is now
+    `-k "window and not board_returns and not composed_board"`, and its roadmap pin is
+    re-stamped.
 - A grok seat composed with the `grok-review` egress proxy now holds a pinned
   `.grok/config.toml` in its private home (grok tool-surface contract, erratum 8 r3, lane
   E8-A; `plans/artifacts/grok-tool-surface-contract-v1.md`). The file is harness-written
