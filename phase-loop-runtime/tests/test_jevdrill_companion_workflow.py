@@ -374,12 +374,8 @@ def test_the_classifier_exposes_the_allowlist_constant():
 )
 def test_each_allowlisted_reason_is_the_string_its_source_emits(path, reason):
     source = TESTS / path
-    if not source.is_file():
-        pytest.skip(f"{path} absent in this tree")
-    body = source.read_text(encoding="utf-8")
-    if "jevdrill_installed" in reason and "jevdrill_installed" not in body:
-        pytest.skip("the jevdrill_installed marker rule is not in conftest.py in this tree")
-    assert reason in body
+    assert source.is_file(), path
+    assert reason in source.read_text(encoding="utf-8")
 
 
 # --- actions and existing workflows ------------------------------------------------------------------
@@ -407,6 +403,35 @@ def test_actions_are_ones_the_repository_already_uses(wf):
                 assert step["with"]["persist-credentials"] is False
 
 
+COMPANION_ROW = ["A", ".github/workflows/jevdrill-companion.yml"]
+
+
+def workflow_change_violations(base_has_companion: bool, name_status: list[str]) -> list[str]:
+    """JEVHOST §8 [C4]: the phase adds the companion workflow and changes no existing one.
+
+    A one-time check of this phase's own diff. It is live only while the comparison base
+    does not yet hold the companion workflow, which is true on the phase branch before it
+    merges, however often it is rebased. Once ``main`` holds the workflow, later pull
+    requests may edit any workflow, the companion included, and nothing is reported.
+    """
+    if base_has_companion:
+        return []
+    return [line for line in name_status if line.split("\t") != COMPANION_ROW]
+
+
+@pytest.mark.parametrize("base_has_companion,name_status,expected", [
+    (False, ["A\t.github/workflows/jevdrill-companion.yml"], []),
+    (False, ["A\t.github/workflows/jevdrill-companion.yml", "M\t.github/workflows/test.yml"],
+     ["M\t.github/workflows/test.yml"]),
+    (False, ["D\t.github/workflows/docs-audit.yml"], ["D\t.github/workflows/docs-audit.yml"]),
+    # After the merge: a later pull request editing any workflow, the companion included.
+    (True, ["M\t.github/workflows/docs-audit.yml"], []),
+    (True, ["M\t.github/workflows/jevdrill-companion.yml"], []),
+])
+def test_workflow_change_rule_is_one_time(base_has_companion, name_status, expected):
+    assert workflow_change_violations(base_has_companion, name_status) == expected
+
+
 def _base_ref() -> str | None:
     for ref in ("origin/main", "main"):
         result = subprocess.run(
@@ -432,4 +457,8 @@ def test_no_existing_workflow_changed():
         ["git", "-C", str(REPO_ROOT), "diff", "--name-status", base, "--", ".github/workflows"],
         capture_output=True, text=True, timeout=30, check=True,
     ).stdout.splitlines()
-    assert all(line.split("\t") == ["A", ".github/workflows/jevdrill-companion.yml"] for line in changed), changed
+    base_has_companion = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "cat-file", "-e", f"{base}:.github/workflows/jevdrill-companion.yml"],
+        capture_output=True, timeout=30,
+    ).returncode == 0
+    assert workflow_change_violations(base_has_companion, changed) == []
