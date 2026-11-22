@@ -856,10 +856,6 @@ def test_sl6_host_paths_are_codexs(codex_supplier, tmp_path):
     assert codex_supplier.host_path_map(seat, credential=False).delivered_credential is None
 
 
-def test_sl6_codex_brings_its_own_bracket(codex_supplier):
-    assert callable(codex_supplier.bracket_steps())
-
-
 # --------------------------------------------------------------------------------------
 # Rows (§10.B): CODEX_WINDOW_ROWS, runtime rows re-rooted at provider_config, the home row.
 # --------------------------------------------------------------------------------------
@@ -951,20 +947,6 @@ def test_sl6_build_qualification_input_commits_the_tree_rows(codex_supplier, tmp
     assert head == qi.commit and not subprocess.run(
         ["git", "-C", str(qi.repo), "status", "--porcelain"], check=True,
         capture_output=True, text=True).stdout
-
-
-def test_sl6_the_containment_watch_and_reducer_fail_closed(codex_supplier):
-    """Until Codex's own I-13 watch and reducer land, a Codex row window can never record
-    a passing containment result: each refuses (and the B1 hold keeps it from starting)."""
-    from phase_loop_runtime import seat_jail_qualification as jailq, seat_window_supply as supply
-    with pytest.raises(jailq.WatchUnavailable):
-        codex_supplier.arm_watch(None, None, kind="measured")
-    with pytest.raises(supply.WindowRefused, match="window_reduction_unavailable"):
-        codex_supplier.definition_probe(None, ())
-    with pytest.raises(supply.WindowRefused, match="window_reduction_unavailable"):
-        codex_supplier.reduce_containment(None)
-    assert codex_supplier.ContextBinding is jailq.ContextBinding
-    assert codex_supplier.ContainmentInputs is jailq.ContainmentInputs
 
 
 # --------------------------------------------------------------------------------------
@@ -1249,3 +1231,768 @@ def test_sl6_a_codex_record_carrying_geminis_digests_fails(codex_supplier, tmp_p
         record[field] = seat_egress_proxy.allowlist_ref("gemini").content_digest
     world.rewrite(record)
     assert world.verify()["passed"] is False
+
+
+# --------------------------------------------------------------------------------------
+# SL-6.5 (review B1): Codex's own I-5 watch, definition probe and I-13 reducer. Every case
+# below goes through the real supplier's functions on frozen WindowLaunchResults.
+# --------------------------------------------------------------------------------------
+
+_ARGV = {"help": "1" * 64, "tree": "2" * 64, "production": "3" * 64}
+_IMAGE, _STAGE = "b" * 64, "d" * 64
+_SURFACES = ("project_settings", "hooks", "mcp_servers", "provider_overrides")
+_FIELDS = ("credential_scope", "refresh_detection", *_SURFACES)
+
+
+def _allowlist_digests():
+    from phase_loop_runtime import seat_egress_proxy as proxy
+    production = proxy._digest(list(proxy.allowlist_ref("codex").request_set))
+    return {"refuse_all": proxy._digest([]), "production": production,
+            "gemini": proxy._digest(list(proxy.allowlist_ref("gemini").request_set))}
+
+
+def _inputs():
+    from phase_loop_runtime import panel_invoker as panel
+    return {"control": hashlib.sha256(panel._WINDOW_CONTROL_INPUT.encode()).hexdigest(),
+            "measured": hashlib.sha256(panel._WINDOW_MEASURED_INPUT.encode()).hexdigest(),
+            "board": panel.window_board_input_sha256()}
+
+
+def _binding(kind, *, admission="release_qualified", allowlist=None, argv=None,
+             input_sha256="auto", profile=None, image=_IMAGE):
+    from phase_loop_runtime import seat_jail, seat_jail_qualification as jailq
+    digests, inputs = _allowlist_digests(), _inputs()
+    role = "refuse_all" if kind in NONE_KINDS else "production"
+    if input_sha256 == "auto":
+        input_sha256 = (None if kind == "help" else inputs["control"]
+                        if kind in CONTROL_KINDS else inputs["measured"])
+    if argv is None:
+        argv = _ARGV["help" if kind == "help" else "tree" if kind in TREE_KINDS
+                     else "production"]
+    return jailq.LaunchBinding(
+        image_sha256=image, admission_class=admission, stage_manifest_sha256=_STAGE,
+        argv_sha256=argv, input_sha256=input_sha256,
+        jail_profile_sha256=profile or seat_jail.jail_profile_digest("codex"),
+        allowlist_sha256=digests[role] if allowlist is None else allowlist)
+
+
+def _watch(*, opened=(), changed=(), credential_events=0, read_marker=True, **changes):
+    from phase_loop_runtime import seat_jail_qualification as jailq
+    values = dict(armed_ns=1, closed_ns=9, sentinel_observed=True, overflow=False,
+                  read_marker_opened=read_marker, drained_after_quiescence=True,
+                  opened_rows=tuple(opened), changed_rows=tuple(changed),
+                  row_ancestor_created=False, credential_path_events=credential_events,
+                  pre_row_sha256={}, pre_tree_manifest_sha256="0" * 64)
+    values.update(changes)
+    return jailq.WatchObservation(**values)
+
+
+def _fence(acknowledged=True):
+    from phase_loop_runtime.seat_egress_proxy import FenceResult
+    return FenceResult(fence_id="f" if acknowledged else "", acknowledged=acknowledged,
+                       acked_ns=1 if acknowledged else None)
+
+
+def _full_bracket(supplier, **row_changes):
+    rows = tuple(supplier.BracketRow(
+        row=name, outcome="refused",
+        signature=row_changes.get(name, sorted(supplier.BRACKET_SIGNATURES[name])[0]))
+        for name in supplier.BRACKET_ROW_NAMES)
+    return supplier.BracketResult(start=_fence(), end=_fence(), post_refused=True, rows=rows)
+
+
+def _windows_stream(leg=(), bracket=None, outside=()):
+    from phase_loop_runtime.seat_egress_proxy import ProxyStream, ProxyWindow
+    windows = [ProxyWindow(label="leg", start_acked=True, end_acked=True, events=tuple(leg))]
+    if bracket is not None:
+        windows.append(ProxyWindow(label="bracket", start_acked=True, end_acked=True,
+                                   events=tuple(bracket)))
+    return ProxyStream(final=True, protocol_error=False, windows=tuple(windows),
+                       outside_events=tuple(outside), allowlist_sha256="6" * 64)
+
+
+_BRACKET_EVENTS = (_DENIED_TOKEN_CONNECT, _event("CONNECT", "ab.chatgpt.com", None, "deny"),
+                   _event("GET", MODEL_HOST, "<other>", "deny"))
+
+
+def _result(kind, **changes):
+    from phase_loop_runtime import seat_jail_qualification as jailq
+    values = dict(
+        kind=kind, status="SUCCESS", timed_out=False, error=None, quiescent=True,
+        model_turn=True, tool_steps=0, subagent_steps=0,
+        stream=_windows_stream(leg=(_ACCOUNT_CHECK, _MODEL)), bridge_exited=True,
+        lookups=None, created=None, lookup_complete=None, watch=_watch(),
+        scan={"scope": "pass", "refresh": "pass"} if kind in CREDENTIAL_KINDS else None,
+        first_jailed_launch_ns=2, bracket=None, issuer=None, delivered_copy_sha256=None,
+        help_sha256=None, help_lists_plugin=None, plugin_validation=None,
+        binding=_binding(kind))
+    if kind == "help":
+        values.update(model_turn=None, tool_steps=None, subagent_steps=None, stream=None,
+                      help_sha256="c" * 64, help_lists_plugin=False)
+    values.update(changes)
+    return jailq.WindowLaunchResult(**values)
+
+
+def _rows_by_role(layout, location):
+    rows = {}
+    for row in layout.rows:
+        if row.location == location:
+            rows.setdefault(row.role, row.row_id)
+    return rows
+
+
+def _context(supplier, **parts):
+    """A complete, passing Codex context: every surface defined by the controls, a clean
+    measured leg with its whole Codex bracket, an expired leg that ends refused_intended,
+    and a board leg bound to the same launch identity."""
+    from phase_loop_runtime import seat_jail_qualification as jailq
+    layout = parts.pop("layout", None) or supplier.plant_layout(plugin_form="nested")
+    tree_rows = tuple(_rows_by_role(layout, "tree").values())
+    runtime_rows = tuple(_rows_by_role(layout, "provider_config").values())
+    controls = parts.pop("controls", None) or (
+        _result("tree_control", watch=_watch(opened=tree_rows)),
+        _result("runtime_control", watch=_watch(opened=runtime_rows)),
+        _result("credentialed_tree_control", watch=_watch(opened=tree_rows)),
+        _result("credentialed_runtime_control", watch=_watch(opened=runtime_rows)))
+    measured = parts.pop("measured", "default")
+    if measured == "default":
+        measured = _result("measured", tool_steps=1, bracket=_full_bracket(supplier),
+                           stream=_windows_stream(leg=(_ACCOUNT_CHECK, _MODEL),
+                                                  bracket=_BRACKET_EVENTS))
+    expired = parts.pop("expired", "default")
+    if expired == "default":
+        expired = _result("expired_copy", status="FAILURE", model_turn=False,
+                          stream=_windows_stream(leg=(_NAMED_DENIAL, _OTHER_DENY)))
+    board = parts.pop("board", "default")
+    if board == "default":
+        board = jailq.BoardLegObservation(
+            watch=_watch(), stream=_windows_stream(leg=(_ACCOUNT_CHECK, _MODEL)),
+            input_sha256=_inputs()["board"], binding=_binding("measured", argv="4" * 64))
+    values = dict(
+        context=supplier.ContextBinding(context_id="c" + "1" * 31, account_label="a" + "2" * 31,
+                                        dependency_subject_sha256=None,
+                                        dependency_projection_sha256=None),
+        layout=layout, help=_result("help"), plugin_validation=None, controls=controls,
+        measured=measured, expired_copy=expired, board=board)
+    values.update(parts)
+    return supplier.ContainmentInputs(**values)
+
+
+def _reasons(reduction, field):
+    return reduction.owner_summary.unavailable_reasons[field]
+
+
+def test_sl6_codex_owns_its_containment_types(codex_supplier):
+    from phase_loop_runtime import seat_jail_qualification as jailq, seat_window_supply as supply
+    assert codex_supplier.ContextBinding is not jailq.ContextBinding
+    assert codex_supplier.ContainmentInputs is not jailq.ContainmentInputs
+    assert codex_supplier.ContextBinding.__module__ == SUPPLIER
+    assert codex_supplier.ContainmentInputs.__module__ == SUPPLIER
+    assert supply.available("codex") is codex_supplier  # every protocol name is supplied
+    with pytest.raises(TypeError):  # Gemini's input type is not Codex's
+        codex_supplier.reduce_containment(jailq.ContainmentInputs(
+            **{name: getattr(_context(codex_supplier), name)
+               for name in ("context", "layout", "help", "plugin_validation", "controls",
+                            "measured", "expired_copy", "board")}))
+
+
+def test_sl6_reducer_is_self_contained(codex_supplier):
+    """OI-1 Step 0: Codex's reducer calls no FIRSTSEAT reducer, definition or binding
+    helper."""
+    source = inspect.getsource(sys.modules[SUPPLIER])
+    reducer = source[source.index("# --- reduction helpers"):]
+    for name in ("reduce_containment", "definition_probe", "_launch_binding_valid",
+                 "_binding_identity", "_expired_copy_state", "_bracket_valid",
+                 "_stream_complete", "_watch_complete", "_credential_event",
+                 "CONTAINMENT_CONTRACT_SHA256", "_BINDING_KEYS", "_VALIDATOR_IMPLEMENTATION",
+                 "_WATCH_IMPLEMENTATION"):
+        assert f"jailq.{name}" not in reducer, name
+
+
+def test_sl6_reducer_passes_a_complete_context_and_the_kit_accepts_it(codex_supplier,
+                                                                     monkeypatch):
+    from phase_loop_runtime import seat_jail_qualification as jailq, seat_window as w
+    reduction = codex_supplier.reduce_containment(_context(codex_supplier))
+    assert dict(reduction.containment) == {
+        "credential_scope": "pass", "refresh_detection": "pass",
+        **dict.fromkeys(_SURFACES, "not_loaded")}, reduction.owner_summary.unavailable_reasons
+    assert reduction.admitted is True and all(reduction.checks.values())
+    # The kit's own acceptance checks (seat_window.run_native_window and the verifier).
+    private, binding = w._json_value(reduction.private), w._json_value(reduction.binding)
+    owner = w._json_value(reduction.owner_summary)
+    assert set(private) == set(w.PRIVATE_FIELDS) and w._private_observation_valid(private)
+    assert w.digest(private) == reduction.observation_sha256
+    assert w._containment_outcomes_valid(w._json_value(reduction.containment),
+                                         codex_supplier.CODEX_WINDOW_DATA)
+    assert set(binding) == set(w.BINDING_FIELDS)
+    assert set(owner) == set(w.OWNER_SUMMARY_FIELDS)
+    assert owner["schema"] == "seat_window_owner_summary.v1"
+    assert type(owner["counted_lookups"]) is dict and owner["counted_lookups"] == {}
+    digests = _allowlist_digests()
+    assert binding["contract_sha256"] == K1_CONTRACT_SHA256 != GEMINI_CONTRACT_SHA256
+    assert binding["production_allowlist_sha256"] == digests["production"]
+    assert binding["refuse_all_allowlist_sha256"] == digests["refuse_all"]
+    assert binding["help_sha256"] == "c" * 64
+    assert (binding["control_argv_sha256"], binding["production_argv_sha256"]) == (
+        _ARGV["tree"], _ARGV["production"])
+    record = {"context_id": binding["context_id"], "account_label": binding["account_label"],
+              "contract": None, "profile_digest": binding["jail_profile_sha256"],
+              "allowlist_digest": binding["production_allowlist_sha256"],
+              "board_input_digest": binding["board_input_sha256"], "vendor": "codex"}
+    monkeypatch.setattr(w, "_record_contract_sha256", lambda record: K1_CONTRACT_SHA256)
+    assert w._binding_valid(binding, record)
+    # Nothing Gemini-shaped is bound.
+    assert binding["watch_sha256"] != jailq._WATCH_IMPLEMENTATION_SHA256
+    assert binding["validator_sha256"] != jailq._VALIDATOR_IMPLEMENTATION_SHA256
+
+
+@pytest.mark.parametrize("kind", ["measured", "expired_copy", "credentialed_tree_control",
+                                  "credentialed_runtime_control"])
+@pytest.mark.parametrize("allowlist", ["refuse_all", "gemini"])
+def test_sl6_reducer_requires_the_production_allowlist(codex_supplier, kind, allowlist):
+    """The production rule set's digest is required on every credentialed launch (the
+    expired leg included, until OI-1's fence edits that one seam)."""
+    digest = _allowlist_digests()[allowlist]
+    context = _context(codex_supplier)
+    if kind == "measured":
+        context = dataclasses.replace(context, measured=dataclasses.replace(
+            context.measured, binding=_binding(kind, allowlist=digest)))
+    elif kind == "expired_copy":
+        context = dataclasses.replace(context, expired_copy=dataclasses.replace(
+            context.expired_copy, binding=_binding(kind, allowlist=digest)))
+    else:
+        context = dataclasses.replace(context, controls=tuple(
+            dataclasses.replace(item, binding=_binding(kind, allowlist=digest))
+            if item.kind == kind else item for item in context.controls))
+    reduction = codex_supplier.reduce_containment(context)
+    assert not any(reduction.checks.values())
+    assert all("binding_mismatch" in _reasons(reduction, name) for name in _FIELDS)
+
+
+@pytest.mark.parametrize("kind", ["help", "tree_control", "runtime_control"])
+def test_sl6_reducer_requires_refuse_all_on_the_none_kinds(codex_supplier, kind):
+    production = _allowlist_digests()["production"]
+    context = _context(codex_supplier)
+    if kind == "help":
+        context = dataclasses.replace(context, help=_result(
+            "help", binding=_binding("help", allowlist=production)))
+    else:
+        context = dataclasses.replace(context, controls=tuple(
+            dataclasses.replace(item, binding=_binding(kind, allowlist=production))
+            if item.kind == kind else item for item in context.controls))
+    reduction = codex_supplier.reduce_containment(context)
+    assert all("binding_mismatch" in _reasons(reduction, name) for name in _FIELDS)
+
+
+def test_sl6_the_expired_leg_binds_production_today(codex_supplier):
+    """The one seam OI-1 edits: today the expired leg's role is ``production``."""
+    assert codex_supplier._allowlist_role("expired_copy") == "production"
+    assert {kind: codex_supplier._allowlist_role(kind) for kind in KINDS} == {
+        **dict.fromkeys(NONE_KINDS, "refuse_all"),
+        **dict.fromkeys(CREDENTIAL_KINDS, "production")}
+
+
+@pytest.mark.parametrize("change", [
+    "image", "stage", "profile", "gemini_profile", "argv_collision", "control_input",
+    "help_digest", "no_help", "board_input", "board_allowlist", "foreign_layout"])
+def test_sl6_reducer_binding_mismatches_fail_closed(codex_supplier, change):
+    from phase_loop_runtime import seat_jail, seat_jail_qualification as jailq
+    context = _context(codex_supplier)
+    measured = context.measured
+    if change == "image":
+        context = dataclasses.replace(context, measured=dataclasses.replace(
+            measured, binding=_binding("measured", image="e" * 64)))
+    elif change == "stage":
+        context = dataclasses.replace(context, measured=dataclasses.replace(
+            measured, binding=dataclasses.replace(measured.binding,
+                                                  stage_manifest_sha256="e" * 64)))
+    elif change in ("profile", "gemini_profile"):
+        profile = "e" * 64 if change == "profile" else seat_jail.jail_profile_digest("gemini")
+        rebind = lambda item: dataclasses.replace(  # noqa: E731
+            item, binding=dataclasses.replace(item.binding, jail_profile_sha256=profile))
+        context = dataclasses.replace(
+            context, help=rebind(context.help), controls=tuple(map(rebind, context.controls)),
+            measured=rebind(measured), expired_copy=rebind(context.expired_copy),
+            board=dataclasses.replace(context.board, binding=dataclasses.replace(
+                context.board.binding, jail_profile_sha256=profile)))
+    elif change == "argv_collision":
+        context = dataclasses.replace(context, controls=tuple(
+            dataclasses.replace(item, binding=dataclasses.replace(
+                item.binding, argv_sha256=_ARGV["production"])) for item in context.controls))
+    elif change == "control_input":
+        context = dataclasses.replace(context, controls=tuple(
+            dataclasses.replace(item, binding=dataclasses.replace(
+                item.binding, input_sha256=_inputs()["measured"]))
+            for item in context.controls))
+    elif change == "help_digest":
+        context = dataclasses.replace(context, help=_result("help", help_sha256=None))
+    elif change == "no_help":
+        context = dataclasses.replace(context, help=None)
+    elif change == "board_input":
+        context = dataclasses.replace(context, board=dataclasses.replace(
+            context.board, input_sha256="e" * 64))
+    elif change == "board_allowlist":
+        context = dataclasses.replace(context, board=dataclasses.replace(
+            context.board, binding=dataclasses.replace(
+                context.board.binding, allowlist_sha256=_allowlist_digests()["refuse_all"])))
+    else:
+        context = dataclasses.replace(context, layout=jailq.plant_layout(plugin_form="nested"))
+    reduction = codex_supplier.reduce_containment(context)
+    assert not any(reduction.checks.values())
+    assert all("binding_mismatch" in _reasons(reduction, name) for name in _FIELDS), change
+
+
+@pytest.mark.parametrize("admission", ["None", ""])
+def test_sl6_reducer_treats_the_none_admission_class_as_no_class(codex_supplier, monkeypatch,
+                                                                 admission):
+    """Review condition: the kit binds ``str(seat.admission_class)``, so a Codex seat with
+    no class binds ``"None"``. The reducer reads that as no class, never as a class value:
+    the record is not admitted even if a class table were to list the string."""
+    context = _context(codex_supplier)
+    rebind = lambda item: dataclasses.replace(  # noqa: E731
+        item, binding=dataclasses.replace(item.binding, admission_class=admission))
+    context = dataclasses.replace(
+        context, help=rebind(context.help), controls=tuple(map(rebind, context.controls)),
+        measured=rebind(context.measured), expired_copy=rebind(context.expired_copy),
+        board=dataclasses.replace(context.board, binding=dataclasses.replace(
+            context.board.binding, admission_class=admission)))
+    monkeypatch.setattr(codex_supplier, "_COUNTED_ADMISSION_CLASSES",
+                        frozenset({"release_qualified", "locally_qualified", admission}))
+    reduction = codex_supplier.reduce_containment(context)
+    assert reduction.admitted is False
+    assert set(reduction.containment.values()) == {"unavailable"}
+    assert all("not_admitted" in _reasons(reduction, name) for name in _FIELDS)
+    assert reduction.binding["admission_class"] == admission  # bound as observed
+
+
+@pytest.mark.parametrize("subject,admitted", [(_IMAGE, True), ("e" * 64, False), (None, False)])
+def test_sl6_reducer_admits_an_executable_dependency_only_on_its_subject(
+        codex_supplier, subject, admitted):
+    context = _context(codex_supplier)
+    rebind = lambda item: dataclasses.replace(  # noqa: E731
+        item, binding=dataclasses.replace(item.binding, admission_class="executable_dependency"))
+    context = dataclasses.replace(
+        context, help=rebind(context.help), controls=tuple(map(rebind, context.controls)),
+        measured=rebind(context.measured), expired_copy=rebind(context.expired_copy),
+        board=dataclasses.replace(context.board, binding=dataclasses.replace(
+            context.board.binding, admission_class="executable_dependency")),
+        context=dataclasses.replace(context.context, dependency_subject_sha256=subject))
+    assert codex_supplier.reduce_containment(context).admitted is admitted
+
+
+_ALLOWED_TOKEN = _event("POST", TOKEN_HOST, TOKEN_PATH, "allow")
+
+
+@pytest.mark.parametrize("where", [
+    "measured_leg", "measured_outside", "measured_bracket", "expired_leg",
+    "measured_tokens_changed", "expired_tokens_changed", "measured_watch", "expired_watch"])
+def test_sl6_refresh_is_detected_by_either_section_10b_arm(codex_supplier, where):
+    """§10.B: refresh via ``tokens_changed`` or an allowed token-endpoint request, giving
+    ``codex_seat_token_refreshed_in_jail``."""
+    context = _context(codex_supplier)
+    measured, expired = context.measured, context.expired_copy
+    if where == "measured_leg":
+        measured = dataclasses.replace(measured, stream=_windows_stream(
+            leg=(_ALLOWED_TOKEN, _MODEL), bracket=_BRACKET_EVENTS))
+    elif where == "measured_outside":
+        measured = dataclasses.replace(measured, stream=_windows_stream(
+            leg=(_MODEL,), bracket=_BRACKET_EVENTS, outside=(_ALLOWED_TOKEN,)))
+    elif where == "measured_bracket":
+        measured = dataclasses.replace(measured, stream=_windows_stream(
+            leg=(_MODEL,), bracket=(*_BRACKET_EVENTS, _ALLOWED_TOKEN)))
+    elif where == "expired_leg":
+        expired = dataclasses.replace(expired, stream=_windows_stream(
+            leg=(_NAMED_DENIAL, _ALLOWED_TOKEN)))
+    elif where.endswith("tokens_changed"):
+        target = measured if where.startswith("measured") else expired
+        target = dataclasses.replace(target, scan={
+            "scope": "pass", "refresh": "codex_seat_token_refreshed_in_jail"})
+        measured, expired = ((target, expired) if where.startswith("measured")
+                             else (measured, target))
+    else:
+        target = measured if where.startswith("measured") else expired
+        target = dataclasses.replace(target, watch=_watch(credential_events=1))
+        measured, expired = ((target, expired) if where.startswith("measured")
+                             else (measured, target))
+    reduction = codex_supplier.reduce_containment(
+        dataclasses.replace(context, measured=measured, expired_copy=expired))
+    assert reduction.containment["refresh_detection"] == "codex_seat_token_refreshed_in_jail"
+    assert reduction.checks["refresh_detection"] is False
+    assert reduction.owner_summary.private_route is True
+
+
+def test_sl6_a_denied_token_request_is_not_a_refresh_but_never_passes(codex_supplier):
+    context = _context(codex_supplier)
+    measured = dataclasses.replace(context.measured, stream=_windows_stream(
+        leg=(_DENIED_TOKEN_CONNECT, _MODEL), bracket=_BRACKET_EVENTS))
+    reduction = codex_supplier.reduce_containment(dataclasses.replace(context, measured=measured))
+    assert reduction.containment["refresh_detection"] == "unavailable"
+    assert "expired_copy_unavailable" in _reasons(reduction, "refresh_detection")
+
+
+@pytest.mark.parametrize("expired_change", ["model_first", "no_denial", "other_host_only",
+                                            "incomplete", "watch"])
+def test_sl6_refresh_passes_only_with_the_expired_control(codex_supplier, expired_change):
+    from phase_loop_runtime.seat_egress_proxy import ProxyStream, ProxyWindow
+    context = _context(codex_supplier)
+    expired = context.expired_copy
+    if expired_change == "model_first":
+        expired = dataclasses.replace(expired, stream=_windows_stream(
+            leg=(_MODEL, _NAMED_DENIAL)))
+    elif expired_change == "no_denial":
+        expired = dataclasses.replace(expired, stream=_windows_stream(leg=(_OTHER_DENY,)))
+    elif expired_change == "other_host_only":
+        expired = dataclasses.replace(expired, stream=_windows_stream(
+            leg=(_event("CONNECT", "ab.chatgpt.com", None, "deny"),)))
+    elif expired_change == "incomplete":
+        expired = dataclasses.replace(expired, stream=ProxyStream(
+            final=True, protocol_error=False, windows=(ProxyWindow(
+                label="leg", start_acked=True, end_acked=False, events=(_NAMED_DENIAL,)),),
+            outside_events=(), allowlist_sha256="6" * 64))
+    else:
+        expired = dataclasses.replace(expired, watch=_watch(overflow=True))
+    reduction = codex_supplier.reduce_containment(dataclasses.replace(
+        context, expired_copy=expired))
+    assert reduction.containment["refresh_detection"] == "unavailable"
+    assert reduction.owner_summary.expired_copy_control == "unavailable"
+
+
+def test_sl6_scope_is_the_measured_copys_and_needs_the_whole_bracket(codex_supplier):
+    context = _context(codex_supplier)
+    excess = dataclasses.replace(context.measured, scan={
+        "scope": "codex_seat_token_scope_excess", "refresh": "pass"})
+    reduction = codex_supplier.reduce_containment(dataclasses.replace(context, measured=excess))
+    assert reduction.containment["credential_scope"] == "codex_seat_token_scope_excess"
+    for bracket, reason in (
+            (None, "bracket_void"),
+            (dataclasses.replace(_full_bracket(codex_supplier), post_refused=False),
+             "bracket_void"),
+            (dataclasses.replace(_full_bracket(codex_supplier), rows=tuple(
+                dataclasses.replace(row, outcome="unavailable", signature=None)
+                if row.row == "codex_refused_paths" else row
+                for row in _full_bracket(codex_supplier).rows)), "bracket_row_unavailable")):
+        measured = dataclasses.replace(context.measured, bracket=bracket)
+        reduction = codex_supplier.reduce_containment(dataclasses.replace(
+            context, measured=measured))
+        assert reduction.containment["credential_scope"] == "unavailable"
+        assert reason in _reasons(reduction, "credential_scope")
+
+
+def test_sl6_geminis_bracket_never_passes_a_codex_context(codex_supplier):
+    from phase_loop_runtime import seat_jail_qualification as jailq
+    context = _context(codex_supplier)
+    gemini = jailq.BracketResult(start=_fence(), end=_fence(), post_refused=True, rows=tuple(
+        jailq.BracketRow(row=name, outcome="refused",
+                         signature=sorted(jailq.BRACKET_SIGNATURES[name])[0])
+        for name in jailq.BRACKET_ROW_NAMES))
+    # Gemini's rows, in Gemini's type or in Codex's, are not Codex's bracket.
+    renamed = codex_supplier.BracketResult(
+        start=_fence(), end=_fence(), post_refused=True, rows=tuple(
+            codex_supplier.BracketRow(row=row.row, outcome=row.outcome,
+                                      signature=row.signature) for row in gemini.rows))
+    for bracket in (gemini, renamed):
+        reduction = codex_supplier.reduce_containment(dataclasses.replace(
+            context, measured=dataclasses.replace(context.measured, bracket=bracket)))
+        assert reduction.containment["credential_scope"] == "unavailable"
+        assert "bracket_void" in _reasons(reduction, "credential_scope")
+        assert reduction.containment["refresh_detection"] == "unavailable"
+
+
+@pytest.mark.parametrize("where,expected", [
+    ("measured_opened", "loaded"), ("board_opened", "loaded"), ("canary", "loaded"),
+    ("runtime_changed", "unavailable"), ("home_changed", "unavailable")])
+def test_sl6_surface_outcomes(codex_supplier, where, expected):
+    context = _context(codex_supplier)
+    layout = context.layout
+    hooks_tree = _rows_by_role(layout, "tree")["hooks"]
+    hooks_runtime = _rows_by_role(layout, "provider_config")["hooks"]
+    measured, board = context.measured, context.board
+    if where == "measured_opened":
+        measured = dataclasses.replace(measured, watch=_watch(opened=(hooks_tree,)))
+    elif where == "board_opened":
+        board = dataclasses.replace(board, watch=_watch(opened=(hooks_tree,)))
+    elif where == "canary":
+        (canary, *_rest) = layout.canary_hosts["mcp_servers"]
+        measured = dataclasses.replace(measured, stream=_windows_stream(
+            leg=(_MODEL, _event("CONNECT", canary, None, "deny")), bracket=_BRACKET_EVENTS))
+    elif where == "runtime_changed":
+        measured = dataclasses.replace(measured, watch=_watch(changed=(hooks_runtime,)))
+    else:
+        measured = dataclasses.replace(measured, watch=_watch(changed=("home:.codex/config.toml",)))
+    reduction = codex_supplier.reduce_containment(dataclasses.replace(
+        context, measured=measured, board=board))
+    surface = "mcp_servers" if where == "canary" else "hooks"
+    if where in ("runtime_changed", "home_changed"):
+        # A change at a defined runtime row is a positive for its own surface; a change at
+        # the home row leaves every other surface unavailable.
+        if where == "home_changed":
+            assert reduction.containment["hooks"] == "unavailable"
+        else:
+            assert reduction.containment["hooks"] == "loaded"
+            assert reduction.containment["mcp_servers"] == "unavailable"
+    else:
+        assert reduction.containment[surface] == expected
+        assert reduction.checks[surface] is False
+
+
+def test_sl6_an_undefined_surface_stays_unavailable(codex_supplier):
+    context = _context(codex_supplier)
+    layout = context.layout
+    hooks = {row.row_id for row in layout.rows if row.role == "hooks"}
+    controls = tuple(dataclasses.replace(item, watch=_watch(opened=tuple(
+        row for row in item.watch.opened_rows if row not in hooks))) for item in context.controls)
+    reduction = codex_supplier.reduce_containment(dataclasses.replace(
+        context, controls=controls))
+    assert reduction.containment["hooks"] == "unavailable"
+    assert "undefined_surface" in _reasons(reduction, "hooks")
+    assert reduction.owner_summary.undefined_surfaces == ("hooks",)
+    assert reduction.containment["mcp_servers"] == "not_loaded"
+
+
+@pytest.mark.parametrize("change,reason", [
+    ("tool_step", "tool_step"), ("token", "token_endpoint_event"),
+    ("credential", "credential_event"), ("watch", "incomplete_watch"),
+    ("status", "launch_error"), ("scan", "incomplete_watch")])
+def test_sl6_definition_probe_voids_a_control(codex_supplier, change, reason):
+    context = _context(codex_supplier)
+    layout = context.layout
+    kind = "credentialed_runtime_control"
+    control = next(item for item in context.controls if item.kind == kind)
+    changed = {
+        "tool_step": dict(tool_steps=1),
+        "token": dict(stream=_windows_stream(leg=(_DENIED_TOKEN_CONNECT, _MODEL))),
+        "credential": dict(watch=_watch(opened=control.watch.opened_rows, credential_events=1)),
+        "watch": dict(watch=_watch(opened=control.watch.opened_rows, sentinel_observed=False)),
+        "status": dict(status="NONE"),
+        "scan": dict(scan=None)}[change]
+    voided = dataclasses.replace(control, **changed)
+    definition = codex_supplier.definition_probe(layout, (voided,))
+    assert (kind, reason) in {(item.kind, item.reason) for item in definition.voided}
+    assert definition.defined_rows == ()
+    assert dict(definition.counted_lookups) == {}  # no trace on a non-Gemini leg
+
+
+def test_sl6_definition_probe_asks_for_credentialed_controls(codex_supplier):
+    context = _context(codex_supplier)
+    none_controls = context.controls[:2]
+    definition = codex_supplier.definition_probe(context.layout, tuple(
+        dataclasses.replace(item, status="NONE") for item in none_controls))
+    assert definition.credentialed_control_required is True
+    assert definition.home_row_baseline == "absent"
+    full = codex_supplier.definition_probe(context.layout, context.controls)
+    assert full.credentialed_control_required is False
+    assert set(full.defined_surfaces) == set(_SURFACES)
+    assert full.home_row_baseline == "no_write_final"
+
+
+def test_sl6_the_watch_arms_on_codexs_paths_and_sees_opens_changes_and_the_credential(
+        codex_supplier, tmp_path):
+    from phase_loop_runtime import seat_codex_credential as cred, seat_jail_qualification as jailq
+    layout = codex_supplier.plant_layout(plugin_form="nested")
+    qi = codex_supplier.build_qualification_input(layout, tmp_path / "inputs")
+    seat = _seat(tmp_path, cred.build_seat_copy(_login()))
+    import shutil
+    paths = codex_supplier.host_path_map(seat, credential=True)
+    shutil.copytree(qi.repo, paths.tree, ignore=shutil.ignore_patterns(".git"))
+    (paths.seat_home / "workspace").mkdir()
+    codex_supplier.seed_runtime_plants(layout, paths)
+    watch = codex_supplier.arm_watch(layout, paths, kind="measured")
+
+    def run(argv, *, env, use_proxy, timeout_s):  # the sentinels, opened on the host
+        path = paths.tree / argv[-1].removeprefix("/seat/tree/")
+        path.read_bytes()
+        return jailq.JailedStep(exit_code=0, timed_out=False, stdout=b"")
+    assert watch.prove_sentinel(run) is True
+    (paths.tree / jailq.WINDOW_READ_PATH).read_text()
+    hooks_tree = _rows_by_role(layout, "tree")["hooks"]
+    (paths.tree / hooks_tree.partition(":")[2]).read_text()
+    hooks_runtime_row = _rows_by_role(layout, "provider_config")["hooks"]
+    target = paths.provider_config / hooks_runtime_row.partition(":")[2]
+    target.write_text("changed\n")
+    (paths.provider_config / "auth.json").write_bytes(b"{}")
+    observation = watch.drain_and_close(quiescent=True)
+    assert observation.sentinel_observed and observation.read_marker_opened
+    assert hooks_tree in observation.opened_rows
+    assert hooks_runtime_row in observation.changed_rows
+    assert observation.credential_path_events >= 1
+    assert not observation.overflow
+    assert set(observation.pre_row_sha256) == {row.row_id for row in layout.rows
+                                               if row.location != "tree"}
+    assert not any("gemini" in row or "agy" in row for row in observation.opened_rows)
+
+
+def test_sl6_the_watch_refuses_a_foreign_layout_or_path_map(codex_supplier, tmp_path):
+    from phase_loop_runtime import seat_codex_credential as cred, seat_jail_qualification as jailq
+    seat = _seat(tmp_path, cred.build_seat_copy(_login()))
+    paths = codex_supplier.host_path_map(seat, credential=True)
+    with pytest.raises(jailq.WatchUnavailable):
+        codex_supplier.arm_watch(jailq.plant_layout(plugin_form="nested"), paths,
+                                 kind="measured")
+    with pytest.raises(jailq.WatchUnavailable):
+        codex_supplier.arm_watch(codex_supplier.plant_layout(plugin_form="nested"),
+                                 SimpleNamespace(tree=tmp_path), kind="measured")
+    with pytest.raises(ValueError):
+        codex_supplier.arm_watch(None, None, kind="plugin_validation")
+    with pytest.raises(jailq.WatchUnavailable):  # its locations are missing
+        codex_supplier.arm_watch(codex_supplier.plant_layout(plugin_form="nested"), paths,
+                                 kind="measured")
+
+
+def test_sl6_f16_help_binds_what_it_printed(codex_supplier, tmp_path, monkeypatch):
+    from phase_loop_runtime import panel_invoker as panel
+    _control_world(monkeypatch, tmp_path, codex_supplier, stdout="usage: plugin\n")
+    result = panel.window_control_launch(_codex_spec("help", tmp_path))
+    assert result.status == "SUCCESS"
+    assert result.help_sha256 == hashlib.sha256(b"usage: plugin\n").hexdigest()
+    assert result.help_lists_plugin is True and result.model_turn is None
+
+
+# --------------------------------------------------------------------------------------
+# Review B2: Codex's bracket, ported from codex-unlisted-endpoint.
+# --------------------------------------------------------------------------------------
+
+_EVIDENCE = (Path(__file__).resolve().parents[2] / "plans" / "evidence" / "seat-codex"
+             / "allowlist-probes.json")
+
+
+class _BracketRun:
+    """A recording jailed run: each step gets the next scripted result."""
+
+    def __init__(self, outcomes):
+        self.outcomes, self.calls = list(outcomes), []
+
+    def __call__(self, argv, *, env, use_proxy, timeout_s):
+        self.calls.append((tuple(argv), dict(env), use_proxy))
+        return self.outcomes.pop(0)
+
+
+def _step(exit_code, stdout=b""):
+    from phase_loop_runtime import seat_jail_qualification as jailq
+    return jailq.JailedStep(exit_code=exit_code, timed_out=False, stdout=stdout)
+
+
+_CONNECT_403 = _step(56, b"\nPHASE_LOOP_CURL 000 403\n")
+_FILTER_403 = _step(0, b"HTTP/1.1 403 Forbidden\r\nX-Proxy-Error: blocked-by-sandbox-runtime"
+                       b"\r\n\r\n\nPHASE_LOOP_CURL 403 200\n")
+_REPLY_200 = _step(0, b"HTTP/1.1 200 OK\r\n\r\n\nPHASE_LOOP_CURL 200 200\n")
+_REFUSED_RUN = (
+    _CONNECT_403,                              # token POST
+    _CONNECT_403, _CONNECT_403,                # refused hosts
+    _FILTER_403, _FILTER_403, _FILTER_403,     # refused paths
+    _FILTER_403, _FILTER_403, _FILTER_403,     # the three tunnel rows
+    _step(0, b"UPSTREAM_BYTES 0 0\n"),         # fail-closed front
+    _step(6), _step(7),                        # direct without the proxy
+)
+
+
+def _fenced(monkeypatch, acknowledged=True):
+    from phase_loop_runtime import seat_egress_proxy
+    fences = []
+    monkeypatch.setattr(seat_egress_proxy, "fence", lambda proxy, marker, window: (
+        fences.append((marker, window)) or _fence(acknowledged)))
+    return fences
+
+
+def _urls(calls):
+    return [next(part for part in argv if part.startswith("https://")) for argv, _env, _p
+            in calls if argv[0] == "/usr/bin/curl"]
+
+
+def test_sl6_codex_brings_its_own_bracket(codex_supplier, monkeypatch):
+    """Review B2: Codex's bracket is its own (not FIRSTSEAT's Gemini steps) and probes the
+    Codex hosts and paths of codex-unlisted-endpoint."""
+    from phase_loop_runtime import seat_jail_qualification as jailq
+    assert codex_supplier.bracket_steps() is codex_supplier.run_bracket
+    assert codex_supplier.bracket_steps() is not jailq.run_bracket
+    fences = _fenced(monkeypatch)
+    run = _BracketRun(_REFUSED_RUN)
+    result = codex_supplier.bracket_steps()("proxy", run)
+    assert fences == [("start", "bracket"), ("end", "bracket")]
+    assert result.post_refused is True
+    assert [row.row for row in result.rows] == list(codex_supplier.BRACKET_ROW_NAMES) == [
+        "codex_refused_hosts", "codex_refused_paths", "codex_tunnel_inner_host",
+        "codex_tunnel_inner_sni_and_host", "codex_tunnel_inner_sni_only",
+        "codex_fail_closed_front", "codex_direct_without_proxy"]
+    assert [(row.outcome, row.signature) for row in result.rows] == [
+        ("refused", "proxy_connect_refused"), ("refused", "request_filter_refused"),
+        ("refused", "request_filter_refused"), ("refused", "request_filter_refused"),
+        ("refused", "request_filter_refused"), ("refused", "no_upstream_bytes"),
+        ("refused", "resolve_refused")]
+    assert _urls(run.calls) == [
+        "https://auth.openai.com/oauth/token",
+        "https://ab.chatgpt.com/otlp/v1/metrics", "https://seat-egress-unlisted.invalid/",
+        "https://chatgpt.com/backend-api/codex/models",
+        "https://chatgpt.com/backend-api/wham/settings/user",
+        "https://chatgpt.com/backend-api/codex/analytics-events/events",
+        "https://chatgpt.com/backend-api/codex/responses",
+        "https://ab.chatgpt.com/backend-api/codex/responses",
+        "https://ab.chatgpt.com/backend-api/codex/responses",
+        "https://1.1.1.1/", "https://chatgpt.com/"]
+    argvs = [argv for argv, _env, _proxy in run.calls]
+    joined = "\n".join(" ".join(argv) for argv in argvs)
+    assert "googleapis" not in joined and ".gemini" not in joined
+    assert argvs[0][-3:] == ("--request", "POST", "https://auth.openai.com/oauth/token")
+    assert ("--header", "Host: ab.chatgpt.com") == argvs[6][-3:-1]
+    assert "ab.chatgpt.com:443:chatgpt.com:443" in argvs[7] and "Host: chatgpt.com" in argvs[8]
+    front = argvs[9]
+    assert front[:3] == ("/usr/bin/python3", "-I", "-c")
+    assert 'allowed = b"chatgpt.com"' in front[3] and 'sni = b"ab.chatgpt.com"' in front[3]
+    # Every proxied step runs with the proxy; the direct steps without it; one clean env.
+    assert [use_proxy for _argv, _env, use_proxy in run.calls] == [True] * 10 + [False] * 2
+    assert all(env == dict(jailq.BRACKET_STEP_ENV) for _argv, env, _p in run.calls)
+    assert all(argv[1] == "-q" for argv in argvs if argv[0] == "/usr/bin/curl")
+
+
+def test_sl6_codex_bracket_rows_are_codex_unlisted_endpoints(codex_supplier):
+    """Every refused decision of codex-unlisted-endpoint is probed (the token host by the
+    token POST), with its method, host and path, and nothing the evidence allows is."""
+    evidence = json.loads(_EVIDENCE.read_text())
+    assert evidence["evidence_id"] == "codex-unlisted-endpoint"
+    targets = {(method, url) for method, url in (*codex_supplier.REFUSED_HOST_TARGETS,
+                                                 *codex_supplier.REFUSED_PATH_TARGETS)}
+    for decision in evidence["decisions"]:
+        if decision["decision"] == "allow":
+            assert not any(url == f"https://{decision['host']}{decision['path']}"
+                           for _m, url in targets)
+        elif decision["host"] == TOKEN_HOST:
+            assert (codex_supplier.TOKEN_HOST, codex_supplier.TOKEN_PATH) == (
+                TOKEN_HOST, TOKEN_PATH)
+        else:
+            assert (decision["method"], f"https://{decision['host']}{decision['path']}") \
+                in targets, decision
+    from phase_loop_runtime import seat_egress_proxy
+    refused = set(seat_egress_proxy.allowlist("codex")["measured_and_refused"])
+    assert {url.split("/")[2] for _m, url in codex_supplier.REFUSED_HOST_TARGETS} == (
+        refused - {TOKEN_HOST}) | {"seat-egress-unlisted.invalid"}
+
+
+@pytest.mark.parametrize("index,row", [
+    (1, "codex_refused_hosts"), (3, "codex_refused_paths"), (6, "codex_tunnel_inner_host"),
+    (9, "codex_fail_closed_front"), (10, "codex_direct_without_proxy")])
+def test_sl6_codex_bracket_row_without_its_refusal_is_unavailable(codex_supplier, monkeypatch,
+                                                                  index, row):
+    _fenced(monkeypatch)
+    outcomes = list(_REFUSED_RUN)
+    outcomes[index] = _REPLY_200 if index < 9 else _step(0, b"UPSTREAM_BYTES 12 0\n") \
+        if index == 9 else _step(0)
+    result = codex_supplier.run_bracket("proxy", _BracketRun(outcomes))
+    rows = {item.row: item for item in result.rows}
+    assert (rows[row].outcome, rows[row].signature) == ("unavailable", None)
+    assert all(item.outcome == "refused" for name, item in rows.items() if name != row)
+
+
+def test_sl6_codex_bracket_token_post_counts_only_on_the_connect_refusal(codex_supplier,
+                                                                        monkeypatch):
+    _fenced(monkeypatch)
+    outcomes = list(_REFUSED_RUN)
+    outcomes[0] = _FILTER_403  # a tunnelled token request is not the CONNECT refusal
+    assert codex_supplier.run_bracket("proxy", _BracketRun(outcomes)).post_refused is False
+
+
+def test_sl6_codex_bracket_runs_nothing_without_its_start_fence(codex_supplier, monkeypatch):
+    fences = _fenced(monkeypatch, acknowledged=False)
+    run = _BracketRun(())
+    result = codex_supplier.run_bracket("proxy", run)
+    assert run.calls == [] and fences == [("start", "bracket")]
+    assert {row.outcome for row in result.rows} == {"unavailable"}
+    assert result.post_refused is False
