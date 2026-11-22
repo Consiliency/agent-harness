@@ -22,14 +22,23 @@ import pytest
 from test_seat_window_supply_codex import (  # noqa: F401 - the shared K-1 harness
     CREDENTIAL_KINDS, HOLD_CODE, K1_CONTRACT_SHA256, NONE_KINDS, TOKEN_HOST, _ACCOUNT_CHECK,
     _COMPLETED, _FIELDS, _FAILED, _MODEL, _NAMED_DENIAL, _OTHER_DENY, _allowlist_digests,
-    _binding, _context, _control_world, _observation, _reasons, _stream, codex_supplier,
+    _binding, _context, _control_world, _observation, _reasons, _stream,
 )
 from test_seat_window_vendor_neutral import (  # noqa: F401
-    _codex_open_stubs, _codex_spec, _row_world, _watch_stub, fixture_vendor,
+    _codex_open_stubs, _codex_spec, _row_world, _watch_stub,
 )
-from test_seat_egress_allowlist_codex import (  # noqa: F401 - the real-proxy fixture
-    _exchange, _http, codex_front,
+from test_seat_egress_allowlist_codex import (  # noqa: F401
+    _exchange, _http,
 )
+import test_seat_egress_allowlist_codex as _egress
+import test_seat_window_supply_codex as _k1
+import test_seat_window_vendor_neutral as _neutral
+
+# Shared fixtures, rebound by assignment so pytest collects them here. A
+# parameter shadowing an import is ruff F811; shadowing an assignment is not.
+codex_supplier = _k1.codex_supplier  # the shared K-1 harness
+fixture_vendor = _neutral.fixture_vendor
+codex_front = _egress.codex_front  # the real-proxy fixture
 
 FENCE = "refuse_all"
 REPO = Path(__file__).resolve().parents[2]
