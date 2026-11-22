@@ -231,6 +231,7 @@ markers = [
     "quarantine(reason): known flake tracked by an OPEN issue; deselected on pull-request CI only (agent-harness#1029)",
     "host_seat_credentials: live jailed-seat test that reads the host's Claude login and seat-jail state (agent-harness#1132)",
     "real_seat_caps: test exercises the real per-seat caps readiness and launch boundary",
+    "jevdrill_installed: test needs an installed JEV Drill (JEVDRILL_TEST_CLI or JEVDRILL_TEST_PYTHON); skipped when neither is set",
 ]
 
 [tool.setuptools.data-files]

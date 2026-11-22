@@ -181,7 +181,12 @@ def install(path, *, fail=False, hashes=(), native_inference_hashes=()):
                 for block in iter(lambda: source.read(1024 * 1024), b""):
                     digest.update(block)
             hashes.add(digest.hexdigest())
-    descriptor = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    # JEVHOST S5 [B5]: each POSIX-only part is guarded by ``os.name == "posix"`` so the
+    # harness configures on native Windows; POSIX runs exactly the code it ran before.
+    flags = os.O_CREAT | os.O_APPEND | os.O_WRONLY
+    if os.name == "posix":
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags, 0o600)
     closed = False
     native_inference_hashes = frozenset(native_inference_hashes)
     image_cache = {}
@@ -198,6 +203,8 @@ def install(path, *, fail=False, hashes=(), native_inference_hashes=()):
                        if word in {'--ro-bind', '--ro-bind-data'})
         for source in sources:
             if source.isdecimal():
+                if os.name != "posix":
+                    continue
                 source = '/proc/self/fd/' + source
             try:
                 info = os.stat(source)
@@ -269,13 +276,14 @@ def install(path, *, fail=False, hashes=(), native_inference_hashes=()):
             return original(*args, **kwargs)
         return audited
 
-    import _posixsubprocess
-    import pty
+    if os.name == "posix":
+        import _posixsubprocess
+        import pty
 
-    _posixsubprocess.fork_exec = wrap(_posixsubprocess.fork_exec, "seat_test.fork_exec")
-    os.fork = wrap(os.fork, "seat_test.fork")
-    os.forkpty = wrap(os.forkpty, "seat_test.forkpty")
-    pty.fork = wrap(pty.fork, "seat_test.pty_fork")
+        _posixsubprocess.fork_exec = wrap(_posixsubprocess.fork_exec, "seat_test.fork_exec")
+        os.fork = wrap(os.fork, "seat_test.fork")
+        os.forkpty = wrap(os.forkpty, "seat_test.forkpty")
+        pty.fork = wrap(pty.fork, "seat_test.pty_fork")
 
     def close():
         nonlocal closed

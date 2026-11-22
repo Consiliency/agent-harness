@@ -547,6 +547,7 @@ def pytest_configure(config):
         "markers",
         "dotfiles_integration: test requires a dotfiles fleet tree (skipped standalone)",
     )
+    config.addinivalue_line("markers", _JEVDRILL_INSTALLED_MARKER_LINE)
 
     # Consiliency/agent-harness#378: abort collection with ONE actionable line if
     # the installed consiliency-contract violates this package's declared floor.
@@ -575,6 +576,57 @@ def pytest_configure(config):
     config.stash[CONTRACT_FLOOR_PREFLIGHT_RAN] = True
 
 
+# JEVHOST §6: the installed-JEV tests. They are the users of ``installed_discovery``
+# (tests/test_jevdrill_discovery.py) and the real-CLI route test below. Each carries the
+# ``jevdrill_installed`` marker per test, and only this hook may skip one: only when
+# neither variable is set. The required suite installs no JEV Drill.
+_JEVDRILL_INSTALLED_MARKER_LINE = (
+    "jevdrill_installed: test needs an installed JEV Drill (JEVDRILL_TEST_CLI or "
+    "JEVDRILL_TEST_PYTHON); skipped when neither is set"
+)
+JEVDRILL_INSTALLED_ENV = ("JEVDRILL_TEST_CLI", "JEVDRILL_TEST_PYTHON")
+JEVDRILL_INSTALLED_SKIP_REASON = (
+    "jevdrill_installed: neither JEVDRILL_TEST_CLI nor JEVDRILL_TEST_PYTHON is set"
+)
+_JEVDRILL_INSTALLED_FIXTURE = "installed_discovery"
+_JEVDRILL_ROUTE_TEST = ("test_jevdrill_adapter.py", "test_real_jevdrill_cli_route_and_durable_reports")
+
+
+def _is_jevdrill_route_test(item) -> bool:
+    path = getattr(item, "path", None)
+    name = getattr(item, "originalname", None) or getattr(item, "name", None)
+    return path is not None and (Path(path).name, name) == _JEVDRILL_ROUTE_TEST
+
+
+def _apply_jevdrill_installed_rules(items) -> None:
+    """Both collection errors of JEVHOST §6, then the one skip rule."""
+    unmarked, stray = [], []
+    for item in items:
+        get_marker = getattr(item, "get_closest_marker", None)
+        if get_marker is None:
+            continue
+        marked = get_marker("jevdrill_installed") is not None
+        uses_fixture = _JEVDRILL_INSTALLED_FIXTURE in getattr(item, "fixturenames", ())
+        if uses_fixture and not marked:
+            unmarked.append(item.nodeid)
+        elif marked and not uses_fixture and not _is_jevdrill_route_test(item):
+            stray.append(item.nodeid)
+    if unmarked or stray:
+        lines = ["jevdrill_installed collection error (JEVHOST §6):"]
+        lines += [f"  {nodeid}: uses installed_discovery without the jevdrill_installed marker"
+                  for nodeid in unmarked]
+        lines += [f"  {nodeid}: carries jevdrill_installed but does not use installed_discovery "
+                  "and is not the route test" for nodeid in stray]
+        raise pytest.UsageError("\n".join(lines))
+    if any(os.environ.get(name) is not None for name in JEVDRILL_INSTALLED_ENV):
+        return
+    skip = pytest.mark.skip(reason=JEVDRILL_INSTALLED_SKIP_REASON)
+    for item in items:
+        get_marker = getattr(item, "get_closest_marker", None)
+        if get_marker is not None and get_marker("jevdrill_installed") is not None:
+            item.add_marker(skip)
+
+
 def pytest_collection_modifyitems(config, items):
     """TESTDECOUPLE SL-0: skip ``dotfiles_integration``-marked items when no
     dotfiles fleet tree is reachable (the extracted ``agent-harness`` standalone
@@ -584,7 +636,10 @@ def pytest_collection_modifyitems(config, items):
     paths. Integration modules that read dotfiles paths at *import* time carry an
     additional module-level ``pytest.skip(..., allow_module_level=True)`` guard
     (SL-1), because markers are only consulted after a module is imported.
+
+    JEVHOST §6: the ``jevdrill_installed`` rules run first, over every collected item.
     """
+    _apply_jevdrill_installed_rules(items)
     if not dotfiles_tree_present():
         skip_marker = pytest.mark.skip(reason="requires dotfiles tree (dotfiles_integration)")
         for item in items:
