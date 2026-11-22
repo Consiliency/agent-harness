@@ -21,6 +21,10 @@
       "status": "advisory"
     },
     {
+      "path": "specs/phase-plans-jevhost-v1.md",
+      "status": "advisory"
+    },
+    {
       "path": "specs/phase-plans-seats-v1.md",
       "status": "superseded"
     },
