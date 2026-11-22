@@ -182,6 +182,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- `phase_loop_runtime.provider_tree_proof` imports on native Windows
+  (Consiliency/agent-harness#2086, JEVHOST contract S5). Before, the module computed its
+  pidfd readiness mask from `select.POLL*` at import, and Windows' `select` has no
+  `poll`. That blocked importing `panel_invoker`, and through it `fab_gate`, `closeout`
+  and `runner`. The mask now keeps the same POSIX value and is `None` where `select.poll`
+  is absent. There, every witness read fails closed: the proof becomes `UNKNOWN`
+  (`poll_unavailable`) and never `PROVEN`. POSIX behaviour is unchanged. Pins: only the
+  whole-file SDK proof binding of `provider_tree_proof.py` moves. No SDK proof region,
+  admission, default, decision record or jail profile digest moves.
+
 - The Codex board-composition probe (`codex login status`) now reads the login that
   `$CODEX_HOME` names, as the CLI and the seat's admission gate do
   (Consiliency/agent-harness#2078). Before, `seat_profile` copied `auth.json` from
