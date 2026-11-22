@@ -833,3 +833,20 @@ def test_live_jail_d_the_after_check_through_the_real_nsenter_path(tmp_path, mon
     assert before is None
     assert after == "grok_seat_token_refreshed_in_jail"
     assert missing == "grok_seat_token_refreshed_in_jail"
+
+
+def test_the_seat_and_probe_directories_are_private_under_a_permissive_umask(leg):
+    """Hosted runners use umask 022: every directory the launch site creates for the stager
+    (the seat directory and the probe jail's) is 0700 whatever the umask, so the stager's
+    privacy check passes without being relaxed."""
+    previous = os.umask(0o022)
+    try:
+        seat = leg.prepare()
+    finally:
+        os.umask(previous)
+    try:
+        for directory in (seat.seat.seat_dir, seat.seat.seat_dir / pi._JAIL_PROBE_DIRNAME):
+            assert os.stat(directory).st_mode & 0o777 == 0o700, directory
+    finally:
+        pi._cleanup_jailed_seat(seat.seat)
+        pi._remove_grok_staged(seat.seat.seat_dir)

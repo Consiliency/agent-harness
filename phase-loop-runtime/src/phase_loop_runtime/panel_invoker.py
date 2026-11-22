@@ -14341,7 +14341,10 @@ def _prepare_jailed_grok(
             jail = replace(jail, process_owner=surface.measurement_owner(jail))
             jails[0] = jail
         probe_dir = seat_dir / _JAIL_PROBE_DIRNAME
-        (probe_dir / _seat_jail.HOST_TREE_DIRNAME).mkdir(mode=0o700, parents=True)
+        # Each level explicitly 0700: an implicit parent would take the umask's mode, and
+        # the stager refuses a review directory that is not private.
+        probe_dir.mkdir(mode=0o700)
+        (probe_dir / _seat_jail.HOST_TREE_DIRNAME).mkdir(mode=0o700)
         shape = grok.qualification_shape(probe_dir)
         probe = _build_jail_with_owned_inputs(
             "grok", probe_dir, executable, artifact=b"", instructions=b"",
