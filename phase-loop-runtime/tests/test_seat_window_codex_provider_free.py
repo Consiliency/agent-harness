@@ -631,6 +631,75 @@ def test_k1_t7_every_model_request_carries_the_installed_bearer(count, digests, 
     assert model_bearers_hold(count, digests, "b" * 64) is expected
 
 
+#: A faithful synthetic Codex 0.167.0 Responses request, as the production provider sends it
+#: with ChatGPT auth: ``Content-Encoding: zstd`` (tagged source ``rust-v0.167.0``:
+#: ``core/src/client.rs`` ``responses_request_compression``; the ``enable_request_compression``
+#: feature is Stable and on by default, and applies to the built-in OpenAI provider only, so
+#: the CODEX harness's custom fixture provider never saw it). One zstd frame, level 19.
+_ZSTD_RESPONSES_REQUEST = base64.b64decode(
+    "KLUv/QRodQUA0kwjF3CtDnBmygK2IQwWAdYRoKrFoKlEAACes5hzTi+O6caz1cOni7w5nnLU79vSBZ3spFpBpkh8"
+    "4uTErdYeYjjOmWjlt+Wc7B5bxEklOu+tUzGLaeHXBc4skKwPVk7e52u4r3uIk/VRWvnO02XF+GblQ2gdEcoroWNO"
+    "l7rKbV03Ovkq92FKsHCxsvPkNUcBCwBMDTQhAWgedBVOUBak2kJXnFVafIUtTvFtZqk9KBM94g==")
+
+
+def _responder_without_a_server():
+    """The run's responder class (SL-6's recorder over the consumed CODEX responder), built
+    without its TLS server so a request can be fed through its real body and reply code."""
+    import threading
+    from fixtures.codex_fixture_provider import CodexFixtureProvider
+    responder = object.__new__(type("Responder", (_BearerRecorder, CodexFixtureProvider), {}))
+    responder._lock, responder._local = threading.Lock(), threading.local()
+    responder.bodies, responder.tool_outputs, responder.problems = [], [], []
+    responder.bearers, responder.auth_records = [], []
+    responder.command = "cat /seat/tree/window-read.txt"
+    return responder
+
+
+class _Sink:
+    def __init__(self):
+        self.sent = b""
+
+    def sendall(self, data):
+        self.sent += data
+
+    def recv(self, _n):
+        return b""
+
+
+def test_k1_t7_the_responder_answers_a_zstd_compressed_model_request():
+    """Run 4's responder_problem, red first: 0.167.0's production model request is zstd
+    compressed, and the consumed responder answered it 404 {}. Decoded, it is answered 200
+    with the scripted tool call, and nothing is recorded as a problem."""
+    if zstd_decoder() is None:
+        pytest.skip("no zstd decoder on this host")
+    responder, sink = _responder_without_a_server(), _Sink()
+    headers = {"content-encoding": "zstd", "authorization": "Bearer tok",
+               "content-length": str(len(_ZSTD_RESPONSES_REQUEST))}
+    responder._drain_body(sink, headers, _ZSTD_RESPONSES_REQUEST)
+    responder._respond(sink, "POST", "/backend-api/codex/responses")
+    assert responder.problems == []
+    assert sink.sent.startswith(b"HTTP/1.1 200 OK"), sink.sent[:80]
+    assert b"shell_command" in sink.sent and b"response.completed" in sink.sent
+    assert json.loads(responder.bodies[0])["model"] == "gpt-fixture"
+
+
+def test_k1_t7_an_identity_body_is_unchanged_and_an_unknown_encoding_is_a_problem():
+    responder, sink = _responder_without_a_server(), _Sink()
+    body = json.dumps({"model": "m", "input": [], "tools": [{"name": "shell_command"}]}).encode()
+    responder._drain_body(sink, {"content-length": str(len(body))}, body)
+    responder._respond(sink, "POST", "/backend-api/codex/responses")
+    assert responder.problems == [] and sink.sent.startswith(b"HTTP/1.1 200 OK")
+    responder, sink = _responder_without_a_server(), _Sink()
+    responder._drain_body(sink, {"content-encoding": "br", "content-length": "3"}, b"abc")
+    assert responder.problems and "content-encoding" in responder.problems[0]
+
+
+def test_k1_t7_responder_problems_reach_the_evidence():
+    """A future responder failure is diagnosable: the evidence keeps its problem list."""
+    assert responder_problems_for_evidence(["fixture shell tool unavailable", "x" * 900]) == [
+        "fixture shell tool unavailable", "x" * 500]
+
+
 @pytest.fixture
 def codex_upstream(request):
     """The provider-free loopback harness of ``test_seat_codex_provider_free``: port-443
