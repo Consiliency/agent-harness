@@ -43,15 +43,25 @@ if os.environ.get("PHASE_LOOP_REQUIRE_SEAT_OWNER") == "1":
     os.environ.setdefault("PHASE_LOOP_LAUNCH_AUDIT_PATH", str(Path.cwd() / "seat-launch-audit.jsonl"))
     os.environ["PHASE_LOOP_LAUNCH_AUDIT_FAIL"] = "1"
 
-import _scratch_audit_hook
+#: JEVHOST [B5]: ``panel_invoker`` cannot be imported on native Windows (its import chain
+#: reaches POSIX-only module-level code), so every conftest use of it is POSIX-only. That
+#: includes the scratch audit hook, which derives its agent-CLI set from it at import.
+#: On Windows the launch audit hook (``pytest_configure``) stays active with ``fail=True``.
+_PANEL_INVOKER_HOST = os.name == "posix"
 
-# agent-harness#1147: every agent-CLI spawn the RUNTIME makes, by any API, must carry the
-# scratch decision's marker. Enforced at runtime by an audit hook, not by reading source.
-_scratch_audit_hook.install()
-_scratch_audit_hook.enabled = True
-_scratch_audit_dir = tempfile.mkdtemp(prefix="pl-scratch-audit-")
+if _PANEL_INVOKER_HOST:
+    import _scratch_audit_hook
+
+    # agent-harness#1147: every agent-CLI spawn the RUNTIME makes, by any API, must carry the
+    # scratch decision's marker. Enforced at runtime by an audit hook, not by reading source.
+    _scratch_audit_hook.install()
+    _scratch_audit_hook.enabled = True
+    _scratch_audit_dir = tempfile.mkdtemp(prefix="pl-scratch-audit-")
+    _scratch_audit_hook.log_path = os.path.join(_scratch_audit_dir, "violations.log")
+else:
+    _scratch_audit_hook = None
+    _scratch_audit_dir = None
 _scratch_audit_pid = os.getpid()
-_scratch_audit_hook.log_path = os.path.join(_scratch_audit_dir, "violations.log")
 
 
 class _CapturedLaunch:
@@ -96,7 +106,7 @@ def _carries_a_proof(process) -> bool:
 def _cleanup_scratch_audit():
     # Each xdist worker owns its directory. Forked children share the log but must
     # not remove their parent's directory when they exit.
-    if os.getpid() == _scratch_audit_pid:
+    if _scratch_audit_hook is not None and os.getpid() == _scratch_audit_pid:
         _scratch_audit_hook.log_path = None
         shutil.rmtree(_scratch_audit_dir, ignore_errors=True)
 
@@ -111,6 +121,9 @@ def pytest_unconfigure(config):
 
 @pytest.fixture(autouse=True)
 def _every_agent_spawn_has_a_scratch_decision():
+    if _scratch_audit_hook is None:
+        yield
+        return
     _scratch_audit_hook.drain()
     yield
     found = _scratch_audit_hook.drain()
@@ -312,6 +325,8 @@ def _no_long_real_gemini_login_wait(monkeypatch):
     more than 30 s to go fails here instead of sleeping; tests use a login about to expire or
     replace the sleep. A test of the sleep's cancellation takes the unguarded function as
     ``_gemini_login_sleep.real``."""
+    if not _PANEL_INVOKER_HOST:
+        return
     from phase_loop_runtime import panel_invoker
 
     real = panel_invoker._gemini_login_sleep
@@ -413,6 +428,8 @@ def _claude_sdk_route_is_provider_free(request, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _isolate_implicit_review_authority(monkeypatch):
+    if not _PANEL_INVOKER_HOST:
+        return
     from phase_loop_runtime import panel_invoker
 
     real_check = panel_invoker._govlean_authority_switched
@@ -523,7 +540,13 @@ def pytest_configure(config):
     carry pyproject.toml, so the ini registration is absent and an unregistered
     marker would emit PytestUnknownMarkWarning)."""
     from launch_audit_hook import install as install_launch_audit
-    from phase_loop_runtime.panel_invoker import _recorded_provider_hashes
+
+    if _PANEL_INVOKER_HOST:
+        from phase_loop_runtime.panel_invoker import _recorded_provider_hashes
+    else:
+        # JEVHOST [B5]: no recorded hashes, so no installed inference binary is exempt.
+        def _recorded_provider_hashes():
+            return ()
 
     audit_path = os.environ.get("PHASE_LOOP_LAUNCH_AUDIT_PATH")
     if audit_path is None:
