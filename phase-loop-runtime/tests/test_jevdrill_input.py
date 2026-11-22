@@ -13,6 +13,11 @@ from phase_loop_runtime.observability import merge_launch_metadata, read_launch_
 from test_jevdrill_adapter import adapter_fixture
 
 
+def captures():
+    """Evaluate the launcher's own manifest-platform condition at test time."""
+    return launcher.sys.platform.startswith("linux")
+
+
 def component(data):
     return {"byte_count": len(data), "sha256": hashlib.sha256(data).hexdigest()}
 
@@ -49,6 +54,15 @@ def test_manifest_matches_child_bytes_and_preserves_context(tmp_path, schema):
     received = json.loads(result.output)
     manifest = result.executor_input_manifest
     assert result.returncode == 0 and result.codex_turn_completion["completed"]
+    if not captures():
+        # Off Linux no manifest is claimed; the child still gets the resolved bytes.
+        assert manifest is None
+        assert "executor_input_manifest" not in result.event_metadata()
+        assert received["prompt"] == component(spec.prompt_bundle.render_prompt().encode("utf-8"))
+        assert result.context_sha256 == spec.prompt_bundle.context_sha256()
+        assert ("output_schema" in received) is schema
+        assert not (tmp_path / "run/codex-output-schema.json").exists()
+        return
     assert manifest["prompt"] == received["prompt"]
     assert manifest["prompt"] == component(spec.prompt_bundle.render_prompt().encode("utf-8"))
     assert manifest["prompt"]["byte_count"] != len(spec.prompt_bundle.render_prompt())
@@ -72,7 +86,11 @@ def test_delivery_modes_use_the_resolved_payload(tmp_path, mode):
     spec = replace(spec, delivery_mode=mode)
     spec = replace(spec, command=[*spec.command[:-1], spec.delivery_payload()])
     result = launcher.launch_with_spec(spec, codex_input_capture=True)
-    assert result.executor_input_manifest["prompt"] == json.loads(result.output)["prompt"]
+    if captures():
+        assert result.executor_input_manifest["prompt"] == json.loads(result.output)["prompt"]
+    else:
+        assert result.returncode == 0 and result.executor_input_manifest is None
+        assert json.loads(result.output)["prompt"] == component(spec.delivery_payload().encode("utf-8"))
 
 
 def test_external_schema_is_not_read_for_accounting(tmp_path, monkeypatch):
@@ -82,6 +100,9 @@ def test_external_schema_is_not_read_for_accounting(tmp_path, monkeypatch):
     monkeypatch.setattr(launcher.Path, "read_bytes", lambda path: reads.append(path))
     manifest = launcher._codex_executor_input_manifest(spec, spec.command, spec.delivery_payload())
     assert not reads
+    if not captures():
+        assert manifest is None
+        return
     assert manifest["output_schema"] is None
     assert manifest["output_schema_status"] == "unknown"
 
@@ -94,7 +115,10 @@ def test_unreadable_owned_schema_stays_unknown(tmp_path, monkeypatch):
         raise OSError("synthetic read failure")
     monkeypatch.setattr(launcher.Path, "read_bytes", fail)
     manifest = launcher._codex_executor_input_manifest(spec, spec.command, spec.delivery_payload())
-    assert manifest["output_schema"] is None and manifest["output_schema_status"] == "unknown"
+    if captures():
+        assert manifest["output_schema"] is None and manifest["output_schema_status"] == "unknown"
+    else:
+        assert manifest is None
 
 
 @pytest.mark.parametrize("case", ["ordinary", "dry", "darwin", "resume", "fork", "context_file", "mismatch", "other"])
@@ -127,8 +151,11 @@ def test_pre_dispatch_timeout_never_claims_provider_receipt(tmp_path, monkeypatc
     monkeypatch.setattr(launcher, "launch", forbidden)
     result = launcher.launch_with_spec(spec, codex_input_capture=True)
     assert result.timed_out
-    assert result.executor_input_manifest["scope"] == "prepared_submission"
-    assert result.executor_input_manifest["provider_receipt"] == "unknown"
+    if captures():
+        assert result.executor_input_manifest["scope"] == "prepared_submission"
+        assert result.executor_input_manifest["provider_receipt"] == "unknown"
+    else:
+        assert result.returncode == 124 and result.executor_input_manifest is None
 
 
 def test_adapter_requests_capture_and_preserves_manifest(tmp_path):

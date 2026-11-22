@@ -6,7 +6,7 @@ from dataclasses import replace
 import pytest
 
 from phase_loop_runtime import launcher
-from test_jevdrill_usage import records, synthetic_spec
+from test_jevdrill_usage import DISABLED, captures, records, synthetic_spec
 
 
 @pytest.mark.parametrize("line,reason", [
@@ -67,7 +67,10 @@ def test_zero_defaults_and_missing_terminal_have_distinct_unknown_reasons():
 def test_real_launch_preserves_diagnostics_and_enrichment(tmp_path, monkeypatch):
     spec = synthetic_spec(tmp_path, monkeypatch)
     result = launcher.launch_with_spec(spec, codex_usage_capture=True)
-    assert result.jevdrill_protocol_diagnostics["usage_valid"] is True
+    if captures():
+        assert result.jevdrill_protocol_diagnostics["usage_valid"] is True
+    else:
+        assert result.returncode == 0 and result.jevdrill_protocol_diagnostics == DISABLED
     assert launcher._result_with_spec(result, spec).jevdrill_protocol_diagnostics == result.jevdrill_protocol_diagnostics
     assert result.event_metadata()["jevdrill_protocol_diagnostics"] == result.jevdrill_protocol_diagnostics
 
@@ -84,7 +87,10 @@ def test_announced_loss_survives_actual_launcher(tmp_path, monkeypatch):
     lines = records(middle=['{"type":"item.completed","item":{"type":"error","message":"in-process app-server event stream lagged; dropped 1 events"}}'])
     spec = synthetic_spec(tmp_path, monkeypatch, lines=lines)
     result = launcher.launch_with_spec(replace(spec, launch_timeout_seconds=10), codex_usage_capture=True)
-    assert result.jevdrill_protocol_diagnostics["reason"] == "announced_event_loss"
+    if captures():
+        assert result.jevdrill_protocol_diagnostics["reason"] == "announced_event_loss"
+    else:
+        assert result.returncode == 0 and result.jevdrill_protocol_diagnostics == DISABLED
     assert result.jevdrill_usage is None
 
 
@@ -174,7 +180,11 @@ def test_startup_warning_does_not_supply_counters_or_hide_invalid_totals():
 def test_startup_warning_survives_actual_launcher(tmp_path, monkeypatch):
     lines = startup_records('{"id":"PRIVATE_ID","type":"error","message":"PRIVATE_WARNING"}')
     result = launcher.launch_with_spec(synthetic_spec(tmp_path, monkeypatch, lines=lines), codex_usage_capture=True)
-    assert result.jevdrill_usage is not None
-    assert result.jevdrill_protocol_diagnostics["usage_valid"] is True
-    assert result.jevdrill_protocol_diagnostics["item_counts"] == {"error": 1}
+    if captures():
+        assert result.jevdrill_usage is not None
+        assert result.jevdrill_protocol_diagnostics["usage_valid"] is True
+        assert result.jevdrill_protocol_diagnostics["item_counts"] == {"error": 1}
+    else:
+        assert result.returncode == 0 and result.jevdrill_usage is None
+        assert result.jevdrill_protocol_diagnostics == DISABLED
     assert "PRIVATE_" not in json.dumps(result.jevdrill_protocol_diagnostics)

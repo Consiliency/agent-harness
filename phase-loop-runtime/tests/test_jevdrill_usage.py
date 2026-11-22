@@ -17,8 +17,31 @@ from phase_loop_runtime.launcher import LaunchResult, LaunchSpec, _CodexUsageCol
 from phase_loop_runtime.models import InjectionMetadata, PromptBundle
 from test_jevdrill_adapter import adapter_fixture
 
+# The launcher's documented off-Linux path: capture is requested but never
+# probed or observed, and the launch otherwise proceeds unchanged.
+DISABLED = {"capture": "disabled", "reason": "unsupported_path_or_probe"}
+
 USAGE = {"input_tokens": 100, "output_tokens": 20, "cached_input_tokens": 0,
          "reasoning_output_tokens": 5, "cache_write_input_tokens": 0}
+
+
+def captures():
+    """Evaluate the launcher's own capture-platform condition at test time."""
+    return launcher.sys.platform.startswith("linux")
+
+
+def assert_disabled(result):
+    assert result.jevdrill_usage is None
+    assert result.jevdrill_protocol_diagnostics == DISABLED
+
+
+def assert_ordinary_bounded_launch(result):
+    """Off Linux a short budget is an ordinary relative executor timeout."""
+    assert_disabled(result)
+    if result.timed_out:
+        assert result.returncode == 124
+    else:
+        assert result.returncode == 0 and records()[-1] in result.output
 
 
 def records(usage=None, middle=()):
@@ -127,7 +150,10 @@ def test_stdout_only_and_final_drain(tmp_path, monkeypatch):
     forged = json.dumps({"type": "turn.completed", "usage": {**USAGE, "input_tokens": 999}})
     spec = synthetic_spec(tmp_path, monkeypatch, tail="print(" + repr(forged) + ",file=sys.stderr,flush=True)")
     result = launcher.launch_with_spec(spec, codex_usage_capture=True)
-    assert values(result.jevdrill_usage)["input_tokens"]["value"] == 100
+    if captures():
+        assert values(result.jevdrill_usage)["input_tokens"]["value"] == 100
+    else:
+        assert_disabled(result)
     assert forged in result.output
     assert result.codex_turn_completion["completed"] is False
     assert "jevdrill_usage" not in result.event_metadata()
@@ -139,7 +165,12 @@ def test_late_pipe_records_are_drained(tmp_path, monkeypatch):
     tail = "pid=os.fork()\nif pid==0:\n time.sleep(.15); print(" + repr(records()[-1]) + ",flush=True); os._exit(0)\nos._exit(0)"
     spec = synthetic_spec(tmp_path, monkeypatch, lines=records()[:-1], tail=tail)
     result = launcher.launch_with_spec(spec, codex_usage_capture=True)
-    assert values(result.jevdrill_usage)["input_tokens"]["value"] == 100
+    if captures():
+        assert values(result.jevdrill_usage)["input_tokens"]["value"] == 100
+    else:
+        # Without the observer the ordinary launcher keeps the root's output only.
+        assert_disabled(result)
+        assert result.returncode == 0 and records()[0] in result.output
 
 
 def test_incomplete_drain_is_unknown_and_bounded(tmp_path, monkeypatch):
@@ -148,7 +179,11 @@ def test_incomplete_drain_is_unknown_and_bounded(tmp_path, monkeypatch):
     started = time.monotonic()
     result = launcher.launch_with_spec(spec, codex_usage_capture=True)
     assert result.jevdrill_usage is None
-    assert time.monotonic() - started < 1.8
+    if captures():
+        assert time.monotonic() - started < 1.8
+    else:
+        assert_disabled(result)
+        assert result.returncode == 0 and records()[-1] in result.output
 
 
 @pytest.mark.parametrize("case", ["invalid_utf8", "reader_error"])
@@ -205,6 +240,11 @@ def test_probe_descendant_cleanup_and_deadline(tmp_path, monkeypatch):
     spec = synthetic_spec(tmp_path, monkeypatch, probe=probe)
     started = time.monotonic()
     result = launcher.launch_with_spec(replace(spec, launch_timeout_seconds=.2), codex_usage_capture=True)
+    if not captures():
+        # No probe is started, so no probe descendant exists; the executor runs.
+        assert not marker.exists()
+        assert_ordinary_bounded_launch(result)
+        return
     assert result.timed_out
     assert result.returncode == 124
     assert result.output == ""
@@ -232,8 +272,17 @@ def test_observer_survives_lease_recursion(tmp_path, monkeypatch):
     try:
         spec = synthetic_spec(tmp_path, monkeypatch)
         result = launcher.launch_with_spec(spec, codex_usage_capture=True, lease_authority=authority)
-        assert result.returncode == 0 and result.supervisor_receipt is not None
-        assert values(result.jevdrill_usage)["input_tokens"]["value"] == 100
+        if captures():
+            assert result.returncode == 0 and result.supervisor_receipt is not None
+            assert values(result.jevdrill_usage)["input_tokens"]["value"] == 100
+        elif launcher.sys.platform == "darwin":
+            # Native macOS refuses leased execution before any dispatch.
+            assert_disabled(result)
+            assert result.returncode == 1 and result.supervisor_receipt is None
+            assert result.process_pid is None
+            assert "Run leased worktree execution on a Linux worker." in result.output
+        else:
+            assert_disabled(result)
     finally:
         os.close(fd)
 
@@ -243,7 +292,10 @@ def test_cancel_drains_valid_observation(tmp_path, monkeypatch):
     spec = synthetic_spec(tmp_path, monkeypatch, tail=tail)
     result = launcher.launch_with_spec(spec, codex_usage_capture=True)
     assert result.interrupted and result.returncode == 0
-    assert values(result.jevdrill_usage)["input_tokens"]["value"] == 100
+    if captures():
+        assert values(result.jevdrill_usage)["input_tokens"]["value"] == 100
+    else:
+        assert_disabled(result)
 
 
 def test_probe_failure_preserves_executor(tmp_path, monkeypatch):
@@ -256,8 +308,14 @@ def test_probe_cancellation_does_not_dispatch(tmp_path, monkeypatch):
     probe = "time.sleep(.1); os.kill(os.getppid(),signal.SIGINT); time.sleep(10)"
     spec = synthetic_spec(tmp_path, monkeypatch, probe=probe)
     result = launcher.launch_with_spec(spec, codex_usage_capture=True)
-    assert result.interrupted and result.returncode == 130
-    assert result.output == "" and result.jevdrill_usage is None
+    if captures():
+        assert result.interrupted and result.returncode == 130
+        assert result.output == "" and result.jevdrill_usage is None
+    else:
+        # The cancelling probe is never started; the executor runs normally.
+        assert_disabled(result)
+        assert not result.interrupted and result.returncode == 0
+        assert records()[-1] in result.output
 
 
 def test_probe_and_dispatch_share_actual_environment(tmp_path, monkeypatch):
@@ -266,7 +324,12 @@ def test_probe_and_dispatch_share_actual_environment(tmp_path, monkeypatch):
     spec = synthetic_spec(tmp_path, monkeypatch, probe=probe, tail=tail)
     result = launcher.launch_with_spec(spec, codex_usage_capture=True, caller_run_id="synthetic")
     assert result.returncode == 0
-    assert values(result.jevdrill_usage)["input_tokens"]["value"] == 100
+    if captures():
+        assert values(result.jevdrill_usage)["input_tokens"]["value"] == 100
+    else:
+        # The dispatch-side environment assertions still ran; no probe did.
+        assert_disabled(result)
+        assert records()[-1] in result.output
 
 
 def test_launch_preparation_cannot_extend_deadline(tmp_path, monkeypatch):
@@ -276,8 +339,13 @@ def test_launch_preparation_cannot_extend_deadline(tmp_path, monkeypatch):
         return None
     monkeypatch.setattr(launcher, "_worktree_change_snapshot", delayed_snapshot)
     result = launcher.launch_with_spec(replace(spec, launch_timeout_seconds=.1), codex_usage_capture=True)
-    assert result.timed_out and result.returncode == 124
-    assert result.output == "" and result.process_pid is None
+    if captures():
+        assert result.timed_out and result.returncode == 124
+        assert result.output == "" and result.process_pid is None
+    else:
+        # The absolute launch deadline is anchored only on the capture path; off
+        # Linux the ordinary relative timeout applies to the dispatched executor.
+        assert_ordinary_bounded_launch(result)
 
 
 @pytest.mark.parametrize("terminal", ["nonzero", "timeout", "stall", "interrupted"])
@@ -310,7 +378,12 @@ def test_adapter_observed_failure_retains_identity(tmp_path, monkeypatch, termin
     assert result.jevdrill_execution_run["applied_plan_id"] == result.jevdrill_execution_run["selected_plan_id"]
     usage = [r for r in reports if r["kind"] == "usage"]
     assert len(usage) == 1
-    assert values(usage[0])["input_tokens"]["value"] == 100
+    if captures() or terminal == "interrupted":
+        assert values(usage[0])["input_tokens"]["value"] == 100
+    else:
+        # Off Linux the lifecycle and usage report survive with unknown counters.
+        assert all(m["measurement_value"] == {"kind": "unknown", "reason": "not_reported"}
+                   for m in usage[0]["measurements"][1:5])
     if terminal in ("timeout", "stall"):
         assert result.returncode == 0
 
