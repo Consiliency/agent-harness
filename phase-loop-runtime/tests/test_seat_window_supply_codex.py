@@ -291,6 +291,41 @@ def test_sl6_expired_access_copy_changes_only_the_access_exp(codex_supplier):
     assert not cred.tokens_changed(expired, expired.data)  # the seat compares the installed copy
 
 
+@pytest.mark.parametrize("filler", [0, 1, 2])
+def test_sl6_expired_access_copy_payload_is_unpadded_at_every_length(codex_supplier, filler):
+    """Unpadded base64url for each padding residue (the payload length mod 3)."""
+    from phase_loop_runtime import seat_codex_credential as cred
+    copy = cred.build_seat_copy(_login())
+    document = json.loads(copy.data)
+    header, payload, signature = document["tokens"]["access_token"].split(".")
+    claims = {**_claims(document["tokens"]["access_token"]), "f": "x" * filler}
+    document["tokens"]["access_token"] = ".".join((header, _part(claims), signature))
+    seeded = dataclasses.replace(copy, data=json.dumps(document).encode())
+    paddings = set()
+    edited = json.loads(codex_supplier.expired_access_copy(seeded, now=1_900_000_000).data)
+    edited_payload = edited["tokens"]["access_token"].split(".")[1]
+    assert "=" not in edited_payload
+    paddings.add(-len(edited_payload) % 4)
+    assert _claims(edited["tokens"]["access_token"])["f"] == "x" * filler
+
+
+def test_sl6_expired_access_copy_payload_lengths_cover_every_residue(codex_supplier):
+    from phase_loop_runtime import seat_codex_credential as cred
+    copy = cred.build_seat_copy(_login())
+    document = json.loads(copy.data)
+    header, payload, signature = document["tokens"]["access_token"].split(".")
+    residues = set()
+    for filler in range(3):
+        claims = {**_claims(document["tokens"]["access_token"]), "f": "x" * filler}
+        document["tokens"]["access_token"] = ".".join((header, _part(claims), signature))
+        edited = json.loads(codex_supplier.expired_access_copy(
+            dataclasses.replace(copy, data=json.dumps(document).encode()), now=1).data)
+        raw = edited["tokens"]["access_token"].split(".")[1]
+        residues.add(len(base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4))) % 3)
+        assert "=" not in raw
+    assert residues == {0, 1, 2}  # the padding-free form is checked where padding would occur
+
+
 def test_sl6_expired_access_copy_uses_the_transform_clock(codex_supplier):
     from phase_loop_runtime import seat_codex_credential as cred
     copy = cred.build_seat_copy(_login())
@@ -960,7 +995,7 @@ def test_sl6_f16_measured_completes(codex_supplier, tmp_path, monkeypatch):
 def test_sl6_f16_expired_copy_is_refused_intended(codex_supplier, tmp_path, monkeypatch):
     from phase_loop_runtime import panel_invoker as panel
     _control_world(monkeypatch, tmp_path, codex_supplier, stdout=_FAILED,
-                   stream=_stream(_DENIED_TOKEN))
+                   stream=_stream(_NAMED_DENIAL))
     expired = panel.window_control_launch(_codex_spec("expired_copy", tmp_path))
     assert codex_supplier.terminal(expired) == "refused_intended"
 
