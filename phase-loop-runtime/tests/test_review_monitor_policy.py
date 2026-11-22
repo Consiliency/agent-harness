@@ -1099,13 +1099,15 @@ def test_heartbeat_egress_unavailable_stays_degraded(tmp_path, monkeypatch):
     result = panel.invoke_board(supported_board(), "synthetic review material",
         monitoring_policy="heartbeat_only", stream_dir=tmp_path / "records")
     assert all(leg.status == "DEGRADED" for leg in result.legs)
-    # Registered seats refuse at L3 before egress; the remaining unregistered route
-    # reaches the egress check. Pin host facts so this asserts the same ordering on CI.
+    # Registered seats refuse at L3 before egress. Since GROK SL-2 registers the Grok jail
+    # profile, every leg of this board is a registered seat, so none reaches the egress
+    # check; egress unavailability must still leave the board degraded, never live.
+    # Pin host facts so this asserts the same ordering on CI.
     by_leg = {leg.leg: leg for leg in result.legs}
-    assert {leg: by_leg[leg].detail for leg in ("claude", "codex")} == {
+    assert {leg: by_leg[leg].detail for leg in ("claude", "codex", "grok")} == {
         "claude": "seat_sandbox_unavailable_host", "codex": "seat_sandbox_unavailable_host",
+        "grok": "seat_sandbox_unavailable_host",
     }
-    assert "egress isolation unavailable" in by_leg["grok"].detail
     assert all(not leg.text for leg in result.legs)
     assert all(not (leg.harden_isolation_evidence or {}).get("sandbox_network_filtered") for leg in result.legs)
 

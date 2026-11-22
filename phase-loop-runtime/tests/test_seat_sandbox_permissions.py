@@ -116,8 +116,9 @@ def test_j7_without_a_stop_a_qualified_gemini_seat_is_jailed():
 @pytest.mark.parametrize("leg", ["claude", "gemini", "codex", "grok"])
 def test_j7_the_jailed_route_is_claude_and_gemini(leg):
     """With every route fact forced true and no recorded stop, Claude and Gemini are jailed
-    (Gemini since agent-harness#1170); codex and grok are not decided by this plan."""
-    assert seat_jail.JAILED_LEGS == frozenset({"claude", "gemini", "codex"})
+    (Gemini since agent-harness#1170); codex and grok are not decided by this plan (both
+    are registered profiles, decided by the JAILCORE resolver: CODEX SL-3, GROK SL-2)."""
+    assert seat_jail.JAILED_LEGS == frozenset({"claude", "gemini", "codex", "grok"})
     route = seat_jail.decide_seat_route(
         leg, staged_tree_approved=True, capable=lambda: None,
         claude_token_present=lambda: True, gemini_credential_present=lambda: True,

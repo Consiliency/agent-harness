@@ -48,19 +48,22 @@ def test_every_sealed_route_code_is_a_refusal(code, leg):
     assert why and fix
 
 
-def test_a_seat_with_no_jail_route_and_no_staged_tree_is_a_refusal():
-    # Grok still has no registered jail route. Codex is registered by SL-3 and
-    # must never take this exception (its independent control follows below).
+def test_a_seat_with_no_jail_route_and_no_staged_tree_is_a_refusal(tmp_path, monkeypatch):
+    # Codex (CODEX SL-3) and Grok (GROK SL-2) are registered profiles and must never take
+    # the unconfined exception; Codex's independent control follows below.
+    monkeypatch.setenv("HOME", str(tmp_path / "no-login"))
+    monkeypatch.setattr(seat_jail, "seat_sandbox_capable", lambda: None)
     for leg in ("grok",):
         route, notices, refusal = pi._seat_route_for_spawn(
             leg, _auth(False), eligible=True,
         )
         assert not route.jailed and route.code == "seat_sandbox_not_staged"
         assert notices == [] and refusal == "seat_sandbox_not_staged"
-        # With a staged tree they keep their (unconfined, tooled) route.
-        assert pi._seat_route_for_spawn(leg, _auth(True), eligible=True) == (
-            None, ["seat_filesystem_unconfined"], None,
-        )
+        # With a staged tree the registered profile refuses (here at L5, without a login)
+        # instead of taking the retired (unconfined, tooled) route.
+        route, notices, refusal = pi._seat_route_for_spawn(leg, _auth(True), eligible=True)
+        assert not route.jailed and route.code == refusal == "grok_seat_credential_missing"
+        assert notices == []
 
 
 def test_registered_codex_refuses_instead_of_using_the_unconfined_exception(tmp_path, monkeypatch):

@@ -1525,5 +1525,8 @@
   {"count": 1, "function": "_scan_dir", "module": "seat_grok_credential", "primitive": "io.stat", "role": "host-io"},
   {"count": 2, "function": "_stage", "module": "seat_grok_credential", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_write_read_only", "module": "seat_grok_credential", "primitive": "io.open", "role": "host-io"},
-  {"count": 1, "function": "grok_seat_credential_after", "module": "seat_grok_credential", "primitive": "io.open", "role": "host-io"}
+  {"count": 1, "function": "grok_seat_credential_after", "module": "seat_grok_credential", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "_stub", "module": "seat_profile_grok", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "_stub", "module": "seat_profile_grok", "primitive": "io.stat", "role": "host-io"},
+  {"count": 3, "function": "write_mask_sources", "module": "seat_profile_grok", "primitive": "io.open", "role": "host-io"}
 ]

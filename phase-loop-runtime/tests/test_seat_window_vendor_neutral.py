@@ -1448,6 +1448,9 @@ def test_k1_t3_the_ledger_reaches_production_board_workers(tmp_path, monkeypatch
     Grok start is refused before it spawns."""
     from phase_loop_runtime import panel_invoker as panel, seat_profiles
     from phase_loop_runtime import seat_window_supply as supply
+    # Grok is this test's unconfined vendor; hide its registered profile (GROK SL-2) so the
+    # matrix keeps that exception for the fixture.
+    monkeypatch.delitem(seat_profiles._REGISTRY, "grok")
     ledger = _ledger(tmp_path, grok_seat=1)
     started = []
 
@@ -2367,7 +2370,11 @@ def test_k1_a4_renewals_reserve_under_their_own_item(tmp_path, monkeypatch, case
 @pytest.mark.parametrize("disagreement", ["mode", "exception", "expiry", "none"])
 def test_k1_r6_a_resolved_route_disagreeing_with_the_snapshot_refuses_before_spawn(
         tmp_path, monkeypatch, disagreement):
-    from phase_loop_runtime import panel_invoker as panel, seat_window_supply as supply
+    from phase_loop_runtime import panel_invoker as panel, seat_profiles
+    from phase_loop_runtime import seat_window_supply as supply
+    # Grok is this test's unconfined vendor; hide its registered profile (GROK SL-2) so the
+    # matrix keeps that exception for the fixture.
+    monkeypatch.delitem(seat_profiles._REGISTRY, "grok")
     ledger = _ledger(tmp_path)
 
     class Spawned(Exception):

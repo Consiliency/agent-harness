@@ -291,6 +291,14 @@ def qualify(leg: str = "claude", *, record: bool = True, provider: Path | None =
         "falsifier_layout": layout, "leg": leg,
         "recorded_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
     }
+    if leg == "grok":
+        # GROK SL-2: the route's L8 key, bound to the grok-review allow-list; named by the
+        # receipt whether or not the run passes.
+        from . import seat_profile_grok
+        from .seat_route_contract import key_digest
+        if qualification_key is None:
+            qualification_key = seat_profile_grok.qualification_key()
+        evidence["key_digest"] = key_digest(qualification_key)
     staged: Path | None = None
     run_thread: threading.Thread | None = None
     run_result: dict[str, object] = {}
@@ -418,6 +426,12 @@ def _run_probe_in_jail(leg, base: Path, config: dict, provider: Path | None, mut
     gids = seat_uid.subordinate_range(seat_uid.SUBGID_FILE)
     dependency = None
     shape = _gemini_shape(seat_dir) if leg == "gemini" else {}
+    grok = None
+    if leg == "grok":
+        # GROK SL-2: the staged `.grok`, the mask sources and the CA, written before the
+        # build; the mount points after it and before the handoff (president note B3).
+        from . import seat_profile_grok as grok
+        shape = grok.qualification_shape(seat_dir)
     if leg == "codex":
         from .seat_codex_runtime import subject_runtime
         from .seat_profile_codex import validate_codex_projection
@@ -445,6 +459,8 @@ def _run_probe_in_jail(leg, base: Path, config: dict, provider: Path | None, mut
                 token_fd=seat_jail.token_pipe(b"QUALIFY-SENTINEL") if leg == "claude" else None,
                 seat_ids=(n, n), **shape)
             try:
+                if grok is not None:
+                    grok.stub_mount_points(jail)
                 if mutate is not None:
                     mutate(jail)
                 else:
@@ -463,6 +479,8 @@ def _run_probe_in_jail(leg, base: Path, config: dict, provider: Path | None, mut
     finally:
         if dependency is not None and getattr(dependency, "_jailcore_owned", False):
             dependency.close()
+        if grok is not None:
+            grok.remove_staged(seat_dir)
     if done.returncode != 0:
         raise QualificationError(f"probe failed to run: {done.stderr[-400:]}")
     return json.loads(done.stdout.strip().splitlines()[-1])
@@ -2724,9 +2742,17 @@ _ARGV_ACTIONS = {
 }
 
 
+def _argv_action(argv: Sequence[str]) -> str | None:
+    """The closed argv table, plus GROK SL-2's ``--leg LEG`` selector for one leg."""
+    argv = tuple(argv)
+    if len(argv) == 2 and argv[0] == "--leg" and argv[1]:
+        return "qualify"
+    return _ARGV_ACTIONS.get(argv)
+
+
 def qualification_provider_capable(argv: Sequence[str]) -> bool:
     """Only closed, effect-free informational commands run without a dependency lease."""
-    return _ARGV_ACTIONS.get(tuple(argv)) not in {"help", "version"}
+    return _argv_action(argv) not in {"help", "version"}
 
 
 def _argument_parser() -> argparse.ArgumentParser:
@@ -2739,24 +2765,36 @@ def _argument_parser() -> argparse.ArgumentParser:
     informational = parser.add_mutually_exclusive_group()
     informational.add_argument("-h", "--help", action="store_true", dest="show_help")
     informational.add_argument("--version", action="store_true", dest="show_version")
+    parser.add_argument("--leg", metavar="LEG",
+                        help="qualify this registered leg's jail (default: claude)")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = _argument_parser()
     normalized = tuple(sys.argv[1:] if argv is None else argv)
-    action = _ARGV_ACTIONS.get(normalized)
+    action = _argv_action(normalized)
     if action is None:
-        parser.error("expected no arguments or exactly one of -h, --help, --version")
+        parser.error("expected no arguments or exactly one of -h, --help, --version, "
+                     "or --leg LEG")
     if action == "help":
         parser.print_help()
         return 0
     if action == "version":
         print(f"{parser.prog} {__version__}")
         return 0
-    evidence = qualify()
+    if normalized:
+        from .seat_profiles import registered_legs
+        if normalized[1] not in registered_legs():
+            parser.error(f"--leg must name a registered leg: {', '.join(registered_legs())}")
+        evidence = qualify(normalized[1])
+    else:
+        evidence = qualify()
     summary = {k: evidence.get(k) for k in ("result", "profile_digest", "falsifier_layout",
                                             "checks", "run_outcome", "recorded_pass")}
+    if normalized:
+        # The receipt names the leg it qualified and its qualification key.
+        summary.update(leg=evidence.get("leg"), key_digest=evidence.get("key_digest"))
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0 if evidence.get("result") == "pass" else 1
 

@@ -894,6 +894,10 @@ def _modes(monkeypatch, *, qualified=True, credential=None, profile_credential=T
     from phase_loop_runtime import seat_profiles
     monkeypatch.setitem(seat_profiles._REGISTRY, "codex", replace(
         seat_profiles.profile_for("codex"), credential_present=lambda: False))
+    # Grok's registered profile (GROK SL-2) stops at its closed tool-surface gate whatever
+    # the host's login; a present login is pinned so the row does not read the host.
+    monkeypatch.setitem(seat_profiles._REGISTRY, "grok", replace(
+        seat_profiles.profile_for("grok"), credential_present=lambda: True))
     authorization = types.SimpleNamespace(staged_tree_sha256="a" * 64)
     modes = pi._seat_launch_modes(
         _mode_board(), mode="review",
@@ -912,7 +916,7 @@ def test_seat_modes_name_every_route_before_launch(monkeypatch):
         "claude": ("jailed", None, "login"),
         "gemini": ("degraded", "gemini_seat_egress_unconfined", None),
         "codex": ("degraded", "codex_seat_credential_missing", None),
-        "grok": ("unconfined", "seat_filesystem_unconfined", None),
+        "grok": ("degraded", "grok_tool_surface_unverified", None),
     }
 
 
@@ -988,7 +992,7 @@ def test_seat_modes_are_published_before_launch(monkeypatch, tmp_path):
     assert seen == [modes]
     record = json.loads((tmp_path / "stream" / "seat-modes.json").read_text())
     assert record["schema"] == "seat_modes.v1"
-    assert [m["mode"] for m in record["modes"]] == ["jailed", "degraded", "degraded", "unconfined"]
+    assert [m["mode"] for m in record["modes"]] == ["jailed", "degraded", "degraded", "degraded"]
 
 
 @pytest.mark.parametrize("give_up, source, notice", [

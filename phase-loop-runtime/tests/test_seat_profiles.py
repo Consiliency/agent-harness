@@ -311,7 +311,7 @@ def test_jailcore_profile_digests_are_byte_identical_to_the_unmodified_base(monk
         "--ro-bind", "/fixed/usr", "/usr", "--perms", "0755", "--dir", "/etc",
         "--ro-bind", "/fixed/etc/hosts", "/etc/hosts",
     ])
-    assert set(seat_profiles.registered_legs()) == {"claude", "gemini", "codex"}
+    assert set(seat_profiles.registered_legs()) == {"claude", "gemini", "codex", "grok"}
     # Complete golden coverage: every registered leg, including codex, has a canonical row
     # on both arches, so a registered profile can never go undigested (agent-harness#1938).
     assert set(golden) == {"aarch64", "x86_64"}

@@ -373,6 +373,8 @@ JAIL_PROFILE_SOURCES = (
     # seat_profiles registers Codex at import; pin its complete import closure too.
     "seat_profile_codex.py",
     "seat_codex_cli_shape.py",
+    # ...and Grok (GROK SL-2), whose profile module imports nothing else at import time.
+    "seat_profile_grok.py",
     "seat_admission.py",
     "seat_subject.py",
     "executable_dependency.py",
