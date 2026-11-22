@@ -599,6 +599,30 @@ def test_sl6_r52_expired_stream_conditions_never_cover_failures(codex_supplier, 
     assert codex_supplier.terminal(_observation(**changes)) == expected
 
 
+@pytest.mark.parametrize("exit_code", [-9, -15, 137, 143])
+def test_sl6_a_signalled_cli_never_reaches_refused_intended_or_not_ready(codex_supplier,
+                                                                        exit_code):
+    """Pre-run review item 1: a CLI ended by a signal (not the launch's own deadline) is a
+    process failure, never ``refused_intended`` after an otherwise qualifying stream and
+    never ``not_ready`` before any traffic."""
+    qualifying = _observation(stream=_stream(_NAMED_DENIAL, *_RUN3_OTHER), status="NONE")
+    qualifying.exit_code = exit_code
+    assert codex_supplier.terminal(qualifying) == "other_failure"
+    silent = _observation(stream=_stream(), status="NONE")
+    silent.exit_code = exit_code
+    assert codex_supplier.terminal(silent) == "other_failure"
+
+
+@pytest.mark.parametrize("exit_code", [None, 0, 1])
+def test_sl6_an_ordinary_exit_or_the_own_deadline_keeps_its_class(codex_supplier, exit_code):
+    qualifying = _observation(stream=_stream(_NAMED_DENIAL), status="FAILURE")
+    qualifying.exit_code = exit_code
+    assert codex_supplier.terminal(qualifying) == "refused_intended"
+    deadline = _observation(stream=_stream(_NAMED_DENIAL), status="NONE", timed_out=True)
+    deadline.exit_code = None  # the launch's own 120 s deadline: no exit status
+    assert codex_supplier.terminal(deadline) == "refused_intended"
+
+
 def test_sl6_r52_run3_aged_shape_is_not_refused_intended(codex_supplier):
     """Run 3's aged case: account checks allowed, no token-host event at all."""
     events = tuple(_event(*row) for row in _RUN3_ACCOUNT_CHECKS)

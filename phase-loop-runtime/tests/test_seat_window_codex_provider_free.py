@@ -499,7 +499,86 @@ _RUN3_NOT_READY_EVENTS = (
 def test_k1_t7_the_not_ready_erratum(terminal, extra, expected):
     """K1-T7 (r5 erratum): not_ready, or timeout at the CLI's own deadline, with no
     token-host event, no model request and no allowed request; never refused_intended."""
-    assert not_ready_erratum_holds(terminal, (*_RUN3_NOT_READY_EVENTS, *extra)) is expected
+    assert not_ready_erratum_holds(terminal, (*_RUN3_NOT_READY_EVENTS, *extra),
+                                   _leg_stream()) is expected
+
+
+def _leg_stream(*, final=True, protocol_error=False, outside=(), windows=None):
+    from phase_loop_runtime.seat_egress_proxy import ProxyStream, ProxyWindow
+    windows = (ProxyWindow(label="leg", start_acked=True, end_acked=True, events=()),) \
+        if windows is None else windows
+    return ProxyStream(final=final, protocol_error=protocol_error, windows=windows,
+                       outside_events=tuple(outside), allowlist_sha256="6" * 64)
+
+
+@pytest.mark.parametrize("timed_out,exit_code,stderr,expected", [
+    (True, None, "", None),            # the launch's own 120 s deadline
+    (False, 0, "", None), (False, 1, "", None),
+    (False, -9, "", "cli_signalled"), (False, -15, "", "cli_signalled"),
+    (False, 137, "", "cli_signalled"), (False, 143, "", "cli_signalled"),
+    (False, 1, "\n[leg-liveness] stalled: no output/CPU for 180s", "cli_stalled"),
+    (False, None, "", "cli_exit_unknown"),
+], ids=["own-deadline", "exit-0", "exit-1", "sigkill", "sigterm", "137", "143", "stall",
+        "unknown"])
+def test_k1_t7_a_cli_process_failure_is_told_from_the_own_deadline(timed_out, exit_code,
+                                                                   stderr, expected):
+    assert cli_process_failure(timed_out=timed_out, exit_code=exit_code,
+                               stderr=stderr) == expected
+
+
+@pytest.mark.parametrize("stream,expected", [
+    (_leg_stream(), True), (_leg_stream(final=False), False),
+    (_leg_stream(protocol_error=True), False),
+    (_leg_stream(outside=(SimpleNamespace(method="CONNECT", host="<other>", path=None,
+                                          decision="deny"),)), False),
+    (_leg_stream(windows=()), False), (None, False),
+], ids=["complete", "not-final", "protocol-error", "outside-events", "no-window", "none"])
+def test_k1_t7_a_complete_single_leg_window(stream, expected):
+    assert complete_leg(stream) is expected
+
+
+def test_k1_t7_a_complete_window_needs_both_fences():
+    from phase_loop_runtime.seat_egress_proxy import ProxyWindow
+    for start, end in ((False, True), (True, False)):
+        window = ProxyWindow(label="leg", start_acked=start, end_acked=end, events=())
+        assert complete_leg(_leg_stream(windows=(window,))) is False
+    two = (ProxyWindow(label="leg", start_acked=True, end_acked=True, events=()),) * 2
+    assert complete_leg(_leg_stream(windows=two)) is False
+
+
+@pytest.mark.parametrize("changes,reason", [
+    ({}, None),
+    ({"stream": _leg_stream(final=False)}, "stream_incomplete"),
+    ({"fenced": False}, "unfenced"),
+    ({"bridge_exited": False}, "bridge_not_exited"),
+    ({"process_failure": "cli_signalled"}, "cli_signalled"),
+    ({"readback_error": "UnsafeSeatObject"}, "credential_readback_failed"),
+], ids=["none", "incomplete", "unfenced", "bridge", "signalled", "readback"])
+def test_k1_t7_missing_proof_is_a_hard_failure_never_a_verdict(changes, reason):
+    """Pre-run review item 3: missing proof is a §15.4 hard failure (no pass, no verdict),
+    kept apart from the expired-case verdict that triggers Q-D."""
+    inputs = {"stream": _leg_stream(), "fenced": True, "bridge_exited": True,
+              "process_failure": None, "readback_error": None, **changes}
+    reasons = hard_failures(**inputs)
+    assert reasons == ([] if reason is None else [reason])
+
+
+def test_k1_t7_the_not_ready_erratum_needs_a_complete_stream():
+    """Pre-run review item 2: both erratum outcomes need the complete single leg window."""
+    for terminal in ("timeout", "not_ready"):
+        assert not_ready_erratum_holds(terminal, _RUN3_NOT_READY_EVENTS, _leg_stream())
+        for broken in (_leg_stream(final=False), _leg_stream(protocol_error=True), None):
+            assert not not_ready_erratum_holds(terminal, _RUN3_NOT_READY_EVENTS, broken)
+
+
+@pytest.mark.parametrize("count,digests,expected", [
+    (2, ["b" * 64, "b" * 64], True), (2, ["b" * 64], False), (1, [None], False),
+    (1, ["c" * 64], False), (0, [], False), (1, ["b" * 64, "b" * 64], False),
+], ids=["all-matched", "one-unrecorded", "header-missing", "wrong-bearer", "no-model-request",
+        "extra-record"])
+def test_k1_t7_every_model_request_carries_the_installed_bearer(count, digests, expected):
+    """Pre-run review item 4: one matching recorded digest for every model event."""
+    assert model_bearers_hold(count, digests, "b" * 64) is expected
 
 
 @pytest.fixture
