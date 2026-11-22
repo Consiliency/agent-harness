@@ -49,6 +49,7 @@ from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from importlib import resources
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Iterator, Mapping
 
 CATALOG_SCHEMA = "grok_tool_surface_catalog.v1"
@@ -99,16 +100,38 @@ CHILD_ABSENT_POLICY_PATHS = ("/etc/claude-code/managed-settings.json",)
 #: ``tests/test_grok_tool_surface.py`` (``test_the_pinned_discovery_set``). Rules files
 #: (``AGENTS.md``, ``CLAUDE.md``) are not in it: that build loads them as prompt text only.
 DISCOVERY_PATHS = (".agents", ".claude", ".cursor", ".grok", ".mcp.json")
-#: Erratum 3: the closed list of refusals that do not disqualify a measurement. Each is an
-#: exact proxy observation -- method, host, path (``None`` for a ``CONNECT``) -- and counts
-#: only when denied: the startup fetch of remote settings, and the updater's release check
-#: and artifact host. Pinned by a test; adding an entry needs an erratum. It qualifies a
-#: measurement, constrains no launch, and is not part of the context digest.
-TOLERATED_REFUSALS = (
-    ("GET", "cli-chat-proxy.grok.com", "/v1/settings"),
-    ("CONNECT", "x.ai", None),
-    ("CONNECT", "storage.googleapis.com", None),
-)
+#: Erratum 8, item 2 (amending erratum 3, item 1): the closed map of the refusals that do
+#: not disqualify a measurement or a rehearsal, keyed by the binary sha256 the grant pins.
+#: Each row is ``(method, host, path, cause, order)``: the exact proxy observation (``path``
+#: ``None`` for a ``CONNECT``), the one check whose refusal of it is tolerated (the event's
+#: ``cause``), and when (:data:`ORDER_ANY`, or :data:`ORDER_PRE_INFERENCE`: strictly before
+#: the launch's first inference request). Within one image each ``(method, host, path)`` has
+#: one row. Nothing here is ever allowed, forwarded or counted. An image with no entry
+#: tolerates nothing. Pinned by a test; a row or an image needs an erratum. The map qualifies
+#: a measurement, constrains no launch, and is not part of the context digest.
+#: :func:`tolerated_refusals` projects the identities; :func:`tolerated` is the predicate.
+ORDER_ANY = "any"
+ORDER_PRE_INFERENCE = "pre_inference"
+TOLERATED_REFUSALS_BY_IMAGE: Mapping[str, tuple[tuple[str, str, str | None, str, str], ...]] = (
+    MappingProxyType({
+        # grok 1.0.89 (erratum 3): the startup fetch of remote settings, refused by the
+        # request rules, and the updater's release check and artifact host, refused at the
+        # tunnel front by the CONNECT-authority check.
+        "a3dface51d9bdc71fd121e0481dd02d9b46a721f7a6b892f756480e9666eba1f": (
+            ("GET", "cli-chat-proxy.grok.com", "/v1/settings", "rules", ORDER_ANY),
+            ("CONNECT", "x.ai", None, "front", ORDER_ANY),
+            ("CONNECT", "storage.googleapis.com", None, "front", ORDER_ANY),
+        ),
+        # grok 1.0.92 (erratum 8): four startup fetches, and the pre-turn calls on another
+        # model, which are refused because they would be a second, uncounted inference route.
+        "add4d201dbf2c0bd6077a36feb55a76939de30bae48dbb06f16b2307d38ceacb": (
+            ("GET", "cli-chat-proxy.grok.com", "/v1/bundle/archive", "rules", ORDER_ANY),
+            ("GET", "cli-chat-proxy.grok.com", "/", "rules", ORDER_ANY),
+            ("GET", "cli-chat-proxy.grok.com", "/v1/subagents/bundle", "rules", ORDER_ANY),
+            ("GET", "cli-chat-proxy.grok.com", "/v1/feedback/config", "rules", ORDER_ANY),
+            ("POST", "cli-chat-proxy.grok.com", "/v1/responses", "rules", ORDER_PRE_INFERENCE),
+        ),
+    }))
 EGRESS_ALLOWLIST_ID = "grok-review"
 COMPOSITION = "panel_invoker.seat_profile+launch_owned:provider-review"
 #: Erratum 8: the seat config, the one file besides the projection that a grok seat's private
@@ -1122,6 +1145,7 @@ REHEARSAL_REASONS = ("passed", "context_refused", "launch_failed", "egress_refus
                      "no_model_request")
 #: §5.8, in that order.
 STATUSES = ("measured", "format_unrecognised", "artifact_missing", "artifact_ambiguous",
+            "artifact_refused",
             "launch_failed", "egress_refused", "budget_exhausted", "identity_changed",
             "context_refused", "interrupted")
 
@@ -1545,11 +1569,14 @@ class Ledger:
         recorded = {item["rehearsal"] for item in self.rehearsals}
         return tuple(item for item in self.rehearsal_attempts if item not in recorded)
 
-    def rehearsed(self, context: str, route: str | None = None) -> bool:
+    def rehearsed(self, context: str, route: str | None = None, *, runtime: str) -> bool:
         """Erratum 4: has this grant a passing rehearsal of ``route`` (by default its pilot,
-        the first planned route) for its binary and the context the code now enforces?"""
+        the first planned route) for its binary, the context the code now enforces and
+        (erratum 8, item 7) the runtime now running? A rehearsal of another runtime is
+        stale: it authorizes nothing."""
         route = self.grant.planned[0] if route is None else route
         return any(item["status"] == "passed" and item["context_digest"] == context
+                   and item["runtime_digest"] == runtime
                    and item["binary_sha256"] == self.grant.binary_sha256
                    and item["route"] == route for item in self.rehearsals)
 
@@ -1692,10 +1719,11 @@ _REHEARSAL_NAME = re.compile(r"(\d{4})-([0-9a-f]{16})\.json")
 _ATTEMPT_NAME = re.compile(r"(\d{4})-([0-9a-f]{16})\.attempt\.json")
 REHEARSAL_ATTEMPT_SCHEMA = "grok_tool_surface_rehearsal_attempt.v1"
 REHEARSAL_KEYS = frozenset({"schema", "grant", "rehearsal", "route", "argv_digest",
-                            "binary_sha256", "context_digest", "egress", "status", "reason",
+                            "binary_sha256", "context_digest", "runtime_digest", "egress",
+                            "status", "reason",
                             "exit_code", "observation", "incomplete", "budget_denials",
                             "tolerated_refusals", "observed", "at"})
-_OBSERVED_KEYS = frozenset({"method", "host", "path", "decision"})
+_OBSERVED_KEYS = frozenset({"method", "host", "path", "decision", "cause"})
 _OBSERVED_CAP = 256
 #: What an ``observation_incomplete`` rehearsal records about what was missing: the first
 #: unmet condition of BA-1's completion proof (``missing``) and the proxy's own metadata,
@@ -1710,7 +1738,9 @@ def check_rehearsal_keys(document: Mapping[str, Any]) -> None:
              and set(document["observation"]) == _OBSERVATION_KEYS
              and document["status"] in ("passed", "failed")
              and document["reason"] in REHEARSAL_REASONS
-             and (document["status"] == "passed") == (document["reason"] == "passed"))
+             and (document["status"] == "passed") == (document["reason"] == "passed")
+             and type(document["runtime_digest"]) is str
+             and _HEX64.fullmatch(document["runtime_digest"]) is not None)
     incomplete = document["incomplete"]
     _require((incomplete is None) == (document["reason"] != "observation_incomplete"))
     if incomplete is not None:
@@ -1722,10 +1752,14 @@ def check_rehearsal_keys(document: Mapping[str, Any]) -> None:
                          for name in _INCOMPLETE_FLAGS)
                  and all(incomplete[name] is None or type(incomplete[name]) is int
                          for name in ("records", "exit_status")))
-    _check_tolerated(document["tolerated_refusals"])
+    _check_tolerated(document["tolerated_refusals"], document["binary_sha256"])
     observed = document["observed"]
     _require(type(observed) is list and len(observed) <= _OBSERVED_CAP
-             and all(type(item) is dict and set(item) == _OBSERVED_KEYS for item in observed))
+             and all(type(item) is dict and set(item) == _OBSERVED_KEYS
+                     and item["decision"] in ("allow", "deny") and item["cause"] is not None
+                     and retained_observation(
+                         **item, binary_sha256=document["binary_sha256"]) == item
+                     for item in observed))
 
 
 def _read_rehearsal_attempts(directory: int) -> tuple[str, ...]:
@@ -1774,8 +1808,9 @@ def _plan_reservation(ledger: Ledger, route: str, argv_digest: str, context: str
     if route not in grant.planned:
         raise _refuse("route_not_planned")
     # Erratum 4: no reservation without the grant's passing rehearsal of its pilot (the
-    # pilot's own route) for this binary and the context the code now enforces.
-    if not ledger.rehearsed(context):
+    # pilot's own route) for this binary, the context the code now enforces and (erratum 8,
+    # item 7) the runtime now running.
+    if not ledger.rehearsed(context, runtime=running_binding()[0]):
         raise _refuse("rehearsal_required")
     if ledger.format_stop():
         raise _refuse("format_unrecognised_unresolved")
@@ -2263,25 +2298,142 @@ _EVIDENCE_ROUTE_KEYS = frozenset({"route", "argv_digest", "status", "eligible", 
 _TOLERATED_KEYS = frozenset({"method", "host", "path", "count"})
 
 
-def _check_tolerated(entries: object) -> None:
+def tolerated_rows(binary_sha256: object) -> tuple[tuple[str, str, str | None, str, str], ...]:
+    """The rows of :data:`TOLERATED_REFUSALS_BY_IMAGE` for the image ``binary_sha256``, the
+    grant's pinned digest (§5.3); none for any other image."""
+    if type(binary_sha256) is not str:
+        return ()
+    return tuple(TOLERATED_REFUSALS_BY_IMAGE.get(binary_sha256, ()))
+
+
+def tolerated_refusals(binary_sha256: object) -> tuple[tuple[str, str, str | None], ...]:
+    """The ``(method, host, path)`` identities of the image's rows: what the proxy's
+    ``named`` list carries and what a saved summary may name."""
+    return tuple(row[:3] for row in tolerated_rows(binary_sha256))
+
+
+def _inference_request(event: Any) -> bool:
+    """The launch's inference request, as the proxy decided it: the counted request of a
+    measurement (an allowed ``POST`` to the inference host), or the budget's own refusal of
+    it (every one in a rehearsal; a second model call in a measurement)."""
+    return _budget_denial(event) or (event.decision == "allow" and event.method == "POST"
+                                     and event.host == INFERENCE_HOST)
+
+
+def _in_order(order: str, position: int, first_inference: int) -> bool:
+    """THE ORDERING RULE of erratum 8, item 2, read from the row's declared ``order``: a
+    :data:`ORDER_PRE_INFERENCE` row is tolerated only strictly before the first inference
+    request in the proxy's decision stream; at or after it, a later model call may rewrite
+    the definitions artifact. An :data:`ORDER_ANY` row is tolerated anywhere. Any other
+    value tolerates nothing."""
+    if order == ORDER_ANY:
+        return True
+    return order == ORDER_PRE_INFERENCE and position < first_inference
+
+
+def tolerated(binary_sha256: object, event: Any, position: int, first_inference: int
+              ) -> tuple[str, str, str | None] | None:
+    """The one predicate (erratum 8, item 2): the identity of the image's row that ``event``
+    -- at ``position`` in the proxy's decision stream, whose first inference request is at
+    ``first_inference`` -- is a tolerated refusal of, else ``None``. It must be a denial by
+    exactly the row's declared ``cause`` (another check refusing the same observation -- the
+    inner Host check, the budget, the shutdown, the front for a request -- is not one), at a
+    position the row's declared ``order`` admits."""
+    if event.decision != "deny":
+        return None
+    key = (event.method, event.host, event.path)
+    for row in tolerated_rows(binary_sha256):
+        if row[:3] == key:
+            return key if (getattr(event, "cause", None) == row[3]
+                           and _in_order(row[4], position, first_inference)) else None
+    return None
+
+
+def _tolerated(events, binary_sha256: object) -> list[tuple | None]:
+    """:func:`tolerated` over a whole decision stream. The one predicate the classification,
+    the rehearsal and the recorded counts share, so a record never calls tolerated what
+    disqualified its launch."""
+    events = list(events)
+    first = next((index for index, event in enumerate(events) if _inference_request(event)),
+                 len(events))
+    return [tolerated(binary_sha256, event, index, first) for index, event in enumerate(events)]
+
+
+#: Erratum 8, item 3: until lane E8-C defines ``seat_egress_proxy.DIAGNOSTIC_LABELS`` (each
+#: closed label mapped to its fixed ``(method, host)``), there are none, and no label is
+#: retained. The projection keeps no label vocabulary of its own.
+_NO_DIAGNOSTIC_LABELS: Mapping[str, tuple[str, str]] = MappingProxyType({})
+
+
+def diagnostic_labels() -> Mapping[str, tuple[str, str]]:
+    """The proxy's closed diagnostic labels, ``{label: (method, host)}``, imported from their
+    owner, :mod:`seat_egress_proxy` (lane E8-C). The one import seam: empty until it lands."""
+    from . import seat_egress_proxy
+
+    return getattr(seat_egress_proxy, "DIAGNOSTIC_LABELS", _NO_DIAGNOSTIC_LABELS)
+
+
+def retained_observation(method: object, host: object, path: object, decision: object,
+                         cause: object, *, binary_sha256: object) -> dict[str, Any]:
+    """One proxy event as a rehearsal record retains it (erratum 8, item 3), for the grant's
+    image ``binary_sha256``. Each value is kept only where this module, the allow-list or
+    the proxy's own tables spell it out, and anything else becomes ``<other>``:
+
+    - a host of an allow-list row, a token-endpoint host, or a host of the image's rows;
+    - a path of an allow-list row on its own host, the proxy's fixed token-endpoint
+      templates, the path of one of the image's ``(method, host, path)`` identities (so a
+      named entry is verbatim, as 1.0.89's ``/v1/settings``; no other image's are), or a
+      :func:`diagnostic_labels` label, only with its fixed method and host, ``deny`` and
+      ``cause`` ``rules``.
+
+    ``cause`` is kept when it is one of :data:`seat_egress_proxy.EVENT_CAUSES`, else
+    ``None``, which the reader refuses. The producer and the reader share this one bound,
+    so a client-chosen word never reaches the grant record, however it was observed."""
+    from . import seat_egress_proxy
+
+    rules = seat_egress_proxy.allowlist_ref(EGRESS_ALLOWLIST_ID).request_set
+    identities = tolerated_refusals(binary_sha256)
+    hosts = {"<other>", *seat_egress_proxy.TOKEN_ENDPOINT_HOSTS,
+             *(rule["host"] for rule in rules), *(entry[1] for entry in identities)}
+    method = method if method in seat_egress_proxy._EVENT_METHODS else "<other>"
+    host = host if host in hosts else "<other>"
+    decision = decision if decision in ("allow", "deny") else "<other>"
+    cause = cause if cause in seat_egress_proxy.EVENT_CAUSES else None
+    paths = {None, "<other>", "/oauth2/*", "/oauth2/v2/userinfo",
+             *(rule["path"] if "path" in rule else rule["path_prefix"] + "*"
+               for rule in rules if rule["host"] == host)}
+    labels = diagnostic_labels()
+    if (method, host, path) in identities:
+        kept = path
+    elif path in labels:
+        kept = path if (labels[path] == (method, host) and decision == "deny"
+                        and cause == "rules") else "<other>"
+    else:
+        kept = path if path in paths else "<other>"
+    return {"method": method, "host": host, "path": kept, "decision": decision,
+            "cause": cause}
+
+
+def _check_tolerated(entries: object, binary_sha256: object) -> None:
+    """A record's ``tolerated_refusals``: entries of its own image's list only."""
+    listed = tolerated_refusals(binary_sha256)
     _require(type(entries) is list)
     assert isinstance(entries, list)
     for entry in entries:
         _require(type(entry) is dict and set(entry) == _TOLERATED_KEYS
-                 and (entry["method"], entry["host"], entry["path"]) in TOLERATED_REFUSALS
+                 and (entry["method"], entry["host"], entry["path"]) in listed
                  and type(entry["count"]) is int and entry["count"] > 0)
 
 
-def tolerated_summary(events) -> list[dict[str, Any]]:
-    """The tolerated refusals of erratum 3 among ``events``: each entry and its count,
-    metadata only."""
+def tolerated_summary(events, binary_sha256: object) -> list[dict[str, Any]]:
+    """The tolerated refusals among ``events`` for the image ``binary_sha256``: each entry
+    and its count, metadata only."""
     counts: dict[tuple, int] = {}
-    for event in events:
-        key = (event.method, event.host, event.path)
-        if event.decision == "deny" and key in TOLERATED_REFUSALS:
+    for key in _tolerated(events, binary_sha256):
+        if key is not None:
             counts[key] = counts.get(key, 0) + 1
     return [{"method": key[0], "host": key[1], "path": key[2], "count": counts[key]}
-            for key in TOLERATED_REFUSALS if key in counts]
+            for key in tolerated_refusals(binary_sha256) if key in counts]
 
 
 def _check_structure(node: object) -> None:
@@ -2301,7 +2453,7 @@ def check_result_keys(document: Mapping[str, Any]) -> None:
     _require(set(document["egress"]) == _EGRESS_KEYS)
     _require(set(document["observation"]) == _OBSERVATION_KEYS)
     _require(document["status"] in STATUSES)
-    _check_tolerated(document["tolerated_refusals"])
+    _check_tolerated(document["tolerated_refusals"], document["binary_sha256"])
     if document["structure"] is not None:
         _check_structure(document["structure"])
     tools = document["tools"]
@@ -2317,7 +2469,7 @@ def check_evidence_keys(document: Mapping[str, Any]) -> None:
         _require(set(item) == _EVIDENCE_RESERVATION_KEYS)
     for item in document["routes"]:
         _require(set(item) == _EVIDENCE_ROUTE_KEYS and item["status"] in STATUSES)
-        _check_tolerated(item["tolerated_refusals"])
+        _check_tolerated(item["tolerated_refusals"], document["binary_sha256"])
         _require(item["tools"] is None or all(_TOOL.fullmatch(t) for t in item["tools"]))
 
 
@@ -2672,22 +2824,24 @@ def _budget_denial(event: Any) -> bool:
         for rule in seat_egress_proxy.allowlist_ref(EGRESS_ALLOWLIST_ID).request_set)
 
 
-def _classify(*, early: str | None, exit_code: int | None, proof: Any, events, identity_ok: bool
-              ) -> str | None:
+def _classify(*, early: str | None, exit_code: int | None, proof: Any, events, identity_ok: bool,
+              binary_sha256: object) -> str | None:
     """The status a launch earns before its artifact is read (§5.5), or ``None`` when it
     may be read: exit 0, the identity unchanged, a complete observation with exactly one
-    allowed counted request and no denial of any kind."""
+    allowed counted request and no denial but the tolerated refusals of the image
+    ``binary_sha256``."""
     if early is not None:
         return early
     if not identity_ok:
         return "identity_changed"
     if proof is None or not proof.complete:
         return "egress_refused"
-    # Erratum 3: a denial disqualifies unless it is one of the tolerated refusals, before or
-    # after the counted request. Everything else still does: a second POST to the inference
-    # host (budget_exhausted), a sign-in host, any other method, path or host.
-    denied = [event for event in events if event.decision == "deny"
-              and (event.method, event.host, event.path) not in TOLERATED_REFUSALS]
+    # Errata 3 and 8: a denial disqualifies unless it is one of this image's tolerated
+    # refusals. Everything else still does: a second POST to the inference host
+    # (budget_exhausted), a sign-in host, any other method, path or host.
+    events = list(events)
+    denied = [event for event, entry in zip(events, _tolerated(events, binary_sha256))
+              if event.decision == "deny" and entry is None]
     if denied:
         if proof.counted >= PER_LAUNCH_BUDGET and any(_budget_denial(event) for event in denied):
             return "budget_exhausted"
@@ -2834,6 +2988,8 @@ def _run_reserved(stage: _Stage, reservation: Reservation, *, route, form, argv,
     from . import panel_invoker as panel
     from . import seat_egress_proxy
 
+    # The result's runtime and context binding is taken here, before the proxy and the child
+    # start, and recorded as is (erratum 8, item 7).
     result = _base_result(stage, reservation, route, model=model, context=context,
                           allowlist_digest=allowlist_digest)
     raw = _subdir(stage.output, "raw", create=True)
@@ -2855,7 +3011,8 @@ def _run_reserved(stage: _Stage, reservation: Reservation, *, route, form, argv,
             try:
                 with panel._grok_review_egress(timeout_s=LAUNCH_TIMEOUT_S + 120.0,
                                                request_budget=PER_LAUNCH_BUDGET,
-                                               named=TOLERATED_REFUSALS) as (proxy, prefix):
+                                               named=tolerated_refusals(
+                                                   stage.grant.binary_sha256)) as (proxy, prefix):
                     # scan_values: held by this frame for the definitions reader (erratum 8,
                     # item 5); dropped when the route returns.
                     early, exit_code, scan_values = _launch(
@@ -2875,16 +3032,17 @@ def _run_reserved(stage: _Stage, reservation: Reservation, *, route, form, argv,
                 "complete": proof.complete, "reason": proof.reason, "requests": proof.requests,
                 "counted": proof.counted,
                 "denied": sum(1 for event in events if event.decision == "deny")}
-            result["tolerated_refusals"] = tolerated_summary(events)
+            result["tolerated_refusals"] = tolerated_summary(events, stage.grant.binary_sha256)
         try:
             identity_ok = panel._grok_probe_identity([stage.binary], stage.env) == stage.identity
         except Exception:  # noqa: BLE001
             identity_ok = False
         result["exit_code"] = exit_code
         status = _classify(early=early, exit_code=exit_code, proof=proof, events=events or (),
-                           identity_ok=identity_ok)
+                           identity_ok=identity_ok, binary_sha256=stage.grant.binary_sha256)
         if status is None:
-            status = _read_and_extract(result, form, folder, sessions)
+            status = _read_and_extract(result, form, folder, sessions, scan_values)
+        scan_values = ()  # erratum 8, item 5: dropped once the reader has returned
         result["status"] = status
         if status == "measured":
             # Deleted at once on a measured route (§5.9).
@@ -2899,8 +3057,15 @@ def _run_reserved(stage: _Stage, reservation: Reservation, *, route, form, argv,
     return result
 
 
-def _read_and_extract(result: dict[str, Any], form, folder: int, sessions: str) -> str:
-    """Read the artifact (§5.5), retain a private copy (§5.9), extract (§5.6)."""
+def _read_and_extract(result: dict[str, Any], form, folder: int, sessions: str,
+                      scan_values: tuple[bytes, ...]) -> str:
+    """Read the artifact (§5.5), scan it, retain a private copy (§5.9), extract (§5.6).
+
+    ``scan_values`` (erratum 8, item 5) are the composed profile's registered secret values
+    and their last 12 characters, in memory from the launch, never reread or written. The
+    raw bytes are scanned for each before anything else is done with them: a hit, or no
+    values to scan with, is ``artifact_refused``, with nothing retained, hashed or
+    extracted."""
     try:
         directory = os.open(sessions, _dir_flags())
     except OSError:
@@ -2911,6 +3076,8 @@ def _read_and_extract(result: dict[str, Any], form, folder: int, sessions: str) 
         return refusal.status
     finally:
         os.close(directory)
+    if not scan_values or any(not value or value in raw for value in scan_values):
+        return "artifact_refused"
     _retain(folder, DEFINITIONS_NAME, raw, RAW_RETENTION_S)
     result["definitions_sha256"] = sha256(raw).hexdigest()
     result["definitions_bytes"] = len(raw)
@@ -2929,12 +3096,13 @@ def _apply_extraction(result: dict[str, Any], form, raw: bytes) -> str:
 
 # ------------------------------------------------------------- rehearsal (erratum 4)
 
-def _rehearsal_reason(*, early: str | None, proof: Any, events, identity_ok: bool) -> str:
+def _rehearsal_reason(*, early: str | None, proof: Any, events, identity_ok: bool,
+                      binary_sha256: object) -> str:
     """Why a rehearsal passed or not. It passes only on a complete observation in which
     nothing was allowed, the launch reached its model request (the budget-0 proxy refused
     it as an allow-listed counted request), and every other refusal is a tolerated one of
-    erratum 3. Anything else is a request the pilot would meet too, so the procedure stops
-    before spending one."""
+    the image ``binary_sha256`` (errata 3 and 8). Anything else is a request the pilot would
+    meet too, so the procedure stops before spending one."""
     if early is not None:
         return early
     if not identity_ok:
@@ -2943,9 +3111,9 @@ def _rehearsal_reason(*, early: str | None, proof: Any, events, identity_ok: boo
         return "observation_incomplete"
     if any(event.decision == "allow" for event in events):
         return "unlisted_request"
-    if any(not _budget_denial(event)
-           and (event.method, event.host, event.path) not in TOLERATED_REFUSALS
-           for event in events):
+    events = list(events)
+    if any(entry is None and not _budget_denial(event)
+           for event, entry in zip(events, _tolerated(events, binary_sha256))):
         return "unlisted_request"
     if not any(_budget_denial(event) for event in events):
         return "no_model_request"
@@ -2964,6 +3132,10 @@ def rehearse(stage: _Stage, route: str) -> dict[str, Any]:
     from . import seat_egress_proxy
 
     form, _model, context, allowlist_digest = _prepare_route(route)
+    # Erratum 8, item 7: the runtime this rehearsal launches under, captured once before the
+    # proxy and the child start and recorded as is, so a runtime installed while it runs
+    # never inherits its pass.
+    runtime = running_binding()[0]
     if route not in stage.grant.planned:
         raise _refuse("route_not_planned")
     if route != stage.grant.planned[0]:
@@ -3028,7 +3200,8 @@ def rehearse(stage: _Stage, route: str) -> dict[str, Any]:
             try:
                 with panel._grok_review_egress(timeout_s=LAUNCH_TIMEOUT_S + 120.0,
                                                request_budget=0,
-                                               named=TOLERATED_REFUSALS) as (proxy, prefix):
+                                               named=tolerated_refusals(
+                                                   stage.grant.binary_sha256)) as (proxy, prefix):
                     early, exit_code, _scan_values = _launch(
                                                stage, proxy=proxy, prefix=prefix, argv=argv,
                                                form=form, argv_digest=argv_digest, cwd=str(cwd),
@@ -3064,7 +3237,8 @@ def rehearse(stage: _Stage, route: str) -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         identity_ok = False
     reason = _rehearsal_reason(early=early, proof=proof, events=events or (),
-                               identity_ok=identity_ok)
+                               identity_ok=identity_ok,
+                               binary_sha256=stage.grant.binary_sha256)
     incomplete = None
     if reason == "observation_incomplete":
         # What was missing, metadata only: the first unmet condition of the completion proof
@@ -3076,15 +3250,18 @@ def rehearse(stage: _Stage, route: str) -> dict[str, Any]:
     record = {
         "schema": REHEARSAL_SCHEMA, "grant": stage.grant.id, "rehearsal": rehearsal_id,
         "route": route, "argv_digest": argv_digest, "binary_sha256": stage.identity[1],
-        "context_digest": context,
+        "context_digest": context, "runtime_digest": runtime,
         "egress": {"allowlist_id": EGRESS_ALLOWLIST_ID, "allowlist_sha256": allowlist_digest},
         "status": "passed" if reason == "passed" else "failed", "reason": reason,
         "exit_code": exit_code, "observation": observation, "incomplete": incomplete,
         "budget_denials": sum(1 for event in events or () if _budget_denial(event)),
-        "tolerated_refusals": tolerated_summary(events or ()),
+        "tolerated_refusals": tolerated_summary(events or (), stage.grant.binary_sha256),
         # Recorded for an erratum: the proxy's metadata-only observation.
-        "observed": [{"method": event.method, "host": event.host, "path": event.path,
-                      "decision": event.decision} for event in (events or ())][:_OBSERVED_CAP],
+        # Its paths are the closed vocabulary only (erratum 8, item 3).
+        "observed": [retained_observation(event.method, event.host, event.path, event.decision,
+                                          getattr(event, "cause", None),
+                                          binary_sha256=stage.grant.binary_sha256)
+                     for event in (events or ())][:_OBSERVED_CAP],
         "at": _utc_now()}
     check_rehearsal_keys(record)
     try:
@@ -3154,6 +3331,16 @@ def _route_state(ledger: Ledger, local: Mapping[tuple[str, int], str], route: st
 
 # ------------------------------------------------------------- aggregation (§5.7, §5.8)
 
+def running_binding() -> tuple[str, str]:
+    """``(runtime_digest, context_digest)`` of the code running now (erratum 8, item 7): what
+    a rehearsal must carry to authorize a reservation, and what every result and the passed
+    rehearsal must carry to be published. The one seam a later context (the jailed
+    contract's ``jail_context_digest``) replaces."""
+    from .seat_window import runtime_digest
+
+    return runtime_digest(), context_digest()
+
+
 _SHARED = ("binary_sha256", "version", "version_sha256", "help_sha256", "model", "effort",
            "context_digest", "host_digest", "runtime_digest")
 
@@ -3188,6 +3375,13 @@ def aggregate(stage: _Stage, *, host_class: str) -> dict[str, Any]:
                 document["egress"] != first["egress"] for document in documents):
             raise _refuse("context_mismatch")
         if first["binary_sha256"] != binary or first["host_digest"] != _host_digest():
+            raise _refuse("context_mismatch")
+        # Erratum 8, item 7, the publication gate: the results and the grant's passed
+        # rehearsal must be of the runtime and context running now, so the checkout is frozen
+        # from the rehearsal through publication and drift stops the grant.
+        runtime, current = running_binding()
+        if first["runtime_digest"] != runtime or first["context_digest"] != current \
+                or not ledger.rehearsed(current, runtime=runtime):
             raise _refuse("context_mismatch")
     except MeasurementRefused:
         with _publication(binary) as root:
@@ -3649,9 +3843,9 @@ def _run_stage(stage: _Stage, stage_name: str, args, report: dict[str, Any]
         # Erratum 4, step 5: the grant's passing rehearsal of this route, for its binary and
         # the context the code now enforces, or a non-zero exit and no pilot.
         route = args.require_rehearsed
-        current = context_digest()
+        runtime, current = running_binding()
         records = [item for item in ledger.rehearsals if item["route"] == route]
-        rehearsed = ledger.rehearsed(current, route)
+        rehearsed = ledger.rehearsed(current, route, runtime=runtime)
         report.update(route=route, status="rehearsed" if rehearsed else (
             "not_rehearsed" if records else
             "interrupted" if ledger.rehearsal_unresolved() else "no_rehearsal"),

@@ -344,7 +344,7 @@ jobs:
           PYTHONPATH=src:tests timeout 900 python -m pytest -p no:cacheprovider -q -rs \
             --junitxml="$RUNNER_TEMP/grok-egress-ns.xml" \
             tests/test_grok_measure_egress.py tests/test_grok_tool_surface_measure.py \
-            tests/test_grok_board_leg_frozen_basis.py
+            tests/test_grok_board_leg_frozen_basis.py tests/test_grok_seat_log_retention.py
           python3 - "$RUNNER_TEMP/grok-egress-ns.xml" <<'PYEOF'
           import sys
           import xml.etree.ElementTree as ET

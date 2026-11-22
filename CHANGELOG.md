@@ -51,6 +51,33 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   No Claude SDK proof input moves: `memfd_with` is called, not edited, and
   `SDK_PROOF_UNBOUND` is unchanged. No rows are added to
   `tests/data/seat_launch_references.json`.
+- The grok tool-surface measurement's tolerated refusals are keyed by binary image (lane E8-B
+  of `plans/artifacts/grok-tool-surface-contract-v1.md`, erratum 8 r3, items 2, 3, 5 and 7).
+  `TOLERATED_REFUSALS_BY_IMAGE` replaces `TOLERATED_REFUSALS`. Each row declares
+  `(method, host, path, cause, order)`. grok 1.0.89 keeps erratum 3's three entries, with
+  cause `rules` for `/v1/settings` and `front` for the two updater `CONNECT`s. grok 1.0.92
+  tolerates four startup GETs on the inference host and its pre-turn `POST /v1/responses`,
+  the last only strictly before the first inference request. An image with no entry
+  tolerates nothing. One predicate drives classification, rehearsal, the recorded counts and
+  the record validators, each against the record's own image. The proxy's `named` list
+  carries the identities only.
+  - **Definitions scan.** Before retaining or extracting the definitions artifact, the
+    measurement scans it for every registered credential value and its last 12 characters,
+    held in memory from the launch. A hit, or no values to scan with, gets the new status
+    `artifact_refused`: nothing is kept, and the route is never reprocessed or published.
+  - **Rehearsal binding.** The rehearsal records the running `runtime_digest`, and it
+    authorizes nothing once the runtime moves. Aggregation refuses with `context_mismatch`
+    and removes the host record unless every result and the passed rehearsal carry the
+    running runtime and context.
+  - **Rehearsal observations.** Each carries its `cause`. A raw path is kept only as the
+    record's own image's entry. A diagnostic label (from `seat_egress_proxy.DIAGNOSTIC_LABELS`,
+    lane E8-C) is kept only with its fixed method and host on a `rules` denial.
+  - **New tests** run a stand-in through the real launches. Its copies of a token suffix
+    reach only a failed launch's private provider log.
+  - **Pins.** `seat_window.runtime_digest()` moves for every qualification that uses it,
+    Gemini's included, and `STATUSES` gains `artifact_refused`. `context_digest` (beyond
+    E8-A's move), the allow-list digests, `proxy_sha256`, the agy QCI and the jail profile
+    digests are unchanged.
 
 ## [0.7.39] - Unreleased candidate
 
