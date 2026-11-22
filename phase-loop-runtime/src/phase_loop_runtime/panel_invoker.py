@@ -10126,7 +10126,11 @@ def _run_leg_with_liveness(
             # (grok tool-surface contract §4.4). A grok argv launches here only on a positive
             # decision of the gate itself, on a legacy or listing receipt: a frozen-basis
             # receipt, or one withdrawn or unreadable since the leg's early gate, refuses.
-            if Path(cmd[0]).name == "grok":
+            if Path(cmd[0]).name == "grok" and isinstance(seat_jail, _seat_jail.SeatJail):
+                # GROK SL-3 (jail contract §4.4): a real seat jail launches a grok argv only
+                # on the final verifier's mark for exactly this jail, argv, cwd and proxy.
+                _grok_jailed_spawn_check(cmd, seat_jail, cwd)
+            elif Path(cmd[0]).name == "grok":
                 admitted, basis = _grok_gate_with_basis(cmd, env)
                 if not admitted or basis != "list_tools":
                     raise _seat_jail.SeatSandboxRefused("grok_tool_surface_unverified")
@@ -14219,6 +14223,267 @@ def _exec_jailed_codex_leg(
         window_board.tool_steps = steps if type(steps) is int else None
     review = text.decode("utf-8", errors="replace")
     _note_exec_signals(model_turn=record.turn_completed, verdict=terminal_verdict(review) is not None)
+    return _classify_leg(proc.returncode, review, proc.stderr, "review"), review
+
+
+# --- GROK SL-3: the jailed Grok leg (jail contract §2-§5.1, IF-0-GROK-3) -------------------
+
+
+@dataclass
+class _JailedGrokSeat:
+    """One jailed Grok launch: the shared seat state, the staged credential (its scan values
+    stay in memory) and the proxy this launch owns. ``_JailedSeat`` is not extended: it is a
+    Claude SDK proof region."""
+
+    seat: _JailedSeat
+    credential: object = field(repr=False)
+    proxy: object = field(repr=False)
+
+    @property
+    def jail(self) -> "_seat_jail.SeatJail":
+        return self.seat.jail
+
+
+#: The staged form's tool controls, recorded with the launch evidence (jail contract §2.1).
+_JAILED_GROK_TOOL_CONTROLS = ("--permission-mode", "--disallowed-tools", "--tools",
+                              "--no-memory", "--no-subagents", "--disable-web-search")
+
+#: The jailed Grok launch the next jailed spawn of a ``grok`` argv belongs to:
+#: ``(seat, mode, measurement)``. The spawn check issues and admits a mark only for it.
+_GROK_JAILED_LAUNCH: ContextVar["tuple[_JailedGrokSeat, str, object] | None"] = ContextVar(
+    "grok_jailed_launch", default=None)
+
+
+def _grok_jailed_spawn_check(cmd, seat_jail, cwd) -> None:
+    """The jailed branch of the spawn check for a ``grok`` argv (jail contract §4.4): the
+    final verifier runs against this jail, proxy, holder, cwd and argv and must issue a mark
+    that admits exactly them. Unjailed, legacy and listing receipts never launch here."""
+    from . import grok_jail_surface as surface
+
+    launch = _GROK_JAILED_LAUNCH.get()
+    if launch is None or launch[0].jail is not seat_jail:
+        raise _seat_jail.SeatSandboxRefused(surface.REFUSED)
+    grok_seat, mode, measurement = launch
+    try:
+        holder = _seat_uid.holder_pid_from_prefix(_EGRESS_LAUNCH_PREFIX.get())
+    except (ValueError, IndexError):
+        raise _seat_jail.SeatSandboxRefused(surface.REFUSED) from None
+    context = surface.verify_jail_launch_context(
+        seat_jail, mode=mode, proxy=grok_seat.proxy, holder=holder, cwd=cwd, command=cmd,
+        credential=grok_seat.credential, measurement=measurement)
+    if not surface.admits(context, seat_jail, cmd, cwd):
+        raise _seat_jail.SeatSandboxRefused(surface.REFUSED)
+
+
+@contextlib.contextmanager
+def _grok_jailed_measurement_admission(grok_seat: _JailedGrokSeat, measurement):
+    """The jailed measurement admission (jail contract §4.4 measurement mode, §5.1): the
+    one measurement launch of ``grok_seat`` spawns only under the reservation's admission,
+    consumed at its spawn boundary. SL-4's flow enters this around its launch."""
+    from . import grok_jail_surface as surface
+
+    if not isinstance(measurement, surface.JailedMeasurementLaunch):
+        raise _seat_jail.SeatSandboxRefused(surface.REFUSED)
+    token = _GROK_JAILED_LAUNCH.set((grok_seat, "measurement", measurement))
+    try:
+        yield
+    finally:
+        _GROK_JAILED_LAUNCH.reset(token)
+
+
+def _remove_grok_staged(seat_dir: Path) -> None:
+    from .seat_profile_grok import remove_staged
+
+    for directory in (seat_dir, seat_dir / _JAIL_PROBE_DIRNAME):
+        try:
+            remove_staged(directory)
+        except OSError:
+            pass
+
+
+def _prepare_jailed_grok(
+    review_dir: Path, seat_dir: Path, review_authorization: "ReviewIsolationAuthorization",
+    seat_id: int, holder_pid: int, prompt_parts: tuple[str, str], egress, *,
+    env: Mapping[str, str] | None = None, deadline_s: float, measurement: bool = False,
+) -> _JailedGrokSeat:
+    """The jailed Grok seat before launch, in order: the tree re-hash (the per-launch copy
+    must equal ``staged_tree_sha256``), the root-owned subject, the staged read-only
+    ``.grok`` (credential margin = the leg deadline plus 300 s), the mask sources, the CA,
+    the jail through the production builder, the mount points before handoff, and a probe
+    jail of the same shape. A measurement's owner carries the sink bind (§5.1)."""
+    from . import grok_jail_surface as surface
+    from . import seat_grok_credential as cred
+    from . import seat_profile_grok as grok
+
+    tree = _approved_stage_or_refuse(review_dir, review_authorization)
+    subject = surface.resolve_subject(_broker_subscription_env(env))
+    executable = Path(subject.path)
+    jails: list = []
+    try:
+        seat_dir.mkdir(mode=0o700)
+        config = seat_dir / grok.HOST_GROK_CONFIG_DIRNAME
+        credential = cred.stage_grok_seat_credential(config, margin_s=float(deadline_s) + 300.0)
+        surface.staged_config_bytes()
+        grok.write_mask_sources(seat_dir)
+        ca = _write_egress_ca(seat_dir, egress.ca_cert)
+        artifact, instructions = prompt_parts
+        jail = _build_jail_with_owned_inputs(
+            "grok", seat_dir, executable, tree=tree,
+            artifact=artifact.encode(), instructions=instructions.encode(),
+            seat_ids=(seat_id, seat_id), gemini_config=config, egress_ca=ca,
+            egress_proxy=egress.proxy_url,
+        )
+        jails.append(jail)
+        grok.stub_mount_points(jail)
+        if measurement:
+            jail = replace(jail, process_owner=surface.measurement_owner(jail))
+            jails[0] = jail
+        probe_dir = seat_dir / _JAIL_PROBE_DIRNAME
+        (probe_dir / _seat_jail.HOST_TREE_DIRNAME).mkdir(mode=0o700, parents=True)
+        shape = grok.qualification_shape(probe_dir)
+        probe = _build_jail_with_owned_inputs(
+            "grok", probe_dir, executable, artifact=b"", instructions=b"",
+            seat_ids=(seat_id, seat_id), gemini_config=shape["gemini_config"],
+            egress_ca=shape["egress_ca"], egress_proxy=egress.proxy_url,
+        )
+        jails.append(probe)
+        grok.stub_mount_points(probe)
+        seat = _JailedSeat(jail, probe, holder_pid, b"", review_dir, seat_dir,
+                           source=_seat_credentials.SOURCE_LOGIN,
+                           expires_at=float(credential.expires_at))
+        return _JailedGrokSeat(seat, credential, egress)
+    except BaseException:
+        for built in jails:
+            _seat_jail.close_jail_fds(built)
+        _remove_grok_staged(seat_dir)
+        shutil.rmtree(seat_dir, ignore_errors=True)
+        raise
+
+
+def _exec_jailed_grok_leg(
+    grok_seat: _JailedGrokSeat, *, deadline_s: int, model: str, prompt: str,
+    broker_evidence: dict[str, object] | None, effort: str | None = None,
+    egress_evidence: Mapping[str, object] | None = None,
+    failure_detail_sink: list[_LegFailure] | None = None,
+    quiescence_latch: _ProviderQuiescenceLatch | None = None,
+    review_monitor: _ReviewMonitor | None = None,
+    window_board: "_WindowBoardLegRuntime | None" = None,
+    review_authorization: ReviewIsolationAuthorization | None = None,
+) -> tuple[str, str]:
+    """The Grok seat inside its jail (jail contract §2-§4.4): the ``staged`` form with
+    ``--cwd /seat/tree`` and the prompt on stdin, launched only on the mark the final
+    verifier issues at the spawn boundary. Every byte the parent keeps (stdout, stderr and
+    the returned text) is scanned for each delivered secret and its 12-character suffix
+    before it is retained; a hit retains nothing. The window kit's hooks run in Gemini's
+    order: ``start`` before the spawn, ``finish`` after it, then the seat is torn down."""
+    from . import grok_jail_surface as surface
+    from .seat_profile_grok import jailed_grok_command
+
+    seat, jail = grok_seat.seat, grok_seat.jail
+    command = list(jailed_grok_command(_seat_route_contract.ArgvInputs(
+        jail.provider_argv0, model=model, effort=effort or surface.PRODUCTION_EFFORT)))
+    password = urllib.parse.urlsplit(jail.env.get("HTTPS_PROXY", "")).password
+    secrets = tuple(dict.fromkeys((*grok_seat.credential.scan_values,
+                                   *((password.encode(),) if password else ()))))
+    observation = _EXEC_OBSERVATION.get()
+    if observation is not None:
+        observation["scan_secrets"] = secrets
+    proxy_secret = password.encode() if password else None
+    kinds = tuple("proxy_credential" if secret == proxy_secret else "bearer"
+                  for secret in secrets)
+    longest = max((len(secret) for secret in secrets), default=1)
+    tails = [b"", b""]
+    cursors = (_StreamCursor(keep=4 * longest), _StreamCursor(keep=4 * longest))
+    secret_seen = False
+
+    def guard(index):
+        def feed(chunk):
+            nonlocal secret_seen
+            window = tails[index] + chunk
+            hit = any(_seat_jail.contains_secret(window, secret) for secret in secrets)
+            if hit and not secret_seen:
+                _note_secret_match(_live_secret_match(
+                    "grok", window, len(tails[index]), cursors[index], secrets, kinds,
+                    ("stdout", "stderr")[index]))
+            secret_seen |= hit
+            tails[index] = window[-4 * longest:]
+            cursors[index].advance(chunk)
+            return secret_seen
+        return feed
+
+    proc = None
+    refreshed = None
+    if review_monitor is not None and review_monitor.cancel.is_set():
+        _note_exec_refusal_code("review_operation_cancelled")
+        _cleanup_jailed_seat(seat)
+        _remove_grok_staged(seat.seat_dir)
+        return "UNAVAILABLE", "review_operation_cancelled"
+    _record_broker_provider_evidence(
+        broker_evidence, harness="grok", model=model, command=command, prompt=prompt,
+        cwd=Path(surface.SEAT_CWD),
+        env={key: "<egress-proxy>" if key == "HTTPS_PROXY" else value
+             for key, value in jail.env.items()},
+        prompt_transport="stdin", stdin_prompt=True, no_tool_controls=_JAILED_GROK_TOOL_CONTROLS,
+    )
+    if broker_evidence is not None:
+        broker_evidence.update({
+            "provider_input_mode": "pointer", "provider_input_inline": False,
+            "provider_cwd_class": "seat_jail_tree_copy",
+            "sandbox_filesystem_confined": True,
+            "seat_jail_profile_id": jail.profile_id,
+            "seat_jail_profile_digest": jail.profile_digest,
+            "seat_jail_filter_sha256": jail.filter_digest,
+            **({"egress": dict(egress_evidence)} if egress_evidence is not None else {}),
+        })
+    token = _GROK_JAILED_LAUNCH.set((grok_seat, "board", None))
+    try:
+        if window_board is not None:
+            if quiescence_latch is None or review_authorization is None:
+                raise ValueError("qualification board launch is missing its binding")
+            if not window_board.start(seat, window_board.proxy, quiescence_latch, command,
+                                      prompt, review_authorization):
+                return _jailed_failure("seat_sandbox_refused:watch_unavailable",
+                                       failure_detail_sink)
+        try:
+            proc = _run_leg_with_liveness(
+                command, cwd=surface.SEAT_CWD, env=dict(jail.env), deadline_s=deadline_s,
+                input_text=prompt, stdout_guard=guard(0), stderr_guard=guard(1),
+                seat_jail=jail, probe_jail=seat.probe_jail, quiescence_latch=quiescence_latch,
+                **({"review_monitor": review_monitor} if review_monitor is not None else {}),
+            )
+        except subprocess.TimeoutExpired:
+            proc = None
+        refreshed = surface.after_check_in_h(
+            seat.holder_pid, str(seat.seat_dir / _seat_jail.HOST_HOME_DIRNAME))
+    finally:
+        _GROK_JAILED_LAUNCH.reset(token)
+        try:
+            if window_board is not None and quiescence_latch is not None:
+                window_board.finish(seat, _EGRESS_LAUNCH_PREFIX.get(), quiescence_latch)
+        finally:
+            try:
+                _cleanup_jailed_seat(seat, primary=sys.exception())
+            finally:
+                _remove_grok_staged(seat.seat_dir)
+    if proc is not None:
+        _note_exec_result(proc.returncode, command, jail.env)
+    kept = () if proc is None else (("stdout", proc.stdout.encode(errors="replace")),
+                                    ("stderr", proc.stderr.encode(errors="replace")))
+    if secret_seen or any(_seat_jail.contains_secret(data, secret)
+                          for _stream, data in kept for secret in secrets):
+        if not secret_seen:
+            _note_secret_match(_post_exit_secret_match("grok", kept, secrets, kinds))
+        return _jailed_failure("grok_seat_token_in_output", failure_detail_sink)
+    if refreshed is not None:
+        return _jailed_failure(refreshed, failure_detail_sink)
+    if proc is None:
+        return _jailed_failure("grok leg deadline exceeded", failure_detail_sink)
+    if proc.returncode != 0 and seat.expires_at is not None and time.time() >= seat.expires_at:
+        return _jailed_failure("grok_seat_token_expired", failure_detail_sink)
+    if window_board is not None:
+        window_board.tool_steps = None
+    review = proc.stdout
+    _note_exec_signals(verdict=terminal_verdict(review) is not None)
     return _classify_leg(proc.returncode, review, proc.stderr, "review"), review
 
 
@@ -19187,6 +19452,44 @@ def _default_spawn(
                             leg_detail = codex_sink[-1]
                             seat_notices.append(leg_detail.template)
                         return codex_status, codex_text
+                    if leg == "grok" and jailed:
+                        # GROK SL-3: the jailed Grok leg (jail contract §2-§4.4).
+                        grok_sink: list[_LegFailure] = []
+                        grok_seat = None
+                        if window_board is not None:
+                            window_board.proxy = gemini_egress
+                        try:
+                            grok_seat = _prepare_jailed_grok(
+                                review_dir, base / "seat", review_authorization, seat_id,
+                                _seat_uid.holder_pid_from_prefix(_EGRESS_LAUNCH_PREFIX.get()),
+                                (staged_bundle, staged_instructions), gemini_egress, env=env,
+                                deadline_s=leg_deadline,
+                            )
+                            _bind_route_qualification(grok_seat.seat, seat_route)
+                            grok_status, grok_text = _exec_jailed_grok_leg(
+                                grok_seat, deadline_s=int(leg_deadline), model=broker_model,
+                                effort=effort, prompt=sealed_prompt,
+                                broker_evidence=broker.evidence,
+                                egress_evidence=_seat_egress_proxy.egress_evidence(gemini_egress),
+                                failure_detail_sink=grok_sink, quiescence_latch=broker_latch,
+                                review_monitor=review_monitor, window_board=window_board,
+                                review_authorization=review_authorization,
+                            )
+                        except _WindowRefused as exc:
+                            grok_sink.append(_LegFailure(template=exc.code))
+                            grok_status, grok_text = "DEGRADED", ""
+                        except _seat_jail.SeatSandboxRefused as exc:
+                            _note_exec_refusal(exc, exc.code)
+                            grok_sink.append(_LegFailure(template=exc.code))
+                            grok_status, grok_text = "DEGRADED", ""
+                            seat_notices.extend(exc.also)
+                        if grok_seat is not None:
+                            seat_notices.extend(grok_seat.seat.notices)
+                        if grok_status != "OK" and grok_sink:
+                            leg_detail = grok_sink[-1]
+                            if leg_detail.template in _seat_jail.NOTICE_CODES:
+                                seat_notices.append(leg_detail.template)
+                        return grok_status, grok_text
                     if leg == "gemini" and jailed:
                         gemini_sink: list[_LegFailure] = []
                         if window_board is not None:

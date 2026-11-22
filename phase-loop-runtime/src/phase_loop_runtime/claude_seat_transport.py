@@ -1072,6 +1072,10 @@ SDK_PROOF_UNBOUND: Mapping[str, frozenset[str]] = MappingProxyType({
         # It runs only for an argv whose executable is `grok`, so never on the Claude SDK
         # path, which launches the claude CLI.
         "_grok_gate_with_basis",
+        # GROK SL-3: the jailed branch's grok spawn check in `_run_leg_with_liveness`. It
+        # runs only for a `grok` argv in a real seat jail, so never on the Claude SDK path,
+        # which launches the claude CLI.
+        "_grok_jailed_spawn_check",
         "_require_jailed_seat_identity", "_require_qualified_jail", "_require_seat_identity",
         "_resolve_claude_executable", "_seat_command_profile", "_validate_jail_dependency",
         "launch_owned",
