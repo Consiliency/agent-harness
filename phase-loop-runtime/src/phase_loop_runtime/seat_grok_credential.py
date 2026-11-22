@@ -80,21 +80,21 @@ SEAT_CONFIG_SHA256 = "2984e0c368943bb6c1627146e413995df12cca5820e782adffcb052a9b
 #: ``grok_tool_surface.seat_config`` is on main, :func:`seat_config_bytes` uses it and this
 #: transcription is only the fallback; SL-3 asserts the two are equal.
 _ERRATUM8_SEAT_CONFIG = (
-    b'[model."grok-4.7"]\n'
-    b'model = "grok-4.7"\n'
-    b'name = "grok-4.7 (pinned local entry)"\n'
+    b'[model."grok-4.7"]\n'  # model-id-source: erratum 8 r3 seat config bytes, verbatim
+    b'model = "grok-4.7"\n'  # model-id-source: erratum 8 r3 seat config bytes, verbatim
+    b'name = "grok-4.7 (pinned local entry)"\n'  # model-id-source: erratum 8 r3 seat config bytes, verbatim
     b'base_url = "https://cli-chat-proxy.grok.com/v1"\n'
     b'api_backend = "chat_completions"\n'
     b'\n'
-    b'[[model."grok-4.7".reasoning_efforts]]\n'
+    b'[[model."grok-4.7".reasoning_efforts]]\n'  # model-id-source: erratum 8 r3 seat config bytes, verbatim
     b'value = "low"\n'
     b'label = "Low Effort"\n'
     b'\n'
-    b'[[model."grok-4.7".reasoning_efforts]]\n'
+    b'[[model."grok-4.7".reasoning_efforts]]\n'  # model-id-source: erratum 8 r3 seat config bytes, verbatim
     b'value = "medium"\n'
     b'label = "Medium Effort"\n'
     b'\n'
-    b'[[model."grok-4.7".reasoning_efforts]]\n'
+    b'[[model."grok-4.7".reasoning_efforts]]\n'  # model-id-source: erratum 8 r3 seat config bytes, verbatim
     b'value = "high"\n'
     b'label = "High Effort"\n'
     b'\n'
