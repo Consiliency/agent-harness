@@ -18,6 +18,62 @@ publication. The qualification host installs the released
 `phase-loop-runtime[agy-watch]`, since the job signs its App token with the extra's
 `cryptography`.
 
+## 0.7.40 release preparation
+
+Expected, unpublished artifacts: `phase_loop_runtime-0.7.40-py3-none-any.whl`
+and `phase_loop_runtime-0.7.40.tar.gz`.
+
+Candidate only: no tag, publication or installation is claimed. The candidate is
+based on merged main after the published 0.7.39 release. It carries the jailed
+Grok seat lanes: the seat config as a sealed read-only projection
+(agent-harness#2061), the image-keyed tolerated refusals, log retention and
+rehearsal binding (agent-harness#2064), the five seat codes (agent-harness#2069),
+credential staging (agent-harness#2070), the Grok jail profile registered with its
+gate closed (agent-harness#2079) and the jailed launch site and its gate
+(agent-harness#2088). The jailed gate opens only on the owner's masked-projection
+confirmation, a hosted boundary record and an admitted jailed measurement; none
+ships and no lane writes them, so every grok route stays
+`grok_tool_surface_unverified`. The vendor-neutral seat window kit lands
+(agent-harness#2068), with Codex's window supplier (agent-harness#2082). A Codex
+row window is held: `qualify --window row --vendor codex` refuses with
+`codex_expired_leg_unfenced` before any claim, jail or proxy. The OI-1 refuse-all
+fence that would lift the hold (agent-harness#2094) is not in this release. The
+JEV Drill host adapter is integrated and off by default (agent-harness#2086);
+review launches are refused on native Windows, and Windows is not proven
+(agent-harness#2092). Fixes: a refused body-declaring request no longer crashes
+the egress proxy on Node 22 (agent-harness#2077), the Codex availability probe
+honours `CODEX_HOME` (agent-harness#2081), and a jailed Gemini seat's tooled stream
+accepts agy's bare `system_message` steps (agent-harness#2093). Test-only changes
+also landed (agent-harness#2066, agent-harness#2074), as did plan-only changes
+(agent-harness#2075, agent-harness#2076, agent-harness#2080, agent-harness#2083,
+agent-harness#2089, agent-harness#2090). The 0.7.40 changelog section lists the
+scope. The published 0.7.39 package remains unchanged. The package still requires
+Python 3.12 or newer.
+
+Live routes stay disabled. This candidate does not lift sandbox activation holds
+or grant installed-provider qualification. `seat_window.runtime_digest()` moves
+(the Grok, window-kit, Codex-supplier, JEV Drill and proxy changes, and the version
+bump itself), so seat-window qualification records keyed on the 0.7.39 value, or on
+an unreleased main checkout, no longer match and affected windows need one
+requalification after installation. `seat_window.release_identity()` is new in this
+release (agent-harness#2068). The seat jail qualification's live `proxy_sha256`
+binding moves with `proxy.mjs` (agent-harness#2077); no allow-list file changes. The
+Claude SDK proof inputs move too (`claude_seat_transport.py`, `seat_profiles.py`,
+`seat_route_contract.py`, `uv.lock` and three `panel_invoker` regions), but the SDK
+transport is not admitted, so no receipt is needed now. The Claude, Codex and
+Gemini jail profile digests, the agy seat QCI, store keys, and the shipped agy
+catalog and its records are unchanged from 0.7.39, so no agy image needs
+requalification; a `grok` jail profile digest is new. The agy validator identity
+stays `agy_validator_v1` with an unchanged verdict vector; only its source-closure
+pin moves (agent-harness#2093). The strict hermetic agy release gate still runs its
+own conformance suite and verifies the vendor archive at publication.
+
+Before publication, required candidate checks, standalone-wheel Gate A and the
+strict hermetic agy release gate must pass, and publication authority must be
+granted. Recording these gates does not authorize dispatch. After publication,
+verify registry artifacts, GitHub Release assets and the managed installation
+separately.
+
 ## 0.7.39 release preparation
 
 Expected, unpublished artifacts: `phase_loop_runtime-0.7.39-py3-none-any.whl`

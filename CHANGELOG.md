@@ -6,6 +6,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+## [0.7.40] - Unreleased candidate
+
 ### Added
 
 - The JEV Drill host adapter, integrated from the draft agent-harness#2071 (JEVHOST;
@@ -307,7 +309,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   The stall test counts one warning per notice episode, and cancels only after the retry is
   observed. Test code only.
 
-## [0.7.39] - Unreleased candidate
+## [0.7.39] - 2026-11-22
 
 ### Added
 
