@@ -88,6 +88,9 @@ jobs:
             exit 1
           fi
 
+      - name: Keep checked-out bytes unconverted (CRLF on Windows breaks the §5 digests)
+        run: git config --global core.autocrlf false
+
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -144,6 +147,9 @@ jobs:
             exit 1
           fi
           echo "sha=$JEVDRILL_REF" >> "$GITHUB_OUTPUT"
+
+      - name: Keep checked-out bytes unconverted (CRLF on Windows breaks the §5 digests)
+        run: git config --global core.autocrlf false
 
       - uses: actions/checkout@v4
         with:
