@@ -58,7 +58,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   seat's namespace (`grok_seat_token_refreshed_in_jail`), and the window kit's `start` and
   `finish` hooks in Gemini's order. A real seat jail now launches a `grok` argv only on the
   verifier's mark for that jail, argv, cwd, proxy and holder; unjailed, legacy and listing
-  receipts never launch there. The gate stays closed in practice: it opens only when the
+  receipts never launch there. `probe_grok_tools` (and so `seat-window probe-tools`)
+  reports the jailed basis for `staged`, and refused for every other form, only once
+  `staged_admission` holds for the resolved subject; until then its result is the
+  unjailed probe's, byte for byte (jail contract r6, §4.3 row 3). The gate stays closed in practice: it opens only when the
   owner's masked-projection confirmation, the hosted boundary record and an admitted jailed
   measurement exist, and no lane writes them. Pins: `seat_window.runtime_digest()` moves;
   the SDK proof bindings of `claude_seat_transport.py` (one `SDK_PROOF_UNBOUND` entry) and

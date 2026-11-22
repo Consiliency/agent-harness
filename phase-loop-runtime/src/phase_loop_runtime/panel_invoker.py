@@ -17622,6 +17622,28 @@ def _grok_frozen_snapshot(command, env=None) -> "tuple[tuple[str, ...], str] | N
     return seen[2]  # set only for a frozen-basis receipt (_grok_tool_gate)
 
 
+def _grok_jailed_probe(command):
+    """GROK SL-3, jail contract §4.3 row 3 (r6, president ruling (c)): the jailed basis of
+    ``probe_grok_tools``. ``None`` -- the unjailed probe decides, unchanged -- unless the
+    jailed subject resolves and ``grok_jail_surface.staged_admission`` holds for it (all
+    five §2.4 conditions). Then the ``staged`` form's receipt is the jailed one, read and
+    written only in the jailed store, and every other form reports refused."""
+    try:
+        from . import grok_jail_surface as surface
+
+        subject = surface.resolve_subject()
+        if surface.staged_admission(subject.sha256) is None:
+            return None
+    except Exception:  # noqa: BLE001 - no admission: the unjailed probe decides
+        return None
+    try:
+        if _grok_argv_digest(list(command)) == surface.staged_argv_digest():
+            return surface.write_jail_receipt(subject.sha256)
+    except Exception:  # noqa: BLE001 - an admitted subject never falls back to unjailed
+        pass
+    return {"passed": False, "public_code": "grok_tool_surface_unverified"}
+
+
 def probe_grok_tools(command, *, allowed_tools, runner=None):
     """Definition-only introspection, with no staged tree or model turn.
 
@@ -17629,7 +17651,14 @@ def probe_grok_tools(command, *, allowed_tools, runner=None):
     that advertises ``--list-tools`` is listed and never falls back. Any other build that
     answers ``--help`` and ``--version`` cleanly takes the frozen record measured on exactly
     this binary, argv form and the literal bytes of ``--version`` and ``--help`` under the
-    running launch context, if there is one; otherwise the receipt fails."""
+    running launch context, if there is one; otherwise the receipt fails.
+
+    Once a jailed ``staged`` admission holds for the resolved subject (GROK SL-3), the
+    jailed basis answers instead (:func:`_grok_jailed_probe`); until then nothing here
+    changes."""
+    jailed = _grok_jailed_probe(command)
+    if jailed is not None:
+        return jailed
     if runner is None:
         runner = lambda argv, **kw: run_provider(argv,
             child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE, **kw)

@@ -715,3 +715,34 @@ def test_the_write_confinement_record_holds_ids_and_current_digests():
             assert (REPO / path).exists(), selector
             source = (REPO / path).read_text(encoding="utf-8")
             assert f"def {name}(" in source, selector
+
+
+# --- Verifier placement (president ruling on agent-harness#2088): nothing between the mark
+# --- and the spawn alters the argv or the jail -----------------------------------------------
+
+
+def test_the_spawn_gets_exactly_the_argv_and_jail_the_verifier_marked(leg, monkeypatch):
+    """The verifier runs immediately before `launch_provider`; the SDK-region identity probe
+    inside it can only add refusals. This pins that the object spawned is the object marked:
+    the same jail (identity, owner argv, descriptors, env), the same argv, and the mark still
+    admits them at the spawn."""
+    seat = leg.prepare()
+    marked = []
+    real_verify = gjs.verify_jail_launch_context
+
+    def verify(jail, **kwargs):
+        context = real_verify(jail, **kwargs)
+        marked.append((context, jail, tuple(kwargs["command"]), kwargs["cwd"],
+                       tuple(jail.process_owner), tuple(jail.pass_fds), dict(jail.env)))
+        return context
+
+    monkeypatch.setattr(gjs, "verify_jail_launch_context", verify)
+    status, _text, failures, _evidence = _run(seat)
+    assert (status, failures) == ("OK", [])
+    (context, jail, command, cwd, owner, fds, env), = marked
+    (argv, spawned_owner), = leg.launches
+    assert spawned_owner is jail is seat.jail
+    assert tuple(argv) == command == context.command
+    assert (tuple(spawned_owner.process_owner), tuple(spawned_owner.pass_fds),
+            dict(spawned_owner.env)) == (owner, fds, env)
+    assert gjs.admits(context, spawned_owner, argv, cwd)

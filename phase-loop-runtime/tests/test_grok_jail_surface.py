@@ -801,3 +801,110 @@ def test_an_unjailed_config_differing_from_the_pinned_jailed_bytes_refuses(monke
     with pytest.raises(seat_jail.SeatSandboxRefused) as caught:
         gjs.staged_config_bytes()
     assert caught.value.code == "seat_profile_unavailable"
+
+
+# --- §4.3 row 3 (jail contract r6, ruling (c)): probe_grok_tools keyed on staged_admission --
+
+from test_grok_tool_surface import (  # noqa: E402 - lane L1's unjailed probe harness
+    SEAT_ROUTES, _form, _probe, _publish_host, _receipt_path, _seat_surface, seat as _l1_seat,
+)
+
+seat = _l1_seat
+
+
+def _unjailed_only(monkeypatch):
+    """The probe with the jailed branch removed: today's unjailed behaviour."""
+    monkeypatch.setattr(pi, "_grok_jailed_probe", lambda command: None)
+
+
+@pytest.fixture
+def probing(world, seat, monkeypatch):
+    """The unjailed L1 seat (a stand-in grok on PATH with a published host-local frozen
+    surface) beside a jailed subject whose admission the test opens or withholds."""
+    _publish_host(_seat_surface(seat))
+    monkeypatch.setattr(gjs, "resolve_subject",
+                        lambda env=None: gjs.JailedSubject(STAND_IN, world.binary))
+    return SimpleNamespace(world=world, seat=seat)
+
+
+def _every_form(seat):
+    results = {}
+    for route in pi.grok_runtime_forms():
+        command = _form(route)
+        receipt = _probe(command)
+        path = _receipt_path(seat, command)
+        results[route] = (receipt, path.read_bytes() if path.exists() else None)
+    return results
+
+
+@pytest.mark.parametrize("withheld", [*gjs.CONDITIONS, "subject"])
+def test_probe_is_byte_identical_to_the_unjailed_probe_without_admission(
+        probing, monkeypatch, withheld):
+    """Not held (each §2.4 condition removed alone, or no resolvable jailed subject): every
+    form's receipt and receipt file equal the unjailed probe's."""
+    world = probing.world
+    _open_gate(world.binary, world.launch, skip=("receipt", *(
+        (withheld,) if withheld in {"confirmation", "boundary", "record"} else ())))
+    if withheld == "enforcement":
+        monkeypatch.setattr(gjs, "ENFORCEMENT", "grok_jail_enforcement.v0")
+    elif withheld == "protection":
+        table = dict(grok.JAIL_PROTECTION)
+        del table[world.binary]
+        monkeypatch.setattr(grok, "JAIL_PROTECTION", MappingProxyType(table))
+    elif withheld == "subject":
+        def unresolved(env=None):
+            raise seat_jail.SeatSandboxRefused(REFUSED)
+        monkeypatch.setattr(gjs, "resolve_subject", unresolved)
+    assert withheld == "subject" or gjs.staged_admission(world.binary) is None
+    keyed = _every_form(probing.seat)
+    with monkeypatch.context() as patch:
+        _unjailed_only(patch)
+        unjailed = _every_form(probing.seat)
+    assert keyed == unjailed
+    assert any(receipt.get("passed") for receipt, _raw in unjailed.values())
+    assert gjs.read_private(gjs.receipt_name(world.binary, gjs.staged_argv_digest())) is None
+
+
+def test_probe_reports_the_jailed_basis_when_admission_holds(probing, monkeypatch):
+    """Held: the `staged` row reads and writes only the jailed receipt store and reports
+    the jailed basis; every other form reports refused; no unjailed receipt is written and
+    the runner is never asked."""
+    from phase_loop_runtime import seat_window
+
+    world = probing.world
+    _open_gate(world.binary, world.launch, skip=("receipt",))
+    assert gjs.staged_admission(world.binary) is not None
+    asked = []
+    monkeypatch.setattr(pi, "run_provider", lambda *a, **k: asked.append(a))
+    results = {}
+    for route in pi.grok_runtime_forms():
+        command = _form(route)
+        results[route] = pi.probe_grok_tools(
+            command, allowed_tools=pi._grok_allowed_tools(command),
+            runner=lambda argv, **kw: asked.append(argv))
+        assert not _receipt_path(probing.seat, command).exists(), route
+    staged = results.pop("staged")
+    assert staged["passed"] is True and staged["basis"] == "frozen_measurement"
+    assert staged["context"] == gjs.JAIL_CONTEXT and staged["surface_source"] == "host_local"
+    assert staged["launch_digest"] == world.launch
+    assert gjs.jail_receipt_matches(world.binary, world.launch) is not None
+    assert all(receipt == {"passed": False, "public_code": REFUSED}
+               for receipt in results.values()), results
+    assert asked == []
+    rows = {row["route"]: row for row in seat_window.probe_tool_rows()}
+    assert rows["staged"] == {"route": "staged", "passed": True, "basis": "frozen_measurement",
+                              "source": "host_local"}
+    assert all(not row["passed"] for route, row in rows.items() if route != "staged")
+    assert set(SEAT_ROUTES) <= set(rows)
+
+
+def test_probe_admission_is_read_for_the_resolved_subject_only(probing, monkeypatch):
+    """Admission held for another image does not switch the probe."""
+    world = probing.world
+    _open_gate(world.binary, world.launch)
+    monkeypatch.setattr(gjs, "resolve_subject",
+                        lambda env=None: gjs.JailedSubject(STAND_IN, "0" * 64))
+    keyed = _every_form(probing.seat)
+    with monkeypatch.context() as patch:
+        _unjailed_only(patch)
+        assert keyed == _every_form(probing.seat)
