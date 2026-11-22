@@ -1,4 +1,4 @@
-# K-1 window-kit contract: one kit for every vendor's row window (r5)
+# K-1 window-kit contract: one kit for every vendor's row window (r5.2)
 
 This file is the frozen input of `plans/amendments/seats-FIRSTSEAT-K1-window-kit.md`, which
 pins it by SHA-256. No lane edits it. A change is a plan amendment, and results bound to an
@@ -14,10 +14,14 @@ test"). It overrides the stall rule for this one change only. It changes only: t
 exception to §10's expired-copy rule; §10.B's expired copy, its A-C1 differential and pass
 condition; K1-T7; Q-D; and §15.4, the A-C1 run authority. Every other section is r4's text.
 r5.1 answers the r5 plan review inside the same scope:
-- the production expired leg's fence and its open item OI-1;
+- the production expired leg's fence, OI-1;
 - the named refresh denial and per-request bearer proof;
 - the A-C1 run's place in SL-6's order;
 - Q-D's triggers.
+
+r5.2 applies the president's three in-place fixes to r5.1: the mechanical Codex row-window
+hold; OI-1, decided by the owner the same day (§10.B); and Q-D restored to the r4 and SL-6 A-C1 ruling item 3
+dispositions.
 
 Pinned inputs (content digests, not history). The roadmap is pinned by the plan's frontmatter
 only.
@@ -637,31 +641,50 @@ data:
     fixture login's `exp` is 3600 s after its creation, which meets this.
   - **Expired copy.** On the shared clock its `exp` lies 3600 s before the transform, so it
     is inside the refresh window by at least 3900 s for the whole run.
-- **The production expired leg's fence (OI-1, open).** In a row window, the expired leg must
-  never contact the provider:
-  - After the named refresh denial is recorded, the leg's model request is blocked before
-    any upstream dial.
+- **The production expired leg's fence (OI-1, decided).** In a row window, the expired leg
+  never contacts the provider:
+  - Every request the leg makes after launch is refused before any upstream dial: routing
+    discovery, cloud config and the model request all carry the bearer (D1).
   - The leg is `refused_intended` when its complete fenced stream shows:
     - the named denial;
     - no allowed request of any kind;
     - `tokens_changed` false.
 
-  **Where the fence lives.** It cannot live in SL-6's own files. The supplier chooses only
-  the credential mode, the copy transform, the argv and the classification. Of these, only
-  argv could steer the model request, and that would be a provider or config override, which
-  is forbidden. The minimal candidate would be in the kit:
-  - `_open_window_launch` starts the expired leg's proxy with the existing narrowing
-    `refuse_all` mode and the production named set, so the model host's CONNECT is refused
-    like the token host's;
-  - the row verifier accepts that leg's refuse-all allowlist binding.
+  **The owner's decision (2026-11-22): "Block all its traffic (Recommended)".** This is a
+  contract change, owner-approved over the stall rule as part of this amendment. The fence:
+  - **The proxy.** `_open_window_launch` starts the expired leg's proxy in the existing
+    narrowing `refuse_all` mode, with the production named set. Every connection is
+    refused, and the named token-host denial is still recorded. No allowlist file, named
+    set or jail profile changes.
+  - **The reducer.** `seat_jail_qualification.reduce_containment` accepts that leg's
+    refuse-all allowlist binding. Today it requires `expired_copy`'s `allowlist_sha256` to
+    be the single production digest, or it returns `binding_mismatch`. The edit accepts the
+    refuse-all digest for `expired_copy` only when that leg's window data declares the
+    fence.
+  - **Ownership.** Both halves belong to one separate kit lane. It is not an SL-6 successor
+    edit, and it lands after SL-6.
+  - **That lane's gates:**
+    - the F10 Gemini golden byte-identical;
+    - Gemini's binding and W1 reduction unchanged;
+    - agy QCI unchanged, and the jail-profile and allowlist digests unmoved;
+    - `audit-order` passing;
+    - a red-first test that a Codex expired leg records no allowed event and makes no
+      upstream dial.
 
-  That candidate changes a leg's proxy refusal rules and an SL-5 verifier check, so this
-  contract does not adopt it. **OI-1 goes to the president and the owner.** Until OI-1 is
-  ruled and its fence lands:
-  - the production expired leg is unqualified;
-  - no Codex row grant is issued, and no Codex row window runs.
+    No new live A-C1 run is needed.
+  - **Recorded measurement gap.** A-C1 measures the expired copy under the production
+    allowlist, but the production leg runs refuse-all. Refuse-all can only remove allowed
+    outcomes, and a missing denial fails closed.
 
-  The provider-free A-C1 run below does not wait on OI-1.
+  **The hold.** Until that kit lane lands:
+  - the production expired leg is unqualified, and no Codex row grant is issued;
+  - SL-6 makes a Codex row window refuse with the typed row-ready code
+    `codex_expired_leg_unfenced` before any jail or proxy starts. A red-first offline test
+    proves that a row `qualify` refuses and launches nothing.
+
+  The kit lane's landing lifts the hold. The A-C1 test calls `_prepare_jailed_codex` and
+  `start_proxy` directly, so the hold does not affect it. The provider-free A-C1 run below
+  does not wait on the kit lane.
 - **A-C1, an offline acceptance gate** (SL-6.4, contract §15.4). It runs once SL-6.3 has
   built the A-C1 surface:
   - registration and kinds;
@@ -1028,23 +1051,13 @@ admits Grok.
 - SL-7 qualifies `print` only. SDK is not qualified by this amendment.
 - If OD-3b's record ever names a default other than `print`, SL-7 stops.
 
-**Q-D (r5.1): Codex is withdrawn on a failed verdict.** Codex is withdrawn from K-1 if the
-§15.4 run returns a failing verdict in any of its cases:
-- the fresh case fails;
-- the expired case fails;
-- the not-ready case violates K1-T7's erratum.
+**Q-D: a contingency stop (r5.2).** If K1-T7's expired case fails in the §15.4 run, SL-6
+stops. No replacement control is authorized.
+- The hold (§10.B) then stays in force for K-1, and SL-9 records the stop.
+- A fresh-case failure is not Q-D. It escalates to the owner.
+- The not-ready case never triggers Q-D. It is read under K1-T7's erratum.
 
-This follows the owner's decision of 2026-11-22: "If it fails, Codex is withdrawn from K-1".
-It supersedes the SL-6 A-C1 ruling item 3's keying of Q-D to the aged case alone. On
-withdrawal:
-- SL-6 stops and lands nothing.
-- Codex registers no window data under K-1, so no Codex row grant is issued.
-- SL-9 records the withdrawal with the run evidence and D1.
-- No further run, amendment or replacement control is authorized under K-1.
-
-A Codex row window would need a new owner decision outside this contract.
-
-### 15.4 A-C1 run authority (r5.1)
+### 15.4 A-C1 run authority (r5.2)
 
 One final provider-free run is authorized, and there is none after it.
 
@@ -1090,6 +1103,14 @@ One final provider-free run is authorized, and there is none after it.
 
      The result is no pass, with no verdict. There is no retry. The owner decides from the
      preserved evidence.
-  3. **A failing verdict** in any case (§10.B's failure conditions): Q-D.
+  3. **The verdict** (§10.B's failure conditions):
+     - the fresh case fails: no pass, escalated to the owner;
+     - otherwise, the expired case fails: Q-D;
+     - otherwise, the not-ready case falls outside K1-T7's erratum: no pass, escalated to
+       the owner.
   4. **A pass in all three cases:** SL-6 resumes with its remaining implementation, and the
-     production expired leg stays unqualified until OI-1 is ruled.
+     hold stays until the OI-1 kit lane lands.
+- **Test names.** The renamed live expired test keeps the `a_c1` token in its name, so
+  SL-6.2's `-k "not a_c1"` selector excludes it.
+- **Left to SL-6 code review.** Whether to require bearer digests for every allowed request,
+  `accounts/check` included, and not only model requests.
