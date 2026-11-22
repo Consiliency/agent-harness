@@ -198,6 +198,7 @@ class WindowLedger:
         self.routes = MappingProxyType(dict(routes or {}))
         self._clock = clock or (lambda: dt.datetime.now(dt.timezone.utc))
         self.composition: str | None = None
+        self.board: object | None = None
         self._lock = threading.Lock()
         self._counts = {item: 0 for item in ENVELOPE_ITEMS}
         self._seq = 0
@@ -206,15 +207,18 @@ class WindowLedger:
         os.close(fd)
 
     def bind(self, snapshot: Mapping[str, Mapping[str, object]],
-             routes: Mapping[str, str | None], *, composition: str | None = None) -> None:
+             routes: Mapping[str, str | None], *, composition: str | None = None,
+             board: object | None = None) -> None:
         """Bind the potential-route snapshot once, after composition and before the first
-        credential-bearing dispatch, with the composed board it was written for."""
+        credential-bearing dispatch, with the composed board it was written for (``board``
+        is that board itself, which the window's board launch reuses)."""
         with self._lock:
             if self.snapshot or self.routes:
                 raise WindowRefused("window_contract_bug")
             self.snapshot = MappingProxyType({key: dict(value) for key, value in snapshot.items()})
             self.routes = MappingProxyType(dict(routes))
             self.composition = composition
+            self.board = board
 
     def counts(self) -> dict[str, int]:
         with self._lock:
@@ -283,16 +287,32 @@ class WindowLedger:
             self._counts[item] += units
             return line
 
-    def start(self, item: str, *, route: str | None = None) -> dict:
-        """A start a call site already debited (a prepaid unit): the route check and its
-        launch time, with no second debit."""
+    def start(self, item: str, *, route: str | None = None,
+              actual: Mapping[str, object] | None = None) -> dict:
+        """A start a call site already debited (a prepaid unit). R6 is checked again at
+        the actual start, with no second debit: the route this start resolved must still
+        agree with its snapshot entry and its exception must be unexpired at this launch
+        time, or the start is refused and nothing is recorded."""
         with self._lock:
+            if route is None and isinstance(actual, Mapping):
+                route = actual.get("route_id")
             route = route if route is not None else self.routes.get(item)
             launch = self._clock()
+            exception = expiry = mode = transport = None
+            if route is not None:
+                entry = self.snapshot.get(route)
+                if not route_agrees(route, entry, actual):
+                    raise WindowRefused("window_exception_expired")
+                exception, expiry = entry.get("exception"), entry.get("expiry")
+                mode, transport = actual.get("mode"), actual.get("transport")
+                bound = _instant(expiry)
+                if bound is False or (bound is not None and not launch < bound):
+                    raise WindowRefused("window_exception_expired")
             self._seq += 1
             line = {"schema": "seat_window_ledger.v1", "seq": self._seq, "op": "start",
-                    "item": item, "units": 0, "route": None, "exception": None,
-                    "expiry": None, "launch_time": _iso(launch), "stage_sha256": None}
+                    "item": item, "units": 0, "route": route, "exception": exception,
+                    "expiry": expiry, "launch_time": _iso(launch), "stage_sha256": None,
+                    "resolved_mode": mode, "resolved_transport": transport}
             self._append(line)
             return line
 
@@ -399,8 +419,8 @@ def provider_start(argv, *, boundary: str = "launch") -> contextlib.AbstractCont
         raise WindowRefused("window_unbudgeted_start")
     with scope.lock:
         if scope.prepaid > 0:
+            ledger.start(scope.item, actual=scope.route)  # refuses before it is consumed
             scope.prepaid -= 1
-            ledger.start(scope.item)
         else:
             ledger.dispatch(scope.item, actual=scope.route)
     if boundary != "run":

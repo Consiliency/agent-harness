@@ -14729,7 +14729,18 @@ def _window_subject_dispatch(kind: str, stage_sha256: str | None):
     if seat_window_supply.call_site_dispatch(item, stage_sha256=stage_sha256,
                                              actual=_WINDOW_CONTROL_ROUTE) is None:
         return contextlib.nullcontext()
-    return seat_window_supply.item_scope(item, prepaid=1)
+    return _window_prepaid_scope(item, _WINDOW_CONTROL_ROUTE)
+
+
+@contextmanager
+def _window_prepaid_scope(item: str, route: Mapping[str, object] | None):
+    """A prepaid item scope carrying the route its call site resolved, so the start that
+    consumes the unit is checked against it again (R6) without a second debit."""
+    from . import seat_window_supply
+    with seat_window_supply.item_scope(item, prepaid=1):
+        if route is not None:
+            seat_window_supply.note_route(route)
+        yield
 
 
 @contextmanager
@@ -15776,16 +15787,16 @@ class _WindowPresidentInvoke:
             if transport is None:
                 raise seat_window_supply.WindowRefused("window_exception_expired")
             exception = _seat_route.load_route_policy().exceptions.get("claude")
-            self._ledger.dispatch("fable_president", route=f"president:fable:{transport}",
-                                  actual={
+            actual = {
                 "mode": "president", "transport": transport,
                 "exception": getattr(exception, "kind", None),
                 "expiry": exception.expiry.isoformat() if exception is not None else None,
-                "code": None})
+                "code": None, "route_id": f"president:fable:{transport}"}
+            self._ledger.dispatch("fable_president", route=actual["route_id"], actual=actual)
         except seat_window_supply.WindowRefused as exc:
             return {"status": "refused", "code": exc.code}
         with seat_window_supply.ledger_scope(self._ledger), \
-                seat_window_supply.item_scope("fable_president", prepaid=1):
+                _window_prepaid_scope("fable_president", actual):
             return self._invoke(model, prompt)
 
 
@@ -15831,9 +15842,17 @@ def window_board_launch(spec: WindowBoardSpec) -> WindowBoardResult:
             source_attempt=None,
         )
 
+    bound = getattr(ledger, "board", None) if ledger is not None else None
     try:
-        composition = compose_review_board_report()
-        outcome = composition.policy_outcome("plan")
+        if bound is not None:
+            # A row window runs the board it composed and bound before any launch. It is
+            # not recomposed here: that would re-run auth probes (after the auth cache's
+            # TTL) outside the window's approved envelope.
+            composition = SimpleNamespace(board=bound)
+            outcome = SimpleNamespace(status="admitted")
+        else:
+            composition = compose_review_board_report()
+            outcome = composition.policy_outcome("plan")
     except Exception:
         composition = None
         outcome = None

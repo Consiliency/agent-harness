@@ -891,7 +891,7 @@ def run_native_window(*, repo, monitoring_policy, host_class, model=None, vendor
                                             snapshot)
         row.ledger.bind(snapshot["entries"],
                         ledger_routes(vendor, snapshot["president_routes"]),
-                        composition=snapshot["board_sha256"])
+                        composition=snapshot["board_sha256"], board=row.board)
         binding, binding_digest = write_run_binding(
             vendor=vendor, context_id=context_id, account_label=account_label,
             attempt=row.attempt, data=data, exceptions_sha256=exceptions_sha256,
@@ -1897,7 +1897,9 @@ def _row_record_code(record, now, source_root, data) -> str | None:
                 row["expiry"]):
             return "window_exception_expired"
     for entry in ledger:
-        if entry["op"] != "dispatch" or entry["route"] is None:
+        # Every start that names a route: a debited dispatch, and a prepaid start the
+        # call site's dispatch covered.
+        if entry["op"] not in {"dispatch", "start"} or entry["route"] is None:
             continue
         bound = snapshot["entries"].get(entry["route"])
         if not supply.route_agrees(entry["route"], bound, {

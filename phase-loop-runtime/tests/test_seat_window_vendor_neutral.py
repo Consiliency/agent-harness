@@ -2149,7 +2149,6 @@ def test_k1_g3_degraded_grok_co_seat(tmp_path, monkeypatch, fixture_vendor):
     any credential, through to a row that the production verifier passes."""
     from phase_loop_runtime import panel_invoker as panel, president_adapter, seat_profiles
     from phase_loop_runtime import seat_window as w, seat_window_supply as supply
-    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
     from phase_loop_runtime.seat_route_contract import QualificationKey
     from harden_tdd_guard import invoke_sanctioned_board_control
     from president_fakes import deferring_president
@@ -2164,9 +2163,10 @@ def test_k1_g3_degraded_grok_co_seat(tmp_path, monkeypatch, fixture_vendor):
     _expiring_rows(monkeypatch, expiry=(ROW_NOW + dt.timedelta(hours=2)).isoformat())
     _guard_provider_spawns(monkeypatch)
     outer = SimpleNamespace(staged_tree_sha256="d" * 64, monitoring_policy="bounded")
+    # The board launch runs the composition the window bound at preflight; it never
+    # recomposes (which would re-probe auth outside the envelope).
     monkeypatch.setattr("phase_loop_runtime.advisor_board.composition.compose_review_board_report",
-                        lambda: SimpleNamespace(board=DEFAULT_BOARD, policy_outcome=lambda t:
-                                                SimpleNamespace(status="admitted")))
+                        lambda **kwargs: pytest.fail("the board launch recomposed"))
     monkeypatch.setattr(panel, "prepare_review_isolation_authorization", lambda *a, **k: outer)
     monkeypatch.setattr(panel, "close_review_isolation_authorization", lambda value: None)
     monkeypatch.setattr(panel, "set_review_instruction_digest", lambda value: object())
@@ -2869,3 +2869,125 @@ def test_k1_r6_a_same_label_board_substitution_refuses(tmp_path, monkeypatch, ch
         assert ran == ["president"] and result.composition == "admitted"
     else:
         assert ran == [] and result.composition == "refused"
+
+
+# ======================================================================================
+# Bot-review fix: the board past the auth-cache TTL, and route expiry at prepaid starts.
+# ======================================================================================
+
+def test_k1_bot_the_board_launch_past_the_auth_ttl_reuses_the_bound_composition(
+        tmp_path, monkeypatch):
+    """Preflight composes and caches auth under the window's ``auth_probe`` item. When
+    the control launches outlast the cache's TTL, the board launch must not recompose:
+    its probes would start outside any item and refuse, failing auth and the board."""
+    import subprocess as sp
+    from phase_loop_runtime import executor_availability as availability
+    from phase_loop_runtime import panel_invoker as panel, seat_profiles
+    from phase_loop_runtime import seat_window_supply as supply
+    from phase_loop_runtime.advisor_board import composition
+    clock = [1000.0]
+    monkeypatch.setattr(availability.time, "monotonic", lambda: clock[0])
+    availability.clear_auth_cache()
+    probes = []
+
+    def probe(command, *args, **kwargs):  # crosses the real provider boundary
+        argv = command.split() if isinstance(command, str) else list(command)
+        seat_profiles.window_provider_start(argv)
+        probes.append(argv[0])
+        return sp.CompletedProcess(argv, 0, '{"loggedIn": true} Logged in using ChatGPT', "")
+    monkeypatch.setattr(availability, "_run_probe", probe)
+    real_compose = composition.compose_review_board_report
+    monkeypatch.setattr(composition, "compose_review_board_report",
+                        lambda **kwargs: real_compose(
+                            is_available=lambda vendor: True,
+                            # the production auth gate: cached by the real TTL cache
+                            auth_ok=lambda vendor: composition.default_board_auth_ok(vendor),
+                            **kwargs))
+    ledger = supply.WindowLedger(tmp_path / "l.jsonl", dict(
+        supply.required_envelope("gemini"), auth_probe=64))
+    with supply.ledger_scope(ledger), supply.item_scope("auth_probe"):
+        composed = composition.compose_review_board_report()  # preflight, inside its item
+    assert composed.policy_outcome("plan").status == "admitted" and probes
+    ledger.bind({}, {}, composition=panel._window_board_composition_digest(composed.board),
+                board=composed.board)
+    clock[0] += availability._AUTH_TTL_SECONDS + 1  # the control launches took longer
+    probes.clear()
+
+    class BoardRan(Exception):
+        pass
+
+    def board_run(*a, **k):
+        raise BoardRan
+    monkeypatch.setattr(panel, "invoke_board", board_run)
+    monkeypatch.setattr(panel, "prepare_review_isolation_authorization",
+                        lambda *a, **k: SimpleNamespace(staged_tree_sha256="d" * 64))
+    monkeypatch.setattr(panel, "close_review_isolation_authorization", lambda value: None)
+    monkeypatch.setattr(panel, "set_review_instruction_digest", lambda value: object())
+    monkeypatch.setattr(panel, "reset_review_instruction_digest", lambda token: None)
+    monkeypatch.setattr(panel._sandbox_policy, "staging_root", lambda: tmp_path)
+    monkeypatch.setattr("phase_loop_runtime.president_adapter.build_president_invoke",
+                        lambda *a, **k: object())
+    with supply.ledger_scope(ledger):
+        result = panel.window_board_launch(panel.WindowBoardSpec(
+            qualification_input=SimpleNamespace(repo=tmp_path, layout=SimpleNamespace()),
+            monitoring_policy="bounded", leg="gemini"))
+    assert result.composition == "admitted"
+    assert probes == []  # no auth recheck outside the window's envelope
+    availability.clear_auth_cache()
+
+
+def _expiring_claude_ledger(tmp_path, clock):
+    from phase_loop_runtime import seat_window as w, seat_window_supply as supply
+    ledger = supply.WindowLedger(tmp_path / "expiry.jsonl", supply.required_envelope("gemini"),
+                                 clock=lambda: clock[0])
+    legs = ["claude", "codex", "grok"]
+    ledger.bind(w._snapshot_entries("gemini", legs), w.ledger_routes("gemini"))
+    return ledger
+
+
+@pytest.mark.parametrize("started", ["before_expiry", "after_expiry"])
+def test_k1_bot_a_prepaid_start_rechecks_its_route_expiry(tmp_path, monkeypatch, started):
+    """A reservation made just before the route's exception expires: the start that
+    consumes it is checked again, and refuses (without a second debit) once expired."""
+    from phase_loop_runtime import panel_invoker as panel, seat_profiles
+    from phase_loop_runtime import seat_window_supply as supply
+    expiry = dt.datetime.fromisoformat(
+        next(row for row in __import__("phase_loop_runtime.seat_window", fromlist=["x"])
+             .readiness_rows() if row["id"] == "vendor:claude")["expiry"])
+    clock = [expiry - dt.timedelta(seconds=1)]
+    ledger = _expiring_claude_ledger(tmp_path, clock)
+    with supply.ledger_scope(ledger), supply.item_scope("claude_seat"):
+        supply.note_route(_agreeing(ledger, "claude_seat"))  # the resolver's evidence
+        with panel._window_call_site("claude_seat"):  # reserved just before expiry
+            if started == "after_expiry":
+                clock[0] = expiry + dt.timedelta(seconds=1)  # the login proof took a while
+                with pytest.raises(supply.WindowRefused) as refused:
+                    seat_profiles.window_provider_start(["claude", "-p", "review"])
+                assert refused.value.code == "window_exception_expired"
+            else:
+                seat_profiles.window_provider_start(["claude", "-p", "review"])
+    lines = [json.loads(line) for line in ledger.path.read_text().splitlines()]
+    assert ledger.counts()["claude_seat"] == 1  # debited once, at the call site
+    assert [line["op"] for line in lines] == (
+        ["dispatch"] if started == "after_expiry" else ["dispatch", "start"])
+    if started == "before_expiry":
+        assert lines[1]["route"] == "vendor:claude" and lines[1]["expiry"] is not None
+
+
+def test_k1_bot_the_verifier_checks_prepaid_starts(row_world):
+    """A start line (no debit) that ran after its route's exception expired fails
+    verification, as a dispatch would."""
+    ctx = row_world.record()["context_id"]
+    name = f"window-ledger-codex-{ctx}.jsonl"
+
+    def append_expired_start(raw):
+        lines = raw.decode().splitlines()
+        claude = next(json.loads(line) for line in lines
+                      if json.loads(line).get("route") == "vendor:claude")
+        start = dict(claude, seq=len(lines) + 1, op="start", units=0,
+                     launch_time=(dt.datetime.fromisoformat(claude["expiry"])
+                                  + dt.timedelta(seconds=1)).isoformat())
+        return (raw.decode() + json.dumps(start, sort_keys=True, separators=(",", ":"))
+                + "\n").encode()
+    _forge_consistently(row_world, name, append_expired_start)
+    assert row_world.verify()["code"] == "window_exception_expired"
