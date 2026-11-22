@@ -141,9 +141,13 @@ def test_coordinator_snapshot_restarts_without_partial_result(mtls_material, mod
             if mode == 'stale-token': value['next_page_token'] = first['next_page_token']
             return value
         async with json_coordinator(mtls_material, [first, second, last]) as (config, calls):
+            # The snapshot age runs on the test's clock; the three TLS exchanges get an
+            # operation and connect budget a loaded runner cannot exhaust, so only the restart
+            # rule decides the outcome (agent-harness#2072).
+            config = replace(config, connect_timeout_s=5)
             client = ot.CoordinatorClient(config, local_owner_id='journal-owner', clock=lambda: clock[0])
-            assert await client.list_owned(ot.CallerAllowance(bound())) == ()
-            assert 'page_token' not in calls[-1][0]
+            assert await client.list_owned(ot.CallerAllowance(bound(30))) == ()
+            assert len(calls) == 3 and 'page_token' not in calls[-1][0]
     run(scenario())
 
 

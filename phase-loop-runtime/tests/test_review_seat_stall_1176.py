@@ -228,6 +228,11 @@ def test_live_but_progressless_seat_is_surfaced_not_killed(tmp_path, monkeypatch
     monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "t", 0, threading.Event(),
                                    stall_notice_s=.3)
     notices: list[dict] = []
+    # The stalled rows of the current notice episode. Genuine progress ends an episode. Under
+    # load, a slow start-up can stall the seat before its first progress, which is an episode
+    # of its own (agent-harness#2073), so the test waits for a steady episode, not a time.
+    episode: list[dict] = []
+    steady: list[dict] = []
     observe = monitor.observe
 
     def capture(*args, **kwargs):
@@ -235,8 +240,12 @@ def test_live_but_progressless_seat_is_surfaced_not_killed(tmp_path, monkeypatch
         row = json.loads(monitor.path.read_text())
         if row["progress_notice"] == "seat_progress_stalled":
             notices.append(row)
-            if len(notices) >= 5:  # well past the window, still waiting: now cancel it
+            episode.append(row)
+            if len(episode) >= 5 and not steady:  # well past the window, still waiting: cancel
+                steady.extend(episode)
                 monitor.cancel.set()
+        else:
+            episode.clear()
 
     monkeypatch.setattr(monitor, "observe", capture)
     guard = threading.Timer(20, monitor.cancel.set)
@@ -257,8 +266,10 @@ def test_live_but_progressless_seat_is_surfaced_not_killed(tmp_path, monkeypatch
     assert notices[0]["progress_notice_count"] == 1
     assert notices[0]["stall_notice_s"] == .3
     assert notices[0]["provider_terminal_state"] is None
+    # One notice per episode: the steady episode's five observations never count it again.
+    assert len(steady) == 5 and {row["progress_notice_count"] for row in steady} == {steady[0]["progress_notice_count"]}
     warnings = [r.getMessage() for r in caplog.records if "seat_progress_stalled" in r.getMessage()]
-    assert len(warnings) == 1, warnings
+    assert len(warnings) == steady[0]["progress_notice_count"], warnings
     assert "Thinking" not in warnings[0] and "Please perform" not in warnings[0]
 
 
