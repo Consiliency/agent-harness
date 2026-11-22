@@ -769,7 +769,7 @@ def _seat(tmp_path, copy, *, proxy_cred=_PROXY_CRED):
         auth.chmod(0o600)
     proxy = f"http://srt:{proxy_cred}@127.0.0.1:3128" if proxy_cred else ""
     return SimpleNamespace(
-        seat_dir=seat_dir, review_dir=tmp_path / "review", codex_copy=copy,
+        seat_dir=seat_dir, review_dir=tmp_path / "review", codex_copy=copy, holder_pid=1,
         delivered_copy=copy.data if copy is not None else b"", token=b"",
         jail=SimpleNamespace(env={"HTTPS_PROXY": proxy}))
 
@@ -805,8 +805,22 @@ def test_sl6_scope_is_measured_on_the_host_without_an_issuer_call(codex_supplier
         _seat(tmp_path / "none", None)) == "unavailable"
 
 
-def test_sl6_refresh_detection(codex_supplier, tmp_path):
+def _read_in_h_from_host(monkeypatch):
+    """The seat's files are read in H in production (``seat_uid.read_in_h``); here the fake
+    seat's own host files stand in, read at that boundary."""
+    from phase_loop_runtime import seat_uid
+
+    def read(holder_pid, root, relpath, cap_bytes, **kwargs):
+        path = Path(root) / relpath
+        if not path.exists():
+            raise seat_uid.SeatObjectMissing(relpath)
+        return path.read_bytes()[:cap_bytes]
+    monkeypatch.setattr(seat_uid, "read_in_h", read)
+
+
+def test_sl6_refresh_detection(codex_supplier, tmp_path, monkeypatch):
     from phase_loop_runtime import seat_codex_credential as cred, seat_jail
+    _read_in_h_from_host(monkeypatch)
     copy = cred.build_seat_copy(_login())
     seat = _seat(tmp_path, copy)
     assert codex_supplier.refresh_detected(seat) == "pass"
@@ -816,6 +830,8 @@ def test_sl6_refresh_detection(codex_supplier, tmp_path):
     auth.write_text(json.dumps(document))
     assert codex_supplier.refresh_detected(seat) == "codex_seat_token_refreshed_in_jail"
     assert codex_supplier.refresh_detected(_seat(tmp_path / "none", None)) == "unavailable"
+    auth.unlink()  # a removed copy is a credential event
+    assert codex_supplier.refresh_detected(seat) == "codex_seat_token_refreshed_in_jail"
 
 
 def test_sl6_secret_scan_is_the_copy_and_the_proxy_credential(codex_supplier, tmp_path):
@@ -872,6 +888,85 @@ def test_sl6_plant_layout_refuses_the_plugin_json_form(codex_supplier):
         codex_supplier.plant_layout(plugin_form="plugin_json", window=CODEX_WINDOW_ROWS)
 
 
+def test_sl6_seed_plants_runtime_rows_at_codex_paths_and_observes_the_home_row(
+        codex_supplier, tmp_path):
+    from phase_loop_runtime import seat_codex_credential as cred
+    from phase_loop_runtime.seat_profile_codex import CODEX_WINDOW_ROWS
+    layout = codex_supplier.plant_layout(plugin_form="nested", window=CODEX_WINDOW_ROWS)
+    seat = _seat(tmp_path, cred.build_seat_copy(_login()))
+    paths = codex_supplier.host_path_map(seat, credential=True)
+    (paths.seat_home / ".codex" / "auth.json").unlink()
+    codex_supplier.seed_runtime_plants(layout, paths)
+    nonces = {row.row_id: row.nonce for row in layout.rows}
+    home = paths.seat_home
+    assert nonces["provider_config:rules/default.rules"] in (
+        home / ".codex/rules/default.rules").read_text()
+    assert nonces["provider_config:AGENTS.md"] in (home / ".codex/AGENTS.md").read_text()
+    assert nonces["workdir:AGENTS.md"] in (home / "workspace/AGENTS.md").read_text()
+    assert nonces["home:AGENTS.md"] in (home / "AGENTS.md").read_text()
+    # The home row is the provider config's own file: planted once, never twice.
+    assert nonces["provider_config:config.toml"] in (home / ".codex/config.toml").read_text()
+    assert nonces["home:.codex/config.toml"] not in (home / ".codex/config.toml").read_text()
+    assert not (home / ".codex/.codex").exists() and not list(paths.tree.glob("*"))
+
+
+def test_sl6_seed_refuses_a_symlinked_runtime_ancestor(codex_supplier, tmp_path):
+    from phase_loop_runtime import seat_codex_credential as cred
+    from phase_loop_runtime import seat_jail_qualification as jailq
+    from phase_loop_runtime.seat_profile_codex import CODEX_WINDOW_ROWS
+    layout = codex_supplier.plant_layout(plugin_form="nested", window=CODEX_WINDOW_ROWS)
+    seat = _seat(tmp_path, cred.build_seat_copy(_login()))
+    paths = codex_supplier.host_path_map(seat, credential=True)
+    (tmp_path / "elsewhere").mkdir()
+    (paths.seat_home / "workspace").symlink_to(tmp_path / "elsewhere")
+    with pytest.raises(jailq.PlantLayoutRefused):
+        codex_supplier.seed_runtime_plants(layout, paths)
+    assert not list((tmp_path / "elsewhere").iterdir())
+
+
+def test_sl6_a_foreign_or_edited_layout_is_refused(codex_supplier, tmp_path):
+    from phase_loop_runtime import seat_jail_qualification as jailq
+    from phase_loop_runtime.seat_profile_codex import CODEX_WINDOW_ROWS
+    gemini = jailq.plant_layout(plugin_form="nested")
+    with pytest.raises(jailq.PlantLayoutRefused):
+        codex_supplier.build_qualification_input(gemini, tmp_path / "in")
+    layout = codex_supplier.plant_layout(plugin_form="nested", window=CODEX_WINDOW_ROWS)
+    edited = dataclasses.replace(layout, rows=layout.rows[:-1])
+    with pytest.raises(jailq.PlantLayoutRefused):
+        codex_supplier.build_qualification_input(edited, tmp_path / "in")
+
+
+def test_sl6_build_qualification_input_commits_the_tree_rows(codex_supplier, tmp_path):
+    import subprocess
+    from phase_loop_runtime import seat_jail_qualification as jailq
+    from phase_loop_runtime.seat_profile_codex import CODEX_TREE_ROWS, CODEX_WINDOW_ROWS
+    layout = codex_supplier.plant_layout(plugin_form="nested", window=CODEX_WINDOW_ROWS)
+    qi = codex_supplier.build_qualification_input(layout, tmp_path / "in")
+    assert isinstance(qi, jailq.QualificationInput) and qi.layout is layout
+    for path, _role in CODEX_TREE_ROWS:
+        assert (qi.repo / path).exists(), path
+    assert (qi.repo / jailq.WINDOW_READ_PATH).is_file()
+    head = subprocess.run(["git", "-C", str(qi.repo), "rev-parse", "HEAD"], check=True,
+                          capture_output=True, text=True).stdout.strip()
+    assert head == qi.commit and not subprocess.run(
+        ["git", "-C", str(qi.repo), "status", "--porcelain"], check=True,
+        capture_output=True, text=True).stdout
+
+
+def test_sl6_the_containment_watch_and_reducer_fail_closed(codex_supplier):
+    """Until Codex's own I-13 watch and reducer land, a Codex row window can never record
+    a passing containment result: each refuses (and the B1 hold keeps it from starting)."""
+    from phase_loop_runtime import seat_jail_qualification as jailq, seat_window_supply as supply
+    with pytest.raises(jailq.WatchUnavailable):
+        codex_supplier.arm_watch(None, None, kind="measured")
+    with pytest.raises(supply.WindowRefused, match="window_reduction_unavailable"):
+        codex_supplier.definition_probe(None, ())
+    with pytest.raises(supply.WindowRefused, match="window_reduction_unavailable"):
+        codex_supplier.reduce_containment(None)
+    assert codex_supplier.ContextBinding is jailq.ContextBinding
+    assert codex_supplier.ContainmentInputs is jailq.ContainmentInputs
+
+
 # --------------------------------------------------------------------------------------
 # F16: Codex through window_control_launch and the real _prepare_jailed_codex, with the
 # provider stubbed at its spawn boundary.
@@ -899,12 +994,22 @@ def _control_world(monkeypatch, tmp_path, supplier, *, stdout, stream=None, **st
 
     def spawn(command, **kwargs):
         seen["spawned"].append(list(command))
-        seen.setdefault("inputs", []).append(kwargs.get("input_text"))
+        if not str(command[0]).startswith("/usr/bin/python3"):  # not a kit bracket step
+            seen.setdefault("provider_spawned", []).append(list(command))
+            seen.setdefault("inputs", []).append(kwargs.get("input_text"))
         if isinstance(stdout, BaseException):
             raise stdout
         return SimpleNamespace(returncode=0, stdout=stdout)
     monkeypatch.setattr(panel, "_run_leg_with_liveness", spawn)
     seen["raw"] = raw
+    from phase_loop_runtime import seat_uid
+
+    def read_in_h(holder_pid, root, relpath, cap_bytes, **kwargs):
+        # The installed copy, as the seat's file reads back unchanged in H.
+        if not seen["installed"]:
+            raise seat_uid.SeatObjectMissing(relpath)
+        return seen["installed"][-1].data
+    monkeypatch.setattr(seat_uid, "read_in_h", read_in_h)
     return seen
 
 
@@ -929,13 +1034,17 @@ def test_sl6_f16_control_launches_through_the_real_prepare(
     elif installed == "live":  # byte-for-byte the production copy
         assert [item.data for item in seen["installed"]] == [production.data]
     else:
-        (aged,) = seen["installed"]
-        assert {k: v for k, v in json.loads(aged.data).items() if k != "last_refresh"} == {
-            k: v for k, v in json.loads(production.data).items() if k != "last_refresh"}
-        assert aged.data != production.data
+        (expired,) = seen["installed"]  # r5.2: only the access token's exp differs
+        after, before = json.loads(expired.data), json.loads(production.data)
+        assert {k: v for k, v in after["tokens"].items() if k != "access_token"} == {
+            k: v for k, v in before["tokens"].items() if k != "access_token"}
+        assert {k: v for k, v in after.items() if k != "tokens"} == {
+            k: v for k, v in before.items() if k != "tokens"}
+        assert _claims(after["tokens"]["access_token"])["exp"] < time.time()
     command = codex_supplier.launch_command(kind, qualification_input=None, model="m",
                                             plugin_paths=())
-    assert seen["spawned"] == [list(command[0])]  # exactly once, the supplier's argv
+    # Exactly once, the supplier's argv (the measured kind's kit bracket steps aside).
+    assert seen["provider_spawned"] == [list(command[0])]
     assert result.binding.argv_sha256 == panel._window_json_digest([list(command[0])])
     # The kit's own input, on stdin, bound by digest exactly as Gemini's.
     expected = (panel._WINDOW_CONTROL_INPUT if kind in CONTROL_KINDS
@@ -1008,7 +1117,7 @@ def test_sl6_f16_failure_modes_reach_a_closed_terminal_class(
     result = panel.window_control_launch(_codex_spec("measured", tmp_path))
     terminal = codex_supplier.terminal(result)
     assert terminal == expected and terminal in supply.TERMINAL_CLASSES
-    assert len(seen["spawned"]) <= 1  # never a retry
+    assert len(seen.get("provider_spawned", [])) <= 1  # never a retry
 
 
 def test_sl6_f16_measured_completes(codex_supplier, tmp_path, monkeypatch):
@@ -1050,7 +1159,7 @@ def test_sl6_f16_a_window_launch_never_retries(codex_supplier, tmp_path, monkeyp
     seen = _control_world(monkeypatch, tmp_path, codex_supplier, stdout=_FAILED,
                           stream=_stream(_DENIED_TOKEN))
     panel.window_control_launch(_codex_spec("expired_copy", tmp_path))
-    assert len(seen["spawned"]) == 1
+    assert len(seen["provider_spawned"]) == 1
 
 
 # --------------------------------------------------------------------------------------
