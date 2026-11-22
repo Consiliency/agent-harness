@@ -96,8 +96,13 @@ def test_the_grok_id_stays_reserved_for_the_jailed_seat():
         seat_egress_proxy.allowlist("grok")
     assert caught.value.code == seat_egress_proxy.ALLOWLIST_MISSING_CODE
     assert seat_egress_proxy.GROK_REVIEW_ALLOWLIST == "grok-review"
-    assert all(profile.allowlist_id != "grok-review"
-               for profile in seat_profiles._REGISTRY.values())
+    # Reserved FOR the jailed seat (IF-0-GROK-2, ruling 4): only the registered Grok jail
+    # profile, the `grok` leg defined by `seat_profile_grok`, adopts it.
+    users = {leg: profile for leg, profile in seat_profiles._REGISTRY.items()
+             if profile.allowlist_id == "grok-review"}
+    assert set(users) <= {"grok"}
+    for profile in users.values():
+        assert profile.owner_binds.__module__ == "phase_loop_runtime.seat_profile_grok"
 
 
 def test_no_grok_review_host_is_listed_by_another_seat():
