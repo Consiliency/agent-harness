@@ -572,7 +572,8 @@ BRACKET_SIGNATURES = MappingProxyType({
 })
 TOKEN_POST_STEP = "token_post"
 TOKEN_POST_SIGNATURE = "proxy_connect_refused"
-#: The allowed host (``codex-allowlist.json``) and one measured-and-refused host on its domain.
+#: The allowed host (the packaged ``codex`` allowlist, read only through ``allowlist_ref``)
+#: and one measured-and-refused host on its domain.
 BRACKET_ALLOWED_HOST, BRACKET_REFUSED_HOST = MODEL_HOST, "ab.chatgpt.com"
 #: ``decisions``' refused hosts (``ab.chatgpt.com``, measured and refused) and the allowlist's
 #: unlisted probe host (``seat_egress_proxy._probe_rows``): each refused at ``CONNECT``.
