@@ -14,7 +14,6 @@ import argparse
 import contextlib
 import ctypes
 from dataclasses import replace
-import fcntl
 from hashlib import sha256
 import hmac
 import json
@@ -38,6 +37,7 @@ from typing import Callable, Literal, NamedTuple
 from . import __version__
 from . import agy_provenance
 from . import gemini_heartbeat as gh
+from .file_lock import acquire_exclusive
 
 # The files an installed wheel runs the qualified route from (agent-harness#1076 D2).
 # ``runtime_identity`` reports their digests. Since RECBIND no CI gate pins them: catalog
@@ -522,6 +522,8 @@ def _network_owner_pid(pid):
     network namespace. Since agent-harness#1052 an ordinary owned provider runs in a nested
     user namespace with no capabilities, so entering the PROVIDER's user namespace cannot
     read the holder's egress rules; the owner's user namespace can."""
+    if sys.platform != "linux":
+        raise QualificationFailure(SELF_QUALIFICATION_UNAVAILABLE)
     import fcntl
     net_fd = os.open(f"/proc/{pid}/ns/net", os.O_RDONLY | os.O_CLOEXEC)
     try:
@@ -1327,6 +1329,8 @@ class Store:
         """Once per key per user per host (I3): a flock on a CLOEXEC fd; waiters stay
         cancellable and emit heartbeats. ``dir_fd`` is an already verified descriptor of
         ``host_dir`` (the HOLD cache's anchor): the lock is then opened relative to it."""
+        if sys.platform != "linux":
+            raise ValueError(SELF_QUALIFICATION_UNAVAILABLE)
         fd = os.open("lock" if dir_fd is not None else self.host_dir / "lock",
                      os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=dir_fd)
         try:
@@ -1337,7 +1341,7 @@ class Store:
                 if cancel_event is not None and cancel_event.is_set():
                     raise ValueError(CANCELLED)
                 try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquire_exclusive(fd, blocking=False)
                     break
                 except BlockingIOError:
                     if heartbeat is not None:
@@ -1359,7 +1363,7 @@ class Store:
             if not stat.S_ISREG(info.st_mode) or info.st_uid != self.euid or stat.S_IMODE(info.st_mode) != 0o600:
                 raise ValueError(STORE_UNSAFE)
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquire_exclusive(fd, blocking=False)
             except BlockingIOError:
                 yield False
                 return
@@ -1820,6 +1824,8 @@ def lookup(env, data, path, *, store=None):
     against the live key (5.1 option (b)); the qualified entry is then verified against the
     full live key, including the measured help. A miss raises ``AdmissionMiss``.
     """
+    if sys.platform != "linux":
+        raise ValueError(SELF_QUALIFICATION_UNAVAILABLE)
     image = data if isinstance(data, gh.VerifiedImage) else None
     handed_off = False  # the memfd leaves only inside an Admission or an AdmissionMiss
     try:
@@ -1985,6 +1991,8 @@ def admit_seat(env, subject_path, *, first_use=False, cancel_event=None, heartbe
     is called whether the caller then raises or a hold admits another image. Such a refusal
     stays hold-eligible as ``provenance_unverified`` and counts no transient.
     """
+    if sys.platform != "linux":
+        raise ValueError(SELF_QUALIFICATION_UNAVAILABLE)
     try:
         gh._local_capabilities()
     except (OSError, gh.AgyCanaryEvidenceError, ValueError) as exc:
@@ -2603,6 +2611,9 @@ def verified_fd_image(fd):
     made before it was added can still change the bytes. Any cross-process hand-off of
     an image memfd must go through this check (claude §2 on agent-harness#1118).
     """
+    if sys.platform != "linux":
+        raise QualificationFailure(SELF_QUALIFICATION_UNAVAILABLE)
+    import fcntl
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
@@ -2631,6 +2642,8 @@ def provenance_gate(image_sha256, *, store=None):
 
 
 def _set_parent_death_signal():
+    if sys.platform != "linux":
+        raise QualificationFailure(SELF_QUALIFICATION_UNAVAILABLE)
     try:
         libc = ctypes.CDLL(None, use_errno=True)
         if libc.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0) != 0:

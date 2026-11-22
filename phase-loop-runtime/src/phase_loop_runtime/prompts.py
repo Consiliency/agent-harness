@@ -236,7 +236,7 @@ def build_skill_maintenance_prompt(options, corpus_dir: Path | None = None) -> s
 
 
 def _plan_execution_body(repo: Path, roadmap: Path, phase: str | None) -> str:
-    roadmap_rel = roadmap_repo_relative_path(repo, roadmap)
+    roadmap_rel = Path(roadmap_repo_relative_path(repo, roadmap)).as_posix()
     plan_rel = _expected_plan_artifact_path(roadmap, phase)
     try:
         roadmap_hash = roadmap_fingerprint(roadmap)

@@ -144,9 +144,13 @@ class Provenance:
 _ARCH = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}
 
 
-def detect_platform(*, uname=os.uname, libc_ver=_platform.libc_ver,
+def detect_platform(*, uname=None, libc_ver=_platform.libc_ver,
                     musl_loaders=lambda: glob.glob("/lib/ld-musl-*.so.1")) -> HostPlatform:
     """The RUNNING host's platform (D4). Reads no config and no environment."""
+    if uname is None:
+        uname = getattr(os, "uname", None)
+    if uname is None:
+        raise ProvenanceError(UNSUPPORTED)
     info = uname()
     if info.sysname != "Linux" or info.machine not in _ARCH:
         raise ProvenanceError(UNSUPPORTED)
