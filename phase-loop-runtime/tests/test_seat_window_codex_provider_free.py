@@ -344,13 +344,74 @@ def test_k1_t7_under_the_opt_in_missing_prerequisites_and_skips_fail(monkeypatch
 # A-C1: the live cases.
 # --------------------------------------------------------------------------------------
 
+#: r5.2 §10.B: the fresh copy's access ``exp`` must clear the launch clock by this much
+#: (0.167.0 refreshes at ``exp <= now + 300``; the A-C1 deadline is 120 s).
+FRESH_ACCESS_MARGIN_S = 900
+REFRESH_WINDOW_S = 300
+_MODEL_TARGET = "/backend-api/codex/responses"
+
+
+def bearer_sha256(access_token: str) -> str:
+    """The sha256 of the ``Authorization`` value a copy's access token presents."""
+    return hashlib.sha256(("Bearer " + access_token).encode("utf-8")).hexdigest()
+
+
+def authorization_sha256(headers) -> str | None:
+    """The sha256 of a request's ``Authorization`` header, or ``None`` when it is absent."""
+    value = headers.get("authorization") if headers else None
+    return hashlib.sha256(value.encode("latin-1")).hexdigest() if value else None
+
+
+def model_bearer_digests(records) -> list:
+    """The recorded ``Authorization`` digest of each model request the responder answered."""
+    return [digest for method, target, digest in records
+            if method == "POST" and target.split("?", 1)[0] == _MODEL_TARGET]
+
+
+def access_exp(data: bytes) -> int:
+    token = json.loads(data)["tokens"]["access_token"]
+    payload = token.split(".")[1]
+    return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))["exp"]
+
+
+def assert_fresh_margin(copy, *, launch_clock: float) -> None:
+    """r5.2 §10.B, checked before the fresh case spawns."""
+    if access_exp(copy.data) < launch_clock + FRESH_ACCESS_MARGIN_S:
+        pytest.fail("A-C1: the fresh copy's access exp is inside the 900 s launch margin")
+
+
+def assert_expired_margin(copy, *, launch_clock: float) -> None:
+    """r5.2 §10.B: the expired copy is inside 0.167.0's refresh window for the whole run."""
+    if access_exp(copy.data) + REFRESH_WINDOW_S > launch_clock:
+        pytest.fail("A-C1: the expired copy's access exp is outside the refresh window")
+
+
+def not_ready_erratum_holds(terminal: str, events) -> bool:
+    """K1-T7 (r5 erratum): ``not_ready``, or ``timeout`` at the CLI's own deadline, with no
+    token-host event, no model request and no allowed request."""
+    return (terminal in {"not_ready", "timeout"}
+            and not any(getattr(event, "host", None) == TOKEN_HOST for event in events)
+            and not any(getattr(event, "method", None) == "POST"
+                        and getattr(event, "host", None) == MODEL_HOST
+                        and getattr(event, "path", None) == MODEL_PATH for event in events)
+            and not any(getattr(event, "decision", None) == "allow" for event in events))
+
+
 class _BearerRecorder:
-    """Mixin for the loopback responder: keeps the bearer each request presented."""
+    """Mixin for the loopback responder (an observation only; every response is the
+    consumed responder's, unchanged): the bearer each request presented, and for each
+    request answered its method, target and ``Authorization`` sha256 (``None`` if absent)."""
 
     def _drain_body(self, tls, headers, rest):
         with self._lock:
             self.bearers.append(headers.get("authorization", ""))
+        self._local.authorization = authorization_sha256(headers)
         return super()._drain_body(tls, headers, rest)
+
+    def _respond(self, tls, method, target):
+        with self._lock:
+            self.auth_records.append((method, target, getattr(self._local, "authorization", None)))
+        return super()._respond(tls, method, target)
 
 
 def test_k1_t7_bearer_and_authorization_digests():
@@ -510,10 +571,10 @@ def _write_evidence(case: str, document: dict) -> None:
 
 def _a_c1(tmp_path, monkeypatch, codex_upstream, *, case):
     """One A-C1 launch through the real prepare path and the supplier's own command and
-    classification. ``case``: ``fresh`` (measured), ``aged`` (expired_copy) or
-    ``not_ready`` (expired_copy's command with no copy installed)."""
+    classification. ``case``: ``fresh`` (measured), ``expired`` (expired_copy, the r5.2
+    expired-access copy) or ``not_ready`` (expired_copy's command with no copy installed)."""
     from phase_loop_runtime import panel_invoker as pi, sandbox_egress, seat_egress_proxy
-    from phase_loop_runtime import seat_jail, seat_uid
+    from phase_loop_runtime import seat_codex_credential as cred, seat_jail, seat_uid
     from phase_loop_runtime import seat_window_supply_codex as supplier
     from fixtures.codex_fixture_provider import CodexFixtureProvider
 
@@ -542,7 +603,7 @@ def _a_c1(tmp_path, monkeypatch, codex_upstream, *, case):
 
     def responder(*args, **kwargs):
         provider = upstream_class(*args, command="cat /seat/tree/window-read.txt", **kwargs)
-        provider.bearers = []
+        provider.bearers, provider.auth_records = [], []
         return provider
     upstream = codex_upstream(hosts=[MODEL_HOST], upstream_class=responder)
     kind = "measured" if case == "fresh" else "expired_copy"
@@ -574,6 +635,12 @@ def _a_c1(tmp_path, monkeypatch, codex_upstream, *, case):
                         env=fixture_env, credential_mode=mode,
                         copy_transform=supplier.copy_transform if mode == "expired" else None)
                     bound_image = pi._window_bound_image_sha256(seat)
+                    installed = seat.codex_copy
+                    launch_clock = time.time()
+                    if case == "fresh":  # r5.2 §10.B, before the spawn
+                        assert_fresh_margin(installed, launch_clock=launch_clock)
+                    elif case == "expired":
+                        assert_expired_margin(installed, launch_clock=launch_clock)
                     start = seat_egress_proxy.fence(proxy, "start", "leg")
                     timed_out, exit_code, stderr = False, None, ""
                     try:
@@ -587,16 +654,35 @@ def _a_c1(tmp_path, monkeypatch, codex_upstream, *, case):
                         timed_out, stdout = True, ""
                     bridge = sandbox_egress.wait_bridge_exit(prefix)
                     end = seat_egress_proxy.fence(proxy, "end", "leg") if bridge else None
+                    # The pre-teardown read (r5.2 §10.B): did the seat's copy change?
+                    if installed is not None:
+                        try:
+                            observed = seat_uid.read_in_h(
+                                seat.holder_pid, str(seat.seat_dir / seat_jail.HOST_HOME_DIRNAME),
+                                cred.SEAT_AUTH_RELPATH, cred.AUTH_CAP_BYTES)
+                        except Exception:
+                            observed = b""  # unreadable counts as changed
+                        tokens_changed = cred.tokens_changed(installed, observed)
+                    else:
+                        tokens_changed = None
                 finally:
                     if seat is not None:
                         pi._cleanup_jailed_seat(seat)
                     pi._EGRESS_LAUNCH_PREFIX.reset(token)
         stream = seat_egress_proxy.proxy_stream(proxy)
     status, model_turn, tools, subagents = supplier.stream_facts(stdout)
+    installed_token = (json.loads(installed.data)["tokens"]["access_token"]
+                       if installed is not None else None)
+    expected_bearer = bearer_sha256(installed_token) if installed_token else None
+    model_digests = model_bearer_digests(upstream.auth_records)
     observation = SimpleNamespace(
         kind=kind, status=status, model_turn=model_turn, tool_steps=tools,
         subagent_steps=subagents, timed_out=timed_out, error=None, quiescent=True,
-        bridge_exited=bridge, stream=stream)
+        bridge_exited=bridge, stream=stream,
+        scan={"refresh": ("unavailable" if tokens_changed is None else
+                          "codex_seat_token_refreshed_in_jail" if tokens_changed else "pass")},
+        # The loopback fixture's bearer proof (r5.2 §10.B; fixture only).
+        bearer_proof={"expected_sha256": expected_bearer or "", "model_requests": model_digests})
     events = [event for window in stream.windows if window.label == "leg"
               for event in window.events]
     terminal = supplier.terminal(observation)
@@ -612,8 +698,12 @@ def _a_c1(tmp_path, monkeypatch, codex_upstream, *, case):
         "allowlist_digest": proxy.allowlist_digest,
         "upstream_connections": upstream.connections, "upstream_requests": [
             [method, target] for _sni, method, target, _host in upstream.requests],
-        "bearer_is_synthetic": all(bearer == "Bearer " + login["tokens"]["access_token"]
+        "bearer_is_synthetic": all(bearer == "Bearer " + (installed_token or "")
                                    for bearer in upstream.bearers if bearer),
+        "auth_records": [list(record) for record in upstream.auth_records],
+        "expected_bearer_sha256": expected_bearer, "model_bearer_digests": model_digests,
+        "tokens_changed": tokens_changed, "launch_clock": int(launch_clock),
+        "installed_access_exp": access_exp(installed.data) if installed is not None else None,
         "decoy_hits": len(hits), "images": [digest for _src, digest in evidence.images],
         "host_runs": [digest for _src, digest in evidence.host_runs],
         "bound_image": bound_image,
@@ -627,7 +717,8 @@ def _a_c1(tmp_path, monkeypatch, codex_upstream, *, case):
     assert decoy["bearer"] not in "".join(upstream.bearers)
     assert not upstream.problems
     return SimpleNamespace(observation=observation, events=events, upstream=upstream,
-                           login=login, terminal=terminal,
+                           login=login, terminal=terminal, expected_bearer=expected_bearer,
+                           model_digests=model_digests, tokens_changed=tokens_changed,
                            token_events=[e for e in events if supplier.token_endpoint(e)],
                            model_events=[e for e in events if (e.method, e.host, e.path)
                                          == ("POST", MODEL_HOST, MODEL_PATH)])
@@ -637,25 +728,37 @@ def _a_c1(tmp_path, monkeypatch, codex_upstream, *, case):
 @_no_skip
 def test_k1_t7_a_c1_fresh_copy_completes_its_local_model_request(
         tmp_path, monkeypatch, codex_upstream, live_seat_attempt):
+    """r5.2 §10.B fresh pass: no token-host event of any kind; the first POST is the
+    model request, answered by the loopback responder; every model request carries the
+    fresh bearer; the launch ends ``completed``."""
     run = _a_c1(tmp_path, monkeypatch, codex_upstream, case="fresh")
-    # The differential control (ruling 3a): no token-host event of any kind.
     assert not any(event.host == TOKEN_HOST for event in run.events), run.events
     posts = [event for event in run.events if event.method == "POST"]
     assert posts and posts[0] == run.model_events[0], run.events  # the first POST
+    assert run.upstream.bodies, "the loopback responder answered no model request"
+    assert run.model_digests and all(
+        digest == run.expected_bearer for digest in run.model_digests), run.model_digests
     assert run.terminal == "completed", (run.observation, run.events)
-    assert run.upstream.bearers and all(
-        bearer == "Bearer " + run.login["tokens"]["access_token"]
-        for bearer in run.upstream.bearers if bearer)
 
 
 @pytest.mark.host_seat_credentials
 @_no_skip
-def test_k1_t7_a_c1_aged_copy_ends_refused_intended(
+def test_k1_t7_a_c1_expired_copy_ends_refused_intended(
         tmp_path, monkeypatch, codex_upstream, live_seat_attempt):
-    run = _a_c1(tmp_path, monkeypatch, codex_upstream, case="aged")
-    assert run.token_events and all(e.decision == "deny" for e in run.token_events), run.events
-    assert run.model_events == [], run.events  # none before the denial and none after
-    assert run.upstream.bodies == []
+    """r5.2 §10.B expired pass: the named refresh denial before any model request, no
+    request event to the token host, no credential change, and every later model request
+    (D1's cached fallback; fixture only) carrying the installed expired bearer."""
+    run = _a_c1(tmp_path, monkeypatch, codex_upstream, case="expired")
+    token_host = [i for i, e in enumerate(run.events) if e.host == TOKEN_HOST]
+    assert token_host and all((run.events[i].method, run.events[i].path,
+                               run.events[i].decision) == ("CONNECT", None, "deny")
+                              for i in token_host), run.events
+    models = [i for i, e in enumerate(run.events) if (e.method, e.host, e.path)
+              == ("POST", MODEL_HOST, MODEL_PATH)]
+    assert all(i > token_host[0] for i in models), run.events
+    assert run.tokens_changed is False
+    assert len(run.model_digests) == len(models) and all(
+        digest == run.expected_bearer for digest in run.model_digests), run.model_digests
     assert run.terminal == "refused_intended", (run.observation, run.events)
 
 
@@ -663,6 +766,7 @@ def test_k1_t7_a_c1_aged_copy_ends_refused_intended(
 @_no_skip
 def test_k1_t7_a_c1_not_ready_variant_is_never_refused_intended(
         tmp_path, monkeypatch, codex_upstream, live_seat_attempt):
+    """K1-T7 (r5 erratum): not_ready, or timeout at the CLI's own 120 s deadline, with
+    no token-host, model or allowed request; never refused_intended."""
     run = _a_c1(tmp_path, monkeypatch, codex_upstream, case="not_ready")
-    assert run.token_events == [] and run.model_events == [], run.events
-    assert run.terminal == "not_ready", (run.observation, run.events)
+    assert not_ready_erratum_holds(run.terminal, run.events), (run.observation, run.events)
