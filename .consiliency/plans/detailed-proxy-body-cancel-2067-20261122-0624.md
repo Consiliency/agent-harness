@@ -1,224 +1,253 @@
+---
+automation:
+  suite_command: "uv run --frozen --group test --project phase-loop-runtime python -m pytest -p no:cacheprovider -n 0 -q phase-loop-runtime/tests/test_grok_measure_egress.py phase-loop-runtime/tests/test_seat_egress_allowlist_codex.py phase-loop-runtime/tests/test_seats_teamhost_gemini.py phase-loop-runtime/tests/test_gemini_seat_egress_1170.py"
+---
+
 # Detailed plan: refused body-declaring requests must not crash the egress proxy (agent-harness#2067)
+
+Revision r2 (2026-11-22): answers the agent-harness#2075 review with a captured Node 22 stack.
 
 ## Task
 
-On Node 22, the seat egress proxy exits 1 when it refuses a GET, HEAD or OPTIONS request
-that declares a body (`Content-Length` or `Transfer-Encoding`). Fix it so that no refusal of a
-body-declaring request, whatever its method, can end the proxy through a cancel after the
-refusal. No allow or refuse decision may change, and nor may the allowlists, the named sets
-or the jail profiles. Plan the pin movement and requalification, and sequence the fix against
-in-flight work.
+**Outcome served:** standalone. A seat process on a Node 22 host can no longer kill its own
+egress proxy with a refused request that declares a body. Every decision stays the same.
+
+Fix the Node 22 crash on a refused request that declares a body (`Content-Length` or
+`Transfer-Encoding`), whatever its method. The fix must change no allow or refuse decision,
+no forwarded byte, no allowlist, no named set and no jail profile. The plan also covers the
+pin movement, requalification and sequencing.
 
 ## Research summary
 
-- **Mechanism (read in srt).** srt 0.0.79 `request-filter.js` `decideAndRespond` tees
-  whenever `!bodylessMethod || declaresBody`, but gives a GET, HEAD or OPTIONS callback a
-  bodyless `Request`. The agent-harness#2033 drain in `refuseRequest` sees `request.body ===
-  null`, and srt then cancels the unread branch.
-- **Why only Node 22.** Node 24.22.3's `newReadableStreamFromStreamReadable` (read via
-  `--expose-internals`) skips close and enqueue once `wasCanceled` is set. Node 22.12.0, the
-  BA-3 job's version (`test.yml` `grok-egress-ns`), lacks that guard [inferred from the
-  `proxy.mjs` comment and the CI report].
-- **Probe (Node 24.22.3, scratch under `$HOME`).** The adapter calls `close` and `enqueue`
-  through `ReadableStreamDefaultController.prototype`. On a cancelled controller either throws
-  `ERR_INVALID_STATE` "Controller is already closed", the error `proxy.mjs` names.
-- **Hosts.** The dev host has only Node 24. `NODE_MIN_VERSION` is `(22, 12, 0)`, so
-  production hosts may run Node 22.
-- **Tests to reuse.** `tests/test_grok_measure_egress.py`, which BA-3 runs, has the
-  `_FAKE_SRT` stand-in (node only) and `real_proxy_upstream` (pinned srt, loopback upstream),
-  plus agent-harness#2033's body test. agent-harness#2064 sent bodies only with POST to avoid
-  the trigger; those tests stay as they are.
+- **srt 0.0.79, `request-filter.js` `decideAndRespond`.**
+  - It pipes the request into a `PassThrough` shim and tees `Readable.toWeb(shim)` whenever
+    `!bodylessMethod || declaresBody`.
+  - A GET, HEAD or OPTIONS callback gets a bodyless `Request`, so the agent-harness#2033
+    drain sees `request.body === null`.
+  - On denial, srt cancels the unread branch and destroys the upstream branch, which cancels
+    the source.
+- **Captured failure (r2 evidence).**
+  - **Setup.** Pinned Node 22.12.0 (nodejs.org tarball, `SHASUMS256` verified) under a
+    private `$HOME` directory. It ran the real `proxy.mjs` over the installed srt 0.0.79 with
+    the grok-review rules, loopback only, with stderr kept.
+  - **Requests.** `GET`, `HEAD` and `OPTIONS` to `/v1/models`, each with `Content-Length: 2`
+    and `{}` or with a chunked `{}`.
+  - **Result.** Each request was observed as `deny`/`rules` and the proxy then exited 1,
+    leaving no marker. The stack:
+
+    ```
+    TypeError [ERR_INVALID_STATE]: Invalid state: Controller is already closed
+        at ReadableStreamDefaultController.enqueue (node:internal/webstreams/readablestream:1076:13)
+        at PassThrough.onData (node:internal/webstreams/adapters:468:16)
+        at PassThrough.emit (node:events:524:28)
+        at Readable.read (node:internal/streams/readable:782:10)
+        at flow (node:internal/streams/readable:1283:53)
+        at resume_ (node:internal/streams/readable:1262:3)
+    ```
+
+  - **What it means.** The throw is a late **`enqueue` in the adapter's `onData`**, after the
+    cancel. It is not a close: Node 22.12.0 already guards `close()` with `wasCanceled`, and
+    only Node 24.22.3 also guards `onData`.
+  - **Controls.** A POST with a body (the agent-harness#2033 drain) and a GET without one
+    survive on Node 22. All cases survive on Node 24.22.3.
+  - **Not reproduced.** Plain-stream stand-ins without the HTTP parser never crashed, so
+    none is planned.
+- **The launcher discards proxy stderr.** `seat_egress_proxy.py:942` passes
+  `stderr=subprocess.DEVNULL`.
+- **Allowlists.** grok-review allows only `POST`. Codex allows
+  `GET chatgpt.com /backend-api/wham/accounts/check`. `filterRequest` checks inner Host, then
+  rules, then budget.
+- **Test harness.** `tests/test_grok_measure_egress.py` (in BA-3) has `real_proxy_upstream`.
+  `FixtureUpstream._handle` reads but does not keep `Content-Length` bodies.
+- **Hosts.** Repository tests on the dev host run Node 24 (the only trusted node); BA-3 runs
+  Node 22.12.0.
 
 ## Changes
 
 ### `phase-loop-runtime/src/phase_loop_runtime/seat_egress/proxy.mjs` (modify)
 
-- **Cancelled-controller guard — add.** Place it before `await import(process.argv[2])`.
-  - It wraps `ReadableStreamDefaultController.prototype.close` and `.enqueue`.
-  - A call that throws a `TypeError` with `code === 'ERR_INVALID_STATE'` and a message
-    matching `/Controller is already closed/` returns `undefined`. Every other error is
-    rethrown unchanged.
-  - The byte-stream controller is not wrapped, because srt's `Readable.toWeb(shim)` passes no
-    `type`.
-  - Reason: it reproduces Node 24's `wasCanceled` behaviour, so no cancel after a refusal
-    can throw, for any method or past the drain's bounds. It acts only after decisions, and
-    any chunk it drops was already undeliverable.
-- **Guard self-test — add.** It runs after the guard is installed and before the ready line.
-  It creates a `ReadableStream`, awaits its `cancel()`, then calls `close()` and
-  `enqueue(new Uint8Array(1))` on its controller. If either throws, it writes `stream cancel
-  guard is not in force` to stderr and exits 3, like the inner-SNI self-test, which
-  `start_proxy` maps to `START_FAILED_CODE`.
-- **The `refuseRequest` comment — modify.** One sentence: a body-declaring GET, HEAD or
-  OPTIONS reaches the filter bodyless, and the guard covers it. No other code changes.
+- **The `Readable.toWeb` listener guard — add.** Place it before `await
+  import(process.argv[2])` and import `Readable` from `node:stream`.
+  - It wraps `Readable.toWeb`. srt calls it as `Readable.toWeb(shim)`, which is the same
+    static.
+  - It snapshots the source's `'data'` listeners, calls the original, and then replaces only
+    the listeners that call added. Each replacement forwards the call only while
+    `!source.destroyed`.
+  - Reason: it reproduces Node 24's `onData` `wasCanceled` check on exactly the captured
+    path. The adapter's cancel destroys the source, and a chunk emitted after that has no
+    reader.
+  - It swallows no error and touches no live source, so allowed forwarding is unchanged (T2).
+  - Verified in r2 on a scratch copy under Node 22.12.0: the crashing GET, HEAD and OPTIONS
+    cases, plus a POST, return 403 with unchanged events, and the proxy exits 0. Through srt's `decideAndRespond`,
+    allowed CL, chunked and 300 KB bodies are forwarded byte-identical with and without the
+    guard.
+- **A start-up structural check — add.** It replaces r1's synthetic self-test.
+  - It runs `Readable.toWeb` on a probe `PassThrough`, using Node's real adapter.
+  - If the adapter did not add exactly one `'data'` listener, or that listener is not the
+    guard, it writes `toWeb data guard is not in force` to stderr and exits 3 before the
+    ready line.
+  - Justification: it attests the guard on the real adapter's listener, the path in the
+    stack. No synthetic sequence reproduces the race, so a behavioural self-test cannot.
+- **The `refuseRequest` comment — modify.** It cites this path.
 
 ### `phase-loop-runtime/tests/test_grok_measure_egress.py` (modify)
 
-- **`_FAKE_SRT` — modify.** A request entry may carry `"declared_body": true`. The stand-in
-  then builds a `ReadableStream` whose source keeps its controller with no cancel guard, like
-  the Node 22 adapter. After the filter denies, it awaits `stream.cancel()` and schedules
-  `controller.close()` in a `setImmediate`. Before the fix, that throws an uncaught exception
-  on any Node version. This is the deterministic red-first test.
-- **`test_a_cancel_after_a_refused_declared_body_leaves_the_proxy_running` — add.** It runs on
-  the fake srt and covers GET, HEAD and OPTIONS, each with `declared_body`, refused by
-  `rules`. It asserts the verdicts are `deny`, `seat_egress_proxy.completion(proxy).complete`,
-  exit status 0 in `completion_detail` and the expected `outside_events` causes.
-- **`test_a_refused_bodyless_method_that_declares_a_body_leaves_the_real_proxy_running` —
-  add.** It uses `real_proxy_upstream` and the Node 22 crash shape: GET, HEAD and OPTIONS,
-  each sent twice, once with `Content-Length: 2` and a `{}` body and once with
-  `Transfer-Encoding: chunked` (`2\r\n{}\r\n0\r\n\r\n`).
-  - Each is refused by `rules`. GET is also refused by `budget` (`request_budget=0`) and
-    `inner_host` (Host `auth.x.ai`).
-  - It asserts each status line is `HTTP/1.1 403`, `upstream.requests == []`, the completion
-    is complete with `requests` equal to the number sent, and the `(method, host, path,
-    decision)` and `cause` of each event are as expected.
-  - It is red on BA-3 (Node 22.12.0) before the fix, and it is the Node 24 control on the dev
-    host.
-- **`test_the_cancel_guard_rethrows_other_errors` — add.** A node child runs the guard
-  prelude, cut from `proxy.mjs` at a marker comment. An `enqueue` whose `size()` throws still
-  throws, and `close` on an open stream closes it.
-- **`test_a_proxy_without_the_cancel_guard_does_not_start` — add.** It follows the
-  `unattested-proxy.mjs` pattern: a copy with the guard installation removed. On the fake
-  srt, `start_proxy` raises `EgressLayerUnavailable` with `START_FAILED_CODE`. Any Node
-  version shows this.
+- **A `proxy_diagnostics` fixture — add.** It is test-only. It wraps
+  `seat_egress_proxy.subprocess.Popen` so that, for a `proxy.mjs` argv only, `stderr` goes to
+  a private file under `tmp_path`. Every new assertion message carries
+  `completion_detail(proxy)` and the stderr tail. Each exchange's `OSError` is caught and
+  recorded, so a crash before the status line keeps its evidence. Production launch is
+  unchanged.
+- **`FixtureUpstream._handle` — modify.** It appends each `Content-Length` body to a new
+  `self.bodies` list.
+- **T1, `test_a_refused_request_that_declares_a_body_leaves_the_real_proxy_running` — add.**
+  It uses `real_proxy_upstream` and `proxy_diagnostics`. The bodies are `Content-Length: 2`
+  with `{}`, and chunked `2\r\n{}\r\n0\r\n\r\n`.
+
+  | Case | Allowlist and budget | Request | Cause |
+  |---|---|---|---|
+  | (a) | `grok-review`, `request_budget=1` | GET, HEAD and OPTIONS to `/v1/models` on the inference host, each with both bodies | `rules` |
+  | (b) | `grok-review`, `request_budget=1` | GET with Host `auth.x.ai` | `inner_host` |
+  | (c) | `codex`, `request_budget=0` | `GET chatgpt.com /backend-api/wham/accounts/check` with `Content-Length` | `budget` |
+
+  Each case asserts:
+  - a `HTTP/1.1 403` status line, since every body is complete;
+  - `upstream.requests == []`;
+  - its event's `(method, host, path, decision, cause)`;
+  - `completion(proxy).complete` with the expected request count, exit status 0, and no
+    `ERR_INVALID_STATE` in stderr.
+- **T2, `test_an_allowed_request_with_a_body_is_forwarded_unchanged` — add.** Real srt,
+  `Content-Length` bodies only, because the fixture reads only those.
+  - Codex `GET /backend-api/wham/accounts/check` with `{}`, no budget.
+  - grok-review `POST` to the inference path with `{}` and with 256 KiB, `request_budget=2`.
+  - It asserts a 200 status, `upstream.bodies` byte-equal to what was sent, `allow` events
+    and a complete observation.
+- **T3, `test_a_proxy_without_the_data_guard_does_not_start` — add.** It follows the
+  `unattested-proxy.mjs` pattern: a copy whose replacement listener is the original
+  listener. On the fake srt, `start_proxy` raises `START_FAILED_CODE` on any Node.
 
 ### `CHANGELOG.md` (modify)
 
-- **A Fixed entry — add.** Unreleased. It gives the failure, the fix and a **Pins** line,
-  following the table below in the agent-harness#2033 entry's style. Values are not
-  recorded.
+- **A Fixed entry — add.** It gives the captured failure, the fix and a Pins line that
+  matches the table. Values are not recorded.
 
 ## Documentation impact
 
 - `CHANGELOG.md`: as above.
 - `docs/releases/outside-agent-release-handoff.md` already covers the `proxy_sha256` move.
 - **Frozen protocol.** `plans/seats-firstseat-containment-contract.md` section 14 (around
-  lines 409–426) holds that a fence "never … changes a decision or its reason … or alters the
-  readiness line". Its regressions list keeps "the readiness line's keys and values" and
-  "every decision and reason of the existing request matrix".
+  lines 409–426) keeps "the readiness line's keys and values" and "every decision and reason
+  of the existing request matrix".
 - **No new vocabulary.** The fix adds no stdout line, ready key, event field, `cause`, exit
-  code or stdin form. The new stderr text is not protocol, because `start_proxy` sends stderr
-  to `DEVNULL`.
+  code (3 already exists) or stdin form.
 
 ## Pin movement
 
 | Pin | Moves? | Why |
 |---|---|---|
-| `proxy_sha256` (`seat_jail_qualification._PROXY_IMPLEMENTATION_SHA256`) | **yes** | It hashes `seat_egress_proxy.py` and `proxy.mjs` bytes |
+| `proxy_sha256` (`seat_jail_qualification._PROXY_IMPLEMENTATION_SHA256`) | **yes** | It hashes `seat_egress_proxy.py` and `proxy.mjs` |
 | `seat_window.runtime_digest()` and window `qualification_keys` | **yes** | It hashes `seat_egress/*` |
-| `seat_window.release_identity()` | **yes** | It hashes the same files, less `seat_window_grants.py` |
-| `ROW_GRANTS`, `OWNER_W1_GRANT_SHA256` and `OWNER_W1_PACKET_SHA256` | no in-repo edit | They are empty or `None` at this base. A grant packet drafted elsewhere against the old `release_identity` is stale |
-| agy QCI (`agy_qualification.seat_qci` / `agy_profile_digest`) | no | It covers the profile description and operations only |
-| Claude SDK proof (`sdk_proof_inputs_sha256`) | no | `proxy.mjs` is in no `SDK_PROOF_FILES` entry or region |
-| `tests/data/seat_launch_references.json` | no | It is a Python call-site inventory, and no Python source is edited |
-| Jail profile digests (`seat_jail.jail_profile_digest`) | no | They cover leg, owner and filter |
-| Allowlist digests (gemini, codex, grok-review), `config.named` | no | Not edited |
-| `watch_sha256`, `validator_sha256`, `CONTAINMENT_CONTRACT_SHA256`, `SRT_TREE_SHA256`, the package lock | no | Not edited |
-| grok `context_digest` | no | It does not cover the proxy. Grok records still go stale through `runtime_digest` |
-| `plans/evidence/seat-jail-1132/mutation-receipts-1170.json` | no | Historical. It is pinned to an older `proxy.mjs` that agent-harness#2033 already superseded |
+| `seat_window.release_identity()` | **yes** | Same files, less `seat_window_grants.py` |
+| `ROW_GRANTS`, `OWNER_W1_GRANT_SHA256` and `OWNER_W1_PACKET_SHA256` | no in-repo edit | Empty or `None` at this base. A grant packet drafted elsewhere is stale |
+| agy QCI (`agy_profile_digest`) | no | It covers the profile description and operations only |
+| Claude SDK proof inputs | no | `proxy.mjs` is in no `SDK_PROOF_FILES` entry or region |
+| `tests/data/seat_launch_references.json` | no | Python call sites only |
+| Jail profile digests | no | They cover leg, owner and filter |
+| Allowlists, `config.named`, `SRT_TREE_SHA256`, package lock, `watch_sha256`, `validator_sha256`, `CONTAINMENT_CONTRACT_SHA256`, grok `context_digest` | no | Not edited, and they do not depend on the proxy bytes |
+| `plans/evidence/seat-jail-1132/mutation-receipts-1170.json` | no | Historical, pinned to an already-superseded `proxy.mjs` |
 
 ## Requalification
 
-These records bind `proxy_sha256` and/or `runtime_digest` and become stale:
+These need current rollout evidence: the coordinator compares each live record's
+`runtime_digest` and `proxy_sha256` with the installed release.
 
-- **Gemini W1 window records:** host-local. Both values move. The refresh is **owner-gated**,
-  live, on the designated seat host (`ai`).
-- **Codex window records**, if K-1 SL-6 registers or qualifies any before this lands: both
-  values move. **Owner-gated**, live, on the seat host.
-- **Grok measurement grants and rehearsals:** stale through `runtime_digest`. A new grant runs
-  on the integrated head (grok contract section 8). **Owner-gated**, with a live provider.
+- **Gemini W1:** **owner-gated**, live, on the designated seat host (`ai`).
+- **Any Codex window** already qualified under K-1 SL-6: **owner-gated**, live, on the seat
+  host.
+- **Grok grants and rehearsals:** stale through `runtime_digest` (`grok_tool_surface.py`
+  runtime check). A new grant runs on the integrated release. **Owner-gated**, with a live
+  provider.
 
-These records are not stale:
+These are not stale:
 
-- **Seat jail-qualification passes** from `qualify`: their own qualification key carries
-  neither value [inferred; grok contract section 8]. V4 confirms this provider-free.
-- **agy QCI and release-qualified records** (`plans/evidence/agy-*-qualification.json`).
+- **Jail-qualification passes:** their keys omit both values (`seat_qualification_key.py`).
+- **agy records.**
 - **The Claude SDK receipt.**
 
-Provider-free work on the dev host: V1 to V4, and a printout of the new `proxy_sha256`,
-`runtime_digest` and `release_identity` for the PR body. Nothing live is scheduled here.
+Provider-free on the dev host: T1 to T3 (Node 24), V3, the new pin values, and optionally the
+standalone Node 22.12.0 capture (private `$HOME`, loopback). Nothing live is scheduled.
 
 ## Dependencies & order
 
-1. **Tests first.** Push a state with the tests and no fix. Record that V1 fails on the dev
-   host (fake srt) and that BA-3 fails on Node 22.12.0 at the real-srt test (proxy exit 1 in
-   `completion_detail`). Record the link to that BA-3 run in the PR body.
-2. Then the `proxy.mjs` change and `CHANGELOG.md`.
-3. **K-1 SL-6** (`t3/k1-sl6-codex`, which edits `panel_invoker.py` named refusals): land
-   agent-harness#2067 **before** SL-6. The reasons:
-   - The two share no file other than `CHANGELOG.md`.
-   - SL-6 already recomputes pins after its own `runtime_digest` move, so rebasing onto this
-     fix costs it nothing.
-   - Any Codex window that SL-6 qualifies afterwards binds a head with the fixed
-     `proxy_sha256` once. Landing after SL-6 would make those records stale a second time on
-     both keys.
-   - It removes a Node 22 crash source from SL-6's own runs.
-4. **GROK SL-1 and SL-2** (agent-harness#2070, then SL-2): no ordering constraint.
-   agent-harness#2070 touches no proxy file. SL-2 owns `seat_jail_qualification.py`, which
-   this fix does not edit; the proxy digest there is computed from file bytes. Rebase on
-   whichever merges first. `CHANGELOG.md` is the only shared file.
-5. **Grok E8-C** (not yet open) also edits `proxy.mjs` and moves `proxy_sha256`. Land it
-   consecutively with this fix and requalify once, on the integrated rollout build (grok
-   contract section 8, batching).
+1. **Draft-only red evidence.** The implementation PR stays draft while a tests-only head of
+   it runs the hosted BA-3 job on Node 22.12.0. Keep that run's link and T1's retained stderr
+   in the PR body.
+   - A red required check, or exit 1 alone, does not confirm the mechanism. The retained
+     stack must match the captured frames: `onData` in adapters, then `enqueue`.
+   - That head is never merged.
+2. **Then the guard and `CHANGELOG.md`.** The final head must pass BA-3 with no skips, and
+   every required check green (`CONTRIBUTING.md` local and required checks). No red required
+   check may remain at merge.
+3. **K-1 SL-6** (`t3/k1-sl6-codex`): land this fix first when it is ready. They share only
+   `CHANGELOG.md`, and SL-6 recomputes its own pins. What matters is that Codex qualification
+   runs on the integrated installed release.
+4. **GROK SL-1 and SL-2** (agent-harness#2070, then SL-2): no code-ordering dependency.
+   Rebase on whichever merges first.
+5. **Grok E8-C** also edits `proxy.mjs`.
+   - Allow one writer at a time. Whichever lands second rebases and reruns T1 to T3 with the
+     diagnostics integrated.
+   - Batch the rollout with E8-C and the next grant's jail lanes
+     (`grok-tool-surface-contract-v1.md` around lines 1604–1609;
+     `grok-jail-tool-surface-contract-v1.md` around 635–652). Separately installed trains can
+     each need their own refresh.
 
 ## Verification
 
 Narrow tests only, `-n 0` with a timeout, after a headroom check; no full suite.
 
 ```bash
-cd phase-loop-runtime
-# V1 red-first then green, any Node (fake srt):
-PYTHONPATH=src:tests timeout 600 python -m pytest -p no:cacheprovider -n 0 -q \
-  tests/test_grok_measure_egress.py -k "declared_body or cancel_guard"
-# V2 Node 24 control and unchanged refusal semantics (real srt, loopback upstream):
-PYTHONPATH=src:tests timeout 900 python -m pytest -p no:cacheprovider -n 0 -q -rs \
-  tests/test_grok_measure_egress.py -k "real_proxy or refused or probe_row or listed"
-# V3 other seats' proxy regressions:
-PYTHONPATH=src:tests timeout 900 python -m pytest -p no:cacheprovider -n 0 -q \
-  tests/test_seat_egress_allowlist_codex.py tests/test_seats_teamhost_gemini.py \
-  tests/test_gemini_seat_egress_1170.py
-# V4 jail-qualification pass keys and pins:
-PYTHONPATH=src:tests timeout 600 python -m pytest -p no:cacheprovider -n 0 -q \
-  tests/test_seat_jail_qualification_entry.py tests/test_seat_window_vendor_neutral.py
-# V5 nothing outside scope moved:
-git diff --exit-code origin/main -- src/phase_loop_runtime/seat_egress/*.json \
-  src/phase_loop_runtime/seat_egress/package*.json src/phase_loop_runtime/seat_egress_proxy.py \
-  src/phase_loop_runtime/seat_jail.py src/phase_loop_runtime/panel_invoker.py
+# V1 Node 24 control: refusals, allowed forwarding and start-up check (dev host)
+PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests timeout 900 python -m pytest \
+  -p no:cacheprovider -n 0 -q -rs phase-loop-runtime/tests/test_grok_measure_egress.py \
+  -k "declares_a_body or forwarded_unchanged or data_guard or refused or probe_row or listed"
+# V2 other seats' proxy regressions
+PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests timeout 900 python -m pytest \
+  -p no:cacheprovider -n 0 -q phase-loop-runtime/tests/test_seat_egress_allowlist_codex.py \
+  phase-loop-runtime/tests/test_seats_teamhost_gemini.py phase-loop-runtime/tests/test_gemini_seat_egress_1170.py
+# V3 nothing outside scope moved
+git diff --exit-code origin/main -- phase-loop-runtime/src/phase_loop_runtime/seat_egress/*.json \
+  phase-loop-runtime/src/phase_loop_runtime/seat_egress/package*.json \
+  phase-loop-runtime/src/phase_loop_runtime/seat_egress_proxy.py \
+  phase-loop-runtime/src/phase_loop_runtime/seat_jail.py phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py
 ```
 
-- **V6** is the hosted BA-3 job on Node 22.12.0, with no skip: red at step 1, then green.
-- `automation.suite_command` is V1, then V2, V3 and V4.
-- The existing tests run unchanged and must pass:
-  - `test_a_refused_request_with_a_body_leaves_the_real_proxy_running`;
-  - `test_a_refused_body_is_read_only_within_its_bounds`;
-  - `test_the_real_proxy_denies_counted_request_n_plus_one`;
-  - the probe-row matrix.
+- **V4** is the hosted BA-3 job on Node 22.12.0 with no skip: red on the draft-only tests
+  head (step 1), and green on the final head.
+- The existing body, bound, budget and probe-row tests run unchanged.
 
 ## Scope boundaries
 
 - **In scope:** `proxy.mjs`, `tests/test_grok_measure_egress.py` and `CHANGELOG.md`.
 - **Out of scope:**
-  - `seat_egress_proxy.py`, the srt version and tree pin, the allowlists, the `named` sets,
-    jail profiles and `panel_invoker.py`;
-  - the workflow (no Node 24 BA-3 leg, so required check names keep their meaning), and
-    `NODE_MIN_VERSION`;
-  - the drain bounds and the agent-harness#2064 tests;
+  - `seat_egress_proxy.py`, srt and its pins, the allowlists, the `named` sets, jail profiles
+    and `panel_invoker.py`;
+  - the workflow and `NODE_MIN_VERSION`;
+  - the agent-harness#2064 tests;
   - any live run.
-- **Rejected:** a timed wait in `refuseRequest` (not deterministic); an
-  `uncaughtException` filter (broad, unsafe to resume); patching srt (moves
-  `SRT_TREE_SHA256`); a Node 24 floor (hides the bug).
+- **Rejected:** r1's global controller guard (it swallows errors after ordinary closure); a
+  timed wait; an `uncaughtException` filter; patching srt or Node; a Node 24 floor.
 
 ## Stop rules
 
-Stop and report, without landing on inference, if any of these happens:
+Stop and report if any of these happens:
 
-- BA-3 at step 1 is not red at the new real-srt test, or it shows an exit status other than 1.
-  That would mean the mechanism is wrong.
-- Node 22.12's throw is not `ERR_INVALID_STATE` "Controller is already closed", so the guard
-  cannot stay narrow.
+- The BA-3 red stack differs from the captured frames.
+- T2 shows any forwarded byte or allowed status changing.
 - An existing allow, refuse, cause or event expectation would have to change.
-- The fix needs a file listed as out of scope, or a pin outside the table moves.
-- E8-C or SL-6 lands a `proxy.mjs`, `refuseRequest` or `filterRequest` edit first, and the
-  rebase conflicts.
+- The fix needs an out-of-scope file, or a pin outside the table moves.
+- srt or Node stops reaching the adapter through `Readable.toWeb`, so the start-up check
+  fails on a supported Node.
+- An E8-C or SL-6 rebase conflicts in `refuseRequest`, `filterRequest` or the guard.
 
 ## Execution Policy
 
@@ -227,14 +256,15 @@ Stop and report, without landing on inference, if any of these happens:
 
 ## Acceptance criteria
 
-- [ ] On the fake srt, GET, HEAD and OPTIONS with a declared body, once refused, leave the
-  proxy complete with exit 0. This is red before the fix. Proven by V1.
-- [ ] On the real srt, every body-declaring GET, HEAD and OPTIONS refusal (`rules`, `budget`,
-  `inner_host`) returns 403, forwards nothing and completes the observation. It is green on
-  Node 24, and red then green on BA-3 Node 22.12.0. Proven by V2 and V6.
-- [ ] A proxy without the guard fails to start with `START_FAILED_CODE`, and the guard
-  rethrows other errors. Proven by V1.
-- [ ] Existing decisions, causes and events are unchanged, and the out-of-scope files are
-  byte-identical to main. Proven by V2, V3, V4 and V5.
-- [ ] The `CHANGELOG.md` Pins line matches the pin table: `proxy_sha256`, `runtime_digest` and
-  `release_identity` move, and nothing else does. Proven by review against V4 and V5.
+- [ ] T1's refusal matrix (`rules` × GET, HEAD and OPTIONS × CL and chunked; `inner_host`
+  GET; codex `budget` GET) returns 403, forwards nothing, and completes with exit 0 and no
+  `ERR_INVALID_STATE`. Proven by V1 (Node 24) and V4 (Node 22.12.0, final head).
+- [ ] T2: allowed codex GET and grok POST bodies, including 256 KiB, reach the upstream
+  byte-identical with 200. Proven by V1 and V4.
+- [ ] T3: a proxy whose data guard is not in force fails with `START_FAILED_CODE`. Proven by
+  V1.
+- [ ] V4 on the draft-only tests head is red with retained stderr matching the captured
+  `onData` → `enqueue` frames, and the final head passes every required check. Proven by the
+  BA-3 run links in the PR body.
+- [ ] Out-of-scope files are byte-identical, and the `CHANGELOG.md` Pins line matches the
+  table. Proven by V3 and V2.
