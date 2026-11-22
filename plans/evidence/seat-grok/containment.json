@@ -1,0 +1,43 @@
+{
+  "schema": "phase_loop_seat_grok_containment.v1",
+  "lane": "SEATS GROK SL-1",
+  "issue": "agent-harness#1820",
+  "redaction": "metadata_only",
+  "evidence": [
+    {
+      "evidence_id": "grok-refresh-detection",
+      "expected_code": "grok_seat_token_refreshed_in_jail",
+      "proven_by": [
+        "phase-loop-runtime/tests/test_grok_seat_credential.py::test_a_new_credential_shaped_file_fires_the_after_check",
+        "phase-loop-runtime/tests/test_grok_seat_credential.py::test_a_linked_auth_file_fires_the_after_check",
+        "phase-loop-runtime/tests/test_grok_seat_credential.py::test_an_unreadable_file_fails_the_after_check_closed",
+        "phase-loop-runtime/tests/test_grok_seat_credential.py::test_an_oversize_credential_file_under_another_name_fails_the_after_check",
+        "phase-loop-runtime/tests/test_grok_seat_credential.py::test_an_oversize_file_of_any_content_fails_the_after_check_closed",
+        "phase-loop-runtime/tests/test_grok_seat_credential.py::test_a_duplicate_member_hiding_a_credential_fails_the_after_check",
+        "phase-loop-runtime/tests/test_grok_seat_credential.py::test_depth_exhaustion_fails_the_after_check_closed",
+        "phase-loop-runtime/tests/test_grok_seat_credential.py::test_a_file_that_grew_past_the_bound_after_its_stat_fails_the_after_check"
+      ],
+      "scope": "host-visible seat-home after teardown (president note B5); the proxy's refusal of the sign-in hosts is the primary detection",
+      "provider_turns": 0
+    },
+    {
+      "evidence_id": "grok-unlisted-refusal",
+      "allowlist_id": "grok-review",
+      "allowlist_sha256": "06a42988e74f9163eb50621c6836068d2cf4c9e387b874ec328dd470b5e259ee",
+      "unmoved_allowlist_sha256": {
+        "codex": "559e7973c7c0d4e1234d1d23db3d5eab6c83996dfaaf75ff65482f19abffa21e",
+        "gemini": "e29dc83b60705beed3d87c600b023dc959a51c76c5e1ab8df9001b1d7daaa296"
+      },
+      "proven_by": [
+        "phase-loop-runtime/tests/test_grok_seat_egress.py::test_the_real_proxy_script_allows_only_the_inference_row",
+        "phase-loop-runtime/tests/test_grok_seat_egress.py::test_an_allowed_inference_request_reaches_the_fixture_upstream",
+        "phase-loop-runtime/tests/test_grok_seat_egress.py::test_an_unlisted_or_other_vendor_host_is_refused",
+        "phase-loop-runtime/tests/test_grok_seat_egress.py::test_a_listed_host_on_an_unlisted_path_is_refused",
+        "phase-loop-runtime/tests/test_grok_seat_egress.py::test_a_direct_connection_is_refused"
+      ],
+      "upstream": "loopback fixture",
+      "provider_turns": 0
+    }
+  ],
+  "seat_config_sha256": "2984e0c368943bb6c1627146e413995df12cca5820e782adffcb052a9b761780"
+}
