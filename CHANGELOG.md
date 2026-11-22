@@ -109,11 +109,19 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   - **Pins.** `runtime_digest()` and the Claude SDK proof-input binding move
     (`_prepare_jailed_claude`, `launch_provider` and the `seat_profiles.py` input). No jail
     profile, allow-list, agy QCI, containment contract or W1 grant digest moves.
-- Codex's window supplier, first part (FIRSTSEAT amendment K-1, lane SL-6; contract r5.2
-  §10.B). SL-9 finalizes this entry.
-  - `seat_window_supply_codex` registers Codex's window data. It supplies the A-C1 surface:
-    kinds, argv, stream facts, `terminal` and `expired_access_copy`. The expired copy
-    changes only the access token's `exp`, setting it an hour into the past.
+- Codex's window supplier (FIRSTSEAT amendment K-1, lane SL-6; contract r5.2 §10.B). SL-9
+  finalizes this entry.
+  - `seat_window_supply_codex` registers Codex's window data. It supplies:
+    - the A-C1 surface: kinds, argv, stream facts, `terminal` and `expired_access_copy`. The
+      expired copy changes only the access token's `exp`, setting it an hour into the past;
+    - Codex's rows and host paths;
+    - the scope, refresh and secret-scan outcomes;
+    - the bracket.
+
+    Its containment watch and reducer refuse for now, so no Codex row record can pass.
+  - A-C1 passed on the owner's ruling of 2026-11-22. The single provider-free run ended as
+    a harness hard failure, whose cause is now fixed in the tests: Codex 0.167.0
+    zstd-compresses its model requests, and the loopback responder could not read them.
   - A Codex row window is held. `qualify --window row --vendor codex` refuses with
     `codex_expired_leg_unfenced` before any claim, jail or proxy, until the OI-1 fence lands.
   - The kit's non-Gemini control launches now do three things:
