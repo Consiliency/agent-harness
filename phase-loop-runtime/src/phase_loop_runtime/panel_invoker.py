@@ -15591,7 +15591,8 @@ def _window_leg_hook(
 ) -> _WindowBoardLegRuntime | None:
     """K-1 §5.4 routing: the board's window runtime reaches only the leg it names."""
     run = _registered_window_board(authorization)
-    return run if run is not None and run.leg == leg else None
+    # A runtime registered without a leg is the pre-K-1 shape, which served Gemini only.
+    return run if run is not None and getattr(run, "leg", "gemini") == leg else None
 
 
 @contextmanager
@@ -15602,12 +15603,12 @@ def _window_worker_scope(authorization: ReviewIsolationAuthorization | None, leg
     included). A worker in a window with no ledger is refused before anything starts."""
     from . import seat_window_supply
     run = _registered_window_board(authorization)
-    if run is None or not run.in_window:
+    if run is None or not getattr(run, "in_window", False):
         yield None
         return
-    if run.ledger is None:
+    if getattr(run, "ledger", None) is None:
         raise seat_window_supply.WindowRefused("window_unbudgeted_start")
-    item = seat_window_supply.seat_item(leg, run.leg)
+    item = seat_window_supply.seat_item(leg, getattr(run, "leg", "gemini"))
     with seat_window_supply.ledger_scope(run.ledger), seat_window_supply.item_scope(item):
         yield run.ledger
 
@@ -15635,7 +15636,7 @@ def _window_agy_reservation(authorization):
     the starts they cover consume them at the provider boundary without a second debit."""
     from . import seat_window_supply
     run = _registered_window_board(authorization)
-    ledger = run.ledger if run is not None else None
+    ledger = getattr(run, "ledger", None) if run is not None else None
     if ledger is None:
         return contextlib.nullcontext()
     ledger.reserve("agy_first_use", 3)

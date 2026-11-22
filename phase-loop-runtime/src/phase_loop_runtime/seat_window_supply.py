@@ -20,12 +20,9 @@ from types import MappingProxyType, ModuleType
 from typing import Callable, Iterator, Mapping
 
 #: IF-K1-2 §4.2: the closed vendor → module table. Parsing ``--vendor`` reads only its keys.
-SUPPLIERS: Mapping[str, str] = MappingProxyType({
-    "gemini": "seat_window_supply_gemini",
-    "codex": "seat_window_supply_codex",
-    "claude": "seat_window_supply_claude",
-    "grok": "seat_window_supply_grok",
-})
+#: Its literal lives beside the window data it validates (``seat_profiles``), so registering
+#: Gemini's data at import loads no module outside the jail profile's declared sources.
+from .seat_profiles import WINDOW_SUPPLIERS as SUPPLIERS  # noqa: E402
 
 #: IF-K1-2 §4.1: every name a supplier module provides.
 REQUIRED_NAMES: tuple[str, ...] = (

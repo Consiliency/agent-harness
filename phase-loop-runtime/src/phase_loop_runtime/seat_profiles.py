@@ -72,6 +72,14 @@ WINDOW_LAUNCH_KINDS = frozenset({
 WINDOW_BOARD_FIELDS: Mapping[str, str] = MappingProxyType({
     "canonical": "canonical", "leg": "leg_observation",
 })
+#: K-1 §4.2: the closed window-supplier table (vendor → module), re-exported as
+#: ``seat_window_supply.SUPPLIERS``.
+WINDOW_SUPPLIERS: Mapping[str, str] = MappingProxyType({
+    "gemini": "seat_window_supply_gemini",
+    "codex": "seat_window_supply_codex",
+    "claude": "seat_window_supply_claude",
+    "grok": "seat_window_supply_grok",
+})
 #: The plan tier's required legs: the policy's fable, sol, gemini and grok seats by vendor.
 WINDOW_PLAN_TIER_LEGS = frozenset({"claude", "codex", "gemini", "grok"})
 _WINDOW_IDS = frozenset({"W1", "row"})
@@ -140,7 +148,7 @@ def register_window_data(data: WindowVendorData) -> WindowVendorData:
 def _check_window_data_v2(data: WindowVendorData) -> None:
     """IF-K1-1 §3: every refusal ``register_window_data`` applies to version 2 data."""
     import re
-    from .seat_window_supply import SUPPLIERS
+    SUPPLIERS = WINDOW_SUPPLIERS
 
     names = tuple(data.record_fields.values())
     if (len(set(names)) != len(names)

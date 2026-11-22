@@ -2414,8 +2414,11 @@ def cli_main(args):
         from .grok_roll.status import cli_main as status_main
         return status_main(args)
     from . import president_adapter, seat_window_supply
-    window = args.window or "W1"
-    vendor = args.vendor
+    # Callers of the Grok actions (probe-tools, measure-tools) may pass a namespace that
+    # carries none of the window options; those actions read neither.
+    window_option = getattr(args, "window", None)
+    window = window_option or "W1"
+    vendor = getattr(args, "vendor", None)
     try:
         if args.action == "matrix":
             if args.record:
@@ -2423,7 +2426,7 @@ def cli_main(args):
                 verdicts = verify_partitions(records, source_root=source_root)["partitions"]
                 verdicts = {key: value for key, value in verdicts.items()
                             if (vendor is None or key[0] == vendor)
-                            and (args.window is None or key[1] == args.window)}
+                            and (window_option is None or key[1] == window_option)}
                 value = _reduce_partitions(verdicts)
             else:
                 value = readiness_rows()
@@ -2446,7 +2449,7 @@ def cli_main(args):
             print(json.dumps(result, sort_keys=True))
             return 0 if result.get("code") == "window_review_required" else 1
         elif args.action == "qualify":
-            result = qualify(window=args.window or "W1", monitoring_policy=args.monitoring_policy,
+            result = qualify(window=window, monitoring_policy=args.monitoring_policy,
                 repo=args.repo or ".", host_class=args.host_class, attended=args.attended,
                 peer_record=args.peer_record, model=args.model)
         elif args.action == "probe-tools":
