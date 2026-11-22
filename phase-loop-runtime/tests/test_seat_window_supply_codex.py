@@ -35,7 +35,7 @@ from test_seat_window_vendor_neutral import (  # noqa: E402 - shared K-1 harness
 
 SUPPLIER = "phase_loop_runtime.seat_window_supply_codex"
 #: The K-1 contract's pin in the amendment (plans/amendments/seats-FIRSTSEAT-K1-window-kit.md).
-K1_CONTRACT_SHA256 = "12a7d96e639846c2f3868434ca1faca837113614ca138c866f2b69592c20c3b2"
+K1_CONTRACT_SHA256 = "aa30ce0a2f947fd004476ac62f1c964c57a1e6554cc273e16366c92a2088e967"
 GEMINI_CONTRACT_SHA256 = "a57d46f722e22973f0522a8bc254856e6224d50b1b67893cab2b80522c4942a6"
 CONTRACT_PATH = (Path(__file__).resolve().parents[2] / "plans" / "artifacts"
                  / "seats-window-kit-k1-contract.md")
@@ -50,7 +50,10 @@ CONTROL_KINDS = frozenset({"tree_control", "runtime_control", "credentialed_tree
                            "credentialed_runtime_control"})
 TOKEN_HOST, TOKEN_PATH = "auth.openai.com", "/oauth/token"
 MODEL_HOST, MODEL_PATH = "chatgpt.com", "/backend-api/codex/responses"
-AGED_DAYS = 60
+#: Contract r5.2 §10.B: the expired copy's access `exp` is the transform clock minus this.
+EXPIRED_ACCESS_MARGIN_S = 3600
+#: §10.B (B1): the typed row-ready code a Codex row window refuses with.
+HOLD_CODE = "codex_expired_leg_unfenced"
 #: Fixture values, assembled at run time (none is a credential).
 _PROXY_CRED = "-".join(("fixture", "proxy"))
 _UNCOPIED = "-".join(("fixture", "not", "copied"))
@@ -251,32 +254,80 @@ def test_sl6_a_kind_outside_codex_kinds_has_no_credential_mode(codex_supplier, k
         codex_supplier.credential_mode(kind)
 
 
-def test_sl6_aged_copy_changes_only_last_refresh(codex_supplier):
+def _claims(token: str) -> dict:
+    payload = token.split(".")[1]
+    return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+
+
+def test_sl6_expired_access_copy_changes_only_the_access_exp(codex_supplier):
+    """r5.2 §10.B: from the production copy exactly one field changes, the access token's
+    ``exp`` (the transform clock minus 3600 s). Header and signature segments are kept byte
+    for byte; the ID token, ``last_refresh`` and ``refresh_token: ""`` are unchanged."""
     from phase_loop_runtime import seat_codex_credential as cred
     copy = cred.build_seat_copy(_login())
-    aged = codex_supplier.copy_transform(copy)
-    assert isinstance(aged, cred.CodexSeatCopy)
-    fresh_doc, aged_doc = json.loads(copy.data), json.loads(aged.data)
-    assert set(fresh_doc) == set(aged_doc)
-    assert {k: v for k, v in fresh_doc.items() if k != "last_refresh"} == {
-        k: v for k, v in aged_doc.items() if k != "last_refresh"}
-    # The production shape stays: the JWT intact, the refresh token empty.
-    assert aged_doc["tokens"] == fresh_doc["tokens"] and aged_doc["tokens"]["refresh_token"] == ""
-    assert (aged.secrets, aged.tokens_sha256, aged.expires_at) == (
-        copy.secrets, copy.tokens_sha256, copy.expires_at)
-    age = dt.datetime.now(dt.timezone.utc) - _instant(aged_doc["last_refresh"])
-    assert abs(age - dt.timedelta(days=AGED_DAYS)) < dt.timedelta(minutes=10)
-    assert _instant(aged_doc["last_refresh"]).tzinfo is not None
-    # Its bytes are the production serialisation of the aged document.
-    assert aged.data == json.dumps(aged_doc, sort_keys=True, indent=2).encode()
-    # The aged copy still passes the host's own checks (only unsigned metadata moved).
-    assert cred.subscription_login_problem(aged.data) is None
-    assert cred.scope_problem(aged.data) is None
+    clock = 1_900_000_000
+    expired = codex_supplier.expired_access_copy(copy, now=clock)
+    assert isinstance(expired, cred.CodexSeatCopy)
+    before, after = json.loads(copy.data), json.loads(expired.data)
+    assert {k: v for k, v in before.items() if k != "tokens"} == {
+        k: v for k, v in after.items() if k != "tokens"}  # last_refresh included
+    assert {k: v for k, v in before["tokens"].items() if k != "access_token"} == {
+        k: v for k, v in after["tokens"].items() if k != "access_token"}  # ID token included
+    assert after["tokens"]["refresh_token"] == ""
+    old_parts = before["tokens"]["access_token"].split(".")
+    new_parts = after["tokens"]["access_token"].split(".")
+    assert (new_parts[0], new_parts[2]) == (old_parts[0], old_parts[2])  # byte for byte
+    assert "=" not in new_parts[1]  # unpadded base64url
+    old_claims, new_claims = _claims(before["tokens"]["access_token"]), _claims(
+        after["tokens"]["access_token"])
+    assert new_claims == {**old_claims, "exp": clock - EXPIRED_ACCESS_MARGIN_S}
+    assert type(new_claims["exp"]) is int and list(new_claims) == list(old_claims)
+    # Copy metadata: the hash over the edited tokens, the secrets gain the edited string,
+    # and expires_at keeps the live login's value.
+    assert expired.tokens_sha256 == cred._tokens_sha256(after["tokens"]) != copy.tokens_sha256
+    assert expired.secrets == (*copy.secrets, after["tokens"]["access_token"].encode())
+    assert expired.expires_at == copy.expires_at
+    assert expired.data == json.dumps(after, sort_keys=True, indent=2).encode()
+    assert not cred.tokens_changed(expired, expired.data)  # the seat compares the installed copy
 
 
-def test_sl6_aged_copy_refuses_anything_but_a_codex_copy(codex_supplier):
-    with pytest.raises((TypeError, ValueError)):
-        codex_supplier.copy_transform(b'{"last_refresh": "x"}')
+def test_sl6_expired_access_copy_uses_the_transform_clock(codex_supplier):
+    from phase_loop_runtime import seat_codex_credential as cred
+    copy = cred.build_seat_copy(_login())
+    before = int(time.time())
+    expired = codex_supplier.copy_transform(copy)
+    after = int(time.time())
+    exp = _claims(json.loads(expired.data)["tokens"]["access_token"])["exp"]
+    assert before - EXPIRED_ACCESS_MARGIN_S <= exp <= after - EXPIRED_ACCESS_MARGIN_S
+    assert codex_supplier.copy_transform is codex_supplier.expired_access_copy
+    assert codex_supplier.EXPIRED_ACCESS_MARGIN_S == EXPIRED_ACCESS_MARGIN_S
+    assert not hasattr(codex_supplier, "aged_copy")
+
+
+@pytest.mark.parametrize("payload", [None, "not-base64!", {"exp": "1"}, {"exp": 1.5},
+                                     {"exp": True}, {"scp": []}],
+                         ids=["no-payload", "undecodable", "str-exp", "float-exp", "bool-exp",
+                              "no-exp"])
+def test_sl6_expired_access_copy_refuses_a_token_without_an_integer_exp(codex_supplier,
+                                                                        payload):
+    from phase_loop_runtime import seat_codex_credential as cred
+    copy = cred.build_seat_copy(_login())
+    document = json.loads(copy.data)
+    parts = document["tokens"]["access_token"].split(".")
+    if payload is None:
+        document["tokens"]["access_token"] = parts[0]
+    elif isinstance(payload, str):
+        document["tokens"]["access_token"] = ".".join((parts[0], payload, parts[2]))
+    else:
+        document["tokens"]["access_token"] = ".".join((parts[0], _part(payload), parts[2]))
+    broken = dataclasses.replace(copy, data=json.dumps(document).encode())
+    with pytest.raises(ValueError, match="contract_bug"):
+        codex_supplier.expired_access_copy(broken)
+
+
+def test_sl6_expired_access_copy_refuses_anything_but_a_codex_copy(codex_supplier):
+    with pytest.raises(TypeError):
+        codex_supplier.copy_transform(b'{"tokens": {}}')
 
 
 # --------------------------------------------------------------------------------------
@@ -399,17 +450,125 @@ _DENIED_TOKEN_CONNECT = _event("CONNECT", TOKEN_HOST, None, "deny")
 _MODEL = _event("POST", MODEL_HOST, MODEL_PATH, "allow")
 
 
+_NAMED_DENIAL = _DENIED_TOKEN_CONNECT  # the production named observation, denied
+_ACCOUNT_CHECK = _event("GET", MODEL_HOST, "/backend-api/wham/accounts/check", "allow")
+_OTHER_DENY = _event("CONNECT", "<other>", None, "deny")
+#: The sha256 of ``Bearer `` plus the installed expired access token (a fixture value).
+_BEARER = hashlib.sha256(("Bearer " + "-".join(("expired", "fixture"))).encode()).hexdigest()
+
+
+def _proof(*digests, expected=_BEARER):
+    """The loopback fixture's bearer proof: the expected Authorization sha256 and the one
+    the responder recorded for each model request it answered, in order (``None`` when the
+    header was absent)."""
+    return {"expected_sha256": expected, "model_requests": list(digests)}
+
+
 def _observation(kind="expired_copy", *, status="FAILURE", stream=None, error=None,
-                 timed_out=False, model_turn=False):
-    return SimpleNamespace(kind=kind, status=status, error=error, timed_out=timed_out,
-                           model_turn=model_turn, quiescent=True, bridge_exited=True,
-                           stream=_stream(_DENIED_TOKEN) if stream is None else stream)
+                 timed_out=False, model_turn=False, refresh="pass", proof=None):
+    observation = SimpleNamespace(
+        kind=kind, status=status, error=error, timed_out=timed_out, model_turn=model_turn,
+        quiescent=True, bridge_exited=True,
+        stream=_stream(_NAMED_DENIAL) if stream is None else stream,
+        scan=None if refresh is None else {"scope": "pass", "refresh": refresh})
+    if proof is not None:
+        observation.bearer_proof = proof
+    return observation
 
 
-@pytest.mark.parametrize("token", [_DENIED_TOKEN, _DENIED_TOKEN_CONNECT],
-                         ids=["post", "connect"])
-def test_sl6_aged_copy_refusal_is_refused_intended(codex_supplier, token):
-    assert codex_supplier.terminal(_observation(stream=_stream(token))) == "refused_intended"
+_RUN3_OTHER = (_OTHER_DENY,) * 5
+
+
+@pytest.mark.parametrize("changes", [
+    {"status": "FAILURE"}, {"status": "NONE"}, {"status": "SUCCESS"},
+    {"status": "NONE", "timed_out": True},
+    {"status": "NONE", "timed_out": True, "error": "launch_failed"},
+], ids=["failure", "no-json", "success", "own-deadline", "own-deadline-kit"])
+def test_sl6_r52_production_expired_leg_is_refused_intended_whatever_the_exit(
+        codex_supplier, changes):
+    """r5.2 §10.B / E2: the named denial, no allowed request of any kind and no credential
+    change, in a complete fenced stream, is ``refused_intended`` whatever the CLI's exit,
+    a stop at the launch's own deadline included."""
+    observation = _observation(stream=_stream(_NAMED_DENIAL, *_RUN3_OTHER), **changes)
+    assert codex_supplier.terminal(observation) == "refused_intended"
+
+
+@pytest.mark.parametrize("changes", [
+    {"status": "SUCCESS", "model_turn": True}, {"status": "FAILURE"},
+    {"status": "NONE", "timed_out": True},
+], ids=["success", "failure", "own-deadline"])
+def test_sl6_r52_fixture_expired_leg_with_matching_bearers_is_refused_intended(
+        codex_supplier, changes):
+    """The loopback fixture only: model requests after the named denial (D1's cached
+    fallback) pass when each carries the installed expired bearer."""
+    events = (_ACCOUNT_CHECK, _NAMED_DENIAL, _ACCOUNT_CHECK, _MODEL, _MODEL)
+    observation = _observation(stream=_stream(*events), proof=_proof(_BEARER, _BEARER),
+                               **changes)
+    assert codex_supplier.terminal(observation) == "refused_intended"
+
+
+def test_sl6_r52_run3_not_ready_shape_with_the_named_denial_first_is_refused_intended(
+        codex_supplier):
+    events = ((_NAMED_DENIAL,) + tuple(_event(*row) for row in _RUN3_NOT_READY))
+    observation = _observation(stream=_stream(*events), status="NONE", timed_out=True)
+    assert codex_supplier.terminal(observation) == "refused_intended"
+
+
+_POST_TUNNEL = _DENIED_TOKEN  # a request event to the token host: the CONNECT was tunnelled
+
+
+@pytest.mark.parametrize("events,proof,refresh", [
+    ((_POST_TUNNEL,), None, "pass"),
+    ((_NAMED_DENIAL, _POST_TUNNEL), None, "pass"),
+    ((_event("CONNECT", TOKEN_HOST, None, "allow"),), None, "pass"),
+    ((_NAMED_DENIAL, _event("GET", TOKEN_HOST, "/.well-known/x", "deny")), None, "pass"),
+    ((_OTHER_DENY, _OTHER_DENY), None, "pass"),
+    ((_event("CONNECT", "ab.chatgpt.com", None, "deny"),), None, "pass"),
+    ((_NAMED_DENIAL,), None, "codex_seat_token_refreshed_in_jail"),
+    ((_NAMED_DENIAL,), None, "unavailable"),
+    ((_NAMED_DENIAL,), None, None),
+    ((_NAMED_DENIAL, _ACCOUNT_CHECK), None, "pass"),
+    ((_NAMED_DENIAL, _MODEL), None, "pass"),
+    ((_MODEL, _NAMED_DENIAL, _MODEL), _proof(_BEARER, _BEARER), "pass"),
+    ((_NAMED_DENIAL, _MODEL), _proof("0" * 64), "pass"),
+    ((_NAMED_DENIAL, _MODEL), _proof(None), "pass"),
+    ((_NAMED_DENIAL, _MODEL, _MODEL), _proof(_BEARER), "pass"),
+    ((_NAMED_DENIAL, _event("POST", MODEL_HOST, MODEL_PATH, "deny")), _proof(), "pass"),
+    ((_NAMED_DENIAL, _event("POST", TOKEN_HOST, TOKEN_PATH, "allow")), _proof(), "pass"),
+], ids=["post-tunnel", "denial-then-post-tunnel", "connect-allowed", "token-host-get",
+        "generic-other-only", "other-named-host-only", "tokens-changed", "refresh-unavailable",
+        "no-credential-read", "production-allowed-request", "production-model-request",
+        "model-before-denial", "bearer-mismatch", "bearer-header-missing",
+        "model-request-without-bearer", "denied-model-request", "allowed-token-endpoint"])
+def test_sl6_r52_expired_failure_conditions_are_never_refused_intended(
+        codex_supplier, events, proof, refresh):
+    observation = _observation(stream=_stream(*events), proof=proof, refresh=refresh)
+    assert codex_supplier.terminal(observation) != "refused_intended"
+
+
+@pytest.mark.parametrize("changes,expected", [
+    ({"error": "jail_unavailable"}, "jail_failure"),
+    ({"error": "proxy_unavailable"}, "proxy_failure"),
+    ({"error": "fence_unacknowledged"}, "proxy_failure"),
+    ({"error": "credential_unavailable"}, "not_ready"),
+    ({"error": "stage_refused"}, "other_failure"),
+    ({"error": "launch_failed"}, "other_failure"),
+    ({"stream": _stream(_NAMED_DENIAL, final=False)}, "stream_incomplete"),
+    ({"stream": _stream(_NAMED_DENIAL, end_acked=False)}, "stream_incomplete"),
+    ({"stream": _stream(_NAMED_DENIAL, protocol_error=True)}, "stream_incomplete"),
+    ({"stream": _stream(_NAMED_DENIAL, final=False), "timed_out": True}, "timeout"),
+], ids=["jail", "proxy", "fence", "credential", "other-error", "failed-not-at-deadline",
+        "not-final", "no-end-fence", "protocol-error", "incomplete-at-deadline"])
+def test_sl6_r52_expired_stream_conditions_never_cover_failures(codex_supplier, changes,
+                                                                expected):
+    assert codex_supplier.terminal(_observation(**changes)) == expected
+
+
+def test_sl6_r52_run3_aged_shape_is_not_refused_intended(codex_supplier):
+    """Run 3's aged case: account checks allowed, no token-host event at all."""
+    events = tuple(_event(*row) for row in _RUN3_ACCOUNT_CHECKS)
+    observation = _observation(stream=_stream(*events))
+    assert codex_supplier.terminal(observation) == "other_failure"
 
 
 @pytest.mark.parametrize("events", [
@@ -425,12 +584,12 @@ def test_sl6_a_model_request_or_an_allowed_token_request_is_not_refused_intended
     (_observation(stream=_stream(_DENIED_TOKEN, final=False)), "stream_incomplete"),
     (_observation(stream=_stream(_DENIED_TOKEN, end_acked=False)), "stream_incomplete"),
     (_observation(stream=_stream(_DENIED_TOKEN, protocol_error=True)), "stream_incomplete"),
-    (_observation(status="NONE"), "stream_incomplete"),
+    (_observation(status="NONE", stream=_stream(_DENIED_TOKEN)), "stream_incomplete"),
     (_observation(error="jail_unavailable"), "jail_failure"),
     (_observation(error="watch_unavailable"), "jail_failure"),
     (_observation(error="proxy_unavailable"), "proxy_failure"),
     (_observation(error="fence_unacknowledged"), "proxy_failure"),
-    (_observation(timed_out=True), "timeout"),
+    (_observation(timed_out=True, stream=_stream(_DENIED_TOKEN)), "timeout"),
     (_observation(error="credential_unavailable"), "not_ready"),
 ], ids=["not-final", "no-end-fence", "protocol-error", "cli-incomplete", "jail", "watch",
         "proxy", "fence", "timeout", "credential"])
@@ -837,7 +996,37 @@ def test_sl6_f16_a_window_launch_never_retries(codex_supplier, tmp_path, monkeyp
 # record changes only vendor:codex.
 # --------------------------------------------------------------------------------------
 
+def test_sl6_hold_a_row_qualify_refuses_unfenced_and_launches_nothing(
+        codex_supplier, tmp_path, monkeypatch):
+    """r5.2 §10.B (B1): until the OI-1 fence lane lands, a Codex row window refuses with
+    the typed row-ready code before any claim, preflight, jail or proxy."""
+    from phase_loop_runtime import panel_invoker as panel, seat_window as w
+
+    def never(*args, **kwargs):
+        pytest.fail("the hold let a Codex row window start")
+    for target, name in ((w, "claim_window_attempt"), (w, "preflight"),
+                         (w, "run_native_window"), (panel, "_open_window_launch"),
+                         (panel, "window_control_launch"), (panel, "window_board_launch"),
+                         (panel, "_prepare_jailed_codex"),
+                         (panel._seat_egress_proxy, "start_proxy"),
+                         (panel._sandbox_egress, "isolated_network")):
+        monkeypatch.setattr(target, name, never)
+    result = w.qualify(window="row", monitoring_policy="bounded", repo=tmp_path,
+                       attended=True, vendor="codex")
+    assert result == {"status": "candidate", "code": HOLD_CODE}
+    assert codex_supplier.ROW_WINDOW_HOLD == HOLD_CODE
+
+
+def test_sl6_the_hold_is_codexs_alone(codex_supplier):
+    from phase_loop_runtime import seat_window as w
+    assert w._row_ready_codes("gemini")[0] is None  # Gemini's row is not held
+    assert w._row_ready_codes("codex") == (HOLD_CODE, None)
+
+
 def _codex_row_world(tmp_path, monkeypatch, supplier):
+    # These fixture-context row tests alone lift the hold (plan SL-6.1); no Codex row
+    # window can run in production until the OI-1 fence lands.
+    monkeypatch.setattr(supplier, "ROW_WINDOW_HOLD", None)
     world = _row_world(tmp_path, monkeypatch, "codex")
     stubbed = supplier.reduce_containment
 
