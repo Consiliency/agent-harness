@@ -4949,6 +4949,11 @@ class SeatProfile:
     #: ``ProvisionalContext`` its composition stamps, or the ``LaunchContext`` mark that
     #: ``grok_tool_surface.verify_launch_context`` gives it. ``None`` otherwise.
     grok_launch_context: object | None = field(default=None, repr=False, compare=False)
+    #: A grok profile (grok tool-surface contract, erratum 8, item 5): each secret value of
+    #: the exact credential copy it projects, and the last 12 characters of each longer one,
+    #: for the measurement's definitions scan. Held in memory only: never in ``repr``,
+    #: evidence, a fingerprint or a record.
+    scan_values: tuple[bytes, ...] = field(default=(), repr=False, compare=False)
 
 
 _OWNED_LAUNCH = ContextVar("owned_provider_launch", default=False)
@@ -5452,11 +5457,15 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
     (:func:`_gemini_launch_needs_login`): the freshness of the login is then not asked.
 
     ``egress_proxy`` (grok tool-surface contract v1, section 5.2) is the ``grok-review``
-    proxy this launch owns; only a grok profile takes one. It adds the proxy projection and
-    nothing else: the proxy's address in :data:`seat_egress_proxy.SEAT_PROXY_ENV`, its CA
-    certificate as a read-only file in the private home named by
-    :data:`seat_egress_proxy.SEAT_CA_ENV` (the seat's whole trust bundle), and the proxy's
-    session token among the redactions. Without it the profile is composed as before.
+    proxy this launch owns; only a grok profile takes one. It adds the proxy projection, the
+    pinned seat config of that contract's erratum 8, and nothing else: the proxy's address
+    in :data:`seat_egress_proxy.SEAT_PROXY_ENV`, its CA certificate as a read-only file in
+    the private home named by :data:`seat_egress_proxy.SEAT_CA_ENV` (the seat's whole trust
+    bundle), the proxy's session token among the redactions, and
+    ``grok_tool_surface.SEAT_CONFIG_RELATIVE`` as an immutable read-only mount of a sealed
+    memfd. Without it the profile is composed as before, with no config. Every grok profile
+    carries ``scan_values`` (erratum 8, item 5); registering them changes nothing it mounts,
+    sets or passes.
 
     ``grok_sessions`` (grok tool-surface contract v1, section 5.1) is the grok measurement's
     scratch sessions directory, bound read-write at ``.grok/sessions``: the one host-backed
@@ -5514,6 +5523,7 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
     pass_fds = set()
     keep_fds = set()
     redactions = []
+    scan_values: tuple[bytes, ...] = ()
     evidence = {}
     with contextlib.ExitStack() as stack:
         dependency_projection = None
@@ -5571,11 +5581,13 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
             elif shape == "blank_refresh":
                 value = _blank_refresh_token(value)
                 raw = json.dumps(value, separators=(",", ":")).encode()
-            redactions.extend(_seat_secret_values(value))
+            secret_values = list(_seat_secret_values(value))
+            redactions.extend(secret_values)
             observation = _EXEC_OBSERVATION.get()
             if observation is not None:
                 observation["scan_secrets"] = tuple(item.encode() for item in redactions)
             data_file(relative, raw)
+            return secret_values
 
         for relative in (".config", ".cache", ".local/share"):
             directory(private_home + "/" + relative)
@@ -5612,9 +5624,20 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
             # #1318, #1798), so the frontdoor's self-update suppression must be set here.
             profile_env.update(DISABLE_AUTOUPDATER="1", DISABLE_UPDATES="1")
         elif harness == "grok":
-            credential(".grok/auth.json", shape=_SEAT_CREDENTIAL_SHAPE["grok"])
+            # Each secret value of the exact copy projected, and its last 12 characters
+            # (the client logs a token's suffix; contract erratum 8, item 5). A value of 12
+            # or fewer is its own suffix. The suffixes are redacted after every full value.
+            delivered = credential(".grok/auth.json", shape=_SEAT_CREDENTIAL_SHAPE["grok"]) or []
+            suffixes = [item[-12:] for item in delivered if len(item) > 12]
+            scan_values = tuple(item.encode() for item in (*delivered, *suffixes))
             data_file(".grok/agent_id", _seat_credential(home, ".grok/agent_id"))
             if egress_proxy is not None:
+                # The pinned seat config, only together with this proxy (contract erratum
+                # 8): a sealed memfd, projected as an immutable read-only mount.
+                config_descriptor = _grok_surface.seat_config_descriptor()
+                stack.callback(os.close, config_descriptor)
+                pass_fds.add(config_descriptor)
+                mounts.extend(_grok_surface.seat_config_projection(config_descriptor))
                 # The same projection at measurement and at use (contract section 5.2).
                 ca_destination = private_home + "/" + _SEAT_EGRESS_CA_RELATIVE
                 descriptor = os.memfd_create("seat-profile", os.MFD_CLOEXEC)
@@ -5642,6 +5665,11 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
                 # rest of the home stays the tmpfs (contract section 5.1).
                 mounts.extend(("--bind", _seat_bind_source(grok_sessions, tree=True),
                                private_home + "/" + _grok_surface.SESSIONS_RELATIVE))
+            if suffixes:
+                redactions.extend(suffixes)
+                observation = _EXEC_OBSERVATION.get()
+                if observation is not None:
+                    observation["scan_secrets"] = tuple(item.encode() for item in redactions)
         elif harness == "gemini":
             credential(".gemini/antigravity-cli/antigravity-oauth-token", access_only=True)
             if gemini_profile is None:
@@ -5713,6 +5741,7 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
             dependency_projection_digest=(
                 dependency_projection.digest if dependency_projection is not None else ""
             ),
+            scan_values=scan_values,
         )
 
 
@@ -16507,7 +16536,7 @@ def _require_grok_launch_context(profile, role, *, argv, cwd, env) -> None:
                     and tuple(_EGRESS_LAUNCH_PREFIX.get()) == context.egress_prefix
                     and context.proxy.process.poll() is None
                     and _grok_surface.bridged_to(context.egress_prefix, context.proxy)
-                    and _grok_tool_gate(list(context.command), env, context=context))
+                    and _grok_frozen_admission(list(context.command), env, context))
     except (OSError, ValueError, TypeError, AttributeError, RuntimeError):
         admitted = False
     if not admitted:
@@ -16611,7 +16640,8 @@ def record_tool_probe(command, definitions, *, allowed_tools, version="unavailab
 
 #: What the last real ``grok_tool_gate`` call in this context admitted: ``(argv, basis)``.
 #: Read by the two callers that must know the basis, so the receipt is read once per check.
-_GROK_ADMITTED_BASIS: ContextVar["tuple[tuple[str, ...], str] | None"] = ContextVar(
+#: A frozen-basis admission also carries ``(admitted tools, surface digest)``, else ``None``.
+_GROK_ADMITTED_BASIS: ContextVar["tuple[tuple[str, ...], str, object] | None"] = ContextVar(
     "grok_admitted_basis", default=None)
 
 
@@ -16667,7 +16697,11 @@ def _grok_frozen_receipt_current(command, binary, argv_digest, record, context) 
         return True  # the provisional step: composition, never a launch (§4.4)
     return (_grok_surface.is_issued(context) and context.context_digest == current
             and _grok_argv_digest(list(context.command)) == argv_digest
-            and list(command[1:]) == list(context.command[1:]))
+            and list(command[1:]) == list(context.command[1:])
+            # The receipt the final check judged (grok tool-surface contract, erratum 8). The
+            # surface digest covers the route's tools, which the record must equal (above),
+            # so it binds the admitted names the mark carries too.
+            and record["surface_digest"] == context.surface_digest)
 
 
 def _grok_tool_gate(command, env=None, *, context=None) -> bool:
@@ -16694,7 +16728,10 @@ def _grok_tool_gate(command, env=None, *, context=None) -> bool:
     except (OSError, ValueError, TypeError, AttributeError, IndexError, RuntimeError):
         return False
     if admitted:
-        _GROK_ADMITTED_BASIS.set((tuple(command), basis))
+        snapshot = None
+        if basis == "frozen_measurement":
+            snapshot = (tuple(record["tools"]), record["surface_digest"])
+        _GROK_ADMITTED_BASIS.set((tuple(command), basis, snapshot))
     return admitted
 
 
@@ -16718,6 +16755,33 @@ def _grok_gate_with_basis(command, env=None) -> "tuple[bool, str | None]":
         _GROK_ADMITTED_BASIS.reset(token)
     basis = seen[1] if admitted and seen is not None and seen[0] == tuple(command) else None
     return admitted, basis
+
+
+def _grok_frozen_admission(command, env, context) -> bool:
+    """The final admission of a marked profile: its receipt admits it on the frozen basis,
+    the one the mark was judged on (a listing receipt in its place does not)."""
+    token = _GROK_ADMITTED_BASIS.set(None)
+    try:
+        admitted = _grok_tool_gate(command, env, context=context)
+        seen = _GROK_ADMITTED_BASIS.get()
+    finally:
+        _GROK_ADMITTED_BASIS.reset(token)
+    return bool(admitted and seen is not None and seen[0] == tuple(command)
+                and seen[1] == "frozen_measurement")
+
+
+def _grok_frozen_snapshot(command, env=None) -> "tuple[tuple[str, ...], str] | None":
+    """The provisional gate's own validated frozen receipt for ``command``: ``(admitted
+    tools, surface digest)``, or ``None`` unless it admitted a frozen-basis receipt."""
+    token = _GROK_ADMITTED_BASIS.set(None)
+    try:
+        admitted = grok_tool_gate(command, env)
+        seen = _GROK_ADMITTED_BASIS.get()
+    finally:
+        _GROK_ADMITTED_BASIS.reset(token)
+    if not admitted or seen is None or seen[0] != tuple(command):
+        return None
+    return seen[2]  # set only for a frozen-basis receipt (_grok_tool_gate)
 
 
 def probe_grok_tools(command, *, allowed_tools, runner=None):

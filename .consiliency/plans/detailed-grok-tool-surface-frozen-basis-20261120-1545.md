@@ -40,6 +40,7 @@ sections and does not restate them.
 ## Changes
 
 Paths are under `phase-loop-runtime/` unless they start with `plans/`, `docs/` or `CHANGELOG`.
+Contract erratum 8 adds lanes E8-A to E8-C.
 
 ### Lane L1 — frozen basis in the probe and gate (code; lands alone, fails closed)
 
@@ -282,7 +283,7 @@ acceptance criteria of those lanes too, and gate D4.
 ## Decisions
 
 Rulings on D1–D3, D5, D6, C1, C2 (resolved) and the reviews are recorded in contract §9.
-Open: D4, the owner's grant for the measurement.
+Open: D4, the owner's grant (1.0.92: contract erratum 8, item 9).
 
 ## Execution Policy
 

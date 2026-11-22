@@ -1353,7 +1353,7 @@
   {"count": 1, "function": "probe_grok_tools", "module": "panel_invoker", "primitive": "run_provider", "role": "owned"},
   {"count": 1, "function": "_catalog_bytes", "module": "grok_tool_surface", "primitive": "io.open", "role": "host-io"},
   {"count": 2, "function": "load_host_record", "module": "grok_tool_surface", "primitive": "io.open", "role": "host-io"},
-  {"count": 1, "function": "_check_managed_config", "module": "grok_tool_surface", "primitive": "io.lstat", "role": "host-io"},
+  {"count": 1, "function": "_present", "module": "grok_tool_surface", "primitive": "io.lstat", "role": "host-io"},
   {"count": 2, "function": "_through", "module": "grok_tool_surface", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_through", "module": "grok_tool_surface", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "_help_and_version.run", "module": "grok_tool_surface", "primitive": "run_provider", "role": "qualification"},
