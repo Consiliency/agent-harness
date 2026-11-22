@@ -60,9 +60,6 @@ EXPECTED_CODEX_IMAGE = MappingProxyType({
 OPT_IN = "PHASE_LOOP_REQUIRE_LIVE_JAIL"
 TOKEN_HOST, TOKEN_PATH = "auth.openai.com", "/oauth/token"
 MODEL_HOST, MODEL_PATH = "chatgpt.com", "/backend-api/codex/responses"
-#: Named observations: the stream reports the token endpoint verbatim instead of folding it
-#: into ``<other>``. Naming allows, refuses and counts nothing.
-NAMED = (("POST", TOKEN_HOST, TOKEN_PATH), ("CONNECT", TOKEN_HOST, None))
 _BIND_FLAGS = frozenset({"--ro-bind", "--bind", "--ro-bind-try", "--bind-try"})
 EVIDENCE = Path(__file__).resolve().parents[2] / "plans" / "evidence" / "seat-codex"
 
@@ -267,6 +264,10 @@ def plant_decoy(root: Path, monkeypatch) -> dict:
     (codex / "config.toml").write_text('model_provider = "decoy"\n')
     for path in codex.iterdir():
         path.chmod(0o600)
+    # The proxy's own install (srt, its CA) is found through the data home, which defaults to
+    # ``$HOME``; it is not a Codex lookup, so it stays where it was before the decoy.
+    from phase_loop_runtime import seat_egress_proxy
+    monkeypatch.setenv("XDG_DATA_HOME", str(seat_egress_proxy._data_home()))
     monkeypatch.setenv("HOME", str(root))
     monkeypatch.setenv("CODEX_HOME", str(codex))
     codex.chmod(0o000)
@@ -386,6 +387,32 @@ def _stage(tmp_path):
     return review, type("Authorization", (), {"staged_tree_sha256": digest})()
 
 
+def _redact(text: str, login: dict) -> str:
+    """Synthetic values only, but none is kept verbatim in the evidence."""
+    text = (text or "")[:8000]
+    for value in (*login["tokens"].values(),):
+        if isinstance(value, str) and len(value) > 8:
+            text = text.replace(value, "<synthetic>")
+    return text
+
+
+def _write_evidence(case: str, document: dict) -> None:
+    """When ``PHASE_LOOP_A_C1_EVIDENCE_DIR`` names a private (0700, own) directory, keep
+    this case's evidence there as a 0600 file. Only an opt-in run writes it."""
+    directory = os.environ.get("PHASE_LOOP_A_C1_EVIDENCE_DIR")
+    if not directory:
+        return
+    info = os.stat(directory)
+    if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077:
+        pytest.fail("the A-C1 evidence directory must be private")
+    document = {**document, "opt_in": os.environ.get(OPT_IN),
+                "native": os.environ.get("PHASE_LOOP_CODEX_FIXTURE_NATIVE")}
+    fd = os.open(os.path.join(directory, f"a-c1-{case}.json"),
+                 os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as handle:
+        json.dump(document, handle, indent=2, sort_keys=True)
+
+
 def _a_c1(tmp_path, monkeypatch, codex_upstream, *, case):
     """One A-C1 launch through the real prepare path and the supplier's own command and
     classification. ``case``: ``fresh`` (measured), ``aged`` (expired_copy) or
@@ -399,6 +426,9 @@ def _a_c1(tmp_path, monkeypatch, codex_upstream, *, case):
     monkeypatch.setattr(seat_jail, "state_home", lambda: tmp_path / "state")
     subject = _native_subject()
     monkeypatch.setattr(pi, "_resolved_jail_subject", lambda *a: (subject, None))
+    # As in the consumed CODEX harness: a provider-free run creates no EC-EXECFIND-2 host
+    # pass, so the launch's recorded-pass check is satisfied here and nowhere else.
+    monkeypatch.setattr(seat_jail, "pass_record_verdict", lambda _digest: (True, "pass"))
     fixture_home = tmp_path / "fixture-home"
     (fixture_home / ".codex").mkdir(parents=True, mode=0o700)
     login = synthetic_login("acct-fixture-" + secrets.token_hex(4))
@@ -421,10 +451,16 @@ def _a_c1(tmp_path, monkeypatch, codex_upstream, *, case):
     mode = "none" if case == "not_ready" else supplier.credential_mode(kind)
     (argv,) = supplier.launch_command(kind, qualification_input=None, model="gpt-fixture",
                                       plugin_paths=())
+    # The kit's own named set and stdin input (rulings 3b and 4), never re-declared here.
+    named = pi._window_named_refusals("codex")
+    input_value = pi._WINDOW_MEASURED_INPUT
+    prompt = pi._render_broker_pointer_prompt(
+        "", input_value, source_commit="0" * 40,
+        staged_tree_sha256=str(authorization.staged_tree_sha256), model_only_network=True)
     uids = seat_uid.subordinate_range(seat_uid.SUBUID_FILE)
     gids = seat_uid.subordinate_range(seat_uid.SUBGID_FILE)
     with decoy_guard(*forbidden_roots(decoy)) as hits:
-        with seat_egress_proxy.start_proxy(allowlist_id="codex", named=NAMED) as proxy:
+        with seat_egress_proxy.start_proxy(allowlist_id="codex", named=named) as proxy:
             assert proxy.allowlist_digest == seat_egress_proxy.allowlist_ref("codex").content_digest
             with seat_uid.lease_seat_id(seat_uid.seat_id_count(uids, gids)) as n, \
                     sandbox_egress.isolated_network(
@@ -439,13 +475,16 @@ def _a_c1(tmp_path, monkeypatch, codex_upstream, *, case):
                         seat_uid.holder_pid_from_prefix(prefix), ("", ""), proxy,
                         env=fixture_env, credential_mode=mode,
                         copy_transform=supplier.copy_transform if mode == "expired" else None)
+                    bound_image = pi._window_bound_image_sha256(seat)
                     start = seat_egress_proxy.fence(proxy, "start", "leg")
-                    timed_out = False
+                    timed_out, exit_code, stderr = False, None, ""
                     try:
                         done = pi._run_leg_with_liveness(
                             list(argv), cwd="/seat/home/workspace", env=dict(seat.jail.env),
-                            deadline_s=120, seat_jail=seat.jail, probe_jail=seat.probe_jail)
-                        stdout = done.stdout
+                            deadline_s=120, input_text=prompt, seat_jail=seat.jail,
+                            probe_jail=seat.probe_jail)
+                        stdout, exit_code = done.stdout, done.returncode
+                        stderr = getattr(done, "stderr", "") or ""
                     except pi.subprocess.TimeoutExpired:
                         timed_out, stdout = True, ""
                     bridge = sandbox_egress.wait_bridge_exit(prefix)
@@ -460,16 +499,37 @@ def _a_c1(tmp_path, monkeypatch, codex_upstream, *, case):
         kind=kind, status=status, model_turn=model_turn, tool_steps=tools,
         subagent_steps=subagents, timed_out=timed_out, error=None, quiescent=True,
         bridge_exited=bridge, stream=stream)
+    events = [event for window in stream.windows if window.label == "leg"
+              for event in window.events]
+    terminal = supplier.terminal(observation)
+    _write_evidence(case, {
+        "case": case, "kind": kind, "credential_mode": mode, "terminal": terminal,
+        "status": status, "model_turn": model_turn, "tool_steps": tools,
+        "timed_out": timed_out, "exit_code": exit_code, "bridge_exited": bridge,
+        "fenced": bool(start.acknowledged and end is not None and end.acknowledged),
+        "stream_final": stream.final, "protocol_error": stream.protocol_error,
+        "events": [[e.method, e.host, e.path, e.decision] for e in events],
+        "outside_events": len(stream.outside_events),
+        "named": [list(entry) for entry in named],
+        "allowlist_digest": proxy.allowlist_digest,
+        "upstream_connections": upstream.connections, "upstream_requests": [
+            [method, target] for _sni, method, target, _host in upstream.requests],
+        "bearer_is_synthetic": all(bearer == "Bearer " + login["tokens"]["access_token"]
+                                   for bearer in upstream.bearers if bearer),
+        "decoy_hits": len(hits), "images": [digest for _src, digest in evidence.images],
+        "host_runs": [digest for _src, digest in evidence.host_runs],
+        "bound_image": bound_image,
+        "stdout": _redact(stdout, login), "stderr_tail": _redact(stderr[-2000:], login),
+    })
     assert start.acknowledged and end is not None and end.acknowledged, "unfenced launch"
     assert_pinned_image(evidence.images)  # K1-T6, from the spawn evidence
+    assert bound_image == EXPECTED_CODEX_IMAGE["sha256"]  # the binding names it (ruling 5)
     assert all(digest == EXPECTED_CODEX_IMAGE["sha256"] for _src, digest in evidence.host_runs)
     assert hits == [], f"K1-T7: a lookup reached the decoy or the real home: {hits}"
     assert decoy["bearer"] not in "".join(upstream.bearers)
     assert not upstream.problems
-    events = [event for window in stream.windows if window.label == "leg"
-              for event in window.events]
     return SimpleNamespace(observation=observation, events=events, upstream=upstream,
-                           login=login, terminal=supplier.terminal(observation),
+                           login=login, terminal=terminal,
                            token_events=[e for e in events if supplier.token_endpoint(e)],
                            model_events=[e for e in events if (e.method, e.host, e.path)
                                          == ("POST", MODEL_HOST, MODEL_PATH)])
@@ -480,7 +540,8 @@ def _a_c1(tmp_path, monkeypatch, codex_upstream, *, case):
 def test_k1_t7_a_c1_fresh_copy_completes_its_local_model_request(
         tmp_path, monkeypatch, codex_upstream, live_seat_attempt):
     run = _a_c1(tmp_path, monkeypatch, codex_upstream, case="fresh")
-    assert run.token_events == [], run.events
+    # The differential control (ruling 3a): no token-host event of any kind.
+    assert not any(event.host == TOKEN_HOST for event in run.events), run.events
     posts = [event for event in run.events if event.method == "POST"]
     assert posts and posts[0] == run.model_events[0], run.events  # the first POST
     assert run.terminal == "completed", (run.observation, run.events)

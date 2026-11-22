@@ -14,6 +14,7 @@ vendor.
 from __future__ import annotations
 
 import base64
+import contextlib
 import dataclasses
 import datetime as dt
 import hashlib
@@ -62,24 +63,36 @@ _REAL_CRED = {name: getattr(_cred, name) for name in (
     "scope_problem")}
 
 
-@pytest.fixture
-def codex_supplier(monkeypatch):
-    """Import the real supplier against a registry without a Codex row; restore both."""
-    from phase_loop_runtime import seat_profiles
+@contextlib.contextmanager
+def _fresh_supplier():
+    """Import the real supplier afresh against a registry without a Codex row, then
+    restore the registry, ``sys.modules`` and the package attribute exactly."""
     import phase_loop_runtime
-    monkeypatch.setattr(seat_profiles, "_WINDOW_DATA", {
-        vendor: data for vendor, data in seat_profiles._WINDOW_DATA.items()
-        if vendor != "codex"})
+    from phase_loop_runtime import seat_profiles
+    name = SUPPLIER.rsplit(".", 1)[1]
+    registry = seat_profiles._WINDOW_DATA
     prior = sys.modules.pop(SUPPLIER, None)
+    had_attr = hasattr(phase_loop_runtime, name)
+    prior_attr = getattr(phase_loop_runtime, name, None)
+    seat_profiles._WINDOW_DATA = {vendor: data for vendor, data in registry.items()
+                                  if vendor != "codex"}
     try:
-        module = importlib.import_module(SUPPLIER)
-        yield module
+        yield importlib.import_module(SUPPLIER)
     finally:
+        seat_profiles._WINDOW_DATA = registry
         sys.modules.pop(SUPPLIER, None)
         if prior is not None:
             sys.modules[SUPPLIER] = prior
-        if hasattr(phase_loop_runtime, "seat_window_supply_codex"):
-            delattr(phase_loop_runtime, "seat_window_supply_codex")
+        if had_attr:
+            setattr(phase_loop_runtime, name, prior_attr)
+        elif hasattr(phase_loop_runtime, name):
+            delattr(phase_loop_runtime, name)
+
+
+@pytest.fixture
+def codex_supplier():
+    with _fresh_supplier() as module:
+        yield module
 
 
 def _part(value: dict) -> str:
@@ -175,6 +188,26 @@ def test_sl6_reimport_is_idempotent_and_a_rival_row_is_refused(codex_supplier, m
     assert seat_profiles.window_data_for("codex") is data
 
 
+def test_sl6_the_fixture_vendor_hides_the_real_supplier_and_leaks_nothing(codex_supplier):
+    """Ruling 2: SL-5's fixture vendor hides the real Codex registration under its own
+    monkeypatch, and its teardown brings the real row and module back."""
+    import phase_loop_runtime
+    from phase_loop_runtime import seat_profiles, seat_window_supply as supply
+    from test_seat_window_vendor_neutral import register_fixture_vendor
+    real = codex_supplier
+    assert seat_profiles.window_data_for("codex") is real.CODEX_WINDOW_DATA
+    assert supply.available("codex") is real
+    with pytest.MonkeyPatch.context() as patch:
+        fixture = register_fixture_vendor(patch)
+        assert seat_profiles.window_data_for("codex") is fixture.data
+        assert fixture.data is not real.CODEX_WINDOW_DATA
+        assert supply.load("codex") is fixture.module
+        assert phase_loop_runtime.seat_window_supply_codex is fixture.module
+    assert seat_profiles.window_data_for("codex") is real.CODEX_WINDOW_DATA
+    assert supply.available("codex") is real and sys.modules[SUPPLIER] is real
+    assert phase_loop_runtime.seat_window_supply_codex is real
+
+
 def test_sl6_profile_allowlist_and_jail_digests_do_not_move(monkeypatch):
     """Stop rule: Codex's profile and allowlist digests are unchanged by the supplier."""
     from phase_loop_runtime import seat_jail, seat_profiles, seat_egress_proxy
@@ -191,17 +224,8 @@ def test_sl6_profile_allowlist_and_jail_digests_do_not_move(monkeypatch):
         return ({arch: seat_jail.jail_profile_digest("codex", arch) for arch in receipt},
                 seat_egress_proxy.allowlist_ref("codex").content_digest)
     before, profile = digests(), seat_profiles.profile_for("codex")
-    monkeypatch.setattr(seat_profiles, "_WINDOW_DATA", {
-        vendor: data for vendor, data in seat_profiles._WINDOW_DATA.items()
-        if vendor != "codex"})
-    prior = sys.modules.pop(SUPPLIER, None)
-    try:
-        importlib.import_module(SUPPLIER)
+    with _fresh_supplier():
         after = digests()
-    finally:
-        sys.modules.pop(SUPPLIER, None)
-        if prior is not None:
-            sys.modules[SUPPLIER] = prior
     assert before == after
     assert after[0] == {arch: rows["codex"] for arch, rows in receipt.items()}
     assert seat_profiles.profile_for("codex") is profile  # registered once, by CODEX
@@ -276,16 +300,12 @@ def _command(supplier, kind, model="gpt-fixture"):
 
 @pytest.mark.parametrize("kind", sorted(MODEL_KINDS))
 def test_sl6_model_kinds_run_the_production_command(codex_supplier, kind):
-    from phase_loop_runtime import seat_jail_qualification as jailq
     argv, production = list(_command(codex_supplier, kind)), list(_production("gpt-fixture"))
-    assert production[-1] == "-"
+    assert production[-1] == "-"  # the prompt comes on stdin, from the kit (ruling 4)
     if kind in TREE_KINDS:
         cd = production.index("--cd")
         production[cd + 1] = "/seat/tree"
-    # The kit's control process has no stdin: the prompt is the final argument.
-    assert argv[:-1] == production[:-1]
-    expected = jailq.CONTROL_INPUT if kind in CONTROL_KINDS else jailq.MEASURED_INPUT
-    assert argv[-1] == expected
+    assert argv == production
 
 
 def test_sl6_help_starts_no_model_turn(codex_supplier):
@@ -298,9 +318,11 @@ def test_sl6_help_starts_no_model_turn(codex_supplier):
 @pytest.mark.parametrize("kind", sorted(KINDS))
 def test_sl6_no_kind_overrides_the_provider_or_config(codex_supplier, kind):
     argv = _command(codex_supplier, kind)
-    overrides = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg in {"-c", "--config"}]
-    assert all(value in {'approval_policy="never"', 'cli_auth_credentials_store="file"'}
-               for value in overrides), overrides
+    def overrides(command):
+        return [command[i + 1] for i, arg in enumerate(command[:-1])
+                if arg in {"-c", "--config"}]
+    # Only production's own configuration values, never one a test or fixture adds.
+    assert set(overrides(argv)) <= set(overrides(_production("gpt-fixture"))), argv
     assert not any(arg.startswith(("--profile", "--oss", "model_provider")) for arg in argv)
     assert not any("model_providers" in arg or "base_url" in arg for arg in argv)
 
@@ -417,8 +439,10 @@ def test_sl6_refused_intended_never_covers_incomplete_or_failed_infrastructure(
     assert codex_supplier.terminal(observation) == expected
 
 
-def test_sl6_a_cli_failing_before_its_credential_path_is_not_ready(codex_supplier):
-    observation = _observation(stream=_stream())  # a complete fence, no request at all
+@pytest.mark.parametrize("status", ["FAILURE", "NONE"])
+def test_sl6_a_cli_failing_before_its_credential_path_is_not_ready(codex_supplier, status):
+    # A complete fence with no request at all, whether or not the CLI wrote a JSON stream.
+    observation = _observation(status=status, stream=_stream())
     assert codex_supplier.terminal(observation) == "not_ready"
 
 
@@ -601,6 +625,7 @@ def _control_world(monkeypatch, tmp_path, supplier, *, stdout, stream=None, **st
 
     def spawn(command, **kwargs):
         seen["spawned"].append(list(command))
+        seen.setdefault("inputs", []).append(kwargs.get("input_text"))
         if isinstance(stdout, BaseException):
             raise stdout
         return SimpleNamespace(returncode=0, stdout=stdout)
@@ -638,6 +663,35 @@ def test_sl6_f16_control_launches_through_the_real_prepare(
                                             plugin_paths=())
     assert seen["spawned"] == [list(command[0])]  # exactly once, the supplier's argv
     assert result.binding.argv_sha256 == panel._window_json_digest([list(command[0])])
+    # The kit's own input, on stdin, bound by digest exactly as Gemini's.
+    expected = (panel._WINDOW_CONTROL_INPUT if kind in CONTROL_KINDS
+                else panel._WINDOW_MEASURED_INPUT)
+    (delivered,) = seen["inputs"]
+    assert delivered == panel._render_broker_pointer_prompt(
+        "", expected, source_commit="2" * 40, staged_tree_sha256="d" * 64,
+        model_only_network=True)
+    assert result.binding.input_sha256 == hashlib.sha256(expected.encode()).hexdigest()
+    # The binding names the image the jail actually bound, never "None".
+    assert result.binding.image_sha256 == seen["image_sha256"] != "None"
+    # The allowlist's own refused hosts are named, and naming moves no allowlist digest.
+    assert seen["named"] == [panel._window_named_refusals("codex")]
+    assert ("CONNECT", TOKEN_HOST, None) in seen["named"][0]
+
+
+def test_sl6_f16_help_has_no_input(codex_supplier, tmp_path, monkeypatch):
+    from phase_loop_runtime import panel_invoker as panel
+    seen = _control_world(monkeypatch, tmp_path, codex_supplier, stdout="usage\n")
+    result = panel.window_control_launch(_codex_spec("help", tmp_path))
+    assert seen["inputs"] == [None] and result.binding.input_sha256 is None
+
+
+def test_sl6_named_refusals_are_the_allowlists_and_move_no_digest():
+    from phase_loop_runtime import panel_invoker as panel, seat_egress_proxy
+    before = seat_egress_proxy.allowlist_ref("codex").content_digest
+    named = panel._window_named_refusals("codex")
+    refused = seat_egress_proxy.allowlist("codex")["measured_and_refused"]
+    assert named == tuple(("CONNECT", host, None) for host in refused) and len(named) <= 16
+    assert seat_egress_proxy.allowlist_ref("codex").content_digest == before
 
 
 @pytest.mark.parametrize("failure,expected", [
