@@ -182,6 +182,26 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- A seat process on a Node 22 host can no longer kill its own egress proxy with a refused
+  request that declares a body (Consiliency/agent-harness#2067). srt tees a GET, HEAD or
+  OPTIONS that declares a body (`Content-Length` or `Transfer-Encoding`) and hands the filter a
+  bodyless request. When the request is refused, srt cancels the tee while the body is still
+  arriving. Node 22.12.0's `Readable.toWeb` adapter then called `enqueue` on its closed
+  controller from its `'data'` listener, which threw an uncaught `ERR_INVALID_STATE`. The
+  proxy exited 1 and wrote no end-of-stream marker. `proxy.mjs` now wraps `Readable.toWeb`:
+  only the `'data'` listeners the adapter adds are replaced, and each forwards only while its
+  source is not destroyed. This is the check Node 24 already makes. A start-up check on a
+  probe stream exits 3 with `toWeb data guard is not in force` before the ready line if the
+  guard is not on the adapter's listener. No allow or refuse decision, cause, event,
+  forwarded byte, allowlist, named set or jail profile changes. Tests prove each refusal
+  cause and allowed `{}`, 256 KiB and chunked bodies on the real proxy over the pinned srt.
+  The hosted BA-3 job runs them on Node 22.12.0.
+  Pins: `proxy_sha256` (`seat_jail_qualification._PROXY_IMPLEMENTATION_SHA256`),
+  `seat_window.runtime_digest()` (and the window `qualification_keys` that inherit it) and
+  `seat_window.release_identity()` move. No grant pin, agy QCI, SDK proof input, jail
+  profile digest, allowlist, srt pin or containment-contract digest moves. Gemini W1, any
+  Codex window already qualified, and the Grok grants and rehearsals need current rollout
+  evidence. Each of those is owner-gated.
 - Tests: three hosted-load flakes are deterministic (Consiliency/agent-harness#2049,
   Consiliency/agent-harness#2072, Consiliency/agent-harness#2073). The capture controls
   that need a finished child get a 5 s budget and report a timeout as one. The

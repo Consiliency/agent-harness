@@ -25,6 +25,56 @@ import { createServer, connect } from 'node:net';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough, Readable } from 'node:stream';
+
+// The Readable.toWeb data guard (agent-harness#2067). srt pipes each request into a
+// PassThrough shim and tees Readable.toWeb(shim) whenever the request declares a body, even
+// for a GET, HEAD or OPTIONS whose filter request is bodyless. On a refusal it cancels the
+// tee, and the adapter's cancel destroys the shim while the client's bytes may still be
+// arriving. Node 22's adapter guards its close() against that but not its 'data' listener:
+// a late chunk reaches controller.enqueue on a closed controller, throws an uncaught
+// ERR_INVALID_STATE and ends the proxy with no end-of-stream marker. Node 24 checks the
+// cancellation in that listener too; this is the same check. Only the 'data' listeners the
+// original toWeb adds are replaced, each forwarding only while its source is not destroyed,
+// so a chunk dropped is one no reader can take. No error is swallowed, no listener that was
+// already there is touched, and a live source forwards exactly as before.
+const originalToWeb = Readable.toWeb;
+const guardedDataListeners = new WeakSet();
+function guardDataListener(source, listener) {
+  const guarded = function (...args) {
+    if (source.destroyed) return undefined;
+    return listener.apply(this, args);
+  };
+  guardedDataListeners.add(guarded);
+  return guarded;
+}
+Readable.toWeb = function (source, ...rest) {
+  const before = typeof source?.listeners === 'function' ? source.listeners('data') : [];
+  const web = originalToWeb.call(this, source, ...rest);
+  if (typeof source?.listeners === 'function') {
+    for (const listener of source.listeners('data')) {
+      if (before.includes(listener)) continue;
+      source.removeListener('data', listener);
+      source.on('data', guardDataListener(source, listener));
+    }
+  }
+  return web;
+};
+// Fail closed at start-up: Node's real adapter, on a probe stream, must hold exactly one
+// 'data' listener and it must be the guard. Anything else, a throw included, exits 3
+// before the ready line.
+let dataGuardInForce = false;
+try {
+  const probe = new PassThrough();
+  Readable.toWeb(probe);
+  const listeners = probe.listeners('data');
+  dataGuardInForce = listeners.length === 1 && guardedDataListeners.has(listeners[0]);
+  probe.destroy();
+} catch { dataGuardInForce = false; }
+if (!dataGuardInForce) {
+  process.stderr.write('toWeb data guard is not in force\n');
+  process.exit(3);
+}
 
 const { SandboxManager } = await import(process.argv[2]);
 const config = JSON.parse(readFileSync(process.argv[3], 'utf8'));
@@ -85,7 +135,9 @@ function innerHost(request, url) {
 // client's bytes may still be in flight. Node 22's stream adapter then throws an uncaught
 // ERR_INVALID_STATE ("Controller is already closed") and the proxy dies with no end-of-stream
 // marker, so every refused request with a body ended the observation incomplete. Reading the
-// branch to its end first leaves srt nothing in flight to cancel. The read is bounded in
+// branch to its end first leaves srt nothing in flight to cancel. A GET, HEAD or OPTIONS
+// that declares a body reaches this callback bodyless, so there is nothing here to read;
+// its tee is the Readable.toWeb data guard's (agent-harness#2067, at the top of this file). The read is bounded in
 // bytes and time and its bytes are discarded: never forwarded, observed or recorded. Past
 // either bound the branch is left unread, and still never cancelled here. It runs after the
 // decision, its observation and any budget charge, which stay synchronous and unchanged.
