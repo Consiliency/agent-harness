@@ -786,6 +786,10 @@ def bracket_steps():
 #   control opened;
 # * no post-launch row scan: a row's change is the watch's change event, and the home row
 #   has no digest baseline, so a change there leaves every surface ``unavailable``;
+# * no post-launch tree manifest: the private record's ``manifest_differences`` is ``None``
+#   (unmeasured), never ``False``. The kit's verifier requires a bool there, so a Codex row
+#   record cannot verify until a measured manifest exists. That is fail-closed, and it is the
+#   deferred finding on this watch (post-launch row and manifest scan);
 # * no issuer: the scope is ``scope_problem`` on the seat's copy (§10.B).
 # --------------------------------------------------------------------------------------
 
@@ -1517,7 +1521,8 @@ def reduce_containment(inputs: ContainmentInputs) -> ContainmentReduction:
         },
         "lookups": {item.kind: () for item in inputs.controls},
         "home_row": {"baseline": None, "measured": None},
-        "manifest_differences": False,
+        # Unmeasured: Codex takes no post-launch tree manifest (see the section note).
+        "manifest_differences": None,
         "delivered_copy_sha256": delivered if _is_digest(delivered) else None,
         "bracket": getattr(observed_measured, "bracket", None),
         "issuer": None,

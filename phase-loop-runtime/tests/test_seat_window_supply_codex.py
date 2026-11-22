@@ -1396,17 +1396,56 @@ def test_sl6_codex_owns_its_containment_types(codex_supplier):
                             "measured", "expired_copy", "board")}))
 
 
-def test_sl6_reducer_is_self_contained(codex_supplier):
-    """OI-1 Step 0: Codex's reducer calls no FIRSTSEAT reducer, definition or binding
-    helper."""
-    source = inspect.getsource(sys.modules[SUPPLIER])
-    reducer = source[source.index("# --- reduction helpers"):]
-    for name in ("reduce_containment", "definition_probe", "_launch_binding_valid",
-                 "_binding_identity", "_expired_copy_state", "_bracket_valid",
-                 "_stream_complete", "_watch_complete", "_credential_event",
-                 "CONTAINMENT_CONTRACT_SHA256", "_BINDING_KEYS", "_VALIDATOR_IMPLEMENTATION",
-                 "_WATCH_IMPLEMENTATION"):
-        assert f"jailq.{name}" not in reducer, name
+_FIRSTSEAT_REDUCER_NAMES = (
+    "reduce_containment", "definition_probe", "ContextBinding", "ContainmentInputs",
+    "ContainmentReduction", "OwnerSummary", "DefinitionResult", "VoidedControl",
+    "_launch_binding_valid", "_binding_identity", "_layout_complete", "_expired_copy_state",
+    "_bracket_valid", "_stream_complete", "_watch_complete", "_credential_event",
+    "_control_void_reasons", "_count_lookup", "_lookup_is_known", "_positive_surfaces",
+    "_positive_board_surfaces", "_row_post_changed", "_runtime_or_home_change",
+    "_leg_token_events", "_outside_token_events", "_token_endpoint_events",
+    "_unexpected_bracket_token_events", "_request_is_token_endpoint", "_all_events",
+    "_plain", "_add_reason", "_valid_digest", "_sha256_text", "CONTAINMENT_CONTRACT_SHA256",
+    "_BINDING_KEYS", "_VALIDATOR_IMPLEMENTATION_SHA256", "_WATCH_IMPLEMENTATION_SHA256",
+    "_PROXY_IMPLEMENTATION_SHA256", "_COUNTED_ADMISSION_CLASSES", "_INFERENCE_HOSTS")
+
+
+def test_sl6_reducer_is_self_contained(codex_supplier, monkeypatch):
+    """OI-1 Step 0: Codex's reducer uses no FIRSTSEAT reducer, definition or binding
+    helper, under any spelling: no import of one by any alias, no attribute of the module
+    under any alias, and none is called when a complete context is reduced."""
+    import ast
+    from phase_loop_runtime import seat_jail_qualification as jailq
+    tree = ast.parse(inspect.getsource(sys.modules[SUPPLIER]))
+    aliases = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for item in node.names:
+                if (node.module or "").endswith("seat_jail_qualification"):
+                    assert item.name not in _FIRSTSEAT_REDUCER_NAMES, item.name
+                if item.name == "seat_jail_qualification":
+                    aliases.add(item.asname or item.name)
+        elif isinstance(node, ast.Import):
+            for item in node.names:
+                if item.name.endswith("seat_jail_qualification"):
+                    aliases.add(item.asname or item.name)
+    assert "jailq" in aliases  # every alias is checked below, not only this one
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) \
+                and node.value.id in aliases:
+            assert node.attr not in _FIRSTSEAT_REDUCER_NAMES, node.attr
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "getattr" \
+                and node.args and getattr(node.args[0], "id", None) in aliases:
+            assert False, "dynamic attribute of seat_jail_qualification"
+    context = _context(codex_supplier)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Codex's reducer called a FIRSTSEAT reducer helper")
+    for name in _FIRSTSEAT_REDUCER_NAMES:
+        if callable(getattr(jailq, name, None)):
+            monkeypatch.setattr(jailq, name, forbidden)
+    reduction = codex_supplier.reduce_containment(context)
+    assert reduction.admitted is True and all(reduction.checks.values())
 
 
 def test_sl6_reducer_passes_a_complete_context_and_the_kit_accepts_it(codex_supplier,
@@ -1420,7 +1459,13 @@ def test_sl6_reducer_passes_a_complete_context_and_the_kit_accepts_it(codex_supp
     # The kit's own acceptance checks (seat_window.run_native_window and the verifier).
     private, binding = w._json_value(reduction.private), w._json_value(reduction.binding)
     owner = w._json_value(reduction.owner_summary)
-    assert set(private) == set(w.PRIVATE_FIELDS) and w._private_observation_valid(private)
+    assert set(private) == set(w.PRIVATE_FIELDS)
+    # Codex takes no post-launch tree manifest, so the record says unmeasured (None), never
+    # "no differences" (False). The kit's verifier requires a bool there, so this record
+    # cannot verify until a measured manifest exists (the deferred watch-scan finding).
+    assert private["manifest_differences"] is None
+    assert w._private_observation_valid(private) is False
+    assert w._private_observation_valid({**private, "manifest_differences": True})
     assert w.digest(private) == reduction.observation_sha256
     assert w._containment_outcomes_valid(w._json_value(reduction.containment),
                                          codex_supplier.CODEX_WINDOW_DATA)
