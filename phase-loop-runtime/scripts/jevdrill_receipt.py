@@ -341,7 +341,8 @@ def leg_from_environment(kind: str, os_label: str, environ=None) -> Leg:
     return Leg(
         kind=kind,
         os=os_label,
-        jevdrill_variables=frozenset(name for name in JEVDRILL_VARIABLES if environ.get(name)),
+        # Set means present, even when empty, as conftest's skip rule reads it.
+        jevdrill_variables=frozenset(name for name in JEVDRILL_VARIABLES if environ.get(name) is not None),
         sched_set=environ.get(SCHED_VARIABLE) == "1",
     )
 

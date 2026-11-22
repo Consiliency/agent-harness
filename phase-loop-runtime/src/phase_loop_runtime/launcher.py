@@ -4574,7 +4574,7 @@ def _codex_usage_version(executable, env, cwd, timeout):
         finally:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError):
                 pass
             process.wait(timeout=1)
 

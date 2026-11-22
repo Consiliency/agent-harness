@@ -1,27 +1,5 @@
 from __future__ import annotations
 
-from .jevdrill_adapter import build_jevdrill_request, launch_jevdrill
-
-
-def discover_jevdrill_work_units(adapter, inputs, *, plan_objective):
-    """Discover guidance, then consume an ordinary host-produced lane plan."""
-    from uuid import UUID, uuid5
-    from .plan_ir import parse_phase_plan_ir
-    from .jevdrill_adapter import JevDrillUnavailable
-
-    result = adapter.discover_objective(inputs)
-    plan = plan_objective(result)
-    ir = parse_phase_plan_ir(plan)
-    if ir.diagnostics or not ir.lanes:
-        raise JevDrillUnavailable("Host planning did not produce valid task lanes")
-    details = result["details"]
-    ref = {key: details[key] for key in ("discovery_id", "work_objective_id", "trace_digest")}
-    tasks = tuple({"task_id": str(uuid5(UUID(inputs["work_objective_id"]), lane.lane_id)),
-                   "assignment": HarnessLaneAssignment(phase=inputs["work_objective_id"],
-                        lane_id=lane.lane_id, work_unit_kind="lane_execute", owned_files=lane.owned_files),
-                   "discovery_ref": ref.copy()} for lane in ir.lanes)
-    return result, tasks
-
 import hashlib
 import inspect
 import json
@@ -270,11 +248,32 @@ from .worker_pool import (
     worker_summary_path,
     write_worker_summary,
 )
+from .jevdrill_adapter import build_jevdrill_request, launch_jevdrill
 
 try:  # Optional in the adapter runtime; tests and normal installs provide it.
     import yaml
 except Exception:  # pragma: no cover - exercised only in stripped runtimes
     yaml = None
+
+
+def discover_jevdrill_work_units(adapter, inputs, *, plan_objective):
+    """Discover guidance, then consume an ordinary host-produced lane plan."""
+    from uuid import UUID, uuid5
+    from .plan_ir import parse_phase_plan_ir
+    from .jevdrill_adapter import JevDrillUnavailable
+
+    result = adapter.discover_objective(inputs)
+    plan = plan_objective(result)
+    ir = parse_phase_plan_ir(plan)
+    if ir.diagnostics or not ir.lanes:
+        raise JevDrillUnavailable("Host planning did not produce valid task lanes")
+    details = result["details"]
+    ref = {key: details[key] for key in ("discovery_id", "work_objective_id", "trace_digest")}
+    tasks = tuple({"task_id": str(uuid5(UUID(inputs["work_objective_id"]), lane.lane_id)),
+                   "assignment": HarnessLaneAssignment(phase=inputs["work_objective_id"],
+                        lane_id=lane.lane_id, work_unit_kind="lane_execute", owned_files=lane.owned_files),
+                   "discovery_ref": ref.copy()} for lane in ir.lanes)
+    return result, tasks
 
 
 def child_executor_env(*, caller_run_id: str | None = None, base: Mapping[str, str] | None = None) -> dict[str, str]:
