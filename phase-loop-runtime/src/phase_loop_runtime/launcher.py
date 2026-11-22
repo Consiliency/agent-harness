@@ -5,6 +5,7 @@ import contextlib
 import json
 import os
 import re
+import select
 import signal
 import shlex
 import shutil
@@ -356,6 +357,11 @@ class LaunchResult:
     changed_paths: tuple[str, ...] | None = None
     codex_turn_completion: dict[str, Any] | None = None
     codex_final_message: str | None = None
+    jevdrill_execution_run: dict[str, Any] | None = None
+    jevdrill_usage: dict[str, Any] | None = None
+    executor_input_manifest: dict[str, Any] | None = None
+    jevdrill_protocol_diagnostics: dict[str, Any] | None = None
+    jevdrill_timings: dict[str, Any] | None = None
 
 
     @property
@@ -425,6 +431,14 @@ class LaunchResult:
             data["changed_paths"] = list(self.changed_paths)
         if self.codex_turn_completion is not None:
             data["codex_turn_completion"] = self.codex_turn_completion
+        if self.jevdrill_execution_run is not None:
+            data["jevdrill_execution_run"] = self.jevdrill_execution_run
+        if self.executor_input_manifest is not None:
+            data["executor_input_manifest"] = self.executor_input_manifest
+        if self.jevdrill_protocol_diagnostics is not None:
+            data["jevdrill_protocol_diagnostics"] = self.jevdrill_protocol_diagnostics
+        if self.jevdrill_timings is not None:
+            data["jevdrill_timings"] = self.jevdrill_timings
         return {key: value for key, value in data.items() if value not in (None, [])}
 
 
@@ -2160,6 +2174,40 @@ def _claude_status_has_quota_signal(payload: dict[str, Any]) -> bool:
     return _looks_like_capacity_exhaustion(json.dumps(payload, sort_keys=True))
 
 
+def _codex_executor_input_manifest(spec: LaunchSpec, command: list[str], stdin_text: str | None) -> dict[str, Any] | None:
+    """Describe resolved submission bytes, never provider receipt or full context."""
+    if (not sys.platform.startswith("linux") or spec.executor != "codex"
+            or len(command) < 3 or command[1] != "exec"
+            or {"resume", "fork"}.intersection(command[2:-1])
+            or spec.delivery_mode not in {"prompt_only", "inline", "stdin"}):
+        return None
+    payload = spec.delivery_payload()
+    if payload is None or stdin_text != payload or command[-1] != "-":
+        return None
+
+    def component(data: bytes) -> dict[str, Any]:
+        return {"byte_count": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+    schema = None
+    schema_status = "not_supplied"
+    if "--output-schema" in command:
+        schema_status = "unknown"
+        # Only inspect a file materialized by this launch, never a caller's path.
+        if (command.count("--output-schema") == 1 and spec.codex_output_schema is not None
+                and CODEX_OUTPUT_SCHEMA_PLACEHOLDER in spec.command):
+            index = command.index("--output-schema")
+            if index + 1 < len(command):
+                try:
+                    schema = component(Path(command[index + 1]).read_bytes())
+                    schema_status = "observed"
+                except OSError:
+                    pass
+    return {"method": "codex_executor_input_v1", "scope": "prepared_submission",
+            "encoding": "utf-8", "prompt": component(payload.encode("utf-8")),
+            "output_schema": schema, "output_schema_status": schema_status,
+            "provider_context": "unknown", "provider_receipt": "unknown"}
+
+
 def launch_with_spec(
     spec: LaunchSpec,
     *,
@@ -2172,7 +2220,10 @@ def launch_with_spec(
     quiet_blocker_seconds: int = 1800,
     caller_run_id: str | None = None,
     lease_authority: object | None = None,
+    codex_usage_capture: bool = False,
+    codex_input_capture: bool = False,
 ) -> LaunchResult:
+    launch_started = time.monotonic()
     dependency = None
     if not dry_run:
         # Dependency admission is deliberately before availability checks and the
@@ -2233,6 +2284,39 @@ def launch_with_spec(
                 command = [*command[:-1], "-"]
             command = [*command[:2], "--output-last-message", str(final_path), *command[2:]]
         if dependency is not None:
+            # JEVHOST S2: the usage probe below runs ``command[0]``, so the admitted
+            # subject inode is bound before it as well as before the process boundary.
+            dependency.validate_command(command, provider=spec.executor)
+        timeout = spec.launch_timeout_seconds
+        input_manifest = _codex_executor_input_manifest(spec, command, stdin_text) if codex_input_capture and not dry_run else None
+        observer = None
+        usage_deadline = None
+        child_env = {**os.environ, "AGENT_DETACHED_WORK": "1"}
+        if caller_run_id:
+            child_env["PHASE_LOOP_CALLER_RUN_ID"] = caller_run_id
+        # JEVHOST S2 [P2]: the usage probe never runs on a review launch; a review
+        # provider start is never made under EXECUTOR_TRUSTED.
+        if (codex_usage_capture and action != "review" and spec.executor == "codex"
+                and sys.platform.startswith("linux")
+                and not dry_run and len(command) > 1 and command[1] == "exec"
+                and "--json" in command and not {"resume", "fork"}.intersection(command[2:-1])):
+            usage_deadline = None if timeout is None else launch_started + timeout
+            remaining = None if timeout is None else timeout - (time.monotonic() - launch_started)
+            if remaining is None or remaining > 0:
+                try:
+                    supported = _codex_usage_version(command[0], child_executor_env(child_env), spec.wrapped_cwd,
+                                                    min(1.0, remaining) if remaining is not None else 1.0)
+                except KeyboardInterrupt:
+                    return _result_with_spec(LaunchResult(command=command, returncode=130, interrupted=True,
+                                                         executor_input_manifest=input_manifest), spec)
+                if supported:
+                    observer = _CodexUsageCollector()
+            if timeout is not None:
+                timeout -= time.monotonic() - launch_started
+        if timeout is not None and timeout <= 0:
+            return _result_with_spec(LaunchResult(command=command, returncode=124, timed_out=True,
+                                                 executor_input_manifest=input_manifest), spec)
+        if dependency is not None:
             # Bind the final path lookup to the admitted subject inode as late as
             # this path-based launcher permits, after every command rewrite and
             # immediately before the process boundary.
@@ -2243,20 +2327,30 @@ def launch_with_spec(
             dry_run=dry_run,
             log_path=log_path,
             stdin_text=stdin_text,
-            env={**os.environ, "AGENT_DETACHED_WORK": "1"},
+            env=child_env,
             stream_output=stream_output,
             heartbeat_path=heartbeat_path,
             heartbeat_interval_seconds=heartbeat_interval_seconds,
             quiet_warning_seconds=quiet_warning_seconds,
             quiet_blocker_seconds=quiet_blocker_seconds,
-            timeout_seconds=spec.launch_timeout_seconds,
+            timeout_seconds=timeout,
             cwd=spec.wrapped_cwd,
             caller_run_id=caller_run_id,
             lease_authority=lease_authority,
             # #61/#86: even an unobserved (--no-observe) executor child must get
             # quiet-child / stall detection so it can't hang the parent silently.
             ephemeral_monitor=log_path is None,
+            _codex_usage_observer=observer,
+            _launch_deadline=usage_deadline,
         )
+        if observer is not None:
+            result = replace(result, jevdrill_usage=observer.receipt(),
+                             jevdrill_protocol_diagnostics=observer.diagnostics())
+        elif codex_usage_capture and not dry_run:
+            result = replace(result, jevdrill_protocol_diagnostics={
+                "capture": "disabled", "reason": "unsupported_path_or_probe"})
+        if input_manifest is not None:
+            result = replace(result, executor_input_manifest=input_manifest)
         if final_path is not None:
             final_message = ""
             if action == "review":
@@ -2681,6 +2775,8 @@ def _launch_with_lease_supervisor(
     timeout_seconds: int | None,
     action: str,
     review_profile: object | None,
+    _codex_usage_observer=None,
+    _launch_deadline=None,
 ) -> LaunchResult:
     """Run an executor under a subreaping supervisor that retains a live lease."""
     lease_fd = int(getattr(lease_authority, "fileno")())
@@ -2701,6 +2797,8 @@ def _launch_with_lease_supervisor(
         env=env,
         ephemeral_monitor=True,
         _supervisor_lease_fd=lease_fd,
+        _codex_usage_observer=_codex_usage_observer,
+        _launch_deadline=_launch_deadline,
     )
     return replace(
         result,
@@ -2712,6 +2810,99 @@ def _launch_with_lease_supervisor(
             "terminal_status": "complete" if not result.failed else "blocked",
         },
     )
+
+
+def _native_windows() -> bool:
+    return os.name == "nt"
+
+
+def _launch_windows_owned(command, *, log_path, stdin_text, stream_output,
+                          heartbeat_path, heartbeat_interval_seconds,
+                          quiet_warning_seconds, quiet_blocker_seconds,
+                          timeout_seconds, cwd, env, lease_authority=None):
+    import codecs
+    from types import SimpleNamespace
+    from .windows_process import run_leased, run_owned
+
+    started_at = _utc_now()
+    started = time.monotonic()
+    last_heartbeat = 0.0
+    process_pid = None
+    heartbeat_summary = None
+    cancel = threading.Event()
+    salvage = None
+    if log_path is not None:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        heartbeat_path = heartbeat_path or heartbeat_path_for_log(log_path)
+    log = log_path.open("w", encoding="utf-8") if log_path is not None else None
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    def output(chunk, final=False):
+        rendered = decoder.decode(chunk, final=final)
+        if log is not None:
+            log.write(rendered)
+            log.flush()
+        if stream_output:
+            print(rendered, end="", flush=True)
+    def started_process(pid):
+        nonlocal process_pid
+        process_pid = pid
+    def heartbeat(returncode=None):
+        nonlocal last_heartbeat, heartbeat_summary, salvage
+        if heartbeat_path is None or (returncode is None and time.monotonic() - last_heartbeat < heartbeat_interval_seconds):
+            return
+        heartbeat_summary = run_heartbeat_summary(
+            log_path=log_path, heartbeat_path=heartbeat_path, pid=process_pid,
+            started_monotonic=started, started_at=started_at,
+            heartbeat_interval_seconds=heartbeat_interval_seconds,
+            quiet_warning_seconds=quiet_warning_seconds,
+            quiet_blocker_seconds=quiet_blocker_seconds,
+            command=command, returncode=returncode,
+        )
+        write_run_heartbeat(heartbeat_path, heartbeat_summary)
+        last_heartbeat = time.monotonic()
+        if returncode is None and heartbeat_summary.get("stalled_suspect") and not cancel.is_set():
+            salvage = _salvage_snapshot(command=command, cwd=cwd, log_path=log_path,
+                heartbeat=heartbeat_summary, process=SimpleNamespace(pid=process_pid),
+                process_group_id=None, reason="stalled")
+            cancel.set()
+    try:
+        backend = run_leased if lease_authority is not None else run_owned
+        custody = {"lease_authority": lease_authority} if lease_authority is not None else {}
+        result = backend(command, **custody, stdin_text=stdin_text, cwd=cwd, env=env,
+                           timeout_seconds=timeout_seconds, on_started=started_process,
+                           on_output=output, on_tick=heartbeat, cancel=cancel)
+        output(b"", final=True)
+        if result.timed_out:
+            salvage = _salvage_snapshot(command=command, cwd=cwd, log_path=log_path,
+                heartbeat=heartbeat_summary, process=SimpleNamespace(pid=process_pid),
+                process_group_id=None, reason="timeout")
+        returncode = 124 if result.timed_out else (1 if result.output_limited or not result.quiescent else result.returncode)
+        heartbeat(returncode)
+        return LaunchResult(
+            command=command, returncode=returncode, output=result.output,
+            log_path=str(log_path) if log_path else None,
+            heartbeat_path=str(heartbeat_path) if heartbeat_path else None,
+            terminal_path=str(log_path.parent / "terminal-summary.json") if log_path else None,
+            heartbeat_summary=heartbeat_summary, started_at=started_at, finished_at=_utc_now(),
+            process_pid=process_pid, timed_out=result.timed_out, stalled=cancel.is_set(),
+            supervisor_receipt={"receipt_binding": lease_authority.identity,
+                                "generation": lease_authority.generation,
+                                "quiescent": result.quiescent} if lease_authority is not None else None,
+            cleanup_evidence={"reason": "timeout" if result.timed_out else "stalled" if cancel.is_set() else "complete",
+                              **({"salvage_snapshot": salvage} if salvage is not None else {}),
+                              "process_alive_after_cleanup": not result.quiescent,
+                              "job_active_processes": 0 if result.quiescent else None},
+        )
+    except KeyboardInterrupt:
+        return LaunchResult(command=command, returncode=130, interrupted=True,
+                            cleanup_evidence={"reason": "interrupted", "process_alive_after_cleanup": None})
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        return LaunchResult(command=command, returncode=1, available=False,
+                            unavailable_reason="native_windows_supervision_unavailable",
+                            output=f"Native Windows supervision failed: {type(error).__name__}.")
+    finally:
+        if log is not None:
+            log.close()
 
 
 def launch(
@@ -2733,7 +2924,14 @@ def launch(
     _supervisor_lease_fd: int | None = None,
     action: str = "execute",
     _review_profile: object | None = None,
+    _codex_usage_observer=None,
+    _launch_deadline=None,
 ) -> LaunchResult:
+    if _native_windows() and action == "review" and not dry_run:
+        # JEVHOST S3: review cannot qualify on native Windows (the isolated egress
+        # network is Linux-only, and the Windows owned path cannot redact a seat).
+        # Refused before any spawn, any usage logic and the ephemeral-monitor recursion.
+        raise ValueError("live launch requested for unavailable executor: review_unsupported_on_windows")
     if not dry_run and action != "review":
         from .executable_dependency_startup import refuse_unwired_dependency_route
         refuse_unwired_dependency_route("direct executor")
@@ -2758,6 +2956,8 @@ def launch(
                 timeout_seconds=None, cwd=cwd, env=env, ephemeral_monitor=True,
                 caller_run_id=caller_run_id, lease_authority=lease_authority,
                 _supervisor_lease_fd=_supervisor_lease_fd,
+                # JEVHOST L4 [P2]: the deadline is forwarded; no usage observer runs on review.
+                _codex_usage_observer=None, _launch_deadline=_launch_deadline,
             )
     # AUTOSEL (change #5): the CLI executor-child spawn path gets a scrubbed +
     # sentinel-stamped env — Claude Code's self-markers removed and PHASE_LOOP_CHILD=1
@@ -2778,6 +2978,39 @@ def launch(
         command = trusted_command(command, child_env)
     if caller_run_id:
         child_env["PHASE_LOOP_CALLER_RUN_ID"] = caller_run_id
+    if sys.platform == "darwin" and lease_authority is not None and not dry_run:
+        return LaunchResult(
+            command=command,
+            returncode=1,
+            available=False,
+            unavailable_reason="native_macos_leased_execution_requires_linux_worker",
+            output="Run leased worktree execution on a Linux worker. Ordinary local macOS routing remains available.",
+        )
+    if _native_windows() and not dry_run:
+        if ephemeral_monitor and log_path is None:
+            with tempfile.TemporaryDirectory(prefix="phase-loop-monitor-") as monitor:
+                result = launch(command, log_path=Path(monitor) / "output.log", stdin_text=stdin_text,
+                    stream_output=stream_output, heartbeat_interval_seconds=heartbeat_interval_seconds,
+                    quiet_warning_seconds=quiet_warning_seconds, quiet_blocker_seconds=quiet_blocker_seconds,
+                    timeout_seconds=timeout_seconds, cwd=cwd, env=env, caller_run_id=caller_run_id,
+                    lease_authority=lease_authority, _supervisor_lease_fd=_supervisor_lease_fd,
+                    action=action, _review_profile=_review_profile,
+                    _codex_usage_observer=_codex_usage_observer, _launch_deadline=_launch_deadline)
+            return replace(result, log_path=None, heartbeat_path=None, terminal_path=None)
+        if _supervisor_lease_fd is not None:
+            return LaunchResult(
+                command=command, returncode=1, available=False,
+                unavailable_reason="Native Windows executor supervision requires qualified lease recovery and protected storage.",
+            )
+        change_snapshot = _worktree_change_snapshot(cwd)
+        result = _launch_windows_owned(
+            command, log_path=log_path, stdin_text=stdin_text,
+            stream_output=stream_output, heartbeat_path=heartbeat_path,
+            heartbeat_interval_seconds=heartbeat_interval_seconds,
+            quiet_warning_seconds=quiet_warning_seconds, quiet_blocker_seconds=quiet_blocker_seconds,
+            timeout_seconds=timeout_seconds, cwd=cwd, env=child_env, lease_authority=lease_authority,
+        )
+        return _with_changed_paths(result, change_snapshot, cwd)
     if lease_authority is not None and not dry_run:
         return _launch_with_lease_supervisor(
             command,
@@ -2794,6 +3027,8 @@ def launch(
             timeout_seconds=timeout_seconds,
             action=action,
             review_profile=_review_profile,
+            _codex_usage_observer=_codex_usage_observer,
+            _launch_deadline=_launch_deadline,
         )
     # #61/#86: an UNOBSERVED (--no-observe) executor child would otherwise fall to
     # the bare `subprocess.run` branch below, which has no heartbeat, no quiet-child
@@ -2888,16 +3123,16 @@ def launch(
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         output_parts: list[str] = []
-        line_queue: Queue[str | None] = Queue()
+        line_queue = Queue()
         started_at = _utc_now()
         started_monotonic = time.monotonic()
 
         with log_path.open("w", encoding="utf-8") as log:
             popen_kwargs: dict[str, Any] = {
-                "text": True,
+                "text": _codex_usage_observer is None,
                 "stdin": subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
                 "stdout": subprocess.PIPE,
-                "stderr": subprocess.STDOUT,
+                "stderr": subprocess.PIPE if _codex_usage_observer is not None else subprocess.STDOUT,
                 "start_new_session": True,
                 "cwd": str(cwd) if cwd else None,
                 "env": child_env,
@@ -2908,6 +3143,13 @@ def launch(
             if _supervisor_lease_fd is not None:
                 exec_status_read, exec_status_write = _supervisor_status_pipe()
             try:
+                if _launch_deadline is not None:
+                    if time.monotonic() >= _launch_deadline:
+                        if exec_status_read is not None:
+                            os.close(exec_status_read)
+                        return LaunchResult(command=command, returncode=124, timed_out=True,
+                                            started_at=started_at, finished_at=_utc_now())
+                    timeout_seconds = _launch_deadline - started_monotonic
                 if exec_status_write is not None:
                     # The supervisor's argv does not name the provider: admit it first, and
                     # run the image the receipt measured.
@@ -2947,10 +3189,51 @@ def launch(
             process_group_id = _process_group_id(process.pid)
             assert process.stdout is not None
             if stdin_text is not None and process.stdin is not None:
-                process.stdin.write(stdin_text)
+                process.stdin.write(stdin_text if _codex_usage_observer is None else stdin_text.encode())
                 process.stdin.close()
-            reader = threading.Thread(target=_read_lines, args=(process.stdout, line_queue), daemon=True)
-            reader.start()
+            reader_stop = threading.Event()
+            streams_done = set()
+            readers = []
+            if _codex_usage_observer is None:
+                readers.append(threading.Thread(target=_read_lines, args=(process.stdout, line_queue), daemon=True))
+            else:
+                for name, pipe in (("stdout", process.stdout), ("stderr", process.stderr)):
+                    readers.append(threading.Thread(target=_read_usage_lines,
+                        args=(pipe, line_queue, name, reader_stop), daemon=True))
+            for reader in readers:
+                reader.start()
+            def consume(record):
+                if _codex_usage_observer is None:
+                    rendered = record
+                else:
+                    name, kind, rendered = record
+                # JEVHOST S3: a live review profile's redaction runs per line before
+                # every sink -- the usage observer, output_parts, the log and the stream
+                # (agent-harness#1282).
+                if rendered:
+                    rendered = redact_seat(rendered)
+                if _codex_usage_observer is not None:
+                    if kind == "eof":
+                        streams_done.add(name)
+                    elif kind == "error":
+                        _codex_usage_observer.invalidate("reader_failure")
+                    elif name == "stdout":
+                        _codex_usage_observer.observe(rendered)
+                if rendered:
+                    output_parts.append(rendered)
+                    log.write(rendered)
+                    log.flush()
+                    if stream_output:
+                        print(rendered, end="", flush=True)
+            def drain():
+                deadline = time.monotonic() + 1.0
+                while streams_done != {"stdout", "stderr"} and time.monotonic() < deadline:
+                    try:
+                        consume(line_queue.get(timeout=min(0.05, max(0.001, deadline-time.monotonic()))))
+                    except Empty:
+                        pass
+                if streams_done != {"stdout", "stderr"}:
+                    _codex_usage_observer.invalidate("incomplete_drain")
             last_heartbeat = 0.0
             timed_out = False
             interrupted = False
@@ -2960,16 +3243,11 @@ def launch(
             while True:
                 try:
                     try:
-                        line = line_queue.get(timeout=1)
+                        line = line_queue.get(timeout=0.05 if _codex_usage_observer is not None else 1)
                     except Empty:
                         line = None
                     if line:
-                        line = redact_seat(line)
-                        output_parts.append(line)
-                        log.write(line)
-                        log.flush()
-                        if stream_output:
-                            print(line, end="", flush=True)
+                        consume(line)
                     now = time.monotonic()
                     if heartbeat_path is not None and now - last_heartbeat >= heartbeat_interval_seconds:
                         heartbeat = run_heartbeat_summary(
@@ -3024,27 +3302,31 @@ def launch(
                         cleanup_evidence = _cleanup_process_group(process, process_group_id, reason="timeout")
                         cleanup_evidence["salvage_snapshot"] = salvage
                     if process.poll() is not None:
+                        if _codex_usage_observer is not None:
+                            drain()
+                            break
                         while True:
                             try:
                                 line = line_queue.get_nowait()
                             except Empty:
                                 break
                             if line:
-                                line = redact_seat(line)
-                                output_parts.append(line)
-                                log.write(line)
-                                log.flush()
-                                if stream_output:
-                                    print(line, end="", flush=True)
+                                consume(line)
                         break
                 except KeyboardInterrupt:
                     interrupted = True
                     cleanup_evidence = _cleanup_process_group(process, process_group_id, reason="interrupt")
+                    if _codex_usage_observer is not None:
+                        drain()
                     break
             returncode = process.wait()
-            reader.join(timeout=1)
+            reader_stop.set()
+            for reader in readers:
+                reader.join(timeout=1)
             try:
                 process.stdout.close()
+                if _codex_usage_observer is not None and process.stderr is not None:
+                    process.stderr.close()
             except OSError:
                 pass
             if not executor_released and returncode != 0 and not (timed_out or interrupted or stalled):
@@ -4020,6 +4302,10 @@ def _result_with_spec(result: LaunchResult, spec: LaunchSpec) -> LaunchResult:
         changed_paths=result.changed_paths,
         codex_turn_completion=result.codex_turn_completion,
         codex_final_message=result.codex_final_message,
+        jevdrill_execution_run=result.jevdrill_execution_run,
+        jevdrill_usage=result.jevdrill_usage,
+        executor_input_manifest=result.executor_input_manifest,
+        jevdrill_protocol_diagnostics=result.jevdrill_protocol_diagnostics,
     )
 
 
@@ -4120,6 +4406,210 @@ def _with_changed_paths(
         if committed.returncode == 0:
             paths.update(path for path in committed.stdout.splitlines() if path)
     return replace(result, changed_paths=tuple(sorted(paths)))
+
+
+class _JsonPairs(list):
+    pass
+
+
+def _unique_object(value):
+    if not isinstance(value, _JsonPairs):
+        raise ValueError("Expected object")
+    result = {}
+    for key, item in value:
+        if key in result:
+            raise ValueError("Duplicate authoritative key")
+        result[key] = item
+    return result
+
+
+class _CodexUsageCollector:
+    METHOD = "codex_exec_jsonl_0_159_2_v2"
+    MAX_RECORD = 1024 * 1024
+    METRICS = {"input_tokens": "input_tokens", "output_tokens": "output_tokens",
+               "cached_input_tokens": "cached_input_tokens", "reasoning_tokens": "reasoning_output_tokens"}
+    EVENTS = {"thread.started", "turn.started", "turn.completed", "turn.failed", "error",
+              "item.started", "item.updated", "item.completed"}
+    ITEMS = {"agent_message", "reasoning", "command_execution", "file_change", "mcp_tool_call",
+             "web_search", "todo_list", "error", "collab_tool_call"}
+
+    def __init__(self):
+        self.invalid = False
+        self.stage = 0
+        self.snapshot = None
+        self.failure_reason = None
+        self.event_counts = {}
+        self.item_counts = {}
+
+    def invalidate(self, reason):
+        if not self.invalid:
+            self.failure_reason = reason
+        self.invalid = True
+
+    def diagnostics(self):
+        reason = self.failure_reason if self.invalid else (
+            "incomplete_terminal" if self.stage != 3 or not self.snapshot else
+            "zero_default" if not any(self.snapshot.values()) else None)
+        return {"capture": "enabled", "reason": reason, "usage_valid": self.receipt() is not None,
+                "stage": self.stage, "count_scope": "through_first_rejection",
+                "event_counts": dict(self.event_counts), "item_counts": dict(self.item_counts)}
+
+    @staticmethod
+    def _count(counts, value, allowed):
+        category = value if type(value) is str and value in allowed else "unknown"
+        counts[category] = min(2**53-1, counts.get(category, 0) + 1)
+
+    def observe(self, line):
+        if self.invalid or not line.strip():
+            return
+        reason = "malformed_record"
+        try:
+            if len(line.encode()) > self.MAX_RECORD:
+                reason = "oversized_record"
+                raise ValueError("Oversized record")
+            def reject_constant(_):
+                raise ValueError("Non-finite number")
+            def finite_float(raw):
+                import math
+                number = float(raw)
+                if not math.isfinite(number):
+                    raise ValueError("Non-finite number")
+                return number
+            event = _unique_object(json.loads(line, object_pairs_hook=_JsonPairs,
+                parse_constant=reject_constant, parse_float=finite_float))
+            kind = event.get("type")
+            self._count(self.event_counts, kind, self.EVENTS)
+            reason = "unsupported_event_sequence"
+            if kind == "thread.started" and self.stage == 0:
+                reason = "invalid_thread_identity"
+                if set(event) != {"type", "thread_id"} or not isinstance(event["thread_id"], str) or not event["thread_id"]:
+                    raise ValueError("Thread identity missing")
+                self.stage = 1
+            elif kind == "turn.started" and self.stage == 1 and set(event) == {"type"}:
+                self.stage = 2
+            elif kind == "turn.completed" and self.stage == 2 and set(event) == {"type", "usage"}:
+                reason = "unclassifiable_usage"
+                usage = _unique_object(event["usage"])
+                if not usage or not set(usage) <= {*self.METRICS.values(), "cache_write_input_tokens"}:
+                    raise ValueError("Unclassifiable usage")
+                if any(type(v) is not int or not 0 <= v <= 2**53-1 for v in usage.values()):
+                    reason = "invalid_counter"
+                    raise ValueError("Invalid counter")
+                for subset, parent in (("cached_input_tokens", "input_tokens"), ("reasoning_output_tokens", "output_tokens")):
+                    if subset in usage and (parent not in usage or usage[subset] > usage[parent]):
+                        reason = "invalid_subset"
+                        raise ValueError("Invalid subset")
+                self.snapshot = usage
+                self.stage = 3
+            elif kind in {"item.started", "item.updated", "item.completed"}:
+                reason = "invalid_item"
+                if set(event) != {"type", "item"} or not isinstance(event["item"], _JsonPairs):
+                    raise ValueError("Invalid item")
+                types = [v for k, v in event["item"] if k == "type"]
+                self._count(self.item_counts, types[0] if len(types) == 1 else None, self.ITEMS)
+                reason = "ambiguous_item_or_collaboration"
+                if len(types) != 1 or types[0] not in {"agent_message", "reasoning", "command_execution",
+                        "file_change", "mcp_tool_call", "web_search", "todo_list", "error"}:
+                    raise ValueError("Ambiguous item or collaboration")
+                if types[0] == "error":
+                    reason = "ambiguous_error_attribution"
+                    messages = [v for k, v in event["item"] if k == "message"]
+                    if len(messages) == 1 and isinstance(messages[0], str):
+                        if messages[0].startswith("model rerouted: "):
+                            reason = "model_rerouted"
+                        elif messages[0].startswith("in-process app-server event stream lagged; dropped "):
+                            reason = "announced_event_loss"
+                    if len(messages) != 1 or not isinstance(messages[0], str) or messages[0].startswith((
+                            "model rerouted: ", "in-process app-server event stream lagged; dropped ")):
+                        raise ValueError("Ambiguous attribution or dropped events")
+                if self.stage == 1 and kind == "item.completed" and types[0] == "error":
+                    reason = "invalid_startup_warning"
+                    warning = _unique_object(event["item"])
+                    if (set(warning) != {"id", "type", "message"}
+                            or any(not isinstance(warning[key], str) or not warning[key]
+                                   for key in ("id", "message"))):
+                        raise ValueError("Invalid startup warning")
+                elif self.stage != 2:
+                    reason = "unsupported_event_sequence"
+                    raise ValueError("Item outside active turn")
+            else:
+                # Fatal, failed and serialization-substitute events cannot prove usage.
+                raise ValueError("Unsupported event sequence")
+        except (ValueError, TypeError, OverflowError, RecursionError):
+            self.invalidate(reason)
+
+    def receipt(self):
+        if self.invalid or self.stage != 3 or not self.snapshot or not any(self.snapshot.values()):
+            return None
+        measurements = []
+        for metric, key in self.METRICS.items():
+            parent = "input_tokens" if metric == "cached_input_tokens" else "output_tokens" if metric == "reasoning_tokens" else None
+            measurements.append({"metric_id": metric, "metric_version": "1", "source": "host",
+                "method": self.METHOD, "scope": "run", "counting_semantics": "subset" if parent else "disjoint",
+                "parent_metric_id": parent, "measurement_value": {"kind": "known", "unit": "tokens", "value": self.snapshot[key]}
+                if key in self.snapshot else {"kind": "unknown", "reason": "not_reported"}})
+        return {"kind": "usage", "measurements": measurements}
+
+
+def _codex_usage_version(executable, env, cwd, timeout):
+    # JEVHOST S2 [B4]: an owned launch, through the same seam and role as the executor
+    # start, and only after ``dependency.validate_command`` admitted ``executable``.
+    # Files avoid a wrapper descendant holding a PIPE open after the probe exits.
+    from . import panel_invoker
+
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        try:
+            process = panel_invoker.launch_owned(
+                [executable, "--version"], role=panel_invoker.SeatLaunchRole.EXECUTOR_TRUSTED,
+                profile=panel_invoker.SeatProfile(env=env), stdin=subprocess.DEVNULL,
+                stdout=out, stderr=err, start_new_session=True, env=env, cwd=cwd)
+        except OSError:
+            return False
+        try:
+            process.wait(timeout=timeout)
+            out.seek(0)
+            return process.returncode == 0 and out.read(128).strip() == b"codex-cli 0.159.2"
+        except subprocess.TimeoutExpired:
+            return False
+        finally:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait(timeout=1)
+
+
+def _read_usage_lines(pipe, line_queue, name, stop):
+    pending = b""
+    def emit(raw):
+        try:
+            rendered = raw.decode("utf-8")
+        except UnicodeError:
+            line_queue.put((name, "error", None))
+            rendered = raw.decode("utf-8", errors="replace")
+        line_queue.put((name, "data", rendered))
+    try:
+        fd = pipe.fileno()
+        os.set_blocking(fd, False)
+        while not stop.is_set():
+            if not select.select([fd], [], [], 0.05)[0]:
+                continue
+            raw = os.read(fd, 65536)
+            if not raw:
+                if pending:
+                    emit(pending)
+                line_queue.put((name, "eof", None))
+                return
+            pending += raw
+            while b"\n" in pending:
+                line, pending = pending.split(b"\n", 1)
+                emit(line + b"\n")
+            if len(pending) > _CodexUsageCollector.MAX_RECORD:
+                line_queue.put((name, "error", None))
+                emit(pending)
+                pending = b""
+    except (OSError, ValueError):
+        line_queue.put((name, "error", None))
 
 
 def _read_lines(stdout, line_queue: Queue[str | None]) -> None:
