@@ -353,6 +353,94 @@ class _BearerRecorder:
         return super()._drain_body(tls, headers, rest)
 
 
+def test_k1_t7_bearer_and_authorization_digests():
+    assert bearer_sha256("tok") == hashlib.sha256(b"Bearer tok").hexdigest()
+    assert authorization_sha256({"authorization": "Bearer tok"}) == bearer_sha256("tok")
+    assert authorization_sha256({}) is None and authorization_sha256({"authorization": ""}) is None
+    records = [("GET", "/backend-api/wham/accounts/check", "a" * 64),
+               ("POST", "/backend-api/codex/responses", "b" * 64),
+               ("POST", "/backend-api/codex/responses?stream=1", None),
+               ("POST", "/backend-api/other", "c" * 64)]
+    assert model_bearer_digests(records) == ["b" * 64, None]
+
+
+def test_k1_t7_the_recorder_pairs_each_request_with_its_authorization_digest():
+    import threading
+
+    class _Base:
+        def __init__(self):
+            self._lock, self._local, self.seen = threading.Lock(), threading.local(), []
+
+        def _drain_body(self, tls, headers, rest):
+            self.seen.append("drain")
+
+        def _respond(self, tls, method, target):
+            self.seen.append(("respond", method, target))
+    recorder = type("Recorder", (_BearerRecorder, _Base), {})()
+    recorder.bearers, recorder.auth_records = [], []
+    recorder._drain_body(None, {"authorization": "Bearer tok"}, b"")
+    recorder._respond(None, "POST", "/backend-api/codex/responses")
+    recorder._drain_body(None, {}, b"")
+    recorder._respond(None, "GET", "/backend-api/wham/accounts/check")
+    assert recorder.auth_records == [("POST", "/backend-api/codex/responses", bearer_sha256("tok")),
+                                     ("GET", "/backend-api/wham/accounts/check", None)]
+    assert recorder.seen == ["drain", ("respond", "POST", "/backend-api/codex/responses"),
+                             "drain", ("respond", "GET", "/backend-api/wham/accounts/check")]
+
+
+def _copy_with_exp(exp):
+    from phase_loop_runtime import seat_codex_credential as cred
+    login = synthetic_login("acct-synthetic")
+    header, payload, signature = login["tokens"]["access_token"].split(".")
+    claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    login["tokens"]["access_token"] = ".".join((header, _part({**claims, "exp": exp}), signature))
+    copy = cred.build_seat_copy(json.dumps(login).encode()) if exp > time.time() + 2100 else None
+    return copy, login
+
+
+def test_k1_t7_fresh_access_exp_must_clear_the_launch_by_900_s():
+    now = int(time.time())
+    copy, _login = _copy_with_exp(now + 3600)
+    assert access_exp(copy.data) == now + 3600
+    assert_fresh_margin(copy, launch_clock=now + 3600 - FRESH_ACCESS_MARGIN_S)
+    with pytest.raises(pytest.fail.Exception, match="fresh"):
+        assert_fresh_margin(copy, launch_clock=now + 3600 - FRESH_ACCESS_MARGIN_S + 1)
+
+
+def test_k1_t7_expired_access_exp_must_lie_inside_the_refresh_window():
+    from phase_loop_runtime import seat_window_supply_codex as supplier
+    now = int(time.time())
+    copy, _login = _copy_with_exp(now + 3600)
+    expired = supplier.expired_access_copy(copy, now=now)
+    assert access_exp(expired.data) == now - supplier.EXPIRED_ACCESS_MARGIN_S
+    assert_expired_margin(expired, launch_clock=now)
+    with pytest.raises(pytest.fail.Exception, match="expired"):
+        assert_expired_margin(copy, launch_clock=now)  # the fresh copy is not expired
+
+
+_RUN3_NOT_READY_EVENTS = (
+    *((SimpleNamespace(method="CONNECT", host="<other>", path=None, decision="deny"),) * 27),
+    SimpleNamespace(method="CONNECT", host="ab.chatgpt.com", path=None, decision="deny"),
+    *((SimpleNamespace(method="CONNECT", host="<other>", path=None, decision="deny"),) * 5))
+
+
+@pytest.mark.parametrize("terminal,extra,expected", [
+    ("timeout", (), True), ("not_ready", (), True),
+    ("refused_intended", (), False), ("other_failure", (), False),
+    ("timeout", (SimpleNamespace(method="GET", host=MODEL_HOST,
+                                 path="/backend-api/wham/accounts/check", decision="allow"),),
+     False),
+    ("timeout", (SimpleNamespace(method="CONNECT", host=TOKEN_HOST, path=None,
+                                 decision="deny"),), False),
+    ("not_ready", (SimpleNamespace(method="POST", host=MODEL_HOST, path=MODEL_PATH,
+                                   decision="deny"),), False),
+], ids=["run3-timeout", "not-ready", "refused", "other", "allowed", "token-host", "model"])
+def test_k1_t7_the_not_ready_erratum(terminal, extra, expected):
+    """K1-T7 (r5 erratum): not_ready, or timeout at the CLI's own deadline, with no
+    token-host event, no model request and no allowed request; never refused_intended."""
+    assert not_ready_erratum_holds(terminal, (*_RUN3_NOT_READY_EVENTS, *extra)) is expected
+
+
 @pytest.fixture
 def codex_upstream(request):
     """The provider-free loopback harness of ``test_seat_codex_provider_free``: port-443
