@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: CLAUDE
 roadmap: specs/phase-plans-seats-v1.md
-roadmap_sha256: 2f26635bfcb5119967735cf5d5966f1ce39695a8331d2543eb9e11c07d187018
+roadmap_sha256: 9d1d149a4709dbf7c67dbdbb957228ff8a06d36570e1f9cb77bcc039b96a7ac4
 automation:
   suite_command: ["timeout", "1800", "uv", "run", "--quiet", "--project", "phase-loop-runtime", "--group", "test", "--extra", "visual", "--extra", "claude-sdk", "--with", "pytest-xdist==3.8.0", "--python", "3.14", "--locked", "python", "-m", "pytest", "-n", "0", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_seats_claude_login_proof.py", "phase-loop-runtime/tests/test_seats_claude_bakeoff.py", "phase-loop-runtime/tests/test_seats_claude_transport.py", "phase-loop-runtime/tests/test_seats_claude_order.py", "phase-loop-runtime/tests/test_seats_claude_records.py", "phase-loop-runtime/tests/test_seats_claude_print.py", "phase-loop-runtime/tests/test_seats_claude_print_observations.py", "phase-loop-runtime/tests/test_claude_transport_seam.py", "phase-loop-runtime/tests/test_panel_claude_print_route.py", "phase-loop-runtime/tests/test_seats_claude_sdk.py", "phase-loop-runtime/tests/test_seats_claude_sdk_adapter.py", "phase-loop-runtime/tests/test_seat_credentials.py", "phase-loop-runtime/tests/test_seat_login_wait_a3_1166.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py", "phase-loop-runtime/tests/test_executable_dependency_startup.py"]
 ---
@@ -116,8 +116,7 @@ builder or an egress allowlist.
     - a native record whose `jail_profile_digest` isn't the TUI's at its `w0_head`;
     - an `sdk` record whose `w0_head` record lacks the current OD-3a section named by
       `activation_section_sha256`, or missing host SDK provenance/proof/delta metadata;
-    - once an OD-3b section exists, one that doesn't cite this directory's
-      `evidence_digest`.
+    - a latest OD-3b section breaking the README's "Sessions" rule.
   - **Control arm.** `t3-sdk-control` may mark `not_applicable` only the jail, staged-clone,
     token-pipe and seat-diagnostics predicates. The kit parses its entrypoint, key source,
     model, canonical output and verdict from the child's output file, marked
@@ -456,6 +455,8 @@ activation and live SDK twins wait for GL-2.
 - **GL-6.** After GL-5 merges, SL-1's owner lands the switch PR. It edits only
   `JAILED_CLAUDE_DEFAULT` and `JAILED_DEFAULT_AUTHORITY` and carries SL-6's card statement.
   With "none admitted" there is no switch.
+- **Interim OD-3b (OQ-4).** A provisional OD-3b section may cite session 1 alone; a later
+  one may switch after session 2 (README "Sessions").
 
 Before asking for any gated merge, the landing agent re-runs `audit-order` against `main`'s
 tip, because `base.sha` can lag it.
@@ -465,13 +466,11 @@ owner answers OQ-1 to OQ-5 otherwise before this plan merges.
 - **Setting.** One host and one operator account; the same review bundle, model and effort;
   the W0 head recorded.
 - **Blocks.** Six single-arm blocks: print, control, sdk, sdk, control, print. The second
-  half reverses the first. Three runs per block, 18 records (OQ-1). The first print and
-  control blocks may run once SL-2 lands; sdk blocks need GL-2.
-- **Meter.** The kit prompts the owner to read the account usage meter before the first
-  block and after each block, after a settle interval: seven readings (OQ-2). Each covers
-  subscription usage and extra-usage spend, plus API spend if the account has an API
-  organization. Records cite their block's `meter_ref`. A block that moves extra usage or
-  API spend sets `billing` for all its records; an ambiguous block records `unknown`.
+  half reverses the first. Three runs per block, 18 records (OQ-1). Session 1 (blocks 1-2)
+  may run once SL-2 lands; session 2 (blocks 3-6) needs GL-2 (OQ-4).
+- **Meter.** The kit prompts the owner to read the account usage meter before each session
+  and after each block, after a settle interval: eight readings (OQ-2, OQ-4). Records cite
+  their block's `meter_ref`; the README fixes what a reading covers and how it sets `billing`.
 - **Isolation.** Inside a block, no other Claude work runs on the W0 account: no W1 Claude
   seat, no other session, and no Claude president or co-seat on a W0 board. W0 may share
   an owner session with W1 outside the blocks.
@@ -490,8 +489,8 @@ owner answers OQ-1 to OQ-5 otherwise before this plan merges.
 1. Answer OQ-1 to OQ-5, or accept the defaults. Pick the W0 host and account, with LA-1 and
    LA-2 done there.
 2. Pause all other Claude use on that account for each block, then run
-   `python -m phase_loop_runtime.claude_bakeoff run` on the W0 head.
-3. Read the usage meter at each of the seven prompts.
+   `python -m phase_loop_runtime.claude_bakeoff run --plan PLAN --session 1` (later `2`) on the W0 head.
+3. Read the usage meter at each of the eight prompts.
 4. At each of the two control blocks, paste the kit's brief into a T3 Code thread.
 5. Review the kit's redacted records, and approve the records PR (G2).
 6. Answer OD-3b (G3), together with OQ-7 and OQ-8.
@@ -499,11 +498,11 @@ owner answers OQ-1 to OQ-5 otherwise before this plan merges.
 **Owner questions.** Each lists the recommended default first.
 - **OQ-1, runs per block.** Three, for 18 records. The alternative is five per arm in a
   single pass, with no control for order.
-- **OQ-2, meter cadence.** Per block: seven readings, each after a 5-minute settle. Reading
-  per run would take 19 readings.
+- **OQ-2, meter cadence.** Eight readings: one opens each session, one closes each block after a
+  5-minute settle. Per-run readings would take 20.
 - **OQ-3, per-run timeout.** 30 minutes.
-- **OQ-4, sessions.** One session after GL-2. The alternative is an early session for the
-  first print and control blocks, which costs one extra reading.
+- **OQ-4, sessions.** Decided 2026-11-21: early session. The claude-w0 README's "Sessions"
+  holds the owner's words and the rules.
 - **OQ-5, capture twins.** One per native block, run unjailed with tools under the owner's
   login (principle 5). One per run doubles native runs for the same set.
 - **OQ-6, the `print` landing, before SL-2 merges.** Accept the content check in place of
@@ -584,7 +583,7 @@ including `-k boundary_proof`. These are pending selectors, not passing test rec
 - [ ] EC-CLAUDE-2 — proven by `V3` and `VL` (`test_seats_claude_print.py`) and by agent-harness#1740 closed citing the landing PR, falsified by any injection or hardening control in that file admitting; path-entered control: each enters through `claude_seat_print.run_jailed`.
 - [ ] EC-CLAUDE-3 — proven by `V4`, `VB`, `VL` at GL-2, W0 provenance records and agent-harness#1744 disposition. Falsified by any SL-3 mutation control passing; path-entered control: `_parent_infer` dispatch to `claude_seat_sdk.run_jailed` with the real SDK. Fixture-only tests cannot replace `VB`.
 - [ ] EC-CLAUDE-4 — proven by `V2` (`test_seats_claude_order.py`) and by the required `audit-order` step on each gated landing, falsified by any `audit_order` control passing; path-entered control: each enters through the `audit-order` CLI on a disposable tree.
-- [ ] EC-CLAUDE-5 — proven by G2's reviewed records PR, with `V7` as its shape check, falsified by any validator control in `test_seats_claude_bakeoff.py` passing; path-entered control: each disposable record enters through `claude_bakeoff validate`.
+- [ ] EC-CLAUDE-5 — proven by G2's records PR completing session 2, with `V7` as its shape check, falsified by any validator control in `test_seats_claude_bakeoff.py` passing; path-entered control: each disposable record enters through `claude_bakeoff validate`.
 - [ ] EC-CLAUDE-6 — proven by `V2` (`test_seats_claude_order.py`) after GL-5 and GL-6, falsified by its default-rule or card-statement control passing; path-entered control: a disposable OD-3b section naming another transport enters through `audit-order`.
 - [ ] EC-CLAUDE-7 — proven by `V1` and `V2` (`test_seats_claude_login_proof.py`, `test_seats_claude_transport.py`), falsified by a failing-probe control that still launches; path-entered control: the stub probe enters at the real `_parent_infer` call site.
 - [ ] EC-CLAUDE-8 — proven by `V6` (`test_seats_claude_records.py`) and `V10` after the v11 note lands, falsified by the two-owner amendment control passing; path-entered control: the disposable amendment copy enters through the records test's parser.

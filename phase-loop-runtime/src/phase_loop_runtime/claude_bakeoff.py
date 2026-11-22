@@ -13,12 +13,14 @@ set. :func:`evidence_digest` is what an OD-3b section cites.
 
 * ``validate DIR`` -- V7, the shape check of every record in ``DIR`` and across them;
 * ``digest DIR`` -- the order-independent evidence digest;
-* ``run --plan PLAN`` -- the W0 kit (an owner action, LA-3). It refuses a run plan that differs
-  from the phase plan's Execution Notes, a board whose president or a co-seat would use the W0
-  Claude account, and a bundle head that is not on ``main``. Per block it brackets the runs
-  with the owner's meter readings, runs the block's arm, and once per native block runs the
-  capture twin. A security-class outcome stops the arm, and its records carry only
-  ``withheld_private``;
+* ``run --plan PLAN --session 1|2`` -- the W0 kit (an owner action, LA-3), one of the two
+  sessions OQ-4 fixes: session 1 is blocks 1-2 (print, control), session 2 blocks 3-6 and only
+  once ``sdk`` is admitted and session 1's records are present. It refuses a run plan that
+  differs from the phase plan's Execution Notes, a board whose president or a co-seat would use
+  the W0 Claude account, and a bundle head that is not on ``main``. Each session opens with a
+  meter reading and each block closes with one; it runs the block's arm, and once per native
+  block the capture twin. A security-class outcome stops the arm, in that session and the
+  next, and its records carry only ``withheld_private``;
 * ``control-brief`` -- print the T3 Code SDK-route control block's brief.
   Its response is parsed through the Python ``ingest_control`` API; there is
   no ``ingest-control`` CLI subcommand.
@@ -31,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import hashlib
 import ipaddress
 import json
@@ -44,7 +47,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Callable, Iterable, Mapping, Sequence
+from typing import Callable, Iterable, Iterator, Mapping, Sequence
 
 from . import claude_seat_transport as _transport
 from . import seat_uid as _seat_uid
@@ -318,10 +321,18 @@ def _request_set_problems(value: object) -> list[str]:
     return problems
 
 
-def evidence_digest(directory: Path | str) -> str:
+def evidence_digest(directory: Path | str, *, sessions: Sequence[int] | None = None) -> str:
     """sha256 over the sorted bytes of every record in ``directory``: independent of file
-    order and names. An OD-3b section cites this value."""
-    blobs = sorted(path.read_bytes() for path in Path(directory).glob("*.json"))
+    order and names. An OD-3b section cites this value over the sessions it names
+    (``sessions``; default every file), so later sessions' records can land beside it."""
+    paths = []
+    for path in Path(directory).glob("*.json"):
+        if sessions is not None:
+            found = _RUN_ID.fullmatch(path.name[:-5])
+            if found is None or _session_or_none(int(found["block"])) not in sessions:
+                continue
+        paths.append(path)
+    blobs = sorted(path.read_bytes() for path in paths)
     digest = hashlib.sha256()
     for blob in blobs:
         digest.update(len(blob).to_bytes(8, "big"))
@@ -343,6 +354,9 @@ def _git_show(repo: Path, rev: str, path: str) -> bytes | None:
 
 
 _OD3B_DIGEST = re.compile(r"\*\*W0 evidence digest:\*\* `(?P<digest>[0-9a-f]{64})`")
+#: The sessions an OD-3b section's evidence holds (OQ-4): ``1`` or ``1 and 2``.
+_OD3B_SESSIONS = re.compile(r"^\*\*W0 sessions:\*\* (?P<sessions>1|1 and 2)[ \t]*$", re.M)
+_OD3B_HEADING = re.compile(r"## 4[c-z]\. .*\bOD-3b\b")
 
 
 #: The architectures a W0 host may run; a W0 head's TUI digest is one per architecture.
@@ -438,24 +452,12 @@ def validate_directory(directory: Path | str, *, repo: Path | str = ".",
     when given, else the digests :func:`tui_digests_at` derives without running that head's
     code; a head whose digest cannot be derived fails."""
     directory, repo = Path(directory), Path(repo)
-    paths, problems = _directory_entries(directory)
-    records: list[dict] = []
-    for path in paths:
-        raw = path.read_bytes()
-        try:
-            obj = json.loads(raw)
-        except ValueError:
-            problems.append(f"{path.name}: not JSON")
-            continue
-        found = validate_record(obj)
-        if found:
-            problems += [f"{path.name}: {problem}" for problem in found]
-            continue
-        if raw != canonical_bytes(obj):
-            problems.append(f"{path.name}: not canonical JSON")
-        if path.name != f"{obj['run_id']}.json":
-            problems.append(f"{path.name}: the file is not named for its run_id")
-        records.append(obj)
+    records, problems = load_records(directory)
+    gaps = coverage_gaps(records)
+    for session in sorted(gaps):
+        if session > 1 and gaps.get(session - 1, ["absent"]):
+            problems.append(f"session {session} records without session {session - 1}'s "
+                            "complete records")
     arms_by_block: dict[int, set[str]] = {}
     heads_by_block: dict[int, set[str]] = {}
     for obj in records:
@@ -500,14 +502,90 @@ def validate_directory(directory: Path | str, *, repo: Path | str = ".",
     if record_text is None:
         current = repo / _transport.DECISION_RECORD
         record_text = current.read_bytes() if current.exists() else b""
-    digest = evidence_digest(directory)
-    for sid, (heading, _d) in sorted(_transport.record_sections(record_text).items()):
-        if re.match(r"## 4[c-z]\. .*\bOD-3b\b", heading):
-            body = _transport.section_bytes(record_text, sid) or b""
-            cited = {m["digest"] for m in _OD3B_DIGEST.finditer(body.decode("utf-8", "replace"))}
-            if digest not in cited:
-                problems.append(f"OD-3b section {sid} does not cite this directory's evidence digest")
+    problems += od3b_problems(record_text, directory, records)
     return list(dict.fromkeys(problems))
+
+
+def load_records(directory: Path) -> tuple[list[dict], list[str]]:
+    """The valid records of ``directory`` and the problem of every entry that is not one."""
+    paths, problems = _directory_entries(directory)
+    records: list[dict] = []
+    for path in paths:
+        raw = path.read_bytes()
+        try:
+            obj = json.loads(raw)
+        except ValueError:
+            problems.append(f"{path.name}: not JSON")
+            continue
+        found = validate_record(obj)
+        if found:
+            problems += [f"{path.name}: {problem}" for problem in found]
+            continue
+        if raw != canonical_bytes(obj):
+            problems.append(f"{path.name}: not canonical JSON")
+        if path.name != f"{obj['run_id']}.json":
+            problems.append(f"{path.name}: the file is not named for its run_id")
+        records.append(obj)
+    return records, problems
+
+
+def _marked(body: str, marker: str) -> list[str]:
+    return [line for line in body.splitlines() if line.startswith(marker)]
+
+
+def od3b_problems(record_text: bytes, directory: Path,
+                  records: Sequence[Mapping[str, object]]) -> list[str]:
+    """OQ-4: only the latest OD-3b section, by letter, answers for this directory; earlier ones
+    are history. It carries exactly one default, one digest and one sessions line. The sessions
+    it names (``1`` or ``1 and 2``) are complete here, and the digest is over their records
+    alone, so a later session's records can land beside it before the next section does. It
+    picks ``print``, ``sdk`` or "none admitted"; a section over session 1 alone picks only
+    ``print`` or "none admitted", and a transport it picks has records in its sessions."""
+    headings = [line.decode("utf-8", "replace") for line in record_text.splitlines()
+                if line.startswith(b"## ")]
+    ids = [found.group(1) for line in headings
+           if (found := re.match(r"## (\d+[a-z]?)\. ", line)) is not None]
+    od3b_ids = {found.group(1) for line in headings if _OD3B_HEADING.match(line)
+                and (found := re.match(r"## (\d+[a-z]?)\. ", line)) is not None}
+    ambiguous = sorted(sid for sid in od3b_ids if ids.count(sid) > 1)
+    if ambiguous:  # the section parser keeps one heading per id; never let it pick
+        return [f"OD-3b section {sid} has more than one heading with its id" for sid in ambiguous]
+    od3b = sorted(sid for sid, (heading, _d) in _transport.record_sections(record_text).items()
+                  if _OD3B_HEADING.match(heading))
+    if not od3b:
+        return []
+    sid = od3b[-1]
+    body = (_transport.section_bytes(record_text, sid) or b"").decode("utf-8", "replace")
+    problems = []
+    defaults = _marked(body, "**Jailed Claude default:**")
+    picked = _transport.DEFAULT_LINE.match(defaults[0]) if len(defaults) == 1 else None
+    if picked is None:
+        problems.append(f"OD-3b section {sid} needs exactly one well-formed default line")
+    elif picked.group("value") == "tui":
+        problems.append(f"OD-3b section {sid} may pick only print, sdk or none admitted")
+    lines = _marked(body, "**W0 sessions:**")
+    found = _OD3B_SESSIONS.fullmatch(lines[0]) if len(lines) == 1 else None
+    if found is None:
+        problems.append(f"OD-3b section {sid} needs exactly one `**W0 sessions:**` line")
+        return problems
+    named = SESSIONS[:2] if found["sessions"] == "1 and 2" else SESSIONS[:1]
+    gaps = coverage_gaps(records)
+    if any(gaps.get(session, ["absent"]) for session in named):
+        problems.append(f"OD-3b section {sid} names a W0 session that is not complete here")
+    digests = _marked(body, "**W0 evidence digest:**")
+    cited = _OD3B_DIGEST.fullmatch(digests[0].rstrip()) if len(digests) == 1 else None
+    if cited is None or cited["digest"] != evidence_digest(directory, sessions=named):
+        problems.append(f"OD-3b section {sid} does not cite exactly the evidence digest of "
+                        "the sessions it names")
+    value = picked.group("value") if picked is not None else None
+    if named == SESSIONS[:1] and value == "sdk":
+        problems.append(f"OD-3b section {sid} is interim (session 1) and may pick only print "
+                        "or none admitted")
+    elif value in NATIVE_ARMS and not any(
+            obj["arm"] == value and session_of(int(obj["block"])) in named  # type: ignore[call-overload]
+            for obj in records):
+        problems.append(f"OD-3b section {sid} names `{value}`, which has no record in its sessions")
+    return problems
 
 
 # --------------------------------------------------------------------------------------
@@ -518,15 +596,161 @@ def validate_directory(directory: Path | str, *, repo: Path | str = ".",
 class RunPlan:
     blocks: tuple[str, ...] = ("print", CONTROL, "sdk", "sdk", CONTROL, "print")
     runs_per_block: int = 3
-    meter_readings: int = 7
+    #: One reading opens each session and one closes each block (OQ-2, OQ-4).
+    meter_readings: int = 8
     settle_s: int = 300
     timeout_s: int = 1800
     twins_per_native_block: int = 1
-    sessions: int = 1
+    sessions: int = 2
+    #: OQ-4's early session: the blocks of each session, in order.
+    session_blocks: tuple[tuple[int, ...], ...] = ((1, 2), (3, 4, 5, 6))
 
 
 #: The phase plan's Execution Notes, fixed before the window.
 EXECUTION_NOTES = RunPlan()
+SESSIONS = tuple(range(1, EXECUTION_NOTES.sessions + 1))
+
+
+def session_of(block: int) -> int:
+    for session, blocks in enumerate(EXECUTION_NOTES.session_blocks, start=1):
+        if block in blocks:
+            return session
+    raise ValueError(f"block {block} is in no session")
+
+
+def sessions_held(records: Iterable[Mapping[str, object]]) -> tuple[int, ...]:
+    return tuple(sorted({s for obj in records  # type: ignore[call-overload]
+                         if (s := _session_or_none(int(obj["block"]))) is not None}))
+
+
+def sessions_label(held: Sequence[int]) -> str:
+    """How an OD-3b section names the sessions its evidence holds."""
+    return " and ".join(str(session) for session in held)
+
+
+def _session_or_none(block: int) -> int | None:
+    try:
+        return session_of(block)
+    except ValueError:
+        return None
+
+
+def coverage_gaps(records: Iterable[Mapping[str, object]]) -> dict[int, list[str]]:
+    """Each session that has any record, with what keeps it from being complete (``[]`` when
+    complete). A block is complete with runs ``r1`` to ``r3`` of its planned arm; a security
+    stop may end it early, but only on its last run; and a block whose arm stopped earlier
+    has no record at all. Records of an unplanned block make their session incomplete."""
+    by_block: dict[int, list[Mapping[str, object]]] = {}
+    for obj in records:
+        by_block.setdefault(int(obj["block"]), []).append(obj)  # type: ignore[call-overload]
+    gaps: dict[int, list[str]] = {}
+    stopped: set[str] = set()
+    for session, blocks in enumerate(EXECUTION_NOTES.session_blocks, start=1):
+        found: list[str] = []
+        for block in blocks:
+            arm = EXECUTION_NOTES.blocks[block - 1]
+            runs = sorted(by_block.get(block, []),
+                          key=lambda obj: int(str(obj["run_id"]).rsplit("-r", 1)[1]))
+            numbers = [int(str(obj["run_id"]).rsplit("-r", 1)[1]) for obj in runs]
+            withheld = [obj["security_outcome"] == "withheld_private" for obj in runs]
+            if any(obj["arm"] != arm for obj in runs):
+                found.append(f"block {block}: not the planned arm")
+            if arm in stopped:
+                if runs:
+                    found.append(f"block {block}: records after its arm stopped")
+                continue
+            if numbers != list(range(1, len(numbers) + 1)):
+                found.append(f"block {block}: runs are not r1 to r{len(numbers)}")
+            elif any(withheld[:-1]) or not (
+                    len(numbers) == EXECUTION_NOTES.runs_per_block
+                    or (numbers and withheld[-1] and len(numbers) < EXECUTION_NOTES.runs_per_block)):
+                found.append(f"block {block}: {len(numbers)} of "
+                             f"{EXECUTION_NOTES.runs_per_block} runs")
+            if any(withheld):
+                stopped.add(arm)
+        if any(block in by_block for block in blocks):
+            gaps[session] = found
+    extra = sorted(block for block in by_block if _session_or_none(block) is None)
+    if extra:
+        gaps.setdefault(0, []).append("records of an unplanned block")
+    return gaps
+
+
+def complete_sessions(records: Iterable[Mapping[str, object]]) -> tuple[int, ...]:
+    return tuple(session for session, found in sorted(coverage_gaps(records).items())
+                 if session and not found)
+
+
+def session_arms(session: int) -> tuple[str, ...]:
+    return tuple(sorted({EXECUTION_NOTES.blocks[block - 1]
+                         for block in EXECUTION_NOTES.session_blocks[session - 1]}))
+
+
+def opening_position(session: int) -> int:
+    """The ledger position of the reading that opens ``session``."""
+    return sum(len(blocks) + 1 for blocks in EXECUTION_NOTES.session_blocks[:session - 1])
+
+
+def bracket_positions(block: int) -> tuple[int, int]:
+    """The ledger positions of the two readings around ``block``: the one before it in its
+    own session (the session's opening reading for its first block) and its closing one."""
+    session = session_of(block)
+    blocks = EXECUTION_NOTES.session_blocks[session - 1]
+    after = opening_position(session) + 1 + blocks.index(block)
+    return after - 1, after
+
+
+#: The arms whose capture twin exists. ``sdk``'s twin (the dedicated worker under the current
+#: GL-2 receipt, EC-CLAUDE-5) lands with the ``sdk`` enablement; until then session 2 refuses.
+TWIN_ARMS = frozenset({"print"})
+
+
+def sdk_readiness_problems(repo: Path) -> list[str]:
+    """What an admitted ``sdk`` arm still needs before a session that runs it spends anything:
+    its capture twin, the ratified OD-3a section (G1) and a current GL-2 worker receipt."""
+    problems = []
+    if "sdk" not in TWIN_ARMS:
+        problems.append("the sdk arm has no capture twin yet")
+    record = repo / _transport.DECISION_RECORD
+    raw = record.read_bytes() if record.is_file() else b""
+    found = _transport.record_sections(raw).get("4b")
+    if found is None or not found[0].startswith("## 4b. OD-3a"):
+        problems.append("the decision record has no ratified OD-3a section (G1)")
+    try:
+        from . import claude_seat_sdk
+
+        claude_seat_sdk.preflight()
+    except Exception as exc:  # any refusal or missing piece: no current GL-2 receipt here
+        problems.append(f"the sdk worker has no current GL-2 receipt here ({type(exc).__name__})")
+    return problems
+
+
+def session_problems(session: object, directory: Path,
+                     admitted: Callable[[str], bool] | None = None,
+                     repo: Path | None = None) -> list[str]:
+    """What refuses ``run --session``, before credentials, CA or any reading: an unknown
+    session, a native arm of this session that is not admitted or (``sdk``) not ready, a
+    directory that already holds this session's records, and for session 2 a directory
+    without session 1's complete records."""
+    if session not in SESSIONS:
+        return ["run: --session must be one of " + ", ".join(map(str, SESSIONS))]
+    is_admitted = admitted or _transport.is_admitted
+    arms = session_arms(int(session))
+    problems = [f"the {arm} arm is not admitted on this tree"
+                for arm in arms if arm in NATIVE_ARMS and not is_admitted(arm)]
+    if "sdk" in arms and is_admitted("sdk"):
+        problems += sdk_readiness_problems(repo if repo is not None else Path("."))
+    records, found = load_records(directory) if directory.exists() else ([], [])
+    problems += [f"evidence: {problem}" for problem in found]
+    held = sessions_held(records)
+    if any(later >= int(session) for later in held):
+        problems.append(f"evidence: session {session}'s or a later session's records are here")
+    gaps = coverage_gaps(records)
+    for earlier in range(1, int(session)):
+        if gaps.get(earlier, ["absent"]):
+            problems.append(f"evidence: session {session} needs session {earlier}'s complete "
+                            "records here")
+    return problems
 
 #: Fields of a run-plan file that the kit takes from the operator (not plan constants). A W0
 #: board runs without a landing tier, so it has no president to place on any account.
@@ -550,7 +774,7 @@ def check_run_plan(plan: Mapping[str, object]) -> list[str]:
         "timeout_s": EXECUTION_NOTES.timeout_s,
         "twins_per_native_block": EXECUTION_NOTES.twins_per_native_block,
         "sessions": EXECUTION_NOTES.sessions,
-    }
+    }  # ``session_blocks`` is the kit's constant, never the operator's
     for key, value in expected.items():
         if plan.get(key) != value:
             problems.append(f"run plan: {key} differs from the phase plan's Execution Notes")
@@ -697,61 +921,293 @@ def private_root(window: str, env: Mapping[str, str] | None = None) -> Path:
     return base / "phase-loop" / "claude-w0" / window
 
 
+class PrivateInputError(OSError, ValueError):
+    """A private file that exists but is not a regular file the kit can use. It is a
+    ``ValueError`` too, so a late refusal ends a session through its refusal handler."""
+
+
+#: Private kit files are small; a larger one is not the kit's.
+_PRIVATE_CAP = 1 << 20
+
+
+def _private_diagnostic(path: Path) -> str:
+    return dict(PRIVATE_INPUTS).get(path.name, f"{path.name}: not a regular private file")
+
+
+def _open_pinned_regular(path: Path, flags: int) -> int:
+    """Open the regular file at ``path`` with ``flags``, never anything else: the entry is
+    pinned first with ``O_PATH | O_NOFOLLOW`` (no I/O, so no device or FIFO side effect and
+    no wait), type-checked on that pin, and only then reopened through it, so a path
+    swapped after the check is not what gets opened. ``FileNotFoundError`` passes through."""
+    pin = os.open(path, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        pinned = os.fstat(pin)
+        if not stat.S_ISREG(pinned.st_mode):
+            raise PrivateInputError(_private_diagnostic(path))
+        fd = os.open(f"/proc/self/fd/{pin}", flags | os.O_NONBLOCK | os.O_CLOEXEC)
+    finally:
+        os.close(pin)
+    opened = os.fstat(fd)
+    if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (
+            pinned.st_dev, pinned.st_ino):
+        os.close(fd)
+        raise PrivateInputError(_private_diagnostic(path))
+    return fd
+
+
 def write_private(path: Path, data: bytes) -> None:
+    """Create or replace a private 0600 regular file without ever blocking: a new file is
+    created exclusively; an existing entry must be a regular file, pinned before it is
+    opened. A FIFO, socket, device, directory or link refuses with the file's diagnostic."""
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(path.parent, 0o700)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_NONBLOCK
+                     | os.O_CLOEXEC, 0o600)
+    except FileExistsError:
+        fd = _open_pinned_regular(path, os.O_WRONLY)
     with os.fdopen(fd, "wb") as handle:
+        os.ftruncate(handle.fileno(), 0)
         handle.write(data)
-    os.chmod(path, 0o600)
+        handle.flush()
+        os.fchmod(handle.fileno(), 0o600)
+        # The write counts only if the path still names the inode written: an entry swapped
+        # after the pin (or after the exclusive create) leaves the data off the path.
+        written = os.fstat(handle.fileno())
+        try:
+            now = os.lstat(path)
+        except (FileNotFoundError, NotADirectoryError):  # the entry, or its directory, moved
+            now = None
+        if now is None or not stat.S_ISREG(now.st_mode) or (now.st_dev, now.st_ino) != (
+                written.st_dev, written.st_ino):
+            raise PrivateInputError(_private_diagnostic(path))
+
+
+def read_private_regular(path: Path, *, cap: int = _PRIVATE_CAP) -> bytes | None:
+    """The bytes of a private regular file, ``None`` when nothing is at ``path``, and
+    :class:`PrivateInputError` (or the ``OSError`` of an unreadable file) for anything else.
+    It never blocks: the entry is pinned and type-checked before it is opened
+    (:func:`_open_pinned_regular`), so a FIFO, socket, device, directory or link is refused,
+    never opened or waited on."""
+    try:
+        fd = _open_pinned_regular(path, os.O_RDONLY)
+    except FileNotFoundError:
+        return None
+    try:
+        chunks, size = [], 0
+        while size <= cap:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+        if size > cap:
+            raise PrivateInputError(f"{path.name}: too large")
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
+#: The salt the kit writes: 32 random bytes as hex.
+_SALT = re.compile(rb"[0-9a-f]{64}")
+#: Every private file a session reads, and the diagnostic it refuses with when it exists but
+#: cannot be read as a regular file.
+PRIVATE_INPUTS = (
+    ("meter.json", "meter: the private ledger cannot be read"),
+    ("meter.salt", "meter: the private salt cannot be read"),
+    ("session-identity.json", "identity: session 1's comparison identity cannot be read"),
+    ("security-outcomes.txt", "security notes: the private notes cannot be read"),
+    ("control-files.txt", "control files: the private list cannot be read"),
+)
+
+
+def private_input_problems(root: Path) -> list[str]:
+    """Each private input that exists but is not a readable regular file of the kit's shape.
+    Checked before any credential, CA, reading or native block, without blocking."""
+    problems = []
+    for name, diagnostic in PRIVATE_INPUTS:
+        try:
+            raw = read_private_regular(root / name)
+        except OSError:
+            problems.append(diagnostic)
+            continue
+        if name == "meter.salt" and raw is not None and not _SALT.fullmatch(raw):
+            problems.append("meter: the private salt is not this kit's; archive it first")
+    return problems
+
+
+_READING_NAMES = ("subscription_usage", "extra_usage_spend", "api_spend")
+#: A value the owner could not read is ``unavailable``; a spend the account has no meter for
+#: (no API organization, no extra usage) is ``none``. Anything else is a number.
+UNAVAILABLE = "unavailable"
+_PERCENT = re.compile(r"(?P<n>[0-9]{1,3}(?:\.[0-9]{1,2})?) ?%")
+_MONEY = re.compile(r"\$? ?(?P<n>[0-9]{1,7}(?:\.[0-9]{1,2})?)")
+_STORED = re.compile(r"[0-9]{1,7}\.[0-9]{2}")
+#: Prompts per value before it is recorded ``unavailable``.
+READING_ATTEMPTS = 3
+
+
+def normalize_reading(name: str, answer: str) -> str | None:
+    """The stored form of one meter value, or ``None`` when ``answer`` is not one: a blank, a
+    word, or a number in another unit never stands for a reading."""
+    from decimal import Decimal
+
+    text = answer.strip().lower()
+    if text == UNAVAILABLE:
+        return UNAVAILABLE
+    if name != "subscription_usage" and text == "none":
+        return "none"
+    found = (_PERCENT if name == "subscription_usage" else _MONEY).fullmatch(text)
+    if found is None:
+        return None
+    return str(Decimal(found["n"]).quantize(Decimal("0.01")))
+
+
+def _stored_reading(item: object) -> bool:
+    return isinstance(item, dict) and set(item) == set(_READING_NAMES) and all(
+        isinstance(value, str) and (value == UNAVAILABLE or _STORED.fullmatch(value)
+                                    or (name != "subscription_usage" and value == "none"))
+        for name, value in item.items())
+
+
+def _movement(before: str, after: str) -> str:
+    """``moved``, ``same`` or ``unresolved`` (a value unavailable on either side, a meter on one
+    side only, or a reading that went backwards)."""
+    from decimal import Decimal
+
+    if before == after == "none":
+        return "same"
+    if UNAVAILABLE in (before, after) or "none" in (before, after):
+        return "unresolved"
+    old, new = Decimal(before), Decimal(after)
+    return "moved" if new > old else "same" if new == old else "unresolved"
 
 
 @dataclass
 class MeterLedger:
-    """The owner's account usage meter readings, one before the first block and one after
-    each block (after the settle interval), kept privately. A record carries only its
-    block's ``meter_ref`` and the salted digest of the two readings that bracket it."""
+    """The owner's account usage meter readings, kept privately at fixed positions: one opens
+    each session and one closes each block, after the settle interval (OQ-2, OQ-4). Session 2
+    keeps session 1's readings and salt. A record carries only its block's ``meter_ref`` and
+    the salted digest of the two readings that bracket it (:func:`bracket_positions`).
+    Readings fill their positions in order, each once; a value is a number, ``none`` or
+    ``unavailable``, re-asked when it is not."""
 
     root: Path
     prompt: Callable[[str], str] = input
     sleep: Callable[[float], None] = time.sleep
-    readings: list[dict] = field(default_factory=list)
+    readings: list[dict | None] = field(default_factory=list)
+    problem: str | None = None
 
-    def read(self, index: int, *, settle_s: float) -> dict:
-        if index:
+    def __post_init__(self) -> None:
+        size = EXECUTION_NOTES.meter_readings
+        path = self.root / "meter.json"
+        if self.readings:
+            return
+        try:
+            raw = read_private_regular(path)
+        except OSError:
+            self.readings = [None] * size
+            self.problem = "meter: the private ledger cannot be read"
+            return
+        if raw is None:
+            self.readings = [None] * size
+            return
+        try:
+            kept = json.loads(raw)
+        except ValueError:
+            kept = None
+        if (isinstance(kept, list) and len(kept) == size
+                and all(item is None or _stored_reading(item) for item in kept)):
+            self.readings = kept
+        else:
+            self.readings = [None] * size
+            self.problem = "meter: the private ledger is not this run plan's; archive it first"
+
+    def read(self, position: int, *, settle_s: float) -> dict:
+        if self.readings[position] is not None:
+            raise ValueError(f"meter: reading {position + 1} is already taken")
+        openings = {opening_position(session) for session in SESSIONS}
+        if position not in openings and self.readings[position - 1] is None:
+            raise ValueError(f"meter: reading {position + 1} is out of order")
+        if settle_s:
             self.sleep(settle_s)
         reading = {}
-        for name in ("subscription_usage", "extra_usage_spend", "api_spend"):
-            answer = self.prompt(f"meter reading {index}: {name} (as shown, or 'none'): ").strip()
-            reading[name] = answer[:64]
-        self.readings.append(reading)
+        for name in _READING_NAMES:
+            value = None
+            for _attempt in range(READING_ATTEMPTS):
+                answer = self.prompt(
+                    f"meter reading {position + 1} of {len(self.readings)}: {name} (a number as "
+                    f"shown, 'none' if the account has no such meter, or '{UNAVAILABLE}'): ")
+                value = normalize_reading(name, answer)
+                if value is not None:
+                    break
+            reading[name] = value or UNAVAILABLE
+        self.readings[position] = reading
         write_private(self.root / "meter.json", json.dumps(self.readings, indent=2).encode())
         return reading
 
     def salt(self) -> bytes:
         path = self.root / "meter.salt"
-        if not path.exists():
-            write_private(path, os.urandom(32).hex().encode())
-        return path.read_bytes()
+        try:
+            raw = read_private_regular(path)
+            if raw is None:
+                write_private(path, os.urandom(32).hex().encode())
+                raw = read_private_regular(path)
+        except OSError:
+            raise ValueError("meter: the private salt cannot be read") from None
+        if raw is None or not _SALT.fullmatch(raw):
+            raise ValueError("meter: the private salt is not this kit's; archive it first")
+        return raw
+
+    def _digest(self, block: int, salt: bytes) -> str:
+        bracket = [self.readings[position] for position in bracket_positions(block)]
+        return hashlib.sha256(salt + json.dumps(bracket, sort_keys=True).encode()).hexdigest()
 
     def digest(self, block: int) -> str:
-        bracket = self.readings[block - 1:block + 1]
-        return hashlib.sha256(self.salt() + json.dumps(bracket, sort_keys=True).encode()).hexdigest()
+        return self._digest(block, self.salt())
 
-    def billing(self, block: int, moved: Callable[[str, str], bool] | None = None) -> str:
-        """Where the block's runs landed: ``extra_usage`` or ``api`` when that spend moved
-        across the block, ``subscription`` when only subscription usage moved, otherwise
-        ``unknown``."""
-        if len(self.readings) <= block:
+    def session_problems(self, session: int, records: Sequence[Mapping[str, object]]
+                         ) -> list[str]:
+        """Session 1 starts on an empty ledger. Session 2 starts only on the ledger session 1
+        wrote: its readings filled, the rest empty, and the same salt, which together still
+        give every session-1 record's ``meter_digest``. Nothing is created to check this."""
+        first = opening_position(session)
+        if any(slot is not None for slot in self.readings[first:]):
+            return [f"meter: session {session}'s readings are already taken; archive the ledger"]
+        path = self.root / "meter.salt"
+        try:  # an existing salt must be readable and the kit's, in every session
+            salt = read_private_regular(path)
+        except OSError:
+            return ["meter: the private salt cannot be read"]
+        if salt is not None and not _SALT.fullmatch(salt):
+            return ["meter: the private salt is not this kit's; archive it first"]
+        if session == 1:
+            return []
+        if any(slot is None for slot in self.readings[:first]):
+            return ["meter: the private ledger lacks the earlier sessions' readings "
+                    "(another --window, or a lost ledger)"]
+        earlier = [obj for obj in records if session_of(int(obj["block"])) < session]  # type: ignore[call-overload]
+        if salt is None or any(obj["meter_digest"] != self._digest(int(obj["block"]), salt)  # type: ignore[call-overload]
+                               for obj in earlier):
+            return ["meter: the private ledger does not give the earlier sessions' meter digests"]
+        return []
+
+    def billing(self, block: int) -> str:
+        """Where the block's runs landed: ``api`` or ``extra_usage`` when that spend rose across
+        the block, ``subscription`` when only subscription usage rose. Any value that cannot be
+        resolved (unavailable, on one side only, or gone backwards), on any meter, leaves
+        ``unknown`` before any ranking, and so does a block where nothing rose."""
+        before, after = (self.readings[position] for position in bracket_positions(block))
+        if before is None or after is None:
             return "unknown"
-        before, after = self.readings[block - 1], self.readings[block]
-        changed = moved or (lambda a, b: a != b)
-        if changed(before["api_spend"], after["api_spend"]):
-            return "api"
-        if changed(before["extra_usage_spend"], after["extra_usage_spend"]):
-            return "extra_usage"
-        if changed(before["subscription_usage"], after["subscription_usage"]):
-            return "subscription"
+        ranked = (("api_spend", "api"), ("extra_usage_spend", "extra_usage"),
+                  ("subscription_usage", "subscription"))
+        movements = {name: _movement(before[name], after[name]) for name, _label in ranked}
+        if "unresolved" in movements.values():  # resolve every meter before ranking any
+            return "unknown"
+        for name, label in ranked:
+            if movements[name] == "moved":
+                return label
         return "unknown"
 
 
@@ -828,7 +1284,7 @@ def twin_command(arm: str, executable: Path, *, model: str | None, effort: str |
 
     from . import claude_seat_print, panel_invoker
 
-    if arm != "print":
+    if arm not in TWIN_ARMS:
         raise ValueError(f"no capture twin for the {arm} arm")
     jail = types.SimpleNamespace(leg="claude", provider_argv0=str(executable))
     command = panel_invoker._broker_claude_tui_command(
@@ -1189,8 +1645,182 @@ def write_record(directory: Path, record: Mapping[str, object], *, token: bytes)
         raise ValueError("record refused: it carries the live credential")
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{record['run_id']}.json"
-    path.write_bytes(data)
+    try:  # never replaces a record: two sessions cannot both publish one run id
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                     0o644)
+    except FileExistsError:
+        raise ValueError(f"record refused: {path.name} already exists") from None
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)
     return path
+
+
+class EvidenceClaimed(ValueError):
+    pass
+
+
+@contextlib.contextmanager
+def claim_evidence(directory: Path) -> Iterator[None]:
+    """Hold the evidence directory for one effectful session: an exclusive, non-blocking lock
+    on the directory itself, so a second session (under any ``--window``) refuses before its
+    first effect instead of racing this one to the same run ids. The lock leaves no file."""
+    import fcntl
+
+    directory.mkdir(parents=True, exist_ok=True)
+    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise EvidenceClaimed("evidence: another W0 session holds this directory") from None
+        yield
+    finally:
+        os.close(fd)
+
+
+SECURITY_NOTES = "security-outcomes.txt"
+#: The private record of what session 1 compared, which session 2 must match.
+IDENTITY = "session-identity.json"
+
+
+def comparison_identity(plan: Mapping[str, object], repo: Path) -> dict:
+    """What both sessions must share for their blocks to compare: the review bundle's path and
+    bytes, the model, the effort and the board. The W0 head may move between sessions."""
+    artifact = bundle_artifact(repo, str(plan.get("w0_head")), plan.get("artifact"))
+    board = plan.get("board")
+    return {"artifact": plan.get("artifact"), "artifact_sha256": hashlib.sha256(artifact).hexdigest(),
+            "model": plan.get("model"), "effort": plan.get("effort"),
+            "seats": list(board.get("seats", [])) if isinstance(board, dict) else None}
+
+
+def identity_problems(root: Path, plan: Mapping[str, object], repo: Path,
+                      session: int) -> list[str]:
+    """Session 2 compares only with session 1's identity, kept privately when session 1 began."""
+    if session == 1:
+        return []
+    path = root / IDENTITY
+    try:
+        raw = read_private_regular(path)
+        kept = json.loads(raw) if raw is not None else None
+    except (OSError, ValueError):
+        return ["identity: session 1's comparison identity cannot be read"]
+    try:
+        current = comparison_identity(plan, repo)
+    except ValueError as exc:
+        return [f"identity: {exc}"]
+    if kept is None:
+        return ["identity: session 1's comparison identity is missing from the private ledger"]
+    if kept != current:
+        return ["identity: the bundle, model, effort or board differs from session 1's"]
+    return []
+
+
+#: The ``<device>:<inode>`` that starts a control-file row.
+_IDENTITY_ROW = re.compile(r"[0-9]+:[0-9]+")
+#: A control output file is a few hundred bytes; anything past this is not one.
+_CONTROL_CAP = 1 << 20
+
+
+@dataclass
+class ControlFiles:
+    """The operator's control output files. Each is opened once, without following a final
+    link, and checked on that descriptor: a regular file written at or after its block's
+    brief (``since``), never the same file (by device and inode) as one already given in
+    this window, whatever path names it. Two children may still write identical bytes."""
+
+    root: Path
+    prompt: Callable[[str], str] = input
+    report: Callable[[str], None] = print
+    since: float = 0.0
+
+    def _given(self) -> list[str]:
+        """Rows ``<device>:<inode>\t<path>``, the path intact after the first tab. Earlier
+        kits wrote a bare path or a bare ``<device>:<inode>``; both still count."""
+        try:
+            raw = read_private_regular(self.root / "control-files.txt")
+        except OSError:
+            raise ValueError("control files: the private list cannot be read") from None
+        # Rows end in "\n" alone; no other character, Unicode or control, ends a row.
+        return [row for row in (raw or b"").decode("utf-8", "surrogateescape").split("\n") if row]
+
+    def _already_given(self, identity: str, path: Path) -> bool:
+        for row in self._given():
+            head, tab, rest = row.partition("\t")
+            if tab and _IDENTITY_ROW.fullmatch(head):
+                given_identity, given_path = head, rest
+            elif _IDENTITY_ROW.fullmatch(row):
+                given_identity, given_path = row, None
+            else:
+                given_identity, given_path = None, row
+            if given_identity == identity or given_path == str(path):
+                return True
+        return False
+
+    def take(self, path: Path) -> tuple[str | None, bytes, str]:
+        """``(problem, bytes, identity)``; ``problem`` is ``None`` when the file is acceptable."""
+        if not path.is_absolute():
+            return "give an absolute path", b"", ""
+        if "\n" in str(path):  # the row delimiter; every other character is kept in a row
+            return "give a path without a line break", b"", ""
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+        except OSError:
+            return "not a regular file, or no such file", b"", ""
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            os.close(fd)
+            return "not a regular file, or no such file", b"", ""
+        with os.fdopen(fd, "rb") as handle:
+            if info.st_mtime < self.since:
+                return "written before this block's brief", b"", ""
+            identity = f"{info.st_dev}:{info.st_ino}"
+            if self._already_given(identity, path):
+                return "already given for another run", b"", ""
+            raw = handle.read(_CONTROL_CAP + 1)
+        if len(raw) > _CONTROL_CAP:
+            return "too large for a control output file", b"", ""
+        return None, raw, identity
+
+    def problem(self, path: Path) -> str | None:
+        return self.take(path)[0]
+
+    def accept(self, block: int, n: int) -> bytes:
+        for _attempt in range(READING_ATTEMPTS):
+            path = Path(self.prompt(f"control block {block} run {n}: path of the child's "
+                                    "output file: ").strip())
+            problem, raw, identity = self.take(path)
+            if problem is None:
+                rows = [*self._given(), f"{identity}\t{path}"]
+                write_private(self.root / "control-files.txt",
+                              "\n".join(rows).encode("utf-8", "surrogateescape"))
+                return raw
+            self.report(f"control block {block} run {n}: {problem}; give another file")
+        raise ValueError(f"W0 stopped: no acceptable control file for block {block} run {n}")
+
+
+def control_model_problem(raw: bytes, model: object) -> str | None:
+    """A control child that reports another model than the run plan's is not this control."""
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None  # ingest_control refuses it
+    if isinstance(data, dict) and "model" in data and data["model"] != model:
+        return "the child reports another model than the run plan's"
+    return None
+
+
+def private_stopped_arms(root: Path) -> set[str]:
+    """Arms the private security-outcome notes stop, so an interrupted session that never
+    wrote its withheld record still keeps the arm stopped. Notes that exist but cannot be
+    read refuse (``ValueError``) rather than read as none."""
+    try:
+        raw = read_private_regular(root / SECURITY_NOTES)
+    except OSError:
+        raise ValueError("security notes: the private notes cannot be read") from None
+    if raw is None:
+        return set()
+    lines = raw.decode("utf-8", "replace").splitlines()
+    return {line.split(" ", 1)[0] for line in lines if line.split(" ", 1)[0] in ARMS}
 
 
 # --------------------------------------------------------------------------------------
@@ -1465,7 +2095,7 @@ def run_native(arm: str, *, repo: Path, artifact_copy: Path, observations: Path,
 
 @dataclass
 class Window:
-    """One W0 session over the plan's six blocks. Every effect is injectable."""
+    """One W0 session (OQ-4) over its blocks of the plan's six. Every effect is injectable."""
 
     plan: Mapping[str, object]
     out_dir: Path
@@ -1478,14 +2108,36 @@ class Window:
     report: Callable[[str], None] = print
     compose: Callable[[], Sequence[str]] = effective_composition
     cli_version: str = "unknown"
+    session: int | None = None
+    #: Called with the block number just before a control block's brief is printed, so a
+    #: control file's freshness cutoff never falls after the brief.
+    on_brief: Callable[[int], None] | None = None
+    #: True when the caller already holds :func:`claim_evidence` on ``out_dir``.
+    claimed: bool = False
     stopped_arms: set[str] = field(default_factory=set)
     private_notes: list[str] = field(default_factory=list)
 
     def preflight(self) -> list[str]:
         """Everything that can refuse the window, before the first meter reading: the run
         plan, the lineup (declared and as this host composes it), the W0 checkout, head and
-        artifact, the observed CLI version, and every arm's activation and admission."""
+        artifact, the observed CLI version, the session's evidence, and the activation and
+        admission of this session's arms only (session 1 never needs ``sdk``)."""
         problems = check_run_plan(self.plan)
+        problems += session_problems(self.session, self.out_dir, repo=self.repo)
+        private = private_input_problems(self.ledger.root)
+        if private:
+            problems += private
+        elif self.ledger.problem:
+            problems.append(self.ledger.problem)
+        elif self.session in SESSIONS:
+            records = load_records(self.out_dir)[0] if self.out_dir.exists() else []
+            problems += self.ledger.session_problems(int(self.session), records)  # type: ignore[arg-type]
+            problems += identity_problems(self.ledger.root, self.plan, self.repo,
+                                          int(self.session))  # type: ignore[arg-type]
+            try:
+                private_stopped_arms(self.ledger.root)
+            except ValueError as exc:
+                problems.append(str(exc))
         problems += composition_problems(self.plan)
         head = str(self.plan.get("w0_head", ""))
         if _HEX40.fullmatch(head):
@@ -1496,13 +2148,12 @@ class Window:
                 bundle_artifact(self.repo, head, self.plan.get("artifact"))
             except ValueError as exc:
                 problems.append(str(exc))
-            for arm in sorted(set(EXECUTION_NOTES.blocks) & set(NATIVE_ARMS)):
+            arms = session_arms(self.session) if self.session in SESSIONS else ()  # type: ignore[arg-type]
+            for arm in sorted(set(arms) & set(NATIVE_ARMS)):
                 try:
                     self.activation(arm)
                 except ValueError as exc:
                     problems.append(str(exc))
-                if not _transport.is_admitted(arm):
-                    problems.append(f"the {arm} arm is not admitted on this tree")
         if self.cli_version == "unknown" or not _CLI_VERSION.fullmatch(self.cli_version):
             problems.append("the Claude CLI version cannot be observed")
         if not problems:
@@ -1522,21 +2173,58 @@ class Window:
         return found[1]
 
     def run(self) -> list[Path]:
+        if self.claimed:
+            return self._run()
+        with claim_evidence(self.out_dir):
+            return self._run()
+
+    def _control_file(self, block: int, n: int) -> bytes:
+        for _attempt in range(READING_ATTEMPTS):
+            raw = self.control(block, n)  # type: ignore[misc]
+            problem = control_model_problem(raw, self.plan.get("model"))
+            if problem is None:
+                return raw
+            self.report(f"control block {block} run {n}: {problem}; give another file")
+        raise ValueError(f"W0 stopped: no control file for block {block} run {n} on the "
+                         "run plan's model")
+
+    def _note_security(self, arm: str, block: int, code: str) -> None:
+        """Persist a security outcome privately the moment it is seen (OD-10), before any
+        reading or record, so an interrupted session still leaves it and keeps the arm
+        stopped."""
+        self.stopped_arms.add(arm)
+        self.private_notes.append(f"{arm} block {block}: {code}")
+        path = self.ledger.root / SECURITY_NOTES
+        kept = (read_private_regular(path) or b"").decode("utf-8", "replace").splitlines()
+        write_private(path, "\n".join(dict.fromkeys(kept + self.private_notes)).encode())
+
+    def _run(self) -> list[Path]:
         problems = self.preflight()
         if problems:
             raise ValueError("W0 refused before any run: " + "; ".join(problems))
+        session = int(self.session)  # type: ignore[arg-type]
+        records, _found = load_records(self.out_dir) if self.out_dir.exists() else ([], [])
+        self.stopped_arms |= {str(obj["arm"]) for obj in records
+                              if obj["security_outcome"] == "withheld_private"}
+        self.stopped_arms |= private_stopped_arms(self.ledger.root)
         written: list[Path] = []
-        self.ledger.read(0, settle_s=0)
-        for block, arm in enumerate(EXECUTION_NOTES.blocks, start=1):
+        if session == 1:
+            write_private(self.ledger.root / IDENTITY, json.dumps(
+                comparison_identity(self.plan, self.repo), sort_keys=True).encode())
+        self.ledger.read(opening_position(session), settle_s=0)
+        for block in EXECUTION_NOTES.session_blocks[session - 1]:
+            arm = EXECUTION_NOTES.blocks[block - 1]
             outcomes: list[RunOutcome] = []
             request_set = {"completeness": "partial",
                            "capture_digest": hashlib.sha256(b"[]").hexdigest(), "entries": []}
             if arm in self.stopped_arms:
                 self.report(f"block {block} ({arm}): skipped, the arm stopped on a private outcome")
             elif arm == CONTROL:
+                if self.on_brief is not None:
+                    self.on_brief(block)
                 self.report(control_brief(block, self.plan))
                 for n in range(1, EXECUTION_NOTES.runs_per_block + 1):
-                    outcomes.append(ingest_control(self.control(block, n)))  # type: ignore[misc]
+                    outcomes.append(ingest_control(self._control_file(block, n)))
             else:
                 changed = checkout_problems(self.repo, str(self.plan["w0_head"]))
                 if changed:
@@ -1551,14 +2239,13 @@ class Window:
                     outcome = self.native(arm, EXECUTION_NOTES.timeout_s)  # type: ignore[misc]
                     outcomes.append(outcome)
                     if _transport.od10_class(outcome.code) == _transport.SECURITY:
-                        self.stopped_arms.add(arm)
-                        self.private_notes.append(f"{arm} block {block}: {outcome.code}")
+                        self._note_security(arm, block, outcome.code)
                         break
                 changed = checkout_problems(self.repo, str(self.plan["w0_head"]))
                 if changed:
                     raise ValueError("W0 stopped after the block's runs: "
                                      + "; ".join(changed))
-            self.ledger.read(block, settle_s=EXECUTION_NOTES.settle_s)
+            self.ledger.read(bracket_positions(block)[1], settle_s=EXECUTION_NOTES.settle_s)
             billing = self.ledger.billing(block)
             for n, outcome in enumerate(outcomes, start=1):
                 record = build_record(
@@ -1566,9 +2253,6 @@ class Window:
                     billing=billing, meter_digest=self.ledger.digest(block),
                     request_set=request_set, activation_section_sha256=self.activation(arm))
                 written.append(write_record(self.out_dir, record, token=self.token))
-        if self.private_notes:
-            write_private(self.ledger.root / "security-outcomes.txt",
-                          "\n".join(self.private_notes).encode())
         return written
 
 
@@ -1587,10 +2271,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                                "without running its code)")
     digest = sub.add_parser("digest", help="the W0 evidence digest an OD-3b section cites")
     digest.add_argument("directory", nargs="?", default=EVIDENCE_DIR)
+    digest.add_argument("--through-session", type=int, choices=SESSIONS, default=None,
+                        help="digest only the records of sessions 1 to N (what an OD-3b "
+                             "section naming those sessions cites)")
     run = sub.add_parser("run", help="run W0 (an owner action)")
     run.add_argument("--plan", required=True)
     run.add_argument("--repo", default=".")
     run.add_argument("--window", default="w0")
+    run.add_argument("--session", type=int, required=True, choices=SESSIONS,
+                     help="OQ-4: 1 runs blocks 1-2 (print, control); 2 runs blocks 3-6 "
+                          "once sdk is admitted and session 1's records are here")
     brief = sub.add_parser("control-brief", help="print a control block's brief")
     brief.add_argument("--plan", required=True)
     brief.add_argument("--block", type=int, required=True)
@@ -1601,25 +2291,116 @@ def main(argv: Sequence[str] | None = None) -> int:
         for problem in problems:
             print(f"claude-bakeoff validate: FAIL: {problem}", file=sys.stderr)
         if not problems:
-            count = len(_directory_entries(directory)[0])
-            print(f"claude-bakeoff validate: OK ({count} record(s))")
+            records = load_records(directory)[0]
+            print(f"claude-bakeoff validate: OK ({len(records)} record(s)"
+                  f"{coverage_note(records)})")
         return 1 if problems else 0
     if args.command == "digest":
-        print(evidence_digest(args.directory))
+        through = SESSIONS[:args.through_session] if args.through_session else None
+        print(evidence_digest(args.directory, sessions=through))
+        note = coverage_note(load_records(Path(args.directory))[0])
+        if note:
+            print(f"claude-bakeoff digest: note: {note.removeprefix('; ')}", file=sys.stderr)
         return 0
     plan = json.loads(Path(args.plan).read_text(encoding="utf-8"))
     if args.command == "control-brief":
         print(control_brief(args.block, plan))
         return 0
-    return _run_window(plan, Path(args.repo), args.window)
+    return _run_window(plan, Path(args.repo), args.window, args.session)
 
 
-def _run_window(plan: Mapping[str, object], repo: Path, window: str) -> int:  # pragma: no cover
+def coverage_note(records: Sequence[Mapping[str, object]]) -> str:
+    """What the directory's sessions mean: only complete sessions count, and session 1 alone is
+    never the complete bake-off."""
+    gaps = coverage_gaps(records)
+    notes = [f"session {session} INCOMPLETE ({'; '.join(found)})"
+             for session, found in sorted(gaps.items()) if found]
+    held = complete_sessions(records)
+    if tuple(held) == SESSIONS:
+        notes.insert(0, "sessions " + sessions_label(held) + " complete")
+    elif held:
+        notes.insert(0, f"session {sessions_label(held)} of {len(SESSIONS)} only: an interim "
+                        "set, not the complete bake-off")
+    return "".join(f"; {note}" for note in notes)
+
+
+def keep_dropped_hosts(root: Path, dropped: Sequence[str], *, session: int,
+                       evidence: Path) -> str | None:
+    """Keep the private dropped-host list. It never raises: a failure comes back as a note
+    saying how many of this session's records are already in the evidence directory, so a
+    cleanup failure never hides or replaces the session's outcome."""
+    if not dropped:
+        return None
+    try:
+        write_private(root / "dropped-hosts.txt", "\n".join(sorted(set(dropped))).encode())
+        return None
+    except (OSError, ValueError) as exc:
+        try:
+            held = [obj for obj in load_records(evidence)[0]
+                    if session_of(int(obj["block"])) == session]  # type: ignore[call-overload]
+            count = f"{len(held)} record(s) of session {session} are already"
+        except Exception:  # best effort: the note never replaces the session's outcome
+            # (a record file replaced mid-session can make the scan raise, e.g. RecursionError)
+            count = f"an unknown number of session {session}'s records may already be"
+        return (f"claude-bakeoff run: NOTE: the private dropped-host list was not kept ({exc}); "
+                f"{count} in the evidence directory")
+
+
+def session_outcome(session: int, *, refusal: str | None, written: Sequence[Path] | None,
+                    note: str | None) -> int:
+    """Print the session's outcome first, then any cleanup note beside it, never in its place."""
+    if refusal is not None:
+        print(f"claude-bakeoff run: REFUSED: {refusal}", file=sys.stderr)
+        code = 1
+    else:
+        print(f"claude-bakeoff run: session {session} wrote {len(written or [])} record(s); "
+              "review them before the records PR")
+        code = 0
+    if note:
+        print(note, file=sys.stderr)
+    return code
+
+
+def _run_window(plan: Mapping[str, object], repo: Path, window: str, session: int) -> int:
+    """One session, holding the evidence directory from before its gate to its end."""
+    try:
+        with claim_evidence(repo / EVIDENCE_DIR):
+            return _run_claimed(plan, repo, window, session)
+    except EvidenceClaimed as exc:
+        print(f"claude-bakeoff run: REFUSED: {exc}", file=sys.stderr)
+        return 1
+
+
+def _run_claimed(plan: Mapping[str, object], repo: Path, window: str,
+                 session: int) -> int:  # pragma: no cover - past its gate, an owner window
     import shutil
 
     from . import panel_invoker, seat_credentials, seat_egress_proxy, seat_jail
 
     root = private_root(window)
+
+    def refused(problems: Sequence[str]) -> int:
+        print("claude-bakeoff run: REFUSED: " + "; ".join(problems), file=sys.stderr)
+        return 1
+
+    gate = session_problems(session, repo / EVIDENCE_DIR, repo=repo)
+    if gate:  # before any private file is read
+        return refused(gate)
+    gate = private_input_problems(root)  # every private input, checked without blocking
+    if gate:  # before the ledger is loaded
+        return refused(gate)
+    ledger = MeterLedger(root)  # reads only; nothing is created before the gate passes
+    gate = [ledger.problem] if ledger.problem else ledger.session_problems(
+        session, load_records(repo / EVIDENCE_DIR)[0])
+    if not gate:
+        gate = identity_problems(root, plan, repo, session)
+    if not gate:
+        try:
+            private_stopped_arms(root)
+        except ValueError as exc:
+            gate = [str(exc)]
+    if gate:  # before any credential, CA, private directory or reading
+        return refused(gate)
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(root, 0o700)
     ca_dir = root / "twin-ca"
@@ -1648,9 +2429,13 @@ def _run_window(plan: Mapping[str, object], repo: Path, window: str) -> int:  # 
         print(f"claude-bakeoff run: REFUSED: {exc}", file=sys.stderr)
         return 1
 
+    files = ControlFiles(root)
+
+    def on_brief(_block: int) -> None:
+        files.since = time.time()  # taken before the brief is printed
+
     def control(block: int, n: int) -> bytes:
-        path = input(f"control block {block} run {n}: path of the child's output file: ").strip()
-        return Path(path).read_bytes()
+        return files.accept(block, n)
 
     def twin(block: int, arm: str) -> Mapping[str, object]:
         return run_capture_twin(arm, plan, root=root, repo=repo, token=credential.token,
@@ -1662,21 +2447,25 @@ def _run_window(plan: Mapping[str, object], repo: Path, window: str) -> int:  # 
                           observations=root / "observations.jsonl",
                           expected=replace(expected, arm=arm), timeout_s=timeout)
 
-    window_run = Window(plan=plan, out_dir=repo / EVIDENCE_DIR, ledger=MeterLedger(root),
+    window_run = Window(plan=plan, out_dir=repo / EVIDENCE_DIR, ledger=ledger,
                         token=credential.token, repo=repo, native=native, control=control,
-                        twin=twin, cli_version=cli_version)
+                        twin=twin, cli_version=cli_version, session=session, claimed=True,
+                        on_brief=on_brief)
+    written: list[Path] | None = None
+    refusal: str | None = None
+    note: str | None = None
     try:
-        written = window_run.run()
-    except ValueError as exc:
-        print(f"claude-bakeoff run: REFUSED: {exc}", file=sys.stderr)
-        return 1
+        try:
+            written = window_run.run()
+        except ValueError as exc:
+            refusal = str(exc)
     finally:
         if ca_created:
             shutil.rmtree(ca_dir, ignore_errors=True)  # this window's CA ends with it
-        if dropped:
-            write_private(root / "dropped-hosts.txt", "\n".join(sorted(set(dropped))).encode())
-    print(f"claude-bakeoff run: wrote {len(written)} record(s); review them before the records PR")
-    return 0
+        note = keep_dropped_hosts(root, dropped, session=session, evidence=repo / EVIDENCE_DIR)
+        if note and written is None and refusal is None:  # another exception is propagating
+            print(note, file=sys.stderr)
+    return session_outcome(session, refusal=refusal, written=written, note=note)
 
 
 if __name__ == "__main__":

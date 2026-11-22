@@ -58,7 +58,7 @@ def _window_records(contexts=_W1_CONTEXTS):
             "board_outcome": "terminated", "admission": "admitted", "canonical_gemini": True,
             "staged_read": True, "gemini_route": "jailed",
             "account_isolation": True if host == "team" else None,
-            "co_seats": ["codex", "grok"],
+            "co_seats": ["claude", "codex", "grok"],
             "rows": [r["id"] for r in w.candidates(w.readiness_rows(), host)],
             "observed_at": w._now().isoformat(),
             **{key: "c" * 64 for key in w.DIGEST_FIELDS}}
@@ -82,10 +82,15 @@ def _window_records(contexts=_W1_CONTEXTS):
             "bracket": {}, "issuer": {}, "unavailable_reasons": {}}
         identity = w.digest(observation)
         pa.write_private_record("window-observation-" + identity + ".json", observation)
-        read = {"schema": "seat_window_read.v1", "tree_digest": ("defab"[index] * 64),
-            "access_observed": True, "tool_observed": True}
+        # The board leg read the reference stage the containment binding names ("9" * 64).
+        read = {"schema": "seat_window_read.v1", "tree_digest": "9" * 64,
+            "access_observed": True, "tool_observed": True,
+            "input_sha256": record["board_input_digest"]}
         record["tool_receipt_digest"] = w.digest(read)
-        pa.write_private_record("window-read-" + w.digest(read) + ".json", read)
+        try:
+            pa.write_private_record("window-read-" + w.digest(read) + ".json", read)
+        except FileExistsError:  # content-addressed: another context retained the same values
+            pass
         egress_source = {"schema": "seat_window_egress.v1", "context_id": context_id,
             "measured_decisions": ["allow", "deny"], "board_decisions": ["allow"],
             "direct_without_proxy": "refused", "board_sha256": record["board_digest"],
@@ -319,11 +324,100 @@ def test_seats_firstseat_w1_receipt_cli(tmp_path, capsys):
 
 def test_seats_firstseat_w1_receipt_matrix_reducer_leaves_unobserved_rows_candidate():
     from phase_loop_runtime import seat_window as w
-    rows = w.reduce_readiness(_window_records())
+    records = _window_records()
+    observed = {row["id"] for row in records[0]["row_observations"]
+                if row["outcome"] == "observed"}
+    # Every co-seat left an exec record on the board, so each is "observed" ...
+    assert {"vendor:claude", "vendor:codex", "vendor:grok"} <= observed
+    rows = w.reduce_readiness(records)
+    # ... yet only the window vendor's row qualifies, on that vendor's evidence.
     assert {row["vendor"] for row in rows if row["kind"] == "vendor"
-            and row["status"] == "done-local"} == {"claude", "gemini", "codex", "grok"}
-    assert next(row for row in rows if row["id"] == "vendor:pi")["status"] == "candidate"
+            and row["status"] == "done-local"} == {"gemini"}
+    for vendor in ("claude", "codex", "grok", "pi"):
+        row = next(row for row in rows if row["id"] == f"vendor:{vendor}")
+        assert row["status"] == "candidate"
+        assert row["qualification_record"] is None and row["live_evidence_digest"] is None
+        assert row["profile_digest"] is None and row["allowlist_digest"] is None
+    gemini = next(row for row in rows if row["id"] == "vendor:gemini")
+    assert gemini["profile_digest"] == records[0]["profile_digest"]
     assert all(row["status"] == "candidate" for row in rows if row["kind"] == "president")
+
+
+@pytest.mark.parametrize("co_seats", [["codex", "grok"], ["claude", "codex"],
+                                      ["claude", "codex", "grok", "gemini"],
+                                      ["claude", "claude", "codex", "grok"]])
+def test_seats_firstseat_w1_receipt_co_seats_are_every_other_plan_seat(co_seats):
+    from phase_loop_runtime import seat_window as w
+    from phase_loop_runtime.advisor_board.composition import compose_review_board_report
+    composed = compose_review_board_report(is_available=lambda v: True, auth_ok=lambda v: True)
+    assert composed.policy_outcome("plan").status == "admitted"
+    plan_co_seats = sorted(seat.harness for seat in composed.board.seats
+                           if seat.harness != "gemini")
+    records = _window_records()
+    assert sorted(records[0]["co_seats"]) == plan_co_seats
+    assert w.verify_records(records)["passed"]
+    records[0]["co_seats"] = co_seats
+    records[0].pop("record_digest")
+    records[0]["record_digest"] = w.digest(records[0])
+    assert not w.verify_records(records)["passed"]
+
+
+def _rebind_read_receipt(record, read):
+    """Retain ``read`` as the record's staged-read source and rebind every digest naming it."""
+    from phase_loop_runtime import seat_window as w
+    from phase_loop_runtime import president_adapter as pa
+    identity = w.digest(read)
+    try:
+        pa.write_private_record("window-read-" + identity + ".json", read)
+    except FileExistsError:  # content-addressed: the same values are already retained
+        pass
+    record["tool_receipt_digest"] = identity
+    egress = {"schema": "seat_window_egress.v1", "context_id": record["context_id"],
+        "measured_decisions": ["allow", "deny"], "board_decisions": ["allow"],
+        "direct_without_proxy": "refused", "board_sha256": record["board_digest"],
+        "board_input_sha256": record["board_input_digest"],
+        "delivered_turn_sha256": record["delivered_turn_digest"],
+        "exec_record_sha256": record["exec_record_digest"],
+        "tool_receipt_sha256": identity}
+    egress_identity = w.digest(egress)
+    try:
+        pa.write_private_record("window-egress-" + egress_identity + ".json", egress)
+    except FileExistsError:  # content-addressed: the same values are already retained
+        pass
+    record["egress"] = w.measurement(record["egress"]["checks"],
+                                     observation_digest=egress_identity)
+    record.pop("record_digest")
+    record["record_digest"] = w.digest(record)
+
+
+@pytest.mark.parametrize("change", ["valid", "missing_input", "other_input", "extra_field",
+                                    "no_tree", "not_accessed", "other_tree"])
+def test_seats_firstseat_w1_receipt_read_receipt_binds_the_board_input(change):
+    """Through public verification: a receipt rehashed with every digest that names it still
+    fails unless it names the board input and the staged tree the containment binding names."""
+    from phase_loop_runtime import seat_window as w
+    records = _window_records()
+    assert w.verify_records(records)["passed"]
+    assert records[0]["containment_binding"]["stage_manifest_sha256"] == "9" * 64
+    read = {"schema": "seat_window_read.v1", "tree_digest": "9" * 64,
+            "access_observed": True, "tool_observed": True,
+            "input_sha256": records[0]["board_input_digest"]}
+    if change == "valid":
+        pass
+    elif change == "missing_input":
+        del read["input_sha256"]
+    elif change == "other_input":
+        read["input_sha256"] = "1" * 64
+    elif change == "extra_field":
+        read["detail"] = "x"
+    elif change == "no_tree":
+        read["tree_digest"] = None
+    elif change == "other_tree":
+        read["tree_digest"] = "3" * 64
+    else:
+        read["access_observed"] = False
+    _rebind_read_receipt(records[0], read)
+    assert w.verify_records(records)["passed"] is (change == "valid")
 
 
 def test_seats_firstseat_w1_receipt_failed_export(tmp_path):
@@ -476,12 +570,13 @@ def test_seats_firstseat_w1_receipt_no_reducer_path_emits_done_team(tmp_path, co
 def test_seats_firstseat_w1_receipt_team_contexts_never_set_a_row_status():
     from phase_loop_runtime import seat_window as w
     records = _window_records(_DONE_TEAM_CONTEXTS)
-    gap = next(r for r in records[0]["row_observations"] if r["id"] == "vendor:claude")
+    gap = next(r for r in records[0]["row_observations"] if r["id"] == "vendor:gemini")
     gap.update(outcome="unavailable", exec_record_digest=None)
     _reseal(records[0])
     assert w.verify_records(records)["passed"]
     rows = {row["id"]: row for row in w.reduce_readiness(records)}
-    assert rows["vendor:claude"]["status"] == "done-local"
+    assert rows["vendor:gemini"]["status"] == "done-local"
+    assert rows["vendor:claude"]["status"] == "candidate"
     designated = records[-1]
     assert rows["vendor:gemini"]["qualification_record"] == w.digest([designated["record_digest"]])
     assert rows["vendor:gemini"]["live_evidence_digest"] == w.digest(

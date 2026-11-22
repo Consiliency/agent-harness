@@ -197,9 +197,234 @@ def preflight(*, is_available=None, auth_ok=None):
     return composed.policy_outcome("plan")
 
 
-def owner_w1_approved() -> bool:
-    """The live W1 gate. Approval requires an explicit reviewed source change."""
-    return False
+#: The live W1 owner grant (owner decision 2026-11-21: agents run the windows once the owner
+#: approves one packet). The reviewed change that sets ``OWNER_W1_GRANT_SHA256`` and
+#: ``OWNER_W1_PACKET_SHA256`` is the approval. Setting the constants proves nothing by itself:
+#: the review of that change must check the owner's approval of the named packet. The grant
+#: digest names the first line of one private grant file, minted on the designated host by
+#: :func:`mint_w1_grant`. That line binds the host, the start window, the vendor, the standard
+#: context, exactly one attempt, the packet digest and a nonce. ``None`` keeps live W1 closed.
+OWNER_W1_GRANT_SHA256: str | None = None
+OWNER_W1_PACKET_SHA256: str | None = None
+#: No live W1 starts at or after this instant (UTC), whatever the grant says. It is its own
+#: literal, never derived from a named exception's expiry, so renewing an exception never
+#: reopens W1.
+OWNER_W1_APPROVED_UNTIL = "2026-12-04T00:00:00+00:00"
+#: The window vendor a grant can admit, and the only context `done-local` reads.
+OWNER_W1_VENDOR = "gemini"
+OWNER_W1_HOST_CLASS = "standard"
+#: A start must leave the run's outer bound (7200 s), its kill grace (120 s) and cleanup,
+#: collection, owner review, verification and export (3480 s) before the earlier of the
+#: grant's end and the cutoff.
+W1_COMPLETION_MARGIN_S = 10800
+W1_GRANT_NAME = "w1-grant.jsonl"
+W1_GRANT_SCHEMA = "seat_window_w1_grant.v1"
+W1_ATTEMPT_SCHEMA = "seat_window_w1_attempt.v1"
+W1_GRANT_FIELDS = ("schema", "host_digest", "not_before", "not_after", "vendor",
+                   "host_class", "max_attempts", "packet_sha256", "nonce")
+_W1_ATTEMPT_FIELDS = ("schema", "nonce", "attempt", "claimed_at", "previous_sha256")
+_NONCE = re.compile(r"[0-9a-f]{32}\Z")
+_W1_GRANT_LIMIT = 8192
+
+
+def _w1_grant_dir() -> Path:
+    """The grant's fixed admission directory, from the account's passwd home, never from
+    ``XDG_STATE_HOME`` or ``HOME``, so moving the state root cannot present a second copy."""
+    import pwd
+    return Path(pwd.getpwuid(os.getuid()).pw_dir) / ".local" / "state" / "agent-harness" / \
+        "w1-admission"
+
+
+def _private_dir_fd(path: Path, *, create: bool) -> int:
+    directory = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for component in path.parts[1:]:
+            if create:
+                try:
+                    os.mkdir(component, 0o700, dir_fd=directory)
+                except FileExistsError:
+                    pass
+            child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                            | os.O_CLOEXEC, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        info = os.fstat(directory)
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            raise ValueError("w1 admission directory unavailable")
+        return directory
+    except BaseException:
+        os.close(directory)
+        raise
+
+
+def mint_w1_grant(*, not_before: str, not_after: str, packet_sha256: str) -> str:
+    """Write this host's one W1 grant (never overwriting one) and return the digest the
+    approval change pins. Runs on the designated host, after the owner approves the packet."""
+    line = (json.dumps({"schema": W1_GRANT_SCHEMA, "host_digest": _host_digest(),
+                        "not_before": not_before, "not_after": not_after,
+                        "vendor": OWNER_W1_VENDOR, "host_class": OWNER_W1_HOST_CLASS,
+                        "max_attempts": 1, "packet_sha256": packet_sha256,
+                        "nonce": secrets.token_hex(16)},
+                       sort_keys=True, separators=(",", ":")) + "\n").encode()
+    directory = _private_dir_fd(_w1_grant_dir(), create=True)
+    try:
+        fd = os.open(W1_GRANT_NAME, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                     | os.O_CLOEXEC, 0o600, dir_fd=directory)
+        try:
+            os.write(fd, line)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    return hashlib.sha256(line).hexdigest()
+
+
+def _w1_journal(raw: bytes) -> tuple[dict, list[dict]] | None:
+    """Parse grant bytes: the pinned grant line, then a hash-chained attempt journal."""
+    lines = raw.split(b"\n")
+    if len(raw) > _W1_GRANT_LIMIT or lines[-1] != b"" or len(lines) < 2:
+        return None
+    if hashlib.sha256(lines[0] + b"\n").hexdigest() != OWNER_W1_GRANT_SHA256:
+        return None
+    grant = json.loads(lines[0])
+    if type(grant) is not dict or set(grant) != set(W1_GRANT_FIELDS):
+        return None
+    attempts, offset = [], len(lines[0]) + 1
+    for number, line in enumerate(lines[1:-1], start=1):
+        entry = json.loads(line)
+        if (type(entry) is not dict or set(entry) != set(_W1_ATTEMPT_FIELDS)
+                or entry["schema"] != W1_ATTEMPT_SCHEMA or entry["nonce"] != grant["nonce"]
+                or entry["attempt"] != number
+                or entry["previous_sha256"] != hashlib.sha256(raw[:offset]).hexdigest()):
+            return None
+        attempts.append(entry)
+        offset += len(line) + 1
+    return grant, attempts
+
+
+def _w1_witnesses(nonce: str) -> int | None:
+    """Count the independent per-attempt witnesses beside the grant, in the same fixed
+    admission directory (never under ``XDG_STATE_HOME``), or ``None`` when they are not a
+    contiguous run from 1."""
+    root = _w1_grant_dir()
+    try:
+        numbers = sorted(int(match.group(1)) for path in root.glob(f"w1-attempt-{nonce}-*.json")
+                         if (match := re.fullmatch(rf"w1-attempt-{nonce}-([1-9])\.json",
+                                                   path.name)))
+    except OSError:
+        return None
+    return len(numbers) if numbers == list(range(1, len(numbers) + 1)) else None
+
+
+def _w1_grant_usable(grant: dict, attempts: list[dict], now: dt.datetime) -> bool:
+    try:
+        not_before = dt.datetime.fromisoformat(grant["not_before"])
+        not_after = dt.datetime.fromisoformat(grant["not_after"])
+        cutoff = dt.datetime.fromisoformat(OWNER_W1_APPROVED_UNTIL)
+    except (TypeError, ValueError):
+        return False
+    if (grant["schema"] != W1_GRANT_SCHEMA or grant["vendor"] != OWNER_W1_VENDOR
+            or grant["host_class"] != OWNER_W1_HOST_CLASS
+            or grant["host_digest"] != _host_digest()
+            or type(grant["max_attempts"]) is not int or grant["max_attempts"] != 1
+            or not _is_digest(OWNER_W1_PACKET_SHA256)
+            or grant["packet_sha256"] != OWNER_W1_PACKET_SHA256
+            or type(grant["nonce"]) is not str or _NONCE.fullmatch(grant["nonce"]) is None
+            or not_before.tzinfo is None or not_after.tzinfo is None):
+        return False
+    # Prior attempt evidence must be complete: the journal and the independent witnesses
+    # agree, so removing either one (or restoring the grant's original bytes) refuses.
+    if _w1_witnesses(grant["nonce"]) != len(attempts) or len(attempts) >= grant["max_attempts"]:
+        return False
+    latest_start = min(not_after, cutoff) - dt.timedelta(seconds=W1_COMPLETION_MARGIN_S)
+    return not_before <= now <= latest_start
+
+
+def owner_w1_grant(now: dt.datetime | None = None) -> dict | None:
+    """The approved grant, when it can admit an attempt now on this host, else ``None``.
+    Reads only."""
+    if not _is_digest(OWNER_W1_GRANT_SHA256):
+        return None
+    now = _now() if now is None else now
+    try:
+        directory = _private_dir_fd(_w1_grant_dir(), create=False)
+        try:
+            fd = os.open(W1_GRANT_NAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                         dir_fd=directory)
+        finally:
+            os.close(directory)
+        try:
+            info = os.fstat(fd)
+            if (info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600
+                    or not stat.S_ISREG(info.st_mode)):
+                return None
+            parsed = _w1_journal(os.read(fd, _W1_GRANT_LIMIT + 1))
+        finally:
+            os.close(fd)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+    if parsed is None or not _w1_grant_usable(*parsed, now):
+        return None
+    return parsed[0]
+
+
+def owner_w1_approved(now: dt.datetime | None = None) -> bool:
+    """The live W1 gate: admit the grant's ONE attempt.
+
+    Under an exclusive lock on the grant file, the grant and its journal are re-read and
+    checked (:func:`_w1_grant_usable`), a hash-chained attempt line is appended and fsynced,
+    and an independent witness is written beside the grant, all before anything else runs.
+    The attempt counts whatever it later returns, a preflight refusal included, and is never
+    released. Removing the witness or the journal line refuses further attempts; no
+    environment variable moves either. A trusted operator who restores both from a copy is
+    outside this guard; the runbook's ledger and the owner's quiet slot cover that case.
+    """
+    import fcntl
+    if not _is_digest(OWNER_W1_GRANT_SHA256):
+        return False
+    now = _now() if now is None else now
+    try:
+        directory = _private_dir_fd(_w1_grant_dir(), create=False)
+        try:
+            fd = os.open(W1_GRANT_NAME, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC,
+                         dir_fd=directory)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                info = os.fstat(fd)
+                if (info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600
+                        or not stat.S_ISREG(info.st_mode)):
+                    return False
+                raw = os.pread(fd, _W1_GRANT_LIMIT + 1, 0)
+                parsed = _w1_journal(raw)
+                if parsed is None or not _w1_grant_usable(*parsed, now):
+                    return False
+                grant, attempts = parsed
+                attempt = len(attempts) + 1
+                entry = {"schema": W1_ATTEMPT_SCHEMA, "nonce": grant["nonce"],
+                         "attempt": attempt, "claimed_at": now.isoformat(),
+                         "previous_sha256": hashlib.sha256(raw).hexdigest()}
+                os.pwrite(fd, (json.dumps(entry, sort_keys=True, separators=(",", ":"))
+                               + "\n").encode(), len(raw))
+                os.fsync(fd)
+                os.fsync(directory)
+                witness = os.open(f"w1-attempt-{grant['nonce']}-{attempt}.json",
+                                  os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                                  | os.O_CLOEXEC, 0o600, dir_fd=directory)
+                try:
+                    os.write(witness, (json.dumps(entry, sort_keys=True) + "\n").encode())
+                    os.fsync(witness)
+                finally:
+                    os.close(witness)
+                os.fsync(directory)
+                return True
+            finally:
+                os.close(fd)
+        finally:
+            os.close(directory)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
 
 
 def _is_digest(value):
@@ -339,6 +564,24 @@ def _private_observation_valid(observation):
              or _is_digest(observation["delivered_copy_sha256"])))
 
 
+READ_RECEIPT_FIELDS = ("schema", "access_observed", "tool_observed", "input_sha256",
+                       "tree_digest")
+
+
+def _read_receipt_valid(read, record) -> bool:
+    """The board's retained staged-read receipt: a tool read observed in the staged tree the
+    containment reduction bound (the reducer requires the board leg's launch binding to name
+    the reference stage), for exactly the board input the record binds."""
+    binding = record.get("containment_binding")
+    return (type(read) is dict and set(read) == set(READ_RECEIPT_FIELDS)
+            and read["schema"] == "seat_window_read.v1"
+            and read["access_observed"] is True and read["tool_observed"] is True
+            and _is_digest(read["tree_digest"])
+            and type(binding) is dict
+            and read["tree_digest"] == binding.get("stage_manifest_sha256")
+            and read["input_sha256"] == record["board_input_digest"])
+
+
 def _reconcile_sources(record, *, root=None):
     try:
         data = _window_data_for_record(record)
@@ -362,9 +605,7 @@ def _reconcile_sources(record, *, root=None):
             or execution["exit_code"] != 0 or execution.get("outcome") != "leg_execution_completed"
             or execution.get("model_turn") is not True or execution.get("verdict") is not True):
             return False
-        if (read.get("schema") != "seat_window_read.v1"
-            or read.get("access_observed") is not True or read.get("tool_observed") is not True
-            or not _is_digest(read.get("tree_digest"))):
+        if not _read_receipt_valid(read, record):
             return False
         if (not _private_observation_valid(observation)
             or not _containment_outcomes_valid(record["containment_outcomes"], data)
@@ -483,7 +724,14 @@ def reduce_readiness(records, *, now=None, source_root=None) -> list[dict]:
     # A team context never sets a row status, and no path here emits `done-team`.
     records = _standard_records(records)
     evidence = digest(sorted(record["record_digest"] for record in records))
+    # A window qualifies only its own vendor's row: the record's containment, egress,
+    # profile and allow-list evidence are that vendor's. A co-seat's exec record shows
+    # only that its leg ran on the board (degraded or not), never that its row qualified.
+    window_rows = {f"vendor:{data.vendor}" for record in records
+                   if (data := _window_data_for_record(record)) is not None}
     for row in rows:
+        if row["id"] not in window_rows:
+            continue
         observed = []
         for record in records:
             match = next((item for item in record["row_observations"] if item["id"] == row["id"]), None)
@@ -739,6 +987,13 @@ def qualify(*, window, monitoring_policy, repo=".", host_class="standard", atten
     from . import president_adapter
     if window != "W1" or monitoring_policy != "bounded":
         raise ValueError("window policy unavailable")
+    from .seat_profiles import default_window_data
+    default = default_window_data()
+    # The grant admits one vendor in the one standard context, so a team context or another
+    # window vendor never claims an attempt slot or reaches preflight.
+    if host_class != OWNER_W1_HOST_CLASS or (
+            vendor or (None if default is None else default.vendor)) != OWNER_W1_VENDOR:
+        return {"status": "candidate", "code": "window_owner_approval_required"}
     if not owner_w1_approved():
         return {"status": "candidate", "code": "window_owner_approval_required"}
     outcome = preflight()
@@ -752,6 +1007,8 @@ def qualify(*, window, monitoring_policy, repo=".", host_class="standard", atten
         from .seat_profiles import default_window_data
         default = default_window_data()
         vendor = None if default is None else default.vendor
+    if vendor != OWNER_W1_VENDOR:
+        return {"status": "candidate", "code": "window_owner_approval_required"}
     profiles = [profile for leg in registered_legs()
                 if (profile := profile_for(leg)) is not None and profile.vendor == vendor]
     profile = profiles[0] if len(profiles) == 1 else None
@@ -858,7 +1115,11 @@ def cli_main(args):
                 value = readiness_rows()
             print(json.dumps(value, sort_keys=True))
             return 0
-        if args.action == "qualify":
+        if args.action == "qualify" and (args.model is not None or args.record
+                                         or args.peer_record is not None):
+            # The owner grant approves the default window model and no peer context.
+            result = {"status": "candidate", "code": "window_owner_approval_required"}
+        elif args.action == "qualify":
             result = qualify(window=args.window, monitoring_policy=args.monitoring_policy,
                 repo=args.repo or ".", host_class=args.host_class, attended=args.attended,
                 peer_record=args.peer_record, model=args.model)

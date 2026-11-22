@@ -18,6 +18,57 @@ publication. The qualification host installs the released
 `phase-loop-runtime[agy-watch]`, since the job signs its App token with the extra's
 `cryptography`.
 
+## 0.7.39 release preparation
+
+Expected, unpublished artifacts: `phase_loop_runtime-0.7.39-py3-none-any.whl`
+and `phase_loop_runtime-0.7.39.tar.gz`.
+
+Candidate only: no tag, publication or installation is claimed. The candidate is
+based on merged main after the published 0.7.38 release. It carries the grok
+review seat's frozen tool-surface basis, vendor-only `grok-review` egress, the
+owner-gated `seat-window measure-tools --vendor grok` and the board leg's use of
+the frozen basis, with the Node 22 egress proxy fix (agent-harness#2033), and the
+read-only `seat-window status --vendor grok` query with an empty, unattested grok
+release catalog and a new optional `grok-catalog` extra (agent-harness#2047,
+agent-harness#2050). No grok tool-surface record ships, so every grok route stays
+`grok_tool_surface_unverified`. Gemini 4 NEON is the shipped Gemini planning,
+review and board default (agent-harness#2038). The jailed Gemini seat's tooled
+stream parser now checks each step's tool name (agent-harness#2045). agy
+first-use provenance can match any listed stable release (agent-harness#2039), a
+Gemini seat keeps the agy image its board preflight last admitted for the hold
+(agent-harness#2044), and the agy upstream watch becomes the rolling catalog job,
+which ships inert (agent-harness#2046). The placement wire decoders refuse input
+nested more than 64 deep, with a selectable limit (agent-harness#2018). A W1 window
+record can now verify, and the Gemini window expects every plan-tier co-seat
+(agent-harness#2055). The W0 bake-off kit runs in two sessions (agent-harness#2057).
+Live W1 has an owner-grant gate with one replay-resistant attempt, which ships closed
+(agent-harness#2062).
+Plan-only changes also landed (agent-harness#2048, agent-harness#2052,
+agent-harness#2059, agent-harness#2060). The 0.7.39
+changelog section lists the scope. The published 0.7.38 package remains
+unchanged. The package still requires Python 3.12 or newer.
+
+Live routes stay disabled. This candidate does not lift sandbox activation holds
+or grant installed-provider qualification. `seat_window.runtime_digest()` moves
+(the grok lanes, the status query and the version bump itself), so seat-window
+qualification records keyed on the 0.7.38 value, or on an unreleased main
+checkout, no longer match and affected windows need one requalification after
+installation. The seat jail qualification's live `proxy_sha256` binding
+moves with `proxy.mjs`. The Claude SDK proof inputs move too, but the SDK
+transport is not admitted, so no receipt is needed now. The agy seat QCI, store
+keys, the shipped agy catalog and its records, and the jail profile digests are
+unchanged from 0.7.38, so no agy image needs requalification. The agy validator
+identity stays `agy_validator_v1` with an unchanged verdict vector; only its
+source-closure pin moves (agent-harness#2038, agent-harness#2045). The strict
+hermetic agy release gate still runs its own conformance suite and verifies the
+vendor archive at publication.
+
+Before publication, required candidate checks, standalone-wheel Gate A and the
+strict hermetic agy release gate must pass, and publication authority must be
+granted. Recording these gates does not authorize dispatch. After publication,
+verify registry artifacts, GitHub Release assets and the managed installation
+separately.
+
 ## 0.7.38 release preparation
 
 Expected, unpublished artifacts: `phase_loop_runtime-0.7.38-py3-none-any.whl`

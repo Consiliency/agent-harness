@@ -14520,6 +14520,24 @@ def _window_json_digest(value: object) -> str:
     return sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def _window_receipt_matches(path: Path, expected: Mapping[str, object]) -> bool:
+    """Whether a retained private receipt (regular, 0600, ours, bounded) holds ``expected``."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError:
+        return False
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size > 16384):
+            return False
+        return json.loads(os.read(fd, 16385)) == dict(expected)
+    except (OSError, ValueError):
+        return False
+    finally:
+        os.close(fd)
+
+
 @dataclass
 class _WindowJailedRun:
     """Lane D's I-9 implementation over one already-built seat and namespace."""
@@ -15386,22 +15404,44 @@ def window_board_launch(spec: WindowBoardSpec) -> WindowBoardResult:
     gemini_legs = [leg for leg in panel.legs if leg.leg == "gemini"]
     gemini = gemini_legs[0] if len(gemini_legs) == 1 else None
     canonical = bool(gemini is not None and gemini.usable)
+    # The staged tree the board's Gemini leg read is the one its launch binding names.
+    tree_digest = getattr(getattr(run, "binding", None), "stage_manifest_sha256", None)
+    if not (isinstance(tree_digest, str) and re.fullmatch(r"[0-9a-f]{64}", tree_digest)):
+        tree_digest = None
     staged_read = bool(
         run is not None and run.watch is not None
         and getattr(run.watch, "read_marker_opened", False)
         and run.tool_steps is not None and run.tool_steps > 0
+        and tree_digest is not None
     )
     read_receipt = {
         "schema": "seat_window_read.v1", "access_observed": staged_read,
         "tool_observed": bool(run is not None and run.tool_steps and run.tool_steps > 0),
-        "input_sha256": input_sha256,
+        "input_sha256": input_sha256, "tree_digest": tree_digest,
     }
+    tool_receipt_sha256 = None
+    if staged_read:
+        # The retained source the offline verifier reconciles (``window-read-<digest>``).
+        from .president_adapter import private_record_root, write_private_record
+        tool_receipt_sha256 = _window_json_digest(read_receipt)
+        name = f"window-read-{tool_receipt_sha256}.json"
+        try:
+            write_private_record(name, read_receipt)
+        except FileExistsError:
+            # Content-addressed: an existing receipt is reused only when it holds exactly
+            # these values; anything else at that name fails the staged read.
+            if not _window_receipt_matches(private_record_root() / name, read_receipt):
+                tool_receipt_sha256 = None
+                staged_read = False
+        except (OSError, ValueError, TypeError):
+            tool_receipt_sha256 = None
+            staged_read = False
     return WindowBoardResult(
         composition="admitted", board_outcome=integrated_board_outcome(panel),
         canonical_gemini=canonical, staged_read=staged_read,
         board_sha256=_window_board_digest(board),
         exec_record_sha256=records.get("gemini"),
-        tool_receipt_sha256=_window_json_digest(read_receipt) if staged_read else None,
+        tool_receipt_sha256=tool_receipt_sha256,
         delivered_turn_sha256=(
             sha256(gemini.text.encode("utf-8", errors="strict")).hexdigest()
             if canonical and gemini is not None else None

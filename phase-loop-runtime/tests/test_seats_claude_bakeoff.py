@@ -274,8 +274,10 @@ def test_a_shared_meter_ref_fails(repo, tmp_path):
 
 
 def test_an_sdk_record_whose_head_lacks_4b_fails(repo, tmp_path):
-    assert validate(write(tmp_path / "w0", native(repo, block=3, arm="sdk",
-                                                  activation_section_sha256="f" * 64)), repo) == 1
+    sdk = native(repo, block=3, arm="sdk", activation_section_sha256="f" * 64)
+    directory = write(tmp_path / "w0", *_session1(repo), sdk)
+    assert bk.validate_directory(directory, repo=repo, tui_digest=TUI) == [
+        "w0-b3-r1: its W0 head lacks the section its activation names"]
 
 
 def test_an_sdk_record_whose_head_has_4b_passes_that_check(repo, tmp_path):
@@ -283,7 +285,8 @@ def test_an_sdk_record_whose_head_has_4b_passes_that_check(repo, tmp_path):
     _git(repo, "-c", "commit.gpgsign=false", "commit", "-qam", "4b")
     _publish(repo)
     record = native(repo, block=3, arm="sdk")
-    assert validate(write(tmp_path / "w0", record), repo, "--tui-digest", TUI) == 0
+    directory = write(tmp_path / "w0", *_session1(repo), record)
+    assert validate(directory, repo, "--tui-digest", TUI) == 0
 
 
 def test_a_native_record_off_the_tui_digest_fails(repo, tmp_path):
@@ -309,11 +312,35 @@ def test_the_control_may_mark_exactly_its_four_checks_not_applicable(repo):
     assert bk.validate_record(record) == []
 
 
+def _od3b(letter: str, digest: str, *, value: str = "`print`", sessions: str | None = "1") -> str:
+    lines = [f"\n## {letter}. OD-3b: the jailed Claude default\n",
+             f"**Jailed Claude default:** {value}\n", f"**W0 evidence digest:** `{digest}`\n"]
+    if sessions is not None:
+        lines.append(f"**W0 sessions:** {sessions}\n")
+    return "\n".join(lines)
+
+
+def _session1(repo: Path) -> list[dict]:
+    return ([native(repo, n=n) for n in (1, 2, 3)]
+            + [control(repo, block=2, n=n) for n in (1, 2, 3)])
+
+
+def _session2(repo: Path) -> list[dict]:
+    """Complete session-2 records, at a head carrying the OD-3a section the sdk records need."""
+    if SDK_4B not in (repo / ct.DECISION_RECORD).read_text():
+        (repo / ct.DECISION_RECORD).write_text(RECORD_4A + SDK_4B)
+        _git(repo, "-c", "commit.gpgsign=false", "commit", "-qam", "4b")
+        _publish(repo)
+    sdk = {"dependency_projection_digest": "e" * 64}
+    return ([native(repo, block=b, n=n, arm="sdk", **sdk) for b in (3, 4) for n in (1, 2, 3)]
+            + [control(repo, block=5, n=n) for n in (1, 2, 3)]
+            + [native(repo, block=6, n=n) for n in (1, 2, 3)])
+
+
 def test_an_od3b_section_must_cite_the_evidence_digest(repo, tmp_path):
-    directory = write(tmp_path / "w0", native(repo))
+    directory = write(tmp_path / "w0", *_session1(repo))
     digest = bk.evidence_digest(directory)
-    wrong = (RECORD_4A + "\n## 4c. OD-3b: the jailed Claude default\n\n"
-             "**Jailed Claude default:** `print`\n\n**W0 evidence digest:** `" + "0" * 64 + "`\n")
+    wrong = RECORD_4A + _od3b("4c", "0" * 64)
     right = wrong.replace("0" * 64, digest)
     assert bk.validate_directory(directory, repo=repo, record_text=wrong.encode(),
                                  tui_digest=TUI) != []
@@ -866,8 +893,8 @@ SEATS = ["grok:grok-4.7:high:adversarial", "claude:claude-opus-5-5:high:correctn
 
 
 def _plan(repo: Path, **overrides) -> dict:
-    plan = {"blocks": list(bk.EXECUTION_NOTES.blocks), "runs_per_block": 3, "meter_readings": 7,
-            "settle_s": 300, "timeout_s": 1800, "twins_per_native_block": 1, "sessions": 1,
+    plan = {"blocks": list(bk.EXECUTION_NOTES.blocks), "runs_per_block": 3, "meter_readings": 8,
+            "settle_s": 300, "timeout_s": 1800, "twins_per_native_block": 1, "sessions": 2,
             "w0_head": _head(repo), "artifact": "docs/bundle.md", "model": "claude-opus-5-5",
             "effort": "high", "board": {"seats": list(SEATS)}}
     plan.update(overrides)
@@ -876,8 +903,9 @@ def _plan(repo: Path, **overrides) -> dict:
 
 @pytest.mark.parametrize("change", [
     {"runs_per_block": 5}, {"blocks": ["print", "sdk", "t3-sdk-control"] * 2},
-    {"meter_readings": 19}, {"settle_s": 60}, {"timeout_s": 3600},
-    {"twins_per_native_block": 3}, {"sessions": 2}, {"unknown": 1}, {"w0_head": "main"},
+    {"meter_readings": 19}, {"meter_readings": 7}, {"settle_s": 60}, {"timeout_s": 3600},
+    {"twins_per_native_block": 3}, {"sessions": 1}, {"session_blocks": [[1, 2, 3, 4, 5, 6]]},
+    {"unknown": 1}, {"w0_head": "main"},
     {"landing_tier": "plan"}, {"artifact": "/tmp/untrusted-injection.md"},
     {"artifact": "../outside.md"}, {"artifact": "docs/../docs/bundle.md"},
 ])
@@ -946,12 +974,13 @@ class _Ledger(bk.MeterLedger):
         super().__init__(root=root, prompt=lambda _q: flat.pop(0), sleep=lambda _s: None)
 
 
-def _window(repo, tmp_path, *, native_outcomes, monkeypatch, admit_sdk=True, **kw):
+def _window(repo, tmp_path, *, native_outcomes, monkeypatch, admit_sdk=True, session=1, **kw):
     monkeypatch.setattr(bk, "head_on_main", lambda _r, _h: True)
     monkeypatch.setattr(bk, "checkout_problems", lambda _r, _h: [])
-    if admit_sdk:
+    if admit_sdk:  # and ready: its twin, G1 and a current GL-2 receipt stand in
         real = ct.is_admitted
         monkeypatch.setattr(ct, "is_admitted", lambda arm: arm == "sdk" or real(arm))
+        monkeypatch.setattr(bk, "sdk_readiness_problems", lambda _repo: [])
     outcomes = iter(native_outcomes)
     calls: list[tuple[str, int]] = []
 
@@ -964,9 +993,10 @@ def _window(repo, tmp_path, *, native_outcomes, monkeypatch, admit_sdk=True, **k
                            "model": "claude-opus-5-5", "canonical_output": "admitted",
                            "verdict": "AGREE", "cli_version": "2.1.318"}).encode()
 
-    (repo / ct.DECISION_RECORD).write_text(RECORD_4A + SDK_4B)
-    _git(repo, "-c", "commit.gpgsign=false", "commit", "-qam", "4b")
-    settings = {"compose": lambda: list(SEATS), "cli_version": "2.1.318", **kw}
+    if SDK_4B not in (repo / ct.DECISION_RECORD).read_text():
+        (repo / ct.DECISION_RECORD).write_text(RECORD_4A + SDK_4B)
+        _git(repo, "-c", "commit.gpgsign=false", "commit", "-qam", "4b")
+    settings = {"compose": lambda: list(SEATS), "cli_version": "2.1.318", "session": session, **kw}
     window = bk.Window(plan=_plan(repo), out_dir=tmp_path / "w0", ledger=_Ledger(tmp_path / "private"),
                        token=TOKEN, repo=repo, native=run_native, control=run_control,
                        twin=lambda block, arm: _set(), report=lambda _m: None, **settings)
@@ -981,33 +1011,61 @@ def _ok(**overrides):
                             **overrides})
 
 
-def test_the_kit_writes_eighteen_valid_records_over_six_blocks(repo, tmp_path, monkeypatch):
-    sdk = _ok(dependency_projection_digest="e" * 64)
-    window, calls = _window(repo, tmp_path, monkeypatch=monkeypatch,
-                            native_outcomes=[_ok()] * 3 + [sdk] * 6 + [_ok()] * 3)
+def _two_sessions(repo, tmp_path, monkeypatch, first, second):
+    window, calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=first)
     written = window.run()
-    assert len(written) == 18
-    assert [arm for arm, _t in calls] == ["print"] * 3 + ["sdk"] * 6 + ["print"] * 3
-    assert all(timeout == 1800 for _a, timeout in calls)
+    later, later_calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=second,
+                                 session=2)
+    return written, calls, later.run(), later_calls
+
+
+def test_the_kit_writes_eighteen_valid_records_over_two_sessions(repo, tmp_path, monkeypatch,
+                                                                 capsys):
+    sdk = _ok(dependency_projection_digest="e" * 64)
+    first, calls, second, later_calls = _two_sessions(
+        repo, tmp_path, monkeypatch, [_ok()] * 3, [sdk] * 6 + [_ok()] * 3)
+    assert sorted({json.loads(p.read_text())["block"] for p in first}) == [1, 2]
+    assert len(first) == 6 and len(second) == 12
+    assert [arm for arm, _t in calls] == ["print"] * 3
+    assert [arm for arm, _t in later_calls] == ["sdk"] * 6 + ["print"] * 3
+    assert all(timeout == 1800 for _a, timeout in calls + later_calls)
+    capsys.readouterr()
     assert validate(tmp_path / "w0", repo, "--tui-digest", TUI) == 0
+    assert "sessions 1 and 2" in capsys.readouterr().out
     readings = json.loads((tmp_path / "private" / "meter.json").read_text())
-    assert len(readings) == 7
+    assert len(readings) == 8 and None not in readings  # session 2 kept session 1's three
     assert (tmp_path / "private" / "meter.json").stat().st_mode & 0o777 == 0o600
-    for path in written:
+    for path in first + second:
         assert "10%" not in path.read_text()  # readings stay private; records carry a digest
+
+
+def test_session_one_alone_is_reported_as_interim(repo, tmp_path, monkeypatch, capsys):
+    window, _calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[_ok()] * 3)
+    assert len(window.run()) == 6
+    capsys.readouterr()
+    assert validate(tmp_path / "w0", repo, "--tui-digest", TUI) == 0
+    assert "session 1 of 2 only: an interim set, not the complete bake-off" in capsys.readouterr().out
+    assert bk.main(["digest", str(tmp_path / "w0")]) == 0
+    captured = capsys.readouterr()
+    assert re.fullmatch(r"[0-9a-f]{64}\n", captured.out)  # stdout stays the bare digest
+    assert "not the complete bake-off" in captured.err
 
 
 def test_a_security_outcome_stops_the_arm_and_publishes_only_withheld(repo, tmp_path, monkeypatch):
     leak = _ok(canonical_output="refused", code="claude_seat_token_in_output")
     sdk = _ok(dependency_projection_digest="e" * 64)
     window, calls = _window(repo, tmp_path, monkeypatch=monkeypatch,
-                            native_outcomes=[_ok(), leak] + [sdk] * 6)
+                            native_outcomes=[_ok(), leak])
     written = window.run()
+    private = (tmp_path / "private" / "security-outcomes.txt").read_text()
+    # The stop outlives session 1: session 2 reads it from the withheld record.
+    later, later_calls = _window(repo, tmp_path, monkeypatch=monkeypatch,
+                                 native_outcomes=[sdk] * 6, session=2)
+    written += later.run()
     print_records = [json.loads(p.read_text()) for p in written if "w0-b1-" in p.name or "w0-b6-" in p.name]
     assert [r["security_outcome"] for r in print_records] == ["none", "withheld_private"]
     assert all("claude_seat_token_in_output" not in json.dumps(r) for r in print_records)
-    assert [arm for arm, _t in calls].count("print") == 2  # block 6 never ran
-    private = (tmp_path / "private" / "security-outcomes.txt").read_text()
+    assert [arm for arm, _t in calls + later_calls].count("print") == 2  # block 6 never ran
     assert "claude_seat_token_in_output" in private
     assert validate(tmp_path / "w0", repo, "--tui-digest", TUI) == 0
 
@@ -1044,8 +1102,16 @@ def test_the_kit_refuses_before_any_run(repo, tmp_path, monkeypatch):
                                   "checkout", "artifact"])
 def test_every_arm_and_the_lineup_are_checked_before_the_first_meter_reading(
         repo, tmp_path, monkeypatch, miss):
+    session = 2 if miss in {"sdk-not-admitted", "no-4b"} else 1
+    if session == 2:  # session 2 needs session 1's records first
+        first, _calls = _window(repo, tmp_path, monkeypatch=monkeypatch,
+                                native_outcomes=[_ok()] * 3)
+        first.run()
+        monkeypatch.undo()
+    meter = tmp_path / "private" / "meter.json"
+    before = meter.read_bytes() if meter.exists() else None
     window, calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[],
-                            admit_sdk=miss != "sdk-not-admitted")
+                            admit_sdk=miss != "sdk-not-admitted", session=session)
     if miss == "no-4b":
         (repo / ct.DECISION_RECORD).write_text(RECORD_4A)
         _git(repo, "-c", "commit.gpgsign=false", "commit", "-qam", "no 4b")
@@ -1061,7 +1127,7 @@ def test_every_arm_and_the_lineup_are_checked_before_the_first_meter_reading(
     assert len(window.preflight()) == 1, miss  # the one miss under test, nothing else
     with pytest.raises(ValueError, match="refused before any run"):
         window.run()
-    assert calls == [] and not (tmp_path / "private" / "meter.json").exists()
+    assert calls == [] and (meter.read_bytes() if meter.exists() else None) == before
 
 
 @pytest.mark.parametrize(("changed_on", "message", "native_calls"), [
@@ -1086,20 +1152,929 @@ def test_a_checkout_change_during_a_native_block_stops_the_window(
 
 
 def test_billing_follows_the_meter_bracket(tmp_path):
-    answers = ["10%", "$0", "$0", "20%", "$0", "$0", "20%", "$5", "$0", "20%", "$5", "$9",
-               "20%", "$5", "$9"]
+    # Positions: 0 opens session 1, 1-2 close blocks 1-2, 3 opens session 2, 4-7 close 3-6.
+    answers = ["10%", "$0", "$0", "20%", "$0", "$0", "20%", "$5", "$0",
+               "30%", "$5", "$0",  # other use between the sessions moved subscription usage
+               "30%", "$5", "$0", "30%", "$5", "$9"]
     ledger = bk.MeterLedger(root=tmp_path / "p", prompt=lambda _q: answers.pop(0),
                             sleep=lambda _s: None)
-    for index in range(5):
-        ledger.read(index, settle_s=300)
-    assert [ledger.billing(block) for block in (1, 2, 3, 4)] == [
-        "subscription", "extra_usage", "api", "unknown"]
+    for position in range(6):
+        ledger.read(position, settle_s=300)
+    # Block 3 opens on session 2's reading, never on block 2's closing one.
+    assert [ledger.billing(block) for block in (1, 2, 3, 4, 5)] == [
+        "subscription", "extra_usage", "unknown", "api", "unknown"]
     assert ledger.digest(1) != ledger.digest(2)
     # The digest is salted with a private salt, so a public record cannot be checked
     # against guessed readings.
     bracket = json.dumps(ledger.readings[0:2], sort_keys=True).encode()
     assert ledger.digest(1) != hashlib.sha256(bracket).hexdigest()
     assert (tmp_path / "p" / "meter.salt").stat().st_mode & 0o777 == 0o600
+    # Session 2 keeps session 1's readings; a ledger from another run plan refuses.
+    assert bk.MeterLedger(root=tmp_path / "p").readings[:6] == ledger.readings[:6]
+    (tmp_path / "p" / "meter.json").write_text(json.dumps(ledger.readings[:7]))
+    assert bk.MeterLedger(root=tmp_path / "p").problem is not None
+
+
+@pytest.mark.parametrize(("name", "answer", "stored"), [
+    ("api_spend", "$0", "0.00"), ("api_spend", "0", "0.00"), ("api_spend", "$12.5", "12.50"),
+    ("api_spend", "none", "none"), ("api_spend", "", None), ("api_spend", "free", None),
+    ("api_spend", "12%", None), ("subscription_usage", "10%", "10.00"),
+    ("subscription_usage", "none", None), ("subscription_usage", "$3", None),
+    ("extra_usage_spend", "Unavailable", "unavailable"),
+])
+def test_a_meter_value_is_a_number_none_or_unavailable(name, answer, stored):
+    assert bk.normalize_reading(name, answer) == stored
+
+
+def _ledger(root, answers):
+    return bk.MeterLedger(root=root, prompt=lambda _q: answers.pop(0), sleep=lambda _s: None)
+
+
+@pytest.mark.parametrize(("closing", "billing"), [
+    (["20%", "$0", "", "$0"], "subscription"),            # a blank API value is asked again
+    (["20%", "$0", "", "", ""], "unknown"),               # never answered: unavailable
+    (["20%", "$0", "0.00"], "subscription"),              # another format of the same value
+    (["5%", "$0", "$0"], "unknown"),                      # a reading that went backwards
+    (["20%", "$0", "unavailable"], "unknown"),            # an unresolved API spend
+    (["20%", "none", "$0"], "unknown"),                   # a meter on one side only
+    (["10%", "$0", "$0"], "unknown"),                     # nothing moved
+    (["20%", "", "", "", "$1"], "unknown"),               # API rose, extra usage unresolved
+    (["20%", "$0", "$1"], "api"),                         # API rose, every meter resolved
+])
+def test_billing_never_comes_from_a_blank_or_unresolved_reading(tmp_path, closing, billing):
+    ledger = _ledger(tmp_path / "p", ["10%", "$0", "$0", *closing])
+    ledger.read(0, settle_s=0)
+    ledger.read(1, settle_s=300)
+    assert ledger.billing(1) == billing
+
+
+def test_readings_fill_their_positions_once_and_in_order(tmp_path):
+    ledger = _ledger(tmp_path / "p", ["10%", "$0", "$0"] * 3)
+    with pytest.raises(ValueError, match="out of order"):
+        ledger.read(1, settle_s=0)
+    ledger.read(0, settle_s=0)
+    with pytest.raises(ValueError, match="already taken"):
+        ledger.read(0, settle_s=0)
+    ledger.read(3, settle_s=0)  # a session opening needs no earlier slot
+    (tmp_path / "p" / "meter.json").write_text(json.dumps(
+        [{"subscription_usage": "10%", "extra_usage_spend": "$0", "api_spend": ""}] + [None] * 7))
+    assert bk.MeterLedger(root=tmp_path / "p").problem is not None  # untyped values refuse
+
+
+def _first_session(repo, tmp_path, monkeypatch):
+    window, _calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[_ok()] * 3)
+    window.run()
+    return bk.load_records(tmp_path / "w0")[0]
+
+
+@pytest.mark.parametrize("loss", ["none", "fresh-window", "meter-file", "salt", "reading",
+                                  "session-2-taken"])
+def test_session_two_starts_only_on_session_ones_private_ledger(repo, tmp_path, monkeypatch, loss):
+    records = _first_session(repo, tmp_path, monkeypatch)
+    root = tmp_path / "private"
+    if loss == "fresh-window":
+        root = tmp_path / "another-window"
+    elif loss == "meter-file":
+        (root / "meter.json").unlink()
+    elif loss == "salt":
+        (root / "meter.salt").unlink()
+    elif loss == "reading":
+        kept = json.loads((root / "meter.json").read_text())
+        kept[1]["subscription_usage"] = "99.00"
+        (root / "meter.json").write_text(json.dumps(kept))
+    elif loss == "session-2-taken":
+        kept = json.loads((root / "meter.json").read_text())
+        kept[3] = kept[2]
+        (root / "meter.json").write_text(json.dumps(kept))
+    problems = bk.MeterLedger(root=root).session_problems(2, records)
+    assert (problems == []) is (loss == "none"), problems
+    if loss in {"fresh-window", "meter-file"}:
+        assert "lacks the earlier sessions' readings" in problems[0]
+    assert not (tmp_path / "another-window").exists()  # checking creates nothing
+    if loss == "none":  # session 1 never restarts on a ledger it already wrote
+        assert bk.MeterLedger(root=tmp_path / "private").session_problems(1, records) != []
+
+
+def test_a_record_is_never_replaced(repo, tmp_path):
+    record = native(repo)
+    bk.write_record(tmp_path / "w0", record, token=TOKEN)
+    with pytest.raises(ValueError, match="already exists"):
+        bk.write_record(tmp_path / "w0", {**record, "billing": "api"}, token=TOKEN)
+    assert json.loads((tmp_path / "w0" / "w0-b1-r1.json").read_text())["billing"] == "subscription"
+
+
+def test_a_second_session_on_the_same_evidence_refuses_before_any_effect(
+        repo, tmp_path, monkeypatch):
+    window, calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[_ok()] * 3)
+    with bk.claim_evidence(tmp_path / "w0"):  # another session, under any --window, holds it
+        with pytest.raises(bk.EvidenceClaimed):
+            window.run()
+    assert calls == [] and not (tmp_path / "private" / "meter.json").exists()
+    assert len(window.run()) == 6  # released, it runs
+    assert [p.name for p in (tmp_path / "w0").iterdir()] != []
+
+
+def test_a_security_stop_is_private_before_the_closing_reading(repo, tmp_path, monkeypatch):
+    leak = _ok(canonical_output="refused", code="claude_seat_token_in_output")
+    window, calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[leak])
+    asked: list[str] = []
+
+    def interrupted(question):
+        asked.append(question)
+        if len(asked) > 3:  # the session is interrupted at block 1's closing reading
+            raise EOFError
+        return ["10%", "none", "none"][len(asked) - 1]
+
+    window.ledger.prompt = interrupted
+    with pytest.raises(EOFError):
+        window.run()
+    assert not list((tmp_path / "w0").glob("*.json"))  # no withheld record was written
+    notes = tmp_path / "private" / bk.SECURITY_NOTES
+    assert "claude_seat_token_in_output" in notes.read_text()
+    assert notes.stat().st_mode & 0o777 == 0o600
+    assert bk.private_stopped_arms(tmp_path / "private") == {"print"}
+    # A rerun on an archived ledger that kept the note launches no print board.
+    (tmp_path / "private" / "meter.json").unlink()
+    monkeypatch.undo()
+    rerun, rerun_calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[])
+    rerun.run()
+    assert rerun_calls == []
+
+
+def test_an_admitted_sdk_still_needs_its_twin_g1_and_a_current_receipt(repo, monkeypatch):
+    found = bk.sdk_readiness_problems(repo)
+    assert any("no capture twin" in p for p in found)
+    assert any("OD-3a" in p for p in found)
+    assert any("GL-2 receipt" in p for p in found)
+    from phase_loop_runtime import claude_seat_sdk
+
+    (repo / ct.DECISION_RECORD).write_text(RECORD_4A + SDK_4B)
+    monkeypatch.setattr(bk, "TWIN_ARMS", frozenset({"print", "sdk"}))
+    monkeypatch.setattr(claude_seat_sdk, "preflight", lambda: object())
+    assert bk.sdk_readiness_problems(repo) == []
+
+
+def test_session_two_refuses_an_admitted_but_unready_sdk(repo, tmp_path, monkeypatch):
+    records = _first_session(repo, tmp_path, monkeypatch)
+    monkeypatch.undo()
+    real = ct.is_admitted
+    monkeypatch.setattr(ct, "is_admitted", lambda arm: arm == "sdk" or real(arm))
+    assert len(records) == 6
+    found = bk.session_problems(2, tmp_path / "w0", repo=repo)
+    assert any("no capture twin" in p for p in found), found
+
+
+@pytest.mark.parametrize("change", ["none", "effort", "artifact", "identity-lost"])
+def test_session_two_compares_only_with_session_ones_bundle_model_and_board(
+        repo, tmp_path, monkeypatch, change):
+    _first_session(repo, tmp_path, monkeypatch)
+    monkeypatch.undo()
+    window, calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[],
+                            session=2)
+    if change == "effort":
+        window.plan = _plan(repo, effort="medium")
+    elif change == "artifact":  # the W0 head may move, the bundle may not change
+        (repo / "docs" / "bundle.md").write_text("# Another bundle\n")
+        _git(repo, "-c", "commit.gpgsign=false", "commit", "-qam", "bundle")
+        window.plan = _plan(repo)
+    elif change == "identity-lost":
+        (tmp_path / "private" / bk.IDENTITY).unlink()
+    found = [p for p in window.preflight() if p.startswith("identity:")]
+    assert (found == []) is (change == "none"), found
+
+
+def test_a_control_file_on_another_model_is_asked_again(repo, tmp_path, monkeypatch):
+    window, _calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[_ok()] * 3)
+    good = window.control
+    given: list[int] = []
+
+    def control(block, n):
+        given.append(n)
+        raw = good(block, n)
+        if len(given) == 1:  # the first file reports another model
+            return raw.replace(b"claude-opus-5-5", b"claude-sonnet-5-5")
+        return raw
+
+    window.control = control
+    assert len(window.run()) == 6
+    assert given == [1, 1, 2, 3]
+    window2, _c = _window(repo, tmp_path / "again", monkeypatch=monkeypatch,
+                          native_outcomes=[_ok()] * 3)
+    window2.control = lambda block, n: good(block, n).replace(b"claude-opus-5-5", b"other")
+    with pytest.raises(ValueError, match="run plan's model"):
+        window2.run()
+
+
+def test_a_control_file_is_fresh_regular_and_never_given_twice(tmp_path):
+    import os
+
+    out = tmp_path / "child.json"
+    out.write_text("{}")
+    files = bk.ControlFiles(root=tmp_path / "private", since=0.0)
+    assert files.problem(Path("child.json")) == "give an absolute path"
+    link = tmp_path / "link.json"
+    link.symlink_to(out)
+    assert files.problem(link) == "not a regular file, or no such file"
+    assert files.problem(tmp_path) == "not a regular file, or no such file"
+    answers = [str(out)]
+    files.prompt = lambda _q: answers.pop(0)
+    files.report = lambda _m: None
+    assert files.accept(2, 1) == b"{}"
+    # The same file again, under any name: itself, a hard link, a path through `..` or a
+    # linked directory.
+    hard = tmp_path / "hard.json"
+    os.link(out, hard)
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "dirlink").symlink_to(tmp_path)
+    for alias in (out, hard, tmp_path / "sub" / ".." / "child.json",
+                  tmp_path / "dirlink" / "child.json"):
+        assert files.problem(alias) == "already given for another run", alias
+    answers[:] = [str(out), str(hard), str(tmp_path / "dirlink" / "child.json")]
+    with pytest.raises(ValueError, match="no acceptable control file"):
+        files.accept(2, 2)
+    other = tmp_path / "other.json"
+    other.write_text("{}")  # identical bytes from another child are a different file
+    assert files.problem(other) is None
+    files.since = 2.0
+    os.utime(other, (1, 1))
+    assert files.problem(other) == "written before this block's brief"
+
+
+def test_the_control_cutoff_is_taken_before_the_brief_is_printed(repo, tmp_path, monkeypatch):
+    window, _calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[_ok()] * 3)
+    events: list[str] = []
+    window.on_brief = lambda block: events.append(f"cutoff {block}")
+    window.report = lambda message: events.append(
+        "brief" if message.startswith("W0 control block") else "other")
+    window.run()
+    assert "cutoff 2" in events and events.index("cutoff 2") < events.index("brief")
+
+
+@pytest.mark.parametrize("unreadable", ["meter.json", "meter.salt", "session-identity.json",
+                                        "security-outcomes.txt"])
+def test_an_unreadable_private_file_refuses_with_a_diagnostic(repo, tmp_path, monkeypatch,
+                                                             unreadable):
+    _first_session(repo, tmp_path, monkeypatch)
+    root = tmp_path / "private"
+    target = root / unreadable
+    if target.exists():
+        target.unlink()
+    target.mkdir()  # exists, cannot be read as a file
+    ledger = bk.MeterLedger(root=root)
+    records = bk.load_records(tmp_path / "w0")[0]
+    found = ([ledger.problem] if ledger.problem else ledger.session_problems(2, records)
+             + bk.identity_problems(root, _plan(repo), repo, 2))
+    if unreadable == "security-outcomes.txt":
+        with pytest.raises(ValueError, match="cannot be read"):
+            bk.private_stopped_arms(root)
+    else:
+        assert any("cannot be read" in problem for problem in found), found
+    assert "cannot be read" in " ".join(
+        [p for p in _preflight_session_two(repo, tmp_path, monkeypatch, root)])
+
+
+def _within(function, seconds: float = 10.0):
+    """Run ``function`` on a daemon thread; fail if it is still blocked after ``seconds``."""
+    import threading
+
+    out: dict = {}
+
+    def target():
+        try:
+            out["value"] = function()
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the test thread
+            out["error"] = exc
+
+    thread = threading.Thread(target=target, daemon=True)
+    thread.start()
+    thread.join(seconds)
+    assert not thread.is_alive(), "blocked on a private input"
+    if "error" in out:
+        raise out["error"]
+    return out["value"]
+
+
+@pytest.mark.parametrize("name", [name for name, _diagnostic in bk.PRIVATE_INPUTS])
+def test_a_fifo_private_input_refuses_without_blocking(tmp_path, name):
+    import os
+
+    root = tmp_path / "private"
+    root.mkdir()
+    os.mkfifo(root / name)  # no writer: a blocking open would wait forever
+    diagnostic = dict(bk.PRIVATE_INPUTS)[name]
+    assert diagnostic in _within(lambda: bk.private_input_problems(root))
+    if name == "meter.json":
+        assert _within(lambda: bk.MeterLedger(root=root)).problem == diagnostic
+    with pytest.raises(bk.PrivateInputError):
+        _within(lambda: bk.read_private_regular(root / name))
+
+
+@pytest.mark.parametrize("kind", ["symlink", "socket"])
+def test_a_link_or_socket_private_input_is_refused(tmp_path, monkeypatch, kind):
+    import socket
+
+    root = tmp_path / "private"
+    root.mkdir()
+    target = root / "meter.salt"
+    if kind == "symlink":
+        (tmp_path / "real.salt").write_text("a" * 64)
+        target.symlink_to(tmp_path / "real.salt")
+        assert "meter: the private salt cannot be read" in bk.private_input_problems(root)
+    else:
+        server = socket.socket(socket.AF_UNIX)
+        monkeypatch.chdir(root)  # a socket path is limited in length; bind it relatively
+        try:
+            server.bind(target.name)
+            assert "meter: the private salt cannot be read" in _within(
+                lambda: bk.private_input_problems(root))
+        finally:
+            server.close()
+
+
+@pytest.mark.parametrize("salt", ["absent", "valid", "directory", "fifo", "bad-shape",
+                                  "unreadable"])
+def test_an_existing_session_one_salt_is_checked_before_any_reading(repo, tmp_path, monkeypatch,
+                                                                   salt):
+    import os
+
+    root = tmp_path / "private"
+    root.mkdir()
+    path = root / "meter.salt"
+    if salt == "valid":
+        path.write_text("ab" * 32)
+    elif salt == "directory":
+        path.mkdir()
+    elif salt == "fifo":
+        os.mkfifo(path)
+    elif salt == "bad-shape":
+        path.write_text("not a salt\n")
+    elif salt == "unreadable":
+        path.write_text("ab" * 32)
+        path.chmod(0)
+        if os.access(path, os.R_OK):
+            pytest.skip("this account reads mode-000 files")
+    ledger_check = _within(lambda: bk.MeterLedger(root=root).session_problems(1, []))
+    inputs_check = _within(lambda: bk.private_input_problems(root))
+    window, calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[_ok()] * 3)
+    if salt in {"absent", "valid"}:
+        assert ledger_check == [] and inputs_check == []
+        assert len(_within(window.run, 60)) == 6
+        return
+    assert any("salt" in problem for problem in ledger_check), ledger_check  # each layer
+    assert any("salt" in problem for problem in inputs_check), inputs_check  # refuses alone
+    if salt != "unreadable":
+        with pytest.raises(ValueError, match="salt"):
+            bk.MeterLedger(root=root).salt()
+    assert any("salt" in problem for problem in _within(window.preflight))
+    with pytest.raises(ValueError, match="refused before any run"):
+        _within(window.run)
+    assert calls == [] and not (root / "meter.json").exists()  # a rerun is not blocked
+
+
+@pytest.mark.parametrize(("name", "diagnostic"), [
+    ("meter.salt", "meter: the private salt cannot be read"),
+    ("control-files.txt", "control files: the private list cannot be read"),
+])
+def test_the_run_cli_refuses_a_fifo_private_input_before_any_effect(
+        repo, tmp_path, monkeypatch, capsys, name, diagnostic):
+    import os
+
+    from phase_loop_runtime import seat_credentials, seat_egress_proxy
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    def sentinel(*_a, **_k):
+        raise AssertionError("an effect ran before the gate")
+
+    for module, attribute in ((seat_credentials, "resolve_claude_seat_credential"),
+                              (seat_egress_proxy, "verify_install"), (bk, "create_window_ca"),
+                              (bk, "bundle_artifact")):
+        monkeypatch.setattr(module, attribute, sentinel)
+    monkeypatch.setattr(bk, "MeterLedger", sentinel)  # refused before the ledger is loaded
+    root = bk.private_root("w0")
+    root.mkdir(parents=True)
+    os.mkfifo(root / name)
+    argv = ["run", "--plan", str(_cli_plan(repo, tmp_path)), "--repo", str(repo),
+            "--session", "1"]
+    assert _within(lambda: bk.main(argv)) == 1
+    assert diagnostic in capsys.readouterr().err
+    with bk.claim_evidence(repo / bk.EVIDENCE_DIR):  # the lock was released, not held
+        pass
+
+
+def test_window_preflight_refuses_a_fifo_private_list_before_any_reading(repo, tmp_path,
+                                                                         monkeypatch):
+    import os
+
+    root = tmp_path / "private"
+    root.mkdir()
+    os.mkfifo(root / "control-files.txt")
+    window, calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[_ok()] * 3)
+    assert "control files: the private list cannot be read" in _within(window.preflight)
+    with pytest.raises(ValueError, match="refused before any run"):
+        _within(window.run)
+    assert calls == [] and not (root / "meter.json").exists()
+
+
+def test_a_control_file_given_by_an_earlier_kit_is_still_refused_by_path(tmp_path):
+    out = tmp_path / "child.json"
+    out.write_text("{}")
+    root = tmp_path / "private"
+    root.mkdir()
+    (root / "control-files.txt").write_text(f"{out}\n")  # an earlier kit stored bare paths
+    files = bk.ControlFiles(root=root, since=0.0)
+    assert files.problem(out) == "already given for another run"
+    other = tmp_path / "other.json"
+    other.write_text("{}")
+    answers = [str(other)]
+    files.prompt = lambda _q: answers.pop(0)
+    assert files.accept(2, 1) == b"{}"
+    rows = (root / "control-files.txt").read_text().splitlines()
+    assert rows[0] == str(out) and rows[1].endswith(f"\t{other}")
+
+
+@pytest.mark.parametrize("entry", ["fifo", "symlink", "directory"])
+def test_a_private_write_never_blocks_or_follows_a_substituted_entry(tmp_path, entry):
+    import os
+
+    root = tmp_path / "private"
+    root.mkdir()
+    target = root / "control-files.txt"
+    outside = tmp_path / "outside.txt"
+    outside.write_text("kept")
+    if entry == "fifo":  # e.g. swapped in after the last checked read
+        os.mkfifo(target)
+    elif entry == "symlink":
+        target.symlink_to(outside)
+    else:
+        target.mkdir()
+    with pytest.raises(bk.PrivateInputError, match="control files: the private list cannot"):
+        _within(lambda: bk.write_private(target, b"row"))
+    assert outside.read_text() == "kept"
+    assert issubclass(bk.PrivateInputError, ValueError)  # a late refusal ends the session
+
+
+def test_a_private_write_creates_or_replaces_a_regular_0600_file(tmp_path):
+    target = tmp_path / "private" / "meter.json"
+    bk.write_private(target, b"first, and longer")
+    bk.write_private(target, b"second")
+    assert target.read_bytes() == b"second"
+    assert target.stat().st_mode & 0o777 == 0o600
+
+
+def test_a_ledger_entry_swapped_for_a_fifo_mid_session_refuses_without_blocking(tmp_path):
+    import os
+
+    root = tmp_path / "private"
+    ledger = _ledger(root, ["10%", "$0", "$0"] * 2)
+    ledger.read(0, settle_s=0)
+    (root / "meter.json").unlink()
+    os.mkfifo(root / "meter.json")
+    with pytest.raises(ValueError, match="meter: the private ledger cannot be read"):
+        _within(lambda: ledger.read(1, settle_s=0))
+
+
+def test_control_rows_keep_paths_with_tabs_and_earlier_formats(tmp_path):
+    import os
+
+    tabbed = tmp_path / "a\tb.json"
+    tabbed.write_text("{}")
+    files = bk.ControlFiles(root=tmp_path / "private", since=0.0)
+    answers = [str(tabbed)]
+    files.prompt = lambda _q: answers.pop(0)
+    assert files.accept(2, 1) == b"{}"
+    assert files.problem(tabbed) == "already given for another run"
+    alias = tmp_path / "alias.json"
+    os.link(tabbed, alias)
+    assert files.problem(alias) == "already given for another run"
+    # Rows an earlier kit wrote: a bare identity, and a bare path containing a tab.
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    by_identity = tmp_path / "by-identity.json"
+    by_identity.write_text("{}")
+    info = by_identity.stat()
+    by_path = tmp_path / "c\td.json"
+    by_path.write_text("{}")
+    (legacy / "control-files.txt").write_text(f"{info.st_dev}:{info.st_ino}\n{by_path}\n")
+    old = bk.ControlFiles(root=legacy, since=0.0)
+    assert old.problem(by_identity) == "already given for another run"
+    assert old.problem(by_path) == "already given for another run"
+    fresh = tmp_path / "fresh.json"
+    fresh.write_text("{}")
+    assert old.problem(fresh) is None
+    assert files.problem(Path(str(tmp_path) + "/x\ny.json")) == "give a path without a line break"
+
+
+@pytest.mark.parametrize(("existing", "swap"), [
+    (True, "fifo"), (True, "regular"), (True, "gone"), (False, "fifo"), (False, "regular"),
+])
+def test_a_private_write_swapped_after_its_pin_is_refused_not_reported(
+        tmp_path, monkeypatch, existing, swap):
+    import os
+
+    root = tmp_path / "private"
+    root.mkdir()
+    target = root / "meter.json"
+    if existing:
+        target.write_bytes(b"old")
+    real = os.ftruncate
+
+    def swapped(fd, length):  # the entry changes after the kit holds its descriptor
+        target.rename(root / "moved-away")
+        if swap == "fifo":
+            os.mkfifo(target)
+        elif swap == "regular":
+            target.write_bytes(b"someone else's")
+        return real(fd, length)
+
+    monkeypatch.setattr(bk.os, "ftruncate", swapped)
+    with pytest.raises(bk.PrivateInputError, match="meter: the private ledger cannot be read"):
+        _within(lambda: bk.write_private(target, b"new reading"))
+
+
+def test_a_private_write_whose_directory_was_replaced_is_refused_not_raised(tmp_path, monkeypatch):
+    import os
+
+    root = tmp_path / "private"
+    root.mkdir()
+    target = root / "meter.json"
+    real = os.ftruncate
+
+    def replaced(fd, length):  # the private directory moves and a file takes its name
+        root.rename(tmp_path / "moved-away")
+        root.write_bytes(b"not a directory")
+        return real(fd, length)
+
+    monkeypatch.setattr(bk.os, "ftruncate", replaced)
+    with pytest.raises(bk.PrivateInputError, match="meter: the private ledger cannot be read"):
+        _within(lambda: bk.write_private(target, b"new reading"))
+
+
+def test_a_failing_record_scan_keeps_the_dropped_host_note_and_the_outcome(
+        repo, tmp_path, capsys, monkeypatch):
+    import os
+
+    root = tmp_path / "private"
+    root.mkdir()
+    os.mkfifo(root / "dropped-hosts.txt")
+    evidence = write(tmp_path / "w0", *_session1(repo))
+
+    def deep(_directory):  # a record file replaced mid-session with deeply nested JSON
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(bk, "load_records", deep)
+    note = _within(lambda: bk.keep_dropped_hosts(root, ["x.example"], session=1,
+                                                 evidence=evidence))
+    assert note is not None and "an unknown number of session 1's records may already be" in note
+    capsys.readouterr()
+    assert bk.session_outcome(1, refusal="W0 stopped: x", written=None, note=note) == 1
+    err = capsys.readouterr().err.splitlines()
+    assert err[0].startswith("claude-bakeoff run: REFUSED: W0 stopped: x") and err[1] == note
+
+
+def test_a_ledger_reading_whose_file_was_swapped_is_refused(tmp_path, monkeypatch):
+    import os
+
+    root = tmp_path / "private"
+    ledger = _ledger(root, ["10%", "$0", "$0"] * 2)
+    ledger.read(0, settle_s=0)
+    real = os.ftruncate
+
+    def swapped(fd, length):
+        (root / "meter.json").rename(root / "moved-away")
+        (root / "meter.json").write_bytes(b"[]")
+        return real(fd, length)
+
+    monkeypatch.setattr(bk.os, "ftruncate", swapped)
+    with pytest.raises(ValueError, match="meter: the private ledger cannot be read"):
+        ledger.read(1, settle_s=0)
+
+
+def test_a_failed_dropped_host_list_never_masks_the_outcome(repo, tmp_path, capsys):
+    import os
+
+    root = tmp_path / "private"
+    root.mkdir()
+    os.mkfifo(root / "dropped-hosts.txt")
+    evidence = write(tmp_path / "w0", *_session1(repo))
+    note = _within(lambda: bk.keep_dropped_hosts(root, ["x.example"], session=1,
+                                                 evidence=evidence))
+    assert note is not None and "6 record(s) of session 1 are already" in note
+    assert bk.keep_dropped_hosts(root, [], session=1, evidence=evidence) is None
+    capsys.readouterr()
+    assert bk.session_outcome(1, refusal="W0 stopped: x", written=None, note=note) == 1
+    err = capsys.readouterr().err.splitlines()
+    assert err[0].startswith("claude-bakeoff run: REFUSED: W0 stopped: x")
+    assert err[1] == note  # beside the refusal, not in its place
+    assert bk.session_outcome(1, refusal=None, written=[Path("a")] * 6, note=note) == 0
+    captured = capsys.readouterr()
+    assert "session 1 wrote 6 record(s)" in captured.out and note in captured.err
+
+
+@pytest.mark.parametrize("character", ["\u2028", "\x1c", "\r", "\x85"])
+def test_a_control_path_with_any_non_newline_separator_stays_one_row(tmp_path, character):
+    out = tmp_path / f"a{character}b.json"
+    out.write_text("{}")
+    files = bk.ControlFiles(root=tmp_path / "private", since=0.0)
+    answers = [str(out)]
+    files.prompt = lambda _q: answers.pop(0)
+    assert files.accept(2, 1) == b"{}"
+    assert files.problem(out) == "already given for another run"
+    # A fresh file installed at the same name is still refused by the stored path.
+    out.unlink()
+    out.write_text("{}")
+    assert files.problem(out) == "already given for another run"
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    (legacy / "control-files.txt").write_text(f"{out}\n", newline="")
+    assert bk.ControlFiles(root=legacy, since=0.0).problem(out) == "already given for another run"
+
+
+def test_a_unicode_line_separator_in_prose_is_not_a_heading(repo, tmp_path):
+    directory = write(tmp_path / "w0", *_session1(repo))
+    digest = bk.evidence_digest(directory)
+    prose = "\nA note\u2028## 4c. OD-3b: not a heading, the parser keeps it in this line\n"
+    text = RECORD_4A + prose + _od3b("4c", digest)
+    assert bk.validate_directory(directory, repo=repo, record_text=text.encode(),
+                                 tui_digest=TUI) == []
+
+
+def _preflight_session_two(repo, tmp_path, monkeypatch, root) -> list[str]:
+    monkeypatch.undo()
+    window, _calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[],
+                             session=2)
+    window.ledger = bk.MeterLedger(root=root)
+    return window.preflight()
+
+
+def _cli_plan(repo, tmp_path) -> Path:
+    path = tmp_path / "w0-plan.json"
+    path.write_text(json.dumps(_plan(repo)))
+    return path
+
+
+@pytest.mark.parametrize("case", ["no-session-1", "ledger-taken", "claimed"])
+def test_the_run_cli_refuses_before_any_credential_ca_or_private_directory(
+        repo, tmp_path, monkeypatch, capsys, case):
+    from phase_loop_runtime import seat_credentials, seat_egress_proxy
+
+    state = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+
+    def sentinel(*_a, **_k):
+        raise AssertionError("an effect ran before the gate")
+
+    for module, name in ((seat_credentials, "resolve_claude_seat_credential"),
+                         (seat_egress_proxy, "verify_install"), (bk, "create_window_ca"),
+                         (bk, "bundle_artifact")):
+        monkeypatch.setattr(module, name, sentinel)
+    if case != "ledger-taken":  # a refusal before the ledger gate never loads the ledger
+        monkeypatch.setattr(bk, "MeterLedger", sentinel)
+    session = "2" if case == "no-session-1" else "1"
+    root = bk.private_root("w0")
+    if case == "ledger-taken":
+        root.mkdir(parents=True)
+        (root / "meter.json").write_text(json.dumps(
+            [{"subscription_usage": "10.00", "extra_usage_spend": "none", "api_spend": "none"}]
+            + [None] * 7))
+    argv = ["run", "--plan", str(_cli_plan(repo, tmp_path)), "--repo", str(repo),
+            "--session", session]
+    if case == "claimed":
+        with bk.claim_evidence(repo / bk.EVIDENCE_DIR):
+            assert bk.main(argv) == 1
+    else:
+        assert bk.main(argv) == 1
+    assert "REFUSED" in capsys.readouterr().err
+    assert root.exists() is (case == "ledger-taken")
+    assert not list((repo / bk.EVIDENCE_DIR).glob("*.json"))
+
+
+def test_the_run_cli_compares_session_two_before_any_credential(repo, tmp_path, monkeypatch,
+                                                                  capsys):
+    import shutil
+
+    from phase_loop_runtime import seat_credentials, seat_egress_proxy
+
+    _first_session(repo, tmp_path, monkeypatch)  # session 1 on tmp_path/w0 and tmp_path/private
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    shutil.copytree(tmp_path / "private", bk.private_root("w0"))
+    evidence = repo / bk.EVIDENCE_DIR
+    evidence.mkdir(parents=True)
+    for path in (tmp_path / "w0").glob("*.json"):
+        shutil.copy(path, evidence / path.name)
+
+    def sentinel(*_a, **_k):
+        raise AssertionError("an effect ran before the gate")
+
+    for module, name in ((seat_credentials, "resolve_claude_seat_credential"),
+                         (seat_egress_proxy, "verify_install"), (bk, "create_window_ca")):
+        monkeypatch.setattr(module, name, sentinel)
+    plan = tmp_path / "w0-plan.json"
+    plan.write_text(json.dumps(_plan(repo, effort="medium")))
+    argv = ["run", "--plan", str(plan), "--repo", str(repo), "--session", "2"]
+    capsys.readouterr()
+    assert bk.main(argv) == 1
+    assert "identity: the bundle, model, effort or board differs" in capsys.readouterr().err
+
+
+def test_the_sessions_partition_the_blocks_and_fix_the_readings():
+    notes = bk.EXECUTION_NOTES
+    assert [b for blocks in notes.session_blocks for b in blocks] == list(
+        range(1, len(notes.blocks) + 1))
+    assert notes.sessions == len(notes.session_blocks) == 2
+    assert notes.meter_readings == len(notes.blocks) + notes.sessions == 8
+    assert bk.session_arms(1) == ("print", bk.CONTROL)
+    assert [bk.bracket_positions(b) for b in range(1, 7)] == [
+        (0, 1), (1, 2), (3, 4), (4, 5), (5, 6), (6, 7)]
+
+
+def test_session_one_needs_neither_sdk_admission_nor_its_section(repo, tmp_path, monkeypatch):
+    window, calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[_ok()] * 3,
+                            admit_sdk=False)
+    (repo / ct.DECISION_RECORD).write_text(RECORD_4A)
+    _git(repo, "-c", "commit.gpgsign=false", "commit", "-qam", "no 4b")
+    window.plan = _plan(repo)
+    assert not ct.is_admitted("sdk")
+    assert window.preflight() == []
+    assert len(window.run()) == 6
+    assert [arm for arm, _t in calls] == ["print"] * 3
+
+
+@pytest.mark.parametrize("case", ["no-session", "session-3", "no-session-1", "partial-session-1",
+                                  "partial-control", "session-2-again", "session-1-again",
+                                  "sdk-not-admitted", "lost-ledger"])
+def test_a_session_refuses_before_any_reading(repo, tmp_path, monkeypatch, case):
+    if case not in {"no-session", "session-3", "no-session-1"}:
+        first, _calls = _window(repo, tmp_path, monkeypatch=monkeypatch,
+                                native_outcomes=[_ok()] * 3)
+        first.run()
+        monkeypatch.undo()
+    if case == "partial-session-1":
+        for path in (tmp_path / "w0").glob("w0-b2-*.json"):
+            path.unlink()
+    if case == "lost-ledger":
+        (tmp_path / "private" / "meter.json").unlink()
+    if case == "partial-control":  # two of block 2's three control records lost
+        for name in ("w0-b2-r2.json", "w0-b2-r3.json"):
+            (tmp_path / "w0" / name).unlink()
+    if case == "session-2-again":
+        second, _calls = _window(repo, tmp_path, monkeypatch=monkeypatch, session=2,
+                                 native_outcomes=[_ok(dependency_projection_digest="e" * 64)] * 6
+                                 + [_ok()] * 3)
+        second.run()
+        monkeypatch.undo()
+    session = {"no-session": None, "session-3": 3, "session-1-again": 1}.get(case, 2)
+    meter = tmp_path / "private" / "meter.json"
+    before = meter.read_bytes() if meter.exists() else None
+    window, calls = _window(repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[],
+                            admit_sdk=case != "sdk-not-admitted", session=session)
+    assert window.preflight() != []
+    with pytest.raises(ValueError, match="refused before any run"):
+        window.run()
+    assert calls == []
+    assert (meter.read_bytes() if meter.exists() else None) == before
+
+
+def test_the_run_cli_requires_a_session(tmp_path):
+    with pytest.raises(SystemExit):
+        bk.main(["run", "--plan", str(tmp_path / "plan.json")])
+    with pytest.raises(SystemExit):
+        bk.main(["run", "--plan", str(tmp_path / "plan.json"), "--session", "3"])
+
+
+def test_session_two_records_without_session_one_fail_v7(repo, tmp_path):
+    directory = write(tmp_path / "w0", control(repo, block=5))
+    without = "session 2 records without session 1's complete records"
+    assert without in bk.validate_directory(directory, repo=repo, tui_digest=TUI)
+    write(directory, control(repo, block=2))  # one control record is not session 1
+    assert without in bk.validate_directory(directory, repo=repo, tui_digest=TUI)
+    write(directory, *_session1(repo))
+    assert bk.validate_directory(directory, repo=repo, tui_digest=TUI) == []
+
+
+def test_validate_names_an_incomplete_session(repo, tmp_path, capsys):
+    directory = write(tmp_path / "w0", *_session1(repo)[:-1])
+    capsys.readouterr()
+    assert validate(directory, repo, "--tui-digest", TUI) == 0  # shape only; coverage is named
+    out = capsys.readouterr().out
+    assert "session 1 INCOMPLETE (block 2: 2 of 3 runs)" in out
+    assert "interim set" not in out
+
+
+@pytest.mark.parametrize(("change", "complete"), [
+    ("none", True), ("drop-control-r3", False), ("drop-print-r1", False),
+    ("security-stop-r2", True), ("security-stop-r1-not-last", False),
+    ("wrong-arm", False), ("run-id-gap", False),
+])
+def test_session_coverage_checks_planned_arms_blocks_and_run_ids(repo, change, complete):
+    records = {r["run_id"]: r for r in _session1(repo)}
+    if change == "drop-control-r3":
+        del records["w0-b2-r3"]
+    elif change == "drop-print-r1":
+        del records["w0-b1-r1"]
+    elif change == "security-stop-r2":
+        del records["w0-b1-r3"]
+        records["w0-b1-r2"] = {**records["w0-b1-r2"], "security_outcome": "withheld_private"}
+    elif change == "security-stop-r1-not-last":
+        records["w0-b1-r1"] = {**records["w0-b1-r1"], "security_outcome": "withheld_private"}
+    elif change == "run-id-gap":  # three runs, numbered r1, r2, r4
+        records["w0-b1-r3"] = {**records["w0-b1-r3"], "run_id": "w0-b1-r4"}
+    elif change == "wrong-arm":
+        records["w0-b2-r1"] = {**records["w0-b1-r1"], "run_id": "w0-b2-r1", "block": 2}
+    assert (bk.complete_sessions(list(records.values())) == (1,)) is complete
+
+
+def test_a_stopped_arm_leaves_its_later_block_empty_and_the_session_complete(repo):
+    first = _session1(repo)
+    first[2] = {**first[2], "security_outcome": "withheld_private"}  # print stopped at w0-b1-r3
+    later = [r for r in _session2(repo) if r["block"] != 6]
+    assert bk.complete_sessions(first + later) == (1, 2)
+    assert bk.complete_sessions(first + _session2(repo)) == (1,)  # print ran after its stop
+
+
+def test_only_the_latest_od3b_section_answers_for_the_directory(repo, tmp_path):
+    directory = write(tmp_path / "w0", *_session1(repo))
+    interim = bk.evidence_digest(directory)
+    write(directory, *_session2(repo))
+    full = bk.evidence_digest(directory)
+    assert bk.evidence_digest(directory, sessions=(1,)) == interim
+
+    def problems(text: str) -> list[str]:
+        return bk.validate_directory(directory, repo=repo, record_text=text.encode(),
+                                     tui_digest=TUI)
+
+    history = (RECORD_4A + _od3b("4c", "0" * 64, value="`sdk`", sessions=None)
+               + _od3b("4d", full, sessions="1 and 2"))
+    assert problems(history) == []  # earlier sections are history, not re-checked
+    assert problems(RECORD_4A + _od3b("4c", full, sessions="1 and 2")
+                    + _od3b("4d", "0" * 64)) != []
+
+
+def test_session_two_records_land_beside_a_landed_interim_od3b(repo, tmp_path):
+    """G2 for session 2 lands after GL-5's interim section, and the later section after it."""
+    directory = write(tmp_path / "w0", *_session1(repo))
+    interim = RECORD_4A + _od3b("4c", bk.evidence_digest(directory))
+
+    def problems(text: str) -> list[str]:
+        return bk.validate_directory(directory, repo=repo, record_text=text.encode(),
+                                     tui_digest=TUI)
+
+    assert problems(interim) == []
+    write(directory, *_session2(repo))
+    assert problems(interim) == []  # the interim section still verifies its session-1 subset
+    assert bk.main(["digest", str(directory), "--through-session", "1"]) == 0
+    later = interim + _od3b("4d", bk.evidence_digest(directory), value="`sdk`",
+                            sessions="1 and 2")
+    assert problems(later) == []
+    stale = interim + _od3b("4d", bk.evidence_digest(directory, sessions=(1,)),
+                            sessions="1 and 2")
+    assert problems(stale) != []
+    (directory / "w0-b1-r1.json").unlink()  # the interim section's subset changed
+    assert problems(interim) != []
+
+
+@pytest.mark.parametrize(("value", "sessions", "ok"), [
+    ("`print`", "1", True), ("none admitted", "1", True), ("`tui`", "1", False),
+    ("`print`", "1 and 2", False), ("`print`", None, False), ("`sdk`", "1", False),
+])
+def test_an_interim_od3b_section_says_session_one_and_names_only_what_it_measured(
+        repo, tmp_path, value, sessions, ok):
+    directory = write(tmp_path / "w0", *_session1(repo))
+    text = RECORD_4A + _od3b("4c", bk.evidence_digest(directory), value=value, sessions=sessions)
+    found = bk.validate_directory(directory, repo=repo, record_text=text.encode(), tui_digest=TUI)
+    assert (found == []) is ok, found
+    if value == "`sdk`":
+        assert any("is interim (session 1)" in problem for problem in found), found
+
+
+@pytest.mark.parametrize("contradiction", ["two-defaults", "no-default", "two-digests",
+                                           "two-sessions-lines", "malformed-default",
+                                           "duplicate-section-id", "id-shared-with-another"])
+def test_an_od3b_section_with_contradictory_declarations_fails(repo, tmp_path, contradiction):
+    directory = write(tmp_path / "w0", *_session1(repo))
+    digest = bk.evidence_digest(directory)
+    section = _od3b("4c", digest)
+    if contradiction == "two-defaults":  # the first declares sdk, the second print
+        section = section.replace("**Jailed Claude default:** `print`",
+                                  "**Jailed Claude default:** `sdk`\n\n"
+                                  "**Jailed Claude default:** `print`")
+    elif contradiction == "no-default":
+        section = section.replace("**Jailed Claude default:** `print`\n", "")
+    elif contradiction == "two-digests":
+        section += f"\n**W0 evidence digest:** `{'0' * 64}`\n"
+    elif contradiction == "two-sessions-lines":
+        section += "\n**W0 sessions:** 1 and 2\n"
+    elif contradiction == "malformed-default":
+        section = section.replace("`print`", "print")
+    elif contradiction == "duplicate-section-id":  # a second 4c, picking sdk, hidden by the parser
+        section += _od3b("4c", digest, value="`sdk`")
+    elif contradiction == "id-shared-with-another":  # an earlier non-OD-3b heading takes 4c
+        section = "\n## 4c. Notes\n\nx\n" + section
+    assert bk.validate_directory(directory, repo=repo, record_text=(RECORD_4A + section).encode(),
+                                 tui_digest=TUI) != []
+    assert bk.validate_directory(directory, repo=repo,
+                                 record_text=(RECORD_4A + _od3b("4c", digest)).encode(),
+                                 tui_digest=TUI) == []
 
 
 # --------------------------------------------------------------------------------------
