@@ -15186,12 +15186,21 @@ def _open_window_launch(spec: WindowLaunchSpec):
             credential_mode = supplier.credential_mode(spec.kind)
             if credential_mode not in seat_window_supply.CREDENTIAL_MODES:
                 raise ValueError("contract_bug")
+            # K-1 OI-1 (owner decision 2026-11-22): a supplier that declares the fence runs
+            # its expired leg in the existing refuse_all mode, same allowlist id and named
+            # set, so every request is refused before any dial.
+            expired_fence = getattr(supplier, "EXPIRED_LEG_PROXY", None)
+            if expired_fence not in (None, "refuse_all"):
+                raise ValueError("contract_bug")
+            refuse_all = credential_mode == "none" or (
+                spec.kind == "expired_copy" and credential_mode == "expired"
+                and expired_fence == "refuse_all")
         proxy = stack.enter_context(_seat_egress_proxy.start_proxy(
             allowlist_id="gemini",
             refuse_all=spec.kind in {"help", "plugin_validation", *_WINDOW_CONTROL_KINDS}
             and spec.kind not in _WINDOW_CREDENTIAL_KINDS,
         ) if supplier is None else _seat_egress_proxy.start_proxy(
-            allowlist_id=profile.allowlist_id, refuse_all=credential_mode == "none",
+            allowlist_id=profile.allowlist_id, refuse_all=refuse_all,
             named=_window_named_refusals(profile.allowlist_id),
         ))
         prefix = tuple(stack.enter_context(_sandbox_egress.isolated_network(
