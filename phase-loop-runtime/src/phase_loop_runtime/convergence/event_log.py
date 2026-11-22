@@ -34,6 +34,9 @@ from typing import Iterable, TYPE_CHECKING
 from phase_loop_runtime.train_ledger import CoordinatorEvent, CoordinatorEventKind
 from phase_loop_runtime.file_lock import acquire_exclusive
 
+if os.name != "nt":
+    import fcntl
+
 if TYPE_CHECKING:
     from phase_loop_runtime.windows_storage import BoundDirectory
 
@@ -211,7 +214,10 @@ def _append(path: Path, event: CoordinatorEvent, *, require_intent: bool) -> Non
     with _LOCK:
         fd, parent_fd = _open_log(path, create=True)
         try:
-            acquire_exclusive(fd)
+            if os.name == "nt":
+                acquire_exclusive(fd)
+            else:
+                fcntl.flock(fd, fcntl.LOCK_EX)
             raw_existing = _read_all(fd)
             keep, existing = _durable_records(raw_existing)
             already_recorded = _is_already_recorded(existing, event, require_intent=require_intent)

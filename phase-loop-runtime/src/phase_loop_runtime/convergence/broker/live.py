@@ -240,6 +240,9 @@ _LOCK_DEPTH_GUARD = threading.Lock()
 
 @contextlib.contextmanager
 def _reentrant_flock(path: Path):
+    if os.name != "nt":
+        import fcntl
+
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     key = (str(path), threading.get_ident())
@@ -264,7 +267,10 @@ def _reentrant_flock(path: Path):
 
     handle = path.open("a+", encoding="utf-8")
     try:
-        acquire_exclusive(handle)
+        if os.name == "nt":
+            acquire_exclusive(handle)
+        else:
+            fcntl.flock(handle, fcntl.LOCK_EX)
     except BaseException:
         handle.close()
         raise
@@ -280,7 +286,10 @@ def _reentrant_flock(path: Path):
                 if entry[0] <= 0:
                     _LOCK_DEPTH.pop(key, None)
         try:
-            release_exclusive(handle)
+            if os.name == "nt":
+                release_exclusive(handle)
+            else:
+                fcntl.flock(handle, fcntl.LOCK_UN)
         finally:
             handle.close()
 
@@ -3397,6 +3406,9 @@ def _exclude_live_run_trains(inventory: dict, *, resuming: bool):
     """
     import errno
 
+    if os.name != "nt":
+        import fcntl
+
     rows = {
         _inventory_row_namespace_root(row).resolve(): row for row in inventory["worktrees"]
     }
@@ -3455,7 +3467,10 @@ def _exclude_live_run_trains(inventory: dict, *, resuming: bool):
                     "owned by the operator"
                 )
             try:
-                acquire_exclusive(descriptor, blocking=False)
+                if os.name == "nt":
+                    acquire_exclusive(descriptor, blocking=False)
+                else:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError as error:
                 if error.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
                     raise LegacyCutoverConflict(
@@ -5287,6 +5302,9 @@ def rotate_blocked_partition(
     authority's ``partition-rotations/<identity>/`` drives an idempotent,
     crash-resumable sequence that ends with the atomic pointer flip.
     """
+    if os.name != "nt":
+        import fcntl
+
     cutover_id = _validate_cutover_id(cutover_id)
     snapshot = repository_snapshot(worktree)
     container = snapshot.container
@@ -5468,7 +5486,10 @@ def rotate_blocked_partition(
     lock_path = active / "admissions.lock"
     try:
         with lock_path.open("a+", encoding="utf-8") as lock:
-            acquire_exclusive(lock)
+            if os.name == "nt":
+                acquire_exclusive(lock)
+            else:
+                fcntl.flock(lock, fcntl.LOCK_EX)
             try:
                 # Everything above was read WITHOUT the lock.  A ceremony that
                 # completed while this one waited (the same or another cutover_id)
@@ -5659,7 +5680,10 @@ def rotate_blocked_partition(
                 _write_active_pointer(generations, successor_generation)
                 _maybe_rotation_crash("after_pointer_flip")
             finally:
-                release_exclusive(lock)
+                if os.name == "nt":
+                    release_exclusive(lock)
+                else:
+                    fcntl.flock(lock, fcntl.LOCK_UN)
     except _RotationCompletedElsewhere as done:
         receipt = done.receipt
     assert receipt is not None
@@ -5736,11 +5760,17 @@ def _finish_rotation_after_flip(
     latch activation, and a forgery re-sealed in the window refuses typed
     instead of becoming the successor's authority (codex r9 P1).
     """
+    if os.name != "nt":
+        import fcntl
+
     predecessor = _rotation_predecessor_root(container, generation)
     latch = WriterGenerationLatch(snapshot.namespace_root)
     lock_path = active / "admissions.lock"
     with lock_path.open("a+", encoding="utf-8") as lock:
-        acquire_exclusive(lock)
+        if os.name == "nt":
+            acquire_exclusive(lock)
+        else:
+            fcntl.flock(lock, fcntl.LOCK_EX)
         try:
             if _read_active_generation(container) != generation:
                 raise PartitionRotationRefused(
@@ -5782,7 +5812,10 @@ def _finish_rotation_after_flip(
             latch.mark_armed()
             latch.activate()
         finally:
-            release_exclusive(lock)
+            if os.name == "nt":
+                release_exclusive(lock)
+            else:
+                fcntl.flock(lock, fcntl.LOCK_UN)
     return PartitionRotationOutcome(cutover_id, "ACTIVE", active, predecessor, generation, receipt)
 
 
