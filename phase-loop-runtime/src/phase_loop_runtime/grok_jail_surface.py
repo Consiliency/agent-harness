@@ -592,23 +592,28 @@ def eligibility(binary_sha256: str, *, through: int = 5) -> str | None:
     """The first failing condition of jail contract §2.4 (one of :data:`CONDITIONS`), or
     ``None``. ``through=4`` is the measurement's set (conditions 1 to 4, before
     ``--new-grant`` and ``--rehearse``); the board's L6 and final spawn take all five."""
+    checking = "enforcement"
     try:
         from . import grok_jail_surface as installed
 
         if getattr(installed, "ENFORCEMENT", None) != _ENFORCEMENT_REVISION:
-            return "enforcement"
+            return checking
+        checking = "protection"
         if not _hex64(binary_sha256) or protection_drift(binary_sha256) is not None:
-            return "protection"
+            return checking
         staged_config_bytes()
+        checking = "confirmation"
         launch = _expected_launch(binary_sha256)
         if launch is None:
-            return "confirmation"
+            return checking
+        checking = "boundary"
         if not _boundary_passed(binary_sha256, launch):
-            return "boundary"
+            return checking
+        checking = "record"
         if through >= 5 and _admitted_record(binary_sha256, launch) is None:
-            return "record"
-    except Exception:  # noqa: BLE001 - every unknown is a closed gate
-        return "enforcement"
+            return checking
+    except Exception:  # noqa: BLE001 - every unknown closes the gate, named by its condition
+        return checking
     return None
 
 
@@ -1206,7 +1211,8 @@ def _after_main(seat_home: str) -> int:
 
     home = os.path.abspath(seat_home)
     if not os.path.lexists(home):
-        return 0
+        # Run before cleanup: a seat-home H cannot see is not a clean pass (review N-2).
+        return _AFTER_FINDING
     try:
         root = os.open(home, cred._O_DIR)
     except OSError:

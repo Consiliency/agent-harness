@@ -320,6 +320,49 @@ def test_d_a_new_credential_shaped_file_gives_the_refresh_code(leg):
     assert (status, text, failures) == ("DEGRADED", "", ["grok_seat_token_refreshed_in_jail"])
 
 
+def test_d_an_absent_seat_home_is_a_finding(tmp_path):
+    """Review N-2: the caller runs the after-check before cleanup, so a seat-home H cannot
+    see is a finding, never a clean pass."""
+    assert gjs._after_main(str(tmp_path / "missing")) == 3
+
+
+def test_n1_a_config_drift_refuses_typed_before_the_credential_is_staged(leg, monkeypatch):
+    """Review N-1 (SL-1 N1): an E8-A drift that makes `seat_config()` raise its `_Refused`
+    is `seat_profile_unavailable` at the launch site, before any credential is staged."""
+    staged = []
+    monkeypatch.setattr(cred, "stage_grok_seat_credential",
+                        lambda *a, **k: staged.append(a) or 1 / 0)
+
+    def drifted():
+        raise gts._Refused("record refused")
+    monkeypatch.setattr(gts, "seat_config", drifted)
+    with pytest.raises(seat_jail.SeatSandboxRefused) as caught:
+        leg.prepare(open_gate=False)
+    assert caught.value.code == "seat_profile_unavailable"
+    assert staged == [] and leg.launches == []
+    assert not (leg.tmp / "base" / "seat").exists()
+
+
+@pytest.mark.parametrize("exc, code", [
+    (ValueError("drift"), "seat_profile_unavailable"),
+    (OSError("disk"), "seat_profile_unavailable"),
+    (RuntimeError("other"), "grok leg local failure")])
+def test_n1_the_dispatch_types_an_untyped_preparation_failure(exc, code):
+    """Review N-1: the Grok dispatch's typed fallback, like Gemini's."""
+    assert pi._jailed_grok_failure(exc).template == code
+
+
+def test_n1_the_dispatch_keeps_propagating_what_gemini_propagates():
+    for kind in pi._JAILED_GEMINI_PROPAGATES:
+        assert issubclass(kind, BaseException)
+    source = Path(pi.__file__).read_text(encoding="utf-8")
+    hunk = source[source.index('if leg == "grok" and jailed:'):
+                  source.index('if leg == "gemini" and jailed:')]
+    assert "except _JAILED_GEMINI_PROPAGATES:" in hunk
+    assert hunk.index("except _JAILED_GEMINI_PROPAGATES:") < hunk.index("except Exception")
+    assert "_jailed_grok_failure(exc)" in hunk
+
+
 def test_d_the_in_h_after_check_reads_seat_home(tmp_path):
     home = tmp_path / "seat-home"
     (home / ".grok-rw" / "sessions").mkdir(parents=True)
@@ -746,3 +789,47 @@ def test_the_spawn_gets_exactly_the_argv_and_jail_the_verifier_marked(leg, monke
     assert (tuple(spawned_owner.process_owner), tuple(spawned_owner.pass_fds),
             dict(spawned_owner.env)) == (owner, fds, env)
     assert gjs.admits(context, spawned_owner, argv, cwd)
+
+
+def test_live_jail_d_the_after_check_through_the_real_nsenter_path(tmp_path, monkeypatch):
+    """Review N-2, positive case: a credential-shaped file the stand-in writes as the seat
+    UID gives `grok_seat_token_refreshed_in_jail` through the real in-H after-check; a
+    clean home passes and a home H cannot see is a finding."""
+    _require_live()
+    from phase_loop_runtime import sandbox_egress, seat_uid
+
+    review, staged, _token, proxy = _live_seat(tmp_path, monkeypatch)
+    base = tmp_path / "base"
+    base.mkdir()
+    write = ("import os\n"
+             "open('/seat/home/.grok-rw/auth.json', 'w').write("
+             "'{\"https://accounts.x.ai/sign-in\": {\"key\": \"' + 'k' * 24 + '\"}}')\n"
+             "print('written')\n")
+    uids = seat_uid.subordinate_range(seat_uid.SUBUID_FILE)
+    gids = seat_uid.subordinate_range(seat_uid.SUBGID_FILE)
+    with seat_uid.lease_seat_id(seat_uid.seat_id_count(uids, gids)) as n, \
+            sandbox_egress.isolated_network(timeout_s=300, required=True,
+                                            seat_uid_map=True) as egress:
+        reset = pi._EGRESS_LAUNCH_PREFIX.set(tuple(egress))
+        holder = seat_uid.holder_pid_from_prefix(egress)
+        seat = pi._prepare_jailed_grok(
+            review, base / "seat", SimpleNamespace(staged_tree_sha256=staged), n, holder,
+            ("bundle", "instructions"), proxy, deadline_s=60)
+        home = str(seat.seat.seat_dir / seat_jail.HOST_HOME_DIRNAME)
+        try:
+            before = gjs.after_check_in_h(holder, home)  # the composed, unlaunched home
+            pi._require_canonical_jail(seat.jail)
+            done = subprocess.run([*pi._compose_seat_jail_prefix(seat.jail), "/usr/bin/python3",
+                                   "-I", "-c", write], capture_output=True, text=True,
+                                  timeout=120, pass_fds=seat.jail.pass_fds,
+                                  env=pi._jail_launch_env(), stdin=subprocess.DEVNULL)
+            after = gjs.after_check_in_h(holder, home)
+            missing = gjs.after_check_in_h(holder, home + "-not-there")
+        finally:
+            pi._cleanup_jailed_seat(seat.seat)
+            pi._remove_grok_staged(seat.seat.seat_dir)
+            pi._EGRESS_LAUNCH_PREFIX.reset(reset)
+    assert done.returncode == 0 and "written" in done.stdout, done.stderr[-2000:]
+    assert before is None
+    assert after == "grok_seat_token_refreshed_in_jail"
+    assert missing == "grok_seat_token_refreshed_in_jail"

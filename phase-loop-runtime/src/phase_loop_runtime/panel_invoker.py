@@ -14316,6 +14316,9 @@ def _prepare_jailed_grok(
     from . import seat_profile_grok as grok
 
     tree = _approved_stage_or_refuse(review_dir, review_authorization)
+    # SL-1 N1: the config pin and the E8-A equality first, typed `seat_profile_unavailable`,
+    # before credential staging reaches `seat_config()` itself.
+    surface.staged_config_bytes()
     subject = surface.resolve_subject(_broker_subscription_env(env))
     executable = Path(subject.path)
     jails: list = []
@@ -14323,7 +14326,6 @@ def _prepare_jailed_grok(
         seat_dir.mkdir(mode=0o700)
         config = seat_dir / grok.HOST_GROK_CONFIG_DIRNAME
         credential = cred.stage_grok_seat_credential(config, margin_s=float(deadline_s) + 300.0)
-        surface.staged_config_bytes()
         grok.write_mask_sources(seat_dir)
         ca = _write_egress_ca(seat_dir, egress.ca_cert)
         artifact, instructions = prompt_parts
@@ -14358,6 +14360,15 @@ def _prepare_jailed_grok(
         _remove_grok_staged(seat_dir)
         shutil.rmtree(seat_dir, ignore_errors=True)
         raise
+
+
+def _jailed_grok_failure(exc: Exception) -> _LegFailure:
+    """The Grok dispatch's typed fallback for an untyped preparation failure (review N-1),
+    as ``_jailed_gemini_failure`` is Gemini's: a config drift or an unreadable staged
+    object is ``seat_profile_unavailable``; anything else a fixed local-failure detail."""
+    if isinstance(exc, (ValueError, OSError)):
+        return _LegFailure(template="seat_profile_unavailable")
+    return _LegFailure(template="grok leg local failure")
 
 
 def _exec_jailed_grok_leg(
@@ -19512,6 +19523,15 @@ def _default_spawn(
                             grok_sink.append(_LegFailure(template=exc.code))
                             grok_status, grok_text = "DEGRADED", ""
                             seat_notices.extend(exc.also)
+                        except _JAILED_GEMINI_PROPAGATES:
+                            raise
+                        except Exception as exc:
+                            # Review N-1: typed here, like Gemini's dispatch, so a config
+                            # drift keeps `seat_profile_unavailable`.
+                            failure = _jailed_grok_failure(exc)
+                            _note_exec_refusal(exc, failure.template)
+                            grok_sink.append(failure)
+                            grok_status, grok_text = "DEGRADED", ""
                         if grok_seat is not None:
                             seat_notices.extend(grok_seat.seat.notices)
                         if grok_status != "OK" and grok_sink:

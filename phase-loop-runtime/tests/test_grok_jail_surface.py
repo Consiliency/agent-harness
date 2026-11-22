@@ -682,10 +682,22 @@ def test_precondition_code_opens_only_on_all_five_and_the_jailed_receipt(world, 
     assert grok.tool_surface_code() is None
 
 
-def test_a_raising_eligibility_is_a_closed_gate(world, monkeypatch):
+@pytest.mark.parametrize("raising, condition", [
+    ("protection_drift", "protection"), ("staged_config_bytes", "protection"),
+    ("_expected_launch", "confirmation"), ("_boundary_passed", "boundary"),
+    ("_admitted_record", "record")])
+def test_a_raising_eligibility_is_a_closed_gate_named_by_its_condition(
+        world, monkeypatch, raising, condition):
+    """Review N-6: an exception closes the gate and names the condition being checked."""
     _open_gate(world.binary, world.launch)
-    monkeypatch.setattr(gjs, "_expected_launch", lambda *a, **k: 1 / 0)
-    assert gjs.eligibility(world.binary) == "enforcement"
+    assert gjs.eligibility(world.binary) is None
+
+    def boom(*_a, **_k):
+        raise ValueError("drift")
+    monkeypatch.setattr(gjs, raising, boom)
+    assert gjs.eligibility(world.binary) == condition
+    assert gjs.staged_admission(world.binary) is None
+    _refuses(world)
 
 
 # --- BA-J7, the verifier's half: the measurement admission ------------------------------------
