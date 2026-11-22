@@ -6,6 +6,21 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Added
+
+- The jailed Grok seat's five codes (SEATS GROK lane SL-0, IF-0-GROK-1 "Codes";
+  Consiliency/agent-harness#1820): `grok_seat_credential_missing`,
+  `grok_seat_credential_refused` and `grok_seat_token_expired` (OD-10 ordinary), and
+  `grok_seat_token_in_output` and `grok_seat_token_refreshed_in_jail` (OD-10 security).
+  Each is a typed notice with what, why and a fix line, and an exact literal of the closed
+  leg-detail vocabulary. All five are terminal: none descends, offloads or falls back. No fix
+  line names a key variable, a key credential, or a sealed or inline route; the operator signs
+  in with `grok login`, and a seat never renews that login. Nothing emits the codes yet; the
+  credential and launch lanes do. Existing notices and classifications are unchanged.
+  Pins: `seat_window.runtime_digest()` and the whole-file SDK proof binding of
+  `seat_route_contract.py` move. No SDK proof region, jail profile digest, agy validator
+  closure or QCI moves.
+
 ## [0.7.39] - Unreleased candidate
 
 ### Added

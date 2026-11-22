@@ -318,6 +318,9 @@ _SECURITY_CODES = frozenset({
     "gemini_seat_credential_unusable",
     "gemini_seat_egress_unconfined",
     "gemini_seat_stream_split_unavailable",
+    # SEATS GROK, IF-0-GROK-1
+    "grok_seat_token_in_output",
+    "grok_seat_token_refreshed_in_jail",
     "gemini_seat_subagent_or_unknown_event",
     "gemini_seat_token_in_output",
     "gemini_seat_token_refreshed_in_jail",
@@ -350,6 +353,8 @@ _ORDINARY_CODES = frozenset({
     # SEATS CODEX, IF-0-CODEX-5
     "codex_seat_api_key_refused", "codex_seat_cli_shape", "codex_seat_credential_missing",
     "codex_seat_token_expiring", "codex_seat_tools_unavailable",
+    # SEATS GROK, IF-0-GROK-1
+    "grok_seat_credential_missing", "grok_seat_credential_refused", "grok_seat_token_expired",
     "panel_claude_route_invalid", "panel_claude_transport_not_admitted",
     "executor_review_route_unsupported", "gemini_credential_awaiting_refresh",
     "gemini_credential_near_expiry", "gemini_credential_refresh_timeout",
