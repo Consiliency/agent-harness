@@ -1,0 +1,2 @@
+# JEVHOST R2: the JEV Drill contract copies are byte copies; never convert line endings.
+phase-loop-runtime/tests/fixtures/jevdrill/** -text
