@@ -45,7 +45,10 @@ TEARDOWN_BUDGET_S = 5.0
 _INFO_CAP = 4096
 _EVENTS_CAP = 4096
 _EVENTS_LINE = re.compile(r"([a-z_]+) ([0-9]+)")
-_PIDFD_READY = select.POLLIN | select.POLLHUP | select.POLLERR
+#: ``None`` where ``select`` has no ``poll`` (native Windows): the module still imports,
+#: and every witness read there fails closed (``UNKNOWN``, ``poll_unavailable``).
+_PIDFD_READY = (select.POLLIN | select.POLLHUP | select.POLLERR
+                if hasattr(select, "poll") else None)
 
 
 class ProofFault(Exception):
@@ -178,6 +181,8 @@ class TreeProof:
     # -- observation ---------------------------------------------------------------
 
     def _read(self, fd: int) -> tuple[bool, str]:
+        if _PIDFD_READY is None:
+            raise ProofFault("poll_unavailable")
         if self.kind == CGROUP:
             try:
                 body = os.pread(fd, _EVENTS_CAP, 0)
@@ -244,12 +249,13 @@ class TreeProof:
         private = self._dup_witness(deadline)
         if private is not None:
             try:
-                poller = select.poll()
-                poller.register(private, (select.POLLPRI | select.POLLERR)
-                                if self.kind == CGROUP else select.POLLIN)
-                timeout = min(SLICE_S, _remaining(deadline))
-                if timeout > 0:
-                    poller.poll(int(timeout * 1000) or 1)
+                if _PIDFD_READY is not None:  # no poll here; observe() fails closed
+                    poller = select.poll()
+                    poller.register(private, (select.POLLPRI | select.POLLERR)
+                                    if self.kind == CGROUP else select.POLLIN)
+                    timeout = min(SLICE_S, _remaining(deadline))
+                    if timeout > 0:
+                        poller.poll(int(timeout * 1000) or 1)
             except OSError:
                 pass
             finally:
