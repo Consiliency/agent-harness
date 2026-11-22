@@ -8,6 +8,22 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
+- The JEV Drill host adapter, integrated from the draft agent-harness#2071 (JEVHOST;
+  `plans/phase-plan-v1-jevhost-JEVHOST.md`). It adds `jevdrill_adapter` and
+  `jevdrill_queue`, the portability modules `file_lock`, `windows_process` and
+  `windows_storage`, and the JEV Drill contract copies under
+  `tests/fixtures/jevdrill/`, synced to Consiliency/jevdrill `998912b1e`. The adapter is
+  off by default: with no adapter, every existing launch path is unchanged. With one,
+  `run_loop` bypasses lane waves and records a `lane_scheduler` event with reason
+  `jevdrill_adapter`. Review launches are refused on native Windows
+  (`review_unsupported_on_windows`). The Codex usage probe runs only on execute launches,
+  through the owned launch seam, so usage on review is recorded as unknown. Installed-JEV
+  tests carry the `jevdrill_installed` marker, which skips only when neither
+  `JEVDRILL_TEST_CLI` nor `JEVDRILL_TEST_PYTHON` is set; otherwise an install preflight
+  fails a broken install. The new non-required `jevdrill-companion` workflow runs the
+  receipt and installed legs on Linux, and on dispatch on macOS and Windows. Pins: every
+  touched package module moves `runtime_digest()`, so window records keyed to the old
+  value need requalification.
 - The jailed Grok seat's five codes (SEATS GROK lane SL-0, IF-0-GROK-1 "Codes";
   Consiliency/agent-harness#1820): `grok_seat_credential_missing`,
   `grok_seat_credential_refused` and `grok_seat_token_expired` (OD-10 ordinary), and
