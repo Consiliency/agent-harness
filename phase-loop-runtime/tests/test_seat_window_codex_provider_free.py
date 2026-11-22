@@ -447,16 +447,61 @@ def not_ready_erratum_holds(terminal: str, events, stream) -> bool:
             and not any(getattr(event, "decision", None) == "allow" for event in events))
 
 
+def zstd_decoder():
+    """A zstd decoder for request bodies: ``compression.zstd`` (Python 3.14+), else the
+    ``zstandard`` package, else the trusted ``/usr/bin/zstd``; ``None`` when there is none."""
+    try:
+        from compression import zstd as _zstd  # type: ignore[import-not-found]
+        return _zstd.decompress
+    except ImportError:
+        pass
+    try:
+        import zstandard  # type: ignore[import-not-found]
+        return lambda data: zstandard.ZstdDecompressor().decompress(data, max_output_size=1 << 24)
+    except ImportError:
+        pass
+    if os.path.isfile("/usr/bin/zstd") and os.access("/usr/bin/zstd", os.X_OK):
+        import subprocess
+
+        def decode(data: bytes) -> bytes:
+            return subprocess.run(["/usr/bin/zstd", "-d", "-q", "-c"], input=data,
+                                  capture_output=True, check=True, timeout=30).stdout
+        return decode
+    return None
+
+
+def responder_problems_for_evidence(problems) -> list:
+    """The responder's problem list as the evidence keeps it (bounded; values only)."""
+    return [str(problem)[:500] for problem in list(problems)[:50]]
+
+
 class _BearerRecorder:
     """Mixin for the loopback responder (an observation only; every response is the
     consumed responder's, unchanged): the bearer each request presented, and for each
-    request answered its method, target and ``Authorization`` sha256 (``None`` if absent)."""
+    request answered its method, target and ``Authorization`` sha256 (``None`` if absent).
+
+    It also undoes the request's ``Content-Encoding`` before the consumed responder parses
+    the body: Codex 0.167.0's production provider zstd-compresses its Responses requests
+    under ChatGPT auth, which the consumed responder (written for a custom provider) never
+    saw. An encoding it cannot undo is recorded as a problem."""
 
     def _drain_body(self, tls, headers, rest):
         with self._lock:
             self.bearers.append(headers.get("authorization", ""))
         self._local.authorization = authorization_sha256(headers)
-        return super()._drain_body(tls, headers, rest)
+        result = super()._drain_body(tls, headers, rest)
+        encoding = (headers.get("content-encoding") or "").strip().lower()
+        if encoding not in ("", "identity"):
+            decode = zstd_decoder() if encoding == "zstd" else None
+            try:
+                if decode is None:
+                    raise ValueError("no decoder")
+                self._local.body = decode(getattr(self._local, "body", b""))
+            except Exception as exc:
+                with self._lock:
+                    self.problems.append(f"content-encoding {encoding!r}: {exc}")
+                self._local.body = b""
+        return result
 
     def _respond(self, tls, method, target):
         with self._lock:
@@ -906,6 +951,7 @@ def _a_c1(tmp_path, monkeypatch, codex_upstream, *, case):
     outcome = "bound_breach" if breaches else "hard_failure" if reasons else "verdict"
     _write_evidence(case, {
         "outcome": outcome, "hard_failure_reasons": reasons, "bound_breaches": breaches,
+        "responder_problems": responder_problems_for_evidence(upstream.problems),
         "process_failure": process_failure, "credential_readback_error": readback_error,
         "case": case, "kind": kind, "credential_mode": mode, "terminal": terminal,
         "status": status, "model_turn": model_turn, "tool_steps": tools,
