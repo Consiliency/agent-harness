@@ -1656,3 +1656,18 @@ Frozen receipt *content* changes with the new context.
 - **Console sync (item 4):** deliberately given no confirming launch. It is refused whatever its route.
 
 Nothing else in the contract changes.
+
+### Erratum 9 (2026-11-22) — the jailed launch context `grok_jail_context.v1`
+
+Source: the coordinator's ruling 1 for GROK, applied by the planning amendment the jailed contract's §8 names (the re-pin gate of `plans/phase-plan-v1-seats-GROK.md`). This is a pointer erratum; its text is the jailed contract's §8, verbatim:
+
+**Erratum 9 (jailed context).** A second launch context, `grok_jail_context.v1`, is defined
+by `plans/artifacts/grok-jail-tool-surface-contract-v1.md`. In it the `staged` form is
+eligible only while all five conditions of its §2.4 hold, each a checked gate: its
+enforcement installed, the protected set pinned for the image, the masked-projection
+confirmation and the real-launcher boundary check recorded for the image's launch digest,
+and an admitted jailed record; otherwise it stays closed. Everywhere else erratum 8's item
+1d stands, including the unjailed frozen-basis `staged` refusal. It amends §3.1–§3.3, §4.1–§4.4, §5.1, §5.3, §5.4, §5.7, §5.8, §5.10 and §10
+as its §8 lists. `grok_seat_context.v1` and `context_digest()` are unchanged.
+
+Nothing else in the contract changes.
