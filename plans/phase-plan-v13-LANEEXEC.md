@@ -65,7 +65,7 @@ tree that binding §0 pins. Its items:
 | Item | Ruling |
 | --- | --- |
 | E2-1 | `capped_popen` takes `before_spawn` (agent-harness#2033); LaneExec never passes it. Collection is the landed reap thread, and the supervisor outlives it or reports `cleanup_pending`. |
-| E2-2 | SL-3 zero-egress amendment: every openshell launch goes through `sandbox_placement.openshell_launch_refusal` at the activation step, the only openshell activation and egress check (agent-harness#2003; owner egress ruling of 2026-11-19, quoted in binding §6). The ACTIVATE roadmap goal is agent-harness#2104. |
+| E2-2 | SL-3 zero-egress amendment (owned by SL-8 since errata-3): every openshell launch goes through `sandbox_placement.openshell_launch_refusal` at the activation step, the only openshell activation and egress check (agent-harness#2003; owner egress ruling of 2026-11-19, quoted in binding §6). The ACTIVATE roadmap goal is agent-harness#2104. |
 | E2-3 | `execute_lane_waves` (agent-harness#1978) launches writable lanes. SL-4 guards the runner's concurrent branch: placement enabled never enters it. |
 | E2-4 | A RAM-backed `staging_root()`, or an override onto another device, refuses `capability_unmet` under the two-check device rule. An exception from it, or from `readiness_code()`, is `capability_unmet`. |
 | E2-5 | Panel verdict and gates recorded; manifest `review_status` updated. |
@@ -77,10 +77,10 @@ STOP. Its items:
 
 | Item | Ruling |
 | --- | --- |
-| E3-1 | The L-S1 pre-claim check runs in one isolated helper, `trusted_module_argv("phase_loop_runtime.launch_admission")`: `load_v2_binding`, `reconcile_v2_binding` with the controller document held in memory, `activate_v2_binding`, `capture_launch_v2`, `prepare_launch_v2`, then `discard_admission` in a `finally`. The controller bytes reach it over a stdin pipe and nothing is written before the claim. Counters, inventory rows and outcome mapping are in binding §7 E3-1. |
+| E3-1 | The L-S1 pre-claim check runs in one isolated helper, `trusted_module_argv("phase_loop_runtime.launch_admission")`: `load_v2_binding`, `reconcile_v2_binding` with the controller document held in memory, `activate_v2_binding`, the codec's `decode_v2` and `precheck_v2_admission` before capture, then `capture_launch_v2`, `prepare_launch_v2`, and `discard_admission` in a `finally`. The controller bytes are serialized once. They reach the helper over a stdin pipe, and the helper never writes them. After the claim the supervisor publishes the same bytes. A failed publication keeps the claim and starts nothing, ending `finished`/`failed_to_start` with zero worker invocations as crash-after-claim recovery. Diagnostics, counters and inventory rows are in binding §7 E3-1. |
 | E3-2 | `ClientConfig` is the captured `PlacementClientConfig`. LaneExec settings live in its `launch` object, which `config_sha256` covers. SL-7 defines the shape and SL-6 documents it. |
-| E3-3 | SL-3 is split: SL-3 (coordinator label SL-3a), SL-7 (SL-3b), SL-8 (SL-3c) and SL-9 (SL-3d), with numeric IDs because the validator requires them. Each former SL-3.1 obligation and SL-3.3 mutation has one owner in binding §7 E3-3. |
-| E3-4 | The E2-4 mount cases skip with a named reason without fixture mounts, and run in the new `laneexec-mounts` workflow on a loop-backed second device and the runner's tmpfs. No required check runs them; the gap is stated in binding §7 E3-4. |
+| E3-3 | SL-3 is split: SL-3 (coordinator label SL-3a), SL-7 (SL-3b), SL-8 (SL-3c) and SL-9 (SL-3d), with numeric IDs because the validator requires them. Each former SL-3.1 obligation and SL-3.3 mutation has one owner in binding §7 E3-3, which also fixes the SL-8/SL-9 staging seam and the reduced dependency graph. |
+| E3-4 | The E2-4 mount cases skip with a named reason without fixture mounts, and run in the new `laneexec-mounts` workflow on a loop-backed second device and the runner's tmpfs. The SL-6 receipt needs a same-head run whose JUnit artifact shows all five cases (M1–M5) passed. No required check runs them; the gap is stated in binding §7 E3-4. |
 
 ## Interface Freeze Gates
 
@@ -122,41 +122,41 @@ STOP. Its items:
 
 SL-0 — Packaged launch contract and strict codec
   Depends on: (none)
-  Blocks: SL-1, SL-2, SL-3, SL-4, SL-5, SL-7, SL-8
+  Blocks: SL-1, SL-2, SL-5, SL-6, SL-7
   Parallel-safe: no
 
 SL-1 — Snapshot and seed construction
   Depends on: SL-0
-  Blocks: SL-8
+  Blocks: SL-6, SL-8
   Parallel-safe: yes
 
 SL-2 — Return, status and cancel mapping
   Depends on: SL-0
-  Blocks: SL-3, SL-8
+  Blocks: SL-3, SL-6, SL-8
   Parallel-safe: yes
 
 SL-3 — Launch service: prepare, status, cancel and lifecycle hooks (SL-3a)
-  Depends on: SL-0, SL-2
-  Blocks: SL-4, SL-5, SL-8, SL-9
+  Depends on: SL-2
+  Blocks: SL-4, SL-5, SL-6, SL-8
   Parallel-safe: yes
 
 SL-7 — Routes, templates, registration and launch settings (SL-3b)
   Depends on: SL-0
-  Blocks: SL-4, SL-5, SL-8
+  Blocks: SL-4, SL-5, SL-6, SL-8
   Parallel-safe: yes
 
 SL-8 — Launch order, exec claim, admission helper and local supervisor (SL-3c)
-  Depends on: SL-0, SL-1, SL-2, SL-3, SL-7
-  Blocks: SL-5, SL-9
+  Depends on: SL-1, SL-2, SL-3, SL-7
+  Blocks: SL-5, SL-6, SL-9
   Parallel-safe: no
 
 SL-9 — Openshell route, bridge and coordinator lifetime (SL-3d)
-  Depends on: SL-3, SL-8
-  Blocks: SL-4, SL-5
+  Depends on: SL-8
+  Blocks: SL-4, SL-5, SL-6
   Parallel-safe: no
 
 SL-4 — Phase-loop lane placement site
-  Depends on: SL-0, SL-3, SL-7, SL-9
+  Depends on: SL-3, SL-7, SL-9
   Blocks: SL-6
   Parallel-safe: yes
 
@@ -186,7 +186,7 @@ patch-return and run-status evidence (SL-2); the reducer (SL-6).
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-0.1 | test | — | `tests/test_launch_process_contract.py`, `tests/test_gate_a_wheel_isolation.py` | obligation C1 and the schema cases of C10 and C11 as the wire artifact lists them; both crossed Pi policy/target pairs decode and are left to SL-3's binding refusal; `patch` with `pi-runner` refused; packaged bytes equal the artifact; Reservation resolves through the PLACECLI `$id`; installed-wheel load; additions to `tests/test_gate_a_wheel_isolation.py` go in `GateAConformEvidenceScopeTest` | `V0` |
+| SL-0.1 | test | — | `tests/test_launch_process_contract.py`, `tests/test_gate_a_wheel_isolation.py` | obligation C1 and the schema cases of C10 and C11 as the wire artifact lists them; both crossed Pi policy/target pairs decode and are left to SL-8's binding refusal; `patch` with `pi-runner` refused; packaged bytes equal the artifact; Reservation resolves through the PLACECLI `$id`; installed-wheel load; additions to `tests/test_gate_a_wheel_isolation.py` go in `GateAConformEvidenceScopeTest` | `V0` |
 | SL-0.2 | impl | SL-0.1 | `launch_process_contract.py`, `contracts/placement/launch-v1.schema.json` | — | — |
 | SL-0.3 | verify | SL-0.2 | SL-0 owned files | all SL-0 tests | `V0`; mutating the packaged bytes while updating only a test expectation still fails |
 
@@ -248,10 +248,10 @@ patch-return and run-status evidence (SL-2); the reducer (SL-6).
 
 ### SL-8 — Launch order, exec claim, admission helper and local supervisor (SL-3c)
 
-- **Scope**: The `x-launch-inputs.order` through the claim, the isolated pre-claim admission helper (binding §7 E3-1), the controller hand-off and chain root, the detached supervisor with the capped parent, local lifetime and the local route, and the E2-4 mount workflow (binding §7 E3-4).
+- **Scope**: The common `x-launch-inputs.order` through the claim on both routes, including pre-claim scratch staging, activation (zero-egress) and the lifetime gate. Also the isolated pre-claim admission helper (binding §7 E3-1), controller publication and the chain root, the detached supervisor with the capped parent, local lifetime and the local route, and the E2-4 mount workflow (binding §7 E3-4). After the claim it hands the immutable staged payload to SL-9.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/launch_exec.py`, `phase-loop-runtime/src/phase_loop_runtime/launch_admission.py`, `phase-loop-runtime/src/phase_loop_runtime/launch_supervisor.py`, `phase-loop-runtime/src/phase_loop_runtime/launch_lifetime.py`, `phase-loop-runtime/tests/test_launch_service.py`, `phase-loop-runtime/tests/test_launch_admission.py`, `phase-loop-runtime/tests/test_launch_local_caps.py`, `phase-loop-runtime/tests/test_launch_lifetime.py`, `.github/workflows/laneexec-mounts.yml`
 - **Interfaces provided**: `launch_exec.launch_attempt`, the `launch_admission` helper module
-- **Interfaces consumed**: records (SL-0), `build_snapshot`, `build_seed` (SL-1), `collect_return`, `map_status` (SL-2), `build_launch_service` and the lifecycle hooks (SL-3), `register_templates` and `launch_settings` (SL-7), `read_binding_locator`, `load_v2_binding`, `reconcile_v2_binding`, `activate_v2_binding`, `capture_launch_v2`, `prepare_launch_v2`, `discard_admission`, `parse_v2`, `canonicalize_v2`, `AttemptBinding`, the §4.2 controller document and `supervised_worker_cli launch --envelope --result` (CLOSEOUT), `seat_resource_caps.capped_popen`, `load_caps`, `caps_sha256`, `readiness_code` (pre-existing), `seat_uid.trusted_module_argv` (pre-existing), `sandbox_policy.staging_root` (pre-existing), `sandbox_placement.openshell_launch_refusal` (pre-existing, agent-harness#2003), `ci/seat-caps-host.sh` (pre-existing, unchanged)
+- **Interfaces consumed**: records (SL-0), `build_snapshot`, `build_seed` (SL-1), `collect_return`, `map_status` (SL-2), `build_launch_service` and the lifecycle hooks (SL-3), `register_templates` and `launch_settings` (SL-7), `read_binding_locator`, `load_v2_binding`, `reconcile_v2_binding`, `activate_v2_binding`, the activated codec's `decode_v2` and `precheck_v2_admission`, `capture_launch_v2`, `prepare_launch_v2`, `discard_admission`, `parse_v2`, `canonicalize_v2`, `AttemptBinding`, the §4.2 controller document and `supervised_worker_cli launch --envelope --result` (CLOSEOUT), `seat_resource_caps.capped_popen`, `load_caps`, `caps_sha256`, `readiness_code` (pre-existing), `seat_uid.trusted_module_argv` (pre-existing), `sandbox_policy.staging_root` (pre-existing), `sandbox_placement.openshell_launch_refusal` (pre-existing, agent-harness#2003), `ci/seat-caps-host.sh` (pre-existing, unchanged)
 - **Parallel-safe**: no
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
@@ -262,7 +262,7 @@ patch-return and run-status evidence (SL-2); the reducer (SL-6).
 
 ### SL-9 — Openshell route, bridge and coordinator lifetime (SL-3d)
 
-- **Scope**: The openshell route entry against the fake coordinator: scratch staging and upload, the one coordinator exec with the landlock-exec helper from the image record (fixture until binding §6 E2-6 lands), bridge attach and loss, coordinator renewal, fencing and `lifetime_exceeded`.
+- **Scope**: The openshell route after the claim, against the fake coordinator: storage and provisioning of SL-8's staged payload and its results, the one coordinator exec with the landlock-exec helper from the image record (fixture until binding §6 E2-6 lands), bridge attach and loss, coordinator renewal, fencing and `lifetime_exceeded`.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/launch_openshell.py`, `phase-loop-runtime/src/phase_loop_runtime/placement_lease.py`, `phase-loop-runtime/src/phase_loop_runtime/openshell_backend.py`, `phase-loop-runtime/tests/test_launch_openshell.py`, `phase-loop-runtime/tests/test_placement_lease.py`, `phase-loop-runtime/tests/test_openshell_backend.py`
 - **Interfaces provided**: `launch_openshell` route entry
 - **Interfaces consumed**: `launch_exec.launch_attempt`, the supervisor and lifetime core (SL-8), the lifecycle hooks (SL-3), `ForwardTcpUnixBridge` (PLACECLI), `openshell_artifacts.Bound` (pre-existing), `openshell_worker.landlock_manifest` (pre-existing)
@@ -312,7 +312,7 @@ patch-return and run-status evidence (SL-2); the reducer (SL-6).
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-6.1 | test | — | `tests/test_laneexec_receipt.py` | the receipt parser refuses missing or skipped-only results, stale artifact hashes, a shared-file pin, an enabled live route, a shipped `laneexec` launcher default, a shipped qualification record, or E2-4 mount nodes without a passing `laneexec-mounts` run at the receipt's head (binding §7 E3-4) | `V6` |
+| SL-6.1 | test | — | `tests/test_laneexec_receipt.py` | the receipt parser refuses missing or skipped-only results, stale artifact hashes, a shared-file pin, an enabled live route, a shipped `laneexec` launcher default, a shipped qualification record, or a receipt without a `laneexec-mounts` run at the receipt's head whose JUnit artifact shows M1–M5 passed with mounts required (binding §7 E3-4) | `V6` |
 | SL-6.2 | docs | SL-6.1 | docs, README, catalog | messages, `prepare`, exit classes, routes and the L-S7 mapping, templates, the `launch` settings object (binding §7 E3-2), snapshot modes and masks, seeds and `scratch_path`, lifetime, caps on the block-backed route (L-S3), status and cancel mapping (L-S4), return rules (L-S5), the interim local route and switch; providers name egress only and credentials stay with the requester | — |
 | SL-6.3 | docs | SL-6.2 | `CHANGELOG.md`, `.doc-decisions.json`, `plans/manifest.json`, `plans/evidence/placement/LANEEXEC.md` | one Unreleased entry; actual V0–V7 outcomes; lifecycle event appended without editing frozen inputs | — |
 | SL-6.4 | verify | SL-6.3 | SL-6 owned files | receipt test | `V6`, then `V7` |
@@ -401,7 +401,7 @@ binding §5. Each group runs as `cd phase-loop-runtime && PYTHONPATH="$PWD/src:$
 - V2: `tests/test_launch_return.py`
 - V3a: `tests/test_launch_prepare.py tests/test_launch_release_reap.py tests/test_sandbox_placement.py`
 - V3b: `tests/test_launch_routes.py`
-- V3c: `tests/test_launch_service.py tests/test_launch_admission.py tests/test_launch_local_caps.py tests/test_launch_lifetime.py`; the E2-4 mount nodes skip with a named reason without fixture mounts and run in `laneexec-mounts` (binding §7 E3-4)
+- V3c: `tests/test_launch_service.py tests/test_launch_admission.py tests/test_launch_local_caps.py tests/test_launch_lifetime.py`; the M1–M5 mount nodes skip with a named reason without fixture mounts and run in `laneexec-mounts` (binding §7 E3-4)
 - V3d: `tests/test_launch_openshell.py tests/test_placement_lease.py tests/test_openshell_backend.py`
 - V3: V3a to V3d together
 - V4: `tests/test_phase_loop_lane_placement.py tests/test_phase_loop_lane_harnesses.py`

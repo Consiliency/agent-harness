@@ -15232,7 +15232,7 @@
           "sha256": "1cea960ddd28ef5e1c4bf79083fa9f9938b2c99c2e29dbd937864944ca76d7e8"
         },
         "plans/artifacts/v13-LANEEXEC-landed-binding.md": {
-          "sha256": "077b537d0744d63d5f4b6e807b0006088f5e51b26d095078ee5f7d9694186e1f"
+          "sha256": "b0ead54a270021c369d37aa72a8df35c1d1e48ed4f4f234fda9b4b4a2cd1a282"
         },
         "plans/artifacts/v12-v13-replan-ownership.md": {
           "sha256": "e5dbbfb45c23cbb6acb9756a23a3d86b62dd5b172b94d6a495ef436d189f3e06"
@@ -15337,7 +15337,13 @@
               },
               "wire_bytes_changed": false
             },
-            "remaining_gate": "separate execution authority for claude-execute-phase"
+            "remaining_gate": "separate execution authority for claude-execute-phase",
+            "review": {
+              "pr": "agent-harness#2126",
+              "round": 1,
+              "verdict": "REQUEST CHANGES",
+              "edits": "applied"
+            }
           },
           "transition": "committed"
         }
