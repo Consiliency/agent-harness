@@ -224,7 +224,7 @@ patch-return and run-status evidence (SL-2); the reducer (SL-6).
 
 - **Scope**: `build_launch_service` with every injection seam the SL-3 lanes use, and `LaunchService.prepare`, `status` and `cancel`. `launch` is one late-bound call to SL-8 (binding §7 E3-3). The `PlacementLifecycle` hooks: the prepare record, the claim compare-and-set and its rollback, the local heartbeat write, release and reap. Provide the §9 lifecycle transactions, bounded heartbeat, durable fence and verified supervisor cancel in the existing service and lifecycle files.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/launch_service.py`, `phase-loop-runtime/src/phase_loop_runtime/sandbox_placement.py`, `phase-loop-runtime/tests/test_launch_prepare.py`, `phase-loop-runtime/tests/test_launch_release_reap.py`, `phase-loop-runtime/tests/test_sandbox_placement.py`
-- **Interfaces provided**: `build_launch_service`, `LaunchService`, the release, reap, claim, rollback and heartbeat hooks in `PlacementLifecycle`
+- **Interfaces provided**: `build_launch_service` with its keyword-only `supervisor_runner` parameter, `LaunchService`, `LaunchService.launch_lane`, the immutable `LaneContext` record, the release, reap, claim, rollback and heartbeat hooks in `PlacementLifecycle`
 - **Interfaces consumed**: records (SL-0), `map_status`, `map_cancel` (SL-2), `PlacementLifecycle` (PLACECLI), `seat_resource_caps.load_caps` (pre-existing), `sandbox_policy.placement_state_root` (pre-existing), `attempt_status` (pre-existing), `cancel_attempt` (pre-existing)
 - **Parallel-safe**: yes
 
@@ -233,7 +233,7 @@ patch-return and run-status evidence (SL-2); the reducer (SL-6).
 | SL-3.1 | test | — | SL-3 test files | the SL-3 rows of binding §7 E3-3 ("Re-homing of SL-3.1"), through `build_launch_service` | `V3a` |
 | SL-3.2 | impl | SL-3.1 | `launch_service.py`, `sandbox_placement.py` | — | — |
 | SL-3.3 | verify | SL-3.2 | SL-3 owned files | all SL-3 tests | `V3a`; the SL-3 mutations of binding §7 E3-3 each fail |
-| SL-3.4 | test | SL-3.3 | `tests/test_launch_release_reap.py` | §9 precursor: generation-checked hooks and record recovery, cancel framing, peer identity, lock order, rollback/release races and implicit prepare | `V3a` |
+| SL-3.4 | test | SL-3.3 | `tests/test_launch_release_reap.py` | §9 precursor: generation-checked hooks and record recovery, cancel framing and peer identity with a real bind/connect under a launch root longer than 107 bytes, lock order, rollback/release races and implicit prepare. Test launch_lane forwarding with explicit lane origin and supervisor_runner injection at the factory. Verify settings, environment and request cannot override the default detached runner | `V3a` |
 | SL-3.5 | impl | SL-3.4 | `launch_service.py`, `sandbox_placement.py` | §9 producer interfaces | — |
 | SL-3.6 | verify | SL-3.5 | SL-3 owned files | §9 precursor and landed regressions | `V3a` |
 

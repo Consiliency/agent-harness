@@ -1079,7 +1079,7 @@ and the corresponding SL-8 tasks on the integrated input in §0.
 | Findings | Decision |
 | --- | --- |
 | 1, 3, 12 | Retain both policy digests. Require a reviewed worker projection for authoritative execution. Verify the actual local bind destination and use SL-1's default workload modes. |
-| 2 | SL-4 supplies trusted scheduler context for lane calls. Process assignment uses the frozen derivation. Nonempty caller context narrows admission to independently evidenced suitability. The codec diagnostic is preserved. |
+| 2 | SL-3a defines LaneContext at the service boundary. SL-4 supplies it from trusted scheduler records for SL-8 admission to match. Process assignment uses the frozen derivation. Nonempty caller context narrows admission to independently evidenced suitability. The codec diagnostic is preserved. |
 | 4 | SL-7 splits static route validation from activation for SL-8. Apply both the host gate and the captured client opt-in at activation. |
 | 5, 6, 9 | SL-8 owns request election, generation-bound staging and the supervisor. SL-3a supplies the ordered locks, generation-scoped records, verified cancel client and teardown gates specified in the resolutions table. Provision the retained return parent while locked. Release the provisioning journal lock at claim. |
 | 7, 8 | Freeze detached inputs and a bounded return-verdict channel. Check captured caps. Track descendant exit and observed collection independently. |
