@@ -144,7 +144,7 @@ def test_git_mode_classes_self_contained_git_and_input_commit(tmp):
     classes = {e["path"]: e["class"] for e in handle.inventory}
     assert classes["a.txt"] == classes["dir/b.txt"] == classes[".gitignore"] == "tracked"
     assert classes["notes.txt"] == "untracked"
-    assert classes["debug.log"] == "omitted" and classes["build"] == "omitted"
+    assert classes["debug.log"] == "omitted" and classes["build/out.o"] == "omitted"
     assert handle.counts.to_json() == {"tracked": 3, "untracked": 1, "ignored": 0, "omitted": 2,
                                        "masked": 0, "special": 0}
     tree = handle.tree
@@ -327,8 +327,8 @@ def test_too_large_at_each_cap(tmp):
 
 def test_timeout_and_cancel(tmp):
     repo = make_repo(tmp / "src", {"a.txt": "a\n"})
-    refused("timeout", ls.build_snapshot, spec(repo), policy=policy(), scratch=tmp / "t", cancelled=never,
-            deadline=time.monotonic() - 1)
+    with ls.snapshot_budget(0):
+        refused("timeout", ls.build_snapshot, spec(repo), policy=policy(), scratch=tmp / "t", cancelled=never)
     with pytest.raises(ls.ConstructionCancelled):
         ls.build_snapshot(spec(repo), policy=policy(), scratch=tmp / "c", cancelled=lambda: True)
     assert not (tmp / "t").exists() and not (tmp / "c").exists()
@@ -969,9 +969,227 @@ def test_default_entry_cap_launches_exactly_at_the_cap(tmp):
 
 def test_seed_timeout_and_cancel(tmp):
     root, decl, _ = seed_tree(tmp, {"a": b"x"})
-    seed_refused("timeout", ls.build_seed, decl, request_id=REQUEST_ID, seed_root=root,
-                 limits=ls.DEFAULT_SEED_LIMITS, staging=tmp / "t", cancelled=never,
-                 deadline=time.monotonic() - 1)
+    with ls.snapshot_budget(0):
+        seed_refused("timeout", ls.build_seed, decl, request_id=REQUEST_ID, seed_root=root,
+                     limits=ls.DEFAULT_SEED_LIMITS, staging=tmp / "t", cancelled=never)
     with pytest.raises(ls.ConstructionCancelled):
         ls.build_seed(decl, request_id=REQUEST_ID, seed_root=root, limits=ls.DEFAULT_SEED_LIMITS,
                       staging=tmp / "c", cancelled=lambda: True)
+
+
+# -- review round 1 -------------------------------------------------------------------------
+
+@pytest.fixture
+def file_reads(monkeypatch):
+    """Bytes read through os.read from regular files, by inode (pipes and directories excluded)."""
+    counts: dict[int, int] = {}
+    real = os.read
+
+    def tracing(fd, n):
+        data = real(fd, n)
+        info = os.fstat(fd)
+        if stat.S_ISREG(info.st_mode):
+            counts[info.st_ino] = counts.get(info.st_ino, 0) + len(data)
+        return data
+    monkeypatch.setattr(os, "read", tracing)
+    return counts
+
+
+def test_reads_stop_at_the_remaining_aggregate_cap(tmp, file_reads):
+    repo = make_repo(tmp / "src", {"a.txt": "a" * 100, "b.txt": "b" * 100})
+    refused("too_large", build, tmp, spec(repo), policy(limits=ls.SnapshotLimits(max_bytes=150)))
+    assert file_reads.get(os.stat(repo / "b.txt").st_ino, 0) == 0
+    assert sum(file_reads.get(os.stat(repo / n).st_ino, 0) for n in ("a.txt", "b.txt")) <= 151
+
+
+def test_copy_is_bounded_by_the_admitted_size_of_a_file_grown_after_inventory(tmp, monkeypatch, file_reads):
+    repo = make_repo(tmp / "src", {"a.txt": "a\n"})
+    (repo / "u.txt").write_bytes(b"u" * 10)
+    inode = os.stat(repo / "u.txt").st_ino
+    monkeypatch.setattr(ls, "_after_inventory", lambda: (repo / "u.txt").write_bytes(b"u" * 4_000_000))
+    refused("source_changed", build, tmp, spec(repo))
+    assert file_reads.get(inode, 0) <= 11
+
+
+def test_the_budget_is_checked_during_a_read(tmp, monkeypatch, file_reads):
+    repo = make_repo(tmp / "src", {"a.txt": "a\n"})
+    (repo / "big.bin").write_bytes(b"z" * (8 * 1024 * 1024))
+    inode = os.stat(repo / "big.bin").st_ino
+    real = os.read
+
+    def slow(fd, n):
+        if os.fstat(fd).st_ino == inode:
+            time.sleep(0.4)
+        return real(fd, n)
+    monkeypatch.setattr(os, "read", slow)
+    with ls.snapshot_budget(1.0):
+        refused("timeout", build, tmp, spec(repo))
+    assert not (tmp / "attempt").exists()
+
+
+def test_overlay_cap_applies_to_every_included_file_before_reading(tmp, file_reads):
+    repo = make_repo(tmp / "src", {"big.txt": "x" * 64, "small.txt": "s"})
+    (repo / "small.txt").write_text("changed")
+    refused("too_large", build, tmp, spec(repo, "git_overlay"),
+            policy(limits=ls.SnapshotLimits(untracked_blob_max_bytes=63)))
+    assert file_reads.get(os.stat(repo / "big.txt").st_ino, 0) == 0
+
+
+def test_overlay_staged_new_file_removed_from_the_work_tree_is_a_deletion(tmp):
+    repo = make_repo(tmp / "src", {"a.txt": "a\n"})
+    (repo / "new.txt").write_text("n\n")
+    git(repo, "add", "new.txt")
+    (repo / "new.txt").unlink()
+    handle = build(tmp, spec(repo, "git_overlay"))
+    assert json.loads(handle.overlay) == [["new.txt", "deleted", None]]
+    assert not (handle.tree / "new.txt").exists()
+
+
+def test_overlay_staged_removal_recreated_as_ignored_is_not_copied_and_is_a_deletion(tmp):
+    repo = make_repo(tmp / "src", {"a.txt": "a\n", "cache.dat": "base\n", ".gitignore": "\n"})
+    git(repo, "rm", "-q", "cache.dat")
+    (repo / ".gitignore").write_text("cache.dat\n")
+    (repo / "cache.dat").write_text("recreated, ignored\n")
+    handle = build(tmp, spec(repo, "git_overlay"))
+    assert not (handle.tree / "cache.dat").exists()
+    rows = json.loads(handle.overlay)
+    assert ["cache.dat", "deleted", None] in rows
+    assert {e["path"]: e["class"] for e in handle.inventory}["cache.dat"] == "omitted"
+
+
+def test_overlay_file_replaced_by_a_directory_records_deletion_and_additions(tmp):
+    repo = make_repo(tmp / "src", {"a": "file\n", "keep.txt": "k\n"})
+    (repo / "a").unlink()
+    (repo / "a").mkdir()
+    (repo / "a" / "x.txt").write_text("x\n")
+    handle = build(tmp, spec(repo, "git_overlay"))
+    assert json.loads(handle.overlay) == [["a", "deleted", None], ["a/x.txt", "file", sha(b"x\n")]]
+    assert (handle.tree / "a" / "x.txt").read_text() == "x\n"
+
+
+def test_git_mode_inventories_a_fifo_as_special_without_opening_it(tmp, opened):
+    repo = make_repo(tmp / "src", {"a.txt": "a\n"})
+    os.mkfifo(repo / "pipe")
+    opened.clear()
+    handle = build(tmp, spec(repo))
+    assert {e["path"]: e["class"] for e in handle.inventory}["pipe"] == "special"
+    assert "pipe" not in opened
+    assert not os.path.lexists(handle.tree / "pipe")
+    assert handle.counts.special == 1
+
+
+def test_ignored_directory_descendants_are_each_inventoried(tmp):
+    repo = make_repo(tmp / "src", {"a.txt": "a\n"}, gitignore="node_modules/\n")
+    (repo / "node_modules" / "pkg").mkdir(parents=True)
+    (repo / "node_modules" / "pkg" / "index.js").write_text("1")
+    (repo / "node_modules" / "top.js").write_text("2")
+    handle = build(tmp, spec(repo))
+    classes = {e["path"]: e["class"] for e in handle.inventory}
+    assert classes["node_modules/pkg/index.js"] == classes["node_modules/top.js"] == "omitted"
+    assert "node_modules" not in classes
+
+
+def test_repository_metadata_swapped_by_identity_refuses_source_changed(tmp, monkeypatch):
+    import shutil
+    repo = make_repo(tmp / "src", {"a.txt": "a\n"})
+
+    def swap(tree):
+        # Same bytes, new identity: only the pinned-descriptor identity check can see it.
+        os.rename(repo / ".git", tmp / "old-git")
+        shutil.copytree(tmp / "old-git", repo / ".git", symlinks=True)
+    monkeypatch.setattr(ls, "_after_copy", swap)
+    refused("source_changed", build, tmp, spec(repo))
+
+
+def test_linked_worktree_metadata_through_a_symlink_component_refuses(tmp):
+    repo = make_repo(tmp / "main", {"a.txt": "a\n"})
+    git(repo, "branch", "other")
+    linked = tmp / "linked"
+    git(repo, "worktree", "add", "-q", str(linked), "other")
+    os.symlink(repo, tmp / "alias")
+    pointer = (linked / ".git").read_text().strip().split(": ", 1)[1]
+    (linked / ".git").write_text("gitdir: " + pointer.replace(str(repo), str(tmp / "alias"), 1) + "\n")
+    refused("not_a_work_tree", build, tmp, spec(linked))
+
+
+def test_full_mode_source_added_after_enumeration_refuses_source_changed(tmp, monkeypatch):
+    plain = tmp / "plain"
+    plain.mkdir()
+    (plain / "f.txt").write_text("f\n")
+    monkeypatch.setattr(ls, "_after_copy", lambda tree: (plain / "late.txt").write_text("late\n"))
+    refused("source_changed", build, tmp, spec(plain, "full"), policy("leg"))
+
+
+def test_git_mode_source_added_in_an_ignored_tree_after_enumeration_refuses(tmp, monkeypatch):
+    repo = make_repo(tmp / "src", {"a.txt": "a\n"}, gitignore="out/\n")
+    (repo / "out").mkdir()
+    monkeypatch.setattr(ls, "_after_copy", lambda tree: (repo / "out" / "late.o").write_text("late\n"))
+    refused("source_changed", build, tmp, spec(repo))
+
+
+@pytest.mark.parametrize("change", ["manifest_removed", "entry_removed", "entry_symlink", "dir_removed"])
+def test_seed_recheck_reports_removed_or_retyped_inputs_as_source_changed(tmp, change):
+    import shutil
+    root, decl, _ = seed_tree(tmp, {"d/a": b"abc"})
+    handle = capture(tmp, root, decl)
+    if change == "manifest_removed":
+        (root / f"{REQUEST_ID}.seed.json").unlink()
+    elif change == "entry_removed":
+        (root / REQUEST_ID / "d" / "a").unlink()
+    elif change == "entry_symlink":
+        target = tmp / "elsewhere"
+        target.write_bytes(b"abc")
+        (root / REQUEST_ID / "d" / "a").unlink()
+        os.symlink(target, root / REQUEST_ID / "d" / "a")
+    else:
+        shutil.rmtree(root / REQUEST_ID)
+    seed_refused("source_changed", handle.recheck)
+
+
+def test_seed_recheck_keeps_the_trust_reason(tmp):
+    root, decl, _ = seed_tree(tmp, {"a": b"abc"})
+    handle = capture(tmp, root, decl)
+    root.chmod(0o750)
+    try:
+        seed_refused("seed_root_untrusted", handle.recheck)
+    finally:
+        root.chmod(0o700)
+
+
+def test_public_builder_signatures_are_the_frozen_prototypes():
+    import inspect
+    assert list(inspect.signature(ls.build_snapshot).parameters) == ["spec", "policy", "scratch", "cancelled"]
+    assert list(inspect.signature(ls.build_seed).parameters) == [
+        "seed", "request_id", "seed_root", "limits", "staging", "cancelled"]
+
+
+def test_seed_capture_has_a_finite_default_budget_and_nested_budgets_never_extend(tmp, monkeypatch):
+    root, decl, _ = seed_tree(tmp, {"a": b"x"})
+    monkeypatch.setattr(ls, "DEFAULT_SNAPSHOT_BUDGET_S", 0)
+    seed_refused("timeout", capture, tmp, root, decl, name="default")
+    monkeypatch.setattr(ls, "DEFAULT_SNAPSHOT_BUDGET_S", 300.0)
+    with ls.snapshot_budget(0):
+        with ls.snapshot_budget(1000):
+            seed_refused("timeout", capture, tmp, root, decl, name="nested")
+    assert capture(tmp, root, decl, name="ok").entries
+
+
+def test_snapshot_scratch_parent_must_be_trusted(tmp):
+    repo = make_repo(tmp / "src", {"a.txt": "a\n"})
+    loose = tmp / "loose"
+    loose.mkdir()
+    loose.chmod(0o770)
+    with pytest.raises(ValueError):
+        ls.build_snapshot(spec(repo), policy=policy(), scratch=loose / "attempt", cancelled=never)
+    assert not (loose / "attempt").exists()
+
+
+@pytest.mark.parametrize("path,unsafe", [
+    ("a.txt", False), ("dir/with space.txt", False), (".gitattributes", False), ("café", False),
+    ("a.git", False), ("x/.gitignore", False), ("-dash", False),
+    ("", True), ("/abs", True), ("a//b", True), ("a/./b", True), ("a/../b", True), ("trail/", True),
+    ("colon:name", True), ("back\\slash", True), ("ctl\x01", True), ("del\x7f", True),
+    ("café", True), (".git", True), ("x/.GIT/y", True), ("x/.git. /y", True), ("GIT~1", True),
+], ids=lambda value: repr(value))
+def test_snapshot_path_grammar(path, unsafe):
+    assert ls._unsafe_path(path) is unsafe  # noqa: SLF001 - the complete x-snapshot.path_rules grammar

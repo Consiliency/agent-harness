@@ -17,8 +17,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   read through no-follow descriptors. `build_seed` verifies a declared seed manifest and
   captures only its declared entries into a private staging directory. The returned
   `SeedHandle` provides the `config` reference, `recheck`, image-link checks and
-  provisioning of `scratch/`. Nothing calls these builders yet; the launch service (SL-3)
-  will. Each refusal carries one closed `snapshot_reason` or `seed_reason`.
+  provisioning of `scratch/`. Both builders share one finite snapshot budget, which
+  `snapshot_budget` binds for an attempt, and they check it during every read. Nothing calls
+  these builders yet; the launch service (SL-3) will. Each refusal carries one closed
+  `snapshot_reason` or `seed_reason`.
 - LANEEXEC SL-0: the placement launch protocol v1 (`plans/phase-plan-v13-LANEEXEC.md`) ships
   as package data at `phase_loop_runtime/contracts/placement/launch-v1.schema.json`, byte
   for byte the frozen artifact `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`

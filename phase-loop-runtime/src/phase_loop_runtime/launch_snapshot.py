@@ -23,10 +23,13 @@ A cancel observed while constructing raises :class:`ConstructionCancelled`.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 from dataclasses import dataclass, field
 import errno
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -52,6 +55,7 @@ from .launch_process_contract import (
 
 __all__ = [
     "DEFAULT_SECRET_MATCHER",
+    "DEFAULT_SNAPSHOT_BUDGET_S",
     "DEFAULT_SEED_LIMITS",
     "DEFAULT_SNAPSHOT_LIMITS",
     "SEED_CODE",
@@ -67,6 +71,7 @@ __all__ = [
     "build_seed",
     "build_snapshot",
     "overlay_bytes",
+    "snapshot_budget",
     "tree_manifest_rows",
     "tree_manifest_sha256",
 ]
@@ -258,6 +263,43 @@ class SnapshotPolicy:
         return mode in (_DEFAULT_MODES.get(self.workload, frozenset({"git"})) | self.operator_modes)
 
 
+# -- the shared snapshot budget -------------------------------------------------------------
+
+#: ``x-lifetime.budget``: the default snapshot budget (the pinned driver-default transfer allowance).
+DEFAULT_SNAPSHOT_BUDGET_S = 300.0
+_BUDGET_END: contextvars.ContextVar[float | None] = contextvars.ContextVar(
+    "laneexec_snapshot_budget_end", default=None)
+
+
+@contextlib.contextmanager
+def snapshot_budget(seconds: float):
+    """Bind one attempt's finite snapshot budget for the builders called inside the block.
+
+    ``x-lifetime.budget``: snapshot construction and seed capture share the attempt's snapshot
+    budget. The end is fixed when the block is entered; a nested block may only shorten it, and
+    neither builder ever extends it. Outside a block each builder applies the default budget.
+    """
+    if type(seconds) not in (int, float) or not math.isfinite(seconds) or seconds < 0:
+        raise ValueError("snapshot_budget_invalid")
+    end = time.monotonic() + seconds
+    outer = _BUDGET_END.get()
+    if outer is not None:
+        end = min(end, outer)
+    token = _BUDGET_END.set(end)
+    try:
+        yield end
+    finally:
+        _BUDGET_END.reset(token)
+
+
+def _budget_end(budget_s: float) -> float:
+    if type(budget_s) not in (int, float) or not math.isfinite(budget_s) or budget_s < 0:
+        raise ValueError("snapshot_budget_invalid")
+    end = time.monotonic() + budget_s
+    outer = _BUDGET_END.get()
+    return end if outer is None else min(end, outer)
+
+
 # -- small helpers --------------------------------------------------------------------------
 
 def _sha256(data: bytes) -> str:
@@ -269,28 +311,37 @@ def _jcs(value: Any) -> bytes:
 
 
 class _Clock:
-    def __init__(self, budget_s: float, cancelled: Callable[[], bool], deadline: float | None = None):
-        self.end = time.monotonic() + budget_s if deadline is None else deadline
+    """One finite monotonic end and the caller's cancel predicate, checked during every read."""
+
+    def __init__(self, end: float, cancelled: Callable[[], bool]):
+        self.end = end
         self.cancelled = cancelled
 
     def left(self) -> float:
         if self.cancelled():
             raise ConstructionCancelled()
         remaining = self.end - time.monotonic()
-        if remaining <= 0:
+        if not math.isfinite(remaining) or remaining <= 0:
             raise _Timeout()
         return remaining
 
 
-def _segment_ok(name: str) -> bool:
-    return bool(name) and name not in (".", "..") and "/" not in name and "\x00" not in name
-
-
 def _unsafe_path(path: str) -> bool:
-    """The writer path rules: NFC, no control character or backslash, no ``.git`` component."""
+    """``x-snapshot.path_rules`` for a repository-relative path.
+
+    NFC UTF-8, '/'-separated, no empty, '.' or '..' segment, no control character, backslash or
+    ':' and no ``.git`` component in any case or 8.3 alias. This is the snapshot grammar of the
+    wire (RepoPath plus the writer-path rules); it is deliberately wider than
+    ``openshell_artifacts.safe_path``, the openshell owned-path grammar, which refuses ordinary
+    names such as ``.gitattributes`` or a space.
+    """
     if not isinstance(path, str) or not path or path.startswith("/") or len(path) > 4096:
         return True
-    if any(ord(c) < 32 or ord(c) == 127 or c == "\\" for c in path):
+    try:
+        path.encode("utf-8")
+    except UnicodeEncodeError:
+        return True
+    if any(ord(c) < 32 or ord(c) == 127 or c in "\\:" for c in path):
         return True
     if unicodedata.normalize("NFC", path) != path:
         return True
@@ -310,10 +361,10 @@ def _open_dir_at(parent: int, name: str) -> int:
     return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
 
 
-def _open_root(path: Path) -> int:
+def _open_root(path: Path | str) -> int:
     """Open an absolute directory one component at a time from ``/``, following no symlink."""
     parts = Path(path).parts
-    if not parts or parts[0] != "/":
+    if not parts or parts[0] != "/" or any(p in (".", "..") for p in parts[1:]):
         raise OSError(errno.EINVAL, "not absolute")
     fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
@@ -325,6 +376,24 @@ def _open_root(path: Path) -> int:
     except BaseException:
         os.close(fd)
         raise
+
+
+def _open_rel_dir(base_fd: int, rel: str) -> int:
+    fd = os.dup(base_fd)
+    try:
+        for part in rel.split("/") if rel else ():
+            child = _open_dir_at(fd, part)
+            os.close(fd)
+            fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _identity(fd: int) -> tuple[int, int]:
+    info = os.fstat(fd)
+    return info.st_dev, info.st_ino
 
 
 def _stamp(info: os.stat_result) -> tuple[int, ...]:
@@ -345,130 +414,142 @@ def _git_mode(info: os.stat_result) -> str | None:
     return None
 
 
+def _kind(info: os.stat_result) -> str:
+    if stat.S_ISDIR(info.st_mode):
+        return "dir"
+    if stat.S_ISLNK(info.st_mode):
+        return "symlink"
+    if stat.S_ISREG(info.st_mode):
+        return "file"
+    return "special"
+
+
 @dataclass
-class _Read:
-    kind: str  # missing | file | symlink | dir | special
-    mode: str | None = None
-    size: int = 0
-    oid: str | None = None
-    sha256: str | None = None
+class _Content:
+    mode: str
+    size: int
+    oid: str
+    sha256: str
     target: bytes | None = None
-    data: bytes | None = field(default=None, repr=False)
-    stamp: tuple[int, ...] | None = None
 
 
-def _read_entry(root_fd: int, rel: str, object_format: str, *, max_bytes: int | None = None,
-                keep: bool = False) -> _Read:
-    """What ``rel`` below ``root_fd`` holds now, read through no-follow descriptors."""
-    segments = rel.split("/")
-    name = segments.pop()
-    fd = os.dup(root_fd)
-    try:
-        for part in segments:
-            try:
-                child = _open_dir_at(fd, part)
-            except OSError as error:
-                if error.errno in (errno.ENOENT, errno.ENOTDIR, errno.ELOOP):
-                    return _Read("missing")
-                raise
-            os.close(fd)
-            fd = child
-        try:
-            info = os.stat(name, dir_fd=fd, follow_symlinks=False)
-        except FileNotFoundError:
-            return _Read("missing")
-        stamp = _stamp(info)
-        if stat.S_ISDIR(info.st_mode):
-            return _Read("dir", stamp=stamp)
-        if stat.S_ISLNK(info.st_mode):
-            target = os.readlink(name, dir_fd=fd)
-            target_bytes = os.fsencode(target)
-            h = _blob_hasher(object_format, len(target_bytes))
-            h.update(target_bytes)
-            return _Read("symlink", "120000", len(target_bytes), h.hexdigest(), _sha256(target_bytes),
-                         target_bytes, None, stamp)
-        if not stat.S_ISREG(info.st_mode):
-            return _Read("special", stamp=stamp)
-        size = info.st_size
-        if max_bytes is not None and size > max_bytes:
+def _read_content(dir_fd: int, name: str, info: os.stat_result, object_format: str, clock: _Clock, *,
+                  cap: int, sink: Callable[[bytes], None] | None = None) -> _Content:
+    """Read a regular file or symlink named ``name`` in ``dir_fd`` without following a symlink.
+
+    ``info`` is its lstat. A size above ``cap`` refuses ``too_large`` before any byte is read;
+    the read stops at the lstat size + 1 bytes (so at most ``cap`` + 1), and the clock and the
+    cancel predicate are checked before every chunk.
+    """
+    clock.left()
+    if stat.S_ISLNK(info.st_mode):
+        target = os.fsencode(os.readlink(name, dir_fd=dir_fd))
+        if len(target) > cap:
             raise SnapshotRefused("too_large")
-        file_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=fd)
-        try:
-            current = os.fstat(file_fd)
-            if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino) or not stat.S_ISREG(current.st_mode):
-                raise SnapshotRefused("source_changed")
-            h = _blob_hasher(object_format, size)
-            s = hashlib.sha256()
-            chunks: list[bytes] = []
-            total = 0
-            while True:
-                chunk = os.read(file_fd, min(_READ_CHUNK, size + 1 - total) or 1)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > size:
-                    raise SnapshotRefused("source_changed")
-                h.update(chunk)
-                s.update(chunk)
-                if keep:
-                    chunks.append(chunk)
-            if total != size:
-                raise SnapshotRefused("source_changed")
-        finally:
-            os.close(file_fd)
-        return _Read("file", _git_mode(info), size, h.hexdigest(), s.hexdigest(), None,
-                     b"".join(chunks) if keep else None, stamp)
-    finally:
-        os.close(fd)
-
-
-def _list_dir_at(root_fd: int, rel: str) -> list[str]:
-    fd = os.dup(root_fd)
+        h = _blob_hasher(object_format, len(target))
+        h.update(target)
+        if sink is not None:
+            sink(target)
+        return _Content("120000", len(target), h.hexdigest(), _sha256(target), target)
+    size = info.st_size
+    if size > cap:
+        raise SnapshotRefused("too_large")
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=dir_fd)
     try:
-        for part in rel.split("/") if rel else ():
-            child = _open_dir_at(fd, part)
-            os.close(fd)
-            fd = child
-        return sorted(os.listdir(fd))
-    finally:
-        os.close(fd)
-
-
-def _read_small(path: Path, cap: int = _SMALL_FILE) -> bytes | None:
-    """A small git metadata file of the source, refusing a symlink at its last component."""
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
-    except FileNotFoundError:
-        return None
-    except OSError:
-        raise SnapshotRefused("unsupported_repository") from None
-    try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise SnapshotRefused("unsupported_repository")
-        data = b""
-        while len(data) <= cap:
-            chunk = os.read(fd, cap + 1 - len(data))
+        current = os.fstat(fd)
+        if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino) or not stat.S_ISREG(current.st_mode):
+            raise SnapshotRefused("source_changed")
+        h = _blob_hasher(object_format, size)
+        s = hashlib.sha256()
+        total = 0
+        while True:
+            clock.left()
+            chunk = os.read(fd, min(_READ_CHUNK, size + 1 - total))
             if not chunk:
                 break
-            data += chunk
-        if len(data) > cap:
-            raise SnapshotRefused("too_large")
-        return data
+            total += len(chunk)
+            if total > size:
+                raise SnapshotRefused("source_changed")
+            h.update(chunk)
+            s.update(chunk)
+            if sink is not None:
+                sink(chunk)
+        if total != size:
+            raise SnapshotRefused("source_changed")
     finally:
         os.close(fd)
+    return _Content(_git_mode(info) or "100644", size, h.hexdigest(), s.hexdigest())
+
+
+def _lstat_at(base_fd: int, rel: str) -> tuple[int | None, os.stat_result | None]:
+    """``(parent_fd, lstat)`` of ``rel`` below ``base_fd`` through no-follow components.
+
+    The caller closes ``parent_fd``. Both are None when a component is missing or not a plain
+    directory; ``lstat`` alone is None when the last component is missing.
+    """
+    parent, _, name = rel.rpartition("/")
+    try:
+        fd = _open_rel_dir(base_fd, parent)
+    except OSError as error:
+        if error.errno in (errno.ENOENT, errno.ENOTDIR, errno.ELOOP):
+            return None, None
+        raise
+    try:
+        return fd, os.stat(name, dir_fd=fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return fd, None
+
+
+def _meta_read(base_fd: int, rel: str, cap: int = _SMALL_FILE) -> bytes | None:
+    """A small repository metadata file read through pinned, no-follow descriptors."""
+    fd, info = _lstat_at(base_fd, rel)
+    if fd is None:
+        return None
+    try:
+        if info is None:
+            return None
+        if not stat.S_ISREG(info.st_mode):
+            raise SnapshotRefused("unsupported_repository")
+        if info.st_size > cap:
+            raise SnapshotRefused("too_large")
+        name = rel.rpartition("/")[2]
+        file_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=fd)
+        try:
+            if _identity(file_fd) != (info.st_dev, info.st_ino):
+                raise SnapshotRefused("source_changed")
+            data = b""
+            while len(data) <= cap:
+                chunk = os.read(file_fd, min(_READ_CHUNK, cap + 1 - len(data)))
+                if not chunk:
+                    break
+                data += chunk
+            if len(data) > cap:
+                raise SnapshotRefused("too_large")
+            return data
+        finally:
+            os.close(file_fd)
+    finally:
+        os.close(fd)
+
+
+def _meta_exists(base_fd: int, rel: str) -> bool:
+    fd, info = _lstat_at(base_fd, rel)
+    if fd is not None:
+        os.close(fd)
+    return info is not None
 
 
 # -- sanitized git --------------------------------------------------------------------------
 
-def _git(clock: _Clock, args: Sequence[str], *, git_dir: Path | None = None,
-         work_tree: Path | None = None, index_file: Path | None = None, cwd: Path = Path("/"),
+def _git(clock: _Clock, args: Sequence[str], *, git_dir: Path | str | None = None,
+         work_tree: str | None = None, index_file: Path | None = None, cwd: Path | str = Path("/"),
          data: bytes = b"", extra_env: Mapping[str, str] | None = None, allow_fail: bool = False,
-         code: str = "unsupported_repository") -> bytes:
+         code: str = "unsupported_repository", pass_fds: tuple[int, ...] = ()) -> bytes:
     env = dict(_GIT_ENV)
     if git_dir is not None:
         env["GIT_DIR"] = str(git_dir)
     if work_tree is not None:
-        env["GIT_WORK_TREE"] = str(work_tree)
+        env["GIT_WORK_TREE"] = work_tree
     if index_file is not None:
         env["GIT_INDEX_FILE"] = str(index_file)
     if extra_env:
@@ -482,8 +563,9 @@ def _git(clock: _Clock, args: Sequence[str], *, git_dir: Path | None = None,
     except _Timeout:
         raise SnapshotRefused("timeout") from None
     try:
-        rc, out, _ = _artifacts.run_process(tuple(argv), cwd=cwd, env=env, data=data, cap=_GIT_OUTPUT_CAP,
-                                            bound=_artifacts.Bound(clock.end, clock.cancelled))
+        rc, out, _ = _artifacts.run_process(tuple(argv), cwd=Path(cwd), env=env, data=data, cap=_GIT_OUTPUT_CAP,
+                                            bound=_artifacts.Bound(clock.end, clock.cancelled),
+                                            pass_fds=pass_fds)
     except _artifacts.Refused as refusal:
         if str(refusal) == "cancelled":
             raise ConstructionCancelled() from None
@@ -512,53 +594,93 @@ def _is_oid(object_format: str, text: str) -> bool:
 
 # -- the source repository ------------------------------------------------------------------
 
-@dataclass(frozen=True)
+@dataclass
 class _Source:
-    top: Path
-    git_dir: Path
-    common_dir: Path
+    """The source repository's metadata, held through pinned directory descriptors."""
+
+    git_fd: int
+    common_fd: int
+    objects_fd: int
+    identities: tuple[tuple[int, int], ...]
     linked: bool
     object_format: str
     head_ref: str | None
     head_oid: str
     exclude: bytes
 
+    def close(self) -> None:
+        for fd in {self.git_fd, self.common_fd, self.objects_fd}:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
-def _real_dir(path: Path) -> Path:
+
+def _lexical(base: str, text: str) -> str:
+    """An absolute, lexically normalized path; ``..`` is resolved without consulting the disk."""
+    return os.path.normpath(text if os.path.isabs(text) else os.path.join(base, text))
+
+
+def _open_meta_dir(path: str) -> int:
     try:
-        real = Path(os.path.realpath(path))
-        if not stat.S_ISDIR(os.stat(real).st_mode):
-            raise SnapshotRefused("not_a_work_tree")
-        return real
+        return _open_root(path)
     except OSError:
         raise SnapshotRefused("not_a_work_tree") from None
 
 
-def _locate(top: Path) -> tuple[Path, Path, bool] | None:
-    """``(git_dir, common_dir, linked)`` of work tree ``top``, or None when ``top`` has no ``.git``."""
-    dot_git = top / ".git"
+def _locate(root_fd: int, top: Path) -> tuple[int, int, bool] | None:
+    """``(git_fd, common_fd, linked)`` of work tree ``top`` through no-follow descriptors.
+
+    A linked worktree's ``.git`` pointer, its gitdir backlink and ``commondir`` are resolved
+    lexically and opened component by component; a symlink component refuses, and the backlink
+    must name this ``.git`` by identity. None when ``top`` has no ``.git``.
+    """
     try:
-        info = os.lstat(dot_git)
+        info = os.stat(".git", dir_fd=root_fd, follow_symlinks=False)
     except FileNotFoundError:
         return None
     if stat.S_ISDIR(info.st_mode):
-        git_dir, linked = _real_dir(dot_git), False
+        git_fd, linked, git_path = _open_dir_at(root_fd, ".git"), False, str(top / ".git")
     elif stat.S_ISREG(info.st_mode):
-        text = (_read_small(dot_git, 4096) or b"").decode("utf-8", "replace")
+        text = (_meta_read(root_fd, ".git", 4096) or b"").decode("utf-8", "replace")
         match = re.fullmatch(r"gitdir: (.+?)\r?\n?", text)
         if not match:
             raise SnapshotRefused("not_a_work_tree")
-        git_dir, linked = _real_dir(top / match.group(1)), True
-        back = (_read_small(git_dir / "gitdir", 4096) or b"").decode("utf-8", "replace").strip()
-        if not back or os.path.realpath(git_dir / back) != os.path.realpath(dot_git):
-            raise SnapshotRefused("not_a_work_tree")
+        git_path = _lexical(str(top), match.group(1))
+        git_fd, linked = _open_meta_dir(git_path), True
+        try:
+            back = (_meta_read(git_fd, "gitdir", 4096) or b"").decode("utf-8", "replace").strip()
+            if not back:
+                raise SnapshotRefused("not_a_work_tree")
+            back_path = _lexical(git_path, back)
+            parent_fd = _open_meta_dir(os.path.dirname(back_path))
+            try:
+                pointer = os.stat(os.path.basename(back_path), dir_fd=parent_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                raise SnapshotRefused("not_a_work_tree") from None
+            finally:
+                os.close(parent_fd)
+            if (pointer.st_dev, pointer.st_ino) != (info.st_dev, info.st_ino):
+                raise SnapshotRefused("not_a_work_tree")
+        except BaseException:
+            os.close(git_fd)
+            raise
     else:
         raise SnapshotRefused("not_a_work_tree")
-    common_text = (_read_small(git_dir / "commondir", 4096) or b"").decode("utf-8", "replace").strip()
-    common_dir = _real_dir(git_dir / common_text) if common_text else git_dir
-    if linked and common_dir == git_dir:
+    try:
+        common_text = (_meta_read(git_fd, "commondir", 4096) or b"").decode("utf-8", "replace").strip()
+        if common_text:
+            common_fd = _open_meta_dir(_lexical(git_path, common_text))
+        else:
+            common_fd = os.dup(git_fd)
+    except BaseException:
+        os.close(git_fd)
+        raise
+    if linked and _identity(common_fd) == _identity(git_fd):
+        os.close(common_fd)
+        os.close(git_fd)
         raise SnapshotRefused("not_a_work_tree")
-    return git_dir, common_dir, linked
+    return git_fd, common_fd, linked
 
 
 def _parse_config(clock: _Clock, raw: bytes, box: Path) -> dict[str, str]:
@@ -575,24 +697,15 @@ def _parse_config(clock: _Clock, raw: bytes, box: Path) -> dict[str, str]:
     return values
 
 
-def _read_ref(git_dir: Path, common_dir: Path, name: str, object_format: str) -> str | None:
-    base = git_dir if re.match(r"refs/(bisect|rewritten|worktree)/", name) else common_dir
-    try:
-        fd = _open_root(base)
-    except OSError:
-        raise SnapshotRefused("unsupported_repository") from None
-    try:
-        entry = _read_entry(fd, name, object_format, max_bytes=4096, keep=True)
-    finally:
-        os.close(fd)
-    if entry.kind == "file":
-        text = (entry.data or b"").decode("ascii", "replace").strip()
+def _read_ref(git_fd: int, common_fd: int, name: str, object_format: str) -> str | None:
+    base = git_fd if re.match(r"refs/(bisect|rewritten|worktree)/", name) else common_fd
+    loose = _meta_read(base, name, 4096)
+    if loose is not None:
+        text = loose.decode("ascii", "replace").strip()
         if not _is_oid(object_format, text):
             raise SnapshotRefused("unsupported_repository")
         return text
-    if entry.kind != "missing":
-        raise SnapshotRefused("unsupported_repository")
-    packed = _read_small(common_dir / "packed-refs", 256 * 1024 * 1024)
+    packed = _meta_read(common_fd, "packed-refs", 256 * 1024 * 1024)
     for line in (packed or b"").decode("utf-8", "replace").split("\n"):
         if not line or line.startswith(("#", "^")):
             continue
@@ -604,50 +717,73 @@ def _read_ref(git_dir: Path, common_dir: Path, name: str, object_format: str) ->
     return None
 
 
-def _inspect(clock: _Clock, top: Path, box: Path) -> _Source | None:
-    located = _locate(top)
+def _inspect(clock: _Clock, root_fd: int, top: Path, box: Path) -> _Source | None:
+    located = _locate(root_fd, top)
     if located is None:
         return None
-    git_dir, common_dir, linked = located
-    for path in (common_dir / "objects/info/alternates", common_dir / "objects/info/http-alternates",
-                 common_dir / "shallow", git_dir / "shallow", common_dir / "reftable"):
-        if os.path.lexists(path):
+    git_fd, common_fd, linked = located
+    objects_fd = -1
+    try:
+        for base, rel in ((common_fd, "objects/info/alternates"), (common_fd, "objects/info/http-alternates"),
+                          (common_fd, "shallow"), (git_fd, "shallow"), (common_fd, "reftable")):
+            if _meta_exists(base, rel):
+                raise SnapshotRefused("unsupported_repository")
+        try:
+            objects_fd = _open_dir_at(common_fd, "objects")
+        except OSError:
+            raise SnapshotRefused("unsupported_repository") from None
+        try:
+            pack_fd = _open_dir_at(objects_fd, "pack")
+        except FileNotFoundError:
+            pack_fd = None
+        except OSError:
+            raise SnapshotRefused("unsupported_repository") from None
+        if pack_fd is not None:
+            try:
+                if any(n.endswith(".promisor") for n in os.listdir(pack_fd)):
+                    raise SnapshotRefused("unsupported_repository")
+            finally:
+                os.close(pack_fd)
+        if any(n.startswith("sharedindex.") for n in os.listdir(git_fd)):
             raise SnapshotRefused("unsupported_repository")
-    pack_dir = common_dir / "objects" / "pack"
-    if pack_dir.is_dir() and any(n.endswith(".promisor") for n in os.listdir(pack_dir)):
-        raise SnapshotRefused("unsupported_repository")
-    if any(n.startswith("sharedindex.") for n in os.listdir(git_dir)):
-        raise SnapshotRefused("unsupported_repository")
-    config = _parse_config(clock, _read_small(common_dir / "config") or b"", box)
-    version = config.get("core.repositoryformatversion", "0")
-    if version not in ("0", "1"):
-        raise SnapshotRefused("unsupported_repository")
-    if config.get("core.bare", "false").lower() == "true" or "core.worktree" in config:
-        raise SnapshotRefused("unsupported_repository")
-    object_format = config.get("extensions.objectformat", "sha1").lower()
-    if object_format not in _OBJECT_FORMATS:
-        raise SnapshotRefused("unsupported_repository")
-    for key, value in config.items():
-        if key == "extensions.partialclone" or (re.fullmatch(r"remote\..*\.promisor", key) and value.lower() == "true"):
+        config = _parse_config(clock, _meta_read(common_fd, "config") or b"", box)
+        version = config.get("core.repositoryformatversion", "0")
+        if version not in ("0", "1"):
             raise SnapshotRefused("unsupported_repository")
-        if key == "extensions.refstorage" and value.lower() != "files":
+        if config.get("core.bare", "false").lower() == "true" or "core.worktree" in config:
             raise SnapshotRefused("unsupported_repository")
-        if key.startswith("extensions.") and version == "1" and key not in (
-                "extensions.objectformat", "extensions.worktreeconfig", "extensions.refstorage"):
+        object_format = config.get("extensions.objectformat", "sha1").lower()
+        if object_format not in _OBJECT_FORMATS:
             raise SnapshotRefused("unsupported_repository")
-    head = (_read_small(git_dir / "HEAD", 4096) or b"").decode("utf-8", "replace").strip()
-    if _is_oid(object_format, head):
-        head_ref, head_oid = None, head
-    else:
-        match = re.fullmatch(r"ref: (refs/heads/[^\x00-\x20\x7f~^:?*\[\\]+)", head)
-        if not match or ".." in match.group(1) or "@{" in match.group(1):
-            raise SnapshotRefused("not_a_work_tree")
-        oid = _read_ref(git_dir, common_dir, match.group(1), object_format)
-        if oid is None:
-            raise SnapshotRefused("not_a_work_tree")
-        head_ref, head_oid = match.group(1), oid
-    exclude = _read_small(common_dir / "info" / "exclude") or b""
-    return _Source(top, git_dir, common_dir, linked, object_format, head_ref, head_oid, exclude)
+        for key, value in config.items():
+            if key == "extensions.partialclone" or (
+                    re.fullmatch(r"remote\..*\.promisor", key) and value.lower() == "true"):
+                raise SnapshotRefused("unsupported_repository")
+            if key == "extensions.refstorage" and value.lower() != "files":
+                raise SnapshotRefused("unsupported_repository")
+            if key.startswith("extensions.") and version == "1" and key not in (
+                    "extensions.objectformat", "extensions.worktreeconfig", "extensions.refstorage"):
+                raise SnapshotRefused("unsupported_repository")
+        head = (_meta_read(git_fd, "HEAD", 4096) or b"").decode("utf-8", "replace").strip()
+        if _is_oid(object_format, head):
+            head_ref, head_oid = None, head
+        else:
+            match = re.fullmatch(r"ref: (refs/heads/[^\x00-\x20\x7f~^:?*\[\\]+)", head)
+            if not match or ".." in match.group(1) or "@{" in match.group(1):
+                raise SnapshotRefused("not_a_work_tree")
+            oid = _read_ref(git_fd, common_fd, match.group(1), object_format)
+            if oid is None:
+                raise SnapshotRefused("not_a_work_tree")
+            head_ref, head_oid = match.group(1), oid
+        exclude = _meta_read(common_fd, "info/exclude") or b""
+        identities = (_identity(git_fd), _identity(common_fd), _identity(objects_fd))
+        return _Source(git_fd, common_fd, objects_fd, identities, linked, object_format, head_ref, head_oid,
+                       exclude)
+    except BaseException:
+        for fd in {git_fd, common_fd, objects_fd}:
+            if fd >= 0:
+                os.close(fd)
+        raise
 
 
 # -- canonical digests ----------------------------------------------------------------------
@@ -669,41 +805,44 @@ def overlay_bytes(entries: Iterable[tuple[str, str, str | None]]) -> bytes:
     return _jcs(rows)
 
 
-def _walk_tree_rows(root: Path) -> list[list[str]]:
+def _walk_tree_rows(root: Path, clock: _Clock | None = None) -> list[list[str]]:
     """Recompute the tree manifest of a private execution tree (``.git`` excluded)."""
     rows: list[tuple[str, str, str]] = []
-
-    def walk(fd: int, prefix: str) -> None:
-        for name in sorted(os.listdir(fd)):
-            if not prefix and name == ".git":
-                continue
-            rel = prefix + name
-            info = os.stat(name, dir_fd=fd, follow_symlinks=False)
-            if stat.S_ISDIR(info.st_mode):
-                child = _open_dir_at(fd, name)
-                try:
-                    walk(child, rel + "/")
-                finally:
-                    os.close(child)
-            elif stat.S_ISLNK(info.st_mode):
-                rows.append((rel, "symlink", _sha256(os.fsencode(os.readlink(name, dir_fd=fd)))))
-            elif stat.S_ISREG(info.st_mode):
-                file_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
-                h = hashlib.sha256()
-                try:
-                    while chunk := os.read(file_fd, _READ_CHUNK):
-                        h.update(chunk)
-                finally:
-                    os.close(file_fd)
-                rows.append((rel, "executable_file" if info.st_mode & 0o111 else "file", h.hexdigest()))
-            else:
-                raise SnapshotRefused("source_changed")
-
     fd = _open_root(root)
+    stack = [(fd, "")]
     try:
-        walk(fd, "")
+        while stack:
+            dir_fd, prefix = stack.pop()
+            try:
+                for name in sorted(os.listdir(dir_fd)):
+                    if clock is not None:
+                        clock.left()
+                    if not prefix and name == ".git":
+                        continue
+                    rel = prefix + name
+                    info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                    if stat.S_ISDIR(info.st_mode):
+                        stack.append((_open_dir_at(dir_fd, name), rel + "/"))
+                    elif stat.S_ISLNK(info.st_mode):
+                        rows.append((rel, "symlink", _sha256(os.fsencode(os.readlink(name, dir_fd=dir_fd)))))
+                    elif stat.S_ISREG(info.st_mode):
+                        file_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dir_fd)
+                        h = hashlib.sha256()
+                        try:
+                            while chunk := os.read(file_fd, _READ_CHUNK):
+                                if clock is not None:
+                                    clock.left()
+                                h.update(chunk)
+                        finally:
+                            os.close(file_fd)
+                        rows.append((rel, "executable_file" if info.st_mode & 0o111 else "file", h.hexdigest()))
+                    else:
+                        raise SnapshotRefused("source_changed")
+            finally:
+                os.close(dir_fd)
     finally:
-        os.close(fd)
+        for dir_fd, _ in stack:
+            os.close(dir_fd)
     return tree_manifest_rows(rows)
 
 
@@ -715,8 +854,9 @@ class SnapshotHandle:
 
     ``envelope_base_commit`` is the envelope ``workspace_state.base_commit`` (S, B in
     ``git_overlay``, null without a work tree). ``descriptor_bytes`` are the RFC 8785 snapshot
-    descriptor, the envelope's single baseline reference. ``inventory`` lists every source path
-    with its class; nothing in it is file content.
+    descriptor ``laneexec.snapshot.descriptor.v1``, the envelope's single baseline reference
+    (an internal canonical artifact; the wire fixes no descriptor schema). ``inventory`` lists
+    every source path with its class; nothing in it is file content.
     """
 
     tree: Path
@@ -780,7 +920,8 @@ class SnapshotHandle:
         shutil.rmtree(self.tree.parent, ignore_errors=True)
 
 
-#: Test seam: called after the copy and before the recheck (barrier for mid-copy mutations).
+#: Test seams: barriers after the inventory and after the copy, before the recheck.
+_after_inventory: Callable[[], None] = lambda: None
 _after_copy: Callable[[Path], None] = lambda tree: None
 
 
@@ -826,11 +967,13 @@ class _Inventory:
     def __init__(self, limits: SnapshotLimits):
         self.limits = limits
         self.entries: dict[str, dict[str, Any]] = {}
-        self.stamps: dict[str, tuple[int, ...]] = {}
         self.bytes = 0
 
+    def remaining(self) -> int:
+        return self.limits.max_bytes - self.bytes
+
     def add(self, path: str, cls: str, *, kind: str, mode: str | None = None, oid: str | None = None,
-            size: int = 0, stamp: tuple[int, ...] | None = None) -> None:
+            size: int = 0) -> None:
         if len(self.entries) >= self.limits.max_entries:
             raise SnapshotRefused("too_large")
         if cls in ("tracked", "untracked", "ignored"):
@@ -838,8 +981,6 @@ class _Inventory:
             if self.bytes > self.limits.max_bytes:
                 raise SnapshotRefused("too_large")
         self.entries[path] = {"path": path, "class": cls, "type": kind, "mode": mode, "oid": oid}
-        if stamp is not None:
-            self.stamps[path] = stamp
 
     def sorted(self) -> list[dict[str, Any]]:
         return [self.entries[p] for p in sorted(self.entries, key=str.encode)]
@@ -851,36 +992,96 @@ class _Inventory:
         return InventoryCounts(**tally)
 
 
+@dataclass(frozen=True)
+class _Node:
+    """One enumerated source entry: its relative path, kind, depth and stamp."""
+
+    rel: str
+    kind: str
+    depth: int
+    stamp: tuple[int, ...]
+
+
+def _enumerate(root_fd: int, clock: _Clock, limits: SnapshotLimits, *, skip_top_git: bool) -> dict[str, _Node]:
+    """Every source entry below ``root_fd``, walked through pinned no-follow directory descriptors.
+
+    Nothing is opened for content here. A directory or file named exactly ``.git`` below the top
+    level is a nested repository; the top-level one is skipped when the root is a work tree.
+    """
+    nodes: dict[str, _Node] = {}
+    stack = [(os.dup(root_fd), "", 0)]
+    try:
+        while stack:
+            dir_fd, prefix, depth = stack.pop()
+            try:
+                for raw_name in sorted(os.listdir(dir_fd)):
+                    clock.left()
+                    name = raw_name
+                    if name == ".git" and not prefix and skip_top_git:
+                        continue
+                    if name == ".git":
+                        raise SnapshotRefused("nested_repository")
+                    rel = prefix + name
+                    info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                    kind = _kind(info)
+                    nodes[rel] = _Node(rel, kind, depth, _stamp(info))
+                    if len(nodes) > limits.max_entries * 2 + 1:
+                        raise SnapshotRefused("too_large")
+                    if kind == "dir":
+                        stack.append((_open_dir_at(dir_fd, name), rel + "/", depth + 1))
+            finally:
+                os.close(dir_fd)
+    finally:
+        for dir_fd, _, _ in stack:
+            os.close(dir_fd)
+    return nodes
+
+
 @dataclass
 class _Copy:
     path: str
     kind: str  # file | symlink | dir
-    oid: str | None
-    executable: bool
+    size: int
     sha256: str | None
+    executable: bool
+
+
+def _read_node(root_fd: int, node: _Node, object_format: str, clock: _Clock, cap: int) -> _Content:
+    parent_fd, info = _lstat_at(root_fd, node.rel)
+    if parent_fd is None or info is None:
+        if parent_fd is not None:
+            os.close(parent_fd)
+        raise SnapshotRefused("source_changed")
+    try:
+        if _stamp(info) != node.stamp:
+            raise SnapshotRefused("source_changed")
+        return _read_content(parent_fd, node.rel.rpartition("/")[2], info, object_format, clock, cap=cap)
+    finally:
+        os.close(parent_fd)
 
 
 def build_snapshot(spec: Snapshot, *, policy: SnapshotPolicy, scratch: Path | str,
-                   cancelled: Callable[[], bool], deadline: float | None = None) -> SnapshotHandle:
+                   cancelled: Callable[[], bool]) -> SnapshotHandle:
     """Build the execution tree of ``spec`` under the new private directory ``scratch``.
 
-    ``scratch`` must not exist and its parent must; it is created 0700 and receives the execution
-    tree at ``scratch/tree`` (private intermediate repositories are removed before return). A
-    refusal deletes ``scratch``. ``deadline`` (monotonic) overrides ``policy.budget_s``.
+    ``scratch`` must not exist; its parent must be a trusted directory (owned by this uid, not
+    group- or other-writable, no symlink or group- or other-writable ancestor), normally the
+    per-reservation directory under the client's LaneExec state directory. ``scratch`` is created
+    0700 and receives the execution tree at ``scratch/tree``; private intermediate repositories
+    are removed before return, and a refusal or cancel deletes ``scratch``. The budget is
+    ``policy.budget_s``, shortened by an enclosing :func:`snapshot_budget`.
     """
     if spec.mode not in ("git", "git_overlay", "full") or not policy.permits(spec.mode):
         raise SnapshotRefused("mode_unpermitted")
-    clock = _Clock(policy.budget_s, cancelled, deadline)
-    base_dir = Path(scratch)
-    try:
-        base_dir.mkdir(mode=0o700)
-    except OSError:
-        raise ValueError("snapshot_scratch_invalid") from None
+    clock = _Clock(_budget_end(policy.budget_s), cancelled)
+    base_dir = _private_child(Path(scratch), "snapshot_scratch_invalid")
     box = base_dir / "work"
     box.mkdir(mode=0o700)
     tree = base_dir / "tree"
     try:
-        return _build(spec, policy, clock, box, tree)
+        handle = _build(spec, policy, clock, box, tree)
+        clock.left()
+        return handle
     except _Timeout:
         shutil.rmtree(base_dir, ignore_errors=True)
         raise SnapshotRefused("timeout") from None
@@ -894,106 +1095,124 @@ def build_snapshot(spec: Snapshot, *, policy: SnapshotPolicy, scratch: Path | st
         shutil.rmtree(box, ignore_errors=True)
 
 
+def _trusted_parent(path: Path) -> bool:
+    """Owned by this uid, not group- or other-writable, reached with no symlink or writable ancestor."""
+    try:
+        fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    except OSError:
+        return False
+    try:
+        for part in path.parts[1:]:
+            if os.fstat(fd).st_mode & 0o022:
+                return False
+            try:
+                child = _open_dir_at(fd, part)
+            except OSError:
+                return False
+            os.close(fd)
+            fd = child
+        info = os.fstat(fd)
+        return info.st_uid == os.geteuid() and not info.st_mode & 0o022
+    finally:
+        os.close(fd)
+
+
+def _private_child(path: Path, code: str) -> Path:
+    if not path.is_absolute() or any(p in (".", "..") for p in path.parts) or not _trusted_parent(path.parent):
+        raise ValueError(code)
+    try:
+        path.mkdir(mode=0o700)
+        path.chmod(0o700)
+    except OSError:
+        raise ValueError(code) from None
+    return path
+
+
 def _build(spec: Snapshot, policy: SnapshotPolicy, clock: _Clock, box: Path, tree: Path) -> SnapshotHandle:
     top = Path(spec.root)
-    if not top.is_absolute() or os.path.realpath(top) != str(top):
+    if not top.is_absolute() or os.path.normpath(top) != str(top):
         raise SnapshotRefused("not_a_work_tree")
     try:
         root_fd = _open_root(top)
     except OSError:
         raise SnapshotRefused("not_a_work_tree") from None
     try:
-        if spec.cwd not in (".", "") and _read_entry(root_fd, spec.cwd, "sha1").kind != "dir":
-            raise SnapshotRefused("unsafe_path")
+        if spec.cwd not in (".", ""):
+            parent_fd, info = _lstat_at(root_fd, spec.cwd)
+            if parent_fd is not None:
+                os.close(parent_fd)
+            if info is None or not stat.S_ISDIR(info.st_mode):
+                raise SnapshotRefused("unsafe_path")
         masks = _Masks(root_fd, spec, policy.secrets)
-        source = _inspect(clock, top, box)
+        source = _inspect(clock, root_fd, top, box)
         if source is None:
             if spec.mode != "full":
                 raise SnapshotRefused("not_a_work_tree")
             return _build_plain(spec, policy, clock, root_fd, masks, tree)
-        return _build_git(spec, policy, clock, root_fd, masks, source, box, tree)
+        try:
+            return _build_git(spec, policy, clock, root_fd, top, masks, source, box, tree)
+        finally:
+            source.close()
     finally:
         os.close(root_fd)
-
-
-def _inventory_ignored(spec_mode: str, root_fd: int, item: str, inventory: _Inventory, masks: _Masks,
-                       object_format: str | None, clock: _Clock, copies: list[_Copy],
-                       class_name: str = "ignored") -> None:
-    """Classify an ignored listing item: ``omitted`` in git modes, walked in full mode."""
-    path = item.rstrip("/")
-    is_dir = item.endswith("/")
-    if masks(path):
-        inventory.add(path, "masked", kind="dir" if is_dir else "file")
-        return
-    if spec_mode != "full":
-        inventory.add(path, "omitted", kind="dir" if is_dir else "file")
-        return
-
-    def walk(rel: str, depth: int) -> None:
-        clock.left()
-        if _unsafe_path(rel) or _gitmodules(rel):
-            raise SnapshotRefused("unsafe_path")
-        if masks(rel):
-            inventory.add(rel, "masked", kind="file")
-            return
-        entry = _read_entry(root_fd, rel, object_format or "sha1")
-        if entry.kind == "dir":
-            if depth > _FULL_DEPTH:
-                raise SnapshotRefused("too_large")
-            names = _list_dir_at(root_fd, rel)
-            if any(n.lower() == ".git" for n in names):
-                raise SnapshotRefused("nested_repository")
-            if not names:
-                inventory.add(rel, class_name, kind="dir", stamp=entry.stamp)
-                copies.append(_Copy(rel, "dir", None, False, None))
-                return
-            for name in names:
-                walk(f"{rel}/{name}", depth + 1)
-            return
-        _classify_read(rel, entry, class_name, inventory, copies)
-
-    walk(path, 0)
-
-
-def _classify_read(rel: str, entry: _Read, cls: str, inventory: _Inventory, copies: list[_Copy]) -> None:
-    if entry.kind in ("file", "symlink"):
-        inventory.add(rel, cls, kind=entry.kind, mode=entry.mode, oid=entry.oid, size=entry.size,
-                      stamp=entry.stamp)
-        copies.append(_Copy(rel, entry.kind, entry.oid, entry.mode == "100755", entry.sha256))
-    elif entry.kind == "missing":
-        raise SnapshotRefused("source_changed")
-    else:
-        inventory.add(rel, "special", kind=entry.kind, stamp=entry.stamp)
 
 
 def _build_plain(spec: Snapshot, policy: SnapshotPolicy, clock: _Clock, root_fd: int, masks: _Masks,
                  tree: Path) -> SnapshotHandle:
     """Full mode on a root that is not a git work tree: the whole tree, no ``.git``."""
-    inventory = _Inventory(policy.limits)
+    limits = policy.limits
+    inventory = _Inventory(limits)
+    nodes = _enumerate(root_fd, clock, limits, skip_top_git=False)
     copies: list[_Copy] = []
-    names = _list_dir_at(root_fd, "")
-    if any(n.lower() == ".git" for n in names):
-        raise SnapshotRefused("nested_repository")
-    for name in names:
-        _inventory_ignored("full", root_fd, name + ("/" if _read_entry(root_fd, name, "sha1").kind == "dir" else ""),
-                           inventory, masks, None, clock, copies, class_name="untracked")
-    _make_tree(tree)
-    rows = _copy_entries(root_fd, tree, copies, clock, "sha1")
+    parents = {rel.rpartition("/")[0] for rel in nodes}
+    for rel in sorted(nodes, key=str.encode):
+        node = nodes[rel]
+        if _unsafe_path(rel) or _gitmodules(rel):
+            raise SnapshotRefused("unsafe_path")
+        if masks(rel):
+            if node.kind != "dir":
+                inventory.add(rel, "masked", kind=node.kind)
+            continue
+        if node.kind == "dir":
+            if node.depth >= _FULL_DEPTH:
+                raise SnapshotRefused("too_large")
+            if rel not in parents:
+                inventory.add(rel, "untracked", kind="dir")
+                copies.append(_Copy(rel, "dir", 0, None, False))
+            continue
+        if node.kind == "special":
+            inventory.add(rel, "special", kind="special")
+            continue
+        content = _read_node(root_fd, node, "sha1", clock, inventory.remaining())
+        inventory.add(rel, "untracked", kind=node.kind, mode=content.mode, oid=content.oid, size=content.size)
+        copies.append(_Copy(rel, node.kind, content.size, content.sha256, content.mode == "100755"))
+    _after_inventory()
+    tree.mkdir(mode=0o700)
+    rows = _copy_entries(root_fd, tree, copies, clock)
     _after_copy(tree)
-    _recheck_stamps(root_fd, inventory)
-    content = tree_manifest_sha256(rows)
-    if tree_manifest_sha256(_walk_tree_rows(tree)) != content:
+    _recheck_enumeration(root_fd, clock, limits, nodes, skip_top_git=False)
+    if tree_manifest_sha256(_walk_tree_rows(tree, clock)) != tree_manifest_sha256(rows):
         raise SnapshotRefused("source_changed")
     return _handle(spec, tree, None, None, None, None, rows, inventory, masks)
 
 
-def _make_tree(tree: Path) -> None:
-    tree.mkdir(mode=0o700)
+def _recheck_enumeration(root_fd: int, clock: _Clock, limits: SnapshotLimits, nodes: Mapping[str, _Node], *,
+                         skip_top_git: bool) -> None:
+    """``x-snapshot.recheck``: the source enumeration and every entry's stamp are unchanged."""
+    try:
+        again = _enumerate(root_fd, clock, limits, skip_top_git=skip_top_git)
+    except SnapshotRefused:
+        raise SnapshotRefused("source_changed") from None
+    for rel in set(again) | set(nodes):
+        before, after = nodes.get(rel), again.get(rel)
+        if before is None or after is None or before.kind != after.kind:
+            raise SnapshotRefused("source_changed")
+        if before.kind != "dir" and before.stamp != after.stamp:
+            raise SnapshotRefused("source_changed")
 
 
-def _copy_entries(root_fd: int, tree: Path, copies: Sequence[_Copy], clock: _Clock,
-                  object_format: str) -> list[list[str]]:
-    """Copy each entry into the new tree, re-verifying the bytes against the inventoried id."""
+def _copy_entries(root_fd: int, tree: Path, copies: Sequence[_Copy], clock: _Clock) -> list[list[str]]:
+    """Stream each entry into the new tree, bounded by its admitted size and re-verified."""
     tree_fd = _open_root(tree)
     rows: list[tuple[str, str, str]] = []
     try:
@@ -1014,56 +1233,43 @@ def _copy_entries(root_fd: int, tree: Path, copies: Sequence[_Copy], clock: _Clo
                 if item.kind == "dir":
                     os.mkdir(name, 0o700, dir_fd=fd)
                     continue
-                entry = _read_entry(root_fd, item.path, object_format, keep=True)
-                if entry.kind != item.kind or (item.oid is not None and entry.oid != item.oid) or (
-                        item.sha256 is not None and entry.sha256 != item.sha256):
+                parent_fd, info = _lstat_at(root_fd, item.path)
+                if parent_fd is None or info is None:
+                    if parent_fd is not None:
+                        os.close(parent_fd)
                     raise SnapshotRefused("source_changed")
-                if item.kind == "symlink":
-                    os.symlink(os.fsdecode(entry.target or b""), name, dir_fd=fd)
-                    rows.append((item.path, "symlink", entry.sha256 or ""))
-                    continue
-                mode = 0o700 if entry.mode == "100755" else 0o600
-                out = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-                              mode, dir_fd=fd)
                 try:
-                    view = memoryview(entry.data or b"")
-                    while view:
-                        view = view[os.write(out, view):]
-                    os.fchmod(out, mode)
+                    if _kind(info) != item.kind or (item.kind == "file" and info.st_size != item.size):
+                        raise SnapshotRefused("source_changed")
+                    if item.kind == "symlink":
+                        content = _read_content(parent_fd, name, info, "sha1", clock, cap=item.size)
+                        if content.sha256 != item.sha256:
+                            raise SnapshotRefused("source_changed")
+                        os.symlink(os.fsdecode(content.target or b""), name, dir_fd=fd)
+                        rows.append((item.path, "symlink", content.sha256))
+                        continue
+                    mode = 0o700 if (info.st_mode & 0o100) else 0o600
+                    out = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                  mode, dir_fd=fd)
+                    try:
+                        def sink(chunk: bytes) -> None:
+                            view = memoryview(chunk)
+                            while view:
+                                view = view[os.write(out, view):]
+                        content = _read_content(parent_fd, name, info, "sha1", clock, cap=item.size, sink=sink)
+                        os.fchmod(out, mode)
+                    finally:
+                        os.close(out)
+                    if content.sha256 != item.sha256 or (mode == 0o700) != item.executable:
+                        raise SnapshotRefused("source_changed")
+                    rows.append((item.path, "executable_file" if mode == 0o700 else "file", content.sha256))
                 finally:
-                    os.close(out)
-                rows.append((item.path, "executable_file" if mode == 0o700 else "file", entry.sha256 or ""))
+                    os.close(parent_fd)
             finally:
                 os.close(fd)
     finally:
         os.close(tree_fd)
     return tree_manifest_rows(rows)
-
-
-def _recheck_stamps(root_fd: int, inventory: _Inventory) -> None:
-    for path, stamp in inventory.stamps.items():
-        if _stat_entry(root_fd, path).stamp != stamp:
-            raise SnapshotRefused("source_changed")
-
-
-def _stat_entry(root_fd: int, rel: str) -> _Read:
-    segments = rel.split("/")
-    name = segments.pop()
-    fd = os.dup(root_fd)
-    try:
-        for part in segments:
-            try:
-                child = _open_dir_at(fd, part)
-            except OSError:
-                return _Read("missing")
-            os.close(fd)
-            fd = child
-        try:
-            return _Read("stat", stamp=_stamp(os.stat(name, dir_fd=fd, follow_symlinks=False)))
-        except FileNotFoundError:
-            return _Read("missing")
-    finally:
-        os.close(fd)
 
 
 def _handle(spec: Snapshot, tree: Path, object_format: str | None, base: str | None, input_commit: str | None,
@@ -1077,38 +1283,40 @@ def _handle(spec: Snapshot, tree: Path, object_format: str | None, base: str | N
         tree_rows=tuple(tuple(r) for r in rows))
 
 
-def _build_git(spec: Snapshot, policy: SnapshotPolicy, clock: _Clock, root_fd: int, masks: _Masks,
+def _build_git(spec: Snapshot, policy: SnapshotPolicy, clock: _Clock, root_fd: int, top: Path, masks: _Masks,
                source: _Source, box: Path, tree: Path) -> SnapshotHandle:
     fmt = source.object_format
-    top = source.top
     limits = policy.limits
+    overlay_mode = spec.mode == "git_overlay"
     reader = box / "reader.git"
     _git(clock, ["init", "-q", "--bare", "--template=", f"--object-format={fmt}", str(reader)])
     (reader / "objects" / "info").mkdir(parents=True, exist_ok=True)
-    (reader / "objects" / "info" / "alternates").write_bytes(os.fsencode(str(source.common_dir / "objects")) + b"\n")
+    # The alternate names the pinned object store through its descriptor, inherited by git.
+    (reader / "objects" / "info" / "alternates").write_bytes(f"/proc/self/fd/{source.objects_fd}\n".encode())
     (reader / "info").mkdir(exist_ok=True)
     (reader / "info" / "exclude").write_bytes(source.exclude)
-    index_bytes = _read_small(source.git_dir / "index", _MAX_INDEX_BYTES)
+    index_bytes = _meta_read(source.git_fd, "index", _MAX_INDEX_BYTES)
     if index_bytes is None:
-        if spec.mode == "git_overlay":
-            index_bytes = b""
-        else:
+        if not overlay_mode:
             raise SnapshotRefused("dirty_source")
+        index_bytes = b""
     source_index = box / "source.index"
     if index_bytes:
         source_index.write_bytes(index_bytes)
     index_digest = _sha256(index_bytes)
+    fds = (source.objects_fd, root_fd)
 
     def rg(args: Sequence[str], **kw: Any) -> bytes:
-        return _git(clock, args, git_dir=reader, **kw)
+        return _git(clock, args, git_dir=reader, pass_fds=fds, **kw)
 
     def listing(args: Sequence[str]) -> list[str]:
-        return _split_z(rg(["ls-files", "-z", *args], work_tree=top, index_file=source_index, cwd=top))
+        # The work tree is the pinned root descriptor; git reads only the private index copy.
+        return _split_z(rg(["ls-files", "-z", *args], work_tree=".", index_file=source_index,
+                           cwd=f"/proc/self/fd/{root_fd}"))
 
     base = rg(["rev-parse", "--verify", "--end-of-options", f"{source.head_oid}^{{commit}}"],
               code="not_a_work_tree").decode().strip()
-    rg(["rev-parse", "--verify", "--end-of-options", f"{base}^{{tree}}"],
-                   code="not_a_work_tree").decode().strip()
+    rg(["rev-parse", "--verify", "--end-of-options", f"{base}^{{tree}}"], code="not_a_work_tree")
 
     base_entries: dict[str, tuple[str, str]] = {}
     for item in _split_z(rg(["ls-tree", "-r", "-z", "--full-tree", base])):
@@ -1136,94 +1344,90 @@ def _build_git(spec: Snapshot, policy: SnapshotPolicy, clock: _Clock, root_fd: i
         if _unsafe_path(path):
             raise SnapshotRefused("unsafe_path")
         staged[path] = (gmode, oid)
+    if not overlay_mode and staged != base_entries:
+        raise SnapshotRefused("dirty_source")
+    untracked = listing(["--others", "--exclude-standard"])
+    for path in untracked:
+        if path.endswith("/"):
+            raise SnapshotRefused("nested_repository")
+    untracked_set = frozenset(untracked)
+    ignored_set = frozenset(listing(["--others", "--ignored", "--exclude-standard"]))
+    tracked_set = frozenset(staged) | frozenset(base_entries)
+
+    nodes = _enumerate(root_fd, clock, limits, skip_top_git=True)
+    for path in untracked_set:
+        if path not in nodes:
+            raise SnapshotRefused("source_changed")
 
     inventory = _Inventory(limits)
     copies: list[_Copy] = []
+    copied: set[str] = set()
     overlay_rows: list[tuple[str, str, str | None]] = []
     masked_tracked: list[str] = []
-
-    if spec.mode == "git_overlay":
-        listed = listing(["--cached", "--others", "--exclude-standard"]) if index_bytes else \
-            listing(["--others", "--exclude-standard"])
-        untracked_listing = listing(["--others", "--exclude-standard"])
-        candidates = sorted(set(listed) | set(base_entries) | set(staged), key=str.encode)
-        for path in candidates:
-            clock.left()
-            if path.endswith("/"):
-                raise SnapshotRefused("nested_repository")
-            if _unsafe_path(path) or _gitmodules(path):
-                raise SnapshotRefused("unsafe_path")
-            in_base = path in base_entries
-            if masks(path):
-                inventory.add(path, "masked", kind="file")
-                if in_base:
-                    masked_tracked.append(path)
-                continue
-            entry = _read_entry(root_fd, path, fmt)
-            cls = "tracked" if (in_base or path in staged) else "untracked"
-            if entry.kind == "missing":
-                if in_base or path in staged:
-                    if in_base:
-                        overlay_rows.append((path, "deleted", None))
-                    continue
-                raise SnapshotRefused("source_changed")
-            if entry.kind == "dir":
-                if os.path.lexists(top / path / ".git"):
-                    raise SnapshotRefused("nested_repository")
-                raise SnapshotRefused("unsupported_repository")
-            if entry.kind == "special":
-                inventory.add(path, "special", kind="special", stamp=entry.stamp)
-                if in_base:
-                    overlay_rows.append((path, "deleted", None))
-                continue
-            differs = not in_base or base_entries[path] != (entry.mode, entry.oid)
-            if differs and entry.size > limits.untracked_blob_max_bytes:
+    for rel in sorted(nodes, key=str.encode):
+        node = nodes[rel]
+        if node.kind == "dir":
+            continue
+        tracked = rel in tracked_set
+        if not tracked and (_unsafe_path(rel) or _gitmodules(rel)):
+            raise SnapshotRefused("unsafe_path")
+        if masks(rel):
+            inventory.add(rel, "masked", kind=node.kind)
+            if rel in base_entries:
+                masked_tracked.append(rel)
+            continue
+        if node.kind == "special":
+            inventory.add(rel, "special", kind="special")
+            if tracked and not overlay_mode:
+                raise SnapshotRefused("dirty_source")
+            continue
+        if rel in staged or rel in untracked_set:
+            cls = "tracked" if tracked else "untracked"
+            cap = inventory.remaining()
+            if overlay_mode or cls == "untracked":
+                cap = min(cap, limits.untracked_blob_max_bytes)
+            if node.stamp[2] > cap and node.kind == "file":
                 raise SnapshotRefused("too_large")
-            _classify_read(path, entry, cls, inventory, copies)
-            if differs:
-                kind = "symlink" if entry.kind == "symlink" else (
-                    "executable_file" if entry.mode == "100755" else "file")
-                overlay_rows.append((path, kind, entry.sha256))
-        for item in listing(["--others", "--ignored", "--exclude-standard", "--directory"]):
-            _inventory_ignored("git", root_fd, item, inventory, masks, fmt, clock, copies)
-        untracked = untracked_listing
-    else:
-        if staged != base_entries:
-            raise SnapshotRefused("dirty_source")
-        dirty = False
-        for path in sorted(base_entries, key=str.encode):
-            clock.left()
-            gmode, oid = base_entries[path]
-            if masks(path):
-                inventory.add(path, "masked", kind="symlink" if gmode == "120000" else "file", mode=gmode, oid=oid)
-                masked_tracked.append(path)
-                continue
-            entry = _read_entry(root_fd, path, fmt)
-            if entry.kind not in ("file", "symlink") or (entry.mode, entry.oid) != (gmode, oid):
-                dirty = True
-                continue
-            _classify_read(path, entry, "tracked", inventory, copies)
-        if dirty:
-            raise SnapshotRefused("dirty_source")
-        untracked = listing(["--others", "--exclude-standard"])
-        for path in untracked:
-            clock.left()
-            if path.endswith("/"):
-                raise SnapshotRefused("nested_repository")
-            if _unsafe_path(path) or _gitmodules(path):
-                raise SnapshotRefused("unsafe_path")
-            if masks(path):
-                inventory.add(path, "masked", kind="file")
-                continue
-            entry = _read_entry(root_fd, path, fmt, max_bytes=limits.untracked_blob_max_bytes)
-            if entry.kind == "dir" and os.path.lexists(top / path / ".git"):
-                raise SnapshotRefused("nested_repository")
-            _classify_read(path, entry, "untracked", inventory, copies)
+            content = _read_node(root_fd, node, fmt, clock, cap)
+            if not overlay_mode and tracked and (content.mode, content.oid) != base_entries.get(rel):
+                raise SnapshotRefused("dirty_source")
+            inventory.add(rel, cls, kind=node.kind, mode=content.mode, oid=content.oid, size=content.size)
+            copies.append(_Copy(rel, node.kind, content.size, content.sha256, content.mode == "100755"))
+            copied.add(rel)
+            if overlay_mode and base_entries.get(rel) != (content.mode, content.oid):
+                kind = "symlink" if node.kind == "symlink" else (
+                    "executable_file" if content.mode == "100755" else "file")
+                overlay_rows.append((rel, kind, content.sha256))
+        elif rel in ignored_set:
+            if spec.mode == "full":
+                if node.depth >= _FULL_DEPTH:
+                    raise SnapshotRefused("too_large")
+                content = _read_node(root_fd, node, fmt, clock, inventory.remaining())
+                inventory.add(rel, "ignored", kind=node.kind, mode=content.mode, oid=content.oid,
+                              size=content.size)
+                copies.append(_Copy(rel, node.kind, content.size, content.sha256, content.mode == "100755"))
+            else:
+                inventory.add(rel, "omitted", kind=node.kind)
+        elif tracked:
+            # A B path git no longer lists (removed from the index): absent from the copy.
+            if not overlay_mode:
+                raise SnapshotRefused("dirty_source")
+            inventory.add(rel, "omitted", kind=node.kind)
+        else:
+            raise SnapshotRefused("unsupported_repository")
+    if not overlay_mode:
+        for path in base_entries:
+            if path not in copied and not masks(path):
+                raise SnapshotRefused("dirty_source")
         if policy.result_kind == "patch" and any(
                 inventory.entries[c.path]["class"] == "untracked" for c in copies):
             raise SnapshotRefused("untracked_input")
-        for item in listing(["--others", "--ignored", "--exclude-standard", "--directory"]):
-            _inventory_ignored(spec.mode, root_fd, item, inventory, masks, fmt, clock, copies)
+    else:
+        # Every B or index path that the execution tree does not carry is a deletion entry.
+        for path in sorted(tracked_set - copied, key=str.encode):
+            if not masks(path):
+                overlay_rows.append((path, "deleted", None))
+    _after_inventory()
 
     # The execution repository: init, the working tree, B's objects, S, branch and index.
     _git(clock, ["init", "-q", "--template=", f"--object-format={fmt}", f"--initial-branch={EXECUTION_BRANCH}",
@@ -1233,17 +1437,17 @@ def _build_git(spec: Snapshot, policy: SnapshotPolicy, clock: _Clock, root_fd: i
     _git(clock, ["config", "core.logAllRefUpdates", "false"], git_dir=ex_git)
     (ex_git / "info").mkdir(mode=0o700, exist_ok=True)
     (ex_git / "info" / "exclude").write_bytes(source.exclude)
-    rows = _copy_entries(root_fd, tree, copies, clock, fmt)
+    rows = _copy_entries(root_fd, tree, copies, clock)
     rg(["pack-objects", "--revs", "-q", "--delta-base-offset", str(ex_git / "objects" / "pack" / "pack")],
        data=f"{base}\n".encode())
 
     def eg(args: Sequence[str], **kw: Any) -> bytes:
-        kw.setdefault("work_tree", tree)
+        kw.setdefault("work_tree", str(tree))
         kw.setdefault("cwd", tree)
         return _git(clock, args, git_dir=ex_git, **kw)
 
     input_commit = base
-    if spec.mode != "git_overlay":
+    if not overlay_mode:
         inputs = [c for c in copies if inventory.entries[c.path]["class"] == "untracked" and c.kind != "dir"]
         if inputs:
             for item in inputs:
@@ -1252,12 +1456,13 @@ def _build_git(spec: Snapshot, policy: SnapshotPolicy, clock: _Clock, root_fd: i
                 else:
                     data = (tree / item.path).read_bytes()
                 oid = eg(["hash-object", "-w", "--no-filters", "--stdin"], data=data).decode().strip()
-                if oid != item.oid:
+                if oid != inventory.entries[item.path]["oid"]:
                     raise SnapshotRefused("source_changed")
             s_index = box / "input.index"
             eg(["read-tree", base], index_file=s_index)
-            info = b"".join(f"{inventory.entries[i.path]['mode']} {i.oid}\t".encode() + i.path.encode() + b"\x00"
-                            for i in inputs)
+            info = b"".join(
+                f"{inventory.entries[i.path]['mode']} {inventory.entries[i.path]['oid']}\t".encode()
+                + i.path.encode() + b"\x00" for i in inputs)
             eg(["update-index", "-z", "--index-info"], index_file=s_index, data=info)
             input_tree = eg(["write-tree"], index_file=s_index).decode().strip()
             input_commit = eg(["commit-tree", input_tree, "-p", base], extra_env=_SYNTHETIC_ENV,
@@ -1267,29 +1472,35 @@ def _build_git(spec: Snapshot, policy: SnapshotPolicy, clock: _Clock, root_fd: i
     if masked_tracked:
         eg(["update-index", "-z", "--skip-worktree", "--stdin"],
            data=b"".join(p.encode() + b"\x00" for p in masked_tracked))
-    if spec.mode != "git_overlay":
+    if not overlay_mode:
         eg(["update-index", "-q", "--refresh"], allow_fail=True)
-        if _split_z(eg(["diff-files", "-z", "--name-only"])):
+        if _split_z(eg(["diff-files", "--no-ext-diff", "--no-textconv", "-z", "--name-only"])):
             raise SnapshotRefused("source_changed")
 
     _after_copy(tree)
     # The source must not have moved while it was copied.
-    after = _inspect(clock, top, box)
-    if after is None or (after.head_oid, after.head_ref) != (source.head_oid, source.head_ref):
-        raise SnapshotRefused("source_changed")
-    after_index = _read_small(source.git_dir / "index", _MAX_INDEX_BYTES) or b""
+    after = _inspect(clock, root_fd, top, box)
+    try:
+        if after is None or after.identities != source.identities or (
+                after.head_oid, after.head_ref) != (source.head_oid, source.head_ref):
+            raise SnapshotRefused("source_changed")
+        after_index = _meta_read(after.git_fd, "index", _MAX_INDEX_BYTES) or b""
+    finally:
+        if after is not None:
+            after.close()
     if _sha256(after_index) != index_digest:
         raise SnapshotRefused("source_changed")
     if listing(["--others", "--exclude-standard"]) != untracked:
         raise SnapshotRefused("source_changed")
-    _recheck_stamps(root_fd, inventory)
+    _recheck_enumeration(root_fd, clock, limits, nodes, skip_top_git=True)
 
     overlay = None
-    if spec.mode == "git_overlay":
+    tree_rows = _walk_tree_rows(tree, clock)
+    if overlay_mode:
         overlay = overlay_bytes(overlay_rows)
-        tree_now = {row[0]: row for row in _walk_tree_rows(tree)}
+        tree_now = {row[0]: row for row in tree_rows}
         recheck_rows = []
-        for path, kind, digest in overlay_rows:
+        for path, kind, _ in overlay_rows:
             if kind == "deleted":
                 if path in tree_now:
                     raise SnapshotRefused("source_changed")
@@ -1299,9 +1510,9 @@ def _build_git(spec: Snapshot, policy: SnapshotPolicy, clock: _Clock, root_fd: i
                 recheck_rows.append((path, row[1], row[2]) if row else (path, "deleted", None))
         if overlay_bytes(recheck_rows) != overlay:
             raise SnapshotRefused("source_changed")
-    if tree_manifest_sha256(_walk_tree_rows(tree)) != tree_manifest_sha256(rows):
+    if tree_manifest_sha256(tree_rows) != tree_manifest_sha256(rows):
         raise SnapshotRefused("source_changed")
-    input_value = base if spec.mode == "git_overlay" else input_commit
+    input_value = base if overlay_mode else input_commit
     return _handle(spec, tree, fmt, base, input_value, overlay, rows, inventory, masks)
 
 
@@ -1365,7 +1576,8 @@ def _seed_root_fd(seed_root: Path) -> tuple[int, tuple[int, ...]]:
         raise
 
 
-def _seed_read(dir_fd: int, name: str, cap: int) -> tuple[bytes, os.stat_result]:
+def _seed_read(dir_fd: int, name: str, cap: int,
+               check: Callable[[], None] = lambda: None) -> tuple[bytes, os.stat_result]:
     """Read at most ``cap`` + 1 bytes of a regular file opened without following a symlink."""
     try:
         info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
@@ -1387,6 +1599,7 @@ def _seed_read(dir_fd: int, name: str, cap: int) -> tuple[bytes, os.stat_result]
             raise SeedRefused("source_changed")
         chunks, total = [], 0
         while total <= cap:
+            check()
             chunk = os.read(fd, min(_READ_CHUNK, cap + 1 - total))
             if not chunk:
                 break
@@ -1449,8 +1662,19 @@ class SeedHandle:
         """``recheck_before_start``: trust rules, identities and bytes; a change is ``source_changed``."""
         if self.manifest is None:
             return
-        identity, files = _capture_identity(self.seed_root, self.request_id, self.manifest, self.limits,
-                                            self._files, cancelled)
+        def check() -> None:
+            if cancelled():
+                raise ConstructionCancelled()
+
+        try:
+            identity, files = _capture_identity(self.seed_root, self.request_id, self.manifest, self.limits,
+                                                self._files, check)
+        except SeedRefused as refusal:
+            # The trust rules keep their reason at recheck; any other difference from the
+            # captured source (removed, retyped, swapped or rewritten) is a changed source.
+            if refusal.reason == "seed_root_untrusted":
+                raise
+            raise SeedRefused("source_changed") from None
         if identity != self._identity or files != self._files:
             raise SeedRefused("source_changed")
 
@@ -1618,7 +1842,7 @@ def _check_manifest(raw: bytes, seed: SeedDeclaration, request_id: str, limits: 
 
 
 def _capture_identity(seed_root: Path | None, request_id: str, manifest: bytes | None, limits: SeedLimits,
-                      files: Sequence[_SeedFile], cancelled: Callable[[], bool],
+                      files: Sequence[_SeedFile], check: Callable[[], None],
                       sink: Callable[[str, bytes], None] | None = None) -> tuple[tuple[Any, ...], tuple[_SeedFile, ...]]:
     """Open the seed source once more along the trusted chain; return identities and files."""
     if seed_root is None:
@@ -1626,7 +1850,7 @@ def _capture_identity(seed_root: Path | None, request_id: str, manifest: bytes |
     uid = os.geteuid()
     root_fd, root_identity = _seed_root_fd(Path(seed_root))
     try:
-        raw, info = _seed_read(root_fd, f"{request_id}.seed.json", limits.manifest_max_bytes)
+        raw, info = _seed_read(root_fd, f"{request_id}.seed.json", limits.manifest_max_bytes, check)
         if info.st_uid != uid or info.st_mode & 0o022:
             raise SeedRefused("seed_root_untrusted")
         if manifest is not None and raw != manifest:
@@ -1636,8 +1860,7 @@ def _capture_identity(seed_root: Path | None, request_id: str, manifest: bytes |
             entry_identity = _stamp(os.fstat(entry_fd))[:2]
             captured = []
             for item in files:
-                if cancelled():
-                    raise ConstructionCancelled()
+                check()
                 pieces = item.relpath.split("/")
                 fd = os.dup(entry_fd)
                 try:
@@ -1645,7 +1868,7 @@ def _capture_identity(seed_root: Path | None, request_id: str, manifest: bytes |
                         child = _seed_open_dir(fd, part)
                         os.close(fd)
                         fd = child
-                    data, file_info = _seed_read(fd, pieces[-1], item.size)
+                    data, file_info = _seed_read(fd, pieces[-1], item.size, check)
                 finally:
                     os.close(fd)
                 if len(data) != item.size or _sha256(data) != item.sha256:
@@ -1662,23 +1885,23 @@ def _capture_identity(seed_root: Path | None, request_id: str, manifest: bytes |
 
 
 def build_seed(seed: SeedDeclaration | None, *, request_id: str, seed_root: Path | str | None,
-               limits: SeedLimits, staging: Path | str, cancelled: Callable[[], bool],
-               deadline: float | None = None) -> SeedHandle:
+               limits: SeedLimits, staging: Path | str, cancelled: Callable[[], bool]) -> SeedHandle:
     """Verify the declared seed set and capture it into the new private directory ``staging``.
 
     Only declared relpaths are opened, after the manifest checks pass. A refusal deletes the
-    staged capture. ``deadline`` (monotonic) is the attempt's snapshot budget, else ``timeout``.
+    staged capture. ``staging`` must not exist and its parent must be trusted, as for
+    :func:`build_snapshot`. Capture shares the attempt's snapshot budget (:func:`snapshot_budget`;
+    the default budget outside one), else ``timeout``.
     """
     if seed is None:
         return SeedHandle(request_id, None, None, None, (), limits, (), ())
-    clock = _Clock(0, cancelled, deadline if deadline is not None else float("inf"))
+    clock = _Clock(_budget_end(DEFAULT_SNAPSHOT_BUDGET_S), cancelled)
 
-    def check() -> bool:
+    def check() -> None:
         try:
             clock.left()
         except _Timeout:
             raise SeedRefused("timeout") from None
-        return False
 
     for name in ("max_entries", "entry_max_bytes", "max_bytes", "manifest_max_bytes"):
         value = getattr(limits, name)
@@ -1693,7 +1916,7 @@ def build_seed(seed: SeedDeclaration | None, *, request_id: str, seed_root: Path
     check()
     root_fd, _ = _seed_root_fd(Path(seed_root))
     try:
-        raw, info = _seed_read(root_fd, f"{request_id}.seed.json", limits.manifest_max_bytes)
+        raw, info = _seed_read(root_fd, f"{request_id}.seed.json", limits.manifest_max_bytes, check)
     finally:
         os.close(root_fd)
     if info.st_uid != os.geteuid() or info.st_mode & 0o022:
@@ -1701,12 +1924,12 @@ def build_seed(seed: SeedDeclaration | None, *, request_id: str, seed_root: Path
     if len(raw) > limits.manifest_max_bytes:
         raise SeedRefused("too_large")
     entries = _check_manifest(raw, seed, request_id, limits)
-    staging_dir = Path(staging)
+    staging_dir = _private_child(Path(staging), "seed_staging_invalid")
     try:
-        staging_dir.mkdir(mode=0o700)
         staging_fd = _open_root(staging_dir)
     except OSError:
-        raise SeedRefused("scratch_unprovisioned") from None
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        raise ValueError("seed_staging_invalid") from None
     planned = tuple(_SeedFile(e.relpath, e.sha256, e.size, bool(e.executable), ()) for e in entries)
 
     def sink(relpath: str, data: bytes) -> None:
@@ -1715,7 +1938,8 @@ def build_seed(seed: SeedDeclaration | None, *, request_id: str, seed_root: Path
 
     try:
         identity, files = _capture_identity(Path(seed_root), request_id, raw, limits, planned,
-                                            lambda: check(), sink)
+                                            check, sink)
+        check()
     except BaseException:
         os.close(staging_fd)
         shutil.rmtree(staging_dir, ignore_errors=True)
