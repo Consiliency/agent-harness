@@ -22,13 +22,21 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   - success is `passed`;
   - reduction blockers, child-reported blockers and host-side failures (a malformed audit
     config, an unavailable BAML evaluator, an interrupt, a missing host log) report nothing.
-
-  The launch-contract verdict uses the reason captured at the blocker check. An observer
-  that raises is logged as one metadata-only `jevdrill_acceptance_hook_failed` diagnostic,
-  with no status, blocker or closeout. Its action is listed in the new
-  `reconcile.DIAGNOSTIC_EVENT_ACTIONS`, which reconciliation, its latest-event recovery
-  scans and the runner's latest-status lookup skip, so the diagnostic can never restate or
-  roll back phase state. With no integration, behaviour is unchanged.
+- LANEEXEC SL-7: `phase_loop_runtime.launch_settings` and `phase_loop_runtime.launch_routes`
+  (`plans/phase-plan-v13-LANEEXEC.md`, binding §7 E3-2 and E3-3). `decode_launch_settings`
+  is the one strict, closed decoder of the `launch` object of the captured
+  `PlacementClientConfig`. It covers the template registry, toolkit pins manifest, image
+  allowlist, snapshot and seed limits, `seed_root`, `local_link_root`, the activation
+  values, the return cap, both lifetime budgets and the review-runner image record. Limits
+  and budgets may only be lowered. `launch_routes` adds the L-S7 route mapping as a closed
+  function, crossed pi-runner pair refusals, template selection and argv expansion, and
+  `register_templates`. Registration checks the canonical template bytes, slots and image
+  links resolved through host symlinks, the frozen pi-runner forms (the local one in its
+  LANEEXEC-v1-errata-1 form, with no read-only tree over a fixed mount), and the
+  agent-toolkit pins manifest, role and 16-file closure checks. A toolkit check failure
+  leaves the whole agent-toolkit registry unregistered. Production openshell registration
+  stays closed until image-bound runtime evidence exists. Every route stays disabled under
+  shipped defaults. Nothing calls these modules yet; the launch entry point follows in SL-8.
 - JEVHOST SL-6: `phase_loop_runtime.host_integration`, the host-neutral integration seam
   (`plans/amendments/jevhost-JEVHOST-host-gaps.md`, IF-0-JEVHOST-5, GAPS §2). It provides
   `RetryBudget` (remaining attempts and floor-millisecond time, exhaustion, tighten-only),
