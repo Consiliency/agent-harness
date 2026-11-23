@@ -8,6 +8,20 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
+- JEVHOST SL-7: the runner uses the host integration seam
+  (`plans/amendments/jevhost-JEVHOST-host-gaps.md`, GAPS §3.1 and §3.5). The main,
+  delegated and lane request sites build through `build_host_request`, so an integration
+  that replaces an operator or policy override is refused before the builder or launcher
+  runs. After an entered launch, one `_report_acceptance` helper sends the verdict to an
+  `AcceptanceObserver`:
+  - a nonzero exit, or an unavailable, stalled or timed-out run, is `infrastructure`;
+  - a zero exit that a post-launch gate or verification blocks is `quality`, as is a
+    launch-contract blocker that judges the run's own output;
+  - success is `passed`;
+  - reduction blockers and unrelated blockers report nothing.
+
+  An observer that raises is logged as one `jevdrill_acceptance_hook_failed` event and
+  never changes the classification. With no integration, behaviour is unchanged.
 - JEVHOST SL-6: `phase_loop_runtime.host_integration`, the host-neutral integration seam
   (`plans/amendments/jevhost-JEVHOST-host-gaps.md`, IF-0-JEVHOST-5, GAPS §2). It provides
   `RetryBudget` (remaining attempts and floor-millisecond time, exhaustion, tighten-only),

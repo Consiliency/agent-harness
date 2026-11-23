@@ -248,7 +248,8 @@ from .worker_pool import (
     worker_summary_path,
     write_worker_summary,
 )
-from .jevdrill_adapter import build_jevdrill_request, launch_jevdrill
+from .host_integration import build_host_request, notify_acceptance
+from .jevdrill_adapter import launch_jevdrill
 
 try:  # Optional in the adapter runtime; tests and normal installs provide it.
     import yaml
@@ -3385,7 +3386,7 @@ def run_loop(
                 _exec_repo = repo
                 _exec_roadmap = roadmap
                 _exec_plan = plan
-            request = build_jevdrill_request(
+            request = build_host_request(
                 jevdrill_adapter, build_launch_request, mode="main", dry_run=dry_run,
                 executor=resolved_executor,
                 action=launch_action,
@@ -3585,6 +3586,26 @@ def run_loop(
                 ),
             ))
 
+        def _report_acceptance(prep: "_DispatchPrep", result, verdict: str | None) -> None:
+            """JEVHOST GAPS §3.1: report an entered launch's acceptance verdict.
+
+            Called after the phase is classified. A failing observer appends one
+            ``jevdrill_acceptance_hook_failed`` event carrying the unchanged status.
+            """
+            failure = _deliver_acceptance(jevdrill_adapter, result, verdict)
+            if failure is None:
+                return
+            append_event(repo, LoopEvent(
+                timestamp=utc_now(), repo=str(repo), roadmap=str(roadmap),
+                phase=alias, action="jevdrill_acceptance_hook_failed",
+                status=classifications.get(alias, "unknown"),
+                model=prep.selection.model, reasoning_effort=prep.selection.effort,
+                source=prep.selection.source,
+                selected_executor=prep.dispatch_decision.selected_executor,
+                metadata={"jevdrill_acceptance_hook_failed": failure},
+                **event_provenance(roadmap, alias),
+            ))
+
         def _finalize_phase_launch(
             prep: "_DispatchPrep",
             result,
@@ -3607,6 +3628,7 @@ def run_loop(
             selection = prep.selection
             spec = prep.spec
             if reduction_blocker is not None:
+                # GAPS §3.1: a reduction blocker is not judged on the run, so no verdict.
                 classifications[alias] = "blocked"
                 terminal_summary = _persist_terminal_summary(
                     artifacts,
@@ -3762,6 +3784,7 @@ def run_loop(
                     pipeline_mode=effective_pipeline_mode,
                 )
                 current = alias
+                _report_acceptance(prep, result, "infrastructure")
                 return _DispatchOutcome("break", None)
             if launch_contract_blocker:
                 classifications[alias] = "blocked"
@@ -3822,6 +3845,7 @@ def run_loop(
                     pipeline_mode=effective_pipeline_mode,
                 )
                 current = alias
+                _report_acceptance(prep, result, _launch_contract_acceptance_verdict(result, launch_contract_blocker))
                 return _DispatchOutcome("break", None)
             if dry_run:
                 terminal_summary = _persist_terminal_summary(
@@ -3922,6 +3946,9 @@ def run_loop(
             child_automation: dict[str, object] = {}
             post_launch_plan = find_plan_artifact(repo, alias, roadmap=roadmap)
             runner_verification: dict[str, object] | None = None
+            # GAPS §3.1: set when a post-launch gate or verification judged this run's own
+            # output and blocked the phase, so a blocked reduction reports ``quality``.
+            acceptance_quality_failure = False
             if not dry_run:
                 verification_plan = post_launch_plan or plan
                 if launch_action == "execute" and verification_plan is not None:
@@ -3946,6 +3973,7 @@ def run_loop(
                     if runner_verification and artifacts:
                         merge_launch_metadata(artifacts.get("metadata"), {"runner_verification": runner_verification})
                     if _runner_verification_fails_closed(runner_verification):
+                        acceptance_quality_failure = True
                         status_after_launch = "blocked"
                         set_phase_status(
                             repo,
@@ -3991,6 +4019,7 @@ def run_loop(
                 automation_status = _gate_outcome.automation_status
                 event_blocker = _gate_outcome.event_blocker
                 if _gate_outcome.blocked_reason is not None:
+                    acceptance_quality_failure = True
                     status_after_launch = "blocked"
                     set_phase_status(
                         repo,
@@ -4698,6 +4727,15 @@ def run_loop(
                 )
                 append_event(repo, closeout_event)
                 status_after_closeout = classifications[alias]
+            if not result.available:
+                acceptance_verdict = "infrastructure"
+            elif status_after_closeout == "complete" or (launch_action == "plan" and status_after_closeout == "planned"):
+                acceptance_verdict = "passed"
+            elif acceptance_quality_failure and status_after_closeout == "blocked":
+                acceptance_verdict = "quality"
+            else:
+                acceptance_verdict = None
+            _report_acceptance(prep, result, acceptance_verdict)
             if coordinator_wave is not None:
                 wave_index, phase_aliases = coordinator_wave
                 latest_snapshot = reconcile(repo, roadmap)
@@ -5506,7 +5544,7 @@ def launch_delegated_child(
         delegation_request=request,
         parent_child_metadata=parent_child,
     )
-    launch_request = build_jevdrill_request(
+    launch_request = build_host_request(
         jevdrill_adapter, build_launch_request, mode="delegated", dry_run=dry_run,
         executor=decision.selected_executor or request.target_executor,
         action=request.product_action,
@@ -6218,7 +6256,7 @@ def launch_harness_lane_work_unit(
         injection_mode_override="context_file" if executor == "command" else None,
         harness_lane_assignment=assignment,
     )
-    request = build_jevdrill_request(
+    request = build_host_request(
         jevdrill_adapter, build_launch_request, mode="lane", dry_run=dry_run,
         executor=executor,
         action=action,
@@ -11316,6 +11354,52 @@ def _launch_contract_blocker(
                 "required_human_inputs": (),
                 "access_attempts": (),
             }
+    return None
+
+
+def _launch_contract_acceptance_verdict(result: LaunchResult, blocker: dict[str, object]) -> str | None:
+    """The acceptance verdict of a zero-exit launch that ``_launch_contract_blocker`` blocked.
+
+    Mirrors that function's order (JEVHOST GAPS §3.1). A stalled, timed-out or unavailable
+    run is ``infrastructure``. ``quality`` is returned only where the blocker judges the
+    run's own output: the child exited without the closeout its output must carry
+    (``contract_bug``), or the host-created log holds no byte of child output and the
+    captured output is empty. An interrupt, a cleanup that left the child alive, and a
+    missing host-owned log judge the host, not the run, so they report nothing.
+    """
+    if not result.available or result.stalled or result.timed_out:
+        return "infrastructure"
+    if result.interrupted:
+        return None
+    cleanup = result.cleanup_evidence if isinstance(result.cleanup_evidence, dict) else {}
+    if cleanup.get("process_alive_after_cleanup"):
+        return None
+    if blocker.get("blocker_class") == "contract_bug":
+        return "quality"
+    if result.log_path and Path(result.log_path).exists():
+        return "quality"
+    return None
+
+
+def _deliver_acceptance(integration: object | None, result: LaunchResult, verdict: str | None) -> dict[str, object] | None:
+    """Send one acceptance verdict for an entered launch to ``integration`` (GAPS §3.1).
+
+    ``verdict`` is ``"passed"``, a failure class, or ``None`` for no report. Nothing is sent
+    without an integration, a verdict, or a launch result that carries its execution run.
+    An exception from the observer is caught and returned as a metadata-only record, so the
+    caller can log it without changing the phase classification.
+    """
+    if integration is None or verdict is None or result.dry_run:
+        return None
+    execution_run = result.jevdrill_execution_run
+    run_id = execution_run.get("execution_run_id") if isinstance(execution_run, dict) else None
+    if not run_id:
+        return None
+    passed = verdict == "passed"
+    try:
+        notify_acceptance(integration, str(run_id), passed=passed, failure_class=None if passed else verdict)
+    except Exception as exc:  # noqa: BLE001 - the observer must never change the classification
+        return {"execution_run_id": str(run_id), "verdict": verdict, "error_type": type(exc).__name__}
     return None
 
 
