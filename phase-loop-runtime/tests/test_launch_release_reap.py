@@ -810,14 +810,30 @@ def test_generation_late_lane_entry(env, monkeypatch):
     assert service.launch_lane("req", lane_context=context, cancelled=event) == "req"
     assert observed == dict(origin="lane", lane_context=context, cancelled=event, pre_exec=None, withhold=None)
     assert service.supervisor_runner is runner
-    monkeypatch.setenv("SUPERVISOR_RUNNER", "fixture")
+    # The factory forwards its keyword directly. The service constructor stores
+    # that same parameter, and no other service method assigns the runner.
+    import ast
+    import inspect
+    factory = ast.parse(inspect.getsource(launch_service.build_launch_service))
+    service_class = ast.parse(inspect.getsource(launch_service.LaunchService))
+    args = factory.body[0].args
+    defaults = dict(zip((arg.arg for arg in args.kwonlyargs), args.kw_defaults))
+    assert ast.unparse(defaults["supervisor_runner"]) == "None"
+    forwarded = [node.value for node in ast.walk(factory)
+                 if isinstance(node, ast.keyword) and node.arg == "supervisor_runner"]
+    stored = [node.value for node in ast.walk(service_class) if isinstance(node, ast.Assign)
+              and any(isinstance(t, ast.Attribute) and t.attr == "supervisor_runner" for t in node.targets)]
+    assert [ast.unparse(value) for value in forwarded + stored] == ["supervisor_runner"] * 2
+    for tree in (factory, service_class):
+        assert not any(isinstance(n, ast.Name) and n.id == "supervisor_runner" and
+                       isinstance(n.ctx, ast.Store) for n in ast.walk(tree))
     default = env.service()
     request = SimpleNamespace(supervisor_runner=runner, caller_context={"supervisor_runner": "fixture"})
     assert default.launch_lane(request, lane_context=context, cancelled=event) is request
     assert default.supervisor_runner is None
 
 
-@pytest.mark.parametrize("fault", ["none", "duplicate", "oversize", "surplus", "utf8", "stale_start"])
+@pytest.mark.parametrize("fault", ["none", "duplicate", "oversize", "surplus", "utf8", "stale_start", "wrong_pid", "enametoolong"])
 def test_generation_cancel_long_path(env, fault, monkeypatch):
     import socket
     import struct
@@ -844,8 +860,7 @@ def test_generation_cancel_long_path(env, fault, monkeypatch):
             pid, uid, _ = struct.unpack("3i", peer)
             assert uid == os.geteuid()
             header = reader.read(4)
-            if fault == "stale_start":
-                assert header == b""
+            if fault in ("stale_start", "wrong_pid") and not header:
                 return
             length, = struct.unpack(">I", header)
             request = json.loads(reader.read(length))
@@ -866,6 +881,18 @@ def test_generation_cancel_long_path(env, fault, monkeypatch):
             listener.bind(address)
             os.chmod(address, 0o600)
             listener.listen()
+            if fault == "enametoolong":
+                import errno
+                def too_long(*args):
+                    raise OSError(errno.ENAMETOOLONG, "injected connect failure")
+                monkeypatch.setattr(socket.socket, "connect", too_long)
+                with pytest.raises(sp.LifecycleError, match="placement_control_socket_invariant"):
+                    life.cancel_launch_owner(*key, deadline=time.monotonic()+2)
+                return
+            if fault == "wrong_pid":
+                claim = life.launch_claim_record(key[0])
+                claim["owner"]["pid"] += 1
+                life._launch_write("claims", key[0], claim)
             thread = threading.Thread(target=serve, args=(listener,))
             thread.start()
             if fault == "stale_start":
@@ -875,7 +902,7 @@ def test_generation_cancel_long_path(env, fault, monkeypatch):
             thread.join(2)
     finally:
         os.close(fd)
-    if fault == "stale_start":
+    if fault in ("stale_start", "wrong_pid"):
         assert not received
         return
     assert received == [dict(version=1, op="cancel", reservation_id=key[0], request_id=key[1],
@@ -934,3 +961,217 @@ def test_generation_release_drops_journal_before_waiting_for_lease(env, prepared
     thread.join(3)
     assert outcome[0][0].state == "released" and not prepared[-1].exists()
     assert life.read_cleanup_debt(*key).allocations_collected is True
+
+
+@pytest.mark.parametrize("kind", ["stage", "scratch"])
+@pytest.mark.parametrize("crash", ["before_mkdir", "before_identify", "after_remove"])
+def test_review_allocation_crash_recovery(prepared, env, monkeypatch, kind, crash):
+    life, _, reservation, response, _, run = prepared
+    rid, req = reservation["reservation_id"], "interrupted"
+    key = (rid, req, GEN)
+    args = dict(kind=kind, deadline=time.monotonic() + 2)
+    (run / "scratch").rmdir()
+    path = (run if kind == "scratch" else life.launch_root / "stages") / GEN
+    with life.launch_lock(rid, timeout_s=1):
+        intent = dict(**args, run_id=response.paths.run_id, owner=sp._own_identity(), basename=GEN)
+        assert life.record_allocation(*key, file_id=None, **intent)
+        if crash != "before_mkdir":
+            path.mkdir(mode=0o700)
+        if crash == "after_remove":
+            info = path.stat()
+            assert life.record_allocation(*key, file_id=(info.st_dev, info.st_ino), **intent)
+            if kind == "scratch":
+                path.rename(run / "scratch")
+            write = life._launch_write
+            def interrupt(name, ident, value):
+                if value.get("phase") == "collected":
+                    raise OSError("interrupted after unlink")
+                write(name, ident, value)
+            with monkeypatch.context() as patch:
+                patch.setattr(life, "_launch_write", interrupt)
+                with pytest.raises(OSError, match="after unlink"):
+                    life.collect_allocation(*key, **args)
+        env.owner = "gone"
+        if crash == "before_identify":
+            assert not life.collect_allocation(*key, **args)
+            assert path.is_dir()
+            path.rmdir()  # independent removal of the unidentified directory
+        adopter = dict(pid=1234, start="adopter")
+        life.write_launch_record(req, dict(reservation_id=rid, generation=GEN, owner=adopter))
+        with monkeypatch.context() as patch:
+            patch.setattr(life, "launch_owner", lambda row: "live" if row["owner"] == adopter else "gone")
+            assert not life.collect_allocation(*key, **args)
+        assert life.collect_allocation(*key, **args)
+        assert life._launch_read(kind + "-intents", GEN)["phase"] == "collected"
+    assert env.release(reservation)[0].state == "released"
+
+
+def test_review_slot_failure_allows_retry_and_release(prepared, env, monkeypatch):
+    life, _, reservation, response, _, run = prepared
+    rid = reservation["reservation_id"]
+    (run / "scratch").rmdir()
+    with life.launch_lock(rid, timeout_s=1) as lock:
+        with monkeypatch.context() as patch:
+            patch.setattr(life, "_confirm_slot", lambda *args: False)
+            assert lock.claim("first", response.paths.run_id, generation=GEN) == "sandbox_placement_capability_unmet"
+        assert life.launch_claim_record(rid) is None
+        assert lock.window(None)[0] is None
+        gen = "3" * 32
+        assert lock.claim("retry", response.paths.run_id, generation=gen) is None
+        assert lock.record_rollback_intent("retry", gen, cause="snapshot_expired")
+        assert lock.rollback("retry", generation=gen)
+    assert env.release(reservation)[0].state == "released"
+
+
+@pytest.mark.parametrize("corrupt", ["claim", "disposition"])
+def test_review_journal_corruption_is_local(env, prepared, corrupt):
+    life, key = _generation_claim(prepared)
+    other = env.reserve()
+    if corrupt == "claim":
+        (life.launch_root / "claims" / (key[0] + ".json")).write_text("{")
+        env.clock.now += 600
+        response, _ = env.reap()
+        assert (response.inventory.pending, response.inventory.destroyed) == (1, 1)
+    else:
+        # A retired generation exercises the reservation index independently
+        # of the current-claim disposition check.
+        with life.launch_lock(key[0], timeout_s=1) as lock:
+            assert lock.record_rollback_intent(key[1], GEN, cause="snapshot_expired")
+            assert lock.rollback(key[1], generation=GEN)
+        (life.launch_root / "dispositions" / (GEN + ".json")).write_text("{")
+        with life.launch_lock(other["reservation_id"], timeout_s=1) as lock:
+            assert lock.window(None)[0] is None
+        with life.launch_lock(key[0], timeout_s=1) as lock:
+            assert lock.window(None)[0] is not None
+
+
+def test_review_cancel_journal_lock_respects_release_deadline(env, prepared):
+    life, key = _generation_claim(prepared)
+    result = []
+    with sp._FileLock(life.launch_root / "cancels" / (key[1] + ".lock"), blocking=True):
+        thread = threading.Thread(target=lambda: result.append(env.release(prepared[2], deadline_ms=250)))
+        thread.start()
+        thread.join(1.5)
+        stuck = thread.is_alive()
+    thread.join(2)
+    assert not stuck and result[0][0].state == "cleanup_pending"
+    assert prepared[-1].is_dir()
+
+
+def test_review_renewal_checks_caller_lock_order(prepared):
+    life, key = _generation_claim(prepared)
+    with life.launch_lock(key[0], timeout_s=1):
+        with pytest.raises(sp.LifecycleError, match="placement_lock_order"):
+            life.renew_launch(*key, deadline=time.monotonic() + .2)
+
+
+def test_review_cleanup_cause_cas(prepared):
+    life, key = _generation_claim(prepared)
+    end = time.monotonic() + 2
+    assert life.fence_launch(*key, cause="release", deadline=end)
+    assert not life.write_cleanup_debt(*key, debt=sp.Debt("owner_gone", True, True, "inapplicable", True),
+                                       deadline=end)
+    assert life.read_cleanup_debt(*key).cause == "release"
+
+
+def test_review_heartbeat_reports_wall_time(prepared, env):
+    life, key = _generation_claim(prepared)
+    assert life.launch_heartbeat(key[0]) == env.clock.now
+    env.clock.now += 12
+    assert life.renew_launch(*key, deadline=time.monotonic() + 1)
+    assert life.launch_heartbeat(key[0]) == env.clock.now
+    # Existing records can be projected from the initial claim clock pair.
+    initial = life._launch_read("renewals", f"{GEN}.0")
+    old = life._launch_read("renewals", f"{GEN}.1")
+    del old["wall_heartbeat_at"]
+    life._launch_write("renewals", f"{GEN}.1", old)
+    elapsed = old["heartbeat_at"] - initial["heartbeat_at"]
+    assert life.launch_heartbeat(key[0]) == life.launch_claim_record(key[0])["claimed_at"] + elapsed
+
+
+@pytest.mark.parametrize("loser", [False, True])
+def test_review_implicit_prepare_publication_crash(env, monkeypatch, loser):
+    from types import SimpleNamespace
+    life = env.lifecycle("agent-harness")
+    reservation = env.reserve("agent-harness")
+    rid, req = reservation["reservation_id"], "implicit"
+    request = SimpleNamespace(request_id=req, reservation=contract.Reservation.from_json(reservation),
+                              reservation_json=reservation, workload="implementation", paths=None,
+                              snapshot=launch.Snapshot("/src/repo", "copy", (), (), "."))
+    life.write_launch_record(req, dict(reservation_id=rid, generation=GEN))
+    with life.launch_lock(rid, timeout_s=1) as lock:
+        with monkeypatch.context() as patch:
+            _interrupt_publication(patch, life)
+            with pytest.raises(OSError):
+                lock.ensure_prepare(request)
+        planned = life._launch_read("implicit", req)["run_id"]
+        assert life.launch_run_dir(planned).is_dir()
+    if loser:
+        winner, _, _ = prepare(env.service("agent-harness", lifecycle=life), reservation)
+    with life.launch_lock(rid, timeout_s=1) as lock:
+        selected = lock.ensure_prepare(request)
+        assert selected.run_id == (winner.paths.run_id if loser else planned)
+        assert life._launch_read("implicit", req)["state"] == ("retired" if loser else "published")
+    if loser:
+        assert life._launch_read("cleanup", planned)["reservation_id"] == rid
+    assert env.release(reservation, "agent-harness")[0].state == "released"
+    assert not life.launch_run_dir(planned).exists()
+
+
+@pytest.mark.parametrize("contender", ["start", "rollback"])
+def test_review_fence_races_claim_transition(prepared, monkeypatch, contender):
+    life, key = _generation_claim(prepared)
+    rid, req, generation = key
+    if contender == "rollback":
+        with life.launch_lock(rid, timeout_s=1) as lock:
+            assert lock.record_rollback_intent(req, generation, cause="snapshot_expired")
+    entered, proceed, competing = threading.Event(), threading.Event(), threading.Event()
+    write = life._launch_write
+    def pause(name, ident, row):
+        if name == "dispositions" and row.get("fenced"):
+            entered.set()
+            assert proceed.wait(3)
+        write(name, ident, row)
+    monkeypatch.setattr(life, "_launch_write", pause)
+    end = time.monotonic() + 4
+    fenced, results = [], []
+    flock = fcntl.flock
+    def observed_flock(fd, operation):
+        try:
+            return flock(fd, operation)
+        except BlockingIOError:
+            competing.set()
+            raise
+    monkeypatch.setattr(fcntl, "flock", observed_flock)
+    def race():
+        if contender == "rollback":
+            with life.launch_lock(rid, timeout_s=2) as lock:
+                results.append(lock.rollback(req, generation=generation))
+        else:
+            with life.launch_operation_lock(rid, generation, timeout_s=2) as held:
+                assert held
+                results.append(life.mark_start_intent(*key, deadline=end))
+    fence = threading.Thread(target=lambda: fenced.append(life.fence_launch(*key, cause="release", deadline=end)))
+    fence.start()
+    assert entered.wait(1)
+    rival = threading.Thread(target=race)
+    rival.start()
+    try:
+        assert competing.wait(1)
+    finally:
+        proceed.set()
+    fence.join(3)
+    rival.join(3)
+    assert fenced == [True] and results == [False]
+    assert life.launch_claim_record(rid)["claimed"] is True
+
+def test_review_cancel_journal_write_error_is_pending(prepared, env, monkeypatch):
+    life, key = _generation_claim(prepared)
+    write = sp.PlacementLifecycle._launch_write
+    def interrupted(self, name, ident, row):
+        if name == "cancels":
+            raise OSError("cancel record unavailable")
+        return write(self, name, ident, row)
+    monkeypatch.setattr(sp.PlacementLifecycle, "_launch_write", interrupted)
+    assert env.release(prepared[2])[0].state == "cleanup_pending"
+    assert life.launch_claim_record(key[0])["claimed"] and prepared[-1].is_dir()
