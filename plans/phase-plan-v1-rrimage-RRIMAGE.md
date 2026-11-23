@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: RRIMAGE
 roadmap: specs/phase-plans-rrimage-v1.md
-roadmap_sha256: 4cb691621ea760f3494513485dbc65abfdda3c9bcd7532152533db0546da899e
+roadmap_sha256: e18114195e558924ca746c6b43b7e306f311aa8fc6280d18d8eff66244f323d3
 automation:
   suite_command: ["bash", "-lc", "cd phase-loop-runtime && PYTHONPATH=$PWD/src:$PWD/tests timeout 600 .venv/bin/python -m pytest -q -p no:cacheprovider tests/test_review_runner_pin.py tests/test_review_runner_containerfile.py tests/test_review_runner_recipe.py tests/test_openshell_worker.py"]
 ---
@@ -24,6 +24,9 @@ the LANEEXEC-v1-errata-2 draft (agent-harness#2102), run in parallel with v13 LA
 - B2: builds go to OCI archives, `build.first_manifest_digest` is recorded, and P9 is added.
 - E1–E10: see RRIMAGE revision 2, §2–§6.
 - The Containerfile hardening is its own lane, SL-1.
+
+**Revision 3 (2026-11-22)** applies the re-review (A1–A8; RRIMAGE revision 3). The strict-P4
+consumer obligations are routed as IF-XR-2 and IF-XR-3.
 
 Frozen inputs, read before building:
 
@@ -66,6 +69,12 @@ needs ai-stack's receipt (EXT-RR-PULL). No lane pushes, pulls or acts on `ai`.
   on ViperJuice/ai-stack#504. It performs EXT-RR-REGISTRY, EXT-RR-PUSH, EXT-RR-PULL and
   EXT-RR-ALLOWLIST, and it produces the §5.1 receipt that SL-5 consumes. No agent-harness lane
   writes ai-stack files.
+- [ ] IF-XR-2 (v13 ACTIVATE, consumer; agent-harness#2107) — ACTIVATE readiness admits the
+  review-runner image only on a `pinned` verdict from `validate_pin_record(record, repo_root)`
+  with the default strict P4. It refuses `stale` and `built`.
+- [ ] IF-XR-3 (LANEEXEC operator configuration, consumer; agent-harness#2108) — the `openshell`
+  route takes the helper path and digest only from a record that passes that same strict call.
+  Otherwise it refuses with a typed refusal and launches nothing.
 
 ## Spec Closeout Plan
 
@@ -111,7 +120,7 @@ SL-5 — Receipt back-fill, pin and docs sweep
 | Lane | Needs | May run now |
 | --- | --- | --- |
 | SL-0, SL-1, SL-2, SL-3 | nothing | yes |
-| SL-4 | G-RR-BUILD; coordinator authority for the post | no |
+| SL-4 | G-RR-BUILD (a build host other than `ai`); coordinator authority for the post | no |
 | SL-5 | the ai-stack receipt (EXT-RR-PULL, after EXT-RR-REGISTRY and EXT-RR-PUSH); coordinator authority for the post | no |
 
 ## Lanes
@@ -140,7 +149,7 @@ SL-5 — Receipt back-fill, pin and docs sweep
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-1.1 | test | — | `tests/test_review_runner_containerfile.py` | every `FROM` by digest; no `# syntax=` unless digest-pinned; every `RUN` `--network=none` except the hash-pinned pip step; no fetch tool; `LICENSES/` checked against the two `BUILD.lock` notice hashes, with an exact-set assertion; no `PROVENANCE.md` copy; `ARG SOURCE_DATE_EPOCH` in the runtime stage; the setuid/setgid strip and its fail check after the last package step | `V1` |
+| SL-1.1 | test | — | `tests/test_review_runner_containerfile.py` | every `FROM` by digest; no `# syntax=` unless digest-pinned; every `RUN` `--network=none` except the hash-pinned pip step; no fetch tool; `LICENSES/` checked against the two `BUILD.lock` notice hashes, with an exact-set assertion; no `PROVENANCE.md` copy; `ARG SOURCE_DATE_EPOCH` in the runtime stage; the setuid/setgid strip and its fail check after the last instruction that adds files, with no later file-adding instruction and no `COPY --chmod` setting a 6000 bit | `V1` |
 | SL-1.2 | impl | SL-1.1 | Containerfile | — | — |
 | SL-1.3 | verify | SL-1.2 | SL-1 owned files | SL-1 tests and the existing Containerfile tests | `V1`, then `V2` |
 
@@ -154,7 +163,7 @@ SL-5 — Receipt back-fill, pin and docs sweep
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-2.1 | test | — | `tests/test_review_runner_recipe.py`, layout fixtures | RRIMAGE §4 third bullet: `plan` prints `git archive`, `type=oci,dest=`, `rewrite-timestamp=true`, `--platform linux/amd64`, `SOURCE_DATE_EPOCH`, `--provenance=false`, `--sbom=false`, `--no-cache` and a digest-pinned BuildKit, contains no push or `ai` command, and makes zero subprocess calls; `record` refuses an index, a mismatched blob or a second manifest; `verify-receipt` refuses each P6 and P9 mismatch | `V3` |
+| SL-2.1 | test | — | `tests/test_review_runner_recipe.py`, layout fixtures | RRIMAGE §4 third bullet: `plan` prints `git archive`, `type=oci,dest=`, `rewrite-timestamp=true`, `--platform linux/amd64`, `SOURCE_DATE_EPOCH`, `--provenance=false`, `--sbom=false`, `--no-cache`, both source labels and a digest-pinned BuildKit whose recorded version is at least v0.13.0; it contains no push or `ai` command and makes zero subprocess calls; `record` accepts a valid layout's top-level `index.json`, commits its single image-manifest blob, and refuses a nested-index descriptor, a second descriptor, or a descriptor whose digest or size differs from its blob; `verify-receipt` refuses each P6 and P9 mismatch, including `input_archive_sha256` and `started_at_zero` | `V3` |
 | SL-2.2 | impl | SL-2.1 | `scripts/review_runner_image.py` | — | — |
 | SL-2.3 | verify | SL-2.2 | SL-2 owned files | all SL-2 tests | `V3` |
 
@@ -197,7 +206,7 @@ SL-5 — Receipt back-fill, pin and docs sweep
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-5.1 | test | — | `tests/test_review_runner_pin_receipt.py` | the committed record is `pinned` under §2.1 (P1–P3 and P5–P10 always; P4, or the stale marker); `receipt-ai-stack.json` hashes to `receipt.ref_sha256`; the handoff values equal the record | `V4` |
+| SL-5.1 | test | — | `tests/test_review_runner_pin_receipt.py` | the committed record is `pinned` under §2.1 (P1–P3 and P5–P10 always; P4, or the stale marker); sha256 of `git show <source.commit>:<containerfile_path>` equals `source.containerfile_sha256`, fetching that one commit on a shallow checkout and failing rather than skipping if it is unreadable; `receipt-ai-stack.json` hashes to `receipt.ref_sha256`; the handoff values equal the record | `V4` |
 | SL-5.2 | evidence | SL-5.1 | `receipt-ai-stack.json`, plus `pin-record.json` and `RRIMAGE.md` by SL-4's hand-off | receipt copied from `receipt.ref`; `verify-receipt` promotes to `pinned` or stops with the record left at `built` | `review_runner_image.py verify-receipt` |
 | SL-5.3 | docs | SL-5.2 | `CHANGELOG.md`, `.claude/docs-catalog.json`, `plans/manifest.json` | one Unreleased entry; catalog rows; pinned-record sha256 posted on ViperJuice/ai-stack#504; lifecycle event appended | — |
 | SL-5.4 | verify | SL-5.3 | SL-5 owned files | receipt test | `V4`, then `V0` |
@@ -241,7 +250,7 @@ under execution authority. SL-4 starts only after G-RR-BUILD.
 
 - [ ] EC-RRIMAGE-1 — proven by V0 (`tests/test_review_runner_pin.py`) through `validate_pin_record` on the packaged schema; falsified by any one-rule mutation passing, a stale record accepted without `allow_stale_marker`, or a refusal message containing a record value, each entered through the path-entered production call `validate_pin_record(record, repo_root)`.
 - [ ] EC-RRIMAGE-2 — proven by V1 (`tests/test_review_runner_containerfile.py`) on the checked-in Containerfile and V3 (`tests/test_review_runner_recipe.py`) through `review_runner_image.py plan`; falsified by an unpinned `FROM` or `# syntax=`, a networked unhashed `RUN`, an extra or unhashed `LICENSES/` file, a `PROVENANCE.md` copy, a remaining setuid file check, a missing determinism or OCI-output option, or any subprocess call from `plan`.
-- [ ] EC-RRIMAGE-3 — proven by `plans/evidence/review-runner/RRIMAGE.md` and a `built` record passing `validate_pin_record` with its committed `manifest.json` and `config.json` (P9); falsified by manifest bytes whose sha256 differs from the digest, an index, a P10 inconsistency, or an unrecorded grant or authority.
+- [ ] EC-RRIMAGE-3 — proven by `plans/evidence/review-runner/RRIMAGE.md` and a `built` record passing `validate_pin_record` (P1–P5, P7, P9 and P10, with P4 against the checkout at SL-4) with its committed `manifest.json` and `config.json`; falsified by manifest bytes whose sha256 differs from the digest, an index, config labels that differ from `source.*`, a P10 inconsistency, or an unrecorded grant or authority.
 - [ ] EC-RRIMAGE-4 — proven by V4 (`tests/test_review_runner_pin_receipt.py`) on the committed `pinned` record and receipt; falsified by any P6 or P9 mismatch, a header-only digest match, `container_state` other than `created`, or a config digest read by any method other than the raw manifest's descriptor.
 - [ ] EC-RRIMAGE-5 — proven by V4 (`tests/test_review_runner_pin_receipt.py`: every handoff value equals the record) and V3 (`tests/test_review_runner_recipe.py`: `plan` emits no push or `ai` command); falsified by a differing handoff value, a push or `ai` command in `plan` output, or an adapter, route or configuration file in the phase diff.
 

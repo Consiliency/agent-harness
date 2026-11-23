@@ -2,85 +2,220 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Consiliency/agent-harness/plans/artifacts/rrimage-v1-pin-record.schema.json",
   "title": "review_runner_pin.v1",
-  "description": "Metadata-only pin record for the review-runner image (RRIMAGE contract §2). No field holds a credential, a token, an auth configuration or a host path. A host appears only as a role alias such as ai, never as an address.",
+  "description": "Metadata-only pin record for the review-runner image (RRIMAGE contract §2). No field holds a credential, a token, an auth configuration or a host path. A build or pull host appears only as a role alias such as ai, never as an address. image.registry is the exception: it is ai-stack's registry host name, copied from its receipt.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "status", "artifact", "platform", "source", "helper", "build", "image", "receipt", "recorded_at"],
+  "required": [
+    "schema",
+    "status",
+    "artifact",
+    "platform",
+    "source",
+    "helper",
+    "build",
+    "image",
+    "receipt",
+    "recorded_at"
+  ],
   "properties": {
-    "schema": {"const": "review_runner_pin.v1"},
-    "status": {"enum": ["built", "pinned"]},
+    "schema": {
+      "const": "review_runner_pin.v1"
+    },
+    "status": {
+      "enum": [
+        "built",
+        "pinned"
+      ]
+    },
     "artifact": {
       "description": "The exact OCI input handed to ai-stack: the first build's OCI archive and its raw manifest.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["oci_archive_sha256", "manifest_digest", "manifest_media_type", "manifest_size", "manifest_path", "config_path"],
+      "required": [
+        "oci_archive_sha256",
+        "manifest_digest",
+        "manifest_media_type",
+        "manifest_size",
+        "manifest_path",
+        "config_path"
+      ],
       "properties": {
-        "oci_archive_sha256": {"$ref": "#/$defs/hex64"},
-        "manifest_digest": {"$ref": "#/$defs/digest"},
+        "oci_archive_sha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "manifest_digest": {
+          "$ref": "#/$defs/digest"
+        },
         "manifest_media_type": {
           "enum": [
             "application/vnd.oci.image.manifest.v1+json",
             "application/vnd.docker.distribution.manifest.v2+json"
           ]
         },
-        "manifest_size": {"type": "integer", "minimum": 1},
-        "manifest_path": {"const": "plans/evidence/review-runner/manifest.json"},
-        "config_path": {"const": "plans/evidence/review-runner/config.json"}
+        "manifest_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "manifest_path": {
+          "const": "plans/evidence/review-runner/manifest.json"
+        },
+        "config_path": {
+          "const": "plans/evidence/review-runner/config.json"
+        }
       }
     },
     "platform": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["os", "architecture", "config_digest"],
+      "required": [
+        "os",
+        "architecture",
+        "config_digest"
+      ],
       "properties": {
-        "os": {"const": "linux"},
-        "architecture": {"const": "amd64"},
-        "config_digest": {"$ref": "#/$defs/digest"}
+        "os": {
+          "const": "linux"
+        },
+        "architecture": {
+          "const": "amd64"
+        },
+        "config_digest": {
+          "$ref": "#/$defs/digest"
+        }
       }
     },
     "source": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["repository", "commit", "containerfile_path", "containerfile_sha256"],
+      "required": [
+        "repository",
+        "commit",
+        "containerfile_path",
+        "containerfile_sha256"
+      ],
       "properties": {
-        "repository": {"const": "Consiliency/agent-harness"},
-        "commit": {"$ref": "#/$defs/commit"},
-        "containerfile_path": {"const": "phase-loop-runtime/images/review-runner/Containerfile"},
-        "containerfile_sha256": {"$ref": "#/$defs/hex64"}
+        "repository": {
+          "const": "Consiliency/agent-harness"
+        },
+        "commit": {
+          "$ref": "#/$defs/commit"
+        },
+        "containerfile_path": {
+          "const": "phase-loop-runtime/images/review-runner/Containerfile"
+        },
+        "containerfile_sha256": {
+          "$ref": "#/$defs/hex64"
+        }
       }
     },
     "helper": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "sha256", "source_repository", "source_commit"],
+      "required": [
+        "path",
+        "sha256",
+        "source_repository",
+        "source_commit"
+      ],
       "properties": {
-        "path": {"const": "/usr/libexec/agent-toolkit/landlock-exec"},
-        "sha256": {"$ref": "#/$defs/hex64"},
-        "source_repository": {"const": "Consiliency/agent-toolkit"},
-        "source_commit": {"$ref": "#/$defs/commit"}
+        "path": {
+          "const": "/usr/libexec/agent-toolkit/landlock-exec"
+        },
+        "sha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "source_repository": {
+          "const": "Consiliency/agent-toolkit"
+        },
+        "source_commit": {
+          "$ref": "#/$defs/commit"
+        }
       }
     },
     "build": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["tool", "tool_version", "buildkit_image", "source_date_epoch", "first_manifest_digest", "setuid_stripped", "reproduced"],
+      "required": [
+        "tool",
+        "tool_version",
+        "buildkit_image",
+        "buildkit_version",
+        "source_date_epoch",
+        "first_manifest_digest",
+        "setuid_stripped",
+        "reproduced"
+      ],
       "properties": {
-        "tool": {"const": "docker buildx"},
-        "tool_version": {"$ref": "#/$defs/version"},
-        "buildkit_image": {"$ref": "#/$defs/pinned_reference"},
-        "source_date_epoch": {"type": "integer", "minimum": 0},
-        "first_manifest_digest": {"$ref": "#/$defs/digest"},
-        "setuid_stripped": {"const": true},
+        "tool": {
+          "const": "docker buildx"
+        },
+        "tool_version": {
+          "$ref": "#/$defs/version"
+        },
+        "buildkit_image": {
+          "$ref": "#/$defs/pinned_reference"
+        },
+        "buildkit_version": {
+          "$ref": "#/$defs/version",
+          "description": "BuildKit release of buildkit_image; at least v0.13.0 (RRIMAGE §3.3)."
+        },
+        "source_date_epoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "first_manifest_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "setuid_stripped": {
+          "const": true
+        },
         "reproduced": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["attempted", "second_manifest_digest", "equal", "differing_layers", "deferred_finding"],
+          "required": [
+            "attempted",
+            "second_manifest_digest",
+            "equal",
+            "differing_layers",
+            "deferred_finding"
+          ],
           "properties": {
-            "attempted": {"type": "boolean"},
-            "second_manifest_digest": {"oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
-            "equal": {"type": ["boolean", "null"]},
-            "differing_layers": {"type": "array", "items": {"$ref": "#/$defs/digest"}, "uniqueItems": true},
-            "deferred_finding": {"oneOf": [{"$ref": "#/$defs/issue_ref"}, {"type": "null"}]}
+            "attempted": {
+              "type": "boolean"
+            },
+            "second_manifest_digest": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/digest"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "equal": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "differing_layers": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/digest"
+              },
+              "uniqueItems": true
+            },
+            "deferred_finding": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/issue_ref"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
           }
         }
       }
@@ -88,15 +223,29 @@
     "image": {
       "description": "The reference ai-stack pushed, copied from its receipt. Null until pinned.",
       "oneOf": [
-        {"type": "null"},
+        {
+          "type": "null"
+        },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["registry", "repository", "reference"],
+          "required": [
+            "registry",
+            "repository",
+            "reference"
+          ],
           "properties": {
-            "registry": {"type": "string", "pattern": "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?$"},
-            "repository": {"type": "string", "pattern": "^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*$"},
-            "reference": {"$ref": "#/$defs/pinned_reference"}
+            "registry": {
+              "type": "string",
+              "pattern": "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?$"
+            },
+            "repository": {
+              "type": "string",
+              "pattern": "^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*$"
+            },
+            "reference": {
+              "$ref": "#/$defs/pinned_reference"
+            }
           }
         }
       ]
@@ -104,68 +253,216 @@
     "receipt": {
       "description": "ai-stack's push and pull receipt (EXT-RR-PUSH, EXT-RR-PULL). RRIMAGE verifies it; it never produces it. Null until pinned.",
       "oneOf": [
-        {"type": "null"},
+        {
+          "type": "null"
+        },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["producer", "ref", "ref_sha256", "host", "pull_account", "by_digest", "pulled_at", "runtime", "image_store", "registry_manifest_digest", "docker_content_digest", "raw_manifest_sha256", "raw_manifest_media_type", "config_digest", "config_digest_method", "os", "architecture", "helper_sha256", "container_state", "entrypoint_started"],
+          "required": [
+            "producer",
+            "ref",
+            "ref_sha256",
+            "host",
+            "pull_account",
+            "by_digest",
+            "pulled_at",
+            "push_tool",
+            "push_tool_version",
+            "input_archive_sha256",
+            "runtime",
+            "image_store",
+            "registry_manifest_digest",
+            "docker_content_digest",
+            "raw_manifest_sha256",
+            "raw_manifest_media_type",
+            "config_digest",
+            "config_digest_method",
+            "os",
+            "architecture",
+            "helper_sha256",
+            "container_state",
+            "started_at_zero",
+            "entrypoint_started"
+          ],
           "properties": {
-            "producer": {"const": "ViperJuice/ai-stack"},
-            "ref": {"type": "string", "pattern": "^https://github\\.com/ViperJuice/ai-stack/[^\\s]+$"},
-            "ref_sha256": {"$ref": "#/$defs/hex64"},
-            "host": {"const": "ai"},
-            "pull_account": {"type": "string", "pattern": "^[a-z_][a-z0-9_-]{0,31}$"},
-            "by_digest": {"const": true},
-            "pulled_at": {"$ref": "#/$defs/timestamp"},
+            "producer": {
+              "const": "ViperJuice/ai-stack"
+            },
+            "ref": {
+              "type": "string",
+              "pattern": "^https://github\\.com/ViperJuice/ai-stack/[^\\s]+$"
+            },
+            "ref_sha256": {
+              "$ref": "#/$defs/hex64"
+            },
+            "host": {
+              "const": "ai"
+            },
+            "pull_account": {
+              "type": "string",
+              "pattern": "^[a-z_][a-z0-9_-]{0,31}$"
+            },
+            "by_digest": {
+              "const": true
+            },
+            "pulled_at": {
+              "$ref": "#/$defs/timestamp"
+            },
+            "push_tool": {
+              "enum": [
+                "skopeo",
+                "regctl"
+              ]
+            },
+            "push_tool_version": {
+              "$ref": "#/$defs/version"
+            },
+            "input_archive_sha256": {
+              "$ref": "#/$defs/hex64"
+            },
             "runtime": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["name", "version"],
+              "required": [
+                "name",
+                "version"
+              ],
               "properties": {
-                "name": {"enum": ["docker", "podman"]},
-                "version": {"$ref": "#/$defs/version"}
+                "name": {
+                  "enum": [
+                    "docker",
+                    "podman"
+                  ]
+                },
+                "version": {
+                  "$ref": "#/$defs/version"
+                }
               }
             },
-            "image_store": {"enum": ["docker-classic", "docker-containerd", "podman"]},
-            "registry_manifest_digest": {"$ref": "#/$defs/digest"},
-            "docker_content_digest": {"$ref": "#/$defs/digest"},
-            "raw_manifest_sha256": {"$ref": "#/$defs/hex64"},
+            "image_store": {
+              "enum": [
+                "docker-classic",
+                "docker-containerd",
+                "podman"
+              ]
+            },
+            "registry_manifest_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "docker_content_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "raw_manifest_sha256": {
+              "$ref": "#/$defs/hex64"
+            },
             "raw_manifest_media_type": {
               "enum": [
                 "application/vnd.oci.image.manifest.v1+json",
                 "application/vnd.docker.distribution.manifest.v2+json"
               ]
             },
-            "config_digest": {"$ref": "#/$defs/digest"},
-            "config_digest_method": {"const": "raw_manifest_config_descriptor"},
-            "os": {"const": "linux"},
-            "architecture": {"const": "amd64"},
-            "helper_sha256": {"$ref": "#/$defs/hex64"},
-            "container_state": {"const": "created"},
-            "entrypoint_started": {"const": false}
+            "config_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "config_digest_method": {
+              "const": "raw_manifest_config_descriptor"
+            },
+            "os": {
+              "const": "linux"
+            },
+            "architecture": {
+              "const": "amd64"
+            },
+            "helper_sha256": {
+              "$ref": "#/$defs/hex64"
+            },
+            "container_state": {
+              "const": "created"
+            },
+            "started_at_zero": {
+              "const": true,
+              "description": "State.StartedAt == 0001-01-01T00:00:00Z, captured with State.Status before rm."
+            },
+            "entrypoint_started": {
+              "const": false
+            }
           }
         }
       ]
     },
-    "recorded_at": {"$ref": "#/$defs/timestamp"}
+    "recorded_at": {
+      "$ref": "#/$defs/timestamp"
+    }
   },
   "allOf": [
     {
-      "if": {"properties": {"status": {"const": "pinned"}}},
-      "then": {"properties": {"image": {"type": "object"}, "receipt": {"type": "object"}}}
+      "if": {
+        "properties": {
+          "status": {
+            "const": "pinned"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "image": {
+            "type": "object"
+          },
+          "receipt": {
+            "type": "object"
+          }
+        }
+      }
     },
     {
-      "if": {"properties": {"status": {"const": "built"}}},
-      "then": {"properties": {"image": {"type": "null"}, "receipt": {"type": "null"}}}
+      "if": {
+        "properties": {
+          "status": {
+            "const": "built"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "image": {
+            "type": "null"
+          },
+          "receipt": {
+            "type": "null"
+          }
+        }
+      }
     }
   ],
   "$defs": {
-    "hex64": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
-    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
-    "pinned_reference": {"type": "string", "pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$"},
-    "version": {"type": "string", "pattern": "^v?[0-9]+\\.[0-9]+\\.[0-9]+([.+-][0-9A-Za-z.-]+)?$"},
-    "issue_ref": {"type": "string", "pattern": "^Consiliency/agent-harness#[0-9]+$"},
-    "timestamp": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"}
+    "hex64": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "pinned_reference": {
+      "type": "string",
+      "pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^v?[0-9]+\\.[0-9]+\\.[0-9]+([.+-][0-9A-Za-z.-]+)?$"
+    },
+    "issue_ref": {
+      "type": "string",
+      "pattern": "^Consiliency/agent-harness#[0-9]+$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    }
   }
 }

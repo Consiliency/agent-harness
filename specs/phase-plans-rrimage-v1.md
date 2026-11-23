@@ -20,7 +20,7 @@ adopted option (c), and this roadmap is that phase. It is a separate roadmap so 
 pinned `roadmap_sha256` of the v13 plans stays valid.
 
 Revision 2 (2026-11-22) applies the review of agent-harness#2106 (RRIMAGE contract,
-revision 2). Under the coordinator's ruling on B1:
+revision 2). Revision 3 applies the re-review (A1–A8, contract revision 3). Under the coordinator's ruling on B1:
 - RRIMAGE builds the image and hands over the exact OCI archive and its manifest bytes.
 - ai-stack pushes the image and pulls it on `ai`.
 - RRIMAGE pins only after verifying ai-stack's pull receipt.
@@ -49,8 +49,8 @@ revision 2). Under the coordinator's ruling on B1:
 
 | Input | Pin |
 | --- | --- |
-| RRIMAGE contract | `plans/artifacts/rrimage-v1-contract.md`, sha256 `0952c0f30258d39b50e202c62b920ea72157acd8d6cc27653a246d427d4e8db8` |
-| Pin record schema | `plans/artifacts/rrimage-v1-pin-record.schema.json`, sha256 `8a9ee36a773f2f03dc3379679d3663a32caa1e770edad8430667faef2c942903` |
+| RRIMAGE contract | `plans/artifacts/rrimage-v1-contract.md`, sha256 `aaded40627261f43ea15a1e23c43cb1a87c9c145da0d1908b2e719001a3a64dc` |
+| Pin record schema | `plans/artifacts/rrimage-v1-pin-record.schema.json`, sha256 `b25654d9b817839c67ad591d4182bd71d4afbb35a2806695bcbb20c2c5e6aff1` |
 | Containerfile at planning time | sha256 `f2d317873366426a8cd71ebe41090d2a3867750690072d73df85460cc81673f2` |
 | landlock-exec source | `Consiliency/agent-toolkit` `d945fdd060aab9ad9471845f4f8e78406a0ac841` |
 | ai-stack Unit 7 | ViperJuice/ai-stack `specs/phase-plans-v17-sandbox-coordinator-unit7.md` at `059abc2178e31db109998f0045ffdea6e97a38f3`, lines 10, 249, 270, 311, 348 and 383 |
@@ -63,8 +63,9 @@ future implementation commit, image digest, commit count or landing topology.
 
 **The one agent-harness owner grant** (RRIMAGE §5):
 
-- **G-RR-BUILD** — a native `linux/amd64` build host and window, with read access to the
-  pinned helper source, heavy-work admission and a private directory that keeps the archive.
+- **G-RR-BUILD** — a native `linux/amd64` build host that is not `ai` (Unit 7 line 383), a
+  build window, read access to the pinned helper source, heavy-work admission and a private
+  directory that keeps the archive.
 
 The handoff posts on ViperJuice/ai-stack#504 are made under the RRIMAGE coordinator's
 authority, which is recorded in the evidence.
@@ -117,7 +118,7 @@ archive. Once ai-stack's pull receipt verifies against it, a committed `pinned`
 
 - [ ] EC-RRIMAGE-1 — The pin record schema and validator enforce RRIMAGE §2 P1–P10 offline, with one refusing mutation per rule, and with the §2.1 P4 scope. The packaged schema equals the frozen artifact.
 - [ ] EC-RRIMAGE-2 — The Containerfile and the recipe meet RRIMAGE §3, and the planner executes nothing. That requires all of the following: digest-pinned bases and BuildKit; network-disabled or hash-pinned `RUN` steps; no unpinned `# syntax=`; `LICENSES/` checked against `BUILD.lock`; no unhashed `PROVENANCE.md` copy; setuid and setgid bits stripped; `ARG SOURCE_DATE_EPOCH`; a clean source export; OCI-archive output.
-- [ ] EC-RRIMAGE-3 — Under G-RR-BUILD, two builds from a named source commit are recorded, and a `built` record passes P1–P3, P5, P7, P9 and P10. Its archive and raw manifest bytes are handed over on ViperJuice/ai-stack#504, with the reproducibility result and the §5.1 receipt requirements.
+- [ ] EC-RRIMAGE-3 — Under G-RR-BUILD, two builds from a named source commit are recorded, and a `built` record passes P1–P5, P7, P9 and P10. Its archive and raw manifest bytes are handed over on ViperJuice/ai-stack#504, with the reproducibility result and the §5.1 receipt requirements.
 - [ ] EC-RRIMAGE-4 — ai-stack's pull receipt passes P6, P8 and P9 against the `built` record, and the record is committed as `pinned`.
 - [ ] EC-RRIMAGE-5 — Nothing is activated, signed or configured, and agent-harness neither pushes nor acts on `ai`.
 
