@@ -3,7 +3,8 @@ RRIMAGE SL-3 handoff template (contract plans/artifacts/rrimage-v1-contract.md Â
 SL-4 copies this file to HANDOFF-ai-stack.md. Fill artifact, platform, source, helper and
 build placeholders from the committed built record. Fill the evidence commit, canonical record
 hash and authority and grant metadata from the evidence. Leave receipt placeholders for
-ai-stack to complete after the push and pull. Keep build and pull host identifiers to role
+ai-stack to complete after the push and pull. Leave `{{image.registry}}` and
+`{{image.repository}}` for ai-stack to fill from the approved EXT-RR-REGISTRY destination. Keep build and pull host identifiers to role
 aliases and omit host paths and credentials. Delete this comment before posting on
 ai-stack#504.
 -->
