@@ -238,10 +238,10 @@ def test_load_pin_record_round_trip_and_strict_json(tmp_path, checkout):
     lambda r: r["build"]["reproduced"].update(extra=1),
     lambda r: r.pop("recorded_at"),
     lambda r: r["artifact"].update(manifest_size=True),
-    lambda r: r["artifact"].update(manifest_size=1.0),
+    lambda r: r["artifact"].update(manifest_size=1.5),
     lambda r: r.update(status="pinned"),
     lambda r: r.update(recorded_at="2026-13-40T99:00:00Z"),
-], ids=["top-extra", "nested-extra", "deep-extra", "missing", "bool-int", "float-int",
+], ids=["top-extra", "nested-extra", "deep-extra", "missing", "bool-int", "fractional-int",
         "pinned-without-receipt", "bad-time"])
 def test_p1_schema_refuses(checkout, mutate):
     record = checkout.built()
@@ -525,10 +525,10 @@ def test_p9_source_labels_missing(checkout):
     {"second_manifest_digest": "sha256:" + "6" * 64, "equal": False},
     {"second_manifest_digest": "sha256:" + "6" * 64, "equal": False,
      "differing_layers": ["sha256:" + "7" * 64]},
-    {"differing_layers": ["sha256:" + "7" * 64]},
     {"second_manifest_digest": None},
+    {"equal": None},
 ], ids=["unattempted-with-second", "equal-false-same", "equal-true-differs",
-        "no-layers", "no-finding", "layers-when-equal", "attempted-no-second"])
+        "no-layers", "no-finding", "attempted-no-second", "attempted-equal-null"])
 def test_p10_reproducibility_inconsistent(checkout, change):
     record = checkout.built()
     record["build"]["reproduced"].update(change)
@@ -641,3 +641,162 @@ def test_record_sha256_is_canonical(checkout):
     assert record_sha256(record) == record_sha256(reordered)
     assert record_sha256(record) != record_sha256(set_path(record, "recorded_at",
                                                            "2026-11-22T10:00:01Z"))
+
+
+# -- review round 1: closed refusals for every input -------------------------------------------
+
+@pytest.mark.parametrize("field,value", [
+    ("artifact.manifest_media_type", ["application/vnd.oci.image.index.v1+json"]),
+    ("artifact.manifest_media_type", {"a": 1}),
+    ("receipt.raw_manifest_media_type", []),
+])
+def test_wrong_type_media_type_is_a_closed_refusal(checkout, field, value):
+    record = set_path(checkout.pinned(), field, value)
+    refuse(checkout, record, "pin_schema_invalid", "P1")
+
+
+def test_wrong_type_committed_manifest_media_type(checkout):
+    manifest = fixture("manifest.json")
+    manifest["mediaType"] = [OCI_INDEX]
+    record = checkout.built(manifest=manifest)
+    refuse(checkout, record, "pin_digest_mismatch", "P9")
+
+
+@pytest.mark.parametrize("where", ["descriptor", "manifest"])
+def test_wrong_type_layout_media_type(checkout, tmp_path, where):
+    if where == "descriptor":
+        _record, meta = make_layout(checkout, tmp_path / "layout",
+                                    descriptors=lambda d, _b: [dict(d, mediaType=[OCI_INDEX])])
+    else:
+        def bad_manifest(descriptor, blobs):
+            manifest = json.loads(checkout.manifest_bytes)
+            manifest["mediaType"] = {"x": 1}
+            data = dump(manifest)
+            (blobs / sha(data)).write_bytes(data)
+            return [dict(descriptor, digest="sha256:" + sha(data), size=len(data))]
+        _record, meta = make_layout(checkout, tmp_path / "layout", descriptors=bad_manifest)
+    with pytest.raises(PinRecordError):
+        assemble_built_record(tmp_path / "layout", meta)
+
+
+@pytest.mark.parametrize("raw", [
+    b"[" * 2000 + b"]" * 2000,
+    b"[" * 20000 + b"]" * 20000,
+    b'{"a": ' * 5000 + b"1" + b"}" * 5000,
+    b'{"schema": 1e400}',
+    b'{"schema": -1e400}',
+    b'{"schema": 1' + b"0" * 5000 + b"}",
+    b'{"a": 1} trailing',
+], ids=["deep-2000", "deep-20000", "deep-objects", "overflow", "neg-overflow",
+        "huge-int", "trailing"])
+def test_loader_refuses_with_a_closed_code(tmp_path, raw):
+    path = tmp_path / "pin-record.json"
+    path.write_bytes(raw)
+    with pytest.raises(PinRecordError) as caught:
+        load_pin_record(path)
+    assert caught.value.code == "pin_schema_invalid"
+    assert caught.value.__cause__ is None
+
+
+def test_loader_refuses_an_oversized_record(tmp_path):
+    path = tmp_path / "pin-record.json"
+    path.write_bytes(b'{"a": "' + b"x" * (rp.MAX_RECORD_BYTES + 1) + b'"}')
+    with pytest.raises(PinRecordError) as caught:
+        load_pin_record(path)
+    assert caught.value.code == "pin_schema_invalid"
+
+
+def test_in_memory_deep_nesting_is_a_closed_refusal(checkout):
+    deep: list = []
+    for _ in range(20000):
+        deep = [deep]
+    record = checkout.built()
+    record["artifact"]["extra"] = deep
+    with pytest.raises(PinRecordError) as caught:
+        checkout.validate(record)
+    assert caught.value.code == "pin_schema_invalid"
+    with pytest.raises(PinRecordError):
+        record_sha256({"a": deep})
+
+
+# -- review round 1: one numeric and Unicode domain for the schema and the hash ----------------
+
+def test_integral_number_spelling_is_accepted_and_hashes_as_the_integer(checkout):
+    record = checkout.built()
+    spelled = copy.deepcopy(record)
+    spelled["build"]["source_date_epoch"] = float(record["build"]["source_date_epoch"])
+    spelled["artifact"]["manifest_size"] = float(record["artifact"]["manifest_size"])
+    assert checkout.validate(spelled).status == "built"
+    assert record_sha256(spelled) == record_sha256(record)
+
+
+@pytest.mark.parametrize("value", [2**53, 2**53 + 1, 10**30, 9007199254740992.0, -(2**53)])
+def test_integers_outside_the_i_json_range_are_refused(checkout, value):
+    record = set_path(checkout.built(), "build.source_date_epoch", value)
+    error = refuse(checkout, record, "pin_schema_invalid", "P1")
+    assert error.field == "build.source_date_epoch"
+    with pytest.raises(PinRecordError) as caught:
+        record_sha256(record)
+    assert caught.value.field == "build.source_date_epoch"
+
+
+def test_largest_safe_integer_is_accepted(checkout):
+    record = set_path(checkout.built(), "build.source_date_epoch", 2**53 - 1)
+    assert checkout.validate(record).status == "built"
+
+
+@pytest.mark.parametrize("text", ["\ud800", "x\udfffy", "﷐", "￿", "\U0010fffe"])
+def test_surrogates_and_noncharacters_are_refused(checkout, text):
+    field = "receipt.ref"
+    record = set_path(checkout.pinned(), field,
+                      "https://github.com/ViperJuice/ai-stack/issues/" + text)
+    error = refuse(checkout, record, "pin_schema_invalid", "P1")
+    assert error.field == field
+    with pytest.raises(PinRecordError):
+        record_sha256(record)
+
+
+def test_supplementary_characters_are_in_the_domain(checkout):
+    record = set_path(checkout.pinned(), "receipt.ref",
+                      "https://github.com/ViperJuice/ai-stack/issues/\U0001F600")
+    assert checkout.validate(record).status == "pinned"
+
+
+@pytest.mark.parametrize("value,canonical", [
+    ({"b": 1.0, "a": "€"}, '{"a":"€","b":1}'),
+    ({"דּ": 2, "\U0001F600": 1}, '{"\U0001F600":1,"דּ":2}'),
+    ({"n": 9007199254740991, "z": [True, None, "\n"]}, '{"n":9007199254740991,"z":[true,null,"\\n"]}'),
+    ({"e": 0, "d": -0.0}, '{"d":0,"e":0}'),
+], ids=["integral-float", "utf16-key-order", "safe-int-literals", "negative-zero"])
+def test_record_sha256_canonical_vectors(value, canonical):
+    assert record_sha256(value) == sha(canonical.encode("utf-8"))
+
+
+# -- review round 1: P7 embedded userinfo and P10 as written -----------------------------------
+
+@pytest.mark.parametrize("value", [
+    "https://github.com/ViperJuice/ai-stack/issues/1/user:pass@example.test",
+    "https://github.com/ViperJuice/ai-stack/x/a:b@c",
+    "https://github.com/ViperJuice/ai-stack/x#user:@host",
+])
+def test_p7_embedded_userinfo_refused(checkout, value):
+    record = set_path(checkout.pinned(), "receipt.ref", value)
+    refuse(checkout, record, "pin_credential_sentinel", "P7")
+
+
+def test_p7_registry_port_and_tagged_digest_reference_pass(checkout):
+    record = set_path(checkout.pinned(), "build.buildkit_image",
+                      "registry.example.test:5000/moby/buildkit:v0.16.0@sha256:" + "2" * 64)
+    assert checkout.validate(record).status == "pinned"
+
+
+@pytest.mark.parametrize("change", [
+    {"differing_layers": ["sha256:" + "7" * 64]},
+    {"deferred_finding": "Consiliency/agent-harness#1"},
+    {"second_manifest_digest": None, "equal": False,
+     "differing_layers": ["sha256:" + "7" * 64], "deferred_finding": "Consiliency/agent-harness#1"},
+], ids=["equal-with-layers", "equal-with-finding", "no-second-unequal"])
+def test_p10_accepts_what_the_contract_permits(checkout, change):
+    record = checkout.built()
+    record["build"]["reproduced"].update(change)
+    assert checkout.validate(record).status == "built"

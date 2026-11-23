@@ -25,6 +25,14 @@ The full signatures (IF-0-RRIMAGE-1):
 Every refusal is a :class:`PinRecordError` carrying one closed code, raised ``from None``.
 Its message names the rule and the field, never a record value. Nothing here runs a
 subprocess or makes a network call.
+
+**Value domain.** The record digest is RFC 8785 (JCS), whose §3.1 requires I-JSON input
+(RFC 7493). Before any rule or hash, P1 therefore refuses, as ``pin_schema_invalid`` on the
+offending field: strings or keys holding a surrogate or a noncharacter (RFC 7493 §2.1);
+numbers that are not finite or whose integral magnitude exceeds 2**53 - 1 (RFC 7493 §2.2);
+nesting deeper than :data:`MAX_DEPTH`; and record files above :data:`MAX_RECORD_BYTES`.
+Inside that domain the frozen schema's ``integer`` keyword keeps its JSON Schema meaning, so
+an integral spelling such as ``1.0`` is valid and hashes exactly as ``1``.
 """
 
 from __future__ import annotations
@@ -76,12 +84,17 @@ INDEX_MEDIA_TYPES = frozenset({
 REVISION_LABEL = "org.opencontainers.image.revision"
 CONTAINERFILE_LABEL = "dev.consiliency.review-runner.containerfile-sha256"
 
+MAX_RECORD_BYTES = 1 << 20
+MAX_BLOB_BYTES = 4 << 20
+MAX_DEPTH = 64
+MAX_SAFE_INTEGER = 2**53 - 1
+
 _DIGEST = re.compile(r"^sha256:([0-9a-f]{64})$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _SUFFIX = re.compile(r"@sha256:[0-9a-f]{64}$")
 _SENTINELS = ("ghp_", "gho_", "ghs_", "github_pat_", "glpat-", "bearer ", "basic ",
               '"auths"', "password", "token", "secret")
-_USERINFO = re.compile(r"(?:^|://)[^\s/@:]+:[^\s/@]+@(?!sha256:)")
+_USERINFO = re.compile(r"[^\s/@:?#&=]+:[^\s/@]*@(?!sha256:)")
 _BASE64_RUN = re.compile(r"[A-Za-z0-9+/]{40,}")
 _HELPER_HASH_LINE = re.compile(r"echo\s+'([0-9a-f]{64})\s+/landlock-exec'\s*\|\s*sha256sum\s+-c")
 _TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
@@ -155,9 +168,7 @@ def _strict_integer(_checker: object, instance: object) -> bool:
 
 @lru_cache(maxsize=1)
 def _validator() -> Any:
-    base = jsonschema.Draft202012Validator
-    checker = base.TYPE_CHECKER.redefine("integer", _strict_integer)
-    return jsonschema.validators.extend(base, type_checker=checker)(_schema())
+    return jsonschema.Draft202012Validator(_schema())
 
 
 @lru_cache(maxsize=1)
@@ -213,28 +224,125 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def _finite_float(text: str) -> float:
+    value = float(text)
+    if value != value or value in (float("inf"), float("-inf")):
+        raise ValueError("non-finite number")
+    return value
+
+
+def _too_deep(text: str, limit: int) -> bool:
+    depth, in_string, escaped = 0, False, False
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char in "[{":
+            depth += 1
+            if depth > limit:
+                return True
+        elif char in "]}":
+            depth -= 1
+    return False
+
+
 def _parse_json(raw: bytes) -> Any:
-    return json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object,
-                      parse_constant=_reject_constant)
+    """Strict JSON: UTF-8, unique keys, finite numbers, bounded nesting. Raises ValueError."""
+    try:
+        text = raw.decode("utf-8")
+        if _too_deep(text, MAX_DEPTH):
+            raise ValueError("nesting too deep")
+        return json.loads(text, object_pairs_hook=_unique_object,
+                          parse_constant=_reject_constant, parse_float=_finite_float)
+    except (UnicodeDecodeError, RecursionError, MemoryError, OverflowError):
+        raise ValueError("unparseable") from None
 
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _read_regular(path: Path) -> bytes:
-    """Read a regular file without following a final symlink."""
+def _read_regular(path: Path, limit: int = MAX_RECORD_BYTES) -> bytes:
+    """Read a bounded regular file without following a final symlink."""
     info = os.lstat(path)
     if not stat.S_ISREG(info.st_mode):
         raise OSError("not a regular file")
     with open(path, "rb") as stream:
-        return stream.read()
+        data = stream.read(limit + 1)
+    if len(data) > limit:
+        raise OSError("file too large")
+    return data
+
+
+def _is_index(value: Any) -> bool:
+    return isinstance(value, str) and value in INDEX_MEDIA_TYPES
+
+
+def _is_manifest(value: Any) -> bool:
+    return isinstance(value, str) and value in MANIFEST_MEDIA_TYPES
+
+
+def _bad_text(text: str) -> bool:
+    for char in text:
+        code = ord(char)
+        if (0xD800 <= code <= 0xDFFF or 0xFDD0 <= code <= 0xFDEF
+                or (code & 0xFFFE) == 0xFFFE):
+            return True
+    return False
+
+
+def _check_domain(value: Any) -> None:
+    """Refuse anything outside the I-JSON domain that RFC 8785 hashes unambiguously."""
+    stack: list[tuple[Any, tuple[str, ...]]] = [(value, ())]
+    while stack:
+        node, path = stack.pop()
+        if len(path) > MAX_DEPTH:
+            raise _fail("pin_schema_invalid", "P1", _field(path[:MAX_DEPTH]))
+        if isinstance(node, Mapping):
+            for key, child in node.items():
+                if not isinstance(key, str) or _bad_text(key):
+                    raise _fail("pin_schema_invalid", "P1", _field(path))
+                stack.append((child, path + (key,)))
+        elif isinstance(node, list):
+            stack.extend((child, path + (str(index),)) for index, child in enumerate(node))
+        elif isinstance(node, str):
+            if _bad_text(node):
+                raise _fail("pin_schema_invalid", "P1", _field(path))
+        elif node is None or isinstance(node, bool):
+            continue
+        elif isinstance(node, int):
+            if abs(node) > MAX_SAFE_INTEGER:
+                raise _fail("pin_schema_invalid", "P1", _field(path))
+        elif isinstance(node, float):
+            if node != node or node in (float("inf"), float("-inf")) or (
+                    node.is_integer() and abs(node) > MAX_SAFE_INTEGER):
+                raise _fail("pin_schema_invalid", "P1", _field(path))
+        else:
+            raise _fail("pin_schema_invalid", "P1", _field(path))
+
+
+def _normalized(value: Any) -> Any:
+    """Integral floats become ints so ``1.0`` and ``1`` share one canonical form."""
+    if isinstance(value, Mapping):
+        return {key: _normalized(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_normalized(child) for child in value]
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
 
 
 def record_sha256(record: Mapping[str, Any]) -> str:
     """sha256 of the record's RFC 8785 canonical bytes; the stale marker names this value."""
+    _check_domain(record)
     try:
-        return _sha256(rfc8785.dumps(record))
+        return _sha256(rfc8785.dumps(_normalized(record)))
     except Exception:  # noqa: BLE001 - any encoding failure is a schema failure
         raise _fail("pin_schema_invalid", "P1") from None
 
@@ -260,7 +368,7 @@ def _check_p3_media_types(record: Any) -> None:
         return
     for section, key in (("artifact", "manifest_media_type"), ("receipt", "raw_manifest_media_type")):
         value = record.get(section)
-        if isinstance(value, Mapping) and value.get(key) in INDEX_MEDIA_TYPES:
+        if isinstance(value, Mapping) and _is_index(value.get(key)):
             raise _fail("pin_index_refused", "P3", f"{section}.{key}")
 
 
@@ -319,19 +427,15 @@ def _check_p10_reproducibility(record: Mapping[str, Any]) -> None:
     build = record["build"]
     rep = build["reproduced"]
     field = "build.reproduced"
+    # Exactly the three implications of contract §2 P10, and nothing more.
     if not rep["attempted"]:
         if (rep["second_manifest_digest"] is not None or rep["equal"] is not None
                 or rep["differing_layers"] or rep["deferred_finding"] is not None):
             raise _fail("pin_reproducibility_inconsistent", "P10", field)
         return
-    if rep["second_manifest_digest"] is None or rep["equal"] is None:
-        raise _fail("pin_reproducibility_inconsistent", "P10", field)
-    if rep["equal"] != (rep["second_manifest_digest"] == build["first_manifest_digest"]):
+    if rep["equal"] is not (rep["second_manifest_digest"] == build["first_manifest_digest"]):
         raise _fail("pin_reproducibility_inconsistent", "P10", f"{field}.equal")
-    if rep["equal"]:
-        if rep["differing_layers"] or rep["deferred_finding"] is not None:
-            raise _fail("pin_reproducibility_inconsistent", "P10", field)
-    elif not rep["differing_layers"] or rep["deferred_finding"] is None:
+    if rep["equal"] is False and (not rep["differing_layers"] or rep["deferred_finding"] is None):
         raise _fail("pin_reproducibility_inconsistent", "P10", field)
 
 
@@ -371,6 +475,7 @@ def _check_p8_order(record: Mapping[str, Any]) -> None:
 
 
 def _check_record_only(record: Any) -> None:
+    _check_domain(record)
     _check_p3_media_types(record)
     _check_p1_schema(record)
     _check_p7_sentinels(record)
@@ -397,7 +502,7 @@ def _check_p9_bytes(record: Mapping[str, Any], manifest_bytes: bytes, config_byt
         raise _fail("pin_digest_mismatch", "P9", "artifact.manifest_path") from None
     if not isinstance(manifest, Mapping):
         raise _fail("pin_digest_mismatch", "P9", "artifact.manifest_path")
-    if manifest.get("mediaType") in INDEX_MEDIA_TYPES or "manifests" in manifest:
+    if _is_index(manifest.get("mediaType")) or "manifests" in manifest:
         raise _fail("pin_index_refused", "P9", "artifact.manifest_path")
     if manifest.get("mediaType") != artifact["manifest_media_type"]:
         raise _fail("pin_digest_mismatch", "P9", "artifact.manifest_media_type")
@@ -432,7 +537,7 @@ def _committed_bytes(repo_root: Path, record: Mapping[str, Any]) -> tuple[bytes,
     out = []
     for key in ("manifest_path", "config_path"):
         try:
-            out.append(_read_regular(repo_root / artifact[key]))
+            out.append(_read_regular(repo_root / artifact[key], MAX_BLOB_BYTES))
         except OSError:
             raise _fail("pin_digest_mismatch", "P9", f"artifact.{key}") from None
     return out[0], out[1]
@@ -532,7 +637,7 @@ def _layout_blob(layout: Path, digest: Any, field: str) -> bytes:
     if not isinstance(digest, str) or _DIGEST.match(digest) is None:
         raise _fail("pin_digest_mismatch", "P9", field)
     try:
-        data = _read_regular(layout / "blobs" / "sha256" / _hex(digest))
+        data = _read_regular(layout / "blobs" / "sha256" / _hex(digest), MAX_BLOB_BYTES)
     except OSError:
         raise _fail("pin_digest_mismatch", "P9", field) from None
     if _sha256(data) != _hex(digest):
@@ -558,7 +663,7 @@ def assemble_built_record(layout_dir: str | os.PathLike[str],
         raise _fail("pin_digest_mismatch", "P9", "index.json.manifests")
     descriptor = descriptors[0]
     media_type = descriptor.get("mediaType")
-    if media_type not in MANIFEST_MEDIA_TYPES:
+    if not _is_manifest(media_type):
         raise _fail("pin_index_refused", "P3", "index.json.manifests.0.mediaType")
     manifest_bytes = _layout_blob(layout, descriptor.get("digest"), "index.json.manifests.0.digest")
     size = descriptor.get("size")
@@ -570,8 +675,10 @@ def assemble_built_record(layout_dir: str | os.PathLike[str],
         raise _fail("pin_digest_mismatch", "P9", "manifest") from None
     if not isinstance(manifest, Mapping):
         raise _fail("pin_digest_mismatch", "P9", "manifest")
-    if manifest.get("mediaType") in INDEX_MEDIA_TYPES or "manifests" in manifest:
+    if _is_index(manifest.get("mediaType")) or "manifests" in manifest:
         raise _fail("pin_index_refused", "P3", "manifest.mediaType")
+    if not _is_manifest(manifest.get("mediaType")):
+        raise _fail("pin_digest_mismatch", "P9", "manifest.mediaType")
     config_descriptor = manifest.get("config")
     if not isinstance(config_descriptor, Mapping):
         raise _fail("pin_digest_mismatch", "P9", "manifest.config")
