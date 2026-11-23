@@ -53,7 +53,8 @@ HELPER_SOURCE_PATH = "harnesses/pi/sandbox/landlock"
 BUILDKIT_MIN_VERSION = (0, 13, 0)
 BUILDKIT_REPOSITORY = "docker.io/moby/buildkit"
 BUILDKIT_VERSION = "v0.18.2"
-BUILDKIT_DIGEST: str | None = None  # resolved from the registry for BUILDKIT_VERSION
+BUILDKIT_DIGEST: str | None = (  # the v0.18.2 image index, as served by the registry
+    "sha256:86c0ad9d1137c186e9d455912167df20e530bdf7f7c19de802e892bb8ca16552")
 EXIT_REFUSED = 2
 
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
