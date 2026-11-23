@@ -27,8 +27,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   record, and withdraws only its own grant's publication; `--verify-probe final` passes only
   when this grant owns the live publication and on the jailed `staged` row. Jailed stages
   refuse before any grok subprocess or reservation when the grant is stopped, the subject's
-  image differs, or the credential's metadata-only lifetime would not outlast the launch
-  (`grok_seat_token_expired`). OWNER-DECISION r7-1
+  image differs, a ledger limit is reached, or the credential's lifetime would not outlast
+  the launch (`grok_seat_token_expired`). The lifetime is read only from the store's
+  credential-free `credential-metadata.json` (never `auth.json` or `agent_id`), and a
+  jailed `--new-grant` refuses, writing no grant, unless it outlasts `GROK_SLOT_END_EPOCH`
+  plus five minutes. A launch whose admission the leg cannot confirm after it ran is never
+  settled. The measurement holds a per-seat resource scope around its launch, as the window
+  launchers do. OWNER-DECISION r7-1
   is not ruled: an `unspawned` settlement stops the grant, through one decision point
   (`grok_tool_surface.unspawned_resumes`). New procedure: `docs/ops/grok-jail-measurement.md`.
   Pins: `seat_window.runtime_digest()` moves; the SDK proof binding of

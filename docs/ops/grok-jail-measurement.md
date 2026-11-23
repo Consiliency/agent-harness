@@ -36,10 +36,13 @@ image on the installed release.
   it is, an `unspawned` settlement **stops the procedure** and later stages refuse
   `grant_stopped_unspawned`.
 - **Unresolved.** A reservation whose admission was consumed and that has no settlement (a
-  crash, a kill, a spawn that failed after its hook) is charged in full, is never resumed,
+  crash, a kill, a spawn that failed after its hook, or a launch whose admission file the
+  leg could not confirm after it ran) is charged in full, is never settled or resumed,
   and blocks every further reservation of the grant (`reservation_unresolved`).
 - **Runtime drift.** A different install between the rehearsal and `--aggregate` makes
-  `--aggregate` refuse `context_mismatch` and remove any jailed record for the image.
+  `--aggregate` refuse `context_mismatch`. A refusal withdraws the current host-local record
+  only when this grant owns the latest attempt. A new reservation of any grant still
+  withdraws the image's jailed publication before it exists (BA-2).
 
 ## Before the slot (no request is spent; stop if any item fails)
 
@@ -55,12 +58,20 @@ the script below stops before any reservation unless the credential check passes
    the managed policy read-only, before anything is projected.
 5. Shared compute: a quiet slot, both shared-compute locks held, the memory-PSI gate, and
    `MemorySwapMax=0` scopes, as for D4.
-6. The slot's hard end is known and exported as `GROK_SLOT_END_EPOCH` (UTC epoch seconds).
-   Step 2 reads the credential's remaining lifetime from the store's metadata only
-   (`credential_remaining_s`: the subscription marker present and the expiry parsed, no value
-   kept) and stops unless it exceeds the slot end plus five minutes. `--new-grant`,
-   `--rehearse` and every `--route staged` stage also refuse `grok_seat_token_expired`
-   before reserving when the lifetime would not outlast the launch.
+6. The credential metadata record is published. At the attended sign-in boundary, the
+   trusted store writer or an owner-run exporter writes `credential-metadata.json` into the
+   operator's `.grok` store, mode 0600, with exactly three keys: `subscription` (`true`),
+   `expires_at` (integer Unix seconds) and `auth_state` (the signed-in `auth.json`'s
+   `device`, `inode`, `size`, `mtime_ns` and `ctime_ns`). It holds no token material. The
+   measurement reads only this record and stats `auth.json` without opening it; it never
+   opens `auth.json` or `agent_id`. **If the record cannot be published, stop: no grant is
+   opened.** A missing, malformed or stale record (the store changed after it was written)
+   refuses `credential_metadata_unavailable`.
+7. The slot's hard end is known and exported as `GROK_SLOT_END_EPOCH` (integer UTC epoch
+   seconds). `--new-grant` refuses `grok_seat_token_expired`, writing no grant, unless the
+   record's expiry exceeds both the slot end plus five minutes and the launch margin.
+   `--rehearse` and every `--route staged` stage refuse the same way before reserving when
+   the lifetime would not outlast the launch.
 
 ## The script
 
@@ -93,14 +104,12 @@ echo "$GROK_SHA  $GROK_BIN" | sha256sum --check --strict
 #    still refused with basis "none".
 "${MT[@]}" --verify-probe initial
 
-# 2. Open the jailed grant: 3 labels, 2 retries, cap 5. 0 calls. Then the credential slot
-#    check, metadata only: stop unless the lifetime outlasts the slot end plus 5 minutes.
+# 2. Open the jailed grant: 3 labels, 2 retries, cap 5. 0 calls. It reads only the
+#    credential metadata record and refuses, writing no grant, unless the expiry outlasts
+#    GROK_SLOT_END_EPOCH plus 5 minutes (prerequisites 6 and 7).
+export GROK_SLOT_END_EPOCH
 "${MT[@]}" --new-grant --planned pilot,planted,confirm --retries 2 \
-  --hosted-check "$GROK_HOSTED_CHECK_RUN" > "$OUT.grant.json"
-python3 -I -c 'import json, sys, time
-remaining = json.load(open(sys.argv[1]))["credential_remaining_s"]
-sys.exit(0 if remaining > int(sys.argv[2]) - time.time() + 300 else 1)' \
-  "$OUT.grant.json" "$GROK_SLOT_END_EPOCH"
+  --hosted-check "$GROK_HOSTED_CHECK_RUN"
 
 # 3. The rehearsal of the pilot under a budget-0 proxy. 0 calls.
 "${MT[@]}" --attended --rehearse --route staged
@@ -137,8 +146,10 @@ sys.exit(0 if remaining > int(sys.argv[2]) - time.time() + 300 else 1)' \
   was `unspawned`, or when nothing could be reserved; later routes on the same command line
   are not attempted. `--status` reports `charged`, `retries_used`, `unspawned`, `unresolved`
   and `stopped`.
-- A transport retry is step 5 or step 7 run again; the label is chosen by the ledger, never
-  by the operator. A retry is refused while any reservation is unresolved.
+- A retry is permitted only for a confirmed transport failure, and only with the
+  coordinator's agreement (jail contract §7); never for a credential or egress failure. It is
+  step 5 or step 7 run again; the label is chosen by the ledger, never by the operator. A
+  retry is refused while any reservation is unresolved.
 - `--aggregate` publishes `staged` only if `pilot`, `planted` and `confirm` are each
   `measured` with identical `tools` and `definitions_sha256`, and the passed rehearsal and
   every label record the same production `launch_digest`; otherwise it refuses

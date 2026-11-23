@@ -1502,7 +1502,11 @@ def _new_jail_grant(grant_id: str, *, binary_sha256: str, retries: int,
         raise _refuse("hosted_check_required")
     if jail.eligibility(binary_sha256, through=4) is not None:
         raise _refuse("jail_ineligible")
-    if jail_credential_remaining() <= JAIL_CREDENTIAL_MARGIN_S:
+    # §7, before the grant is written: the metadata expiry outlasts the slot end plus five
+    # minutes and the launch margin.
+    slot_end = _slot_end()
+    expires_at = jail_credential_expiry()
+    if expires_at <= slot_end + 300 or expires_at <= time.time() + JAIL_CREDENTIAL_MARGIN_S:
         raise _refuse("grok_seat_token_expired")
     grant = Grant(id=grant_id, host_digest=_host_digest(), binary_sha256=binary_sha256,
                   planned=JAIL_LABELS, retries=retries, cap=JAIL_GRANT_CAP,
@@ -3905,6 +3909,9 @@ class _JailOutcome:
     launch_digest: str | None = None
     #: ``(status, raw)`` from the sink reader: ``(None, bytes)`` when the scan passed.
     read: tuple[str | None, bytes] | None = None
+    #: The leg's strict post-run check found the admission file: it calls ``read_sink``
+    #: only then. Without it a counted reservation is never settled (§5.1 r7).
+    admission_observed: bool = False
 
 
 def _jail_secrets(grok_seat, measurement) -> tuple[bytes, ...]:
@@ -3935,12 +3942,18 @@ def _jail_launch(stage: "_Stage", reservation, *, label: str, budget: int) -> _J
     from . import seat_route_contract
     from .seat_profile_grok import jailed_grok_command
 
+    import uuid
+
     from . import seat_jail
+    from .seat_resource_caps import _seat_scope
 
     outcome = _JailOutcome()
     measurement = None
     try:
-        with _jail_compose(stage, label, budget=budget) as composed:
+        # The per-seat resource scope, as the window launchers hold one for their whole
+        # launch: the jailed branch's capped launch needs a live seat key.
+        with _seat_scope(f"measure:grok:{label}:{uuid.uuid4().hex}"), \
+                _jail_compose(stage, label, budget=budget) as composed:
             outcome.proxy = composed.proxy
             grok_seat = composed.grok_seat
             command = list(jailed_grok_command(seat_route_contract.ArgvInputs(
@@ -3957,6 +3970,7 @@ def _jail_launch(stage: "_Stage", reservation, *, label: str, budget: int) -> _J
             secrets_ = _jail_secrets(grok_seat, measurement)
 
             def read_sink(path: str) -> None:
+                outcome.admission_observed = True
                 try:
                     raw = jail.read_sink_in_h(composed.holder, composed.seat_id, path)
                 except ArtifactRefused as refusal:
@@ -4040,6 +4054,17 @@ def _plan_jail_reservation(ledger: Ledger, label: str, argv_digest: str, *, cont
                            runtime: str) -> Reservation:
     """The next reservation of a jailed grant (§5.1 item 5, §5.2), checked but not written."""
     grant = ledger.grant
+    _check_jail_reservation(ledger, label, context=context, runtime=runtime)
+    sequence = ledger.last_sequence + 1
+    return Reservation(id=f"{sequence:04d}-{secrets.token_hex(8)}", sequence=sequence,
+                       route=label, argv_digest=argv_digest, budget=grant.budget, at=_utc_now())
+
+
+def _check_jail_reservation(ledger: Ledger, label: str, *, context: str, runtime: str) -> None:
+    """Every ledger refusal of the next jailed reservation, side-effect free: the stop
+    policy, an unresolved reservation, the grant's passing rehearsal, the format stop and
+    the retry and request allowances."""
+    grant = ledger.grant
     if ledger.unspawned and not unspawned_resumes(ledger, label):
         raise _refuse("grant_stopped_unspawned")
     if ledger.unresolved():
@@ -4053,9 +4078,6 @@ def _plan_jail_reservation(ledger: Ledger, label: str, argv_digest: str, *, cont
         raise _refuse("grant_retries_exhausted")
     if ledger.charged() + grant.budget > grant.cap:
         raise _refuse("grant_cap_reached")
-    sequence = ledger.last_sequence + 1
-    return Reservation(id=f"{sequence:04d}-{secrets.token_hex(8)}", sequence=sequence,
-                       route=label, argv_digest=argv_digest, budget=grant.budget, at=_utc_now())
 
 
 def _unspawned_code(code: str | None) -> str:
@@ -4138,26 +4160,85 @@ def _jail_result(stage: "_Stage", reservation: Reservation, *, runtime: str,
 JAIL_CREDENTIAL_MARGIN_S = LAUNCH_TIMEOUT_S + 300.0
 
 
-def jail_credential_remaining() -> int:
-    """§7's metadata-only reader of the operator's store: the positive subscription marker
-    and a parseable expiry, as credential staging checks them. Returns the remaining
-    lifetime in whole seconds (metadata; no value is kept or reported). Refuses with the
-    credential's own code."""
+#: The credential-free metadata record of the operator's Grok store, written (mode 0600)
+#: at the attended sign-in boundary by the trusted store writer or an owner-run exporter.
+CREDENTIAL_METADATA_NAME = "credential-metadata.json"
+CREDENTIAL_METADATA_MAX_BYTES = 4096
+_AUTH_STATE_KEYS = ("device", "inode", "size", "mtime_ns", "ctime_ns")
+
+
+def jail_credential_expiry() -> int:
+    """§7's metadata-only reader: the expiry (Unix seconds) from the store's credential-free
+    ``credential-metadata.json``. It never opens ``auth.json`` or ``agent_id``: the record
+    must be an owner-owned 0600 regular file in the owner's private ``.grok``, with exactly
+    ``subscription`` (true), ``expires_at`` (integer) and ``auth_state`` (the signed-in
+    ``auth.json``'s device, inode, size, ``mtime_ns`` and ``ctime_ns``), and the auth entry,
+    stat'ed without following a link, must be an owner-private regular file in that state.
+    Absent, malformed or stale metadata refuses ``credential_metadata_unavailable``."""
     from . import seat_grok_credential as cred
 
+    def unavailable() -> MeasurementRefused:
+        return _refuse("credential_metadata_unavailable")
+
     try:
-        raw, _agent = cred._read_store()
-    except cred.GrokCredentialRefused as refusal:
-        raise _refuse(refusal.code) from None
-    marked = cred._sign_in_entry(raw)
-    del raw
-    if marked is None:
-        raise _refuse(cred.CREDENTIAL_REFUSED)
-    expires_at = cred._expiry(marked[1].get("expires_at"))
-    del marked
-    if expires_at is None:
-        raise _refuse(cred.TOKEN_EXPIRED)
-    return int(expires_at - time.time())
+        store = os.open(cred._operator_home() / cred.STORE_DIRNAME, cred._O_DIR)
+    except OSError:
+        raise unavailable() from None
+    try:
+        info = os.fstat(store)
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) & 0o022):
+            raise unavailable()
+        try:
+            descriptor = os.open(CREDENTIAL_METADATA_NAME, os.O_RDONLY | os.O_NOFOLLOW
+                                 | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=store)
+        except OSError:
+            raise unavailable() from None
+        try:
+            meta = os.fstat(descriptor)
+            if (not stat.S_ISREG(meta.st_mode) or meta.st_uid != os.geteuid()
+                    or stat.S_IMODE(meta.st_mode) != 0o600
+                    or meta.st_size > CREDENTIAL_METADATA_MAX_BYTES):
+                raise unavailable()
+            raw = _read_bounded(descriptor, CREDENTIAL_METADATA_MAX_BYTES)
+        finally:
+            os.close(descriptor)
+        try:
+            auth = os.stat(cred.AUTH_FILE_NAME, dir_fd=store, follow_symlinks=False)
+        except OSError:
+            raise unavailable() from None
+    finally:
+        os.close(store)
+    try:
+        document = _loads(raw)
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        raise unavailable() from None
+    state = document.get("auth_state") if type(document) is dict else None
+    if (type(document) is not dict
+            or set(document) != {"subscription", "expires_at", "auth_state"}
+            or document["subscription"] is not True or type(document["expires_at"]) is not int
+            or type(state) is not dict or set(state) != set(_AUTH_STATE_KEYS)
+            or not all(type(state[key]) is int for key in _AUTH_STATE_KEYS)):
+        raise unavailable()
+    if (not stat.S_ISREG(auth.st_mode) or auth.st_uid != os.geteuid()
+            or stat.S_IMODE(auth.st_mode) & 0o077
+            or [state[key] for key in _AUTH_STATE_KEYS]
+            != [auth.st_dev, auth.st_ino, auth.st_size, auth.st_mtime_ns, auth.st_ctime_ns]):
+        raise unavailable()  # stale: the store changed after the metadata was written
+    return document["expires_at"]
+
+
+def jail_credential_remaining() -> int:
+    """The remaining lifetime in whole seconds, from :func:`jail_credential_expiry`."""
+    return int(jail_credential_expiry() - time.time())
+
+
+def _slot_end() -> int:
+    """The slot's hard end, the exported integer ``GROK_SLOT_END_EPOCH`` (§7)."""
+    value = os.environ.get("GROK_SLOT_END_EPOCH", "")
+    if re.fullmatch(r"[1-9][0-9]{8,10}", value) is None:
+        raise _refuse("slot_end_required")
+    return int(value)
 
 
 def _jail_preflight(stage: "_Stage", ledger: Ledger, *, reserve: bool) -> int:
@@ -4166,11 +4247,9 @@ def _jail_preflight(stage: "_Stage", ledger: Ledger, *, reserve: bool) -> int:
     policy and the next label, then the credential's lifetime. Returns that lifetime."""
     _jail_stage_checks(stage)
     if reserve:
-        if ledger.unspawned and not unspawned_resumes(ledger, _jail_label(ledger)):
-            raise _refuse("grant_stopped_unspawned")
-        if ledger.unresolved():
-            raise _refuse("reservation_unresolved")
-        _jail_label(ledger)
+        label = _jail_label(ledger)
+        runtime, context = jail_running_binding(stage.grant.binary_sha256)
+        _check_jail_reservation(ledger, label, context=context, runtime=runtime)
     remaining = jail_credential_remaining()
     if remaining <= JAIL_CREDENTIAL_MARGIN_S:
         raise _refuse("grok_seat_token_expired")
@@ -4206,7 +4285,7 @@ def jail_measure(stage: "_Stage") -> dict[str, Any]:
         # §4.5: no admission file is positive proof that no provider process started.
         _write_unspawned(stage, reservation, outcome.early or "refused")
         return {**result, "status": "unspawned", "code": outcome.early}
-    if outcome.spawned and outcome.returned:
+    if outcome.spawned and outcome.returned and outcome.admission_observed:
         _settle(stage.grant_dir, stage.grant, reservation, outcome.proxy)
     proof = events = None
     proxy = outcome.proxy
@@ -4306,7 +4385,8 @@ def jail_rehearse(stage: "_Stage") -> dict[str, Any]:
                        "requests": proof.requests, "counted": proof.counted,
                        "denied": sum(1 for event in events if event.decision == "deny")}
     early = None
-    if not (outcome.spawned and outcome.returned) or outcome.failure in _JAIL_SECURITY_CODES:
+    if (not (outcome.spawned and outcome.returned and outcome.admission_observed)
+            or outcome.failure in _JAIL_SECURITY_CODES):
         early = "launch_failed"
     reason = _rehearsal_reason(early=early, proof=proof, events=events or (),
                                identity_ok=_jail_identity_ok(stage),
@@ -4361,8 +4441,9 @@ def jail_aggregate(stage: "_Stage", *, host_class: str) -> dict[str, Any]:
     the passed rehearsal must carry the running ``runtime_digest`` and ``jail_context_digest``
     (``context_mismatch``). Then the agreement rule: ``pilot``, ``planted`` and ``confirm``
     each ``measured`` with identical ``tools`` and ``definitions_sha256``, and the rehearsal
-    and every label on the same production ``launch_digest`` (``surface_unstable``). Any
-    refusal removes the jailed record for the binary. Only an admitted surface whose latest
+    and every label on the same production ``launch_digest`` (``surface_unstable``). A
+    refusal withdraws the current host-local record only when this grant owns the latest
+    attempt. Only an admitted surface whose latest
     attempt is this grant's is written, after ``check_jail_surface``."""
     from . import grok_jail_surface as jail
     from .seat_jail import host_arch
@@ -4699,8 +4780,6 @@ def measure_tools_cli(args) -> tuple[int, dict[str, Any]]:
             grant = new_grant(args.grant, binary_sha256=identity[1], planned=planned,
                               retries=retries, hosted_check=args.hosted_check)
             report.update(status="opened", grant=grant.document())
-            if grant.jailed:
-                report["credential_remaining_s"] = jail_credential_remaining()
             return 0, report
         grant_dir, grant = _open_grant(args.grant, binary_sha256=identity[1])
         try:

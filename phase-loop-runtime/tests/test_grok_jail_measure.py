@@ -22,6 +22,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 
@@ -75,6 +76,8 @@ class Launch:
     complete: bool = True
     launch_digest: str = LAUNCH
     leg_failure: str | None = None
+    #: The leg's strict post-run admission lookup fails (the marker is not confirmed).
+    strict_missing: bool = False
 
 
 class Runner:
@@ -88,6 +91,8 @@ class Runner:
     def __init__(self, bench):
         self.bench = bench
         self.order: list[str] = []
+        self.seat_keys: list[str] = []
+        self.reads = 0
         self.plan: list[Launch] = []
         self.proxies: list = []
 
@@ -134,7 +139,10 @@ class Runner:
     def leg(self, grok_seat, *, measurement, read_sink, failure_detail_sink, prompt, **kwargs):
         launch = self.current
         assert prompt == gts.MEASUREMENT_PROMPT
+        from phase_loop_runtime import seat_resource_caps
+
         self.order.append("leg")
+        self.seat_keys.append(seat_resource_caps.live_seat_key())
         for step in ("verify", "qualified", "identity", "preflight"):
             self.order.append(step)
             if launch.refuse_at == step:
@@ -148,11 +156,15 @@ class Runner:
         self.order.append("spawn")
         proxy = self.proxies[-1]
         proxy.counted = sum(1 for event in launch.events if event.decision == "allow")
+        if launch.strict_missing:  # the leg reads nothing and fails the launch
+            failure_detail_sink.append(SimpleNamespace(template=REFUSED))
+            return "DEGRADED", ""
+        self.bench.sink_bytes = launch.artifact
+        self.reads += 1
+        read_sink("/fixture/sink")  # the leg reads once its marker is strictly present
         if launch.leg_failure is not None:
             failure_detail_sink.append(SimpleNamespace(template=launch.leg_failure))
             return "DEGRADED", ""
-        self.bench.sink_bytes = launch.artifact
-        read_sink("/fixture/sink")
         status = "OK" if launch.exit == 0 else "DEGRADED"
         return status, launch.text
 
@@ -185,7 +197,9 @@ class Bench:
         patch.setattr(gts, "_help_and_version", lambda binary, env: (
             self.metadata_calls.append(binary), (b"grok help\n", b"grok 1.0.92\n"))[1])
         self.credential_remaining = 7200
-        patch.setattr(gts, "jail_credential_remaining", lambda: self.credential_remaining)
+        patch.setattr(gts, "jail_credential_expiry",
+                      lambda: int(time.time()) + self.credential_remaining)
+        patch.setenv("GROK_SLOT_END_EPOCH", str(int(time.time()) + 600))
         patch.setattr(gts, "_prepare_route", lambda route: (None, None, None, None))
         patch.setattr(gjs, "resolve_subject",
                       lambda env=None: gjs.JailedSubject(STAND_IN, self.digest))
@@ -469,9 +483,11 @@ def test_a_sixth_counted_request_is_refused(bench):
     code, report = bench.launch(failure)
     assert report["routes"][0]["status"] == "launch_failed"
     assert bench.status()["charged"] == 5
+    calls = len(bench.metadata_calls)
     code, report = bench.launch(_measured())
     assert code == 1 and report["routes"][0]["code"] in ("grant_retries_exhausted",
                                                          "grant_cap_reached")
+    assert len(bench.metadata_calls) == calls  # refused before any grok subprocess
 
 
 def test_ba1_an_incomplete_observation_settles_nothing_and_charges_in_full(bench):
@@ -487,6 +503,7 @@ def test_no_reservation_without_the_grants_passing_rehearsal(bench):
     assert bench.new_grant()[0] == 0
     code, report = bench.launch(_measured())
     assert (code, report["routes"][0]["code"]) == (1, "rehearsal_required")
+    assert bench.metadata_calls == []  # refused before any grok subprocess
     code, report = bench.rehearse(Launch(events=(_event("allow"),)))  # forwarded: fails
     assert (code, report["result"], report["reason"]) == (1, "failed", "unlisted_request")
     assert bench.launch(_measured())[1]["routes"][0]["code"] == "rehearsal_required"
@@ -1259,14 +1276,97 @@ def test_a_short_credential_lifetime_refuses_before_opening_or_reserving(bench):
     bench.credential_remaining = int(gts.JAIL_CREDENTIAL_MARGIN_S)
     code, report = bench.new_grant()
     assert (code, report["code"]) == (1, "grok_seat_token_expired")
+    assert not bench.grant_dir().exists()
     bench.credential_remaining = 7200
     code, report = bench.new_grant()
-    assert code == 0 and report["credential_remaining_s"] == 7200
+    assert code == 0 and "credential_remaining_s" not in report  # no post-commit reread
     assert bench.rehearse()[0] == 0
     bench.credential_remaining = 60
     code, report = bench.launch(_measured())
     assert (code, report["routes"][0]["code"]) == (1, "grok_seat_token_expired")
     assert bench.status()["reservations"] == [] and bench.metadata_calls == []
+
+
+@pytest.mark.parametrize("slot", ["short", "missing", "malformed"])
+def test_the_slot_cutoff_is_enforced_before_the_grant_exists(bench, monkeypatch, slot):
+    """§7: the expiry must exceed the slot end plus five minutes, checked before
+    ``grant.json`` is written; a missing or malformed slot end refuses too."""
+    if slot == "short":  # expiry 7200 s away; the slot ends 7000 s away: < slot end + 300
+        monkeypatch.setenv("GROK_SLOT_END_EPOCH", str(int(time.time()) + 7000))
+        expected = "grok_seat_token_expired"
+    elif slot == "missing":
+        monkeypatch.delenv("GROK_SLOT_END_EPOCH")
+        expected = "slot_end_required"
+    else:
+        monkeypatch.setenv("GROK_SLOT_END_EPOCH", "soon")
+        expected = "slot_end_required"
+    code, report = bench.new_grant()
+    assert (code, report["code"]) == (1, expected)
+    assert not bench.grant_dir().exists()
+
+
+def _metadata_store(tmp_path, monkeypatch, *, expires_at=None):
+    home = tmp_path / "home"
+    store = home / ".grok"
+    store.mkdir(parents=True, mode=0o700)
+    auth = store / "auth.json"
+    auth.write_bytes(b"not read by the metadata reader")
+    auth.chmod(0o600)
+    info = auth.stat()
+    expires_at = expires_at or int(time.time()) + 7200
+    meta = store / gts.CREDENTIAL_METADATA_NAME
+    meta.write_text(json.dumps({"subscription": True, "expires_at": expires_at, "auth_state": {
+        "device": info.st_dev, "inode": info.st_ino, "size": info.st_size,
+        "mtime_ns": info.st_mtime_ns, "ctime_ns": info.st_ctime_ns}}))
+    meta.chmod(0o600)
+    monkeypatch.setenv("HOME", str(home))
+    from phase_loop_runtime import seat_grok_credential as cred
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("the metadata reader touched the secret store")
+
+    monkeypatch.setattr(cred, "_read_store", forbidden)
+    monkeypatch.setattr(cred, "_sign_in_entry", forbidden)
+    real_open = os.open
+
+    def guarded_open(path, *args, **kwargs):
+        if os.fspath(path).endswith(("auth.json", "agent_id")):
+            raise AssertionError("the metadata reader opened a secret file")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", guarded_open)
+    return SimpleNamespace(store=store, auth=auth, meta=meta, expires_at=expires_at)
+
+
+def test_the_metadata_reader_reads_only_the_credential_free_record(tmp_path, monkeypatch):
+    fixture = _metadata_store(tmp_path, monkeypatch)
+    assert gts.jail_credential_expiry() == fixture.expires_at
+
+
+@pytest.mark.parametrize("bad", ["stale", "absent", "mode", "keys", "subscription",
+                                 "symlinked_auth"])
+def test_absent_malformed_or_stale_metadata_refuses(tmp_path, monkeypatch, bad):
+    fixture = _metadata_store(tmp_path, monkeypatch)
+    if bad == "stale":
+        with open(fixture.auth, "ab") as handle:  # signed in again after the record
+            handle.write(b" refreshed")
+    elif bad == "absent":
+        fixture.meta.unlink()
+    elif bad == "mode":
+        fixture.meta.chmod(0o640)
+    elif bad in ("keys", "subscription"):
+        document = json.loads(fixture.meta.read_text())
+        if bad == "keys":
+            document["token"] = "never"
+        else:
+            document["subscription"] = "yes"
+        fixture.meta.write_text(json.dumps(document))
+    else:
+        fixture.auth.rename(fixture.store / "real.json")
+        fixture.auth.symlink_to(fixture.store / "real.json")
+    with pytest.raises(gts.MeasurementRefused) as caught:
+        gts.jail_credential_expiry()
+    assert caught.value.code == "credential_metadata_unavailable"
 
 
 def _second_grant(bench, name="second"):
@@ -1337,9 +1437,45 @@ def test_the_procedure_code_block_is_valid_bash():
     done = subprocess.run(["bash", "-n"], input=block.encode(), capture_output=True,
                           timeout=30)
     assert done.returncode == 0, done.stderr.decode()
-    for needed in ("GROK_SLOT_END_EPOCH", "credential_remaining_s", "VL2",
+    for needed in ("GROK_SLOT_END_EPOCH", "credential-metadata.json", "VL2",
                    "erratum 8", "MemorySwapMax=0", "Gemini"):
         assert needed in text, needed
+
+
+def test_an_unverified_post_run_admission_stays_unresolved(bench):
+    """E1: the leg returns after its strict marker lookup fails, while the conservative
+    charge check sees the marker and the proxy shows a complete zero-count proof. The
+    reservation is never settled: charged in full, unresolved, nothing read, grant stopped."""
+    bench.opened()
+    reads = bench.runner.reads
+    code, report = bench.launch(Launch(strict_missing=True, events=(), complete=True))
+    assert code == 1 and report["routes"][0]["status"] != "unspawned"
+    reservation = report["routes"][0]["reservation"]
+    assert not (bench.grant_dir() / "settlements" / f"{reservation}.json").exists()
+    status = bench.status()
+    assert status["charged"] == 1 and status["unresolved"] == [reservation]
+    assert bench.runner.reads == reads and status["stopped"] is True
+    code, report = bench.launch(_measured())
+    assert (code, report["routes"][0]["code"]) == (1, "reservation_unresolved")
+
+
+def test_an_unverified_post_run_admission_fails_the_rehearsal(bench):
+    assert bench.new_grant()[0] == 0
+    code, report = bench.rehearse(Launch(strict_missing=True, exit=1, text="",
+                                         events=(_event("deny", "budget"),)))
+    assert (code, report["result"], report["reason"]) == (1, "failed", "launch_failed")
+
+
+def test_the_measurement_leg_runs_inside_a_live_seat_scope(bench):
+    """The jailed branch's capped launch needs a live seat key; the measurement holds the
+    per-seat resource scope around its whole launch, and the leg reaches the hook in it."""
+    from phase_loop_runtime import seat_resource_caps
+
+    bench.opened()
+    code, _report = bench.launch(_measured())
+    assert code == 0 and bench.runner.seat_keys and all(bench.runner.seat_keys)
+    assert all(key.startswith("measure:grok:") for key in bench.runner.seat_keys)
+    assert "hook" in bench.runner.order and seat_resource_caps.live_seat_key() == ""
 
 
 # --- The procedure script ------------------------------------------------------------------

@@ -1395,6 +1395,8 @@
   {"count": 2, "function": "bridged_to", "module": "grok_tool_surface", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "_remove_commit_temps", "module": "grok_tool_surface", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "rehearse", "module": "grok_tool_surface", "primitive": "io.open", "role": "host-io"},
+  {"count": 2, "function": "jail_credential_expiry", "module": "grok_tool_surface", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "jail_credential_expiry", "module": "grok_tool_surface", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "_await_tree", "module": "panel_invoker", "primitive": "subprocess.Popen", "role": "host-helper"},
   {"count": 2, "function": "_complete_bwrap_witness", "module": "panel_invoker", "primitive": "subprocess.Popen", "role": "host-helper"},
   {"count": 1, "function": "_require_launch_proof", "module": "panel_invoker", "primitive": "subprocess.Popen", "role": "host-helper"},
