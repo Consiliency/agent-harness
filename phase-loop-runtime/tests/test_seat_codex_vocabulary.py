@@ -111,6 +111,7 @@ BASE_OD10_CLASSES: dict[str, str] = {
     "sandbox_placement_unreachable": "ordinary",
     "sandbox_placement_workload_unsupported": "ordinary",
     "seat_bind_source_unavailable": "ordinary",
+    "seat_broker_socket_path_too_long": "ordinary",
     "seat_broker_socket_unavailable": "ordinary",
     "seat_capacity_offloaded": "ordinary",
     "seat_cli_adapter_missing": "ordinary",
@@ -254,7 +255,7 @@ def test_removing_the_codex_entries_leaves_the_base_table():
     later = {code for code in contract.OD10_CLASSES if code.startswith(LATER_SEAT_PREFIXES)}
     base = {code: cls for code, cls in contract.OD10_CLASSES.items()
             if not code.startswith("codex_seat_") and code not in later}
-    assert len(BASE_OD10_CLASSES) == 129
+    assert len(BASE_OD10_CLASSES) == 130
     assert base == BASE_OD10_CLASSES
     base_closure = (
         (set(seat_jail.NOTICE_CODES) - set(CODEX_CODES) - later)
