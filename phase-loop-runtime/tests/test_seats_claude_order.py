@@ -1096,6 +1096,55 @@ def test_github_pr_merged_returns_only_a_boolean_field(monkeypatch, label):
         ct.github_pr_merged(1775)
 
 
+def _raw_http(raw: bytes):
+    """A real ``http.client.HTTPResponse`` read from ``raw`` bytes, as urlopen returns it."""
+    import http.client
+    import io
+
+    class _Socket:
+        def makefile(self, *_args, **_kwargs):
+            return io.BytesIO(raw)
+
+    def urlopen(request, timeout=None):
+        response = http.client.HTTPResponse(_Socket(), method="GET")
+        response.begin()
+        return response
+    return urlopen
+
+
+_FRAMED = {
+    # The connection ends after a body whose received bytes alone parse as merged.
+    "short-content-length": (b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n"
+                             b'{"merged":true}', "incomplete response"),
+    "short-chunked": (b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+                      b'f\r\n{"merged":true}\r\n', "incomplete response"),
+    "oversized": (b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n" % ((1 << 20) + 16)
+                  + b'{"merged":true}' + b" " * ((1 << 20) + 1), "the response is too large"),
+}
+
+
+@pytest.mark.parametrize("label", sorted(_FRAMED))
+def test_an_incomplete_or_oversized_response_is_unverifiable(tree, seam, monkeypatch, capsys,
+                                                             label):
+    raw, reason = _FRAMED[label]
+    monkeypatch.setattr(ct.urllib.request, "urlopen", _raw_http(raw))
+    with pytest.raises(ct.AuditError, match=rf"^merge state unverifiable \({reason}\)$"):
+        ct.github_pr_merged(1775)
+    head = tree.commit(print=module_source(True, citation(RECORD_HEAD, "4a", 1775)))
+    assert ct.main(["audit-order", "--repo", str(tree.root), "--base", seam, "--head", head,
+                    "--pr", "1999"]) == 1
+    assert (f"print: the cited PR's merge state unverifiable ({reason})"
+            in capsys.readouterr().err)
+
+
+def test_a_complete_framed_response_passes(monkeypatch):
+    for raw in (b"HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\n" b'{"merged":true}',
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+                b'f\r\n{"merged":true}\r\n0\r\n\r\n'):
+        monkeypatch.setattr(ct.urllib.request, "urlopen", _raw_http(raw))
+        assert ct.github_pr_merged(1775) is True
+
+
 def test_a_lookup_returning_no_boolean_is_unverifiable(tree, seam, capsys):
     head = tree.commit(print=module_source(True, citation(RECORD_HEAD, "4a", 1775)))
     assert ct.main(["audit-order", "--repo", str(tree.root), "--base", seam, "--head", head],
