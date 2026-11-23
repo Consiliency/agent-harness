@@ -54,7 +54,6 @@ SPAWN_ALLOWANCE_MS = 250
 _BUDGETED_COMMANDS = ("route", "discover", "notices", "report", "inspect-discovery", "delete-discovery")
 RETRY_LEDGER_LIMIT = 256
 RUN_HANDLE_LIMIT = 256
-ROUTED_BUNDLE_LIMIT = 65_536
 _SOURCE_ID = "agent-harness"
 
 
@@ -254,13 +253,6 @@ class JevDrillUnavailable(ValueError):
         self.decision = deepcopy(decision)
 
 
-def _bundle_fingerprint(bundle):
-    """A digest of every dataclass field, kept across copies and field reconstruction."""
-    from dataclasses import astuple, is_dataclass
-    value = astuple(bundle) if is_dataclass(bundle) else (type(bundle).__name__, id(bundle))
-    return hashlib.sha256(repr(value).encode()).hexdigest()
-
-
 def _fresh(snapshot):
     now = datetime.now(timezone.utc)
     return (datetime.fromisoformat(snapshot["verified_at"].replace("Z", "+00:00")) <= now
@@ -302,8 +294,6 @@ class JevDrillAdapter:
         self._ledger = {}
         self._run_index = {}
         self._ledger_generation = 0
-        # Routing provenance by bundle content: fingerprint -> ids of its pending bindings.
-        self._routed = OrderedDict()
         # One lock orders every event on a run's stream, host and hook alike.
         self._report_lock = threading.RLock()
         self._runs = OrderedDict()
@@ -603,12 +593,14 @@ class JevDrillAdapter:
                     or hashlib.sha256(resource["instructions"].encode()).hexdigest() != key[2]):
                 raise JevDrillUnavailable("Optional guidance identity is unverified")
             additions.append(resource["instructions"])
+        # Each prepare stamps its own routing id; launch consumes only that exact binding.
+        routing_id = str(uuid4())
         if additions:
             extra = "\n\n" + "\n\n".join(additions)
-            bundle = replace(bundle, body=bundle.body + extra,
+            bundle = replace(bundle, body=bundle.body + extra, routing_provenance=routing_id,
                              context_body=(bundle.context_body + extra if bundle.context_body is not None else None))
         else:
-            bundle = replace(bundle)
+            bundle = replace(bundle, routing_provenance=routing_id)
         self._prompt_bases[id(bundle)] = (
             weakref.ref(bundle, lambda _ref, identity=id(bundle): self._prompt_bases.pop(identity, None)),
             base_bundle,
@@ -624,10 +616,9 @@ class JevDrillAdapter:
                                  details["routing_decision_id"], run_id)
         # Every fallible step is done: only now does the ledger hold this prepare.
         generation = self._commit_route(admission)
-        fingerprint = _bundle_fingerprint(bundle)
-        self._pending[id(bundle)] = {"request": request, "decision": decision, "candidate": candidate,
+        self._pending[routing_id] = {"request": request, "decision": decision, "candidate": candidate,
                                     "linked_inputs": deepcopy(wrapper),
-                                    "limits_required": limits_required, "fingerprint": fingerprint,
+                                    "limits_required": limits_required,
                                     "context": context, "run_id": run_id, "sequence": 0,
                                     "ledger_key": ledger_key, "ledger_generation": generation,
                                     "counts": {"queued": 0, "losses": {}},
@@ -635,11 +626,7 @@ class JevDrillAdapter:
                                     "guidance": bool(additions),
                                     "freshness": [{"verified_at": row["verified_at"], "expires_at": row["expires_at"]}
                                                   for row in (inventory, capabilities)]}
-        weakref.finalize(bundle, self._pending.pop, id(bundle), None)
-        self._routed.setdefault(fingerprint, []).append(id(bundle))
-        self._routed.move_to_end(fingerprint)
-        while len(self._routed) > ROUTED_BUNDLE_LIMIT:
-            self._routed.popitem(last=False)
+        weakref.finalize(bundle, self._pending.pop, routing_id, None)
         return kwargs
 
     # --- Retry ledger (GAPS §3.1) -------------------------------------------------------
@@ -813,24 +800,18 @@ class JevDrillAdapter:
                 self._runs.popitem(last=False)
 
     def _take_binding(self, bundle):
-        """Return the routed binding for ``bundle``, or None for an unrouted bundle.
+        """Return the binding named by the bundle's routing id, or None for an unrouted bundle.
 
-        Routing provenance is the bundle's content fingerprint, so a copied or rebuilt
-        routed bundle is recognized. A copy of a pending bundle takes that binding once; a
-        bundle whose bindings were all launched, refused or collected fails closed. A
-        bundle identical in every field to a routed bundle is treated as routed.
+        The id survives copies and field reconstruction. A routed id with no live binding,
+        because it was launched, refused or collected, fails closed.
         """
-        fingerprint = _bundle_fingerprint(bundle)
-        pending = self._routed.get(fingerprint)
-        if pending is None:
+        routing_id = getattr(bundle, "routing_provenance", None)
+        if routing_id is None:
             return None
-        binding = self._pending.get(id(bundle))
-        identity = id(bundle) if binding is not None and binding["fingerprint"] == fingerprint else next(
-            (i for i in pending if i in self._pending and self._pending[i]["fingerprint"] == fingerprint), None)
-        if identity is None:
+        binding = self._pending.pop(routing_id, None)
+        if binding is None:
             raise JevDrillUnavailable("Routed launch binding was already used or refused")
-        pending.remove(identity)
-        return self._pending.pop(identity)
+        return binding
 
     def _report(self, binding, event_type=None, *, payload=None, reason=None):
         with self._report_lock:

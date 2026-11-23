@@ -354,6 +354,64 @@ def test_copied_routed_bundles_cannot_bypass_admission(tmp_path, state):
     assert outcomes[-3:] == ["Routed launch binding was already used or refused"] * 3
 
 
+def test_identical_tasks_keep_their_own_authorization(tmp_path):
+    env = routed_fixture(tmp_path, max_attempts=1)
+    adapter = env.adapter
+    prepared = {}
+    for name in ("a", "b"):  # identical prompt, model and effort; different tasks
+        env.current[0] = name
+        prepared[name] = adapter.prepare(mode="main", dry_run=False, **env.kwargs)
+    entries, outcomes = [], []
+    for name in ("a", "a", "b"):
+        try:
+            result = adapter.launch(counting_executor(entries), spec_for(prepared[name]))
+            outcomes.append((result.jevdrill_execution_run or {}).get("task_id", "unrouted dispatch"))
+        except JevDrillUnavailable as exc:
+            outcomes.append(str(exc))
+    assert outcomes[1] == "Routed launch binding was already used or refused", (
+        "a spent launch consumed another task's authorization")
+    assert len(entries) == 2
+    assert outcomes == [env.task("a")["request"]["task_id"], "Routed launch binding was already used or refused",
+                        env.task("b")["request"]["task_id"]]
+
+
+def test_reordered_reconstruction_stays_routed(tmp_path):
+    adapter, _, _, kwargs, _, _ = adapter_fixture(tmp_path)
+    kwargs["prompt_bundle"] = replace(kwargs["prompt_bundle"], bridge_skill_inventory=({"a": 1, "b": 2},))
+    prepared = adapter.prepare(mode="main", dry_run=False, **kwargs)
+    original = prepared["prompt_bundle"]
+    entries = []
+    adapter.launch(counting_executor(entries), spec_for(prepared))
+    reordered = replace(rebuilt(original), bridge_skill_inventory=({"b": 2, "a": 1},))
+    assert reordered == original
+    refused = None
+    try:
+        adapter.launch(counting_executor(entries), spec_for({**prepared, "prompt_bundle": reordered}))
+    except JevDrillUnavailable as exc:
+        refused = exc
+    assert len(entries) == 1, "an equal reconstructed routed bundle skipped launch admission"
+    assert refused is not None
+
+
+def test_routing_id_without_a_live_binding_fails_closed(tmp_path):
+    adapter, _, _, kwargs, _, _ = adapter_fixture(tmp_path)
+    prepared = adapter.prepare(mode="main", dry_run=False, **kwargs)
+    routing_id = getattr(prepared["prompt_bundle"], "routing_provenance", None)
+    assert routing_id is not None, "prepare stamped no routing provenance on the bundle"
+    entries, outcomes = [], []
+    adapter.launch(counting_executor(entries), spec_for(prepared))
+    for bundle in (prepared["prompt_bundle"],  # spent id
+                   replace(prepared["prompt_bundle"], routing_provenance=str(uuid4()))):  # never issued
+        try:
+            adapter.launch(counting_executor(entries), spec_for({**prepared, "prompt_bundle": bundle}))
+            outcomes.append("launched")
+        except JevDrillUnavailable as exc:
+            outcomes.append(str(exc))
+    assert len(entries) == 1, "a routed id with no live binding was dispatched"
+    assert outcomes == ["Routed launch binding was already used or refused"] * 2
+    assert "routing_provenance" not in json.dumps(prepared["prompt_bundle"].to_json())
+
+
 def linked_fixture(tmp_path, *, max_attempts=1):
     adapter, inputs, decision, kwargs, calls, _ = adapter_fixture(tmp_path)
     inputs["request"]["hard_constraints"]["max_attempts"] = max_attempts

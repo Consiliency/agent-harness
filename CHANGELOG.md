@@ -26,6 +26,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
     `run_event_identity`, `enqueue_run_event` and `run_report_counts`. The hook and the
     host's own events share one ordered `source_sequence` stream.
   - The ledger and run handles do not survive a restart.
+  - `PromptBundle.routing_provenance`, an optional routing ID that each prepare stamps. It is
+    never rendered or serialized. Launch consumes only the binding with that ID, and a routed
+    ID with no live binding fails closed.
 - LANEEXEC SL-7: `phase_loop_runtime.launch_settings` and `phase_loop_runtime.launch_routes`
   (`plans/phase-plan-v13-LANEEXEC.md`, binding §7 E3-2 and E3-3). `decode_launch_settings`
   is the one strict, closed decoder of the `launch` object of the captured
