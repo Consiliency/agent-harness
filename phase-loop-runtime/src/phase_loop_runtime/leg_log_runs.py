@@ -29,6 +29,7 @@ from .advisor_board.backing import spelled_without_parent_steps, trusted_compone
 
 KEEP_RUNS = 20
 MAX_AGE_S = 14 * 24 * 3600
+PARENT_LOCK_WAIT_S = 5.0
 _PREFIX = "advisor-board-"
 _ACTIVE = ".active"
 _DONE = ".done"
@@ -58,7 +59,10 @@ def _open_private_parent() -> tuple[str, int] | None:
     path = spelled_without_parent_steps(str(runs_parent()))
     if path is None:
         return None
-    fd = os.open("/", _DIR_FLAGS)
+    try:
+        fd = os.open("/", _DIR_FLAGS)
+    except OSError:
+        return None
     try:
         for part in path.split("/")[1:]:
             if not trusted_component(os.fstat(fd)):
@@ -82,10 +86,21 @@ def _open_private_parent() -> tuple[str, int] | None:
 
 @contextlib.contextmanager
 def _parent_locked(parent_fd: int) -> Iterator[None]:
+    """Hold the parent lock, waiting at most ``PARENT_LOCK_WAIT_S``. Retention is optional,
+    so a holder that never releases (a stopped process) only costs this run its retention:
+    the wait ends with ``TimeoutError`` and the caller falls back to running without it."""
     fd = os.open(_PARENT_LOCK, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600,
                  dir_fd=parent_fd)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        deadline = time.monotonic() + PARENT_LOCK_WAIT_S
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("board-runs lock is held") from None
+                time.sleep(0.05)
         yield
     finally:
         os.close(fd)
@@ -141,8 +156,9 @@ class LegLogRun:
         try:
             with _parent_locked(self._parent_fd):
                 kept = self._settle(refs)
-                _prune_locked(self.path.parent, keep=KEEP_RUNS, max_age_s=MAX_AGE_S,
-                              exclude=self.path)
+                # The finishing run counts toward the cap when it is kept.
+                _prune_locked(self.path.parent, keep=KEEP_RUNS - (1 if kept else 0),
+                              max_age_s=MAX_AGE_S, exclude=self.path)
         except OSError:
             kept = False
             shutil.rmtree(self.path, ignore_errors=True)

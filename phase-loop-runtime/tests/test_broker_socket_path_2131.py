@@ -405,6 +405,39 @@ def test_a_lock_failure_runs_the_board_without_retention(tmp_path, monkeypatch):
     assert "CLI output not retained" in line and "leg failure logs kept" not in err
 
 
+def test_a_held_parent_lock_bounds_the_wait_and_the_board_still_runs(tmp_path, monkeypatch):
+    """A holder that never releases (a stopped process) costs only retention: start and
+    finish each give up after the bounded wait instead of blocking the board."""
+    first = leg_log_runs.LegLogRun.start()
+    assert first is not None
+    first.finish([])  # no log named: the run is removed, the parent stays
+    parent = leg_log_runs.runs_parent()
+    holder = os.open(parent / ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        monkeypatch.setattr(leg_log_runs, "PARENT_LOCK_WAIT_S", 0.2)
+        began = time.monotonic()
+        assert leg_log_runs.LegLogRun.start() is None
+        assert time.monotonic() - began < 5
+        _out, err = _board_run(tmp_path / "board", monkeypatch, failing={"codex"})
+        assert "[DEGRADED] codex:" in err
+    finally:
+        os.close(holder)
+
+
+def test_the_finishing_run_counts_toward_the_cap(tmp_path):
+    parent = leg_log_runs.runs_parent()
+    run = leg_log_runs.LegLogRun.start()
+    assert run is not None
+    _completed_runs(parent, leg_log_runs.KEEP_RUNS, newest=time.time() - 60)
+    (run.path / "leg-logs").mkdir(mode=0o700)
+    (run.path / "leg-logs" / "codex-0.log").write_text("failed")
+    kept = run.finish(["failed; CLI output: leg-logs/codex-0.log"])
+    assert kept is not None
+    runs = [p for p in parent.iterdir() if p.is_dir() and p.name.startswith("advisor-board-")]
+    assert len(runs) == leg_log_runs.KEEP_RUNS and kept in runs
+
+
 def _completed_runs(parent: Path, count: int, *, newest: float) -> list[Path]:
     runs = []
     for index in range(count):
