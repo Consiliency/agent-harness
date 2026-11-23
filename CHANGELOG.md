@@ -6,6 +6,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Added
+
+- The review-runner image pin record contract and validator (RRIMAGE SL-0;
+  `plans/phase-plan-v1-rrimage-RRIMAGE.md`, Consiliency/agent-harness#2106). The frozen
+  `review_runner_pin.v1` schema ships as
+  `contracts/placement/review-runner-pin-v1.schema.json`, and `review_runner_pin` adds
+  `load_pin_record`, `validate_pin_record` (rules P1–P10, with P4 strict unless the stale
+  marker is explicitly allowed and names the record), `assemble_built_record` and
+  `apply_receipt`. Refusals use the closed `pin_*` codes and name the rule and the field only.
+
 ## [0.7.41] - Unreleased candidate
 
 ### Changed

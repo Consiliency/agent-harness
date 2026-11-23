@@ -1,0 +1,48 @@
+{
+  "schema": "review_runner_pin.v1",
+  "status": "built",
+  "artifact": {
+    "oci_archive_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "manifest_digest": "computed-in-test",
+    "manifest_media_type": "application/vnd.oci.image.manifest.v1+json",
+    "manifest_size": 1,
+    "manifest_path": "plans/evidence/review-runner/manifest.json",
+    "config_path": "plans/evidence/review-runner/config.json"
+  },
+  "platform": {
+    "os": "linux",
+    "architecture": "amd64",
+    "config_digest": "computed-in-test"
+  },
+  "source": {
+    "repository": "Consiliency/agent-harness",
+    "commit": "0123456789abcdef0123456789abcdef01234567",
+    "containerfile_path": "phase-loop-runtime/images/review-runner/Containerfile",
+    "containerfile_sha256": "computed-in-test"
+  },
+  "helper": {
+    "path": "/usr/libexec/agent-toolkit/landlock-exec",
+    "sha256": "from-PIN.json",
+    "source_repository": "Consiliency/agent-toolkit",
+    "source_commit": "from-PIN.json"
+  },
+  "build": {
+    "tool": "docker buildx",
+    "tool_version": "v0.17.1",
+    "buildkit_image": "docker.io/moby/buildkit@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "buildkit_version": "v0.16.0",
+    "source_date_epoch": 1763769600,
+    "first_manifest_digest": "computed-in-test",
+    "setuid_stripped": true,
+    "reproduced": {
+      "attempted": true,
+      "second_manifest_digest": "computed-in-test",
+      "equal": true,
+      "differing_layers": [],
+      "deferred_finding": null
+    }
+  },
+  "image": null,
+  "receipt": null,
+  "recorded_at": "2026-11-22T10:00:00Z"
+}
