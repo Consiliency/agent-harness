@@ -1,0 +1,26 @@
+{
+  "oci_archive_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+  "source": {
+    "commit": "0123456789abcdef0123456789abcdef01234567",
+    "containerfile_sha256": "computed-in-test"
+  },
+  "helper": {
+    "sha256": "from-PIN.json",
+    "source_commit": "from-PIN.json"
+  },
+  "build": {
+    "tool_version": "v0.17.1",
+    "buildkit_image": "docker.io/moby/buildkit:v0.18.2@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "buildkit_version": "v0.18.2",
+    "source_date_epoch": 1763769600,
+    "setuid_stripped": true,
+    "reproduced": {
+      "attempted": false,
+      "second_manifest_digest": null,
+      "equal": null,
+      "differing_layers": [],
+      "deferred_finding": null
+    }
+  },
+  "recorded_at": "2026-11-22T10:00:00Z"
+}
