@@ -293,9 +293,11 @@ the parent (`:780`–`:786`). Every refusal still raises one `SeatSandboxRefused
 - While the supervisor lives, its reap thread collects the parent when the child ends.
 - The thread is a daemon, so it would die with an exiting supervisor before it released
   the parent. After `wait()` returns, the supervisor therefore stays alive until every
-  thread other than its own has ended, bounded by the attempt's release deadline. It uses
-  `threading.enumerate()` and never names, joins by name or replaces the landed thread.
-  On timeout it records the capped parent `cleanup_pending`.
+  thread in `threading.enumerate()` that was not present immediately before its
+  `capped_popen` call has ended, bounded by the attempt's release deadline. Its own
+  renewal and bridge threads predate that call and are not waited on. It never names,
+  joins by name or replaces the landed thread. On timeout it records the capped parent
+  `cleanup_pending`.
 - A dead supervisor's thread dies with it, so `x-lifetime.supervisor_death` still yields
   `cleanup_pending`. Kill and collect by key remain agent-harness#2098.
 
@@ -307,6 +309,8 @@ the parent (`:780`–`:786`). Every refusal still raises one `SeatSandboxRefused
   never collected.
 - A supervisor whose child has ended does not exit while the reap thread runs. A
   mutation that exits immediately after `wait()` fails.
+- A supervisor that runs its own long-lived thread, started before `capped_popen`, still
+  exits promptly once the reap thread ends, and records no `cleanup_pending`.
 
 ### E2-2 — SL-3 zero-egress amendment (agent-harness#2003)
 
@@ -323,8 +327,8 @@ agent-harness#2003 (merge `0eac43f035afb42ae26d13649c5843fba2226d05`) records th
 decision. Its description says: "Zero egress is met only once a follow-up planning change
 (the ACTIVATE goal plus a LANEEXEC SL-3 amendment), LANEEXEC's launch-service wiring and
 ACTIVATE evidence land. No production code calls the new launch check yet." This section
-is that LANEEXEC SL-3 amendment. The ACTIVATE goal is a separate roadmap amendment and is
-not made here.
+is that LANEEXEC SL-3 amendment. The ACTIVATE goal is a separate roadmap amendment, not
+made here and tracked by agent-harness#2104.
 
 **Binding.**
 
@@ -402,8 +406,15 @@ cannot is possible.
   `lane_placement_wave_unrouted`, with no fallback to the local pool or to serial
   dispatch. Writable lanes are placed only through `launch_harness_lane_work_unit` →
   `lane_launch.place_lane`.
+- **Guard position and coverage.** The guard runs after the `jevdrill_adapter` and
+  `lane_recovery_blocker` checks and after the capacity computation. `capacity.effective
+  < 2` keeps its whole-phase serial outcome, which is outside SL-4. With capacity of at
+  least 2 the guard blocks every concurrent dispatch. That includes plans that
+  `execute_lane_waves` would have returned `serial` for (`no_verified_lanes`,
+  `executor_pin_conflict`, `ownership_ambiguous`, `serial_selection`), a single-lane
+  plan among them.
 - **Out of scope.** Routing concurrent waves through `place_lane` is an ACTIVATE item
-  (plan Deferred Items).
+  (plan Deferred Items; agent-harness#2103).
 - **Unchanged files.** `lane_wave_executor.py` and `worker_pool.py` are not edited.
 - **`jevdrill_adapter` (agent-harness#2086).** The parameter is kept. With placement
   enabled, a call that passes an adapter refuses typed before reserve, because the
@@ -419,6 +430,10 @@ test:
   or the worker-pool spawn counter is not zero;
 - with placement disabled, the wave's launch specs differ from those built without this
   change;
+- with placement enabled and capacity of at least 2, a single-lane plan ends anything
+  other than `blocked`;
+- with placement enabled and capacity below 2, the dispatch ends anything other than its
+  whole-phase serial outcome;
 - an adapter call reserves.
 
 A mutation that removes the guard must fail the first falsifier.
@@ -494,7 +509,8 @@ merged agent-harness#1966 after that commit.
 - the PLACECLI gate, by agent-harness#1971, agent-harness#1991 and agent-harness#2003.
 
 **Manifest.** The `v13-LANEEXEC` row records this with `review_status`
-`board_edits_applied_coordinator_delta_checked`, the form `v12-WORKER` uses, and one
+`board_edits_applied_coordinator_delta_checked`, the same `board_edits_applied_*` shape
+`v12-WORKER` uses, and one
 appended, hand-written `committed` event (agent-harness#1968 is still open). The one
 remaining gate is the separate execution authority the plan names.
 
@@ -532,16 +548,12 @@ evidence exists on main.
 through the operator configuration. Until a record exists, tests use a fixture record.
 LANEEXEC builds, pushes and pins nothing.
 
-**OWNER-DECISION RR-1: who builds and pins the image.** Options:
+**RR-1, decided by the coordinator, 2026-11-22: option (c).** A small new phase in
+parallel with LANEEXEC builds and pins the image and produces the pin record above, which
+ACTIVATE consumes. Options (a) LANEEXEC SL-6 and (b) ACTIVATE readiness lane 1 were
+rejected for the reasons recorded in the readiness audit.
 
-- (a) LANEEXEC SL-6. This does not fit: the plan excludes live effects, and SL-6 is a
-  docs reducer.
-- (b) ACTIVATE readiness lane 1. This fits EC-ACTIVATE-1, but it starts only after
-  LANEEXEC, which is later than ai-stack needs the image.
-- (c) **Recommended:** a small new phase or task now, in parallel with LANEEXEC. Its
-  output is the pin record above, which ACTIVATE then consumes.
-
-**Owner grants any option needs.**
+**Owner grants the new phase needs.**
 
 - the registry and repository, and push credentials;
 - a build host and the build window;

@@ -15232,7 +15232,7 @@
           "sha256": "1cea960ddd28ef5e1c4bf79083fa9f9938b2c99c2e29dbd937864944ca76d7e8"
         },
         "plans/artifacts/v13-LANEEXEC-landed-binding.md": {
-          "sha256": "39681b48ffaba86d260da020b8e02ff8b67b347e7b26e67c933fe5093957caae"
+          "sha256": "216f9ab9b1c11526ad3fa8b3e699b387dfda2e33260255da84d2696c75e1d500"
         },
         "plans/artifacts/v12-v13-replan-ownership.md": {
           "sha256": "e5dbbfb45c23cbb6acb9756a23a3d86b62dd5b172b94d6a495ef436d189f3e06"
@@ -15295,7 +15295,10 @@
               "issues_filed": [
                 "agent-harness#2098",
                 "agent-harness#2099",
-                "agent-harness#2100"
+                "agent-harness#2100",
+                "agent-harness#2103",
+                "agent-harness#2104",
+                "agent-harness#2105"
               ],
               "wire_bytes_changed": false
             },

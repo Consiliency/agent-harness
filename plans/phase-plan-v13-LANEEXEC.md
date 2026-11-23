@@ -64,11 +64,11 @@ tree that binding §0 pins. Its items:
 | Item | Ruling |
 | --- | --- |
 | E2-1 | `capped_popen` takes `before_spawn` (agent-harness#2033); LaneExec never passes it. Collection is the landed reap thread, and the supervisor outlives it or reports `cleanup_pending`. |
-| E2-2 | SL-3 zero-egress amendment: every openshell launch goes through `sandbox_placement.openshell_launch_refusal` at the activation step, the only openshell activation and egress check (agent-harness#2003; owner egress ruling of 2026-11-19, quoted in binding §6). |
+| E2-2 | SL-3 zero-egress amendment: every openshell launch goes through `sandbox_placement.openshell_launch_refusal` at the activation step, the only openshell activation and egress check (agent-harness#2003; owner egress ruling of 2026-11-19, quoted in binding §6). The ACTIVATE roadmap goal is agent-harness#2104. |
 | E2-3 | `execute_lane_waves` (agent-harness#1978) launches writable lanes. SL-4 guards the runner's concurrent branch: placement enabled never enters it. |
-| E2-4 | A RAM-backed or overridden `staging_root()` still refuses `capability_unmet` under the device rule; an exception from it is `capability_unmet`. |
+| E2-4 | A RAM-backed `staging_root()`, or an override onto another device, refuses `capability_unmet` under the two-check device rule. An exception from it, or from `readiness_code()`, is `capability_unmet`. |
 | E2-5 | Panel verdict and gates recorded; manifest `review_status` updated. |
-| E2-6 | The review-runner image pin is scoped. Its owner is OWNER-DECISION RR-1. |
+| E2-6 | The review-runner image pin is scoped. RR-1 is decided: a new parallel phase builds the pin record (binding §6 E2-6). |
 
 ## Interface Freeze Gates
 
@@ -301,10 +301,11 @@ Recorded, not built in this phase (coordinator ruling 4, 2026-11-09).
 | SEATS public caps APIs: an expected-digest check inside `capped_popen`, typed evidence of whether a failure came before or after its helper started, and kill/collect of a capped parent by key | SEATS/JAILCORE; agent-harness#2098, scheduled against v13 ACTIVATE, cross-linked to agent-harness#1963 and agent-harness#1895 | Activation prerequisite: no local LaneExec route is enabled before they land (binding §3 L-S3). |
 | Caps contract §1a tmpfs carve-out cleanup | SEATS; agent-harness#2099 | tmpfs attempt paths refuse until it lands; adopting it needs no wire change. |
 | Garbage collection of orphaned content-addressed echoes (capped and secret-free) | v12 supervised-worker follow-up; agent-harness#2100, parked | None; LANEEXEC writes no echo. |
-| Folding the reinterpreted sentences into the next protocol versions: the PLACECLI `launch_binding` sentence, the LANEEXEC narrowings and the wheel-shipped `x-*` prose | v13 placement protocol owner; new parked issue | The narrowings of `x-snapshot.upload`, `x-seed.provisioning`, `x-exec.claim_rollback`, `x-exec.after_start`, `x-local-cgroup.automatic_paths` and `x-lifetime.supervisor_death` and the L-S8 reading stay in the binding artifact. |
+| Folding the reinterpreted sentences into the next protocol versions: the PLACECLI `launch_binding` sentence, the LANEEXEC narrowings and the wheel-shipped `x-*` prose | v13 placement protocol owner; agent-harness#2105, parked | The narrowings of `x-snapshot.upload`, `x-seed.provisioning`, `x-exec.claim_rollback`, `x-exec.after_start`, `x-local-cgroup.automatic_paths` and `x-lifetime.supervisor_death` and the L-S8 reading stay in the binding artifact. |
+| The ACTIVATE roadmap goal for the owner zero-egress ruling (binding §6 E2-2) | v13 ACTIVATE roadmap amendment; agent-harness#2104 | None; SL-3 wires the launch check, and ACTIVATE supplies the live evidence. |
 | The `/var/log` runtime check of the local template in its LANEEXEC-v1-errata-1 form: under the expanded argv, `/var/log` exists, lists empty and refuses a write, on Ubuntu 24.04 and 26.04 | v13 ACTIVATE local-launch qualification; owner-gated | None; the erratum is document-and-test only, and no local route is activated before this check is recorded. |
-| Routing concurrent lane waves through `place_lane` while `lane_placement` is enabled (binding §6 E2-3) | v13 ACTIVATE | None; with placement enabled the wave path refuses `lane_placement_wave_unrouted`. |
-| The pinned review-runner image record (binding §6 E2-6) | OWNER-DECISION RR-1 | None; SL-3 reads the helper path and digest only from that record, and tests use a fixture. |
+| Routing concurrent lane waves through `place_lane` while `lane_placement` is enabled (binding §6 E2-3) | v13 ACTIVATE; agent-harness#2103 | None; with placement enabled the wave path refuses `lane_placement_wave_unrouted`. |
+| The pinned review-runner image record (binding §6 E2-6) | new review-runner image phase (RR-1 option c); tracking issue to come with its plan | None; SL-3 reads the helper path and digest only from that record, and tests use a fixture. |
 | Production worker state root taken from trusted operator configuration | agent-harness#1960 | None; the CLI's state root is CLOSEOUT's. |
 | A sanctioned `replan` lifecycle path in `plan_manifest.update_lifecycle` (the replan events here are hand-written and append-only) | coordinator follow-up (ruling 3) | The `v13-LANEEXEC` row carries one hand-written `replan` event. |
 
