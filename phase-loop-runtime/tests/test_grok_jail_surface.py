@@ -730,7 +730,9 @@ def measuring(world, monkeypatch):
     return world
 
 
-def test_ba_j7_a_measurement_consumes_its_admission_once(measuring):
+def test_ba_j7_the_verifier_verifies_and_only_the_spawn_hook_consumes(measuring):
+    """r7 (§4.4, §4.5 M4/M5): the measurement mode verifies the recorded admission without
+    consuming it; ``consume_admission`` (the M5 hook) consumes it once, mode 0600."""
     m = _measurement(measuring)
     assert list(m.launch.scan_values) == list(measuring.credential.scan_values)
     context = _verify(measuring, jail=m.jail, mode="measurement", proxy=m.proxy,
@@ -738,19 +740,23 @@ def test_ba_j7_a_measurement_consumes_its_admission_once(measuring):
     assert context.reservation_id == m.reservation.reservation_id
     assert context.launch_digest == measuring.launch
     admitted = Path(m.reservation.grant_dir) / f"admission-{m.reservation.reservation_id}"
-    assert admitted.stat().st_mode & 0o777 == 0o600
-    _refuses(measuring, jail=m.jail, mode="measurement", proxy=m.proxy, measurement=m.launch)
+    assert not admitted.exists() and not gjs.admission_consumed(m.reservation)
+    _verify(measuring, jail=m.jail, mode="measurement", proxy=m.proxy, measurement=m.launch)
+    gjs.consume_admission(m.launch, m.jail, m.proxy, measuring.holder, measuring.command,
+                          measuring.binary)
+    assert admitted.stat().st_mode & 0o777 == 0o600 and gjs.admission_consumed(m.reservation)
+    with pytest.raises(gjs.JailRefused):  # consumed twice
+        gjs.consume_admission(m.launch, m.jail, m.proxy, measuring.holder, measuring.command,
+                              measuring.binary)
 
 
-@pytest.mark.parametrize("change", ["no_reservation", "non_empty_sink", "swapped_proxy",
-                                    "budget", "other_image", "forged", "production_jail"])
+@pytest.mark.parametrize("change", ["no_reservation", "swapped_proxy", "budget", "other_image",
+                                    "forged", "production_jail"])
 def test_ba_j7_the_measurement_refuses_with_nothing_spawned(measuring, change):
     m = _measurement(measuring)
     arguments = dict(jail=m.jail, mode="measurement", proxy=m.proxy, measurement=m.launch)
     if change == "no_reservation":
         arguments["measurement"] = None
-    elif change == "non_empty_sink":
-        (m.sink / "planted").write_bytes(b"")
     elif change == "swapped_proxy":
         arguments["proxy"] = SimpleNamespace(**{**vars(m.proxy), "socket": "/other.sock"})
     elif change == "budget":
@@ -767,6 +773,30 @@ def test_ba_j7_the_measurement_refuses_with_nothing_spawned(measuring, change):
     _refuses(measuring, **arguments)
     admitted = Path(m.reservation.grant_dir) / f"admission-{m.reservation.reservation_id}"
     assert not admitted.exists()
+
+
+@pytest.mark.parametrize("change", ["non_empty_sink", "swapped_proxy", "other_holder",
+                                    "replayed", "unprepared"])
+def test_ba_j7_the_spawn_hook_refuses_and_writes_no_admission(measuring, change):
+    """The M5 hook re-derives the binding from the actual objects and needs an empty sink;
+    a replay against another launch, or a measurement not issued by ``prepare_measurement``,
+    refuses with no admission file."""
+    m = _measurement(measuring)
+    proxy, holder, launch = m.proxy, measuring.holder, m.launch
+    if change == "non_empty_sink":
+        (m.sink / "planted").write_bytes(b"")
+    elif change == "swapped_proxy":
+        proxy = SimpleNamespace(**{**vars(m.proxy), "socket": "/other.sock"})
+    elif change == "other_holder":
+        holder = os.getppid()
+    elif change == "replayed":
+        other = _reservation(measuring, rid="0002-00000000000000bb")
+        launch = dataclasses.replace(m.launch, reservation=other)
+    else:
+        launch = SimpleNamespace(reservation=m.reservation, admission=m.launch.admission)
+    with pytest.raises(gjs.JailRefused):
+        gjs.consume_admission(launch, m.jail, proxy, holder, measuring.command, measuring.binary)
+    assert not any(Path(m.reservation.grant_dir).glob("admission-*"))
 
 
 def test_ba_j7_prepare_refuses_a_pre_existing_sink_entry(measuring):

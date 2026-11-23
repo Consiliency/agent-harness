@@ -266,6 +266,14 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
     # GROK SL-3: the jailed seat's refresh after-check, run in H as H-root.
     ("grok_jail_surface.py", "after_check_in_h"): (
         NOT_AGENT, "nsenter + this package's grok_jail_surface after-check helper"),
+    # GROK SL-4: the measurement sink's probe (handed to the seat UID, then probed as it)
+    # and its reader, each run in H; the handoff verb execs setpriv and the probe verb.
+    ("grok_jail_surface.py", "probe_sink"): (
+        NOT_AGENT, "nsenter + this package's grok_jail_surface sink-handoff helper"),
+    ("grok_jail_surface.py", "read_sink_in_h"): (
+        NOT_AGENT, "nsenter + this package's grok_jail_surface sink-read helper"),
+    ("grok_jail_surface.py", "_sink_handoff_main"): (
+        NOT_AGENT, "in-namespace helper: execs setpriv and this package's sink-probe verb"),
     ("seat_keyring_exec.py", "main"): (
         NOT_AGENT, "execs the jail chain it is handed; inherits the launch's decided env"),
     ("seat_uid.py", "_main"): (

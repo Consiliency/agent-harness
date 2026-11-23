@@ -21,6 +21,39 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `snapshot_budget` binds for an attempt, and they check it during every read. Nothing calls
   these builders yet; the launch service (SL-3) will. Each refusal carries one closed
   `snapshot_reason` or `seed_reason`.
+- The jailed Grok measurement (SEATS GROK lane SL-4, IF-0-GROK-4,
+  `plans/artifacts/grok-jail-tool-surface-contract-v1.md` r7 §3, §4.4, §4.5, §5.1 to §5.4
+  and §7.1; Consiliency/agent-harness#1820). `seat-window measure-tools --vendor grok` opens
+  a jailed grant when `--planned` is `pilot,planted,confirm` (`grant.json` records
+  `grok_jail_context.v1`; cap 5, at most 2 retries), and only while eligibility conditions 1
+  to 4 hold. Each `--route staged` launch takes the next label, runs in the §4.5 order --
+  `prepare_measurement`, the new `grok_jail_surface.probe_sink` (run in the seat's holder
+  namespace; it hands only the admitted sink inode to the seat UID, mode 0700, and probes it
+  as that UID), then the SL-3 leg in its new measurement mode -- and is settled on positive
+  proof, or `unspawned` with no charge when no admission file exists. The final verifier no
+  longer consumes the measurement admission: `grok_jail_surface.consume_admission` runs as
+  `launch_provider`'s spawn hook, after the qualification check and the identity probe, and
+  `_require_qualified_jail` checks a prepared measurement jail with its sink bind substituted
+  back against the production key's pass. In measurement mode the leg's status is `OK` iff
+  the launch exited 0. `--aggregate` applies the agreement rule and the publication gate on
+  `runtime_digest` and `jail_context_digest` and is the only writer of the jailed host-local
+  record, and withdraws only its own grant's publication; `--verify-probe final` passes only
+  when this grant owns the live publication and on the jailed `staged` row. Jailed stages
+  refuse before any grok subprocess or reservation when the grant is stopped, the subject's
+  image differs, a ledger limit is reached, or the credential's lifetime would not outlast
+  the launch (`grok_seat_token_expired`). The lifetime is read only from the store's
+  credential-free `credential-metadata.json` (never `auth.json` or `agent_id`), and a
+  jailed `--new-grant` refuses, writing no grant, unless it outlasts `GROK_SLOT_END_EPOCH`
+  plus five minutes. A launch whose admission the leg cannot confirm after it ran is never
+  settled. The measurement holds a per-seat resource scope around its launch, as the window
+  launchers do. OWNER-DECISION r7-1
+  is not ruled: an `unspawned` settlement stops the grant, through one decision point
+  (`grok_tool_surface.unspawned_resumes`). New procedure: `docs/ops/grok-jail-measurement.md`.
+  Pins: `seat_window.runtime_digest()` moves; the SDK proof binding of
+  `_run_leg_with_liveness` moves (its `spawn_hook` argument only); `claude_seat_transport.py`,
+  `launch_provider`, every other SDK region, every jail profile digest, the unjailed
+  `context_digest()`, `jail_context_digest()`, the allow-lists and every Grok form's argv
+  digest do not. Installs with Train B.
 - LANEEXEC SL-2: the new `phase_loop_runtime.launch_return` module maps a terminated
   attempt to its return, status and cancel outcome (`plans/phase-plan-v13-LANEEXEC.md`,
   binding §3 L-S4 and L-S5). `collect_return` returns at most one bounded return,
