@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextvars
 import logging
+import inspect
 import math
 import mimetypes
 import os
@@ -17411,7 +17412,22 @@ def _retain_panel_leg(result):
     return result
 
 
+def _typed_leg_failure(detail: object) -> bool:
+    """Whether a failed leg's detail is a typed failure of its own (a classified template or
+    a registered harness code) other than an auth failure: one an auth outcome must not
+    replace. The unknown-failure template is not typed."""
+    if isinstance(detail, _LegFailure):
+        return not detail.unknown and detail.template != "auth_failure"
+    if not isinstance(detail, str):
+        return False
+    text = str.__str__(detail)
+    return (bool(text) and not text.startswith("leg_auth_") and "unknown failure" not in text
+            and _detail_is_valid(text))
+
+
 def _retained_leg_exec(function):
+    signature = inspect.signature(function)
+
     @wraps(function)
     def retained(leg, *args, **kwargs):
         from .president_adapter import write_private_record
@@ -17429,7 +17445,13 @@ def _retained_leg_exec(function):
             rc = observation["returncode"]
             if (type(rc) is int and rc != 0 and observation["model_turn"] is False
                     and observation["verdict"] is False and not observation["auth_probed"]):
-                observation["auth_state"] = _parent_auth_state(leg, observation.get("env"))
+                # The host probe runs with the caller's host env: the env a leg recorded may
+                # be its jail's, whose paths exist only inside the jail.
+                try:
+                    host_env = signature.bind_partial(leg, *args, **kwargs).arguments.get("env")
+                except TypeError:
+                    host_env = None
+                observation["auth_state"] = _parent_auth_state(leg, host_env)
             # A refusal counts only when the leg did not end accepted after all.
             accepted = result is not None and (
                 result[0] == "OK" or (type(result[0]) is int and result[0] == 0))
@@ -17446,7 +17468,7 @@ def _retained_leg_exec(function):
                     result = (result[0], result[1], _HarnessCode(record["outcome"]))
             elif result is not None and result[0] in {"DEGRADED", "ERROR", "EMPTY"}:
                 detail = result[2] if len(result) > 2 else None
-                if (record["outcome"].startswith("leg_auth_")
+                if ((record["outcome"].startswith("leg_auth_") and not _typed_leg_failure(detail))
                     or isinstance(detail, _LegFailure) and detail.template == "auth_failure"):
                     result = _BrokeredSpawnResult(result[0], result[1], _HarnessCode(record["outcome"]),
                         evidence=getattr(result, "harden_isolation_evidence", None),
@@ -19603,6 +19625,10 @@ def _default_spawn(
                                 proof = _jailed_claude_login_proof(
                                     seat, quiescence_latch=broker_latch)
                             launched = True  # proven: whatever follows is the transport's own
+                            observation = _EXEC_OBSERVATION.get()
+                            if observation is not None:
+                                # The in-jail login check passed: no host probe overrides it.
+                                observation.update(auth_state="healthy", auth_probed=True)
                             return proof
 
                         try:
