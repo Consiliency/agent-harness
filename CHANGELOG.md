@@ -6,7 +6,30 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Added
+
+- LANEEXEC SL-0: the placement launch protocol v1 (`plans/phase-plan-v13-LANEEXEC.md`) ships
+  as package data at `phase_loop_runtime/contracts/placement/launch-v1.schema.json`, byte
+  for byte the frozen artifact `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`
+  (erratum LANEEXEC-v1-errata-1, sha256 `da311638…`). The new
+  `phase_loop_runtime.launch_process_contract` module is its side-effect-free strict codec:
+  `decode_launch_request` and `encode_launch_response` (plus a client-side
+  `decode_launch_response`), immutable records for every message family, and
+  `launch_exit_class`. Input follows the PLACECLI v1 strictness rules and the 64 KiB
+  bound. The PLACECLI definitions, `Reservation` among them, resolve by `$id` only against
+  the packaged `process-v1.schema.json`. For every terminal state, the codec also refuses a
+  `StatusResponse` whose top-level `run_id`, `scratch_path` or `tree_path` differs from the
+  nested launch. No CLI, launch service or route is added, and nothing is activated.
+
 ### Fixed
+
+- The jailed Claude seat's login proof now builds its auth-probe jails with the route's
+  qualification key, the same key the review jails carry, so the launch gate reads the v2
+  pass record the route qualified. Before this the probe jails had no key, the gate looked up
+  the bare profile digest and the jailed (non-native) Claude seat reported
+  `claude_seat_login_unproven` on every host. The probe now fails closed when either auth
+  jail's key is missing or differs from the review jail's (regression of
+  Consiliency/agent-harness#1890).
 
 - The Codex row window's expired-token check now runs fenced on the real seat (K-1 OI-1,
   owner decision 2026-11-22, "Block all its traffic"; plan

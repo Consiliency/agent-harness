@@ -407,7 +407,8 @@ def test_an_auth_jail_of_another_shape_is_a_failed_probe_and_launches_nothing(
         monkeypatch, tmp_path, differs):
     review = types.SimpleNamespace(profile_digest="a" * 64, filter_digest="b" * 64,
                                    dependency_projection_digest="", provider_path="/x",
-                                   seat_ids=(1, 1), dependency=None)
+                                   seat_ids=(1, 1), dependency=None,
+                                   qualification_key=_route_key())
     seat = types.SimpleNamespace(jail=review, seat_dir=tmp_path, holder_pid=1, notices=[])
     built: list[object] = []
 
@@ -427,6 +428,98 @@ def test_an_auth_jail_of_another_shape_is_a_failed_probe_and_launches_nothing(
     assert len(built) == 2
     assert result.returncode != 0 and result.stdout == b""
     assert result.credential_sha256 == hashlib.sha256(ACCESS.encode()).hexdigest()
+
+
+def _route_key(**changes):
+    from phase_loop_runtime.seat_route_contract import QualificationKey
+
+    values = dict(profile_digest="a" * 64, allowlist_digest="b" * 64,
+                  falsifier_layout=seat_jail.falsifier_layout_identity(),
+                  projection_digest=None, variant=None,
+                  host_identity=seat_jail.host_identity())
+    values.update(changes)
+    return QualificationKey(**values)
+
+
+def _keyed_claude_seat(tmp_path, key):
+    def jail(qualification_key):
+        return seat_jail.SeatJail(
+            leg="claude", process_owner=(), path_map={}, env={}, pass_fds=(),
+            seccomp_fd=-1, profile_id="fixture", profile_digest=key.profile_digest,
+            filter_digest="b" * 64, seat_ids=(1, 1), provider_argv0="/seat/bin/claude",
+            provider_path="/x", qualification_key=qualification_key,
+        )
+
+    seat = pi._JailedSeat(jail=jail(key), probe_jail=jail(key), holder_pid=1, token=b"",
+                          review_dir=tmp_path, seat_dir=tmp_path)
+    return seat, jail
+
+
+def test_the_auth_jails_carry_the_route_key_and_pass_its_v2_record(monkeypatch, tmp_path):
+    """Regression: the jailed login proof's auth jails are built fresh, so they must carry
+    the review jail's route key. With only the v2 key record on the host, the launch gate
+    admits both auth jails and the probe runs; without the key it read the bare profile
+    digest, found no usable record and the login stayed unproven."""
+    from phase_loop_runtime import seat_jail_qualification
+
+    key = _route_key()
+    seat_jail_qualification._record_pass({
+        "result": "pass", "profile_digest": key.profile_digest,
+        "host_identity": key.host_identity, "falsifier_layout": key.falsifier_layout,
+    }, key)
+    assert seat_jail.pass_record_verdict(key.profile_digest)[0] is False
+    seat, jail = _keyed_claude_seat(tmp_path, key)
+    monkeypatch.setattr(pi, "_build_jail_with_owned_inputs", lambda *_a, **_k: jail(None))
+    monkeypatch.setattr(pi._seat_uid, "teardown_in_h", lambda _pid, _root: [])
+    monkeypatch.setattr(pi, "_require_canonical_jail", lambda _jail: None)
+    monkeypatch.setattr(pi._seat_jail, "actual_profile_digest", lambda _jail: key.profile_digest)
+    monkeypatch.setattr(pi._seat_jail, "close_jail_fds", lambda _j: None)
+    launched: list[object] = []
+
+    def run(_cmd, *, seat_jail, probe_jail, **_k):
+        for gate in (seat_jail, probe_jail):
+            assert gate.qualification_key == key
+            pi._require_qualified_jail(gate)
+        launched.append((seat_jail, probe_jail))
+        return pi._LegRun(0, "", "")
+
+    monkeypatch.setattr(pi, "_run_leg_with_liveness", run)
+    result = pi._jailed_claude_auth_probe(seat, ACCESS.encode())
+    assert len(launched) == 1
+    assert result.returncode == 0
+
+
+@pytest.mark.parametrize("auth_key", ["missing", "other"])
+def test_an_auth_jail_without_the_review_jails_key_is_refused(monkeypatch, tmp_path, auth_key):
+    """Falsifier: an auth jail whose key is missing or differs from the review jail's is a
+    failed probe and launches nothing."""
+    key = _route_key()
+    seat, jail = _keyed_claude_seat(tmp_path, key)
+    wrong = None if auth_key == "missing" else _route_key(allowlist_digest="d" * 64)
+    built: list[object] = []
+
+    def build(_seat, _directory, _token):
+        built.append(jail(wrong if not built else key))
+        return built[-1]
+
+    monkeypatch.setattr(pi, "_build_claude_auth_jail", build)
+    monkeypatch.setattr(pi._seat_jail, "close_jail_fds", lambda _j: None)
+    monkeypatch.setattr(pi, "_run_leg_with_liveness",
+                        lambda *a, **k: pytest.fail("the probe launched"))
+    result = pi._jailed_claude_auth_probe(seat, ACCESS.encode())
+    assert len(built) == 2
+    assert result.returncode != 0 and result.stdout == b""
+
+
+def test_a_review_jail_without_a_route_key_fails_the_auth_probe(monkeypatch, tmp_path):
+    seat, jail = _keyed_claude_seat(tmp_path, _route_key())
+    seat.jail = jail(None)
+    monkeypatch.setattr(pi, "_build_jail_with_owned_inputs", lambda *_a, **_k: jail(None))
+    monkeypatch.setattr(pi._seat_uid, "teardown_in_h", lambda _pid, _root: [])
+    monkeypatch.setattr(pi._seat_jail, "close_jail_fds", lambda _j: None)
+    monkeypatch.setattr(pi, "_run_leg_with_liveness",
+                        lambda *a, **k: pytest.fail("the probe launched"))
+    assert pi._jailed_claude_auth_probe(seat, ACCESS.encode()).returncode != 0
 
 
 # --------------------------------------------------------------------------------------
@@ -588,7 +681,8 @@ def test_an_auth_probe_past_its_cap_is_still_scanned(monkeypatch, tmp_path, plan
     the proof's security refusal."""
     review = types.SimpleNamespace(profile_digest="a" * 64, filter_digest="b" * 64,
                                    dependency_projection_digest="", provider_path="/x",
-                                   seat_ids=(1, 1), dependency=None)
+                                   seat_ids=(1, 1), dependency=None,
+                                   qualification_key=_route_key())
     seat = types.SimpleNamespace(jail=review, seat_dir=tmp_path, holder_pid=1, notices=[])
     monkeypatch.setattr(pi, "_build_claude_auth_jail", lambda _s, _d, _t: types.SimpleNamespace(
         **{**vars(review), "provider_argv0": "/seat/bin/claude", "env": {}}))

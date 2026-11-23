@@ -1519,6 +1519,7 @@
   {"count": 2, "function": "_socket_is_private", "module": "placement_bridge", "primitive": "io.lstat", "role": "host-io"},
   {"count": 1, "function": "_spawn_helper", "module": "placement_bridge", "primitive": "subprocess.Popen", "role": "host-helper"},
   {"count": 1, "function": "_start_ticks", "module": "placement_bridge", "primitive": "io.read_text", "role": "host-io"},
+  {"count": 1, "function": "schema_bytes", "module": "launch_process_contract", "primitive": "io.read_bytes", "role": "host-io"},
   {"count": 1, "function": "schema_bytes", "module": "placement_process_contract", "primitive": "io.read_bytes", "role": "host-io"},
   {"count": 1, "function": "_read_regular", "module": "review_runner_pin", "primitive": "io.lstat", "role": "host-io"},
   {"count": 1, "function": "_read_regular", "module": "review_runner_pin", "primitive": "io.open", "role": "host-io"},
