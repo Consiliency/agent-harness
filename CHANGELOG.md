@@ -6,6 +6,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+## [0.7.41] - Unreleased candidate
+
 ### Changed
 
 - The review-runner Containerfile is hardened for the RRIMAGE build (lane SL-1,
@@ -64,7 +66,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   watch digests, `proxy_sha256`, the launch inventory, the SDK proof bindings, agy QCI and
   `CONTAINMENT_CONTRACT_SHA256` do not.
 
-## [0.7.40] - Unreleased candidate
+## [0.7.40] - 2026-11-22
 
 ### Added
 
