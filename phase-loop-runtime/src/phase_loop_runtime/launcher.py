@@ -4314,6 +4314,11 @@ def _worktree_change_snapshot(
 ) -> tuple[str, str, str, str, tuple[str, ...]] | None:
     if cwd is None:
         return None
+    if _native_windows():
+        # host_git's trusted-helper resolution is POSIX-only (no PATHEXT, uid and mode
+        # bits). Changed paths stay unknown on native Windows, which _with_changed_paths
+        # already treats as no claim.
+        return None
     root = Path(cwd)
     if not root.is_dir():
         return None

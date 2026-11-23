@@ -111,7 +111,7 @@ def test_opaque_tool_and_benign_warning(middle):
     '{"type":"unknown"}', '{"type":"thread.started","thread_id":"second"}',
     '{"type":"turn.started"}', '{"type":"item.completed","item":NaN}',
     '{"type":"item.completed","item":{"type":"agent_message","content":1e999}}',
-    'x' * (1024 * 1024 + 1), '{"type":"item.completed","item":{"type":"collab_tool_call",' ,
+    pytest.param('x' * (1024 * 1024 + 1), id="oversized_line"), '{"type":"item.completed","item":{"type":"collab_tool_call",' ,
 ])
 def test_permanent_invalidation(middle):
     assert collect(records(middle=[middle])) is None

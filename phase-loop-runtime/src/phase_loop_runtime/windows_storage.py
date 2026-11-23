@@ -57,6 +57,8 @@ def _apis():
         "ConvertStringSecurityDescriptorToSecurityDescriptorW": ([wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p, ctypes.c_void_p], wintypes.BOOL),
         "ConvertSecurityDescriptorToStringSecurityDescriptorW": ([ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p, ctypes.c_void_p], wintypes.BOOL),
         "GetSecurityInfo": ([wintypes.HANDLE, ctypes.c_int, wintypes.DWORD, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p], wintypes.DWORD),
+        "GetSecurityDescriptorControl": ([ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p], wintypes.BOOL),
+        "GetLengthSid": ([ctypes.c_void_p], wintypes.DWORD),
     }
     for name, (args, result) in signatures.items():
         function = getattr(security, name)
@@ -79,20 +81,87 @@ def _current_sid(kernel, security):
         buffer = ctypes.create_string_buffer(size.value)
         _require(security.GetTokenInformation(token, 1, buffer, size, ctypes.byref(size)))
         sid = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_void_p))[0]
+        binary = ctypes.string_at(sid, _require(security.GetLengthSid(sid)))
         rendered = wintypes.LPWSTR()
         _require(security.ConvertSidToStringSidW(sid, ctypes.byref(rendered)))
         try:
-            return rendered.value
+            return rendered.value, binary
         finally:
             kernel.LocalFree(rendered)
     finally:
         kernel.CloseHandle(token)
 
 
+# S-1-5-18 (LocalSystem) in binary form: revision 1, one sub-authority, NT authority 5, RID 18.
+_SYSTEM_SID = bytes((1, 1, 0, 0, 0, 0, 0, 5)) + (18).to_bytes(4, "little")
+_SE_DACL_PRESENT = 0x0004
+_SE_DACL_PROTECTED = 0x1000
+_ACCESS_ALLOWED_ACE_TYPE = 0
+_FILE_ALL_ACCESS = 0x001F01FF
+
+
+def _private_dacl_problem(control, dacl, user_sid):
+    """Return why a DACL is not exactly the private policy, or ``None`` when it is.
+
+    The policy (the descriptor ``PrivateSecurity`` writes): a present, protected DACL
+    holding exactly two ACEs, FILE_ALL_ACCESS allowed to SYSTEM and to the current
+    user, compared as binary SIDs, each with no ACE flags (so no inherited, inheritable
+    or inherit-only entry). Any other ACE, any deny entry, any flag, an unprotected or
+    null DACL, or a malformed ACL is refused. Control bits that describe how the system
+    stored the descriptor (auto-inherited, self-relative) do not change who has access,
+    so they are not part of the policy; the returned text names no SID.
+    """
+    if not control & _SE_DACL_PRESENT or dacl is None:
+        return "no DACL"
+    if not control & _SE_DACL_PROTECTED:
+        return "DACL not protected"
+    if len(dacl) < 8:
+        return "malformed ACL"
+    size = int.from_bytes(dacl[2:4], "little")
+    count = int.from_bytes(dacl[4:6], "little")
+    if size < 8 or size > len(dacl):
+        return "malformed ACL"
+    if count != 2:
+        return f"{count} ACEs"
+    offset, granted = 8, []
+    for _ in range(count):
+        if offset + 8 > size:
+            return "malformed ACL"
+        ace_type, flags = dacl[offset], dacl[offset + 1]
+        ace_size = int.from_bytes(dacl[offset + 2:offset + 4], "little")
+        if ace_type != _ACCESS_ALLOWED_ACE_TYPE:
+            return f"ACE type {ace_type}"
+        if flags:
+            return f"ACE flags {flags:#x}"
+        if ace_size < 16 or offset + ace_size > size:
+            return "malformed ACL"
+        mask = int.from_bytes(dacl[offset + 4:offset + 8], "little")
+        sid = dacl[offset + 8:offset + ace_size]
+        if len(sid) < 8 or sid[0] != 1 or len(sid) != 8 + 4 * sid[1]:
+            return "malformed ACL"
+        if mask != _FILE_ALL_ACCESS:
+            return f"ACE mask {mask:#x}"
+        granted.append(sid)
+        offset += ace_size
+    if sorted(granted) != sorted([_SYSTEM_SID, bytes(user_sid)]):
+        return "ACE trustees are not SYSTEM and the current user"
+    return None
+
+
+def _descriptor_dacl_problem(security, descriptor, dacl, user_sid):
+    """Read a security descriptor's control bits and DACL bytes, then apply the policy."""
+    control, revision = wintypes.WORD(), wintypes.DWORD()
+    _require(security.GetSecurityDescriptorControl(descriptor, ctypes.byref(control), ctypes.byref(revision)))
+    acl = None
+    if dacl.value:
+        acl = ctypes.string_at(dacl.value, int.from_bytes(ctypes.string_at(dacl.value, 4)[2:4], "little"))
+    return _private_dacl_problem(control.value, acl, user_sid)
+
+
 class PrivateSecurity:
     def __init__(self):
         self.kernel, self.security = _apis()
-        sid = _current_sid(self.kernel, self.security)
+        sid, self.sid_bytes = _current_sid(self.kernel, self.security)
         self.sid = sid
         self.sddl = f"D:P(A;;FA;;;SY)(A;;FA;;;{sid})"
         self.descriptor = ctypes.c_void_p()
@@ -102,21 +171,19 @@ class PrivateSecurity:
     def verify(self, handle):
         descriptor = ctypes.c_void_p()
         owner = ctypes.c_void_p()
-        result = self.security.GetSecurityInfo(handle, 1, 5, ctypes.byref(owner), None, None, None, ctypes.byref(descriptor))
+        dacl = ctypes.c_void_p()
+        result = self.security.GetSecurityInfo(handle, 1, 5, ctypes.byref(owner), None, ctypes.byref(dacl), None, ctypes.byref(descriptor))
         if result:
             raise ctypes.WinError(result)
-        rendered = wintypes.LPWSTR()
         owner_sid = wintypes.LPWSTR()
         try:
             _require(self.security.ConvertSidToStringSidW(owner, ctypes.byref(owner_sid)))
             if owner_sid.value not in {self.sid, "S-1-5-18"}:
                 raise PermissionError("Storage owner is not the current user or SYSTEM")
-            _require(self.security.ConvertSecurityDescriptorToStringSecurityDescriptorW(descriptor, 1, 4, ctypes.byref(rendered), None))
-            if rendered.value != self.sddl:
-                raise PermissionError("Storage ACL is not protected current-user and SYSTEM only")
+            problem = _descriptor_dacl_problem(self.security, descriptor, dacl, self.sid_bytes)
+            if problem is not None:
+                raise PermissionError(f"Storage ACL is not protected current-user and SYSTEM only ({problem})")
         finally:
-            if rendered:
-                self.kernel.LocalFree(rendered)
             if owner_sid:
                 self.kernel.LocalFree(owner_sid)
             self.kernel.LocalFree(descriptor)
