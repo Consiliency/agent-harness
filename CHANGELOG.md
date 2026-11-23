@@ -12,6 +12,20 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   and reap retain an allocation while cleanup evidence is unresolved. Trusted scheduler
   calls can pass an immutable lane context through the launch service.
 
+- JEVHOST SL-7: the runner uses the host integration seam
+  (`plans/amendments/jevhost-JEVHOST-host-gaps.md`, GAPS §3.1 and §3.5). The main,
+  delegated and lane request sites build through `build_host_request`, so an integration
+  that replaces an operator or policy override is refused before the builder or launcher
+  runs. After an entered launch, one `_report_acceptance` helper sends the verdict to an
+  `AcceptanceObserver`:
+  - the launcher's own failure is `infrastructure`: a nonzero exit (kept even when a
+    trusted closeout normalizes it), or an unavailable, stalled or timed-out run;
+  - a zero exit whose output the runner rejects is `quality`: a fail-closed verification
+    (which wins over a later `complete` closeout), a closeout gate, a Tier 3 audit, a
+    missing or unparseable closeout, or an empty host log;
+  - success is `passed`;
+  - reduction blockers, child-reported blockers and host-side failures (a malformed audit
+    config, an unavailable BAML evaluator, an interrupt, a missing host log) report nothing.
 - LANEEXEC SL-3: `phase_loop_runtime.launch_service` adds `build_launch_service` and
   `LaunchService.prepare`, `status` and `cancel` (`plans/phase-plan-v13-LANEEXEC.md`,
   binding §7 E3-3). The function stores the captured client configuration and the seams the
@@ -139,6 +153,34 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `built`.
 
 ### Fixed
+
+- A long `TMPDIR` no longer fails a brokered review leg with the opaque "unknown failure;
+  CLI output not retained" (agent-harness#2131). The broker's private 0700 socket root is
+  now created under the first safe, short base: a private `$XDG_RUNTIME_DIR`, else the temp
+  dir, else a root-owned sticky `/tmp`. A base qualifies only when its path has no link, no
+  `..` step and no part another account can replace, and when the socket pathname, measured exactly as
+  it is bound, fits Linux's 107-byte AF_UNIX limit. When no base qualifies, the leg is
+  refused before any staging setup with the typed notice `seat_broker_socket_path_too_long`,
+  whose fix names the 56-byte limit for `TMPDIR` or `XDG_RUNTIME_DIR`. The standalone
+  `advisor-board` now hands `invoke_board` a failure-log-only directory (the new
+  `leg_log_dir`, which writes no verdict, seat-mode or monitoring file). It keeps only the
+  redacted, capped leg logs the board output names, in a private 0700 run under the
+  operator's state dir, reached without following links, and removes a run with none.
+  At most 20 runs, none older than 14 days, are kept, ranked by completion under one lock
+  on their parent, and a run still in progress is never removed. When that directory or
+  its lock is unavailable, the board runs without retention. The president tier keeps
+  its own stream directory unchanged.
+- Seat legs (agent-harness#2139): when a leg fails before any model turn, the host auth probe
+  now runs with the caller's host environment, not the environment recorded for a jailed
+  launch, whose paths exist only inside the jail. A jailed Claude leg whose in-jail login
+  check passed keeps that auth state, and no host probe runs for it. A host sign-out alone no
+  longer turns a jailed TUI failure into a rejected credential. A seat credential the CLI
+  rejected in a session it ended itself is reported as `claude_seat_token_rejected` or
+  `claude_seat_login_rejected`, as both the detail and the notice, with that credential's
+  fix rather than the host-login guidance. An auth outcome
+  (`leg_auth_signed_out`, `leg_auth_unavailable`) no longer replaces a leg's own typed failure
+  detail, such as a `claude_tui_*` code, judged by the same rules as a stored leg detail; a
+  leg with no typed detail still maps to it.
 
 - The last eleven JEV Drill companion failures on the Windows legs (second follow-up to
   agent-harness#2092; POSIX behaviour is unchanged):
