@@ -15232,7 +15232,7 @@
           "sha256": "1cea960ddd28ef5e1c4bf79083fa9f9938b2c99c2e29dbd937864944ca76d7e8"
         },
         "plans/artifacts/v13-LANEEXEC-landed-binding.md": {
-          "sha256": "7ba2e8adbf4bbe667ed06f39ab555a8836fffde3b9833e87c43e8104f454ae85"
+          "sha256": "6613e25f90fb85bce1731a68d27ede3d8473c13851196c7463342b35c2b650e8"
         },
         "plans/artifacts/v12-v13-replan-ownership.md": {
           "sha256": "e5dbbfb45c23cbb6acb9756a23a3d86b62dd5b172b94d6a495ef436d189f3e06"
@@ -15242,6 +15242,9 @@
         },
         "plans/artifacts/v13-PLACECLI-landed-binding.md": {
           "sha256": "64cd6c576530ac9af0fe72fa521286e0643425beb0d11045257b0b1fac45da51"
+        },
+        "plans/artifacts/v13-LANEEXEC-errata-5-resolutions.md": {
+          "sha256": "e62870d8c1683773b501bf62f9e91ea6c934b9ec825a8d356636b471c8021778"
         }
       },
       "gate_status": "declared_not_produced",
@@ -15370,6 +15373,39 @@
               "round": 1,
               "verdict": "REVISE",
               "edits": "applied"
+            }
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-11-23T21:10:00Z",
+          "by": "codex",
+          "metadata": {
+            "amendment": {
+              "artifact_section": "plans/artifacts/v13-LANEEXEC-landed-binding.md \u00a79",
+              "baseline": "f5ffefc50ccc582eeb8fee82368599c73d4c2121",
+              "erratum": "LANEEXEC-v1-errata-5",
+              "frozen_inputs_repinned": [
+                "plans/artifacts/v13-LANEEXEC-landed-binding.md",
+                "plans/artifacts/v13-LANEEXEC-errata-5-resolutions.md"
+              ],
+              "wire_bytes_changed": false
+            },
+            "remaining_gate": "separate execution authority; authoritative positive evidence per \u00a79",
+            "review": {
+              "pr": "agent-harness#2147",
+              "round": 2,
+              "reviewed_head": "e142c0d22a80bdab15d565876b17c22ffe7cb72b",
+              "verdict": "REVISE (narrow)",
+              "edits": "N1\u2013N4 applied for coordinator verification",
+              "plan_sha256": "7234c8c545246a863f98e23f5057f0777cd2030435999d998d566cda60506863",
+              "previous_round": {
+                "pr": "agent-harness#2147",
+                "round": 1,
+                "reviewed_head": "195182ec0f54c1634d275a9cf5b3ca19746b76ce",
+                "verdict": "REVISE",
+                "edits": "F1\u2013F12 applied for independent re-check"
+              }
             }
           },
           "transition": "committed"

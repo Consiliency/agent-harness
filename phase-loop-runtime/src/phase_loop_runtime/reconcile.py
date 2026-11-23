@@ -33,6 +33,10 @@ RECONCILE_EVENT_STATUSES = {
     "unplanned",
 }
 
+# Diagnostic-only ledger actions: they record that something happened and carry no phase
+# state, so reconciliation and its latest-event recovery scans never read them.
+DIAGNOSTIC_EVENT_ACTIONS = frozenset({"jevdrill_acceptance_hook_failed"})
+
 
 def _reconcile_timestamp(repo: Path, roadmap: Path, *, read_only: bool) -> str:
     """Keep a read-only reconciliation a pure observation of repo-owned inputs."""
@@ -142,6 +146,8 @@ def reconcile(repo: Path, roadmap: Path, *, read_only: bool = False) -> StateSna
     latest_untrusted_terminal_event: dict[str, dict] = {}
     legacy_executor_closeout_action_warned = False
     for raw_event in read_events(repo):
+        if raw_event.get("action") in DIAGNOSTIC_EVENT_ACTIONS:
+            continue
         event = _normalize_automation_event(repo, roadmap, raw_event, current_roadmap_sha, current_phase_sha)
         event, normalized_legacy_executor_closeout = _normalize_legacy_executor_closeout_action(event)
         event_matches, event_relocated = roadmap_paths_match(event.get("repo"), event.get("roadmap"), repo, roadmap)
@@ -987,6 +993,8 @@ def _clean_manual_repair_complete_supersedes_blocker(
     complete_event: dict | None = None
     stale_blocked_after_complete = False
     for raw_event in read_events(repo):
+        if raw_event.get("action") in DIAGNOSTIC_EVENT_ACTIONS:
+            continue
         event = _normalize_automation_event(repo, roadmap, raw_event, current_roadmap_sha, current_phase_sha)
         if not roadmap_paths_match(event.get("repo"), event.get("roadmap"), repo, roadmap)[0]:
             continue
@@ -1027,6 +1035,8 @@ def _clean_verified_dirty_closeout_recovery_supersedes_blocker(
         return None
     latest_event: dict | None = None
     for raw_event in read_events(repo):
+        if raw_event.get("action") in DIAGNOSTIC_EVENT_ACTIONS:
+            continue
         event = _normalize_automation_event(repo, roadmap, raw_event, current_roadmap_sha, current_phase_sha)
         if not roadmap_paths_match(event.get("repo"), event.get("roadmap"), repo, roadmap)[0]:
             continue
