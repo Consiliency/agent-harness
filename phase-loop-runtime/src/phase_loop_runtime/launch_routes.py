@@ -911,11 +911,13 @@ def static_route_refusal(settings: LaunchSettings, *, client: str, workload: str
 
 
 def activation_refusal(settings: LaunchSettings, *, workload: str, target_kind: str) -> str | None:
-    """Check the captured settings for a statically valid route at the activation step.
+    """Check that the captured client owns the workload and has opted into the route.
 
     OpenShell targets also require the launch entry point's
     ``sandbox_placement.openshell_launch_refusal`` check before this settings check (§9).
     """
+    if (settings.client, workload) not in _CLIENT_ROUTES:
+        return _REFUSED
     governed = ROUTE_TABLE.get((workload, target_kind))
     if governed == "lane_placement":
         return None if settings.lane_placement == "enabled" else _ROUTE_DISABLED
