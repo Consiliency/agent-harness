@@ -1,0 +1,80 @@
+{
+  "$comment": "Canonical git_overlay fixtures (LANEEXEC C3). Each case starts from the base repository (one commit, bin/run.sh executable) and applies ops; overlay_bytes is the literal UTF-8 RFC 8785 overlay array.",
+  "base": {
+    "README.md": [
+      "file",
+      "hello\n"
+    ],
+    "bin/run.sh": [
+      "file",
+      "#!/bin/sh\necho run\n"
+    ],
+    "link": [
+      "symlink",
+      "src/a.txt"
+    ],
+    "src/a.txt": [
+      "file",
+      "alpha\n"
+    ]
+  },
+  "base_executable": [
+    "bin/run.sh"
+  ],
+  "cases": {
+    "addition": {
+      "ops": [
+        [
+          "write",
+          "src/new.txt",
+          "new file\n"
+        ]
+      ],
+      "overlay_bytes": "[[\"src/new.txt\",\"file\",\"0f15384d18789b1ebf3043dc7b6bc27273c8576373fbeb6f3e15854b588141c0\"]]",
+      "overlay_sha256": "c617a5a703ecf2198d7de62ced7bb0edf69518a7328ad7d3a54f9425d4e9842b"
+    },
+    "deletion": {
+      "ops": [
+        [
+          "delete",
+          "README.md"
+        ]
+      ],
+      "overlay_bytes": "[[\"README.md\",\"deleted\",null]]",
+      "overlay_sha256": "f43e3afff7e31a301945d8537b60b5981f2a4bd6758eed62c0c5cd02b91357c1"
+    },
+    "executable_bit": {
+      "ops": [
+        [
+          "chmod",
+          "src/a.txt",
+          493
+        ]
+      ],
+      "overlay_bytes": "[[\"src/a.txt\",\"executable_file\",\"b6a98d9ce9a2d9149288fa3df42d377c3e42737afdcdaf714e33c0a100b51060\"]]",
+      "overlay_sha256": "aff278d2bd0e3c3e3014b110000725da4eb9b94459dc50b01b0399deaee4f8bc"
+    },
+    "modification": {
+      "ops": [
+        [
+          "write",
+          "src/a.txt",
+          "alpha changed\n"
+        ]
+      ],
+      "overlay_bytes": "[[\"src/a.txt\",\"file\",\"f05f6f5ba8b533b43627574e5fb399e547d32884ca9a563acc29a8a9cf601273\"]]",
+      "overlay_sha256": "ba03528ece56ba35ffac5283ed5f1e3203c5e66b94531ee12fcffaab7207e0c4"
+    },
+    "tracked_symlink": {
+      "ops": [
+        [
+          "symlink",
+          "link",
+          "README.md"
+        ]
+      ],
+      "overlay_bytes": "[[\"link\",\"symlink\",\"b335630551682c19a781afebcf4d07bf978fb1f8ac04c6bf87428ed5106870f5\"]]",
+      "overlay_sha256": "73b62953a8a63e1c35d2938e56101fc38be6ced982295b6cc567d80c8bbe4b5c"
+    }
+  }
+}

@@ -8,6 +8,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
+- LANEEXEC SL-1: `phase_loop_runtime.launch_snapshot` builds LaneExec snapshots and seed
+  sets (`plans/phase-plan-v13-LANEEXEC.md`, launch protocol v1 `x-snapshot` and `x-seed`).
+  `build_snapshot` copies a source tree into a new private execution tree in `git`,
+  `git_overlay` or `full` mode. It returns a `SnapshotHandle` with the tree manifest,
+  inventory, masks, overlay digests, descriptor bytes and `SnapshotEvidence`. Git runs only
+  against a private reader repository with a sanitized environment, and source files are
+  read through no-follow descriptors. `build_seed` verifies a declared seed manifest and
+  captures only its declared entries into a private staging directory. The returned
+  `SeedHandle` provides the `config` reference, `recheck`, image-link checks and
+  provisioning of `scratch/`. Nothing calls these builders yet; the launch service (SL-3)
+  will. Each refusal carries one closed `snapshot_reason` or `seed_reason`.
 - LANEEXEC SL-0: the placement launch protocol v1 (`plans/phase-plan-v13-LANEEXEC.md`) ships
   as package data at `phase_loop_runtime/contracts/placement/launch-v1.schema.json`, byte
   for byte the frozen artifact `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`
