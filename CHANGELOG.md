@@ -20,9 +20,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   launch-order lane, imported at call time. `PlacementLifecycle` gains the LaneExec hooks:
   the prepare record, the exec claim's compare-and-set and rollback, and the local
   heartbeat. Release cancels a live attempt before teardown and answers `cleanup_pending`
-  while it is not terminal. Reap settles an attempt only when its owner is verifiably gone,
-  and both remove a run's allocations. Nothing calls the service yet, and every route stays
-  disabled under shipped defaults.
+  while it is not terminal. Reap settles an attempt only when its owner has verifiably
+  exited or been replaced. Both remove a run's execution allocations, including a run that
+  an interrupted prepare left unused. Retained returns live outside them and outlive
+  release until the reservation's tombstone expires. Nothing calls the service yet, and
+  every route stays disabled under shipped defaults.
 - JEVHOST SL-6: `phase_loop_runtime.host_integration`, the host-neutral integration seam
   (`plans/amendments/jevhost-JEVHOST-host-gaps.md`, IF-0-JEVHOST-5, GAPS §2). It provides
   `RetryBudget` (remaining attempts and floor-millisecond time, exhaustion, tighten-only),

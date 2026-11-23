@@ -11,6 +11,7 @@ The local end-to-end supervisor and capped-parent evidence belong to SL-8.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -22,6 +23,7 @@ import pytest
 from phase_loop_runtime import launch_process_contract as launch
 from phase_loop_runtime import launch_service
 from phase_loop_runtime import placement_process_contract as contract
+from phase_loop_runtime import run_status
 from phase_loop_runtime import sandbox_placement as sp
 from phase_loop_runtime import seat_resource_caps
 
@@ -507,3 +509,115 @@ def test_reap_examines_only_the_selected_inventory(env):
     assert records(env, "prepare") == []
     assert records(env, "prepare", "agent-harness") == [f"{harness['reservation_id']}.json"]
     assert len(records(env, "runs", "agent-harness")) == 1
+
+
+# -- an interrupted publication keeps the unused run owned ------------------------------------
+
+def _interrupt_publication(monkeypatch, lifecycle):
+    real = lifecycle._launch_write
+
+    def write(name, key, value):
+        if name == "prepare":
+            raise OSError("injected")
+        return real(name, key, value)
+
+    monkeypatch.setattr(lifecycle, "_launch_write", write)
+    return real
+
+
+@pytest.mark.parametrize("end", ["release", "reap"])
+def test_an_interrupted_publication_hands_its_run_to_cleanup_when_another_wins(env, monkeypatch, end):
+    lifecycle = env.lifecycle()
+    service = env.service(lifecycle=lifecycle)
+    reservation = env.reserve()
+    real = _interrupt_publication(monkeypatch, lifecycle)
+    with pytest.raises(sp.LifecycleError):
+        prepare(service, reservation, "prep-a")
+    monkeypatch.setattr(lifecycle, "_launch_write", real)
+    [loser] = records(env, "runs")
+    winner, _raw, code = prepare(service, reservation, "prep-b")
+    assert code == 0 and winner.paths.run_id != loser
+    replay, _raw, code = prepare(service, reservation, "prep-a")
+    assert code == 0 and replay.paths == winner.paths
+    assert records(env, "cleanup") == [f"{loser}.json"]
+    assert sorted(records(env, "runs")) == sorted([loser, winner.paths.run_id])
+    if end == "release":
+        assert env.release(reservation)[1] == 0
+    else:
+        env.clock.now += 600
+        env.reap()
+    assert records(env, "runs") == [] and records(env, "cleanup") == []
+
+
+# -- the production owner classifier needs affirmative evidence -----------------------------
+
+def test_an_unreadable_identity_of_a_live_owner_is_unverified_and_reap_keeps_everything(
+        env, prepared, monkeypatch):
+    _lifecycle, _service, reservation, response, _raw, run_dir = prepared
+    landed = env.lifecycle(launch_owner=None)
+    journal_launch(landed, reservation, "launch-1", response.paths)
+    claim = landed.launch_claim_record(reservation["reservation_id"])
+    assert claim["owner"]["pid"] == os.getpid()
+    monkeypatch.setattr(run_status, "process_start_identity", lambda pid: None)
+    assert landed.launch_owner(claim) == "unverified"
+    env.clock.now += 600
+    body = {"schema": "placement.reap.request.v1", "request_id": "reap-x", "scope": "caller_inventory",
+            "deadline_ms": 2000, "max_items": 100, "caller_context": {}}
+    reaped = landed.reap(contract.decode_request("reap", json.dumps(body).encode()),
+                         cancelled=threading.Event())
+    assert (reaped.state, reaped.inventory.pending) == ("cleanup_pending", 1)
+    assert env.cancels == [] and run_dir.is_dir()
+    assert len(list((env.state / "local-slots").glob("*.json"))) == 1
+
+
+def test_a_pid_that_no_longer_exists_is_gone(env, prepared, monkeypatch):
+    lifecycle = env.lifecycle(launch_owner=None)
+    monkeypatch.setattr(run_status, "process_start_identity", lambda pid: None)
+    pid_max = int(Path("/proc/sys/kernel/pid_max").read_text())
+    absent = next(pid for pid in range(pid_max - 1, 1, -1) if not Path(f"/proc/{pid}").exists())
+    claim = {"owner": {"pid": absent, "start": "linux-proc:x:1"}}
+    assert lifecycle.launch_owner(claim) == "gone"
+
+
+# -- retained returns outlive release -------------------------------------------------------
+
+def test_a_retained_return_outlives_release_and_is_pruned_after_the_tombstone(env, prepared):
+    lifecycle, service, reservation, response, _raw, run_dir = prepared
+    rid, paths = reservation["reservation_id"], response.paths
+    journal_launch(lifecycle, reservation, "launch-1", paths)
+    directory = lifecycle.launch_return_dir(rid, paths.run_id)
+    directory.mkdir(parents=True, mode=0o700)
+    data = b'{"ok":true}'
+    returned = directory / "result.json"
+    returned.write_bytes(data)
+    os.chmod(returned, 0o600)
+    descriptor = launch.ReturnDescriptor("result", "json_object", str(returned),
+                                         hashlib.sha256(data).hexdigest(),
+                                         len(data), None)
+    terminal = launch.LaunchResponse(
+        "launch-1", rid, paths.run_id, "finished", None, None, None, None,
+        launch.Termination("completed", None, "worker"), 1, HEX, paths.scratch_path,
+        paths.tree_path, descriptor, _evidence(), {})
+    lifecycle.write_launch_terminal("launch-1", terminal)
+    assert env.release(reservation)[1] == 0
+    assert not run_dir.exists()
+    assert returned.read_bytes() == data
+    body = {"schema": "placement.launch.status.request.v1", "request_id": "st-1",
+            "reservation_id": rid, "launch_request_id": "launch-1", "caller_context": {}}
+    status = service.status(launch.decode_launch_request("status", json.dumps(body).encode()))
+    assert status.launch.return_ == descriptor and Path(status.launch.return_.path).read_bytes() == data
+    env.reap()
+    assert returned.exists()  # the tombstone still answers
+    env.clock.now += sp.TOMBSTONE_RETENTION_S
+    env.reap()
+    assert not directory.exists()
+
+
+def _evidence():
+    from phase_loop_runtime.launch_return import build_launch_evidence
+
+    return build_launch_evidence(
+        snapshot=None, launch_digest=HEX, template_sha256=HEX, image_digest=DIGEST,
+        policy_digest=DIGEST, egress_sha256=DIGEST, transport_id="local", caps_sha256=HEX,
+        bridge_attached=False, stdout_sha256=None, stderr_sha256=None, exit_status=0,
+        duration_ms=5, renewals=0)

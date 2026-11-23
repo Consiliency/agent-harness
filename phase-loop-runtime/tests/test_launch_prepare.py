@@ -563,6 +563,44 @@ def test_an_unreadable_caps_record_refuses_prepare_and_status_and_cancel_keep_wo
     assert cancel(service, reservation, "launch-1").state == "cancelled"
 
 
+def test_an_unsettled_replay_after_caps_become_unreadable_refuses_before_any_reservation_read(
+        env, short_waits):
+    service = env.service()
+    reservation = env.reserve()
+    fd = hold_lock(env, reservation)
+    try:
+        assert prepare(service, reservation)[2] == 20  # the lock wait: unsettled
+    finally:
+        os.close(fd)
+    # Releasing first means a reservation read would answer reservation_unknown.
+    assert env.release(reservation)[1] == 0
+    env.caps_error = True
+    response, raw, code = prepare(service, reservation)
+    assert (code, response.state, response.paths) == (10, "refused", None)
+    assert response.code == sp.PREPARE_CAPS_UNREADABLE_CODE == "sandbox_launch_refused"
+    assert records(env, "runs") == [] and records(env, "prepare") == []
+    assert records(env, "cleanup") == []
+    env.caps_error = False
+    assert prepare(service, reservation)[1] == raw
+
+
+def test_an_unsettled_replay_refused_for_caps_keeps_its_planned_run_owned(env):
+    reservation = env.reserve()
+    fresh = iter(f"{n:032x}" for n in range(0xc00, 0xd00))
+    service = env.service(lifecycle=env.lifecycle(new_id=lambda: next(fresh)))
+    planned = f"run-{0xc00:032x}"
+    _block_run_dir(env, planned)
+    with pytest.raises(sp.LifecycleError):
+        prepare(service, reservation)
+    (env.launch_root() / "runs" / planned).unlink()
+    env.caps_error = True
+    response, _raw, code = prepare(service, reservation)
+    assert (code, response.code) == (10, "sandbox_launch_refused")
+    entry = json.loads((env.launch_root() / "cleanup" / f"{planned}.json").read_text())
+    assert (entry["reservation_id"], entry["run_id"]) == (reservation["reservation_id"], planned)
+    assert records(env, "prepare") == []
+
+
 # -- status echo schema -------------------------------------------------------------------
 
 def _finished(reservation_id, request_id, paths):

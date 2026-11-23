@@ -2340,7 +2340,7 @@ _LAUNCH_MISMATCH = "sandbox_launch_reservation_mismatch"
 _LAUNCH_CLAIMED = "sandbox_launch_exec_claimed"
 _LAUNCH_INPUT_MISMATCH = "sandbox_launch_input_mismatch"
 _LAUNCH_DIRS = ("prepare", "prepare-requests", "claims", "launches", "cancels", "heartbeats",
-                "cleanup", "runs")
+                "cleanup", "runs", "returns")
 #: The run ids prepare assigns (they satisfy the envelope and JOURNAL identifier grammars).
 _RUN_ID = re.compile(r"run-[0-9a-f]{32}")
 #: A LaneExec journal key: a reservation id, a request id or a run id.
@@ -4001,7 +4001,11 @@ class PlacementLifecycle:
     #   signal (L-S4);
     # * ``heartbeats/<reservation_id>.json``: the last durable local heartbeat;
     # * ``cleanup/<run_id>.json``: an uncertain prepare write left for release or reap;
-    # * ``runs/<run_id>/``: the allocations a run owns, removed only through its record.
+    # * ``runs/<run_id>/``: the execution allocations a run owns, removed only through its
+    #   record;
+    # * ``returns/<reservation_id>/<run_id>/``: retained return bytes, outside ``runs/``;
+    #   they outlive release and are pruned by reap once the reservation's tombstone has
+    #   expired.
     #
     # The reservation's journal lock (``reservations/<id>.lock``) serializes prepare, the
     # launch steps through the claim, release and reap (``x-prepare.lock``).
@@ -4041,6 +4045,15 @@ class PlacementLifecycle:
             raise LifecycleError("placement_internal")
         self._launch_prepare()
         _write_journal(self._launch_dir(name) / f"{key}.json", value)
+
+    def launch_return_dir(self, reservation_id: str, run_id: str) -> Path:
+        """``returns/<reservation_id>/<run_id>``: where a run's retained return bytes live.
+        It is outside ``runs/``, so release and reap of the execution allocations never
+        remove it; it outlives release until the reservation's tombstone expires
+        (``x-release-reap.release``), when reap's sweep removes it."""
+        if not _ISSUED_RESERVATION.fullmatch(reservation_id) or not _RUN_ID.fullmatch(run_id):
+            raise LifecycleError("placement_internal")
+        return self._launch_dir("returns") / reservation_id / run_id
 
     def launch_run_dir(self, run_id: str) -> Path:
         """``runs/<run_id>``: the directory that owns a run's local allocations."""
@@ -4257,6 +4270,12 @@ class PlacementLifecycle:
                 # Step 3, then step 4: the clock is read before the journal.
                 if self._at_bound(record, self.clock()):
                     return self._settle_prepare_end_reached(record)
+                if not caps_readable:
+                    # Gated before any reservation read or allocation; a run the attempt
+                    # already planned stays owned through a cleanup entry.
+                    self._retire_planned(record, None)
+                    return self._settle_prepare(record, self._prepare_response(
+                        request, "refused", PREPARE_CAPS_UNREADABLE_CODE))
                 return self._prepare_locked(request, record)
             record = {
                 "request_id": request_id, "body_sha256": body_sha256,
@@ -4310,15 +4329,21 @@ class PlacementLifecycle:
             raise LifecycleError("placement_journal_corrupt")
         return response
 
+    def _retire_planned(self, record: Mapping[str, object], winning_run: object) -> None:
+        """Durably hand the ``run_id`` an attempt planned, when it is not the run the
+        reservation's prepare record names, to a cleanup entry for that reservation, so
+        release or reap removes its allocation. Written before the attempt settles."""
+        run_id = record.get("run_id")
+        if isinstance(run_id, str) and _RUN_ID.fullmatch(run_id) and run_id != winning_run:
+            self._launch_write("cleanup", run_id, {
+                "reservation_id": record.get("reservation_id"), "run_id": run_id,
+                "request_id": record.get("request_id"), "created_at": self.clock()})
+
     def _settle_prepare_end_reached(self, record: dict[str, object]) -> object:
         """Step 3: settle terminally (``timeout``, ``sandbox_placement_end_reached``,
         paths null, exit 20) and turn the attempt's uncertain prepare write, the
         ``run_id`` it planned, into a cleanup entry for that reservation and run id."""
-        run_id = record.get("run_id")
-        if isinstance(run_id, str) and _RUN_ID.fullmatch(run_id):
-            self._launch_write("cleanup", run_id, {
-                "reservation_id": record.get("reservation_id"), "run_id": run_id,
-                "request_id": record.get("request_id"), "created_at": self.clock()})
+        self._retire_planned(record, None)
         return self._settle_prepare(record, self._prepare_response(record, "timeout", _END_REACHED))
 
     def _launch_startup(self, deadline: "_Deadline | None",
@@ -4357,13 +4382,19 @@ class PlacementLifecycle:
                 existing = None if code is not None else self.launch_prepare_record(reservation_id)
             except (LifecycleError, OSError):
                 return self._prepare_response(request, "timeout", _TIMEOUT)
+            winning = None if existing is None else existing.get("run_id")
             if code is not None:
+                self._retire_planned(record, winning)
                 return self._settle_prepare(record, self._prepare_response(request, "refused", code))
             if claim is not None and claim.get("claimed") is not False:
+                self._retire_planned(record, winning)
                 return self._settle_prepare(record, self._prepare_response(request, "refused",
                                                                            _LAUNCH_CLAIMED))
             snapshot_root = request.snapshot_root  # type: ignore[attr-defined]
             if existing is not None:
+                # Another attempt published the reservation's run: this attempt's planned
+                # run, if any, is not it and passes to cleanup under this lock.
+                self._retire_planned(record, winning)
                 if existing.get("snapshot_root") != snapshot_root:
                     return self._settle_prepare(record, self._prepare_response(
                         request, "refused", _LAUNCH_INPUT_MISMATCH))
@@ -4371,6 +4402,7 @@ class PlacementLifecycle:
                     request, "prepared", None, existing))
             kind = ((active or {}).get("reservation") or {}).get("target", {}).get("kind")  # type: ignore[union-attr]
             if kind not in ("local", "openshell"):
+                self._retire_planned(record, None)
                 return self._settle_prepare(record, self._prepare_response(
                     request, "refused", _LAUNCH_REFUSED))
             try:
@@ -4496,7 +4528,8 @@ class PlacementLifecycle:
     def _launch_sweep(self, deadline: "_Deadline", cancelled: threading.Event | None) -> None:
         """Reap, caller-scoped: cleanup entries and prepare records of reservations this
         inventory no longer holds (no active record) are removed under that reservation's
-        lock. Launch, claim and cancel records stay for status."""
+        lock, and so are retained returns once that reservation's tombstone has expired.
+        Launch, claim and cancel records stay for status."""
         reservation_ids = {str((self._launch_read("cleanup", key) or {}).get("reservation_id"))
                            for key in self._launch_ids("cleanup")}
         reservation_ids |= set(self._launch_ids("prepare"))
@@ -4508,6 +4541,17 @@ class PlacementLifecycle:
             with self._try_lock(self._dir("reservations") / f"{reservation_id}.lock", deadline) as held:
                 if held and not os.path.lexists(self._dir("reservations") / f"{reservation_id}.json"):
                     self._remove_launch_allocations(reservation_id)
+        try:
+            retained = sorted(os.listdir(self._launch_dir("returns")))
+        except FileNotFoundError:
+            retained = []
+        for reservation_id in retained:
+            if _stopped(deadline, cancelled) or not _ISSUED_RESERVATION.fullmatch(reservation_id):
+                continue
+            with self._try_lock(self._dir("reservations") / f"{reservation_id}.lock", deadline) as held:
+                if (held and not os.path.lexists(self._dir("reservations") / f"{reservation_id}.json")
+                        and self._live_tombstone(self._dir("tombstones") / f"{reservation_id}.json") is None):
+                    _remove_tree(self._launch_dir("returns") / reservation_id)
 
 
 class _RequestEcho(NamedTuple):
@@ -4680,8 +4724,10 @@ def _own_identity() -> dict[str, object]:
 
 
 def _landed_launch_owner(claim: Mapping[str, object]) -> str:
-    """``gone`` when the claim's recorded owner process is verifiably not the same live
-    process, ``live`` when it is, ``unverified`` when the record names no owner."""
+    """Classify the claim's recorded owner process. ``gone`` needs affirmative evidence:
+    the pid no longer exists, or a readable start identity names another process.
+    ``live`` is a readable, equal identity. Everything else, an owner the record does not
+    name or an identity that cannot be read for an existing pid, is ``unverified``."""
     from . import run_status
 
     owner = claim.get("owner")
@@ -4690,7 +4736,19 @@ def _landed_launch_owner(claim: Mapping[str, object]) -> str:
     pid, start = owner.get("pid"), owner.get("start")
     if type(pid) is not int or pid < 1 or not isinstance(start, str):
         return "unverified"
-    return "live" if run_status.process_start_identity(pid) == start else "gone"
+    try:
+        identity = run_status.process_start_identity(pid)
+    except Exception:
+        identity = None
+    if identity is not None:
+        return "live" if identity == start else "gone"
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return "gone"
+    except OSError:
+        return "unverified"
+    return "unverified"
 
 
 def _landed_launch_cancel(claim: Mapping[str, object], wait_s: float) -> str:
