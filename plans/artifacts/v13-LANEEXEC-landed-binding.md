@@ -9,7 +9,7 @@ adds, removes or renames a wire member, enum value, code, verb or exit class, an
 this artifact makes no wire change of its own. Erratum LANEEXEC-v1-errata-2 (§6) is a
 plan and binding erratum only: it changes this artifact and the phase plan, never the
 wire bytes, so the toolkit does not repin. Errata LANEEXEC-v1-errata-3 (§7) and
-LANEEXEC-v1-errata-4 (§8) are likewise plan and binding errata only.
+LANEEXEC-v1-errata-4 (§8) are likewise plan and binding errata only. LANEEXEC-v1-errata-5 (§9) incorporates a frozen SL-8 resolutions artifact.
 
 Where this artifact binds an `x-*` semantic sentence of the wire artifact to the
 landed code, it says so with the sentence's member path, and this artifact governs that
@@ -29,6 +29,7 @@ outcomes the wire already expresses. A future protocol version folds them in.
 | Landed baseline re-inspected (LANEEXEC-v1-errata-2) | `origin/main` at `4dd77878afe58c429b01969c32c89b755a820002` (v0.7.40). Every `file:line` below refers to this tree. |
 | Landed baseline re-inspected (LANEEXEC-v1-errata-3) | `origin/main` at `2441fa0d695f23dccf150660d277872a93b3ea16`. The `file:line` citations of §7 refer to this tree; §2 keeps its v0.7.40 anchors. |
 | Landed baseline re-inspected (LANEEXEC-v1-errata-4) | `origin/main` at `8856634492df9dd55a6cac2dca65f48464fb9222`. §8 cites no `file:line`. |
+| Integrated SL-8 input (§9) | `origin/main` at `f5ffefc50ccc582eeb8fee82368599c73d4c2121` |
 | Pre-build sweep | Consiliency/agent-harness#1963 head `cdecd32cf9b9e33cbcf7ddf07c44b4556c6ad074`, `plans/artifacts/v13-LANEEXEC-landed-sweep.md` |
 | Upstream re-plans consumed | `plans/artifacts/v12-CLOSEOUT-landed-binding.md` (§3 C-S1, §4.1–§4.3) and `plans/artifacts/v13-PLACECLI-landed-binding.md` (§3, §4) |
 | Cross-phase ownership | `plans/artifacts/v12-v13-replan-ownership.md` |
@@ -83,7 +84,7 @@ tmpfs carve-out and its §7 (j) tests (STOP L-S3 removes the dependency); the
 | `seat_resource_caps.py:650` | `capped_popen(command, *, seat_key, before_spawn=None, **popen_kwargs)` — one capped parent per key, child-side readback, a daemon reap thread that collects the parent (`:780`–`:786`) | consume with key `laneexec:<client>:<reservation_id>` and `before_spawn` never passed, called only by the detached supervisor; any exception keeps the claim (L-S3, §6 E2-1) |
 | `sandbox_policy.py:807` | `staging_root()` = `resolve_staging().path` (`:768`), which may be RAM-backed or the `PHASE_LOOP_SANDBOX_STAGING_DIR` override | consume as the device witness for local attempt directories, never their location (L-S3, §6 E2-4) |
 | `sandbox_policy.py:1275`; `sandbox_placement.py:2675` | `placement_state_root()`; `PlacementLifecycle.inventory` = that root `/ <client>` | consume: the client's LaneExec state directory lies under `PlacementLifecycle.inventory` (§6 E2-4) |
-| `sandbox_placement.py:2530`, `:2584` | `openshell_route_state()`, `openshell_launch_refusal(config, *, workload, target_kind, providers, config_sha256, egress_sha256, route_state=None)` (agent-harness#2003) | consume (SL-8, §7 E3-3), the only openshell activation and egress check (§6 E2-2) |
+| `sandbox_placement.py:2530`, `:2584` | `openshell_route_state()`, `openshell_launch_refusal(config, *, workload, target_kind, providers, config_sha256, egress_sha256, route_state=None)` (agent-harness#2003) | consume (SL-8, §7 E3-3), the OpenShell host activation and egress check alongside the client opt-in (§6 E2-2) |
 | `seat_uid.py:490` | `trusted_module_argv(module, *args)` | consume for every helper launch |
 | `openshell_artifacts.py:72`, `:159`, `:445` | `Bound(end, cancelled)`, `safe_path(path)`, `check_binary_literals(patch, limits, bound)` | consume |
 | `openshell_worker.py:398` | `landlock_manifest(rules, uid=10001, gid=10001)` | consume |
@@ -106,7 +107,7 @@ through the v12 admission seam (supervised_launch.prepare_launch …)") binds to
 CLOSEOUT's production seam:
 
 - **Pre-claim check (rebound by LANEEXEC-v1-errata-3, §7 E3-1).** In the order position "envelope admission" (`x-launch-inputs.order`), LaunchService starts one short-lived isolated helper, `seat_uid.trusted_module_argv("phase_loop_runtime.launch_admission")`. The helper calls CLOSEOUT's `load_v2_binding`, `reconcile_v2_binding` (with this attempt's §4.2 controller document, held in memory), `activate_v2_binding`, the activated codec's `decode_v2` and `precheck_v2_admission`, then `capture_launch_v2` and `prepare_launch_v2` on the captured envelope bytes, then `discard_admission` in a `finally`. It reports only the outcome and the pinned diagnostic. A refusal is `refused`, code `sandbox_launch_admission_refused`, with that diagnostic and no claim. The `PreparedLaunch` is never consumed. The helper is not a launch-chain process and starts no target. §7 E3-1 gives the full binding.
-- **Authoritative admission.** After the claim, the supervisor publishes the per-attempt controller document, the same bytes the helper admitted, at the path CLOSEOUT binding §4.2 derives from the envelope bytes. A failed publication keeps the claim, starts nothing, and is the crash-after-claim terminal of §7 E3-1: `finished`, termination `failed_to_start`, `worker_invocations` 0. It then starts exactly one chain root, `seat_uid.trusted_module_argv("phase_loop_runtime.supervised_worker_cli", "launch", "--envelope", …, "--result", …)`, through `capped_popen` for a local target (L-S3). The CLI re-admits the same bytes, consumes once and reserves the JOURNAL attempt. A CLI refusal there, or an inner WORKER refusal after it, is a failure after the first chain process: `finished`, termination `failed_to_start`, claim kept (`x-exec.after_start`; L-S4).
+- **Authoritative admission.** After the claim, the supervisor publishes the per-attempt controller document, the same bytes the helper admitted, at the path CLOSEOUT binding §4.2 derives from the envelope bytes. A failed publication keeps the claim, starts nothing, and is the crash-after-claim terminal of §7 E3-1: `finished`, termination `failed_to_start`, `worker_invocations` 0. It then starts exactly one chain root, `seat_uid.trusted_module_argv("phase_loop_runtime.supervised_worker_cli", "launch", "--envelope", …, "--result", …)`, through `capped_popen` for a local target (L-S3). Positive CLI re-admission, consumption and JOURNAL reservation require the independently verified adapter of §9. SL-8 proves real refusal on the landed representations. A CLI refusal there, or an inner WORKER refusal after it, is a failure after the first chain process: `finished`, termination `failed_to_start`, claim kept (`x-exec.after_start`; L-S4).
 - **Status mapping.** LANEEXEC consumes CLOSEOUT's `WorkerResult`-to-v2 mapping
   (CLOSEOUT binding §4.3) and maps v2 states to the wire only through §3 L-S4.
 
@@ -143,9 +144,9 @@ attempt_id through the v12 journal") is bound to:
 - **Location.** Each local attempt's execution tree, home, out and scratch directories live under the selected client's LaneExec state directory (`x-snapshot.upload` and `x-seed.provisioning`), in a 0700 per-reservation directory whose ancestors meet `x-seed.provisioning`'s ownership rule. These are the `x-argv-templates.slots` host paths.
 - **Device rule.** At prepared-path verification (`x-launch-inputs.order`, pre-claim), each directory must have the same `st_dev` as `sandbox_policy.staging_root()`, the landed automatic path whose whole device `io_devices(load_caps())` plans. `staging_root()` is a device witness only; it never chooses a location. A tmpfs, any anonymous filesystem, or another device refuses with `sandbox_placement_capability_unmet`, zero invocations and no claim.
 - **No carve-out in v1.** `x-local-cgroup.automatic_paths`'s "including the caps contract §1a tmpfs carve-out" is read as "excluding" until SEATS ships the carve-out; adopting it later needs no wire change. `readiness_code()` still checks both landed automatic paths (`seat_resource_caps.py:250`, `:368`), so a host whose staging root or child scratch directory is tmpfs refuses at the readiness steps.
-- **Chain-start re-check.** After the claim and immediately before `capped_popen`, the supervisor repeats `readiness_code()`, the device rule, and a comparison of `caps_sha256(load_caps())` against the reservation's `seat_caps_sha256`. A failure is `x-exec.claim_rollback`'s chain-start caps re-check: nothing has started, the claim rolls back, and the code is `sandbox_placement_capability_unmet`.
+- **Chain-start re-check.** After the claim and immediately before `capped_popen`, the supervisor repeats `readiness_code()`, the device rule, and a comparison of `caps_sha256(load_caps())` against `seat_caps_sha256` from the captured configuration already matched to the reservation's config digest. A failure is `x-exec.claim_rollback`'s chain-start caps re-check: nothing has started, the claim rolls back, and the code is `sandbox_placement_capability_unmet`.
 - **`capped_popen` failures.** Any exception from `capped_popen` keeps the claim and yields `finished`, termination `failed_to_start`, code `sandbox_placement_capability_unmet` (`x-exec.claim_rollback`, "rollback is never inferred", and `x-local-cgroup.refusal`). The landed API raises one refusal for failures both before and after its helper starts (`seat_resource_caps.py:642`–`:646`, `:788`–`:797`).
-- **Capped parent.** The detached supervisor calls `capped_popen` with key `laneexec:<client>:<reservation_id>` (`x-local-cgroup.parent`); the short-lived `agent-harness-launch` process never does. The supervisor waits on the returned process for the attempt's life. The landed collection is a daemon reap thread in the supervisor's process that waits on the child and then releases the parent (`seat_resource_caps.py:780`–`:786`), so the parent is collected when the child ends while the supervisor lives (§6 E2-1). Reaping a dead supervisor's attempt relies on parent-death SIGKILL (`x-lifetime.supervisor_death`) and reports the capped parent as `cleanup_pending`. LaneExec never reconstructs a private unit or cgroup name.
+- **Capped parent.** The detached supervisor calls `capped_popen` with key `laneexec:<client>:<reservation_id>` (`x-local-cgroup.parent`); the short-lived `agent-harness-launch` process never does. The supervisor waits on the returned process for the attempt's life. The landed collection is a daemon reap thread in the supervisor's process that waits on the child and then releases the parent (`seat_resource_caps.py:780`–`:786`), so completion records a collection attempt (§6 E2-1). Verified descendant death and observed parent collection are separate positive gates (`x-lifetime.supervisor_death`). Reap records capped-parent `cleanup_pending` until collection is confirmed. LaneExec never reconstructs a private unit or cgroup name.
 - LaneExec adds no `seat_resource_caps` API and calls none of its private functions. **ACTIVATE prerequisites** (SEATS-owned, not built here):
   - an expected-digest check inside `capped_popen`, which reloads caps at `:665`;
   - typed evidence of whether a failure came before or after the helper started;
@@ -181,8 +182,8 @@ sentences `x-return.patch` and `x-return.termination` bind to:
 
 | `result_kind` | Rule |
 | --- | --- |
-| `patch` | From `WorkerResult.proposal` only. `returned` → the bytes at the proposal `locator`, verified against `proposal_bytes_digest`, written to the ReturnDescriptor file; a baseline path (`ProposalReturn.baselines[].path`) under a snapshot mask → `sandbox_launch_audit_failed`, return null. `absent` → return null. `withheld_incomplete` (every non-completed termination, cancelled and timed-out included) → return null, no extra code; the termination already says why. `withheld_oversized`, `withheld_malformed` → `sandbox_launch_result_invalid`. `withheld_audit_error`, `withheld_unexplained_change`, `withheld_evidence_error` → `sandbox_launch_audit_failed`. The worker's `proposal_cap` is set no higher than the LaneExec cap. |
-| `result` | LaneExec reads `{out}/result.json` after the worker ends, for every terminal state whose out directory is reachable. `out` lies outside the execution tree, so the worker's audit never sees it. Bounds and strict decoding as frozen; a failure is `sandbox_launch_result_invalid`. |
+| `patch` | From the verified WorkerResult handoff of §9, using `WorkerResult.proposal` only. `returned` → the bytes at the proposal `locator`, verified against `proposal_bytes_digest`, written to the ReturnDescriptor file; a baseline path (`ProposalReturn.baselines[].path`) under a snapshot mask → `sandbox_launch_audit_failed`, return null. `absent` → return null. `withheld_incomplete` (every non-completed termination, cancelled and timed-out included) → return null, no extra code; the termination already says why. `withheld_oversized`, `withheld_malformed` → `sandbox_launch_result_invalid`. `withheld_audit_error`, `withheld_unexplained_change`, `withheld_evidence_error` → `sandbox_launch_audit_failed`. The trusted worker adapter binds the positive proposal cap. Zero disables delivery (§9). |
+| `result` | LaneExec reads `{out}/result.json` after the worker ends, for every terminal state whose out directory is reachable. `out` lies outside the execution tree, so the worker's audit never sees it. Read at most the smaller of the captured return cap and the frozen result ceiling, plus one oversize sentinel byte. Zero withholds before opening the file. Strict decoding applies; a failure is `sandbox_launch_result_invalid`. |
 | `none` | Return null. |
 
 "Return runs for every terminal state" holds as: the return step runs and yields
@@ -220,7 +221,7 @@ The route key for a qualification record is CLOSEOUT's complete public route key
 (tier `provider_readonly_patch_return_audit`, action, transport, ordered
 executable chain, template and qualification digests). LaneExec ships no record.
 Tests construct records only at the trusted-file seam of a temporary operator
-configuration, never in shipped configuration or a controller document. A local review seat never
+configuration. The controller echoes the independently resolved list solely for reconciliation (§9). A local review seat never
 launches through LaneExec, so the jailed seat path and its profiles stay the only
 local seat route; LaneExec never calls `seat_jail` or the jailed Codex route.
 
@@ -294,7 +295,7 @@ the parent (`:780`–`:786`). Every refusal still raises one `SeatSandboxRefused
 **Rebinding of L-S3 "Capped parent".**
 
 - The supervisor waits on the returned process for the attempt's life.
-- While the supervisor lives, its reap thread collects the parent when the child ends.
+- While the supervisor lives, its reap thread attempts collection when the child ends. Without positive confirmation the supervisor records cleanup_pending.
 - The thread is a daemon, so it would die with an exiting supervisor before it released
   the parent. After `wait()` returns, the supervisor therefore stays alive until every
   thread in `threading.enumerate()` that was not present immediately before its
@@ -314,7 +315,7 @@ the parent (`:780`–`:786`). Every refusal still raises one `SeatSandboxRefused
 - A supervisor whose child has ended does not exit while the reap thread runs. A
   mutation that exits immediately after `wait()` fails.
 - A supervisor that runs its own long-lived thread, started before `capped_popen`, still
-  exits promptly once the reap thread ends, and records no `cleanup_pending`.
+  exits promptly once the reap thread ends, and clears capped-parent debt only on independently confirmed collection.
 
 ### E2-2 — SL-3 zero-egress amendment (agent-harness#2003; launch owner SL-8 since §7 E3-3)
 
@@ -339,11 +340,11 @@ made here and tracked by agent-harness#2104.
 - **When the check runs.** At the order position "activation" (`x-launch-inputs.order`),
   for every openshell target, `LaunchService` calls
   `sandbox_placement.openshell_launch_refusal(config, workload=…, target_kind="openshell",
-  providers=…, config_sha256=…, egress_sha256=…)`.
+  providers=…, config_sha256=…, egress_sha256=…, route_state=service.route_state)`.
 - **What it is called with.** `config` is the effective configuration whose bytes
   `x-launch-inputs.config_binding` captured for this launch. The other values are the
   reservation's.
-- **The only openshell check.** This call is the single implementation of the three
+- **Host activation and egress.** On success SL-8 separately applies the captured client route opt-in (§9). This call implements the host
   conditions of `x-activation.remote` and of the link-only provider rule. LaneExec never
   re-derives the route state, never calls `openshell_route_state` directly, and never
   inspects provider endpoints itself.
@@ -611,11 +612,9 @@ takes no lock and is not started through `capped_popen`.
 
 - LaunchService builds this attempt's CLOSEOUT §4.2 controller document once per launch
   request, before the helper starts. Its four members `h`, `attempt`, `context` and `slots`
-  come from the captured envelope bytes (`h` is their SHA-256), the prepare record
-  (`assignment_digest`, `run_id`, `attempt_id`), the captured configuration and the prepared
-  paths. It is serialized once, as `supervised_envelope_v2.canonicalize_v2` of that
+  come from the captured envelope bytes (`h` is their SHA-256), the §9 assignment derivation, prepared run identity and independently managed context and allowed slots. It is serialized once, as `supervised_envelope_v2.canonicalize_v2` of that
   document. The identical bytes go to the helper before the claim and to the supervisor
-  after it. Nothing re-derives them.
+  before provisioning for publication only after claim. Nothing re-derives them.
 - The helper's stdin carries one frame and is then closed: an 8-byte big-endian length and
   the envelope bytes, then an 8-byte big-endian length and the controller bytes. Each part is
   at most 1048576 bytes, the CLI's envelope cap and `read_controller_snapshot`'s cap. A short
@@ -628,8 +627,7 @@ takes no lock and is not started through `capped_popen`.
 launch process over its own stdin pipe, bounded by the same cap. Before opening the destination, the supervisor compares the full stdin payload's SHA-256 against the digest of the controller bytes sent to the helper, carried separately in the trusted supervisor launch arguments. Missing, short, oversized or mismatched payloads fail publication. The digest stays in the private supervisor invocation; the CLOSEOUT CLI and its arguments stay as landed. It publishes them under
 CLOSEOUT §4.2's rules: the path `<controller_root>/<h>.json`, ancestors and ownership as
 §4.2 and `read_controller_snapshot` require, mode 0600, created once with `O_EXCL |
-O_NOFOLLOW`, written in full and fsynced. An existing document is reused only when a
-complete read of it equals these bytes. A short, truncated or longer file is unequal. If any
+O_NOFOLLOW`, written in full and fsynced with its parent. Reuse requires every trusted reader check including single link, exclusions, owner, mode and regular file, and a complete bounded read equal to these bytes. A short, truncated or longer file is unequal. If any
 step fails after the exclusive create, the supervisor unlinks the file it created (matched
 by device and inode), so a partial write can never be taken for an equal existing document.
 
@@ -752,7 +750,7 @@ start.
   - a pinned prefix refusal with a capture that would also fail, giving that refusal;
   - a refusal that only a fixture codec's `precheck_v2_admission` raises, giving its
     diagnostic.
-- `discard_admission` runs on every helper path, and the capture is closed on a refusal.
+- `discard_admission` runs once on each path owning a prepared token. Close an acquired capture on refusal if the token did not take ownership.
 - The helper never creates or modifies `<controller_root>/<h>.json`. This includes the
   case where a file with equal trusted bytes is already there, which keeps its inode, bytes
   and mtime.
@@ -797,7 +795,7 @@ defines it in `launch_settings.py` as a strict, closed decoder:
   configuration invalid, as PLACECLI treats an invalid client configuration.
 - Operators may only lower the frozen limits and budgets.
 
-SL-4, SL-5 and SL-8 read settings only through this decoder. SL-6 documents the shape in
+SL-4, SL-5 and SL-8 read settings only through this decoder. SL-8 uses only landed workload-mode defaults (§9). SL-6 documents the shape in
 `docs/placement-launch-service.md`.
 
 
@@ -813,7 +811,7 @@ crossed Pi pair refusal SL-0 leaves to the binding step, now belongs to SL-8.
 | --- | --- | --- | --- |
 | SL-3a | SL-3 | `build_launch_service` and its seams; prepare, status, cancel; the lifecycle hooks: prepare record, claim compare-and-set and rollback, local heartbeat write, release, cancel and reap state transitions on journaled records, verified-owner handling | `src/phase_loop_runtime/launch_service.py`, `src/phase_loop_runtime/sandbox_placement.py`, `tests/test_launch_prepare.py`, `tests/test_launch_release_reap.py`, `tests/test_sandbox_placement.py` |
 | SL-3b | SL-7 | the pure route mapping, templates, registration, and the `launch` settings decoder (E3-2) | `src/phase_loop_runtime/launch_routes.py`, `src/phase_loop_runtime/launch_settings.py`, `tests/test_launch_routes.py` |
-| SL-3c | SL-8 | the common launch order through the claim on both routes, including pre-claim scratch staging, activation and the lifetime gate; the isolated admission helper (E3-1); the detached supervisor with local caps, local lifetime and the local route | `src/phase_loop_runtime/launch_exec.py`, `src/phase_loop_runtime/launch_admission.py`, `src/phase_loop_runtime/launch_supervisor.py`, `src/phase_loop_runtime/launch_lifetime.py`, `tests/test_launch_service.py`, `tests/test_launch_admission.py`, `tests/test_launch_local_caps.py`, `tests/test_launch_lifetime.py`, `.github/workflows/laneexec-mounts.yml` (E3-4) |
+| SL-3c | SL-8 | the common launch order through the claim on both routes, including pre-claim scratch staging, activation and the lifetime gate; the isolated admission helper (E3-1); the detached supervisor with local caps, local lifetime and the local route | `src/phase_loop_runtime/launch_exec.py`, `src/phase_loop_runtime/launch_admission.py`, `src/phase_loop_runtime/launch_supervisor.py`, `src/phase_loop_runtime/launch_lifetime.py`, `tests/test_launch_service.py`, `tests/test_launch_admission.py`, `tests/test_launch_local_caps.py`, `tests/test_launch_lifetime.py`, `.github/workflows/laneexec-mounts.yml` (E3-4); §9 assigns extensions of landed modules to their producer lanes |
 | SL-3d | SL-9 | the openshell route after the claim, against the fake coordinator: storage and provisioning of the staged payload, the coordinator exec, bridge attach and loss, coordinator renewal, expiry and `lifetime_exceeded` | `src/phase_loop_runtime/launch_openshell.py`, `src/phase_loop_runtime/placement_lease.py`, `src/phase_loop_runtime/openshell_backend.py`, `tests/test_launch_openshell.py`, `tests/test_placement_lease.py`, `tests/test_openshell_backend.py` |
 
 Owned files are disjoint. Each test file belongs to the lane in its row, and V3a to V3d run
@@ -844,8 +842,7 @@ exactly those files.
   both routes. They belong to SL-8.
 - The local supervisor cannot run without renewal (`x-lifetime.liveness`: a local
   heartbeat is the durable journal and slot write). So the renewal clock, fencing, local
-  renewal, local lifetime exhaustion and local supervisor death belong to SL-8 (V3c). The
-  durable write itself is SL-3's hook.
+  renewal, local lifetime exhaustion and local supervisor death belong to SL-8 (V3c). An SL-3a precursor extends its durable write with the bounded confirmation and fence in §9.
 - Coordinator renewal, its reply faults, coordinator expiry and `lifetime_exceeded`, remote
   supervisor death and remote non-overlap belong to SL-9 (V3d).
 
@@ -860,7 +857,7 @@ captured configuration, so it belongs to SL-8:
 **The staging seam between SL-8 and SL-9.**
 
 - SL-8 owns common pre-claim scratch staging on both routes. After the claim it passes the
-  immutable staged payload to SL-9's late-bound openshell entry.
+  immutable staged payload and retained return path to SL-9's late-bound openshell entry, under the generation and lease protocol of §9.
 - SL-9 owns what remote storage and provisioning return:
   - the confirmed-empty scratch provisioning result, with `scratch_unprovisioned`;
   - its rollback and relaunch;
@@ -872,7 +869,7 @@ captured configuration, so it belongs to SL-8:
 
 **Seams between the lanes.**
 
-- `build_launch_service` (SL-3) declares every injection seam the later lanes use. The
+- `build_launch_service` (SL-3) provides caller-side seams. The detached entry reconstructs trusted defaults and the core accepts explicit in-process test effects (§9). The
   defaults are the landed functions. The seams are:
   - `capped_popen`, `load_caps` and `readiness_code`;
   - `route_state` (§6 E2-2);
@@ -884,7 +881,7 @@ captured configuration, so it belongs to SL-8:
   (SL-9), also imported at call time.
 - No test of an earlier lane enters a late-bound call. No production caller exists before
   SL-9 merges, because SL-4 and SL-5 start after it.
-- A later lane never edits an earlier lane's file. If it needs to, it stops and reports.
+- SL-8 consumes the §9 precursor extensions from SL-2, SL-3a and SL-7 after their owner checks. Each keeps its assigned files.
 
 **Verification.** V3 splits by lane: V3a (SL-3), V3b (SL-7), V3c (SL-8) and V3d (SL-9) run
 their own lane's test files. V3 is their union (§5).
@@ -944,7 +941,7 @@ cross-device controls can be built:
 | M2 | primary block | second block | `capability_unmet` |
 | M3 | tmpfs | tmpfs (same) | `capability_unmet` (check 1) |
 | M4 | primary block | tmpfs | `capability_unmet` |
-| M5 | `PHASE_LOOP_SANDBOX_REFUSE_RAM=1` with a RAM-backed candidate | — | `capability_unmet`, no claim, zero invocations |
+| M5 | primary block | verified tmpfs alias with `PHASE_LOOP_SANDBOX_REFUSE_RAM=1` | `capability_unmet`, no claim, zero invocations |
 
 The witness-change case (§6 E2-4) needs no mount and stays an ordinary V3c case.
 
@@ -969,15 +966,13 @@ fails instead of skipping.
 - `ci/seat-caps-host.sh provision`, consumed unchanged, attaches its private loop-backed
   ext4 filesystem. A 0700 directory under `ci/seat-caps-host.sh mountpoint` is
   `PHASE_LOOP_TEST_SECOND_BLOCK_DIR`.
-- A 0700 directory under the runner's `/dev/shm` is `PHASE_LOOP_TEST_TMPFS_DIR`, after the
-  step checks that the filesystem type is `tmpfs`.
+- Bind-mount a private 0700 tmpfs directory beneath trusted ancestors. Verify tmpfs there and set `PHASE_LOOP_TEST_TMPFS_DIR` to that alias for the witness and M3 attempt. Verify both block devices independently and assert M3 reaches check 1.
 - It sets `PHASE_LOOP_TEST_REQUIRE_MOUNTS=1` and runs exactly the M1–M5 node IDs,
-  serially, under `timeout 600`, writing a JUnit XML report. It uploads that report as the
+  serially, under `timeout 600`, writing a JUnit XML report. An always-run step uploads that report as the
   artifact `laneexec-mounts-junit`. The mount suite writes a JUnit testsuite property named
   `PHASE_LOOP_TEST_REQUIRE_MOUNTS` containing the effective setting observed by the mount
   fixture. SL-6 requires that property to equal `1` in the suite reporting M1–M5 and rejects
-  a missing property or any other value. `ci/seat-caps-host.sh teardown` runs in an
-  `always()` step.
+  a missing property or any other value. Separate `always()` steps unmount the tmpfs alias and run `ci/seat-caps-host.sh teardown`.
 - Triggers: `workflow_dispatch`, kept so that receipt evidence can be produced at any head,
   and `pull_request` on these paths:
   - `phase-loop-runtime/src/phase_loop_runtime/launch_*.py`;
@@ -1074,3 +1069,24 @@ supply those values in that form:
 **Effect.** Under shipped defaults every openshell route is `route_disabled` before the
 template step, so no runtime behavior changes. SL-7 owns the tests: the fixture positive
 case, the production `runtime_unavailable` refusal, and the rejection of a `runtime` member.
+
+## 9. Erratum LANEEXEC-v1-errata-5 — SL-8 on the integrated interfaces
+
+`plans/artifacts/v13-LANEEXEC-errata-5-resolutions.md` is normative for SL-8.
+The manifest seals both documents. The following decisions bind §§3, 6 and 7
+and the corresponding SL-8 tasks on the integrated input in §0.
+
+| Findings | Decision |
+| --- | --- |
+| 1, 3, 12 | Retain both policy digests. Require a reviewed worker projection for authoritative execution. Verify the actual local bind destination and use SL-1's default workload modes. |
+| 2 | Derive process assignment independently of prepare. Reconcile only declared slots and independently managed context. Limit positive cases to supported authority. |
+| 4 | SL-7 splits static route validation from activation for SL-8. Apply both the host gate and the captured client opt-in at activation. |
+| 5, 6, 9 | SL-8 owns request election, generation-bound staging and the supervisor. SL-3a supplies the lease, bounded transactions, durable fence and teardown gates. Provision the retained return parent while locked. Release the provisioning journal lock at claim. |
+| 7, 8 | Freeze detached inputs and a bounded return-verdict channel. Check captured caps. Track descendant exit and observed collection independently. |
+| 10 | Require an acknowledged worker-result producer for positive patch execution. SL-2 enforces the effective bound on both return kinds for SL-8. |
+| 11 | Use trusted mount aliases and an explicit RAM staging override in the hosted M1–M5 evidence. |
+| 13 | Local Pi stays interim pending an admitted-child duplex handoff. Exercise the socket lifecycle with an offline stream. |
+
+R1 and R2 remain binding. Shipped routes stay disabled. Only actual producer
+evidence discharges the affected positive acceptance criteria. The wire and
+toolkit pin retain the §0 identity.
