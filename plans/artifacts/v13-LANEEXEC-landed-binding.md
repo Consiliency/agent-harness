@@ -182,8 +182,8 @@ sentences `x-return.patch` and `x-return.termination` bind to:
 
 | `result_kind` | Rule |
 | --- | --- |
-| `patch` | From the verified WorkerResult handoff of §9, using `WorkerResult.proposal` only. `returned` → the bytes at the proposal `locator`, verified against `proposal_bytes_digest`, written to the ReturnDescriptor file; a baseline path (`ProposalReturn.baselines[].path`) under a snapshot mask → `sandbox_launch_audit_failed`, return null. `absent` → return null. `withheld_incomplete` (every non-completed termination, cancelled and timed-out included) → return null, no extra code; the termination already says why. `withheld_oversized`, `withheld_malformed` → `sandbox_launch_result_invalid`. `withheld_audit_error`, `withheld_unexplained_change`, `withheld_evidence_error` → `sandbox_launch_audit_failed`. The trusted worker adapter binds the positive proposal cap. Zero disables delivery (§9). |
-| `result` | LaneExec reads `{out}/result.json` after the worker ends, for every terminal state whose out directory is reachable. `out` lies outside the execution tree, so the worker's audit never sees it. Read at most the smaller of the captured return cap and the frozen result ceiling, plus one oversize sentinel byte. Zero withholds before opening the file. Strict decoding applies; a failure is `sandbox_launch_result_invalid`. |
+| `patch` | From the verified WorkerResult handoff of §9, using `WorkerResult.proposal` only. `returned` → the bytes at the proposal `locator`, verified against `proposal_bytes_digest`, written to the ReturnDescriptor file; a baseline path (`ProposalReturn.baselines[].path`) under a snapshot mask → `sandbox_launch_audit_failed`, return null. `absent` → return null. `withheld_incomplete` (every non-completed termination, cancelled and timed-out included) → return null, no extra code; the termination already says why. `withheld_oversized`, `withheld_malformed` → `sandbox_launch_result_invalid`. `withheld_audit_error`, `withheld_unexplained_change`, `withheld_evidence_error` → `sandbox_launch_audit_failed`. A future trusted adapter binds the effective proposal cap. At cap zero a non-empty proposal yields `sandbox_launch_result_invalid`, null return and zero bytes copied. A verified absent proposal stays null (§9). |
+| `result` | LaneExec reads `{out}/result.json` after the worker ends, for every terminal state whose out directory is reachable. `out` lies outside the execution tree, so the worker's audit never sees it. Read at most the smaller of the captured return cap and the frozen result ceiling, plus one oversize sentinel byte. At cap zero any non-empty result yields `sandbox_launch_result_invalid`, null return and zero bytes copied. Strict decoding applies; a failure is `sandbox_launch_result_invalid`. |
 | `none` | Return null. |
 
 "Return runs for every terminal state" holds as: the return step runs and yields
@@ -941,7 +941,7 @@ cross-device controls can be built:
 | M2 | primary block | second block | `capability_unmet` |
 | M3 | tmpfs | tmpfs (same) | `capability_unmet` (check 1) |
 | M4 | primary block | tmpfs | `capability_unmet` |
-| M5 | primary block | verified tmpfs alias with `PHASE_LOOP_SANDBOX_REFUSE_RAM=1` | `capability_unmet`, no claim, zero invocations |
+| M5 | primary block | verified tmpfs alias with `PHASE_LOOP_SANDBOX_REFUSE_RAM=1` | observe real `staging_root()` raising `SandboxRamBackedError` before device comparison, then `capability_unmet`, no claim, zero invocations |
 
 The witness-change case (§6 E2-4) needs no mount and stays an ordinary V3c case.
 
@@ -1079,11 +1079,11 @@ and the corresponding SL-8 tasks on the integrated input in §0.
 | Findings | Decision |
 | --- | --- |
 | 1, 3, 12 | Retain both policy digests. Require a reviewed worker projection for authoritative execution. Verify the actual local bind destination and use SL-1's default workload modes. |
-| 2 | Derive process assignment independently of prepare. Reconcile only declared slots and independently managed context. Limit positive cases to supported authority. |
+| 2 | SL-4 supplies trusted scheduler context for lane calls. Process assignment uses the frozen derivation. Nonempty caller context narrows admission to independently evidenced suitability. The codec diagnostic is preserved. |
 | 4 | SL-7 splits static route validation from activation for SL-8. Apply both the host gate and the captured client opt-in at activation. |
-| 5, 6, 9 | SL-8 owns request election, generation-bound staging and the supervisor. SL-3a supplies the lease, bounded transactions, durable fence and teardown gates. Provision the retained return parent while locked. Release the provisioning journal lock at claim. |
+| 5, 6, 9 | SL-8 owns request election, generation-bound staging and the supervisor. SL-3a supplies the ordered locks, generation-scoped records, verified cancel client and teardown gates specified in the resolutions table. Provision the retained return parent while locked. Release the provisioning journal lock at claim. |
 | 7, 8 | Freeze detached inputs and a bounded return-verdict channel. Check captured caps. Track descendant exit and observed collection independently. |
-| 10 | Require an acknowledged worker-result producer for positive patch execution. SL-2 enforces the effective bound on both return kinds for SL-8. |
+| 10 | Authoritative patch execution awaits a future acknowledged result handoff. SL-2 applies ordinary over-cap invalidation to both return kinds, including cap zero. |
 | 11 | Use trusted mount aliases and an explicit RAM staging override in the hosted M1–M5 evidence. |
 | 13 | Local Pi stays interim pending an admitted-child duplex handoff. Exercise the socket lifecycle with an offline stream. |
 

@@ -15232,7 +15232,7 @@
           "sha256": "1cea960ddd28ef5e1c4bf79083fa9f9938b2c99c2e29dbd937864944ca76d7e8"
         },
         "plans/artifacts/v13-LANEEXEC-landed-binding.md": {
-          "sha256": "8d7efc39c046a105ae88e7ee7045f0448797427d9cae544c3affcc28d25fa2d7"
+          "sha256": "c0ec9b2847ee382fe81deb80fd08aa61d8ccd78c8e34fb4a997fe47dddc5ab41"
         },
         "plans/artifacts/v12-v13-replan-ownership.md": {
           "sha256": "e5dbbfb45c23cbb6acb9756a23a3d86b62dd5b172b94d6a495ef436d189f3e06"
@@ -15244,7 +15244,7 @@
           "sha256": "64cd6c576530ac9af0fe72fa521286e0643425beb0d11045257b0b1fac45da51"
         },
         "plans/artifacts/v13-LANEEXEC-errata-5-resolutions.md": {
-          "sha256": "59ee2c2f5da2b9a9be4d2d237f080bf6433b8b85002cf85cc141c0353c27c8a0"
+          "sha256": "02b0fa175e68794cae2e81173e6ead7e3a66466541be05ae13f433a924f10f00"
         }
       },
       "gate_status": "declared_not_produced",
@@ -15391,7 +15391,14 @@
               ],
               "wire_bytes_changed": false
             },
-            "remaining_gate": "separate execution authority; authoritative positive evidence per \u00a79"
+            "remaining_gate": "separate execution authority; authoritative positive evidence per \u00a79",
+            "review": {
+              "pr": "agent-harness#2147",
+              "round": 1,
+              "reviewed_head": "195182ec0f54c1634d275a9cf5b3ca19746b76ce",
+              "verdict": "REVISE",
+              "edits": "F1\u2013F12 applied for independent re-check"
+            }
           },
           "transition": "committed"
         }
