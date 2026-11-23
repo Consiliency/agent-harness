@@ -1,4 +1,5 @@
 [
+  {"count": 1, "function": "_identities", "module": "launch_return", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "_gone", "module": "launch_return", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "_private_return_dir", "module": "launch_return", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_read_capped", "module": "launch_return", "primitive": "io.open", "role": "host-io"},

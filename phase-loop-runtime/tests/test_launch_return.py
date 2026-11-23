@@ -691,3 +691,42 @@ def test_expired_budget_with_failed_cleanup_publishes_nothing(state, monkeypatch
     assert len(checks) == 3
     assert (outcome.descriptor, outcome.code) == (None, "sandbox_launch_result_invalid")
     assert outcome.status == "budget_exhausted_cleanup_pending"
+
+
+class StableClock:
+    """A monotonic clock that moves only when a test moves it."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+
+@pytest.mark.parametrize("kind", ["patch", "result"])
+def test_budget_expiring_after_the_directory_closes_never_publishes(state, kind, monkeypatch):
+    (state["out"] / "result.json").write_bytes(b'{"ok": true}')
+    item = attempt(state, store_proposal(state, patch_bytes()))
+    clock = StableClock()
+    real_close = os.close
+    return_dir = state["return_dir"]
+
+    def close_then_expire(fd):
+        info = os.fstat(fd)
+        real_close(fd)
+        # Expire only when the return directory itself closes after a successful write.
+        if (stat.S_ISDIR(info.st_mode) and return_dir.exists()
+                and (info.st_dev, info.st_ino) == (return_dir.stat().st_dev,
+                                                   return_dir.stat().st_ino)
+                and any(return_dir.iterdir())):
+            clock.now = 100.0
+
+    monkeypatch.setattr(openshell_artifacts.time, "monotonic", clock)
+    monkeypatch.setattr(lr.os, "close", close_then_expire)
+    outcome = lr.collect_return(item, kind, policy=POLICY, withhold=None,
+                                bound=openshell_artifacts.Bound(10.0, lambda: False))
+    monkeypatch.undo()
+    assert clock.now == 100.0
+    assert (outcome.descriptor, outcome.code) == (None, "sandbox_launch_result_invalid")
+    assert outcome.status == "budget_exhausted"
+    assert returned_files(state) == []

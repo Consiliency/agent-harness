@@ -272,9 +272,10 @@ def _deliver(attempt: ReturnAttempt, kind: str, status: str, data: bytes,
     """Apply ``withhold`` to the in-memory bytes, then write them once and name them.
 
     A true or raising predicate returns ``result_withheld`` before any file exists. The
-    return budget is checked before the write and again after the last I/O, at the point of
-    publication; an expired budget removes the uncommitted file and returns
-    ``result_invalid``, never a descriptor."""
+    return budget is checked before the write, after the write, and once more after the
+    directory is closed, immediately before publication; an expired budget removes the
+    uncommitted file (verified by device and inode) and returns ``result_invalid``, never a
+    descriptor."""
     if withhold is not None:
         try:
             withheld = withhold(data) is not False
@@ -283,6 +284,11 @@ def _deliver(attempt: ReturnAttempt, kind: str, status: str, data: bytes,
         if withheld:
             return _null(kind, "withheld_by_predicate", _RESULT_WITHHELD)
     name = _PATCH_FILE if kind == "patch" else _RESULT_FILE
+    descriptor = ReturnDescriptor(
+        kind=kind, format="worker_proposal_bytes" if kind == "patch" else "json_object",
+        path=str(attempt.return_dir / name), sha256=hashlib.sha256(data).hexdigest(),
+        byte_length=len(data), base_commit=attempt.base_commit if kind == "patch" else None)
+    outcome = ReturnOutcome(kind, status, descriptor, None)
     try:
         bound.check()
     except openshell_artifacts.Refused:
@@ -296,26 +302,51 @@ def _deliver(attempt: ReturnAttempt, kind: str, status: str, data: bytes,
             _write_once(directory, name, data)
         except (OSError, ValueError):
             return _null(kind, status, _RESULT_INVALID)
+        written = _identities(directory, name)
         try:
             bound.check()
         except openshell_artifacts.Refused:
-            try:
-                os.unlink(name, dir_fd=directory)
-                os.fsync(directory)
-            except OSError:
-                pass
-            # No descriptor names the file either way; the status records whether the
-            # uncommitted bytes are verified gone.
-            cleaned = _gone(directory, name)
-            return _null(kind, "budget_exhausted" if cleaned else "budget_exhausted_cleanup_pending",
-                         _RESULT_INVALID)
+            return _budget_exhausted(kind, directory, name)
     finally:
         os.close(directory)
-    descriptor = ReturnDescriptor(
-        kind=kind, format="worker_proposal_bytes" if kind == "patch" else "json_object",
-        path=str(attempt.return_dir / name), sha256=hashlib.sha256(data).hexdigest(),
-        byte_length=len(data), base_commit=attempt.base_commit if kind == "patch" else None)
-    return ReturnOutcome(kind, status, descriptor, None)
+    # The last check, after the directory is closed: an expiry here still publishes nothing.
+    try:
+        bound.check()
+    except openshell_artifacts.Refused:
+        try:
+            directory = _private_return_dir(attempt.return_dir)
+        except (OSError, ValueError):
+            return _null(kind, "budget_exhausted_cleanup_pending", _RESULT_INVALID)
+        try:
+            if written is None or _identities(directory, name) != written:
+                return _null(kind, "budget_exhausted_cleanup_pending", _RESULT_INVALID)
+            return _budget_exhausted(kind, directory, name)
+        finally:
+            os.close(directory)
+    return outcome
+
+
+def _identities(directory: int, name: str) -> tuple[tuple[int, int], tuple[int, int]] | None:
+    """The (device, inode) of the return directory and of the file written in it."""
+    try:
+        folder = os.fstat(directory)
+        leaf = os.stat(name, dir_fd=directory, follow_symlinks=False)
+    except OSError:
+        return None
+    return (folder.st_dev, folder.st_ino), (leaf.st_dev, leaf.st_ino)
+
+
+def _budget_exhausted(kind: str, directory: int, name: str) -> ReturnOutcome:
+    """Remove the uncommitted file; no descriptor names it either way, and the status records
+    whether its absence is verified."""
+    try:
+        os.unlink(name, dir_fd=directory)
+        os.fsync(directory)
+    except OSError:
+        pass
+    cleaned = _gone(directory, name)
+    return _null(kind, "budget_exhausted" if cleaned else "budget_exhausted_cleanup_pending",
+                 _RESULT_INVALID)
 
 
 def _masked(path: str, masks: Sequence[str], mask_dirs: Sequence[str]) -> bool:
