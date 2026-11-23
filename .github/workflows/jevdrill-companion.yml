@@ -120,8 +120,8 @@ jobs:
           uv run --no-sync python -c "import sys, xml.etree.ElementTree as E; s = E.parse(sys.argv[1]).getroot(); s = s if s.tag == 'testsuite' else s[0]; c = {k: int(s.get(k, 0)) for k in ('tests', 'failures', 'errors', 'skipped')}; print(c); sys.exit(0 if c == {'tests': 1, 'failures': 0, 'errors': 0, 'skipped': 0} else 1)" "$junit"
 
       - name: Run the twelve files and classify the receipt
-        # Step-level bound: a hung pytest ends here, so the always() junit upload still runs
-        # inside the job timeout.
+        # Step-level bound on a hung pytest. The step timeout leaves time for the always()
+        # upload if pytest has already written the junit and the job still has time remaining.
         timeout-minutes: 20
         working-directory: phase-loop-runtime
         env:
@@ -242,8 +242,8 @@ jobs:
           uv run --no-sync python -c "import sys, xml.etree.ElementTree as E; s = E.parse(sys.argv[1]).getroot(); s = s if s.tag == 'testsuite' else s[0]; c = {k: int(s.get(k, 0)) for k in ('tests', 'failures', 'errors', 'skipped')}; print(c); sys.exit(0 if c == {'tests': 1, 'failures': 0, 'errors': 0, 'skipped': 0} else 1)" "$junit"
 
       - name: Run the twelve files against the installed JEV Drill and classify
-        # Step-level bound: a hung pytest ends here, so the always() junit upload still runs
-        # inside the job timeout.
+        # Step-level bound on a hung pytest. The step timeout leaves time for the always()
+        # upload if pytest has already written the junit and the job still has time remaining.
         timeout-minutes: 20
         working-directory: phase-loop-runtime
         env:
