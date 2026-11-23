@@ -123,9 +123,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
     every later line.
 
   The loop now waits for the reader's end-of-file marker, for at most one second, the
-  same bound as the observer's drain. So a descendant that holds the pipe open still
-  cannot extend the launch by more than a second. The text pipe now decodes with
-  `errors="replace"`. `tests/test_launcher_reader_drain.py` reproduces both bugs
+  same bound as the observer's drain. The text pipe now decodes with
+  `errors="replace"`. A descendant that holds the pipe open still delays the return
+  until it exits, because closing the pipe waits for the reader. That behaviour predates
+  this fix and is unchanged. `tests/test_launcher_reader_drain.py` reproduces both bugs
   deterministically.
 - The JEV Drill companion workflow's Windows legs (follow-up to
   Consiliency/agent-harness#2092; POSIX behaviour is unchanged):

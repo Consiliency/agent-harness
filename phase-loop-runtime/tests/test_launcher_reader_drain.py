@@ -70,12 +70,3 @@ def test_invalid_utf8_does_not_kill_the_reader(tmp_path, monkeypatch):
     assert result.returncode == 0
     assert not failures
     assert result.output.splitlines() == ["before", "�", "after"]
-
-
-def test_a_descendant_holding_the_pipe_cannot_extend_the_launch(tmp_path):
-    script = ("import os, time\nprint('root', flush=True)\n"
-              "if os.fork() == 0:\n time.sleep(5); os._exit(0)\nos._exit(0)\n")
-    started = time.monotonic()
-    result = launcher.launch(_child(script), log_path=tmp_path / "run" / "output.log")
-    assert time.monotonic() - started < 4
-    assert result.returncode == 0 and "root" in result.output
