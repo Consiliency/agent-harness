@@ -54,6 +54,7 @@ SPAWN_ALLOWANCE_MS = 250
 _BUDGETED_COMMANDS = ("route", "discover", "notices", "report", "inspect-discovery", "delete-discovery")
 RETRY_LEDGER_LIMIT = 256
 RUN_HANDLE_LIMIT = 256
+ROUTED_BUNDLE_LIMIT = 65_536
 _SOURCE_ID = "agent-harness"
 
 
@@ -253,6 +254,13 @@ class JevDrillUnavailable(ValueError):
         self.decision = deepcopy(decision)
 
 
+def _bundle_fingerprint(bundle):
+    """A digest of every dataclass field, kept across copies and field reconstruction."""
+    from dataclasses import astuple, is_dataclass
+    value = astuple(bundle) if is_dataclass(bundle) else (type(bundle).__name__, id(bundle))
+    return hashlib.sha256(repr(value).encode()).hexdigest()
+
+
 def _fresh(snapshot):
     now = datetime.now(timezone.utc)
     return (datetime.fromisoformat(snapshot["verified_at"].replace("Z", "+00:00")) <= now
@@ -294,8 +302,8 @@ class JevDrillAdapter:
         self._ledger = {}
         self._run_index = {}
         self._ledger_generation = 0
-        # Routed bundles already launched or refused, held until the bundle is collected.
-        self._spent = {}
+        # Routing provenance by bundle content: fingerprint -> ids of its pending bindings.
+        self._routed = OrderedDict()
         # One lock orders every event on a run's stream, host and hook alike.
         self._report_lock = threading.RLock()
         self._runs = OrderedDict()
@@ -336,10 +344,12 @@ class JevDrillAdapter:
             self.queue.bind_objective(inputs["envelope"], ref)
             return result
 
-    def _check_discovery(self, envelope, ref, *, started_at=None):
+    def _check_discovery(self, envelope, ref, *, started_at=None, gate=None):
         self.transport.validators["DiscoveryRef"].validate(ref)
         if not self.queue.objective_bound(envelope, ref):
             raise JevDrillUnavailable("Objective binding is missing or deleted")
+        if gate is not None:
+            gate()
         scope = {"project_id": envelope["project_id"], "workspace_id": envelope["workspace_id"],
                  "producer": envelope["harness_id"], "operation": "discover"}
         result = self._call("inspect-discovery", {"schema_version": "1", "scope": scope,
@@ -435,13 +445,16 @@ class JevDrillAdapter:
                 if p.get("kind") != "known" or m["measurement_value"]["value"] > p["value"]:
                     raise ValueError("Invalid Codex subset")
 
-    def _notices(self, envelope, *, started_at=None, operation="route"):
+    def _notices(self, envelope, *, started_at=None, operation="route", deferred=None):
         inbox = self._call("notices", {"schema_version": "1", "scope": {
             "project_id": envelope["project_id"], "workspace_id": envelope["workspace_id"],
             "producer": envelope["harness_id"], "operation": "report" if envelope["operation"] == "report" else "route"}},
             started_at=started_at, operation=operation)
         for notice in inbox["notices"]:
-            self._emit_notice(notice)
+            if deferred is not None:
+                deferred.append(notice)
+            else:
+                self._emit_notice(notice)
 
     def _emit_notice(self, notice):
         try:
@@ -605,11 +618,17 @@ class JevDrillAdapter:
         kwargs = {**kwargs, "prompt_bundle": bundle, "model_selection": chosen}
         if executor == "codex":
             kwargs["json_output"] = True
+        run_id = str(uuid4())
+        if linked:
+            self.queue.bind_task(request["envelope"], wrapper["discovery_ref"], request["task_id"],
+                                 details["routing_decision_id"], run_id)
+        # Every fallible step is done: only now does the ledger hold this prepare.
         generation = self._commit_route(admission)
+        fingerprint = _bundle_fingerprint(bundle)
         self._pending[id(bundle)] = {"request": request, "decision": decision, "candidate": candidate,
                                     "linked_inputs": deepcopy(wrapper),
-                                    "limits_required": limits_required,
-                                    "context": context, "run_id": str(uuid4()), "sequence": 0,
+                                    "limits_required": limits_required, "fingerprint": fingerprint,
+                                    "context": context, "run_id": run_id, "sequence": 0,
                                     "ledger_key": ledger_key, "ledger_generation": generation,
                                     "counts": {"queued": 0, "losses": {}},
                                     "routing_ms": (time.monotonic_ns() - routing_started) / 1_000_000,
@@ -617,10 +636,10 @@ class JevDrillAdapter:
                                     "freshness": [{"verified_at": row["verified_at"], "expires_at": row["expires_at"]}
                                                   for row in (inventory, capabilities)]}
         weakref.finalize(bundle, self._pending.pop, id(bundle), None)
-        if linked:
-            binding = self._pending[id(bundle)]
-            self.queue.bind_task(request["envelope"], wrapper["discovery_ref"], request["task_id"],
-                                 details["routing_decision_id"], binding["run_id"])
+        self._routed.setdefault(fingerprint, []).append(id(bundle))
+        self._routed.move_to_end(fingerprint)
+        while len(self._routed) > ROUTED_BUNDLE_LIMIT:
+            self._routed.popitem(last=False)
         return kwargs
 
     # --- Retry ledger (GAPS §3.1) -------------------------------------------------------
@@ -639,9 +658,11 @@ class JevDrillAdapter:
         constraints = request["hard_constraints"]
         offered = RetryBudget(constraints["max_attempts"], constraints["total_deadline_ms"], routing_started)
         supplied = request["retry_context"]
-        admission = {"key": key, "budget": offered, "context": None, "unrecorded": False}
+        admission = {"key": key, "budget": offered, "context": None, "unrecorded": False, "generation": None}
         with self._ledger_lock:
             entry = self._ledger.get(key)
+            if entry is not None:
+                admission["generation"] = entry["generation"]
             if entry is None:
                 if len(self._ledger) >= RETRY_LEDGER_LIMIT:
                     raise JevDrillUnavailable("Retry ledger is full")
@@ -680,9 +701,16 @@ class JevDrillAdapter:
             return admission
 
     def _commit_route(self, admission):
-        """Open or tighten the task's entry for a successful prepare; return its generation."""
+        """Open or tighten the task's entry for a successful prepare; return its generation.
+
+        A prepare admitted against an entry that closed during routing fails; it never opens
+        a fresh generation.
+        """
         with self._ledger_lock:
             entry = self._ledger.get(admission["key"])
+            if admission["generation"] is not None and (
+                    entry is None or entry["generation"] != admission["generation"]):
+                raise JevDrillUnavailable("Retry record closed during routing")
             if entry is None:
                 if len(self._ledger) >= RETRY_LEDGER_LIMIT:
                     raise JevDrillUnavailable("Retry ledger is full")
@@ -711,6 +739,11 @@ class JevDrillAdapter:
                                           "outcome": "launched"})
                 self._run_index[binding["run_id"]] = binding["ledger_key"]
         return None
+
+    def _gate(self, binding):
+        refusal = self._ledger_refusal(binding)
+        if refusal is not None:
+            raise JevDrillUnavailable(refusal)
 
     def record_acceptance_outcome(self, execution_run_id, *, passed, failure_class):
         """IF-0-JEVHOST-5 observer: the host's acceptance verdict for a launched run."""
@@ -780,17 +813,24 @@ class JevDrillAdapter:
                 self._runs.popitem(last=False)
 
     def _take_binding(self, bundle):
-        """Pop a routed binding and mark its bundle spent; refuse a spent bundle's reuse."""
-        identity = id(bundle)
-        binding = self._pending.pop(identity, None)
-        spent = self._spent.get(identity)
-        if binding is None:
-            if spent is not None and spent() is bundle:
-                raise JevDrillUnavailable("Routed launch binding was already used or refused")
+        """Return the routed binding for ``bundle``, or None for an unrouted bundle.
+
+        Routing provenance is the bundle's content fingerprint, so a copied or rebuilt
+        routed bundle is recognized. A copy of a pending bundle takes that binding once; a
+        bundle whose bindings were all launched, refused or collected fails closed. A
+        bundle identical in every field to a routed bundle is treated as routed.
+        """
+        fingerprint = _bundle_fingerprint(bundle)
+        pending = self._routed.get(fingerprint)
+        if pending is None:
             return None
-        self._spent[identity] = weakref.ref(bundle)
-        weakref.finalize(bundle, self._spent.pop, identity, None)
-        return binding
+        binding = self._pending.get(id(bundle))
+        identity = id(bundle) if binding is not None and binding["fingerprint"] == fingerprint else next(
+            (i for i in pending if i in self._pending and self._pending[i]["fingerprint"] == fingerprint), None)
+        if identity is None:
+            raise JevDrillUnavailable("Routed launch binding was already used or refused")
+        pending.remove(identity)
+        return self._pending.pop(identity)
 
     def _report(self, binding, event_type=None, *, payload=None, reason=None):
         with self._report_lock:
@@ -824,14 +864,14 @@ class JevDrillAdapter:
         if binding is None:
             return launch(spec, **kwargs)
         # A closed entry or a spent budget is refused before any CLI or executor contact.
-        refusal = self._ledger_refusal(binding)
-        if refusal is not None:
-            raise JevDrillUnavailable(refusal)
+        self._gate(binding)
         candidate = binding["candidate"]
         request = binding["request"]
         linked = binding.get("linked_inputs")
         if linked is not None:
-            self._check_discovery(request["envelope"], linked["discovery_ref"])
+            # A verdict takes effect when recorded: one that closes the entry before this
+            # locked gate prevents the CLI request; a later one is applied at final admission.
+            self._check_discovery(request["envelope"], linked["discovery_ref"], gate=lambda: self._gate(binding))
             current = deepcopy(self.inputs_for(binding["context"]))
             self.transport.validators["DiscoveryRouteInputs"].validate(current)
             if (current["discovery_ref"] != linked["discovery_ref"]
@@ -854,7 +894,7 @@ class JevDrillAdapter:
         reporting_ms = (time.monotonic_ns() - reporting_started) / 1_000_000
         # GAPS §3.6: every lock that can block is taken first; then the final readiness
         # check, the attempt commit and run registration sit directly before dispatch.
-        with self._ledger_lock, self._report_lock:
+        with self._report_lock, self._ledger_lock:
             if (not _fresh(candidate) or not all(_fresh(row) for row in binding["freshness"])
                     or not _fresh({"verified_at": readiness["verified_at"], "expires_at": readiness["valid_until"]})):
                 refusal = "Final executor readiness expired; launch is not enforceable"
@@ -946,17 +986,20 @@ class JevDrillAdapter:
             "reporting_ms": reporting_ms, "provider_generation_ms": None})
 
     def flush(self):
-        disconnected = []
+        disconnected, inbox = [], []
         def send(report):
             started = time.monotonic()
             try:
-                self._notices(report["envelope"], started_at=started, operation="report")
+                # Notices are held until the queue's write transaction ends.
+                self._notices(report["envelope"], started_at=started, operation="report", deferred=inbox)
                 return self._call("report", report, started_at=started, operation="report")
             except (OSError, TimeoutError) as exc:
                 # Re-raised into the queue, which commits its backoff for this row.
                 disconnected.append(exc)
                 raise
         result = self.queue.deliver_one(send)
+        for notice in inbox:
+            self._emit_notice(notice)
         if result == "retry" and disconnected:
             self._emit_notice(self._disconnect_notice("report"))
         dispositions = self.queue.status()["dispositions"]

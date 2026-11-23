@@ -304,18 +304,54 @@ def test_spent_binding_never_falls_through_to_ordinary_launch(tmp_path):
     prepared = adapter.prepare(mode="main", dry_run=False, **kwargs)
     adapter.launch(counting_executor(entries), spec_for(prepared))
     refused = []
-    for spec in (spec_for(prepared), spec_for(adapter.prepare(mode="main", dry_run=False, **kwargs))):
-        for _ in range(2):  # a refused binding stays refused on retry
-            try:
-                adapter.launch(counting_executor(entries), spec)
-            except JevDrillUnavailable as exc:
-                refused.append(str(exc))
+    for _ in range(2):  # a spent binding stays refused on retry
+        try:
+            adapter.launch(counting_executor(entries), spec_for(prepared))
+        except JevDrillUnavailable as exc:
+            refused.append(str(exc))
     assert len(entries) == 1, "a consumed or refused routed binding reached the executor again"
-    assert refused == ["Routed launch binding was already used or refused"] * 2 + [
-        "Retry budget is exhausted", "Routed launch binding was already used or refused"]
-    # A genuinely unrouted bundle keeps the ordinary launch path.
-    adapter.launch(counting_executor(entries), SimpleNamespace(prompt_bundle=kwargs["prompt_bundle"]))
+    assert refused == ["Routed launch binding was already used or refused"] * 2
+    # A genuinely unrouted bundle carries no routing provenance and launches normally.
+    unrouted = replace(kwargs["prompt_bundle"], body="unrouted work")
+    adapter.launch(counting_executor(entries), SimpleNamespace(prompt_bundle=unrouted))
     assert len(entries) == 2
+
+
+def rebuilt(bundle):
+    from dataclasses import fields
+    return type(bundle)(**{field.name: getattr(bundle, field.name) for field in fields(bundle)})
+
+
+@pytest.mark.parametrize("state", ["pending", "consumed", "refused"])
+def test_copied_routed_bundles_cannot_bypass_admission(tmp_path, state):
+    verified = [True]
+    adapter, _, _, kwargs, _, _ = adapter_fixture(tmp_path, verify_candidate=lambda *_a: verified[0])
+    prepared = adapter.prepare(mode="main", dry_run=False, **kwargs)
+    original = prepared["prompt_bundle"]
+    entries, outcomes = [], []
+
+    def attempt(bundle):
+        try:
+            adapter.launch(counting_executor(entries), spec_for({**prepared, "prompt_bundle": bundle}))
+            outcomes.append("launched")
+        except JevDrillUnavailable as exc:
+            outcomes.append(str(exc))
+
+    if state == "pending":
+        attempt(replace(original))  # a copy of a pending bundle takes that binding once
+        expected_entries = 1
+    elif state == "consumed":
+        attempt(original)
+        expected_entries = 1
+    else:
+        verified[0] = False
+        attempt(original)  # refused at the launch-time identity check
+        verified[0] = True
+        expected_entries = 0
+    for bundle in (original, replace(original), rebuilt(original)):
+        attempt(bundle)
+    assert len(entries) == expected_entries, f"a copied {state} routed bundle bypassed launch admission"
+    assert outcomes[-3:] == ["Routed launch binding was already used or refused"] * 3
 
 
 def linked_fixture(tmp_path, *, max_attempts=1):
@@ -411,6 +447,130 @@ def test_refused_prepare_holds_no_ledger_slot(tmp_path, monkeypatch):
     except JevDrillUnavailable as exc:
         prepared = exc
     assert not isinstance(prepared, Exception), f"a refused prepare held the only ledger slot: {prepared}"
+
+
+def test_pass_during_routing_cannot_open_a_new_generation(tmp_path):
+    env = routed_fixture(tmp_path, max_attempts=2)
+    adapter = env.adapter
+    record, = require(adapter, "record_acceptance_outcome")
+    first = adapter.prepare(mode="main", dry_run=False, **env.kwargs)
+    run_id = adapter.launch(lambda spec, **_k: result_for(), spec_for(first)).jevdrill_execution_run["execution_run_id"]
+    routed = adapter.transport.call
+
+    def call(command, payload, **options):
+        if command == "route":  # the verdict lands between route admission and commit
+            record(run_id, passed=True, failure_class=None)
+        return routed(command, payload, **options)
+
+    adapter.transport.call = call
+    outcome = None
+    try:
+        outcome = adapter.prepare(mode="main", dry_run=False, **env.kwargs)
+    except JevDrillUnavailable as exc:
+        outcome = exc
+    assert isinstance(outcome, JevDrillUnavailable), "a prepare admitted against a closed entry was published"
+    assert "closed during routing" in str(outcome)
+    assert adapter._ledger == {} and not adapter._pending
+
+
+def test_pass_before_linked_revalidation_prevents_cli_contact(tmp_path):
+    adapter, kwargs, calls = linked_fixture(tmp_path, max_attempts=2)
+    record, = require(adapter, "record_acceptance_outcome")
+    first = adapter.prepare(mode="main", dry_run=False, **kwargs)
+    run_id = adapter.launch(lambda spec, **_k: result_for(), spec_for(first)).jevdrill_execution_run["execution_run_id"]
+    second = adapter.prepare(mode="main", dry_run=False, **kwargs)
+    bound = adapter.queue.objective_bound
+
+    def verdict_then_bound(*args):
+        record(run_id, passed=True, failure_class=None)  # after the early check, before the CLI call
+        return bound(*args)
+
+    adapter.queue.objective_bound = verdict_then_bound
+    contacted, entries, refused = len(calls), [], None
+    try:
+        adapter.launch(counting_executor(entries), spec_for(second))
+    except JevDrillUnavailable as exc:
+        refused = exc
+    assert calls[contacted:] == [], "a binding closed before linked revalidation contacted the CLI"
+    assert entries == [] and refused is not None and "Retry record is closed" in str(refused)
+
+
+def test_failed_linked_binding_write_leaves_no_ledger_slot(tmp_path, monkeypatch):
+    adapter, kwargs, _ = linked_fixture(tmp_path)
+    monkeypatch.setattr(jevdrill_adapter, "RETRY_LEDGER_LIMIT", 1, raising=False)
+    bind_task = adapter.queue.bind_task
+    failures = [OSError("synthetic binding write failure")]
+
+    def failing_bind_task(*args):
+        if failures:
+            raise failures.pop()
+        return bind_task(*args)
+
+    adapter.queue.bind_task = failing_bind_task
+    with pytest.raises(OSError, match="binding write"):
+        adapter.prepare(mode="main", dry_run=False, **kwargs)
+    assert getattr(adapter, "_ledger", {}) == {}, "a failed prepare holds a ledger slot"
+    assert not adapter._pending
+    assert adapter.prepare(mode="main", dry_run=False, **kwargs)["model_selection"].model == "model-a"
+
+
+class OrderedLock:
+    """Records whether it is entered while the other lock of a pair is held."""
+
+    def __init__(self, lock, name, held, violations, forbidden_under):
+        self._lock, self.name, self.held = lock, name, held
+        self.violations, self.forbidden_under = violations, forbidden_under
+
+    def __enter__(self):
+        if self.held.get(self.forbidden_under) and not self.held.get(self.name):
+            self.violations.append(f"{self.name} acquired while holding {self.forbidden_under}")
+        value = self._lock.__enter__()
+        self.held[self.name] = self.held.get(self.name, 0) + 1
+        return value
+
+    def __exit__(self, *exc):
+        self.held[self.name] -= 1
+        return self._lock.__exit__(*exc)
+
+
+def test_report_lock_is_taken_before_the_ledger_lock(tmp_path, monkeypatch):
+    adapter, _, _, kwargs, _, _ = adapter_fixture(tmp_path)
+    prepared = adapter.prepare(mode="main", dry_run=False, **kwargs)
+    held, violations = {}, []
+    for name, forbidden_under in (("_report_lock", "_ledger_lock"), ("_ledger_lock", "_report_lock_unused")):
+        monkeypatch.setattr(adapter, name, OrderedLock(getattr(adapter, name, threading.RLock()), name, held,
+                                                       violations, forbidden_under), raising=False)
+    adapter.launch(lambda spec, **_k: result_for(), spec_for(prepared))
+    assert violations == [], "the report lock was acquired while holding the ledger lock"
+
+
+def test_flush_notices_leave_the_queue_transaction(tmp_path):
+    adapter, _, _, kwargs, calls, _ = adapter_fixture(tmp_path)
+    inbox = {"schema_version": "1", "notices": [{"kind": "synthetic_notice"}]}
+    routed = adapter.transport.call
+    adapter.transport.call = lambda command, payload, **o: (
+        deepcopy(inbox) if command == "notices" else routed(command, payload, **o))
+    depth, seen = [0], []
+    transaction = adapter.queue._transaction
+    from contextlib import contextmanager
+
+    @contextmanager
+    def tracked():
+        with transaction() as db:
+            depth[0] += 1
+            try:
+                yield db
+            finally:
+                depth[0] -= 1
+
+    adapter.queue._transaction = tracked
+    adapter.notice_sink = lambda notice: seen.append(depth[0])
+    report = fixture("ReportRequest")
+    for field in ("harness_id", "execution_target_id"):
+        report["envelope"][field] = report["event"]["task_id"]
+    adapter.queue.enqueue(report)
+    adapter.flush()
+    assert seen and all(level == 0 for level in seen), "a notice callback ran inside the queue write transaction"
 
 
 class ArmedLock:
