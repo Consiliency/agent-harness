@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Consiliency/agent-harness/plans/artifacts/rrimage-v1-pin-record.schema.json",
+  "title": "review_runner_pin.v1",
+  "description": "Metadata-only pin record for the review-runner image (RRIMAGE contract §2). No field holds a credential, a token, an auth configuration, a host path or a private host name.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "status", "image", "platform", "source", "helper", "build", "pull", "recorded_at"],
+  "properties": {
+    "schema": {"const": "review_runner_pin.v1"},
+    "status": {"enum": ["pushed", "pinned"]},
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["registry", "repository", "manifest_digest", "manifest_media_type", "reference"],
+      "properties": {
+        "registry": {"type": "string", "pattern": "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?$"},
+        "repository": {"type": "string", "pattern": "^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*$"},
+        "manifest_digest": {"$ref": "#/$defs/digest"},
+        "manifest_media_type": {
+          "enum": [
+            "application/vnd.oci.image.manifest.v1+json",
+            "application/vnd.docker.distribution.manifest.v2+json"
+          ]
+        },
+        "reference": {"type": "string", "pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$"}
+      }
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "architecture", "config_digest"],
+      "properties": {
+        "os": {"const": "linux"},
+        "architecture": {"const": "amd64"},
+        "config_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "commit", "containerfile_path", "containerfile_sha256"],
+      "properties": {
+        "repository": {"const": "Consiliency/agent-harness"},
+        "commit": {"$ref": "#/$defs/commit"},
+        "containerfile_path": {"const": "phase-loop-runtime/images/review-runner/Containerfile"},
+        "containerfile_sha256": {"$ref": "#/$defs/hex64"}
+      }
+    },
+    "helper": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "source_repository", "source_commit"],
+      "properties": {
+        "path": {"const": "/usr/libexec/agent-toolkit/landlock-exec"},
+        "sha256": {"$ref": "#/$defs/hex64"},
+        "source_repository": {"const": "Consiliency/agent-toolkit"},
+        "source_commit": {"$ref": "#/$defs/commit"}
+      }
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tool", "tool_version", "buildkit_image", "source_date_epoch", "reproduced"],
+      "properties": {
+        "tool": {"const": "docker buildx"},
+        "tool_version": {"type": "string", "pattern": "^v?[0-9]+\\.[0-9]+\\.[0-9]+([.+-][0-9A-Za-z.-]+)?$"},
+        "buildkit_image": {"type": "string", "pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$"},
+        "source_date_epoch": {"type": "integer", "minimum": 0},
+        "reproduced": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["attempted", "second_manifest_digest", "equal"],
+          "properties": {
+            "attempted": {"type": "boolean"},
+            "second_manifest_digest": {"oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+            "equal": {"type": ["boolean", "null"]}
+          }
+        }
+      }
+    },
+    "pull": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["host", "by_digest", "pulled_at", "manifest_digest", "os", "architecture", "config_digest", "helper_sha256", "entrypoint_started"],
+          "properties": {
+            "host": {"const": "ai"},
+            "by_digest": {"const": true},
+            "pulled_at": {"$ref": "#/$defs/timestamp"},
+            "manifest_digest": {"$ref": "#/$defs/digest"},
+            "os": {"const": "linux"},
+            "architecture": {"const": "amd64"},
+            "config_digest": {"$ref": "#/$defs/digest"},
+            "helper_sha256": {"$ref": "#/$defs/hex64"},
+            "entrypoint_started": {"const": false}
+          }
+        }
+      ]
+    },
+    "recorded_at": {"$ref": "#/$defs/timestamp"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "pinned"}}},
+      "then": {"properties": {"pull": {"type": "object"}}}
+    },
+    {
+      "if": {"properties": {"status": {"const": "pushed"}}},
+      "then": {"properties": {"pull": {"type": "null"}}}
+    }
+  ],
+  "$defs": {
+    "hex64": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "timestamp": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"}
+  }
+}
