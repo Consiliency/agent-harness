@@ -133,6 +133,11 @@ _HOST_SYMLINKS = ("/bin", "/sbin", "/lib32", "/lib64")
 _PROTECTED_MOUNTS = ("/proc", "/dev", "/tmp", "/etc", "/lib", "/usr", "/var/log") + _HOST_SYMLINKS
 #: Reasons that are a ``x-contract-pins.toolkit_pins`` check failure (``file_check`` and the
 #: closure): any of them leaves the whole agent-toolkit registry unregistered (``when``).
+#: The local sandbox mount layout of the frozen argv (``argv_rule``): host directories bound
+#: read-only at their own path, and mounts that are empty inside the sandbox (``/var/log``
+#: by LANEEXEC-v1-errata-1). Nothing else of the host exists there.
+_SANDBOX_HOST_BINDS = ("/etc", "/lib", "/usr")
+_SANDBOX_EMPTY_MOUNTS = ("/proc", "/dev", "/tmp", "/var/log")
 _TOOLKIT_INTEGRITY = frozenset({"file_mismatch", "file_unlisted", "closure_mismatch"})
 _MAX_ARGV = 512
 _MAX_CHAIN = 16
@@ -553,7 +558,7 @@ def _check_slots(record: Mapping[str, Any]) -> None:
 def _check_image_links(record: Mapping[str, Any], trees: Iterable[str],
                        host: HostFiles | None = None) -> None:
     """``x-argv-templates.image_links``, at registration. On local the image path must also
-    resolve, through every symlink of the host view, inside a resolved read-only tree."""
+    resolve, in the sandbox mount layout, inside a read-only tree."""
     links = record["image_links"]
     if record["workload"] != "pi-runner":
         _require(links == [], "image_link")
@@ -567,26 +572,73 @@ def _check_image_links(record: Mapping[str, Any], trees: Iterable[str],
             raise TemplateRefused("image_link") from None
         _require(any(_inside(link, root) for root in roots), "image_link")
         if host is not None:
-            resolved = host.resolve(link)
-            resolved_roots = [host.resolve(root) for root in roots]
-            _require(resolved is not None and any(
-                r is not None and _inside(resolved, r) for r in resolved_roots), "image_link")
+            entries = _host_symlink_entries(host, roots)
+            emitted = {entries[i + 2]: entries[i + 1] for i in range(0, len(entries), 3)}
+            resolved = _sandbox_resolve(host, link, roots, emitted)
+            _require(resolved is not None and any(_inside(resolved, r) for r in roots), "image_link")
     for i, link in enumerate(links):
         for j, other in enumerate(links):
             _require(i == j or not _inside(link, other), "image_link")
 
 
-def _host_symlink_entries(host: HostFiles) -> list[str]:
-    """``<host symlink entries>``: ``--symlink <target> <link>`` for each host link into /usr."""
+def _sandbox_resolve(host: HostFiles, path: str, trees: Sequence[str],
+                     links: Mapping[str, str]) -> str | None:
+    """``path`` resolved in the local sandbox mount layout, not the host view.
+
+    Host symlinks are read only inside a bound tree (``trees`` and ``_SANDBOX_HOST_BINDS``);
+    ``links`` are the emitted ``--symlink`` entries. A component inside an empty mount, or
+    outside every mount and not a directory above one, is absent there: ``None``. So is a
+    loop. A missing component inside a bound tree ends resolution lexically.
+    """
+    bound = tuple(trees) + _SANDBOX_HOST_BINDS
+    mounts = bound + _SANDBOX_EMPTY_MOUNTS + tuple(links)
+    parts = [part for part in path.split("/") if part]
+    resolved: list[str] = []
+    hops = 0
+    while parts:
+        name = parts.pop(0)
+        if name == ".":
+            continue
+        if name == "..":
+            if resolved:
+                resolved.pop()
+            continue
+        candidate = "/" + "/".join(resolved + [name])
+        if candidate in links:
+            target: str | None = links[candidate]
+        elif any(_inside(candidate, root) for root in bound):
+            target = host.readlink(candidate)
+        elif any(_inside(candidate, root) for root in _SANDBOX_EMPTY_MOUNTS):
+            if candidate not in _SANDBOX_EMPTY_MOUNTS:
+                return None
+            target = None
+        elif any(_inside(mount, candidate) for mount in mounts):
+            target = None  # a directory the sandbox creates above a mount point
+        else:
+            return None
+        if target is None:
+            resolved.append(name)
+            continue
+        hops += 1
+        if hops > 40:
+            return None
+        if target.startswith("/"):
+            resolved = []
+        parts = [part for part in target.split("/") if part] + parts
+    return "/" + "/".join(resolved)
+
+
+def _host_symlink_entries(host: HostFiles, trees: Sequence[str] = ()) -> list[str]:
+    """``<host symlink entries>``: ``--symlink <target> <link>`` for each host link into /usr,
+    its target resolving inside /usr in the sandbox mount layout."""
     out: list[str] = []
     for link in _HOST_SYMLINKS:
         target = host.readlink(link)
         if target is None:
             continue
         lexical = posixpath.normpath(posixpath.join("/", target))
-        resolved = host.resolve(link)
-        if (resolved is not None and _inside(lexical, "/usr") and _inside(resolved, "/usr")
-                and host.resolve("/usr") == "/usr"):
+        resolved = _sandbox_resolve(host, lexical, trees, {})
+        if _inside(lexical, "/usr") and resolved is not None and _inside(resolved, "/usr"):
             out.extend(["--symlink", target, link])
     return out
 
@@ -598,7 +650,7 @@ def _expected_pi_argv(record: Mapping[str, Any], host: HostFiles | None) -> list
     fills: dict[str, list[Any]] = {"<node>": [chain[1]["locator"]], "<remote_inner>": [chain[2]["locator"]]}
     if record["target_kind"] == "local":
         assert host is not None
-        fills["<host symlink entries>"] = _host_symlink_entries(host)
+        fills["<host symlink entries>"] = _host_symlink_entries(host, [t["path"] for t in record["ro_trees"]])
         binds: list[Any] = []
         for tree in record["ro_trees"]:
             binds.extend(["--ro-bind", tree["path"], tree["path"]])
@@ -637,14 +689,11 @@ def _check_pi_form(record: Mapping[str, Any], host: HostFiles | None) -> None:
     _require(record["argv"] == _expected_pi_argv(record, host), "argv_form")
 
 
-def _check_local_trees(record: Mapping[str, Any], host: HostFiles) -> dict[str, list[list[str]]]:
-    """Read-only tree digests against the host bytes; returns each tree's rows."""
-    rows_by_tree: dict[str, list[list[str]]] = {}
+def _check_local_trees(record: Mapping[str, Any], host: HostFiles) -> None:
+    """Read-only tree digests against the host bytes."""
     for tree in record["ro_trees"]:
         rows = host.tree_rows(tree["path"])
         _require(rows is not None and _tree_sha256(rows) == tree["tree_sha256"], "tree_mismatch")
-        rows_by_tree[tree["path"]] = rows  # type: ignore[assignment]
-    return rows_by_tree
 
 
 def _check_local_chain(record: Mapping[str, Any], host: HostFiles) -> None:
@@ -657,9 +706,10 @@ def _check_local_chain(record: Mapping[str, Any], host: HostFiles) -> None:
             _require(any(_inside(entry["locator"], t["path"]) for t in record["ro_trees"]), "pi_form")
 
 
-def _check_toolkit_local(record: Mapping[str, Any], manifest: ToolkitManifest,
-                         rows_by_tree: Mapping[str, list[list[str]]]) -> None:
-    """``file_check`` and the local bound closure of ``remote_inner_closure``."""
+def _check_toolkit_local(record: Mapping[str, Any], manifest: ToolkitManifest, host: HostFiles) -> None:
+    """``file_check`` and the local bound closure of ``remote_inner_closure``, on the live
+    host bytes of the toolkit tree. Runs before any aggregate tree digest is compared, so a
+    stale ``tree_sha256`` cannot mask a toolkit failure (``x-contract-pins.toolkit_pins.when``)."""
     worker = record["executable_chain"][-1]
     remote_inner = manifest.roles["toolkit_remote_inner"]
     _require(worker["sha256"] == manifest.files[remote_inner], "file_mismatch")
@@ -671,7 +721,9 @@ def _check_toolkit_local(record: Mapping[str, Any], manifest: ToolkitManifest,
             rel = entry["locator"][len(toolkit.rstrip("/")) + 1:]  # type: ignore[union-attr]
             _require(rel in manifest.files, "file_unlisted")
             _require(entry["sha256"] == manifest.files[rel], "file_mismatch")
-    bound = {row[0]: row[2] for row in rows_by_tree[toolkit]}  # type: ignore[index]
+    rows = host.tree_rows(toolkit)  # type: ignore[arg-type]
+    _require(rows is not None, "closure_mismatch")
+    bound = {row[0]: row[2] for row in rows}  # type: ignore[union-attr]
     for path, digest in bound.items():
         _require(path in manifest.files, "file_unlisted")
         _require(digest == manifest.files[path], "file_mismatch")
@@ -759,11 +811,11 @@ def _register_one(raw: bytes, settings: LaunchSettings, manifest: ToolkitManifes
     _require(pi == (record["template_id"] in PI_RUNNER_TEMPLATE_IDS.values()), "pi_form")
     if pi:
         _require(settings.client == "agent-toolkit" and manifest is not None, "pi_form")
+        if record["target_kind"] == "local":
+            _check_toolkit_local(record, manifest, host)  # type: ignore[arg-type]
         _check_pi_form(record, host if record["target_kind"] == "local" else None)
     if record["target_kind"] == "local":
-        rows_by_tree = _check_local_trees(record, host)
-        if pi:
-            _check_toolkit_local(record, manifest, rows_by_tree)  # type: ignore[arg-type]
+        _check_local_trees(record, host)
         _check_local_chain(record, host)
         trees = [t["path"] for t in record["ro_trees"]]
         _check_image_links(record, trees, host)

@@ -1307,3 +1307,52 @@ def test_host_resolve_follows_indirect_links_in_the_host_view(host):
     os.symlink("loop2", host.root / "opt/loop1")
     os.symlink("loop1", host.root / "opt/loop2")
     assert host.files.resolve("/opt/loop1") is None
+
+
+# -- review round 2 (Consiliency/agent-harness#2134) ------------------------------------------
+
+def test_a_stale_tree_digest_cannot_mask_a_toolkit_file_failure(host, fixture_raw):
+    """The tree digest is captured before a pinned closure file changes: the toolkit check
+    still runs first and the whole registry, the valid openshell sibling included, is
+    unregistered (the recomputed-digest case is the ``[local]`` whole-registry test)."""
+    manifest = json.loads(fixture_raw)
+    stale = local_record(host, manifest)
+    host.write("opt/toolkit/harnesses/pi/sandbox/link.mjs", b"changed after the digest was taken")
+    registry, _ = register([stale, openshell_record(manifest)], fixture_raw, host)
+    assert registry.templates == {}
+    assert registry.refused == {0: "file_mismatch", 1: "toolkit_unregistered"}
+
+
+def test_an_image_link_resolving_through_host_var_log_refuses(tmp_path, fixture_raw):
+    """``/opt/npm/lib/pi`` -> host ``/var/log/hop`` -> ``/opt/npm/lib/real``: the host view
+    lands back in the tree, but in the sandbox ``/var/log`` is an empty mount."""
+    host = Host(tmp_path)
+    shutil.rmtree(host.root / "opt/npm/lib/pi")
+    host.write("opt/npm/lib/real/index.js", b"fixture pi")
+    host.write("var/log/keep", b"")
+    os.symlink("../../../var/log/hop", host.root / "opt/npm/lib/pi")
+    os.symlink("../../opt/npm/lib/real", host.root / "var/log/hop")
+    assert host.files.resolve("/opt/npm/lib/pi") == "/opt/npm/lib/real"
+    manifest = json.loads(fixture_raw)
+    registry, _ = register([local_record(host, manifest, image_links=["/opt/npm/lib/pi"])],
+                           fixture_raw, host)
+    assert registry.refused == {0: "image_link"}
+
+
+def test_a_host_symlink_resolving_through_host_var_log_is_excluded(tmp_path, fixture_raw):
+    """``/lib64`` -> ``usr/lib64`` -> host ``/var/log/l`` -> ``/usr/lib``: inside /usr in
+    the host view, absent in the sandbox, so no ``--symlink`` entry is emitted."""
+    host = Host(tmp_path)
+    (host.root / "usr/lib64").rmdir()
+    (host.root / "usr/lib").mkdir(parents=True)
+    host.write("var/log/keep", b"")
+    os.symlink("../var/log/l", host.root / "usr/lib64")
+    os.symlink("../../usr/lib", host.root / "var/log/l")
+    assert host.files.resolve("/lib64") == "/usr/lib"
+    manifest = json.loads(fixture_raw)
+    with_entry = local_record(host, manifest)
+    registry, _ = register([with_entry], fixture_raw, host)
+    assert registry.refused == {0: "argv_form"}
+    registry, _ = register([local_record(host, manifest, argv=without_lib64(with_entry["argv"]))],
+                           fixture_raw, host)
+    assert registry.refused == {} and list(registry.templates) == ["pi-runner.local.v1"]
