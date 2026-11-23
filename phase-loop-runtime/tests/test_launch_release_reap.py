@@ -11,10 +11,11 @@ The local end-to-end supervisor and capped-parent evidence belong to SL-8.
 from __future__ import annotations
 
 import fcntl
-import hashlib
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import threading
 import time
 
@@ -22,10 +23,12 @@ import pytest
 
 from phase_loop_runtime import launch_process_contract as launch
 from phase_loop_runtime import launch_service
+from phase_loop_runtime import openshell_artifacts
 from phase_loop_runtime import placement_process_contract as contract
 from phase_loop_runtime import run_status
 from phase_loop_runtime import sandbox_placement as sp
 from phase_loop_runtime import seat_resource_caps
+from phase_loop_runtime.launch_return import ReturnAttempt, ReturnPolicy, collect_return
 
 # -- fixture: a real PlacementLifecycle and LaunchService on a temporary inventory ---------
 #
@@ -585,15 +588,24 @@ def test_a_retained_return_outlives_release_and_is_pruned_after_the_tombstone(en
     lifecycle, service, reservation, response, _raw, run_dir = prepared
     rid, paths = reservation["reservation_id"], response.paths
     journal_launch(lifecycle, reservation, "launch-1", paths)
-    directory = lifecycle.launch_return_dir(rid, paths.run_id)
-    directory.mkdir(parents=True, mode=0o700)
+    # The out directory is the run's; the return directory comes from the lifecycle on this
+    # fresh reservation, with no directory made by the test.
+    out = run_dir / "out"
+    out.mkdir(mode=0o700)
     data = b'{"ok":true}'
-    returned = directory / "result.json"
-    returned.write_bytes(data)
-    os.chmod(returned, 0o600)
-    descriptor = launch.ReturnDescriptor("result", "json_object", str(returned),
-                                         hashlib.sha256(data).hexdigest(),
-                                         len(data), None)
+    (out / "result.json").write_bytes(data)
+    os.chmod(out / "result.json", 0o600)
+    directory = lifecycle.launch_return_dir(rid, paths.run_id)
+    assert not directory.exists()
+    limits = openshell_artifacts.Limits(source_bytes=1 << 20, file_bytes=1 << 20, files=100,
+                                        patch_bytes=1 << 20, output_bytes=1 << 20)
+    outcome = collect_return(ReturnAttempt(return_dir=directory, out_dir=out), "result",
+                             policy=ReturnPolicy(binary_limits=limits), withhold=None,
+                             bound=openshell_artifacts.Bound(time.monotonic() + 30, lambda: False))
+    assert (outcome.status, outcome.code) == ("returned", None)
+    assert (directory.parent.stat().st_mode & 0o777) == 0o700
+    descriptor = outcome.descriptor
+    assert Path(descriptor.path).parent == directory
     terminal = launch.LaunchResponse(
         "launch-1", rid, paths.run_id, "finished", None, None, None, None,
         launch.Termination("completed", None, "worker"), 1, HEX, paths.scratch_path,
@@ -601,16 +613,66 @@ def test_a_retained_return_outlives_release_and_is_pruned_after_the_tombstone(en
     lifecycle.write_launch_terminal("launch-1", terminal)
     assert env.release(reservation)[1] == 0
     assert not run_dir.exists()
-    assert returned.read_bytes() == data
+    assert Path(descriptor.path).read_bytes() == data
     body = {"schema": "placement.launch.status.request.v1", "request_id": "st-1",
             "reservation_id": rid, "launch_request_id": "launch-1", "caller_context": {}}
     status = service.status(launch.decode_launch_request("status", json.dumps(body).encode()))
     assert status.launch.return_ == descriptor and Path(status.launch.return_.path).read_bytes() == data
     env.reap()
-    assert returned.exists()  # the tombstone still answers
+    assert Path(descriptor.path).exists()  # the tombstone still answers
     env.clock.now += sp.TOMBSTONE_RETENTION_S
     env.reap()
-    assert not directory.exists()
+    assert not directory.parent.exists()
+
+
+def test_no_return_directory_is_provisioned_for_a_reservation_no_longer_held(env, prepared):
+    lifecycle, _service, reservation, response, _raw, _run_dir = prepared
+    assert env.release(reservation)[1] == 0
+    with pytest.raises(sp.LifecycleError):
+        lifecycle.launch_return_dir(reservation["reservation_id"], response.paths.run_id)
+    assert not (env.launch_root() / "returns" / reservation["reservation_id"]).exists()
+
+
+# -- a claim needs an owner reap can verify ---------------------------------------------------
+
+def test_a_claim_is_refused_and_never_written_without_a_readable_owner_identity(env, prepared,
+                                                                                monkeypatch):
+    lifecycle, _service, reservation, response, _raw, _run_dir = prepared
+    rid, run_id = reservation["reservation_id"], response.paths.run_id
+    assert lifecycle.claim_exec(rid, "launch-1", run_id, timeout_s=1,
+                                owner={"pid": os.getpid(), "start": None}) == (
+        "sandbox_placement_capability_unmet")
+    monkeypatch.setattr(run_status, "process_start_identity", lambda pid: None)
+    assert lifecycle.claim_exec(rid, "launch-1", run_id, timeout_s=1) == (
+        "sandbox_placement_capability_unmet")
+    assert lifecycle.launch_claim_record(rid) is None
+    monkeypatch.undo()
+    assert lifecycle.claim_exec(rid, "launch-1", run_id, timeout_s=1) is None
+
+
+def test_a_legacy_claim_with_no_start_identity_is_gone_once_its_pid_is_gone(env):
+    lifecycle = env.lifecycle(launch_owner=None)
+    pid_max = int(Path("/proc/sys/kernel/pid_max").read_text())
+    absent = next(pid for pid in range(pid_max - 1, 1, -1) if not Path(f"/proc/{pid}").exists())
+    assert lifecycle.launch_owner({"owner": {"pid": absent, "start": None}}) == "gone"
+    # A live pid with no recorded identity stays indeterminate.
+    assert lifecycle.launch_owner({"owner": {"pid": os.getpid(), "start": None}}) == "unverified"
+
+
+def test_a_zombie_owner_is_gone(env):
+    lifecycle = env.lifecycle(launch_owner=None)
+    child = subprocess.Popen([sys.executable, "-I", "-c", "import time; time.sleep(0.2)"])
+    try:
+        start = run_status.process_start_identity(child.pid)
+        assert start is not None
+        deadline = time.monotonic() + 10
+        while Path(f"/proc/{child.pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z":
+            assert time.monotonic() < deadline
+            time.sleep(0.02)
+        assert run_status.process_start_identity(child.pid) is None
+        assert lifecycle.launch_owner({"owner": {"pid": child.pid, "start": start}}) == "gone"
+    finally:
+        child.wait(5)
 
 
 def _evidence():

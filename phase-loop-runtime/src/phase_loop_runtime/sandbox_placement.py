@@ -4046,14 +4046,34 @@ class PlacementLifecycle:
         self._launch_prepare()
         _write_journal(self._launch_dir(name) / f"{key}.json", value)
 
-    def launch_return_dir(self, reservation_id: str, run_id: str) -> Path:
-        """``returns/<reservation_id>/<run_id>``: where a run's retained return bytes live.
-        It is outside ``runs/``, so release and reap of the execution allocations never
-        remove it; it outlives release until the reservation's tombstone expires
-        (``x-release-reap.release``), when reap's sweep removes it."""
+    def launch_return_dir(self, reservation_id: str, run_id: str, *,
+                          timeout_s: float = ANSWER_BOUND_S) -> Path:
+        """``returns/<reservation_id>/<run_id>``: where a run's retained return bytes live,
+        the ``return_dir`` that ``launch_return.collect_return`` takes. Its parent
+        ``returns/<reservation_id>`` is provisioned 0700 under the reservation lock while
+        the reservation is held; the run directory itself is SL-2's to create. It is
+        outside ``runs/``, so release and reap of the execution allocations never remove
+        it; it outlives release until the reservation's tombstone expires
+        (``x-release-reap.release``), when reap's sweep removes it. A caller already holding
+        the lock uses :meth:`ReservationLock.return_dir`."""
+        with self.launch_lock(reservation_id, timeout_s=timeout_s) as lock:
+            if not lock.held:
+                raise LifecycleError(_TIMEOUT)
+            return lock.return_dir(run_id)
+
+    def _return_dir_locked(self, reservation_id: str, run_id: str) -> Path:
         if not _ISSUED_RESERVATION.fullmatch(reservation_id) or not _RUN_ID.fullmatch(run_id):
             raise LifecycleError("placement_internal")
-        return self._launch_dir("returns") / reservation_id / run_id
+        if not os.path.lexists(self._dir("reservations") / f"{reservation_id}.json"):
+            # A reservation no longer held is swept; nothing is provisioned for it.
+            raise LifecycleError("placement_internal")
+        parent = self._launch_dir("returns") / reservation_id
+        self._launch_prepare()
+        try:
+            _private_tree(parent)
+        except OSError:
+            raise LifecycleError("placement_inventory_unsafe") from None
+        return parent / run_id
 
     def launch_run_dir(self, run_id: str) -> Path:
         """``runs/<run_id>``: the directory that owns a run's local allocations."""
@@ -4171,10 +4191,15 @@ class PlacementLifecycle:
         current = self.launch_claim_record(reservation_id)
         if current is not None and current.get("claimed") is not False:
             return _LAUNCH_CLAIMED
+        identity = dict(owner) if owner is not None else _own_identity()
+        if not _valid_owner(identity):
+            # A claim is committed only with an owner reap can later verify: without a
+            # readable start identity nothing is written and the claim is refused.
+            return _CAPABILITY_UNMET
         self._launch_write("claims", reservation_id, {
             "reservation_id": reservation_id, "request_id": request_id, "run_id": run_id,
             "claimed": True, "claimed_at": self.clock(),
-            "owner": dict(owner) if owner is not None else _own_identity(),
+            "owner": identity,
             "rolled_back": list((current or {}).get("rolled_back") or []),  # type: ignore[arg-type]
         })
         return None
@@ -4715,6 +4740,10 @@ class ReservationLock:
         self._require()
         return self.lifecycle._rollback_locked(self.reservation_id, request_id)
 
+    def return_dir(self, run_id: str) -> Path:
+        self._require()
+        return self.lifecycle._return_dir_locked(self.reservation_id, run_id)
+
 
 def _own_identity() -> dict[str, object]:
     """The claiming process: pid and its start identity (``run_status``)."""
@@ -4723,31 +4752,56 @@ def _own_identity() -> dict[str, object]:
     return {"pid": os.getpid(), "start": run_status.process_start_identity(os.getpid())}
 
 
+def _valid_owner(owner: Mapping[str, object]) -> bool:
+    pid, start = owner.get("pid"), owner.get("start")
+    return type(pid) is int and pid >= 1 and isinstance(start, str) and bool(start)
+
+
+def _observed_exited(pid: int) -> bool:
+    """Whether ``/proc/<pid>/stat`` was read and shows an exited state. A read that
+    fails is not evidence either way."""
+    try:
+        fd = os.open(f"/proc/{pid}/stat", os.O_RDONLY | os.O_CLOEXEC)
+        try:
+            data = os.read(fd, 4096)
+        finally:
+            os.close(fd)
+        state = data.decode("ascii", "replace").rsplit(")", 1)[1].split()[0]
+    except (OSError, IndexError):
+        return False
+    return state in ("Z", "X", "x")
+
+
 def _landed_launch_owner(claim: Mapping[str, object]) -> str:
     """Classify the claim's recorded owner process. ``gone`` needs affirmative evidence:
-    the pid no longer exists, or a readable start identity names another process.
-    ``live`` is a readable, equal identity. Everything else, an owner the record does not
-    name or an identity that cannot be read for an existing pid, is ``unverified``."""
+    the pid no longer exists (ESRCH, also for a claim that recorded no start identity), a
+    readable start identity names another process, or procfs shows the process exited
+    (state ``Z``, ``X`` or ``x``). ``live`` is a readable identity equal to the recorded
+    one. Everything else, an owner the record does not name or a process whose state
+    cannot be read, is ``unverified``."""
     from . import run_status
 
     owner = claim.get("owner")
     if not isinstance(owner, Mapping):
         return "unverified"
     pid, start = owner.get("pid"), owner.get("start")
-    if type(pid) is not int or pid < 1 or not isinstance(start, str):
+    if type(pid) is not int or pid < 1:
         return "unverified"
+    recorded = start if isinstance(start, str) and start else None
     try:
         identity = run_status.process_start_identity(pid)
     except Exception:
         identity = None
-    if identity is not None:
-        return "live" if identity == start else "gone"
+    if identity is not None and recorded is not None:
+        return "live" if identity == recorded else "gone"
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
-        return "gone"
+        return "gone"  # ESRCH: the recorded pid no longer exists
     except OSError:
         return "unverified"
+    if _observed_exited(pid):
+        return "gone"  # procfs shows the process exited (zombie or dead)
     return "unverified"
 
 
