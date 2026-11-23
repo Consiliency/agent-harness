@@ -3591,10 +3591,14 @@ def run_loop(
         def _report_acceptance(prep: "_DispatchPrep", result, verdict: str | None) -> None:
             """JEVHOST GAPS §3.1: report an entered launch's acceptance verdict.
 
-            Called once per entered launch, after the phase is classified. A failing
-            observer appends one metadata-only ``jevdrill_acceptance_hook_failed``
-            diagnostic, which reconciliation ignores.
+            Called once per entered launch, after the phase is classified. An interrupted
+            run reports nothing, whatever its exit (the launcher's interrupt result exits
+            130), so an interrupt never counts as a failed attempt. A failing observer
+            appends one metadata-only ``jevdrill_acceptance_hook_failed`` diagnostic,
+            which reconciliation ignores.
             """
+            if result.interrupted:
+                verdict = None
             failure = _deliver_acceptance(jevdrill_adapter, result, verdict)
             if failure is not None:
                 _append_acceptance_hook_failure(repo, roadmap, alias, failure)

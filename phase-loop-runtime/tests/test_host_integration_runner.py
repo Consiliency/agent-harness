@@ -185,6 +185,12 @@ CASES = {
                                            "blocked", "stalled_child_observation"),
     "contract_timed_out_is_infrastructure": (lambda spec, plan, tmp: _result(spec, timed_out=True), None, INFRA,
                                              "blocked", "repeated_verification_failure"),
+    # The launcher's KeyboardInterrupt result: exit 130 with ``interrupted=True``. The
+    # interrupt takes precedence over the nonzero exit, so it reports nothing.
+    "interrupted_exit_130_reports_nothing": (
+        lambda spec, plan, tmp: _result(spec, returncode=130, interrupted=True, cleanup_evidence={
+            "reason": "interrupted", "process_alive_after_cleanup": None}),
+        None, None, "blocked", "repeated_verification_failure"),
     "contract_interrupted_reports_nothing": (lambda spec, plan, tmp: _result(spec, interrupted=True), None, None,
                                              "blocked", "repeated_verification_failure"),
     "contract_surviving_child_reports_nothing": (
