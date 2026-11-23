@@ -14540,7 +14540,7 @@ def _exec_jailed_grok_leg(
         if measurement is not None:
             # §5.1 r7: the process ran, so its admission must have been consumed; without
             # it the reservation is unresolved and nothing is read or retained.
-            if not surface.admission_consumed(measurement.reservation):
+            if not surface.admission_present(measurement.reservation):
                 unresolved = True
             elif read_sink is not None:
                 read_sink(surface.sink_source(str(seat.seat_dir / _seat_jail.HOST_HOME_DIRNAME)))

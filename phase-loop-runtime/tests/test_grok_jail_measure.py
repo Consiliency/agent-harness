@@ -125,7 +125,7 @@ class Runner:
             reservation, (b"fixture-bearer-0123456789",), MappingProxyType({"sink": [1, 2]}),
             issuer=gjs._ISSUER)
 
-    def probe_sink(self, holder, seat_id, sink):
+    def probe_sink(self, holder, seat_id, sink, *, measurement):
         self.order.append("probe_sink")
         if self.current.refuse_at == "probe_sink":
             raise seat_jail.SeatSandboxRefused(REFUSED)
@@ -181,8 +181,11 @@ class Bench:
                           gts.MeasurementRefused("binary_mismatch")))
         patch.setattr(pi, "_grok_probe_identity", lambda argv, env=None: identity)
         patch.setattr(pi, "_subscription_env", lambda base_env=None: {"PATH": "/usr/bin:/bin"})
-        patch.setattr(gts, "_help_and_version",
-                      lambda binary, env: (b"grok help\n", b"grok 1.0.92\n"))
+        self.metadata_calls: list = []
+        patch.setattr(gts, "_help_and_version", lambda binary, env: (
+            self.metadata_calls.append(binary), (b"grok help\n", b"grok 1.0.92\n"))[1])
+        self.credential_remaining = 7200
+        patch.setattr(gts, "jail_credential_remaining", lambda: self.credential_remaining)
         patch.setattr(gts, "_prepare_route", lambda route: (None, None, None, None))
         patch.setattr(gjs, "resolve_subject",
                       lambda env=None: gjs.JailedSubject(STAND_IN, self.digest))
@@ -361,7 +364,7 @@ def test_ba_j7_a_refusal_before_the_hook_settles_unspawned_with_no_charge(bench,
     assert bench.admissions() == []
     status = bench.status()
     assert status["charged"] == 0 and status["stopped"] is True
-    assert status["unspawned"] == {first["reservation"]: report["routes"][0]["code"]}
+    assert status["unspawned"] == {first["reservation"]: gts._unspawned_code(first["code"])}
     code, report = bench.launch(_measured())
     assert (code, report["routes"][0]["code"]) == (1, "grant_stopped_unspawned")
 
@@ -492,7 +495,7 @@ def test_no_reservation_without_the_grants_passing_rehearsal(bench):
 def test_a_rehearsal_refused_before_its_hook_is_no_rehearsal(bench):
     assert bench.new_grant()[0] == 0
     code, report = bench.rehearse(Launch(refuse_at="identity"))
-    assert (code, report["code"]) == (1, "context_refused")
+    assert (code, report["code"]) == (1, REFUSED)  # the typed code survives the boundary
     assert bench.admissions() == []
     code, report = bench.rehearse()
     assert code == 0 and report["result"] == "passed", report
@@ -831,7 +834,7 @@ def test_a_measurement_that_fails_is_not_ok(mleg, case):
 
 def test_a_measurement_without_its_admission_after_exit_is_unresolved(mleg, monkeypatch):
     seat, measurement = mleg.prepare()
-    monkeypatch.setattr(gjs, "admission_consumed", lambda reservation: False)
+    monkeypatch.setattr(gjs, "admission_present", lambda reservation: False)
     status, _text, failures = _mrun(mleg, seat, measurement)
     assert status != "OK" and failures == [REFUSED] and mleg.reads == []
 
@@ -1006,7 +1009,7 @@ def test_launch_provider_runs_the_hook_after_qualification_identity_and_prefligh
         assert "hook" not in order
 
 
-# --- §4.5 M2: probe_sink -------------------------------------------------------------------
+# --- §4.5 M2: probe_sink, bound to the admitted inode -------------------------------------
 
 
 class _Done:
@@ -1014,9 +1017,20 @@ class _Done:
         self.returncode, self.stdout, self.stderr = rc, out, b""
 
 
-def test_probe_sink_runs_the_verbs_in_h_and_checks_the_inode(tmp_path, monkeypatch):
+def _sink_measurement(sink: Path, *, admitted=None):
+    descriptor = gjs.open_dir_chain(str(sink))
+    info = os.fstat(descriptor)
+    reservation = gjs.MeasurementReservation("g", "0001-00000000000000aa", "pilot", "0" * 64,
+                                             1, str(sink.parent))
+    return gjs.JailedMeasurementLaunch(
+        reservation, (), MappingProxyType({"sink": list(admitted or (info.st_dev, info.st_ino))}),
+        issuer=gjs._ISSUER, sink_fd=descriptor)
+
+
+def test_probe_sink_runs_the_verbs_in_h_bound_to_the_admitted_inode(tmp_path, monkeypatch):
     sink = tmp_path / "sink"
     sink.mkdir(mode=0o700)
+    measurement = _sink_measurement(sink)
     info = sink.stat()
     calls = []
 
@@ -1025,19 +1039,24 @@ def test_probe_sink_runs_the_verbs_in_h_and_checks_the_inode(tmp_path, monkeypat
         return _Done(0, json.dumps({"device": info.st_dev, "inode": info.st_ino}).encode())
 
     monkeypatch.setattr(subprocess, "run", run)
-    monkeypatch.setattr(os, "getuid", lambda: info.st_uid + 1)  # the sink is "not ours"
-    assert gjs.probe_sink(4242, 7, str(sink)) == (info.st_dev, info.st_ino)
+    monkeypatch.setattr(os, "getuid", lambda: info.st_uid + 1)  # the sink is the seat's
+    try:
+        assert gjs.probe_sink(4242, 7, str(sink), measurement=measurement) == (
+            info.st_dev, info.st_ino)
+    finally:
+        gjs.close_measurement(measurement)
     argv = calls[0]
     assert argv[:4] == ["/usr/bin/nsenter", "-t", "4242", "-U"]
-    assert argv[-3:] == ["sink-handoff", str(sink), "7"]
+    assert argv[-5:] == ["sink-handoff", str(sink), "7", str(info.st_dev), str(info.st_ino)]
     assert "phase_loop_runtime.grok_jail_surface" in argv
 
 
 @pytest.mark.parametrize("fail", ["exit", "swapped", "non_empty", "garbled", "helper",
-                                  "operator_owned"])
+                                  "operator_owned", "group_mode", "path_swapped", "no_fd"])
 def test_probe_sink_fails_closed(tmp_path, monkeypatch, fail):
     sink = tmp_path / "sink"
     sink.mkdir(mode=0o700)
+    measurement = _sink_measurement(sink)
     info = sink.stat()
     report = {"device": info.st_dev, "inode": info.st_ino}
     rc = 0
@@ -1047,6 +1066,13 @@ def test_probe_sink_fails_closed(tmp_path, monkeypatch, fail):
         report["inode"] += 1
     elif fail == "non_empty":
         (sink / "x").write_bytes(b"")
+    elif fail == "group_mode":
+        sink.chmod(0o770)
+    elif fail == "path_swapped":  # the name now holds another empty directory
+        sink.rename(tmp_path / "moved")
+        sink.mkdir(mode=0o700)
+    elif fail == "no_fd":
+        gjs.close_measurement(measurement)
     payload = b"{" if fail == "garbled" else json.dumps(report).encode()
 
     def run(argv, **kwargs):
@@ -1057,14 +1083,77 @@ def test_probe_sink_fails_closed(tmp_path, monkeypatch, fail):
     monkeypatch.setattr(subprocess, "run", run)
     if fail != "operator_owned":
         monkeypatch.setattr(os, "getuid", lambda: info.st_uid + 1)
-    with pytest.raises(seat_jail.SeatSandboxRefused) as caught:
-        gjs.probe_sink(4242, 7, str(sink))
+    try:
+        with pytest.raises(seat_jail.SeatSandboxRefused) as caught:
+            gjs.probe_sink(4242, 7, str(sink), measurement=measurement)
+    finally:
+        gjs.close_measurement(measurement)
     assert caught.value.code == REFUSED
+
+
+def test_the_handoff_refuses_a_substituted_sink_before_changing_anything(tmp_path):
+    """The pre-handoff substitution: another empty directory renamed into the sink slot
+    after M1. The H helper compares the admitted inode first and changes nothing."""
+    sink = tmp_path / "sink"
+    sink.mkdir(mode=0o700)
+    admitted = sink.stat()
+    sink.rename(tmp_path / "admitted")
+    other = tmp_path / "sibling"
+    other.mkdir(mode=0o750)
+    other.rename(sink)
+    before = sink.stat()
+    assert gjs._sink_handoff_main(str(sink), str(os.getuid()), str(admitted.st_dev),
+                                  str(admitted.st_ino)) == 3
+    after = sink.stat()
+    assert (after.st_mode, after.st_uid, after.st_gid) == (
+        before.st_mode, before.st_uid, before.st_gid)
+
+
+@pytest.mark.parametrize("bad", ["mode", "non_empty", "symlink"])
+def test_the_handoff_refuses_a_sink_that_is_not_an_empty_private_directory(tmp_path, bad):
+    sink = tmp_path / "sink"
+    sink.mkdir(mode=0o700)
+    info = sink.stat()
+    if bad == "mode":
+        sink.chmod(0o750)
+    elif bad == "non_empty":
+        (sink / "old").write_bytes(b"")
+    else:
+        sink.rename(tmp_path / "target")
+        sink.symlink_to(tmp_path / "target")
+    assert gjs._sink_handoff_main(str(sink), str(os.getuid()), str(info.st_dev),
+                                  str(info.st_ino)) == 3
+
+
+def test_the_handoff_keeps_0700_and_passes_its_descriptor_to_the_dropped_probe(
+        tmp_path, monkeypatch):
+    sink = tmp_path / "sink"
+    sink.mkdir(mode=0o700)
+    info = sink.stat()
+    seen = []
+
+    class Exec(Exception):
+        pass
+
+    def execv(path, argv):
+        seen.append(argv)
+        raise Exec
+
+    monkeypatch.setattr(os, "execv", execv)
+    with pytest.raises(Exec):
+        gjs._sink_handoff_main(str(sink), str(os.getuid()), str(info.st_dev), str(info.st_ino))
+    after = sink.stat()
+    assert after.st_mode & 0o777 == 0o700
+    assert (after.st_uid, after.st_gid) == (os.getuid(), os.getuid())
+    argv = seen[0]
+    assert argv[0] == "/usr/bin/setpriv" and argv[-2] == "sink-probe"
+    assert os.fstat(int(argv[-1])).st_ino == info.st_ino
 
 
 def test_the_sink_probe_verb_writes_reads_back_and_unlinks(tmp_path, capsys):
     sink = tmp_path / "sink"
     sink.mkdir(mode=0o700)
+    os.chown(sink, os.getuid(), os.getgid())
     descriptor = os.open(sink, os.O_RDONLY | os.O_DIRECTORY)
     try:
         assert gjs._sink_probe_main(str(descriptor)) == 0
@@ -1075,14 +1164,16 @@ def test_the_sink_probe_verb_writes_reads_back_and_unlinks(tmp_path, capsys):
     assert list(sink.iterdir()) == []
 
 
-@pytest.mark.parametrize("bad", ["non_empty", "symlink_entry"])
-def test_the_sink_probe_verb_refuses_a_non_empty_sink(tmp_path, bad):
+@pytest.mark.parametrize("bad", ["non_empty", "symlink_entry", "group_mode"])
+def test_the_sink_probe_verb_refuses_a_non_private_or_non_empty_sink(tmp_path, bad):
     sink = tmp_path / "sink"
     sink.mkdir(mode=0o700)
     if bad == "non_empty":
         (sink / "old").write_bytes(b"")
-    else:
+    elif bad == "symlink_entry":
         (sink / "link").symlink_to("/etc/passwd")
+    else:
+        sink.chmod(0o770)
     descriptor = os.open(sink, os.O_RDONLY | os.O_DIRECTORY)
     try:
         assert gjs._sink_probe_main(str(descriptor)) == 3
@@ -1090,12 +1181,37 @@ def test_the_sink_probe_verb_refuses_a_non_empty_sink(tmp_path, bad):
         os.close(descriptor)
 
 
+def test_the_spawn_hook_reads_the_sink_through_the_m1_descriptor(tmp_path, monkeypatch):
+    """After M2 the sink is the seat's; M5 checks emptiness through the operator's M1
+    descriptor and refuses when the path names another inode."""
+    sink = tmp_path / "sink"
+    sink.mkdir(mode=0o700)
+    measurement = _sink_measurement(sink)
+    try:
+        sink.rename(tmp_path / "moved")
+        sink.mkdir(mode=0o700)
+        with pytest.raises(gjs.JailRefused):
+            gjs._sink_view(measurement.sink_fd, [sink.stat().st_dev, sink.stat().st_ino])
+    finally:
+        gjs.close_measurement(measurement)
+
+
+def test_the_admission_presence_check_is_strict(tmp_path):
+    reservation = gjs.MeasurementReservation("g", "0001-00000000000000aa", "pilot", "0" * 64,
+                                             1, str(tmp_path))
+    assert gjs.admission_state(reservation) == "absent"
+    (tmp_path / gjs.admission_name(reservation.reservation_id)).mkdir()  # not the file
+    assert gjs.admission_consumed(reservation) is True  # the charge stays
+    assert gjs.admission_present(reservation) is False  # and nothing succeeds
+
+
 def test_the_sink_handoff_verb_refuses_a_symlinked_sink(tmp_path):
     target = tmp_path / "elsewhere"
-    target.mkdir()
+    target.mkdir(mode=0o700)
     link = tmp_path / "sink"
     link.symlink_to(target)
-    assert gjs._sink_handoff_main(str(link), "7") == 3
+    info = target.stat()
+    assert gjs._sink_handoff_main(str(link), "7", str(info.st_dev), str(info.st_ino)) == 3
 
 
 def test_the_sink_reader_reads_one_seat_owned_artifact(tmp_path, capsys):
@@ -1106,6 +1222,124 @@ def test_the_sink_reader_reads_one_seat_owned_artifact(tmp_path, capsys):
     assert capsys.readouterr().out.encode() == _definitions(_staged_tools())
     assert gjs._sink_read_main(str(tmp_path / "sink"), str(os.getuid() + 1)) == gjs._SINK_AMBIGUOUS
     assert gjs._sink_read_main(str(tmp_path / "none"), str(os.getuid())) == gjs._SINK_AMBIGUOUS
+
+
+# --- Review round 1: ordering, ownership and the credential slot ------------------------
+
+
+def test_a_stopped_grant_starts_no_grok_subprocess(bench):
+    """A launch stage of a stopped grant refuses before the definition-only --help and
+    --version calls, and before anything is composed."""
+    bench.opened()
+    bench.launch(Launch(refuse_at="probe_sink"))
+    calls, order = len(bench.metadata_calls), len(bench.runner.order)
+    code, report = bench.launch(_measured())
+    assert (code, report["routes"][0]["code"]) == (1, "grant_stopped_unspawned")
+    assert len(bench.metadata_calls) == calls and len(bench.runner.order) == order
+
+
+def test_an_identity_refused_grant_starts_no_grok_subprocess(bench, monkeypatch):
+    bench.opened()
+    bench.runner.order.clear()
+    monkeypatch.setattr(gjs, "resolve_subject",
+                        lambda env=None: gjs.JailedSubject(STAND_IN, "0" * 64))
+    code, report = bench.launch(_measured())
+    assert (code, report["routes"][0]["code"]) == (1, "binary_mismatch")
+    assert bench.metadata_calls == [] and "compose" not in bench.runner.order
+
+
+def test_an_m2_refusal_keeps_its_typed_code(bench):
+    bench.opened()
+    code, report = bench.launch(Launch(refuse_at="probe_sink"))
+    assert report["routes"][0]["code"] == REFUSED
+    assert list(bench.status()["unspawned"].values()) == [REFUSED]
+
+
+def test_a_short_credential_lifetime_refuses_before_opening_or_reserving(bench):
+    bench.credential_remaining = int(gts.JAIL_CREDENTIAL_MARGIN_S)
+    code, report = bench.new_grant()
+    assert (code, report["code"]) == (1, "grok_seat_token_expired")
+    bench.credential_remaining = 7200
+    code, report = bench.new_grant()
+    assert code == 0 and report["credential_remaining_s"] == 7200
+    assert bench.rehearse()[0] == 0
+    bench.credential_remaining = 60
+    code, report = bench.launch(_measured())
+    assert (code, report["routes"][0]["code"]) == (1, "grok_seat_token_expired")
+    assert bench.status()["reservations"] == [] and bench.metadata_calls == []
+
+
+def _second_grant(bench, name="second"):
+    code, report = bench.cli("--new-grant", "--planned", "pilot,planted,confirm",
+                             "--retries", "0", "--hosted-check", HOSTED, grant=name)
+    assert code == 0, report
+    bench.runner.plan.insert(0, Launch(events=(_event("deny", "budget"),), exit=1))
+    assert bench.cli("--attended", "--rehearse", "--route", "staged", grant=name)[0] == 0
+    bench.runner.plan.extend([_measured(), _measured(), _measured()])
+    out = bench.output
+    bench.output = out.parent / ("out-" + name)
+    try:
+        assert bench.cli("--attended", *(["--route", "staged"] * 3), grant=name)[0] == 0
+        code, report = bench.cli("--aggregate", grant=name)
+        assert code == 0 and report["published"] == ["staged"], report
+    finally:
+        bench.output = out
+
+
+def test_a_stale_aggregate_leaves_the_other_grants_publication(bench):
+    _three(bench)
+    assert bench.cli("--aggregate")[0] == 0
+    _second_grant(bench)
+    published = bench.jail_record()
+    code, report = bench.cli("--aggregate")
+    assert code == 0 and report["published"] == [] and report["superseded"]
+    assert bench.jail_record() == published
+    assert gjs.resolve_record(bench.digest, gjs.staged_argv_digest()) is not None
+
+
+def test_a_refused_stale_aggregate_leaves_the_other_grants_publication(bench, monkeypatch):
+    _three(bench)
+    _second_grant(bench)
+    published = bench.jail_record()
+    monkeypatch.setattr(seat_window, "runtime_digest", lambda: "f" * 64)
+    code, report = bench.cli("--aggregate")
+    assert (code, report["code"]) == (1, "context_mismatch")
+    assert bench.jail_record() == published
+
+
+def test_the_final_check_refuses_another_grants_publication_and_writes_no_receipt(bench):
+    receipt = Path(pa.private_record_root()) / gjs.receipt_name(bench.digest,
+                                                                gjs.staged_argv_digest())
+    _three(bench)
+    assert bench.cli("--aggregate")[0] == 0
+    _second_grant(bench)
+    code, report = bench.cli("--verify-probe", "final")
+    assert (code, report["code"]) == (1, "publication_of_another_grant")
+    assert not receipt.exists()
+
+
+def test_the_final_check_needs_exactly_one_staged_row(bench, monkeypatch):
+    _three(bench)
+    assert bench.cli("--aggregate")[0] == 0
+    real = gts._probe_rows
+    monkeypatch.setattr(gts, "_probe_rows",
+                        lambda *a, **k: [row for row in real(*a, **k) if row["route"] != "staged"])
+    code, report = bench.cli("--verify-probe", "final")
+    assert (code, report["code"]) == (1, "probe_mismatch")
+
+
+def test_the_procedure_code_block_is_valid_bash():
+    doc = Path(__file__).resolve().parents[2] / "docs" / "ops" / "grok-jail-measurement.md"
+    if not doc.exists():
+        pytest.skip("repo-only: the clean-room wheel tree has no docs/")
+    text = doc.read_text(encoding="utf-8")
+    block = text.split("```bash\n", 1)[1].split("```", 1)[0]
+    done = subprocess.run(["bash", "-n"], input=block.encode(), capture_output=True,
+                          timeout=30)
+    assert done.returncode == 0, done.stderr.decode()
+    for needed in ("GROK_SLOT_END_EPOCH", "credential_remaining_s", "VL2",
+                   "erratum 8", "MemorySwapMax=0", "Gemini"):
+        assert needed in text, needed
 
 
 # --- The procedure script ------------------------------------------------------------------

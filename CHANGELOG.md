@@ -15,7 +15,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `grok_jail_context.v1`; cap 5, at most 2 retries), and only while eligibility conditions 1
   to 4 hold. Each `--route staged` launch takes the next label, runs in the §4.5 order --
   `prepare_measurement`, the new `grok_jail_surface.probe_sink` (run in the seat's holder
-  namespace), then the SL-3 leg in its new measurement mode -- and is settled on positive
+  namespace; it hands only the admitted sink inode to the seat UID, mode 0700, and probes it
+  as that UID), then the SL-3 leg in its new measurement mode -- and is settled on positive
   proof, or `unspawned` with no charge when no admission file exists. The final verifier no
   longer consumes the measurement admission: `grok_jail_surface.consume_admission` runs as
   `launch_provider`'s spawn hook, after the qualification check and the identity probe, and
@@ -23,7 +24,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   back against the production key's pass. In measurement mode the leg's status is `OK` iff
   the launch exited 0. `--aggregate` applies the agreement rule and the publication gate on
   `runtime_digest` and `jail_context_digest` and is the only writer of the jailed host-local
-  record; `--verify-probe final` passes only on the jailed `staged` row. OWNER-DECISION r7-1
+  record, and withdraws only its own grant's publication; `--verify-probe final` passes only
+  when this grant owns the live publication and on the jailed `staged` row. Jailed stages
+  refuse before any grok subprocess or reservation when the grant is stopped, the subject's
+  image differs, or the credential's metadata-only lifetime would not outlast the launch
+  (`grok_seat_token_expired`). OWNER-DECISION r7-1
   is not ruled: an `unspawned` settlement stops the grant, through one decision point
   (`grok_tool_surface.unspawned_resumes`). New procedure: `docs/ops/grok-jail-measurement.md`.
   Pins: `seat_window.runtime_digest()` moves; the SDK proof binding of

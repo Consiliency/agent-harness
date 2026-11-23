@@ -41,25 +41,47 @@ image on the installed release.
 - **Runtime drift.** A different install between the rehearsal and `--aggregate` makes
   `--aggregate` refuse `context_mismatch` and remove any jailed record for the image.
 
+## Before the slot (no request is spent; stop if any item fails)
+
+Jail contract §7 lists these preconditions. Each is confirmed before the grant is opened, and
+the script below stops before any reservation unless the credential check passes.
+
+1. The owner signs in afresh with `grok login` on the seat host immediately before the slot.
+2. `VL` and `VL2` have passed on the seat host, and hosted BA-J1 has run with no skips on the
+   installed head (`PHASE_LOOP_REQUIRE_GROK_JAIL_NS=1`); its run is `GROK_HOSTED_CHECK_RUN`.
+3. Where a Gemini window refresh is required, it is separately authorised and completed
+   first, on the same installed release.
+4. The erratum 8 item 4 staging check passes: `--verify-probe initial` (step 1 below) checks
+   the managed policy read-only, before anything is projected.
+5. Shared compute: a quiet slot, both shared-compute locks held, the memory-PSI gate, and
+   `MemorySwapMax=0` scopes, as for D4.
+6. The slot's hard end is known and exported as `GROK_SLOT_END_EPOCH` (UTC epoch seconds).
+   Step 2 reads the credential's remaining lifetime from the store's metadata only
+   (`credential_remaining_s`: the subscription marker present and the expiry parsed, no value
+   kept) and stops unless it exceeds the slot end plus five minutes. `--new-grant`,
+   `--rehearse` and every `--route staged` stage also refuse `grok_seat_token_expired`
+   before reserving when the lifetime would not outlast the launch.
+
 ## The script
 
 The script is safe to paste into `bash` as a whole. It stops at the first unexpected result.
-Every value in angle brackets is the owner's grant, not a default.
+Every input is exported by the operator from the owner's grant before pasting; the script
+stops if one is unset.
 
 ```bash
 set -euo pipefail
 
-# The approved image and its grant (jail contract §7).
-GROK_BIN=<the installed grok executable the jailed subject resolves>
-GROK_SHA=<the image sha256 the grant names>
-GRANT=<the grant id>
+# The approved image and its grant (jail contract §7), exported before pasting.
+: "${GROK_BIN:?export GROK_BIN=<the installed grok executable the jailed subject resolves>}"
+: "${GROK_SHA:?export GROK_SHA=<the image sha256 the grant names>}"
+: "${GRANT:?export GRANT=<the grant id>}"
+: "${GROK_SLOT_END_EPOCH:?export GROK_SLOT_END_EPOCH=<the slot hard end, UTC epoch seconds>}"
+# The hosted CI run of the boundary check on the installed head (BA-J1, condition 4).
+: "${GROK_HOSTED_CHECK_RUN:?export GROK_HOSTED_CHECK_RUN=<hosted run id or URL>}"
 OUT="$HOME/.local/state/phase-loop/grok-jail-surface/$GRANT"
 MT=(timeout 600 phase-loop seat-window measure-tools --vendor grok --host-class team
     --grant "$GRANT"
     --binary "$GROK_BIN" --expect-binary-sha256 "$GROK_SHA" --output "$OUT")
-
-# The hosted CI run of the boundary check on the installed head (BA-J1, condition 4).
-: "${GROK_HOSTED_CHECK_RUN:?export GROK_HOSTED_CHECK_RUN=<hosted run id or URL> first}"
 
 # 0. 0 calls. The installed runtime shows the Grok row jailed, and the provider-free
 #    qualification is current for the production key.
@@ -67,33 +89,43 @@ timeout 300 phase-loop seat-window matrix
 timeout 300 phase-loop seat-sandbox qualify --leg grok
 echo "$GROK_SHA  $GROK_BIN" | sha256sum --check --strict
 
-# 1. Open the jailed grant: 3 labels, 2 retries, cap 5. 0 calls.
-"${MT[@]}" --new-grant --planned pilot,planted,confirm --retries 2 \
-  --hosted-check "$GROK_HOSTED_CHECK_RUN"
+# 1. 0 calls. Erratum 8 item 4's staging check and the BA-3 isolation check; every route
+#    still refused with basis "none".
+"${MT[@]}" --verify-probe initial
 
-# 2. The rehearsal of the pilot under a budget-0 proxy. 0 calls.
+# 2. Open the jailed grant: 3 labels, 2 retries, cap 5. 0 calls. Then the credential slot
+#    check, metadata only: stop unless the lifetime outlasts the slot end plus 5 minutes.
+"${MT[@]}" --new-grant --planned pilot,planted,confirm --retries 2 \
+  --hosted-check "$GROK_HOSTED_CHECK_RUN" > "$OUT.grant.json"
+python3 -I -c 'import json, sys, time
+remaining = json.load(open(sys.argv[1]))["credential_remaining_s"]
+sys.exit(0 if remaining > int(sys.argv[2]) - time.time() + 300 else 1)' \
+  "$OUT.grant.json" "$GROK_SLOT_END_EPOCH"
+
+# 3. The rehearsal of the pilot under a budget-0 proxy. 0 calls.
 "${MT[@]}" --attended --rehearse --route staged
 
-# 3. Gate on THIS grant's rehearsal record.
+# 4. Gate on THIS grant's rehearsal record.
 "${MT[@]}" --require-rehearsed staged
 
-# 4. The pilot. At most 1 counted request.
+# 5. The pilot. At most 1 counted request.
 "${MT[@]}" --attended --route staged
 
-# 5. Gate on the pilot: exits non-zero unless the label just launched is "measured".
+# 6. Gate on the pilot: exits non-zero unless the label just launched is "measured".
 "${MT[@]}" --require-measured staged
 
-# 6. planted, then confirm. At most 1 counted request each.
+# 7. planted, then confirm. At most 1 counted request each.
 "${MT[@]}" --attended --route staged --route staged
 "${MT[@]}" --require-measured staged
 
-# 7. Aggregate: the agreement rule and the publication gate, then the jailed host-local
+# 8. Aggregate: the agreement rule and the publication gate, then the jailed host-local
 #    record. 0 calls.
 "${MT[@]}" --aggregate
 
-# 8. The grant-backed check. 0 calls. Passes only if the jailed staged row is
-#    frozen_measurement, admitted and sourced from the host-local jailed record, and every
-#    other form is refused. Its probe writes the host's first jailed receipt.
+# 9. The grant-backed check. 0 calls. Passes only if this grant owns the live jailed
+#    publication, the jailed staged row is frozen_measurement, admitted and sourced from the
+#    host-local jailed record, and every other form is refused. Its probe writes the host's
+#    first jailed receipt.
 "${MT[@]}" --verify-probe final
 
 "${MT[@]}" --status
@@ -105,7 +137,7 @@ echo "$GROK_SHA  $GROK_BIN" | sha256sum --check --strict
   was `unspawned`, or when nothing could be reserved; later routes on the same command line
   are not attempted. `--status` reports `charged`, `retries_used`, `unspawned`, `unresolved`
   and `stopped`.
-- A transport retry is step 4 or step 6 run again; the label is chosen by the ledger, never
+- A transport retry is step 5 or step 7 run again; the label is chosen by the ledger, never
   by the operator. A retry is refused while any reservation is unresolved.
 - `--aggregate` publishes `staged` only if `pilot`, `planted` and `confirm` are each
   `measured` with identical `tools` and `definitions_sha256`, and the passed rehearsal and
@@ -113,7 +145,7 @@ echo "$GROK_SHA  $GROK_BIN" | sha256sum --check --strict
   `surface_unstable` and publishes nothing. A measured surface that is not admitted is
   evidence only.
 - `--aggregate` is the only writer of the jailed host-local record; the jailed receipt is
-  written only by the probe of step 8 (or `phase-loop seat-window probe-tools --vendor grok`
+  written only by the probe of step 9 (or `phase-loop seat-window probe-tools --vendor grok`
   once the record exists). Jail contract §3, "Production writers".
 - The installed-catalog check (jail contract §7.1) comes after GROK SL-6 and is not part of
   this script.
