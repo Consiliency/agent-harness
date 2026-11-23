@@ -8,6 +8,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
+- RRIMAGE SL-3: the review-runner image operator guide, `docs/review-runner-image.md`, and
+  the ai-stack handoff template, `plans/evidence/review-runner/HANDOFF-ai-stack.template.md`
+  (`plans/phase-plan-v1-rrimage-RRIMAGE.md`, contract §5.1 and §6). The guide covers the
+  recipe, G-RR-BUILD as the only agent-harness grant, the four ai-stack gates and their order,
+  rules P1–P10, the P4 scope and stale marker, the consumers, and `record --replace` versus
+  `verify-receipt`. It notes that a config-only reproducibility difference is refused by P10
+  until the contract erratum agent-harness#2122 lands. The template carries the §6 fields and
+  §5.1 receipt requirements as placeholders, and the `no-new-privileges` request.
+  `openshell-private-transport.md` points to the guide.
 - LANEEXEC SL-1: `phase_loop_runtime.launch_snapshot` builds LaneExec snapshots and seed
   sets (`plans/phase-plan-v13-LANEEXEC.md`, launch protocol v1 `x-snapshot` and `x-seed`).
   `build_snapshot` copies a source tree into a new private execution tree in `git`,

@@ -80,6 +80,8 @@ shared Consiliency/agent-toolkit helper commit
 and rfc8785 wheel hash. See agent-harness#1813 for local network-disabled container
 evidence. Its default entrypoint reaches restriction then refuses with
 `isolation_adapter_unavailable`: no production adapter/provider is supplied.
+The build, hand-over to ai-stack and pin of this image (RRIMAGE) are in
+`docs/review-runner-image.md`; consumers accept only a strict `pinned` record.
 
 ## Offline regression recipe
 
