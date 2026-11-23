@@ -8,6 +8,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
+- LANEEXEC SL-2: `ReturnPolicy` supports independent patch and JSON result byte caps,
+  including zero. A return above its cap yields `sandbox_launch_result_invalid` and
+  leaves no retained bytes. A verified absent proposal still returns null without a code.
 - LANEEXEC SL-3: `phase_loop_runtime.launch_service` adds `build_launch_service` and
   `LaunchService.prepare`, `status` and `cancel` (`plans/phase-plan-v13-LANEEXEC.md`,
   binding §7 E3-3). The function stores the captured client configuration and the seams the

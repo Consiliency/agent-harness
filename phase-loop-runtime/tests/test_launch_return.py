@@ -250,12 +250,85 @@ def test_patch_over_the_laneexec_cap_is_result_invalid(state):
     assert (outcome.descriptor, outcome.code) == (None, "sandbox_launch_result_invalid")
 
 
-@pytest.mark.parametrize("cap", [0, -1, lr.PATCH_CAP_MAX + 1, True])
-def test_patch_cap_may_only_be_lowered(cap):
+@pytest.mark.parametrize("cap", [-1, True])
+def test_patch_cap_rejects_invalid_values(cap):
     with pytest.raises(lr.LaunchReturnError) as error:
         lr.ReturnPolicy(binary_limits=LIMITS, patch_cap=cap)
     assert error.value.code == "return_policy_invalid"
     assert lr.ReturnPolicy(binary_limits=LIMITS).patch_cap == 67108864
+
+
+@pytest.mark.parametrize("cap", [-1, True, 1.5])
+def test_result_cap_rejects_invalid_values(cap):
+    with pytest.raises(lr.LaunchReturnError) as error:
+        lr.ReturnPolicy(binary_limits=LIMITS, result_cap=cap)
+    assert error.value.code == "return_policy_invalid"
+
+
+def test_return_policy_clamps_each_cap_to_its_ceiling():
+    policy = lr.ReturnPolicy(LIMITS, patch_cap=lr.PATCH_CAP_MAX + 1, result_cap=lr.RESULT_CAP + 1)
+    assert policy.patch_cap == lr.PATCH_CAP_MAX
+    assert policy.result_cap == lr.RESULT_CAP
+    assert lr.ReturnPolicy(LIMITS).result_cap == lr.RESULT_CAP
+
+
+@pytest.mark.parametrize("byte_length", [None, 0], ids=["declared-size", "read-size"])
+def test_zero_patch_cap_refuses_nonempty_proposal(state, byte_length):
+    proposal = store_proposal(state, patch_bytes(), byte_length=byte_length)
+    policy = lr.ReturnPolicy(LIMITS, patch_cap=0)
+    seen = []
+    outcome = lr.collect_return(attempt(state, proposal), "patch", policy=policy,
+                                withhold=seen.append, bound=bound())
+    assert (outcome.descriptor, outcome.code) == (None, "sandbox_launch_result_invalid")
+    assert seen == []
+    assert not state["return_dir"].exists()
+
+
+def test_zero_patch_cap_preserves_verified_absence(state):
+    proposal = patch_return.ProposalReturn("absent", None, 0, (), None)
+    policy = lr.ReturnPolicy(LIMITS, patch_cap=0)
+    seen = []
+    outcome = lr.collect_return(attempt(state, proposal), "patch", policy=policy,
+                                withhold=seen.append, bound=bound())
+    assert (outcome.status, outcome.descriptor, outcome.code) == ("absent", None, None)
+    assert seen == []
+    assert not state["return_dir"].exists()
+
+
+@pytest.mark.parametrize("cap", [0, 1], ids=["zero", "lowered"])
+def test_result_cap_refuses_nonempty_json_above_cap(state, cap):
+    (state["out"] / "result.json").write_bytes(b"{}")
+    policy = lr.ReturnPolicy(LIMITS, result_cap=cap)
+    seen = []
+    outcome = lr.collect_return(attempt(state), "result", policy=policy,
+                                withhold=seen.append, bound=bound())
+    assert (outcome.descriptor, outcome.code) == (None, "sandbox_launch_result_invalid")
+    assert seen == []
+    assert not state["return_dir"].exists()
+
+
+@pytest.mark.parametrize("kind", ["patch", "result"])
+def test_return_at_lowered_kind_cap_is_delivered_with_other_cap_zero(state, kind):
+    patch = patch_bytes()
+    result = b'{"ok": true}'
+    proposal = store_proposal(state, patch)
+    (state["out"] / "result.json").write_bytes(result)
+    policy = lr.ReturnPolicy(LIMITS, patch_cap=len(patch) if kind == "patch" else 0,
+                             result_cap=len(result) if kind == "result" else 0)
+    data = patch if kind == "patch" else result
+    seen = []
+
+    def withhold(candidate):
+        seen.append(candidate)
+        return False
+
+    outcome = lr.collect_return(attempt(state, proposal), kind, policy=policy,
+                                withhold=withhold, bound=bound())
+    assert outcome.code is None
+    assert outcome.descriptor.kind == kind
+    assert outcome.descriptor.byte_length == len(data)
+    assert Path(outcome.descriptor.path).read_bytes() == data
+    assert seen == [data]
 
 
 def test_binary_literal_over_its_limit_is_result_invalid(state):
