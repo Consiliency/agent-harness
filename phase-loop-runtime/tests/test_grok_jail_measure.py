@@ -1505,3 +1505,31 @@ def test_the_procedure_script_runs_end_to_end(bench):
     assert code == 0 and report["passed"], report
     status = bench.status()
     assert status["charged"] == 3 and status["stopped"] is False
+
+
+# --- The no-hook call shape of _run_leg_with_liveness is unchanged ------------------------
+
+
+def test_a_launch_without_a_hook_keeps_its_old_call_shape(tmp_path, monkeypatch):
+    """Only a prepared Grok measurement passes ``spawn_hook``; every other jailed launch
+    reaches ``launch_provider`` with exactly the keywords it had before SL-4, so a launch
+    callable that does not accept ``spawn_hook`` still works."""
+    built = _build(tmp_path / "shape")
+    seen: list = []
+
+    def launch_provider(argv, *, process_owner, probe_owner, env, stdin, stdout, stderr,
+                        start_new_session, trace_output, seat_caps):
+        seen.append(sorted(locals()))
+        return subprocess.Popen(["/bin/echo", "shape"], stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                start_new_session=True)
+
+    monkeypatch.setattr(pi, "launch_provider", launch_provider)
+    try:
+        proc = pi._run_leg_with_liveness(["/bin/echo", "shape"], cwd="/seat/tree", env={},
+                                         deadline_s=30, seat_jail=built.jail,
+                                         probe_jail=built.jail)
+    finally:
+        seat_jail.close_jail_fds(built.jail)
+    assert proc.returncode == 0 and len(seen) == 1
+    assert "spawn_hook" not in seen[0]
