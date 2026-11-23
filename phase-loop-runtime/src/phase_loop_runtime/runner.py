@@ -139,7 +139,6 @@ from .models import (
     DelegationDecision,
     DelegationRequest,
     DispatchDecision,
-    EVENT_STATUSES,
     DispatchHints,
     EXECUTORS,
     HarnessLaneAssignment,
@@ -214,7 +213,7 @@ from .governed_premerge import (
 )
 from .governed_bundle import render_governed_bundle, staged_index_diff
 from .panel_invoker import available_panel_legs, invoke_board as _PRODUCTION_INVOKE_BOARD
-from .reconcile import reconcile
+from .reconcile import DIAGNOSTIC_EVENT_ACTIONS, reconcile
 from .credential_redaction import redact_text
 from .redaction import apply_diagnostics_redaction
 from .review_summary import summarize_run
@@ -916,6 +915,8 @@ def is_sibling_phase_plan_doc(path: str, roadmap: Path, current_phase: str) -> b
 
 def _latest_phase_event_status(repo: Path, phase: str) -> str | None:
     for event in reversed(read_events(repo)):
+        if event.get("action") in DIAGNOSTIC_EVENT_ACTIONS:
+            continue
         if str(event.get("phase", "")).upper() == phase.upper():
             status = event.get("status")
             return str(status) if status is not None else None
@@ -3590,10 +3591,9 @@ def run_loop(
         def _report_acceptance(prep: "_DispatchPrep", result, verdict: str | None) -> None:
             """JEVHOST GAPS §3.1: report an entered launch's acceptance verdict.
 
-            Called once per entered launch, after the phase is classified and its
-            authoritative events are appended. A failing observer appends one
-            ``jevdrill_acceptance_hook_failed`` event that restates the phase's latest event,
-            so reconcile keeps its status, blocker, terminal and closeout state.
+            Called once per entered launch, after the phase is classified. A failing
+            observer appends one metadata-only ``jevdrill_acceptance_hook_failed``
+            diagnostic, which reconciliation ignores.
             """
             failure = _deliver_acceptance(jevdrill_adapter, result, verdict)
             if failure is not None:
@@ -11407,39 +11407,25 @@ _LAUNCH_CONTRACT_ACCEPTANCE = {
 }
 
 
-def _append_acceptance_hook_failure(repo: Path, roadmap: Path, phase: str, failure: dict[str, object]) -> None:
-    """Log a failed acceptance observer without changing the phase's reconciled state.
+# A diagnostic-only action: listed in ``reconcile.DIAGNOSTIC_EVENT_ACTIONS``.
+ACCEPTANCE_HOOK_FAILED_ACTION = "jevdrill_acceptance_hook_failed"
 
-    The diagnostic restates the phase's latest ledger event (status, blocker, terminal,
-    closeout and dirty summaries, provenance) under its own action, adding only the
-    metadata-only failure record. Reconcile therefore re-applies the same state.
+
+def _append_acceptance_hook_failure(repo: Path, roadmap: Path, phase: str, failure: dict[str, object]) -> None:
+    """Log a failed acceptance observer as a metadata-only diagnostic (GAPS §3.1).
+
+    The record carries no status, blocker, closeout or transition, and its action is in
+    ``reconcile.DIAGNOSTIC_EVENT_ACTIONS``, so it can never restate or roll back phase state.
     """
-    latest = None
-    for event in read_events(repo):
-        if str(event.get("phase", "")).upper() == phase.upper() and event.get("roadmap") == str(roadmap):
-            latest = event
-    if latest is None or latest.get("status") not in EVENT_STATUSES:
-        return
-    metadata = dict(latest.get("metadata") or {})
-    metadata["jevdrill_acceptance_hook_failed"] = failure
-    append_event(repo, LoopEvent(
-        timestamp=utc_now(),
-        repo=str(latest.get("repo") or repo),
-        roadmap=str(roadmap),
-        phase=str(latest.get("phase") or phase),
-        action="jevdrill_acceptance_hook_failed",
-        status=latest["status"],
-        model=latest.get("model") or "",
-        reasoning_effort=latest.get("reasoning_effort") or "",
-        source=latest.get("source") or "",
-        override_reason=latest.get("override_reason"),
-        command=latest.get("command"),
-        blocker=latest.get("blocker"),
-        metadata=metadata,
-        selected_executor=latest.get("selected_executor"),
-        roadmap_sha256=latest.get("roadmap_sha256"),
-        phase_sha256=latest.get("phase_sha256"),
-    ))
+    append_payload(repo, {
+        "timestamp": utc_now(),
+        "repo": str(repo),
+        "roadmap": str(roadmap),
+        "phase": phase,
+        "action": ACCEPTANCE_HOOK_FAILED_ACTION,
+        "schema_version": 2,
+        "metadata": {"jevdrill_acceptance_hook_failed": failure},
+    }, roadmap=roadmap)
 
 
 def _deliver_acceptance(integration: object | None, result: LaunchResult, verdict: str | None) -> dict[str, object] | None:

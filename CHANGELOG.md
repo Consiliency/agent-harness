@@ -24,9 +24,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
     config, an unavailable BAML evaluator, an interrupt, a missing host log) report nothing.
 
   The launch-contract verdict uses the reason captured at the blocker check. An observer
-  that raises is logged as one `jevdrill_acceptance_hook_failed` event that restates the
-  phase's latest event, so the reconciled status, blocker and closeout state are unchanged.
-  With no integration, behaviour is unchanged.
+  that raises is logged as one metadata-only `jevdrill_acceptance_hook_failed` diagnostic,
+  with no status, blocker or closeout. Its action is listed in the new
+  `reconcile.DIAGNOSTIC_EVENT_ACTIONS`, which reconciliation, its latest-event recovery
+  scans and the runner's latest-status lookup skip, so the diagnostic can never restate or
+  roll back phase state. With no integration, behaviour is unchanged.
 - JEVHOST SL-6: `phase_loop_runtime.host_integration`, the host-neutral integration seam
   (`plans/amendments/jevhost-JEVHOST-host-gaps.md`, IF-0-JEVHOST-5, GAPS §2). It provides
   `RetryBudget` (remaining attempts and floor-millisecond time, exhaustion, tighten-only),

@@ -23,6 +23,7 @@ imported test-locally behind the GAPS §3.0 availability assertion.
 import importlib
 import re
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -327,10 +328,61 @@ def test_a_raising_observer_leaves_the_reconciled_state_and_logs_one_event(tmp_p
         assert _reconciled_state(repo, roadmap)["blocker_class"] == CASES[case][4]
     failures = [event for event in read_events(repo) if event["action"] == HOOK_FAILED]
     assert len(failures) == 1
-    assert failures[0]["status"] == snapshot.phases["RUNNER"]
-    assert failures[0]["metadata"][HOOK_FAILED] == {
-        "execution_run_id": RUN_ID, "verdict": verdict[1] or "passed", "error_type": "RuntimeError"}
+    _assert_metadata_only(failures[0], verdict[1] or "passed")
     assert not [event for event in read_events(base_repo) if event["action"] == HOOK_FAILED]
+
+
+def _assert_metadata_only(diagnostic, verdict):
+    """The diagnostic carries the failure record and no phase state."""
+    assert diagnostic["metadata"] == {HOOK_FAILED: {
+        "execution_run_id": RUN_ID, "verdict": verdict, "error_type": "RuntimeError"}}
+    for field in ("status", "blocker", "terminal_summary", "closeout_summary", "selected_executor"):
+        assert field not in diagnostic, field
+
+
+NEWER_CLOSEOUT_COMMIT = "0123456789abcdef0123456789abcdef01234567"
+
+
+def test_a_raising_observer_never_rolls_back_a_newer_ledger_event(tmp_path, monkeypatch):
+    """Another writer appends a newer ``complete`` between the observer failing and the
+    diagnostic landing. The newer status, blocker and closeout state must survive."""
+    from phase_loop_runtime.models import LoopEvent
+    from phase_loop_runtime.provenance import event_provenance
+
+    newer = []
+
+    def other_writer(repo, roadmap):
+        from phase_loop_runtime.events import append_event
+
+        append_event(repo, LoopEvent(
+            timestamp="2999-01-01T00:00:00Z", repo=str(repo), roadmap=str(roadmap), phase="RUNNER",
+            action="run", status="complete", model="m", reasoning_effort="high", source="user_override",
+            metadata={"closeout": {"closeout_mode": "commit", "closeout_action": "commit",
+                                   "closeout_commit": NEWER_CLOSEOUT_COMMIT}},
+            **event_provenance(Path(roadmap), "RUNNER")))
+        newer.append(True)
+
+    def interleave(write):
+        def wrapped(repo, item, *args, **kwargs):
+            action = item.get("action") if isinstance(item, dict) else getattr(item, "action", None)
+            if action == HOOK_FAILED and not newer:
+                roadmap = item.get("roadmap") if isinstance(item, dict) else item.roadmap
+                other_writer(repo, roadmap)
+            return write(repo, item, *args, **kwargs)
+        return wrapped
+
+    monkeypatch.setattr(runner, "append_payload", interleave(runner.append_payload))
+    monkeypatch.setattr(runner, "append_event", interleave(runner.append_event))
+    repo, roadmap, snapshot, loud = _run_case(tmp_path, monkeypatch, "zero_exit_failing_gate_is_quality", raises=True)
+    assert loud.verdicts == [(RUN_ID, False, "quality")]
+    assert newer == [True], "the interleaved writer did not run"
+    events = read_events(repo)
+    assert [event["action"] for event in events][-2:] == ["run", HOOK_FAILED]
+    state = reconcile(repo, roadmap)
+    assert state.phases["RUNNER"] == "complete", "the diagnostic rolled back the newer event"
+    assert state.blocker_class is None and state.blocker_summary is None and not state.human_required
+    assert (state.closeout_summary or {}).get("closeout_commit") == NEWER_CLOSEOUT_COMMIT
+    _assert_metadata_only(events[-1], "quality")
 
 
 # --- GAPS §3.5 row 5a ------------------------------------------------------------------------
