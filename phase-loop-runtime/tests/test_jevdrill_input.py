@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import sys
 from dataclasses import replace
 
@@ -36,7 +37,9 @@ def input_spec(tmp_path):
     child.chmod(0o700)
     bundle = PromptBundle("workflow", "PRIVATE_PROMPT é😀\r\nnext", "prompt_only",
                           context_body="PRIVATE_CONTEXT with additional instructions")
-    return launcher.LaunchSpec(executor="codex", command=[str(child), "exec", bundle.render_prompt()],
+    command = ([sys.executable, str(child), "exec", bundle.render_prompt()]
+               if os.name == "nt" else [str(child), "exec", bundle.render_prompt()])
+    return launcher.LaunchSpec(executor="codex", command=command,
         prompt_bundle=bundle, injection_metadata=InjectionMetadata("codex", "prompt_only",
             context_sha256=bundle.context_sha256()), delivery_mode="prompt_only",
         dispatch_decision=None, available=True)

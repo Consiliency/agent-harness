@@ -8,6 +8,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
+- RRIMAGE SL-3: the review-runner image operator guide, `docs/review-runner-image.md`, and
+  the ai-stack handoff template, `plans/evidence/review-runner/HANDOFF-ai-stack.template.md`
+  (`plans/phase-plan-v1-rrimage-RRIMAGE.md`, contract §5.1 and §6). The guide covers the
+  recipe, G-RR-BUILD as the only agent-harness grant, the four ai-stack gates and their order,
+  rules P1–P10, the P4 scope and stale marker, the consumers, and `record --replace` versus
+  `verify-receipt`. It notes that a config-only reproducibility difference is refused by P10
+  until the contract erratum agent-harness#2122 lands. The template carries the §6 fields and
+  §5.1 receipt requirements as placeholders, and the `no-new-privileges` request.
+  `openshell-private-transport.md` points to the guide.
 - LANEEXEC SL-1: `phase_loop_runtime.launch_snapshot` builds LaneExec snapshots and seed
   sets (`plans/phase-plan-v13-LANEEXEC.md`, launch protocol v1 `x-snapshot` and `x-seed`).
   `build_snapshot` copies a source tree into a new private execution tree in `git`,
@@ -85,6 +94,32 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- The JEV Drill companion workflow's Windows legs (follow-up to
+  Consiliency/agent-harness#2092; POSIX behaviour is unchanged):
+  - `windows_storage.PrivateSecurity.verify` no longer compares rendered SDDL text, which
+    refused the private directories it had just created. Possible explanations, pending
+    inspection of the returned descriptor, are `D:PAI` rendering and SID alias rendering.
+    It now checks the DACL structurally. The DACL must be protected and hold exactly two
+    `FILE_ALL_ACCESS` allow ACEs with no ACE flags, for SYSTEM and the current user,
+    compared as binary SIDs. Any extra, deny, inherited or inheritable ACE is still
+    refused.
+  - On native Windows, `launch(cwd=…)` no longer fails in `_worktree_change_snapshot`.
+    That helper uses POSIX-only trusted-git resolution, so it now returns `None` there,
+    and changed paths are unknown.
+  - Two JEV Drill tests are now portable. The `input_spec` child is started through
+    `sys.executable` on Windows. The 1 MiB `test_permanent_invalidation` parameter has a
+    short id: its generated id overflowed the Windows environment limit. Both Windows logs
+    stop where pytest would begin reporting the oversized node ID. This strongly implicates
+    the ID. Runner output backpressure remains unconfirmed.
+  - Both "Run the twelve files" workflow steps now have a 20-minute step timeout. The step
+    timeout leaves time for the `always()` upload if pytest has already written the junit
+    and the job still has time remaining.
+  - `grok_jail_surface` imports on native Windows again. Its module-level `_PATH_WALK` and
+    `_DIR_READ` open flags (added by Consiliency/agent-harness#2116) are `None` there, so
+    `open_dir_chain` fails closed at use, as the file's `_WALK` already did. POSIX values
+    are unchanged, and `test_windows_import.py` covers both constants.
+
+  The contract record is `plans/amendments/jevhost-S5-windows-runtime.md`.
 - `phase_loop_runtime` now imports on native Windows, and POSIX behaviour is unchanged
   (Consiliency/agent-harness#2092). Before, `closeout`, `runner` and the JEV Drill test
   files that import them failed at import on Windows. `provider_tree_proof` computed its

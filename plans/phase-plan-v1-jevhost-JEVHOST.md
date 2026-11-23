@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: JEVHOST
 roadmap: specs/phase-plans-jevhost-v1.md
-roadmap_sha256: 79dae858f5b456625b4cb72e751fb91085d9280e7dfa87b6125d2d3b6dfc4ee7
+roadmap_sha256: 55bae44da652dc537d33edf5eaaa685d21f7e9c2ab4515b98601e0d04a8b853a
 automation:
   suite_command: ["bash", "-lc", "cd phase-loop-runtime && PHASE_LOOP_TDD_EXPECT_SCHED=1 PYTHONPATH=$PWD/src:$PWD/tests timeout 1800 .venv/bin/python -m pytest -q -p no:cacheprovider -m 'not dotfiles_integration' tests/test_jevdrill_selection.py tests/test_jevdrill_install_preflight.py tests/test_jevdrill_runner_lanes.py tests/test_jevdrill_launch_merge.py tests/test_jevdrill_companion_workflow.py tests/test_jevdrill_receipt.py tests/test_jevdrill_adapter.py tests/test_jevdrill_diagnostics.py tests/test_jevdrill_discovery.py tests/test_jevdrill_input.py tests/test_jevdrill_queue.py tests/test_jevdrill_usage.py tests/test_launcher_liveness.py tests/test_phase_loop_launcher.py tests/test_phase_loop_work_unit_observability.py tests/test_windows_locking.py tests/test_windows_processes.py tests/test_windows_storage.py tests/test_launch_audit_inventory.py tests/test_seat_reference_inventory.py tests/test_agent_cli_scratch_inventory_1147.py"]
 ---
