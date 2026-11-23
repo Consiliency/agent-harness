@@ -284,6 +284,17 @@ def test_zero_patch_cap_refuses_nonempty_proposal(state, byte_length):
     assert not state["return_dir"].exists()
 
 
+def test_declared_patch_length_over_cap_refuses_even_with_missing_locator_file(state):
+    data = patch_bytes()
+    proposal = patch_return.ProposalReturn(
+        "returned", sha256(data).hexdigest(), len(data), (), "a-run/missing.bin")
+    policy = lr.ReturnPolicy(LIMITS, patch_cap=0)
+    outcome = lr.collect_return(attempt(state, proposal), "patch", policy=policy,
+                                withhold=None, bound=bound())
+    assert (outcome.descriptor, outcome.code) == (None, "sandbox_launch_result_invalid")
+    assert not state["return_dir"].exists()
+
+
 def test_zero_patch_cap_preserves_verified_absence(state):
     proposal = patch_return.ProposalReturn("absent", None, 0, (), None)
     policy = lr.ReturnPolicy(LIMITS, patch_cap=0)
@@ -295,9 +306,23 @@ def test_zero_patch_cap_preserves_verified_absence(state):
     assert not state["return_dir"].exists()
 
 
-@pytest.mark.parametrize("cap", [0, 1], ids=["zero", "lowered"])
-def test_result_cap_refuses_nonempty_json_above_cap(state, cap):
-    (state["out"] / "result.json").write_bytes(b"{}")
+def test_zero_patch_cap_delivers_empty_returned_proposal(state):
+    proposal = store_proposal(state, b"")
+    policy = lr.ReturnPolicy(LIMITS, patch_cap=0)
+    outcome = lr.collect_return(attempt(state, proposal), "patch", policy=policy,
+                                withhold=None, bound=bound())
+    assert outcome.code is None
+    assert outcome.descriptor.byte_length == 0
+    assert Path(outcome.descriptor.path).read_bytes() == b""
+
+
+@pytest.mark.parametrize(("body", "cap"), [
+    pytest.param(b"{}", 0, id="zero"),
+    pytest.param(b"{}", 1, id="lowered"),
+    pytest.param(b"", 0, id="empty-at-zero"),
+])
+def test_result_cap_refuses_invalid_or_oversized_json(state, body, cap):
+    (state["out"] / "result.json").write_bytes(body)
     policy = lr.ReturnPolicy(LIMITS, result_cap=cap)
     seen = []
     outcome = lr.collect_return(attempt(state), "result", policy=policy,
