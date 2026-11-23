@@ -16266,6 +16266,47 @@
     },
     {
       "acceptance_criteria_count": null,
+      "amends": "plans/phase-plan-v1-jevhost-JEVHOST.md",
+      "created_at": "2026-11-23T03:00:00Z",
+      "file": "plans/amendments/jevhost-JEVHOST-host-gaps.md",
+      "frozen_inputs": {
+        "plans/artifacts/jevhost-host-gaps-v1.md": {
+          "sha256": "89ac72d9d7e77601b99940508191991c6d256db586223a7c1afcfb6e5e86958d"
+        },
+        "plans/artifacts/jevhost-v1-contract.md": {
+          "sha256": "1fa957afc8f7b3a324a8f048695b3d2ebf1009336a1d49407d33dfc1b36f4e1d"
+        }
+      },
+      "handoff_ref": null,
+      "if_gates_produced": [
+        "IF-0-JEVHOST-5"
+      ],
+      "lanes": [
+        "SL-6",
+        "SL-7",
+        "SL-8",
+        "SL-9"
+      ],
+      "lifecycle": [],
+      "owner_skill": "claude-plan-phase",
+      "phase_alias": "JEVHOST",
+      "planning_artifact_only": true,
+      "reflection_ref": null,
+      "review_status": "pending",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-jevhost-v1.md",
+        "slug": "phase-plans-jevhost-v1",
+        "status": "committed",
+        "type": "phase"
+      },
+      "slug": "v1-jevhost-JEVHOST-amend-host-gaps",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-11-23T09:00:00Z"
+    },
+    {
+      "acceptance_criteria_count": null,
       "created_at": "2026-11-22T21:00:00Z",
       "file": "plans/phase-plan-v1-rrimage-RRIMAGE.md",
       "handoff_ref": null,
