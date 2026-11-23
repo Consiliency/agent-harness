@@ -683,3 +683,254 @@ def _evidence():
         policy_digest=DIGEST, egress_sha256=DIGEST, transport_id="local", caps_sha256=HEX,
         bridge_attached=False, stdout_sha256=None, stderr_sha256=None, exit_status=0,
         duration_ms=5, renewals=0)
+
+
+GEN = "f" * 32
+
+
+def _generation_claim(prepared):
+    life, _, reservation, response, _, _ = prepared
+    key = (reservation["reservation_id"], "launch-1", GEN)
+    with life.launch_lock(key[0], timeout_s=1) as lock:
+        assert lock.claim(key[1], response.paths.run_id, generation=GEN) is None
+    return life, key
+
+
+def test_generation_start_fence_and_rollback_cas(prepared):
+    life, key = _generation_claim(prepared)
+    deadline = time.monotonic() + 2
+    assert not life.fence_launch(key[0], key[1], "0" * 32, cause="release", deadline=deadline)
+    assert not life.renew_launch(key[0], key[1], "0" * 32, deadline=deadline)
+    with life.launch_lock(key[0], timeout_s=1):
+        with pytest.raises(sp.LifecycleError, match="placement_lock_order"):
+            with life.launch_operation_lock(key[0], GEN, timeout_s=.1):
+                pytest.fail("operation lock acquired under the journal")
+    with life.launch_operation_lock(key[0], GEN, timeout_s=1) as held:
+        assert held and life.mark_start_intent(*key, deadline=deadline)
+        assert not life.mark_start_intent(*key, deadline=deadline)
+    with life.launch_lock(key[0], timeout_s=1) as lock:
+        assert not lock.rollback(key[1])
+        assert not lock.record_rollback_intent(key[1], GEN, cause="snapshot_expired")
+    assert life.fence_launch(*key, cause="release", deadline=deadline)
+    assert life.read_cleanup_debt(*key).cause == "release"
+    with life.launch_operation_lock(key[0], GEN, timeout_s=.2) as held:
+        assert held and not life.mark_start_intent(*key, deadline=deadline)
+    assert not life.renew_launch(*key, deadline=deadline)
+    with life.launch_lock(key[0], timeout_s=1) as lock:
+        code, active = lock.window(None)
+        assert code is not None
+        assert life._flags(active).fenced
+        # An unreadable disposition is still a closed window even with the claim intact.
+        (life.launch_root / "dispositions" / (GEN + ".json")).unlink()
+        assert lock.window(None)[0] is not None and life._flags(active).fenced
+    with pytest.raises(sp.LifecycleError):
+        life.read_cleanup_debt(*key)
+
+
+def test_generation_rollback_records_completion(prepared):
+    life, key = _generation_claim(prepared)
+    with life.launch_lock(key[0], timeout_s=1) as lock:
+        assert not lock.rollback(key[1], generation=GEN)
+        assert lock.record_rollback_intent(key[1], GEN, cause="snapshot_expired")
+        assert lock.rollback(key[1], generation=GEN)
+    claim = life.launch_claim_record(key[0])
+    assert claim["completed_rollback"] == dict(request_id=key[1], generation=GEN, cause="snapshot_expired")
+    assert not claim["claimed"] and claim["rolled_back"] == [key[1]]
+
+
+def test_generation_reap_dead_before_expiry_keeps_unresolved_debt(env, prepared):
+    life, key = _generation_claim(prepared)
+    env.owner = "gone"
+    result, _ = env.reap()
+    assert result.inventory.pending == 1 and prepared[-1].exists()
+    assert life.read_cleanup_debt(*key).cause == "owner_gone"
+
+
+@pytest.mark.parametrize("kind", ["stage", "scratch"])
+def test_generation_allocation_requires_observed_inode(env, prepared, kind):
+    life, _, reservation, response, _, run = prepared
+    key = (reservation["reservation_id"], "launch-1", GEN)
+    path = (run if kind == "scratch" else life.launch_root / "stages") / GEN
+    args = dict(kind=kind, run_id=response.paths.run_id, owner=sp._own_identity(),
+                basename=GEN, deadline=time.monotonic()+2)
+    with life.launch_lock(key[0], timeout_s=1):
+        assert life.record_allocation(*key, **args, file_id=None)
+        path.mkdir(mode=0o700)
+        ident = path.stat()
+        assert life.record_allocation(*key, **args, file_id=(ident.st_dev, ident.st_ino))
+        path.rename(path.with_suffix(".saved"))
+        path.mkdir(mode=0o700)
+        assert not life.collect_allocation(*key, kind=kind, deadline=args["deadline"])
+        path.rmdir()
+        path.with_suffix(".saved").rename(path)
+        assert life.collect_allocation(*key, kind=kind, deadline=args["deadline"])
+        assert not path.exists()
+
+
+def test_generation_implicit_prepare_replay(env):
+    from types import SimpleNamespace
+    life = env.lifecycle("agent-harness")
+    reservation = env.reserve("agent-harness")
+    rid = reservation["reservation_id"]
+    request = SimpleNamespace(request_id="launch-1", reservation=contract.Reservation.from_json(reservation),
+                              reservation_json=reservation, workload="implementation", paths=None,
+                              snapshot=launch.Snapshot("/src", "copy", (), (), "."))
+    life.write_launch_record(request.request_id, dict(reservation_id=rid, generation=GEN))
+    env.caps_error = True
+    with life.launch_request_lock(request.request_id, timeout_s=1):
+        with pytest.raises(sp.LifecycleError, match="placement_lock_order"):
+            with life.launch_lock(rid, timeout_s=.1):
+                pytest.fail("journal acquired under the request lock")
+    with life.launch_lock(rid, timeout_s=1) as lock:
+        paths = lock.ensure_prepare(request)
+        assert isinstance(paths, launch.PreparedPaths)
+        assert lock.ensure_prepare(request) == paths
+        request.workload = "pi-runner"
+        assert lock.ensure_prepare(request) == "sandbox_launch_input_mismatch"
+    assert life.launch_prepare_record(rid)["request_id"] == request.request_id
+    assert not list((life.launch_root / "prepare-requests").glob("*.json"))
+
+
+def test_generation_late_lane_entry(env, monkeypatch):
+    from types import SimpleNamespace
+    import phase_loop_runtime
+    units = launch_service.LaneUnits(("target",), (), HEX, HEX)
+    context = launch_service.LaneContext(HEX, units, ("src",), (HEX,))
+    with pytest.raises(ValueError):
+        launch_service.LaneContext("bad", units, ("src",), ())
+    runner = lambda handoff: None
+    service = env.service(supervisor_runner=runner)
+    observed = {}
+    def attempt(service, request, **kwargs):
+        observed.update(kwargs)
+        return request
+    monkeypatch.setattr(phase_loop_runtime, "launch_exec", SimpleNamespace(launch_attempt=attempt),
+                        raising=False)
+    event = threading.Event()
+    assert service.launch_lane("req", lane_context=context, cancelled=event) == "req"
+    assert observed == dict(origin="lane", lane_context=context, cancelled=event, pre_exec=None, withhold=None)
+    assert service.supervisor_runner is runner
+    monkeypatch.setenv("SUPERVISOR_RUNNER", "fixture")
+    default = env.service()
+    request = SimpleNamespace(supervisor_runner=runner, caller_context={"supervisor_runner": "fixture"})
+    assert default.launch_lane(request, lane_context=context, cancelled=event) is request
+    assert default.supervisor_runner is None
+
+
+@pytest.mark.parametrize("fault", ["none", "duplicate", "oversize", "surplus", "utf8", "stale_start"])
+def test_generation_cancel_long_path(env, fault, monkeypatch):
+    import socket
+    import struct
+    env.state /= "long-root-" + "x" * 108
+    life = env.lifecycle()
+    reservation = env.reserve()
+    response, _, _ = prepare(env.service(lifecycle=life), reservation)
+    key = (reservation["reservation_id"], "launch-1", GEN)
+    with life.launch_lock(key[0], timeout_s=1) as journal:
+        assert journal.claim(key[1], response.paths.run_id, generation=GEN) is None
+    ctl = life.launch_root / "ctl"
+    assert len(os.fsencode(life.launch_root)) > 107
+    flags = os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW
+    fd = os.open("/", flags)
+    for component in ctl.parts[1:]:
+        child = os.open(component, flags, dir_fd=fd)
+        os.close(fd)
+        fd = child
+    received = []
+    def serve(listener):
+        conn, _ = listener.accept()
+        with conn, conn.makefile("rb") as reader:
+            peer = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+            pid, uid, _ = struct.unpack("3i", peer)
+            assert uid == os.geteuid()
+            header = reader.read(4)
+            if fault == "stale_start":
+                assert header == b""
+                return
+            length, = struct.unpack(">I", header)
+            request = json.loads(reader.read(length))
+            assert request["sender_pid"] == pid
+            assert request["sender_start"] == run_status.process_start_identity(pid)
+            received.append(request)
+            reply = json.dumps(dict(version=1, generation=GEN, outcome="cancel_pending")).encode()
+            if fault == "duplicate":
+                reply = reply.replace(b'"version": 1', b'"version": 1, "version": 1')
+            if fault == "utf8":
+                reply = b"\xff"
+            frame = struct.pack(">I", 4097 if fault == "oversize" else len(reply)) + reply
+            conn.sendall(frame * (2 if fault == "surplus" else 1))
+    try:
+        with socket.socket(socket.AF_UNIX) as listener:
+            listener.settimeout(2)
+            address = f"/proc/self/fd/{fd}/{GEN}.sock"
+            listener.bind(address)
+            os.chmod(address, 0o600)
+            listener.listen()
+            thread = threading.Thread(target=serve, args=(listener,))
+            thread.start()
+            if fault == "stale_start":
+                monkeypatch.setattr(run_status, "process_start_identity", lambda pid: "different")
+            assert life.cancel_launch_owner(*key, deadline=time.monotonic()+2) == (
+                "cancel_pending" if fault == "none" else "owner_unverified")
+            thread.join(2)
+    finally:
+        os.close(fd)
+    if fault == "stale_start":
+        assert not received
+        return
+    assert received == [dict(version=1, op="cancel", reservation_id=key[0], request_id=key[1],
+                             generation=GEN, sender_pid=os.getpid(), sender_start=sp._own_identity()["start"])]
+
+def test_generation_renewal_late_writer_cannot_move_confirmed_heartbeat(prepared, monkeypatch):
+    life, key = _generation_claim(prepared)
+    assert life.renew_launch(*key, deadline=time.monotonic() + 1)
+    confirmed = life.launch_heartbeat(key[0])
+    invoked, resume, finished = threading.Event(), threading.Event(), threading.Event()
+    write = life._launch_write
+
+    def delayed(directory, name, row):
+        if directory == "renewals":
+            invoked.set()
+            assert resume.wait(3)
+            try:
+                return write(directory, name, row)
+            finally:
+                finished.set()
+        return write(directory, name, row)
+
+    monkeypatch.setattr(life, "_launch_write", delayed)
+    try:
+        assert not life.renew_launch(*key, deadline=time.monotonic() + .25)
+        assert invoked.is_set() and not finished.is_set()
+        assert life.read_cleanup_debt(*key).cause == "renewal_lost"
+    finally:
+        resume.set()
+    assert finished.wait(1)
+    assert life.launch_heartbeat(key[0]) == confirmed
+    assert not life.renew_launch(*key, deadline=time.monotonic() + 1)
+
+
+def test_generation_release_drops_journal_before_waiting_for_lease(env, prepared):
+    life, key = _generation_claim(prepared)
+    rid, req, generation = key
+    # This simulated zero-start supervisor never provisioned a generation scratch.
+    (prepared[-1] / "scratch").rmdir()
+    outcome = []
+    with life.launch_lease_lock(rid, timeout_s=1) as held:
+        assert held
+        thread = threading.Thread(target=lambda: outcome.append(env.release(prepared[2], deadline_ms=2000)))
+        thread.start()
+        end = time.monotonic() + 1
+        while life.read_cleanup_debt(*key) is None:
+            assert time.monotonic() < end
+            time.sleep(.01)
+        with life.launch_lock(rid, timeout_s=.25) as journal:
+            assert journal.held and not journal.rollback(req, generation=generation)
+        assert life.write_cleanup_debt(*key, debt=sp.Debt("release", True, True, "inapplicable", False),
+                                       deadline=end)
+        life.write_launch_record(req, dict(version=1, reservation_id=rid, request_id=req,
+                                           generation=generation))
+        life.write_launch_terminal(req, refused_terminal(prepared[2], req))
+    thread.join(3)
+    assert outcome[0][0].state == "released" and not prepared[-1].exists()
+    assert life.read_cleanup_debt(*key).allocations_collected is True

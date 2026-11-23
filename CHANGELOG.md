@@ -8,6 +8,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
+- LaneExec tracks launch ownership, renewal, cancellation and cleanup by generation. Release
+  and reap retain an allocation while cleanup evidence is unresolved. Trusted scheduler
+  calls can pass an immutable lane context through the launch service.
+
 - LANEEXEC SL-3: `phase_loop_runtime.launch_service` adds `build_launch_service` and
   `LaunchService.prepare`, `status` and `cancel` (`plans/phase-plan-v13-LANEEXEC.md`,
   binding §7 E3-3). The function stores the captured client configuration and the seams the

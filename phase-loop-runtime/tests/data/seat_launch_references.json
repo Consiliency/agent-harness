@@ -1,4 +1,10 @@
 [
+  {"count": 1, "function": "PlacementLifecycle._launch_prepare", "module": "sandbox_placement", "primitive": "io.stat", "role": "host-io"},
+  {"count": 2, "function": "PlacementLifecycle._confirm_slot.write", "module": "sandbox_placement", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "PlacementLifecycle.record_allocation", "module": "sandbox_placement", "primitive": "io.lstat", "role": "host-io"},
+  {"count": 1, "function": "PlacementLifecycle.collect_allocation", "module": "sandbox_placement", "primitive": "io.lstat", "role": "host-io"},
+  {"count": 2, "function": "_supervisor_cancel", "module": "sandbox_placement", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "_supervisor_cancel", "module": "sandbox_placement", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "PlacementLifecycle.record_heartbeat", "module": "sandbox_placement", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_remove_tree", "module": "sandbox_placement", "primitive": "io.lstat", "role": "host-io"},
   {"count": 1, "function": "_observed_exited", "module": "sandbox_placement", "primitive": "io.open", "role": "host-io"},
