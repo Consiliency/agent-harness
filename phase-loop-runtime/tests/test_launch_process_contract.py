@@ -932,3 +932,136 @@ def test_exit_class_of_an_unknown_state_is_a_protocol_error():
         contract.launch_exit_class(dataclasses.replace(record, state="gone"))
     with pytest.raises(contract.ProtocolError):
         contract.launch_exit_class(object())  # type: ignore[arg-type]
+
+
+# -- review round 1: encoder failure closure, response framing, branch negatives ------------
+
+def test_the_encoder_refuses_an_unencodable_record_with_a_closed_code():
+    record = contract.decode_launch_response("cancel", line(cancel_response()))
+    import dataclasses
+    bad = dataclasses.replace(record, caller_context={"note": chr(0xD800)})
+    with pytest.raises(contract.ProtocolError) as caught:
+        contract.encode_launch_response(bad)
+    assert caught.value.code == "response_invalid"
+    assert caught.value.__cause__ is None and caught.value.__suppress_context__
+
+
+@pytest.mark.parametrize("member,value", [
+    ("evidence.duration_ms", 2 ** 53), ("evidence.renewals", 2 ** 64),
+    ("evidence.snapshot.byte_total", 2 ** 63), ("evidence.snapshot.counts.tracked", 2 ** 53 + 1),
+])
+def test_every_schema_valid_response_the_encoder_emits_decodes(member, value):
+    body = at(finished_response(), member, value)
+    encoded = contract.encode_launch_response(
+        contract.LaunchResponse.from_json(body))
+    assert contract.decode_launch_response("launch", encoded).to_json() == body
+
+
+def test_a_large_schema_valid_response_decodes():
+    # Responses have no 64 KiB input bound; that bound is the request rule of x-cli.input.
+    body = status_response("finished", caller_context={f"k{i}": "x" * 512 for i in range(16)})
+    body["launch"]["caller_context"] = {f"k{i}": "y" * 512 for i in range(16)}
+    version = version_response(templates=[
+        {"template_id": f"t{i:02d}", "template_sha256": HEX, "workload": "pi-runner"}
+        for i in range(64)])
+    for verb, value in (("status", body), ("version", version)):
+        encoded = contract.encode_launch_response(contract.decode_launch_response(verb, line(value)))
+        assert contract.decode_launch_response(verb, encoded).to_json() == value
+    assert len(line(body)) > 16384
+
+
+@pytest.mark.parametrize("framing", [
+    lambda b: b + b"\n", lambda b: b[:-1] + b"\r\n", lambda b: b" " + b, lambda b: b[:-1] + b" \n",
+    lambda b: b + b"{}\n", lambda b: b[:-1], lambda b: b"\n" + b,
+])
+def test_a_response_is_exactly_one_line(framing):
+    good = line(cancel_response())
+    assert contract.decode_launch_response("cancel", good).state == "cancelled"
+    with pytest.raises(contract.ProtocolError):
+        contract.decode_launch_response("cancel", framing(good))
+
+
+@pytest.mark.parametrize("data", [
+    b'{"schema":"a","schema":"b"}\n', b'{"x":NaN}\n', b'{"x":1e999}\n', b'\xff\n', b'[]\n',
+    b'{"x":"\\ud800"}\n',
+])
+def test_the_response_parser_keeps_the_other_strictness_rules(data):
+    with pytest.raises(contract.ProtocolError):
+        contract.decode_launch_response("cancel", data)
+
+
+def test_response_decoding_refuses_non_bytes():
+    with pytest.raises(contract.ProtocolError) as caught:
+        contract.decode_launch_response("cancel", "x\n")  # type: ignore[arg-type]
+    assert caught.value.code == "input_not_bytes"
+
+
+# C1 branch negatives for Instructions, each entered from a valid fixture of that form.
+INSTRUCTION_FORMS = {
+    "none": {"source": "none"},
+    "snapshot": {"source": "snapshot", "path": "docs/brief.md"},
+    "inline": {"source": "inline", "base64": "aGVsbG8="},
+}
+INSTRUCTION_NEGATIVES = [
+    ("none", {"source": "none", "path": "docs/brief.md"}),
+    ("none", {"source": "none", "base64": "aGVsbG8="}),
+    ("snapshot", {"source": "snapshot"}),
+    ("snapshot", {"source": "snapshot", "path": "/abs/brief.md"}),
+    ("snapshot", {"source": "snapshot", "path": "a/../b"}),
+    ("snapshot", {"source": "snapshot", "path": 7}),
+    ("snapshot", {"source": "snapshot", "path": "docs/brief.md", "base64": "aGVsbG8="}),
+    ("inline", {"source": "inline"}),
+    ("inline", {"source": "inline", "base64": "not base64!"}),
+    ("inline", {"source": "inline", "base64": "A" * 43693}),
+    ("inline", {"source": "inline", "base64": "aGVsbG8=", "path": "docs/brief.md"}),
+]
+
+
+@pytest.mark.parametrize("form", sorted(INSTRUCTION_FORMS))
+def test_every_instructions_form_decodes(form):
+    for build in (remote_pi_request, implementation_request, lambda **c: review_request("leg", **c)):
+        body = build(instructions=INSTRUCTION_FORMS[form])
+        assert contract.decode_launch_request("launch", raw(body)).to_json() == body
+    at_limit = {"source": "inline", "base64": "A" * 43692}
+    assert contract.decode_launch_request("launch", raw(remote_pi_request(instructions=at_limit)))
+
+
+@pytest.mark.parametrize("form,bad", INSTRUCTION_NEGATIVES)
+def test_every_instructions_branch_refuses_its_own_violation(form, bad):
+    assert contract.decode_launch_request(
+        "launch", raw(review_request("leg", instructions=INSTRUCTION_FORMS[form])))
+    assert refused("launch", raw(review_request("leg", instructions=bad))) == "schema_invalid"
+
+
+# Response restrictions not entered above. Where a second clause also refuses the case, the
+# overlap is named: such a case shows the message is refused, not which clause refused it.
+OMITTED_RESPONSE_CASES = [
+    # finished: seed_reason is null outside sandbox_launch_seed_refused (finished code is null).
+    ("launch-finished", "seed_reason", "symlink", "seed else-branch only"),
+    # uncertain: the uncertain clause and the code else-branches both require null reasons.
+    ("launch-uncertain", "snapshot_reason", "dirty_source", "overlaps snapshot else-branch"),
+    ("launch-uncertain", "admission_diagnostic", "route_not_qualified",
+     "overlaps admission else-branch"),
+    ("launch-uncertain", "seed_reason", "symlink", "seed else-branch only"),
+    ("launch-uncertain", "code", None, "uncertain code enum only"),
+]
+
+
+@pytest.mark.parametrize("name,path,bad,note", OMITTED_RESPONSE_CASES)
+def test_the_remaining_launch_response_restrictions_refuse(name, path, bad, note):
+    verb, build = RESPONSES[name]
+    response_refused(verb, at(build(), path, bad))
+
+
+@pytest.mark.parametrize("state", ["queued", "running", "cancelling"])
+@pytest.mark.parametrize("member", ["run_id", "scratch_path", "tree_path"])
+def test_an_active_status_needs_every_prepared_value(state, member):
+    good = status_response(state)
+    assert contract.decode_launch_response("status", line(good)).state == state
+    response_refused("status", at(good, member, None))
+
+
+def test_a_seed_manifest_schema_accepts_4096_entries_and_refuses_4097():
+    entries = [f"f{i:04d}" for i in range(4096)]
+    assert contract.validate_launch_message("SeedManifest", _manifest(*entries))
+    assert not contract.validate_launch_message("SeedManifest", _manifest(*entries, "f4096"))

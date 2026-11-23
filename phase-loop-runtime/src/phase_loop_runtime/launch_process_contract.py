@@ -763,19 +763,63 @@ def encode_launch_response(message: LaunchProcessResponse) -> bytes:
         raise ProtocolError("response_invalid")
     try:
         text = json.dumps(value, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
-    except (TypeError, ValueError):
+        return text.encode("utf-8") + b"\n"
+    except (TypeError, ValueError, RecursionError):  # UnicodeEncodeError is a ValueError
         raise ProtocolError("response_invalid") from None
-    return text.encode("utf-8") + b"\n"
+
+
+def _load_response_line(raw: bytes) -> dict[str, Any]:
+    """Parse one response line under ``x-cli.output``: exactly one compact JSON object
+    followed by one LF and nothing else.
+
+    The request bounds of ``x-cli.input`` (65536 bytes, safe integers) are not applied,
+    because responses carry members the schema leaves unbounded (``duration_ms``, counts).
+    Duplicate keys, non-finite numbers, invalid UTF-8 and lone surrogates still refuse."""
+    if not isinstance(raw, (bytes, bytearray, memoryview)):
+        raise ProtocolError("input_not_bytes")
+    captured = bytes(raw)
+    if not captured.endswith(b"\n"):
+        raise ProtocolError("input_trailing_data")
+    body = captured[:-1]
+    if b"\n" in body or b"\r" in body or body[:1].isspace() or body[-1:].isspace():
+        raise ProtocolError("input_trailing_data")
+    try:
+        text = body.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        raise ProtocolError("input_not_utf8") from None
+    if text.startswith("\ufeff"):
+        raise ProtocolError("input_not_utf8")
+    decoder = json.JSONDecoder(
+        object_pairs_hook=_placement._unique_object,  # noqa: SLF001 - shared strictness
+        parse_constant=_placement._reject_constant,  # noqa: SLF001
+        parse_float=_placement._finite_float,  # noqa: SLF001
+    )
+    try:
+        value, end = decoder.raw_decode(text)
+    except ProtocolError:
+        raise
+    except (ValueError, RecursionError):
+        raise ProtocolError("input_invalid_json") from None
+    if end != len(text):
+        raise ProtocolError("input_trailing_data")
+    if not isinstance(value, dict):
+        raise ProtocolError("input_not_object")
+    try:
+        encodable = _placement._encodable(value)  # noqa: SLF001
+    except RecursionError:
+        raise ProtocolError("input_invalid_json") from None
+    if not encodable:
+        raise ProtocolError("input_not_utf8")
+    return value
 
 
 def decode_launch_response(verb: str, raw: bytes) -> LaunchProcessResponse:
-    """A client's strict decoder for one response line (the trailing LF is required)."""
+    """A client's strict decoder for one response line: it accepts exactly the lines
+    :func:`encode_launch_response` emits for schema-valid records (one object, one LF)."""
     definition = _RESPONSE_DEFS.get(verb) if isinstance(verb, str) else None
     if definition is None:
         raise ProtocolError("verb_unknown")
-    if not isinstance(raw, (bytes, bytearray)) or not bytes(raw).endswith(b"\n"):
-        raise ProtocolError("input_trailing_data")
-    value = _placement.load_strict_object(bytes(raw)[:-1])
+    value = _load_response_line(raw)
     if not _valid(definition, value) or not _status_echo_consistent(definition, value):
         raise ProtocolError("schema_invalid")
     try:
