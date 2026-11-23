@@ -3130,6 +3130,8 @@ def launch(
         with log_path.open("w", encoding="utf-8") as log:
             popen_kwargs: dict[str, Any] = {
                 "text": _codex_usage_observer is None,
+                # Invalid UTF-8 must not kill the line reader and drop every later line.
+                **({"errors": "replace"} if _codex_usage_observer is None else {}),
                 "stdin": subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
                 "stdout": subprocess.PIPE,
                 "stderr": subprocess.PIPE if _codex_usage_observer is not None else subprocess.STDOUT,
@@ -3240,10 +3242,13 @@ def launch(
             stalled = False
             cleanup_evidence: dict[str, Any] | None = None
             last_heartbeat_summary: dict[str, Any] | None = None
+            reader_eof = False
             while True:
                 try:
                     try:
                         line = line_queue.get(timeout=0.05 if _codex_usage_observer is not None else 1)
+                        if line is None and _codex_usage_observer is None:
+                            reader_eof = True
                     except Empty:
                         line = None
                     if line:
@@ -3305,12 +3310,21 @@ def launch(
                         if _codex_usage_observer is not None:
                             drain()
                             break
-                        while True:
+                        # The child has exited, but its last lines may still be in the
+                        # pipe or the reader. Wait, bounded as drain() is, for the
+                        # reader's EOF sentinel; a descendant holding the pipe open
+                        # cannot extend the launch by more than the bound.
+                        drain_deadline = time.monotonic() + 1.0
+                        while not reader_eof:
                             try:
-                                line = line_queue.get_nowait()
+                                line = line_queue.get(timeout=max(0.001, drain_deadline - time.monotonic()))
                             except Empty:
-                                break
-                            if line:
+                                if time.monotonic() >= drain_deadline:
+                                    break
+                                continue
+                            if line is None:
+                                reader_eof = True
+                            else:
                                 consume(line)
                         break
                 except KeyboardInterrupt:
