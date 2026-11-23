@@ -241,3 +241,49 @@ def test_posix_open_flags_are_unchanged() -> None:
     assert run_status._CREATE_FLAGS == (os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
                                         | os.O_CLOEXEC)
     assert grok_jail_surface._WALK == walk and seat_codex_runtime._WALK == walk
+
+
+def test_seat_jail_directory_open_refuses_a_regular_file_on_simulated_windows(tmp_path) -> None:
+    regular = tmp_path / "regular.txt"
+    regular.write_text("not a directory")
+    result = run_windows_sim(
+        f"""
+        import json
+        from phase_loop_runtime import seat_grok_credential, seat_jail
+        outcome = {{"masks_absent": [seat_jail._O_DIR is None, seat_jail._O_READ is None,
+                                     seat_grok_credential._O_DIR is None]}}
+        try:
+            fd = seat_jail.open_dir_nofollow({str(regular)!r})
+            os.close(fd)
+            outcome["regular_file"] = "opened"
+        except seat_jail.UnsafeSeatObject as exc:
+            outcome["regular_file"] = ["UnsafeSeatObject", exc.errno == errno.ENOTSUP]
+        except Exception as exc:
+            outcome["regular_file"] = type(exc).__name__
+        print(json.dumps(outcome))
+        """
+    )
+    assert all(result["masks_absent"])
+    assert result["regular_file"] == ["UnsafeSeatObject", True]
+
+
+def test_seat_jail_masks_and_directory_refusal_are_unchanged_on_posix(tmp_path) -> None:
+    if os.name == "nt":
+        return
+    import errno
+
+    from phase_loop_runtime import seat_grok_credential, seat_jail
+
+    assert seat_jail._O_DIR == os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    assert seat_jail._O_READ == os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+    assert seat_grok_credential._O_DIR == seat_jail._O_DIR
+    regular = tmp_path / "regular.txt"
+    regular.write_text("not a directory")
+    try:
+        seat_jail.open_dir_nofollow(regular)
+    except OSError as exc:
+        assert exc.errno == errno.ENOTDIR
+    else:
+        raise AssertionError("a regular file opened as a directory")
+    fd = seat_jail.open_dir_nofollow(tmp_path)
+    os.close(fd)
