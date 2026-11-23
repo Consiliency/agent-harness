@@ -14,14 +14,19 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   that replaces an operator or policy override is refused before the builder or launcher
   runs. After an entered launch, one `_report_acceptance` helper sends the verdict to an
   `AcceptanceObserver`:
-  - a nonzero exit, or an unavailable, stalled or timed-out run, is `infrastructure`;
-  - a zero exit that a post-launch gate or verification blocks is `quality`, as is a
-    launch-contract blocker that judges the run's own output;
+  - the launcher's own failure is `infrastructure`: a nonzero exit (kept even when a
+    trusted closeout normalizes it), or an unavailable, stalled or timed-out run;
+  - a zero exit whose output the runner rejects is `quality`: a fail-closed verification
+    (which wins over a later `complete` closeout), a closeout gate, a Tier 3 audit, a
+    missing or unparseable closeout, or an empty host log;
   - success is `passed`;
-  - reduction blockers and unrelated blockers report nothing.
+  - reduction blockers, child-reported blockers and host-side failures (a malformed audit
+    config, an unavailable BAML evaluator, an interrupt, a missing host log) report nothing.
 
-  An observer that raises is logged as one `jevdrill_acceptance_hook_failed` event and
-  never changes the classification. With no integration, behaviour is unchanged.
+  The launch-contract verdict uses the reason captured at the blocker check. An observer
+  that raises is logged as one `jevdrill_acceptance_hook_failed` event that restates the
+  phase's latest event, so the reconciled status, blocker and closeout state are unchanged.
+  With no integration, behaviour is unchanged.
 - JEVHOST SL-6: `phase_loop_runtime.host_integration`, the host-neutral integration seam
   (`plans/amendments/jevhost-JEVHOST-host-gaps.md`, IF-0-JEVHOST-5, GAPS §2). It provides
   `RetryBudget` (remaining attempts and floor-millisecond time, exhaustion, tighten-only),

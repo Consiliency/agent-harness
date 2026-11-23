@@ -139,6 +139,7 @@ from .models import (
     DelegationDecision,
     DelegationRequest,
     DispatchDecision,
+    EVENT_STATUSES,
     DispatchHints,
     EXECUTORS,
     HarnessLaneAssignment,
@@ -3589,22 +3590,14 @@ def run_loop(
         def _report_acceptance(prep: "_DispatchPrep", result, verdict: str | None) -> None:
             """JEVHOST GAPS §3.1: report an entered launch's acceptance verdict.
 
-            Called after the phase is classified. A failing observer appends one
-            ``jevdrill_acceptance_hook_failed`` event carrying the unchanged status.
+            Called once per entered launch, after the phase is classified and its
+            authoritative events are appended. A failing observer appends one
+            ``jevdrill_acceptance_hook_failed`` event that restates the phase's latest event,
+            so reconcile keeps its status, blocker, terminal and closeout state.
             """
             failure = _deliver_acceptance(jevdrill_adapter, result, verdict)
-            if failure is None:
-                return
-            append_event(repo, LoopEvent(
-                timestamp=utc_now(), repo=str(repo), roadmap=str(roadmap),
-                phase=alias, action="jevdrill_acceptance_hook_failed",
-                status=classifications.get(alias, "unknown"),
-                model=prep.selection.model, reasoning_effort=prep.selection.effort,
-                source=prep.selection.source,
-                selected_executor=prep.dispatch_decision.selected_executor,
-                metadata={"jevdrill_acceptance_hook_failed": failure},
-                **event_provenance(roadmap, alias),
-            ))
+            if failure is not None:
+                _append_acceptance_hook_failure(repo, roadmap, alias, failure)
 
         def _finalize_phase_launch(
             prep: "_DispatchPrep",
@@ -3706,6 +3699,9 @@ def run_loop(
                         "cleanup_evidence": result.cleanup_evidence,
                     },
                 )
+            # GAPS §3.1: acceptance keeps the launcher's own exit, even when a trusted closeout
+            # below normalizes the result for reduction.
+            acceptance_launcher_failed = result.failed or not result.available
             failed_launch_closeout = _trusted_failed_launch_closeout(result, spec) if result.failed else None
             if failed_launch_closeout is not None:
                 failed_launch_closeout_override = {
@@ -3722,7 +3718,10 @@ def run_loop(
                             "failed_launch_closeout_override": failed_launch_closeout_override,
                         },
                     )
-            launch_contract_blocker = _launch_contract_blocker(result, artifacts, spec.executor, alias, spec=spec)
+            launch_contract_reason: dict[str, str] = {}
+            launch_contract_blocker = _launch_contract_blocker(
+                result, artifacts, spec.executor, alias, spec=spec, reason_out=launch_contract_reason
+            )
             if result.failed:
                 launch_blocker = launch_contract_blocker or _executor_launch_failure_blocker(spec.executor, alias, result.output)
                 classifications[alias] = "blocked" if launch_blocker else "unknown"
@@ -3845,7 +3844,13 @@ def run_loop(
                     pipeline_mode=effective_pipeline_mode,
                 )
                 current = alias
-                _report_acceptance(prep, result, _launch_contract_acceptance_verdict(result, launch_contract_blocker))
+                _report_acceptance(
+                    prep,
+                    result,
+                    "infrastructure"
+                    if acceptance_launcher_failed
+                    else _LAUNCH_CONTRACT_ACCEPTANCE.get(launch_contract_reason.get("reason")),
+                )
                 return _DispatchOutcome("break", None)
             if dry_run:
                 terminal_summary = _persist_terminal_summary(
@@ -4050,6 +4055,12 @@ def run_loop(
                     if tier3_audit is not None:
                         child_automation["tier3_audit"] = tier3_audit["summary"]
                         if tier3_audit.get("blocker"):
+                            # GAPS §3.1: the audit rejected the child's closeout evidence,
+                            # unless the host could not run it (config error, BAML outage).
+                            if not tier3_audit["summary"].get("config_error") and (
+                                tier3_audit["blocker"].get("blocker_class") != "unretryable_external_outage"
+                            ):
+                                acceptance_quality_failure = True
                             status_after_launch = "blocked"
                             set_phase_status(
                                 repo,
@@ -4089,6 +4100,7 @@ def run_loop(
                     alias,
                 ):
                     if not automation_status:
+                        acceptance_quality_failure = True  # GAPS §3.1: the output has no closeout
                         status_after_launch = "blocked"
                         set_phase_status(
                             repo,
@@ -4111,6 +4123,10 @@ def run_loop(
                             "access_attempts": (),
                         }
                     elif child_automation.get("automation_parse_error"):
+                        # GAPS §3.1: the child's closeout failed to parse, unless the BAML
+                        # evaluator was unavailable and the closeout was never judged.
+                        if child_automation.get("automation_parse_error_blocker_class") != "unretryable_external_outage":
+                            acceptance_quality_failure = True
                         status_after_launch = "blocked"
                         set_phase_status(
                             repo,
@@ -4267,6 +4283,7 @@ def run_loop(
                         else:
                             automation_status_literal = _phase_status_literal(automation_status)
                             if automation_status_literal is None:
+                                acceptance_quality_failure = True  # GAPS §3.1: invalid closeout status
                                 status_after_launch = "blocked"
                                 child_automation["automation_parse_error"] = (
                                     f"{_executor_display_name(spec.executor)} live launch for {alias} emitted an invalid "
@@ -4727,12 +4744,14 @@ def run_loop(
                 )
                 append_event(repo, closeout_event)
                 status_after_closeout = classifications[alias]
-            if not result.available:
+            # GAPS §3.1 precedence: the launcher's own failure, then a rejection of the run's
+            # output (even if a later closeout reduced the phase to success), then success.
+            if acceptance_launcher_failed:
                 acceptance_verdict = "infrastructure"
+            elif acceptance_quality_failure:
+                acceptance_verdict = "quality"
             elif status_after_closeout == "complete" or (launch_action == "plan" and status_after_closeout == "planned"):
                 acceptance_verdict = "passed"
-            elif acceptance_quality_failure and status_after_closeout == "blocked":
-                acceptance_verdict = "quality"
             else:
                 acceptance_verdict = None
             _report_acceptance(prep, result, acceptance_verdict)
@@ -11273,9 +11292,22 @@ def _launch_contract_blocker(
     phase: str,
     *,
     spec=None,
+    reason_out: dict[str, str] | None = None,
 ) -> dict[str, object] | None:
+    """The zero-exit launch-contract blocker, if any.
+
+    When ``reason_out`` is given, the reason selected here is written to
+    ``reason_out["reason"]`` at the check itself (JEVHOST GAPS §3.1), so a caller never
+    re-derives it from state that may have changed since.
+    """
+
+    def selected(blocker: dict[str, object], reason: str) -> dict[str, object]:
+        if reason_out is not None:
+            reason_out["reason"] = reason
+        return blocker
+
     if result.stalled:
-        return {
+        return selected({
             "human_required": False,
             "blocker_class": "stalled_child_observation",
             "blocker_summary": (
@@ -11284,9 +11316,9 @@ def _launch_contract_blocker(
             ),
             "required_human_inputs": (),
             "access_attempts": (),
-        }
+        }, "stalled")
     if result.timed_out:
-        return {
+        return selected({
             "human_required": False,
             "blocker_class": "repeated_verification_failure",
             "blocker_summary": (
@@ -11294,9 +11326,9 @@ def _launch_contract_blocker(
             ),
             "required_human_inputs": (),
             "access_attempts": (),
-        }
+        }, "timed_out")
     if result.interrupted:
-        return {
+        return selected({
             "human_required": False,
             "blocker_class": "repeated_verification_failure",
             "blocker_summary": (
@@ -11304,10 +11336,10 @@ def _launch_contract_blocker(
             ),
             "required_human_inputs": (),
             "access_attempts": (),
-        }
+        }, "interrupted")
     cleanup = result.cleanup_evidence if isinstance(result.cleanup_evidence, dict) else {}
     if cleanup.get("process_alive_after_cleanup"):
-        return {
+        return selected({
             "human_required": False,
             "blocker_class": "repeated_verification_failure",
             "blocker_summary": (
@@ -11315,18 +11347,18 @@ def _launch_contract_blocker(
             ),
             "required_human_inputs": (),
             "access_attempts": (),
-        }
+        }, "cleanup_left_child")
     if spec is not None:
         parsed = _parsed_child_automation(result, spec)
         failure = parsed.get("native_closeout_extraction_failure") or {}
         if failure.get("reason") == "executor_exited_without_closeout":
-            return {
+            return selected({
                 "human_required": False,
                 "blocker_class": "contract_bug",
                 "blocker_summary": parsed["automation_blocker_summary"],
                 "required_human_inputs": (),
                 "access_attempts": (),
-            }
+            }, "no_closeout")
     if result.log_path and not result.dry_run and (
         result.process_pid is not None
         or result.started_at is not None
@@ -11335,7 +11367,7 @@ def _launch_contract_blocker(
     ):
         log_path = Path(result.log_path)
         if not log_path.exists():
-            return {
+            return selected({
                 "human_required": False,
                 "blocker_class": "repeated_verification_failure",
                 "blocker_summary": (
@@ -11343,9 +11375,9 @@ def _launch_contract_blocker(
                 ),
                 "required_human_inputs": (),
                 "access_attempts": (),
-            }
+            }, "missing_log")
         if log_path.stat().st_size == 0 and not result.output.strip():
-            return {
+            return selected({
                 "human_required": False,
                 "blocker_class": "repeated_verification_failure",
                 "blocker_summary": (
@@ -11353,32 +11385,61 @@ def _launch_contract_blocker(
                 ),
                 "required_human_inputs": (),
                 "access_attempts": (),
-            }
+            }, "zero_byte_log")
     return None
 
 
-def _launch_contract_acceptance_verdict(result: LaunchResult, blocker: dict[str, object]) -> str | None:
-    """The acceptance verdict of a zero-exit launch that ``_launch_contract_blocker`` blocked.
+# JEVHOST GAPS §3.1: the acceptance verdict of each zero-exit launch-contract reason, as
+# captured by ``_launch_contract_blocker(reason_out=...)``. Stalled and timed-out runs are
+# infrastructure. ``quality`` is used only where the check judged the run's own output: the
+# child exited without the closeout its output must carry, or the host-created log (opened
+# before spawn, ``launcher.launch``) received no byte and the captured output is empty. An
+# interrupt, a cleanup that left the child alive, and a missing host-owned log judge the
+# host, not the run, so they report nothing.
+_LAUNCH_CONTRACT_ACCEPTANCE = {
+    "stalled": "infrastructure",
+    "timed_out": "infrastructure",
+    "interrupted": None,
+    "cleanup_left_child": None,
+    "no_closeout": "quality",
+    "missing_log": None,
+    "zero_byte_log": "quality",
+}
 
-    Mirrors that function's order (JEVHOST GAPS §3.1). A stalled, timed-out or unavailable
-    run is ``infrastructure``. ``quality`` is returned only where the blocker judges the
-    run's own output: the child exited without the closeout its output must carry
-    (``contract_bug``), or the host-created log holds no byte of child output and the
-    captured output is empty. An interrupt, a cleanup that left the child alive, and a
-    missing host-owned log judge the host, not the run, so they report nothing.
+
+def _append_acceptance_hook_failure(repo: Path, roadmap: Path, phase: str, failure: dict[str, object]) -> None:
+    """Log a failed acceptance observer without changing the phase's reconciled state.
+
+    The diagnostic restates the phase's latest ledger event (status, blocker, terminal,
+    closeout and dirty summaries, provenance) under its own action, adding only the
+    metadata-only failure record. Reconcile therefore re-applies the same state.
     """
-    if not result.available or result.stalled or result.timed_out:
-        return "infrastructure"
-    if result.interrupted:
-        return None
-    cleanup = result.cleanup_evidence if isinstance(result.cleanup_evidence, dict) else {}
-    if cleanup.get("process_alive_after_cleanup"):
-        return None
-    if blocker.get("blocker_class") == "contract_bug":
-        return "quality"
-    if result.log_path and Path(result.log_path).exists():
-        return "quality"
-    return None
+    latest = None
+    for event in read_events(repo):
+        if str(event.get("phase", "")).upper() == phase.upper() and event.get("roadmap") == str(roadmap):
+            latest = event
+    if latest is None or latest.get("status") not in EVENT_STATUSES:
+        return
+    metadata = dict(latest.get("metadata") or {})
+    metadata["jevdrill_acceptance_hook_failed"] = failure
+    append_event(repo, LoopEvent(
+        timestamp=utc_now(),
+        repo=str(latest.get("repo") or repo),
+        roadmap=str(roadmap),
+        phase=str(latest.get("phase") or phase),
+        action="jevdrill_acceptance_hook_failed",
+        status=latest["status"],
+        model=latest.get("model") or "",
+        reasoning_effort=latest.get("reasoning_effort") or "",
+        source=latest.get("source") or "",
+        override_reason=latest.get("override_reason"),
+        command=latest.get("command"),
+        blocker=latest.get("blocker"),
+        metadata=metadata,
+        selected_executor=latest.get("selected_executor"),
+        roadmap_sha256=latest.get("roadmap_sha256"),
+        phase_sha256=latest.get("phase_sha256"),
+    ))
 
 
 def _deliver_acceptance(integration: object | None, result: LaunchResult, verdict: str | None) -> dict[str, object] | None:

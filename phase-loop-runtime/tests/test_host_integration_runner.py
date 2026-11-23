@@ -1,18 +1,26 @@
 """JEVHOST host gaps SL-7: the runner's side of the host-neutral seam.
 
 GAPS §3.1 row 1b: an entered launch reports its acceptance verdict to an
-``AcceptanceObserver`` through the runner's one ``_report_acceptance`` helper. A nonzero
-exit is ``infrastructure``, a zero exit that a post-launch gate or verification blocks is
-``quality``, a phase that reaches success is ``passed``, and a reduction blocker or any
-unrelated blocker reports nothing. A raising observer is logged once and never changes
-the phase classification.
+``AcceptanceObserver`` through the runner's one ``_report_acceptance`` helper:
+- the launcher's own failure (a nonzero exit, even under a trusted closeout, or an
+  unavailable, stalled or timed-out run) is ``infrastructure``;
+- a zero exit whose output the runner rejects (a fail-closed verification, a closeout
+  gate, a Tier 3 audit, a missing or unparseable closeout, an empty host log) is
+  ``quality``;
+- a phase that reaches success is ``passed``;
+- a reduction blocker, a child-reported blocker and host-side failures report nothing.
+
+A raising observer is logged once and never changes the reconciled phase state.
 
 GAPS §3.5 row 5a: the three request sites (main, delegated and lane) build through
 ``build_host_request``, so an integration that replaces an override is refused before the
 builder or the launcher runs.
 
-Every integration here is a host-neutral fake. Nothing here imports the JEV Drill adapter.
+Every case enters the real ``run_loop`` (or the delegated and lane constructors) with a
+host-neutral fake integration. Nothing here imports the JEV Drill adapter. Seam names are
+imported test-locally behind the GAPS §3.0 availability assertion.
 """
+import importlib
 import re
 from dataclasses import replace
 
@@ -20,7 +28,6 @@ import pytest
 
 from phase_loop_runtime import runner
 from phase_loop_runtime.events import read_events
-from phase_loop_runtime.host_integration import HostOverrideViolation
 from phase_loop_runtime.launcher import LaunchResult
 from phase_loop_runtime.models import (
     DelegationBudget,
@@ -32,6 +39,18 @@ from phase_loop_runtime.reconcile import reconcile
 from phase_loop_test_utils import build_fake_automation_output, commit_fixture_paths, make_repo, write_phase_plan
 
 RUN_ID = "synthetic-execution-run-0001"
+HOOK_FAILED = "jevdrill_acceptance_hook_failed"
+
+
+def _seam(*names):
+    """GAPS §3.0: import the seam test-locally and name any missing interface."""
+    try:
+        module = importlib.import_module("phase_loop_runtime.host_integration")
+    except ImportError:
+        module = None
+    missing = [name for name in names if not hasattr(module, name)]
+    assert not missing, f"host_integration is unavailable: missing interface {', '.join(missing)}"
+    return module
 
 
 class Observer:
@@ -70,7 +89,18 @@ def _closeout(status, plan):
                                         artifact_state="tracked")
 
 
-def _failing_gate(monkeypatch):
+def _result(spec, *, returncode=0, output="", **fields):
+    return LaunchResult(command=spec.command, returncode=returncode, output=output, executor=spec.executor, **fields)
+
+
+# --- per-case launcher results and setup -------------------------------------------------------
+
+
+def _complete(spec, plan, _tmp):
+    return _result(spec, output=_closeout("complete", plan))
+
+
+def _failing_gate(monkeypatch, _tmp):
     """The produced-gates closeout gate fails on the run's own closeout."""
     from types import SimpleNamespace
 
@@ -81,32 +111,104 @@ def _failing_gate(monkeypatch):
     monkeypatch.setattr(runner, "validate_produced_gates", lambda *_a, **_k: validation)
 
 
-def _child_blocker(plan):
-    return build_fake_automation_output(status="blocked", blocker_class="repeated_verification_failure",
-                                        blocker_summary="Synthetic child-reported blocker.",
-                                        verification_status="blocked", artifact=str(plan))
+def _red_verification(monkeypatch, _tmp):
+    monkeypatch.setattr(runner, "_run_execute_verification", lambda **_k: {
+        "ok": False, "code": "nonzero_exit", "blocker_summary": "Synthetic red suite."})
 
 
-# case id -> (returncode, output builder, extra setup, expected verdict or None)
+def _tier3(blocker_class, *, config_error=None):
+    def setup(monkeypatch, _tmp):
+        summary = {"config_error": config_error} if config_error else {"tier3_calls_made": 1}
+        monkeypatch.setattr(runner, "_runner_tier3_closeout_audit", lambda **_k: {"summary": summary, "blocker": {
+            "human_required": False, "blocker_class": blocker_class,
+            "blocker_summary": f"Synthetic Tier 3 {blocker_class}.",
+            "required_human_inputs": (), "access_attempts": ()}})
+    return setup
+
+
+def _baml_outage(monkeypatch, _tmp):
+    summary = "closeout NOT evaluated: synthetic BAML worker outage"
+    monkeypatch.setattr(runner, "_parsed_child_automation", lambda *_a, **_k: {
+        "automation_status": "blocked", "automation_verification_status": "blocked",
+        "automation_blocker_class": "unretryable_external_outage", "automation_blocker_summary": summary,
+        "automation_human_required": "false", "automation_required_human_inputs": [],
+        "automation_next_skill": "none", "automation_next_command": "none",
+        "automation_parse_error": summary, "automation_parse_error_blocker_class": "unretryable_external_outage",
+        "baml_worker_outage": "unavailable"})
+
+
+def _child_blocker(spec, plan, _tmp):
+    return _result(spec, output=build_fake_automation_output(
+        status="blocked", blocker_class="repeated_verification_failure",
+        blocker_summary="Synthetic child-reported blocker.", verification_status="blocked", artifact=str(plan)))
+
+
+def _log_result(spec, tmp, *, write):
+    log = tmp / "host-owned.log"
+    if write:
+        log.write_text("", encoding="utf-8")
+    return _result(spec, log_path=str(log), process_pid=4242)
+
+
+INFRA, QUALITY, PASSED = (False, "infrastructure"), (False, "quality"), (True, None)
+
+# case id -> (launcher result, setup, verdict or None, literal phase status, reconciled blocker class)
 CASES = {
-    "nonzero_exit_is_infrastructure": (1, lambda plan: "", None, (False, "infrastructure")),
-    "zero_exit_failing_gate_is_quality": (0, lambda plan: _closeout("complete", plan), _failing_gate,
-                                          (False, "quality")),
-    "success_is_passed": (0, lambda plan: _closeout("complete", plan), None, (True, None)),
-    "unrelated_child_blocker_reports_nothing": (0, _child_blocker, None, None),
+    "nonzero_exit_is_infrastructure": (lambda spec, plan, tmp: _result(spec, returncode=1), None, INFRA, "unknown", None),
+    "trusted_closeout_keeps_exit_8_as_infrastructure": (
+        lambda spec, plan, tmp: _result(spec, returncode=8, output=_closeout("complete", plan)), None, INFRA,
+        "complete", None),
+    "unavailable_launch_is_infrastructure": (
+        lambda spec, plan, tmp: _result(spec, returncode=None, available=False, output=_closeout("complete", plan)),
+        None, INFRA, None, None),
+    "zero_exit_failing_gate_is_quality": (_complete, _failing_gate, QUALITY, "blocked", "contract_bug"),
+    "failed_verification_beats_a_complete_closeout": (_complete, _red_verification, QUALITY, None, None),
+    "tier3_rejection_is_quality": (_complete, _tier3("repeated_verification_failure"), QUALITY, "blocked",
+                                   "repeated_verification_failure"),
+    "tier3_config_error_reports_nothing": (_complete, _tier3("contract_bug", config_error="malformed"), None,
+                                           "blocked", "contract_bug"),
+    "tier3_outage_reports_nothing": (_complete, _tier3("unretryable_external_outage"), None, "blocked",
+                                     "unretryable_external_outage"),
+    "missing_shared_closeout_is_quality": (lambda spec, plan, tmp: _result(spec, output="no closeout here\n"), None,
+                                           QUALITY, "blocked", "repeated_verification_failure"),
+    "invalid_closeout_status_is_quality": (
+        lambda spec, plan, tmp: _result(spec, output=build_fake_automation_output(status="bogus", artifact=str(plan))),
+        None, QUALITY, "blocked", None),
+    "baml_outage_reports_nothing": (_complete, _baml_outage, None, "blocked", "unretryable_external_outage"),
+    "success_is_passed": (_complete, None, PASSED, "complete", None),
+    "child_reported_blocker_reports_nothing": (_child_blocker, None, None, "blocked",
+                                               "repeated_verification_failure"),
+    # Launch-contract blockers on a zero exit, each through the real finalizer.
+    "contract_stalled_is_infrastructure": (lambda spec, plan, tmp: _result(spec, stalled=True), None, INFRA,
+                                           "blocked", "stalled_child_observation"),
+    "contract_timed_out_is_infrastructure": (lambda spec, plan, tmp: _result(spec, timed_out=True), None, INFRA,
+                                             "blocked", "repeated_verification_failure"),
+    "contract_interrupted_reports_nothing": (lambda spec, plan, tmp: _result(spec, interrupted=True), None, None,
+                                             "blocked", "repeated_verification_failure"),
+    "contract_surviving_child_reports_nothing": (
+        lambda spec, plan, tmp: _result(spec, cleanup_evidence={"process_alive_after_cleanup": True}), None, None,
+        "blocked", "repeated_verification_failure"),
+    "contract_no_closeout_is_quality": (
+        lambda spec, plan, tmp: _result(spec, codex_turn_completion={"completed": False}), None, QUALITY,
+        "blocked", "contract_bug"),
+    "contract_missing_host_log_reports_nothing": (lambda spec, plan, tmp: _log_result(spec, tmp, write=False), None,
+                                                  None, "blocked", "repeated_verification_failure"),
+    "contract_empty_host_log_is_quality": (lambda spec, plan, tmp: _log_result(spec, tmp, write=True), None, QUALITY,
+                                           "blocked", "repeated_verification_failure"),
 }
 
 
 def _run_case(tmp_path, monkeypatch, case, *, raises=False):
-    returncode, output, setup, _expected = CASES[case]
+    make, setup, _verdict, _status, _blocker = CASES[case]
+    tmp_path.mkdir(parents=True, exist_ok=True)
     repo, roadmap, plan = _phase(tmp_path, monkeypatch)
     if setup is not None:
-        setup(monkeypatch)
+        setup(monkeypatch, tmp_path)
     executed = []
 
     def launcher(spec, **_kwargs):
         executed.append(spec)
-        return LaunchResult(command=spec.command, returncode=returncode, output=output(plan), executor=spec.executor)
+        return make(spec, plan, tmp_path)
 
     monkeypatch.setattr(runner, "launch_with_spec", launcher)
     observer = Observer(raises=raises)
@@ -119,21 +221,47 @@ def _run_case(tmp_path, monkeypatch, case, *, raises=False):
 
 @pytest.mark.parametrize("case", list(CASES))
 def test_acceptance_verdicts_reach_the_observer(tmp_path, monkeypatch, case):
-    _repo, _roadmap, snapshot, observer = _run_case(tmp_path, monkeypatch, case)
-    expected = CASES[case][3]
-    if expected is None:
-        assert observer.verdicts == []
-        assert snapshot.phases["RUNNER"] == "blocked"
-    else:
-        passed, failure_class = expected
-        assert observer.verdicts == [(RUN_ID, passed, failure_class)]
-        assert snapshot.phases["RUNNER"] == ("complete" if passed else observer_status(snapshot))
+    _make, _setup, verdict, status, blocker_class = CASES[case]
+    repo, roadmap, snapshot, observer = _run_case(tmp_path, monkeypatch, case)
+    expected = [] if verdict is None else [(RUN_ID, *verdict)]
+    assert observer.verdicts == expected
+    reconciled = reconcile(repo, roadmap)
+    if status is not None:
+        assert snapshot.phases["RUNNER"] == status
+        assert reconciled.phases["RUNNER"] == status
+    if blocker_class is not None:
+        assert reconciled.blocker_class == blocker_class
+        assert reconciled.blocker_summary
+    if case == "failed_verification_beats_a_complete_closeout":
+        transitions = [event["metadata"]["state_transition"].get("reason") for event in read_events(repo)
+                       if event["action"] == "state_transition"]
+        assert "runner_verification_failed" in transitions
+    assert not [event for event in read_events(repo) if event["action"] == HOOK_FAILED]
 
 
-def observer_status(snapshot):
-    status = snapshot.phases["RUNNER"]
-    assert status in {"blocked", "unknown"}
-    return status
+def test_launch_contract_verdict_uses_the_reason_captured_at_the_check(tmp_path, monkeypatch):
+    """GAPS §3.1: the verdict follows the blocker actually selected, not a later re-check.
+
+    The missing-log blocker is selected; the log then appears before verdict selection. The
+    run must still report nothing, as a missing host-owned log does.
+    """
+    import inspect
+
+    assert "reason_out" in inspect.signature(runner._launch_contract_blocker).parameters, (
+        "runner does not capture the blocker reason")
+    check = runner._launch_contract_blocker
+
+    def racing_check(result, *args, **kwargs):
+        selected = check(result, *args, **kwargs)
+        if result.log_path:
+            open(result.log_path, "w", encoding="utf-8").close()
+        return selected
+
+    monkeypatch.setattr(runner, "_launch_contract_blocker", racing_check)
+    repo, roadmap, snapshot, observer = _run_case(tmp_path, monkeypatch, "contract_missing_host_log_reports_nothing")
+    assert observer.verdicts == []
+    assert snapshot.phases["RUNNER"] == "blocked"
+    assert "durable output log" in reconcile(repo, roadmap).blocker_summary
 
 
 def test_acceptance_verdicts_reach_the_observer_reduction_blocker_reports_nothing(monkeypatch):
@@ -169,35 +297,40 @@ def test_acceptance_verdicts_reach_the_observer_reduction_blocker_reports_nothin
     assert ("FOUND", "passed") in handed, handed
 
 
-def test_a_raising_observer_leaves_the_classification_and_logs_one_event(tmp_path, monkeypatch):
-    base_repo, base_roadmap, base, quiet = _run_case(tmp_path / "quiet", monkeypatch, "nonzero_exit_is_infrastructure")
-    repo, roadmap, snapshot, loud = _run_case(tmp_path / "loud", monkeypatch, "nonzero_exit_is_infrastructure",
-                                              raises=True)
-    assert quiet.verdicts == loud.verdicts == [(RUN_ID, False, "infrastructure")]
+def _reconciled_state(repo, roadmap):
+    state = reconcile(repo, roadmap)
+    terminal = state.terminal_summary or {}
+    closeout = state.closeout_summary or {}
+    return {
+        "phases": state.phases,
+        "human_required": state.human_required,
+        "blocker_class": state.blocker_class,
+        "blocker_summary": state.blocker_summary,
+        "terminal_status": terminal.get("terminal_status"),
+        "verification_status": terminal.get("verification_status"),
+        "closeout_terminal_status": state.closeout_terminal_status,
+        "closeout_status": closeout.get("status"),
+    }
+
+
+@pytest.mark.parametrize("case", ["zero_exit_failing_gate_is_quality", "nonzero_exit_is_infrastructure",
+                                  "success_is_passed"])
+def test_a_raising_observer_leaves_the_reconciled_state_and_logs_one_event(tmp_path, monkeypatch, case):
+    base_repo, base_roadmap, base, quiet = _run_case(tmp_path / "quiet", monkeypatch, case)
+    repo, roadmap, snapshot, loud = _run_case(tmp_path / "loud", monkeypatch, case, raises=True)
+    verdict = CASES[case][2]
+    assert quiet.verdicts == loud.verdicts == [(RUN_ID, *verdict)]
     assert snapshot.phases == base.phases
-    assert reconcile(repo, roadmap).phases == reconcile(base_repo, base_roadmap).phases
-    failures = [event for event in read_events(repo) if event["action"] == "jevdrill_acceptance_hook_failed"]
+    assert snapshot.phases["RUNNER"] == CASES[case][3]
+    assert _reconciled_state(repo, roadmap) == _reconciled_state(base_repo, base_roadmap)
+    if CASES[case][4] is not None:
+        assert _reconciled_state(repo, roadmap)["blocker_class"] == CASES[case][4]
+    failures = [event for event in read_events(repo) if event["action"] == HOOK_FAILED]
     assert len(failures) == 1
     assert failures[0]["status"] == snapshot.phases["RUNNER"]
-    assert failures[0]["metadata"]["jevdrill_acceptance_hook_failed"] == {
-        "execution_run_id": RUN_ID, "verdict": "infrastructure", "error_type": "RuntimeError"}
-    assert not [event for event in read_events(base_repo) if event["action"] == "jevdrill_acceptance_hook_failed"]
-
-
-@pytest.mark.parametrize("contract", ["stalled", "timed_out", "interrupted", "contract_bug", "zero_byte_log",
-                                      "missing_log", "cleanup_left_child"])
-def test_launch_contract_blocker_verdict_records_whether_the_run_was_judged(tmp_path, contract):
-    log = tmp_path / "child.log"
-    fields = {"stalled": {"stalled": True}, "timed_out": {"timed_out": True}, "interrupted": {"interrupted": True},
-              "cleanup_left_child": {"cleanup_evidence": {"process_alive_after_cleanup": True}}}.get(contract, {})
-    if contract == "zero_byte_log":
-        log.write_text("", encoding="utf-8")
-    result = LaunchResult(command=["codex"], returncode=0, output="", executor="codex",
-                          log_path=str(log) if contract in {"zero_byte_log", "missing_log"} else None, **fields)
-    blocker = {"blocker_class": "contract_bug" if contract == "contract_bug" else "repeated_verification_failure"}
-    expected = {"stalled": "infrastructure", "timed_out": "infrastructure", "contract_bug": "quality",
-                "zero_byte_log": "quality"}.get(contract)
-    assert runner._launch_contract_acceptance_verdict(result, blocker) == expected
+    assert failures[0]["metadata"][HOOK_FAILED] == {
+        "execution_run_id": RUN_ID, "verdict": verdict[1] or "passed", "error_type": "RuntimeError"}
+    assert not [event for event in read_events(base_repo) if event["action"] == HOOK_FAILED]
 
 
 # --- GAPS §3.5 row 5a ------------------------------------------------------------------------
@@ -219,22 +352,39 @@ class Replacer:
         return launch(spec, **kwargs)
 
 
-@pytest.mark.parametrize("entrypoint", ["main", "delegated", "lane"])
-def test_runner_refuses_an_integration_that_replaces_an_override(tmp_path, monkeypatch, entrypoint):
-    repo, roadmap, plan = _phase(tmp_path, monkeypatch)
+def _enter(entrypoint, repo, roadmap, plan, integration=None, **main_kwargs):
+    if entrypoint == "main":
+        runner.run_loop(repo, roadmap, phase="RUNNER", executor="codex", dry_run=True,
+                        jevdrill_adapter=integration, **main_kwargs)
+    elif entrypoint == "delegated":
+        runner.launch_delegated_child(
+            repo=repo, roadmap=roadmap, parent_phase="RUNNER", parent_action="execute", plan=plan,
+            request=DelegationRequest(request_id="synthetic", product_action="review", target_executor="codex",
+                                      reason="synthetic conformance", owned_files=("notes.md",),
+                                      expected_output="findings", budget=DelegationBudget(max_seconds=60)),
+            dry_run=True, jevdrill_adapter=integration)
+    else:
+        runner.launch_harness_lane_work_unit(
+            repo=repo, roadmap=roadmap, plan=plan,
+            assignment=HarnessLaneAssignment(phase="RUNNER", lane_id="SL-0", work_unit_kind="lane_execute",
+                                             owned_files=("notes.md",)),
+            dry_run=True, jevdrill_adapter=integration)
+
+
+def _observe_builder_and_launcher(monkeypatch):
     built, launched = [], []
     builder = runner.build_launch_request
+    monkeypatch.setattr(runner, "build_launch_request", lambda **kwargs: built.append(kwargs) or builder(**kwargs))
+    monkeypatch.setattr(runner, "launch_with_spec", lambda spec, **_k: launched.append(spec) or LaunchResult(
+        command=spec.command, returncode=0, output="", executor=spec.executor, dry_run=True))
+    return built, launched
 
-    def observed_builder(**kwargs):
-        built.append(kwargs)
-        return builder(**kwargs)
 
-    def observed_launcher(spec, **_kwargs):
-        launched.append(spec)
-        return LaunchResult(command=spec.command, returncode=0, output="", executor=spec.executor, dry_run=True)
-
-    monkeypatch.setattr(runner, "build_launch_request", observed_builder)
-    monkeypatch.setattr(runner, "launch_with_spec", observed_launcher)
+@pytest.mark.parametrize("entrypoint", ["main", "delegated", "lane"])
+def test_runner_refuses_an_integration_that_replaces_an_override(tmp_path, monkeypatch, entrypoint):
+    seam = _seam("HostOverrideViolation", "build_host_request")
+    repo, roadmap, plan = _phase(tmp_path, monkeypatch)
+    built, launched = _observe_builder_and_launcher(monkeypatch)
     if entrypoint != "main":
         # The delegated and lane constructors resolve the executor default profile; pin it
         # as an operator override so only the guard decides.
@@ -244,53 +394,20 @@ def test_runner_refuses_an_integration_that_replaces_an_override(tmp_path, monke
     integration = Replacer()
     refused = None
     try:
-        if entrypoint == "main":
-            runner.run_loop(repo, roadmap, phase="RUNNER", executor="codex", model="gpt-5.4", effort="high",
-                            dry_run=True, jevdrill_adapter=integration)
-        elif entrypoint == "delegated":
-            runner.launch_delegated_child(
-                repo=repo, roadmap=roadmap, parent_phase="RUNNER", parent_action="execute", plan=plan,
-                request=DelegationRequest(request_id="synthetic", product_action="review", target_executor="codex",
-                                          reason="synthetic conformance", owned_files=("notes.md",),
-                                          expected_output="findings", budget=DelegationBudget(max_seconds=60)),
-                dry_run=True, jevdrill_adapter=integration)
-        else:
-            runner.launch_harness_lane_work_unit(
-                repo=repo, roadmap=roadmap, plan=plan,
-                assignment=HarnessLaneAssignment(phase="RUNNER", lane_id="SL-0", work_unit_kind="lane_execute",
-                                                 owned_files=("notes.md",)),
-                dry_run=True, jevdrill_adapter=integration)
-    except HostOverrideViolation as exc:
+        _enter(entrypoint, repo, roadmap, plan, integration, model="gpt-5.4", effort="high")
+    except seam.HostOverrideViolation as exc:
         refused = exc
     assert [mode for mode, _selection in integration.prepared] == [entrypoint]
     assert integration.prepared[0][1].source not in ("default", "codex_default")
     assert launched == [] and integration.launched == [], "the launcher was called"
     assert built == [], "the builder was called"
-    assert isinstance(refused, HostOverrideViolation)
+    assert isinstance(refused, seam.HostOverrideViolation)
 
 
 @pytest.mark.parametrize("entrypoint", ["main", "delegated", "lane"])
 def test_request_sites_without_an_integration_build_exactly_once(tmp_path, monkeypatch, entrypoint):
-    """With no integration the three request sites are unchanged: one build, one launch."""
+    """Control: with no integration the three request sites are unchanged."""
     repo, roadmap, plan = _phase(tmp_path, monkeypatch)
-    built, launched = [], []
-    builder = runner.build_launch_request
-    monkeypatch.setattr(runner, "build_launch_request", lambda **kwargs: built.append(kwargs) or builder(**kwargs))
-    monkeypatch.setattr(runner, "launch_with_spec", lambda spec, **_k: launched.append(spec) or LaunchResult(
-        command=spec.command, returncode=0, output="", executor=spec.executor, dry_run=True))
-    if entrypoint == "main":
-        runner.run_loop(repo, roadmap, phase="RUNNER", executor="codex", dry_run=True)
-    elif entrypoint == "delegated":
-        runner.launch_delegated_child(
-            repo=repo, roadmap=roadmap, parent_phase="RUNNER", parent_action="execute", plan=plan,
-            request=DelegationRequest(request_id="synthetic", product_action="review", target_executor="codex",
-                                      reason="synthetic conformance", owned_files=("notes.md",),
-                                      expected_output="findings", budget=DelegationBudget(max_seconds=60)),
-            dry_run=True)
-    else:
-        runner.launch_harness_lane_work_unit(
-            repo=repo, roadmap=roadmap, plan=plan,
-            assignment=HarnessLaneAssignment(phase="RUNNER", lane_id="SL-0", work_unit_kind="lane_execute",
-                                             owned_files=("notes.md",)),
-            dry_run=True)
+    built, launched = _observe_builder_and_launcher(monkeypatch)
+    _enter(entrypoint, repo, roadmap, plan)
     assert len(built) == 1 and len(launched) == 1
