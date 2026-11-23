@@ -1,4 +1,7 @@
 [
+  {"count": 1, "function": "PlacementLifecycle.record_heartbeat", "module": "sandbox_placement", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "_remove_tree", "module": "sandbox_placement", "primitive": "io.lstat", "role": "host-io"},
+  {"count": 1, "function": "_observed_exited", "module": "sandbox_placement", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "HostFiles.sha256", "module": "launch_routes", "primitive": "io.open", "role": "host-io"},
   {"count": 3, "function": "HostFiles.tree_rows", "module": "launch_routes", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "HostFiles.tree_rows", "module": "launch_routes", "primitive": "io.stat", "role": "host-io"},

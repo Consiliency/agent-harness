@@ -22,6 +22,23 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   - success is `passed`;
   - reduction blockers, child-reported blockers and host-side failures (a malformed audit
     config, an unavailable BAML evaluator, an interrupt, a missing host log) report nothing.
+- LANEEXEC SL-3: `phase_loop_runtime.launch_service` adds `build_launch_service` and
+  `LaunchService.prepare`, `status` and `cancel` (`plans/phase-plan-v13-LANEEXEC.md`,
+  binding §7 E3-3). The function stores the captured client configuration and the seams the
+  later launch lanes inject: `capped_popen`, `load_caps`, `readiness_code`, `route_state`,
+  the clock, the admission bound and the placement lifecycle. `prepare` assigns `run_id`,
+  `scratch_path` and `tree_path` once per reservation, under the reservation lock, and
+  replays through the `x-prepare.replay` steps. `status` and `cancel` map journaled records
+  through the L-S4 tables. Cancel goes through the verified owning launcher only, and a
+  zero-signal outcome is never reported as a success. `launch` is one call to the later
+  launch-order lane, imported at call time. `PlacementLifecycle` gains the LaneExec hooks:
+  the prepare record, the exec claim's compare-and-set and rollback, and the local
+  heartbeat. Release cancels a live attempt before teardown and answers `cleanup_pending`
+  while it is not terminal. Reap settles an attempt only when its owner has verifiably
+  exited or been replaced. Both remove a run's execution allocations, including a run that
+  an interrupted prepare left unused. Retained returns live outside them and outlive
+  release until the reservation's tombstone expires. Nothing calls the service yet, and
+  every route stays disabled under shipped defaults.
 - LANEEXEC SL-7: `phase_loop_runtime.launch_settings` and `phase_loop_runtime.launch_routes`
   (`plans/phase-plan-v13-LANEEXEC.md`, binding §7 E3-2 and E3-3). `decode_launch_settings`
   is the one strict, closed decoder of the `launch` object of the captured
@@ -132,6 +149,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `built`.
 
 ### Fixed
+
+- Seat legs (agent-harness#2139): when a leg fails before any model turn, the host auth probe
+  now runs with the caller's host environment, not the environment recorded for a jailed
+  launch, whose paths exist only inside the jail. A jailed Claude leg whose in-jail login
+  check passed keeps that auth state, and no host probe runs for it. A host sign-out alone no
+  longer turns a jailed TUI failure into a rejected credential. A seat credential the CLI
+  rejected in a session it ended itself is reported as `claude_seat_token_rejected` or
+  `claude_seat_login_rejected`, as both the detail and the notice, with that credential's
+  fix rather than the host-login guidance. An auth outcome
+  (`leg_auth_signed_out`, `leg_auth_unavailable`) no longer replaces a leg's own typed failure
+  detail, such as a `claude_tui_*` code, judged by the same rules as a stored leg detail; a
+  leg with no typed detail still maps to it.
 
 - The last eleven JEV Drill companion failures on the Windows legs (second follow-up to
   agent-harness#2092; POSIX behaviour is unchanged):
