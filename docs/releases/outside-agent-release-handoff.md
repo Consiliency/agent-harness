@@ -18,6 +18,67 @@ publication. The qualification host installs the released
 `phase-loop-runtime[agy-watch]`, since the job signs its App token with the extra's
 `cryptography`.
 
+## 0.7.41 release preparation
+
+Expected, unpublished artifacts: `phase_loop_runtime-0.7.41-py3-none-any.whl`
+and `phase_loop_runtime-0.7.41.tar.gz`.
+
+Candidate only: no tag, publication or installation is claimed. The candidate is
+based on merged main after the published 0.7.40 release. Three installer-relevant
+fixes land. The jailed Claude seat's login proof now builds its auth-probe jails
+with the route's qualification key, so the launch gate reads the v2 pass record the
+route qualified instead of reporting `claude_seat_login_unproven` on every host
+(agent-harness#2110). Staged-tree manifest hashing streams regular files in 1 MiB
+chunks, which lowers peak memory for large review trees (agent-harness#2113). The
+Codex row window's `expired_copy` leg runs fenced in the existing refuse-all mode
+(K-1 OI-1, agent-harness#2094), so the `codex_expired_leg_unfenced` hold that 0.7.40
+carried is lifted; this creates no admission class and no grant, and Codex admission
+stays blocked (agent-harness#2085). LANEEXEC SL-0 ships the placement launch
+protocol v1 schema as package data with its side-effect-free strict codec
+`launch_process_contract` (agent-harness#2112); no CLI, launch service or route is
+added and nothing is activated. Plan-only changes also landed (agent-harness#2097,
+agent-harness#2102, agent-harness#2106). The 0.7.41 changelog section lists the
+scope. The published 0.7.40 package remains unchanged. The package still requires
+Python 3.12 or newer.
+
+Live routes stay disabled. This candidate does not lift sandbox activation holds
+or grant installed-provider qualification. Derived from
+`git diff v0.7.40..main -- phase-loop-runtime/src` and computed against both trees:
+
+- Moves: `seat_window.runtime_digest()` and `seat_window.release_identity()` (every
+  source change above and the version bump itself), so seat-window qualification
+  records keyed on the 0.7.40 value, or on an unreleased main checkout, no longer
+  match and affected windows need one requalification after installation. Two Claude
+  SDK proof inputs move: `uv.lock` (the version bump) and
+  `tests/test_seats_claude_transport.py` (agent-harness#2110); the SDK transport is
+  not admitted, so no receipt is needed now. The test-only launch-reference inventory
+  records the manifest walk's `io.open` (agent-harness#2113) and the new codec's
+  schema read (agent-harness#2112).
+- Unchanged from 0.7.40: the Claude, Codex, Gemini and Grok jail profile digests (both
+  architectures); every `seat_egress` allow-list file, `proxy.mjs` and the live
+  `proxy_sha256`; the seat jail qualification's watch and validator implementation
+  digests and `CONTAINMENT_CONTRACT_SHA256`; every SDK proof region, including the
+  `panel_invoker` and `seat_jail` regions; the agy seat QCI and profile digest, the
+  validator identity `agy_validator_v1`, store keys, and the shipped agy catalog and
+  its records.
+- agent-harness#2113 keeps every manifest digest byte-identical: the streamed hash
+  equals hashing the whole payload, for both `review_tree_manifest_sha256` and
+  `seat_jail.tree_manifest_sha256_at`. No qualification record, pass record or
+  authorization changes, and nothing needs requalification because of it.
+
+Operator action after installation: requalify the seat windows whose records are
+keyed on the moved `runtime_digest()`; nothing else. No agy image needs
+requalification. A jailed Claude route already qualified under a v2 pass record
+needs no new record for agent-harness#2110; its login proof reads that record.
+The strict hermetic agy release gate still runs its own conformance suite and
+verifies the vendor archive at publication.
+
+Before publication, required candidate checks, standalone-wheel Gate A and the
+strict hermetic agy release gate must pass, and publication authority must be
+granted. Recording these gates does not authorize dispatch. After publication,
+verify registry artifacts, GitHub Release assets and the managed installation
+separately.
+
 ## 0.7.40 release preparation
 
 Expected, unpublished artifacts: `phase_loop_runtime-0.7.40-py3-none-any.whl`

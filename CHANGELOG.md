@@ -6,6 +6,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+## [0.7.41] - Unreleased candidate
+
+### Changed
+
+- The review-runner Containerfile is hardened for the RRIMAGE build (lane SL-1,
+  Consiliency/agent-harness#2106). Every `RUN` step except the hash-pinned pip install now runs
+  with `--network=none`, and that step now does only the pinned install. `LICENSES/` is checked against the `BUILD.lock` notice hashes as an
+  exact set. The unhashed `PROVENANCE.md` copy is gone. The runtime stage declares
+  `ARG SOURCE_DATE_EPOCH`. A final step strips setuid and setgid bits and fails if any remain.
+  `tests/test_review_runner_containerfile.py` checks all of this statically, and checks that
+  each rule rejects a mutated copy.
+
 ### Added
 
 - The review-runner image pin record contract and validator (RRIMAGE SL-0;
@@ -39,6 +51,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   jail's key is missing or differs from the review jail's (regression of
   Consiliency/agent-harness#1890).
 
+- Staged-tree manifest hashing now reads regular files in 1 MiB chunks and preserves
+  existing digests used by pass records and authorizations. Previously, the jailed-seat
+  verification retained all file contents until the walk finished (regression from
+  agent-harness#1132).
+
 - The Codex row window's expired-token check now runs fenced on the real seat (K-1 OI-1,
   owner decision 2026-11-22, "Block all its traffic"; plan
   `detailed-k1-oi1-refuse-all-fence-20261122-0736.md`, Consiliency/agent-harness#2080).
@@ -57,7 +74,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   watch digests, `proxy_sha256`, the launch inventory, the SDK proof bindings, agy QCI and
   `CONTAINMENT_CONTRACT_SHA256` do not.
 
-## [0.7.40] - Unreleased candidate
+## [0.7.40] - 2026-11-22
 
 ### Added
 

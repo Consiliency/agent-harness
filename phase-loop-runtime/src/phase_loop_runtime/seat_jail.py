@@ -1122,6 +1122,10 @@ def write_new_file_at(root_fd: int, relpath: str, data: bytes, mode: int = 0o600
             os.close(fd)
 
 
+# Read size for streaming a staged file into its manifest digest (bounded memory).
+_MANIFEST_CHUNK_BYTES = 1 << 20
+
+
 def tree_manifest_sha256_at(tree_fd: int) -> str:
     """The staged-tree digest, computed fd-relatively without following any link.
 
@@ -1131,7 +1135,10 @@ def tree_manifest_sha256_at(tree_fd: int) -> str:
     their target text. A FIFO or device is skipped exactly as the path walk skips it, and
     is never opened.
     """
-    records: list[tuple[str, bytes, bool, bytes]] = []
+    # Each entry keeps only its digest and length, never its bytes: a regular file is
+    # hashed in bounded chunks as it is visited, so peak memory does not grow with the
+    # tree. The records are identical to hashing the whole payload at once.
+    records: list[tuple[str, bytes, bool, str, int]] = []
 
     def walk(dir_fd: int, prefix: str) -> None:
         for name in sorted(os.listdir(dir_fd)):
@@ -1140,8 +1147,10 @@ def tree_manifest_sha256_at(tree_fd: int) -> str:
             rel = f"{prefix}{name}"
             info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
             if stat.S_ISLNK(info.st_mode):
-                target = os.readlink(name, dir_fd=dir_fd)
-                records.append((rel, b"link", False, os.fsencode(target)))
+                target = os.fsencode(os.readlink(name, dir_fd=dir_fd))
+                records.append(
+                    (rel, b"link", False, hashlib.sha256(target).hexdigest(), len(target))
+                )
             elif stat.S_ISDIR(info.st_mode):
                 child = os.open(name, _O_DIR, dir_fd=dir_fd)
                 try:
@@ -1153,24 +1162,26 @@ def tree_manifest_sha256_at(tree_fd: int) -> str:
                 try:
                     if not stat.S_ISREG(os.fstat(fd).st_mode):
                         raise UnsafeSeatObject(errno.EINVAL, f"{rel!r} changed type")
-                    chunks = []
+                    content = hashlib.sha256()
+                    length = 0
                     while True:
-                        chunk = os.read(fd, 1 << 16)
+                        chunk = os.read(fd, _MANIFEST_CHUNK_BYTES)
                         if not chunk:
                             break
-                        chunks.append(chunk)
+                        content.update(chunk)
+                        length += len(chunk)
                 finally:
                     os.close(fd)
                 executable = os.access(name, os.X_OK, dir_fd=dir_fd, follow_symlinks=False)
-                records.append((rel, b"blob", executable, b"".join(chunks)))
+                records.append((rel, b"blob", executable, content.hexdigest(), length))
 
     walk(tree_fd, "")
     digest = hashlib.sha256()
-    for rel, kind, executable, payload in sorted(records, key=lambda r: r[0]):
+    for rel, kind, executable, payload_hex, length in sorted(records, key=lambda r: r[0]):
         digest.update(
             kind + (b"1" if executable else b"0")
-            + hashlib.sha256(payload).hexdigest().encode("ascii")
-            + b"%020d" % len(payload)
+            + payload_hex.encode("ascii")
+            + b"%020d" % length
             + hashlib.sha256(rel.encode("utf-8")).hexdigest().encode("ascii")
         )
     return digest.hexdigest()
