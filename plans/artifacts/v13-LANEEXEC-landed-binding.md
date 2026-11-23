@@ -8,7 +8,8 @@ vendors by digest (IF-XR-1). That erratum is the one toolkit repin. Nothing here
 adds, removes or renames a wire member, enum value, code, verb or exit class, and
 this artifact makes no wire change of its own. Erratum LANEEXEC-v1-errata-2 (§6) is a
 plan and binding erratum only: it changes this artifact and the phase plan, never the
-wire bytes, so the toolkit does not repin.
+wire bytes, so the toolkit does not repin. Erratum LANEEXEC-v1-errata-3 (§7) is likewise a
+plan and binding erratum only.
 
 Where this artifact binds an `x-*` semantic sentence of the wire artifact to the
 landed code, it says so with the sentence's member path, and this artifact governs that
@@ -26,6 +27,7 @@ outcomes the wire already expresses. A future protocol version folds them in.
 | SEATS REMOTE contract | `plans/seats-remote-contract.md`, sha256 `1cea960ddd28ef5e1c4bf79083fa9f9938b2c99c2e29dbd937864944ca76d7e8` |
 | Landed baseline inspected | `origin/main` at `a493c46ccf979231b1a3ae5b23ae678a801f0603` (re-plan). |
 | Landed baseline re-inspected (LANEEXEC-v1-errata-2) | `origin/main` at `4dd77878afe58c429b01969c32c89b755a820002` (v0.7.40). Every `file:line` below refers to this tree. |
+| Landed baseline re-inspected (LANEEXEC-v1-errata-3) | `origin/main` at `2441fa0d695f23dccf150660d277872a93b3ea16`. The `file:line` citations of §7 refer to this tree; §2 keeps its v0.7.40 anchors. |
 | Pre-build sweep | Consiliency/agent-harness#1963 head `cdecd32cf9b9e33cbcf7ddf07c44b4556c6ad074`, `plans/artifacts/v13-LANEEXEC-landed-sweep.md` |
 | Upstream re-plans consumed | `plans/artifacts/v12-CLOSEOUT-landed-binding.md` (§3 C-S1, §4.1–§4.3) and `plans/artifacts/v13-PLACECLI-landed-binding.md` (§3, §4) |
 | Cross-phase ownership | `plans/artifacts/v12-v13-replan-ownership.md` |
@@ -80,7 +82,7 @@ tmpfs carve-out and its §7 (j) tests (STOP L-S3 removes the dependency); the
 | `seat_resource_caps.py:650` | `capped_popen(command, *, seat_key, before_spawn=None, **popen_kwargs)` — one capped parent per key, child-side readback, a daemon reap thread that collects the parent (`:780`–`:786`) | consume with key `laneexec:<client>:<reservation_id>` and `before_spawn` never passed, called only by the detached supervisor; any exception keeps the claim (L-S3, §6 E2-1) |
 | `sandbox_policy.py:807` | `staging_root()` = `resolve_staging().path` (`:768`), which may be RAM-backed or the `PHASE_LOOP_SANDBOX_STAGING_DIR` override | consume as the device witness for local attempt directories, never their location (L-S3, §6 E2-4) |
 | `sandbox_policy.py:1275`; `sandbox_placement.py:2675` | `placement_state_root()`; `PlacementLifecycle.inventory` = that root `/ <client>` | consume: the client's LaneExec state directory lies under `PlacementLifecycle.inventory` (§6 E2-4) |
-| `sandbox_placement.py:2530`, `:2584` | `openshell_route_state()`, `openshell_launch_refusal(config, *, workload, target_kind, providers, config_sha256, egress_sha256, route_state=None)` (agent-harness#2003) | consume (SL-3), the only openshell activation and egress check (§6 E2-2) |
+| `sandbox_placement.py:2530`, `:2584` | `openshell_route_state()`, `openshell_launch_refusal(config, *, workload, target_kind, providers, config_sha256, egress_sha256, route_state=None)` (agent-harness#2003) | consume (SL-8, §7 E3-3), the only openshell activation and egress check (§6 E2-2) |
 | `seat_uid.py:490` | `trusted_module_argv(module, *args)` | consume for every helper launch |
 | `openshell_artifacts.py:72`, `:159`, `:445` | `Bound(end, cancelled)`, `safe_path(path)`, `check_binary_literals(patch, limits, bound)` | consume |
 | `openshell_worker.py:398` | `landlock_manifest(rules, uid=10001, gid=10001)` | consume |
@@ -90,7 +92,7 @@ tmpfs carve-out and its §7 (j) tests (STOP L-S3 removes the dependency); the
 | `lane_wave_executor.py:110` | `execute_lane_waves(...)` (agent-harness#1978): launches writable lane workers through `run_phase_worker_pool` from resolved launch specs | do not touch (§6 E2-3) |
 | `panel_invoker.py:4537` | `_NONLOCAL_EXECUTION_DRIVER = False` | do not touch |
 | `panel_invoker.py:14106` | jailed Codex seat route | do not touch (L-S7) |
-| `sandbox_placement.py`, `placement_lease.py`, `openshell_backend.py` | as left by PLACECLI (`PlacementLifecycle`, reservation journal) | extend (SL-3) after PLACECLI merges and the reservation-only walk exit (PLACECLI binding §2, §4.2); SL-3 performs every later step on a remote rung |
+| `sandbox_placement.py`, `placement_lease.py`, `openshell_backend.py` | as left by PLACECLI (`PlacementLifecycle`, reservation journal) | extend after PLACECLI merges and the reservation-only walk exit (PLACECLI binding §2, §4.2): `sandbox_placement.py` by SL-3, `placement_lease.py` and `openshell_backend.py` by SL-9 (§7 E3-3); SL-9 performs every later step on a remote rung |
 | `tests/data/seat_launch_references.json` | landed rows plus CLOSEOUT and PLACECLI rows | extend (SL-5) by union |
 
 ## 3. STOP decisions
@@ -102,7 +104,7 @@ recommendation, adopted).** The wire sentence `x-envelope-construction.rule` ("a
 through the v12 admission seam (supervised_launch.prepare_launch …)") binds to
 CLOSEOUT's production seam:
 
-- **Pre-claim check.** In the order position "envelope admission" (`x-launch-inputs.order`), LaunchService calls CLOSEOUT's `load_v2_binding`, `capture_launch_v2` and `prepare_launch_v2` in process on the captured envelope bytes. A refusal is `refused`, code `sandbox_launch_admission_refused`, with the pinned diagnostic and no claim. The `PreparedLaunch` is never consumed here; it is disposed through CLOSEOUT's `discard_admission` in a `finally`.
+- **Pre-claim check (rebound by LANEEXEC-v1-errata-3, §7 E3-1).** In the order position "envelope admission" (`x-launch-inputs.order`), LaunchService starts one short-lived isolated helper, `seat_uid.trusted_module_argv("phase_loop_runtime.launch_admission")`. The helper calls CLOSEOUT's `load_v2_binding`, `reconcile_v2_binding` (with this attempt's §4.2 controller document, held in memory), `activate_v2_binding`, `capture_launch_v2` and `prepare_launch_v2` on the captured envelope bytes, then `discard_admission` in a `finally`. It reports only the outcome and the pinned diagnostic. A refusal is `refused`, code `sandbox_launch_admission_refused`, with that diagnostic and no claim. The `PreparedLaunch` is never consumed. The helper is not a launch-chain process and starts no target. §7 E3-1 gives the full binding.
 - **Authoritative admission.** After the claim, the supervisor writes the per-attempt controller document at the path CLOSEOUT binding §4.2 derives from the envelope bytes. It then starts exactly one chain root, `seat_uid.trusted_module_argv("phase_loop_runtime.supervised_worker_cli", "launch", "--envelope", …, "--result", …)`, through `capped_popen` for a local target (L-S3). The CLI re-admits the same bytes, consumes once and reserves the JOURNAL attempt. A CLI refusal there, or an inner WORKER refusal after it, is a failure after the first chain process: `finished`, termination `failed_to_start`, claim kept (`x-exec.after_start`; L-S4).
 - **Status mapping.** LANEEXEC consumes CLOSEOUT's `WorkerResult`-to-v2 mapping
   (CLOSEOUT binding §4.3) and maps v2 states to the wire only through §3 L-S4.
@@ -195,7 +197,8 @@ refusal at any step through `pre_exec` (`x-launch-inputs.order`), claim, upload,
 scratch-provisioning and chain-start counters are zero. Snapshot, seed-capture
 and envelope-admission counters equal one exactly when the refusal happens at or
 after that step, and zero before it. This replaces the old plan's flat "zero
-snapshot, upload, envelope or invocation counters" assertion.
+snapshot, upload, envelope or invocation counters" assertion. The isolated admission
+helper of §7 E3-1 is counted only by the envelope-admission counter (§7 E3-1, "Counters").
 
 ### L-S7 — supported routes and qualification
 
@@ -253,7 +256,7 @@ provider; dev0 runs plan validators only.
 - V0: `tests/test_launch_process_contract.py`, `tests/test_gate_a_wheel_isolation.py::GateAConformEvidenceScopeTest`
 - V1: `tests/test_launch_snapshot.py`
 - V2: `tests/test_launch_return.py`
-- V3: `tests/test_launch_service.py`, `tests/test_launch_local_caps.py`, `tests/test_launch_lifetime.py`, `tests/test_launch_release_reap.py`, `tests/test_sandbox_placement.py`, `tests/test_placement_lease.py`, `tests/test_openshell_backend.py`
+- V3 (the four SL-3 lanes of §7 E3-3): `tests/test_launch_prepare.py`, `tests/test_launch_release_reap.py`, `tests/test_sandbox_placement.py`, `tests/test_launch_routes.py`, `tests/test_launch_service.py`, `tests/test_launch_admission.py`, `tests/test_launch_local_caps.py`, `tests/test_launch_lifetime.py`, `tests/test_launch_openshell.py`, `tests/test_placement_lease.py`, `tests/test_openshell_backend.py`. Each lane runs its own files as V3a to V3d (§7 E3-3).
 - V4: `tests/test_phase_loop_lane_placement.py`, `tests/test_phase_loop_lane_harnesses.py`
 - V5: `tests/test_launch_cli.py`, `tests/test_agent_cli_scratch_inventory_1147.py`, `tests/test_seat_launch_helpers_trusted.py`, `tests/test_seat_reference_inventory.py`
 - V6: `tests/test_laneexec_receipt.py`
@@ -558,3 +561,311 @@ rejected for the reasons recorded in the readiness audit.
 - the registry and repository, and push credentials;
 - a build host and the build window;
 - the image allowlist entry on ai-stack's side.
+
+## 7. Erratum LANEEXEC-v1-errata-3 (2026-11-23): isolated pre-claim admission and the SL-3 split
+
+This erratum covers the plan and this binding only. No wire byte, member, code, verb or exit
+class changes. The `x-errata` member keeps its one entry, agent-toolkit does not repin, and
+no CLOSEOUT file is edited. It answers the SL-3 implementer's STOP and the coordinator's
+rulings on it (2026-11-23). E3-1 rebinds the L-S1 pre-claim check, E3-2 records the
+`ClientConfig` reading, E3-3 splits SL-3 into four lanes and re-homes its obligations, and
+E3-4 settles where the E2-4 mount cases run. `file:line` citations refer to the errata-3
+baseline of §0.
+
+### E3-1 — pre-claim admission in an isolated helper
+
+**Why the L-S1 sentence could not be met.**
+
+- `prepare_launch_v2` refuses `binding_unavailable` unless the binding carries an agreement
+  and an activated codec and validator (`supervised_launch.py:566`–`:568`).
+- `load_v2_binding` returns a binding without an agreement (`supervised_launch_binding.py:118`).
+  Only `reconcile_v2_binding` sets one (`:321`), and only `activate_v2_binding` (`:328`)
+  loads the codec and validator.
+- `load_v2_binding` (`:219`) and `activate_v2_binding` (`:332`) require `sys.flags.isolated`.
+  The SL-4 runner and the SL-5 launch process are not `-I` interpreters, and activation
+  executes operator codec and validator bytes, which CLOSEOUT confines to isolated Python.
+
+**Ruling (coordinator, option a).** The pre-claim check runs in one short-lived isolated
+helper. CLOSEOUT is consumed unchanged.
+
+**The helper.** It is the module `phase_loop_runtime.launch_admission` (SL-8, §E3-3). The
+launch order starts it once for each launch that reaches the order position "envelope
+admission":
+
+- argv `seat_uid.trusted_module_argv("phase_loop_runtime.launch_admission")` with no further
+  argument, never `-m`;
+- stdin and stdout are pipes, and stderr is discarded;
+- working directory `/`, and an environment of `PATH=/usr/bin:/bin` only, so no ambient
+  variable and no credential reaches it;
+- its own session; the launch process kills the whole group when the helper outlives the
+  admission bound (300 s, injectable at `build_launch_service`) or when the launch is
+  cancelled.
+
+The helper is not a launch-chain process. It starts no target, writes no file, takes no lock
+and is not started through `capped_popen`.
+
+**How the controller document reaches the helper (in memory, over the pipe).**
+
+- LaunchService builds this attempt's CLOSEOUT §4.2 controller document once per launch
+  request, before the helper starts. Its four members `h`, `attempt`, `context` and `slots`
+  come from the captured envelope bytes (`h` is their SHA-256), the prepare record
+  (`assignment_digest`, `run_id`, `attempt_id`), the captured configuration and the prepared
+  paths. Its bytes are `supervised_envelope_v2.canonicalize_v2` of that document.
+- stdin carries one frame and is then closed: an 8-byte big-endian length and the envelope
+  bytes, then an 8-byte big-endian length and the controller bytes. Each part is at most
+  1048576 bytes, the CLI's envelope cap and `read_controller_snapshot`'s cap. A short read,
+  a trailing byte or an over-cap length refuses.
+- Before the claim nothing is written for admission: not at `<controller_root>/<h>.json`,
+  not in the LaneExec state directory, not in a temporary file.
+- After the claim, the supervisor receives the same controller bytes from the launch process
+  over its own stdin pipe. It writes them once at `<controller_root>/<h>.json` with
+  `O_EXCL`, mode 0600, under CLOSEOUT §4.2's rule that equal existing bytes are reused. A
+  failed write is not one of `x-exec.claim_rollback`'s closed failures, so it keeps the
+  claim and is reported as a chain-root refusal is: `finished`, termination
+  `failed_to_start` (L-S4).
+
+**Calls, in order, inside the helper.**
+
+1. Decode the controller bytes with the public `supervised_envelope_v2.parse_v2`, build the
+   `AttemptBinding` from `attempt`, and apply the checks `read_controller_snapshot` makes
+   after its file walk (`supervised_worker_cli.py:186`–`:221`): the member sets, `h` equal
+   to the envelope digest, the digest shapes, the timeout bound, the run and attempt
+   identifiers, and exclusions that are directories. The file-walk checks stay with the
+   chain root. No private CLOSEOUT function is called.
+2. `read_binding_locator(MANAGED_BINDING)`, the locator `reconcile_v2_binding` takes.
+3. `load_v2_binding(MANAGED_BINDING, workspace=…, target=…, reference_roots=…)`, with the
+   exclusions from `slots`.
+4. `reconcile_v2_binding(locator, binding, controller=document, attempt=attempt)`.
+5. `activate_v2_binding(agreed)`.
+6. `capture_launch_v2(spec=active.spec, context=active.context, attempt=attempt)`.
+7. `prepare_launch_v2(envelope_bytes, binding=active, capture=capture, attempt=attempt)`.
+8. In a `finally`: `discard_admission` on any `PreparedLaunch`, and `close()` on a capture
+   that no `PreparedLaunch` took.
+
+The `PreparedLaunch` is never consumed. The helper adds no admission rule of its own. A
+refusal that only the chain root's `decode_v2`, `precheck_v2_admission` or file-walk checks
+would raise is a failure after the claim (L-S1, authoritative admission), never a rollback.
+
+**What the helper returns.** It writes one JSON line of at most 4096 bytes and exits 0:
+either `{"admitted":true}` or `{"admitted":false,"diagnostic":"<value>"}`. The value is
+the first of `Refused.diagnostics`, then `Refused.reason`, that is a member of the pinned
+PLACECLI `AdmissionDiagnostic` enum. When none is, the value is `codec_unavailable`. An
+exception inside the helper yields `{"admitted":false,"diagnostic":"codec_unavailable"}`. No
+path, envelope or controller byte and no exception text leaves the helper.
+
+**How LaunchService reads it.** Only exactly `{"admitted":true}` with exit status 0 admits.
+Every other outcome is `refused`, code `sandbox_launch_admission_refused`, with no claim:
+
+- a refusal line, with its value as `admission_diagnostic`;
+- any other line, extra output or a value outside the enum;
+- a non-zero exit, a signal, the admission bound, a cancel, or a start failure.
+
+All but the first carry `admission_diagnostic` `codec_unavailable`. The order then continues
+as frozen: `recheck_before_start`, `pre_exec`, scratch provisioning, the claim and chain
+start. The chain root re-admits authoritatively as L-S1 states.
+
+**Counters (L-S6).**
+
+- The envelope-admission counter counts helper starts. It is 1 for a launch that reaches
+  envelope admission, including a refusal there or at any later step, and 0 for a refusal
+  before it.
+- The helper is never a launch-chain process, a worker invocation, a chain start or an
+  upload. For every refusal through scratch provisioning, `worker_invocations` and the
+  chain-start counter stay 0 even though the helper ran.
+- The EC-LANEEXEC-1 falsifier "a second launch for one reservation reaching the
+  launch-chain counter" does not count the helper.
+- An idempotent replay (same `request_id` and body) starts no helper. A relaunch under a
+  new `request_id` after `claim_rolled_back` starts one. The helper is never retried within
+  one launch.
+
+**SL-5 launch-inventory rows.**
+
+- One `host-helper` row, primitive `subprocess.Popen`, module `launch_exec`, for the helper
+  start. Its argv is built only by `seat_uid.trusted_module_argv`, and the
+  `test_seat_launch_helpers_trusted.py` no-`-m` scan covers the call site.
+- `launch_admission` joins the modules that `test_seat_launch_helpers_trusted.py` proves
+  resolve from the trusted installation in any working directory.
+- The helper module has no launch primitive of its own. Any reference the static scan finds
+  in it is added by union with its role.
+- Operator codec and validator bytes execute only inside `activate_v2_binding` in the `-I`
+  helper. No LaneExec module calls `_load_absolute` or `exec`.
+
+**SL-8 obligations.** Every case is entered through `build_launch_service`:
+
+- One helper start per admitted launch. Its argv equals `trusted_module_argv(...)`, carries
+  `-I` and no `-m`, and the helper observes `sys.flags.isolated`.
+- Admission refuses with no claim and the L-S6 counters for each of these: no binding,
+  a controller disagreement at `reconcile_v2_binding`, an enum diagnostic from
+  `prepare_launch_v2` carried through, a non-enum reason mapped to `codec_unavailable`,
+  a helper crash, extra or malformed stdout, a non-zero exit, the admission bound, and
+  a cancel.
+- `discard_admission` runs on every helper path, and the capture is closed on a refusal.
+- After a pre-claim refusal, and before every claim, no file exists at
+  `<controller_root>/<h>.json` and the state directory has no admission file.
+- The bytes written at `<controller_root>/<h>.json` after the claim equal the bytes piped
+  pre-claim. A write failure keeps the claim and reports `finished`/`failed_to_start`.
+- A credential sentinel in the launching process's environment never reaches the helper.
+
+**SL-8.3 mutations.** Each fails through a production path:
+
+- admitting in process instead of in the helper;
+- skipping `reconcile_v2_binding`;
+- writing the controller document before the claim;
+- passing the controller document through a file;
+- reading a helper failure as admitted;
+- counting the helper as a chain start.
+
+### E3-2 — `ClientConfig` and the `launch` settings object (F1)
+
+**Confirmed by the coordinator.**
+
+- `ClientConfig` in `build_launch_service(client, *, config: ClientConfig)` is the captured
+  `sandbox_policy.PlacementClientConfig` (`sandbox_policy.py:1247`).
+- LaneExec reads its settings only from that configuration's free-form top-level `launch`
+  object. `config_sha256` already covers the object (`sandbox_policy.py:1540`–`:1567`;
+  PLACECLI binding §4.1), so `x-launch-inputs.config_binding` holds without change.
+
+**Who defines the shape.** The wire artifact does not freeze the object's shape. SL-7
+defines it in `launch_settings.py` as a strict, closed decoder:
+
+- Its members are the operator values the contract names: the template registry and toolkit
+  pins, the image allowlist, snapshot limits, seed limits and `seed_root`, activation values
+  (`local_pi_runner_launcher`, `lane_placement`, route enablement), the return cap, the two
+  lifetime budgets, and the reference to the review-runner image record (§6 E2-6).
+- An absent `launch` object means the shipped defaults.
+- An unknown member, a wrong type, or a value outside its frozen bound makes the
+  configuration invalid, as PLACECLI treats an invalid client configuration.
+- Operators may only lower the frozen limits and budgets.
+
+SL-4, SL-5 and SL-8 read settings only through this decoder. SL-6 documents the shape in
+`docs/placement-launch-service.md`.
+
+### E3-3 — SL-3 split into four lanes, and the obligations re-homed
+
+**Lane identifiers.** `validate_plan_doc.py` accepts only numeric `SL-N` identifiers, so the
+coordinator's SL-3a to SL-3d are numbered as below. The SL-4, SL-5 and SL-6 identifiers,
+which §6 cites, stay unchanged.
+
+| Coordinator label | Lane | Scope | Owned files (under `phase-loop-runtime/` unless rooted) | Depends on |
+| --- | --- | --- | --- | --- |
+| SL-3a | SL-3 | prepare, status, cancel; the lifecycle hooks: prepare record, claim compare-and-set and rollback, local heartbeat write, release and reap | `src/phase_loop_runtime/launch_service.py`, `src/phase_loop_runtime/sandbox_placement.py`, `tests/test_launch_prepare.py`, `tests/test_launch_release_reap.py`, `tests/test_sandbox_placement.py` | SL-0, SL-2 |
+| SL-3b | SL-7 | routes, templates and registration; the `launch` settings decoder (E3-2) | `src/phase_loop_runtime/launch_routes.py`, `src/phase_loop_runtime/launch_settings.py`, `tests/test_launch_routes.py` | SL-0 |
+| SL-3c | SL-8 | the launch order, exec claim, isolated admission helper (E3-1), detached supervisor with local caps and local lifetime, local route | `src/phase_loop_runtime/launch_exec.py`, `src/phase_loop_runtime/launch_admission.py`, `src/phase_loop_runtime/launch_supervisor.py`, `src/phase_loop_runtime/launch_lifetime.py`, `tests/test_launch_service.py`, `tests/test_launch_admission.py`, `tests/test_launch_local_caps.py`, `tests/test_launch_lifetime.py`, `.github/workflows/laneexec-mounts.yml` (E3-4) | SL-1, SL-2, SL-3, SL-7 |
+| SL-3d | SL-9 | the openshell route against the fake coordinator: upload and scratch staging, the coordinator exec, bridge attach and loss, coordinator renewal and `lifetime_exceeded` | `src/phase_loop_runtime/launch_openshell.py`, `src/phase_loop_runtime/placement_lease.py`, `src/phase_loop_runtime/openshell_backend.py`, `tests/test_launch_openshell.py`, `tests/test_placement_lease.py`, `tests/test_openshell_backend.py` | SL-3, SL-8 |
+
+SL-3 and SL-7 run in parallel, and their files are disjoint. SL-4 and SL-5 depend on SL-9,
+and through it on every SL-3 lane.
+
+**Lifetime.** The local supervisor cannot run without renewal (`x-lifetime.liveness`: a
+local heartbeat is the durable journal and slot write). So the renewal clock, fencing, the
+`ttl_s` floor and local renewal belong to SL-8. SL-9 supplies the coordinator renewal and
+its fault cases. The write itself is SL-3's lifecycle hook.
+
+**Seams between the lanes.**
+
+- `build_launch_service` (SL-3) declares every injection seam the later lanes use:
+  `capped_popen`, `load_caps`, `readiness_code`, `route_state` (§6 E2-2), the clock, the
+  admission bound (E3-1), and the placement lifecycle that PLACECLI tests already inject.
+  The defaults are the landed functions.
+- `LaunchService.launch` (SL-3) is one call to `launch_exec.launch_attempt` (SL-8), imported
+  at call time. The openshell route entry of the launch order (SL-8) is one call to
+  `launch_openshell` (SL-9), also imported at call time.
+- No test of an earlier lane enters a late-bound call. No production caller exists before
+  SL-9 merges, because SL-4 and SL-5 depend on it.
+- A later lane never edits an earlier lane's file. If it needs to, it stops and reports.
+
+**Verification.** V3 splits by lane: V3a (SL-3), V3b (SL-7), V3c (SL-8) and V3d (SL-9) run
+their own lane's test files. V3 is their union (§5).
+
+**Re-homing of SL-3.1.** In §3 to §6, "SL-3.1" and "SL-3.3" name the tasks of the former
+single SL-3 lane. Every obligation of that SL-3.1 has exactly one owner:
+
+| Obligation | Lane |
+| --- | --- |
+| C2 registration matrix (17 roles, the 16-file closure one file at a time, manifest form, image links, positive case) at `launch_routes.register_templates`, the one registration function, which no test double replaces | SL-7 |
+| C2 through `build_launch_service`: one case per refusal class, with zero snapshot reads, uploads, envelopes and invocations; the registration-to-start recheck | SL-8 |
+| Template selection and argv expansion, naming the other target's template, `template_sha256` mismatch, the local template's LANEEXEC-v1-errata-1 form (E1, E2), and the L-S7 route table as a closed function | SL-7 |
+| `route_disabled` under shipped defaults, `toolkit_interim` for local `pi-runner`, local `leg`/`qualification` always `route_disabled`, and crossed Pi pairs, each path-entered with zero invocations | SL-8 |
+| C11 values, idempotency, replay, clock, the refusals, cleanup on release and reap, races of prepare against release and reap, and the status echo schema | SL-3 |
+| C11 launch echo, relaunch after rollback reusing the values, expiry between seed capture and claim, and two concurrent launches | SL-8 |
+| L-S4 status and cancel through the service on journaled records; caller-scoped reap with other inventories invisible; release and reap of prepared, never-launched reservations; the claim compare-and-set under a barrier | SL-3 |
+| Unreadable caps (coordinator ruling 1): `prepare` refuses and `status`/`cancel` keep working | SL-3 |
+| Unreadable caps: `launch` refuses for every target | SL-8 |
+| L-S6 stage-scoped counters; the bare-hex egress grant; the pre-claim admission refusal with no claim (E3-1); claim order with a crash injected between each step, rollback only before the first chain process, relaunch under a new `request_id`, and claims kept after it (L-S2) | SL-8 |
+| C4 local cases, including the `link socket` rollback and the configuration-digest cases | SL-8 |
+| C4 openshell cases: an upload confirmed empty, an unknown upload, `duplicate_binding` | SL-9 |
+| The chain root through `trusted_module_argv` and `capped_popen` with key `laneexec:<client>:<reservation_id>`; the controller document at its envelope-digest path only; the `PreparedLaunch` discarded on every path | SL-8 |
+| Local attempt directories outside the state directory, on another filesystem or on tmpfs; the caps digest changed before chain start; `capped_popen` exceptions keeping the claim (L-S3); an inner WORKER refusal reported by launch and by `status` after restart (L-S4); a changed `launch` referent | SL-8 |
+| C5 local caps | SL-8 |
+| C6 on the local journal heartbeat: clock boundaries, fencing, the `ttl_s` floor, the budget refusal | SL-8 |
+| C6 on the fake coordinator: each reply fault, `lifetime_exceeded`, supervisor death letting the lease lapse, no overlap, and a fenced lease not released early | SL-9 |
+| C7 bridge loss | SL-9 |
+| C7 cancel through the verified owner, release cancelling a live attempt then `cleanup_pending`, and reap of a dead supervisor reporting its capped parent `cleanup_pending`, on local | SL-8 |
+| The same on openshell | SL-9 |
+| C10 seed refusals before the claim, local provisioning and ancestor cases, local `scratch_path` echo, source lifetime | SL-8 |
+| C10 openshell provisioning, the fake-coordinator path cases, an unknown provisioning result, openshell `scratch_path` echo | SL-9 |
+| §6 E2-1, E2-2 and E2-4 obligations; E3-1 obligations | SL-8 |
+| §6 E2-6: the helper path and digest read only from the fixture image record | SL-9 |
+
+**Re-homing of SL-3.3 mutations.**
+
+| Mutation | Lane |
+| --- | --- |
+| Drop the capped parent; skip the claim write at launch; launch after `pre_exec` refuses; roll back after the first chain process; accept a tmpfs attempt path; claim before `pre_exec`; hash the raw client configuration file | SL-8 |
+| A claim compare-and-set that lets two claims through; assign a new `run_id` on replay; skip the clock check before the journal read; leave the prepare record after reap | SL-3 |
+| Accept a prefix-matched `tree_path`; accept a launch whose paths differ from the record; follow a symlink in the seed source, re-read seed bytes after capture, skip the size check, drop the manifest reference, or open an entry before the digest check, each through the service | SL-8 |
+| Swallow a renewal failure: the local heartbeat in SL-8, the coordinator in SL-9 | SL-8, SL-9 |
+| Reach a coordinator under shipped defaults; roll back an unknown upload; upload from the source instead of the staged capture | SL-9 |
+| §6 E2-1, E2-2 and E2-4 mutations; E3-1 mutations | SL-8 |
+
+### E3-4 — where the E2-4 mount cases run (F3)
+
+**The cases.** Four cases of §6 E2-4 need real mounts:
+
+- a tmpfs override with the attempt directory on the same tmpfs;
+- a tmpfs override with a block-backed attempt directory;
+- a block override on another device;
+- a block override on the attempt directory's own device.
+
+`PHASE_LOOP_SANDBOX_REFUSE_RAM=1` with a RAM-backed candidate also needs the tmpfs. These
+cases live in SL-8's `tests/test_launch_local_caps.py`.
+
+**Fixtures, discovered and never mounted.** No test mounts anything or calls `sudo`. The
+cases read two variables:
+
+- `PHASE_LOOP_TEST_TMPFS_DIR`: a writable directory whose filesystem is tmpfs by `statfs`
+  magic.
+- `PHASE_LOOP_TEST_SECOND_BLOCK_DIR`: a writable directory on a block device (major
+  device not 0) other than the device of the test's attempt root.
+
+The test places the client's LaneExec state directory on the fixture filesystem through the
+state-root seam that the other V3 tests use. When a variable is unset or its check fails,
+the case skips with the exact reason `E2-4 mount fixture unavailable: tmpfs` or
+`E2-4 mount fixture unavailable: second block device`. With
+`PHASE_LOOP_TEST_REQUIRE_MOUNTS=1` set, it fails instead of skipping.
+
+**Where they run.** SL-8 adds `.github/workflows/laneexec-mounts.yml`:
+
+- It runs on `ubuntu-24.04` with Python 3.12 and the locked environment, and follows the
+  repository's workflow tests (`test_python_floor_1546.py`).
+- `ci/seat-caps-host.sh provision`, consumed unchanged, attaches its private loop-backed
+  ext4 filesystem. A 0700 directory under `ci/seat-caps-host.sh mountpoint` is
+  `PHASE_LOOP_TEST_SECOND_BLOCK_DIR`.
+- A 0700 directory under the runner's `/dev/shm` is `PHASE_LOOP_TEST_TMPFS_DIR`, after the
+  step checks that the filesystem type is `tmpfs`.
+- It sets `PHASE_LOOP_TEST_REQUIRE_MOUNTS=1` and runs only the E2-4 mount node IDs,
+  serially, under `timeout 600`. `ci/seat-caps-host.sh teardown` runs in an `always()`
+  step.
+- Triggers: `workflow_dispatch`, and `pull_request` on `src/phase_loop_runtime/launch_*.py`,
+  `sandbox_policy.py`, `seat_resource_caps*.py`, `tests/test_launch_local_caps.py`, the
+  workflow and `ci/seat-caps-host.sh`.
+
+**The gap, stated.**
+
+- No required check runs these cases today. The `test.yml` pytest lanes and Gate A provide
+  no second block device. Shared hosts and V3 runs without the variables skip them with
+  the named reasons.
+- The new workflow is the only provider. Making it a required check is a `CONTRIBUTING.md`
+  change outside this phase.
+- SL-6's receipt (SL-6.1) therefore refuses a receipt whose E2-4 mount nodes lack a passing
+  `laneexec-mounts` run at the receipt's head.
