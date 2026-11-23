@@ -1,14 +1,16 @@
 <!--
 RRIMAGE SL-3 handoff template (contract plans/artifacts/rrimage-v1-contract.md §5.1 and §6).
-SL-4 copies this file to HANDOFF-ai-stack.md and fills every {{placeholder}} from the
-committed `built` record, plans/evidence/review-runner/pin-record.json. Every value must equal
-the record; the SL-5 receipt test checks this. Do not add host names, host paths or
-credentials. Delete this comment block before posting on ViperJuice/ai-stack#504.
+SL-4 copies this file to HANDOFF-ai-stack.md. Fill artifact, platform, source, helper and
+build placeholders from the committed built record. Fill the evidence commit, canonical record
+hash and authority and grant metadata from the evidence. Leave receipt placeholders for
+ai-stack to complete after the push and pull. Keep build and pull host identifiers to role
+aliases and omit host paths and credentials. Delete this comment before posting on
+ai-stack#504.
 -->
 
 # RRIMAGE review-runner image: hand-over to ai-stack Unit 7
 
-Consiliency/agent-harness hands over the review-runner image for ai-stack Unit 7 (IF-XR-1),
+agent-harness hands over the review-runner image for ai-stack Unit 7 (IF-XR-1),
 answering the foreign prompt at Unit 7 line 383.
 
 - Posted under the authority of: {{coordinator_name}}, {{authority_date}}
@@ -75,7 +77,9 @@ root-owned allowlist.
 
 ## What we need back: the pull receipt (§5.1)
 
-Please publish a receipt with these fields. They map onto the pin record's `receipt` object.
+Please publish a receipt with these fields after the push and pull. The `{{receipt.*}}`
+placeholders are yours to fill; agent-harness leaves them open. They map onto the pin record's
+`receipt` object.
 agent-harness verifies the digest equalities (P6 and P9). They are the authority, not the
 tools' own claims.
 
@@ -86,7 +90,9 @@ tools' own claims.
   - `push_tool_version`: {{receipt.push_tool_version}}
   - `input_archive_sha256`, the sha256 of the archive actually pushed:
     {{receipt.input_archive_sha256}}
-- **Reference.** A pull by digest, `<registry>/<repository>@<digest>`.
+- **Reference.** Please report the exact pulled reference
+  `{{image.registry}}/{{image.repository}}@{{artifact.manifest_digest}}` and set `by_digest`
+  to true.
   - `by_digest`: {{receipt.by_digest}}
   - `pull_account`, the authenticated pull account's name, never a credential:
     {{receipt.pull_account}}
@@ -102,9 +108,10 @@ tools' own claims.
   - `raw_manifest_sha256`, the sha256 of the raw manifest bytes fetched from the registry:
     {{receipt.raw_manifest_sha256}}
   - `raw_manifest_media_type`: {{receipt.raw_manifest_media_type}}
-- **Config digest.** Read from the raw manifest's config descriptor
-  (`config_digest_method = raw_manifest_config_descriptor`), never from
+- **Config digest.** Read from the raw manifest's config descriptor, never from
   `docker image inspect .Id`.
+  - `config_digest_method`: {{receipt.config_digest_method}} (must be
+    `raw_manifest_config_descriptor`)
   - `config_digest`: {{receipt.config_digest}}
   - `os` / `architecture`: {{receipt.os}} / {{receipt.architecture}}
 - **Helper.** Read through `create` and then `cp`. `cp` reads `helper.path` as a regular
@@ -121,6 +128,7 @@ The receipt must match the record exactly:
 
 - `registry_manifest_digest` = `docker_content_digest` = `artifact.manifest_digest`;
 - `raw_manifest_sha256` = the hex of that digest;
+- `raw_manifest_media_type` = `artifact.manifest_media_type`;
 - `config_digest` = `platform.config_digest`;
 - `helper_sha256` = `helper.sha256`;
 - `os` and `architecture` = `platform`;
