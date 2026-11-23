@@ -8,6 +8,20 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
+- JEVHOST SL-7: the runner uses the host integration seam
+  (`plans/amendments/jevhost-JEVHOST-host-gaps.md`, GAPS §3.1 and §3.5). The main,
+  delegated and lane request sites build through `build_host_request`, so an integration
+  that replaces an operator or policy override is refused before the builder or launcher
+  runs. After an entered launch, one `_report_acceptance` helper sends the verdict to an
+  `AcceptanceObserver`:
+  - the launcher's own failure is `infrastructure`: a nonzero exit (kept even when a
+    trusted closeout normalizes it), or an unavailable, stalled or timed-out run;
+  - a zero exit whose output the runner rejects is `quality`: a fail-closed verification
+    (which wins over a later `complete` closeout), a closeout gate, a Tier 3 audit, a
+    missing or unparseable closeout, or an empty host log;
+  - success is `passed`;
+  - reduction blockers, child-reported blockers and host-side failures (a malformed audit
+    config, an unavailable BAML evaluator, an interrupt, a missing host log) report nothing.
 - LANEEXEC SL-3: `phase_loop_runtime.launch_service` adds `build_launch_service` and
   `LaunchService.prepare`, `status` and `cancel` (`plans/phase-plan-v13-LANEEXEC.md`,
   binding §7 E3-3). The function stores the captured client configuration and the seams the
