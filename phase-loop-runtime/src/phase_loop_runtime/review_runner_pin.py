@@ -11,6 +11,17 @@ source, its helper and, once ai-stack's pull receipt is verified, its pushed ref
   the raw manifest and config bytes to commit beside it (§3.4).
 - :func:`apply_receipt` promotes a ``built`` record to ``pinned`` from a verified receipt.
 
+The full signatures (IF-0-RRIMAGE-1):
+
+- ``load_pin_record(path) -> dict``
+- ``validate_pin_record(record, repo_root, *, allow_stale_marker=False) -> PinVerdict``
+- ``assemble_built_record(layout_dir, build_meta) -> AssembledRecord`` (``record``,
+  ``manifest_bytes``, ``config_bytes``)
+- ``apply_receipt(record, receipt, *, image, recorded_at=None) -> dict``. ``image`` holds the
+  pushed ``registry`` and ``repository`` and is required; ``recorded_at`` defaults to now (UTC).
+- ``record_sha256(record) -> str``: the sha256 of the record's RFC 8785 canonical bytes, which
+  the stale marker's ``record_sha256`` names.
+
 Every refusal is a :class:`PinRecordError` carrying one closed code, raised ``from None``.
 Its message names the rule and the field, never a record value. Nothing here runs a
 subprocess or makes a network call.

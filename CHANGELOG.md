@@ -30,6 +30,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
+- The review-runner image pin record contract and validator (RRIMAGE SL-0;
+  `plans/phase-plan-v1-rrimage-RRIMAGE.md`, Consiliency/agent-harness#2106). The frozen
+  `review_runner_pin.v1` schema ships as
+  `contracts/placement/review-runner-pin-v1.schema.json`, and `review_runner_pin` adds
+  `load_pin_record`, `validate_pin_record` (rules P1–P10, with P4 strict unless the stale
+  marker is explicitly allowed and names the record), `assemble_built_record` and
+  `apply_receipt`. Refusals use the closed `pin_*` codes and name the rule and the field only.
+
 - The JEV Drill host adapter, integrated from the draft agent-harness#2071 (JEVHOST;
   `plans/phase-plan-v1-jevhost-JEVHOST.md`). It adds `jevdrill_adapter` and
   `jevdrill_queue`, the portability modules `file_lock`, `windows_process` and
