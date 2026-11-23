@@ -8,6 +8,38 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
+- LANEEXEC SL-3: `phase_loop_runtime.launch_service` adds `build_launch_service` and
+  `LaunchService.prepare`, `status` and `cancel` (`plans/phase-plan-v13-LANEEXEC.md`,
+  binding §7 E3-3). The function stores the captured client configuration and the seams the
+  later launch lanes inject: `capped_popen`, `load_caps`, `readiness_code`, `route_state`,
+  the clock, the admission bound and the placement lifecycle. `prepare` assigns `run_id`,
+  `scratch_path` and `tree_path` once per reservation, under the reservation lock, and
+  replays through the `x-prepare.replay` steps. `status` and `cancel` map journaled records
+  through the L-S4 tables. Cancel goes through the verified owning launcher only, and a
+  zero-signal outcome is never reported as a success. `launch` is one call to the later
+  launch-order lane, imported at call time. `PlacementLifecycle` gains the LaneExec hooks:
+  the prepare record, the exec claim's compare-and-set and rollback, and the local
+  heartbeat. Release cancels a live attempt before teardown and answers `cleanup_pending`
+  while it is not terminal. Reap settles an attempt only when its owner has verifiably
+  exited or been replaced. Both remove a run's execution allocations, including a run that
+  an interrupted prepare left unused. Retained returns live outside them and outlive
+  release until the reservation's tombstone expires. Nothing calls the service yet, and
+  every route stays disabled under shipped defaults.
+- LANEEXEC SL-7: `phase_loop_runtime.launch_settings` and `phase_loop_runtime.launch_routes`
+  (`plans/phase-plan-v13-LANEEXEC.md`, binding §7 E3-2 and E3-3). `decode_launch_settings`
+  is the one strict, closed decoder of the `launch` object of the captured
+  `PlacementClientConfig`. It covers the template registry, toolkit pins manifest, image
+  allowlist, snapshot and seed limits, `seed_root`, `local_link_root`, the activation
+  values, the return cap, both lifetime budgets and the review-runner image record. Limits
+  and budgets may only be lowered. `launch_routes` adds the L-S7 route mapping as a closed
+  function, crossed pi-runner pair refusals, template selection and argv expansion, and
+  `register_templates`. Registration checks the canonical template bytes, slots and image
+  links resolved through host symlinks, the frozen pi-runner forms (the local one in its
+  LANEEXEC-v1-errata-1 form, with no read-only tree over a fixed mount), and the
+  agent-toolkit pins manifest, role and 16-file closure checks. A toolkit check failure
+  leaves the whole agent-toolkit registry unregistered. Production openshell registration
+  stays closed until image-bound runtime evidence exists. Every route stays disabled under
+  shipped defaults. Nothing calls these modules yet; the launch entry point follows in SL-8.
 - JEVHOST SL-6: `phase_loop_runtime.host_integration`, the host-neutral integration seam
   (`plans/amendments/jevhost-JEVHOST-host-gaps.md`, IF-0-JEVHOST-5, GAPS §2). It provides
   `RetryBudget` (remaining attempts and floor-millisecond time, exhaustion, tighten-only),
@@ -120,6 +152,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   on their parent, and a run still in progress is never removed. When that directory or
   its lock is unavailable, the board runs without retention. The president tier keeps
   its own stream directory unchanged.
+- Seat legs (agent-harness#2139): when a leg fails before any model turn, the host auth probe
+  now runs with the caller's host environment, not the environment recorded for a jailed
+  launch, whose paths exist only inside the jail. A jailed Claude leg whose in-jail login
+  check passed keeps that auth state, and no host probe runs for it. A host sign-out alone no
+  longer turns a jailed TUI failure into a rejected credential. A seat credential the CLI
+  rejected in a session it ended itself is reported as `claude_seat_token_rejected` or
+  `claude_seat_login_rejected`, as both the detail and the notice, with that credential's
+  fix rather than the host-login guidance. An auth outcome
+  (`leg_auth_signed_out`, `leg_auth_unavailable`) no longer replaces a leg's own typed failure
+  detail, such as a `claude_tui_*` code, judged by the same rules as a stored leg detail; a
+  leg with no typed detail still maps to it.
+
 - The last eleven JEV Drill companion failures on the Windows legs (second follow-up to
   agent-harness#2092; POSIX behaviour is unchanged):
   - The Windows admitted child (`windows_process._admitted_child`) now writes the

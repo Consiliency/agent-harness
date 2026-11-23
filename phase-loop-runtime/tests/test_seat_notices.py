@@ -692,7 +692,8 @@ def test_a_rejected_seat_token_ends_the_leg_with_its_notice(monkeypatch, tmp_pat
         log_text=pi._HarnessCode("claude_tui_pty_eof_no_output"),
         tail="Invalid API key · Please run /login", parent_auth="signed_out")
     assert status == "DEGRADED"
-    assert [f.template for f in sink] == ["auth_failure"]
+    # The detail is the credential's own notice (agent-harness#2139), so the board names it.
+    assert [f.template for f in sink] == ["claude_seat_token_rejected"]
     assert seat.notices == ["claude_seat_token_rejected"]
 
 
@@ -770,7 +771,7 @@ def test_a_login_token_rejected_before_its_expiry_is_a_rejection(monkeypatch, tm
         monkeypatch, tmp_path, rc=1, review_text="",
         log_text=pi._HarnessCode("claude_tui_pty_eof_no_output"), tail=_AUTH_TAIL,
         source="login", expires_at=time.time() + 3600, parent_auth="signed_out")
-    assert [f.template for f in sink] == ["auth_failure"]
+    assert [f.template for f in sink] == ["claude_seat_login_rejected"]
     assert seat.notices == ["claude_seat_login_rejected"]
 
 
@@ -1162,8 +1163,8 @@ _AUTH_TAIL = "Invalid API key · Please run /login"
 
 @pytest.mark.parametrize("source, expires_in, detail, notice", [
     ("login", -5, "claude_seat_login_token_expired", "claude_seat_login_token_expired"),
-    ("login", 3600, "auth_failure", "claude_seat_login_rejected"),
-    ("seat_token", None, "auth_failure", "claude_seat_token_rejected"),
+    ("login", 3600, "claude_seat_login_rejected", "claude_seat_login_rejected"),
+    ("seat_token", None, "claude_seat_token_rejected", "claude_seat_token_rejected"),
 ])
 def test_a_journaled_give_up_keeps_the_credential_outcome(monkeypatch, tmp_path, source,
                                                          expires_in, detail, notice):
@@ -1198,7 +1199,9 @@ def test_the_sealed_and_jailed_routes_label_a_give_up_alike(monkeypatch, tmp_pat
     _seat, _status, _text, sink = _jailed_leg_ending_with(
         monkeypatch, tmp_path, rc=1, review_text="", log_text=code, tail=tail,
         parent_auth="signed_out" if detail == "auth_failure" else "healthy")
-    assert [f.template for f in sink] == [detail]
+    # The jailed seat names its rejected credential (agent-harness#2139).
+    assert [f.template for f in sink] == [
+        "claude_seat_token_rejected" if detail == "auth_failure" else detail]
 
 
 def test_an_ignored_override_is_on_the_jailed_mode_line(monkeypatch):

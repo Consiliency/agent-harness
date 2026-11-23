@@ -2211,3 +2211,186 @@ def test_pi_runner_is_a_request_workload_only_through_the_lifecycle_mapping():
     assert mapped.workload == "pi-runner"
     with pytest.raises(ValueError):
         placement.ExecSpec("pi-runner", b"", None, None, 0)
+
+
+# -- LANEEXEC SL-3: the LaneExec hooks of PlacementLifecycle ---------------------------------
+#
+# The exec claim's compare-and-set and its rollback, the local heartbeat and the reservation
+# lock, on a real lifecycle whose reservation was made by ``reserve``.
+
+import threading as _threading
+
+from phase_loop_runtime import placement_process_contract as _pcontract
+from phase_loop_runtime import seat_resource_caps as _caps
+
+_LX_NOW = 1_800_000_000.0
+_LX_RUN = "run-" + "1" * 32
+
+
+class _LxClock:
+    def __init__(self) -> None:
+        self.now = _LX_NOW
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _lx_lifecycle(tmp_path, clock):
+    config = tmp_path / "config"
+    config.mkdir(mode=0o700, exist_ok=True)
+    path = config / "agent-toolkit.json"
+    path.write_text(json.dumps({
+        "schema": "placement.client-config.v1", "client": "agent-toolkit",
+        "providers": {"anthropic": {"endpoints": [{"host": "api.anthropic.com", "port": 443}],
+                                    "workloads": ["pi-runner"],
+                                    "policy_vectors": ["full-remote-pi-runner", "minimal-without-app"]}},
+        "targets": [{"name": "local", "kind": "local", "rank": 1, "transport_id": "local"}]}))
+    os.chmod(path, 0o600)
+    ids = iter(f"{n:032x}" for n in range(1, 10_000))
+    return sandbox_placement.PlacementLifecycle(
+        "agent-toolkit", state_root=tmp_path / "state", config_root=config,
+        caps_loader=lambda: _caps.DEFAULT_CAPS, caps_readiness=lambda: None,
+        observe=lambda: {"memory_available_bytes": 64 << 30, "memory_total_bytes": 128 << 30,
+                         "load_per_cpu_percent": 10.0, "io_full_avg10": 0.0, "memory_some_avg10": 0.0},
+        backend_for=lambda root: None, reconcile=lambda record, timeout_s: "indeterminate",
+        clock=clock, new_id=lambda: next(ids), launch_cancel=lambda claim, wait: "cancel_pending",
+        launch_owner=lambda claim: "live")
+
+
+def _lx_reserve(lifecycle, request_id="rsv-req-1"):
+    body = {"schema": "placement.reserve.request.v1", "request_id": request_id,
+            "workload": "pi-runner", "ttl_s": 600, "image_digest": "sha256:" + "c" * 64,
+            "policy_vector": "full-remote-pi-runner", "providers": ["anthropic"],
+            "deadline_ms": 60000, "caller_context": {}}
+    response = lifecycle.reserve(_pcontract.decode_request("reserve", json.dumps(body).encode()),
+                                 cancelled=_threading.Event())
+    assert response.outcome == "admitted"
+    return response.reservation.to_json()
+
+
+def _lx_release(lifecycle, reservation):
+    body = {"schema": "placement.release.request.v1", "request_id": "rel-1",
+            "reservation": reservation, "deadline_ms": 2000, "caller_context": {}}
+    return lifecycle.release(_pcontract.decode_request("release", json.dumps(body).encode()),
+                             cancelled=_threading.Event())
+
+
+@pytest.fixture
+def lx(tmp_path):
+    clock = _LxClock()
+    lifecycle = _lx_lifecycle(tmp_path, clock)
+    return lifecycle, _lx_reserve(lifecycle), clock
+
+
+def test_laneexec_claim_is_one_compare_and_set_under_a_barrier(lx, monkeypatch):
+    lifecycle, reservation, _clock = lx
+    rid = reservation["reservation_id"]
+    barrier = _threading.Barrier(2)
+    real = sandbox_placement._read_journal
+
+    def read(path):
+        # Both claimants reach the claim read together unless the lock serializes them.
+        if path.parent.name == "claims":
+            try:
+                barrier.wait(timeout=0.5)
+            except _threading.BrokenBarrierError:
+                pass
+        return real(path)
+
+    monkeypatch.setattr(sandbox_placement, "_read_journal", read)
+    out: dict[str, object] = {}
+    threads = [_threading.Thread(target=lambda name=name: out.setdefault(
+        name, lifecycle.claim_exec(rid, name, _LX_RUN, timeout_s=5))) for name in ("launch-a", "launch-b")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(10)
+    assert sorted(map(str, out.values())) == ["None", "sandbox_launch_exec_claimed"]
+    winner = next(name for name, code in out.items() if code is None)
+    claim = lifecycle.launch_claim_record(rid)
+    assert (claim["claimed"], claim["request_id"], claim["run_id"]) == (True, winner, _LX_RUN)
+
+
+def test_laneexec_claim_refuses_a_second_claim_and_an_unknown_or_expired_reservation(lx):
+    lifecycle, reservation, clock = lx
+    rid = reservation["reservation_id"]
+    assert lifecycle.claim_exec("rsv-" + "f" * 32, "launch-a", _LX_RUN, timeout_s=1) == (
+        "sandbox_launch_reservation_unknown")
+    assert lifecycle.claim_exec(rid, "launch-a", _LX_RUN, timeout_s=1) is None
+    assert lifecycle.claim_exec(rid, "launch-b", _LX_RUN, timeout_s=1) == "sandbox_launch_exec_claimed"
+    assert lifecycle.claim_exec(rid, "launch-a", _LX_RUN, timeout_s=1) == "sandbox_launch_exec_claimed"
+    other = _lx_reserve(lifecycle, "rsv-req-2")
+    clock.now += 600
+    assert lifecycle.claim_exec(other["reservation_id"], "launch-c", _LX_RUN, timeout_s=1) == (
+        "sandbox_launch_reservation_unknown")
+    assert lifecycle.launch_claim_record(other["reservation_id"]) is None
+
+
+def test_laneexec_rollback_clears_only_its_own_claim_in_one_write(lx):
+    lifecycle, reservation, _clock = lx
+    rid = reservation["reservation_id"]
+    assert lifecycle.rollback_claim(rid, "launch-a", timeout_s=1) is False
+    assert lifecycle.claim_exec(rid, "launch-a", _LX_RUN, timeout_s=1) is None
+    assert lifecycle.rollback_claim(rid, "launch-b", timeout_s=1) is False
+    assert lifecycle.launch_claim_record(rid)["claimed"] is True
+    assert lifecycle.rollback_claim(rid, "launch-a", timeout_s=1) is True
+    claim = lifecycle.launch_claim_record(rid)
+    assert (claim["claimed"], claim["rolled_back"]) == (False, ["launch-a"])
+    assert lifecycle.rollback_claim(rid, "launch-a", timeout_s=1) is False
+    # A new request_id may then launch the reservation.
+    assert lifecycle.claim_exec(rid, "launch-b", _LX_RUN, timeout_s=1) is None
+    assert lifecycle.launch_claim_record(rid)["rolled_back"] == ["launch-a"]
+
+
+def test_laneexec_release_flags_report_the_claim(lx):
+    lifecycle, reservation, _clock = lx
+    rid = reservation["reservation_id"]
+    lifecycle.claim_exec(rid, "launch-a", _LX_RUN, timeout_s=1)
+    response = _lx_release(lifecycle, reservation)
+    assert response.state == "cleanup_pending" and response.flags.exec_claimed is True
+    other = _lx_reserve(lifecycle, "rsv-req-2")
+    assert _lx_release(lifecycle, other).state == "released"
+
+
+def test_laneexec_heartbeat_is_a_durable_slot_and_journal_write(lx):
+    lifecycle, reservation, clock = lx
+    rid = reservation["reservation_id"]
+    assert lifecycle.record_heartbeat(rid, "launch-a") is False  # no claim
+    lifecycle.claim_exec(rid, "launch-a", _LX_RUN, timeout_s=1)
+    assert lifecycle.record_heartbeat(rid, "launch-b") is False  # another launch's claim
+    clock.now += 7
+    assert lifecycle.record_heartbeat(rid, "launch-a") is True
+    assert lifecycle.launch_heartbeat(rid) == clock.now
+    [slot] = (lifecycle.state_root / "local-slots").glob("*.json")
+    assert json.loads(slot.read_text())["heartbeat_at"] == clock.now
+
+
+def test_laneexec_heartbeat_never_recreates_a_removed_slot_and_reports_a_fault(lx):
+    lifecycle, reservation, _clock = lx
+    rid = reservation["reservation_id"]
+    lifecycle.claim_exec(rid, "launch-a", _LX_RUN, timeout_s=1)
+    [slot] = (lifecycle.state_root / "local-slots").glob("*.json")
+    slot.unlink()
+    assert lifecycle.record_heartbeat(rid, "launch-a") is False
+    assert not slot.exists()
+    slot.mkdir()  # an injected write fault: the slot path cannot be written
+    assert lifecycle.record_heartbeat(rid, "launch-a") is False
+
+
+def test_laneexec_reservation_lock_steps_refuse_unless_held(lx):
+    lifecycle, reservation, _clock = lx
+    rid = reservation["reservation_id"]
+    lock = lifecycle.launch_lock(rid, timeout_s=1)
+    with pytest.raises(sandbox_placement.LifecycleError):
+        lock.claim("launch-a", _LX_RUN)
+    with lock:
+        assert lock.held
+        assert lock.window(reservation) == (None, lock.window(None)[1])
+        assert lock.window({**reservation, "lease_id": "x"})[0] == "sandbox_launch_reservation_mismatch"
+        other = lifecycle.launch_lock(rid, timeout_s=0.1)
+        with other:
+            assert other.held is False
+    with pytest.raises(sandbox_placement.LifecycleError):
+        lifecycle.launch_lock("../escape", timeout_s=1)
+    with pytest.raises(sandbox_placement.LifecycleError):
+        lifecycle.launch_run_dir("../escape")

@@ -8,8 +8,8 @@ vendors by digest (IF-XR-1). That erratum is the one toolkit repin. Nothing here
 adds, removes or renames a wire member, enum value, code, verb or exit class, and
 this artifact makes no wire change of its own. Erratum LANEEXEC-v1-errata-2 (§6) is a
 plan and binding erratum only: it changes this artifact and the phase plan, never the
-wire bytes, so the toolkit does not repin. Erratum LANEEXEC-v1-errata-3 (§7) is likewise a
-plan and binding erratum only.
+wire bytes, so the toolkit does not repin. Errata LANEEXEC-v1-errata-3 (§7) and
+LANEEXEC-v1-errata-4 (§8) are likewise plan and binding errata only.
 
 Where this artifact binds an `x-*` semantic sentence of the wire artifact to the
 landed code, it says so with the sentence's member path, and this artifact governs that
@@ -28,6 +28,7 @@ outcomes the wire already expresses. A future protocol version folds them in.
 | Landed baseline inspected | `origin/main` at `a493c46ccf979231b1a3ae5b23ae678a801f0603` (re-plan). |
 | Landed baseline re-inspected (LANEEXEC-v1-errata-2) | `origin/main` at `4dd77878afe58c429b01969c32c89b755a820002` (v0.7.40). Every `file:line` below refers to this tree. |
 | Landed baseline re-inspected (LANEEXEC-v1-errata-3) | `origin/main` at `2441fa0d695f23dccf150660d277872a93b3ea16`. The `file:line` citations of §7 refer to this tree; §2 keeps its v0.7.40 anchors. |
+| Landed baseline re-inspected (LANEEXEC-v1-errata-4) | `origin/main` at `8856634492df9dd55a6cac2dca65f48464fb9222`. §8 cites no `file:line`. |
 | Pre-build sweep | Consiliency/agent-harness#1963 head `cdecd32cf9b9e33cbcf7ddf07c44b4556c6ad074`, `plans/artifacts/v13-LANEEXEC-landed-sweep.md` |
 | Upstream re-plans consumed | `plans/artifacts/v12-CLOSEOUT-landed-binding.md` (§3 C-S1, §4.1–§4.3) and `plans/artifacts/v13-PLACECLI-landed-binding.md` (§3, §4) |
 | Cross-phase ownership | `plans/artifacts/v12-v13-replan-ownership.md` |
@@ -149,7 +150,7 @@ attempt_id through the v12 journal") is bound to:
   - an expected-digest check inside `capped_popen`, which reloads caps at `:665`;
   - typed evidence of whether a failure came before or after the helper started;
   - kill/collect of a capped parent by key. `__all__` (`:798`–`:802`) exports neither. Filed as agent-harness#2098.
-- **Unreadable caps record (coordinator ruling 1, 2026-11-09).** When `load_caps()` raises `CapsUnavailable`, every verb that places or launches fails closed: `prepare` and `launch` refuse `sandbox_placement_capability_unmet`, exit 10, for every target, with zero invocations and no claim. `status` and `cancel` act on existing records and keep working. `version` still exits 0 with a schema-valid response and empty stderr: `seat_caps_sha256` is the documented sentinel `sha256(b"seat_resource_caps_unavailable")`, also carried into `config_sha256` (PLACECLI binding §3 P-S1). `--help` prints one line naming the caps state and exits 0.
+- **Unreadable caps record (coordinator ruling 1, 2026-11-09; `prepare` code rebound by LANEEXEC-v1-errata-4, §8 E4-1).** When `load_caps()` raises `CapsUnavailable`, every verb that places or launches fails closed for every target, with zero invocations and no claim: a fresh `prepare` refuses `sandbox_launch_refused`, exit 10, and `launch` refuses `sandbox_placement_capability_unmet`, exit 10. A `prepare` replay keeps the §8 E4-1 order: a settled replay with the same canonical body returns its stored response, and a lock timeout or `sandbox_placement_end_reached` takes precedence over the caps refusal. `status` and `cancel` act on existing records and keep working. `version` still exits 0 with a schema-valid response and empty stderr: `seat_caps_sha256` is the documented sentinel `sha256(b"seat_resource_caps_unavailable")`, also carried into `config_sha256` (PLACECLI binding §3 P-S1). `--help` prints one line naming the caps state and exits 0.
 
 ### L-S4 — status and cancel mapping
 
@@ -1004,3 +1005,72 @@ Gate A provide no second block device, and shared hosts and V3 runs without the 
 skip these cases with the named reasons. So ordinary required CI still has no mount
 regression gate. The SL-6 receipt gate above covers phase acceptance only. Making the
 workflow required is a `CONTRIBUTING.md` change outside this phase.
+
+## 8. Erratum LANEEXEC-v1-errata-4 (2026-11-23): caps-unreadable `prepare` code and the openshell runtime record
+
+This erratum covers the plan and this binding only. No wire byte, member, code, verb or exit
+class changes, the `x-errata` member keeps its one entry, agent-toolkit does not repin, and
+§6 E2-6 is unchanged. It records two coordinator rulings of 2026-11-23 on implementer STOPs:
+E4-1 from SL-3 (agent-harness#2138) and E4-2 from SL-7 (agent-harness#2134).
+
+### E4-1 — `prepare` with an unreadable caps record
+
+**Conflict.** L-S3 (coordinator ruling 1) had `prepare` refuse
+`sandbox_placement_capability_unmet`. The `PrepareResponse` refused branch admits only
+`sandbox_launch_refused`, `sandbox_launch_reservation_unknown`,
+`sandbox_launch_reservation_mismatch`, `sandbox_launch_exec_claimed` and
+`sandbox_launch_input_mismatch`, so that response would be schema-invalid.
+
+**Ruling, per the frozen wire.** An independent reviewer confirmed it as the closest
+wire-valid reading.
+
+- When `load_caps()` raises `CapsUnavailable`, `prepare` refuses `sandbox_launch_refused`,
+  state `refused`, `paths` null, exit 10, for every target.
+- It reads no reservation state and allocates nothing: no new run, no `run_id`, no claim.
+- It journals the response under its `request_id`, so the refusal is settled under
+  `x-prepare.replay`. On a replay, any run id the attempt had already planned stays owned
+  through a recorded cleanup entry.
+- `launch` still refuses `sandbox_placement_capability_unmet`. `status`, `cancel`, `version`
+  and `--help` keep the L-S3 behavior.
+
+**Replays,** in the existing `x-prepare.replay` order:
+
+- A replay whose canonical body differs from the journaled one refuses
+  `sandbox_launch_refused` and journals nothing.
+- A settled prepare (`prepared` or `refused`) replayed with the same canonical body returns
+  its journaled response byte for byte, whatever the caps state is now.
+- For an unsettled replay, the request-lock and frozen clock checks run first. A lock timeout
+  still answers `timeout`, and a replay at its bound still settles
+  `sandbox_placement_end_reached`. Only then does the caps gate run, before any reservation
+  read or allocation, with the same generic refusal.
+
+**Owners.** The §7 E3-3 row "Unreadable caps (coordinator ruling 1)" stays with SL-3 and now
+reads this code. SL-3's tests also cover the settled and unsettled replay cases.
+
+### E4-2 — the openshell runtime record
+
+**Conflict.** `x-argv-templates.pi_runner_templates` reads the node path and digest, the
+helper digest and the launcher and tree paths from the registered image's runtime manifest.
+The pinned toolkit runtime manifest (`openshell-runtime.json`, RUNTIME_VERSION 3) does not
+supply those values in that form:
+
+- it records no node path or node digest;
+- it names the helper digest differently;
+- its launcher and tree layout differs.
+
+**Ruling.**
+
+- SL-7 defines a normalized runtime-record shape: helper, node, launcher with its files, and
+  trees. Registration accepts one only through a test-only fixture seam that production
+  callers never pass.
+- Production openshell template registration stays closed. The template stays unregistered
+  with the registration reason `runtime_unavailable` until reviewed, image-bound evidence
+  supplies the node, helper and tree values.
+- Image rows of the `launch` settings object (§7 E3-2) accept no `runtime` member. An image
+  row that carries one makes the configuration invalid.
+- This is an open input for SL-9 and ACTIVATE. It does not change E2-6, which stays SL-9's
+  review-runner image record.
+
+**Effect.** Under shipped defaults every openshell route is `route_disabled` before the
+template step, so no runtime behavior changes. SL-7 owns the tests: the fixture positive
+case, the production `runtime_unavailable` refusal, and the rejection of a `runtime` member.

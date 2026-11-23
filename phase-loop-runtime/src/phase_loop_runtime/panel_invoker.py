@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextvars
 import logging
+import inspect
 import math
 import mimetypes
 import os
@@ -13796,6 +13797,16 @@ def _exec_jailed_claude_leg(
         # reason, its reset time included; otherwise the shared tail classifier labels the
         # failure, and our own session code stands when the tail names nothing.
         failure = _claude_leg_failure(status, rc, "", log_text, pty_tail)
+        # The seat's credential was rejected: the CLI's auth signature with no model turn and
+        # no verdict, in a session the CLI ended itself (its terminal closed, or it journaled a
+        # provider give-up). A session the harness ended (a stall, an editor never ready) may
+        # be showing only echoed input. This names the credential in the detail and notice; it
+        # never changes the leg's auth state, which the launch-time login proof decided, and
+        # the host's own session says nothing about the seat's credential.
+        seat_auth_rejected = (failure is not None and failure.template == "auth_failure"
+                              and rc != 0 and model_turn is False
+                              and terminal_verdict(review_text) is None
+                              and str(log_text) in _CLAUDE_TUI_SELF_ENDED_CODES)
         # The tail is seat-rendered once a model turn has run, so it can quote a reviewed
         # tree: it names a credential's limit only with the provider's typed give-up, or
         # when the parent-held journal shows no turn.
@@ -13812,20 +13823,22 @@ def _exec_jailed_claude_leg(
             if _seat_jail.is_limit_detail(failure.template):
                 seat.notices.append("claude_seat_login_rate_limited" if login
                                     else "claude_seat_token_rate_limited")
-            elif (rc != 0 and ((login and seat.expires_at is not None and time.time() >= seat.expires_at)
-                  or (_EXEC_OBSERVATION.get() is not None
-                  and _EXEC_OBSERVATION.get().get("model_turn") is False
-                  and _EXEC_OBSERVATION.get().get("verdict") is False
-                  and _parent_auth_state("claude") == "signed_out"))):
-                if login and seat.expires_at is not None and time.time() >= seat.expires_at:
-                    failure = _LegFailure(template="claude_seat_login_token_expired")
-                    seat.notices.append("claude_seat_login_token_expired")
-                else:
-                    failure = _LegFailure(template="auth_failure")
-                    seat.notices.append("claude_seat_login_rejected" if login
-                                        else "claude_seat_token_rejected")
+            elif rc != 0 and login and seat.expires_at is not None and time.time() >= seat.expires_at:
+                failure = _LegFailure(template="claude_seat_login_token_expired")
+                seat.notices.append("claude_seat_login_token_expired")
+            elif seat_auth_rejected:
+                # The detail IS the credential's notice, so the board names the refused seat
+                # and its fix: not the host-login guidance of `leg_auth_signed_out`.
+                code = "claude_seat_login_rejected" if login else "claude_seat_token_rejected"
+                failure = _LegFailure(template=code)
+                seat.notices.append(code)
             failure_detail_sink.append(failure)
     return status, text
+
+
+#: A jailed TUI session the CLI ended itself: its terminal closed, or it journaled a give-up.
+_CLAUDE_TUI_SELF_ENDED_CODES = frozenset({"claude_tui_pty_eof_no_output",
+                                          *_CLAUDE_PROVIDER_GAVE_UP_CODES})
 
 
 def _jailed_failure(code: str, sink: list[_LegFailure] | None) -> tuple[str, str]:
@@ -17412,7 +17425,28 @@ def _retain_panel_leg(result):
     return result
 
 
+def _typed_leg_failure(detail: object) -> bool:
+    """Whether a failed leg's detail is a typed failure of its own, one an auth outcome must
+    not replace. It is read as ``_finalize_leg_detail`` stores it, so provenance and the
+    registry decide: a foreign or unregistered detail is the unknown failure, which is not
+    typed. Neither is an auth failure (plain or behind a route code) nor an auth outcome. A
+    route code in front of an unknown failure is typed: the code names what happened."""
+    rendered = _finalize_leg_detail(detail)
+    text = "" if rendered is None else str.__str__(rendered)
+    if not text or text.startswith("leg_auth_"):
+        return False
+    code, sep, rest = text.partition(": ")
+    while sep:  # a registered route code in front, split as `_detail_is_valid` splits
+        if _is_harness_code(code) and _is_failure_template(rest):
+            return rest != "auth_failure"
+        more, sep, rest = rest.partition(": ")
+        code = f"{code}: {more}"
+    return not (text == "auth_failure" or text.startswith("unknown failure"))
+
+
 def _retained_leg_exec(function):
+    signature = inspect.signature(function)
+
     @wraps(function)
     def retained(leg, *args, **kwargs):
         from .president_adapter import write_private_record
@@ -17430,7 +17464,13 @@ def _retained_leg_exec(function):
             rc = observation["returncode"]
             if (type(rc) is int and rc != 0 and observation["model_turn"] is False
                     and observation["verdict"] is False and not observation["auth_probed"]):
-                observation["auth_state"] = _parent_auth_state(leg, observation.get("env"))
+                # The host probe runs with the caller's host env: the env a leg recorded may
+                # be its jail's, whose paths exist only inside the jail.
+                try:
+                    host_env = signature.bind_partial(leg, *args, **kwargs).arguments.get("env")
+                except TypeError:
+                    host_env = None
+                observation["auth_state"] = _parent_auth_state(leg, host_env)
             # A refusal counts only when the leg did not end accepted after all.
             accepted = result is not None and (
                 result[0] == "OK" or (type(result[0]) is int and result[0] == 0))
@@ -17447,7 +17487,7 @@ def _retained_leg_exec(function):
                     result = (result[0], result[1], _HarnessCode(record["outcome"]))
             elif result is not None and result[0] in {"DEGRADED", "ERROR", "EMPTY"}:
                 detail = result[2] if len(result) > 2 else None
-                if (record["outcome"].startswith("leg_auth_")
+                if ((record["outcome"].startswith("leg_auth_") and not _typed_leg_failure(detail))
                     or isinstance(detail, _LegFailure) and detail.template == "auth_failure"):
                     result = _BrokeredSpawnResult(result[0], result[1], _HarnessCode(record["outcome"]),
                         evidence=getattr(result, "harden_isolation_evidence", None),
@@ -19617,6 +19657,10 @@ def _default_spawn(
                                 proof = _jailed_claude_login_proof(
                                     seat, quiescence_latch=broker_latch)
                             launched = True  # proven: whatever follows is the transport's own
+                            observation = _EXEC_OBSERVATION.get()
+                            if observation is not None:
+                                # The in-jail login check passed: no host probe overrides it.
+                                observation.update(auth_state="healthy", auth_probed=True)
                             return proof
 
                         try:
