@@ -6,32 +6,37 @@ FROM docker.io/library/rust@sha256:e15c563b25397d4172f34ebe50b3715bb9509c59e537f
 # --build-context landlock-source=<that commit>/harnesses/pi/sandbox/landlock
 COPY --from=landlock-source / /src/
 WORKDIR /src
-RUN echo 'ccb26a3d7078ca1ab6d6dab0bdbf7a0bf44d8cc22250d193094d6425ae1a1a6c  BUILD.lock' | sha256sum -c - \
+RUN --network=none echo 'ccb26a3d7078ca1ab6d6dab0bdbf7a0bf44d8cc22250d193094d6425ae1a1a6c  BUILD.lock' | sha256sum -c - \
     && echo '689b41cdd017f7df6e0246bddfb0f9b5913802001c6c0421ec076908ad0066fa  LICENSE' | sha256sum -c - \
     && echo 'a83ec097b90a11c711493f2ace37ded50970c416fa7d71e5b280a171712e7b94  build.sh' | sha256sum -c - \
     && echo 'dff311f80f0b30d6961a3f6d0644df71fbd42f8e7935e38d3689254f0f49eea5  exec.c' | sha256sum -c - \
     && echo 'b58873117c841859537f9f4aef2ec2d7ae5c67ed57973f1961063858ac68055e  uapi.h' | sha256sum -c - \
+    && echo '8780e78a1a737e127f25a65f6d95269bffd36158dc261114de7859b490bfc5aa  LICENSES/GPL-2.0' | sha256sum -c - \
+    && echo '8e378ab93586eb55135d3bc119cce787f7324f48394777d00c34fa3d0be3303f  LICENSES/Linux-syscall-note' | sha256sum -c - \
+    && test "$(find LICENSES -mindepth 1 -printf '%P\n' | LC_ALL=C sort | tr '\n' ' ')" = 'GPL-2.0 Linux-syscall-note ' \
     && sh build.sh /landlock-exec \
     && echo '775d4f7af61dff58e5094eeac56fcda2fdb7e56d3f05fbf008b1caf1f84500aa  /landlock-exec' | sha256sum -c -
 
 # Runtime tag: docker.io/library/python:3.12-slim-bookworm (3.12.16, linux/amd64).
 FROM docker.io/library/python@sha256:623674a14ef93d052bb9b0de4dbf5f28eb578a35263838941cc8aa43213c1487
+# Reaches the useradd step, so its shadow dates follow the source commit time.
+ARG SOURCE_DATE_EPOCH
 # /usr is in the verbatim full-remote-pi-runner policy's baseline read_only.
 COPY phase-loop-runtime/src/phase_loop_runtime /usr/local/lib/python3.12/site-packages/phase_loop_runtime
 # Normalize ownership and modes so the build never depends on the checkout's umask.
-RUN chown -R 0:0 /usr/local/lib/python3.12/site-packages/phase_loop_runtime \
+RUN --network=none chown -R 0:0 /usr/local/lib/python3.12/site-packages/phase_loop_runtime \
     && chmod -R u=rwX,go=rX /usr/local/lib/python3.12/site-packages/phase_loop_runtime
 RUN printf '%s\n' 'rfc8785==0.1.4 --hash=sha256:520d690b448ecf0703691c76e1a34a24ddcd4fc5bc41d589cb7c58ec651bcd48' > /tmp/worker-requirements.txt \
     && pip install --no-cache-dir --only-binary=:all: --require-hashes -r /tmp/worker-requirements.txt \
-    && rm /tmp/worker-requirements.txt \
-    && groupadd --gid 10001 sandbox && useradd --uid 10001 --gid 10001 --no-create-home sandbox \
+    && rm /tmp/worker-requirements.txt
+RUN --network=none groupadd --gid 10001 sandbox && useradd --uid 10001 --gid 10001 --no-create-home sandbox \
     && install -d -o 10001 -g 10001 -m 0700 /work \
     && install -d -o root -g root -m 0755 /usr/libexec/agent-toolkit \
     && test ! -e /app
 # Merged-usr is required by the unchanged policy. Fail the build on a rootfs
 # whose interpreter, ELF PT_INTERP loader or ldd dependencies escape the baseline.
 # Include native modules imported by the worker, not unused optional GUI modules.
-RUN /usr/local/bin/python3 - <<'CHECK_RUNTIME'
+RUN --network=none /usr/local/bin/python3 - <<'CHECK_RUNTIME'
 import os
 import re
 import struct
@@ -74,8 +79,15 @@ for dependency in sorted(dependencies):
     print("baseline dependency:", dependency, flush=True)
 CHECK_RUNTIME
 COPY --from=landlock --chown=0:0 --chmod=0755 /landlock-exec /usr/libexec/agent-toolkit/landlock-exec
-COPY --from=landlock /src/LICENSE /src/PROVENANCE.md /usr/share/doc/landlock-exec/
+# LICENSES/ holds exactly the BUILD.lock notices, hash-checked in the landlock stage.
+COPY --from=landlock /src/LICENSE /usr/share/doc/landlock-exec/
 COPY --from=landlock /src/LICENSES /usr/share/doc/landlock-exec/LICENSES
+# Last file-adding step: drop setuid/setgid bits and fail if any remain.
+# A find error fails the step too: the scan is captured on its own before the test.
+RUN --network=none set -eu \
+    && find / -xdev -perm /6000 -type f -exec chmod ug-s {} + \
+    && remaining="$(find / -xdev -perm /6000 -type f -print)" \
+    && test -z "$remaining"
 USER sandbox:sandbox
 WORKDIR /work
 ENTRYPOINT ["/usr/local/bin/python3", "-I", "-m", "phase_loop_runtime.openshell_worker"]
