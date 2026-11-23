@@ -152,7 +152,9 @@ def _pairs(pairs):
 
 
 def _read_regular(path: Path, *, owner: int) -> bytes:
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    if not hasattr(os, "O_NOFOLLOW"):
+        _refuse("no-follow caps record open is unavailable")
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
     fd = os.open(path, flags)
     try:
         info = os.fstat(fd)
@@ -278,7 +280,9 @@ def _fstatfs_magic(fd: int) -> int:
 
 
 def _tmpfs_carveout(path: Path, device: tuple[int, int]) -> bool:
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    if not (hasattr(os, "O_DIRECTORY") and hasattr(os, "O_NOFOLLOW")):
+        _refuse("no-follow caps directory open is unavailable")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     fd = os.open(path, flags)
     try:
         info = os.fstat(fd)

@@ -287,3 +287,53 @@ def test_seat_jail_masks_and_directory_refusal_are_unchanged_on_posix(tmp_path) 
         raise AssertionError("a regular file opened as a directory")
     fd = seat_jail.open_dir_nofollow(tmp_path)
     os.close(fd)
+
+
+def test_no_follow_callers_refuse_before_any_open_on_simulated_windows(tmp_path) -> None:
+    fixture = Path(__file__).resolve()  # an existing regular file
+    state = tmp_path / "state"
+    result = run_windows_sim(
+        f"""
+        import json
+        from pathlib import Path
+        from phase_loop_runtime import grok_jail_surface, seat_credentials, seat_resource_caps
+
+        def _no_open(*args, **kwargs):
+            raise AssertionError("os.open reached without no-follow protection")
+
+        os.open = _no_open
+        os.environ["XDG_STATE_HOME"] = {str(state)!r}
+        fixture = Path({str(fixture)!r})
+        outcome = {{
+            "grok": grok_jail_surface._after_main({str(tmp_path)!r})
+                    == grok_jail_surface._AFTER_FINDING,
+            "login": seat_credentials._read_store_file(fixture),
+            "account": seat_credentials._read_owner_only(fixture, 4096, private_dir=True),
+        }}
+        for name, call in (("record", lambda: seat_resource_caps._read_regular(fixture, owner=0)),
+                           ("carveout", lambda: seat_resource_caps._tmpfs_carveout(
+                               fixture.parent, (0, 0)))):
+            try:
+                call()
+                outcome[name] = "opened"
+            except seat_resource_caps.CapsUnavailable:
+                outcome[name] = "CapsUnavailable"
+        adapter = seat_credentials.ClaudeCredentialAdapter()
+        adapter.record_path = lambda: fixture
+        try:
+            adapter.read_override()
+            outcome["override"] = "read"
+        except seat_credentials.UnsafeOverride:
+            outcome["override"] = "UnsafeOverride"
+        try:
+            seat_credentials._open_store_dir(Path({str(state)!r}) / "seat" / "record.json")
+            outcome["store_dir"] = "opened"
+        except seat_credentials.StoreRefused:
+            outcome["store_dir"] = "StoreRefused"
+        outcome["state_created"] = os.path.lexists({str(state)!r})
+        print(json.dumps(outcome))
+        """
+    )
+    assert result == {"grok": True, "login": None, "account": None, "record": "CapsUnavailable",
+                      "carveout": "CapsUnavailable", "override": "UnsafeOverride",
+                      "store_dir": "StoreRefused", "state_created": False}

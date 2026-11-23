@@ -1212,6 +1212,8 @@ def after_check_in_h(holder_pid: int, seat_home: str) -> str | None:
 
 def _after_main(seat_home: str) -> int:
     from . import seat_grok_credential as cred
+    if cred._O_DIR is None:
+        return _AFTER_FINDING
 
     home = os.path.abspath(seat_home)
     if not os.path.lexists(home):
