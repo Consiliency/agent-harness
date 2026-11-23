@@ -119,6 +119,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- Suppress the bypass-permissions acknowledgement in jailed Claude TUI seats on Claude
+  Code 2.1.330. The launcher retains the legacy acknowledgement for older versions.
+
 - The last eleven JEV Drill companion failures on the Windows legs (second follow-up to
   agent-harness#2092; POSIX behaviour is unchanged):
   - The Windows admitted child (`windows_process._admitted_child`) now writes the

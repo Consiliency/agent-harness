@@ -1192,9 +1192,15 @@ def test_live_jail_every_admitted_transport_holds_the_jail_boundary(monkeypatch,
         records[transport] = {"leg": {**leg, "launch": observed["launch"]},
                               "digest": evidence.get("seat_jail_profile_digest")}
     baseline = records["tui"]
+    non_tui_argv = list(baseline["leg"]["argv"])
+    settings_index = non_tui_argv.index("--settings") + 1
+    settings = json.loads(non_tui_argv[settings_index])
+    assert settings.pop("skipDangerousModePermissionPrompt") is True
+    non_tui_argv[settings_index] = json.dumps(settings)
     for transport, record in records.items():
         assert record["digest"] == baseline["digest"] == seat_jail.jail_profile_digest("claude")
-        assert boundary_violations(baseline["leg"], record["leg"],
+        expected = baseline["leg"] if transport == "tui" else {**baseline["leg"], "argv": non_tui_argv}
+        assert boundary_violations(expected, record["leg"],
                                    cli_delta=_cli_delta(transport)) == [], transport
 
 

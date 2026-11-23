@@ -8374,6 +8374,7 @@ def _broker_claude_tui_command(
     sandboxed: "_seat_jail.SeatJail | None" = None,
     env: Mapping[str, str] | None = None,
     session_name: str | None = None,
+    skip_bypass_prompt: bool = False,
 ) -> list[str]:
     """Claude subscription TUI command with no workspace and no model tools.
 
@@ -8385,6 +8386,9 @@ def _broker_claude_tui_command(
     ``session_name`` names the session in the app's session list and applies to the JAILED argv
     only. The sealed argv is held token-for-token by the HARDEN evidence verifier's frozen
     grammar (``scripts/verify_harden_evidence.py``), so it is never renamed here.
+
+    ``skip_bypass_prompt`` applies only to the jailed interactive launch. Headless
+    transports also use this builder for their common argv.
     """
     effort_args = render_seat_invocation(
         "claude", model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["claude"], effort or "high"
@@ -8401,12 +8405,15 @@ def _broker_claude_tui_command(
             effort=effort,
             transport="tui",
         ))
+        settings = _claude_panel_settings(env)
+        if skip_bypass_prompt:
+            settings = json.dumps({**json.loads(settings), "skipDangerousModePermissionPrompt": True})
         jailed = [
             *provider,
             "--disable-slash-commands",
             "--model", model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["claude"],
             "--session-id", session_id, *effort_args,
-            "--setting-sources", "", "--settings", _claude_panel_settings(env),
+            "--setting-sources", "", "--settings", settings,
             "--strict-mcp-config", "--mcp-config", json.dumps({"mcpServers": {}}),
             "--agents", "{}", "--permission-mode", "bypassPermissions", "--tools", "default",
         ]
@@ -13681,7 +13688,8 @@ def _exec_jailed_claude_leg(
     jail = seat.jail
     session_id = str(uuid.uuid4())
     command = _broker_claude_tui_command(model=model, effort=effort, session_id=session_id,
-                                         sandboxed=jail, env=env, session_name=session_name)
+                                         sandboxed=jail, env=env, session_name=session_name,
+                                         skip_bypass_prompt=True)
     snapshots = Path(tempfile.mkdtemp(prefix="pl-seat-snapshot-"))  # 0700, parent-owned
     transcript_snapshot = snapshots / "transcript.jsonl"
     output_snapshot = snapshots / _seat_jail.CLAUDE_OUTPUT_NAME
