@@ -4,7 +4,7 @@ phase: JEVHOST
 roadmap: specs/phase-plans-jevhost-v1.md
 roadmap_sha256: 55bae44da652dc537d33edf5eaaa685d21f7e9c2ab4515b98601e0d04a8b853a
 automation:
-  suite_command: ["bash", "-lc", "cd phase-loop-runtime && PHASE_LOOP_TDD_EXPECT_SCHED=1 PYTHONPATH=$PWD/src:$PWD/tests timeout 1800 .venv/bin/python -m pytest -q -rA -p no:cacheprovider -m 'not dotfiles_integration' tests/test_host_integration.py tests/test_host_integration_runner.py tests/test_jevdrill_host_gaps.py tests/test_jevdrill_adapter.py tests/test_jevdrill_queue.py tests/test_jevdrill_usage.py tests/test_jevdrill_discovery.py tests/test_jevdrill_diagnostics.py tests/test_jevdrill_input.py tests/test_jevdrill_selection.py tests/test_jevdrill_companion_workflow.py tests/test_jevdrill_receipt.py tests/test_jevdrill_launch_merge.py tests/test_jevdrill_runner_lanes.py tests/test_launch_audit_inventory.py tests/test_seat_reference_inventory.py tests/test_agent_cli_scratch_inventory_1147.py tests/test_seat_resource_caps.py tests/test_seat_launch_helpers_trusted.py tests/test_gate_fail_open_visibility.py"]
+  suite_command: ["bash", "-lc", "cd phase-loop-runtime && PHASE_LOOP_TDD_EXPECT_SCHED=1 PYTHONPATH=$PWD/src:$PWD/tests timeout 1800 .venv/bin/python -m pytest -q -rA -p no:cacheprovider -m 'not dotfiles_integration' tests/test_host_integration.py tests/test_host_integration_runner.py tests/test_jevdrill_host_gaps.py tests/test_jevdrill_adapter.py tests/test_jevdrill_queue.py tests/test_jevdrill_usage.py tests/test_jevdrill_discovery.py tests/test_jevdrill_diagnostics.py tests/test_jevdrill_input.py tests/test_jevdrill_selection.py tests/test_jevdrill_companion_workflow.py tests/test_jevdrill_receipt.py tests/test_jevdrill_launch_merge.py tests/test_jevdrill_runner_lanes.py tests/test_launch_audit_inventory.py tests/test_seat_reference_inventory.py tests/test_agent_cli_scratch_inventory_1147.py tests/test_seat_resource_caps.py tests/test_seat_launch_helpers_trusted.py tests/test_gate_fail_open_visibility.py tests/test_windows_locking.py tests/test_launcher_liveness.py tests/test_windows_processes.py tests/test_windows_storage.py tests/test_phase_loop_launcher.py tests/test_phase_loop_work_unit_observability.py"]
 ---
 
 # JEVHOST amendment: host gaps, generic seam first
@@ -23,7 +23,7 @@ agent-harness#2123 and is outside this amendment.
 change is tagged in GAPS.
 
 **Frozen input.** `plans/artifacts/jevhost-host-gaps-v1.md` (**GAPS**, sha256
-`a3037ebaf63dd745c583cac6deff199ba175fc0da53ca4f69edaf6049def4db3`) holds:
+`89ac72d9d7e77601b99940508191991c6d256db586223a7c1afcfb6e5e86958d`) holds:
 - each item's coverage key, class, status and file:line evidence (§1);
 - the generic seam (§2);
 - per-item behaviour, ordering and tests, with each test's expected base outcome (§3);
@@ -123,7 +123,7 @@ every named test collects (`--collect-only -q`) and executes (`-rA`).
 - **Tasks**:
   - test: GAPS §3.1 row 1b and §3.5's runner row 5a (main, delegated and lane), with a host-neutral fake.
   - impl: the verdict helper and the three call sites. Record the `launch_contract_blocker` verdict with evidence. If it is ambiguous, stop.
-  - verify: `timeout 900 .venv/bin/python -m pytest -q -rA -p no:cacheprovider tests/test_host_integration_runner.py tests/test_jevdrill_runner_lanes.py`, then `timeout 900 .venv/bin/python -m pytest -q -rA -p no:cacheprovider tests/test_phase_loop_runner.py -k jevdrill`.
+  - verify: `timeout 900 .venv/bin/python -m pytest -q -rA -p no:cacheprovider tests/test_host_integration_runner.py tests/test_jevdrill_runner_lanes.py`.
 
 ### SL-8 — ADAPTER: the retry ledger, deactivation reasons, disconnect advice, readiness order, spawn reserve and declaration check
 
@@ -159,7 +159,7 @@ every named test collects (`--collect-only -q`) and executes (`-rA`).
 - **Interfaces consumed**: IF-0-JEVHOST-5
 - **Parallel-safe**: no
 - **Tasks**:
-  - test: the frontmatter `suite_command`. A moved inventory is a stop, followed by a GAPS repin, and no lane edits an inventory file (GAPS §6).
+  - test: SL-9 runs the serial combined `suite_command` on hosted CI and records the companion receipt on the implementation PR. Local verification uses the narrow lane commands. A moved inventory is a stop, followed by a GAPS repin, and no lane edits an inventory file (GAPS §6).
   - impl: add a "Host gaps" section to `docs/jevdrill-integration.md`, and a `CHANGELOG.md` entry under `## [Unreleased]`.
   - impl: the PR body states:
     - the coverage-key-to-node-ID map;
@@ -191,15 +191,15 @@ key (GAPS §1). This amendment adds no EC.
 - [ ] Item 4, coverage key `EC-HOST-2 / Disconnects include supported resolution advice` — proven by `test_jevdrill_host_gaps.py::test_route_disconnect_carries_advice`, `::test_report_disconnect_keeps_backoff_and_advises` and `::test_non_transport_delivery_errors_stay_distinct`; falsified by a disconnect with no or mismatched advice, a changed exception object, lost queue backoff, or advice on a non-transport error.
 - [ ] Item 5, coverage key `EC-HOST-4 / The harness may retain its current model: a launch that keeps it` — proven by `test_host_integration.py::test_build_host_request_refuses_override_changes`, `::test_build_host_request_passes_preserved_override_and_default_routing`, `test_host_integration_runner.py::test_runner_refuses_an_integration_that_replaces_an_override` and `test_jevdrill_host_gaps.py::test_operator_model_is_kept_through_launch`; falsified by a launch with any override field replaced.
 - [ ] Item 6, coverage key `scope / Scope note: the readiness recheck before launch` — proven by `test_jevdrill_host_gaps.py::test_readiness_expiring_in_a_final_callback_refuses_launch`, `::test_readiness_expiring_during_the_started_write_refuses_launch` and `::test_fresh_launch_reports_started_before_dispatch`; falsified by a launch after readiness expired at any point before dispatch.
-- [ ] Item 7, coverage key `scope / Scope note: the budget passed after host spawn time` — proven by `test_jevdrill_host_gaps.py::test_budget_reserves_spawn_time`, `::test_near_zero_budget_never_spawns`, `::test_over_reserve_spawn_is_bounded_by_the_parent_deadline` and `::test_delete_argv_has_no_budget_flag`; falsified by an argv budget without the pinned pre-spawn reserve, a spawn with no budget left, or a child outliving the parent deadline. The guarantee is pre-spawn reserve plus parent-side enforcement (GAPS §3.7).
+- [ ] Item 7, coverage key `scope / Scope note: the budget passed after host spawn time` — proven by `test_jevdrill_host_gaps.py::test_budget_reserves_spawn_time`, `::test_near_zero_budget_never_spawns`, `::test_over_reserve_spawn_is_bounded_by_the_parent_deadline` and `::test_delete_argv_has_no_budget_flag`; falsified by an argv budget without the pinned pre-spawn reserve, a spawn with no budget left, or a wait budget extended past the original parent deadline, or a started child surviving the cleanup bound. The guarantee is pre-spawn reserve plus parent-side enforcement (GAPS §3.7).
 - [ ] Item 9, coverage key `scope / Scope note: the absence of silent forwarding` — proven by `test_jevdrill_host_gaps.py::test_undeclared_identity_makes_no_cli_request` and `::test_declared_identity_and_absent_file_still_route`; falsified by any CLI request for an identity that a present declaration omits.
 - [ ] EC-JEVHOST-3 — continuity per GAPS §6: proven by rerunning `test_jevdrill_launch_merge.py`, `test_jevdrill_runner_lanes.py` and `test_launch_audit_inventory.py` on the combined tree, with S1 to S6 provenance from the landed evidence of agent-harness#2086; falsified by any behaviour change with no integration. Path-entered control: `run_loop` with production constructors and no integration.
 - [ ] EC-JEVHOST-1, EC-JEVHOST-2, EC-JEVHOST-4, EC-JEVHOST-5, EC-JEVHOST-6, EC-JEVHOST-7, EC-JEVHOST-8 — continuity per GAPS §6: proven by the landed evidence of agent-harness#2086 plus the reruns named there; falsified by any rerun failing or any frozen file, inventory or workflow edited. Path-entered control: SL-9's `suite_command` on the combined tree.
 
 ## Verification
 
-Per lane: the commands above. Whole amendment, serially after a headroom check: the
-frontmatter `suite_command` (SL-9). Hosted: the required checks, plus the companion
+SL-9 runs the serial combined `suite_command` on hosted CI and records the companion
+receipt on the implementation PR. Local verification uses the narrow lane commands. Hosted: the required checks, plus the companion
 receipt leg that the path filter triggers on the implementation PR. Gate A is the
 coordinator's decision, and SL-9 records it if it runs. No step makes a provider call or
 runs on a non-hosted machine.

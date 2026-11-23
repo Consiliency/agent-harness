@@ -150,6 +150,10 @@ spawn or `ctypes`. Everything else stays in the adapter.
     under a recorded mutation that overwrites `selection.source` at
     `jevdrill_adapter.py:519-520`;
   - the positive controls marked "passes on base".
+- On the base, tests for the new module use a test-local import and fail at an explicit
+  `host_integration` availability assertion naming that missing interface. Record this
+  separately from semantic failures. The fixed-tree run must execute the behavioral
+  assertions in every row.
 - Before closing, each lane checks that every named test collects
   (`--collect-only -q`) and executes in its verify command (`-rA`).
 
@@ -168,10 +172,17 @@ spawn or `ctypes`. Everything else stays in the adapter.
   launched run keeps its exact decision, scoped by project, workspace and task.
   `last_decision` is never used for this.
 - **`record_acceptance_outcome(run_id, *, passed, failure_class)`** (adapter):
-  - an unknown or evicted run ID is ignored and emits one `acceptance_unknown_run` notice;
-  - a duplicate call for the same run is idempotent: the first outcome wins;
-  - `passed=True` closes the task and deletes its ledger entry;
+  - An ID absent from the active index is a no-op.
+  - A duplicate verdict for an active run is a no-op.
+  - On pass, remove the task and all its run-index entries atomically.
   - otherwise the attempt's outcome becomes `failure_class`.
+- **Exhaustion.** For every route on a task with an existing ledger entry, tighten the
+  budget and check both counters before any CLI contact, including when the latest
+  attempt has no acceptance verdict. If the budget is exhausted, raise
+  `JevDrillUnavailable("Retry budget is exhausted")`. Apply the same check immediately
+  before launch admission and add the launched attempt atomically with that check under
+  the ledger lock. A previously prepared binding cannot spend a slot after another launch
+  consumed it. Generate retry context only for a recorded failure.
 - **Construction.** At a later `prepare` for a task whose latest attempt failed:
   - `attempts_used` is the number of launched attempts;
   - if `budget.exhausted(...)`, it raises `JevDrillUnavailable("Retry budget is exhausted")`
@@ -192,9 +203,10 @@ spawn or `ctypes`. Everything else stays in the adapter.
   ledger entry is refused.
 - **Bound on the ledger.** It holds at most 256 open tasks. A first prepare for a 257th
   open task is refused (`"Retry ledger is full"`). Open entries are never evicted, so a
-  budget cannot be reset by eviction. Closed entries are deleted. A process restart
-  loses the ledger. A retry is then routed as a first attempt, and JEV's own attempt
-  check (`application.py:1201-1219` at the pin) still bounds it. SL-9 states this.
+  budget cannot be reset by eviction. Closed entries are deleted. After restart, the adapter has no continuity of the prior
+  host budget. A context-free request is handled as a first attempt. JEV's retry-context
+  validation at `application.py:1201–1219` applies when there is retry context. SL-9
+  states this.
 - **Runner verdict** (`_finalize_phase_launch`). There is one helper,
   `_report_acceptance(prep, result, verdict)`. It is called only on paths after an
   entered launch whose result carries `jevdrill_execution_run`:
@@ -217,7 +229,7 @@ spawn or `ctypes`. Everything else stays in the adapter.
 | --- | --- | --- | --- |
 | 1a | `tests/test_host_integration.py::test_retry_budget_arithmetic_and_exhaustion` | positive elapsed arithmetic; the exact boundary (`remaining_time_ms` reaches 0 at the deadline, and floor rounding to an int); exhaustion by attempts and by time separately; `tighten`; an unknown class raises | fails: the module does not exist |
 | 1b | `tests/test_host_integration_runner.py::test_acceptance_verdicts_reach_the_observer[...]` | parametrized: nonzero exit gives `infrastructure`; zero exit plus a failing gate gives `quality`; success gives `passed`; `reduction_blocker` gives no call; the observer raises and the classification is unchanged with one event. Each case asserts the launch was entered and the literal class. | fails: no call site |
-| 1c | `tests/test_jevdrill_host_gaps.py::test_acceptance_failure_builds_bounded_retry_context` | with a controlled `monotonic_ns`: two independent tasks; prepare, launch, failure, prepare. The second `route` payload names both prior IDs of **that** task's run, `remaining_attempts = max - 1`, and the exact `remaining_time_ms`. A duplicate failure call does not double-count. After exhaustion there is no `route`. | fails: `retry_context` is `None` |
+| 1c | `tests/test_jevdrill_host_gaps.py::test_acceptance_failure_builds_bounded_retry_context` | with a controlled `monotonic_ns`: two independent tasks; prepare, launch, failure, prepare. The second `route` payload names both prior IDs of **that** task's run, `remaining_attempts = max - 1`, and the exact `remaining_time_ms`. A duplicate failure call does not double-count. After exhaustion there is no `route`. An exhausted context-free route with no verdict is refused with no CLI contact. Two prepared bindings compete for the final launch slot: exactly one launches. A duplicate pass changes neither state nor notices. | fails: `retry_context` is `None` |
 | 1d | `tests/test_jevdrill_host_gaps.py::test_supplied_retry_context_cannot_widen_or_bypass` | widened attempts, widened time, mismatched IDs, an exhausted budget and a no-ledger supply are each refused with no `route` | fails: the base forwards them |
 
 ### §3.2 Item 2
@@ -306,7 +318,8 @@ If the final recheck fails after `started` was persisted:
   - If `budget_ms <= 0`, it raises `TimeoutError("... before spawn")` with no spawn.
   - The parent's wait deadline is unchanged, and post-spawn cleanup kills and reaps
     exactly as today.
-  - `delete` keeps its argv shape, with no budget flag.
+  - `delete` keeps its argv shape, with no budget flag, and keeps the expired-deadline
+    no-spawn check.
 - **What it guarantees.** A pre-spawn reserve plus parent-side enforcement after spawn.
   It does not guarantee that the child's deadline falls before the parent's when the
   spawn takes longer than the reserve. That would need a JEV protocol change: a shared
@@ -318,7 +331,7 @@ If the final recheck fails after `started` was persisted:
 | --- | --- | --- |
 | `test_jevdrill_host_gaps.py::test_budget_reserves_spawn_time` | a fake monotonic clock and a recording `Popen` seam; the argv budget equals the formula exactly, and `budget_ms / 1000 + SPAWN_ALLOWANCE_MS / 1000 <= deadline - clock_at_budget` | fails: the base budget has no reserve |
 | `test_jevdrill_host_gaps.py::test_near_zero_budget_never_spawns` | remaining ≤ the reserve: `TimeoutError` "before spawn", and the `Popen` seam is not called | fails: the base spawns |
-| `test_jevdrill_host_gaps.py::test_over_reserve_spawn_is_bounded_by_the_parent_deadline` | a real fake child that sleeps past the deadline, with the real timed wait: `TimeoutError` within the original deadline plus a 1 s cleanup bound; the child is reaped | passes on base (control) |
+| `test_jevdrill_host_gaps.py::test_over_reserve_spawn_is_bounded_by_the_parent_deadline` | the call gets more than 250 ms initially; a recording `Popen` wrapper starts the real sleeping test child and delays returning its handle by more than 250 ms while leaving positive time on the parent deadline; the child was started (asserted); after the real timed wait, `TimeoutError` within the original deadline plus a 1 s cleanup bound, and the captured child is reaped | passes on base (control) |
 | `test_jevdrill_host_gaps.py::test_delete_argv_has_no_budget_flag` | the exact `delete` argv | passes on base (control) |
 
 The frozen `tests/test_jevdrill_adapter.py::test_deadline_includes_prior_work_and_reaps_child`

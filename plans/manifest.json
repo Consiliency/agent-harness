@@ -16271,7 +16271,7 @@
       "file": "plans/amendments/jevhost-JEVHOST-host-gaps.md",
       "frozen_inputs": {
         "plans/artifacts/jevhost-host-gaps-v1.md": {
-          "sha256": "a3037ebaf63dd745c583cac6deff199ba175fc0da53ca4f69edaf6049def4db3"
+          "sha256": "89ac72d9d7e77601b99940508191991c6d256db586223a7c1afcfb6e5e86958d"
         },
         "plans/artifacts/jevhost-v1-contract.md": {
           "sha256": "1fa957afc8f7b3a324a8f048695b3d2ebf1009336a1d49407d33dfc1b36f4e1d"
