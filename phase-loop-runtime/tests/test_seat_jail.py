@@ -562,6 +562,127 @@ def test_j10_tree_walk_never_follows_a_link_or_opens_a_fifo(tmp_path):
     assert time.monotonic() - started < 5
 
 
+def _reference_tree_manifest_sha256_at(tree_fd: int) -> str:
+    """The pre-streaming algorithm, verbatim: whole payloads held, hashed after the walk."""
+    records = []
+
+    def walk(dir_fd, prefix):
+        for name in sorted(os.listdir(dir_fd)):
+            if name == ".git":
+                continue
+            rel = f"{prefix}{name}"
+            info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+            if stat.S_ISLNK(info.st_mode):
+                records.append((rel, b"link", False,
+                                os.fsencode(os.readlink(name, dir_fd=dir_fd))))
+            elif stat.S_ISDIR(info.st_mode):
+                child = os.open(name, seat_jail._O_DIR, dir_fd=dir_fd)
+                try:
+                    walk(child, rel + "/")
+                finally:
+                    os.close(child)
+            elif stat.S_ISREG(info.st_mode):
+                fd = os.open(name, seat_jail._O_READ, dir_fd=dir_fd)
+                try:
+                    payload = b"".join(iter(lambda: os.read(fd, 1 << 16), b""))
+                finally:
+                    os.close(fd)
+                executable = os.access(name, os.X_OK, dir_fd=dir_fd, follow_symlinks=False)
+                records.append((rel, b"blob", executable, payload))
+
+    walk(tree_fd, "")
+    digest = hashlib.sha256()
+    for rel, kind, executable, payload in sorted(records, key=lambda r: r[0]):
+        digest.update(
+            kind + (b"1" if executable else b"0")
+            + hashlib.sha256(payload).hexdigest().encode("ascii")
+            + b"%020d" % len(payload)
+            + hashlib.sha256(rel.encode("utf-8")).hexdigest().encode("ascii")
+        )
+    return digest.hexdigest()
+
+
+def _manifest_tree(root: Path, shape: str) -> Path:
+    root.mkdir()
+    (root / "top.txt").write_bytes(b"top\n")
+    if shape in ("nested", "everything"):
+        (root / "a" / "b" / "c").mkdir(parents=True)
+        (root / "a" / "b" / "c" / "deep.py").write_bytes(b"deep\n")
+        # "a-z" sorts before "a/..." globally but after "a" in a per-directory walk.
+        (root / "a-z").write_bytes(b"dash\n")
+        (root / "a" / "b" / "sibling").write_bytes(b"s")
+    if shape in ("executable", "everything"):
+        (root / "run.sh").write_bytes(b"#!/bin/sh\n")
+        (root / "run.sh").chmod(0o755)
+    if shape in ("empty", "everything"):
+        (root / "empty").write_bytes(b"")
+        (root / "emptydir").mkdir()
+    if shape in ("large", "everything"):
+        block = hashlib.sha256(b"seed").digest() * 4096
+        with open(root / "large.bin", "wb") as handle:
+            for _ in range(24):
+                handle.write(block)  # 3 MiB: several streaming chunks
+            handle.write(b"tail")  # and not a chunk multiple
+    if shape in ("unicode", "everything"):
+        (root / "d\u00e9j\u00e0").mkdir()
+        (root / "d\u00e9j\u00e0" / "\u6587\u4ef6.txt").write_bytes("\u00fc\n".encode())
+        (root / "\U0001f600").write_bytes(b"emoji")
+    if shape in ("special", "everything"):
+        (root / "link").symlink_to("top.txt")
+        (root / "dangling").symlink_to("missing/target")
+        (root / "dirlink").symlink_to("a" if shape == "everything" else ".")
+        os.mkfifo(root / "fifo")
+        (root / ".git").mkdir()
+        (root / ".git" / "HEAD").write_bytes(b"ignored")
+    return root
+
+
+@pytest.mark.parametrize(
+    "shape", ["flat", "nested", "executable", "empty", "large", "unicode", "special",
+              "everything"],
+)
+def test_streamed_tree_manifest_matches_the_reference_digest(tmp_path, shape):
+    tree = _manifest_tree(tmp_path / "tree", shape)
+    fd = _dirfd(tree)
+    try:
+        assert seat_jail.tree_manifest_sha256_at(fd) == _reference_tree_manifest_sha256_at(fd)
+    finally:
+        os.close(fd)
+
+
+def test_streamed_tree_manifest_keeps_peak_memory_bounded(tmp_path):
+    import tracemalloc
+
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    size = 256 << 20
+    with open(tree / "big.bin", "wb") as handle:
+        handle.truncate(size)  # sparse: no real disk use
+    (tree / "small").write_bytes(b"x")
+    fd = _dirfd(tree)
+    try:
+        tracemalloc.start()
+        try:
+            digest = seat_jail.tree_manifest_sha256_at(fd)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+    finally:
+        os.close(fd)
+    assert peak < 16 << 20, peak
+    zeros = hashlib.sha256()
+    chunk = bytes(1 << 20)
+    for _ in range(size >> 20):
+        zeros.update(chunk)
+    expected = hashlib.sha256(
+        b"blob0" + zeros.hexdigest().encode() + b"%020d" % size
+        + hashlib.sha256(b"big.bin").hexdigest().encode()
+        + b"blob0" + hashlib.sha256(b"x").hexdigest().encode() + b"%020d" % 1
+        + hashlib.sha256(b"small").hexdigest().encode()
+    ).hexdigest()
+    assert digest == expected
+
+
 def test_hard_link_handoff_precondition_detects_a_shared_inode(tmp_path):
     stage = tmp_path / "tree"
     stage.mkdir()

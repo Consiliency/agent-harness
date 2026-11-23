@@ -232,6 +232,82 @@ def test_manifest_digest_detects_a_renamed_path(tmp_path):
     assert review_stage.review_tree_manifest_sha256(repo) != before
 
 
+def _reference_review_tree_manifest_sha256(root: Path) -> str:
+    """The pre-streaming algorithm, verbatim: each file read whole before hashing."""
+    import hashlib
+
+    root = Path(root).resolve(strict=True)
+    digest = hashlib.sha256()
+    for rel in review_stage._selected_paths(root):
+        target = root / rel
+        if target.is_symlink():
+            payload = os.readlink(target).encode("utf-8")
+            kind = b"link"
+        else:
+            payload = target.read_bytes()
+            kind = b"blob"
+        executable = b"1" if (not target.is_symlink() and os.access(target, os.X_OK)) else b"0"
+        digest.update(
+            kind + executable
+            + hashlib.sha256(payload).hexdigest().encode("ascii")
+            + b"%020d" % len(payload)
+            + hashlib.sha256(rel.encode("utf-8")).hexdigest().encode("ascii")
+        )
+    return digest.hexdigest()
+
+
+def _streaming_manifest_tree(root: Path) -> Path:
+    import hashlib
+
+    (root / "a" / "b").mkdir(parents=True)
+    (root / "a" / "b" / "deep.py").write_bytes(b"deep\n")
+    (root / "a-z").write_bytes(b"dash\n")
+    (root / "run.sh").write_bytes(b"#!/bin/sh\n")
+    (root / "run.sh").chmod(0o755)
+    (root / "empty").write_bytes(b"")
+    block = hashlib.sha256(b"seed").digest() * 4096
+    with open(root / "large.bin", "wb") as handle:
+        for _ in range(24):
+            handle.write(block)  # 3 MiB: several streaming chunks
+        handle.write(b"tail")
+    (root / "d\u00e9j\u00e0").mkdir()
+    (root / "d\u00e9j\u00e0" / "\u6587\u4ef6.txt").write_bytes("\u00fc\n".encode())
+    (root / "link").symlink_to("a-z")
+    (root / "dangling").symlink_to("missing/target")
+    return root
+
+
+@pytest.mark.parametrize("layout", ["git", "stage"])
+def test_streamed_review_manifest_matches_the_reference_digest(tmp_path, layout):
+    repo = _streaming_manifest_tree(_git_repo(tmp_path / "repo"))
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    if layout == "stage":
+        subprocess.run(
+            ["git", "-C", str(repo), "-c", "commit.gpgsign=false", "-c", "user.name=t",
+             "-c", "user.email=t@e.st", "commit", "-qm", "c"], check=True,
+        )
+        repo = review_stage.stage_review_tree(repo, tmp_path / "stage")
+    assert review_stage.review_tree_manifest_sha256(repo) == \
+        _reference_review_tree_manifest_sha256(repo)
+
+
+def test_streamed_review_manifest_keeps_peak_memory_bounded(tmp_path, monkeypatch):
+    import tracemalloc
+
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    with open(tree / "big.bin", "wb") as handle:
+        handle.truncate(256 << 20)  # sparse: no real disk use
+    monkeypatch.setattr(review_stage, "review_tree_paths", lambda _root: ["big.bin"])
+    tracemalloc.start()
+    try:
+        review_stage.review_tree_manifest_sha256(tree)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 16 << 20, peak
+
+
 def test_a_readonly_stage_is_actually_removable(tmp_path):
     """Regression: `shutil.rmtree` cannot unlink through a 0o500 directory.
 
