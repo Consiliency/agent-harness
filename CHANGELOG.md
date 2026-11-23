@@ -6,6 +6,21 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Added
+
+- LANEEXEC SL-0: the placement launch protocol v1 (`plans/phase-plan-v13-LANEEXEC.md`) ships
+  as package data at `phase_loop_runtime/contracts/placement/launch-v1.schema.json`, byte
+  for byte the frozen artifact `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`
+  (erratum LANEEXEC-v1-errata-1, sha256 `da311638…`). The new
+  `phase_loop_runtime.launch_process_contract` module is its side-effect-free strict codec:
+  `decode_launch_request` and `encode_launch_response` (plus a client-side
+  `decode_launch_response`), immutable records for every message family, and
+  `launch_exit_class`. Input follows the PLACECLI v1 strictness rules and the 64 KiB
+  bound. The PLACECLI definitions, `Reservation` among them, resolve by `$id` only against
+  the packaged `process-v1.schema.json`. For every terminal state, the codec also refuses a
+  `StatusResponse` whose top-level `run_id`, `scratch_path` or `tree_path` differs from the
+  nested launch. No CLI, launch service or route is added, and nothing is activated.
+
 ### Fixed
 
 - The jailed Claude seat's login proof now builds its auth-probe jails with the route's

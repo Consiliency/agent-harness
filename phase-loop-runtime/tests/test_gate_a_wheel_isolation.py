@@ -120,6 +120,38 @@ class GateAConformEvidenceScopeTest(unittest.TestCase):
         self.assertTrue(packaged.is_file())
         self.assertIn(b'"placement.version.response.v1"', packaged.read_bytes())
 
+    def test_launch_process_schema_ships_as_package_data(self):
+        # v13 LANEEXEC SL-0: the packaged launch protocol schema rides the same placement
+        # package-data glob as process-v1; no new declaration is needed.
+        pyproject = (PKG_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertIn('"contracts/placement/**"', pyproject)
+        packaged = PKG_ROOT / "src/phase_loop_runtime/contracts/placement/launch-v1.schema.json"
+        self.assertTrue(packaged.is_file())
+        self.assertIn(b'"placement.launch.version.response.v1"', packaged.read_bytes())
+
+    def test_launch_process_schema_loads_from_the_installed_package(self):
+        # Under Gate A the import resolves to the installed wheel, so this proves the
+        # resource is in the wheel and that its PLACECLI references resolve there.
+        from importlib import resources
+        import json
+
+        from phase_loop_runtime import launch_process_contract as launch
+        from phase_loop_runtime import placement_process_contract as placement
+
+        shipped = resources.files("phase_loop_runtime").joinpath(
+            "contracts/placement/launch-v1.schema.json").read_bytes()
+        self.assertEqual(launch.schema_bytes(), shipped)
+        pin = json.loads(shipped)["x-contract-pins"]["placement_process_v1"]["sha256"]
+        self.assertEqual(placement.protocol_schema_sha256(), pin)
+        self.assertTrue(launch.validate_launch_message("CancelRequest", {
+            "schema": "placement.launch.cancel.request.v1", "request_id": "c-1",
+            "reservation_id": "r-1", "launch_request_id": "l-1", "deadline_ms": 1000,
+            "caller_context": {}}))
+        self.assertFalse(launch.validate_launch_message("CancelRequest", {
+            "schema": "placement.launch.cancel.request.v1", "request_id": "c-1",
+            "reservation_id": "r-1", "launch_request_id": "bad id", "deadline_ms": 1000,
+            "caller_context": {}}))
+
     def test_conform_evidence_scope_is_minimal_and_excludes_final_nodes(self):
         script = GATE_SCRIPT.read_text(encoding="utf-8")
 
