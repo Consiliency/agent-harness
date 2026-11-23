@@ -119,6 +119,13 @@ Everything under Non-Goals above.
 - `phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py`
 - `.github/workflows/jevdrill-companion.yml`
 - `docs/jevdrill-integration.md`
+- `phase-loop-runtime/src/phase_loop_runtime/host_integration.py` (host-gaps amendment, 2026-11-23)
+- `phase-loop-runtime/tests/test_host_integration.py` (host-gaps amendment)
+- `phase-loop-runtime/tests/test_host_integration_runner.py` (host-gaps amendment)
+- `phase-loop-runtime/tests/test_jevdrill_host_gaps.py` (host-gaps amendment)
+
+The last four paths were added by `plans/amendments/jevhost-JEVHOST-host-gaps.md`
+(agent-harness#2124). That amendment adds no exit criterion and changes no other text.
 
 **Depends on**
 

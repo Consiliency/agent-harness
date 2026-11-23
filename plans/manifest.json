@@ -16271,7 +16271,7 @@
       "file": "plans/amendments/jevhost-JEVHOST-host-gaps.md",
       "frozen_inputs": {
         "plans/artifacts/jevhost-host-gaps-v1.md": {
-          "sha256": "2b2e4d487a126f6cfb15968ed73f6bbcfc2804e937b09a2bb5e812ea173a6eff"
+          "sha256": "a3037ebaf63dd745c583cac6deff199ba175fc0da53ca4f69edaf6049def4db3"
         },
         "plans/artifacts/jevhost-v1-contract.md": {
           "sha256": "1fa957afc8f7b3a324a8f048695b3d2ebf1009336a1d49407d33dfc1b36f4e1d"
@@ -16303,7 +16303,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-11-23T03:00:00Z"
+      "updated_at": "2026-11-23T09:00:00Z"
     },
     {
       "acceptance_criteria_count": null,
