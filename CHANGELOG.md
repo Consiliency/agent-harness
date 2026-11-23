@@ -31,6 +31,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   jail's key is missing or differs from the review jail's (regression of
   Consiliency/agent-harness#1890).
 
+- Staged-tree manifest hashing now reads regular files in 1 MiB chunks and preserves
+  existing digests used by pass records and authorizations. Previously, the jailed-seat
+  verification retained all file contents until the walk finished (regression from
+  agent-harness#1132).
+
 - The Codex row window's expired-token check now runs fenced on the real seat (K-1 OI-1,
   owner decision 2026-11-22, "Block all its traffic"; plan
   `detailed-k1-oi1-refuse-all-fence-20261122-0736.md`, Consiliency/agent-harness#2080).
