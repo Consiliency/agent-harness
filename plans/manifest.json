@@ -15232,7 +15232,7 @@
           "sha256": "1cea960ddd28ef5e1c4bf79083fa9f9938b2c99c2e29dbd937864944ca76d7e8"
         },
         "plans/artifacts/v13-LANEEXEC-landed-binding.md": {
-          "sha256": "216f9ab9b1c11526ad3fa8b3e699b387dfda2e33260255da84d2696c75e1d500"
+          "sha256": "07446ed9598547ed288d789c88db82a3ba61f4e0e51615b0614f89bbaaebba63"
         },
         "plans/artifacts/v12-v13-replan-ownership.md": {
           "sha256": "e5dbbfb45c23cbb6acb9756a23a3d86b62dd5b172b94d6a495ef436d189f3e06"
@@ -15256,7 +15256,10 @@
         "SL-3",
         "SL-4",
         "SL-5",
-        "SL-6"
+        "SL-6",
+        "SL-7",
+        "SL-8",
+        "SL-9"
       ],
       "lifecycle": [
         {
@@ -15317,6 +15320,32 @@
             }
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-11-23T08:40:55Z",
+          "by": "claude-plan-phase",
+          "metadata": {
+            "amendment": {
+              "artifact_section": "plans/artifacts/v13-LANEEXEC-landed-binding.md \u00a77",
+              "baseline": "2441fa0d695f23dccf150660d277872a93b3ea16",
+              "erratum": "LANEEXEC-v1-errata-3",
+              "frozen_inputs_repinned": [
+                "plans/artifacts/v13-LANEEXEC-landed-binding.md"
+              ],
+              "lanes_split": {
+                "SL-3": "SL-3, SL-7, SL-8, SL-9"
+              },
+              "wire_bytes_changed": false
+            },
+            "remaining_gate": "separate execution authority for claude-execute-phase",
+            "review": {
+              "pr": "agent-harness#2126",
+              "round": 2,
+              "verdict": "ACCEPT-WITH-EDITS",
+              "edits": "applied"
+            }
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "claude-plan-phase",
@@ -15333,7 +15362,7 @@
       "slug": "v13-LANEEXEC",
       "status": "committed",
       "type": "phase",
-      "updated_at": "2026-11-23T00:43:23Z"
+      "updated_at": "2026-11-23T08:40:55Z"
     },
     {
       "acceptance_criteria_count": null,
