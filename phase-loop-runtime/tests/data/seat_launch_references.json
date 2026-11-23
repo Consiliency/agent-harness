@@ -1,4 +1,7 @@
 [
+  {"count": 1, "function": "HostFiles.sha256", "module": "launch_routes", "primitive": "io.open", "role": "host-io"},
+  {"count": 3, "function": "HostFiles.tree_rows", "module": "launch_routes", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "HostFiles.tree_rows", "module": "launch_routes", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "SeedHandle.provision", "module": "launch_snapshot", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "SeedHandle.provision", "module": "launch_snapshot", "primitive": "io.read_bytes", "role": "host-io"},
   {"count": 1, "function": "_build_git", "module": "launch_snapshot", "primitive": "io.read_bytes", "role": "host-io"},
