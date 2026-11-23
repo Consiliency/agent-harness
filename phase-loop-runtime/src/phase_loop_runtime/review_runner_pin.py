@@ -28,9 +28,10 @@ subprocess or makes a network call.
 
 **Value domain.** The record digest is RFC 8785 (JCS), whose §3.1 requires I-JSON input
 (RFC 7493). Before any rule or hash, P1 therefore refuses, as ``pin_schema_invalid`` on the
-offending field: strings or keys holding a surrogate or a noncharacter (RFC 7493 §2.1);
-numbers that are not finite or whose integral magnitude exceeds 2**53 - 1 (RFC 7493 §2.2);
-nesting deeper than :data:`MAX_DEPTH`; and record files above :data:`MAX_RECORD_BYTES`.
+offending field, strings or keys holding a surrogate or a noncharacter (RFC 7493 §2.1).
+The record profile also refuses non-finite numbers and limits integral numbers to magnitude
+``2**53 - 1``, the interoperable exact-integer range discussed in RFC 7493 §2.2. It also
+refuses nesting deeper than :data:`MAX_DEPTH` and record files above :data:`MAX_RECORD_BYTES`.
 Inside that domain the frozen schema's ``integer`` keyword keeps its JSON Schema meaning, so
 an integral spelling such as ``1.0`` is valid and hashes exactly as ``1``.
 """
@@ -94,7 +95,7 @@ _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _SUFFIX = re.compile(r"@sha256:[0-9a-f]{64}$")
 _SENTINELS = ("ghp_", "gho_", "ghs_", "github_pat_", "glpat-", "bearer ", "basic ",
               '"auths"', "password", "token", "secret")
-_USERINFO = re.compile(r"[^\s/@:?#&=]+:[^\s/@]*@(?!sha256:)")
+_USERINFO = re.compile(r"[^\s/@:?#&=]:")
 _BASE64_RUN = re.compile(r"[A-Za-z0-9+/]{40,}")
 _HELPER_HASH_LINE = re.compile(r"echo\s+'([0-9a-f]{64})\s+/landlock-exec'\s*\|\s*sha256sum\s+-c")
 _TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
@@ -297,34 +298,61 @@ def _bad_text(text: str) -> bool:
     return False
 
 
+@lru_cache(maxsize=1)
+def _record_schema_paths() -> frozenset[tuple[str, ...]]:
+    paths = {()}
+    stack = [(_schema(), ())]
+    while stack:
+        schema, path = stack.pop()
+        for name, child in schema.get("properties", {}).items():
+            child_path = (*path, name)
+            paths.add(child_path)
+            stack.append((child, child_path))
+        for keyword in ("oneOf", "anyOf", "allOf"):
+            stack.extend((branch, path) for branch in schema.get(keyword, ()))
+        if "items" in schema:
+            item_path = (*path, "*")
+            paths.add(item_path)
+            stack.append((schema["items"], item_path))
+    return frozenset(paths)
+
+
+def _domain_field(path: tuple[str, ...]) -> str:
+    normalized = _schema_path(path)
+    known = _record_schema_paths()
+    while normalized not in known:
+        normalized = normalized[:-1]
+    return _field(normalized)
+
+
 def _check_domain(value: Any) -> None:
-    """Refuse anything outside the I-JSON domain that RFC 8785 hashes unambiguously."""
+    """Enforce the record's JCS input profile before schema validation or hashing."""
     stack: list[tuple[Any, tuple[str, ...]]] = [(value, ())]
     while stack:
         node, path = stack.pop()
-        if len(path) > MAX_DEPTH:
-            raise _fail("pin_schema_invalid", "P1", _field(path[:MAX_DEPTH]))
+        if isinstance(node, (Mapping, list)) and len(path) >= MAX_DEPTH:
+            raise _fail("pin_schema_invalid", "P1", _domain_field(path))
         if isinstance(node, Mapping):
             for key, child in node.items():
                 if not isinstance(key, str) or _bad_text(key):
-                    raise _fail("pin_schema_invalid", "P1", _field(path))
+                    raise _fail("pin_schema_invalid", "P1", _domain_field(path))
                 stack.append((child, path + (key,)))
         elif isinstance(node, list):
             stack.extend((child, path + (str(index),)) for index, child in enumerate(node))
         elif isinstance(node, str):
             if _bad_text(node):
-                raise _fail("pin_schema_invalid", "P1", _field(path))
+                raise _fail("pin_schema_invalid", "P1", _domain_field(path))
         elif node is None or isinstance(node, bool):
             continue
         elif isinstance(node, int):
             if abs(node) > MAX_SAFE_INTEGER:
-                raise _fail("pin_schema_invalid", "P1", _field(path))
+                raise _fail("pin_schema_invalid", "P1", _domain_field(path))
         elif isinstance(node, float):
             if node != node or node in (float("inf"), float("-inf")) or (
                     node.is_integer() and abs(node) > MAX_SAFE_INTEGER):
-                raise _fail("pin_schema_invalid", "P1", _field(path))
+                raise _fail("pin_schema_invalid", "P1", _domain_field(path))
         else:
-            raise _fail("pin_schema_invalid", "P1", _field(path))
+            raise _fail("pin_schema_invalid", "P1", _domain_field(path))
 
 
 def _normalized(value: Any) -> Any:
@@ -400,16 +428,24 @@ def _schema_path(path: tuple[str, ...]) -> tuple[str, ...]:
     return tuple("*" if part.isdigit() else part for part in path)
 
 
+def _has_userinfo(text: str) -> bool:
+    for segment in re.split(r"[\s/]", text):
+        for prefix in segment.split("@")[:-1]:
+            if _USERINFO.search(prefix):
+                return True
+    return False
+
+
 def _check_p7_sentinels(record: Mapping[str, Any]) -> None:
     exempt = _digest_fields()
     for path, text, is_key in _strings(record, ()):
-        lowered = text.lower()
-        if any(sentinel in lowered for sentinel in _SENTINELS) or _USERINFO.search(text):
-            raise _fail("pin_credential_sentinel", "P7", _field(path))
         kind = None if is_key else exempt.get(_schema_path(path))
+        probe = _SUFFIX.sub("", text) if kind == "suffix" else text
+        lowered = text.lower()
+        if any(sentinel in lowered for sentinel in _SENTINELS) or _has_userinfo(probe):
+            raise _fail("pin_credential_sentinel", "P7", _field(path))
         if kind == "full":
             continue
-        probe = _SUFFIX.sub("", text) if kind == "suffix" else text
         if _BASE64_RUN.search(probe):
             raise _fail("pin_credential_sentinel", "P7", _field(path))
 
@@ -757,7 +793,8 @@ def apply_receipt(record: Mapping[str, Any], receipt: Mapping[str, Any], *,
         raise _fail("pin_schema_invalid", "P1", "image") from None
     pinned["status"] = "pinned"
     pinned["image"] = {"registry": registry, "repository": repository, "reference": reference}
-    pinned["receipt"] = copy.deepcopy(dict(receipt))
+    pinned["receipt"] = dict(receipt)
     pinned["recorded_at"] = recorded_at or datetime.now(timezone.utc).strftime(_TIMESTAMP_FORMAT)
     _check_record_only(pinned)
+    pinned["receipt"] = copy.deepcopy(pinned["receipt"])
     return pinned

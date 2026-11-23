@@ -800,3 +800,47 @@ def test_p10_accepts_what_the_contract_permits(checkout, change):
     record = checkout.built()
     record["build"]["reproduced"].update(change)
     assert checkout.validate(record).status == "built"
+
+
+# -- review round 2: depth before copy, depth boundary, field-only diagnostics -----------------
+
+def test_apply_receipt_checks_depth_before_copying(checkout):
+    built = checkout.built()
+    deep: list = []
+    for _ in range(2000):
+        deep = [deep]
+    receipt = dict(checkout.receipt(built), extra=deep)
+    with pytest.raises(PinRecordError) as caught:
+        apply_receipt(built, receipt, image=fixture("image.json"),
+                      recorded_at="2026-11-23T12:00:00Z")
+    assert (caught.value.code, caught.value.rule) == ("pin_schema_invalid", "P1")
+
+
+def nested_arrays(count: int) -> list:
+    value: list = []
+    for _ in range(count - 1):
+        value = [value]
+    return value
+
+
+def test_domain_depth_boundary():
+    with pytest.raises(PinRecordError) as caught:
+        record_sha256({"a": nested_arrays(64)})
+    assert (caught.value.code, caught.value.rule) == ("pin_schema_invalid", "P1")
+    assert re.fullmatch(r"[0-9a-f]{64}", record_sha256({"a": nested_arrays(63)}))
+
+
+def test_domain_refusal_does_not_echo_an_unknown_key():
+    key = "synthetic-unknown-member"
+    with pytest.raises(PinRecordError) as caught:
+        record_sha256({"artifact": {key: float("inf")}})
+    assert (caught.value.code, caught.value.rule) == ("pin_schema_invalid", "P1")
+    assert key not in str(caught.value)
+    assert caught.value.field == "artifact"
+
+
+def test_p7_userinfo_before_a_digest_like_suffix_refused():
+    # Neutral vector; receipt.ref's schema prefix would refuse it at P1, so P7 is entered directly.
+    with pytest.raises(PinRecordError) as caught:
+        rp._check_p7_sentinels({"receipt": {"ref": "https://example.com/issues/a:b@sha256:short"}})
+    assert (caught.value.code, caught.value.field) == ("pin_credential_sentinel", "receipt.ref")
