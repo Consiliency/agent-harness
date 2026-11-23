@@ -1139,6 +1139,19 @@ RESULT_SCHEMA = "grok_tool_surface_result.v1"
 EVIDENCE_SCHEMA = "grok_tool_surface_evidence.v1"
 ATTEMPTS_SCHEMA = "grok_tool_surface_attempts.v1"
 REHEARSAL_SCHEMA = "grok_tool_surface_rehearsal.v1"
+#: GROK SL-4 (grok jail contract §5.2-§5.4): a jailed grant's context, labels and limits.
+#: A grant is jailed exactly when its ``--planned`` list is :data:`JAIL_LABELS`.
+JAIL_CONTEXT = "grok_jail_context.v1"
+JAIL_LABELS = ("pilot", "planted", "confirm")
+JAIL_ROUTE = "staged"
+JAIL_GRANT_CAP = 5
+JAIL_RETRIES = 2
+JAIL_RESULT_SCHEMA = "grok_jail_tool_surface_result.v1"
+JAIL_REHEARSAL_SCHEMA = "grok_jail_tool_surface_rehearsal.v1"
+JAIL_EVIDENCE_SCHEMA = "grok_jail_tool_surface_evidence.v1"
+UNSPAWNED_SCHEMA = "grok_jail_tool_surface_unspawned.v1"
+#: The keys a jailed result and rehearsal carry beyond the unjailed ones.
+_JAIL_EXTRA_KEYS = frozenset({"launch_digest"})
 #: Erratum 4: why a rehearsal did not pass, in a closed vocabulary.
 REHEARSAL_REASONS = ("passed", "context_refused", "launch_failed", "egress_refused",
                      "identity_changed", "observation_incomplete", "unlisted_request",
@@ -1389,12 +1402,22 @@ class Grant:
     #: Erratum 4: the hosted CI run of the BA-3 egress check on the merged head
     #: (``GROK_HOSTED_CHECK_RUN``), recorded when the grant opens.
     hosted_check: str = ""
+    #: Grok jail contract §5.2: the grant's context. ``grant.json`` carries it only for a
+    #: jailed grant; absent means ``grok_seat_context.v1``.
+    context: str = GROK_SEAT_CONTEXT
+
+    @property
+    def jailed(self) -> bool:
+        return self.context == JAIL_CONTEXT
 
     def document(self) -> dict[str, Any]:
-        return {"schema": GRANT_SCHEMA, "grant": self.id, "host_digest": self.host_digest,
-                "binary_sha256": self.binary_sha256, "planned": list(self.planned),
-                "retries": self.retries, "cap": self.cap, "budget": self.budget,
-                "created_at": self.created_at, "hosted_check": self.hosted_check}
+        document = {"schema": GRANT_SCHEMA, "grant": self.id, "host_digest": self.host_digest,
+                    "binary_sha256": self.binary_sha256, "planned": list(self.planned),
+                    "retries": self.retries, "cap": self.cap, "budget": self.budget,
+                    "created_at": self.created_at, "hosted_check": self.hosted_check}
+        if self.jailed:
+            document["context"] = self.context
+        return document
 
 
 _GRANT_KEYS = frozenset({"schema", "grant", "host_digest", "binary_sha256", "planned", "retries",
@@ -1410,11 +1433,13 @@ def _check_grant_id(grant_id: object) -> str:
 
 
 def _parse_grant(document: Mapping[str, Any], grant_id: str) -> Grant:
-    _require(set(document) == _GRANT_KEYS and document["schema"] == GRANT_SCHEMA
+    jailed = set(document) == _GRANT_KEYS | {"context"} and document["context"] == JAIL_CONTEXT
+    _require((set(document) == _GRANT_KEYS or jailed) and document["schema"] == GRANT_SCHEMA
              and document["grant"] == grant_id)
     planned = document["planned"]
     _require(type(planned) is list and bool(planned) and len(set(planned)) == len(planned)
-             and all(route in MEASURED_ROUTES for route in planned))
+             and (tuple(planned) == JAIL_LABELS if jailed
+                  else all(route in MEASURED_ROUTES for route in planned)))
     for key in ("retries", "cap", "budget"):
         _require(type(document[key]) is int and document[key] >= 0)
     _require(_hex64(document["host_digest"]) and _hex64(document["binary_sha256"])
@@ -1425,7 +1450,8 @@ def _parse_grant(document: Mapping[str, Any], grant_id: str) -> Grant:
     return Grant(id=grant_id, host_digest=document["host_digest"],
                  binary_sha256=document["binary_sha256"], planned=tuple(planned),
                  retries=document["retries"], cap=document["cap"], budget=document["budget"],
-                 created_at=document["created_at"], hosted_check=document["hosted_check"])
+                 created_at=document["created_at"], hosted_check=document["hosted_check"],
+                 context=JAIL_CONTEXT if jailed else GROK_SEAT_CONTEXT)
 
 
 def _grants_dir(*, create: bool) -> int:
@@ -1445,6 +1471,9 @@ def new_grant(grant_id: str, *, binary_sha256: str, planned, retries: int,
 
     _check_grant_id(grant_id)
     planned = tuple(planned)
+    if planned == JAIL_LABELS:
+        return _new_jail_grant(grant_id, binary_sha256=binary_sha256, retries=retries,
+                               hosted_check=hosted_check)
     if (not planned or len(set(planned)) != len(planned)
             or not all(route in MEASURED_ROUTES for route in planned)):
         raise _refuse("planned_routes_invalid")
@@ -1455,6 +1484,34 @@ def new_grant(grant_id: str, *, binary_sha256: str, planned, retries: int,
     grant = Grant(id=grant_id, host_digest=_host_digest(), binary_sha256=binary_sha256,
                   planned=planned, retries=retries, cap=GRANT_CAP, budget=PER_LAUNCH_BUDGET,
                   created_at=_utc_now(), hosted_check=hosted_check)
+    _create_grant(grant)
+    return grant
+
+
+def _new_jail_grant(grant_id: str, *, binary_sha256: str, retries: int,
+                    hosted_check: str | None) -> Grant:
+    """A jailed grant (grok jail contract §5.2, §7): the three labels, at most two retries,
+    a hard cap of 5 counted requests, opened only while eligibility conditions 1 to 4 hold
+    for the image (§2.4)."""
+    from . import grok_jail_surface as jail
+    from .seat_window import _host_digest
+
+    if type(retries) is not int or not 0 <= retries <= JAIL_RETRIES:
+        raise _refuse("retries_invalid")
+    if type(hosted_check) is not str or _HOSTED_CHECK.fullmatch(hosted_check) is None:
+        raise _refuse("hosted_check_required")
+    if jail.eligibility(binary_sha256, through=4) is not None:
+        raise _refuse("jail_ineligible")
+    grant = Grant(id=grant_id, host_digest=_host_digest(), binary_sha256=binary_sha256,
+                  planned=JAIL_LABELS, retries=retries, cap=JAIL_GRANT_CAP,
+                  budget=PER_LAUNCH_BUDGET, created_at=_utc_now(), hosted_check=hosted_check,
+                  context=JAIL_CONTEXT)
+    _create_grant(grant)
+    return grant
+
+
+def _create_grant(grant: Grant) -> None:
+    grant_id = grant.id
     grants = _grants_dir(create=True)
     try:
         try:
@@ -1463,14 +1520,14 @@ def new_grant(grant_id: str, *, binary_sha256: str, planned, retries: int,
             raise _refuse("grant_exists") from None
         directory = _subdir(grants, grant_id, create=False)
         try:
-            for name in ("reservations", "settlements", "results", "rehearsals"):
+            for name in ("reservations", "settlements", "results", "rehearsals",
+                         *(("unspawned",) if grant.jailed else ())):
                 os.close(_subdir(directory, name, create=True))
             _write_new(directory, "grant.json", grant.document())
         finally:
             os.close(directory)
     finally:
         os.close(grants)
-    return grant
 
 
 def _open_grant(grant_id: str, *, binary_sha256: str) -> tuple[int, Grant]:
@@ -1496,7 +1553,8 @@ def _open_grant(grant_id: str, *, binary_sha256: str) -> tuple[int, Grant]:
         except (OSError, ValueError, TypeError, RecursionError):
             raise _refuse("grant_unavailable") from None
         if (grant.host_digest != _host_digest() or grant.binary_sha256 != binary_sha256
-                or grant.cap != GRANT_CAP or grant.budget != PER_LAUNCH_BUDGET):
+                or grant.cap != (JAIL_GRANT_CAP if grant.jailed else GRANT_CAP)
+                or grant.budget != PER_LAUNCH_BUDGET):
             raise _refuse("grant_mismatch")
     except BaseException:
         os.close(directory)
@@ -1562,6 +1620,17 @@ class Ledger:
     rehearsals: tuple[Mapping[str, Any], ...] = ()
     #: Rehearsal ids whose launch began: an attempt marker exists for each.
     rehearsal_attempts: tuple[str, ...] = ()
+    #: Grok jail contract §4.5 (jailed grants): reservations settled ``unspawned`` -- no
+    #: admission file, so no provider process -- by refusal code. They charge nothing.
+    unspawned: Mapping[str, str] = field(default_factory=dict)
+
+    def unresolved(self) -> tuple[str, ...]:
+        """Jailed grants (§5.1 item 5): reservations with neither a settlement nor an
+        ``unspawned`` settlement, each charged in full and never resumed; an unreadable
+        reservation is one too."""
+        return tuple(item.id for item in self.reservations
+                     if item.id not in self.settlements and item.id not in self.unspawned
+                     ) + ("unreadable",) * self.unreadable
 
     def rehearsal_unresolved(self) -> tuple[str, ...]:
         """Rehearsals that launched and never committed a record: each is spent, and none
@@ -1581,7 +1650,8 @@ class Ledger:
                    and item["route"] == route for item in self.rehearsals)
 
     def charged(self) -> int:
-        return (sum(self.settlements.get(item.id, item.budget) for item in self.reservations)
+        return (sum(self.settlements.get(item.id, 0 if item.id in self.unspawned else item.budget)
+                    for item in self.reservations)
                 + self.unreadable * self.grant.budget)
 
     def launches(self) -> int:
@@ -1604,12 +1674,14 @@ class Ledger:
         """A reservation with no committed result is a failed attempt of its route
         (§5.7)."""
         result = self.latest_result(reservation)
+        if result is None and reservation.id in self.unspawned:
+            return "unspawned"
         return "interrupted" if result is None else result["status"]
 
     def format_stop(self) -> bool:
         """§5.6: an unresolved ``format_unrecognised`` that is the latest for any route."""
         return any(self.status(latest) == "format_unrecognised"
-                   for latest in (self.latest(route) for route in MEASURED_ROUTES)
+                   for latest in (self.latest(route) for route in self.grant.planned)
                    if latest is not None)
 
 
@@ -1693,7 +1765,9 @@ def _read_ledger(directory: int, grant: Grant) -> Ledger:
                 _require(type(document) is dict and reservation is not None)
                 assert isinstance(document, dict) and reservation is not None
                 check_result_keys(document)
-                _require(document["schema"] == RESULT_SCHEMA and document["grant"] == grant.id
+                _require(document["schema"] == (JAIL_RESULT_SCHEMA if grant.jailed
+                                                else RESULT_SCHEMA)
+                         and document["grant"] == grant.id
                          and document["reservation"] == reservation.id
                          and document["route"] == reservation.route
                          and document["argv_digest"] == reservation.argv_digest
@@ -1711,7 +1785,33 @@ def _read_ledger(directory: int, grant: Grant) -> Ledger:
                            for key, value in results.items()},
                   payloads=payloads, unreadable_results=unreadable_results,
                   rehearsals=_read_rehearsals(directory, grant),
-                  rehearsal_attempts=_read_rehearsal_attempts(directory))
+                  rehearsal_attempts=_read_rehearsal_attempts(directory),
+                  unspawned=_read_unspawned(directory, grant, by_id) if grant.jailed else {})
+
+
+def _read_unspawned(directory: int, grant: Grant, by_id: Mapping[str, Any]) -> dict[str, str]:
+    """A jailed grant's ``unspawned`` settlements (§4.5); an unreadable one is none, so its
+    reservation stays charged in full."""
+    found: dict[str, str] = {}
+    folder = _subdir(directory, "unspawned", create=False)
+    try:
+        for name in sorted(os.listdir(folder)):
+            reservation = by_id.get(name[:-len(".json")]) if name.endswith(".json") else None
+            try:
+                _require(reservation is not None)
+                document = _read_doc(folder, name)
+                _require(set(document) == {"schema", "grant", "reservation", "code", "at"}
+                         and document["schema"] == UNSPAWNED_SCHEMA
+                         and document["grant"] == grant.id
+                         and document["reservation"] == name[:-len(".json")]
+                         and type(document["code"]) is str
+                         and _KEY_NAME.fullmatch(document["code"]) is not None)
+            except (OSError, ValueError, TypeError, RecursionError, KeyError):
+                continue
+            found[document["reservation"]] = document["code"]
+    finally:
+        os.close(folder)
+    return found
 
 
 _REHEARSAL_NAME = re.compile(r"(\d{4})-([0-9a-f]{16})\.json")
@@ -1734,7 +1834,9 @@ _INCOMPLETE_FLAGS = ("marker", "killed", "stdout_eof", "exited", "protocol_error
 
 
 def check_rehearsal_keys(document: Mapping[str, Any]) -> None:
-    _require(set(document) == REHEARSAL_KEYS and set(document["egress"]) == _EGRESS_KEYS
+    jailed = document.get("schema") == JAIL_REHEARSAL_SCHEMA
+    _require(set(document) == (REHEARSAL_KEYS | _JAIL_EXTRA_KEYS if jailed else REHEARSAL_KEYS)
+             and set(document["egress"]) == _EGRESS_KEYS
              and set(document["observation"]) == _OBSERVATION_KEYS
              and document["status"] in ("passed", "failed")
              and document["reason"] in REHEARSAL_REASONS
@@ -1790,7 +1892,9 @@ def _read_rehearsals(directory: int, grant: Grant) -> tuple[Mapping[str, Any], .
             try:
                 document = _read_doc(folder, name)
                 check_rehearsal_keys(document)
-                _require(document["schema"] == REHEARSAL_SCHEMA and document["grant"] == grant.id
+                _require(document["schema"] == (JAIL_REHEARSAL_SCHEMA if grant.jailed
+                                                 else REHEARSAL_SCHEMA)
+                         and document["grant"] == grant.id
                          and document["rehearsal"] == name[:-len(".json")])
             except (OSError, ValueError, TypeError, RecursionError, KeyError):
                 continue
@@ -2108,13 +2212,14 @@ class ArtifactRefused(ValueError):
         self.status = status
 
 
-def read_definitions(sessions: int) -> bytes:
+def read_definitions(sessions: int, *, owner_uid: int | None = None) -> bytes:
     """The one ``<group>/<session>/tool_definitions.json`` under the scratch sessions
     directory ``sessions`` (an open descriptor). Every component is opened relative to its
     parent without following a link; the file must be a regular file of the launch's mapped
-    uid, at most 4 MiB, read through its descriptor with a bound. Zero candidates is
-    ``artifact_missing``; several, a link, another file type, an over-size or foreign file
-    is ``artifact_ambiguous``."""
+    uid (``owner_uid``, by default this process's), at most 4 MiB, read through its
+    descriptor with a bound. Zero candidates is ``artifact_missing``; several, a link,
+    another file type, an over-size or foreign file is ``artifact_ambiguous``."""
+    owner = os.getuid() if owner_uid is None else owner_uid
 
     def entries(directory: int) -> list[str]:
         names = []
@@ -2164,7 +2269,7 @@ def read_definitions(sessions: int) -> bytes:
             os.close(group_fd)
         try:
             info = os.fstat(descriptor)
-            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != owner
                     or info.st_size > DEFINITIONS_MAX_BYTES):
                 raise ArtifactRefused("artifact_ambiguous")
             raw = _read_bounded(descriptor, DEFINITIONS_MAX_BYTES)
@@ -2448,8 +2553,12 @@ def _check_structure(node: object) -> None:
 
 
 def check_result_keys(document: Mapping[str, Any]) -> None:
-    """The result writer's allow-list (§5.9); :class:`_Refused` on any other key."""
-    _require(set(document) == RESULT_KEYS)
+    """The result writer's allow-list (§5.9); :class:`_Refused` on any other key. A jailed
+    result (grok jail contract §5.4) also carries its production ``launch_digest``."""
+    jailed = document.get("schema") == JAIL_RESULT_SCHEMA
+    _require(set(document) == (RESULT_KEYS | _JAIL_EXTRA_KEYS if jailed else RESULT_KEYS))
+    if jailed:
+        _require(_hex64(document["launch_digest"]) and document["context"] == JAIL_CONTEXT)
     _require(set(document["egress"]) == _EGRESS_KEYS)
     _require(set(document["observation"]) == _OBSERVATION_KEYS)
     _require(document["status"] in STATUSES)
@@ -3516,7 +3625,8 @@ def reprocess(stage: _Stage, reservation_id: str) -> dict[str, Any]:
         os.close(folder)
     if deadline <= time.time() or sha256(raw).hexdigest() != previous["definitions_sha256"]:
         raise _refuse("capture_unavailable")
-    form = panel.grok_runtime_forms(effort=MEASUREMENT_EFFORT)[reservation.route]
+    form = panel.grok_runtime_forms(effort=MEASUREMENT_EFFORT)[
+        JAIL_ROUTE if stage.grant.jailed else reservation.route]
     result = dict(previous)
     result.update(revision=previous["revision"] + 1, reprocessed_from=reservation.id,
                   extractor=EXTRACTOR_REVISION, at=_utc_now())
@@ -3639,6 +3749,701 @@ def isolation_check(*, work_root: Path, timeout_s: float = 120.0) -> dict[str, A
     passed = (process.returncode == 0 and str(report.get("proxy", "")).startswith("HTTP/1.1 403")
               and observed and str(report.get("direct", "")).startswith("refused:") and not reached)
     return {"passed": passed, "code": "isolation_proven" if passed else "isolation_unproven"}
+
+
+# ---------------------------- the jailed measurement (GROK SL-4, grok jail contract §4.5-§5.4)
+#
+# A jailed grant measures the production ``staged`` form inside the real Grok jail, through
+# the SL-3 leg (``panel_invoker._exec_jailed_grok_leg``); no second launch path exists. Its
+# writers: this section commits the grant's records and, at ``--aggregate``, the jailed
+# host-local record (jail contract §3 "Production writers", r7); nothing else writes that
+# record.
+
+#: §5.3: the fixture tree each label launches on.
+JAIL_TREES = MappingProxyType({"pilot": "clean", "planted": "planted", "confirm": "clean"})
+_JAIL_FIXTURE = (("main.py", b"print('fixture')\n"),
+                 ("AGENTS.md", b"# Fixture\n\nA measurement fixture tree.\n"))
+_JAIL_MARKER = b"phase-loop jailed measurement marker\n"
+#: The leg's failure details that disqualify a launch whatever the proxy saw.
+_JAIL_SECURITY_CODES = frozenset({"grok_seat_token_in_output",
+                                  "grok_seat_token_refreshed_in_jail",
+                                  "grok_seat_token_expired"})
+
+
+def jail_running_binding(binary_sha256: str) -> tuple[str, str]:
+    """``(runtime_digest, jail_context_digest)`` of the code running now: what a jailed
+    rehearsal must carry to authorize a reservation and what every jailed result and the
+    passed rehearsal must carry to be published (§5.4, erratum 8 r3 item 7)."""
+    from . import grok_jail_surface as jail
+    from .seat_window import runtime_digest
+
+    return runtime_digest(), jail.jail_context_digest(binary_sha256)
+
+
+def _grant_path(grant: Grant) -> str:
+    from .president_adapter import private_record_root
+
+    return str(Path(private_record_root()) / GRANTS_DIRNAME / grant.id)
+
+
+def unspawned_resumes(ledger: Ledger, label: str) -> bool:
+    """OWNER-DECISION r7-1 (grok jail contract §20): how a label resumes after one of the
+    grant's reservations was settled ``unspawned``. The owner has not ruled. The interim
+    rule (§4.5) is that an ``unspawned`` settlement stops the procedure and nothing more is
+    launched under the grant, so this one decision point refuses every resumption. The
+    owner's answer (A, A', B or C) replaces this body and nothing else."""
+    return False
+
+
+def _jail_fixture_repo(base: Path, tree: str) -> tuple[Path, str]:
+    """§5.3's fixture tree as a one-commit repository: ``clean`` is one source file and
+    ``AGENTS.md`` with no discovery path; ``planted`` adds a marker at every path of the
+    per-image discovery inventory. ``(repo, commit)``."""
+    from . import review_stage
+    from .seat_profile_grok import TREE_MASKS
+
+    repo = base / "fixture"
+    repo.mkdir(mode=0o700)
+    for name, data in _JAIL_FIXTURE:
+        (repo / name).write_bytes(data)
+    if tree == "planted":
+        for path, treatment in TREE_MASKS:
+            if treatment == "masked_directory":
+                (repo / path).mkdir(mode=0o700)
+                (repo / path / "MARKER").write_bytes(_JAIL_MARKER)
+            else:
+                (repo / path).write_bytes(_JAIL_MARKER)
+    identity = ("-c", "user.name=phase-loop", "-c", "user.email=measurement@phase-loop.invalid",
+                "-c", "commit.gpgsign=false")
+    for args in (("init", "-q"), ("add", "-A"), (*identity, "commit", "-qm", "fixture")):
+        review_stage.host_git(repo, *args, capture_output=True, check=True, offline=True)
+    commit = review_stage.host_git(repo, "rev-parse", "--verify", "HEAD", capture_output=True,
+                                   text=True, check=True, offline=True).stdout.strip()
+    return repo, commit
+
+
+@dataclass
+class _JailSeat:
+    """One composed jailed measurement seat (§4.5 M1, before ``prepare_measurement``)."""
+
+    grok_seat: Any
+    proxy: Any
+    holder: int
+    seat_id: int
+    #: Set once the leg owns the seat's teardown (it tears it down in its ``finally``).
+    leg_owns_teardown: bool = False
+
+
+@contextlib.contextmanager
+def _jail_compose(stage: "_Stage", label: str, *, budget: int) -> Iterator[_JailSeat]:
+    """§4.5 M1's composition, as the window launcher stages a fresh seat: the label's
+    fixture tree staged and authorized, a leased seat id, the budgeted ``grok-review`` proxy
+    and its seat-uid holder, and ``_prepare_jailed_grok(..., measurement=True)``."""
+    from . import panel_invoker as panel
+    from . import review_stage, sandbox_policy, seat_jail, seat_uid
+    from .advisor_board.fixtures import DEFAULT_BOARD
+
+    with contextlib.ExitStack() as stack:
+        scratch = Path(tempfile.mkdtemp(prefix="pl-jail-measure-",
+                                        dir=sandbox_policy.staging_root()))
+        stack.callback(shutil.rmtree, scratch, True)
+        source, commit = _jail_fixture_repo(scratch, JAIL_TREES[label])
+        authorization = panel.prepare_review_isolation_authorization(
+            DEFAULT_BOARD, "", mode="review", canonical_repo_authority=source,
+            stage_review_tree=True)
+        stack.callback(panel.close_review_isolation_authorization, authorization)
+        panel.activate_review_isolation_authorization(
+            authorization, DEFAULT_BOARD, "", mode="review", canonical_repo_authority=source)
+        base = scratch / "stage"
+        base.mkdir(mode=0o700)
+        stack.callback(review_stage.remove_review_stage, base)
+        review_dir = base / "review"
+        review_dir.mkdir(mode=0o700)
+        staged = review_stage.stage_review_tree(source, parent=review_dir)
+        tree = review_dir / seat_jail.HOST_TREE_DIRNAME
+        os.replace(staged, tree)
+        if review_stage.staged_source_commit(tree) != commit:
+            raise _refuse("context_refused")
+        uids = seat_uid.subordinate_range(seat_uid.SUBUID_FILE)
+        gids = seat_uid.subordinate_range(seat_uid.SUBGID_FILE)
+        if uids is None or gids is None:
+            raise _refuse("context_refused")
+        seat_id = stack.enter_context(seat_uid.lease_seat_id(seat_uid.seat_id_count(uids, gids)))
+        proxy, prefix = stack.enter_context(panel._grok_review_egress(
+            timeout_s=LAUNCH_TIMEOUT_S + 120.0, request_budget=budget,
+            named=tolerated_refusals(stage.grant.binary_sha256)))
+        token = panel._EGRESS_LAUNCH_PREFIX.set(tuple(prefix))
+        stack.callback(panel._EGRESS_LAUNCH_PREFIX.reset, token)
+        holder = seat_uid.holder_pid_from_prefix(prefix)
+        grok_seat = panel._prepare_jailed_grok(
+            review_dir, base / "seat", authorization, seat_id, holder, ("", ""), proxy,
+            env=stage.env, deadline_s=LAUNCH_TIMEOUT_S, measurement=True)
+        composed = _JailSeat(grok_seat=grok_seat, proxy=proxy, holder=holder, seat_id=seat_id)
+        try:
+            yield composed
+        finally:
+            if not composed.leg_owns_teardown:
+                try:
+                    panel._cleanup_jailed_seat(grok_seat.seat)
+                finally:
+                    panel._remove_grok_staged(grok_seat.seat.seat_dir)
+
+
+@dataclass
+class _JailOutcome:
+    """What one jailed launch left, for its settlement and its record."""
+
+    spawned: bool = False
+    #: The leg returned: a process ran (whatever its admission file says).
+    returned: bool = False
+    early: str | None = None
+    leg_status: str | None = None
+    failure: str | None = None
+    proxy: Any = None
+    launch_digest: str | None = None
+    #: ``(status, raw)`` from the sink reader: ``(None, bytes)`` when the scan passed.
+    read: tuple[str | None, bytes] | None = None
+
+
+def _jail_secrets(grok_seat, measurement) -> tuple[bytes, ...]:
+    """§5.1 r7 (E7): the leg's full secret set, the staged credential's scan values and the
+    egress proxy credential, each with its 12-character suffix."""
+    import urllib.parse
+
+    values = list(measurement.scan_values)
+    password = urllib.parse.urlsplit(grok_seat.jail.env.get("HTTPS_PROXY", "")).password
+    if password:
+        values.append(password.encode())
+    out = []
+    for value in values:
+        value = bytes(value)
+        out.append(value)
+        if len(value) > 12:
+            out.append(value[-12:])
+    return tuple(dict.fromkeys(out))
+
+
+def _jail_launch(stage: "_Stage", reservation, *, label: str, budget: int) -> _JailOutcome:
+    """One counted or rehearsal launch of a jailed grant in the order of §4.5: M1 compose and
+    ``prepare_measurement`` (admission recorded), M2 ``probe_sink``, M3 the SL-3 leg in
+    measurement mode, whose spawn check (M4) verifies without consuming and whose spawn
+    hook (M5) consumes the admission last before ``Popen``."""
+    from . import grok_jail_surface as jail
+    from . import panel_invoker as panel
+    from . import seat_route_contract
+    from .seat_profile_grok import jailed_grok_command
+
+    outcome = _JailOutcome()
+    try:
+        with _jail_compose(stage, label, budget=budget) as composed:
+            outcome.proxy = composed.proxy
+            grok_seat = composed.grok_seat
+            command = list(jailed_grok_command(seat_route_contract.ArgvInputs(
+                grok_seat.jail.provider_argv0, model=MEASUREMENT_MODEL,
+                effort=MEASUREMENT_EFFORT)))
+            outcome.launch_digest = jail.launch_digest(grok_seat.jail, command, measurement=True)
+            measurement = jail.prepare_measurement(reservation, grok_seat, proxy=composed.proxy,
+                                                   holder=composed.holder, command=command)
+            sink = jail.sink_source(str(Path(grok_seat.jail.review_dir) / "seat-home"))
+            probed = jail.probe_sink(composed.holder, composed.seat_id, sink)
+            if list(probed) != list(measurement.admission["sink"]):
+                raise _refuse("context_refused")
+            secrets_ = _jail_secrets(grok_seat, measurement)
+
+            def read_sink(path: str) -> None:
+                try:
+                    raw = jail.read_sink_in_h(composed.holder, composed.seat_id, path)
+                except ArtifactRefused as refusal:
+                    outcome.read = (refusal.status, b"")
+                    return
+                # Scanned before anything is retained; a match retains nothing.
+                if not secrets_ or any(not value or value in raw for value in secrets_):
+                    outcome.read = ("artifact_refused", b"")
+                    return
+                outcome.read = (None, raw)
+
+            failures: list = []
+            composed.leg_owns_teardown = True
+            outcome.leg_status, _text = panel._exec_jailed_grok_leg(
+                grok_seat, deadline_s=int(LAUNCH_TIMEOUT_S), model=MEASUREMENT_MODEL,
+                effort=MEASUREMENT_EFFORT, prompt=MEASUREMENT_PROMPT, broker_evidence=None,
+                failure_detail_sink=failures, measurement=measurement, read_sink=read_sink)
+            outcome.returned = True
+            outcome.failure = failures[-1].template if failures else None
+    except Exception as exc:  # noqa: BLE001 - a refusal anywhere from M1 to M5
+        outcome.early = exc.code if isinstance(exc, MeasurementRefused) else "context_refused"
+    outcome.spawned = jail.admission_consumed(reservation)
+    if outcome.returned and outcome.leg_status != "OK":
+        outcome.early = "launch_failed"
+        outcome.read = None  # §5.1 r7 (E6): kept only on the measurement success status
+    if outcome.returned and not outcome.spawned:
+        outcome.early = "launch_failed"  # ran without its admission: unresolved
+    if not outcome.returned and outcome.spawned:
+        outcome.early = "launch_failed"  # the hook ran and the spawn failed: charged in full
+    return outcome
+
+
+def _jail_identity_ok(stage: "_Stage") -> bool:
+    from . import grok_jail_surface as jail
+
+    try:
+        subject = jail.resolve_subject(stage.env)
+        return subject.sha256 == stage.grant.binary_sha256 and subject.path == stage.binary
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _jail_reservation(stage: "_Stage", reservation_id: str, label: str, budget: int):
+    from . import grok_jail_surface as jail
+
+    return jail.MeasurementReservation(stage.grant.id, reservation_id, label,
+                                       stage.grant.binary_sha256, budget, _grant_path(stage.grant))
+
+
+def _jail_stage_checks(stage: "_Stage") -> None:
+    """Every jailed launch stage: the image the jailed subject resolves is the grant's, and
+    eligibility conditions 1 to 4 hold (§5.2, §7)."""
+    from . import grok_jail_surface as jail
+
+    if not _jail_identity_ok(stage):
+        raise _refuse("binary_mismatch")
+    if jail.eligibility(stage.grant.binary_sha256, through=4) is not None:
+        raise _refuse("jail_ineligible")
+
+
+def _jail_label(ledger: Ledger) -> str:
+    """§5.2: the first label, in order, whose latest result is not ``measured``; ``planted``
+    and ``confirm`` wait for a measured ``pilot``."""
+    for label in JAIL_LABELS:
+        latest = ledger.latest(label)
+        if latest is None or ledger.status(latest) != "measured":
+            if label != "pilot":
+                pilot = ledger.latest("pilot")
+                if pilot is None or ledger.status(pilot) != "measured":
+                    raise _refuse("pilot_not_measured")
+            return label
+    raise _refuse("labels_measured")
+
+
+def _plan_jail_reservation(ledger: Ledger, label: str, argv_digest: str, *, context: str,
+                           runtime: str) -> Reservation:
+    """The next reservation of a jailed grant (§5.1 item 5, §5.2), checked but not written."""
+    grant = ledger.grant
+    if ledger.unspawned and not unspawned_resumes(ledger, label):
+        raise _refuse("grant_stopped_unspawned")
+    if ledger.unresolved():
+        raise _refuse("reservation_unresolved")
+    if not ledger.rehearsed(context, runtime=runtime):
+        raise _refuse("rehearsal_required")
+    if ledger.format_stop():
+        raise _refuse("format_unrecognised_unresolved")
+    retries = ledger.retries_used() + (label in {item.route for item in ledger.reservations})
+    if retries > grant.retries or ledger.launches() + 1 > len(grant.planned) + grant.retries:
+        raise _refuse("grant_retries_exhausted")
+    if ledger.charged() + grant.budget > grant.cap:
+        raise _refuse("grant_cap_reached")
+    sequence = ledger.last_sequence + 1
+    return Reservation(id=f"{sequence:04d}-{secrets.token_hex(8)}", sequence=sequence,
+                       route=label, argv_digest=argv_digest, budget=grant.budget, at=_utc_now())
+
+
+def _write_unspawned(stage: "_Stage", reservation: Reservation, code: str) -> None:
+    """§4.5: no admission file, so no provider process: settled ``unspawned``, no charge."""
+    folder = _subdir(stage.grant_dir, "unspawned", create=False)
+    try:
+        _write_new(folder, reservation.id + ".json", {
+            "schema": UNSPAWNED_SCHEMA, "grant": stage.grant.id, "reservation": reservation.id,
+            "code": code if _KEY_NAME.fullmatch(code or "") else "refused", "at": _utc_now()})
+    finally:
+        os.close(folder)
+
+
+def _jail_register(binary_sha256: str) -> dict[str, Any]:
+    """The jailed latest-attempt register (jail contract §3), or a fresh one."""
+    from . import grok_jail_surface as jail
+    from .seat_window import _host_digest
+
+    document = jail.read_private(jail.attempts_name(binary_sha256))
+    if (document is None or set(document) != {"schema", "binary_sha256", "host_digest",
+                                              "attempts", "published"}
+            or document["schema"] != jail.ATTEMPTS_SCHEMA
+            or type(document["attempts"]) is not dict or type(document["published"]) is not dict):
+        document = {"schema": jail.ATTEMPTS_SCHEMA, "binary_sha256": binary_sha256,
+                    "host_digest": _host_digest(), "attempts": {}, "published": {}}
+    return document
+
+
+def _jail_withdraw(grant: Grant, reservation: Reservation) -> None:
+    """BA-2 for a jailed grant, before the reservation exists: this attempt becomes the
+    latest for the ``staged`` argv, its publication is cleared, and the jailed host-local
+    record leaves the host. A crash between steps leaves nothing consumable."""
+    from . import grok_jail_surface as jail
+    from .president_adapter import private_record_root
+
+    register = _jail_register(grant.binary_sha256)
+    register["attempts"][reservation.argv_digest] = {
+        "route": reservation.route, "grant": grant.id, "reservation": reservation.id,
+        "at": reservation.at}
+    register["published"].pop(reservation.argv_digest, None)
+    jail.write_private(jail.attempts_name(grant.binary_sha256), register)
+    with contextlib.suppress(FileNotFoundError):
+        os.unlink(Path(private_record_root()) / jail.host_record_name(grant.binary_sha256))
+
+
+def _remove_jail_record(binary_sha256: str) -> None:
+    from . import grok_jail_surface as jail
+    from .president_adapter import private_record_root
+
+    with contextlib.suppress(FileNotFoundError):
+        os.unlink(Path(private_record_root()) / jail.host_record_name(binary_sha256))
+
+
+def _jail_result(stage: "_Stage", reservation: Reservation, *, runtime: str,
+                 context: str) -> dict[str, Any]:
+    result = _base_result(stage, reservation, reservation.route, model=MEASUREMENT_MODEL,
+                          context=context, allowlist_digest=egress_allowlist_digest())
+    result.update(schema=JAIL_RESULT_SCHEMA, context=JAIL_CONTEXT, runtime_digest=runtime,
+                  eligible=True, launch_digest="0" * 64)
+    return result
+
+
+def jail_measure(stage: "_Stage") -> dict[str, Any]:
+    """One ``--route staged`` launch of a jailed grant (§5.2): the next label, reserved
+    (per label, immutable, BA-2 withdrawal first), launched in the §4.5 order, settled on
+    positive proof (BA-1) or ``unspawned``, and recorded."""
+    from . import panel_invoker as panel
+    from . import seat_egress_proxy
+
+    _jail_stage_checks(stage)
+    _prepare_route(JAIL_ROUTE)  # the model, the egress layer and the namespace, first
+    form = panel.grok_runtime_forms(effort=MEASUREMENT_EFFORT)[JAIL_ROUTE]
+    argv_digest = panel._grok_argv_digest(form)
+    runtime, context = jail_running_binding(stage.grant.binary_sha256)
+    with _publication(stage.grant.binary_sha256):
+        ledger = _read_ledger(stage.grant_dir, stage.grant)
+        label = _jail_label(ledger)
+        reservation = _plan_jail_reservation(ledger, label, argv_digest, context=context,
+                                             runtime=runtime)
+        _jail_withdraw(stage.grant, reservation)
+        _write_reservation(stage.grant_dir, stage.grant, reservation)
+        stage.reserved = reservation
+    result = _jail_result(stage, reservation, runtime=runtime, context=context)
+    outcome = _jail_launch(stage, _jail_reservation(stage, reservation.id, label, 1),
+                           label=label, budget=PER_LAUNCH_BUDGET)
+    if not outcome.spawned and not outcome.returned:
+        # §4.5: no admission file is positive proof that no provider process started.
+        _write_unspawned(stage, reservation, outcome.early or "refused")
+        return {**result, "status": "unspawned", "code": outcome.early}
+    if outcome.spawned and outcome.returned:
+        _settle(stage.grant_dir, stage.grant, reservation, outcome.proxy)
+    proof = events = None
+    proxy = outcome.proxy
+    if proxy is not None and proxy.request_budget == PER_LAUNCH_BUDGET:
+        proof = seat_egress_proxy.completion(proxy)
+        events = seat_egress_proxy.proxy_stream(proxy).outside_events
+        result["observation"] = {
+            "complete": proof.complete, "reason": proof.reason, "requests": proof.requests,
+            "counted": proof.counted,
+            "denied": sum(1 for event in events if event.decision == "deny")}
+        result["tolerated_refusals"] = tolerated_summary(events, stage.grant.binary_sha256)
+    early = outcome.early
+    if early is None and outcome.failure in _JAIL_SECURITY_CODES:
+        early = "launch_failed"
+    result["exit_code"] = 0 if outcome.leg_status == "OK" else None
+    result["launch_digest"] = outcome.launch_digest or "0" * 64
+    status = _classify(early=early, exit_code=result["exit_code"], proof=proof,
+                       events=events or (), identity_ok=_jail_identity_ok(stage),
+                       binary_sha256=stage.grant.binary_sha256)
+    if status is None:
+        read = outcome.read
+        if read is None:
+            status = "artifact_missing"
+        elif read[0] is not None:
+            status = read[0]
+        else:
+            status = _jail_accept(stage, reservation, result, form, read[1])
+    outcome.read = None  # the reader's bytes are dropped once the record is written
+    result["status"] = status
+    result["at"] = _utc_now()
+    _write_result(stage, result)
+    return result
+
+
+def _jail_accept(stage: "_Stage", reservation: Reservation, result: dict[str, Any], form,
+                 raw: bytes) -> str:
+    """Retain the scanned definitions privately (§5.9) and extract (§5.6)."""
+    folder_root = _subdir(stage.output, "raw", create=True)
+    try:
+        folder = _subdir(folder_root, reservation.id, create=True)
+    finally:
+        os.close(folder_root)
+    try:
+        _retain(folder, DEFINITIONS_NAME, raw, RAW_RETENTION_S)
+    finally:
+        os.close(folder)
+    result["definitions_sha256"] = sha256(raw).hexdigest()
+    result["definitions_bytes"] = len(raw)
+    return _apply_extraction(result, form, raw)
+
+
+def jail_rehearse(stage: "_Stage") -> dict[str, Any]:
+    """The one binding rehearsal of ``pilot`` under a budget-0 proxy (§5.3, TS contract
+    erratum 4), through ``prepare_measurement`` and the measurement mode of §4.4 like a
+    counted launch. It reserves, settles and charges nothing. Its attempt marker is written
+    before the launch and removed when the admission file is absent (nothing started)."""
+    from . import panel_invoker as panel
+    from . import seat_egress_proxy
+
+    _jail_stage_checks(stage)
+    _prepare_route(JAIL_ROUTE)
+    form = panel.grok_runtime_forms(effort=MEASUREMENT_EFFORT)[JAIL_ROUTE]
+    argv_digest = panel._grok_argv_digest(form)
+    runtime, context = jail_running_binding(stage.grant.binary_sha256)
+    folder = _subdir(stage.grant_dir, "rehearsals", create=True)
+    try:
+        _remove_commit_temps(folder)
+        if any(_REHEARSAL_NAME.fullmatch(name) or _ATTEMPT_NAME.fullmatch(name)
+               for name in os.listdir(folder)):
+            raise _refuse("rehearsal_exists")
+        rehearsal_id = f"0001-{secrets.token_hex(8)}"
+        marker = rehearsal_id + ".attempt.json"
+        _commit_new(folder, marker, _encode({
+            "schema": REHEARSAL_ATTEMPT_SCHEMA, "grant": stage.grant.id,
+            "rehearsal": rehearsal_id, "route": "pilot", "argv_digest": argv_digest,
+            "binary_sha256": stage.identity[1], "context_digest": context, "at": _utc_now()}))
+    finally:
+        os.close(folder)
+    reservation = _jail_reservation(stage, rehearsal_id, "pilot", 0)
+    outcome = _jail_launch(stage, reservation, label="pilot", budget=0)
+    if not outcome.spawned and not outcome.returned:
+        folder = _subdir(stage.grant_dir, "rehearsals", create=False)
+        try:
+            os.unlink(marker, dir_fd=folder)
+        finally:
+            os.close(folder)
+        raise _refuse("launch_refused" if outcome.early in (None, "launch_failed")
+                      else outcome.early)
+    proof = events = None
+    observation = {"complete": False, "reason": "not_started", "requests": 0, "counted": 0,
+                   "denied": 0}
+    proxy = outcome.proxy
+    if proxy is not None and proxy.request_budget == 0:
+        proof = seat_egress_proxy.completion(proxy)
+        events = seat_egress_proxy.proxy_stream(proxy).outside_events
+        observation = {"complete": proof.complete, "reason": proof.reason,
+                       "requests": proof.requests, "counted": proof.counted,
+                       "denied": sum(1 for event in events if event.decision == "deny")}
+    early = None
+    if not (outcome.spawned and outcome.returned) or outcome.failure in _JAIL_SECURITY_CODES:
+        early = "launch_failed"
+    reason = _rehearsal_reason(early=early, proof=proof, events=events or (),
+                               identity_ok=_jail_identity_ok(stage),
+                               binary_sha256=stage.grant.binary_sha256)
+    incomplete = None
+    if reason == "observation_incomplete":
+        incomplete = dict.fromkeys(_INCOMPLETE_KEYS)
+        incomplete["missing"] = observation["reason"]
+        if proxy is not None and proxy.request_budget == 0:
+            incomplete.update(seat_egress_proxy.completion_detail(proxy))
+    record = {
+        "schema": JAIL_REHEARSAL_SCHEMA, "grant": stage.grant.id, "rehearsal": rehearsal_id,
+        "route": "pilot", "argv_digest": argv_digest, "binary_sha256": stage.identity[1],
+        "context_digest": context, "runtime_digest": runtime,
+        "egress": {"allowlist_id": EGRESS_ALLOWLIST_ID,
+                   "allowlist_sha256": egress_allowlist_digest()},
+        "status": "passed" if reason == "passed" else "failed", "reason": reason,
+        "exit_code": None, "observation": observation, "incomplete": incomplete,
+        "budget_denials": sum(1 for event in events or () if _budget_denial(event)),
+        "tolerated_refusals": tolerated_summary(events or (), stage.grant.binary_sha256),
+        "observed": [retained_observation(event.method, event.host, event.path, event.decision,
+                                          getattr(event, "cause", None),
+                                          binary_sha256=stage.grant.binary_sha256)
+                     for event in (events or ())][:_OBSERVED_CAP],
+        "launch_digest": outcome.launch_digest or "0" * 64, "at": _utc_now()}
+    check_rehearsal_keys(record)
+    folder = _subdir(stage.grant_dir, "rehearsals", create=True)
+    try:
+        _commit_new(folder, rehearsal_id + ".json", _encode(record))
+    finally:
+        os.close(folder)
+    return record
+
+
+_JAIL_EVIDENCE_KEYS = EVIDENCE_KEYS | {"launch_digest", "unspawned"}
+
+
+def check_jail_evidence_keys(document: Mapping[str, Any]) -> None:
+    """The jailed aggregate's allow-list: the unjailed one plus the production
+    ``launch_digest`` and the ``unspawned`` settlements by reservation."""
+    _require(set(document) == _JAIL_EVIDENCE_KEYS and document["schema"] == JAIL_EVIDENCE_SCHEMA
+             and document["context"] == JAIL_CONTEXT and _hex64(document["launch_digest"])
+             and type(document["unspawned"]) is dict)
+    plain = {key: value for key, value in document.items()
+             if key not in ("launch_digest", "unspawned")}
+    check_evidence_keys(plain)
+
+
+def jail_aggregate(stage: "_Stage", *, host_class: str) -> dict[str, Any]:
+    """``--aggregate`` for a jailed grant (§5.4) and the sole production writer of the
+    jailed host-local record (§3, r7). The publication gate first: every label's result and
+    the passed rehearsal must carry the running ``runtime_digest`` and ``jail_context_digest``
+    (``context_mismatch``). Then the agreement rule: ``pilot``, ``planted`` and ``confirm``
+    each ``measured`` with identical ``tools`` and ``definitions_sha256``, and the rehearsal
+    and every label on the same production ``launch_digest`` (``surface_unstable``). Any
+    refusal removes the jailed record for the binary. Only an admitted surface whose latest
+    attempt is this grant's is written, after ``check_jail_surface``."""
+    from . import grok_jail_surface as jail
+    from .seat_jail import host_arch
+    from .seat_window import _host_digest
+
+    binary = stage.grant.binary_sha256
+    runtime, current = jail_running_binding(binary)
+    try:
+        ledger = _read_ledger(stage.grant_dir, stage.grant)
+        if ledger.unreadable or ledger.unreadable_results:
+            raise _refuse("ledger_unreadable")
+        _local_payloads(stage, ledger, strict=True)
+        latest = {label: ledger.latest(label) for label in JAIL_LABELS}
+        results = {label: (ledger.latest_result(item) if item is not None else None)
+                   for label, item in latest.items()}
+        documents = [result for result in results.values() if result is not None]
+        if not documents:
+            raise _refuse("nothing_to_aggregate")
+        passed = [item for item in ledger.rehearsals if item["status"] == "passed"]
+        if (any(document["runtime_digest"] != runtime or document["context_digest"] != current
+                for document in documents)
+                or not ledger.rehearsed(current, runtime=runtime)):
+            raise _refuse("context_mismatch")
+        first = documents[0]
+        if any(document[key] != first[key] for document in documents for key in _SHARED) \
+                or first["binary_sha256"] != binary or first["host_digest"] != _host_digest():
+            raise _refuse("context_mismatch")
+    except MeasurementRefused:
+        with _publication(binary):
+            _remove_jail_record(binary)
+        raise
+    launches = {document["launch_digest"] for document in documents} | {
+        item["launch_digest"] for item in passed}
+    agreed = (all(result is not None and result["status"] == "measured"
+                  for result in results.values())
+              and len({(tuple(result["tools"]), result["definitions_sha256"])
+                       for result in documents}) == 1
+              and len(launches) == 1)
+    launch = next(iter(launches)) if len(launches) == 1 else first["launch_digest"]
+    evidence = {
+        "schema": JAIL_EVIDENCE_SCHEMA, "binary_sha256": binary, "version": first["version"],
+        "version_sha256": first["version_sha256"], "help_sha256": first["help_sha256"],
+        "host_class": host_class, "host_digest": first["host_digest"],
+        "runtime_digest": runtime, "context": JAIL_CONTEXT, "context_digest": current,
+        "account_scope": "unbound", "method": "session_artifact", "model": first["model"],
+        "effort": first["effort"], "egress": dict(first["egress"]),
+        "prompt_sha256": first["prompt_sha256"],
+        "grant": {"id": stage.grant.id, "planned": len(stage.grant.planned),
+                  "retries": stage.grant.retries, "cap": stage.grant.cap,
+                  "charged": ledger.charged(),
+                  "other_grants_for_binary": other_grants_for_binary(stage.grant)},
+        "reservations": [
+            {"id": item.id, "at": item.at, "route": item.route, "budget": item.budget,
+             "settled": ledger.settlements.get(item.id),
+             "reprocessed": any(result["revision"] > 0
+                                for result in ledger.results.get(item.id, ()))}
+            for item in ledger.reservations],
+        "routes": [{
+            "route": label, "argv_digest": item.argv_digest,
+            "status": "interrupted" if result is None else result["status"], "eligible": True,
+            "shape": None if result is None else result["shape"],
+            "tools": None if result is None else result["tools"],
+            "definitions_sha256": None if result is None else result["definitions_sha256"],
+            "definitions_bytes": None if result is None else result["definitions_bytes"],
+            "reservation": item.id,
+            "exit_code": None if result is None else result["exit_code"],
+            "admitted": None if result is None else result["admitted"],
+            "tolerated_refusals": [] if result is None else list(result["tolerated_refusals"]),
+            "superseded": False}
+            for label, item in latest.items() if item is not None
+            for result in (results[label],)],
+        "launch_digest": launch, "unspawned": dict(ledger.unspawned),
+    }
+    check_jail_evidence_keys(evidence)
+    with _publication(binary):
+        _replace_file(stage.output, "tool-surface.json", evidence)
+        _remove_jail_record(binary)
+        if not agreed:
+            raise _refuse("surface_unstable")
+        pilot = results["pilot"]
+        assert pilot is not None
+        register = _jail_register(binary)
+        attempt = register["attempts"].get(pilot["argv_digest"])
+        newest = max((item for item in latest.values() if item is not None),
+                     key=lambda item: item.sequence)
+        if (type(attempt) is not dict or attempt.get("grant") != stage.grant.id
+                or attempt.get("reservation") != newest.id):
+            for entry in evidence["routes"]:
+                entry["superseded"] = True
+            return {"evidence": evidence, "published": [], "superseded": list(JAIL_LABELS)}
+        if pilot["admitted"] is not True:
+            return {"evidence": evidence, "published": [], "superseded": []}
+        surface = {
+            "binary_sha256": binary, "version": first["version"],
+            "version_sha256": first["version_sha256"], "help_sha256": first["help_sha256"],
+            "model": first["model"], "effort": first["effort"], "context": JAIL_CONTEXT,
+            "context_digest": current,
+            "measured_at": max(result["at"] for result in documents),
+            "routes": [{"route": JAIL_ROUTE, "argv_digest": pilot["argv_digest"],
+                        "tools": pilot["tools"],
+                        "definitions_sha256": pilot["definitions_sha256"]}],
+            "jail_context_digest": current, "launch_digest": {host_arch(): launch},
+            "image_sha256": binary}
+        jail.check_jail_surface(surface)
+        register["published"][pilot["argv_digest"]] = {
+            "grant": stage.grant.id, "reservation": newest.id,
+            "surface_digest": surface_digest(surface, surface["routes"][0])}
+        jail.write_private(jail.attempts_name(binary), register)
+        jail.write_private(jail.host_record_name(binary), {
+            "schema": jail.HOST_RECORD_SCHEMA, "host_digest": _host_digest(), "surface": surface})
+    return {"evidence": evidence, "published": [JAIL_ROUTE], "superseded": []}
+
+
+def jail_verify_probe(*, expected: str, output: int, grant: Grant) -> dict[str, Any]:
+    """``--verify-probe final --grant <id>`` for a jailed grant (§7.1): bound to this
+    grant's jailed aggregate, the probe of ``seat-window probe-tools`` passes only when the
+    jailed ``staged`` row is ``frozen_measurement`` from the host-local jailed record and
+    every other form is refused. The probe is ``probe_grok_tools``'s, so the first jailed
+    receipt on the host is written here (jail contract §3)."""
+    from . import grok_jail_surface as jail
+    from .seat_window import _host_digest
+
+    try:
+        resolved = jail.resolve_subject(_subscription_env_for_probe()).sha256
+    except Exception:  # noqa: BLE001
+        resolved = None
+    if resolved != expected:
+        return {"passed": False, "code": "probe_binary_mismatch"}
+    try:
+        evidence = _read_doc(output, "tool-surface.json")
+        check_jail_evidence_keys(evidence)
+        _require(evidence["binary_sha256"] == expected)
+    except (OSError, ValueError, TypeError, KeyError, RecursionError):
+        return {"passed": False, "code": "aggregate_unavailable"}
+    if (evidence["grant"]["id"] != grant.id or evidence["host_digest"] != _host_digest()
+            or evidence["binary_sha256"] != grant.binary_sha256):
+        return {"passed": False, "code": "aggregate_of_another_grant"}
+    rows = _probe_rows()
+    expected_rows = {row["route"]: ((True, "frozen_measurement", "host_local")
+                                    if row["route"] == JAIL_ROUTE else (False, "none", None))
+                     for row in rows}
+    mismatches = [row["route"] for row in rows
+                  if (row["passed"], row["basis"], row.get("source"))
+                  != expected_rows[row["route"]]]
+    return {"passed": not mismatches,
+            "code": "probe_matches" if not mismatches else "probe_mismatch",
+            "routes": rows, "mismatches": mismatches}
+
+
+def _subscription_env_for_probe() -> dict[str, str]:
+    from . import panel_invoker as panel
+
+    return dict(panel._subscription_env())
 
 
 # ------------------------------------------------------------------- the CLI (§5.10)
@@ -3764,6 +4569,10 @@ def measure_tools_cli(args) -> tuple[int, dict[str, Any]]:
                 # The final stage needs this grant; the initial stage may run before it.
                 grant_dir, grant = _open_grant(args.grant, binary_sha256=identity[1])
                 os.close(grant_dir)
+                if grant.jailed:
+                    outcome = jail_verify_probe(expected=identity[1], output=output, grant=grant)
+                    report.update(outcome)
+                    return (0 if outcome["passed"] else 1), report
             else:
                 _check_grant_if_present(args.grant, identity[1])
             outcome = verify_probe(args.verify_probe, expected=identity[1], output=output,
@@ -3810,6 +4619,9 @@ def _run_stage(stage: _Stage, stage_name: str, args, report: dict[str, Any]
     finally:
         os.close(committed)
     ledger = _read_ledger(stage.grant_dir, stage.grant)
+    if stage.grant.jailed and stage_name in ("require_measured", "require_rehearsed",
+                                             "aggregate", "rehearse", "route"):
+        return _run_jail_stage(stage, stage_name, args, report, ledger)
     if stage_name == "status":
         local = _local_payloads(stage, ledger, strict=False)
         report.update(
@@ -3826,6 +4638,10 @@ def _run_stage(stage: _Stage, stage_name: str, args, report: dict[str, Any]
             reservations=[{"id": item.id, "route": item.route, "at": item.at,
                            "settled": ledger.settlements.get(item.id),
                            "status": ledger.status(item)} for item in ledger.reservations])
+        if stage.grant.jailed:
+            report.update(unspawned=dict(ledger.unspawned),
+                          unresolved=list(ledger.unresolved()),
+                          stopped=bool(ledger.unspawned) or bool(ledger.unresolved()))
         return 0, report
     if stage_name == "require_measured":
         # "no reservation" is reported apart from "not measured" (§5.10), and both from an
@@ -3925,5 +4741,102 @@ def _run_stage(stage: _Stage, stage_name: str, args, report: dict[str, Any]
                      in stage.local_copy_failed else "present"})
         if result["status"] == "interrupted":
             code = 1
+    report.update(status="recorded" if code == 0 else "refused", routes=rows)
+    return code, report
+
+
+def _run_jail_stage(stage: _Stage, stage_name: str, args, report: dict[str, Any],
+                    ledger: Ledger) -> tuple[int, dict[str, Any]]:
+    """The stages of a jailed grant that differ from the unjailed ones (grok jail contract
+    §5.2-§5.4, §7.1). Every ``--route`` is ``staged``; each takes the next label. A stage of
+    another context refuses ``context_mismatch``."""
+    from . import panel_invoker as panel
+
+    routes = list(getattr(args, "route", None) or ())
+    if stage_name == "require_measured":
+        if args.require_measured != JAIL_ROUTE:
+            return 1, {**report, "status": "refused", "code": "context_mismatch"}
+        launched = max(ledger.reservations, key=lambda item: item.sequence, default=None)
+        if launched is None:
+            report.update(route=JAIL_ROUTE, status="no_reservation", label=None)
+            return 1, report
+        state = _route_state(ledger, _local_payloads(stage, ledger, strict=False),
+                             launched.route)
+        measured = state["state"] == "recorded" and state["status"] == "measured"
+        report.update(route=JAIL_ROUTE, label=launched.route,
+                      reservation=state.get("reservation"), result=state.get("status"),
+                      local_payload=state.get("local_payload"),
+                      status="measured" if measured else (
+                          "not_measured" if state["state"] == "recorded"
+                          else ledger.status(launched)))
+        return (0 if measured else 1), report
+    if stage_name == "require_rehearsed":
+        if args.require_rehearsed != JAIL_ROUTE:
+            return 1, {**report, "status": "refused", "code": "context_mismatch"}
+        runtime, current = jail_running_binding(stage.grant.binary_sha256)
+        records = list(ledger.rehearsals)
+        rehearsed = ledger.rehearsed(current, runtime=runtime)
+        report.update(route=JAIL_ROUTE, status="rehearsed" if rehearsed else (
+            "not_rehearsed" if records else
+            "interrupted" if ledger.rehearsal_unresolved() else "no_rehearsal"),
+            reason=records[-1]["reason"] if records else None,
+            rehearsal=records[-1]["rehearsal"] if records else None)
+        return (0 if rehearsed else 1), report
+    if stage_name == "aggregate":
+        outcome = jail_aggregate(stage, host_class=args.host_class)
+        report.update(status="aggregated", published=outcome["published"],
+                      superseded=outcome["superseded"])
+        return 0, report
+    if not args.attended:
+        return 1, {**report, "status": "refused", "code": "attendance_required"}
+    if any(route != JAIL_ROUTE for route in routes):
+        return 1, {**report, "status": "refused", "code": "context_mismatch"}
+    if stage_name == "rehearse":
+        if len(routes) != 1:
+            return 2, {**report, "status": "refused", "code": "one_route_to_rehearse"}
+        record = jail_rehearse(stage)
+        report.update(status="rehearsed", route=JAIL_ROUTE, label=record["route"],
+                      rehearsal=record["rehearsal"], result=record["status"],
+                      reason=record["reason"], observation=record["observation"],
+                      incomplete=record["incomplete"], budget_denials=record["budget_denials"],
+                      tolerated_refusals=record["tolerated_refusals"])
+        return (0 if record["status"] == "passed" else 1), report
+    stage.help_bytes, stage.version_bytes = _help_and_version(stage.binary, stage.env)
+    if panel._grok_probe_identity([stage.binary], stage.env) != stage.identity:
+        raise _refuse("binary_mismatch")
+    rows: list[dict[str, Any]] = []
+    code = 0
+    for index, _route in enumerate(routes):
+        stage.reserved = None
+        try:
+            result = jail_measure(stage)
+        except Exception as exc:  # noqa: BLE001 - reported, and nothing later is launched
+            rows.append({"route": JAIL_ROUTE, "reserved": stage.reserved is not None,
+                         **({"label": stage.reserved.route, "reservation": stage.reserved.id,
+                             "status": "interrupted"} if stage.reserved is not None else
+                            {"code": exc.code if isinstance(exc, MeasurementRefused)
+                             else "measurement_failed"})})
+            rows.extend({"route": JAIL_ROUTE, "reserved": False, "code": "not_attempted"}
+                        for _later in routes[index + 1:])
+            code = 1
+            break
+        row = {"route": JAIL_ROUTE, "reserved": True, "label": result["route"],
+               "reservation": result["reservation"], "status": result["status"]}
+        if result["status"] == "unspawned":
+            # §4.5 and OWNER-DECISION r7-1: the procedure stops; nothing more is launched.
+            row["code"] = result.get("code")
+            rows.append(row)
+            rows.extend({"route": JAIL_ROUTE, "reserved": False, "code": "not_attempted"}
+                        for _later in routes[index + 1:])
+            code = 1
+            break
+        row["local_copy"] = ("failed" if (result["reservation"], result["revision"])
+                             in stage.local_copy_failed else "present")
+        rows.append(row)
+        if result["status"] != "measured":
+            rows.extend({"route": JAIL_ROUTE, "reserved": False, "code": "not_attempted"}
+                        for _later in routes[index + 1:])
+            code = 1
+            break
     report.update(status="recorded" if code == 0 else "refused", routes=rows)
     return code, report

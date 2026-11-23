@@ -4706,7 +4706,12 @@ def _require_qualified_jail(jail: "_seat_jail.SeatJail",
     """At LAUNCH, re-establish qualification against the jail actually built: it must be the
     canonical profile, AND that profile's digest must have a recorded pass on this host.
     The route gate admitted a digest earlier; if the host layout (or anything else) changed
-    in between, the built jail's digest differs and has no pass -- refused, never launched."""
+    in between, the built jail's digest differs and has no pass -- refused, never launched.
+
+    GROK SL-4 (grok jail contract §5.1 r7): the measurement jail of a prepared Grok
+    measurement held for this exact jail object is checked with its one declared sink bind
+    substituted back, against the production key's pass."""
+    jail = _grok_measurement_production_jail(jail)
     _require_canonical_jail(jail)
     actual = _seat_jail.actual_profile_digest(jail)
     key = getattr(jail, "qualification_key", None)
@@ -4718,6 +4723,30 @@ def _require_qualified_jail(jail: "_seat_jail.SeatJail",
         code, reason = refusal
         raise _seat_jail.SeatSandboxRefused(
             code, f"built jail has no usable recorded pass on this host ({reason})")
+
+
+def _grok_measurement_production_jail(jail: "_seat_jail.SeatJail") -> "_seat_jail.SeatJail":
+    """The measurement clause of :func:`_require_qualified_jail` (grok jail contract §5.1
+    r7): only for a ``grok`` jail that ``_GROK_JAILED_LAUNCH`` holds in measurement mode as
+    this very object, with a measurement ``prepare_measurement`` issued, is the owner
+    replaced by ``grok_jail_surface.production_owner(jail, measurement=True)``. A refused
+    substitution is ``seat_sandbox_refused:identity``. Every other jail is returned as is."""
+    if getattr(jail, "leg", None) != "grok":
+        return jail
+    launch = _GROK_JAILED_LAUNCH.get()
+    if launch is None or launch[1] != "measurement" or launch[0].jail is not jail:
+        return jail
+    from . import grok_jail_surface as surface
+
+    measurement = launch[2]
+    if not (isinstance(measurement, surface.JailedMeasurementLaunch)
+            and measurement.issuer is surface._ISSUER):
+        return jail
+    try:
+        return replace(jail, process_owner=surface.production_owner(jail, measurement=True))
+    except surface.JailRefused as exc:
+        raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("identity"),
+                                            "the measurement jail is not production") from exc
 
 
 def _pass_refusal(digest: str, pass_recorded: "Callable[[str], bool] | None" = None,
@@ -10148,10 +10177,12 @@ def _run_leg_with_liveness(
             # (grok tool-surface contract §4.4). A grok argv launches here only on a positive
             # decision of the gate itself, on a legacy or listing receipt: a frozen-basis
             # receipt, or one withdrawn or unreadable since the leg's early gate, refuses.
+            grok_spawn_hook = None
             if Path(cmd[0]).name == "grok" and isinstance(seat_jail, _seat_jail.SeatJail):
                 # GROK SL-3 (jail contract §4.4): a real seat jail launches a grok argv only
                 # on the final verifier's mark for exactly this jail, argv, cwd and proxy.
-                _grok_jailed_spawn_check(cmd, seat_jail, cwd)
+                # GROK SL-4 (§4.5 M5): a measurement's admission is consumed by the hook.
+                grok_spawn_hook = _grok_jailed_spawn_check(cmd, seat_jail, cwd)
             elif Path(cmd[0]).name == "grok":
                 admitted, basis = _grok_gate_with_basis(cmd, env)
                 if not admitted or basis != "list_tools":
@@ -10163,7 +10194,7 @@ def _run_leg_with_liveness(
                 stdin=(subprocess.PIPE if input_text is not None or duplex is not None
                        else subprocess.DEVNULL),
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
-                trace_output=trace_output, seat_caps=seat_caps,
+                trace_output=trace_output, seat_caps=seat_caps, spawn_hook=grok_spawn_hook,
             )
             return proc
         # A grok leg on a frozen-basis receipt launches only under the grok-review egress its
@@ -14276,10 +14307,15 @@ _GROK_JAILED_LAUNCH: ContextVar["tuple[_JailedGrokSeat, str, object] | None"] = 
     "grok_jailed_launch", default=None)
 
 
-def _grok_jailed_spawn_check(cmd, seat_jail, cwd) -> None:
+def _grok_jailed_spawn_check(cmd, seat_jail, cwd) -> "Callable[[], None] | None":
     """The jailed branch of the spawn check for a ``grok`` argv (jail contract §4.4): the
     final verifier runs against this jail, proxy, holder, cwd and argv and must issue a mark
-    that admits exactly them. Unjailed, legacy and listing receipts never launch here."""
+    that admits exactly them. Unjailed, legacy and listing receipts never launch here.
+
+    Returns the spawn hook of §4.5 step M5 for a measurement that ``prepare_measurement``
+    issued -- ``grok_jail_surface.consume_admission`` bound to these objects, which
+    ``launch_provider`` runs after its qualification check and identity probe, last before
+    ``Popen`` -- and ``None`` for a board launch."""
     from . import grok_jail_surface as surface
 
     launch = _GROK_JAILED_LAUNCH.get()
@@ -14295,22 +14331,16 @@ def _grok_jailed_spawn_check(cmd, seat_jail, cwd) -> None:
         credential=grok_seat.credential, measurement=measurement)
     if not surface.admits(context, seat_jail, cmd, cwd):
         raise _seat_jail.SeatSandboxRefused(surface.REFUSED)
-
-
-@contextlib.contextmanager
-def _grok_jailed_measurement_admission(grok_seat: _JailedGrokSeat, measurement):
-    """The jailed measurement admission (jail contract §4.4 measurement mode, §5.1): the
-    one measurement launch of ``grok_seat`` spawns only under the reservation's admission,
-    consumed at its spawn boundary. SL-4's flow enters this around its launch."""
-    from . import grok_jail_surface as surface
-
-    if not isinstance(measurement, surface.JailedMeasurementLaunch):
+    if mode != "measurement":
+        return None
+    if not (isinstance(measurement, surface.JailedMeasurementLaunch)
+            and measurement.issuer is surface._ISSUER):
         raise _seat_jail.SeatSandboxRefused(surface.REFUSED)
-    token = _GROK_JAILED_LAUNCH.set((grok_seat, "measurement", measurement))
-    try:
-        yield
-    finally:
-        _GROK_JAILED_LAUNCH.reset(token)
+    proxy, command, binary = grok_seat.proxy, tuple(cmd), context.binary_sha256
+
+    def consume() -> None:
+        surface.consume_admission(measurement, seat_jail, proxy, holder, command, binary)
+    return consume
 
 
 def _remove_grok_staged(seat_dir: Path) -> None:
@@ -14405,17 +14435,31 @@ def _exec_jailed_grok_leg(
     review_monitor: _ReviewMonitor | None = None,
     window_board: "_WindowBoardLegRuntime | None" = None,
     review_authorization: ReviewIsolationAuthorization | None = None,
+    measurement: "object | None" = None,
+    read_sink: "Callable[[str], object] | None" = None,
 ) -> tuple[str, str]:
     """The Grok seat inside its jail (jail contract §2-§4.4): the ``staged`` form with
     ``--cwd /seat/tree`` and the prompt on stdin, launched only on the mark the final
     verifier issues at the spawn boundary. Every byte the parent keeps (stdout, stderr and
     the returned text) is scanned for each delivered secret and its 12-character suffix
     before it is retained; a hit retains nothing. The window kit's hooks run in Gemini's
-    order: ``start`` before the spawn, ``finish`` after it, then the seat is torn down."""
+    order: ``start`` before the spawn, ``finish`` after it, then the seat is torn down.
+
+    GROK SL-4 (§5.1 r7 "Launch path"): with ``measurement`` (a ``JailedMeasurementLaunch``)
+    the launch is that measurement's, never in a row window, and ``read_sink`` is called with
+    the sink path after the process exits and the after-check, before the teardown. The
+    leg's status is then ``"OK"`` iff the launch exited 0 (TS contract §5.5); the reply
+    text never decides a measurement."""
     from . import grok_jail_surface as surface
     from .seat_profile_grok import jailed_grok_command
 
     seat, jail = grok_seat.seat, grok_seat.jail
+    if measurement is not None and (window_board is not None or read_sink is None
+                                    or not isinstance(measurement,
+                                                      surface.JailedMeasurementLaunch)):
+        _cleanup_jailed_seat(seat)
+        _remove_grok_staged(seat.seat_dir)
+        raise _seat_jail.SeatSandboxRefused(surface.REFUSED)
     command = list(jailed_grok_command(_seat_route_contract.ArgvInputs(
         jail.provider_argv0, model=model, effort=effort or surface.PRODUCTION_EFFORT)))
     password = urllib.parse.urlsplit(jail.env.get("HTTPS_PROXY", "")).password
@@ -14471,7 +14515,9 @@ def _exec_jailed_grok_leg(
             "seat_jail_filter_sha256": jail.filter_digest,
             **({"egress": dict(egress_evidence)} if egress_evidence is not None else {}),
         })
-    token = _GROK_JAILED_LAUNCH.set((grok_seat, "board", None))
+    token = _GROK_JAILED_LAUNCH.set((grok_seat, "measurement", measurement)
+                                    if measurement is not None else (grok_seat, "board", None))
+    unresolved = False
     try:
         if window_board is not None:
             if quiescence_latch is None or review_authorization is None:
@@ -14491,6 +14537,13 @@ def _exec_jailed_grok_leg(
             proc = None
         refreshed = surface.after_check_in_h(
             seat.holder_pid, str(seat.seat_dir / _seat_jail.HOST_HOME_DIRNAME))
+        if measurement is not None:
+            # §5.1 r7: the process ran, so its admission must have been consumed; without
+            # it the reservation is unresolved and nothing is read or retained.
+            if not surface.admission_consumed(measurement.reservation):
+                unresolved = True
+            elif read_sink is not None:
+                read_sink(surface.sink_source(str(seat.seat_dir / _seat_jail.HOST_HOME_DIRNAME)))
     finally:
         _GROK_JAILED_LAUNCH.reset(token)
         try:
@@ -14520,6 +14573,13 @@ def _exec_jailed_grok_leg(
         window_board.tool_steps = None
     review = proc.stdout
     _note_exec_signals(verdict=terminal_verdict(review) is not None)
+    if measurement is not None:
+        if unresolved:
+            return _jailed_failure(surface.REFUSED, failure_detail_sink)
+        # §5.1 r7, the measurement success predicate: TS contract §5.5's "the launch exited 0".
+        status = "OK" if proc.returncode == 0 else _classify_leg(proc.returncode, review,
+                                                                 proc.stderr, "review")
+        return status, review
     return _classify_leg(proc.returncode, review, proc.stderr, "review"), review
 
 
