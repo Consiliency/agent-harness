@@ -3130,8 +3130,6 @@ def launch(
         with log_path.open("w", encoding="utf-8") as log:
             popen_kwargs: dict[str, Any] = {
                 "text": _codex_usage_observer is None,
-                # Invalid UTF-8 must not kill the line reader and drop every later line.
-                **({"errors": "replace"} if _codex_usage_observer is None else {}),
                 "stdin": subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
                 "stdout": subprocess.PIPE,
                 "stderr": subprocess.PIPE if _codex_usage_observer is not None else subprocess.STDOUT,
@@ -3190,6 +3188,10 @@ def launch(
                 executor_released = _read_supervisor_status(process, exec_status_read, command)
             process_group_id = _process_group_id(process.pid)
             assert process.stdout is not None
+            if _codex_usage_observer is None and hasattr(process.stdout, "reconfigure"):
+                # Output only: an undecodable byte must not kill the line reader and drop
+                # every later line. The stdin codec stays strict.
+                process.stdout.reconfigure(errors="replace")
             if stdin_text is not None and process.stdin is not None:
                 process.stdin.write(stdin_text if _codex_usage_observer is None else stdin_text.encode())
                 process.stdin.close()
@@ -3311,17 +3313,19 @@ def launch(
                             drain()
                             break
                         # The child has exited, but its last lines may still be in the
-                        # pipe or the reader. Wait, bounded as drain() is, for the
-                        # reader's EOF sentinel; a descendant holding the pipe open
-                        # cannot extend the launch by more than the bound.
+                        # pipe or the reader. Collect until the reader's EOF sentinel,
+                        # within one second as drain() does: the budget is checked
+                        # before each dequeue. A sink write in flight and the cleanup
+                        # after this loop are outside the bound.
                         drain_deadline = time.monotonic() + 1.0
                         while not reader_eof:
+                            remaining = drain_deadline - time.monotonic()
+                            if remaining <= 0:
+                                break
                             try:
-                                line = line_queue.get(timeout=max(0.001, drain_deadline - time.monotonic()))
+                                line = line_queue.get(timeout=remaining)
                             except Empty:
-                                if time.monotonic() >= drain_deadline:
-                                    break
-                                continue
+                                break
                             if line is None:
                                 reader_eof = True
                             else:

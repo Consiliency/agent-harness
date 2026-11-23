@@ -122,11 +122,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   - Invalid UTF-8 raised `UnicodeDecodeError` in the reader thread, which then dropped
     every later line.
 
-  The loop now waits for the reader's end-of-file marker, for at most one second, the
-  same bound as the observer's drain. The text pipe now decodes with
-  `errors="replace"`. A descendant that holds the pipe open still delays the return
-  until it exits, because closing the pipe waits for the reader. That behaviour predates
-  this fix and is unchanged. `tests/test_launcher_reader_drain.py` reproduces both bugs
+  The loop now collects lines until the reader's end-of-file marker. Like the
+  observer's drain, it allows one second and checks that budget before each dequeue. A
+  sink write in flight and the cleanup after the loop fall outside the bound.
+
+  The output reader alone now decodes with `errors="replace"`. The stdin codec stays
+  strict, so a prompt that cannot be encoded still fails rather than reaching the
+  executor altered. The observer's binary usage parsing is unchanged.
+
+  A descendant that holds the pipe open still delays the return until it exits,
+  because closing the pipe waits for the reader. That behaviour predates this fix and
+  is unchanged. `tests/test_launcher_reader_drain.py` reproduces both bugs
   deterministically.
 - The JEV Drill companion workflow's Windows legs (follow-up to
   Consiliency/agent-harness#2092; POSIX behaviour is unchanged):
