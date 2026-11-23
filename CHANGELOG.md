@@ -102,6 +102,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
     stalled the run.
   - Both "Run the twelve files" workflow steps now have a 20-minute step timeout, so the
     `always()` junit upload still runs after a hang.
+  - `grok_jail_surface` imports on native Windows again. Its module-level `_PATH_WALK` and
+    `_DIR_READ` open flags (added by Consiliency/agent-harness#2116) are `None` there, so
+    `open_dir_chain` fails closed at use, as the file's `_WALK` already did. POSIX values
+    are unchanged, and `test_windows_import.py` covers both constants.
 
   The contract record is `plans/amendments/jevhost-S5-windows-runtime.md`.
 - `phase_loop_runtime` now imports on native Windows, and POSIX behaviour is unchanged

@@ -1113,8 +1113,12 @@ def close_measurement(measurement: object) -> None:
             os.close(descriptor)
 
 
-_PATH_WALK = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-_DIR_READ = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+# Native Windows has none of these flags (nor ``dir_fd``): ``None`` makes every open fail closed.
+if os.name != "nt":
+    _PATH_WALK = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    _DIR_READ = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+else:
+    _PATH_WALK = _DIR_READ = None
 
 
 def open_dir_chain(path: str) -> int:
