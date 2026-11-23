@@ -167,6 +167,7 @@ def test_posix_only_modules_fail_closed_on_simulated_windows() -> None:
             "flags_absent": [flags is None for flags in (
                 agy_hold._DIR_FLAGS, agy_hold._FILE_FLAGS, run_status._DIR_FLAGS,
                 run_status._READ_FLAGS, run_status._CREATE_FLAGS, grok_jail_surface._WALK,
+                grok_jail_surface._PATH_WALK, grok_jail_surface._DIR_READ,
                 catalog._DIR_FLAGS, catalog._FILE_FLAGS, evidence._DIR_FLAGS,
                 evidence._FILE_FLAGS, seat_codex_runtime._WALK, seat_grok_credential._O_READ)],
         }
@@ -241,6 +242,7 @@ def test_posix_open_flags_are_unchanged() -> None:
     assert run_status._CREATE_FLAGS == (os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
                                         | os.O_CLOEXEC)
     assert grok_jail_surface._WALK == walk and seat_codex_runtime._WALK == walk
+    assert grok_jail_surface._PATH_WALK == walk and grok_jail_surface._DIR_READ == directory
 
 
 def test_seat_jail_directory_open_refuses_a_regular_file_on_simulated_windows(tmp_path) -> None:

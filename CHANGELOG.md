@@ -85,6 +85,32 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- The JEV Drill companion workflow's Windows legs (follow-up to
+  Consiliency/agent-harness#2092; POSIX behaviour is unchanged):
+  - `windows_storage.PrivateSecurity.verify` no longer compares rendered SDDL text, which
+    refused the private directories it had just created. Possible explanations, pending
+    inspection of the returned descriptor, are `D:PAI` rendering and SID alias rendering.
+    It now checks the DACL structurally. The DACL must be protected and hold exactly two
+    `FILE_ALL_ACCESS` allow ACEs with no ACE flags, for SYSTEM and the current user,
+    compared as binary SIDs. Any extra, deny, inherited or inheritable ACE is still
+    refused.
+  - On native Windows, `launch(cwd=…)` no longer fails in `_worktree_change_snapshot`.
+    That helper uses POSIX-only trusted-git resolution, so it now returns `None` there,
+    and changed paths are unknown.
+  - Two JEV Drill tests are now portable. The `input_spec` child is started through
+    `sys.executable` on Windows. The 1 MiB `test_permanent_invalidation` parameter has a
+    short id: its generated id overflowed the Windows environment limit. Both Windows logs
+    stop where pytest would begin reporting the oversized node ID. This strongly implicates
+    the ID. Runner output backpressure remains unconfirmed.
+  - Both "Run the twelve files" workflow steps now have a 20-minute step timeout. The step
+    timeout leaves time for the `always()` upload if pytest has already written the junit
+    and the job still has time remaining.
+  - `grok_jail_surface` imports on native Windows again. Its module-level `_PATH_WALK` and
+    `_DIR_READ` open flags (added by Consiliency/agent-harness#2116) are `None` there, so
+    `open_dir_chain` fails closed at use, as the file's `_WALK` already did. POSIX values
+    are unchanged, and `test_windows_import.py` covers both constants.
+
+  The contract record is `plans/amendments/jevhost-S5-windows-runtime.md`.
 - `phase_loop_runtime` now imports on native Windows, and POSIX behaviour is unchanged
   (Consiliency/agent-harness#2092). Before, `closeout`, `runner` and the JEV Drill test
   files that import them failed at import on Windows. `provider_tree_proof` computed its
