@@ -78,3 +78,160 @@ def test_a_genuine_signed_out_leg_still_reads_as_signed_out(tmp_path, monkeypatc
     assert result[2] == "leg_auth_signed_out"
     (record,) = _records(tmp_path)
     assert record["outcome"] == "leg_auth_signed_out"
+
+
+# --------------------------------------------------------------------------------------
+# A detail is typed by the stored-detail rules: provenance and the registry decide.
+# --------------------------------------------------------------------------------------
+
+_ROUTE = pi._HarnessCode("claude_tui_pty_eof_no_output")
+
+
+@pytest.mark.parametrize("detail, typed", [
+    (pi._LegFailure(template="claude_tui_workspace_trust_blocked"), True),
+    (pi._HarnessCode("claude_tui_stalled"), True),
+    ("claude_tui_stalled", True),                      # our own literal, as a plain str
+    ("timeout", True),
+    (pi._LegFailure(template="x", unknown=True, rc=1, prefix=_ROUTE), True),
+    (pi._LegFailure(template=""), False),
+    (pi._LegFailure(template="not_a_registered_code"), False),
+    ("some text a CLI printed", False),
+    (pi._LegFailure(template="auth_failure"), False),
+    ("auth_failure", False),
+    (pi._HarnessCode("claude_tui_pty_eof_no_output: auth_failure"), False),
+    (pi._LegFailure(template="auth_failure", prefix=_ROUTE), False),
+    (pi._LegFailure(template="x", unknown=True, rc=1), False),
+    (pi._UNKNOWN_DETAIL, False),
+    (pi._HarnessCode("leg_auth_unavailable"), False),
+    (None, False),
+], ids=lambda value: repr(getattr(value, "template", value))[:40])
+def test_only_a_typed_detail_survives_a_signed_out_leg(tmp_path, monkeypatch, detail, typed):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(pi, "_parent_auth_state", lambda leg, env=None: "signed_out")
+    result = _turnless_leg(detail)("claude", "artifact", env=dict(_HOST_ENV))
+    assert (result[2] if len(result) > 2 else None) == (detail if typed else "leg_auth_signed_out")
+
+
+# --------------------------------------------------------------------------------------
+# The real jailed call site: `_default_spawn` -> `launch_jailed` -> the login proof -> the
+# real jailed TUI leg. Only the proof and the TUI session boundaries are stand-ins.
+# --------------------------------------------------------------------------------------
+
+_AUTH_TAIL = "Invalid API key · Please run /login"
+
+
+def _attempt(monkeypatch, tmp_path, *, proof="pass", log_text=None, tail="", rc=1):
+    from phase_loop_runtime import claude_seat_transport as ct
+    from phase_loop_runtime import seat_credentials as sc
+    from test_seat_login_wait_a3_1166 import _spawn
+    from test_seat_notices import _FakeSeat
+
+    state = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    monkeypatch.setenv(ct.ROUTE_ENV, "tui")
+    before = set(state.rglob("leg-*.json"))
+    probes: list = []
+    tui: list = []
+    monkeypatch.setattr(pi, "_parent_auth_state",
+                        lambda leg, env=None: probes.append(leg) or "signed_out")
+    monkeypatch.setattr(pi._seat_uid, "read_in_h", lambda *a, **k: b"")
+    monkeypatch.setattr(pi._seat_uid, "teardown_in_h", lambda *a, **k: [])
+    monkeypatch.setattr(pi._seat_jail, "close_jail_fds", lambda jail: None)
+    monkeypatch.setattr(pi, "_broker_claude_tui_command", lambda **k: ["/seat/bin/claude"])
+    monkeypatch.setattr(pi, "_cleanup_jailed_seat", lambda seat, **k: None)
+
+    def _session(**kwargs):
+        tui.append(kwargs)
+        return rc, "", pi._HarnessCode(log_text) if log_text else "", tail
+
+    def _real_leg(seat, **kwargs):
+        # The TUI session is swapped only inside the real jailed leg: swapped for the whole
+        # spawn, it would read as an injected execution seam and take another route.
+        production = pi._run_claude_tui_session
+        pi._run_claude_tui_session = _session
+        try:
+            return _REAL_JAILED_CLAUDE_LEG(seat, **kwargs)
+        finally:
+            pi._run_claude_tui_session = production
+
+    def _proof(seat, *a, **k):
+        if proof != "pass":
+            raise ct.TransportRefused(sc.LOGIN_UNPROVEN)
+        return sc.LoginProof(sc.SOURCE_LOGIN, "oauth_token", "none")
+
+    spawned, _calls = _spawn(monkeypatch, tmp_path, sc.LOGIN_READY,
+                             jailed_leg=_real_leg, login_proof=_proof,
+                             prepare=lambda *a, **k: _route_seat(_FakeSeat(tmp_path)))
+    (record,) = [json.loads(p.read_text()) for p in set(state.rglob("leg-*.json")) - before]
+    detail = tuple(spawned)[2] if len(tuple(spawned)) > 2 else None
+    return spawned, record, str(getattr(detail, "template", detail)), probes, tui
+
+
+_REAL_JAILED_CLAUDE_LEG = pi._exec_jailed_claude_leg
+
+
+def _route_seat(seat):
+    # The route's own jails are bound to the seat, so the route qualification holds.
+    del seat.jail, seat.probe_jail
+    return seat
+
+
+def _tui_failure(monkeypatch, tmp_path):
+    return _attempt(monkeypatch, tmp_path, log_text="claude_tui_workspace_trust_blocked",
+                    tail="Do you trust the files in this folder?")
+
+
+def _auth_rejection(monkeypatch, tmp_path):
+    return _attempt(monkeypatch, tmp_path, log_text="claude_tui_pty_eof_no_output",
+                    tail=_AUTH_TAIL)
+
+
+def test_a_proven_seat_keeps_its_tui_failure_and_probes_no_host(monkeypatch, tmp_path):
+    spawned, record, detail, probes, tui = _tui_failure(monkeypatch, tmp_path)
+    assert len(tui) == 1 and probes == []
+    assert record["auth_state"] == "healthy" and record["outcome"] == "leg_execution_failed"
+    assert detail == "claude_tui_workspace_trust_blocked"
+    assert not any(code.endswith(("_rejected", "_signed_out", "_unavailable"))
+                   for code in spawned.seat_notices)
+
+
+def test_a_refused_proof_launches_nothing_and_is_never_healthy(monkeypatch, tmp_path):
+    spawned, record, detail, probes, tui = _attempt(monkeypatch, tmp_path, proof="refuse")
+    assert tui == [] and probes == []
+    assert tuple(spawned)[0] == "DEGRADED"
+    assert detail == "claude_seat_login_unproven"
+    assert record["auth_state"] != "healthy"
+
+
+def test_a_seat_auth_rejection_after_the_proof_is_one_auth_decision(monkeypatch, tmp_path):
+    spawned, record, detail, probes, tui = _auth_rejection(monkeypatch, tmp_path)
+    assert len(tui) == 1 and probes == []
+    assert record["auth_state"] == "signed_out" and record["outcome"] == "leg_auth_signed_out"
+    assert detail == "leg_auth_signed_out"
+    assert "claude_seat_token_rejected" in spawned.seat_notices
+
+
+def test_attempts_in_sequence_decide_auth_each_on_their_own(monkeypatch, tmp_path):
+    _s, rejected, *_ = _auth_rejection(monkeypatch, tmp_path)
+    spawned, failed, detail, probes, _t = _tui_failure(monkeypatch, tmp_path)
+    assert rejected["auth_state"] == "signed_out"
+    assert failed["auth_state"] == "healthy" and probes == []
+    assert detail == "claude_tui_workspace_trust_blocked"
+    assert "claude_seat_token_rejected" not in spawned.seat_notices
+    _s, again, *_ = _auth_rejection(monkeypatch, tmp_path)
+    assert again["auth_state"] == "signed_out"
+
+
+def test_the_board_keeps_a_registered_tui_refusal_without_an_auth_notice(monkeypatch, tmp_path):
+    from phase_loop_runtime.cli import _board_notices_json
+
+    spawned, _record, detail, _probes, _tui = _tui_failure(monkeypatch, tmp_path)
+    assert detail == "claude_tui_workspace_trust_blocked"
+    board = pi.invoke_panel("ARTIFACT", ["claude"], spawn=lambda leg, art: spawned)
+    (leg,) = board.legs
+    assert leg.status == "DEGRADED" and leg.detail == "claude_tui_workspace_trust_blocked"
+    assert [n.code for n in pi.refused_seat_notices(board.legs)] == [
+        "claude_tui_workspace_trust_blocked"]
+    codes = [n["code"] for n in _board_notices_json(board.legs)]
+    assert "claude_tui_workspace_trust_blocked" in codes
+    assert not any(code.startswith("leg_auth_") or code.endswith("_rejected") for code in codes)

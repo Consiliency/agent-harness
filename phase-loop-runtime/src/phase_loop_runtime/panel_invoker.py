@@ -13796,6 +13796,13 @@ def _exec_jailed_claude_leg(
         # reason, its reset time included; otherwise the shared tail classifier labels the
         # failure, and our own session code stands when the tail names nothing.
         failure = _claude_leg_failure(status, rc, "", log_text, pty_tail)
+        # The seat's own authentication rejection: the CLI's auth signature while the
+        # parent-held journal shows no turn and no verdict, so the tail cannot be quoting the
+        # reviewed tree. It is the one auth decision after the launch-time login proof; the
+        # host's own session says nothing about the seat's credential.
+        seat_auth_rejected = (failure is not None and failure.template == "auth_failure"
+                              and rc != 0 and model_turn is False
+                              and terminal_verdict(review_text) is None)
         # The tail is seat-rendered once a model turn has run, so it can quote a reviewed
         # tree: it names a credential's limit only with the provider's typed give-up, or
         # when the parent-held journal shows no turn.
@@ -13813,10 +13820,11 @@ def _exec_jailed_claude_leg(
                 seat.notices.append("claude_seat_login_rate_limited" if login
                                     else "claude_seat_token_rate_limited")
             elif (rc != 0 and ((login and seat.expires_at is not None and time.time() >= seat.expires_at)
-                  or (_EXEC_OBSERVATION.get() is not None
-                  and _EXEC_OBSERVATION.get().get("model_turn") is False
-                  and _EXEC_OBSERVATION.get().get("verdict") is False
-                  and _parent_auth_state("claude") == "signed_out"))):
+                  or seat_auth_rejected)):
+                observation = _EXEC_OBSERVATION.get()
+                if observation is not None:
+                    # The record agrees with the notice: the seat's credential was refused.
+                    observation.update(auth_state="signed_out", auth_probed=True)
                 if login and seat.expires_at is not None and time.time() >= seat.expires_at:
                     failure = _LegFailure(template="claude_seat_login_token_expired")
                     seat.notices.append("claude_seat_login_token_expired")
@@ -17413,16 +17421,22 @@ def _retain_panel_leg(result):
 
 
 def _typed_leg_failure(detail: object) -> bool:
-    """Whether a failed leg's detail is a typed failure of its own (a classified template or
-    a registered harness code) other than an auth failure: one an auth outcome must not
-    replace. The unknown-failure template is not typed."""
-    if isinstance(detail, _LegFailure):
-        return not detail.unknown and detail.template != "auth_failure"
-    if not isinstance(detail, str):
+    """Whether a failed leg's detail is a typed failure of its own, one an auth outcome must
+    not replace. It is read as ``_finalize_leg_detail`` stores it, so provenance and the
+    registry decide: a foreign or unregistered detail is the unknown failure, which is not
+    typed. Neither is an auth failure (plain or behind a route code) nor an auth outcome. A
+    route code in front of an unknown failure is typed: the code names what happened."""
+    rendered = _finalize_leg_detail(detail)
+    text = "" if rendered is None else str.__str__(rendered)
+    if not text or text.startswith("leg_auth_"):
         return False
-    text = str.__str__(detail)
-    return (bool(text) and not text.startswith("leg_auth_") and "unknown failure" not in text
-            and _detail_is_valid(text))
+    code, sep, rest = text.partition(": ")
+    while sep:  # a registered route code in front, split as `_detail_is_valid` splits
+        if _is_harness_code(code) and _is_failure_template(rest):
+            return rest != "auth_failure"
+        more, sep, rest = rest.partition(": ")
+        code = f"{code}: {more}"
+    return not (text == "auth_failure" or text.startswith("unknown failure"))
 
 
 def _retained_leg_exec(function):
