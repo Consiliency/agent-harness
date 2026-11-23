@@ -6,6 +6,26 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Fixed
+
+- The Codex row window's expired-token check now runs fenced on the real seat (K-1 OI-1,
+  owner decision 2026-11-22, "Block all its traffic"; plan
+  `detailed-k1-oi1-refuse-all-fence-20261122-0736.md`, Consiliency/agent-harness#2080).
+  `seat_window_supply_codex.EXPIRED_LEG_PROXY = "refuse_all"` is the one declaration: the
+  kit's proxy start runs the Codex `expired_copy` leg in the existing refuse-all mode, with
+  the production allowlist id and named set, so every request of that leg is refused
+  before any upstream dial and the named `auth.openai.com` denial is still observed. Codex's
+  own reducer accepts that leg's `sha256([])` binding only while the declaration is present,
+  and only for `expired_copy`; refuse-all on `measured` or a credentialed control is still
+  `binding_mismatch`. The `codex_expired_leg_unfenced` row hold is derived from the
+  declaration, so it is lifted now and re-arms if the declaration is removed. This creates
+  no admission class and no grant (Consiliency/agent-harness#2085 still blocks Codex
+  admission). `seat_jail_qualification.py`, the allowlists, `proxy.mjs`, the jail profiles,
+  the K-1 contract and every SDK proof region are unedited.
+  Pins: `seat_window.runtime_digest()` and `release_identity()` move. The validator and
+  watch digests, `proxy_sha256`, the launch inventory, the SDK proof bindings, agy QCI and
+  `CONTAINMENT_CONTRACT_SHA256` do not.
+
 ## [0.7.40] - Unreleased candidate
 
 ### Added
@@ -251,24 +271,6 @@ versioning; the release tag, the package `version`, and this file are kept in lo
     digests are unchanged.
 
 ### Fixed
-
-- The Codex row window's expired-token check now runs fenced on the real seat (K-1 OI-1,
-  owner decision 2026-11-22, "Block all its traffic"; plan
-  `detailed-k1-oi1-refuse-all-fence-20261122-0736.md`, Consiliency/agent-harness#2080).
-  `seat_window_supply_codex.EXPIRED_LEG_PROXY = "refuse_all"` is the one declaration: the
-  kit's proxy start runs the Codex `expired_copy` leg in the existing refuse-all mode, with
-  the production allowlist id and named set, so every request of that leg is refused
-  before any upstream dial and the named `auth.openai.com` denial is still observed. Codex's
-  own reducer accepts that leg's `sha256([])` binding only while the declaration is present,
-  and only for `expired_copy`; refuse-all on `measured` or a credentialed control is still
-  `binding_mismatch`. The `codex_expired_leg_unfenced` row hold is derived from the
-  declaration, so it is lifted now and re-arms if the declaration is removed. This creates
-  no admission class and no grant (Consiliency/agent-harness#2085 still blocks Codex
-  admission). `seat_jail_qualification.py`, the allowlists, `proxy.mjs`, the jail profiles,
-  the K-1 contract and every SDK proof region are unedited.
-  Pins: `seat_window.runtime_digest()` and `release_identity()` move. The validator and
-  watch digests, `proxy_sha256`, the launch inventory, the SDK proof bindings, agy QCI and
-  `CONTAINMENT_CONTRACT_SHA256` do not.
 
 - A jailed Gemini seat's tooled stream now accepts agy's bare `system_message` steps.
   A long tooled review on agy 1.5.14 (0.7.39, dev0) was refused with
