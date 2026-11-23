@@ -26,7 +26,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `O_DIRECTORY`/`O_NOFOLLOW`/`O_CLOEXEC` open flags, at module level. Each of these is now
   guarded where it is defined. On Windows the guarded paths fail closed:
   - the tree proof records `UNKNOWN` (`poll_unavailable`) and never `PROVEN`;
-  - the open-flag constants are `None`, so every guarded `os.open` raises;
+  - the open-flag constants are `None`, so every guarded `os.open` raises. This includes
+    the shared `seat_jail` no-follow masks: `open_dir_nofollow` refuses
+    (`UnsafeSeatObject`, `ENOTSUP`) instead of degrading to a plain open that accepts a
+    regular file;
   - the `pwd`/`fcntl` uses raise, and the managed supervised-launch binding is absent, so
     that launch refuses.
 
