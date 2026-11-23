@@ -1,135 +1,249 @@
-# RRIMAGE v1 contract: build and pin the review-runner image
+# RRIMAGE v1 contract: build and hand over the review-runner image, then pin it
 
-Frozen planning input for `specs/phase-plans-rrimage-v1.md` and
-`plans/phase-plan-v1-rrimage-RRIMAGE.md`. A change needs a reviewed repin of this file's
-sha256 in both. It pins inputs only. No section names a commit, digest or count that this
-phase will itself produce.
+Frozen planning input for `specs/phase-plans-rrimage-v1.md`. A change needs a reviewed repin
+of this file's sha256 in the roadmap's External Inputs. The execution plan pins it
+transitively, through its `roadmap_sha256`. The contract pins inputs only. No section names
+a commit, digest or count that this phase will itself produce.
 
-## §1 Need and sources
+**Revision 2 (2026-11-22).** This revision applies the review of agent-harness#2106 at
+`c028c985` (B1, B2, E1–E10).
+- B1 moves the push and the pull on `ai` to ai-stack (§5).
+- B2 builds to OCI archives and adds rule P9 (§2, §3).
+
+## §1 Need, sources and ownership
 
 - **ai-stack Unit 7** (ViperJuice/ai-stack `specs/phase-plans-v17-sandbox-coordinator-unit7.md`
-  at `059abc2178e31db109998f0045ffdea6e97a38f3`, foreign prompt for Consiliency/agent-harness):
-  "Supply review-runner exact image evidence from
-  phase-loop-runtime/images/review-runner/Containerfile in the seats work, not a LANEEXEC
-  image: resolve source/build receipt, OCI manifest digest/platform, registry repository and
-  verified pull evidence without activating its adapter. … v1 uses exact digest plus ai's
-  root-owned allowlist; no image signing. … Report missing review-runner as a blocker."
-- **LANEEXEC-v1-errata-2 draft** (agent-harness#2102, head
-  `d8aba601eb7a7ce38d07aca3f395fa679e01e0bc`), binding §6 E2-6: the definition of "pinned"
-  and the grants list. OWNER-DECISION RR-1 option (c), recommended there, is this phase: a
-  small phase run in parallel with LANEEXEC, whose pin record ACTIVATE consumes.
+  at `059abc2178e31db109998f0045ffdea6e97a38f3`).
+  - Line 383, the foreign prompt to Consiliency/agent-harness: "Supply review-runner exact
+    image evidence from phase-loop-runtime/images/review-runner/Containerfile in the seats
+    work, not a LANEEXEC image: resolve source/build receipt, OCI manifest digest/platform,
+    registry repository and verified pull evidence without activating its adapter. … **Do
+    not access/change live ai** or apply client config. … v1 uses exact digest plus ai's
+    root-owned allowlist; no image signing. … Report missing review-runner as a blocker."
+  - Line 249: ai-stack PREP freezes "the push tool, exact OCI input and destination for each
+    image, verified CA, root-only openshell-push credential path".
+  - Line 348: the owner "separately pushes exact images … (ai-stack#503); capture digest
+    receipt. Then independently verify BOTH manifest bytes and pull-account access".
+  - Line 270 (EC-PREP-2): "raw manifest hash = expected digest = unique digest header".
+- **Ownership (coordinator ruling on B1, 2026-11-22).** RRIMAGE builds the image, then hands
+  over the exact OCI archive and its raw manifest bytes, with their digests. It never pushes
+  to ai-stack's registry, never pulls on `ai` and never touches `ai`. The record becomes
+  `pinned` only from ai-stack's pull receipt, which RRIMAGE verifies against its own recorded
+  digests.
+- **LANEEXEC-v1-errata-2 scoping** (agent-harness#2102). The input is `plans/artifacts/v13-LANEEXEC-landed-binding.md`
+  §6 E2-6, sha256 `b128afc43a0b156f175e3d3f37848c04467b181ba1fb0ef516e53fc25eae8786`. The
+  hash covers the bytes from the `### E2-6` line up to the next heading of level 2 or 3,
+  exclusive. That section defines "pinned" and OWNER-DECISION RR-1. This phase is option (c).
 - **Containerfile** `phase-loop-runtime/images/review-runner/Containerfile` at planning time,
-  sha256 `f2d317873366426a8cd71ebe41090d2a3867750690072d73df85460cc81673f2`. It already pins
-  the rust and python base images by digest, the landlock-exec source commit
-  (`Consiliency/agent-toolkit` `d945fdd060aab9ad9471845f4f8e78406a0ac841`), five source-file
-  hashes, the helper output hash and the `rfc8785` wheel hash. The test pin
-  `phase-loop-runtime/tests/data/landlock-exec/PIN.json` repeats the commit, helper hash and
-  toolchain.
+  sha256 `f2d317873366426a8cd71ebe41090d2a3867750690072d73df85460cc81673f2`. It pins:
+  - the base images, by digest;
+  - the helper source, `Consiliency/agent-toolkit` at `d945fdd060aab9ad9471845f4f8e78406a0ac841`;
+  - `BUILD.lock`, `LICENSE`, `build.sh`, `exec.c`, `uapi.h`, the helper output and the
+    `rfc8785` wheel, each by hash.
+
+  `phase-loop-runtime/tests/data/landlock-exec/PIN.json` repeats the commit, the helper hash
+  and the toolchain.
 
 ## §2 Pin record (`review_runner_pin.v1`)
 
 Schema: `plans/artifacts/rrimage-v1-pin-record.schema.json` (frozen). SL-0 packages it
-byte-equal as `phase_loop_runtime/contracts/placement/review-runner-pin-v1.schema.json`;
+byte-equal as `phase_loop_runtime/contracts/placement/review-runner-pin-v1.schema.json`.
 `contracts/placement/**` is already package data.
 
-A record is **pinned** only when `status = "pinned"` and every rule below holds. A record with
-`status = "pushed"` and `pull = null` is valid but not pinned. Consumers accept `pinned` only.
+Statuses:
+- `built`: the record after SL-4. `image` and `receipt` are null.
+- `pinned`: the record after SL-5 has verified ai-stack's receipt.
+
+Consumers accept only `pinned`, under strict P4 (§2.1).
+
+**Digest fields.** These are:
+- every field typed `digest`, `hex64` or `commit` in the schema;
+- the `@sha256:` suffix of every `pinned_reference` value.
 
 | Rule | Check |
 | --- | --- |
-| P1 | The record validates against the schema. Every object is closed (`additionalProperties: false`). |
-| P2 | `image.reference == image.registry + "/" + image.repository + "@" + image.manifest_digest`. A tag never appears. |
-| P3 | `image.manifest_media_type` is a single-platform image manifest. An index is refused in v1. |
-| P4 | `source.containerfile_sha256` equals the sha256 of the Containerfile in the checkout under test. A later Containerfile edit makes the committed record stale, by design: re-pin or supersede. |
-| P5 | `helper.sha256` equals the `/landlock-exec` hash line in the Containerfile and `PIN.json` `helper_sha256`; `helper.source_commit` equals `PIN.json` `commit`; `helper.path` equals the Containerfile's `COPY --from=landlock … /landlock-exec <dest>` destination. |
-| P6 | For `pinned`: `pull.manifest_digest`, `pull.config_digest` and `pull.helper_sha256` equal `image.manifest_digest`, `platform.config_digest` and `helper.sha256`; `pull.os`/`pull.architecture` equal `platform`; `pull.host == "ai"`; `pull.by_digest` is true; `pull.entrypoint_started` is false. |
-| P7 | No string in the record matches the credential sentinels: `ghp_`, `gho_`, `ghs_`, `github_pat_`, `glpat-`, `Bearer `, `Basic `, `"auths"`, `password`, `token`, `secret`, a `user:pass@` userinfo, or a base64 run of 40 or more characters outside a digest field. |
-| P8 | `recorded_at` is not earlier than `pull.pulled_at` for `pinned`. |
+| P1 | The record validates against the schema, and every object is closed. |
+| P2 | `image.reference` equals `image.registry + "/" + image.repository + "@" + artifact.manifest_digest`. A tag never appears. |
+| P3 | `artifact.manifest_media_type` and `receipt.raw_manifest_media_type` each name a single-platform image manifest. An index is refused. |
+| P4 | `source.containerfile_sha256` equals the sha256 of the Containerfile in the checkout under test. §2.1 sets the scope. |
+| P5 | Three helper checks hold. `helper.sha256` equals the `/landlock-exec` hash line in the Containerfile and `PIN.json` `helper_sha256`. `helper.source_commit` equals `PIN.json` `commit`. `helper.path` equals the destination of the Containerfile's `COPY --from=landlock … /landlock-exec <dest>`. |
+| P6 | For `pinned`, the receipt matches the record. Its `registry_manifest_digest` and `docker_content_digest` equal `artifact.manifest_digest`. Its `raw_manifest_sha256` equals the digest's hex. Its `config_digest` equals `platform.config_digest`, and its `helper_sha256` equals `helper.sha256`. Its `os` and `architecture` equal `platform`. Its `container_state` is `created` and `entrypoint_started` is false. |
+| P7 | No string matches the credential sentinels: `ghp_`, `gho_`, `ghs_`, `github_pat_`, `glpat-`, `Bearer `, `Basic `, `"auths"`, `password`, `token`, `secret`, a `user:pass@` userinfo, or a base64 run of 40 or more characters. Digest fields are exempt from the base64 test. The closed schema patterns already exclude most of these, so P7 is defence in depth. |
+| P8 | For `pinned`, `recorded_at` is not earlier than `receipt.pulled_at`. |
+| P9 | The digests and bytes agree. `build.first_manifest_digest` equals `artifact.manifest_digest`. sha256 of the committed `manifest.json` bytes equals that digest, and their length equals `artifact.manifest_size`. The manifest's `mediaType` is not an index, and its `config.digest` equals `platform.config_digest`. sha256 of the committed `config.json` bytes equals `platform.config_digest`. In that config, `os` and `architecture` equal `platform`. For `pinned`, P6's receipt digests equal this same digest. |
+| P10 | The reproducibility fields agree. `attempted=false` implies `second_manifest_digest=null`, `equal=null`, `differing_layers=[]` and `deferred_finding=null`. `attempted=true` implies `equal == (second_manifest_digest == first_manifest_digest)`. `equal=false` implies a non-empty `differing_layers` and a non-null `deferred_finding`. |
 
-Refusals are closed codes: `pin_schema_invalid`, `pin_reference_mismatch`,
-`pin_index_refused`, `pin_containerfile_stale`, `pin_helper_mismatch`,
-`pin_pull_mismatch`, `pin_credential_sentinel`, `pin_not_pinned`. Messages name the rule
-and field, never the offending value.
+Refusal codes are closed:
+`pin_schema_invalid`, `pin_reference_mismatch`, `pin_index_refused`,
+`pin_containerfile_stale`, `pin_helper_mismatch`, `pin_receipt_mismatch`,
+`pin_credential_sentinel`, `pin_digest_mismatch`, `pin_reproducibility_inconsistent` and
+`pin_not_pinned`. Each message names the rule and the field, never the value.
+
+### §2.1 Scope of P4 (the stale-pin tripwire)
+
+- `validate_pin_record(record, repo_root, *, allow_stale_marker=False)`. Consumers call it
+  with the default, which enforces P4 strictly. The consumers are ACTIVATE, the LANEEXEC
+  operator configuration and the SL-5 hand-back to ai-stack.
+- The receipt test, which runs in required CI, always enforces P1–P3 and P5–P10.
+- A P4 mismatch passes that test only when a sibling marker
+  `plans/evidence/review-runner/pin-record.stale.json` exists and names the record. The marker
+  holds `{"schema": "review_runner_pin_stale.v1", "record_sha256": <hex64>, "reason": <text>}`,
+  and the PR that changes the Containerfile adds it. The verdict is then `stale`, which no
+  consumer accepts.
+- Re-pinning means a new SL-4 build and SL-5 receipt, which delete the marker.
 
 ## §3 Build recipe
 
-The recipe is a command plan printed by `phase-loop-runtime/scripts/review_runner_image.py
-plan`, which executes nothing. The live lane runs the printed commands under the grants of §5.
+`phase-loop-runtime/scripts/review_runner_image.py plan` prints the recipe as a command plan
+and executes nothing. SL-4 runs the printed commands under G-RR-BUILD.
 
 1. **Source export.** `git archive <source commit>` into an empty context directory, so
    untracked files, `__pycache__` and the checkout's umask never enter the image.
-2. **Helper source.** Read-only fetch of `Consiliency/agent-toolkit` at
+2. **Helper source.** Read-only fetch, under G-RR-BUILD, of `Consiliency/agent-toolkit` at
    `d945fdd060aab9ad9471845f4f8e78406a0ac841`, path `harnesses/pi/sandbox/landlock`, into a
-   second empty directory, passed as `--build-context landlock-source=<dir>`. The
+   second empty directory. It is passed as `--build-context landlock-source=<dir>`. The
    Containerfile's hash checks are the verification. No token enters the build.
-3. **Builder.** `docker buildx` with a BuildKit image named by digest
-   (`moby/buildkit@sha256:…`), chosen and recorded by SL-1 from a release at least two weeks
-   old. The tool version is recorded.
-4. **Determinism options.** `--platform linux/amd64`; `SOURCE_DATE_EPOCH` set to the source
-   commit's committer time and passed as a build arg; `--provenance=false --sbom=false`;
-   output `type=image,oci-mediatypes=true,rewrite-timestamp=true`; `--no-cache` and
-   `--pull=false` with the digest-pinned bases.
-5. **Network.** Every `RUN` step is either `RUN --network=none` or a hash-pinned install
-   (`pip … --require-hashes --only-binary=:all:`). No `curl`, `wget`, `git clone`, `apt-get`,
-   `ADD <url>` or unpinned `pip` appears.
-6. **Unhashed copies.** The Containerfile today copies `PROVENANCE.md` and `LICENSES/**` from
-   the helper source without a hash check. SL-1 adds `sha256sum -c` lines for them, with values
-   read at the pinned commit through read-only `gh api`. A file it cannot read stays a
-   recorded gap and is not invented.
-7. **Reproducibility.** Measured, not assumed. The live build runs twice from the same
-   export and records both manifest digests in `build.reproduced`. Inequality is reported
-   with the differing layer, and is not a gate (known candidates: `useradd`'s shadow
-   `lastchg`, and byte-compiled files). The first build's digest is the one pushed.
+3. **Builder.** `docker buildx` with a `docker-container` driver whose BuildKit image is named
+   by digest (`moby/buildkit@sha256:…`). SL-2 chooses it from a release at least two weeks old
+   and records it with the buildx version.
+4. **Output, preserving the digest.** Each attempt runs
+   `--output type=oci,dest=<attempt>.tar,rewrite-timestamp=true`. The other options are
+   `--platform linux/amd64`, `SOURCE_DATE_EPOCH` set to the source commit's committer time,
+   `--provenance=false`, `--sbom=false` and `--no-cache`. With these, the layout's
+   `index.json` lists exactly one image manifest. The first attempt's archive is the hand-over
+   artifact, and nothing loads or re-pushes it on the agent-harness side. Its raw manifest and
+   config blobs are extracted byte-for-byte and committed as `manifest.json` and `config.json`.
+5. **Network.** Every `RUN` is either `RUN --network=none` or the hash-pinned pip install
+   (`--require-hashes --only-binary=:all:`). Today that means adding `--network=none` to the
+   RUN steps at Containerfile lines 9, 22 and 34. No `curl`, `wget`, `git clone`, `apt-get`,
+   `ADD <url>` or unpinned `pip` may appear. A `# syntax=` directive is refused unless it is
+   pinned by digest.
+6. **Helper-source copies.** `LICENSES/**` is checked against the hashes in the `notices`
+   block of the hash-checked `BUILD.lock`:
+   - `LICENSES/GPL-2.0`: `8780e78a1a737e127f25a65f6d95269bffd36158dc261114de7859b490bfc5aa`
+   - `LICENSES/Linux-syscall-note`: `8e378ab93586eb55135d3bc119cce787f7324f48394777d00c34fa3d0be3303f`
+
+   A build step asserts that `LICENSES/` holds exactly that set. `PROVENANCE.md` is not in `BUILD.lock`, so its `COPY` is dropped. The pin
+   record carries the provenance instead. No lane before SL-4 makes a network call.
+7. **Timestamps.** The runtime stage declares `ARG SOURCE_DATE_EPOCH`, so the value reaches the
+   `useradd` step's environment.
+8. **setuid and setgid.** A `RUN --network=none` step after the last package step runs
+   `find / -xdev -perm /6000 -type f -exec chmod ug-s {} +` and then fails if any such file
+   remains. On the slim-bookworm base this covers `su`, `mount`, `umount`, `passwd`, `chsh`,
+   `chfn`, `gpasswd` and `newgrp`. The handoff still asks ai-stack to run the image with
+   `no-new-privileges`.
+9. **Local evidence.** From the first archive, SL-4 reads the helper's sha256 from the layer
+   that holds `helper.path`. It never runs a container.
+10. **Reproducibility.** It is measured, and it is not a gate. Trust rests on the exact digest
+    plus the root-owned allowlist (ai-stack line 10). Both attempts are recorded under P10.
+    On a mismatch, SL-4 lists the differing layers in the record and the handoff, and files a
+    repository-qualified issue with the finding verbatim, per
+    `docs/registers/deferred-findings.md`. Known candidates are `useradd`'s shadow `lastchg`
+    and byte-compiled files.
 
 ## §4 Offline tests
 
-- `tests/test_review_runner_pin.py` (SL-0): P1–P8 with a valid fixture record and one
-  mutation per rule. The valid fixture is built from the checked-in Containerfile and
-  `PIN.json`, so P4/P5 are exercised against real bytes. The packaged schema equals the
-  artifact byte for byte.
-- `tests/test_review_runner_recipe.py` (SL-1): every `FROM` is by digest; every `RUN`
-  satisfies §3.5; every helper-source `COPY` is hash-checked; `plan` prints the §3 options,
-  never `--push` without `--allow-push`, and runs no subprocess (asserted by a patched
-  `subprocess` that refuses any call).
-- `tests/test_review_runner_pin_receipt.py` (SL-4): the committed record is `pinned` under
-  P1–P8 against the checkout.
+- `tests/test_review_runner_pin.py` (SL-0) covers P1–P10. It uses a valid `built` record and a
+  valid `pinned` record, with one refusing mutation per rule.
+  - Fixtures use the checked-in Containerfile and `PIN.json`, and a synthetic manifest and
+    config whose digests are computed in the test.
+  - Two P7 cases: a 40-hex commit passes, and a 40-character base64 run in a non-digest field
+    is refused.
+  - The P4 marker is tested in both directions.
+  - The packaged schema equals the artifact.
+- `tests/test_review_runner_containerfile.py` (SL-1) covers §3.5–§3.8 on the checked-in
+  Containerfile.
+- `tests/test_review_runner_recipe.py` (SL-2) covers three things.
+  - `plan` prints the §3.1–§3.4 options and makes zero subprocess calls, asserted by a patched
+    `subprocess` that refuses any call.
+  - `record` builds a `built` record from a fixture OCI layout and refuses an index, a
+    manifest whose bytes do not match its digest, and a second manifest.
+  - `verify-receipt` refuses each P6 and P9 mismatch in a fixture receipt.
+- `tests/test_review_runner_pin_receipt.py` (SL-5) checks the committed record under §2.1.
 
-## §5 Grants and live sequence
+## §5 Grants, external gates and the live sequence
 
-Each grant is given by the owner separately and recorded in the evidence file by name and
-date, never with a credential.
+**The one agent-harness grant.** Each grant is recorded in the evidence by name and date,
+never with a credential.
 
 | Gate | Grant | Unblocks |
 | --- | --- | --- |
-| G-RR-REGISTRY | The registry and repository names, and a push credential on the build host held by the host's own credential helper. It never appears in the repository, environment dumps, build args or evidence. | SL-3.2 |
-| G-RR-BUILD | A native `linux/amd64` build host, a build window, read access there to the pinned helper source, and heavy-work admission on that host. | SL-3.1 |
-| G-RR-PUSH | One push of the first build, by digest. | SL-3.2 |
-| G-RR-PULL | One pull by digest on `ai`, with inspection and a `create`/`cp` helper read. The entrypoint is never started, and the container is removed afterwards. | SL-3.3 |
+| G-RR-BUILD | A native `linux/amd64` build host, a build window, read access there to the pinned helper source, heavy-work admission on that host, and a private directory there that keeps the archives until SL-5. | SL-4 |
 
-External, not an agent-harness grant: **EXT-RR-ALLOWLIST**. ai-stack adds the root-owned
-allowlist entry on `ai` from the handoff (§6). The pull of G-RR-PULL does not depend on it.
-If ai-stack's runtime refuses a pull that is not allowlisted, SL-3.3 stops and reports, and
-the order of the two is the owner's to settle.
+**Handoff post authority.** The SL-4 and SL-5 comments on ViperJuice/ai-stack#504 are made
+under the RRIMAGE coordinator's authority. That authority answers ai-stack's own request at
+line 383, and the coordinator's name and the date are recorded in the evidence. Without it,
+SL-4 and SL-5 write the handoff file and stop before posting.
 
-Live sequence:
+**Transfer channel.** agent-harness transfers no bytes. The archive stays in the build host's
+private directory, and the archive's sha256 in the handoff is its integrity check. Moving it
+to the push input is the owner's own action under EXT-RR-PUSH, in ai-stack's step 2. It
+needs no agent-harness grant. If the owner instead asks agent-harness to publish the archive
+somewhere, that is a new grant and an amendment to this contract.
 
-1. SL-3.1 (G-RR-BUILD): export, fetch, build twice, inspect locally. Record `build.*`.
-2. SL-3.2 (G-RR-REGISTRY, G-RR-PUSH): push the first build; read the manifest and config
-   digests from the registry with `buildx imagetools inspect --raw`. Write a `pushed` record.
-3. SL-3.3 (G-RR-PULL): on `ai`, `pull <reference>`, inspect the manifest digest, platform and
-   config digest, read the helper through `create` + `cp` + `sha256sum`, then remove it.
-   Promote the record to `pinned` only if P6 holds; otherwise keep it `pushed` and stop.
+**External gates, owned by ai-stack.** No agent-harness lane performs these.
+
+| Gate | Owner action | Source |
+| --- | --- | --- |
+| EXT-RR-REGISTRY | PREP freezes the push tool, the destination, the verified CA and the root-only openshell-push credential. | Unit 7 line 249 |
+| EXT-RR-PUSH | The owner pushes the exact OCI archive with a version-pinned tool that preserves digests. | Unit 7 line 348; ai-stack#503 |
+| EXT-RR-PULL | The owner verifies the manifest bytes and pull-account access on `ai`, and publishes the receipt (§5.1). | Unit 7 lines 270, 311 and 348 |
+| EXT-RR-ALLOWLIST | ai-stack makes the root-owned allowlist entry on `ai`. | Unit 7 lines 10 and 383 |
+
+**Order.**
+1. SL-4 builds and posts the handoff.
+2. EXT-RR-REGISTRY, which can run at any time before EXT-RR-PUSH.
+3. EXT-RR-PUSH.
+4. EXT-RR-PULL, which produces the receipt.
+5. SL-5 verifies the receipt and the record becomes `pinned`.
+
+EXT-RR-ALLOWLIST and ai-stack's block10 come after the receipt. They gate ai-stack's
+qualification, not the `pinned` status.
+
+### §5.1 Pull receipt that RRIMAGE consumes
+
+The handoff states these requirements for ai-stack's receipt. They map onto the schema's
+`receipt` object.
+
+- **Push tool.** Version-pinned and digest-preserving, copying from `oci-archive:`, for
+  example `skopeo copy --preserve-digests` or `regctl image import`. It must not recompress
+  layers or convert media types. A `docker load` followed by `docker push` is refused.
+- **Reference.** A pull by digest (`<registry>/<repository>@<digest>`), with the
+  authenticated pull account named in `pull_account`. A name is recorded, never a credential.
+- **Runtime.** The runtime's name and version, and its image store (`image_store`).
+- **Digests.** `registry_manifest_digest`; the `Docker-Content-Digest` response header; the
+  sha256 of the raw manifest bytes fetched from the registry, and their media type.
+- **Config digest.** Read as the raw manifest's config descriptor
+  (`config_digest_method = raw_manifest_config_descriptor`). It is never
+  `docker image inspect .Id`, which on the containerd image store reports the manifest or
+  index digest.
+- **Helper.** Read through `create` and then `cp`, with `helper_sha256` taken from the copied
+  file. The container's `State.Status` is captured as `created` before `rm`. That is the
+  evidence for `entrypoint_started = false`.
+- **Location.** A stable link (`ref`) to the receipt, and the sha256 of its bytes.
 
 ## §6 Handoff to ai-stack
 
-`plans/evidence/review-runner/HANDOFF-ai-stack.md`, posted as a comment on
-ViperJuice/ai-stack#504. It carries `image.reference`, the platform and config digest, the
-source commit and Containerfile hash, the helper path and hash, and the pull evidence date.
-It asks for the allowlist entry and states what is not done: no adapter activation, no
-signing, no client configuration and no LANEEXEC route change.
+`plans/evidence/review-runner/HANDOFF-ai-stack.md` is posted as a comment on
+ViperJuice/ai-stack#504 under the authority in §5.
+
+The SL-4 post carries:
+- `artifact.*`, the platform and the config digest;
+- the source commit and the Containerfile hash;
+- the helper path and hash;
+- the reproducibility result, with any differing layers and the deferred-finding link;
+- the §5.1 receipt requirements and the `no-new-privileges` request.
+
+The SL-5 post carries the `pinned` record's sha256.
+
+Both posts state what is not done: no adapter activation, no signing, no client
+configuration, no LANEEXEC route change, and no access to `ai`.
 
 ## §7 Non-goals
 
-Image signing; SEATS REMOTE per-target vendor images, which derive from this base; any
-adapter, route or `policies.json` change; LANEEXEC or ACTIVATE edits; a CI image build or
-push; a multi-platform index.
+- image signing;
+- the per-target SEATS REMOTE vendor images, which derive from this base;
+- any change to an adapter, a route, `policies.json`, LANEEXEC or ACTIVATE;
+- a CI image build or push;
+- a multi-platform index;
+- any push to a registry, or any pull or other action on `ai`, by agent-harness.
