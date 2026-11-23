@@ -6,18 +6,6 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-## [0.7.41] - Unreleased candidate
-
-### Changed
-
-- The review-runner Containerfile is hardened for the RRIMAGE build (lane SL-1,
-  Consiliency/agent-harness#2106). Every `RUN` step except the hash-pinned pip install now runs
-  with `--network=none`, and that step now does only the pinned install. `LICENSES/` is checked against the `BUILD.lock` notice hashes as an
-  exact set. The unhashed `PROVENANCE.md` copy is gone. The runtime stage declares
-  `ARG SOURCE_DATE_EPOCH`. A final step strips setuid and setgid bits and fails if any remain.
-  `tests/test_review_runner_containerfile.py` checks all of this statically, and checks that
-  each rule rejects a mutated copy.
-
 ### Added
 
 - The jailed Grok measurement (SEATS GROK lane SL-4, IF-0-GROK-4,
@@ -53,6 +41,20 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `launch_provider`, every other SDK region, every jail profile digest, the unjailed
   `context_digest()`, `jail_context_digest()`, the allow-lists and every Grok form's argv
   digest do not. Installs with Train B.
+
+## [0.7.41] - Unreleased candidate
+
+### Changed
+
+- The review-runner Containerfile is hardened for the RRIMAGE build (lane SL-1,
+  Consiliency/agent-harness#2106). Every `RUN` step except the hash-pinned pip install now runs
+  with `--network=none`, and that step now does only the pinned install. `LICENSES/` is checked against the `BUILD.lock` notice hashes as an
+  exact set. The unhashed `PROVENANCE.md` copy is gone. The runtime stage declares
+  `ARG SOURCE_DATE_EPOCH`. A final step strips setuid and setgid bits and fails if any remain.
+  `tests/test_review_runner_containerfile.py` checks all of this statically, and checks that
+  each rule rejects a mutated copy.
+
+### Added
 
 - LANEEXEC SL-0: the placement launch protocol v1 (`plans/phase-plan-v13-LANEEXEC.md`) ships
   as package data at `phase_loop_runtime/contracts/placement/launch-v1.schema.json`, byte
