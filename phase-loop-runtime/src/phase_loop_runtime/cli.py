@@ -2184,26 +2184,6 @@ def _review_isolation_hint(exc: BaseException) -> str | None:
     return None
 
 
-def _private_leg_stream_dir() -> Path | None:
-    """A fresh 0700 run directory under the operator's private state, where a failing leg's
-    reason is kept (``leg-logs/``); ``None`` when one cannot be made safely."""
-    import stat
-    import tempfile
-
-    from .seat_jail import state_home
-
-    parent = state_home() / "agent-harness" / "board-runs"
-    try:
-        parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        info = os.lstat(parent)
-        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
-                or stat.S_IMODE(info.st_mode) & 0o077):
-            return None
-        return Path(tempfile.mkdtemp(prefix="advisor-board-", dir=parent))
-    except OSError:
-        return None
-
-
 def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | None = None) -> int:
     """LEGACY (CLEANSHIP P7): run the 4-vendor advisor board as the RUNNABLE
     agent-facing default. Composes availability-aware seats via
@@ -2561,10 +2541,13 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
         seat_modes.extend(modes)
         _print_seat_modes(modes)
 
-    # agent-harness#2131: without a stream dir a failing leg's reason is discarded
-    # ("CLI output not retained"); a private run dir keeps it under `leg-logs/`. A caller
-    # that already chose a stream dir (the president tier) keeps its own.
-    leg_stream_dir = None if "stream_dir" in president_kwargs else _private_leg_stream_dir()
+    # agent-harness#2131: without a stream dir a failing leg's reason was discarded
+    # ("CLI output not retained"). A private run keeps only the leg logs the results name;
+    # the president tier keeps its own stream dir.
+    from .leg_log_runs import LegLogRun
+
+    leg_log_run = None if "stream_dir" in president_kwargs else LegLogRun.start()
+    leg_details: tuple[object, ...] = ()
     try:
         with tempfile.TemporaryDirectory(prefix="advisor-board-") as scratch:
             invoke_kwargs: dict[str, object] = {
@@ -2583,10 +2566,11 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
             if review_authorization is not None:
                 invoke_kwargs["review_authorization"] = review_authorization
                 invoke_kwargs["canonical_repo_authority"] = canonical_repo_authority
-            if leg_stream_dir is not None:
-                invoke_kwargs["stream_dir"] = leg_stream_dir
+            if leg_log_run is not None:
+                invoke_kwargs["leg_log_dir"] = leg_log_run.path
             invoke_kwargs.update(president_kwargs)
             result = invoke_board(board, artifact_text or "", **invoke_kwargs)
+            leg_details = tuple(leg.detail for leg in getattr(result, "legs", ()))
     except PresidentPolicyError as exc:
         # PRESROUTE: a refused president path (override, stream, resume) is a typed exit.
         print(f"advisor-board: president refused [{exc.code}]: {exc}", file=sys.stderr)
@@ -2611,13 +2595,10 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
     finally:
         if instruction_token is not None:
             reset_review_instruction_digest(instruction_token)
-        if leg_stream_dir is not None:
-            if (leg_stream_dir / "leg-logs").is_dir():
-                print(f"advisor-board: leg failure logs kept in {leg_stream_dir}", file=sys.stderr)
-            else:
-                import shutil
-
-                shutil.rmtree(leg_stream_dir, ignore_errors=True)
+        if leg_log_run is not None:
+            kept = leg_log_run.finish(leg_details)
+            if kept is not None:
+                print(f"advisor-board: leg failure logs kept in {kept}", file=sys.stderr)
     # PRESROUTE: the president rung deferred to this driving Claude Code session.
     pending_president = getattr(result, "needs_native_president", None)
     if pending_president is not None:

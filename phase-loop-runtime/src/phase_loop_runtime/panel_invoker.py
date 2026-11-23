@@ -19053,6 +19053,28 @@ def _default_spawn(
         and not _has_injected_review_execution_seam(leg=leg)
     ):
         return "UNAVAILABLE", "missing HARDEN review authorization"
+    native_host_deferral_only = (
+        leg == "claude"
+        and model is not None
+        and _under_claude_code(env)
+    )
+    brokered_route = (
+        mode == "review"
+        and review_authorization is not None
+        and not _has_injected_review_execution_seam(leg=leg)
+        and not native_host_deferral_only
+    )
+    broker_socket_base: str | None = None
+    if brokered_route:
+        # agent-harness#2131: the broker binds an AF_UNIX socket. Its base is admitted here,
+        # before any staging storage is chosen, and carried to the broker; a leg with no
+        # short safe base is refused with a typed code.
+        try:
+            broker_socket_base = _advisor_board_backing.broker_socket_base()
+        except ValueError as exc:
+            if review_monitor is not None:
+                return _BrokeredSpawnResult("DEGRADED", "", _exception_failure(exc), evidence=None)
+            return "DEGRADED", "", _exception_failure(exc)
     if capture_stage is None:
         # On a disk-backed per-user root, never RAM while a disk candidate exists
         # (agent-harness#1147). Only the opt-in PHASE_LOOP_SANDBOX_REFUSE_RAM refuses, and
@@ -19212,15 +19234,6 @@ def _default_spawn(
     try:
         if quiescence_latch is not None:
             quiescence_latch.raise_if_set()
-        if (
-            mode == "review"
-            and review_authorization is not None
-            and not _has_injected_review_execution_seam(leg=leg)
-            and not (leg == "claude" and model is not None and _under_claude_code(env))
-        ):
-            # agent-harness#2131: a brokered leg binds an AF_UNIX socket; refuse with a
-            # typed code before staging when no short base keeps its path within the limit.
-            _advisor_board_backing.broker_socket_base()
         if capture_stage is None:
             (review_dir / "review-bundle.md").write_text(artifact, encoding="utf-8")
             resolved_brief = _resolve_brief(mode, brief_ref)
@@ -19490,17 +19503,7 @@ def _default_spawn(
             extra["provider_authority"] = provider_authority
         if quiescence_latch is not None:
             extra["quiescence_latch"] = quiescence_latch
-        native_host_deferral_only = (
-            leg == "claude"
-            and model is not None
-            and _under_claude_code(env)
-        )
-        if (
-            mode == "review"
-            and review_authorization is not None
-            and not _has_injected_review_execution_seam(leg=leg)
-            and not native_host_deferral_only
-        ):
+        if brokered_route:
             # The namespace child can only submit this one bound request. The
             # parent, after validating it, retains the subscription adapter and
             # is the sole component that can contact a provider.
@@ -19525,6 +19528,7 @@ def _default_spawn(
                 model=broker_model,
                 staged_dir=review_dir,
                 canonical_repo=resolved_repo_dir,
+                socket_base=broker_socket_base,
             )
             response: dict[str, object] | None = None
             probe: Mapping[str, object] | None = None
@@ -20846,6 +20850,7 @@ def invoke_board(
     timeouts_by_leg: Mapping[str, int] | None = None,
     on_leg_complete: "Callable[[PanelLegResult], None] | None" = None,
     stream_dir: Path | str | None = None,
+    leg_log_dir: Path | str | None = None,
     research_policy: ResearchPolicy | None = None,
     agy_canary_capture: AgyCanaryCapture | None = None,
     landing_tier: ReviewLandingTier | str | None = None,
@@ -20945,7 +20950,12 @@ def invoke_board(
     (callback + an incremental per-leg verdict file in ``stream_dir``) so a consumer
     can reconcile as seats return; the consolidated ``PanelResult`` stays in seat
     order. Both ``None`` (default) is the byte-identical historical path.
+
+    ``leg_log_dir`` (agent-harness#2131): where an unknown failure's private leg log is
+    written when there is no ``stream_dir``. It enables nothing else: no verdict file,
+    seat-mode file or monitoring record is written there.
     """
+    leg_log_root = stream_dir if stream_dir is not None else leg_log_dir
     if brief_ref is not None and not _brief_pinned(brief_ref) and (
         landing_tier is not None or review_policy is not None
         or president_invoke is not None or native_president_fill is not None
@@ -21676,7 +21686,7 @@ def invoke_board(
                         seat_key=seat.seat_key,
                         detail=research_unavailable_detail
                         or "research_profile_unavailable",
-                        run_dir=stream_dir,
+                        run_dir=leg_log_root,
                     )
                 research_seat = research_run.seats[index]
                 if (
@@ -21725,7 +21735,7 @@ def invoke_board(
                     env_source,
                     board,
                     _skip,
-                    run_dir=stream_dir,
+                    run_dir=leg_log_root,
                 )
             if decision.backing != BACKING_HOMEBREW:
                 return _skip(
@@ -21756,7 +21766,7 @@ def invoke_board(
                     leg=leg,
                     status="DEGRADED",
                     text="",
-                    detail=_resolve_leg_detail(_exception_failure(exc), stream_dir, str(seat.seat_key)),
+                    detail=_resolve_leg_detail(_exception_failure(exc), leg_log_root, str(seat.seat_key)),
                     seat_key=seat.seat_key,
                 )
             try:
@@ -21833,7 +21843,7 @@ def invoke_board(
                     leg=leg,
                     status="DEGRADED",
                     text="",
-                    detail=_resolve_leg_detail(_exception_failure(exc), stream_dir, str(seat.seat_key)),
+                    detail=_resolve_leg_detail(_exception_failure(exc), leg_log_root, str(seat.seat_key)),
                     seat_key=seat.seat_key,
                 )
                 if getattr(exc, "_leg_exec_metadata", None) is not None:
@@ -21864,7 +21874,7 @@ def invoke_board(
             # A typed UNAVAILABLE text becomes the detail: resolve the spawn's detail only when
             # it will be kept, so no private log is written and then orphaned (r8).
             detail = None if (status == "UNAVAILABLE" and text_value in _TYPED_UNAVAILABLE_DETAILS) \
-                else _resolve_leg_detail(seat_detail, stream_dir, str(seat.seat_key))
+                else _resolve_leg_detail(seat_detail, leg_log_root, str(seat.seat_key))
             if status == "UNAVAILABLE" and text_value in _TYPED_UNAVAILABLE_DETAILS:
                 detail, text_value = text_value, ""
             result = PanelLegResult(

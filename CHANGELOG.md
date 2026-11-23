@@ -106,14 +106,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 - A long `TMPDIR` no longer fails a brokered review leg with the opaque "unknown failure;
   CLI output not retained" (agent-harness#2131). The broker's private 0700 socket root is
-  now created under a private `$XDG_RUNTIME_DIR`, else the temp dir, else `/tmp`, whichever
-  first keeps the AF_UNIX socket path within Linux's 107-byte limit. When none does, the leg
-  is refused before staging with the typed notice `seat_broker_socket_path_too_long`, whose
-  fix names the limit, `TMPDIR` and `XDG_RUNTIME_DIR`. The standalone `advisor-board`
-  now gives its legs a private 0700 run directory under the operator's state dir. A
-  failing leg's reason is kept there in `leg-logs/`, named by the board output, and the
-  directory is removed when no leg log was written. Callers that pass their own
-  `stream_dir`, such as the president tier, are unchanged.
+  now created under the first safe, short base: a private `$XDG_RUNTIME_DIR`, else the temp
+  dir, else a root-owned sticky `/tmp`. A base qualifies only when its path has no link and
+  no part another account can replace, and when the socket pathname, measured exactly as
+  it is bound, fits Linux's 107-byte AF_UNIX limit. When no base qualifies, the leg is
+  refused before any staging setup with the typed notice `seat_broker_socket_path_too_long`,
+  whose fix names the 56-byte limit for `TMPDIR` or `XDG_RUNTIME_DIR`. The standalone
+  `advisor-board` now hands `invoke_board` a failure-log-only directory (the new
+  `leg_log_dir`, which writes no verdict, seat-mode or monitoring file). It keeps only the
+  redacted, capped leg logs the board output names, in a private 0700 run under the
+  operator's state dir, and removes a run with none. At most 20 runs, none older than 14
+  days, are kept, and a run still in progress is never removed. The president tier keeps
+  its own stream directory unchanged.
 - The last eleven JEV Drill companion failures on the Windows legs (second follow-up to
   agent-harness#2092; POSIX behaviour is unchanged):
   - The Windows admitted child (`windows_process._admitted_child`) now writes the

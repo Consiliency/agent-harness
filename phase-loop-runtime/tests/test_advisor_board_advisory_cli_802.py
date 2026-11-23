@@ -236,10 +236,9 @@ def test_advisory_run_stages_the_contract_as_the_board_brief(monkeypatch, bundle
     [prepared] = run.prepare_calls
     assert prepared["stage_review_tree"] is False and prepared["mode"] == "review"
     [invoked] = run.invoke_calls
-    # Nothing on the advisory call can put it on a landing path. Its `stream_dir` is only
-    # the private run dir that keeps a failing leg's log (agent-harness#2131).
-    assert not {"landing_tier", "review_policy", "president_invoke", "native_president_fill"} & set(invoked)
-    assert "president" not in Path(invoked["stream_dir"]).parts
+    # Nothing on the advisory call can put it on a landing path.
+    assert not {"landing_tier", "review_policy", "president_invoke", "native_president_fill",
+                "stream_dir"} & set(invoked)
     # One brief for the whole board: every seat's review-instructions.md is this file.
     assert invoked["_brief_text"] == ADVISORY_CONTRACT
     assert Path(invoked["artifact_ref"]) == bundle.resolve()
