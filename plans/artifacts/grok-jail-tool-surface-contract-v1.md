@@ -514,8 +514,44 @@ to the leg:
   teardown removes seat-home. SL-4's reader scans for the leg's full secret set (the staged
   credential's scan values and the egress proxy credential) and their 12-character suffixes
   before it retains anything; a match retains nothing. Its result is kept only when the leg
-  returns its success classification (no output secret match, no refresh finding, a process
-  that exited); otherwise SL-4 discards it unretained.
+  returns the measurement success classification below; otherwise SL-4 discards it
+  unretained.
+
+**Measurement success predicate (r7).** The board predicate cannot classify a measurement.
+`_classify_leg(proc.returncode, review, proc.stderr, "review")` requires a conforming terminal
+review verdict, but the measurement prompt is fixed by TS contract §5.4 item 4: "Reply with
+the single word OK. Do not call any tool." That item also says the prompt "is not the
+control. §5.3 is." So the reply text never decides a measurement. The leg's predicate is the
+part of TS contract §5.5 that the leg can observe, quoted: "the launch exited 0". Erratum 3
+restates it: "The positive requirements of §5.5 are unchanged: exit 0, exactly one allowed
+counted request, the completion proof of BA-1."
+
+In the measurement branch, after the leg's existing secret, refresh, deadline and expiry
+returns (unchanged, and still first), the classification hunk is:
+`status = "OK" if proc.returncode == 0 else _classify_leg(proc.returncode, review,
+proc.stderr, "review")`. For a non-zero exit, `_classify_leg` only chooses among failure
+statuses. The rest of §5.5 is judged after settlement by SL-4's reader and the result
+record, not by the leg. That rest is: binary identity unchanged; exactly one allowed counted
+request, with no denial except erratum 3's tolerated refusals; exactly one
+`tool_definitions.json`; names extracted under §5.6. A tool call or a second model turn that
+makes a second inference `POST` is therefore disqualified there, because erratum 3 says "a
+second `POST` to the inference host, whether denied by the allow-list or by the spent
+budget". The leg does not disqualify it. The board-mode classification line stays
+byte-unchanged. This is a GROK (SL-4) hunk in `_exec_jailed_grok_leg`'s measurement branch.
+
+**Tests (SL-4.1).**
+- With a recording runner: a measurement run that exits 0 answering `OK` with no tool call is
+  `OK`, and its sink read is kept.
+- A measurement run that exits 0 with a review verdict, or with any other text, is also `OK`
+  at the leg, because the text is not the control. Whether it is `measured` is decided only
+  by §5.5.
+- A measurement run that exits non-zero, times out, hits a secret match or has a refresh
+  finding is not `OK`, and its sink read is discarded.
+- A run whose settled observation shows a second inference `POST` (the tool-call or
+  second-turn case) is `OK` at the leg and is not `measured`.
+- Board mode is unchanged.
+- Falsifier mutant: the measurement branch using the board predicate (`"review"`) fails the
+  first test.
 
 In measurement mode, after the process exits, the leg requires that `admission-<reservation
 id>` exists. If it does not, the leg treats the reservation as unresolved (charged in full),
@@ -1136,4 +1172,7 @@ hook mutant and the post-spawn admission check); E4 → §4.5 M2 (check 2 proves
 reader's result is kept only on success, and it scans the full secret set); E8 → §10 (stale
 comment and the EC-CLAUDE-3 receipt refresh); E9 → §3 (the scan names the jailed record) and
 the plan's SL-4 and SL-7 rows; E10 → §11 and §14 item 4 (agent-harness#2101). OWNER-DECISION
-r7-1 gains option (A′); it stays the owner's decision.
+r7-1 gains option (A′); it stays the owner's decision. A later fix from the review thread on
+agent-harness#2097 → §5.1: the measurement success predicate is TS contract §5.5's "the
+launch exited 0". The board predicate would require a review verdict that the fixed
+measurement prompt never produces.
