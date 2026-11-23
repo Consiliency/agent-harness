@@ -8,6 +8,8 @@ Three subcommands, none of which builds, pushes, pulls or starts anything:
   :func:`review_runner_pin.assemble_built_record`, checks it with
   :func:`review_runner_pin.validate_pin_record` against ``--repo-root`` and commits the raw
   manifest, the raw config and the ``built`` record under ``plans/evidence/review-runner/``.
+  It validates a staged copy first and publishes the three files as one set, so a refusal
+  never touches existing evidence; replacing existing evidence needs ``--replace``.
 - ``verify-receipt --receipt <json> --registry <host> --repository <name>`` promotes the
   committed ``built`` record with ai-stack's receipt through
   :func:`review_runner_pin.apply_receipt`, then requires a strict ``pinned`` verdict. The
@@ -24,6 +26,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import sys
 import tempfile
 from typing import Any, Mapping, Sequence
@@ -193,6 +196,11 @@ def _second_attempt(meta: Mapping[str, Any], layout: Path, second: Path,
     differing = [] if equal else sorted(
         {d for a, b in zip(first_layers, second_layers) if a != b for d in (a, b)}
         | set(first_layers[len(second_layers):]) | set(second_layers[len(first_layers):]))
+    if not equal and not differing:
+        # Only the config differs. P10 requires a non-empty layer list for unequal digests,
+        # and the schema holds layer digests only, so no record can describe this truthfully.
+        raise PinRecordError("pin_reproducibility_inconsistent", "P10",
+                             "build.reproduced.differing_layers")
     return {
         "attempted": True,
         "second_manifest_digest": second_digest,
@@ -203,15 +211,78 @@ def _second_attempt(meta: Mapping[str, Any], layout: Path, second: Path,
 
 
 def _write_atomic(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    _publish({path: data})
+
+
+def _publish(files: Mapping[Path, bytes]) -> None:
+    """Replace ``files`` as one set: stage every file, then swap them in, rolling back on error.
+
+    Existing targets are first moved aside as hidden backups in the same directory; if any
+    replacement fails, every target is restored from its backup (or removed if it was new).
+    """
+    staged: dict[Path, str] = {}
+    backups: dict[Path, str | None] = {}
     try:
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(data)
-        os.replace(tmp, path)
+        for path, data in files.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+            staged[path] = tmp
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+        for path, tmp in list(staged.items()):
+            backup = None
+            if os.path.lexists(path):
+                backup = str(path.parent / f".{path.name}.bak.{secrets.token_hex(8)}")
+                os.link(path, backup)  # fails on a name collision; the target stays in place
+            backups[path] = backup
+            os.replace(tmp, path)
+            del staged[path]
     except BaseException:
-        Path(tmp).unlink(missing_ok=True)
+        for path, backup in backups.items():
+            if path in staged:
+                continue
+            if backup is not None:
+                os.replace(backup, path)
+            else:
+                Path(path).unlink(missing_ok=True)
+        for tmp in staged.values():
+            Path(tmp).unlink(missing_ok=True)
+        for backup in backups.values():
+            if backup is not None:
+                Path(backup).unlink(missing_ok=True)
         raise
+    for backup in backups.values():
+        if backup is not None:
+            Path(backup).unlink(missing_ok=True)
+
+
+def _validate_staged(record: Mapping[str, Any], root: Path, manifest: bytes,
+                     config: bytes) -> Any:
+    """Strict ``validate_pin_record`` on a private copy, before any evidence path changes.
+
+    The copy holds the candidate manifest and config plus the checkout's Containerfile and
+    PIN.json, the only other files the validator reads under strict P4.
+    """
+    with tempfile.TemporaryDirectory(prefix="rrimage-record-") as staging:
+        stage = Path(staging)
+        inputs = {
+            record["artifact"]["manifest_path"]: manifest,
+            record["artifact"]["config_path"]: config,
+        }
+        for rel, field, code, rule in (
+                (record["source"]["containerfile_path"], "source.containerfile_path",
+                 "pin_containerfile_stale", "P4"),
+                (rp.PIN_JSON_PATH, "helper", "pin_helper_mismatch", "P5")):
+            try:
+                inputs[rel] = rp._read_regular(root / rel)
+            except OSError:
+                raise PinRecordError(code, rule, field) from None
+        for rel, data in inputs.items():
+            (stage / rel).parent.mkdir(parents=True, exist_ok=True)
+            (stage / rel).write_bytes(data)
+        return validate_pin_record(record, stage)
 
 
 def _record_bytes(record: Mapping[str, Any]) -> bytes:
@@ -231,13 +302,20 @@ def cmd_record(args: argparse.Namespace) -> int:
             raise PinRecordError("pin_schema_invalid", "P1", "build_meta")
         build["reproduced"] = _second_attempt(meta, Path(args.layout), Path(args.second_layout),
                                               args.deferred_finding)
+    root = Path(args.repo_root)
+    targets = (RECORD_PATH, f"{EVIDENCE_DIR}/manifest.json", f"{EVIDENCE_DIR}/config.json")
+    if not args.replace:
+        for rel in targets:
+            if os.path.lexists(root / rel):
+                raise RecipeError(f"evidence_exists: {rel} (pass --replace to re-record)")
     assembled = assemble_built_record(args.layout, meta)
     record = assembled.record
-    root = Path(args.repo_root)
-    _write_atomic(root / record["artifact"]["manifest_path"], assembled.manifest_bytes)
-    _write_atomic(root / record["artifact"]["config_path"], assembled.config_bytes)
-    verdict = validate_pin_record(record, root)
-    _write_atomic(root / RECORD_PATH, _record_bytes(record))
+    verdict = _validate_staged(record, root, assembled.manifest_bytes, assembled.config_bytes)
+    _publish({
+        root / record["artifact"]["manifest_path"]: assembled.manifest_bytes,
+        root / record["artifact"]["config_path"]: assembled.config_bytes,
+        root / RECORD_PATH: _record_bytes(record),
+    })
     print(f"recorded {verdict.record_status} {RECORD_PATH} record_sha256={verdict.record_sha256}")
     return 0
 
@@ -276,6 +354,8 @@ def _parser() -> argparse.ArgumentParser:
     record.add_argument("--second-layout")
     record.add_argument("--deferred-finding")
     record.add_argument("--repo-root", default=".")
+    record.add_argument("--replace", action="store_true",
+                        help="re-record over existing evidence (a re-pin, contract §2.1)")
 
     verify = sub.add_parser("verify-receipt", help="promote the built record with a receipt")
     verify.add_argument("--receipt", required=True)

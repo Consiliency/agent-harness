@@ -67,7 +67,7 @@ class Layout:
     """An OCI image layout on disk: ``oci-layout``, ``index.json`` and ``blobs/sha256``."""
 
     def __init__(self, root: Path, *, commit: str = COMMIT, containerfile_sha256: str = "c" * 64,
-                 layer: bytes = b"synthetic layer\n"):
+                 layer: bytes = b"synthetic layer\n", config_extra: dict | None = None):
         self.root = root
         (root / "blobs" / "sha256").mkdir(parents=True)
         (root / "oci-layout").write_text('{"imageLayoutVersion":"1.0.0"}')
@@ -76,6 +76,7 @@ class Layout:
         config["config"]["Labels"][rp.REVISION_LABEL] = commit
         config["config"]["Labels"][rp.CONTAINERFILE_LABEL] = containerfile_sha256
         config["rootfs"]["diff_ids"] = [layer_digest]
+        config.update(config_extra or {})
         self.config_bytes = dump(config)
         manifest = template("manifest.json")
         manifest["config"].update(digest=self.blob(self.config_bytes), size=len(self.config_bytes))
@@ -433,6 +434,99 @@ def test_record_reproduction_mismatch_needs_deferred_finding(cli, tmp_path, caps
     assert reproduced["second_manifest_digest"] == second.manifest_digest
     assert reproduced["differing_layers"] == sorted([first.layer_digest, second.layer_digest])
     assert reproduced["deferred_finding"] == "Consiliency/agent-harness#1"
+
+
+@needs_checkout
+def test_record_config_only_reproduction_difference_is_named(cli, tmp_path, capsys, checkout):
+    """Same layers, different config: the manifest digests differ but no layer does.
+
+    Contract §2 P10 ("`equal=false` implies a non-empty `differing_layers`") and the schema
+    (``differing_layers`` items are layer digests) leave no truthful form for this case, so
+    ``record`` refuses before writing and names the field that cannot be filled."""
+    first = checkout.layout(tmp_path / "layout-1")
+    second = checkout.layout(tmp_path / "layout-2",
+                             config_extra={"history": [{"comment": "second attempt"}]})
+    assert first.layer_digest == second.layer_digest
+    assert first.manifest_digest != second.manifest_digest
+    code, out, err = checkout.record(cli, capsys, first.root, checkout.meta(),
+                                     "--second-layout", second.root,
+                                     "--deferred-finding", "Consiliency/agent-harness#1")
+    assert code == 2 and out == ""
+    assert err.rstrip().endswith(
+        "P10 pin_reproducibility_inconsistent: build.reproduced.differing_layers")
+    assert not (checkout.root / EVIDENCE).exists()
+
+
+def _evidence_bytes(checkout):
+    evidence = checkout.root / EVIDENCE
+    return {name: (evidence / name).read_bytes()
+            for name in ("pin-record.json", "manifest.json", "config.json")}
+
+
+@pytest.fixture
+def recorded(cli, tmp_path, capsys, checkout):
+    layout = checkout.layout(tmp_path / "layout-a")
+    code, _, err = checkout.record(cli, capsys, layout.root, checkout.meta())
+    assert (code, err) == (0, "")
+    return checkout
+
+
+@needs_checkout
+def test_record_rerun_without_replace_preserves_evidence(cli, tmp_path, capsys, recorded):
+    before = _evidence_bytes(recorded)
+    other = recorded.layout(tmp_path / "layout-b", layer=b"other layer\n")
+    code, out, err = recorded.record(cli, capsys, other.root, recorded.meta())
+    assert code == 2 and out == "" and "evidence_exists" in err
+    assert _evidence_bytes(recorded) == before
+
+
+@needs_checkout
+def test_record_rejected_rerun_preserves_evidence(cli, tmp_path, capsys, recorded):
+    """A replacement that fails strict P4 leaves all three evidence files byte-identical."""
+    before = _evidence_bytes(recorded)
+    other = Layout(tmp_path / "layout-b", containerfile_sha256="c" * 64)
+    meta = recorded.meta()
+    meta["source"]["containerfile_sha256"] = "c" * 64
+    code, out, err = recorded.record(cli, capsys, other.root, meta, "--replace")
+    assert code == 2 and out == "" and "P4 pin_containerfile_stale" in err
+    assert _evidence_bytes(recorded) == before
+    leftovers = sorted(p.name for p in (recorded.root / EVIDENCE).iterdir())
+    assert leftovers == ["config.json", "manifest.json", "pin-record.json"]
+
+
+@needs_checkout
+def test_record_replace_publishes_consistent_set(cli, tmp_path, capsys, recorded):
+    other = recorded.layout(tmp_path / "layout-b", layer=b"other layer\n")
+    code, _, err = recorded.record(cli, capsys, other.root, recorded.meta(), "--replace")
+    assert (code, err) == (0, "")
+    after = _evidence_bytes(recorded)
+    assert after["manifest.json"] == other.manifest_bytes
+    assert after["config.json"] == other.config_bytes
+    record = json.loads(after["pin-record.json"])
+    assert record["artifact"]["manifest_digest"] == other.manifest_digest
+    assert rp.validate_pin_record(record, recorded.root).status == "built"
+
+
+@needs_checkout
+def test_record_publication_failure_restores_evidence(cli, tmp_path, capsys, recorded,
+                                                      monkeypatch):
+    """If the last replacement fails, the earlier ones are rolled back."""
+    before = _evidence_bytes(recorded)
+    other = recorded.layout(tmp_path / "layout-b", layer=b"other layer\n")
+    real_replace = os.replace
+
+    def failing_replace(src, dst, *args, **kwargs):
+        if Path(dst).name == "pin-record.json" and Path(src).name.startswith(".pin-record.json."):
+            raise OSError("injected publication failure")
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+    with pytest.raises(OSError, match="injected"):
+        recorded.record(cli, capsys, other.root, recorded.meta(), "--replace")
+    monkeypatch.undo()
+    assert _evidence_bytes(recorded) == before
+    leftovers = sorted(p.name for p in (recorded.root / EVIDENCE).iterdir())
+    assert leftovers == ["config.json", "manifest.json", "pin-record.json"]
 
 
 @needs_checkout
