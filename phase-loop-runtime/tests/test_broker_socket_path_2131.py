@@ -186,16 +186,30 @@ def test_the_exact_byte_boundary_binds_at_107_and_passes_over_108(multibyte, lon
     assert backing.broker_socket_base() == "/tmp"
 
 
-def test_a_redundant_spelling_is_measured_and_bound_as_one_pathname(long_tmpdir, short_root,
-                                                                   tmp_path, monkeypatch):
+def test_a_normalized_spelling_is_measured_and_bound_as_one_pathname(long_tmpdir, short_root,
+                                                                     tmp_path, monkeypatch):
     fits = _base_of(short_root, 107 - SUFFIX_BYTES, multibyte=False)
-    _private(short_root / "x")
-    # 107 bytes only once `x/..` is collapsed; its spelled form is longer.
-    monkeypatch.setenv("XDG_RUNTIME_DIR", str(short_root / "x" / ".." / fits.name))
+    # 107 bytes only once `/./` and the trailing `/` are collapsed.
+    monkeypatch.setenv("XDG_RUNTIME_DIR", f"{short_root}/./{fits.name}/")
     assert backing.broker_socket_base() == str(fits)
     with _real_broker(tmp_path) as broker:
         assert str(broker.path).startswith(str(fits) + "/")
         assert len(os.fsencode(str(broker.path))) == 107 and broker.path.is_socket()
+
+
+@pytest.mark.parametrize("variable", ["XDG_RUNTIME_DIR", "TMPDIR"])
+def test_a_link_before_a_parent_step_is_refused_and_falls_through(variable, long_tmpdir,
+                                                                   short_root, monkeypatch):
+    """`link/..` reaches the link target's parent in the kernel, not `short_root`: the
+    lexical collapse would admit `short_root/runtime`, a directory the variable never
+    names. A spelling with `..` is refused and the next safe base is used."""
+    elsewhere = _private(_private(short_root / "elsewhere") / "deeper")
+    (short_root / "link").symlink_to(elsewhere)
+    _private(short_root / "runtime")
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.setenv(variable, f"{short_root}/link/../runtime")
+    monkeypatch.setattr(tempfile, "tempdir", None)
+    assert backing.broker_socket_base() == "/tmp"
 
 
 def _no_short_base(tmp_path, monkeypatch):
@@ -317,9 +331,10 @@ def test_advisor_board_keeps_only_the_failing_legs_log(tmp_path, monkeypatch):
     run = Path(kept.group(1))
     assert run.parent == leg_log_runs.runs_parent()
     assert run.is_relative_to(seat_jail.state_home())
-    # The run holds the one diagnostic the board output names, and nothing else.
+    # The run holds the one diagnostic the board output names and its empty completion
+    # marker, and nothing else.
     files = sorted(p.relative_to(run).as_posix() for p in run.rglob("*") if not p.is_dir())
-    assert files == [ref.group(0)]
+    assert files == [".done", ref.group(0)] and (run / ".done").stat().st_size == 0
     assert stat.S_IMODE(run.stat().st_mode) == 0o700
     assert stat.S_IMODE((run / "leg-logs").stat().st_mode) == 0o700
     assert stat.S_IMODE((run / ref.group(0)).stat().st_mode) == 0o600
@@ -331,7 +346,7 @@ def test_advisor_board_keeps_only_the_failing_legs_log(tmp_path, monkeypatch):
     # A later board with no failing leg keeps no run of its own.
     _out, err = _board_run(tmp_path / "passing", monkeypatch, failing=set())
     assert "leg failure logs kept" not in err
-    assert [p.name for p in leg_log_runs.runs_parent().iterdir()] == [run.name]
+    assert [p.name for p in leg_log_runs.runs_parent().iterdir() if p.is_dir()] == [run.name]
 
 
 def test_an_unpublished_log_is_not_kept(tmp_path):
@@ -354,6 +369,130 @@ def test_an_unsafe_state_parent_gets_no_run(tmp_path, monkeypatch):
         open_dir.chmod(0o700)
 
 
+def test_a_state_path_with_a_parent_step_gets_no_run(tmp_path, monkeypatch):
+    target = _private(_private(tmp_path / "elsewhere") / "deeper")
+    (tmp_path / "link").symlink_to(target)
+    monkeypatch.setenv("XDG_STATE_HOME", f"{tmp_path}/link/../state")
+    assert leg_log_runs.LegLogRun.start() is None
+    assert not (tmp_path / "state").exists() and not (tmp_path / "elsewhere" / "state").exists()
+
+
+def test_a_linked_state_home_creates_nothing_through_the_link(tmp_path, monkeypatch):
+    target = _private(tmp_path / "target")
+    (tmp_path / "state-link").symlink_to(target)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-link"))
+    assert leg_log_runs.LegLogRun.start() is None
+    assert list(target.iterdir()) == []
+
+
+def _fd_count() -> int:
+    return len(os.listdir("/proc/self/fd"))
+
+
+def test_a_lock_failure_runs_the_board_without_retention(tmp_path, monkeypatch):
+    def refuse(*_a, **_k):
+        raise OSError(38, "locks not supported")
+
+    monkeypatch.setattr(leg_log_runs, "fcntl", types.SimpleNamespace(
+        flock=refuse, LOCK_EX=fcntl.LOCK_EX, LOCK_NB=fcntl.LOCK_NB))
+    before = _fd_count()
+    assert leg_log_runs.LegLogRun.start() is None
+    assert _fd_count() == before
+    parent = leg_log_runs.runs_parent()
+    assert not parent.exists() or not [p for p in parent.iterdir() if p.is_dir()]
+    _out, err = _board_run(tmp_path / "board", monkeypatch, failing={"codex"})
+    [line] = [line for line in err.splitlines() if "[DEGRADED] codex:" in line]
+    assert "CLI output not retained" in line and "leg failure logs kept" not in err
+
+
+def _completed_runs(parent: Path, count: int, *, newest: float) -> list[Path]:
+    runs = []
+    for index in range(count):
+        run = _private(parent / f"advisor-board-done{index:04d}")
+        (run / ".done").touch()
+        stamp = newest - index * 60
+        os.utime(run / ".done", (stamp, stamp))
+        os.utime(run, (stamp, stamp))
+        runs.append(run)
+    return runs
+
+
+def test_a_pruner_never_removes_a_run_that_completes_during_its_pass(tmp_path, monkeypatch):
+    """The pruner lists while the board is running (its directory old, ranked last); the
+    board then completes. Under the parent lock the completion waits for the pass, the
+    running board is skipped, and it is ranked by completion afterwards."""
+    import threading
+
+    run = leg_log_runs.LegLogRun.start()
+    assert run is not None
+    (run.path / "leg-logs").mkdir(mode=0o700)
+    (run.path / "leg-logs" / "codex-0.log").write_text("AF_UNIX path too long")
+    old = time.time() - 3600
+    os.utime(run.path, (old, old))
+    _completed_runs(run.path.parent, leg_log_runs.KEEP_RUNS, newest=time.time() - 60)
+    reached, release = threading.Event(), threading.Event()
+    real_held = leg_log_runs._held
+
+    def paused_held(candidate):
+        if candidate == run.path and not reached.is_set():
+            reached.set()
+            release.wait(5)
+        return real_held(candidate)
+
+    monkeypatch.setattr(leg_log_runs, "_held", paused_held)
+    pruner = threading.Thread(target=leg_log_runs.prune, args=(run.path.parent,),
+                              kwargs={"keep": leg_log_runs.KEEP_RUNS,
+                                      "max_age_s": leg_log_runs.MAX_AGE_S})
+    pruner.start()
+    assert reached.wait(5)
+    kept: list = []
+    finisher = threading.Thread(target=lambda: kept.append(
+        run.finish(["unknown failure; CLI output: leg-logs/codex-0.log"])))
+    finisher.start()
+    finisher.join(0.5)
+    release.set()
+    pruner.join(5)
+    finisher.join(5)
+    assert kept == [run.path] and (run.path / "leg-logs" / "codex-0.log").is_file()
+
+
+def test_a_pruner_never_sees_a_half_registered_run(tmp_path, monkeypatch):
+    """Between creating a run directory and locking its marker, a pruner (here keeping
+    none) waits on the parent lock instead of taking the new run for an abandoned one."""
+    import threading
+
+    reached, release = threading.Event(), threading.Event()
+    real_os = os
+
+    class PausingOs:
+        def __getattr__(self, name):
+            return getattr(real_os, name)
+
+        @staticmethod
+        def mkdir(path, *args, **kwargs):
+            real_os.mkdir(path, *args, **kwargs)
+            if real_os.path.basename(real_os.fspath(path)).startswith("advisor-board-"):
+                reached.set()
+                release.wait(5)
+
+    leg_log_runs.runs_parent().mkdir(mode=0o700, parents=True)
+    monkeypatch.setattr(leg_log_runs, "os", PausingOs())
+    started: list = []
+    starter = threading.Thread(target=lambda: started.append(leg_log_runs.LegLogRun.start()))
+    starter.start()
+    assert reached.wait(5)
+    pruner = threading.Thread(target=leg_log_runs.prune, args=(leg_log_runs.runs_parent(),),
+                              kwargs={"keep": 0, "max_age_s": leg_log_runs.MAX_AGE_S})
+    pruner.start()
+    pruner.join(0.5)
+    release.set()
+    starter.join(5)
+    pruner.join(5)
+    [run] = started
+    assert run is not None and run.path.is_dir() and (run.path / ".active").exists()
+    run.finish([])
+
+
 def test_kept_runs_are_bounded_and_a_held_run_is_never_removed(tmp_path):
     parent = _private(tmp_path / "board-runs")
     now = time.time()
@@ -373,7 +512,7 @@ def test_kept_runs_are_bounded_and_a_held_run_is_never_removed(tmp_path):
         leg_log_runs.prune(parent, keep=leg_log_runs.KEEP_RUNS, max_age_s=leg_log_runs.MAX_AGE_S)
     finally:
         os.close(fd)
-    left = {p.name for p in parent.iterdir()}
+    left = {p.name for p in parent.iterdir()} - {".lock"}
     assert {r.name for r in runs[:leg_log_runs.KEEP_RUNS]} <= left
     assert held.name in left and old.name not in left
     assert len(left) == leg_log_runs.KEEP_RUNS + 1

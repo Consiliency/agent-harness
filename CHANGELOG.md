@@ -107,16 +107,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - A long `TMPDIR` no longer fails a brokered review leg with the opaque "unknown failure;
   CLI output not retained" (agent-harness#2131). The broker's private 0700 socket root is
   now created under the first safe, short base: a private `$XDG_RUNTIME_DIR`, else the temp
-  dir, else a root-owned sticky `/tmp`. A base qualifies only when its path has no link and
-  no part another account can replace, and when the socket pathname, measured exactly as
+  dir, else a root-owned sticky `/tmp`. A base qualifies only when its path has no link, no
+  `..` step and no part another account can replace, and when the socket pathname, measured exactly as
   it is bound, fits Linux's 107-byte AF_UNIX limit. When no base qualifies, the leg is
   refused before any staging setup with the typed notice `seat_broker_socket_path_too_long`,
   whose fix names the 56-byte limit for `TMPDIR` or `XDG_RUNTIME_DIR`. The standalone
   `advisor-board` now hands `invoke_board` a failure-log-only directory (the new
   `leg_log_dir`, which writes no verdict, seat-mode or monitoring file). It keeps only the
   redacted, capped leg logs the board output names, in a private 0700 run under the
-  operator's state dir, and removes a run with none. At most 20 runs, none older than 14
-  days, are kept, and a run still in progress is never removed. The president tier keeps
+  operator's state dir, reached without following links, and removes a run with none.
+  At most 20 runs, none older than 14 days, are kept, ranked by completion under one lock
+  on their parent, and a run still in progress is never removed. When that directory or
+  its lock is unavailable, the board runs without retention. The president tier keeps
   its own stream directory unchanged.
 - The last eleven JEV Drill companion failures on the Windows legs (second follow-up to
   agent-harness#2092; POSIX behaviour is unchanged):

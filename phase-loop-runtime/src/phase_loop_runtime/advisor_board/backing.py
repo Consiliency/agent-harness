@@ -571,7 +571,6 @@ def trusted_directory(path: str, *, private: bool = False) -> str | None:
     if not isinstance(path, str) or not path.startswith("/") or path.startswith("//") \
             or os.path.normpath(path) != path:
         return None
-    uid = os.getuid()
     current = "/"
     for part in ("", *path.split("/")[1:]):
         current = os.path.join(current, part) if part else current
@@ -579,14 +578,38 @@ def trusted_directory(path: str, *, private: bool = False) -> str | None:
             info = os.lstat(current)
         except OSError:
             return None
-        mode = stat.S_IMODE(info.st_mode)
-        if not stat.S_ISDIR(info.st_mode) or info.st_uid not in {0, uid}:
+        if not trusted_component(info):
             return None
-        if mode & 0o022 and not (info.st_uid == 0 and mode & stat.S_ISVTX):
-            return None
-    if private and (info.st_uid != uid or mode != 0o700):
+    if private and (info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700):
         return None
     return path
+
+
+def trusted_component(info: os.stat_result) -> bool:
+    """A real directory owned by root or this account that no one else can write to,
+    except a root-owned sticky directory, where only an entry's owner can rename it."""
+    mode = stat.S_IMODE(info.st_mode)
+    return (stat.S_ISDIR(info.st_mode) and info.st_uid in {0, os.getuid()}
+            and (not mode & 0o022 or (info.st_uid == 0 and bool(mode & stat.S_ISVTX))))
+
+
+def spelled_without_parent_steps(raw: str | None) -> str | None:
+    """``raw`` normalized, or ``None`` when it is not absolute or has a ``..`` component:
+    the kernel follows a link before applying ``..``, so collapsing it lexically could
+    name a different directory than the one the variable reaches."""
+    if not raw or not raw.startswith("/") or ".." in raw.split("/"):
+        return None
+    return os.path.normpath(raw)
+
+
+def _temp_dir_spelling() -> str | None:
+    """The temp dir as its variable spells it, refused like any base with a ``..``."""
+    chosen = tempfile.gettempdir()
+    for name in ("TMPDIR", "TEMP", "TMP"):
+        value = os.environ.get(name)
+        if value and os.path.abspath(value) == chosen:
+            return spelled_without_parent_steps(value)
+    return spelled_without_parent_steps(chosen)
 
 
 def _broker_socket_path(base: str, name: str) -> str:
@@ -600,11 +623,11 @@ def _fits(base: str) -> bool:
 
 
 def _socket_base_candidates() -> tuple[str | None, ...]:
-    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    runtime = spelled_without_parent_steps(os.environ.get("XDG_RUNTIME_DIR"))
+    temp = _temp_dir_spelling()
     return (
-        trusted_directory(os.path.normpath(runtime), private=True)
-        if runtime and runtime.startswith("/") else None,
-        trusted_directory(os.path.normpath(tempfile.gettempdir())),
+        trusted_directory(runtime, private=True) if runtime is not None else None,
+        trusted_directory(temp) if temp is not None else None,
         _sticky_tmp(),
     )
 
