@@ -16,6 +16,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -492,10 +493,38 @@ def test_record_rejected_rerun_preserves_evidence(cli, tmp_path, capsys, recorde
     assert _evidence_bytes(recorded) == before
     leftovers = sorted(p.name for p in (recorded.root / EVIDENCE).iterdir())
     assert leftovers == ["config.json", "manifest.json", "pin-record.json"]
+    assert not (recorded.root / "plans/evidence/.review-runner.txn").exists()
+
+
+TXN = "plans/evidence/.review-runner.txn"
+
+
+def _unrelated(checkout):
+    """Unrelated evidence entries that every publication must carry over unchanged."""
+    evidence = checkout.root / EVIDENCE
+    (evidence / "RRIMAGE.md").write_text("evidence notes\n")
+    (evidence / "RRIMAGE.md").chmod(0o640)
+    (evidence / "pin-record.stale.json").write_text('{"schema": "review_runner_pin_stale.v1"}\n')
+    (evidence / "notes").mkdir()
+    (evidence / "notes" / "a.txt").write_text("a\n")
+    os.symlink("RRIMAGE.md", evidence / "link.md")
+
+
+def _unrelated_state(checkout):
+    evidence = checkout.root / EVIDENCE
+    return {
+        "RRIMAGE.md": ((evidence / "RRIMAGE.md").read_bytes(),
+                       (evidence / "RRIMAGE.md").stat().st_mode & 0o777),
+        "pin-record.stale.json": (evidence / "pin-record.stale.json").read_bytes(),
+        "notes/a.txt": (evidence / "notes" / "a.txt").read_bytes(),
+        "link.md": os.readlink(evidence / "link.md"),
+    }
 
 
 @needs_checkout
 def test_record_replace_publishes_consistent_set(cli, tmp_path, capsys, recorded):
+    _unrelated(recorded)
+    unrelated = _unrelated_state(recorded)
     other = recorded.layout(tmp_path / "layout-b", layer=b"other layer\n")
     code, _, err = recorded.record(cli, capsys, other.root, recorded.meta(), "--replace")
     assert (code, err) == (0, "")
@@ -505,28 +534,121 @@ def test_record_replace_publishes_consistent_set(cli, tmp_path, capsys, recorded
     record = json.loads(after["pin-record.json"])
     assert record["artifact"]["manifest_digest"] == other.manifest_digest
     assert rp.validate_pin_record(record, recorded.root).status == "built"
+    assert _unrelated_state(recorded) == unrelated
+    assert not (recorded.root / TXN).exists()
 
 
 @needs_checkout
-def test_record_publication_failure_restores_evidence(cli, tmp_path, capsys, recorded,
-                                                      monkeypatch):
-    """If the last replacement fails, the earlier ones are rolled back."""
-    before = _evidence_bytes(recorded)
+def test_record_published_files_are_private(cli, tmp_path, capsys, recorded):
+    for name in ("pin-record.json", "manifest.json", "config.json"):
+        assert (recorded.root / EVIDENCE / name).stat().st_mode & 0o777 == 0o600, name
     other = recorded.layout(tmp_path / "layout-b", layer=b"other layer\n")
-    real_replace = os.replace
+    assert recorded.record(cli, capsys, other.root, recorded.meta(), "--replace")[0] == 0
+    for name in ("pin-record.json", "manifest.json", "config.json"):
+        assert (recorded.root / EVIDENCE / name).stat().st_mode & 0o777 == 0o600, name
 
-    def failing_replace(src, dst, *args, **kwargs):
-        if Path(dst).name == "pin-record.json" and Path(src).name.startswith(".pin-record.json."):
-            raise OSError("injected publication failure")
-        return real_replace(src, dst, *args, **kwargs)
 
-    monkeypatch.setattr(os, "replace", failing_replace)
+@needs_checkout
+def test_record_commit_failure_keeps_old_generation(cli, tmp_path, capsys, recorded,
+                                                    monkeypatch):
+    """A failure at the directory commit leaves every old entry and removes the staging."""
+    _unrelated(recorded)
+    before, unrelated = _evidence_bytes(recorded), _unrelated_state(recorded)
+    other = recorded.layout(tmp_path / "layout-b", layer=b"other layer\n")
+
+    def failing_switch(evidence, txn_fd):
+        raise OSError("injected commit failure")
+
+    monkeypatch.setattr(cli, "_switch", failing_switch)
     with pytest.raises(OSError, match="injected"):
         recorded.record(cli, capsys, other.root, recorded.meta(), "--replace")
-    monkeypatch.undo()
     assert _evidence_bytes(recorded) == before
-    leftovers = sorted(p.name for p in (recorded.root / EVIDENCE).iterdir())
-    assert leftovers == ["config.json", "manifest.json", "pin-record.json"]
+    assert _unrelated_state(recorded) == unrelated
+    assert not (recorded.root / TXN).exists()
+
+
+CRASH_DRIVER = """
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("review_runner_image", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+real, side = module._switch, sys.argv[2]
+
+def switch(evidence, txn_fd):
+    if side == "before":
+        os._exit(17)
+    real(evidence, txn_fd)
+    os._exit(17)
+
+module._switch = switch
+sys.exit(module.main(sys.argv[3:]))
+"""
+
+
+@needs_checkout
+@pytest.mark.parametrize("side", ["before", "after"])
+def test_record_process_exit_around_commit(cli, tmp_path, capsys, recorded, side):
+    """A process killed on either side of the commit leaves one whole generation live, and
+    the next validated invocation clears the abandoned staging."""
+    _unrelated(recorded)
+    before, unrelated = _evidence_bytes(recorded), _unrelated_state(recorded)
+    other = recorded.layout(tmp_path / "layout-b", layer=b"other layer\n")
+    meta_path = write_json(tmp_path / "meta-b.json", recorded.meta())
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join(
+        [str(PKG_ROOT / "src"), os.environ.get("PYTHONPATH", "")]))
+    child = subprocess.run(
+        [sys.executable, "-c", CRASH_DRIVER, str(SCRIPT), side, "record",
+         "--layout", str(other.root), "--meta", str(meta_path),
+         "--repo-root", str(recorded.root), "--replace"],
+        env=env, capture_output=True, timeout=120, check=False)
+    assert child.returncode == 17, child.stderr
+    live = _evidence_bytes(recorded)
+    if side == "before":
+        assert live == before
+    else:
+        assert live["manifest.json"] == other.manifest_bytes
+        assert live["config.json"] == other.config_bytes
+        record = json.loads(live["pin-record.json"])
+        assert record["artifact"]["manifest_digest"] == other.manifest_digest
+    assert _unrelated_state(recorded) == unrelated
+    assert (recorded.root / TXN).is_dir()
+
+    third = recorded.layout(tmp_path / "layout-c", layer=b"third layer\n")
+    code, _, err = recorded.record(cli, capsys, third.root, recorded.meta(), "--replace")
+    assert (code, err) == (0, "")
+    assert not (recorded.root / TXN).exists()
+    assert _evidence_bytes(recorded)["manifest.json"] == third.manifest_bytes
+    assert _unrelated_state(recorded) == unrelated
+
+
+@needs_checkout
+def test_record_refuses_foreign_abandoned_staging(cli, tmp_path, capsys, recorded):
+    txn = recorded.root / TXN
+    txn.mkdir(mode=0o755)
+    txn.chmod(0o755)
+    (txn / "keep").write_text("x")
+    before = _evidence_bytes(recorded)
+    other = recorded.layout(tmp_path / "layout-b", layer=b"other layer\n")
+    code, _, err = recorded.record(cli, capsys, other.root, recorded.meta(), "--replace")
+    assert code == 2 and "evidence_unsafe" in err
+    assert (txn / "keep").read_text() == "x"
+    assert _evidence_bytes(recorded) == before
+
+
+@needs_checkout
+def test_record_refuses_symlinked_evidence_directory(cli, tmp_path, capsys, checkout):
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    (target / "keep.txt").write_text("untouched\n")
+    (checkout.root / "plans" / "evidence").mkdir(parents=True)
+    os.symlink(target, checkout.root / EVIDENCE)
+    layout = checkout.layout(tmp_path / "layout")
+    code, out, err = checkout.record(cli, capsys, layout.root, checkout.meta())
+    assert code == 2 and out == "" and "evidence_unsafe: plans/evidence/review-runner" in err
+    assert sorted(p.name for p in target.iterdir()) == ["keep.txt"]
+    assert (target / "keep.txt").read_text() == "untouched\n"
+    assert os.path.islink(checkout.root / EVIDENCE)
+    assert not (checkout.root / TXN).exists()
 
 
 @needs_checkout
