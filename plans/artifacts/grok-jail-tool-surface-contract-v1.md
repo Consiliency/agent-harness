@@ -298,7 +298,9 @@ EC-GROK-1's tool write, and (b) waiting for a later image or erratum.
   point with a recording runner. Before `--aggregate`, `--verify-probe final` writes no jailed
   receipt. After it, the check writes exactly one, equal to `jail_receipt(...)` for the
   record, and the unjailed `tool_probe.v1` bytes are unchanged. A source scan finds no other
-  caller of `write_jail_receipt` and no other writer of the host-local record's name.
+  caller of `write_jail_receipt`, and no writer of `grok_jail_surface.host_record_name(...)`
+  (the jailed name) other than SL-4's `--aggregate`. The unjailed
+  `grok_tool_surface.host_record_name` writers are a different name and are out of the scan.
 - **Repo evidence** `plans/evidence/seat-grok/tool-surface.json`
   (`grok_tool_surface_evidence_set.v1`); a jailed aggregate carries the context, both
   digests, the per-label launches (§5.3) and the release it was captured on. Catalog parity
@@ -421,14 +423,17 @@ step; the code it adds is named in §10.
   consumed. The probe runs in H and not in the jail. A second process in the launch's jail
   would mean spawning the single-use owner a second time. The identity probe runs in a probe
   jail of the same shape, not on this sink, and it is SDK proof code. The same credentials act
-  on the same inode the jail binds, and check 3's mount policy proves that the bind is a
-  read-write `--bind` at `.grok/sessions`.
+  on the same inode the jail binds, and check 2 (`launch_digest` with `measurement=True`,
+  through `production_owner`'s exact `--bind <sink_source(home)> /seat/home/.grok/sessions`
+  match) proves the bind is the one declared difference. Check 3 runs on the substituted
+  owner and does not see the bind.
 - **M3. Leg.** SL-4 calls `_exec_jailed_grok_leg(grok_seat, ..., measurement=<the
   JailedMeasurementLaunch>, read_sink=<SL-4's reader>)` (§5.1 "Launch path").
 - **M4. Verify.** `_grok_jailed_spawn_check` runs §4.4 in measurement mode and issues the
   mark. Nothing is consumed.
 - **M5. Spawn.** `_grok_jailed_spawn_check` returns a spawn hook in measurement mode, and
-  `None` in board mode. `_run_leg_with_liveness` passes it to `launch_provider` as
+  `None` in board mode. It returns a hook only for a measurement that is a
+  `JailedMeasurementLaunch` issued by `prepare_measurement` (`issuer is _ISSUER`). `_run_leg_with_liveness` passes it to `launch_provider` as
   `spawn_hook`. Inside `launch_provider` the order is: `_require_qualified_jail` (with the
   measurement clause of §5.1), the jailed identity probe, the capped launch's preflight, then
   the hook, then `Popen`. The hook is `grok_jail_surface.consume_admission`. It re-derives the
@@ -440,8 +445,11 @@ only after the qualification check and the identity probe have passed. When a st
 to M5 refuses before the hook returns, no admission file exists. The absence of that file
 is positive proof that no provider process started for the reservation. SL-4 settles such a
 reservation `unspawned` and charges no counted request (BA-1 still holds: the settlement
-rests on positive proof). If the hook succeeded and `Popen` then failed, the admission is
-consumed and the reservation has no settlement; §5.1 item 5 still applies to it. How an
+rests on positive proof). If the hook succeeded and the spawn then failed (`Popen` of the
+capped helper, its attestation, or its gate), the admission is consumed and the reservation
+has no settlement; §5.1 item 5 still applies to it and it is charged in full, although no
+provider process ran. The same holds when `consume_admission` fails after its
+`O_CREAT|O_EXCL` succeeded (a write or fsync error): the file exists, so the charge stands. How an
 `unspawned` label resumes is **OWNER-DECISION r7-1** (§20). Until the owner rules, an
 `unspawned` settlement stops the procedure, and nothing more is launched under the grant.
 
@@ -477,9 +485,14 @@ The measurement does not enter `seat_route.resolve`'s L6 and gains no general by
 `profile_digest`. A measurement jail fails that comparison, because its owner carries the
 sink bind. SL-4 adds one clause to `_require_qualified_jail`. The clause applies only when
 `jail.leg == "grok"` and `_GROK_JAILED_LAUNCH` holds measurement mode for this exact jail
-object (identity, not equality). Under the clause, the digest compared is
-`actual_profile_digest` of the jail with `grok_jail_surface.production_owner(jail,
-measurement=True)` as its owner. That is SL-3's `_production_owner`, made public. It is the
+object (identity, not equality) and whose measurement is a `JailedMeasurementLaunch` issued by
+`prepare_measurement` (`issuer is _ISSUER`). Under the clause, `_require_qualified_jail` first
+rebinds `jail` to `dataclasses.replace(jail,
+process_owner=grok_jail_surface.production_owner(jail, measurement=True))`, and both
+`_require_canonical_jail` and the `qualification_key.profile_digest` comparison run on that
+jail. A `JailRefused` from the substitution is `seat_sandbox_refused:identity`.
+`_pass_refusal(key)` is unchanged. `production_owner` is SL-3's `_production_owner`, made
+public. It is the
 same single substitution `launch_digest` makes, and it refuses unless the owner differs from
 production by exactly the one sink bind, at the tmpfs's position. The pass that is looked up
 is the production key's, the pass item 1 already reads. For every other jail the function is
@@ -498,8 +511,15 @@ to the leg:
   `read_sink` is `None`.
 - `read_sink: Callable[[str], object] | None = None`. The leg calls it with the sink path after
   the process exits and after the after-check, inside the `try` and before the `finally`
-  teardown removes seat-home. SL-4's reader scans for `measurement.scan_values` before it
-  retains anything.
+  teardown removes seat-home. SL-4's reader scans for the leg's full secret set (the staged
+  credential's scan values and the egress proxy credential) and their 12-character suffixes
+  before it retains anything; a match retains nothing. Its result is kept only when the leg
+  returns its success classification (no output secret match, no refresh finding, a process
+  that exited); otherwise SL-4 discards it unretained.
+
+In measurement mode, after the process exits, the leg requires that `admission-<reservation
+id>` exists. If it does not, the leg treats the reservation as unresolved (charged in full),
+stops the procedure, and retains nothing.
 
 With `measurement=None`, the board path behaves exactly as SL-3 built it.
 `_grok_jailed_measurement_admission`, which has no caller and whose mode the leg overrode
@@ -776,7 +796,9 @@ Retiring the id would move both contexts' digests; it is not done.
   `_require_jailed_seat_identity` and `claude_seat_transport.py` are not edited. The
   docstring of `launch_provider` says "only the grok rehearsal passes" a `spawn_hook`. That
   sentence is superseded by §4.5, and it stays unedited so that the `launch_provider` region
-  does not move.
+  does not move. The `SDK_PROOF_UNBOUND` comment on `_caps_spawn_hook` is superseded likewise
+  and stays unedited. SL-4's PR refreshes the EC-CLAUDE-3 proof receipt for the
+  `_run_leg_with_liveness` move, as SL-3 did.
 
 ## §11 Critical path to 2026-12-04T00:00Z
 
@@ -792,6 +814,7 @@ Retiring the id would move both contexts' digests; it is not done.
 | 2026-12-02 12:00 | Train A installed on every seat host, and the K-1 snapshot rule installed on every **verifying** host; coverage recorded per host: `seat-window matrix` shows Grok `jailed` with no exception (or the renewed expiry), and the installed verifier is the snapshot one | host owner |
 | 2026-12-03 | only if Train A carried SL-2: `seat-sandbox qualify --leg grok` on the designated host (SL-5) | host owner |
 | 2026-12-04 00:00 | expiry; the exception is absent or renewed on every installed host | — |
+| before the §7 grant ask | writers for the condition 3 confirmation and condition 4 boundary records, with provenance checks, named by erratum r8 (§14 item 4, agent-harness#2101) | coordinator's planning delegate |
 
 - **Fallback, without a second build.** SL-8 depends on nothing and rides Train A in SL-2's
   place. It replaces the shared expiry constant with a per-vendor map (Grok renewed to the
@@ -869,8 +892,9 @@ Retiring the id would move both contexts' digests; it is not done.
   with no charge. The admission file appears only when the hook runs, after the identity
   probe. A board launch passes no hook. A measurement jail whose owner differs from
   production by more than the sink bind refuses `seat_sandbox_refused:identity`. Mutations
-  that the tests must kill: consuming in the verifier again, and dropping the
-  `_require_qualified_jail` clause's jail-identity condition.
+  that the tests must kill: consuming in the verifier again, dropping the
+  `_require_qualified_jail` clause's jail-identity condition, and `_run_leg_with_liveness` not
+  passing the returned hook.
 
 ## §13 Coordination
 
@@ -918,7 +942,14 @@ Retiring the id would move both contexts' digests; it is not done.
    condition 4 (the boundary), and `--hosted-check` currently records only a string in the
    grant (SL-3 review §1). `--new-grant` needs conditions 1 to 4, so a writer and its
    provenance check must be named before the §7 grant is asked. This does not block SL-4's
-   dispatch, because SL-4's tests write fixture records.
+   dispatch, because SL-4's tests write fixture records. Tracked in issue agent-harness#2101,
+   dispositioned SCHEDULED under `docs/registers/deferred-findings.md`'s filing rule (a
+   SCHEDULED issue stays open and takes no register row); a precondition of the §7 grant ask
+   on the §11 critical path; owner: the coordinator's planning delegate, through erratum r8.
+   The reviewer's direction for r8: SL-4 writes condition 4 through the existing
+   `--hosted-check` flag (no new CLI flag, if r8 lands before SL-4.2 starts); condition 3
+   needs its own owner-run, offline, no-egress procedure with the provenance checks of the
+   SL-3 review §1.
 
 ## §15 Revision r2 (2026-11-21)
 
@@ -1083,9 +1114,26 @@ is unchanged.
 starts no process. How does that reservation's label resume under the grant's "at most 2
 retries, transport failures only"?
 - **(A)** The label reopens as a planned launch, and no retry is spent.
-- **(B)** It counts as one of the two retries.
+- **(A′)** (the reviewer's recommendation): the label reopens without spending a retry, at
+  most once per label, and only when the refusal code is in a named transient class (for
+  example a busy capped preflight or a sink-probe timeout). A deterministic refusal
+  (qualification, identity probe, a swapped or owned sink, a launch digest that will recur),
+  or a second `unspawned` on the same label, stops the grant as in (C).
+- **(B)** It counts as one of the two retries. The reviewer notes that (B) contradicts the
+  grant's own rule that retries are "transport failures only", since an `unspawned`
+  reservation is not a transport failure.
 - **(C)** The grant stops, and resuming needs a new grant.
 
 The interim rule is to stop the procedure (§4.5). SL-4 implements that stop and the
 `unspawned` settlement, and the owner's answer sets the resumption rule before the §7 grant
 is asked. This does not block SL-4's dispatch.
+
+**r7 review edits (independent review of agent-harness#2097, ACCEPT-WITH-EDITS).** E1 and E2
+→ §5.1 (both checks of `_require_qualified_jail` run on the substituted jail; the clause and
+the hook need a `prepare_measurement` issue); E3 → §5.1 "Launch path" and BA-J7 (the dropped
+hook mutant and the post-spawn admission check); E4 → §4.5 M2 (check 2 proves the bind); E5
+→ §4.5 (attestation and gate failures after the hook are charged); E6 and E7 → §5.1 (the
+reader's result is kept only on success, and it scans the full secret set); E8 → §10 (stale
+comment and the EC-CLAUDE-3 receipt refresh); E9 → §3 (the scan names the jailed record) and
+the plan's SL-4 and SL-7 rows; E10 → §11 and §14 item 4 (agent-harness#2101). OWNER-DECISION
+r7-1 gains option (A′); it stays the owner's decision.

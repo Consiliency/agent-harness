@@ -21,7 +21,7 @@ window-kit decisions (jail contract §15). The roadmap text is unchanged.
 **Frozen inputs (pinned).**
 
 - `plans/artifacts/grok-jail-tool-surface-contract-v1.md` at sha256
-  `70685aea59c51e913956c920f5a2fb4364b0f6a55f970d988aa4788316af0ebd` ("the jail contract", r7). This plan cites its sections.
+  `1213bade870b30bb210616d5d810ee67efc0e465cde14084c0bd417da60217cf` ("the jail contract", r7). This plan cites its sections.
 - `plans/artifacts/grok-tool-surface-contract-v1.md` at sha256
   `5b929cb588e4bb555ce8374311432376fe4c04e8a851fd511e6c44682736b27c` (the **effective
   input**: agent-harness#2033 through erratum 7, erratum 8 r3 as merged with E8-A
@@ -282,6 +282,7 @@ contract §2.4).
 
 - **Scope**: Implement IF-0-GROK-4 and the paste-safe jailed procedure.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/grok_tool_surface.py`, `phase-loop-runtime/tests/test_grok_jail_measure.py`, `docs/ops/grok-jail-measurement.md`
+- **Successor hunks (after SL-3), per the edit scope**: `phase-loop-runtime/src/phase_loop_runtime/grok_jail_surface.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/tests/test_grok_jail_surface.py`. These stay in SL-3's `Owned files`, because the plan validator (check D) requires owned files to be disjoint.
 - **Interfaces provided**: IF-0-GROK-4
 - **Interfaces consumed**: IF-0-GROK-3 (SL-3); the TS contract ledger, rehearsal and aggregation (pre-existing); erratum 8's per-image map, `artifact_refused` and publication gate (pre-existing once E8-B merges)
 - **Parallel-safe**: no
@@ -297,8 +298,8 @@ base holding jail contract r7 and its pins.
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-4.1 | test | — | `phase-loop-runtime/tests/test_grok_jail_measure.py` | recording runner: BA-J7; `--new-grant` and `--rehearse` refuse unless eligibility conditions 1–4 pass; per-label reservations with interleaved transport failures, crash and restart, newest result per label, successful launches leaving both retries, a sixth counted request refused; context mismatch between grant and stage refuses; jail contract §4.5 M1–M5 in order, BA-J7's r7 additions and its two mutants, `probe_sink`'s pass and fail rules, the leg refusing a measurement with a `window_board` or without `read_sink`, the board leg unchanged; §3 "Production writers" test; a new unjailed grant refuses once a profile is registered; agreement publishes or `surface_unstable`; `context_mismatch` when the runtime or `jail_context_digest` drifts after the last launch; a suffix in the definitions artifact gives `artifact_refused`; BA-1 and BA-2 for jailed grants; `--verify-probe final` passes only with jailed `staged` admitted and other forms refused; the procedure script runs end to end. | `V4` |
-| SL-4.2 | impl | SL-4.1 | `phase-loop-runtime/src/phase_loop_runtime/grok_tool_surface.py`, `docs/ops/grok-jail-measurement.md`, and the successor hunks of the edit scope | — | — |
+| SL-4.1 | test | — | `phase-loop-runtime/tests/test_grok_jail_measure.py`, `phase-loop-runtime/tests/test_grok_jail_surface.py` | recording runner: BA-J7; `--new-grant` and `--rehearse` refuse unless eligibility conditions 1–4 pass; per-label reservations with interleaved transport failures, crash and restart, newest result per label, successful launches leaving both retries, a sixth counted request refused; context mismatch between grant and stage refuses; jail contract §4.5 M1–M5 in order, BA-J7's r7 additions and its two mutants, `probe_sink`'s pass and fail rules, the leg refusing a measurement with a `window_board` or without `read_sink`, the board leg unchanged; §3 "Production writers" test; a new unjailed grant refuses once a profile is registered; agreement publishes or `surface_unstable`; `context_mismatch` when the runtime or `jail_context_digest` drifts after the last launch; a suffix in the definitions artifact gives `artifact_refused`; BA-1 and BA-2 for jailed grants; `--verify-probe final` passes only with jailed `staged` admitted and other forms refused; the procedure script runs end to end. | `V4` |
+| SL-4.2 | impl | SL-4.1 | `phase-loop-runtime/src/phase_loop_runtime/grok_tool_surface.py`, `docs/ops/grok-jail-measurement.md`, `phase-loop-runtime/src/phase_loop_runtime/grok_jail_surface.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py` | — | — |
 | SL-4.3 | verify | SL-4.2 | SL-4 files | all SL-4 tests; TS contract suites unedited | `V4`, `V3`, `VU`, `V9`, `VS` |
 
 Stop: the unjailed measurement's behaviour before registration, or a TS contract test, changes;
@@ -363,7 +364,7 @@ Edit scope: `readiness_rows`'s expiry literal and `renewal_record` only; K-1 als
 | Task ID | Type | Depends on | Files in scope | Action |
 |---|---|---|---|---|
 | SL-docs.1 | docs | — | `.claude/docs-catalog.json` | rescan, or record "manual catalog audit" |
-| SL-docs.2 | docs | SL-docs.1 | per catalog | each PR: a CHANGELOG entry naming its pins and install; SL-2: the Grok readiness rows; SL-3: launch-inventory rows and the jailed probe paragraph; SL-4: the measurement row (`qualification`); after SL-6: the card's Grok entry |
+| SL-docs.2 | docs | SL-docs.1 | per catalog | each PR: a CHANGELOG entry naming its pins and install; SL-2: the Grok readiness rows; SL-3: launch-inventory rows and the jailed probe paragraph; SL-4: the measurement row (`qualification`), and `phase-loop-runtime/tests/data/seat_launch_references.json` rows for the `consume_admission` rename and `probe_sink`'s `subprocess.run` (role host-helper), riding in SL-4's PR (`V9`); after SL-6: the card's Grok entry |
 | SL-docs.3 | docs | SL-docs.2 | `plans/phase-plan-v1-seats-GROK.md` | `### Post-execution amendments` only if a freeze proved wrong |
 | SL-docs.4 | verify | SL-docs.3 | — | `V5`, the hosted docs-freshness audit, and the jail contract §7.3 row-window evidence present before closeout |
 
