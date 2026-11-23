@@ -13796,13 +13796,16 @@ def _exec_jailed_claude_leg(
         # reason, its reset time included; otherwise the shared tail classifier labels the
         # failure, and our own session code stands when the tail names nothing.
         failure = _claude_leg_failure(status, rc, "", log_text, pty_tail)
-        # The seat's own authentication rejection: the CLI's auth signature while the
-        # parent-held journal shows no turn and no verdict, so the tail cannot be quoting the
-        # reviewed tree. It is the one auth decision after the launch-time login proof; the
-        # host's own session says nothing about the seat's credential.
+        # The seat's credential was rejected: the CLI's auth signature with no model turn and
+        # no verdict, in a session the CLI ended itself (its terminal closed, or it journaled a
+        # provider give-up). A session the harness ended (a stall, an editor never ready) may
+        # be showing only echoed input. This names the credential in the detail and notice; it
+        # never changes the leg's auth state, which the launch-time login proof decided, and
+        # the host's own session says nothing about the seat's credential.
         seat_auth_rejected = (failure is not None and failure.template == "auth_failure"
                               and rc != 0 and model_turn is False
-                              and terminal_verdict(review_text) is None)
+                              and terminal_verdict(review_text) is None
+                              and str(log_text) in _CLAUDE_TUI_SELF_ENDED_CODES)
         # The tail is seat-rendered once a model turn has run, so it can quote a reviewed
         # tree: it names a credential's limit only with the provider's typed give-up, or
         # when the parent-held journal shows no turn.
@@ -13819,21 +13822,22 @@ def _exec_jailed_claude_leg(
             if _seat_jail.is_limit_detail(failure.template):
                 seat.notices.append("claude_seat_login_rate_limited" if login
                                     else "claude_seat_token_rate_limited")
-            elif (rc != 0 and ((login and seat.expires_at is not None and time.time() >= seat.expires_at)
-                  or seat_auth_rejected)):
-                observation = _EXEC_OBSERVATION.get()
-                if observation is not None:
-                    # The record agrees with the notice: the seat's credential was refused.
-                    observation.update(auth_state="signed_out", auth_probed=True)
-                if login and seat.expires_at is not None and time.time() >= seat.expires_at:
-                    failure = _LegFailure(template="claude_seat_login_token_expired")
-                    seat.notices.append("claude_seat_login_token_expired")
-                else:
-                    failure = _LegFailure(template="auth_failure")
-                    seat.notices.append("claude_seat_login_rejected" if login
-                                        else "claude_seat_token_rejected")
+            elif rc != 0 and login and seat.expires_at is not None and time.time() >= seat.expires_at:
+                failure = _LegFailure(template="claude_seat_login_token_expired")
+                seat.notices.append("claude_seat_login_token_expired")
+            elif seat_auth_rejected:
+                # The detail IS the credential's notice, so the board names the refused seat
+                # and its fix: not the host-login guidance of `leg_auth_signed_out`.
+                code = "claude_seat_login_rejected" if login else "claude_seat_token_rejected"
+                failure = _LegFailure(template=code)
+                seat.notices.append(code)
             failure_detail_sink.append(failure)
     return status, text
+
+
+#: A jailed TUI session the CLI ended itself: its terminal closed, or it journaled a give-up.
+_CLAUDE_TUI_SELF_ENDED_CODES = frozenset({"claude_tui_pty_eof_no_output",
+                                          *_CLAUDE_PROVIDER_GAVE_UP_CODES})
 
 
 def _jailed_failure(code: str, sink: list[_LegFailure] | None) -> tuple[str, str]:

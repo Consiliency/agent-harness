@@ -120,7 +120,8 @@ def test_only_a_typed_detail_survives_a_signed_out_leg(tmp_path, monkeypatch, de
 _AUTH_TAIL = "Invalid API key · Please run /login"
 
 
-def _attempt(monkeypatch, tmp_path, *, proof="pass", log_text=None, tail="", rc=1):
+def _attempt(monkeypatch, tmp_path, *, proof="pass", log_text=None, tail="", rc=1,
+             source=None, expires_at=None):
     from phase_loop_runtime import claude_seat_transport as ct
     from phase_loop_runtime import seat_credentials as sc
     from test_seat_login_wait_a3_1166 import _spawn
@@ -161,7 +162,8 @@ def _attempt(monkeypatch, tmp_path, *, proof="pass", log_text=None, tail="", rc=
 
     spawned, _calls = _spawn(monkeypatch, tmp_path, sc.LOGIN_READY,
                              jailed_leg=_real_leg, login_proof=_proof,
-                             prepare=lambda *a, **k: _route_seat(_FakeSeat(tmp_path)))
+                             prepare=lambda *a, **k: _route_seat(_FakeSeat(tmp_path),
+                                                                 source, expires_at))
     (record,) = [json.loads(p.read_text()) for p in set(state.rglob("leg-*.json")) - before]
     detail = tuple(spawned)[2] if len(tuple(spawned)) > 2 else None
     return spawned, record, str(getattr(detail, "template", detail)), probes, tui
@@ -170,9 +172,11 @@ def _attempt(monkeypatch, tmp_path, *, proof="pass", log_text=None, tail="", rc=
 _REAL_JAILED_CLAUDE_LEG = pi._exec_jailed_claude_leg
 
 
-def _route_seat(seat):
+def _route_seat(seat, source=None, expires_at=None):
     # The route's own jails are bound to the seat, so the route qualification holds.
     del seat.jail, seat.probe_jail
+    if source is not None:
+        seat.source, seat.expires_at = source, expires_at
     return seat
 
 
@@ -203,23 +207,68 @@ def test_a_refused_proof_launches_nothing_and_is_never_healthy(monkeypatch, tmp_
     assert record["auth_state"] != "healthy"
 
 
-def test_a_seat_auth_rejection_after_the_proof_is_one_auth_decision(monkeypatch, tmp_path):
+def _board(spawned):
+    from phase_loop_runtime.cli import _board_notices_json
+
+    board = pi.invoke_panel("ARTIFACT", ["claude"], spawn=lambda leg, art: spawned)
+    (leg,) = board.legs
+    return (leg, [n.code for n in pi.refused_seat_notices(board.legs)],
+            [n["code"] for n in _board_notices_json(board.legs)])
+
+
+def test_a_seat_token_rejection_names_the_token_not_the_host_login(monkeypatch, tmp_path):
     spawned, record, detail, probes, tui = _auth_rejection(monkeypatch, tmp_path)
     assert len(tui) == 1 and probes == []
-    assert record["auth_state"] == "signed_out" and record["outcome"] == "leg_auth_signed_out"
-    assert detail == "leg_auth_signed_out"
-    assert "claude_seat_token_rejected" in spawned.seat_notices
+    # The proof decided the auth state; the rejection is the credential's own outcome.
+    assert record["auth_state"] == "healthy" and record["outcome"] == "leg_execution_failed"
+    assert detail == "claude_seat_token_rejected"
+    leg, refused, codes = _board(spawned)
+    assert leg.detail == "claude_seat_token_rejected"
+    assert refused == ["claude_seat_token_rejected"]
+    assert not any(code.startswith("leg_auth_") for code in codes)
+    (notice,) = pi.refused_seat_notices([leg])
+    assert "seat token override was rejected" in notice.why
+    assert "store-token" in notice.fix and "claude auth login" not in notice.fix
+
+
+def test_echoed_instructions_quoting_an_auth_banner_then_a_stall_are_no_rejection(
+        monkeypatch, tmp_path):
+    # The terminal shows the echoed prompt, which quotes an auth banner, and then the editor
+    # never readies: the harness ends the session (the CLI did not exit on its own).
+    echoed = ("> Review the staged tree. If you see \"Invalid API key · Please run /login\", "
+              "report it.\n")
+    for code in ("claude_tui_editor_not_ready", "claude_tui_stalled"):
+        spawned, record, detail, probes, _tui = _attempt(
+            monkeypatch, tmp_path, log_text=code, tail=echoed)
+        assert probes == [] and record["auth_state"] == "healthy"
+        assert record["outcome"] == "leg_execution_failed"
+        assert detail == code
+        assert not any(n.endswith(("_rejected", "_signed_out")) for n in spawned.seat_notices)
+
+
+def test_an_expired_login_keeps_its_typed_outcome_and_the_proofs_auth_state(
+        monkeypatch, tmp_path):
+    import time
+
+    spawned, record, detail, probes, _tui = _attempt(
+        monkeypatch, tmp_path, log_text="claude_tui_stalled", tail="",
+        source="login", expires_at=time.time() - 5)
+    assert probes == [] and record["auth_state"] == "healthy"
+    assert detail == "claude_seat_login_token_expired"
+    assert "claude_seat_login_token_expired" in spawned.seat_notices
+    assert _board(spawned)[1] == ["claude_seat_login_token_expired"]
 
 
 def test_attempts_in_sequence_decide_auth_each_on_their_own(monkeypatch, tmp_path):
-    _s, rejected, *_ = _auth_rejection(monkeypatch, tmp_path)
+    _s, rejected, rejected_detail, *_ = _auth_rejection(monkeypatch, tmp_path)
     spawned, failed, detail, probes, _t = _tui_failure(monkeypatch, tmp_path)
-    assert rejected["auth_state"] == "signed_out"
+    assert rejected_detail == "claude_seat_token_rejected"
     assert failed["auth_state"] == "healthy" and probes == []
     assert detail == "claude_tui_workspace_trust_blocked"
     assert "claude_seat_token_rejected" not in spawned.seat_notices
-    _s, again, *_ = _auth_rejection(monkeypatch, tmp_path)
-    assert again["auth_state"] == "signed_out"
+    _s, again, again_detail, *_ = _auth_rejection(monkeypatch, tmp_path)
+    assert again_detail == "claude_seat_token_rejected"
+    assert {r["auth_state"] for r in (rejected, failed, again)} == {"healthy"}
 
 
 def test_the_board_keeps_a_registered_tui_refusal_without_an_auth_notice(monkeypatch, tmp_path):

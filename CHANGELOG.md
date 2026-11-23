@@ -107,10 +107,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Seat legs (agent-harness#2139): when a leg fails before any model turn, the host auth probe
   now runs with the caller's host environment, not the environment recorded for a jailed
   launch, whose paths exist only inside the jail. A jailed Claude leg whose in-jail login
-  check passed is recorded as signed in, and no host probe runs for it: only the seat's own
-  authentication rejection after that check (the CLI's auth signature with no model turn)
-  marks it signed out, with the matching rejected-credential notice. A host sign-out alone no
-  longer turns a jailed TUI failure into a rejected credential. An auth outcome
+  check passed keeps that auth state, and no host probe runs for it. A host sign-out alone no
+  longer turns a jailed TUI failure into a rejected credential. A seat credential the CLI
+  rejected in a session it ended itself is reported as `claude_seat_token_rejected` or
+  `claude_seat_login_rejected`, as both the detail and the notice, with that credential's
+  fix rather than the host-login guidance. An auth outcome
   (`leg_auth_signed_out`, `leg_auth_unavailable`) no longer replaces a leg's own typed failure
   detail, such as a `claude_tui_*` code, judged by the same rules as a stored leg detail; a
   leg with no typed detail still maps to it.
