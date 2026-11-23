@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextvars
 import logging
+import inspect
 import math
 import mimetypes
 import os
@@ -3196,6 +3197,7 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "seat_placement_waiting",
     # agent-harness#1222: the seat-launch owner's refusals (typed notices in seat_jail.NOTICES)
     "seat_owner_unavailable", "seat_bind_source_unavailable", "seat_broker_socket_unavailable",
+    "seat_broker_socket_path_too_long",
     "seat_resource_caps_unavailable",
     "seat_launch_owner_required", "seat_output_path_unavailable", "seat_profile_unavailable",
     "seat_provider_unavailable", "seat_filtered_egress_unavailable",
@@ -13795,6 +13797,16 @@ def _exec_jailed_claude_leg(
         # reason, its reset time included; otherwise the shared tail classifier labels the
         # failure, and our own session code stands when the tail names nothing.
         failure = _claude_leg_failure(status, rc, "", log_text, pty_tail)
+        # The seat's credential was rejected: the CLI's auth signature with no model turn and
+        # no verdict, in a session the CLI ended itself (its terminal closed, or it journaled a
+        # provider give-up). A session the harness ended (a stall, an editor never ready) may
+        # be showing only echoed input. This names the credential in the detail and notice; it
+        # never changes the leg's auth state, which the launch-time login proof decided, and
+        # the host's own session says nothing about the seat's credential.
+        seat_auth_rejected = (failure is not None and failure.template == "auth_failure"
+                              and rc != 0 and model_turn is False
+                              and terminal_verdict(review_text) is None
+                              and str(log_text) in _CLAUDE_TUI_SELF_ENDED_CODES)
         # The tail is seat-rendered once a model turn has run, so it can quote a reviewed
         # tree: it names a credential's limit only with the provider's typed give-up, or
         # when the parent-held journal shows no turn.
@@ -13811,20 +13823,22 @@ def _exec_jailed_claude_leg(
             if _seat_jail.is_limit_detail(failure.template):
                 seat.notices.append("claude_seat_login_rate_limited" if login
                                     else "claude_seat_token_rate_limited")
-            elif (rc != 0 and ((login and seat.expires_at is not None and time.time() >= seat.expires_at)
-                  or (_EXEC_OBSERVATION.get() is not None
-                  and _EXEC_OBSERVATION.get().get("model_turn") is False
-                  and _EXEC_OBSERVATION.get().get("verdict") is False
-                  and _parent_auth_state("claude") == "signed_out"))):
-                if login and seat.expires_at is not None and time.time() >= seat.expires_at:
-                    failure = _LegFailure(template="claude_seat_login_token_expired")
-                    seat.notices.append("claude_seat_login_token_expired")
-                else:
-                    failure = _LegFailure(template="auth_failure")
-                    seat.notices.append("claude_seat_login_rejected" if login
-                                        else "claude_seat_token_rejected")
+            elif rc != 0 and login and seat.expires_at is not None and time.time() >= seat.expires_at:
+                failure = _LegFailure(template="claude_seat_login_token_expired")
+                seat.notices.append("claude_seat_login_token_expired")
+            elif seat_auth_rejected:
+                # The detail IS the credential's notice, so the board names the refused seat
+                # and its fix: not the host-login guidance of `leg_auth_signed_out`.
+                code = "claude_seat_login_rejected" if login else "claude_seat_token_rejected"
+                failure = _LegFailure(template=code)
+                seat.notices.append(code)
             failure_detail_sink.append(failure)
     return status, text
+
+
+#: A jailed TUI session the CLI ended itself: its terminal closed, or it journaled a give-up.
+_CLAUDE_TUI_SELF_ENDED_CODES = frozenset({"claude_tui_pty_eof_no_output",
+                                          *_CLAUDE_PROVIDER_GAVE_UP_CODES})
 
 
 def _jailed_failure(code: str, sink: list[_LegFailure] | None) -> tuple[str, str]:
@@ -17411,7 +17425,28 @@ def _retain_panel_leg(result):
     return result
 
 
+def _typed_leg_failure(detail: object) -> bool:
+    """Whether a failed leg's detail is a typed failure of its own, one an auth outcome must
+    not replace. It is read as ``_finalize_leg_detail`` stores it, so provenance and the
+    registry decide: a foreign or unregistered detail is the unknown failure, which is not
+    typed. Neither is an auth failure (plain or behind a route code) nor an auth outcome. A
+    route code in front of an unknown failure is typed: the code names what happened."""
+    rendered = _finalize_leg_detail(detail)
+    text = "" if rendered is None else str.__str__(rendered)
+    if not text or text.startswith("leg_auth_"):
+        return False
+    code, sep, rest = text.partition(": ")
+    while sep:  # a registered route code in front, split as `_detail_is_valid` splits
+        if _is_harness_code(code) and _is_failure_template(rest):
+            return rest != "auth_failure"
+        more, sep, rest = rest.partition(": ")
+        code = f"{code}: {more}"
+    return not (text == "auth_failure" or text.startswith("unknown failure"))
+
+
 def _retained_leg_exec(function):
+    signature = inspect.signature(function)
+
     @wraps(function)
     def retained(leg, *args, **kwargs):
         from .president_adapter import write_private_record
@@ -17429,7 +17464,13 @@ def _retained_leg_exec(function):
             rc = observation["returncode"]
             if (type(rc) is int and rc != 0 and observation["model_turn"] is False
                     and observation["verdict"] is False and not observation["auth_probed"]):
-                observation["auth_state"] = _parent_auth_state(leg, observation.get("env"))
+                # The host probe runs with the caller's host env: the env a leg recorded may
+                # be its jail's, whose paths exist only inside the jail.
+                try:
+                    host_env = signature.bind_partial(leg, *args, **kwargs).arguments.get("env")
+                except TypeError:
+                    host_env = None
+                observation["auth_state"] = _parent_auth_state(leg, host_env)
             # A refusal counts only when the leg did not end accepted after all.
             accepted = result is not None and (
                 result[0] == "OK" or (type(result[0]) is int and result[0] == 0))
@@ -17446,7 +17487,7 @@ def _retained_leg_exec(function):
                     result = (result[0], result[1], _HarnessCode(record["outcome"]))
             elif result is not None and result[0] in {"DEGRADED", "ERROR", "EMPTY"}:
                 detail = result[2] if len(result) > 2 else None
-                if (record["outcome"].startswith("leg_auth_")
+                if ((record["outcome"].startswith("leg_auth_") and not _typed_leg_failure(detail))
                     or isinstance(detail, _LegFailure) and detail.template == "auth_failure"):
                     result = _BrokeredSpawnResult(result[0], result[1], _HarnessCode(record["outcome"]),
                         evidence=getattr(result, "harden_isolation_evidence", None),
@@ -19052,6 +19093,28 @@ def _default_spawn(
         and not _has_injected_review_execution_seam(leg=leg)
     ):
         return "UNAVAILABLE", "missing HARDEN review authorization"
+    native_host_deferral_only = (
+        leg == "claude"
+        and model is not None
+        and _under_claude_code(env)
+    )
+    brokered_route = (
+        mode == "review"
+        and review_authorization is not None
+        and not _has_injected_review_execution_seam(leg=leg)
+        and not native_host_deferral_only
+    )
+    broker_socket_base: str | None = None
+    if brokered_route:
+        # agent-harness#2131: the broker binds an AF_UNIX socket. Its base is admitted here,
+        # before any staging storage is chosen, and carried to the broker; a leg with no
+        # short safe base is refused with a typed code.
+        try:
+            broker_socket_base = _advisor_board_backing.broker_socket_base()
+        except ValueError as exc:
+            if review_monitor is not None:
+                return _BrokeredSpawnResult("DEGRADED", "", _exception_failure(exc), evidence=None)
+            return "DEGRADED", "", _exception_failure(exc)
     if capture_stage is None:
         # On a disk-backed per-user root, never RAM while a disk candidate exists
         # (agent-harness#1147). Only the opt-in PHASE_LOOP_SANDBOX_REFUSE_RAM refuses, and
@@ -19480,17 +19543,7 @@ def _default_spawn(
             extra["provider_authority"] = provider_authority
         if quiescence_latch is not None:
             extra["quiescence_latch"] = quiescence_latch
-        native_host_deferral_only = (
-            leg == "claude"
-            and model is not None
-            and _under_claude_code(env)
-        )
-        if (
-            mode == "review"
-            and review_authorization is not None
-            and not _has_injected_review_execution_seam(leg=leg)
-            and not native_host_deferral_only
-        ):
+        if brokered_route:
             # The namespace child can only submit this one bound request. The
             # parent, after validating it, retains the subscription adapter and
             # is the sole component that can contact a provider.
@@ -19515,6 +19568,7 @@ def _default_spawn(
                 model=broker_model,
                 staged_dir=review_dir,
                 canonical_repo=resolved_repo_dir,
+                socket_base=broker_socket_base,
             )
             response: dict[str, object] | None = None
             probe: Mapping[str, object] | None = None
@@ -19603,6 +19657,10 @@ def _default_spawn(
                                 proof = _jailed_claude_login_proof(
                                     seat, quiescence_latch=broker_latch)
                             launched = True  # proven: whatever follows is the transport's own
+                            observation = _EXEC_OBSERVATION.get()
+                            if observation is not None:
+                                # The in-jail login check passed: no host probe overrides it.
+                                observation.update(auth_state="healthy", auth_probed=True)
                             return proof
 
                         try:
@@ -20836,6 +20894,7 @@ def invoke_board(
     timeouts_by_leg: Mapping[str, int] | None = None,
     on_leg_complete: "Callable[[PanelLegResult], None] | None" = None,
     stream_dir: Path | str | None = None,
+    leg_log_dir: Path | str | None = None,
     research_policy: ResearchPolicy | None = None,
     agy_canary_capture: AgyCanaryCapture | None = None,
     landing_tier: ReviewLandingTier | str | None = None,
@@ -20935,7 +20994,12 @@ def invoke_board(
     (callback + an incremental per-leg verdict file in ``stream_dir``) so a consumer
     can reconcile as seats return; the consolidated ``PanelResult`` stays in seat
     order. Both ``None`` (default) is the byte-identical historical path.
+
+    ``leg_log_dir`` (agent-harness#2131): where an unknown failure's private leg log is
+    written when there is no ``stream_dir``. It enables nothing else: no verdict file,
+    seat-mode file or monitoring record is written there.
     """
+    leg_log_root = stream_dir if stream_dir is not None else leg_log_dir
     if brief_ref is not None and not _brief_pinned(brief_ref) and (
         landing_tier is not None or review_policy is not None
         or president_invoke is not None or native_president_fill is not None
@@ -21666,7 +21730,7 @@ def invoke_board(
                         seat_key=seat.seat_key,
                         detail=research_unavailable_detail
                         or "research_profile_unavailable",
-                        run_dir=stream_dir,
+                        run_dir=leg_log_root,
                     )
                 research_seat = research_run.seats[index]
                 if (
@@ -21715,7 +21779,7 @@ def invoke_board(
                     env_source,
                     board,
                     _skip,
-                    run_dir=stream_dir,
+                    run_dir=leg_log_root,
                 )
             if decision.backing != BACKING_HOMEBREW:
                 return _skip(
@@ -21746,7 +21810,7 @@ def invoke_board(
                     leg=leg,
                     status="DEGRADED",
                     text="",
-                    detail=_resolve_leg_detail(_exception_failure(exc), stream_dir, str(seat.seat_key)),
+                    detail=_resolve_leg_detail(_exception_failure(exc), leg_log_root, str(seat.seat_key)),
                     seat_key=seat.seat_key,
                 )
             try:
@@ -21823,7 +21887,7 @@ def invoke_board(
                     leg=leg,
                     status="DEGRADED",
                     text="",
-                    detail=_resolve_leg_detail(_exception_failure(exc), stream_dir, str(seat.seat_key)),
+                    detail=_resolve_leg_detail(_exception_failure(exc), leg_log_root, str(seat.seat_key)),
                     seat_key=seat.seat_key,
                 )
                 if getattr(exc, "_leg_exec_metadata", None) is not None:
@@ -21854,7 +21918,7 @@ def invoke_board(
             # A typed UNAVAILABLE text becomes the detail: resolve the spawn's detail only when
             # it will be kept, so no private log is written and then orphaned (r8).
             detail = None if (status == "UNAVAILABLE" and text_value in _TYPED_UNAVAILABLE_DETAILS) \
-                else _resolve_leg_detail(seat_detail, stream_dir, str(seat.seat_key))
+                else _resolve_leg_detail(seat_detail, leg_log_root, str(seat.seat_key))
             if status == "UNAVAILABLE" and text_value in _TYPED_UNAVAILABLE_DETAILS:
                 detail, text_value = text_value, ""
             result = PanelLegResult(
