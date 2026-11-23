@@ -34,8 +34,8 @@ Frozen inputs, read before building:
 - `plans/artifacts/v13-LANEEXEC-landed-binding.md`: work-start gates and what is
   dropped (§1), the landed-interface table at `file:line` (§2), the STOP
   decisions with the wire sentences they bind (§3), cross-repo consequences (§4),
-  verification groups (§5), erratum LANEEXEC-v1-errata-2 (§6) and erratum
-  LANEEXEC-v1-errata-3 (§7).
+  verification groups (§5), and errata LANEEXEC-v1-errata-2 (§6),
+  LANEEXEC-v1-errata-3 (§7) and LANEEXEC-v1-errata-4 (§8).
 - `plans/artifacts/v13-PLACECLI-contract-v1.schema.json` (unchanged), the
   CLOSEOUT and PLACECLI landed-binding artifacts, and
   `plans/artifacts/v12-v13-replan-ownership.md`.
@@ -380,6 +380,7 @@ Recorded, not built in this phase (coordinator ruling 4, 2026-11-09).
 | The `/var/log` runtime check of the local template in its LANEEXEC-v1-errata-1 form: under the expanded argv, `/var/log` exists, lists empty and refuses a write, on Ubuntu 24.04 and 26.04 | v13 ACTIVATE local-launch qualification; owner-gated | None; the erratum is document-and-test only, and no local route is activated before this check is recorded. |
 | Routing concurrent lane waves through `place_lane` while `lane_placement` is enabled (binding §6 E2-3) | v13 ACTIVATE; agent-harness#2103 | None; with placement enabled the wave path refuses `lane_placement_wave_unrouted`. |
 | The pinned review-runner image record (binding §6 E2-6) | new review-runner image phase (RR-1 option c); tracking issue to come with its plan | None; SL-9 reads the helper path and digest only from that record, and tests use a fixture. |
+| Reviewed, image-bound openshell runtime values (node path and digest, helper digest, launcher and tree paths) that the pinned toolkit runtime manifest lacks (binding §8 E4-2) | SL-9 and v13 ACTIVATE | None; production openshell registration stays closed (`runtime_unavailable`), and every openshell route is `route_disabled` under shipped defaults. |
 | Production worker state root taken from trusted operator configuration | agent-harness#1960 | None; the CLI's state root is CLOSEOUT's. |
 | A sanctioned `replan` lifecycle path in `plan_manifest.update_lifecycle` (the replan events here are hand-written and append-only) | coordinator follow-up (ruling 3) | The `v13-LANEEXEC` row carries one hand-written `replan` event. |
 
