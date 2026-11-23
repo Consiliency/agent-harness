@@ -10,7 +10,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 - The review-runner Containerfile is hardened for the RRIMAGE build (lane SL-1,
   Consiliency/agent-harness#2106). Every `RUN` step except the hash-pinned pip install now runs
-  with `--network=none`. `LICENSES/` is checked against the `BUILD.lock` notice hashes as an
+  with `--network=none`, and that step now does only the pinned install. `LICENSES/` is checked against the `BUILD.lock` notice hashes as an
   exact set. The unhashed `PROVENANCE.md` copy is gone. The runtime stage declares
   `ARG SOURCE_DATE_EPOCH`. A final step strips setuid and setgid bits and fails if any remain.
   `tests/test_review_runner_containerfile.py` checks all of this statically, and checks that
