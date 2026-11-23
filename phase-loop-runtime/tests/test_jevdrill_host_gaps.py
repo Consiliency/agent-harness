@@ -246,30 +246,38 @@ def test_supplied_retry_context_cannot_widen_or_bypass(tmp_path, monkeypatch):
     assert len(route_payloads(env.calls)) == routes
 
 
-# GAPS §3.1 rules that conflict with frozen tests/test_jevdrill_adapter.py (SL-8 STOP items).
-# Strict xfail: each turns into a failure once its rule is implemented after a ruling.
+# Erratum 1 (plans/amendments/jevhost-JEVHOST-host-gaps-erratum-1.md): the frozen
+# test_jevdrill_adapter.py keeps route reachable; the safety property moves to a later point.
 
 
-@pytest.mark.xfail(strict=True, reason="STOP S1: frozen test_requested_ceiling_rejects_unproven_executor_limits"
-                   "[retry_spend] requires a supplied context with no ledger entry to reach route")
-def test_stop_s1_supplied_context_without_ledger_is_refused_before_route(tmp_path):
+def test_unrecorded_supplied_context_never_launches(tmp_path):
     adapter, inputs, _, kwargs, calls, _ = adapter_fixture(tmp_path)
-    inputs["request"]["retry_context"] = fixture("RouteRequest")["retry_context"]
-    with pytest.raises(JevDrillUnavailable):
-        adapter.prepare(mode="main", dry_run=False, **kwargs)
-    assert route_payloads(calls) == []
+    forged = fixture("RouteRequest")["retry_context"]
+    forged["remaining_spend"] = None
+    inputs["request"]["retry_context"] = forged
+    launched, refused = [], None
+    try:
+        prepared = adapter.prepare(mode="main", dry_run=False, **kwargs)
+        adapter.launch(lambda spec, **_k: launched.append(spec) or result_for(), spec_for(prepared))
+    except JevDrillUnavailable as exc:
+        refused = exc
+    assert launched == [], "a supplied retry context with no host record reached the executor"
+    assert refused is not None and "no host retry record" in str(refused)
+    assert not adapter._pending
 
 
-@pytest.mark.xfail(strict=True, reason="STOP S2: frozen test_guidance_is_verified_injected_once_and_deactivated "
-                   "routes the same task after one unjudged launch with max_attempts=1")
-def test_stop_s2_unjudged_attempt_exhausts_route_before_cli_contact(tmp_path):
-    adapter, _, _, kwargs, calls, _ = adapter_fixture(tmp_path)
-    prepared = adapter.prepare(mode="main", dry_run=False, **kwargs)
-    adapter.launch(lambda spec, **_k: result_for(), spec_for(prepared))
-    contacted = len(calls)
-    with pytest.raises(JevDrillUnavailable, match="Retry budget is exhausted"):
-        adapter.prepare(mode="main", dry_run=False, **kwargs)
-    assert len(calls) == contacted
+def test_unjudged_attempt_is_refused_at_launch_admission(tmp_path):
+    adapter, _, _, kwargs, calls, _ = adapter_fixture(tmp_path)  # max_attempts=1
+    first = adapter.prepare(mode="main", dry_run=False, **kwargs)
+    adapter.launch(lambda spec, **_k: result_for(), spec_for(first))
+    again = adapter.prepare(mode="main", dry_run=False, **kwargs)  # route may occur
+    launched, refused = [], None
+    try:
+        adapter.launch(lambda spec, **_k: launched.append(spec) or result_for(), spec_for(again))
+    except JevDrillUnavailable as exc:
+        refused = exc
+    assert launched == [], "a second launch spent an exhausted attempt budget"
+    assert refused is not None and "Retry budget is exhausted" in str(refused)
 
 
 # --- Item 2 (GAPS §3.2) ---------------------------------------------------------------------

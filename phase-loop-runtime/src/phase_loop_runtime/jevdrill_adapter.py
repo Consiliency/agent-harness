@@ -486,7 +486,7 @@ class JevDrillAdapter:
             if declaration is None:
                 raise JevDrillUnavailable("Harness identity is not declared")
         ledger_key = (request["envelope"]["project_id"], request["envelope"]["workspace_id"], request["task_id"])
-        request["retry_context"] = self._admit_route(ledger_key, request, routing_started)
+        request["retry_context"], unrecorded_context = self._admit_route(ledger_key, request, routing_started)
         self._notices(request["envelope"], started_at=started)
         if linked:
             self._check_discovery(request["envelope"], wrapper["discovery_ref"], started_at=started)
@@ -549,6 +549,10 @@ class JevDrillAdapter:
                          ("provider", "model_id", "resolved_model_revision", "access_route", "native_effort"))), None)
         if candidate is None or not set(plan["required_capabilities"]) <= allowed:
             raise JevDrillUnavailable("Selected identity or capabilities are unverified")
+        if unrecorded_context:
+            # Never forwarded as accepted retry authority, never launchable.
+            raise JevDrillUnavailable("Supplied retry context is unverified: no host retry record",
+                                      decision=decision)
         selection = kwargs["model_selection"]
         effort = plan["native_effort"]
         if effort["kind"] != "explicit" or effort["native_value"] not in candidate["supported_efforts"]:
@@ -613,11 +617,13 @@ class JevDrillAdapter:
     # --- Retry ledger (GAPS §3.1) -------------------------------------------------------
 
     def _admit_route(self, key, request, routing_started):
-        """Check the task's retry budget before any CLI contact; return the context to send.
+        """Check the task's retry budget before any CLI contact.
 
-        The budget comes from the trusted host request and is only ever tightened. Retry
-        context is generated only from a recorded acceptance failure; a supplied context
-        must agree with that record and may not widen it.
+        Returns ``(context_to_send, unrecorded)``. The budget comes from the trusted host
+        request and is only ever tightened. Retry context is generated only from a recorded
+        acceptance failure; a supplied context must agree with that record and may not
+        widen it. A supplied context with no ledger entry may be routed, but ``unrecorded``
+        makes ``_prepare`` refuse it before any launchable decision (erratum 1, row 1d).
         """
         constraints = request["hard_constraints"]
         offered = RetryBudget(constraints["max_attempts"], constraints["total_deadline_ms"], routing_started)
@@ -628,21 +634,20 @@ class JevDrillAdapter:
                 if len(self._ledger) >= RETRY_LEDGER_LIMIT:
                     raise JevDrillUnavailable("Retry ledger is full")
                 self._ledger[key] = {"budget": offered, "attempts": []}
-                # No host record: a context-free request is a first attempt. A supplied
-                # context is left to JEV's own validation (STOP item S1 in the SL-8 report).
-                return supplied
+                # No host record: a context-free request is a first attempt.
+                return supplied, supplied is not None
             entry["budget"] = budget = entry["budget"].tighten(offered)
             attempts = entry["attempts"]
             judged = sum(1 for attempt in attempts if attempt["outcome"] != "launched")
             now = time.monotonic_ns()
-            # A launch with no verdict yet is counted at launch admission (STOP item S2).
+            # A launch with no verdict yet is counted at launch admission (erratum 1, row 1c).
             if budget.exhausted(judged, now):
                 raise JevDrillUnavailable("Retry budget is exhausted")
             latest = attempts[-1] if attempts else None
             if latest is None or latest["outcome"] not in ACCEPTANCE_FAILURE_CLASSES:
                 if supplied is not None:
                     raise JevDrillUnavailable("Supplied retry context is unverified: no recorded failure")
-                return None
+                return None, False
             used = len(attempts)
             if budget.exhausted(used, now):
                 raise JevDrillUnavailable("Retry budget is exhausted")
@@ -659,7 +664,7 @@ class JevDrillAdapter:
                     or supplied["remaining_attempts"] > remaining_attempts
                     or supplied["remaining_time_ms"] > remaining_time_ms):
                 raise JevDrillUnavailable("Supplied retry context is unverified or widens the host budget")
-            return generated
+            return generated, False
 
     def _admit_launch(self, binding):
         """Spend one attempt atomically with the budget check; return a refusal or None."""
