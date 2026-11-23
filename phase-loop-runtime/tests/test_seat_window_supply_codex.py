@@ -1003,7 +1003,7 @@ _FAILED = _events(*_STARTED, {"type": "error", "message": "refused"},
 @pytest.mark.parametrize("kind,installed,refuse_all", [
     ("tree_control", "none", True), ("runtime_control", "none", True),
     ("credentialed_tree_control", "live", False), ("measured", "live", False),
-    ("expired_copy", "expired", False)])
+    ("expired_copy", "expired", True)])  # OI-1: the fenced expired leg runs refuse-all
 def test_sl6_f16_control_launches_through_the_real_prepare(
         codex_supplier, tmp_path, monkeypatch, kind, installed, refuse_all):
     from phase_loop_runtime import panel_invoker as panel
@@ -1204,9 +1204,10 @@ def test_sl6_f16_a_window_launch_never_retries(codex_supplier, tmp_path, monkeyp
 
 def test_sl6_hold_a_row_qualify_refuses_unfenced_and_launches_nothing(
         codex_supplier, tmp_path, monkeypatch):
-    """r5.2 §10.B (B1): until the OI-1 fence lane lands, a Codex row window refuses with
+    """r5.2 §10.B (B1): without the OI-1 fence declaration, a Codex row window refuses with
     the typed row-ready code before any claim, preflight, jail or proxy."""
     from phase_loop_runtime import panel_invoker as panel, seat_window as w
+    monkeypatch.delattr(codex_supplier, "EXPIRED_LEG_PROXY")
 
     def never(*args, **kwargs):
         pytest.fail("the hold let a Codex row window start")
@@ -1223,16 +1224,19 @@ def test_sl6_hold_a_row_qualify_refuses_unfenced_and_launches_nothing(
     assert codex_supplier.ROW_WINDOW_HOLD == HOLD_CODE
 
 
-def test_sl6_the_hold_is_codexs_alone(codex_supplier):
-    from phase_loop_runtime import seat_window as w
+def test_sl6_the_hold_is_codexs_alone(codex_supplier, monkeypatch):
+    from phase_loop_runtime import seat_profiles, seat_window as w
     assert w._row_ready_codes("gemini")[0] is None  # Gemini's row is not held
+    # OI-1: the fence declaration lifts the hold; removing it re-arms the hold.
+    assert w._row_ready_codes("codex") == (None, seat_profiles.window_data_for("codex"))
+    monkeypatch.delattr(codex_supplier, "EXPIRED_LEG_PROXY")
     assert w._row_ready_codes("codex") == (HOLD_CODE, None)
 
 
 def _codex_row_world(tmp_path, monkeypatch, supplier):
-    # These fixture-context row tests alone lift the hold (plan SL-6.1); no Codex row
-    # window can run in production until the OI-1 fence lands.
-    monkeypatch.setattr(supplier, "ROW_WINDOW_HOLD", None)
+    # The OI-1 fence declaration lifts the hold; these fixture-context row tests no longer
+    # need to (plan SL-6.1, then the OI-1 fence lane).
+    assert supplier.ROW_WINDOW_HOLD is None
     world = _row_world(tmp_path, monkeypatch, "codex")
     stubbed = supplier.reduce_containment
 
@@ -1315,7 +1319,8 @@ def _binding(kind, *, admission="release_qualified", allowlist=None, argv=None,
              input_sha256="auto", profile=None, image=_IMAGE):
     from phase_loop_runtime import seat_jail, seat_jail_qualification as jailq
     digests, inputs = _allowlist_digests(), _inputs()
-    role = "refuse_all" if kind in NONE_KINDS else "production"
+    # OI-1: the fenced expired leg binds the empty rule set, as the none kinds do.
+    role = "refuse_all" if kind in NONE_KINDS | {"expired_copy"} else "production"
     if input_sha256 == "auto":
         input_sha256 = (None if kind == "help" else inputs["control"]
                         if kind in CONTROL_KINDS else inputs["measured"])
@@ -1544,12 +1549,12 @@ def test_sl6_reducer_passes_a_complete_context_and_the_kit_accepts_it(codex_supp
     assert binding["validator_sha256"] != jailq._VALIDATOR_IMPLEMENTATION_SHA256
 
 
-@pytest.mark.parametrize("kind", ["measured", "expired_copy", "credentialed_tree_control",
+@pytest.mark.parametrize("kind", ["measured", "credentialed_tree_control",
                                   "credentialed_runtime_control"])
 @pytest.mark.parametrize("allowlist", ["refuse_all", "gemini"])
 def test_sl6_reducer_requires_the_production_allowlist(codex_supplier, kind, allowlist):
-    """The production rule set's digest is required on every credentialed launch (the
-    expired leg included, until OI-1's fence edits that one seam)."""
+    """The production rule set's digest is required on every credentialed launch but the
+    fenced expired leg (OI-1), which the next test covers."""
     digest = _allowlist_digests()[allowlist]
     context = _context(codex_supplier)
     if kind == "measured":
@@ -1582,12 +1587,27 @@ def test_sl6_reducer_requires_refuse_all_on_the_none_kinds(codex_supplier, kind)
     assert all("binding_mismatch" in _reasons(reduction, name) for name in _FIELDS)
 
 
-def test_sl6_the_expired_leg_binds_production_today(codex_supplier):
-    """The one seam OI-1 edits: today the expired leg's role is ``production``."""
-    assert codex_supplier._allowlist_role("expired_copy") == "production"
+@pytest.mark.parametrize("allowlist", ["production", "gemini"])
+def test_sl6_reducer_requires_refuse_all_on_the_fenced_expired_leg(codex_supplier, allowlist):
+    """OI-1: with the fence declared, the expired leg must bind ``sha256([])``."""
+    digest = _allowlist_digests()[allowlist]
+    context = _context(codex_supplier)
+    context = dataclasses.replace(context, expired_copy=dataclasses.replace(
+        context.expired_copy, binding=_binding("expired_copy", allowlist=digest)))
+    reduction = codex_supplier.reduce_containment(context)
+    assert not any(reduction.checks.values())
+    assert all("binding_mismatch" in _reasons(reduction, name) for name in _FIELDS)
+
+
+def test_sl6_the_fenced_expired_leg_binds_refuse_all(codex_supplier, monkeypatch):
+    """The one seam OI-1 edits: with the fence the expired leg's role is ``refuse_all``;
+    without the declaration it is ``production`` again."""
+    assert codex_supplier._allowlist_role("expired_copy") == "refuse_all"
     assert {kind: codex_supplier._allowlist_role(kind) for kind in KINDS} == {
-        **dict.fromkeys(NONE_KINDS, "refuse_all"),
-        **dict.fromkeys(CREDENTIAL_KINDS, "production")}
+        **dict.fromkeys(NONE_KINDS | {"expired_copy"}, "refuse_all"),
+        **dict.fromkeys(CREDENTIAL_KINDS - {"expired_copy"}, "production")}
+    monkeypatch.delattr(codex_supplier, "EXPIRED_LEG_PROXY")
+    assert codex_supplier._allowlist_role("expired_copy") == "production"
 
 
 @pytest.mark.parametrize("change", [

@@ -12,7 +12,9 @@ model request, in a complete fenced stream, with no token-host request, no allow
 (in the loopback fixture: every later model request carrying the installed expired bearer)
 and no credential change, whatever the CLI's exit.
 
-Until the OI-1 fence lands, a Codex row window is held (:data:`ROW_WINDOW_HOLD`).
+On the real seat the expired leg runs fenced (OI-1, owner decision 2026-11-22): its proxy
+refuses every request (:data:`EXPIRED_LEG_PROXY`), and the named refresh denial is still
+observed. Without that declaration a Codex row window is held (``ROW_WINDOW_HOLD``).
 """
 from __future__ import annotations
 
@@ -42,9 +44,38 @@ _NONE_KINDS = frozenset({"help", "tree_control", "runtime_control"})
 _TREE_KINDS = frozenset({"tree_control", "credentialed_tree_control"})
 #: r5.2 §10.B: the expired copy's access ``exp`` is the transform clock minus this.
 EXPIRED_ACCESS_MARGIN_S = 3600
-#: r5.2 §10.B (B1): the typed row-ready code every Codex row window refuses with, before
-#: any claim, preflight, jail or proxy, until the OI-1 fence lane lands and lifts it.
-ROW_WINDOW_HOLD = "codex_expired_leg_unfenced"
+#: r5.2 §10.B (B1): the typed row-ready code a Codex row window refuses with, before any
+#: claim, preflight, jail or proxy, while the expired leg is unfenced (``ROW_WINDOW_HOLD``).
+_ROW_WINDOW_HOLD_CODE = "codex_expired_leg_unfenced"
+#: OI-1 (owner decision 2026-11-22, "Block all its traffic"; r5.2 §10.B by the president's
+#: erratum of 2026-11-22): the expired leg's proxy runs in the existing ``refuse_all`` mode
+#: with the production named set. This one declaration is read by the kit's proxy start
+#: (``panel_invoker._open_window_launch``) and by :func:`reduce_containment`; removing it
+#: re-arms the hold and returns the leg to the production allowlist.
+EXPIRED_LEG_PROXY = "refuse_all"
+
+
+def _expired_leg_fenced() -> bool:
+    """Whether :data:`EXPIRED_LEG_PROXY` declares the fence; any value other than ``None``
+    or ``"refuse_all"`` is a ``contract_bug``."""
+    value = globals().get("EXPIRED_LEG_PROXY")
+    if value is None:
+        return False
+    if value == "refuse_all":
+        return True
+    raise ValueError("contract_bug")
+
+
+def __getattr__(name: str):
+    # ``ROW_WINDOW_HOLD`` is derived from the declaration on every read (the kit reads it
+    # with ``getattr``), so it can never disagree with the fence. Fail closed: an unknown
+    # declaration keeps the hold.
+    if name == "ROW_WINDOW_HOLD":
+        try:
+            return None if _expired_leg_fenced() else _ROW_WINDOW_HOLD_CODE
+        except ValueError:
+            return _ROW_WINDOW_HOLD_CODE
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 TOKEN_HOST, TOKEN_PATH = "auth.openai.com", "/oauth/token"
 MODEL_HOST, MODEL_PATH = "chatgpt.com", "/backend-api/codex/responses"
@@ -1171,12 +1202,12 @@ def _bracket_valid(result) -> bool:
 
 def _allowlist_role(kind: str) -> str:
     """The proxy rule set a launch of ``kind`` must bind: the empty set (``refuse_all``) for
-    the ``none`` kinds, the production ``codex`` allowlist for every credentialed kind.
+    the ``none`` kinds, the production ``codex`` allowlist for every other credentialed kind.
 
-    The ``expired_copy`` line is the seam the OI-1 fence edits: today the expired leg runs the
-    production allowlist (§10.B), so it binds the production digest."""
+    The ``expired_copy`` line is the OI-1 seam: with :data:`EXPIRED_LEG_PROXY` declared the
+    expired leg binds the empty set (``sha256([])``), else the production digest."""
     if kind == "expired_copy":
-        return "production"
+        return "refuse_all" if _expired_leg_fenced() else "production"
     return "refuse_all" if kind in _NONE_KINDS else "production"
 
 
@@ -1224,9 +1255,13 @@ def _launch_valid(result, identity, *, inputs: tuple[str, str, str],
         return False
     if result.kind not in LAUNCH_KINDS:
         return False
-    expected = allowlists.get(_allowlist_role(result.kind))
+    role = _allowlist_role(result.kind)
+    expected = allowlists.get(role)
     if expected is None or binding.allowlist_sha256 != expected:
         return False
+    if (result.kind == "expired_copy" and role == "refuse_all"
+            and binding.allowlist_sha256 == allowlists.get("production")):
+        return False  # OI-1: the fenced leg's empty set must differ from production
     if result.kind == "help":
         return binding.input_sha256 is None and _is_digest(getattr(result, "help_sha256", None))
     return binding.input_sha256 == (inputs[0] if result.kind in _CONTROL_KINDS else inputs[1])
@@ -1309,8 +1344,9 @@ def reduce_containment(inputs: ContainmentInputs) -> ContainmentReduction:
     * Bindings: every launch shares one image, admission class, stage and jail profile (the
       canonical Codex profile); one control argv and one production argv, which differ; each
       launch binds its kind's input and its rule set's digest: the empty set for the ``none``
-      kinds, the packaged production ``codex`` allowlist for the credentialed kinds
-      (:func:`_allowlist_role`, the OI-1 seam). Anything else is ``binding_mismatch``.
+      kinds and the fenced expired leg (OI-1), the packaged production ``codex`` allowlist
+      for the other credentialed kinds (:func:`_allowlist_role`). Anything else is
+      ``binding_mismatch``.
     * Admission: ``release_qualified``, ``locally_qualified``, or ``executable_dependency``
       with the context's dependency subject equal to the image. ``"None"`` is no class.
     * Scope: ``scope_problem`` on the seat's copy (§10.B), with the bracket whole.
