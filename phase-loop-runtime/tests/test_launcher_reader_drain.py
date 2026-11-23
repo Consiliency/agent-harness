@@ -1,0 +1,137 @@
+"""The ordinary (observer-less) streaming launch keeps every line its child wrote
+(agent-harness#2092 follow-up).
+
+Two bugs on that path lost output:
+- when the child exited, the loop drained only the lines already queued and stopped,
+  while the reader thread still held the child's last lines;
+- invalid UTF-8 raised in the text-mode reader thread, which then dropped every later
+  line.
+
+The first is reproduced without timing: the reader is held back until the launcher's
+first post-exit dequeue has found the queue empty. The fix must keep the stdin codec
+strict and bound the post-exit collection.
+"""
+from __future__ import annotations
+
+import queue
+import subprocess
+import sys
+import threading
+import time
+
+import pytest
+
+from phase_loop_runtime import launcher, panel_invoker
+
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX streaming path")
+
+MARKER = "phase-loop-drain-test-child"
+LINES = ["first", "second", "third"]
+
+
+def _child(script: str) -> list[str]:
+    return [sys.executable, "-c", f"# {MARKER}\n" + script]
+
+
+def _watch_exit(monkeypatch) -> threading.Event:
+    """Set once the launcher's poll() has seen the test child exit."""
+    exited = threading.Event()
+    original_poll = subprocess.Popen.poll
+
+    def poll(self):
+        returncode = original_poll(self)
+        if returncode is not None and MARKER in " ".join(map(str, self.args)):
+            exited.set()
+        return returncode
+
+    monkeypatch.setattr(subprocess.Popen, "poll", poll)
+    return exited
+
+
+def test_lines_the_reader_still_holds_at_exit_are_kept(tmp_path, monkeypatch):
+    exited = _watch_exit(monkeypatch)
+    empty_after_exit = threading.Event()
+
+    class GatedQueue(queue.Queue):
+        def get(self, block=True, timeout=None):
+            if not exited.is_set():
+                return super().get(block, timeout)
+            try:
+                return super().get(block=False)
+            except queue.Empty:
+                # The launcher has seen the exit and found nothing queued: only now
+                # may the reader deliver the rest.
+                empty_after_exit.set()
+                if not block:
+                    raise
+            return super().get(block, timeout)
+
+    monkeypatch.setattr(launcher, "Queue", GatedQueue)
+    original_reader = launcher._read_lines
+    released = []
+
+    def held_reader(stdout, line_queue):
+        def lines():
+            iterator = iter(stdout)
+            yield next(iterator)
+            rest = list(iterator)  # the child has written everything; EOF is reached
+            released.append(empty_after_exit.wait(10))
+            yield from rest
+        original_reader(lines(), line_queue)
+
+    monkeypatch.setattr(launcher, "_read_lines", held_reader)
+    script = "".join(f"print({line!r}, flush=True)\n" for line in LINES)
+    result = launcher.launch(_child(script), log_path=tmp_path / "run" / "output.log")
+    assert exited.is_set() and released == [True]
+    assert result.returncode == 0
+    assert result.output.splitlines() == LINES
+    assert (tmp_path / "run" / "output.log").read_text(encoding="utf-8").splitlines() == LINES
+
+
+def test_post_exit_collection_stops_at_its_budget(tmp_path, monkeypatch):
+    exited = _watch_exit(monkeypatch)
+    stop = time.monotonic() + 8
+
+    class EndlessQueue(queue.Queue):
+        """After exit, a record is always readable until well past the budget."""
+
+        def get(self, block=True, timeout=None):
+            if not exited.is_set():
+                return super().get(block, timeout)
+            if time.monotonic() < stop:
+                time.sleep(0.005)
+                return "more\n"
+            if not block:
+                raise queue.Empty
+            return None
+
+    monkeypatch.setattr(launcher, "Queue", EndlessQueue)
+    started = time.monotonic()
+    result = launcher.launch(_child("print('root', flush=True)\n"), log_path=tmp_path / "run" / "output.log")
+    assert time.monotonic() - started < 5
+    assert result.returncode == 0 and "root" in result.output and "more" in result.output
+
+
+def test_invalid_output_bytes_do_not_kill_the_reader(tmp_path, monkeypatch):
+    launch_owned = panel_invoker.launch_owned
+
+    def launch_with_utf8(*args, **kwargs):
+        return launch_owned(*args, **{**kwargs, "encoding": "utf-8"})
+
+    monkeypatch.setattr(panel_invoker, "launch_owned", launch_with_utf8)
+    failures = []
+    monkeypatch.setattr(threading, "excepthook", lambda args: failures.append(args.exc_type))
+    raw = b"before\n\xff\nafter\n"
+    script = "import os\nos.write(1, " + repr(raw) + ")\n"
+    result = launcher.launch(_child(script), log_path=tmp_path / "run" / "output.log")
+    assert result.returncode == 0
+    assert not failures
+    assert result.output.splitlines() == ["before", "\ufffd", "after"]
+
+
+def test_unencodable_stdin_still_fails(tmp_path):
+    # A lone surrogate has no strict encoding in any codec, so the stdin codec must refuse
+    # it rather than send a replacement character to the executor.
+    with pytest.raises(UnicodeEncodeError):
+        launcher.launch(_child("pass\n"), stdin_text="prompt \udc80",
+                        log_path=tmp_path / "run" / "output.log")

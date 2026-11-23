@@ -14,24 +14,31 @@ Until JEV Drill agrees, the following hold:
 
 ## Why an amendment
 
-The JEVHOST §2 table classes three of the changed files as "New, verbatim", copied from
+The JEVHOST §2 table classes four of the changed files as "New, verbatim", copied from
 JEV Drill's draft:
 - `src/phase_loop_runtime/windows_storage.py`;
+- `src/phase_loop_runtime/windows_process.py` (row E);
 - `tests/test_jevdrill_input.py`;
 - `tests/test_jevdrill_usage.py`.
 
 S5 permits a fix that is only a platform guard, but only within its owned file,
 `convergence/broker/live.py`. That permission does not extend to the files above. JEV
-Drill's agreement is therefore requested, under §2, for these three changes:
+Drill's agreement is therefore requested, under §2, for these changes:
 - the structural rewrite of the ACL check (A);
 - the edit to `test_jevdrill_input.py` (C);
-- the edit to `test_jevdrill_usage.py` (D).
+- the edit to `test_jevdrill_usage.py` (D);
+- the byte-exact stdin of the Windows admitted child in `windows_process.py` (E);
+- the Windows branches in six `test_jevdrill_usage.py` tests (F).
 
-The launcher change (B) is disclosed separately below.
+The launcher changes (B and G) are disclosed separately below.
 
 The first `windows-2025` run of the companion workflow failed on four causes. They are
 diagnosed in the coordinator's review record for agent-harness#2092, and this amendment
 uses its cause letters.
+
+Rows E and F come from the second `windows-2025` run, made on the code of rows A to D.
+Both legs finished with no stall, and the same eleven tests failed in each. Rows E and F
+are in a separate pull request stacked on the one for rows A to D.
 
 ## Changes recorded
 
@@ -41,6 +48,9 @@ uses its cause letters.
 | B | `launcher.py` `_worktree_change_snapshot` | On native Windows it returns `None` before calling `host_git`, whose trusted-helper resolution is POSIX-only. Changed paths stay unknown on Windows. | A platform guard, disclosed separately. `launcher.py` is a §2 "Modified, conflicting" file. It is the only JEV-pinned adapter module this change touches. |
 | C | `tests/test_jevdrill_input.py` `input_spec` | On Windows, prefixes `sys.executable` to the child command, as `synthetic_spec` in `test_jevdrill_usage.py` already does. | Test portability, in a verbatim file, so JEV Drill's agreement is requested. The POSIX command is unchanged. |
 | D | `tests/test_jevdrill_usage.py` `test_permanent_invalidation` | The 1 MiB parameter gets `id="oversized_line"`. The generated ID was longer than the 32767-character limit for a Windows environment variable, and pytest stores the node ID in `PYTEST_CURRENT_TEST`. Both Windows logs stop where pytest would begin reporting the oversized node ID. This strongly implicates the ID. Runner output backpressure remains unconfirmed. | Changes only the test ID, in a verbatim file, so JEV Drill's agreement is requested. [C7] compares names without parametrize ids (`tests/data/jevdrill_test_names.json`), so name stability is unaffected. |
+| E | `windows_process.py` `_admitted_child` | The executor's stdin is written as UTF-8 bytes. Before, it was written through a text-mode pipe (`text=True, encoding="utf-8"`). On Windows that pipe writes each `\n` as `\r\n`, so, for example, the executor got 40 bytes for a 37-byte payload. That caused the five `test_jevdrill_input.py` failures: both `test_manifest_matches_child_bytes_and_preserves_context` cases and all three `test_delivery_modes_use_the_resolved_payload` cases. The UTF-8 guarantee of agent-harness#2123 is kept, because bytes need no code page. | A product fix in a verbatim file, so JEV Drill's agreement is requested. Only native Windows runs this code: `run_owned` and the leased guardian both spawn it, and both are Windows-only. `windows_process` has no module digest in the JEV handoff. `tests/test_windows_runtime_guards.py` simulates the Windows newline translation on every platform. |
+| F | `tests/test_jevdrill_usage.py`, six tests | Each test gets a Windows branch. On POSIX each test runs and asserts as before; the two fork tails gain only a `hasattr(os, "fork")` guard that is true there. `test_late_pipe_records_are_drained` and `test_incomplete_drain_is_unknown_and_bounded`: Windows has no `os.fork`, so the child skips the fork. The off-Linux branch asserts only the root's output. `test_observer_survives_lease_recursion`: the `fcntl` lock is taken on POSIX only. On Windows the bare lease authority is refused, and the existing `assert_disabled` branch applies. `test_cancel_drains_valid_observation`: no POSIX signal reaches the launcher from a job-owned child. The test therefore raises the interrupt in the launcher with `_thread.interrupt_main` once the child has started, and expects 130. `test_adapter_observed_failure_retains_identity[timeout]` and `[stall]`: the job object ends the tree, and no SIGTERM handler runs. The test therefore expects the Windows path's 124 for a timeout and 1 for a stall. | Test portability, in a verbatim file, so JEV Drill's agreement is requested. No test is skipped, because the receipt classifier allows only its four skip reasons. No test is renamed or reparametrized, so `tests/data/jevdrill_test_names.json` is unchanged. |
+| G | `launcher.py` `launch`, the streaming path with no usage observer | When the child exits, the loop now collects lines until the line reader's end-of-file marker. It has a one-second budget, checked before each dequeue as `drain()` does; a sink write in flight and the later cleanup are outside it. Before, it stopped after the lines already queued. Only the output reader now decodes with `errors="replace"`, through `process.stdout.reconfigure`, so invalid UTF-8 no longer kills the reader thread. The stdin codec stays strict, so the default behaviour for an unencodable prompt is preserved. A descendant that holds the pipe open already delayed the return, because closing the pipe waits for the reader; that is unchanged. Both bugs were in place before agent-harness#2127, whose launcher change is inactive off Windows. The macOS receipt leg exposed the first one in `test_stdout_only_and_final_drain`: the captured output held only the first stdout record. The second one was the run's `PytestUnhandledThreadExceptionWarning` in `test_real_decode_failure_stays_unknown`. | A product fix, disclosed separately like B. The observer path, which carries JEV usage capture on Linux, is unchanged. `launcher.py` is a §2 "Modified, conflicting" file and JEV-pinned, so adopting this follow-up would also re-pin it. `tests/test_launcher_reader_drain.py` reproduces the drain race deterministically by gating the reader on the launcher's first post-exit dequeue. It also covers the collection budget, the invalid byte and strict stdin. |
 
 **JEV Drill's pin on `launcher.py`.**
 - JEV Drill's current handoff pins the module digest of `launcher.py` at the previously

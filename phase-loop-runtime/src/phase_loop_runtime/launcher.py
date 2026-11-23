@@ -3188,6 +3188,10 @@ def launch(
                 executor_released = _read_supervisor_status(process, exec_status_read, command)
             process_group_id = _process_group_id(process.pid)
             assert process.stdout is not None
+            if _codex_usage_observer is None and hasattr(process.stdout, "reconfigure"):
+                # Output only: an undecodable byte must not kill the line reader and drop
+                # every later line. The stdin codec stays strict.
+                process.stdout.reconfigure(errors="replace")
             if stdin_text is not None and process.stdin is not None:
                 process.stdin.write(stdin_text if _codex_usage_observer is None else stdin_text.encode())
                 process.stdin.close()
@@ -3240,10 +3244,13 @@ def launch(
             stalled = False
             cleanup_evidence: dict[str, Any] | None = None
             last_heartbeat_summary: dict[str, Any] | None = None
+            reader_eof = False
             while True:
                 try:
                     try:
                         line = line_queue.get(timeout=0.05 if _codex_usage_observer is not None else 1)
+                        if line is None and _codex_usage_observer is None:
+                            reader_eof = True
                     except Empty:
                         line = None
                     if line:
@@ -3305,12 +3312,23 @@ def launch(
                         if _codex_usage_observer is not None:
                             drain()
                             break
-                        while True:
+                        # The child has exited, but its last lines may still be in the
+                        # pipe or the reader. Collect until the reader's EOF sentinel,
+                        # within one second as drain() does: the budget is checked
+                        # before each dequeue. A sink write in flight and the cleanup
+                        # after this loop are outside the bound.
+                        drain_deadline = time.monotonic() + 1.0
+                        while not reader_eof:
+                            remaining = drain_deadline - time.monotonic()
+                            if remaining <= 0:
+                                break
                             try:
-                                line = line_queue.get_nowait()
+                                line = line_queue.get(timeout=remaining)
                             except Empty:
                                 break
-                            if line:
+                            if line is None:
+                                reader_eof = True
+                            else:
                                 consume(line)
                         break
                 except KeyboardInterrupt:

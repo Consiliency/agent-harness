@@ -162,7 +162,7 @@ def test_stdout_only_and_final_drain(tmp_path, monkeypatch):
 
 def test_late_pipe_records_are_drained(tmp_path, monkeypatch):
     # Root exits first; its local descendant writes the terminal line before EOF.
-    tail = "pid=os.fork()\nif pid==0:\n time.sleep(.15); print(" + repr(records()[-1]) + ",flush=True); os._exit(0)\nos._exit(0)"
+    tail = "pid=os.fork() if hasattr(os,'fork') else 1\nif pid==0:\n time.sleep(.15); print(" + repr(records()[-1]) + ",flush=True); os._exit(0)\nos._exit(0)"
     spec = synthetic_spec(tmp_path, monkeypatch, lines=records()[:-1], tail=tail)
     result = launcher.launch_with_spec(spec, codex_usage_capture=True)
     if captures():
@@ -174,7 +174,7 @@ def test_late_pipe_records_are_drained(tmp_path, monkeypatch):
 
 
 def test_incomplete_drain_is_unknown_and_bounded(tmp_path, monkeypatch):
-    tail = "pid=os.fork()\nif pid==0:\n time.sleep(2); os._exit(0)\nos._exit(0)"
+    tail = "pid=os.fork() if hasattr(os,'fork') else 1\nif pid==0:\n time.sleep(2); os._exit(0)\nos._exit(0)"
     spec = synthetic_spec(tmp_path, monkeypatch, tail=tail)
     started = time.monotonic()
     result = launcher.launch_with_spec(spec, codex_usage_capture=True)
@@ -265,9 +265,10 @@ def test_real_decode_failure_stays_unknown(tmp_path, monkeypatch, stream):
 
 
 def test_observer_survives_lease_recursion(tmp_path, monkeypatch):
-    import fcntl
     fd = os.open(tmp_path / "lease", os.O_CREAT | os.O_RDWR, 0o600)
-    fcntl.flock(fd, fcntl.LOCK_EX)
+    if os.name == "posix":
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_EX)
     authority = SimpleNamespace(fileno=lambda: fd, generation="synthetic", identity=None)
     try:
         spec = synthetic_spec(tmp_path, monkeypatch)
@@ -289,9 +290,26 @@ def test_observer_survives_lease_recursion(tmp_path, monkeypatch):
 
 def test_cancel_drains_valid_observation(tmp_path, monkeypatch):
     tail = "signal.signal(signal.SIGTERM,lambda *_: sys.exit(0)); time.sleep(.15); os.kill(os.getppid(),signal.SIGINT); time.sleep(10)"
+    if os.name == "nt":
+        # No POSIX signal reaches the launcher from the job-owned child, so the
+        # operator's interrupt is raised in the launcher once the child has started.
+        tail = "Path(sys.argv[0]).with_name('started').touch(); time.sleep(10)"
+        launched = threading.Event()
+        def interrupt():
+            deadline = time.monotonic() + 10
+            while not (tmp_path / "started").exists() and time.monotonic() < deadline:
+                time.sleep(.01)
+            time.sleep(.15)
+            if (tmp_path / "started").exists() and not launched.is_set():
+                import _thread
+                _thread.interrupt_main()
+        threading.Thread(target=interrupt, daemon=True).start()
     spec = synthetic_spec(tmp_path, monkeypatch, tail=tail)
     result = launcher.launch_with_spec(spec, codex_usage_capture=True)
-    assert result.interrupted and result.returncode == 0
+    if os.name == "nt":
+        launched.set()
+    # The job object ends the tree on Windows, so no graceful SIGTERM exit status.
+    assert result.interrupted and result.returncode == (130 if os.name == "nt" else 0)
     if captures():
         assert values(result.jevdrill_usage)["input_tokens"]["value"] == 100
     else:
@@ -385,7 +403,8 @@ def test_adapter_observed_failure_retains_identity(tmp_path, monkeypatch, termin
         assert all(m["measurement_value"] == {"kind": "unknown", "reason": "not_reported"}
                    for m in usage[0]["measurements"][1:5])
     if terminal in ("timeout", "stall"):
-        assert result.returncode == 0
+        # Native Windows has no SIGTERM handler to run: the job object ends the tree.
+        assert result.returncode == ({"timeout": 124, "stall": 1}[terminal] if os.name == "nt" else 0)
 
 
 @pytest.mark.parametrize("method", ["codex_exec_jsonl_0_159_2_v1", "codex_exec_jsonl_0_159_2_v2"])

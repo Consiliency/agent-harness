@@ -94,6 +94,46 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- The last eleven JEV Drill companion failures on the Windows legs (second follow-up to
+  agent-harness#2092; POSIX behaviour is unchanged):
+  - The Windows admitted child (`windows_process._admitted_child`) now writes the
+    executor's stdin as UTF-8 bytes. Its text-mode pipe turned each `\n` into `\r\n`, so
+    the executor did not receive the resolved prompt byte for byte. This fixes the five
+    `test_jevdrill_input.py` failures.
+    `tests/test_windows_runtime_guards.py` simulates the Windows newline translation on
+    every platform.
+  - Six `test_jevdrill_usage.py` tests assumed POSIX. Two forked a descendant, one took
+    an `fcntl` lock, and three relied on a SIGTERM handler or a SIGINT sent to the parent
+    process. On Windows they now:
+    - skip the fork;
+    - take the lock on POSIX only;
+    - raise the interrupt in the launcher;
+    - expect the job object's exit statuses: 124 for a timeout, 1 for a stall and 130
+      for an interrupt.
+
+  These are rows E and F of `plans/amendments/jevhost-S5-windows-runtime.md`. JEV
+  Drill's agreement is pending.
+- `launch` no longer loses a child's last lines on its streaming path when no usage
+  observer runs. This path is used off Linux and whenever usage capture is off. Two
+  earlier bugs, in place before agent-harness#2127, caused the loss:
+  - When the child exited, the loop took only the lines already queued and stopped,
+    while the reader thread still held the rest. The macOS companion leg exposed this in
+    `test_stdout_only_and_final_drain`.
+  - Invalid UTF-8 raised `UnicodeDecodeError` in the reader thread, which then dropped
+    every later line.
+
+  The loop now collects lines until the reader's end-of-file marker. Like the
+  observer's drain, it allows one second and checks that budget before each dequeue. A
+  sink write in flight and the cleanup after the loop fall outside the bound.
+
+  The output reader alone now decodes with `errors="replace"`. The stdin codec stays
+  strict, so a prompt that cannot be encoded still fails rather than reaching the
+  executor altered. The observer's binary usage parsing is unchanged.
+
+  A descendant that holds the pipe open still delays the return until it exits,
+  because closing the pipe waits for the reader. That behaviour predates this fix and
+  is unchanged. `tests/test_launcher_reader_drain.py` reproduces both bugs
+  deterministically.
 - The JEV Drill companion workflow's Windows legs (follow-up to
   Consiliency/agent-harness#2092; POSIX behaviour is unchanged):
   - `windows_storage.PrivateSecurity.verify` no longer compares rendered SDDL text, which

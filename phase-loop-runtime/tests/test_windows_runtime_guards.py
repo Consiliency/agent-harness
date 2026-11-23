@@ -1,5 +1,5 @@
-"""agent-harness#2092 follow-up: the structural private-ACL check and the Windows
-changed-paths guard.
+"""agent-harness#2092 follow-up: the structural private-ACL check, the Windows
+changed-paths guard and the admitted child's byte-exact stdin.
 
 The ACL policy is checked on constructed binary DACLs on every platform, and on real
 descriptors built by the Windows security APIs on native Windows.
@@ -7,11 +7,16 @@ descriptors built by the Windows security APIs on native Windows.
 from __future__ import annotations
 
 import ctypes
+import io
+import json
 import os
+import subprocess
+import sys
+import types
 
 import pytest
 
-from phase_loop_runtime import launcher
+from phase_loop_runtime import launcher, windows_process
 from phase_loop_runtime.windows_storage import _private_dacl_problem
 
 PRESENT, PROTECTED, AUTO_INHERITED, SELF_RELATIVE = 0x0004, 0x1000, 0x0400, 0x8000
@@ -144,3 +149,48 @@ def test_posix_change_snapshot_still_consults_host_git(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="stop after"):
         launcher._worktree_change_snapshot(tmp_path)
     assert calls and calls[0][0] == tmp_path
+
+
+# The admitted child's stdin is the executor's resolved payload, byte for byte. On
+# Windows a text-mode pipe writes each "\n" as "\r\n"; that translation is compiled
+# into the io layer, so it is simulated here by a ``subprocess.run`` that applies it
+# whenever text mode is requested.
+
+PAYLOAD = "PRIVATE_PROMPT é😀\r\nnext\nlast\n"
+
+
+def _windows_text_mode_run(real_run):
+    def run(command, *, input=None, text=None, encoding=None, errors=None,
+            universal_newlines=None, **kwargs):
+        if input is not None and (text or encoding or errors or universal_newlines):
+            input = input.replace("\n", "\r\n").encode(encoding or "utf-8")
+        return real_run(command, input=input, **kwargs)
+    return run
+
+
+def _admitted_child_stdin(monkeypatch, tmp_path, stdin_text):
+    sink = tmp_path / "executor-stdin.bin"
+    executor = [sys.executable, "-c",
+                "import sys; open(sys.argv[1], 'wb').write(sys.stdin.buffer.read())", str(sink)]
+    admission = json.dumps({"command": executor, "stdin": stdin_text}).encode() + b"\n"
+    monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(buffer=io.BytesIO(admission)))
+    monkeypatch.setattr(windows_process.subprocess, "run", _windows_text_mode_run(subprocess.run))
+    return windows_process._admitted_child(), sink.read_bytes()
+
+
+def test_the_windows_text_mode_simulation_is_effective(tmp_path):
+    run = _windows_text_mode_run(subprocess.run)
+    completed = run([sys.executable, "-c", "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())"],
+                    input=PAYLOAD, text=True, encoding="utf-8", stdout=subprocess.PIPE)
+    assert completed.stdout != PAYLOAD.encode("utf-8")
+
+
+def test_admitted_child_sends_the_payload_bytes_unchanged(monkeypatch, tmp_path):
+    returncode, received = _admitted_child_stdin(monkeypatch, tmp_path, PAYLOAD)
+    assert returncode == 0
+    assert received == PAYLOAD.encode("utf-8")
+
+
+def test_admitted_child_without_stdin_still_reads_nothing(monkeypatch, tmp_path):
+    returncode, received = _admitted_child_stdin(monkeypatch, tmp_path, None)
+    assert returncode == 0 and received == b""
