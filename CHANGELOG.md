@@ -8,6 +8,24 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
+- JEVHOST SL-8: the JEV Drill adapter half of the host gaps
+  (`plans/amendments/jevhost-JEVHOST-host-gaps.md`, GAPS §3.1–§3.8).
+  - A per-task retry ledger in memory, keyed by project, workspace and task. Budgets come
+    from the trusted request and can only be tightened. Retry context is generated from a
+    recorded acceptance failure, and a supplied context that disagrees or widens the
+    budget is refused before route. Launch admission spends attempts atomically.
+    `JevDrillAdapter.record_acceptance_outcome` implements the IF-0-JEVHOST-5 observer.
+  - Closed `guidance_deactivated` reasons.
+  - Disconnect advice on pre-launch calls and on report delivery, with the queue's backoff
+    preserved.
+  - A readiness recheck after the `started` write, which queues `canceled` on expiry.
+  - A 250 ms spawn reserve (`SPAWN_ALLOWANCE_MS`) subtracted from `--remaining-budget-ms`.
+  - A refusal, before any CLI request, of an identity that a present
+    `.jevdrill/harnesses.yaml` omits. An absent file keeps today's routing.
+  - Run-bound explicit reports for the JEV Drill item-3 request:
+    `run_event_identity`, `enqueue_run_event` and `run_report_counts`. The hook and the
+    host's own events share one ordered `source_sequence` stream.
+  - The ledger and run handles do not survive a restart.
 - JEVHOST SL-6: `phase_loop_runtime.host_integration`, the host-neutral integration seam
   (`plans/amendments/jevhost-JEVHOST-host-gaps.md`, IF-0-JEVHOST-5, GAPS §2). It provides
   `RetryBudget` (remaining attempts and floor-millisecond time, exhaustion, tighten-only),
