@@ -687,7 +687,11 @@ class JailedSubject:
     sha256: str
 
 
-_WALK = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+# Native Windows has none of these flags (nor ``dir_fd``): ``None`` makes every open fail closed.
+if os.name != "nt":
+    _WALK = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+else:
+    _WALK = None
 
 
 def root_owned_digest(path: str) -> str:
@@ -1478,6 +1482,8 @@ def after_check_in_h(holder_pid: int, seat_home: str) -> str | None:
 
 def _after_main(seat_home: str) -> int:
     from . import seat_grok_credential as cred
+    if cred._O_DIR is None:
+        return _AFTER_FINDING
 
     home = os.path.abspath(seat_home)
     if not os.path.lexists(home):

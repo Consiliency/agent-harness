@@ -485,9 +485,11 @@ def _admitted_child():
     if not admission.endswith(b"\n") or len(admission) > 1048576:
         raise SystemExit(2)
     request = json.loads(admission)
+    # The prompt goes to the executor as UTF-8 whatever the host code page is (this
+    # isolated child does not inherit PYTHONUTF8).
     completed = subprocess.run(request["command"], input=request["stdin"],
                                stdin=subprocess.DEVNULL if request["stdin"] is None else None,
-                               text=True, check=False, close_fds=True)
+                               text=True, encoding="utf-8", check=False, close_fds=True)
     return completed.returncode
 
 

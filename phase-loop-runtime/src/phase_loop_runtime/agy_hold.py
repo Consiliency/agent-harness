@@ -65,8 +65,12 @@ ROUTE_COVERAGE = MappingProxyType({"seat_profile": True, "heartbeat": True, "jai
 # Anchors are walked from here. Production walks from "/"; tests substitute an isolated root
 # (as ``seat_subject._PIN_WALK_ROOT`` does), because a world-writable /tmp is never an anchor.
 _WALK_ROOT = Path("/")
-_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-_FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+# Native Windows has none of these flags (nor ``dir_fd``): ``None`` makes every open fail closed.
+if os.name != "nt":
+    _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    _FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+else:
+    _DIR_FLAGS = _FILE_FLAGS = None
 _RELEASE = r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
 _VENDOR_NAME = re.compile(_RELEASE + r"-[0-9a-f]{16}")
 _DIGEST_NAME = re.compile(r"[0-9a-f]{64}")

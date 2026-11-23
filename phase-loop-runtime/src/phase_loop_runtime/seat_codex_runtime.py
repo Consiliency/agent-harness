@@ -37,7 +37,11 @@ CODEX_RUNTIME_DESTINATIONS: tuple[str, ...] = tuple(
 # npm platform package) and ``.../releases/<version>-<triple>/bin/codex``.
 _TARGET_PARENTS = frozenset({"vendor", "releases"})
 _TARGET_NAME = re.compile(r"(?:[^/]+-)?(?:x86_64|aarch64)-unknown-linux-musl")
-_WALK = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+# Native Windows has none of these flags (nor ``dir_fd``): ``None`` makes every open fail closed.
+if os.name != "nt":
+    _WALK = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+else:
+    _WALK = None
 
 
 @dataclass(frozen=True)

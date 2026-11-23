@@ -96,9 +96,13 @@ _MESSAGE_MAX = 200
 _SCAN_MAX = 100000
 _SAFE_INTEGER = 9007199254740991
 _RESERVED = "attempt_reserved"
-_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-_READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
-_CREATE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+# Native Windows has none of these flags (nor ``dir_fd``): ``None`` makes every open fail closed.
+if os.name != "nt":
+    _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    _READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
+    _CREATE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+else:
+    _DIR_FLAGS = _READ_FLAGS = _CREATE_FLAGS = None
 #: ``x-journal-rules.lifecycle`` with the implicit start: the first state is queued.
 _NEXT = MappingProxyType({
     None: ("queued",),

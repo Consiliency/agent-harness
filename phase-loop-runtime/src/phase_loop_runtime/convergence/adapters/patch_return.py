@@ -2,12 +2,18 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-import fcntl
+try:
+    import fcntl
+except ImportError:  # native Windows: POSIX-only; every use here fails closed there
+    fcntl = None  # type: ignore[assignment]
 from hashlib import sha1, sha256
 import json
 import os
 from pathlib import Path
-import pwd
+try:
+    import pwd
+except ImportError:  # native Windows has no password database; uses fail closed there
+    pwd = None  # type: ignore[assignment]
 import signal
 import stat
 import threading

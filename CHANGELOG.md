@@ -83,6 +83,29 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   record to `pinned` only when ai-stack's receipt passes P6 and P9; otherwise the record stays
   `built`.
 
+### Fixed
+
+- `phase_loop_runtime` now imports on native Windows, and POSIX behaviour is unchanged
+  (Consiliency/agent-harness#2092). Before, `closeout`, `runner` and the JEV Drill test
+  files that import them failed at import on Windows. `provider_tree_proof` computed its
+  pidfd mask from `select.POLL*` at import (this absorbs Consiliency/agent-harness#2091).
+  Fifteen other modules imported `fcntl` or `pwd`, or computed
+  `O_DIRECTORY`/`O_NOFOLLOW`/`O_CLOEXEC` open flags, at module level. Each of these is now
+  guarded where it is defined. On Windows the guarded paths fail closed:
+  - the tree proof records `UNKNOWN` (`poll_unavailable`) and never `PROVEN`;
+  - the open-flag constants are `None`, so every guarded `os.open` raises. This includes
+    the shared `seat_jail` no-follow masks: `open_dir_nofollow` refuses
+    (`UnsafeSeatObject`, `ENOTSUP`) instead of degrading to a plain open that accepts a
+    regular file;
+  - the `pwd`/`fcntl` uses raise, and the managed supervised-launch binding is absent, so
+    that launch refuses.
+
+  The Windows admitted child now writes the executor's stdin as UTF-8, whatever the
+  host's code page is. A new test imports every module of the package on a simulated
+  Windows. Pins: the whole-file SDK proof bindings of `provider_tree_proof.py` and
+  `claude_seat_sdk.py` move. No SDK proof region, admission, default or jail profile
+  digest moves.
+
 ## [0.7.41] - Unreleased candidate
 
 ### Changed

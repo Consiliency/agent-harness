@@ -119,10 +119,10 @@ def _keychain_account(env: Mapping[str, str]) -> str:
 def _read_store_file(path: Path) -> bytes | None:
     """The file store, opened without following a final link; owned by the euid, regular,
     and not writable by anyone else. ``None`` when absent or unsuitable."""
-    flags = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-             | getattr(os, "O_CLOEXEC", 0))
+    if _O_READ is None:
+        return None
     try:
-        fd = os.open(path, flags)
+        fd = os.open(path, _O_READ)
     except OSError:
         return None
     try:
@@ -234,9 +234,10 @@ RECORD_SCHEMA = "seat_credential_override.v2"
 _RECORD_CAP_BYTES = seat_jail.TOKEN_FILE_CAP_BYTES + 4096
 _ACCOUNT_FILE_CAP_BYTES = 16 << 20
 #: Every metadata and store open: never follow a final link, never block (a FIFO or device
-#: is opened, then rejected as non-regular), never leak into a child.
-_O_READ = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-           | getattr(os, "O_CLOEXEC", 0))
+#: is opened, then rejected as non-regular), never leak into a child. ``None`` where the
+#: platform has no ``O_NOFOLLOW`` (native Windows): every such open refuses instead.
+_O_READ = ((os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_CLOEXEC", 0)) if hasattr(os, "O_NOFOLLOW") else None)
 
 
 @dataclass(frozen=True)
@@ -327,6 +328,8 @@ def _read_owner_only(path: Path, cap: int, *, private_dir: bool) -> bytes | None
     """A regular file owned by the euid, not group/other-writable, read without following a
     final link and without blocking (and, with ``private_dir``, in a 0700 directory).
     ``None`` otherwise."""
+    if _O_READ is None:
+        return None
     if private_dir:
         try:
             if not _private_dir(os.stat(path.parent, follow_symlinks=False)):
@@ -410,6 +413,8 @@ class ClaudeCredentialAdapter:
         path = self.record_path()
         if not os.path.lexists(path):
             return None
+        if _O_READ is None:
+            raise UnsafeOverride("no-follow file open is unavailable")
         try:
             directory = os.stat(path.parent, follow_symlinks=False)
             fd = os.open(path, _O_READ)
@@ -493,12 +498,15 @@ def _open_store_dir(record: Path) -> int:
     """The record's directory as a held descriptor, opened component by component from the
     state root (the root included) without following links, each component checked by ``fstat`` on the
     descriptor actually held. Raises :class:`StoreRefused`."""
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
+    if not _DIR_FD_STORE:
+        raise StoreRefused("this platform cannot store the override safely "
+                           "(no descriptor-relative file operations)")
+    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0)
     root = seat_jail.state_home()
     relative = record.parent.relative_to(root).parts
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
-        fd = os.open(root, flags | getattr(os, "O_NOFOLLOW", 0))
+        fd = os.open(root, flags | os.O_NOFOLLOW)
     except OSError as exc:
         raise StoreRefused(
             f"{root} is a link (or not a directory): set XDG_STATE_HOME to the directory it "
@@ -515,7 +523,7 @@ def _open_store_dir(record: Path) -> int:
             except FileExistsError:
                 pass
             try:
-                child = os.open(name, flags | getattr(os, "O_NOFOLLOW", 0), dir_fd=fd)
+                child = os.open(name, flags | os.O_NOFOLLOW, dir_fd=fd)
             except OSError as exc:
                 raise StoreRefused(f"{here} is not a directory you own (a link is refused)") from exc
             os.close(fd)
@@ -532,7 +540,8 @@ def _open_store_dir(record: Path) -> int:
 
 #: Whether this platform has every descriptor-relative operation the store needs (decided
 #: once, at import).
-_DIR_FD_STORE = bool(hasattr(os, "O_NOFOLLOW") and os.open in os.supports_dir_fd
+_DIR_FD_STORE = bool(hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY")
+                     and os.open in os.supports_dir_fd
                      and os.rename in os.supports_dir_fd and os.mkdir in os.supports_dir_fd
                      and os.unlink in os.supports_dir_fd and os.stat in os.supports_dir_fd
                      and os.listdir in os.supports_fd)

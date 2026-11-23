@@ -5,7 +5,10 @@ or host. Deployment still needs the reviewed machine/principal binding. Every
 journal mutation/recovery caller must use this same directory lock protocol.
 """
 from contextlib import contextmanager
-import fcntl
+try:
+    import fcntl
+except ImportError:  # native Windows: POSIX-only; every use here fails closed there
+    fcntl = None  # type: ignore[assignment]
 import os
 import stat
 

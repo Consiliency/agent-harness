@@ -1032,9 +1032,14 @@ def decide_seat_route(
 
 # POSIX-only flags, looked up without failing at import: `panel_invoker` imports this module
 # on every platform, and only the Linux jail ever reaches these reads (a Windows host is
-# never seat-sandbox capable, so it never calls them).
-_O_READ = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
-_O_DIR = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+# never seat-sandbox capable, so it never calls them). Where the platform has no
+# O_DIRECTORY/O_NOFOLLOW (native Windows) both masks are None: every open through them
+# refuses rather than degrading to a plain open that follows links or accepts a file.
+if hasattr(os, "O_DIRECTORY") and hasattr(os, "O_NOFOLLOW"):
+    _O_READ = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+    _O_DIR = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+else:
+    _O_READ = _O_DIR = None
 
 
 class UnsafeSeatObject(OSError):
@@ -1043,6 +1048,8 @@ class UnsafeSeatObject(OSError):
 
 def open_dir_nofollow(path: str | os.PathLike[str], *, dir_fd: int | None = None) -> int:
     """Open a directory without following a final symlink."""
+    if _O_DIR is None:
+        raise UnsafeSeatObject(errno.ENOTSUP, "no-follow directory open is unavailable here")
     return os.open(path, _O_DIR, dir_fd=dir_fd)
 
 
