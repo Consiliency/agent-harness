@@ -104,6 +104,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- A long `TMPDIR` no longer fails a brokered review leg with the opaque "unknown failure;
+  CLI output not retained" (agent-harness#2131). The broker's private 0700 socket root is
+  now created under a private `$XDG_RUNTIME_DIR`, else the temp dir, else `/tmp`, whichever
+  first keeps the AF_UNIX socket path within Linux's 107-byte limit. When none does, the leg
+  is refused before staging with the typed notice `seat_broker_socket_path_too_long`, whose
+  fix names the limit, `TMPDIR` and `XDG_RUNTIME_DIR`. The standalone `advisor-board`
+  now gives its legs a private 0700 run directory under the operator's state dir. A
+  failing leg's reason is kept there in `leg-logs/`, named by the board output, and the
+  directory is removed when no leg log was written. Callers that pass their own
+  `stream_dir`, such as the president tier, are unchanged.
 - The last eleven JEV Drill companion failures on the Windows legs (second follow-up to
   agent-harness#2092; POSIX behaviour is unchanged):
   - The Windows admitted child (`windows_process._admitted_child`) now writes the

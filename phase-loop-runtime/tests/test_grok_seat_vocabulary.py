@@ -32,9 +32,10 @@ PREFIX = "grok_seat_"
 
 # The two tables at base e91638d7, before SEATS GROK: their size and the sha256 of their
 # canonical JSON. Literals, never derived from the production tables, so an edited, removed
-# or renamed entry fails.
-BASE_NOTICES = (114, "301dfc69ede3e9475a3c67ca5454de049ba0f676a91aad252fcd3ee330881f4b")
-BASE_OD10_CLASSES = (138, "d12ff6d8dee21ed6afb91f99f30f4d0651aa2a5400a0308021959708591d2754")
+# or renamed entry fails. agent-harness#2131 adds `seat_broker_socket_path_too_long`
+# (an ordinary refusal) to both.
+BASE_NOTICES = (115, "0236376e6f110d4194a9e3106f2e074d10236fc21e3d265fe207ec04a4451bd5")
+BASE_OD10_CLASSES = (139, "ebca95f84e246cdccbdbad324cd89194f9967295de2d9f56f3e0816c58a26266")
 
 BASE_DESCEND_CODES = frozenset({
     "seat_sandbox_unavailable_host",

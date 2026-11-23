@@ -469,6 +469,12 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "with the real path"),
     "seat_broker_socket_unavailable": (
         "leg refused", "the broker socket is missing or not a socket", "re-run the board"),
+    "seat_broker_socket_path_too_long": (
+        "leg refused",
+        "the broker socket path would exceed the 107-byte AF_UNIX limit under "
+        "XDG_RUNTIME_DIR, TMPDIR and /tmp",
+        "set TMPDIR to a directory with a path of at most 56 characters, or run with a "
+        "private (0700) XDG_RUNTIME_DIR, then re-run"),
     "seat_launch_owner_required": (
         "leg refused", "a provider launch did not go through the seat-launch owner",
         "report a defect"),

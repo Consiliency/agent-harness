@@ -24,6 +24,7 @@ import platform
 from pathlib import Path
 import secrets
 import socket
+import stat
 import subprocess
 import tempfile
 import threading
@@ -552,6 +553,59 @@ def _client_exit_expected(wait: "_ClientWait | None", adapter_failure_ns: int | 
             and wait.exit_ns >= adapter_failure_ns)
 
 
+#: The longest AF_UNIX socket path Linux binds: ``sun_path`` is 108 bytes with its NUL.
+AF_UNIX_PATH_MAX = 107
+#: The typed refusal when no candidate base keeps the broker socket within that limit.
+BROKER_SOCKET_PATH_TOO_LONG = "seat_broker_socket_path_too_long"
+_BROKER_ROOT_PREFIX = "phase-loop-broker-"
+_BROKER_SOCKET_NAME = "intended-inference.sock"
+
+
+def _private_runtime_dir() -> str | None:
+    """``$XDG_RUNTIME_DIR`` when it is an absolute, unlinked directory this account owns
+    with mode 0700; otherwise ``None``."""
+    value = os.environ.get("XDG_RUNTIME_DIR")
+    if not value or not os.path.isabs(value):
+        return None
+    try:
+        info = os.lstat(value)
+    except OSError:
+        return None
+    if (stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
+            and stat.S_IMODE(info.st_mode) == 0o700):
+        return value
+    return None
+
+
+def _sticky_tmp() -> str | None:
+    """``/tmp`` when it is an unlinked root-owned sticky directory; otherwise ``None``."""
+    try:
+        info = os.lstat("/tmp")
+    except OSError:
+        return None
+    if stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and info.st_mode & stat.S_ISVTX:
+        return "/tmp"
+    return None
+
+
+def broker_socket_path_length(base: str) -> int:
+    """The byte length of the broker socket path a root created under ``base`` gets
+    (``mkdtemp`` appends eight random characters to the prefix)."""
+    return len(os.fsencode(os.path.join(
+        os.path.abspath(base), _BROKER_ROOT_PREFIX + "x" * 8, _BROKER_SOCKET_NAME)))
+
+
+def broker_socket_base() -> str:
+    """The directory the broker's private 0700 socket root is created in, independent of
+    how long ``TMPDIR`` is: a private ``$XDG_RUNTIME_DIR``, else the temp dir, else a
+    verified ``/tmp``, the first whose socket path fits :data:`AF_UNIX_PATH_MAX`. Raises
+    ``ValueError(BROKER_SOCKET_PATH_TOO_LONG)`` when none does."""
+    for base in (_private_runtime_dir(), tempfile.gettempdir(), _sticky_tmp()):
+        if base and broker_socket_path_length(base) <= AF_UNIX_PATH_MAX:
+            return base
+    raise ValueError(BROKER_SOCKET_PATH_TOO_LONG)
+
+
 class ParentUnixBroker:
     """One-request parent-owned AF_UNIX broker; child selects no provider action."""
     def __init__(
@@ -623,7 +677,8 @@ class ParentUnixBroker:
         self._canonical_probe_file = probe_file
         self._instruction_sha256 = sha256(instructions.read_bytes()).hexdigest()
         self.nonce = secrets.token_hex(32)
-        self.root = Path(tempfile.mkdtemp(prefix="phase-loop-broker-")); self.root.chmod(0o700)
+        self.root = Path(tempfile.mkdtemp(prefix=_BROKER_ROOT_PREFIX, dir=broker_socket_base()))
+        self.root.chmod(0o700)
         secret_fd = None
         secret_path = None
         try:
@@ -639,7 +694,7 @@ class ParentUnixBroker:
             if secret_fd is not None:
                 os.close(secret_fd)
         self._host_secret_probe = Path(secret_path)
-        self.path = self.root / "intended-inference.sock"; self._used = False
+        self.path = self.root / _BROKER_SOCKET_NAME; self._used = False
         self.evidence: dict[str, object] = {
             "schema": PARENT_UNIX_BROKER_V1,
             "stage_bundle_sha256": authorization.input_sha256,

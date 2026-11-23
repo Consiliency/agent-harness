@@ -3196,6 +3196,7 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "seat_placement_waiting",
     # agent-harness#1222: the seat-launch owner's refusals (typed notices in seat_jail.NOTICES)
     "seat_owner_unavailable", "seat_bind_source_unavailable", "seat_broker_socket_unavailable",
+    "seat_broker_socket_path_too_long",
     "seat_resource_caps_unavailable",
     "seat_launch_owner_required", "seat_output_path_unavailable", "seat_profile_unavailable",
     "seat_provider_unavailable", "seat_filtered_egress_unavailable",
@@ -19211,6 +19212,15 @@ def _default_spawn(
     try:
         if quiescence_latch is not None:
             quiescence_latch.raise_if_set()
+        if (
+            mode == "review"
+            and review_authorization is not None
+            and not _has_injected_review_execution_seam(leg=leg)
+            and not (leg == "claude" and model is not None and _under_claude_code(env))
+        ):
+            # agent-harness#2131: a brokered leg binds an AF_UNIX socket; refuse with a
+            # typed code before staging when no short base keeps its path within the limit.
+            _advisor_board_backing.broker_socket_base()
         if capture_stage is None:
             (review_dir / "review-bundle.md").write_text(artifact, encoding="utf-8")
             resolved_brief = _resolve_brief(mode, brief_ref)
