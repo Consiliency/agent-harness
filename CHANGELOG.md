@@ -8,6 +8,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
+- LANEEXEC SL-2: the new `phase_loop_runtime.launch_return` module maps a terminated
+  attempt to its return, status and cancel outcome (`plans/phase-plan-v13-LANEEXEC.md`,
+  binding §3 L-S4 and L-S5). `collect_return` returns at most one bounded return,
+  written once as a 0600 file in a 0700 per-attempt directory and named by a
+  `ReturnDescriptor`. For `patch` it reads only the WORKER proposal and checks the
+  locator digest, the snapshot masks, the cap and binary literals. For `result` it
+  reads `{out}/result.json` (1 MiB, strict JSON, `truncated` false). `none` returns null.
+  A true or failing `withhold` predicate deletes the bytes. `map_status`, `map_cancel`
+  and `map_worker_terminal` are the L-S4 tables, closed and total. A zero-signal cancel
+  maps to `cancel_pending`, never to `cancelled` or `already_terminal`.
+  `build_launch_evidence` builds the metadata-only `LaunchEvidence`. Nothing calls the
+  module yet, and no route is activated.
 - LANEEXEC SL-0: the placement launch protocol v1 (`plans/phase-plan-v13-LANEEXEC.md`) ships
   as package data at `phase_loop_runtime/contracts/placement/launch-v1.schema.json`, byte
   for byte the frozen artifact `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`
