@@ -33,7 +33,10 @@ _PREFIX = "advisor-board-"
 _ACTIVE = ".active"
 _DONE = ".done"
 _PARENT_LOCK = ".lock"
-_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+# Resolved without failing on platforms that lack these flags (Windows imports this module
+# but never retains: ``fcntl`` is absent there, so no run is ever started).
+_DIR_FLAGS = (os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+              | getattr(os, "O_CLOEXEC", 0))
 _LOG_REF = re.compile(r"; CLI output: (leg-logs/[A-Za-z0-9_-]+\.log)\Z")
 
 try:
