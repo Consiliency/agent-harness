@@ -186,6 +186,10 @@ def _selected_paths(root: Path) -> list[str]:
     )
 
 
+# Read size for streaming a file into its manifest digest (bounded memory).
+_MANIFEST_CHUNK_BYTES = 1 << 20
+
+
 def review_tree_manifest_sha256(root: Path) -> str:
     """Digest binding the reviewed PATH SET and its BYTES.
 
@@ -208,9 +212,18 @@ def review_tree_manifest_sha256(root: Path) -> str:
         target = root / rel
         if target.is_symlink():
             payload = os.readlink(target).encode("utf-8")
+            content = hashlib.sha256(payload)
+            length = len(payload)
             kind = b"link"
         else:
-            payload = target.read_bytes()
+            # Streamed in bounded chunks: only the digest and length are kept, so peak
+            # memory does not grow with the file. Identical to hashing the whole payload.
+            content = hashlib.sha256()
+            length = 0
+            with open(target, "rb") as handle:
+                while chunk := handle.read(_MANIFEST_CHUNK_BYTES):
+                    content.update(chunk)
+                    length += len(chunk)
             kind = b"blob"
         # The EXECUTABLE BIT is execution-relevant state, so it belongs in the digest.
         # Without it a stage that silently dropped `chmod +x` still matched the source and
@@ -222,8 +235,8 @@ def review_tree_manifest_sha256(root: Path) -> str:
         digest.update(
             kind                                                    # 4 bytes, fixed
             + executable                                            # 1 byte, fixed
-            + hashlib.sha256(payload).hexdigest().encode("ascii")   # 64 bytes, fixed
-            + b"%020d" % len(payload)                               # 20 bytes, fixed
+            + content.hexdigest().encode("ascii")                   # 64 bytes, fixed
+            + b"%020d" % length                                     # 20 bytes, fixed
             + hashlib.sha256(rel.encode("utf-8")).hexdigest().encode("ascii")  # 64, fixed
         )
     return digest.hexdigest()
