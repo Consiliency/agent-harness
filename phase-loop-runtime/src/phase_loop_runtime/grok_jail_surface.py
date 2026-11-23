@@ -18,6 +18,7 @@ not touched by anything here.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import errno
 import json
@@ -230,7 +231,12 @@ def measurement_owner(jail) -> tuple[str, ...]:
     raise JailRefused("no sessions mount to substitute")
 
 
-def _production_owner(jail, *, measurement: bool) -> tuple[str, ...]:
+def production_owner(jail, *, measurement: bool) -> tuple[str, ...]:
+    """The owner argv with the declared sink bind substituted back to the production
+    sessions tmpfs (``measurement=True``), refusing unless the owner differs from production
+    by exactly that one bind at the tmpfs's position; the owner itself otherwise. The same
+    single substitution :func:`launch_digest` makes and ``panel_invoker._require_qualified_jail``
+    applies to a measurement jail (jail contract §5.1 r7)."""
     owner = list(jail.process_owner)
     if not measurement:
         return tuple(owner)
@@ -253,7 +259,7 @@ def launch_digest(jail, command, *, arch: str | None = None,
     from .seat_jail import actual_profile_digest, host_arch
 
     arch = arch or host_arch()
-    normalised = dataclasses.replace(jail, process_owner=_production_owner(
+    normalised = dataclasses.replace(jail, process_owner=production_owner(
         jail, measurement=measurement))
     return sha256(_canonical({
         "schema": LAUNCH_DIGEST_SCHEMA,
@@ -1032,7 +1038,7 @@ def _verify(jail, *, mode, proxy, holder, cwd, command, credential, measurement)
     _require(_grok_argv_digest(list(command)) == staged_argv_digest(), "argv digest")
     # 3. Projections and masks, then the per-launch bytes.
     _check_mount_policy(jail if mode == "board" else dataclasses.replace(
-        jail, process_owner=_production_owner(jail, measurement=True)))
+        jail, process_owner=production_owner(jail, measurement=True)))
     _check_mount_points(jail)
     _check_staged_bytes(jail, credential, proxy)
     # 2. Owner argv: the normalised actual launch digest is the expected production value.
@@ -1057,7 +1063,11 @@ def _verify(jail, *, mode, proxy, holder, cwd, command, credential, measurement)
         _require(reservation.budget in (0, 1), "budget")
         _check_proxy(proxy, holder, budget=reservation.budget)
         _require(eligibility(binary, through=4) is None, "eligibility")
-        _consume_admission(measurement, jail, proxy, holder, command, binary)
+        # r7 (§4.4, §4.5 M4): verified here, not consumed. Only the spawn hook of M5,
+        # :func:`consume_admission`, consumes it, after the qualification check and the
+        # identity probe inside ``launch_provider``.
+        _require(_admission_binding(reservation, jail, proxy, holder, command, binary)
+                 == dict(measurement.admission), "the admission does not bind this launch")
         reservation_id = reservation.reservation_id
     return JailLaunchContext(
         mode=mode, command=command, cwd=str(cwd), owner_sha256=_owner_sha256(jail),
@@ -1080,10 +1090,53 @@ class JailedMeasurementLaunch:
     scan_values: object = field(repr=False, compare=False)
     admission: Mapping[str, object] = field(compare=False)
     issuer: object = field(default=None, repr=False, compare=False)
+    #: The operator's descriptor of the admitted sink, opened at M1 before the M2 handoff
+    #: and held through the launch: M2's parent check and the M5 hook read the sink
+    #: through it, and check that the path still names the same inode.
+    sink_fd: int | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self.issuer is not _ISSUER:
             raise TypeError("a jailed measurement launch is issued only by prepare_measurement")
+
+
+def close_measurement(measurement: object) -> None:
+    """Close the sink descriptor a prepared measurement holds (idempotent)."""
+    descriptor = getattr(measurement, "sink_fd", None)
+    if isinstance(measurement, JailedMeasurementLaunch) and descriptor is not None:
+        object.__setattr__(measurement, "sink_fd", None)
+        with contextlib.suppress(OSError):
+            os.close(descriptor)
+
+
+_PATH_WALK = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+_DIR_READ = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+
+def open_dir_chain(path: str) -> int:
+    """A readable descriptor of the directory ``path``, opened one component at a time
+    from ``/`` without following a link anywhere. The sink's ancestors are the operator's
+    private review directories; that ancestry is trusted (an operator-side process can
+    always act as the operator), and every check below binds the inode, not the name."""
+    _require(os.path.isabs(path) and posixpath.normpath(path) == path, "path not normal")
+    parts = [part for part in path.split("/") if part]
+    _require(bool(parts) and not any(part in {".", ".."} for part in parts))
+    current = os.open("/", _PATH_WALK)
+    try:
+        for part in parts[:-1]:
+            child = os.open(part, _PATH_WALK, dir_fd=current)
+            os.close(current)
+            current = child
+        return os.open(parts[-1], _DIR_READ, dir_fd=current)
+    finally:
+        os.close(current)
+
+
+def _sink_view(descriptor: int, admitted) -> os.stat_result:
+    info = os.fstat(descriptor)
+    _require(stat.S_ISDIR(info.st_mode) and [info.st_dev, info.st_ino] == list(admitted),
+             "the sink is not the admitted inode")
+    return info
 
 
 def _identity(path: str) -> list[int]:
@@ -1138,36 +1191,51 @@ def prepare_measurement(reservation: MeasurementReservation, seat, *, proxy, hol
         jail = seat.jail
         _require(eligibility(reservation.image_sha256, through=4) is None, "conditions 1-4")
         sink = sink_source(_home_of(jail))
-        info = os.lstat(sink)
-        _require(stat.S_ISDIR(info.st_mode) and not os.listdir(sink), "the sink is not fresh")
         launch = launch_digest(jail, command, measurement=True)
         _require(launch == _expected_launch(reservation.image_sha256), "launch digest")
         _require(proxy.request_budget == reservation.budget, "the proxy's budget")
         admission = _admission_binding(reservation, jail, proxy, holder, command,
                                        reservation.image_sha256)
-        return JailedMeasurementLaunch(reservation, seat.credential.scan_values,
-                                       MappingProxyType(admission), issuer=_ISSUER)
+        descriptor = open_dir_chain(sink)
+        try:
+            info = _sink_view(descriptor, admission["sink"])
+            _require(info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700
+                     and not os.listdir(descriptor), "the sink is not fresh")
+            return JailedMeasurementLaunch(reservation, seat.credential.scan_values,
+                                           MappingProxyType(admission), issuer=_ISSUER,
+                                           sink_fd=descriptor)
+        except BaseException:
+            os.close(descriptor)
+            raise
     except Exception as exc:  # noqa: BLE001
         raise _refused() from exc
 
 
-def _consume_admission(measurement, jail, proxy, holder, command, binary) -> None:
-    """Measurement mode: the recorded admission, re-derived from the actual objects, is
-    consumed atomically (``O_CREAT|O_EXCL``) in the grant directory, once."""
+def consume_admission(measurement, jail, proxy, holder, command, binary) -> None:
+    """The spawn hook of §4.5 step M5, the last step before ``Popen``: the recorded
+    admission, re-derived from the actual objects, with the sink still empty, is consumed
+    atomically (``O_CREAT|O_EXCL``) in the grant directory, once. Only a
+    :class:`JailedMeasurementLaunch` that :func:`prepare_measurement` issued is consumed.
+    Raises :class:`JailRefused`; once the file exists the charge stands, whatever follows."""
     from .seat_jail import open_dir_nofollow
 
+    _require(isinstance(measurement, JailedMeasurementLaunch) and measurement.issuer is _ISSUER,
+             "no prepared measurement")
     reservation = measurement.reservation
     actual = _admission_binding(reservation, jail, proxy, holder, command, binary)
     _require(actual == dict(measurement.admission), "the admission does not bind this launch")
-    sink = sink_source(_home_of(jail))
-    _require(not os.listdir(sink), "the sink is not empty")
+    # Through the operator's descriptor of the admitted inode (the sink is the seat's since
+    # M2); the path, re-checked here, still names that inode.
+    _require(measurement.sink_fd is not None, "no sink descriptor")
+    _sink_view(measurement.sink_fd, actual["sink"])
+    _require(not os.listdir(measurement.sink_fd), "the sink is not empty")
     directory = open_dir_nofollow(reservation.grant_dir)
     try:
         info = os.fstat(directory)
         _require(info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700,
                  "grant directory")
         try:
-            descriptor = os.open(f"admission-{reservation.reservation_id}",
+            descriptor = os.open(admission_name(reservation.reservation_id),
                                  os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
                                  | os.O_CLOEXEC, 0o600, dir_fd=directory)
         except FileExistsError as exc:
@@ -1179,6 +1247,208 @@ def _consume_admission(measurement, jail, proxy, holder, command, binary) -> Non
             os.close(descriptor)
     finally:
         os.close(directory)
+
+
+def admission_name(reservation_id: str) -> str:
+    """``admission-<reservation id>`` in the grant directory: present only once the M5
+    hook ran (§4.5, "The rule that makes the order safe")."""
+    return f"admission-{reservation_id}"
+
+
+def admission_state(reservation: MeasurementReservation) -> str:
+    """``present`` (a regular file of the operator's), ``absent``, or ``unknown`` when the
+    grant directory or the entry cannot be read or is not that file."""
+    from .seat_jail import open_dir_nofollow
+
+    try:
+        directory = open_dir_nofollow(reservation.grant_dir)
+    except OSError:
+        return "unknown"
+    try:
+        info = os.stat(admission_name(reservation.reservation_id), dir_fd=directory,
+                       follow_symlinks=False)
+    except FileNotFoundError:
+        return "absent"
+    except OSError:
+        return "unknown"
+    finally:
+        os.close(directory)
+    return "present" if stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() else "unknown"
+
+
+def admission_consumed(reservation: MeasurementReservation) -> bool:
+    """The charge decision: was the admission consumed? Only a positive ``absent`` is proof
+    that no provider process started for it (§4.5); any doubt is ``True``."""
+    return admission_state(reservation) != "absent"
+
+
+def admission_present(reservation: MeasurementReservation) -> bool:
+    """The strict post-run check: the admission file is positively present. Any doubt is
+    ``False``, so nothing is read and the launch does not succeed (the charge stays)."""
+    return admission_state(reservation) == "present"
+
+
+# --- The sink probe (§4.5 step M2) and the sink reader, run in H ---------------------------
+
+_SINK_TIMEOUT_S = 60
+_SINK_PROBE_PREFIX = ".sink-probe-"
+_SINK_MISSING, _SINK_AMBIGUOUS = 4, 5
+
+
+def _in_h_argv(holder_pid: int, verb: str, *args: str) -> list[str]:
+    """``nsenter`` into H as H-root, then this module's helper ``verb``."""
+    from . import seat_uid
+
+    return ["/usr/bin/nsenter", "-t", str(int(holder_pid)), "-U", "-m",
+            "--preserve-credentials",
+            *seat_uid.trusted_module_argv("phase_loop_runtime.grok_jail_surface", verb, *args)]
+
+
+def probe_sink(holder_pid: int, seat_id: int, sink: str, *,
+               measurement: "JailedMeasurementLaunch") -> tuple[int, int]:
+    """§4.5 step M2. In H, the H-root helper opens the sink one component at a time without
+    following a link and requires the **admitted** inode (the admission's ``sink`` binding),
+    an empty H-root-owned 0700 directory, before it changes anything; it then hands that
+    inode to the seat UID (``seat_id:seat_id``, still 0700) and runs this module's
+    ``sink-probe`` verb as the dropped UID (``seat_jail.setpriv_drop(seat_id)``,
+    ``trusted_module_argv``) on the same descriptor. As that UID the probe creates
+    ``.sink-probe-<16 hex>`` exclusively, writes 32 random bytes, fsyncs, reads them back and
+    unlinks the file. Passes only on exit 0 within 60 s; the parent then finds, by path and
+    through the descriptor it opened at M1, the admitted inode, seat-owned and 0700, and
+    empty. Returns ``(device, inode)``; anything else is ``grok_tool_surface_unverified``
+    with nothing spawned and nothing consumed."""
+    import subprocess
+
+    from . import seat_uid
+
+    try:
+        _require(isinstance(measurement, JailedMeasurementLaunch)
+                 and measurement.issuer is _ISSUER and measurement.sink_fd is not None,
+                 "no prepared measurement")
+        admitted = [int(value) for value in measurement.admission["sink"]]
+        done = subprocess.run(_in_h_argv(holder_pid, "sink-handoff", str(sink), str(int(seat_id)),
+                                         str(admitted[0]), str(admitted[1])),
+                              stdin=subprocess.DEVNULL, capture_output=True,
+                              timeout=_SINK_TIMEOUT_S, env=seat_uid._pythonpath_env())
+        _require(done.returncode == 0, "the sink probe failed")
+        reported = _loads(done.stdout)
+        _require(type(reported) is dict and set(reported) == {"device", "inode"}
+                 and [reported["device"], reported["inode"]] == admitted, "report")
+        info = os.lstat(sink)
+        _require(stat.S_ISDIR(info.st_mode) and [info.st_dev, info.st_ino] == admitted
+                 and info.st_uid != os.getuid() and stat.S_IMODE(info.st_mode) == 0o700,
+                 "the sink is not the admitted, seat-owned inode")
+        _sink_view(measurement.sink_fd, admitted)
+        _require(not os.listdir(measurement.sink_fd), "the sink is not empty")
+        return info.st_dev, info.st_ino
+    except Exception as exc:  # noqa: BLE001 - a helper that cannot run is a failure
+        raise _refused() from exc
+
+
+def read_sink_in_h(holder_pid: int, seat_id: int, sink: str) -> bytes:
+    """The one ``<group>/<session>/tool_definitions.json`` under the sink, read in H as
+    H-root with the TS contract §5.5 rules (the file the seat UID's). Raises
+    ``grok_tool_surface.ArtifactRefused``: ``artifact_missing`` or ``artifact_ambiguous``,
+    and the latter for a helper that cannot run."""
+    import subprocess
+
+    from . import seat_uid
+
+    try:
+        done = subprocess.run(_in_h_argv(holder_pid, "sink-read", str(sink), str(int(seat_id))),
+                              stdin=subprocess.DEVNULL, capture_output=True,
+                              timeout=_SINK_TIMEOUT_S, env=seat_uid._pythonpath_env())
+    except Exception as exc:  # noqa: BLE001
+        raise _gts.ArtifactRefused("artifact_ambiguous") from exc
+    if done.returncode == _SINK_MISSING:
+        raise _gts.ArtifactRefused("artifact_missing")
+    if done.returncode != 0 or len(done.stdout) > _gts.DEFINITIONS_MAX_BYTES:
+        raise _gts.ArtifactRefused("artifact_ambiguous")
+    return done.stdout
+
+
+def _sink_handoff_main(sink: str, seat_text: str, device_text: str, inode_text: str) -> int:
+    """As H-root: the sink, opened one component at a time without following a link, must
+    be the admitted inode and an empty H-root-owned 0700 directory **before** anything is
+    changed. It is then handed to the seat UID (``n:n``, 0700, as ``seat_uid.handoff`` would)
+    and the probe runs as that UID on this descriptor (seat-home is not the seat's to
+    traverse before the launch)."""
+    from .seat_jail import setpriv_drop
+    from .seat_uid import trusted_module_argv
+
+    try:
+        seat_id = int(seat_text)
+        descriptor = open_dir_chain(sink)
+        info = os.fstat(descriptor)
+        if (not stat.S_ISDIR(info.st_mode) or [info.st_dev, info.st_ino]
+                != [int(device_text), int(inode_text)] or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o700 or os.listdir(descriptor)):
+            return 3
+        os.fchown(descriptor, seat_id, seat_id)
+        os.fchmod(descriptor, 0o700)
+        after = os.fstat(descriptor)
+        if (after.st_uid, after.st_gid, stat.S_IMODE(after.st_mode)) != (seat_id, seat_id, 0o700):
+            return 3
+        os.set_inheritable(descriptor, True)
+        argv = [*setpriv_drop(seat_id),
+                *trusted_module_argv("phase_loop_runtime.grok_jail_surface", "sink-probe",
+                                     str(descriptor))]
+        os.execv(argv[0], argv)
+    except (OSError, ValueError):
+        return 3
+    return 3  # pragma: no cover - execv does not return
+
+
+def _sink_probe_main(descriptor_text: str) -> int:
+    """As the dropped seat UID, on the inherited sink descriptor (§4.5 M2)."""
+    import secrets
+
+    try:
+        directory = int(descriptor_text)
+        info = os.fstat(directory)
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_gid != os.getgid() or stat.S_IMODE(info.st_mode) != 0o700
+                or os.listdir(directory)):
+            return 3
+        name = _SINK_PROBE_PREFIX + secrets.token_hex(8)
+        data = secrets.token_bytes(32)
+        written = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                          | os.O_CLOEXEC, 0o600, dir_fd=directory)
+        try:
+            if os.write(written, data) != len(data):
+                return 3
+            os.fsync(written)
+        finally:
+            os.close(written)
+        read = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory)
+        try:
+            back = os.read(read, len(data) + 1)
+        finally:
+            os.close(read)
+        os.unlink(name, dir_fd=directory)
+        if back != data or os.listdir(directory):
+            return 3
+    except (OSError, ValueError):
+        return 3
+    sys.stdout.write(json.dumps({"device": info.st_dev, "inode": info.st_ino}))
+    return 0
+
+
+def _sink_read_main(sink: str, seat_text: str) -> int:
+    try:
+        directory = open_dir_chain(sink)
+    except (OSError, JailRefused):
+        return _SINK_AMBIGUOUS
+    try:
+        raw = _gts.read_definitions(directory, owner_uid=int(seat_text))
+    except _gts.ArtifactRefused as refusal:
+        return _SINK_MISSING if refusal.status == "artifact_missing" else _SINK_AMBIGUOUS
+    except (OSError, ValueError):
+        return _SINK_AMBIGUOUS
+    finally:
+        os.close(directory)
+    sys.stdout.buffer.write(raw)
+    return 0
 
 
 # --- The refresh after-check, run where the seat's files are readable ----------------------
@@ -1227,14 +1497,23 @@ def _after_main(seat_home: str) -> int:
 
 __all__ = [
     "CONDITIONS", "ENFORCEMENT", "JAIL_CONTEXT", "JailLaunchContext", "JailedMeasurementLaunch",
-    "JailedSubject", "JailedSurface", "MeasurementReservation", "admits", "after_check_in_h",
-    "eligibility", "jail_context_digest", "launch_digest", "measurement_owner",
-    "precondition_code", "prepare_measurement", "resolve_record", "resolve_subject",
+    "JailedSubject", "JailedSurface", "MeasurementReservation", "admission_consumed",
+    "admission_name", "admission_present", "admission_state", "admits", "close_measurement",
+    "open_dir_chain", "after_check_in_h", "consume_admission", "eligibility",
+    "jail_context_digest", "launch_digest", "measurement_owner", "precondition_code",
+    "prepare_measurement", "probe_sink", "production_owner", "read_sink_in_h",
+    "resolve_record", "resolve_subject",
     "staged_admission", "verify_jail_launch_context", "write_jail_receipt",
 ]
 
 
-if __name__ == "__main__":  # pragma: no cover - run in H by after_check_in_h
+if __name__ == "__main__":  # pragma: no cover - run in H by the helpers above
     if len(sys.argv) == 3 and sys.argv[1] == "after":
         raise SystemExit(_after_main(sys.argv[2]))
+    if len(sys.argv) == 6 and sys.argv[1] == "sink-handoff":
+        raise SystemExit(_sink_handoff_main(*sys.argv[2:6]))
+    if len(sys.argv) == 3 and sys.argv[1] == "sink-probe":
+        raise SystemExit(_sink_probe_main(sys.argv[2]))
+    if len(sys.argv) == 4 and sys.argv[1] == "sink-read":
+        raise SystemExit(_sink_read_main(sys.argv[2], sys.argv[3]))
     raise SystemExit(errno.EINVAL)
