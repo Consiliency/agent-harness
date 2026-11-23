@@ -21,6 +21,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 
 import pytest
@@ -299,19 +300,33 @@ def runtime_record(manifest: dict, *, files=None) -> dict:
     }
 
 
-def toolkit_settings(records, manifest_raw: bytes, *, runtime=None, **launch):
+def toolkit_settings(records, manifest_raw: bytes, **launch):
     try:
         manifest = json.loads(manifest_raw)
         manifest["files"][0]["path"]
     except (ValueError, KeyError, TypeError, IndexError):
         manifest = fixture_manifest()
-    images = [{"image_digest": LOCAL_IMAGE, "workload": "pi-runner", "target_kind": "local", "runtime": None},
-              {"image_digest": OPENSHELL_IMAGE, "workload": "pi-runner", "target_kind": "openshell",
-               "runtime": runtime if runtime is not None else runtime_record(manifest)}]
+    del manifest
+    images = [{"image_digest": LOCAL_IMAGE, "workload": "pi-runner", "target_kind": "local"},
+              {"image_digest": OPENSHELL_IMAGE, "workload": "pi-runner", "target_kind": "openshell"}]
     value = {"templates": [r if isinstance(r, str) else jcs(r).decode() for r in records],
              "toolkit_pins": manifest_raw.decode(), "images": images}
     value.update(launch)
     return decode_launch_object(value, client="agent-toolkit")
+
+
+def fixture_runtime(manifest_raw: bytes, runtime=None):
+    """The test-only image runtime seam: the normalized record for the openshell image."""
+    try:
+        manifest = json.loads(manifest_raw)
+        manifest["files"][0]["path"]
+    except (ValueError, KeyError, TypeError, IndexError):
+        manifest = fixture_manifest()
+    record = runtime if runtime is not None else runtime_record(manifest)
+
+    def supply(image):
+        return record if image.image_digest == OPENSHELL_IMAGE else None
+    return supply
 
 
 @pytest.fixture(autouse=True)
@@ -344,9 +359,10 @@ def fixture_raw():
     return jcs(fixture_manifest())
 
 
-def register(records, raw, host, *, pin="fixture", **kwargs):
+def register(records, raw, host, *, pin="fixture", runtime=None, fixture=True, **kwargs):
     settings = toolkit_settings(records, raw, **kwargs)
-    return register_templates(settings, host=host.files, pin=pin_for(raw) if pin == "fixture" else pin), settings
+    return register_templates(settings, host=host.files, pin=pin_for(raw) if pin == "fixture" else pin,
+                              fixture_image_runtime=fixture_runtime(raw, runtime) if fixture else None), settings
 
 
 def refused_all(registry, reason):
@@ -428,13 +444,13 @@ def test_operators_may_only_lower_limits_per_workload_or_target():
     ("agent-toolkit", {"return_budget_s": 121}),
     ("agent-toolkit", {"return_budget_s": 1.5}),
     ("agent-toolkit", {"images": [{"image_digest": LOCAL_IMAGE, "workload": "pi-runner",
-                                   "target_kind": "local", "runtime": {}}]}),
-    ("agent-toolkit", {"images": [{"image_digest": "sha256:" + "A" * 64, "workload": "pi-runner",
                                    "target_kind": "local", "runtime": None}]}),
+    ("agent-toolkit", {"images": [{"image_digest": "sha256:" + "A" * 64, "workload": "pi-runner",
+                                   "target_kind": "local"}]}),
     ("agent-toolkit", {"images": [{"image_digest": LOCAL_IMAGE, "workload": "pi-runner",
-                                   "target_kind": "local", "runtime": None}] * 2}),
+                                   "target_kind": "local"}] * 2}),
     ("agent-toolkit", {"images": [{"image_digest": OPENSHELL_IMAGE, "workload": "pi-runner",
-                                   "target_kind": "openshell", "runtime": {"version": 2}}]}),
+                                   "target_kind": "openshell", "runtime": {"version": 3}}]}),
     ("agent-toolkit", {"review_runner_image": {"image": "x"}}),
     ("agent-harness", {"toolkit_pins": "{}"}),
     ("agent-harness", {"seed_root": "/srv/seeds"}),
@@ -804,8 +820,7 @@ def test_a_local_bound_closure_omitting_each_file_refuses(tmp_path, fixture_raw,
     (host.root / "opt/toolkit" / path).unlink()
     manifest = json.loads(fixture_raw)
     registry, _ = register([local_record(host, manifest)], fixture_raw, host)
-    expected = "chain_mismatch" if path == REMOTE_INNER else "closure_mismatch"
-    assert registry.refused == {0: expected}
+    assert registry.refused == {0: "closure_mismatch"}
 
 
 @pytest.mark.parametrize("path", CLOSURE_PATHS)
@@ -814,8 +829,7 @@ def test_an_openshell_recorded_closure_omitting_each_file_refuses(host, fixture_
     runtime = runtime_record(manifest)
     del runtime["launcher"]["files"][path]
     registry, _ = register([openshell_record(manifest)], fixture_raw, host, runtime=runtime)
-    expected = "chain_mismatch" if path == REMOTE_INNER else "closure_mismatch"
-    assert registry.refused == {0: expected}
+    assert registry.refused == {0: "closure_mismatch"}
 
 
 def test_a_local_bound_closure_adding_a_file_refuses(host, fixture_raw):
@@ -1160,3 +1174,136 @@ def test_no_refusal_carries_an_input_value(host, fixture_raw):
     with pytest.raises(TemplateRefused) as raised:
         select_local(registry, secret)
     assert secret not in str(raised.value) and secret not in repr(raised.value.args)
+
+
+# -- review round 1 (Consiliency/agent-harness#2134) ------------------------------------------
+
+def protected_record(host, manifest, path):
+    record = local_record(host, manifest)
+    trees = record["ro_trees"] + [{"path": path, "tree_sha256": host.tree(path)}]
+    i = record["argv"].index("--bind")
+    binds = ["--ro-bind", path, path]
+    return {**record, "ro_trees": trees, "argv": record["argv"][:i] + binds + record["argv"][i:]}
+
+
+@pytest.mark.parametrize("path", ["/var/log", "/var", "/usr/share", "/tmp/x", "/etc/ssl"])
+def test_a_read_only_tree_over_a_protected_mount_refuses(host, fixture_raw, path):
+    """errata-1: a digest-correct ``/var/log`` tree must not replace the empty read-only one."""
+    host.write(path.lstrip("/") + "/host.log", b"host log bytes")
+    manifest = json.loads(fixture_raw)
+    record = protected_record(host, manifest, path)
+    registry, _ = register([record], fixture_raw, host)
+    assert registry.templates == {} and registry.refused == {0: "tree_protected"}
+
+
+def test_a_read_only_tree_resolving_onto_a_protected_mount_refuses(host, fixture_raw):
+    """An ancestor symlink (``/opt/logroot`` -> ``../var``) puts the tree on ``/var/log``."""
+    host.write("var/log/host.log", b"host log bytes")
+    os.symlink("../var", host.root / "opt/logroot")
+    manifest = json.loads(fixture_raw)
+    record = local_record(host, manifest)
+    record["ro_trees"].append({"path": "/opt/logroot/log", "tree_sha256": host.tree("/opt/logroot/log")})
+    i = record["argv"].index("--bind")
+    record["argv"][i:i] = ["--ro-bind", "/opt/logroot/log", "/opt/logroot/log"]
+    registry, _ = register([record], fixture_raw, host)
+    assert registry.templates == {} and registry.refused == {0: "tree_protected"}
+
+
+def test_production_openshell_registration_is_closed(host, fixture_raw):
+    manifest = json.loads(fixture_raw)
+    registry, _ = register([openshell_record(manifest)], fixture_raw, host, fixture=False)
+    assert registry.templates == {} and registry.refused == {0: "runtime_unavailable"}
+
+
+def test_an_operator_authored_runtime_record_is_not_accepted_in_settings(fixture_raw):
+    image = {"image_digest": OPENSHELL_IMAGE, "workload": "pi-runner", "target_kind": "openshell",
+             "runtime": runtime_record(json.loads(fixture_raw))}
+    with pytest.raises(PlacementConfigError):
+        decode_launch_object({"images": [image]}, client="agent-toolkit")
+
+
+def test_a_malformed_fixture_runtime_record_refuses(host, fixture_raw):
+    manifest = json.loads(fixture_raw)
+    bad = runtime_record(manifest)
+    bad["node"] = "v22.0.0"  # the toolkit v3 manifest's node version string
+    registry, _ = register([openshell_record(manifest)], fixture_raw, host, runtime=bad)
+    assert registry.refused == {0: "image_unregistered"}
+
+
+@pytest.mark.parametrize("broken", ["local", "openshell"])
+def test_a_toolkit_file_failure_leaves_the_whole_registry_unregistered(tmp_path, fixture_raw, broken):
+    digests = {"harnesses/pi/sandbox/link.mjs": b"changed"} if broken == "local" else None
+    host = Host(tmp_path, digests=digests)
+    manifest = json.loads(fixture_raw)
+    runtime = runtime_record(manifest)
+    if broken == "openshell":
+        runtime["launcher"]["files"]["harnesses/pi/sandbox/link.mjs"] = "0" * 64
+    registry, _ = register([local_record(host, manifest), openshell_record(manifest)],
+                           fixture_raw, host, runtime=runtime)
+    assert registry.templates == {}
+    bad, good = (0, 1) if broken == "local" else (1, 0)
+    assert registry.refused == {bad: "file_mismatch", good: "toolkit_unregistered"}
+
+
+def test_a_non_toolkit_failure_leaves_the_sibling_registered(host, fixture_raw):
+    manifest = json.loads(fixture_raw)
+    bad = local_record(host, manifest, image_links=["/opt/outside/lib"])
+    registry, _ = register([bad, openshell_record(manifest)], fixture_raw, host)
+    assert registry.refused == {0: "image_link"} and list(registry.templates) == ["pi-runner.openshell.v1"]
+
+
+@pytest.mark.parametrize("links", [
+    [("opt/npm/lib/pi", "/opt/outside")],
+    [("opt/npm/lib/pi", "hop"), ("opt/npm/lib/hop", "/opt/outside")],
+    [("opt/npm/lib/pi", "../../elsewhere")],
+])
+def test_an_image_link_resolving_outside_its_tree_refuses(tmp_path, fixture_raw, links):
+    host = Host(tmp_path)
+    shutil.rmtree(host.root / "opt/npm/lib/pi")
+    (host.root / "opt/outside").mkdir(parents=True)
+    for rel, target in links:
+        os.symlink(target, host.root / rel)
+    manifest = json.loads(fixture_raw)
+    registry, _ = register([local_record(host, manifest, image_links=["/opt/npm/lib/pi/node_modules"])],
+                           fixture_raw, host)
+    assert registry.refused == {0: "image_link"}
+
+
+def test_an_image_link_through_an_in_tree_symlink_registers(tmp_path, fixture_raw):
+    host = Host(tmp_path)
+    os.symlink("pi", host.root / "opt/npm/lib/alias")
+    manifest = json.loads(fixture_raw)
+    registry, _ = register([local_record(host, manifest, image_links=["/opt/npm/lib/alias"])],
+                           fixture_raw, host)
+    assert registry.refused == {} and list(registry.templates) == ["pi-runner.local.v1"]
+
+
+def without_lib64(argv):
+    i = index_of(argv, ["--symlink", "usr/lib64", "/lib64"])
+    return argv[:i] + argv[i + 3:]
+
+
+def test_a_host_symlink_resolving_outside_usr_through_another_link_is_excluded(tmp_path, fixture_raw):
+    host = Host(tmp_path)
+    (host.root / "usr/lib64").rmdir()
+    (host.root / "opt/evil").mkdir(parents=True)
+    os.symlink("/opt/evil", host.root / "usr/lib64")
+    manifest = json.loads(fixture_raw)
+    with_entry = local_record(host, manifest)
+    registry, _ = register([with_entry], fixture_raw, host)
+    assert registry.refused == {0: "argv_form"}
+    registry, _ = register([local_record(host, manifest, argv=without_lib64(with_entry["argv"]))],
+                           fixture_raw, host)
+    assert registry.refused == {} and list(registry.templates) == ["pi-runner.local.v1"]
+
+
+def test_host_resolve_follows_indirect_links_in_the_host_view(host):
+    os.symlink("usr/../opt", host.root / "lib32")
+    os.symlink("a", host.root / "opt/b")
+    os.symlink("b", host.root / "opt/c")
+    assert host.files.resolve("/lib64/x") == "/usr/lib64/x"
+    assert host.files.resolve("/lib32") == "/opt"
+    assert host.files.resolve("/opt/c/z") == "/opt/a/z"
+    os.symlink("loop2", host.root / "opt/loop1")
+    os.symlink("loop1", host.root / "opt/loop2")
+    assert host.files.resolve("/opt/loop1") is None

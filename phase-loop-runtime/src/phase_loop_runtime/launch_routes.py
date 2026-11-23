@@ -31,12 +31,12 @@ import posixpath
 import re
 import stat
 from types import MappingProxyType
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import rfc8785
 
 from .launch_process_contract import Command, TemplateSummary, schema_bytes
-from .launch_settings import LaunchSettings
+from .launch_settings import ImageEntry, LaunchSettings
 from .openshell_artifacts import Refused as _PathRefused, safe_path
 
 __all__ = [
@@ -50,6 +50,7 @@ __all__ = [
     "TemplateRegistry",
     "ToolkitManifest",
     "ToolkitPin",
+    "FixtureImageRuntime",
     "check_toolkit_manifest",
     "expand_argv",
     "frozen_pi_runner_template",
@@ -126,6 +127,13 @@ _SLOTS: Mapping[str, frozenset[str]] = MappingProxyType({
 })
 #: ``x-argv-templates.pi_runner_templates.local.argv_rule``: the host symlinks, in order.
 _HOST_SYMLINKS = ("/bin", "/sbin", "/lib32", "/lib64")
+#: The fixed mounts of the frozen local pi-runner argv (``argv_rule``) and the host symlink
+#: links. A read-only tree bind at, under or above one of them could replace it, the
+#: LANEEXEC-v1-errata-1 ``/var/log`` empty read-only directory included, so it refuses.
+_PROTECTED_MOUNTS = ("/proc", "/dev", "/tmp", "/etc", "/lib", "/usr", "/var/log") + _HOST_SYMLINKS
+#: Reasons that are a ``x-contract-pins.toolkit_pins`` check failure (``file_check`` and the
+#: closure): any of them leaves the whole agent-toolkit registry unregistered (``when``).
+_TOOLKIT_INTEGRITY = frozenset({"file_mismatch", "file_unlisted", "closure_mismatch"})
 _MAX_ARGV = 512
 _MAX_CHAIN = 16
 _MAX_TREES = 32
@@ -343,6 +351,32 @@ class HostFiles:
         except OSError:
             return None
 
+    def resolve(self, path: str) -> str | None:
+        """``path`` with every symlink component resolved inside this host view, as the
+        kernel would; a missing component ends resolution lexically. ``None`` on a loop."""
+        parts = [part for part in path.split("/") if part]
+        resolved: list[str] = []
+        hops = 0
+        while parts:
+            name = parts.pop(0)
+            if name == ".":
+                continue
+            if name == "..":
+                if resolved:
+                    resolved.pop()
+                continue
+            target = self.readlink("/" + "/".join(resolved + [name]))
+            if target is None:
+                resolved.append(name)
+                continue
+            hops += 1
+            if hops > 40:
+                return None
+            if target.startswith("/"):
+                resolved = []
+            parts = [part for part in target.split("/") if part] + parts
+        return "/" + "/".join(resolved)
+
     def tree_rows(self, path: str) -> list[list[str]] | None:
         """The ``rfc8785_tree_manifest`` rows ``[path, kind, sha256]`` of a directory, ``.git``
         at its top excluded and directories implied, as the envelope defines them; ``None``
@@ -516,8 +550,10 @@ def _check_slots(record: Mapping[str, Any]) -> None:
             _require(listen and record["workload"] == "leg", "slot_invalid")
 
 
-def _check_image_links(record: Mapping[str, Any], trees: Iterable[str]) -> None:
-    """``x-argv-templates.image_links``, at registration."""
+def _check_image_links(record: Mapping[str, Any], trees: Iterable[str],
+                       host: HostFiles | None = None) -> None:
+    """``x-argv-templates.image_links``, at registration. On local the image path must also
+    resolve, through every symlink of the host view, inside a resolved read-only tree."""
     links = record["image_links"]
     if record["workload"] != "pi-runner":
         _require(links == [], "image_link")
@@ -530,6 +566,11 @@ def _check_image_links(record: Mapping[str, Any], trees: Iterable[str]) -> None:
         except _PathRefused:
             raise TemplateRefused("image_link") from None
         _require(any(_inside(link, root) for root in roots), "image_link")
+        if host is not None:
+            resolved = host.resolve(link)
+            resolved_roots = [host.resolve(root) for root in roots]
+            _require(resolved is not None and any(
+                r is not None and _inside(resolved, r) for r in resolved_roots), "image_link")
     for i, link in enumerate(links):
         for j, other in enumerate(links):
             _require(i == j or not _inside(link, other), "image_link")
@@ -542,8 +583,10 @@ def _host_symlink_entries(host: HostFiles) -> list[str]:
         target = host.readlink(link)
         if target is None:
             continue
-        resolved = posixpath.normpath(posixpath.join("/", target))
-        if resolved == "/usr" or resolved.startswith("/usr/"):
+        lexical = posixpath.normpath(posixpath.join("/", target))
+        resolved = host.resolve(link)
+        if (resolved is not None and _inside(lexical, "/usr") and _inside(resolved, "/usr")
+                and host.resolve("/usr") == "/usr"):
             out.extend(["--symlink", target, link])
     return out
 
@@ -582,26 +625,36 @@ def _check_pi_form(record: Mapping[str, Any], host: HostFiles | None) -> None:
         _require(record["ro_trees"] == [], "pi_form")
     else:
         _require(record["references"] == [], "pi_form")
+        assert host is not None
+        for tree in record["ro_trees"]:
+            for path in (tree["path"], host.resolve(tree["path"])):
+                _require(path is not None and not any(
+                    _inside(path, mount) or _inside(mount, path) for mount in _PROTECTED_MOUNTS),
+                    "tree_protected")
     chain = record["executable_chain"]
     _require([e["role"] for e in chain] == [e["role"] for e in frozen["executable_chain"]], "pi_form")
     _require(chain[0]["locator"] == frozen["executable_chain"][0]["locator"], "pi_form")
     _require(record["argv"] == _expected_pi_argv(record, host), "argv_form")
 
 
-def _check_local_bytes(record: Mapping[str, Any], host: HostFiles) -> dict[str, list[list[str]]]:
-    """Chain and read-only tree digests against the host bytes; returns each tree's rows."""
+def _check_local_trees(record: Mapping[str, Any], host: HostFiles) -> dict[str, list[list[str]]]:
+    """Read-only tree digests against the host bytes; returns each tree's rows."""
     rows_by_tree: dict[str, list[list[str]]] = {}
     for tree in record["ro_trees"]:
         rows = host.tree_rows(tree["path"])
         _require(rows is not None and _tree_sha256(rows) == tree["tree_sha256"], "tree_mismatch")
         rows_by_tree[tree["path"]] = rows  # type: ignore[assignment]
+    return rows_by_tree
+
+
+def _check_local_chain(record: Mapping[str, Any], host: HostFiles) -> None:
+    """Chain digests against the host bytes."""
     for entry in record["executable_chain"]:
         _require(host.sha256(entry["locator"]) == entry["sha256"], "chain_mismatch")
     if record["workload"] == "pi-runner":
         # node and remote_inner: absolute paths inside an ro_trees entry.
         for entry in record["executable_chain"][1:]:
             _require(any(_inside(entry["locator"], t["path"]) for t in record["ro_trees"]), "pi_form")
-    return rows_by_tree
 
 
 def _check_toolkit_local(record: Mapping[str, Any], manifest: ToolkitManifest,
@@ -625,36 +678,80 @@ def _check_toolkit_local(record: Mapping[str, Any], manifest: ToolkitManifest,
     _require(set(bound) == set(manifest.closure), "closure_mismatch")
 
 
+#: A test-only source of an openshell image's runtime record (see :func:`register_templates`).
+FixtureImageRuntime = Callable[[ImageEntry], "Mapping[str, Any] | None"]
+
+
+def _runtime_record(value: object) -> Mapping[str, Any]:
+    """The normalized runtime record a test fixture supplies, checked for shape:
+    ``{"version": 3, "helper": {"path", "version", "sha256"}, "node": {"path", "sha256"},
+    "launcher": {"path", "files": {<manifest path>: <hex sha256>}}, "trees": [<image path>]}``.
+    """
+    def closed(item: object, keys: set[str]) -> Mapping[str, Any]:
+        _require(isinstance(item, Mapping) and set(item) == keys, "image_unregistered")
+        return item  # type: ignore[return-value]
+
+    def hex64(item: object) -> bool:
+        return isinstance(item, str) and bool(_HEX64.fullmatch(item))
+
+    record = closed(value, {"version", "helper", "node", "launcher", "trees"})
+    helper = closed(record["helper"], {"path", "version", "sha256"})
+    node = closed(record["node"], {"path", "sha256"})
+    launcher = closed(record["launcher"], {"path", "files"})
+    files = launcher["files"]
+    _require(type(record["version"]) is int and record["version"] == 3
+             and helper["path"] == frozen_pi_runner_template("openshell")["executable_chain"][0]["locator"]
+             and type(helper["version"]) is int and helper["version"] == 1 and hex64(helper["sha256"])
+             and _absolute_normalized(node["path"]) and hex64(node["sha256"])
+             and _absolute_normalized(launcher["path"])
+             and isinstance(files, Mapping) and 0 < len(files) <= 512
+             and all(isinstance(k, str) and not k.startswith("/") and _absolute_normalized("/" + k)
+                     and hex64(v) for k, v in files.items())
+             and isinstance(record["trees"], (list, tuple))
+             and all(_absolute_normalized(t) for t in record["trees"]), "image_unregistered")
+    return record
+
+
 def _check_openshell_image(record: Mapping[str, Any], settings: LaunchSettings,
-                           manifest: ToolkitManifest | None) -> list[str]:
-    """Chain digests against the registered image's runtime record; returns its trees."""
+                           manifest: ToolkitManifest | None,
+                           fixture_image_runtime: FixtureImageRuntime | None) -> list[str]:
+    """Chain digests against the registered image's runtime record; returns its trees.
+
+    Production registration has no source for the node path, node digest, helper digest
+    and launcher closure that ``x-argv-templates.pi_runner_templates`` reads from the
+    registered image's runtime manifest: the pinned toolkit's RUNTIME_VERSION 3 manifest
+    does not record them in that form, and no reviewed, image-bound evidence supplies them
+    yet. So without the test-only fixture seam every openshell template refuses
+    ``runtime_unavailable`` (routes are ``sandbox_launch_route_disabled`` anyway).
+    """
     image = settings.image(record["workload"], "openshell", record["image_digest"])
-    _require(image is not None and image.runtime is not None, "image_unregistered")
-    runtime = image.runtime  # type: ignore[union-attr]
+    _require(image is not None, "image_unregistered")
+    _require(fixture_image_runtime is not None, "runtime_unavailable")
+    runtime = _runtime_record(fixture_image_runtime(image))  # type: ignore[misc, arg-type]
     launcher_root = runtime["launcher"]["path"].rstrip("/")
-    known = {runtime["helper"]["path"]: runtime["helper"]["sha256"],
-             runtime["node"]["path"]: runtime["node"]["sha256"]}
-    for rel, digest in runtime["launcher"]["files"].items():
-        known[launcher_root + "/" + rel] = digest
     chain = record["executable_chain"]
-    for entry in chain:
-        _require(known.get(entry["locator"]) == entry["sha256"], "chain_mismatch")
     if record["workload"] == "pi-runner":
-        _require(chain[1]["locator"] == runtime["node"]["path"], "chain_mismatch")
         assert manifest is not None
         remote_inner = manifest.roles["toolkit_remote_inner"]
-        _require(chain[2]["locator"] == launcher_root + "/" + remote_inner, "chain_mismatch")
         _require(chain[2]["sha256"] == manifest.files[remote_inner], "file_mismatch")
         recorded = runtime["launcher"]["files"]
         for path, digest in recorded.items():
             _require(path in manifest.files, "file_unlisted")
             _require(digest == manifest.files[path], "file_mismatch")
         _require(set(recorded) == set(manifest.closure), "closure_mismatch")
+        _require(chain[1]["locator"] == runtime["node"]["path"], "chain_mismatch")
+        _require(chain[2]["locator"] == launcher_root + "/" + remote_inner, "chain_mismatch")
+    known = {runtime["helper"]["path"]: runtime["helper"]["sha256"],
+             runtime["node"]["path"]: runtime["node"]["sha256"]}
+    for rel, digest in runtime["launcher"]["files"].items():
+        known[launcher_root + "/" + rel] = digest
+    for entry in chain:
+        _require(known.get(entry["locator"]) == entry["sha256"], "chain_mismatch")
     return list(runtime["trees"])
 
 
 def _register_one(raw: bytes, settings: LaunchSettings, manifest: ToolkitManifest | None,
-                  host: HostFiles) -> RegisteredTemplate:
+                  host: HostFiles, fixture_image_runtime: FixtureImageRuntime | None) -> RegisteredTemplate:
     record = _canonical_object(raw, "record_bytes", "record_bytes")
     _check_record_shape(record)
     _check_slots(record)
@@ -664,24 +761,32 @@ def _register_one(raw: bytes, settings: LaunchSettings, manifest: ToolkitManifes
         _require(settings.client == "agent-toolkit" and manifest is not None, "pi_form")
         _check_pi_form(record, host if record["target_kind"] == "local" else None)
     if record["target_kind"] == "local":
-        rows_by_tree = _check_local_bytes(record, host)
+        rows_by_tree = _check_local_trees(record, host)
         if pi:
             _check_toolkit_local(record, manifest, rows_by_tree)  # type: ignore[arg-type]
+        _check_local_chain(record, host)
         trees = [t["path"] for t in record["ro_trees"]]
+        _check_image_links(record, trees, host)
     else:
-        trees = _check_openshell_image(record, settings, manifest)
-    _check_image_links(record, trees)
+        trees = _check_openshell_image(record, settings, manifest, fixture_image_runtime)
+        _check_image_links(record, trees)
     return RegisteredTemplate(raw, hashlib.sha256(raw).hexdigest(), _freeze(record))
 
 
 def register_templates(settings: LaunchSettings, *, host: HostFiles | None = None,
-                       pin: ToolkitPin | None = None) -> TemplateRegistry:
+                       pin: ToolkitPin | None = None,
+                       fixture_image_runtime: FixtureImageRuntime | None = None) -> TemplateRegistry:
     """Register one client's template registry (``x-argv-templates``, obligation C2).
 
-    For agent-toolkit the toolkit pins manifest is checked first. A manifest failure, or a
-    missing manifest, leaves the whole registry unregistered, so every launch naming one of
-    its templates refuses at the template step. Any other failure leaves only that template
-    unregistered. Two templates with one id are both unregistered.
+    For agent-toolkit the toolkit pins manifest is checked first. A manifest failure, a
+    missing manifest, or a toolkit file or closure failure of any template
+    (``x-contract-pins.toolkit_pins.when``) leaves the whole registry unregistered, so every
+    launch naming one of its templates refuses at the template step. Any other failure
+    leaves only that template unregistered. Two templates with one id are both unregistered.
+
+    ``fixture_image_runtime`` is a test-only seam that supplies an openshell image's
+    normalized runtime record; production callers never pass it, so production openshell
+    registration stays closed (``runtime_unavailable``).
     """
     host = host or HostFiles()
     manifest: ToolkitManifest | None = None
@@ -698,9 +803,14 @@ def register_templates(settings: LaunchSettings, *, host: HostFiles | None = Non
     refused: dict[int, str] = {}
     for index, text in enumerate(settings.templates):
         try:
-            registered[index] = _register_one(text.encode("utf-8"), settings, manifest, host)
+            registered[index] = _register_one(text.encode("utf-8"), settings, manifest, host,
+                                              fixture_image_runtime)
         except TemplateRefused as refusal:
             refused[index] = refusal.reason
+    if settings.client == "agent-toolkit" and _TOOLKIT_INTEGRITY & set(refused.values()):
+        reasons = {i: refused.get(i, "toolkit_unregistered") for i in range(count)}
+        return TemplateRegistry(settings.client, MappingProxyType({}),
+                                MappingProxyType(reasons), None)
     ids = [t.template_id for t in registered.values()]
     for index, template in list(registered.items()):
         if ids.count(template.template_id) > 1:
@@ -716,13 +826,14 @@ def register_templates(settings: LaunchSettings, *, host: HostFiles | None = Non
 
 def recheck_template(template: RegisteredTemplate, registry: TemplateRegistry,
                      settings: LaunchSettings, *, host: HostFiles | None = None,
-                     pin: ToolkitPin | None = None) -> None:
+                     pin: ToolkitPin | None = None,
+                     fixture_image_runtime: FixtureImageRuntime | None = None) -> None:
     """``recheck_before_start``: recompute every digest registration checked.
 
     Refuses when the template's bytes, the toolkit manifest bytes, a chain or tree digest or
     a closure file differs from what registration accepted.
     """
-    again = register_templates(settings, host=host, pin=pin)
+    again = register_templates(settings, host=host, pin=pin, fixture_image_runtime=fixture_image_runtime)
     current = again.templates.get(template.template_id)
     if current is None or current.template_sha256 != template.template_sha256:
         raise TemplateRefused("recheck_mismatch")

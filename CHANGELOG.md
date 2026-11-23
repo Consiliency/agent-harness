@@ -17,10 +17,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   and budgets may only be lowered. `launch_routes` adds the L-S7 route mapping as a closed
   function, crossed pi-runner pair refusals, template selection and argv expansion, and
   `register_templates`. Registration checks the canonical template bytes, slots and image
-  links, the frozen pi-runner forms (the local one in its LANEEXEC-v1-errata-1 form), and
-  the agent-toolkit pins manifest, role and 16-file closure checks. Every route stays
-  disabled under shipped defaults. Nothing calls these modules yet; the launch entry point
-  follows in SL-8.
+  links resolved through host symlinks, the frozen pi-runner forms (the local one in its
+  LANEEXEC-v1-errata-1 form, with no read-only tree over a fixed mount), and the
+  agent-toolkit pins manifest, role and 16-file closure checks. A toolkit check failure
+  leaves the whole agent-toolkit registry unregistered. Production openshell registration
+  stays closed until image-bound runtime evidence exists. Every route stays disabled under
+  shipped defaults. Nothing calls these modules yet; the launch entry point follows in SL-8.
 - JEVHOST SL-6: `phase_loop_runtime.host_integration`, the host-neutral integration seam
   (`plans/amendments/jevhost-JEVHOST-host-gaps.md`, IF-0-JEVHOST-5, GAPS §2). It provides
   `RetryBudget` (remaining attempts and floor-millisecond time, exhaustion, tighten-only),

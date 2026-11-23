@@ -13,7 +13,7 @@ The object, with every member optional::
                                                        # registered file's bytes as UTF-8 text
       "toolkit_pins":             <str>,               # agent-toolkit only: the toolkit_pins.v1
                                                        # manifest bytes as UTF-8 text
-      "images":                   [{"image_digest", "workload", "target_kind", "runtime"}, ...],
+      "images":                   [{"image_digest", "workload", "target_kind"}, ...],
       "snapshot_limits":          {<limit>: int, ..., "by_workload": {...}, "by_target_kind": {...}},
       "seed_limits":              {<limit>: int, ..., "by_workload": {...}, "by_target_kind": {...}},
       "seed_root":                <absolute path> | null,     # agent-toolkit only
@@ -134,15 +134,15 @@ def _closed(value: object, required: frozenset[str], optional: frozenset[str] = 
 class ImageEntry:
     """One image allowlist row for ``(client, workload, target_kind)``.
 
-    ``runtime`` is the registered image's runtime record, which openshell registration reads
-    (``x-argv-templates.pi_runner_templates.rule``); it is ``None`` on a local target, where
-    ``image_digest`` names the registration and binds no container.
+    The row carries no runtime record. An openshell template's values come from the
+    registered image's runtime manifest (``x-argv-templates.pi_runner_templates.rule``),
+    never from an operator-authored substitute in this object; see
+    :func:`phase_loop_runtime.launch_routes.register_templates`.
     """
 
     image_digest: str
     workload: str
     target_kind: str
-    runtime: Mapping[str, Any] | None
 
 
 @dataclass(frozen=True)
@@ -261,56 +261,15 @@ def _absolute_or_null(value: object) -> str | None:
     return value  # type: ignore[return-value]
 
 
-def _runtime(value: object) -> Mapping[str, Any]:
-    """The runtime record of an openshell image, checked for shape only.
-
-    ``{"version": 3, "helper": {"path", "version", "sha256"}, "node": {"path", "sha256"},
-    "launcher": {"path", "files": {<manifest path>: <hex sha256>}}, "trees": [<image path>]}``
-    """
-    record = _closed(value, frozenset({"version", "helper", "node", "launcher", "trees"}))
-    _require(record["version"] == 3 and _is_int(record["version"]))
-    helper = _closed(record["helper"], frozenset({"path", "version", "sha256"}))
-    _require(helper["path"] == _HELPER_PATH and helper["version"] == 1 and _is_int(helper["version"]))
-    _require(isinstance(helper["sha256"], str) and _HEX64.fullmatch(helper["sha256"]) is not None)
-    node = _closed(record["node"], frozenset({"path", "sha256"}))
-    _require(_absolute_or_null(node["path"]) is not None)
-    _require(isinstance(node["sha256"], str) and _HEX64.fullmatch(node["sha256"]) is not None)
-    launcher = _closed(record["launcher"], frozenset({"path", "files"}))
-    _require(_absolute_or_null(launcher["path"]) is not None)
-    files = launcher["files"]
-    _require(isinstance(files, dict) and 0 < len(files) <= 512)
-    for path, digest in files.items():
-        _require(isinstance(path, str) and 0 < len(path) <= 1024 and not path.startswith("/"))
-        _require(all(part not in ("", ".", "..") for part in path.split("/")))
-        _require(isinstance(digest, str) and _HEX64.fullmatch(digest) is not None)
-    trees = record["trees"]
-    _require(isinstance(trees, list) and len(trees) <= 64)
-    for tree in trees:
-        _require(_absolute_or_null(tree) is not None)
-    _require(len(set(trees)) == len(trees))
-    return MappingProxyType({
-        "version": 3,
-        "helper": MappingProxyType(dict(helper)),
-        "node": MappingProxyType(dict(node)),
-        "launcher": MappingProxyType({"path": launcher["path"], "files": MappingProxyType(dict(files))}),
-        "trees": tuple(trees),
-    })
-
-
 def _images(value: object) -> tuple[ImageEntry, ...]:
     _require(isinstance(value, list) and len(value) <= _MAX_IMAGES)
     out: list[ImageEntry] = []
     for item in value:  # type: ignore[union-attr]
-        row = _closed(item, frozenset({"image_digest", "workload", "target_kind", "runtime"}))
+        row = _closed(item, frozenset({"image_digest", "workload", "target_kind"}))
         _require(isinstance(row["image_digest"], str)
                  and _SHA256_DIGEST.fullmatch(row["image_digest"]) is not None)
         _require(row["workload"] in _WORKLOADS and row["target_kind"] in _TARGET_KINDS)
-        if row["target_kind"] == "openshell":
-            runtime = None if row["runtime"] is None else _runtime(row["runtime"])
-        else:
-            _require(row["runtime"] is None)
-            runtime = None
-        out.append(ImageEntry(row["image_digest"], row["workload"], row["target_kind"], runtime))
+        out.append(ImageEntry(row["image_digest"], row["workload"], row["target_kind"]))
     keys = [(e.image_digest, e.workload, e.target_kind) for e in out]
     _require(len(set(keys)) == len(keys))
     return tuple(out)
