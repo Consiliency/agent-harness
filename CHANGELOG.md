@@ -150,6 +150,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- Suppress the bypass-permissions acknowledgement in jailed Claude TUI seats on Claude
+  Code 2.1.330. The launcher retains the legacy acknowledgement for older versions.
 - A long `TMPDIR` no longer fails a brokered review leg with the opaque "unknown failure;
   CLI output not retained" (agent-harness#2131). The broker's private 0700 socket root is
   now created under the first safe, short base: a private `$XDG_RUNTIME_DIR`, else the temp
