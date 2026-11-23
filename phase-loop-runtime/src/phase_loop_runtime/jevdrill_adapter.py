@@ -10,9 +10,12 @@ ExecutionEvent stream. Integrations that report on that run use three public met
 - ``enqueue_run_event(execution_run_id, payload)`` is the public enqueue path for hooks. It
   assigns the envelope, ``event_id``, ``source_id`` and the next ``source_sequence`` under
   the same lock the host's own lifecycle reports use, then enqueues through the adapter's
-  ``ReportQueue`` and sanitizer, so hook and host reports on one run never collide or
-  reorder. Lifecycle payloads stay host-owned and are refused. It returns the queue
-  disposition (``queued``, ``duplicate``, ``conflict``, ``overflow`` or ``deleted``);
+  ``ReportQueue`` and sanitizer. Sequence allocation and enqueue happen together, so on one
+  run hook and host reports never share a ``source_sequence`` and enter the queue in
+  sequence order. Delivery order is not guaranteed: a report in retry backoff can be
+  delivered after a later one, so consumers order a run's events by ``source_sequence``.
+  Lifecycle payloads stay host-owned and are refused. It returns the queue disposition
+  (``queued``, ``duplicate``, ``conflict``, ``overflow`` or ``deleted``);
 - ``run_report_counts(execution_run_id)`` returns that run's enqueue-time queue entries and
   losses. Losses after enqueue (expiry, delivery conflict or rejection) are counted only
   queue-wide, by ``adapter.queue.status()``.
@@ -290,6 +293,9 @@ class JevDrillAdapter:
         self._ledger_lock = threading.RLock()
         self._ledger = {}
         self._run_index = {}
+        self._ledger_generation = 0
+        # Routed bundles already launched or refused, held until the bundle is collected.
+        self._spent = {}
         # One lock orders every event on a run's stream, host and hook alike.
         self._report_lock = threading.RLock()
         self._runs = OrderedDict()
@@ -486,7 +492,8 @@ class JevDrillAdapter:
             if declaration is None:
                 raise JevDrillUnavailable("Harness identity is not declared")
         ledger_key = (request["envelope"]["project_id"], request["envelope"]["workspace_id"], request["task_id"])
-        request["retry_context"], unrecorded_context = self._admit_route(ledger_key, request, routing_started)
+        admission = self._admit_route(ledger_key, request, routing_started)
+        request["retry_context"] = admission["context"]
         self._notices(request["envelope"], started_at=started)
         if linked:
             self._check_discovery(request["envelope"], wrapper["discovery_ref"], started_at=started)
@@ -549,7 +556,7 @@ class JevDrillAdapter:
                          ("provider", "model_id", "resolved_model_revision", "access_route", "native_effort"))), None)
         if candidate is None or not set(plan["required_capabilities"]) <= allowed:
             raise JevDrillUnavailable("Selected identity or capabilities are unverified")
-        if unrecorded_context:
+        if admission["unrecorded"]:
             # Never forwarded as accepted retry authority, never launchable.
             raise JevDrillUnavailable("Supplied retry context is unverified: no host retry record",
                                       decision=decision)
@@ -598,11 +605,13 @@ class JevDrillAdapter:
         kwargs = {**kwargs, "prompt_bundle": bundle, "model_selection": chosen}
         if executor == "codex":
             kwargs["json_output"] = True
+        generation = self._commit_route(admission)
         self._pending[id(bundle)] = {"request": request, "decision": decision, "candidate": candidate,
                                     "linked_inputs": deepcopy(wrapper),
                                     "limits_required": limits_required,
                                     "context": context, "run_id": str(uuid4()), "sequence": 0,
-                                    "ledger_key": ledger_key, "counts": {"queued": 0, "losses": {}},
+                                    "ledger_key": ledger_key, "ledger_generation": generation,
+                                    "counts": {"queued": 0, "losses": {}},
                                     "routing_ms": (time.monotonic_ns() - routing_started) / 1_000_000,
                                     "guidance": bool(additions),
                                     "freshness": [{"verified_at": row["verified_at"], "expires_at": row["expires_at"]}
@@ -619,23 +628,26 @@ class JevDrillAdapter:
     def _admit_route(self, key, request, routing_started):
         """Check the task's retry budget before any CLI contact.
 
-        Returns ``(context_to_send, unrecorded)``. The budget comes from the trusted host
+        Returns an admission for ``_commit_route``. The budget comes from the trusted host
         request and is only ever tightened. Retry context is generated only from a recorded
-        acceptance failure; a supplied context must agree with that record and may not
-        widen it. A supplied context with no ledger entry may be routed, but ``unrecorded``
-        makes ``_prepare`` refuse it before any launchable decision (erratum 1, row 1d).
+        acceptance failure, counting every launched attempt; a supplied context must agree
+        with that record and may not widen it. A supplied context with no ledger entry may
+        be routed, but ``unrecorded`` makes ``_prepare`` refuse it before any launchable
+        decision (erratum 1, row 1d). A first entry is only committed by a prepare that
+        succeeds, so a refused prepare never holds a ledger slot.
         """
         constraints = request["hard_constraints"]
         offered = RetryBudget(constraints["max_attempts"], constraints["total_deadline_ms"], routing_started)
         supplied = request["retry_context"]
+        admission = {"key": key, "budget": offered, "context": None, "unrecorded": False}
         with self._ledger_lock:
             entry = self._ledger.get(key)
             if entry is None:
                 if len(self._ledger) >= RETRY_LEDGER_LIMIT:
                     raise JevDrillUnavailable("Retry ledger is full")
-                self._ledger[key] = {"budget": offered, "attempts": []}
                 # No host record: a context-free request is a first attempt.
-                return supplied, supplied is not None
+                admission.update(context=supplied, unrecorded=supplied is not None)
+                return admission
             entry["budget"] = budget = entry["budget"].tighten(offered)
             attempts = entry["attempts"]
             judged = sum(1 for attempt in attempts if attempt["outcome"] != "launched")
@@ -647,7 +659,7 @@ class JevDrillAdapter:
             if latest is None or latest["outcome"] not in ACCEPTANCE_FAILURE_CLASSES:
                 if supplied is not None:
                     raise JevDrillUnavailable("Supplied retry context is unverified: no recorded failure")
-                return None, False
+                return admission
             used = len(attempts)
             if budget.exhausted(used, now):
                 raise JevDrillUnavailable("Retry budget is exhausted")
@@ -664,21 +676,40 @@ class JevDrillAdapter:
                     or supplied["remaining_attempts"] > remaining_attempts
                     or supplied["remaining_time_ms"] > remaining_time_ms):
                 raise JevDrillUnavailable("Supplied retry context is unverified or widens the host budget")
-            return generated, False
+            admission["context"] = generated
+            return admission
 
-    def _admit_launch(self, binding):
-        """Spend one attempt atomically with the budget check; return a refusal or None."""
-        key = binding["ledger_key"]
+    def _commit_route(self, admission):
+        """Open or tighten the task's entry for a successful prepare; return its generation."""
         with self._ledger_lock:
-            entry = self._ledger.get(key)
+            entry = self._ledger.get(admission["key"])
             if entry is None:
+                if len(self._ledger) >= RETRY_LEDGER_LIMIT:
+                    raise JevDrillUnavailable("Retry ledger is full")
+                self._ledger_generation += 1
+                entry = self._ledger[admission["key"]] = {
+                    "budget": admission["budget"], "attempts": [], "generation": self._ledger_generation}
+            else:
+                entry["budget"] = entry["budget"].tighten(admission["budget"])
+            return entry["generation"]
+
+    def _ledger_refusal(self, binding, *, commit=False):
+        """Refuse a binding whose entry closed or whose budget is spent; optionally spend one.
+
+        The caller holds ``_ledger_lock`` when ``commit`` is true, so the check and the
+        attempt append are one atomic step.
+        """
+        with self._ledger_lock:
+            entry = self._ledger.get(binding["ledger_key"])
+            if entry is None or entry["generation"] != binding["ledger_generation"]:
                 return "Retry record is closed"
             if entry["budget"].exhausted(len(entry["attempts"]), time.monotonic_ns()):
                 return "Retry budget is exhausted"
-            entry["attempts"].append({"execution_run_id": binding["run_id"],
-                                      "routing_decision_id": binding["decision"]["details"]["routing_decision_id"],
-                                      "outcome": "launched"})
-            self._run_index[binding["run_id"]] = key
+            if commit:
+                entry["attempts"].append({"execution_run_id": binding["run_id"],
+                                          "routing_decision_id": binding["decision"]["details"]["routing_decision_id"],
+                                          "outcome": "launched"})
+                self._run_index[binding["run_id"]] = binding["ledger_key"]
         return None
 
     def record_acceptance_outcome(self, execution_run_id, *, passed, failure_class):
@@ -742,10 +773,24 @@ class JevDrillAdapter:
             return deepcopy(binding["counts"])
 
     def _register_run(self, binding):
+        # The caller already holds ``_report_lock``.
         with self._report_lock:
             self._runs[binding["run_id"]] = binding
             while len(self._runs) > RUN_HANDLE_LIMIT:
                 self._runs.popitem(last=False)
+
+    def _take_binding(self, bundle):
+        """Pop a routed binding and mark its bundle spent; refuse a spent bundle's reuse."""
+        identity = id(bundle)
+        binding = self._pending.pop(identity, None)
+        spent = self._spent.get(identity)
+        if binding is None:
+            if spent is not None and spent() is bundle:
+                raise JevDrillUnavailable("Routed launch binding was already used or refused")
+            return None
+        self._spent[identity] = weakref.ref(bundle)
+        weakref.finalize(bundle, self._spent.pop, identity, None)
+        return binding
 
     def _report(self, binding, event_type=None, *, payload=None, reason=None):
         with self._report_lock:
@@ -775,9 +820,13 @@ class JevDrillAdapter:
             return self._launch(launch, spec, **kwargs)
 
     def _launch(self, launch, spec, **kwargs):
-        binding = self._pending.pop(id(spec.prompt_bundle), None)
+        binding = self._take_binding(spec.prompt_bundle)
         if binding is None:
             return launch(spec, **kwargs)
+        # A closed entry or a spent budget is refused before any CLI or executor contact.
+        refusal = self._ledger_refusal(binding)
+        if refusal is not None:
+            raise JevDrillUnavailable(refusal)
         candidate = binding["candidate"]
         request = binding["request"]
         linked = binding.get("linked_inputs")
@@ -803,19 +852,21 @@ class JevDrillAdapter:
         reporting_started = time.monotonic_ns()
         self._report(binding, "started")
         reporting_ms = (time.monotonic_ns() - reporting_started) / 1_000_000
-        # GAPS §3.6: readiness after the last blocking write, admitted with the attempt.
-        refusal = None
-        if (not _fresh(candidate) or not all(_fresh(row) for row in binding["freshness"])
-                or not _fresh({"verified_at": readiness["verified_at"], "expires_at": readiness["valid_until"]})):
-            refusal = "Final executor readiness expired; launch is not enforceable"
-        else:
-            refusal = self._admit_launch(binding)
+        # GAPS §3.6: every lock that can block is taken first; then the final readiness
+        # check, the attempt commit and run registration sit directly before dispatch.
+        with self._ledger_lock, self._report_lock:
+            if (not _fresh(candidate) or not all(_fresh(row) for row in binding["freshness"])
+                    or not _fresh({"verified_at": readiness["verified_at"], "expires_at": readiness["valid_until"]})):
+                refusal = "Final executor readiness expired; launch is not enforceable"
+            else:
+                refusal = self._ledger_refusal(binding, commit=True)
+            if refusal is None:
+                self._register_run(binding)
         if refusal is not None:
             self._report(binding, "canceled")
             if binding["guidance"]:
                 self._report(binding, "guidance_deactivated", reason="launch_canceled")
             raise JevDrillUnavailable(refusal)
-        self._register_run(binding)
         terminal = "failed"
         result = None
         mismatch = False

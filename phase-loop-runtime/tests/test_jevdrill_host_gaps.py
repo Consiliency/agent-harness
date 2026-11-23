@@ -20,11 +20,22 @@ from uuid import uuid4
 import pytest
 
 from phase_loop_runtime import jevdrill_adapter
-from phase_loop_runtime.host_integration import DEACTIVATION_REASONS, disconnect_advice
 from phase_loop_runtime.jevdrill_adapter import JevDrillTransport, JevDrillUnavailable
 from phase_loop_runtime.launcher import LaunchResult
 from jevdrill_fixture_values import load_rows
 from test_jevdrill_adapter import FIXTURES, adapter_fixture, fixture
+
+
+def seam(*names):
+    """GAPS §3.0: a test-local seam import that fails at a named availability assertion."""
+    try:
+        from phase_loop_runtime import host_integration
+    except ImportError:
+        host_integration = None
+    missing = [n for n in names if host_integration is None or not hasattr(host_integration, n)]
+    assert not missing, "host_integration is unavailable: missing interface " + ", ".join(missing)
+    values = [getattr(host_integration, n) for n in names]
+    return values[0] if len(values) == 1 else values
 
 
 def require(owner, *names):
@@ -280,6 +291,207 @@ def test_unjudged_attempt_is_refused_at_launch_admission(tmp_path):
     assert refused is not None and "Retry budget is exhausted" in str(refused)
 
 
+def counting_executor(entries):
+    def execute(spec, **_kwargs):
+        entries.append(spec)
+        return result_for()
+    return execute
+
+
+def test_spent_binding_never_falls_through_to_ordinary_launch(tmp_path):
+    adapter, _, _, kwargs, _, _ = adapter_fixture(tmp_path)  # max_attempts=1
+    entries = []
+    prepared = adapter.prepare(mode="main", dry_run=False, **kwargs)
+    adapter.launch(counting_executor(entries), spec_for(prepared))
+    refused = []
+    for spec in (spec_for(prepared), spec_for(adapter.prepare(mode="main", dry_run=False, **kwargs))):
+        for _ in range(2):  # a refused binding stays refused on retry
+            try:
+                adapter.launch(counting_executor(entries), spec)
+            except JevDrillUnavailable as exc:
+                refused.append(str(exc))
+    assert len(entries) == 1, "a consumed or refused routed binding reached the executor again"
+    assert refused == ["Routed launch binding was already used or refused"] * 2 + [
+        "Retry budget is exhausted", "Routed launch binding was already used or refused"]
+    # A genuinely unrouted bundle keeps the ordinary launch path.
+    adapter.launch(counting_executor(entries), SimpleNamespace(prompt_bundle=kwargs["prompt_bundle"]))
+    assert len(entries) == 2
+
+
+def linked_fixture(tmp_path, *, max_attempts=1):
+    adapter, inputs, decision, kwargs, calls, _ = adapter_fixture(tmp_path)
+    inputs["request"]["hard_constraints"]["max_attempts"] = max_attempts
+    ref = {"discovery_id": str(uuid4()), "work_objective_id": str(uuid4()), "trace_digest": "a" * 64}
+    adapter.queue.bind_objective(inputs["request"]["envelope"], ref)
+    decision["details"]["discovery_ref"] = ref
+    wrapper = {"schema_version": "2", "route_inputs": inputs, "discovery_ref": ref}
+    routed = adapter.transport.call
+
+    def call(command, payload, **options):
+        if command == "inspect-discovery":
+            calls.append((command, deepcopy(payload)))
+            return {"schema_version": "1", "status": "selected_guidance", "details": dict(ref)}
+        return routed(command, payload, **options)
+
+    adapter.transport.call = call
+    adapter.inputs_for = lambda _context: deepcopy(wrapper)
+    return adapter, kwargs, calls
+
+
+@pytest.mark.parametrize("case", ["slot_spent", "budget_expired"])
+def test_linked_launch_checks_the_ledger_before_cli_contact(tmp_path, monkeypatch, case):
+    clock = MonotonicClock()
+    monkeypatch.setattr(jevdrill_adapter, "time", clock)
+    adapter, kwargs, calls = linked_fixture(tmp_path)
+    entries = []
+    first = adapter.prepare(mode="main", dry_run=False, **kwargs)
+    if case == "slot_spent":
+        second = adapter.prepare(mode="main", dry_run=False, **kwargs)
+        adapter.launch(counting_executor(entries), spec_for(first))
+        target = second
+    else:
+        clock.advance_ms(5000)
+        target = first
+    contacted = len(calls)
+    callbacks = []
+    adapter.verify_candidate = lambda *_a: callbacks.append(True) or True
+    refused = None
+    try:
+        adapter.launch(counting_executor(entries), spec_for(target))
+    except JevDrillUnavailable as exc:
+        refused = exc
+    assert calls[contacted:] == [], "a spent or expired linked binding contacted the CLI"
+    assert callbacks == [] and len(entries) == int(case == "slot_spent")
+    assert refused is not None and "Retry budget is exhausted" in str(refused)
+
+
+def test_reopened_ledger_rejects_an_old_generation(tmp_path):
+    env = routed_fixture(tmp_path, max_attempts=1)
+    adapter = env.adapter
+    record, = require(adapter, "record_acceptance_outcome")
+    entries = []
+    prepared_a = adapter.prepare(mode="main", dry_run=False, **env.kwargs)
+    prepared_b = adapter.prepare(mode="main", dry_run=False, **env.kwargs)
+    result = adapter.launch(counting_executor(entries), spec_for(prepared_a))
+    record(result.jevdrill_execution_run["execution_run_id"], passed=True, failure_class=None)
+    prepared_c = adapter.prepare(mode="main", dry_run=False, **env.kwargs)
+    refused = None
+    try:
+        adapter.launch(counting_executor(entries), spec_for(prepared_b))
+    except JevDrillUnavailable as exc:
+        refused = exc
+    assert len(entries) == 1, "a binding from a closed ledger entry spent the reopened budget"
+    assert refused is not None and "Retry record is closed" in str(refused)
+    adapter.launch(counting_executor(entries), spec_for(prepared_c))
+    assert len(entries) == 2
+
+
+def test_refused_prepare_holds_no_ledger_slot(tmp_path, monkeypatch):
+    env = routed_fixture(tmp_path)
+    adapter = env.adapter
+    monkeypatch.setattr(jevdrill_adapter, "RETRY_LEDGER_LIMIT", 1, raising=False)
+    forged = fixture("RouteRequest")["retry_context"]
+    forged["remaining_spend"] = None
+    env.task("forged")["request"]["retry_context"] = forged
+    refusals = []
+    for name in ("forged", "deleted"):
+        if name == "deleted":
+            request = env.task(name)["request"]
+            adapter.queue.delete_task(request["envelope"]["project_id"], request["envelope"]["workspace_id"],
+                                      request["task_id"])
+        env.current[0] = name
+        try:
+            adapter.prepare(mode="main", dry_run=False, **env.kwargs)
+        except JevDrillUnavailable as exc:
+            refusals.append(str(exc))
+    assert len(refusals) == 2, "a forged or deleted task was routed as launchable"
+    env.current[0] = "valid"
+    try:
+        prepared = adapter.prepare(mode="main", dry_run=False, **env.kwargs)
+    except JevDrillUnavailable as exc:
+        prepared = exc
+    assert not isinstance(prepared, Exception), f"a refused prepare held the only ledger slot: {prepared}"
+
+
+class ArmedLock:
+    """A lock that runs ``on_enter`` the first time it is entered after being armed."""
+
+    def __init__(self, lock, on_enter):
+        self._lock, self._on_enter, self.armed = lock, on_enter, False
+
+    def __enter__(self):
+        if self.armed:
+            self.armed = False
+            self._on_enter()
+        return self._lock.__enter__()
+
+    def __exit__(self, *exc):
+        return self._lock.__exit__(*exc)
+
+    def acquire(self, *args, **kwargs):
+        return self._lock.acquire(*args, **kwargs)
+
+    def release(self):
+        return self._lock.release()
+
+
+@pytest.mark.parametrize("lock", ["ledger", "report"])
+def test_lock_wait_cannot_outlive_readiness(tmp_path, monkeypatch, lock):
+    adapter, inputs, decision, kwargs, calls, _ = adapter_fixture(tmp_path)
+    with_guidance(inputs, decision)
+    now = patched_clock(monkeypatch)
+    decision["readiness"]["valid_until"] = (now[0] + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+    prepared = adapter.prepare(mode="main", dry_run=False, **kwargs)
+    name = "_ledger_lock" if lock == "ledger" else "_report_lock"
+    armed = ArmedLock(getattr(adapter, name, threading.RLock()),
+                      lambda: now.__setitem__(0, now[0] + timedelta(hours=2)))
+    monkeypatch.setattr(adapter, name, armed, raising=False)
+    enqueue = adapter.queue.enqueue
+
+    def arm_after_started(report):
+        disposition = enqueue(report)
+        if report["event"]["payload"].get("event_type") == "started":
+            armed.armed = True
+        return disposition
+
+    adapter.queue.enqueue = arm_after_started
+    entries = []
+    try:
+        adapter.launch(counting_executor(entries), spec_for(prepared))
+    except JevDrillUnavailable:
+        pass
+    assert entries == [], "the executor was dispatched after readiness expired during a lock wait"
+    assert queued_event_types(adapter) == ["started", "canceled", "guidance_deactivated"]
+    drain(adapter)
+    deactivated = [e["payload"]["reason"] for e in delivered(calls)
+                   if e["payload"].get("event_type") == "guidance_deactivated"]
+    assert deactivated == ["launch_canceled"]
+    assert all(not entry["attempts"] for entry in adapter._ledger.values()), "a refused launch was charged"
+
+
+def test_competing_launches_enter_the_executor_once(tmp_path):
+    adapter, _, _, kwargs, _, _ = adapter_fixture(tmp_path)  # max_attempts=1
+    specs = [spec_for(adapter.prepare(mode="main", dry_run=False, **kwargs)) for _ in range(2)]
+    barrier = threading.Barrier(2)
+    entries, outcomes = [], []
+
+    def compete(spec):
+        barrier.wait(timeout=5)
+        try:
+            adapter.launch(counting_executor(entries), spec)
+            outcomes.append("launched")
+        except JevDrillUnavailable as exc:
+            outcomes.append(str(exc))
+
+    threads = [threading.Thread(target=compete, args=(spec,)) for spec in specs]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    assert len(entries) == 1, "two competing launches both reached the executor"
+    assert sorted(outcomes) == ["Retry budget is exhausted", "launched"]
+
+
 # --- Item 2 (GAPS §3.2) ---------------------------------------------------------------------
 
 
@@ -339,7 +551,7 @@ def test_deactivation_reports_the_host_limitation(tmp_path, case, expected):
     assert adapter.sanitize_report(report)["event"]["payload"]["reason"] is None
     report["event"]["payload"].update(reason=expected)
     assert adapter.sanitize_report(report)["event"]["payload"]["reason"] == expected
-    assert expected in DEACTIVATION_REASONS
+    assert expected in seam("DEACTIVATION_REASONS")
 
 
 # --- Item 4 (GAPS §3.4) ---------------------------------------------------------------------
@@ -380,10 +592,10 @@ def test_route_disconnect_carries_advice(tmp_path, entry):
                 "project_id", "workspace_id", "harness_id", "execution_target_id")})
             adapter.discover_objective(objective)
     assert type(error.value) is FileNotFoundError and error.value is raised[0]
-    assert getattr(error.value, "resolution_advice", None) == disconnect_advice("route")
+    assert getattr(error.value, "resolution_advice", None) == seam("disconnect_advice")("route")
     assert disconnect_notices(notices, "route") == [{
         "kind": "transport_disposition", "status": "disconnected", "operation": "route",
-        "resolution_advice": list(disconnect_advice("route"))}]
+        "resolution_advice": list(seam("disconnect_advice")("route"))}]
 
 
 def test_report_disconnect_keeps_backoff_and_advises(tmp_path):
@@ -401,7 +613,7 @@ def test_report_disconnect_keeps_backoff_and_advises(tmp_path):
     assert len(rows) == 1 and rows[0][0] == 1 and rows[0][1] > time.time() and rows[0][2] == "pending"
     assert disconnect_notices(notices, "report") == [{
         "kind": "transport_disposition", "status": "disconnected", "operation": "report",
-        "resolution_advice": list(disconnect_advice("report"))}]
+        "resolution_advice": list(seam("disconnect_advice")("report"))}]
     executor_result = result_for(output="executor output")
     observed = adapter.launch(lambda spec, **_k: executor_result, spec_for(prepared))
     assert (observed.output, observed.returncode) == (executor_result.output, executor_result.returncode)
@@ -594,28 +806,50 @@ def test_near_zero_budget_never_spawns(tmp_path, monkeypatch):
 
 
 def test_over_reserve_spawn_is_bounded_by_the_parent_deadline(tmp_path, monkeypatch):
-    children, handed = [], []
+    clock = MonotonicClock()
+    monkeypatch.setattr(jevdrill_adapter, "time", clock)
+    children, waits, handed = [], [], []
+
+    class Handle:
+        """The real child behind a handle whose timed wait reports its timeout and expires."""
+
+        def __init__(self, child):
+            self._child = child
+
+        def __getattr__(self, name):
+            return getattr(self._child, name)
+
+        def wait(self, timeout=None):
+            if timeout is None:
+                return self._child.wait()
+            waits.append(timeout)
+            raise subprocess.TimeoutExpired(self._child.args, timeout)
 
     def slow_popen(argv, **kwargs):
         child = subprocess.Popen(argv, **kwargs)
         children.append(child)
-        time.sleep(0.4)  # startup forced past the 250 ms reserve
-        handed.append(time.monotonic())
-        return child
+        clock.advance_ms(400)  # startup forced past the 250 ms reserve, on the controlled clock
+        handed.append(clock.monotonic())
+        return Handle(child)
 
     argvs = []
     monkeypatch.setattr(jevdrill_adapter, "subprocess", recording_subprocess(argvs, slow_popen))
     cli = plain_transport(tmp_path, "import time\ntime.sleep(60)\n")
-    begin = time.monotonic()
-    started_at = begin - 3.0
-    deadline = started_at + 5  # about 2 s remain, well over the reserve
-    with pytest.raises(TimeoutError):
-        cli.call("notices", fixture("NoticeRequest"), started_at=started_at)
-    ended = time.monotonic()
-    assert len(children) == 1, "the child was not started"
-    assert handed[0] - begin > 0.25 and handed[0] < deadline
-    assert deadline - 0.05 <= ended <= deadline + 1.0
-    assert children[0].returncode is not None, "the started child was not reaped"
+    started_at = clock.monotonic() - 3.0
+    deadline = started_at + 5  # 2000 ms remain, well over the reserve
+    try:
+        with pytest.raises(TimeoutError, match="exceeded deadline"):
+            cli.call("notices", fixture("NoticeRequest"), started_at=started_at)
+        assert len(children) == 1, "the child was not started"
+        assert handed[0] < deadline
+        # The parent waits only until its original deadline, never longer.
+        assert waits == [pytest.approx(deadline - handed[0])] and waits[0] <= deadline - handed[0]
+        assert children[0].returncode is not None, "the started child was not reaped"
+    finally:
+        for child in children:
+            if child.poll() is None:
+                child.kill()
+                child.wait()
 
 
 def test_delete_argv_has_no_budget_flag(tmp_path, monkeypatch):
@@ -690,34 +924,42 @@ def test_run_bound_reports_share_the_run_stream(tmp_path):
     identity, enqueue, counts = require(adapter, "run_event_identity", "enqueue_run_event", "run_report_counts")
     prepared = adapter.prepare(mode="main", dry_run=False, **kwargs)
     decision_id = adapter.last_decision["details"]["routing_decision_id"]
-    observed = []
+    entered = []  # (sequence, kind) in the order reports reach the queue
+    enqueue_queue = adapter.queue.enqueue
+
+    def ordered_enqueue(report):
+        entered.append((report["event"]["source_sequence"], report["event"]["payload"]["kind"]))
+        time.sleep(0.002)  # widen the window for a racing producer
+        return enqueue_queue(report)
+
+    adapter.queue.enqueue = ordered_enqueue
+    observed, hooks = [], []
 
     def execute(spec, **_k):
-        # A hook reporting while the run executes shares the host's stream.
-        run_id = next(iter(adapter._runs))
+        run_id = next(reversed(adapter._runs))
         observed.append(identity(run_id))
-        enqueue(run_id, evaluation_payload("during"))
+        # Hooks race the host's own terminal and usage reports after the executor returns.
+        hooks.extend(threading.Thread(target=enqueue, args=(run_id, evaluation_payload(i))) for i in range(6))
+        for hook in hooks:
+            hook.start()
         return result_for()
 
     result = adapter.launch(execute, spec_for(prepared))
+    for hook in hooks:
+        hook.join()
     run_id = result.jevdrill_execution_run["execution_run_id"]
     assert observed[0] == {"task_id": kwargs_task(adapter, run_id), "routing_decision_id": decision_id,
                            "execution_run_id": run_id, "source_id": "agent-harness", "next_source_sequence": 1}
-    after = identity(run_id)
-    assert after["next_source_sequence"] == 4  # started, hook, terminal, usage
-
-    threads = [threading.Thread(target=enqueue, args=(run_id, evaluation_payload(i))) for i in range(6)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
+    # Enqueue order, before any sorting, is sequence order, with host and hook interleaved.
+    assert [sequence for sequence, _ in entered] == list(range(9))
+    assert {kind for _, kind in entered} == {"lifecycle", "usage", "evaluation"}
+    assert identity(run_id)["next_source_sequence"] == 9
     drain(adapter)
     events = delivered(calls, run_id)
-    assert [e["source_sequence"] for e in events] == list(range(10))
+    assert sorted(e["source_sequence"] for e in events) == list(range(9))
     assert len({e["source_id"] for e in events}) == 1
-    assert {(e["task_id"], e["routing_decision_id"]) for e in events} == {(after["task_id"], decision_id)}
-    assert [e["payload"].get("event_type") for e in events][:4] == ["started", None, "completed", None]
-    assert counts(run_id) == {"queued": 10, "losses": {}}
+    assert {(e["task_id"], e["routing_decision_id"]) for e in events} == {(observed[0]["task_id"], decision_id)}
+    assert counts(run_id) == {"queued": 9, "losses": {}}
 
     with pytest.raises(ValueError, match="non-lifecycle"):
         enqueue(run_id, {"kind": "lifecycle", "event_type": "completed", "applied_plan_id": None, "reason": None})
