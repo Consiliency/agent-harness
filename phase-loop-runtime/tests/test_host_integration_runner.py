@@ -26,6 +26,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from test_phase_worktree_executor import require_sched_red as _require_sched_red
 
 from phase_loop_runtime import runner
 from phase_loop_runtime.events import read_events
@@ -265,6 +266,11 @@ def test_launch_contract_verdict_uses_the_reason_captured_at_the_check(tmp_path,
     assert "durable output log" in reconcile(repo, roadmap).blocker_summary
 
 
+# It drives the SCHED transfer anchor, so it carries that anchor's own gates: the
+# dotfiles-integration mark (skipped when no dotfiles tree is reachable) and
+# ``require_sched_red``.
+@pytest.mark.dotfiles_integration
+@_require_sched_red
 def test_acceptance_verdicts_reach_the_observer_reduction_blocker_reports_nothing(monkeypatch):
     """A reduction blocker is not judged on the run (GAPS §3.1), so it reports no verdict.
 
