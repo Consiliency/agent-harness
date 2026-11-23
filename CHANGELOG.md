@@ -15,6 +15,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `load_pin_record`, `validate_pin_record` (rules P1–P10, with P4 strict unless the stale
   marker is explicitly allowed and names the record), `assemble_built_record` and
   `apply_receipt`. Refusals use the closed `pin_*` codes and name the rule and the field only.
+- The review-runner recipe CLI `phase-loop-runtime/scripts/review_runner_image.py` (RRIMAGE
+  SL-2; Consiliency/agent-harness#2106). `plan` prints the RRIMAGE §3 build recipe for a
+  source commit without running anything: a `git archive` export, a digest-pinned BuildKit
+  builder, and two `--platform linux/amd64` OCI-archive builds with `rewrite-timestamp`,
+  `SOURCE_DATE_EPOCH`, `--no-cache`, no provenance or SBOM, and both source labels. `record`
+  commits the `built` record and the raw manifest and config bytes from an OCI layout whose
+  `index.json` holds exactly one image-manifest descriptor. `verify-receipt` promotes the
+  record to `pinned` only when ai-stack's receipt passes P6 and P9; otherwise the record stays
+  `built`.
 
 ## [0.7.41] - Unreleased candidate
 

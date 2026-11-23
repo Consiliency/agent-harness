@@ -1,0 +1,15 @@
+{
+  "architecture": "amd64",
+  "os": "linux",
+  "config": {
+    "User": "sandbox:sandbox",
+    "Labels": {
+      "org.opencontainers.image.revision": "computed-in-test",
+      "dev.consiliency.review-runner.containerfile-sha256": "computed-in-test"
+    }
+  },
+  "rootfs": {
+    "type": "layers",
+    "diff_ids": ["computed-in-test"]
+  }
+}
