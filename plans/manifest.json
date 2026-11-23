@@ -15232,7 +15232,7 @@
           "sha256": "1cea960ddd28ef5e1c4bf79083fa9f9938b2c99c2e29dbd937864944ca76d7e8"
         },
         "plans/artifacts/v13-LANEEXEC-landed-binding.md": {
-          "sha256": "f1dbfc321780debfad1fc58b1852f6cb0351c156f2ef793f39e5e95a92d76db7"
+          "sha256": "39681b48ffaba86d260da020b8e02ff8b67b347e7b26e67c933fe5093957caae"
         },
         "plans/artifacts/v12-v13-replan-ownership.md": {
           "sha256": "e5dbbfb45c23cbb6acb9756a23a3d86b62dd5b172b94d6a495ef436d189f3e06"
@@ -15280,13 +15280,47 @@
             }
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-11-23T00:43:23Z",
+          "by": "claude-plan-phase",
+          "metadata": {
+            "amendment": {
+              "artifact_section": "plans/artifacts/v13-LANEEXEC-landed-binding.md \u00a76",
+              "baseline": "4dd77878afe58c429b01969c32c89b755a820002",
+              "erratum": "LANEEXEC-v1-errata-2",
+              "frozen_inputs_repinned": [
+                "plans/artifacts/v13-LANEEXEC-landed-binding.md"
+              ],
+              "issues_filed": [
+                "agent-harness#2098",
+                "agent-harness#2099",
+                "agent-harness#2100"
+              ],
+              "wire_bytes_changed": false
+            },
+            "remaining_gate": "separate execution authority for claude-execute-phase",
+            "review": {
+              "delta_check": "coordinator; the verdict requires no further board round",
+              "edits_applied_commit": "6da287e181b9f3768e4f314f4e799b43e185b415",
+              "panel": "advisor-board plan-landing tier",
+              "verdict": "AGREE-WITH-EDITS",
+              "verdict_at": "2026-11-09T16:05:44Z",
+              "verdict_ref": "https://github.com/Consiliency/agent-harness/pull/1966#issuecomment-6744806830"
+            },
+            "work_start_gates": {
+              "closeout": "met by agent-harness#1970",
+              "placecli": "met by agent-harness#1971, agent-harness#1991 and agent-harness#2003"
+            }
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "claude-plan-phase",
       "phase_alias": "LANEEXEC",
       "planning_artifact_only": true,
       "reflection_ref": null,
-      "review_status": "pending",
+      "review_status": "board_edits_applied_coordinator_delta_checked",
       "roadmap_ref": {
         "file": "specs/phase-plans-v13.md",
         "slug": "phase-plans-v13",
@@ -15296,7 +15330,7 @@
       "slug": "v13-LANEEXEC",
       "status": "committed",
       "type": "phase",
-      "updated_at": "2026-11-09T15:14:18Z"
+      "updated_at": "2026-11-23T00:43:23Z"
     },
     {
       "acceptance_criteria_count": null,
