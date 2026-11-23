@@ -136,6 +136,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- The placement-lifecycle replay test runs its interrupted setup reserve on a frozen clock with
+  inline backend calls, removing a real-time 300 ms deadline race (agent-harness#2117).
 - The last eleven JEV Drill companion failures on the Windows legs (second follow-up to
   agent-harness#2092; POSIX behaviour is unchanged):
   - The Windows admitted child (`windows_process._admitted_child`) now writes the
