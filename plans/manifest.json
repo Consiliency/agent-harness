@@ -15232,7 +15232,7 @@
           "sha256": "1cea960ddd28ef5e1c4bf79083fa9f9938b2c99c2e29dbd937864944ca76d7e8"
         },
         "plans/artifacts/v13-LANEEXEC-landed-binding.md": {
-          "sha256": "ff7003eed8866edbb4b96b46f22737facab0ea4090ffe8c7098f5208d183b427"
+          "sha256": "7ba2e8adbf4bbe667ed06f39ab555a8836fffde3b9833e87c43e8104f454ae85"
         },
         "plans/artifacts/v12-v13-replan-ownership.md": {
           "sha256": "e5dbbfb45c23cbb6acb9756a23a3d86b62dd5b172b94d6a495ef436d189f3e06"
@@ -15348,7 +15348,7 @@
           "transition": "committed"
         },
         {
-          "at": "2026-11-23T19:30:00Z",
+          "at": "2026-11-23T21:10:00Z",
           "by": "claude-plan-phase",
           "metadata": {
             "amendment": {
@@ -15364,7 +15364,13 @@
               },
               "wire_bytes_changed": false
             },
-            "remaining_gate": "separate execution authority for claude-execute-phase"
+            "remaining_gate": "separate execution authority for claude-execute-phase",
+            "review": {
+              "pr": "agent-harness#2141",
+              "round": 1,
+              "verdict": "REVISE",
+              "edits": "applied"
+            }
           },
           "transition": "committed"
         }
@@ -15383,7 +15389,7 @@
       "slug": "v13-LANEEXEC",
       "status": "committed",
       "type": "phase",
-      "updated_at": "2026-11-23T19:30:00Z"
+      "updated_at": "2026-11-23T21:10:00Z"
     },
     {
       "acceptance_criteria_count": null,

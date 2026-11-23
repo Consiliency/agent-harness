@@ -150,7 +150,7 @@ attempt_id through the v12 journal") is bound to:
   - an expected-digest check inside `capped_popen`, which reloads caps at `:665`;
   - typed evidence of whether a failure came before or after the helper started;
   - kill/collect of a capped parent by key. `__all__` (`:798`–`:802`) exports neither. Filed as agent-harness#2098.
-- **Unreadable caps record (coordinator ruling 1, 2026-11-09; `prepare` code rebound by LANEEXEC-v1-errata-4, §8 E4-1).** When `load_caps()` raises `CapsUnavailable`, every verb that places or launches fails closed, exit 10, for every target, with zero invocations and no claim: `prepare` refuses `sandbox_launch_refused` and `launch` refuses `sandbox_placement_capability_unmet`. `status` and `cancel` act on existing records and keep working. `version` still exits 0 with a schema-valid response and empty stderr: `seat_caps_sha256` is the documented sentinel `sha256(b"seat_resource_caps_unavailable")`, also carried into `config_sha256` (PLACECLI binding §3 P-S1). `--help` prints one line naming the caps state and exits 0.
+- **Unreadable caps record (coordinator ruling 1, 2026-11-09; `prepare` code rebound by LANEEXEC-v1-errata-4, §8 E4-1).** When `load_caps()` raises `CapsUnavailable`, every verb that places or launches fails closed for every target, with zero invocations and no claim: a fresh `prepare` refuses `sandbox_launch_refused`, exit 10, and `launch` refuses `sandbox_placement_capability_unmet`, exit 10. A `prepare` replay keeps the §8 E4-1 order: a settled replay with the same canonical body returns its stored response, and a lock timeout or `sandbox_placement_end_reached` takes precedence over the caps refusal. `status` and `cancel` act on existing records and keep working. `version` still exits 0 with a schema-valid response and empty stderr: `seat_caps_sha256` is the documented sentinel `sha256(b"seat_resource_caps_unavailable")`, also carried into `config_sha256` (PLACECLI binding §3 P-S1). `--help` prints one line naming the caps state and exits 0.
 
 ### L-S4 — status and cancel mapping
 
@@ -1026,18 +1026,23 @@ wire-valid reading.
 
 - When `load_caps()` raises `CapsUnavailable`, `prepare` refuses `sandbox_launch_refused`,
   state `refused`, `paths` null, exit 10, for every target.
-- It creates nothing: no run, no `run_id`, no claim. It reads no reservation state.
-- It journals the refusal under its `request_id`, so the refusal is settled under
-  `x-prepare.replay`.
+- It reads no reservation state and allocates nothing: no new run, no `run_id`, no claim.
+- It journals the response under its `request_id`, so the refusal is settled under
+  `x-prepare.replay`. On a replay, any run id the attempt had already planned stays owned
+  through a recorded cleanup entry.
 - `launch` still refuses `sandbox_placement_capability_unmet`. `status`, `cancel`, `version`
   and `--help` keep the L-S3 behavior.
 
-**Replays.**
+**Replays,** in the existing `x-prepare.replay` order:
 
-- A settled prepare, whether `prepared` or `refused`, replays its journaled response
-  byte for byte, whatever the caps state is now.
-- An unsettled replay finds the caps record unreadable. The caps gate refuses it with the same
-  generic refusal before it reads reservation state or allocates a value.
+- A replay whose canonical body differs from the journaled one refuses
+  `sandbox_launch_refused` and journals nothing.
+- A settled prepare (`prepared` or `refused`) replayed with the same canonical body returns
+  its journaled response byte for byte, whatever the caps state is now.
+- For an unsettled replay, the request-lock and frozen clock checks run first. A lock timeout
+  still answers `timeout`, and a replay at its bound still settles
+  `sandbox_placement_end_reached`. Only then does the caps gate run, before any reservation
+  read or allocation, with the same generic refusal.
 
 **Owners.** The §7 E3-3 row "Unreadable caps (coordinator ruling 1)" stays with SL-3 and now
 reads this code. SL-3's tests also cover the settled and unsettled replay cases.
