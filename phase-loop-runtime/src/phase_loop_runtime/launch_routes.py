@@ -51,6 +51,7 @@ __all__ = [
     "ToolkitManifest",
     "ToolkitPin",
     "FixtureImageRuntime",
+    "activation_refusal",
     "check_toolkit_manifest",
     "expand_argv",
     "frozen_pi_runner_template",
@@ -61,6 +62,7 @@ __all__ = [
     "relay_endpoint_argument",
     "route_refusal",
     "select_template",
+    "static_route_refusal",
     "template_summaries",
 ]
 
@@ -897,20 +899,23 @@ def recheck_template(template: RegisteredTemplate, registry: TemplateRegistry,
 
 # -- route mapping and selection -------------------------------------------------------------
 
-def route_refusal(settings: LaunchSettings, *, client: str, workload: str, action: str,
-                  result_kind: str, target_kind: str) -> str | None:
-    """The L-S7 route mapping as a closed function; ``None`` means the route may proceed.
-
-    Order: the ``x-client-routes`` client/workload pairing (``sandbox_launch_refused``), the
-    writer route (``sandbox_launch_writer_route_refused``), then the activation that governs
-    ``(workload, target_kind)``. Openshell routes additionally pass the activation check of
-    ``sandbox_placement.openshell_launch_refusal`` at the launch entry point (binding §6 E2-2).
-    """
+def static_route_refusal(settings: LaunchSettings, *, client: str, workload: str, action: str,
+                         result_kind: str) -> str | None:
+    """Validate the captured client, workload and writer pairing from ``x-client-routes``."""
     route = _CLIENT_ROUTES.get((client, workload))
     if route is None or settings.client != client:
         return _REFUSED
     if route != (action, result_kind):
         return _WRITER_ROUTE
+    return None
+
+
+def activation_refusal(settings: LaunchSettings, *, workload: str, target_kind: str) -> str | None:
+    """Check the captured settings for a statically valid route at the activation step.
+
+    OpenShell targets also require the launch entry point's
+    ``sandbox_placement.openshell_launch_refusal`` check before this settings check (§9).
+    """
     governed = ROUTE_TABLE.get((workload, target_kind))
     if governed == "lane_placement":
         return None if settings.lane_placement == "enabled" else _ROUTE_DISABLED
@@ -919,6 +924,16 @@ def route_refusal(settings: LaunchSettings, *, client: str, workload: str, actio
     if governed == "route":
         return None if settings.route_enabled(workload, target_kind) else _ROUTE_DISABLED
     return _ROUTE_DISABLED
+
+
+def route_refusal(settings: LaunchSettings, *, client: str, workload: str, action: str,
+                  result_kind: str, target_kind: str) -> str | None:
+    """Apply the L-S7 static checks before the captured settings' activation check."""
+    refusal = static_route_refusal(settings, client=client, workload=workload, action=action,
+                                   result_kind=result_kind)
+    if refusal is not None:
+        return refusal
+    return activation_refusal(settings, workload=workload, target_kind=target_kind)
 
 
 def pi_policy_refusal(workload: str, target_kind: str, policy_vector: str) -> str | None:

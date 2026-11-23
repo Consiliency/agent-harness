@@ -8,6 +8,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
+- LANEEXEC SL-7 precursor: `static_route_refusal` checks the client, workload and
+  writer pairing, and `activation_refusal` checks the captured route settings.
+  `route_refusal` preserves its refusal order and codes. All routes refuse under
+  shipped defaults, including the existing interim diagnostic for local Pi.
 - LANEEXEC SL-3: `phase_loop_runtime.launch_service` adds `build_launch_service` and
   `LaunchService.prepare`, `status` and `cancel` (`plans/phase-plan-v13-LANEEXEC.md`,
   binding §7 E3-3). The function stores the captured client configuration and the seams the

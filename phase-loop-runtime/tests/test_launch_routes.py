@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+from itertools import product
 import json
 import os
 from pathlib import Path
@@ -588,6 +589,64 @@ def test_writer_route_and_client_pairing_refusals(client, workload, action, kind
 def test_settings_of_another_client_never_open_a_route():
     assert route_refusal(ENABLED_AH, client="agent-toolkit", workload="pi-runner", action="execution",
                          result_kind="none", target_kind="local") == "sandbox_launch_refused"
+
+
+@pytest.mark.parametrize("client,workload,action,kind,expected", [
+    ("agent-toolkit", "pi-runner", "execution", "none", None),
+    ("agent-harness", "implementation", "execution", "patch", None),
+    ("agent-harness", "leg", "review", "result", None),
+    ("agent-harness", "qualification", "review", "result", None),
+    ("agent-toolkit", "pi-runner", "execution", "patch", "sandbox_launch_writer_route_refused"),
+    ("agent-harness", "leg", "execution", "result", "sandbox_launch_writer_route_refused"),
+    ("agent-toolkit", "leg", "execution", "none", "sandbox_launch_refused"),
+    ("agent-toolkit", "unknown", "execution", "none", "sandbox_launch_refused"),
+])
+def test_static_route_refusal_is_independent_of_activation(client, workload, action, kind, expected):
+    active = ENABLED_TK if client == "agent-toolkit" else ENABLED_AH
+    for settings in (DEFAULT_LAUNCH_SETTINGS[client], active):
+        assert launch_routes.static_route_refusal(
+            settings, client=client, workload=workload, action=action, result_kind=kind,
+        ) == expected
+
+
+def test_static_route_refusal_requires_the_captured_client():
+    assert launch_routes.static_route_refusal(
+        ENABLED_AH, client="agent-toolkit", workload="pi-runner", action="execution", result_kind="none",
+    ) == "sandbox_launch_refused"
+
+
+@pytest.mark.parametrize("workload,target,default_refusal,enabled_refusal", [
+    ("implementation", "local", "sandbox_launch_route_disabled", None),
+    ("pi-runner", "local", "sandbox_launch_local_route_interim", None),
+    ("pi-runner", "openshell", "sandbox_launch_route_disabled", None),
+    ("leg", "openshell", "sandbox_launch_route_disabled", None),
+    ("qualification", "openshell", "sandbox_launch_route_disabled", None),
+    ("leg", "local", "sandbox_launch_route_disabled", "sandbox_launch_route_disabled"),
+    ("qualification", "local", "sandbox_launch_route_disabled", "sandbox_launch_route_disabled"),
+    ("implementation", "openshell", "sandbox_launch_route_disabled", "sandbox_launch_route_disabled"),
+    ("pi-runner", "e2b", "sandbox_launch_route_disabled", "sandbox_launch_route_disabled"),
+    ("unknown", "openshell", "sandbox_launch_route_disabled", "sandbox_launch_route_disabled"),
+])
+def test_activation_refusal_preserves_default_and_opt_in_mapping(workload, target, default_refusal, enabled_refusal):
+    defaults, active = (DEFAULTS_TK, ENABLED_TK) if workload == "pi-runner" else (DEFAULTS_AH, ENABLED_AH)
+    assert launch_routes.activation_refusal(defaults, workload=workload, target_kind=target) == default_refusal
+    assert launch_routes.activation_refusal(active, workload=workload, target_kind=target) == enabled_refusal
+
+
+def test_route_refusal_matches_the_split_route_checks():
+    for settings, client, workload, action, kind, target in product(
+        (DEFAULTS_TK, DEFAULTS_AH, ENABLED_TK, ENABLED_AH),
+        ("agent-harness", "agent-toolkit"),
+        WRITER,
+        ("execution", "review"),
+        ("patch", "result", "none"),
+        ("local", "openshell", "e2b"),
+    ):
+        writer = dict(client=client, workload=workload, action=action, result_kind=kind)
+        expected = launch_routes.static_route_refusal(settings, **writer)
+        if expected is None:
+            expected = launch_routes.activation_refusal(settings, workload=workload, target_kind=target)
+        assert route_refusal(settings, **writer, target_kind=target) == expected
 
 
 @pytest.mark.parametrize("target,vector,expected", [
