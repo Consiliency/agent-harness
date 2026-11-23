@@ -94,6 +94,25 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- The last eleven JEV Drill companion failures on the Windows legs (second follow-up to
+  agent-harness#2092; POSIX behaviour is unchanged):
+  - The Windows admitted child (`windows_process._admitted_child`) now writes the
+    executor's stdin as UTF-8 bytes. Its text-mode pipe turned each `\n` into `\r\n`, so
+    the executor did not receive the resolved prompt byte for byte. This fixes the five
+    `test_jevdrill_input.py` failures.
+    `tests/test_windows_runtime_guards.py` simulates the Windows newline translation on
+    every platform.
+  - Six `test_jevdrill_usage.py` tests assumed POSIX. Two forked a descendant, one took
+    an `fcntl` lock, and three relied on a SIGTERM handler or a SIGINT sent to the parent
+    process. On Windows they now:
+    - skip the fork;
+    - take the lock on POSIX only;
+    - raise the interrupt in the launcher;
+    - expect the job object's exit statuses: 124 for a timeout, 1 for a stall and 130
+      for an interrupt.
+
+  These are rows E and F of `plans/amendments/jevhost-S5-windows-runtime.md`. JEV
+  Drill's agreement is pending.
 - The JEV Drill companion workflow's Windows legs (follow-up to
   Consiliency/agent-harness#2092; POSIX behaviour is unchanged):
   - `windows_storage.PrivateSecurity.verify` no longer compares rendered SDDL text, which

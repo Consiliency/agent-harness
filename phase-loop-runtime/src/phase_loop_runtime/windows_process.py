@@ -486,10 +486,14 @@ def _admitted_child():
         raise SystemExit(2)
     request = json.loads(admission)
     # The prompt goes to the executor as UTF-8 whatever the host code page is (this
-    # isolated child does not inherit PYTHONUTF8).
-    completed = subprocess.run(request["command"], input=request["stdin"],
-                               stdin=subprocess.DEVNULL if request["stdin"] is None else None,
-                               text=True, encoding="utf-8", check=False, close_fds=True)
+    # isolated child does not inherit PYTHONUTF8). It is written as bytes: a text-mode
+    # pipe on Windows turns each "\n" into "\r\n", so the executor would not receive
+    # the resolved payload byte for byte (agent-harness#2092).
+    stdin_text = request["stdin"]
+    completed = subprocess.run(request["command"],
+                               input=None if stdin_text is None else stdin_text.encode("utf-8"),
+                               stdin=subprocess.DEVNULL if stdin_text is None else None,
+                               check=False, close_fds=True)
     return completed.returncode
 
 
