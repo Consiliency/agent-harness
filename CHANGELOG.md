@@ -8,6 +8,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
+- JEVHOST SL-6: `phase_loop_runtime.host_integration`, the host-neutral integration seam
+  (`plans/amendments/jevhost-JEVHOST-host-gaps.md`, IF-0-JEVHOST-5, GAPS §2). It provides
+  `RetryBudget` (remaining attempts and floor-millisecond time, exhaustion, tighten-only),
+  `ACCEPTANCE_FAILURE_CLASSES`, the `AcceptanceObserver` protocol and `notify_acceptance`,
+  the closed `DEACTIVATION_REASONS` vocabulary and `deactivation_reason`, per-operation
+  `disconnect_advice` and `annotate_disconnect`, and `build_host_request` with
+  `HostOverrideViolation`, which refuses an integration that changes the model, effort or
+  source of an operator or policy override, comparing values captured before `prepare`.
+  The module does no IO, spawn or ctypes and imports no JEV Drill code. Nothing calls it
+  yet; the runner and adapter wiring follow in later lanes.
 - RRIMAGE SL-3: the review-runner image operator guide, `docs/review-runner-image.md`, and
   the ai-stack handoff template, `plans/evidence/review-runner/HANDOFF-ai-stack.template.md`
   (`plans/phase-plan-v1-rrimage-RRIMAGE.md`, contract §5.1 and §6). The guide covers the
