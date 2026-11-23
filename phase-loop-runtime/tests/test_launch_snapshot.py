@@ -1193,3 +1193,127 @@ def test_snapshot_scratch_parent_must_be_trusted(tmp):
 ], ids=lambda value: repr(value))
 def test_snapshot_path_grammar(path, unsafe):
     assert ls._unsafe_path(path) is unsafe  # noqa: SLF001 - the complete x-snapshot.path_rules grammar
+
+
+# -- review round 2 -------------------------------------------------------------------------
+
+def test_nested_and_negated_ignore_rules_classify_from_captured_ignores(tmp):
+    repo = make_repo(tmp / "src", {"a.txt": "a\n", "sub/.gitignore": "local.txt\n"},
+                     gitignore="*.log\n!keep.log\n")
+    for rel in ("a.log", "keep.log", "sub/local.txt", "sub/other.txt"):
+        (repo / rel).write_text(rel)
+    handle = build(tmp, spec(repo))
+    classes = {e["path"]: e["class"] for e in handle.inventory}
+    assert classes["a.log"] == classes["sub/local.txt"] == "omitted"
+    assert classes["keep.log"] == classes["sub/other.txt"] == "untracked"
+    assert (handle.tree / "keep.log").exists() and not (handle.tree / "a.log").exists()
+
+
+def test_git_listings_see_only_private_paths(tmp, monkeypatch):
+    repo = make_repo(tmp / "src", {"a.txt": "a\n"}, gitignore="*.log\n")
+    (repo / "u.txt").write_text("u\n")
+    calls = []
+    real = ls._artifacts.run_process
+
+    def recording(argv, *, cwd, env, **kw):
+        calls.append((tuple(argv), str(cwd), dict(env)))
+        return real(argv, cwd=cwd, env=env, **kw)
+    monkeypatch.setattr(ls._artifacts, "run_process", recording)
+    build(tmp, spec(repo))
+    listings = [c for c in calls if "ls-files" in c[0]]
+    assert listings
+    private = str(tmp / "attempt" / "work")
+    for argv, cwd, env in calls:
+        values = [cwd, *argv, *env.values()]
+        assert not any(str(repo) in v or "/proc/self/fd" in v for v in values), argv
+    for argv, cwd, env in listings:
+        assert cwd.startswith(private) and env["GIT_WORK_TREE"].startswith(private)
+
+
+@pytest.mark.parametrize("what", ["ignore_file", "directory"])
+def test_replacement_between_enumeration_and_classification_refuses(tmp, monkeypatch, what):
+    import shutil
+    repo = make_repo(tmp / "src", {"a.txt": "a\n", "sub/.gitignore": "x\n", "sub/f.txt": "f\n"})
+
+    def replace():
+        if what == "ignore_file":
+            fresh = repo / "sub" / "fresh"
+            fresh.write_text("x\n")
+            os.replace(fresh, repo / "sub" / ".gitignore")
+        else:
+            os.rename(repo / "sub", tmp / "old-sub")
+            shutil.copytree(tmp / "old-sub", repo / "sub")
+    monkeypatch.setattr(ls, "_after_enumerate", replace)
+    refused("source_changed", build, tmp, spec(repo))
+
+
+def test_over_cap_ignore_file_refuses_before_its_content_is_opened(tmp, file_reads):
+    repo = make_repo(tmp / "src", {"a.txt": "a"}, gitignore="#" * 200 + "\n")
+    inode = os.stat(repo / ".gitignore").st_ino
+    refused("too_large", build, tmp, spec(repo), policy(limits=ls.SnapshotLimits(max_bytes=100)))
+    assert file_reads.get(inode, 0) == 0
+
+
+def test_metadata_reads_check_cancellation_between_chunks(tmp, monkeypatch, file_reads):
+    repo = make_repo(tmp / "src", {f"f{i}.txt": str(i) for i in range(20)})
+    inode = os.stat(repo / ".git" / "index").st_ino
+    monkeypatch.setattr(ls, "_READ_CHUNK", 64)
+    with pytest.raises(ls.ConstructionCancelled):
+        ls.build_snapshot(spec(repo), policy=policy(), scratch=tmp / "c",
+                          cancelled=lambda: file_reads.get(inode, 0) > 0)
+    assert 0 < file_reads[inode] <= 64
+    assert not (tmp / "c").exists()
+
+
+def test_null_seed_checks_cancellation(tmp):
+    with pytest.raises(ls.ConstructionCancelled):
+        ls.build_seed(None, request_id=REQUEST_ID, seed_root=None, limits=ls.DEFAULT_SEED_LIMITS,
+                      staging=tmp / "s", cancelled=lambda: True)
+
+
+@pytest.mark.parametrize("mode", ["git", "full"])
+def test_source_root_replaced_during_the_build_refuses(tmp, monkeypatch, mode):
+    import shutil
+    root = make_repo(tmp / "src", {"a.txt": "a\n"}) if mode == "git" else tmp / "src"
+    if mode == "full":
+        root.mkdir()
+        (root / "a.txt").write_text("a\n")
+
+    def swap(tree):
+        os.rename(root, tmp / "moved")
+        shutil.copytree(tmp / "moved", root, symlinks=True)
+    monkeypatch.setattr(ls, "_after_copy", swap)
+    refused("source_changed", build, tmp, spec(root, mode), policy("leg"))
+
+
+def test_same_content_pointer_replacement_refuses(tmp, monkeypatch):
+    repo = make_repo(tmp / "main", {"a.txt": "a\n"})
+    git(repo, "branch", "other")
+    linked = tmp / "linked"
+    git(repo, "worktree", "add", "-q", str(linked), "other")
+
+    def replace(tree):
+        fresh = linked / "fresh-pointer"
+        fresh.write_bytes((linked / ".git").read_bytes())
+        os.replace(fresh, linked / ".git")
+    monkeypatch.setattr(ls, "_after_copy", replace)
+    refused("source_changed", build, tmp, spec(linked))
+
+
+def test_symlinked_object_storage_component_refuses(tmp):
+    repo = make_repo(tmp / "src", {"a.txt": "a\n"})
+    objects = repo / ".git" / "objects"
+    loose = next(p for p in objects.iterdir() if len(p.name) == 2)
+    os.rename(loose, tmp / "elsewhere")
+    os.symlink(tmp / "elsewhere", loose)
+    refused("unsupported_repository", build, tmp, spec(repo))
+
+
+@pytest.mark.parametrize("mode", ["git", "full"])
+def test_undecodable_name_refuses_unsafe_path(tmp, mode):
+    root = make_repo(tmp / "src", {"a.txt": "a\n"}) if mode == "git" else tmp / "src"
+    if mode == "full":
+        root.mkdir()
+    fd = os.open(os.path.join(os.fsencode(root), b"bad\xff"), os.O_WRONLY | os.O_CREAT, 0o600)
+    os.close(fd)
+    refused("unsafe_path", build, tmp, spec(root, mode), policy("leg"))

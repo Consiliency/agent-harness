@@ -500,32 +500,48 @@ def _lstat_at(base_fd: int, rel: str) -> tuple[int | None, os.stat_result | None
         return fd, None
 
 
-def _meta_read(base_fd: int, rel: str, cap: int = _SMALL_FILE) -> bytes | None:
-    """A small repository metadata file read through pinned, no-follow descriptors."""
+def _meta_read(base_fd: int, rel: str, clock: _Clock, cap: int = _SMALL_FILE) -> bytes | None:
+    """A repository metadata file read through pinned, no-follow descriptors.
+
+    The clock is checked before the open and before every read; the read stops at the recorded
+    size + 1 bytes, and a stamp that drifts between the lstat and the end of the read refuses
+    ``source_changed``.
+    """
+    return _meta_read_stamped(base_fd, rel, clock, cap)[0]
+
+
+def _meta_read_stamped(base_fd: int, rel: str, clock: _Clock,
+                       cap: int = _SMALL_FILE) -> tuple[bytes | None, tuple[int, ...] | None]:
+    clock.left()
     fd, info = _lstat_at(base_fd, rel)
     if fd is None:
-        return None
+        return None, None
     try:
         if info is None:
-            return None
+            return None, None
         if not stat.S_ISREG(info.st_mode):
             raise SnapshotRefused("unsupported_repository")
-        if info.st_size > cap:
+        size = info.st_size
+        if size > cap:
             raise SnapshotRefused("too_large")
         name = rel.rpartition("/")[2]
+        clock.left()
         file_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=fd)
         try:
             if _identity(file_fd) != (info.st_dev, info.st_ino):
                 raise SnapshotRefused("source_changed")
-            data = b""
-            while len(data) <= cap:
-                chunk = os.read(file_fd, min(_READ_CHUNK, cap + 1 - len(data)))
+            chunks: list[bytes] = []
+            total = 0
+            while total <= size:
+                clock.left()
+                chunk = os.read(file_fd, min(_READ_CHUNK, size + 1 - total))
                 if not chunk:
                     break
-                data += chunk
-            if len(data) > cap:
-                raise SnapshotRefused("too_large")
-            return data
+                chunks.append(chunk)
+                total += len(chunk)
+            if total != size or _stamp(os.fstat(file_fd)) != _stamp(info):
+                raise SnapshotRefused("source_changed")
+            return b"".join(chunks), _stamp(info)
         finally:
             os.close(file_fd)
     finally:
@@ -602,6 +618,7 @@ class _Source:
     common_fd: int
     objects_fd: int
     identities: tuple[tuple[int, int], ...]
+    pointers: tuple[tuple[str, tuple[int, ...] | None], ...]
     linked: bool
     object_format: str
     head_ref: str | None
@@ -628,13 +645,16 @@ def _open_meta_dir(path: str) -> int:
         raise SnapshotRefused("not_a_work_tree") from None
 
 
-def _locate(root_fd: int, top: Path) -> tuple[int, int, bool] | None:
+def _locate(root_fd: int, top: Path, clock: _Clock) -> tuple[int, int, bool, tuple] | None:
     """``(git_fd, common_fd, linked)`` of work tree ``top`` through no-follow descriptors.
 
     A linked worktree's ``.git`` pointer, its gitdir backlink and ``commondir`` are resolved
     lexically and opened component by component; a symlink component refuses, and the backlink
-    must name this ``.git`` by identity. None when ``top`` has no ``.git``.
+    must name this ``.git`` by identity. The stamps of each present pointer file (``.git``,
+    ``gitdir``, ``commondir``) are returned for the post-copy recheck. None when ``top`` has no
+    ``.git``.
     """
+    pointers: list[tuple[str, tuple[int, ...] | None]] = []
     try:
         info = os.stat(".git", dir_fd=root_fd, follow_symlinks=False)
     except FileNotFoundError:
@@ -642,14 +662,18 @@ def _locate(root_fd: int, top: Path) -> tuple[int, int, bool] | None:
     if stat.S_ISDIR(info.st_mode):
         git_fd, linked, git_path = _open_dir_at(root_fd, ".git"), False, str(top / ".git")
     elif stat.S_ISREG(info.st_mode):
-        text = (_meta_read(root_fd, ".git", 4096) or b"").decode("utf-8", "replace")
+        raw, stamp = _meta_read_stamped(root_fd, ".git", clock, 4096)
+        pointers.append((".git", stamp))
+        text = (raw or b"").decode("utf-8", "replace")
         match = re.fullmatch(r"gitdir: (.+?)\r?\n?", text)
         if not match:
             raise SnapshotRefused("not_a_work_tree")
         git_path = _lexical(str(top), match.group(1))
         git_fd, linked = _open_meta_dir(git_path), True
         try:
-            back = (_meta_read(git_fd, "gitdir", 4096) or b"").decode("utf-8", "replace").strip()
+            raw, stamp = _meta_read_stamped(git_fd, "gitdir", clock, 4096)
+            pointers.append(("gitdir", stamp))
+            back = (raw or b"").decode("utf-8", "replace").strip()
             if not back:
                 raise SnapshotRefused("not_a_work_tree")
             back_path = _lexical(git_path, back)
@@ -668,7 +692,9 @@ def _locate(root_fd: int, top: Path) -> tuple[int, int, bool] | None:
     else:
         raise SnapshotRefused("not_a_work_tree")
     try:
-        common_text = (_meta_read(git_fd, "commondir", 4096) or b"").decode("utf-8", "replace").strip()
+        raw, stamp = _meta_read_stamped(git_fd, "commondir", clock, 4096)
+        pointers.append(("commondir", stamp))
+        common_text = (raw or b"").decode("utf-8", "replace").strip()
         if common_text:
             common_fd = _open_meta_dir(_lexical(git_path, common_text))
         else:
@@ -680,7 +706,7 @@ def _locate(root_fd: int, top: Path) -> tuple[int, int, bool] | None:
         os.close(common_fd)
         os.close(git_fd)
         raise SnapshotRefused("not_a_work_tree")
-    return git_fd, common_fd, linked
+    return git_fd, common_fd, linked, tuple(pointers)
 
 
 def _parse_config(clock: _Clock, raw: bytes, box: Path) -> dict[str, str]:
@@ -697,15 +723,15 @@ def _parse_config(clock: _Clock, raw: bytes, box: Path) -> dict[str, str]:
     return values
 
 
-def _read_ref(git_fd: int, common_fd: int, name: str, object_format: str) -> str | None:
+def _read_ref(git_fd: int, common_fd: int, name: str, object_format: str, clock: _Clock) -> str | None:
     base = git_fd if re.match(r"refs/(bisect|rewritten|worktree)/", name) else common_fd
-    loose = _meta_read(base, name, 4096)
+    loose = _meta_read(base, name, clock, 4096)
     if loose is not None:
         text = loose.decode("ascii", "replace").strip()
         if not _is_oid(object_format, text):
             raise SnapshotRefused("unsupported_repository")
         return text
-    packed = _meta_read(common_fd, "packed-refs", 256 * 1024 * 1024)
+    packed = _meta_read(common_fd, "packed-refs", clock, 256 * 1024 * 1024)
     for line in (packed or b"").decode("utf-8", "replace").split("\n"):
         if not line or line.startswith(("#", "^")):
             continue
@@ -718,10 +744,10 @@ def _read_ref(git_fd: int, common_fd: int, name: str, object_format: str) -> str
 
 
 def _inspect(clock: _Clock, root_fd: int, top: Path, box: Path) -> _Source | None:
-    located = _locate(root_fd, top)
+    located = _locate(root_fd, top, clock)
     if located is None:
         return None
-    git_fd, common_fd, linked = located
+    git_fd, common_fd, linked, pointers = located
     objects_fd = -1
     try:
         for base, rel in ((common_fd, "objects/info/alternates"), (common_fd, "objects/info/http-alternates"),
@@ -746,7 +772,7 @@ def _inspect(clock: _Clock, root_fd: int, top: Path, box: Path) -> _Source | Non
                 os.close(pack_fd)
         if any(n.startswith("sharedindex.") for n in os.listdir(git_fd)):
             raise SnapshotRefused("unsupported_repository")
-        config = _parse_config(clock, _meta_read(common_fd, "config") or b"", box)
+        config = _parse_config(clock, _meta_read(common_fd, "config", clock) or b"", box)
         version = config.get("core.repositoryformatversion", "0")
         if version not in ("0", "1"):
             raise SnapshotRefused("unsupported_repository")
@@ -764,21 +790,21 @@ def _inspect(clock: _Clock, root_fd: int, top: Path, box: Path) -> _Source | Non
             if key.startswith("extensions.") and version == "1" and key not in (
                     "extensions.objectformat", "extensions.worktreeconfig", "extensions.refstorage"):
                 raise SnapshotRefused("unsupported_repository")
-        head = (_meta_read(git_fd, "HEAD", 4096) or b"").decode("utf-8", "replace").strip()
+        head = (_meta_read(git_fd, "HEAD", clock, 4096) or b"").decode("utf-8", "replace").strip()
         if _is_oid(object_format, head):
             head_ref, head_oid = None, head
         else:
             match = re.fullmatch(r"ref: (refs/heads/[^\x00-\x20\x7f~^:?*\[\\]+)", head)
             if not match or ".." in match.group(1) or "@{" in match.group(1):
                 raise SnapshotRefused("not_a_work_tree")
-            oid = _read_ref(git_fd, common_fd, match.group(1), object_format)
+            oid = _read_ref(git_fd, common_fd, match.group(1), object_format, clock)
             if oid is None:
                 raise SnapshotRefused("not_a_work_tree")
             head_ref, head_oid = match.group(1), oid
-        exclude = _meta_read(common_fd, "info/exclude") or b""
+        exclude = _meta_read(common_fd, "info/exclude", clock) or b""
         identities = (_identity(git_fd), _identity(common_fd), _identity(objects_fd))
-        return _Source(git_fd, common_fd, objects_fd, identities, linked, object_format, head_ref, head_oid,
-                       exclude)
+        return _Source(git_fd, common_fd, objects_fd, identities, pointers, linked, object_format, head_ref,
+                       head_oid, exclude)
     except BaseException:
         for fd in {git_fd, common_fd, objects_fd}:
             if fd >= 0:
@@ -921,6 +947,7 @@ class SnapshotHandle:
 
 
 #: Test seams: barriers after the inventory and after the copy, before the recheck.
+_after_enumerate: Callable[[], None] = lambda: None
 _after_inventory: Callable[[], None] = lambda: None
 _after_copy: Callable[[Path], None] = lambda tree: None
 
@@ -1022,6 +1049,10 @@ def _enumerate(root_fd: int, clock: _Clock, limits: SnapshotLimits, *, skip_top_
                     if name == ".git":
                         raise SnapshotRefused("nested_repository")
                     rel = prefix + name
+                    try:
+                        rel.encode("utf-8")
+                    except UnicodeEncodeError:
+                        raise SnapshotRefused("unsafe_path") from None
                     info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
                     kind = _kind(info)
                     nodes[rel] = _Node(rel, kind, depth, _stamp(info))
@@ -1148,13 +1179,30 @@ def _build(spec: Snapshot, policy: SnapshotPolicy, clock: _Clock, box: Path, tre
         if source is None:
             if spec.mode != "full":
                 raise SnapshotRefused("not_a_work_tree")
-            return _build_plain(spec, policy, clock, root_fd, masks, tree)
+            handle = _build_plain(spec, policy, clock, root_fd, masks, tree)
+            _check_root(root_fd, top)
+            return handle
         try:
-            return _build_git(spec, policy, clock, root_fd, top, masks, source, box, tree)
+            handle = _build_git(spec, policy, clock, root_fd, top, masks, source, box, tree)
         finally:
             source.close()
+        _check_root(root_fd, top)
+        return handle
     finally:
         os.close(root_fd)
+
+
+def _check_root(root_fd: int, top: Path) -> None:
+    """The snapshot root path still names the pinned root directory, else ``source_changed``."""
+    try:
+        fd = _open_root(top)
+    except OSError:
+        raise SnapshotRefused("source_changed") from None
+    try:
+        if _identity(fd) != _identity(root_fd):
+            raise SnapshotRefused("source_changed")
+    finally:
+        os.close(fd)
 
 
 def _build_plain(spec: Snapshot, policy: SnapshotPolicy, clock: _Clock, root_fd: int, masks: _Masks,
@@ -1283,6 +1331,142 @@ def _handle(spec: Snapshot, tree: Path, object_format: str | None, base: str | N
         tree_rows=tuple(tuple(r) for r in rows))
 
 
+_PLACEHOLDER_TARGET = "laneexec-placeholder"
+
+
+def _classification_tree(root_fd: int, nodes: Mapping[str, _Node], classify: Path, clock: _Clock,
+                         limits: SnapshotLimits) -> None:
+    """A private tree with the source's names: empty files, inert symlinks, captured ignores.
+
+    Only regular files named ``.gitignore`` are read, through :func:`_read_node` under the
+    shared clock and a cumulative allowance of ``limits.max_bytes``; special entries are left
+    out (the inventory classes them directly).
+    """
+    classify.mkdir(mode=0o700)
+    allowance = limits.max_bytes
+    for rel in sorted(nodes, key=str.encode):
+        clock.left()
+        node = nodes[rel]
+        target = classify / rel
+        if node.kind == "dir":
+            target.mkdir(mode=0o700)
+        elif node.kind == "symlink":
+            os.symlink(_PLACEHOLDER_TARGET, target)
+        elif node.kind == "file":
+            data = b""
+            if rel.rpartition("/")[2] == ".gitignore":
+                chunks: list[bytes] = []
+                content = _read_node_into(root_fd, node, clock, allowance, chunks.append)
+                allowance -= content.size
+                data = b"".join(chunks)
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+            try:
+                view = memoryview(data)
+                while view:
+                    view = view[os.write(fd, view):]
+            finally:
+                os.close(fd)
+
+
+def _read_node_into(root_fd: int, node: _Node, clock: _Clock, cap: int, sink: Callable[[bytes], None]) -> _Content:
+    parent_fd, info = _lstat_at(root_fd, node.rel)
+    if parent_fd is None or info is None:
+        if parent_fd is not None:
+            os.close(parent_fd)
+        raise SnapshotRefused("source_changed")
+    try:
+        if _stamp(info) != node.stamp:
+            raise SnapshotRefused("source_changed")
+        return _read_content(parent_fd, node.rel.rpartition("/")[2], info, "sha1", clock, cap=cap, sink=sink)
+    finally:
+        os.close(parent_fd)
+
+
+_LOOSE_DIR = re.compile(r"[0-9a-f]{2}")
+_LOOSE_NAME = re.compile(r"[0-9a-f]{38}|[0-9a-f]{62}")
+_PACK_NAME = re.compile(r"pack-[0-9a-f]{40,64}\.(pack|idx)")
+
+
+def _project_objects(objects_fd: int, dest: Path, clock: _Clock) -> tuple[tuple[str, tuple[int, ...]], ...]:
+    """Stream the pinned store's loose objects and pack/index pairs into a private store.
+
+    The store is walked through no-follow descriptors; a symlink or special entry anywhere in
+    it, alternates and promisor metadata refuse ``unsupported_repository``. Other metadata
+    (commit-graph, multi-pack-index, bitmaps, info) is not projected. Returns each projected
+    file's relative path and stamp for the post-copy recheck.
+    """
+    projected: list[tuple[str, tuple[int, ...]]] = []
+    files: list[tuple[str, os.stat_result]] = []
+    packs: dict[str, set[str]] = {}
+    stack = [(os.dup(objects_fd), "")]
+    try:
+        while stack:
+            dir_fd, prefix = stack.pop()
+            try:
+                for name in sorted(os.listdir(dir_fd)):
+                    clock.left()
+                    rel = prefix + name
+                    info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                    kind = _kind(info)
+                    if kind in ("symlink", "special"):
+                        raise SnapshotRefused("unsupported_repository")
+                    if rel in ("info/alternates", "info/http-alternates") or name.endswith(".promisor"):
+                        raise SnapshotRefused("unsupported_repository")
+                    if kind == "dir":
+                        stack.append((_open_dir_at(dir_fd, name), rel + "/"))
+                        continue
+                    if (_LOOSE_DIR.fullmatch(prefix[:-1]) and "/" not in prefix[:-1]
+                            and _LOOSE_NAME.fullmatch(name)):
+                        files.append((rel, info))
+                    elif prefix == "pack/" and (match := _PACK_NAME.fullmatch(name)):
+                        packs.setdefault(name.rsplit(".", 1)[0], set()).add(match.group(1))
+                        files.append((rel, info))
+            finally:
+                os.close(dir_fd)
+    finally:
+        for dir_fd, _ in stack:
+            os.close(dir_fd)
+    paired = {stem for stem, kinds in packs.items() if kinds == {"pack", "idx"}}
+    dest.mkdir(mode=0o700, exist_ok=True)
+    (dest / "pack").mkdir(mode=0o700, exist_ok=True)
+    for rel, info in files:
+        if rel.startswith("pack/") and rel[5:].rsplit(".", 1)[0] not in paired:
+            continue
+        parent, _, name = rel.rpartition("/")
+        (dest / parent).mkdir(mode=0o700, exist_ok=True)
+        parent_fd = _open_rel_dir(objects_fd, parent)
+        try:
+            current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            if _stamp(current) != _stamp(info) or not stat.S_ISREG(current.st_mode):
+                raise SnapshotRefused("source_changed")
+            out = os.open(dest / rel, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o400)
+            try:
+                def sink(chunk: bytes) -> None:
+                    view = memoryview(chunk)
+                    while view:
+                        view = view[os.write(out, view):]
+                _read_content(parent_fd, name, current, "sha1", clock, cap=current.st_size, sink=sink)
+            finally:
+                os.close(out)
+            after = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            if _stamp(after) != _stamp(info):
+                raise SnapshotRefused("source_changed")
+        finally:
+            os.close(parent_fd)
+        projected.append((rel, _stamp(info)))
+    return tuple(projected)
+
+
+def _recheck_projection(objects_fd: int, projected: Sequence[tuple[str, tuple[int, ...]]], clock: _Clock) -> None:
+    for rel, stamp in projected:
+        clock.left()
+        parent_fd, info = _lstat_at(objects_fd, rel)
+        if parent_fd is not None:
+            os.close(parent_fd)
+        if info is None or _stamp(info) != stamp:
+            raise SnapshotRefused("source_changed")
+
+
 def _build_git(spec: Snapshot, policy: SnapshotPolicy, clock: _Clock, root_fd: int, top: Path, masks: _Masks,
                source: _Source, box: Path, tree: Path) -> SnapshotHandle:
     fmt = source.object_format
@@ -1290,12 +1474,11 @@ def _build_git(spec: Snapshot, policy: SnapshotPolicy, clock: _Clock, root_fd: i
     overlay_mode = spec.mode == "git_overlay"
     reader = box / "reader.git"
     _git(clock, ["init", "-q", "--bare", "--template=", f"--object-format={fmt}", str(reader)])
-    (reader / "objects" / "info").mkdir(parents=True, exist_ok=True)
-    # The alternate names the pinned object store through its descriptor, inherited by git.
-    (reader / "objects" / "info" / "alternates").write_bytes(f"/proc/self/fd/{source.objects_fd}\n".encode())
+    # Git sees only a private projection of the pinned object store, never the hostile store.
+    projected = _project_objects(source.objects_fd, reader / "objects", clock)
     (reader / "info").mkdir(exist_ok=True)
     (reader / "info" / "exclude").write_bytes(source.exclude)
-    index_bytes = _meta_read(source.git_fd, "index", _MAX_INDEX_BYTES)
+    index_bytes = _meta_read(source.git_fd, "index", clock, _MAX_INDEX_BYTES)
     if index_bytes is None:
         if not overlay_mode:
             raise SnapshotRefused("dirty_source")
@@ -1304,15 +1487,9 @@ def _build_git(spec: Snapshot, policy: SnapshotPolicy, clock: _Clock, root_fd: i
     if index_bytes:
         source_index.write_bytes(index_bytes)
     index_digest = _sha256(index_bytes)
-    fds = (source.objects_fd, root_fd)
 
     def rg(args: Sequence[str], **kw: Any) -> bytes:
-        return _git(clock, args, git_dir=reader, pass_fds=fds, **kw)
-
-    def listing(args: Sequence[str]) -> list[str]:
-        # The work tree is the pinned root descriptor; git reads only the private index copy.
-        return _split_z(rg(["ls-files", "-z", *args], work_tree=".", index_file=source_index,
-                           cwd=f"/proc/self/fd/{root_fd}"))
+        return _git(clock, args, git_dir=reader, **kw)
 
     base = rg(["rev-parse", "--verify", "--end-of-options", f"{source.head_oid}^{{commit}}"],
               code="not_a_work_tree").decode().strip()
@@ -1331,6 +1508,18 @@ def _build_git(spec: Snapshot, policy: SnapshotPolicy, clock: _Clock, root_fd: i
         base_entries[path] = (gmode, oid)
     if len(base_entries) > limits.max_entries:
         raise SnapshotRefused("too_large")
+
+    nodes = _enumerate(root_fd, clock, limits, skip_top_git=True)
+    _after_enumerate()
+    # Git classifies paths in a private tree of placeholders carrying only the captured
+    # .gitignore bytes; it never opens a file of the hostile work tree.
+    classify = box / "classify"
+    _classification_tree(root_fd, nodes, classify, clock, limits)
+
+    def listing(args: Sequence[str]) -> list[str]:
+        return _split_z(rg(["ls-files", "-z", *args], work_tree=str(classify), index_file=source_index,
+                           cwd=classify))
+
     staged: dict[str, tuple[str, str]] = {}
     for item in listing(["--stage"]) if index_bytes else ():
         match = re.fullmatch(r"(\d{6}) ([0-9a-f]+) (\d)\t(.+)", item, re.DOTALL)
@@ -1353,9 +1542,7 @@ def _build_git(spec: Snapshot, policy: SnapshotPolicy, clock: _Clock, root_fd: i
     untracked_set = frozenset(untracked)
     ignored_set = frozenset(listing(["--others", "--ignored", "--exclude-standard"]))
     tracked_set = frozenset(staged) | frozenset(base_entries)
-
-    nodes = _enumerate(root_fd, clock, limits, skip_top_git=True)
-    for path in untracked_set:
+    for path in untracked_set | ignored_set:
         if path not in nodes:
             raise SnapshotRefused("source_changed")
 
@@ -1478,19 +1665,28 @@ def _build_git(spec: Snapshot, policy: SnapshotPolicy, clock: _Clock, root_fd: i
             raise SnapshotRefused("source_changed")
 
     _after_copy(tree)
-    # The source must not have moved while it was copied.
-    after = _inspect(clock, root_fd, top, box)
+    # The source must not have moved while it was copied: metadata identities and pointer
+    # stamps, HEAD, the index and info/exclude bytes, the projected object files and the walk.
     try:
-        if after is None or after.identities != source.identities or (
-                after.head_oid, after.head_ref) != (source.head_oid, source.head_ref):
+        after = _inspect(clock, root_fd, top, box)
+    except SnapshotRefused as refusal:
+        if refusal.reason == "timeout":
+            raise
+        raise SnapshotRefused("source_changed") from None
+    try:
+        if after is None or after.identities != source.identities or after.pointers != source.pointers or (
+                after.head_oid, after.head_ref, after.exclude) != (source.head_oid, source.head_ref, source.exclude):
             raise SnapshotRefused("source_changed")
-        after_index = _meta_read(after.git_fd, "index", _MAX_INDEX_BYTES) or b""
+        after_index = _meta_read(after.git_fd, "index", clock, _MAX_INDEX_BYTES) or b""
+        _recheck_projection(after.objects_fd, projected, clock)
+    except SnapshotRefused as refusal:
+        if refusal.reason == "timeout":
+            raise
+        raise SnapshotRefused("source_changed") from None
     finally:
         if after is not None:
             after.close()
     if _sha256(after_index) != index_digest:
-        raise SnapshotRefused("source_changed")
-    if listing(["--others", "--exclude-standard"]) != untracked:
         raise SnapshotRefused("source_changed")
     _recheck_enumeration(root_fd, clock, limits, nodes, skip_top_git=True)
 
@@ -1894,6 +2090,8 @@ def build_seed(seed: SeedDeclaration | None, *, request_id: str, seed_root: Path
     the default budget outside one), else ``timeout``.
     """
     if seed is None:
+        if cancelled():
+            raise ConstructionCancelled()
         return SeedHandle(request_id, None, None, None, (), limits, (), ())
     clock = _Clock(_budget_end(DEFAULT_SNAPSHOT_BUDGET_S), cancelled)
 
