@@ -603,3 +603,91 @@ def test_cancel_exit_classes_match_x_cli():
             contract.CancelResponse("c-1", "rsv-1", "req-1", state, {}))
     assert classes == {"cancelled": 0, "already_terminal": 0, "cancel_pending": 20,
                        "unknown_attempt": 10}
+
+
+# -- review round 1 regressions (agent-harness#2118) ---------------------------------------
+
+@pytest.mark.parametrize("kind", ["patch", "result"])
+def test_withhold_leaves_no_payload_even_when_unlink_fails(state, kind, monkeypatch):
+    (state["out"] / "result.json").write_bytes(b'{"ok": "' + SENTINEL + b'"}')
+    item = attempt(state, store_proposal(state, patch_bytes()))
+
+    def refuse_unlink(*args, **kwargs):
+        raise PermissionError("unlink refused")
+
+    monkeypatch.setattr(lr.os, "unlink", refuse_unlink)
+    for predicate in (lambda data: True, lambda data: (_ for _ in ()).throw(RuntimeError())):
+        outcome = lr.collect_return(item, kind, policy=POLICY, withhold=predicate,
+                                    bound=bound())
+        assert (outcome.descriptor, outcome.code) == (None, "sandbox_launch_result_withheld")
+        assert returned_files(state) == []
+
+
+class FakeClock:
+    """A monotonic clock that advances one second per reading."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        self.now += 1.0
+        return self.now
+
+
+@pytest.mark.parametrize("kind", ["patch", "result"])
+def test_budget_expiring_during_return_never_publishes(state, kind, monkeypatch):
+    (state["out"] / "result.json").write_bytes(b'{"ok": true}')
+    item = attempt(state, store_proposal(state, patch_bytes()))
+    # Count the bound checks of one full, successful return.
+    calls = []
+    lr.collect_return(item, kind, policy=POLICY, withhold=None,
+                      bound=openshell_artifacts.Bound(time.monotonic() + 30,
+                                                      lambda: calls.append(1) or False))
+    for leftover in returned_files(state):
+        os.unlink(state["return_dir"] / leftover)
+    assert len(calls) >= 2
+    # The budget is live at the start and expires at each later check, the last
+    # one after the final write.
+    for live in range(1, len(calls)):
+        clock = FakeClock()
+        monkeypatch.setattr(openshell_artifacts.time, "monotonic", clock)
+        outcome = lr.collect_return(item, kind, policy=POLICY, withhold=None,
+                                    bound=openshell_artifacts.Bound(live + 0.5, lambda: False))
+        monkeypatch.undo()
+        assert (outcome.descriptor, outcome.code) == (None, "sandbox_launch_result_invalid"), live
+        assert returned_files(state) == [], live
+
+
+def test_budget_expiring_inside_the_withhold_predicate_never_publishes(state, monkeypatch):
+    (state["out"] / "result.json").write_bytes(b'{"ok": true}')
+    clock = FakeClock()
+    monkeypatch.setattr(openshell_artifacts.time, "monotonic", clock)
+
+    def slow(data):
+        clock.now += 100.0
+        return False
+
+    outcome = lr.collect_return(attempt(state), "result", policy=POLICY, withhold=slow,
+                                bound=openshell_artifacts.Bound(50.0, lambda: False))
+    assert (outcome.descriptor, outcome.code) == (None, "sandbox_launch_result_invalid")
+    assert returned_files(state) == []
+
+
+def test_expired_budget_with_failed_cleanup_publishes_nothing(state, monkeypatch):
+    (state["out"] / "result.json").write_bytes(b'{"ok": true}')
+    checks = []
+
+    def expire_after_write():
+        checks.append(1)
+        return len(checks) >= 3  # live for the read and the pre-write check
+
+    def refuse_unlink(*args, **kwargs):
+        raise PermissionError("unlink refused")
+
+    monkeypatch.setattr(lr.os, "unlink", refuse_unlink)
+    outcome = lr.collect_return(attempt(state), "result", policy=POLICY, withhold=None,
+                                bound=openshell_artifacts.Bound(time.monotonic() + 30,
+                                                                expire_after_write))
+    assert len(checks) == 3
+    assert (outcome.descriptor, outcome.code) == (None, "sandbox_launch_result_invalid")
+    assert outcome.status == "budget_exhausted_cleanup_pending"

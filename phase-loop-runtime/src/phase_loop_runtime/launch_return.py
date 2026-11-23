@@ -256,10 +256,37 @@ def _write_once(directory: int, name: str, data: bytes) -> None:
         raise
 
 
+def _gone(directory: int, name: str) -> bool:
+    try:
+        os.stat(name, dir_fd=directory, follow_symlinks=False)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
 def _deliver(attempt: ReturnAttempt, kind: str, status: str, data: bytes,
-             withhold: Callable[[bytes], bool] | None) -> ReturnOutcome:
-    """Write the bytes once, apply ``withhold`` (true or raising deletes them) and name them."""
+             withhold: Callable[[bytes], bool] | None,
+             bound: openshell_artifacts.Bound) -> ReturnOutcome:
+    """Apply ``withhold`` to the in-memory bytes, then write them once and name them.
+
+    A true or raising predicate returns ``result_withheld`` before any file exists. The
+    return budget is checked before the write and again after the last I/O, at the point of
+    publication; an expired budget removes the uncommitted file and returns
+    ``result_invalid``, never a descriptor."""
+    if withhold is not None:
+        try:
+            withheld = withhold(data) is not False
+        except Exception:  # noqa: BLE001 - a failing predicate withholds
+            withheld = True
+        if withheld:
+            return _null(kind, "withheld_by_predicate", _RESULT_WITHHELD)
     name = _PATCH_FILE if kind == "patch" else _RESULT_FILE
+    try:
+        bound.check()
+    except openshell_artifacts.Refused:
+        return _null(kind, status, _RESULT_INVALID)
     try:
         directory = _private_return_dir(attempt.return_dir)
     except (OSError, ValueError):
@@ -269,18 +296,19 @@ def _deliver(attempt: ReturnAttempt, kind: str, status: str, data: bytes,
             _write_once(directory, name, data)
         except (OSError, ValueError):
             return _null(kind, status, _RESULT_INVALID)
-        if withhold is not None:
+        try:
+            bound.check()
+        except openshell_artifacts.Refused:
             try:
-                withheld = withhold(data) is not False
-            except Exception:  # noqa: BLE001 - a failing predicate withholds
-                withheld = True
-            if withheld:
-                try:
-                    os.unlink(name, dir_fd=directory)
-                    os.fsync(directory)
-                except OSError:
-                    pass
-                return _null(kind, "withheld_by_predicate", _RESULT_WITHHELD)
+                os.unlink(name, dir_fd=directory)
+                os.fsync(directory)
+            except OSError:
+                pass
+            # No descriptor names the file either way; the status records whether the
+            # uncommitted bytes are verified gone.
+            cleaned = _gone(directory, name)
+            return _null(kind, "budget_exhausted" if cleaned else "budget_exhausted_cleanup_pending",
+                         _RESULT_INVALID)
     finally:
         os.close(directory)
     descriptor = ReturnDescriptor(
@@ -345,7 +373,7 @@ def _collect_patch(attempt: ReturnAttempt, policy: ReturnPolicy,
         openshell_artifacts.check_binary_literals(data, policy.binary_limits, bound)
     except openshell_artifacts.Refused:
         return _null("patch", status, _RESULT_INVALID)
-    return _deliver(attempt, "patch", status, data, withhold)
+    return _deliver(attempt, "patch", status, data, withhold, bound)
 
 
 class _Strict(ValueError):
@@ -407,7 +435,7 @@ def _collect_result(attempt: ReturnAttempt, withhold: Callable[[bytes], bool] | 
         return _null("result", "invalid", _RESULT_INVALID)
     if data is None or not _strict_object(data):
         return _null("result", "invalid", _RESULT_INVALID)
-    return _deliver(attempt, "result", "returned", data, withhold)
+    return _deliver(attempt, "result", "returned", data, withhold, bound)
 
 
 def collect_return(attempt: ReturnAttempt, kind: str, *, policy: ReturnPolicy,
