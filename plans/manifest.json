@@ -15232,7 +15232,7 @@
           "sha256": "1cea960ddd28ef5e1c4bf79083fa9f9938b2c99c2e29dbd937864944ca76d7e8"
         },
         "plans/artifacts/v13-LANEEXEC-landed-binding.md": {
-          "sha256": "b0ead54a270021c369d37aa72a8df35c1d1e48ed4f4f234fda9b4b4a2cd1a282"
+          "sha256": "07446ed9598547ed288d789c88db82a3ba61f4e0e51615b0614f89bbaaebba63"
         },
         "plans/artifacts/v12-v13-replan-ownership.md": {
           "sha256": "e5dbbfb45c23cbb6acb9756a23a3d86b62dd5b172b94d6a495ef436d189f3e06"
@@ -15340,8 +15340,8 @@
             "remaining_gate": "separate execution authority for claude-execute-phase",
             "review": {
               "pr": "agent-harness#2126",
-              "round": 1,
-              "verdict": "REQUEST CHANGES",
+              "round": 2,
+              "verdict": "ACCEPT-WITH-EDITS",
               "edits": "applied"
             }
           },

@@ -624,7 +624,7 @@ takes no lock and is not started through `capped_popen`.
   state directory and creates no temporary file.
 
 **Publication after the claim.** The supervisor receives the controller bytes from the
-launch process over its own stdin pipe, bounded by the same cap. It publishes them under
+launch process over its own stdin pipe, bounded by the same cap. Before opening the destination, the supervisor compares the full stdin payload's SHA-256 against the digest of the controller bytes sent to the helper, carried separately in the trusted supervisor launch arguments. Missing, short, oversized or mismatched payloads fail publication. The digest stays in the private supervisor invocation; the CLOSEOUT CLI and its arguments stay as landed. It publishes them under
 CLOSEOUT §4.2's rules: the path `<controller_root>/<h>.json`, ancestors and ownership as
 §4.2 and `read_controller_snapshot` require, mode 0600, created once with `O_EXCL |
 O_NOFOLLOW`, written in full and fsynced. An existing document is reused only when a
@@ -678,7 +678,7 @@ chain root repeats steps 6 to 9 authoritatively and keeps the file-walk checks o
 from a change between admission and chain start, comes after the first chain process, so it
 is `finished`/`failed_to_start` with the claim kept (L-S1, L-S4).
 
-**What the helper returns.** It writes one JSON line of at most 4096 bytes and exits 0:
+**What the helper returns.** It writes one JSON line of at most 4096 bytes, its terminating newline included, and exits 0:
 either `{"admitted":true}` or `{"admitted":false,"diagnostic":"<value>"}`. The value is,
 in order:
 
@@ -693,7 +693,7 @@ An exception inside the helper yields `codec_unavailable`. No path, envelope or 
 byte and no exception text leaves the helper.
 
 **How LaunchService reads it.** LaunchService reads at most 4097 bytes from the helper's
-stdout. More than that is an over-long answer: it stops reading and kills the group. Only
+stdout. The 4097th byte is the overflow signal. On receiving it, LaunchService stops reading, kills the group and returns the fallback refusal. Only
 exactly `{"admitted":true}` with exit status 0 admits. Every other outcome is `refused`,
 code `sandbox_launch_admission_refused`, with no claim:
 
@@ -742,7 +742,7 @@ start.
 - Admission refuses with no claim, under the L-S6 counters, for each of these: no binding;
   a controller disagreement at `reconcile_v2_binding`; an enum diagnostic from
   `prepare_launch_v2` carried through; a non-enum reason mapped to `codec_unavailable`; a
-  helper crash; extra, malformed or over-long stdout; a non-zero exit; a spawn failure
+  helper crash; extra, malformed or over-long stdout, including exactly 4097 bytes with the writer still open; a non-zero exit; a spawn failure
   (one attempt, zero spawns); the admission bound; and a cancel.
 - Precedence before capture. Each case returns the pre-claim diagnostic, with no capture
   attempted and no claim:
@@ -757,8 +757,8 @@ start.
   and mtime.
 - The bytes the supervisor publishes equal the bytes piped to the helper.
 - Publication failures, one at a time: a refused create, an unequal existing document, a
-  failure after the exclusive create (the partial file is removed and never reused), and a
-  pipe delivering other bytes. Each keeps the claim and starts no chain root. Each writes the
+  failure after the exclusive create (the partial file is removed and never reused), a pipe
+  delivering different bytes of the same length, and an oversized pipe payload. Each keeps the claim and starts no chain root. Each writes the
   durable terminal `finished`/`failed_to_start` with `worker_invocations` 0, which `status`
   then replays.
 - A credential sentinel in the launching process's environment never reaches the helper.
@@ -972,8 +972,11 @@ fails instead of skipping.
   step checks that the filesystem type is `tmpfs`.
 - It sets `PHASE_LOOP_TEST_REQUIRE_MOUNTS=1` and runs exactly the M1–M5 node IDs,
   serially, under `timeout 600`, writing a JUnit XML report. It uploads that report as the
-  artifact `laneexec-mounts-junit`. `ci/seat-caps-host.sh teardown` runs in an `always()`
-  step.
+  artifact `laneexec-mounts-junit`. The mount suite writes a JUnit testsuite property named
+  `PHASE_LOOP_TEST_REQUIRE_MOUNTS` containing the effective setting observed by the mount
+  fixture. SL-6 requires that property to equal `1` in the suite reporting M1–M5 and rejects
+  a missing property or any other value. `ci/seat-caps-host.sh teardown` runs in an
+  `always()` step.
 - Triggers: `workflow_dispatch`, kept so that receipt evidence can be produced at any head,
   and `pull_request` on these paths:
   - `phase-loop-runtime/src/phase_loop_runtime/launch_*.py`;
@@ -988,8 +991,10 @@ the receipt's head:
 
 - a run of `laneexec-mounts` at exactly that head;
 - its `laneexec-mounts-junit` artifact;
-- that artifact showing each of M1–M5 as passed (not skipped, not errored) with
-  `PHASE_LOOP_TEST_REQUIRE_MOUNTS=1`.
+- that artifact showing each of M1–M5 as passed (not skipped, not errored);
+- the testsuite property `PHASE_LOOP_TEST_REQUIRE_MOUNTS` equal to `1` in the suite
+  reporting M1–M5; a missing property or any other value refuses. A pytest pass entry by
+  itself does not record the effective environment.
 
 A green job alone does not satisfy it. The receipt's head is an observed input at acceptance
 time, not a pinned output.
