@@ -8,6 +8,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- The jailed Claude seat's login proof now builds its auth-probe jails with the route's
+  qualification key, the same key the review jails carry, so the launch gate reads the v2
+  pass record the route qualified. Before this the probe jails had no key, the gate looked up
+  the bare profile digest and the jailed (non-native) Claude seat reported
+  `claude_seat_login_unproven` on every host. The probe now fails closed when either auth
+  jail's key is missing or differs from the review jail's (regression of
+  Consiliency/agent-harness#1890).
+
 - The Codex row window's expired-token check now runs fenced on the real seat (K-1 OI-1,
   owner decision 2026-11-22, "Block all its traffic"; plan
   `detailed-k1-oi1-refuse-all-fence-20261122-0736.md`, Consiliency/agent-harness#2080).

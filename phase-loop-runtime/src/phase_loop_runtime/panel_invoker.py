@@ -13514,12 +13514,16 @@ _JAILED_CLAUDE_AUTH_TIMEOUT_S = 30
 
 def _build_claude_auth_jail(seat: _JailedSeat, directory: Path, token: bytes) -> "_seat_jail.SeatJail":
     """A jail of the review seat's exact shape (image, projection, seat ids) over its own
-    empty directories, with fresh single-use descriptors: the review jail's are not spent."""
+    empty directories, with fresh single-use descriptors: the review jail's are not spent.
+    It carries the review jail's route qualification key, as :func:`_bind_route_qualification`
+    binds it onto the review jails, so the launch gate reads the same pass record."""
     (directory / _seat_jail.HOST_TREE_DIRNAME).mkdir(mode=0o700, parents=True)
-    return _build_jail_with_owned_inputs(
+    jail = _build_jail_with_owned_inputs(
         "claude", directory, Path(seat.jail.provider_path), artifact=b"", instructions=b"",
         token=token, seat_ids=seat.jail.seat_ids, dependency=seat.jail.dependency,
     )
+    key = getattr(seat.jail, "qualification_key", None)
+    return replace(jail, qualification_key=key) if key is not None else jail
 
 
 def _jailed_claude_auth_probe(
@@ -13554,6 +13558,12 @@ def _jailed_claude_auth_probe(
         if (auth.profile_digest != seat.jail.profile_digest
                 or auth.filter_digest != seat.jail.filter_digest
                 or auth.dependency_projection_digest != seat.jail.dependency_projection_digest):
+            return failed
+        # Both auth jails launch under the review jail's route key; a missing or different
+        # key is the same failed probe, never a fallback to the profile-digest read.
+        key = getattr(seat.jail, "qualification_key", None)
+        if key is None or any(getattr(jail, "qualification_key", None) != key
+                              for jail in (auth, probe)):
             return failed
         run = _run_leg_with_liveness(
             [auth.provider_argv0, "auth", "status", "--json"], cwd=Path(_seat_jail.SEAT_TREE),
