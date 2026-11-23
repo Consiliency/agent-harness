@@ -27,6 +27,17 @@ LICENSE_SEGMENTS = [
     "test \"$(find LICENSES -mindepth 1 -printf '%P\\n' | LC_ALL=C sort | tr '\\n' ' ')\" = '"
     + "".join(f"{name} " for name in sorted(LICENSE_NOTICES)) + "'",
 ]
+# The builder's verification RUN, as a pure `&&` chain: these steps in this order, nothing else.
+BUILDER_SEGMENTS = [
+    "echo 'ccb26a3d7078ca1ab6d6dab0bdbf7a0bf44d8cc22250d193094d6425ae1a1a6c  BUILD.lock' | sha256sum -c -",
+    "echo '689b41cdd017f7df6e0246bddfb0f9b5913802001c6c0421ec076908ad0066fa  LICENSE' | sha256sum -c -",
+    "echo 'a83ec097b90a11c711493f2ace37ded50970c416fa7d71e5b280a171712e7b94  build.sh' | sha256sum -c -",
+    "echo 'dff311f80f0b30d6961a3f6d0644df71fbd42f8e7935e38d3689254f0f49eea5  exec.c' | sha256sum -c -",
+    "echo 'b58873117c841859537f9f4aef2ec2d7ae5c67ed57973f1961063858ac68055e  uapi.h' | sha256sum -c -",
+    *LICENSE_SEGMENTS,
+    "sh build.sh /landlock-exec",
+    "echo '775d4f7af61dff58e5094eeac56fcda2fdb7e56d3f05fbf008b1caf1f84500aa  /landlock-exec' | sha256sum -c -",
+]
 LICENSE_COPY = "--from=landlock /src/LICENSES /usr/share/doc/landlock-exec/LICENSES"
 # The scan's exit status is checked on its own, so a find error fails the step.
 SETUID_SEGMENTS = [
@@ -46,12 +57,17 @@ AFTER_STRIP = {"USER", "WORKDIR", "ENTRYPOINT", "CMD", "ENV", "LABEL", "EXPOSE",
 FETCH_TOOLS = re.compile(r"\b(curl|wget|apt-get|apt|apk|aptitude|git\s+clone|git\s+fetch|gh\s+api)\b")
 
 
+HEREDOC_INSTRUCTIONS = {"RUN", "COPY", "ADD"}
+HEREDOC_MARKER = re.compile(r"(?<!\S)<<(-?)(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2(?!\S)")
+
+
 @dataclass(frozen=True)
 class Instruction:
     keyword: str
     text: str  # everything after the opcode, continuations joined
     heredoc: str
     stage: int
+    unterminated: bool = False
 
     @property
     def options(self) -> dict[str, str]:
@@ -71,7 +87,9 @@ def parse(source: str) -> list[Instruction]:
 
     Comment and blank lines inside a continuation are dropped, as BuildKit does. The
     opcode is case-insensitive and delimited by any whitespace. A heredoc ends only at
-    a line equal to its delimiter (leading tabs removed for ``<<-``).
+    a line equal to its delimiter (leading tabs removed for ``<<-``). Heredocs are read
+    only for RUN, COPY and ADD, and only from a whole marker word. An unterminated
+    heredoc is flagged, and parsing resumes after its instruction.
     """
     lines = source.splitlines()
     out: list[Instruction] = []
@@ -94,14 +112,20 @@ def parse(source: str) -> list[Instruction]:
         match = re.match(r"(\S+)\s*(.*)", joined, re.S)
         keyword, rest = match[1].upper(), match[2].strip()
         body: list[str] = []
-        for dash, marker in re.findall(r"<<(-?)['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?", rest):
+        unterminated = False
+        markers = HEREDOC_MARKER.findall(rest) if keyword in HEREDOC_INSTRUCTIONS else []
+        for dash, _, marker in markers:
+            start = i
             while i < len(lines) and (lines[i].lstrip("\t") if dash else lines[i]) != marker:
                 body.append(lines[i])
                 i += 1
+            if i == len(lines):
+                unterminated, i, body = True, start, []
+                break
             i += 1  # the delimiter line
         if keyword == "FROM":
             stage += 1
-        out.append(Instruction(keyword, rest, "\n".join(body), stage))
+        out.append(Instruction(keyword, rest, "\n".join(body), stage, unterminated))
     return out
 
 
@@ -134,6 +158,10 @@ def runtime(instructions: list[Instruction]) -> list[Instruction]:
 
 
 # -- checks: each returns a list of violations --------------------------------
+
+def check_heredocs(source: str) -> list[str]:
+    return [f"unterminated heredoc in {i.keyword}" for i in parse(source) if i.unterminated]
+
 
 def check_from_digests(source: str) -> list[str]:
     bad = []
@@ -192,8 +220,9 @@ def check_no_fetch_tool(source: str) -> list[str]:
 def check_licenses(source: str) -> list[str]:
     instructions = parse(source)
     builder = [i for i in instructions if i.stage == 0 and i.keyword == "RUN"]
-    segments = [s for i in builder for s in i.segments]
-    bad = [f"missing builder step: {s[:50]}" for s in LICENSE_SEGMENTS if s not in segments]
+    bad = []
+    if len(builder) != 1 or builder[0].segments != BUILDER_SEGMENTS or builder[0].heredoc:
+        bad.append("builder verification RUN differs from the audited && chain")
     copies = [i for i in instructions if i.keyword in {"COPY", "ADD"} and "LICENSES" in i.text]
     if [i.text for i in copies] != [LICENSE_COPY] or copies[0] not in runtime(instructions):
         bad.append("runtime stage must copy exactly the checked LICENSES/")
@@ -239,6 +268,7 @@ def check_setuid_strip(source: str) -> list[str]:
 
 
 CHECKS = {
+    "heredocs": check_heredocs,
     "from_digests": check_from_digests,
     "parser_directives": check_parser_directives,
     "no_shell_override": check_no_shell_override,
@@ -302,6 +332,10 @@ MUTATIONS = [
     ("licenses", _replace(f"COPY {LICENSE_COPY}\n", "")),
     ("licenses", _replace(f"COPY {LICENSE_COPY}\n", "COPY --from=landlock-source /LICENSES /usr/share/doc/landlock-exec/LICENSES\n")),
     ("licenses", _replace("    && echo '8780e78a", "    && printf '%s\\n' \"echo '8780e78a")),
+    ("licenses", _replace("RUN --network=none echo 'ccb26a3d", "RUN --network=none false && echo 'ccb26a3d")),
+    ("licenses", _replace("/landlock-exec' | sha256sum -c -\n", "/landlock-exec' | sha256sum -c - || true\n")),
+    ("heredocs", _append_before_user("RUN --network=none sh <<'NEVER_ENDS'")),
+    ("setuid_strip", _append_before_user('ENV REVIEW_NOTE="<<EOF"\nCOPY --from=landlock /src/LICENSE /tmp/late')),
     ("no_provenance_copy", _append_before_user("COPY --from=landlock /src/PROVENANCE.md /usr/share/doc/landlock-exec/")),
     ("source_date_epoch", _replace("ARG SOURCE_DATE_EPOCH\n", "")),
     ("setuid_strip", _replace("--chmod=0755", "--chmod=4755")),
@@ -344,3 +378,14 @@ def test_parser_heredoc_ends_only_at_exact_delimiter():
     assert parsed[1].heredoc == "  EOF\nRUN true"
     dashed = parse("FROM a\nRUN sh <<-EOF\n\t\tEOF\nUSER x\n")
     assert [i.keyword for i in dashed] == ["FROM", "RUN", "USER"]
+
+
+def test_env_literal_does_not_hide_a_late_copy(source):
+    mutated = _append_before_user('ENV REVIEW_NOTE="<<EOF"\nCOPY --from=landlock /src/LICENSE /tmp/late')(source)
+    assert "COPY after setuid strip" in check_setuid_strip(mutated)
+    assert [i.keyword for i in parse(mutated)][-5:] == ["ENV", "COPY", "USER", "WORKDIR", "ENTRYPOINT"]
+
+
+def test_parser_flags_unterminated_heredoc_and_keeps_parsing():
+    parsed = parse("FROM a\nRUN sh <<EOF\necho x\nUSER x\n")
+    assert [(i.keyword, i.unterminated) for i in parsed] == [("FROM", False), ("RUN", True), ("ECHO", False), ("USER", False)]
