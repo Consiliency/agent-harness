@@ -136,6 +136,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- The FIRSTSEAT record-board test stubs the Gemini board preflight, so it no longer runs live
+  Agy qualification inside the guard's 30 s authorization window (agent-harness#2142).
 - The last eleven JEV Drill companion failures on the Windows legs (second follow-up to
   agent-harness#2092; POSIX behaviour is unchanged):
   - The Windows admitted child (`windows_process._admitted_child`) now writes the

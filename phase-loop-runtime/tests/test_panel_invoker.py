@@ -407,7 +407,13 @@ def test_seats_firstseat_exec_record_composed_board(tmp_path, missing):
 
 @pytest.mark.parametrize("failure", [False, True])
 def test_seats_firstseat_exec_record_board_returns(tmp_path, monkeypatch, failure):
+    from phase_loop_runtime import agy_qualification, panel_invoker
     from phase_loop_runtime.advisor_board import composition
+    # Live Agy qualification would run inside the guard's authorization window
+    # (agent-harness#2142); the records under test never depend on it.
+    monkeypatch.setattr(panel_invoker, "board_preflight_requalify", lambda *a, **kw: None)
+    monkeypatch.setattr(agy_qualification, "requalify_once",
+        lambda *a, **kw: pytest.fail("live Agy qualification in record test"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     composed = composition.compose_review_board_report(is_available=lambda v: True, auth_ok=lambda v: True)
     def spawn(leg, artifact, **kw):
