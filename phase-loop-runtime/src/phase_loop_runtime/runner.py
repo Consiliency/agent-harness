@@ -213,7 +213,7 @@ from .governed_premerge import (
 )
 from .governed_bundle import render_governed_bundle, staged_index_diff
 from .panel_invoker import available_panel_legs, invoke_board as _PRODUCTION_INVOKE_BOARD
-from .reconcile import reconcile
+from .reconcile import DIAGNOSTIC_EVENT_ACTIONS, reconcile
 from .credential_redaction import redact_text
 from .redaction import apply_diagnostics_redaction
 from .review_summary import summarize_run
@@ -248,7 +248,8 @@ from .worker_pool import (
     worker_summary_path,
     write_worker_summary,
 )
-from .jevdrill_adapter import build_jevdrill_request, launch_jevdrill
+from .host_integration import build_host_request, notify_acceptance
+from .jevdrill_adapter import launch_jevdrill
 
 try:  # Optional in the adapter runtime; tests and normal installs provide it.
     import yaml
@@ -914,6 +915,8 @@ def is_sibling_phase_plan_doc(path: str, roadmap: Path, current_phase: str) -> b
 
 def _latest_phase_event_status(repo: Path, phase: str) -> str | None:
     for event in reversed(read_events(repo)):
+        if event.get("action") in DIAGNOSTIC_EVENT_ACTIONS:
+            continue
         if str(event.get("phase", "")).upper() == phase.upper():
             status = event.get("status")
             return str(status) if status is not None else None
@@ -3385,7 +3388,7 @@ def run_loop(
                 _exec_repo = repo
                 _exec_roadmap = roadmap
                 _exec_plan = plan
-            request = build_jevdrill_request(
+            request = build_host_request(
                 jevdrill_adapter, build_launch_request, mode="main", dry_run=dry_run,
                 executor=resolved_executor,
                 action=launch_action,
@@ -3585,6 +3588,21 @@ def run_loop(
                 ),
             ))
 
+        def _report_acceptance(prep: "_DispatchPrep", result, verdict: str | None) -> None:
+            """JEVHOST GAPS §3.1: report an entered launch's acceptance verdict.
+
+            Called once per entered launch, after the phase is classified. An interrupted
+            run reports nothing, whatever its exit (the launcher's interrupt result exits
+            130), so an interrupt never counts as a failed attempt. A failing observer
+            appends one metadata-only ``jevdrill_acceptance_hook_failed`` diagnostic,
+            which reconciliation ignores.
+            """
+            if result.interrupted:
+                verdict = None
+            failure = _deliver_acceptance(jevdrill_adapter, result, verdict)
+            if failure is not None:
+                _append_acceptance_hook_failure(repo, roadmap, alias, failure)
+
         def _finalize_phase_launch(
             prep: "_DispatchPrep",
             result,
@@ -3607,6 +3625,7 @@ def run_loop(
             selection = prep.selection
             spec = prep.spec
             if reduction_blocker is not None:
+                # GAPS §3.1: a reduction blocker is not judged on the run, so no verdict.
                 classifications[alias] = "blocked"
                 terminal_summary = _persist_terminal_summary(
                     artifacts,
@@ -3684,6 +3703,9 @@ def run_loop(
                         "cleanup_evidence": result.cleanup_evidence,
                     },
                 )
+            # GAPS §3.1: acceptance keeps the launcher's own exit, even when a trusted closeout
+            # below normalizes the result for reduction.
+            acceptance_launcher_failed = result.failed or not result.available
             failed_launch_closeout = _trusted_failed_launch_closeout(result, spec) if result.failed else None
             if failed_launch_closeout is not None:
                 failed_launch_closeout_override = {
@@ -3700,7 +3722,10 @@ def run_loop(
                             "failed_launch_closeout_override": failed_launch_closeout_override,
                         },
                     )
-            launch_contract_blocker = _launch_contract_blocker(result, artifacts, spec.executor, alias, spec=spec)
+            launch_contract_reason: dict[str, str] = {}
+            launch_contract_blocker = _launch_contract_blocker(
+                result, artifacts, spec.executor, alias, spec=spec, reason_out=launch_contract_reason
+            )
             if result.failed:
                 launch_blocker = launch_contract_blocker or _executor_launch_failure_blocker(spec.executor, alias, result.output)
                 classifications[alias] = "blocked" if launch_blocker else "unknown"
@@ -3762,6 +3787,7 @@ def run_loop(
                     pipeline_mode=effective_pipeline_mode,
                 )
                 current = alias
+                _report_acceptance(prep, result, "infrastructure")
                 return _DispatchOutcome("break", None)
             if launch_contract_blocker:
                 classifications[alias] = "blocked"
@@ -3822,6 +3848,13 @@ def run_loop(
                     pipeline_mode=effective_pipeline_mode,
                 )
                 current = alias
+                _report_acceptance(
+                    prep,
+                    result,
+                    "infrastructure"
+                    if acceptance_launcher_failed
+                    else _LAUNCH_CONTRACT_ACCEPTANCE.get(launch_contract_reason.get("reason")),
+                )
                 return _DispatchOutcome("break", None)
             if dry_run:
                 terminal_summary = _persist_terminal_summary(
@@ -3922,6 +3955,9 @@ def run_loop(
             child_automation: dict[str, object] = {}
             post_launch_plan = find_plan_artifact(repo, alias, roadmap=roadmap)
             runner_verification: dict[str, object] | None = None
+            # GAPS §3.1: set when a post-launch gate or verification judged this run's own
+            # output and blocked the phase, so a blocked reduction reports ``quality``.
+            acceptance_quality_failure = False
             if not dry_run:
                 verification_plan = post_launch_plan or plan
                 if launch_action == "execute" and verification_plan is not None:
@@ -3946,6 +3982,7 @@ def run_loop(
                     if runner_verification and artifacts:
                         merge_launch_metadata(artifacts.get("metadata"), {"runner_verification": runner_verification})
                     if _runner_verification_fails_closed(runner_verification):
+                        acceptance_quality_failure = True
                         status_after_launch = "blocked"
                         set_phase_status(
                             repo,
@@ -3991,6 +4028,7 @@ def run_loop(
                 automation_status = _gate_outcome.automation_status
                 event_blocker = _gate_outcome.event_blocker
                 if _gate_outcome.blocked_reason is not None:
+                    acceptance_quality_failure = True
                     status_after_launch = "blocked"
                     set_phase_status(
                         repo,
@@ -4021,6 +4059,12 @@ def run_loop(
                     if tier3_audit is not None:
                         child_automation["tier3_audit"] = tier3_audit["summary"]
                         if tier3_audit.get("blocker"):
+                            # GAPS §3.1: the audit rejected the child's closeout evidence,
+                            # unless the host could not run it (config error, BAML outage).
+                            if not tier3_audit["summary"].get("config_error") and (
+                                tier3_audit["blocker"].get("blocker_class") != "unretryable_external_outage"
+                            ):
+                                acceptance_quality_failure = True
                             status_after_launch = "blocked"
                             set_phase_status(
                                 repo,
@@ -4060,6 +4104,7 @@ def run_loop(
                     alias,
                 ):
                     if not automation_status:
+                        acceptance_quality_failure = True  # GAPS §3.1: the output has no closeout
                         status_after_launch = "blocked"
                         set_phase_status(
                             repo,
@@ -4082,6 +4127,10 @@ def run_loop(
                             "access_attempts": (),
                         }
                     elif child_automation.get("automation_parse_error"):
+                        # GAPS §3.1: the child's closeout failed to parse, unless the BAML
+                        # evaluator was unavailable and the closeout was never judged.
+                        if child_automation.get("automation_parse_error_blocker_class") != "unretryable_external_outage":
+                            acceptance_quality_failure = True
                         status_after_launch = "blocked"
                         set_phase_status(
                             repo,
@@ -4238,6 +4287,7 @@ def run_loop(
                         else:
                             automation_status_literal = _phase_status_literal(automation_status)
                             if automation_status_literal is None:
+                                acceptance_quality_failure = True  # GAPS §3.1: invalid closeout status
                                 status_after_launch = "blocked"
                                 child_automation["automation_parse_error"] = (
                                     f"{_executor_display_name(spec.executor)} live launch for {alias} emitted an invalid "
@@ -4698,6 +4748,17 @@ def run_loop(
                 )
                 append_event(repo, closeout_event)
                 status_after_closeout = classifications[alias]
+            # GAPS §3.1 precedence: the launcher's own failure, then a rejection of the run's
+            # output (even if a later closeout reduced the phase to success), then success.
+            if acceptance_launcher_failed:
+                acceptance_verdict = "infrastructure"
+            elif acceptance_quality_failure:
+                acceptance_verdict = "quality"
+            elif status_after_closeout == "complete" or (launch_action == "plan" and status_after_closeout == "planned"):
+                acceptance_verdict = "passed"
+            else:
+                acceptance_verdict = None
+            _report_acceptance(prep, result, acceptance_verdict)
             if coordinator_wave is not None:
                 wave_index, phase_aliases = coordinator_wave
                 latest_snapshot = reconcile(repo, roadmap)
@@ -5506,7 +5567,7 @@ def launch_delegated_child(
         delegation_request=request,
         parent_child_metadata=parent_child,
     )
-    launch_request = build_jevdrill_request(
+    launch_request = build_host_request(
         jevdrill_adapter, build_launch_request, mode="delegated", dry_run=dry_run,
         executor=decision.selected_executor or request.target_executor,
         action=request.product_action,
@@ -6218,7 +6279,7 @@ def launch_harness_lane_work_unit(
         injection_mode_override="context_file" if executor == "command" else None,
         harness_lane_assignment=assignment,
     )
-    request = build_jevdrill_request(
+    request = build_host_request(
         jevdrill_adapter, build_launch_request, mode="lane", dry_run=dry_run,
         executor=executor,
         action=action,
@@ -11235,9 +11296,22 @@ def _launch_contract_blocker(
     phase: str,
     *,
     spec=None,
+    reason_out: dict[str, str] | None = None,
 ) -> dict[str, object] | None:
+    """The zero-exit launch-contract blocker, if any.
+
+    When ``reason_out`` is given, the reason selected here is written to
+    ``reason_out["reason"]`` at the check itself (JEVHOST GAPS §3.1), so a caller never
+    re-derives it from state that may have changed since.
+    """
+
+    def selected(blocker: dict[str, object], reason: str) -> dict[str, object]:
+        if reason_out is not None:
+            reason_out["reason"] = reason
+        return blocker
+
     if result.stalled:
-        return {
+        return selected({
             "human_required": False,
             "blocker_class": "stalled_child_observation",
             "blocker_summary": (
@@ -11246,9 +11320,9 @@ def _launch_contract_blocker(
             ),
             "required_human_inputs": (),
             "access_attempts": (),
-        }
+        }, "stalled")
     if result.timed_out:
-        return {
+        return selected({
             "human_required": False,
             "blocker_class": "repeated_verification_failure",
             "blocker_summary": (
@@ -11256,9 +11330,9 @@ def _launch_contract_blocker(
             ),
             "required_human_inputs": (),
             "access_attempts": (),
-        }
+        }, "timed_out")
     if result.interrupted:
-        return {
+        return selected({
             "human_required": False,
             "blocker_class": "repeated_verification_failure",
             "blocker_summary": (
@@ -11266,10 +11340,10 @@ def _launch_contract_blocker(
             ),
             "required_human_inputs": (),
             "access_attempts": (),
-        }
+        }, "interrupted")
     cleanup = result.cleanup_evidence if isinstance(result.cleanup_evidence, dict) else {}
     if cleanup.get("process_alive_after_cleanup"):
-        return {
+        return selected({
             "human_required": False,
             "blocker_class": "repeated_verification_failure",
             "blocker_summary": (
@@ -11277,18 +11351,18 @@ def _launch_contract_blocker(
             ),
             "required_human_inputs": (),
             "access_attempts": (),
-        }
+        }, "cleanup_left_child")
     if spec is not None:
         parsed = _parsed_child_automation(result, spec)
         failure = parsed.get("native_closeout_extraction_failure") or {}
         if failure.get("reason") == "executor_exited_without_closeout":
-            return {
+            return selected({
                 "human_required": False,
                 "blocker_class": "contract_bug",
                 "blocker_summary": parsed["automation_blocker_summary"],
                 "required_human_inputs": (),
                 "access_attempts": (),
-            }
+            }, "no_closeout")
     if result.log_path and not result.dry_run and (
         result.process_pid is not None
         or result.started_at is not None
@@ -11297,7 +11371,7 @@ def _launch_contract_blocker(
     ):
         log_path = Path(result.log_path)
         if not log_path.exists():
-            return {
+            return selected({
                 "human_required": False,
                 "blocker_class": "repeated_verification_failure",
                 "blocker_summary": (
@@ -11305,9 +11379,9 @@ def _launch_contract_blocker(
                 ),
                 "required_human_inputs": (),
                 "access_attempts": (),
-            }
+            }, "missing_log")
         if log_path.stat().st_size == 0 and not result.output.strip():
-            return {
+            return selected({
                 "human_required": False,
                 "blocker_class": "repeated_verification_failure",
                 "blocker_summary": (
@@ -11315,7 +11389,68 @@ def _launch_contract_blocker(
                 ),
                 "required_human_inputs": (),
                 "access_attempts": (),
-            }
+            }, "zero_byte_log")
+    return None
+
+
+# JEVHOST GAPS §3.1: the acceptance verdict of each zero-exit launch-contract reason, as
+# captured by ``_launch_contract_blocker(reason_out=...)``. Stalled and timed-out runs are
+# infrastructure. ``quality`` is used only where the check judged the run's own output: the
+# child exited without the closeout its output must carry, or the host-created log (opened
+# before spawn, ``launcher.launch``) received no byte and the captured output is empty. An
+# interrupt, a cleanup that left the child alive, and a missing host-owned log judge the
+# host, not the run, so they report nothing.
+_LAUNCH_CONTRACT_ACCEPTANCE = {
+    "stalled": "infrastructure",
+    "timed_out": "infrastructure",
+    "interrupted": None,
+    "cleanup_left_child": None,
+    "no_closeout": "quality",
+    "missing_log": None,
+    "zero_byte_log": "quality",
+}
+
+
+# A diagnostic-only action: listed in ``reconcile.DIAGNOSTIC_EVENT_ACTIONS``.
+ACCEPTANCE_HOOK_FAILED_ACTION = "jevdrill_acceptance_hook_failed"
+
+
+def _append_acceptance_hook_failure(repo: Path, roadmap: Path, phase: str, failure: dict[str, object]) -> None:
+    """Log a failed acceptance observer as a metadata-only diagnostic (GAPS §3.1).
+
+    The record carries no status, blocker, closeout or transition, and its action is in
+    ``reconcile.DIAGNOSTIC_EVENT_ACTIONS``, so it can never restate or roll back phase state.
+    """
+    append_payload(repo, {
+        "timestamp": utc_now(),
+        "repo": str(repo),
+        "roadmap": str(roadmap),
+        "phase": phase,
+        "action": ACCEPTANCE_HOOK_FAILED_ACTION,
+        "schema_version": 2,
+        "metadata": {"jevdrill_acceptance_hook_failed": failure},
+    }, roadmap=roadmap)
+
+
+def _deliver_acceptance(integration: object | None, result: LaunchResult, verdict: str | None) -> dict[str, object] | None:
+    """Send one acceptance verdict for an entered launch to ``integration`` (GAPS §3.1).
+
+    ``verdict`` is ``"passed"``, a failure class, or ``None`` for no report. Nothing is sent
+    without an integration, a verdict, or a launch result that carries its execution run.
+    An exception from the observer is caught and returned as a metadata-only record, so the
+    caller can log it without changing the phase classification.
+    """
+    if integration is None or verdict is None or result.dry_run:
+        return None
+    execution_run = result.jevdrill_execution_run
+    run_id = execution_run.get("execution_run_id") if isinstance(execution_run, dict) else None
+    if not run_id:
+        return None
+    passed = verdict == "passed"
+    try:
+        notify_acceptance(integration, str(run_id), passed=passed, failure_class=None if passed else verdict)
+    except Exception as exc:  # noqa: BLE001 - the observer must never change the classification
+        return {"execution_run_id": str(run_id), "verdict": verdict, "error_type": type(exc).__name__}
     return None
 
 
