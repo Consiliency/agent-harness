@@ -48,9 +48,11 @@ The amendment's Item 1 falsifier is narrowed as follows:
 - "an exhausted budget that still routes" excludes the two ruled cases:
   - a route for a no-ledger supplied context that is refused before any launchable decision;
   - a route after an attempt with no verdict, where the attempt count alone is exhausted.
-- It adds two falsifiers:
-  - such a request reaching launch;
-  - a spent binding making a launch-time CLI request or executor contact.
+- It adds two falsifiers, stated separately:
+  - **Row 1d:** publishing a launchable binding for a no-ledger supplied context.
+  - **Row 1c:** a launch-time CLI request, executor callback or dispatch for an exhausted,
+    spent or closed-generation binding. A `launch` call that is refused before any of these
+    is not a failure.
 
 The node IDs proving Item 1 also include `test_jevdrill_host_gaps.py::test_unrecorded_supplied_context_never_launches`
 and `::test_unjudged_attempt_is_refused_at_launch_admission`.
