@@ -38,7 +38,7 @@ from .launch_process_contract import (
     StatusResponse,
 )
 from .launch_return import STATUS_UNCERTAIN_CODE, map_cancel, map_status
-from .sandbox_placement import CANCEL_WAIT_S, LifecycleError, PlacementLifecycle
+from .sandbox_placement import CANCEL_WAIT_S, LifecycleError, PlacementLifecycle, _Deadline
 
 __all__ = [
     "ADMISSION_BOUND_S",
@@ -273,6 +273,7 @@ class LaunchService:
             return CancelResponse(request.request_id, request.reservation_id,
                                   request.launch_request_id, state, request.caller_context)  # type: ignore[arg-type]
 
+        deadline = _Deadline.after(request.deadline_ms / 1000.0)
         record = self._record(request)
         if record is None:
             return response(map_cancel(None, record_present=False, claim_held=False).state)
@@ -281,13 +282,13 @@ class LaunchService:
         claim_held = self._claim_held(record, request.launch_request_id)
         outcome: str | None = None
         run_id = record.get("run_id")
-        if not cancelled.is_set() and isinstance(run_id, str):
-            wait = min(CANCEL_WAIT_S, max(0.001, request.deadline_ms / 1000.0))
+        wait = min(CANCEL_WAIT_S, deadline.left())
+        if not cancelled.is_set() and isinstance(run_id, str) and wait > 0:
             try:
                 if record.get("generation") is not None:
                     result = self.lifecycle.cancel_launch_owner(
                         request.reservation_id, request.launch_request_id, record["generation"],
-                        deadline=time.monotonic() + wait)
+                        deadline=min(deadline.end, time.monotonic() + wait))
                 elif (self.lifecycle.launch_claim_record(request.reservation_id) or {}).get("generation"):
                     result = "owner_unverified"
                 else:
@@ -301,7 +302,12 @@ class LaunchService:
                 outcome = None
         mapping = map_cancel(outcome, record_present=True, claim_held=claim_held)
         if mapping.local_outcome is not None:
-            self.lifecycle.journal_local_cancel(request.launch_request_id, mapping.local_outcome)
+            try:
+                self.lifecycle.journal_local_cancel(request.launch_request_id, mapping.local_outcome,
+                                                   deadline=deadline)
+            except (OSError, LifecycleError):
+                # The zero-signal outcome still maps to cancel_pending.
+                pass
         return response(mapping.state)
 
 

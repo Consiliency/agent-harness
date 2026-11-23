@@ -4482,6 +4482,8 @@ class PlacementLifecycle:
     def renew_launch(self, reservation_id: str, request_id: str, generation: str, *,
                      deadline: float) -> bool:
         self._check_launch_lock_order(1)
+        if self._holds_operation(reservation_id, generation):
+            raise LifecycleError("placement_lock_order")
         bound = _Deadline(deadline)
         calls = _Calls()
         try:

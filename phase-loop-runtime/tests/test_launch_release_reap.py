@@ -1175,3 +1175,12 @@ def test_review_cancel_journal_write_error_is_pending(prepared, env, monkeypatch
     monkeypatch.setattr(sp.PlacementLifecycle, "_launch_write", interrupted)
     assert env.release(prepared[2])[0].state == "cleanup_pending"
     assert life.launch_claim_record(key[0])["claimed"] and prepared[-1].is_dir()
+
+
+def test_renewal_rejects_held_generation_operation_lock(prepared):
+    life, key = _generation_claim(prepared)
+    with life.launch_operation_lock(key[0], key[2], timeout_s=1) as held:
+        assert held
+        with pytest.raises(sp.LifecycleError, match="placement_lock_order"):
+            life.renew_launch(*key, deadline=time.monotonic() + .2)
+    assert life.read_cleanup_debt(*key) is None
