@@ -16,13 +16,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   jail's key is missing or differs from the review jail's (regression of
   Consiliency/agent-harness#1890).
 
-- Staging a large review tree now uses much less peak memory. The staged-tree manifest
-  digests (`seat_jail.tree_manifest_sha256_at` and
-  `review_stage.review_tree_manifest_sha256`) hash each file in bounded 1 MiB chunks as it
-  is visited and keep only its digest and length, instead of holding every file's bytes
-  until the walk ends. Before, each jailed seat's preparation held a full copy of the tree
-  in memory. The digests are byte-identical to before, so pass records, authorizations and
-  stage digests do not change (regression from agent-harness#1132).
+- Staged-tree manifest hashing now reads regular files in 1 MiB chunks and preserves
+  existing digests used by pass records and authorizations. Previously, the jailed-seat
+  verification retained all file contents until the walk finished (regression from
+  agent-harness#1132).
 
 - The Codex row window's expired-token check now runs fenced on the real seat (K-1 OI-1,
   owner decision 2026-11-22, "Block all its traffic"; plan

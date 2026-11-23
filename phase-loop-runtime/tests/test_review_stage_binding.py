@@ -233,7 +233,7 @@ def test_manifest_digest_detects_a_renamed_path(tmp_path):
 
 
 def _reference_review_tree_manifest_sha256(root: Path) -> str:
-    """The pre-streaming algorithm, verbatim: each file read whole before hashing."""
+    """The pre-streaming record format and whole-file hashing."""
     import hashlib
 
     root = Path(root).resolve(strict=True)

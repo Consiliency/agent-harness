@@ -563,18 +563,18 @@ def test_j10_tree_walk_never_follows_a_link_or_opens_a_fifo(tmp_path):
 
 
 def _reference_tree_manifest_sha256_at(tree_fd: int) -> str:
-    """The pre-streaming algorithm, verbatim: whole payloads held, hashed after the walk."""
-    records = []
+    """Verbatim copy of the pre-streaming ``seat_jail.tree_manifest_sha256_at``."""
+    records: list[tuple[str, bytes, bool, bytes]] = []
 
-    def walk(dir_fd, prefix):
+    def walk(dir_fd: int, prefix: str) -> None:
         for name in sorted(os.listdir(dir_fd)):
             if name == ".git":
                 continue
             rel = f"{prefix}{name}"
             info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
             if stat.S_ISLNK(info.st_mode):
-                records.append((rel, b"link", False,
-                                os.fsencode(os.readlink(name, dir_fd=dir_fd))))
+                target = os.readlink(name, dir_fd=dir_fd)
+                records.append((rel, b"link", False, os.fsencode(target)))
             elif stat.S_ISDIR(info.st_mode):
                 child = os.open(name, seat_jail._O_DIR, dir_fd=dir_fd)
                 try:
@@ -584,11 +584,18 @@ def _reference_tree_manifest_sha256_at(tree_fd: int) -> str:
             elif stat.S_ISREG(info.st_mode):
                 fd = os.open(name, seat_jail._O_READ, dir_fd=dir_fd)
                 try:
-                    payload = b"".join(iter(lambda: os.read(fd, 1 << 16), b""))
+                    if not stat.S_ISREG(os.fstat(fd).st_mode):
+                        raise seat_jail.UnsafeSeatObject(errno.EINVAL, f"{rel!r} changed type")
+                    chunks = []
+                    while True:
+                        chunk = os.read(fd, 1 << 16)
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
                 finally:
                     os.close(fd)
                 executable = os.access(name, os.X_OK, dir_fd=dir_fd, follow_symlinks=False)
-                records.append((rel, b"blob", executable, payload))
+                records.append((rel, b"blob", executable, b"".join(chunks)))
 
     walk(tree_fd, "")
     digest = hashlib.sha256()
@@ -647,6 +654,35 @@ def test_streamed_tree_manifest_matches_the_reference_digest(tmp_path, shape):
     try:
         assert seat_jail.tree_manifest_sha256_at(fd) == _reference_tree_manifest_sha256_at(fd)
     finally:
+        os.close(fd)
+
+
+@pytest.mark.parametrize(
+    "implementation",
+    [seat_jail.tree_manifest_sha256_at, _reference_tree_manifest_sha256_at],
+    ids=["streamed", "reference"],
+)
+def test_tree_manifest_refuses_a_file_swapped_for_a_fifo_before_open(
+    tmp_path, monkeypatch, implementation,
+):
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    (tree / "victim").write_bytes(b"regular when listed")
+    real_open = os.open
+
+    def swapping_open(path, flags, *args, **kwargs):
+        if path == "victim" and flags == seat_jail._O_READ:
+            os.unlink(path, dir_fd=kwargs["dir_fd"])
+            os.mkfifo(path, dir_fd=kwargs["dir_fd"])
+        return real_open(path, flags, *args, **kwargs)
+
+    fd = _dirfd(tree)
+    try:
+        monkeypatch.setattr(os, "open", swapping_open)
+        with pytest.raises(seat_jail.UnsafeSeatObject, match="changed type"):
+            implementation(fd)
+    finally:
+        monkeypatch.undo()
         os.close(fd)
 
 
