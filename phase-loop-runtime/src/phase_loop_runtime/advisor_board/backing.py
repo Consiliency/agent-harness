@@ -24,6 +24,7 @@ import platform
 from pathlib import Path
 import secrets
 import socket
+import stat
 import subprocess
 import tempfile
 import threading
@@ -552,6 +553,130 @@ def _client_exit_expected(wait: "_ClientWait | None", adapter_failure_ns: int | 
             and wait.exit_ns >= adapter_failure_ns)
 
 
+#: The longest AF_UNIX socket path Linux binds: ``sun_path`` is 108 bytes with its NUL.
+AF_UNIX_PATH_MAX = 107
+#: The typed refusal when no candidate base keeps the broker socket within that limit.
+BROKER_SOCKET_PATH_TOO_LONG = "seat_broker_socket_path_too_long"
+_BROKER_ROOT_PREFIX = "phase-loop-broker-"
+_BROKER_ROOT_RANDOM_HEX = 8
+_BROKER_SOCKET_NAME = "intended-inference.sock"
+
+
+def trusted_directory(path: str, *, private: bool = False) -> str | None:
+    """``path`` when it is an absolute, normalized directory that no other account can
+    replace or redirect, else ``None``. Every component is a real directory (no link)
+    owned by root or this account, and writable by no one else unless it is a root-owned
+    sticky directory (``/tmp``), where only an entry's owner can rename it. ``private``
+    also requires the leaf to be this account's own, mode 0700."""
+    if not isinstance(path, str) or not path.startswith("/") or path.startswith("//") \
+            or os.path.normpath(path) != path:
+        return None
+    current = "/"
+    for part in ("", *path.split("/")[1:]):
+        current = os.path.join(current, part) if part else current
+        try:
+            info = os.lstat(current)
+        except OSError:
+            return None
+        if not trusted_component(info):
+            return None
+    if private and (info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700):
+        return None
+    return path
+
+
+def trusted_component(info: os.stat_result) -> bool:
+    """A real directory owned by root or this account that no one else can write to,
+    except a root-owned sticky directory, where only an entry's owner can rename it."""
+    mode = stat.S_IMODE(info.st_mode)
+    return (stat.S_ISDIR(info.st_mode) and info.st_uid in {0, os.getuid()}
+            and (not mode & 0o022 or (info.st_uid == 0 and bool(mode & stat.S_ISVTX))))
+
+
+def spelled_without_parent_steps(raw: str | None) -> str | None:
+    """``raw`` normalized, or ``None`` when it is not absolute or has a ``..`` component:
+    the kernel follows a link before applying ``..``, so collapsing it lexically could
+    name a different directory than the one the variable reaches."""
+    if not raw or not raw.startswith("/") or ".." in raw.split("/"):
+        return None
+    return os.path.normpath(raw)
+
+
+def _temp_dir_spelling() -> str | None:
+    """The temp dir as its variable spells it, refused like any base with a ``..``."""
+    chosen = tempfile.gettempdir()
+    for name in ("TMPDIR", "TEMP", "TMP"):
+        value = os.environ.get(name)
+        if value and os.path.abspath(value) == chosen:
+            return spelled_without_parent_steps(value)
+    return spelled_without_parent_steps(chosen)
+
+
+def _broker_socket_path(base: str, name: str) -> str:
+    """The exact pathname the broker binds for a root named ``name`` under ``base``."""
+    return os.path.join(base, name, _BROKER_SOCKET_NAME)
+
+
+def _fits(base: str) -> bool:
+    name = _BROKER_ROOT_PREFIX + "0" * _BROKER_ROOT_RANDOM_HEX
+    return len(os.fsencode(_broker_socket_path(base, name))) <= AF_UNIX_PATH_MAX
+
+
+def _socket_base_candidates() -> tuple[str | None, ...]:
+    runtime = spelled_without_parent_steps(os.environ.get("XDG_RUNTIME_DIR"))
+    temp = _temp_dir_spelling()
+    return (
+        trusted_directory(runtime, private=True) if runtime is not None else None,
+        trusted_directory(temp) if temp is not None else None,
+        _sticky_tmp(),
+    )
+
+
+def _sticky_tmp() -> str | None:
+    """``/tmp`` when it is an unlinked root-owned sticky directory; otherwise ``None``."""
+    try:
+        info = os.lstat("/tmp")
+    except OSError:
+        return None
+    if stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and info.st_mode & stat.S_ISVTX:
+        return "/tmp"
+    return None
+
+
+def broker_socket_base() -> str:
+    """The directory the broker's private socket root is created in, independent of how
+    long ``TMPDIR`` is: a private ``$XDG_RUNTIME_DIR``, else the temp dir, else ``/tmp``,
+    the first that :func:`trusted_directory` admits and whose socket pathname, spelled
+    exactly as it is bound, fits :data:`AF_UNIX_PATH_MAX`. Raises
+    ``ValueError(BROKER_SOCKET_PATH_TOO_LONG)`` when none does."""
+    for base in _socket_base_candidates():
+        if base is not None and _fits(base):
+            return base
+    raise ValueError(BROKER_SOCKET_PATH_TOO_LONG)
+
+
+def _admitted_socket_base(base: str | None) -> str:
+    """``base`` re-checked at construction (or a fresh choice when none was carried)."""
+    if base is None:
+        return broker_socket_base()
+    if base in _socket_base_candidates() and _fits(base):
+        return base
+    raise ValueError(BROKER_SOCKET_PATH_TOO_LONG)
+
+
+def _make_broker_root(base: str) -> Path:
+    """A fresh 0700 root under ``base``, created with that mode and spelled exactly as
+    ``base`` joined with its name, so the checked and the bound pathname are one string."""
+    for _ in range(16):
+        root = os.path.join(base, _BROKER_ROOT_PREFIX + secrets.token_hex(_BROKER_ROOT_RANDOM_HEX // 2))
+        try:
+            os.mkdir(root, 0o700)
+        except FileExistsError:
+            continue
+        return Path(root)
+    raise FileExistsError("no unused broker root name")
+
+
 class ParentUnixBroker:
     """One-request parent-owned AF_UNIX broker; child selects no provider action."""
     def __init__(
@@ -562,6 +687,7 @@ class ParentUnixBroker:
         model: str,
         staged_dir: Path,
         canonical_repo: Path,
+        socket_base: str | None = None,
     ) -> None:
         # Retention state first: a root is removed only when no client ever launched or
         # the client, server and adapter were all proven quiescent.
@@ -623,23 +749,6 @@ class ParentUnixBroker:
         self._canonical_probe_file = probe_file
         self._instruction_sha256 = sha256(instructions.read_bytes()).hexdigest()
         self.nonce = secrets.token_hex(32)
-        self.root = Path(tempfile.mkdtemp(prefix="phase-loop-broker-")); self.root.chmod(0o700)
-        secret_fd = None
-        secret_path = None
-        try:
-            secret_fd, secret_path = tempfile.mkstemp(prefix="phase-loop-host-probe-")
-            os.fchmod(secret_fd, 0o600)
-            os.write(secret_fd, secrets.token_bytes(32))
-        except BaseException:
-            if secret_path is not None:
-                Path(secret_path).unlink(missing_ok=True)
-            self.root.rmdir()
-            raise
-        finally:
-            if secret_fd is not None:
-                os.close(secret_fd)
-        self._host_secret_probe = Path(secret_path)
-        self.path = self.root / "intended-inference.sock"; self._used = False
         self.evidence: dict[str, object] = {
             "schema": PARENT_UNIX_BROKER_V1,
             "stage_bundle_sha256": authorization.input_sha256,
@@ -652,13 +761,34 @@ class ParentUnixBroker:
             "cleanup_root_removed": False,
             "child_quiescent": False,
         }
+        self._sock: socket.socket | None = None
+        self._host_secret_probe: Path | None = None
+        # The root is made with mode 0700 and spelled exactly as it is bound; everything
+        # after its creation runs under the cleanup below.
+        self.root = _make_broker_root(_admitted_socket_base(socket_base))
+        self.path = self.root / _BROKER_SOCKET_NAME; self._used = False
+        secret_fd = None
         try:
+            info = os.lstat(self.root)
+            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+                    or stat.S_IMODE(info.st_mode) & 0o077):
+                raise ValueError("broker socket root is not private")
+            secret_fd, secret_path = tempfile.mkstemp(prefix="phase-loop-host-probe-")
+            self._host_secret_probe = Path(secret_path)
+            os.fchmod(secret_fd, 0o600)
+            os.write(secret_fd, secrets.token_bytes(32))
+            os.close(secret_fd)
+            secret_fd = None
+            if len(os.fsencode(str(self.path))) > AF_UNIX_PATH_MAX:
+                raise ValueError(BROKER_SOCKET_PATH_TOO_LONG)
             self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             self._sock.bind(str(self.path))
             self._sock.listen(1)
             self._sock.settimeout(10)
             self.path.chmod(0o600)
         except BaseException:
+            if secret_fd is not None:
+                os.close(secret_fd)
             try:
                 self.close()
             except OSError:
@@ -709,10 +839,12 @@ class ParentUnixBroker:
             except FileNotFoundError: pass
             try: self.root.rmdir()
             except OSError: pass
-        try: self._host_secret_probe.unlink()
-        except FileNotFoundError: pass
+        probe = self._host_secret_probe
+        if probe is not None:
+            try: probe.unlink()
+            except FileNotFoundError: pass
         self.evidence["cleanup_root_removed"] = not self.root.exists()
-        self.evidence["host_secret_probe_removed"] = not self._host_secret_probe.exists()
+        self.evidence["host_secret_probe_removed"] = probe is None or not probe.exists()
     @staticmethod
     def _proc_stat(pid: int) -> tuple[int, int]:
         raw = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
