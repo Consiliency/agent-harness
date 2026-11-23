@@ -13,7 +13,6 @@ strict and bound the post-exit collection.
 """
 from __future__ import annotations
 
-import io
 import queue
 import subprocess
 import sys
@@ -22,7 +21,7 @@ import time
 
 import pytest
 
-from phase_loop_runtime import launcher
+from phase_loop_runtime import launcher, panel_invoker
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX streaming path")
 
@@ -114,6 +113,12 @@ def test_post_exit_collection_stops_at_its_budget(tmp_path, monkeypatch):
 
 
 def test_invalid_output_bytes_do_not_kill_the_reader(tmp_path, monkeypatch):
+    launch_owned = panel_invoker.launch_owned
+
+    def launch_with_utf8(*args, **kwargs):
+        return launch_owned(*args, **{**kwargs, "encoding": "utf-8"})
+
+    monkeypatch.setattr(panel_invoker, "launch_owned", launch_with_utf8)
     failures = []
     monkeypatch.setattr(threading, "excepthook", lambda args: failures.append(args.exc_type))
     raw = b"before\n\xff\nafter\n"
@@ -121,9 +126,7 @@ def test_invalid_output_bytes_do_not_kill_the_reader(tmp_path, monkeypatch):
     result = launcher.launch(_child(script), log_path=tmp_path / "run" / "output.log")
     assert result.returncode == 0
     assert not failures
-    # The reader decodes with the pipe's own default codec; replace only undecodable bytes.
-    expected = io.TextIOWrapper(io.BytesIO(raw), errors="replace").read().splitlines()
-    assert result.output.splitlines() == expected and expected[-1] == "after"
+    assert result.output.splitlines() == ["before", "\ufffd", "after"]
 
 
 def test_unencodable_stdin_still_fails(tmp_path):
