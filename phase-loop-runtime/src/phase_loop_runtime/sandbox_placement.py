@@ -2322,6 +2322,29 @@ _WORKLOAD_UNSUPPORTED = "sandbox_placement_workload_unsupported"
 _PREFLIGHT = "preflight"
 #: The only reservation ids this lifecycle issues; anything else was never ours.
 _ISSUED_RESERVATION = re.compile(r"rsv-[0-9a-f]{32}")
+
+# LaneExec (v13 LANEEXEC SL-3) lifecycle hooks.
+#: ``x-prepare.constants.prepare_deadline_ms``.
+PREPARE_DEADLINE_MS = 30_000
+#: The code an unreadable caps record gives ``prepare`` (coordinator ruling 1). The ruling
+#: names ``sandbox_placement_capability_unmet``, which the frozen ``PrepareResponse`` refused
+#: enum does not admit; until that sentence is amended prepare refuses with the wire's
+#: generic refusal, state ``refused``, exit 10, nothing changed.
+PREPARE_CAPS_UNREADABLE_CODE = "sandbox_launch_refused"
+#: ``patch_return.CANCEL_WAIT_SECONDS``: the longest one verified-owner cancel waits.
+CANCEL_WAIT_S = 10.0
+_PREPARE_MIN_WAIT_S = 0.5
+_LAUNCH_REFUSED = "sandbox_launch_refused"
+_LAUNCH_UNKNOWN = "sandbox_launch_reservation_unknown"
+_LAUNCH_MISMATCH = "sandbox_launch_reservation_mismatch"
+_LAUNCH_CLAIMED = "sandbox_launch_exec_claimed"
+_LAUNCH_INPUT_MISMATCH = "sandbox_launch_input_mismatch"
+_LAUNCH_DIRS = ("prepare", "prepare-requests", "claims", "launches", "cancels", "heartbeats",
+                "cleanup", "runs")
+#: The run ids prepare assigns (they satisfy the envelope and JOURNAL identifier grammars).
+_RUN_ID = re.compile(r"run-[0-9a-f]{32}")
+#: A LaneExec journal key: a reservation id, a request id or a run id.
+_LAUNCH_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 #: ``_settle_committed`` outcomes that are not a response: the settle bound was reached
 #: under the lock, or the committed effect was removed or handed to cleanup.
 _AT_BOUND = object()
@@ -2665,6 +2688,8 @@ class PlacementLifecycle:
         settings: sandbox_policy.PlacementDriverSettings | None = None,
         new_id: Callable[[], str] | None = None,
         route_state: Callable[[], str] | None = None,
+        launch_cancel: Callable[[Mapping[str, object], float], str] | None = None,
+        launch_owner: Callable[[Mapping[str, object]], str] | None = None,
     ) -> None:
         from .placement_process_contract import CLIENTS
 
@@ -2684,6 +2709,10 @@ class PlacementLifecycle:
         self._settings = settings
         self.new_id = new_id if new_id is not None else (lambda: secrets.token_hex(16))
         self.route_state = route_state if route_state is not None else _default_route_state
+        # LaneExec (v13 LANEEXEC SL-3): cancel through the verified owning launcher, and
+        # whether a claim's recorded owner process is still the same live process.
+        self.launch_cancel = launch_cancel if launch_cancel is not None else _landed_launch_cancel
+        self.launch_owner = launch_owner if launch_owner is not None else _landed_launch_owner
 
     # -- configuration -------------------------------------------------------------------
     @property
@@ -2767,8 +2796,9 @@ class PlacementLifecycle:
         settle every unsettled attempt at its bound, resume every unfinished cleanup
         transfer (settled attempts included), then collect the destroyed cleanup owners
         whose attempts have journaled their completion and prune expired tombstones no
-        recovery still needs. Enumeration only selects request ids; each attempt is read
-        again under its own lock. Locks are only tried, never waited for, so an attempt or
+        recovery still needs. LaneExec prepare attempts at their settle bound are settled
+        first (``x-prepare.replay`` step 3). Enumeration only selects request ids; each
+        attempt is read again under its own lock. Locks are only tried, never waited for, so an attempt or
         file another process holds is left for a later start-up. The deadline and
         cancellation are checked before each attempt and again once its lock is held;
         when either has fired, start-up stops and leaves everything it has not begun as it
@@ -2783,6 +2813,7 @@ class PlacementLifecycle:
         when that sync fails nothing is removed in this pass. Each removal re-reads its own
         file under that file's lock; the attempts are not read again."""
         self._prepare()
+        self._launch_startup(deadline, cancelled)
         for request_id in self._ids("attempts"):
             if _stopped(deadline, cancelled):
                 return
@@ -3688,10 +3719,11 @@ class PlacementLifecycle:
         if tombstone:
             return LeaseFlags(create_settled=True, fenced=True, destruction_observed=True,
                               barrier_confirmed=True, expired=expired)
+        claimed = self._launch_claimed(entry)
         if entry.get("state") == "cleanup_pending":
-            return LeaseFlags(reserved=True, create_settled=True, fenced=True,
+            return LeaseFlags(reserved=True, create_settled=True, fenced=True, exec_claimed=claimed,
                               cleanup_pending=True, expired=expired)
-        return LeaseFlags(reserved=True, create_settled=True, ready=True,
+        return LeaseFlags(reserved=True, create_settled=True, ready=True, exec_claimed=claimed,
                           barrier_confirmed=True, expired=expired)
 
     def release(self, request: object, *, cancelled: threading.Event) -> object:
@@ -3748,6 +3780,12 @@ class PlacementLifecycle:
             if self._claimed_by_transfer(reservation_id, active):
                 # Its cleanup owner removes the effect; the active record is retired.
                 return response("cleanup_pending", _RELEASE_UNCONFIRMED, pending_flags)
+            if not self._launch_release_gate(reservation_id, deadline, cancelled):
+                # A LaneExec attempt is not terminal by the release deadline: the lease
+                # stays held and nothing is torn down (``x-release-reap.release``).
+                active["state"] = "cleanup_pending"
+                _write_journal(active_path, active)
+                return response("cleanup_pending", _RELEASE_UNCONFIRMED, self._flags(active))
             if self._cleanup(active["effect"], deadline, cancelled):  # type: ignore[arg-type]
                 self._tombstone(reservation_id, active)
                 return response("released", None, self._flags(active, tombstone=True))
@@ -3903,6 +3941,7 @@ class PlacementLifecycle:
                 destroyed += 1
             else:
                 pending += 1
+        self._launch_sweep(deadline, cancelled)
         state = "complete" if pending == 0 else "cleanup_pending"
         result = InventoryReapResult(self.client, self.client, examined, destroyed, pending,
                                      None if pending == 0 else _RELEASE_UNCONFIRMED)
@@ -3919,6 +3958,10 @@ class PlacementLifecycle:
             return self._reap_owner(reservation_id, deadline, cancelled) if owned else None
         if self._claimed_by_transfer(reservation_id, current):
             return self._reap_owner(reservation_id, deadline, cancelled)
+        if not self._launch_reap_gate(reservation_id, deadline, cancelled):
+            current["state"] = "cleanup_pending"
+            _write_journal(self._dir("reservations") / f"{reservation_id}.json", current)
+            return False
         if self._cleanup(current["effect"], deadline, cancelled):  # type: ignore[arg-type]
             self._tombstone(reservation_id, current)
             return True
@@ -3940,6 +3983,532 @@ class PlacementLifecycle:
         owner["destroyed_at"] = self.clock()
         _write_journal(path, owner)
         return True
+
+    # -- LaneExec hooks (v13 LANEEXEC SL-3) ----------------------------------------------
+    #
+    # The client's LaneExec state directory is ``<inventory>/laneexec`` (binding §6 E2-4).
+    # Every record there is a whole-file journal written by ``_write_journal``:
+    #
+    # * ``prepare/<reservation_id>.json``: the one prepare record of a reservation
+    #   (``x-prepare.journal``), values assigned once;
+    # * ``prepare-requests/<request_id>.json``: one prepare attempt, its retained settled
+    #   response and the ``run_id`` it planned (``x-prepare.replay``);
+    # * ``claims/<reservation_id>.json``: the exec claim, set and cleared only by the
+    #   compare-and-set and the rollback below, under the reservation lock (L-S2);
+    # * ``launches/<launch request_id>.json``: the launch record status and cancel read,
+    #   holding the terminal LaunchResponse once one is written (L-S4);
+    # * ``cancels/<launch request_id>.json``: local cancel outcomes journaled without a
+    #   signal (L-S4);
+    # * ``heartbeats/<reservation_id>.json``: the last durable local heartbeat;
+    # * ``cleanup/<run_id>.json``: an uncertain prepare write left for release or reap;
+    # * ``runs/<run_id>/``: the allocations a run owns, removed only through its record.
+    #
+    # The reservation's journal lock (``reservations/<id>.lock``) serializes prepare, the
+    # launch steps through the claim, release and reap (``x-prepare.lock``).
+
+    @property
+    def launch_root(self) -> Path:
+        """The client's LaneExec state directory, under this inventory."""
+        return self.inventory / "laneexec"
+
+    def _launch_dir(self, name: str) -> Path:
+        return self.launch_root / name
+
+    def _launch_prepare(self) -> None:
+        self._prepare()
+        try:
+            _private_tree(self.launch_root)
+            for name in _LAUNCH_DIRS:
+                _private_tree(self._launch_dir(name))
+        except OSError:
+            raise LifecycleError("placement_inventory_unsafe") from None
+
+    def _launch_ids(self, name: str) -> list[str]:
+        try:
+            entries = os.listdir(self._launch_dir(name))
+        except FileNotFoundError:
+            return []
+        return [entry[:-5] for entry in sorted(entries)
+                if entry.endswith(".json") and not entry.startswith(".")]
+
+    def _launch_read(self, name: str, key: str) -> dict[str, object] | None:
+        if not _LAUNCH_KEY.fullmatch(key):
+            return None
+        return _read_journal(self._launch_dir(name) / f"{key}.json")
+
+    def _launch_write(self, name: str, key: str, value: Mapping[str, object]) -> None:
+        if not _LAUNCH_KEY.fullmatch(key):
+            raise LifecycleError("placement_internal")
+        self._launch_prepare()
+        _write_journal(self._launch_dir(name) / f"{key}.json", value)
+
+    def launch_run_dir(self, run_id: str) -> Path:
+        """``runs/<run_id>``: the directory that owns a run's local allocations."""
+        if not _RUN_ID.fullmatch(run_id):
+            raise LifecycleError("placement_internal")
+        return self._launch_dir("runs") / run_id
+
+    def launch_prepare_record(self, reservation_id: str) -> dict[str, object] | None:
+        return self._launch_read("prepare", reservation_id)
+
+    def launch_claim_record(self, reservation_id: str) -> dict[str, object] | None:
+        return self._launch_read("claims", reservation_id)
+
+    def launch_record(self, request_id: str) -> dict[str, object] | None:
+        """The LaneExec launch record of one launch ``request_id``, if any."""
+        return self._launch_read("launches", request_id)
+
+    def write_launch_record(self, request_id: str, value: Mapping[str, object]) -> None:
+        """Durably replace the launch record of ``request_id`` (the launch order's own
+        record: reservation id, run id, paths, claim state and counters)."""
+        self._launch_write("launches", request_id, dict(value))
+
+    def write_launch_terminal(self, request_id: str, response: object) -> None:
+        """Journal LaneExec's terminal LaunchResponse in the launch record before it is
+        returned (L-S4). The bytes are the strict encoding; status replays them."""
+        from .launch_process_contract import encode_launch_response
+
+        record = self.launch_record(request_id)
+        if record is None:
+            raise LifecycleError("placement_internal")
+        record["terminal"] = encode_launch_response(response).decode("utf-8")  # type: ignore[arg-type]
+        self._launch_write("launches", request_id, record)
+
+    def launch_terminal(self, request_id: str) -> object:
+        """The terminal LaunchResponse journaled for ``request_id``, or None."""
+        from .launch_process_contract import decode_launch_response, encode_launch_response
+
+        record = self.launch_record(request_id)
+        raw = None if record is None else record.get("terminal")
+        if raw is None:
+            return None
+        try:
+            data = str(raw).encode("utf-8")
+            response = decode_launch_response("launch", data)
+        except Exception:
+            raise LifecycleError("placement_journal_corrupt") from None
+        if encode_launch_response(response) != data:
+            raise LifecycleError("placement_journal_corrupt")
+        return response
+
+    def journal_local_cancel(self, request_id: str, outcome: str) -> None:
+        """Append one zero-signal cancel outcome for a launch (L-S4); never a success."""
+        self._launch_prepare()
+        with _FileLock(self._launch_dir("cancels") / f"{request_id}.lock", blocking=True):
+            current = self._launch_read("cancels", request_id) or {"request_id": request_id,
+                                                                   "outcomes": []}
+            outcomes = list(current.get("outcomes") or [])  # type: ignore[arg-type]
+            outcomes.append({"outcome": str(outcome), "at": self.clock()})
+            self._launch_write("cancels", request_id, {"request_id": request_id,
+                                                       "outcomes": outcomes})
+
+    def launch_local_cancels(self, request_id: str) -> list[str]:
+        record = self._launch_read("cancels", request_id) or {}
+        return [str(item.get("outcome")) for item in record.get("outcomes") or []]  # type: ignore[union-attr]
+
+    def launch_lock(self, reservation_id: str, *, timeout_s: float,
+                    cancelled: threading.Event | None = None) -> "ReservationLock":
+        """The reservation's journal lock, waited on for at most ``timeout_s``. Use as a
+        context manager and check ``held``."""
+        return ReservationLock(self, reservation_id, _Deadline.after(timeout_s), cancelled)
+
+    def _launch_window(self, reservation_id: str, echo: Mapping[str, object] | None
+                       ) -> tuple[str | None, dict[str, object] | None]:
+        """Under the reservation lock: whether the reservation is held, unexpired, not
+        fenced and equal to ``echo`` field by field (``x-launch-inputs.reservation_echo``).
+        Returns ``(code, active record)``; the code is None when the window is open."""
+        from .placement_process_contract import canonical_bytes
+
+        if not _ISSUED_RESERVATION.fullmatch(reservation_id):
+            return _LAUNCH_UNKNOWN, None
+        active = _read_journal(self._dir("reservations") / f"{reservation_id}.json")
+        if active is None or active.get("state") == "cleanup_pending":
+            return _LAUNCH_UNKNOWN, None
+        reservation = active.get("reservation")
+        if not isinstance(reservation, dict):
+            raise LifecycleError("placement_journal_corrupt")
+        expires = _epoch(reservation.get("expires_at"))
+        if expires is None or self.clock() >= expires:
+            return _LAUNCH_UNKNOWN, None
+        if (reservation.get("client") != self.client or reservation.get("inventory") != self.client):
+            return _LAUNCH_UNKNOWN, None
+        if echo is not None and canonical_bytes(dict(echo)) != canonical_bytes(reservation):
+            return _LAUNCH_MISMATCH, active
+        return None, active
+
+    def _launch_claimed(self, entry: Mapping[str, object]) -> bool:
+        """Whether a LaneExec claim is held on the reservation an active entry names."""
+        try:
+            reservation_id = str(entry["reservation"]["reservation_id"])  # type: ignore[index]
+            claim = self.launch_claim_record(reservation_id)
+        except (KeyError, TypeError, LifecycleError, OSError):
+            return False
+        return bool(claim and claim.get("claimed") is True)
+
+    def _claim_locked(self, reservation_id: str, request_id: str, run_id: str,
+                      owner: Mapping[str, object] | None) -> str | None:
+        """The exec claim's compare-and-set; the caller holds the reservation lock. One
+        durable write sets the claim (``LeaseFlags.exec_claimed``) and records the launch
+        ``request_id``; it never touches the worker JOURNAL (L-S2)."""
+        if not _LAUNCH_KEY.fullmatch(request_id) or not _RUN_ID.fullmatch(run_id):
+            raise LifecycleError("placement_internal")
+        code, _active = self._launch_window(reservation_id, None)
+        if code is not None:
+            return code
+        current = self.launch_claim_record(reservation_id)
+        if current is not None and current.get("claimed") is not False:
+            return _LAUNCH_CLAIMED
+        self._launch_write("claims", reservation_id, {
+            "reservation_id": reservation_id, "request_id": request_id, "run_id": run_id,
+            "claimed": True, "claimed_at": self.clock(),
+            "owner": dict(owner) if owner is not None else _own_identity(),
+            "rolled_back": list((current or {}).get("rolled_back") or []),  # type: ignore[arg-type]
+        })
+        return None
+
+    def _rollback_locked(self, reservation_id: str, request_id: str) -> bool:
+        """``x-exec.claim_rollback``: one durable write that clears the claim and journals
+        ``claim_rolled_back`` for that launch ``request_id``. Only the claim that request
+        took is cleared."""
+        current = self.launch_claim_record(reservation_id)
+        if current is None or current.get("claimed") is not True or current.get("request_id") != request_id:
+            return False
+        current["claimed"] = False
+        current["rolled_back"] = [*list(current.get("rolled_back") or []), request_id]  # type: ignore[arg-type]
+        current["rolled_back_at"] = self.clock()
+        self._launch_write("claims", reservation_id, current)
+        return True
+
+    def claim_exec(self, reservation_id: str, request_id: str, run_id: str, *,
+                   timeout_s: float, owner: Mapping[str, object] | None = None,
+                   cancelled: threading.Event | None = None) -> str | None:
+        """Take the exec claim under the reservation lock. None when claimed, else the
+        refusal code (``sandbox_launch_exec_claimed`` for a held claim)."""
+        with self.launch_lock(reservation_id, timeout_s=timeout_s, cancelled=cancelled) as lock:
+            if not lock.held:
+                return _TIMEOUT
+            return lock.claim(request_id, run_id, owner=owner)
+
+    def rollback_claim(self, reservation_id: str, request_id: str, *, timeout_s: float) -> bool:
+        with self.launch_lock(reservation_id, timeout_s=timeout_s) as lock:
+            return bool(lock.held) and lock.rollback(request_id)
+
+    def record_heartbeat(self, reservation_id: str, request_id: str) -> bool:
+        """The local durable heartbeat (``x-lifetime.liveness``): the slot heartbeat, then
+        the journal heartbeat. True only when both writes completed for the claim this
+        launch holds. A removed slot is never recreated, so a released reservation can
+        never be confirmed; any failure is reported, never swallowed."""
+        try:
+            claim = self.launch_claim_record(reservation_id)
+            if (claim is None or claim.get("claimed") is not True
+                    or claim.get("request_id") != request_id):
+                return False
+            active = _read_journal(self._dir("reservations") / f"{reservation_id}.json")
+            effect = (active or {}).get("effect") or {}
+            if effect.get("kind") != "local" or not isinstance(effect.get("slot"), str):  # type: ignore[union-attr]
+                return False
+            now = self.clock()
+            slot = self._slots_dir() / f"{effect['slot']}.json"  # type: ignore[index]
+            data = json.dumps({"client": self.client, "reservation_id": reservation_id,
+                               "request_id": request_id, "heartbeat_at": now},
+                              sort_keys=True, separators=(",", ":")).encode("utf-8")
+            fd = os.open(slot, os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            try:
+                os.ftruncate(fd, 0)
+                view = memoryview(data)
+                while view:
+                    view = view[os.pwrite(fd, view, len(data) - len(view)):]
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            self._launch_write("heartbeats", reservation_id, {
+                "reservation_id": reservation_id, "request_id": request_id, "heartbeat_at": now})
+        except (OSError, LifecycleError):
+            return False
+        return True
+
+    def launch_heartbeat(self, reservation_id: str) -> float | None:
+        record = self._launch_read("heartbeats", reservation_id)
+        value = None if record is None else record.get("heartbeat_at")
+        return float(value) if type(value) in (int, float) else None  # type: ignore[arg-type]
+
+    # -- LaneExec prepare (``x-prepare``) -------------------------------------------------
+    def launch_prepare(self, request: object, *, caps_readable: bool) -> object:
+        """``x-prepare``: assign ``run_id``, ``scratch_path`` and ``tree_path`` once per
+        reservation, journaled under the reservation lock before the response; replay as
+        ``x-prepare.replay``. Raises :class:`LifecycleError` for an internal failure."""
+        from .placement_process_contract import canonical_bytes
+
+        self._launch_prepare()
+        self._launch_startup(None, None)
+        body_sha256 = hashlib.sha256(canonical_bytes(request.to_json())).hexdigest()  # type: ignore[attr-defined]
+        request_id = request.request_id  # type: ignore[attr-defined]
+        directory = self._launch_dir("prepare-requests")
+        with _FileLock(directory / f"{request_id}.lock", blocking=False) as held:
+            record = _read_journal(directory / f"{request_id}.json")
+            if record is not None and record.get("body_sha256") != body_sha256:
+                # Same request_id, another body: refused, and nothing is created or journaled.
+                return self._prepare_response(request, "refused", _LAUNCH_REFUSED)
+            if record is not None and record.get("settled"):
+                return self._stored_prepare(record)
+            if not held:
+                return self._prepare_response(request, "timeout", _TIMEOUT)
+            if record is not None:
+                # Step 3, then step 4: the clock is read before the journal.
+                if self._at_bound(record, self.clock()):
+                    return self._settle_prepare_end_reached(record)
+                return self._prepare_locked(request, record)
+            record = {
+                "request_id": request_id, "body_sha256": body_sha256,
+                "reservation_id": request.reservation.reservation_id,  # type: ignore[attr-defined]
+                "caller_context": dict(request.caller_context),  # type: ignore[attr-defined]
+                "started_at": self.clock(), "deadline_ms": PREPARE_DEADLINE_MS,
+                "settled": False, "run_id": None,
+            }
+            self._launch_write("prepare-requests", request_id, record)
+            if not caps_readable:
+                # Coordinator ruling 1: an unreadable caps record refuses prepare.
+                return self._settle_prepare(record, self._prepare_response(
+                    request, "refused", PREPARE_CAPS_UNREADABLE_CODE))
+            return self._prepare_locked(request, record)
+
+    def _prepare_response(self, request: object, state: str, code: str | None,
+                          paths: Mapping[str, object] | None = None) -> object:
+        from .launch_process_contract import PreparedPaths, PrepareResponse
+
+        if isinstance(request, Mapping):
+            request_id, reservation_id = str(request["request_id"]), str(request["reservation_id"])
+            context = request.get("caller_context") or {}
+        else:
+            request_id = request.request_id  # type: ignore[attr-defined]
+            reservation_id = request.reservation.reservation_id  # type: ignore[attr-defined]
+            context = request.caller_context  # type: ignore[attr-defined]
+        values = None if paths is None else PreparedPaths(
+            str(paths["run_id"]), str(paths["scratch_path"]), str(paths["tree_path"]))
+        return PrepareResponse(request_id, reservation_id, state, code, values,
+                               dict(context))  # type: ignore[arg-type]
+
+    def _settle_prepare(self, record: dict[str, object], response: object) -> object:
+        from .launch_process_contract import encode_launch_response, launch_exit_class
+
+        record["settled"] = True
+        record["response"] = encode_launch_response(response).decode("utf-8")  # type: ignore[arg-type]
+        record["exit"] = launch_exit_class(response)  # type: ignore[arg-type]
+        self._launch_write("prepare-requests", str(record["request_id"]), record)
+        return response
+
+    def _stored_prepare(self, record: Mapping[str, object]) -> object:
+        from .launch_process_contract import decode_launch_response, encode_launch_response
+        from .placement_process_contract import ProtocolError
+
+        raw = str(record.get("response", "")).encode("utf-8")
+        try:
+            response = decode_launch_response("prepare", raw)
+        except ProtocolError:
+            raise LifecycleError("placement_journal_corrupt") from None
+        if encode_launch_response(response) != raw:
+            raise LifecycleError("placement_journal_corrupt")
+        return response
+
+    def _settle_prepare_end_reached(self, record: dict[str, object]) -> object:
+        """Step 3: settle terminally (``timeout``, ``sandbox_placement_end_reached``,
+        paths null, exit 20) and turn the attempt's uncertain prepare write, the
+        ``run_id`` it planned, into a cleanup entry for that reservation and run id."""
+        run_id = record.get("run_id")
+        if isinstance(run_id, str) and _RUN_ID.fullmatch(run_id):
+            self._launch_write("cleanup", run_id, {
+                "reservation_id": record.get("reservation_id"), "run_id": run_id,
+                "request_id": record.get("request_id"), "created_at": self.clock()})
+        return self._settle_prepare(record, self._prepare_response(record, "timeout", _END_REACHED))
+
+    def _launch_startup(self, deadline: "_Deadline | None",
+                        cancelled: threading.Event | None) -> None:
+        """Lifecycle start-up for LaneExec: step 3 applied to every unsettled prepare
+        attempt at its bound. Locks are only tried; a held attempt is left for later."""
+        directory = self._launch_dir("prepare-requests")
+        for request_id in self._launch_ids("prepare-requests"):
+            if _stopped(deadline, cancelled):
+                return
+            with self._try_lock(directory / f"{request_id}.lock", deadline) as held:
+                if not held:
+                    continue
+                try:
+                    record = _read_journal(directory / f"{request_id}.json")
+                except LifecycleError:
+                    continue
+                if record is not None and not record.get("settled") and self._at_bound(record, self.clock()):
+                    self._settle_prepare_end_reached(record)
+
+    def _prepare_locked(self, request: object, record: dict[str, object]) -> object:
+        """Steps 4 and 5 for a replay, and the whole of a fresh prepare: one read of the
+        reservation's journal under its lock. A lock not obtained, or a journal that
+        cannot be read, is indeterminate: nothing is journaled and the answer is
+        ``timeout``/``sandbox_placement_operation_timeout``."""
+        reservation_id = request.reservation.reservation_id  # type: ignore[attr-defined]
+        echo = request.reservation_json or request.reservation.to_json()  # type: ignore[attr-defined]
+        left = float(record["started_at"]) + PREPARE_DEADLINE_MS / 1000.0 - self.clock()  # type: ignore[arg-type]
+        wait = max(_PREPARE_MIN_WAIT_S, min(left, ANSWER_BOUND_S))
+        with self.launch_lock(reservation_id, timeout_s=wait) as lock:
+            if not lock.held:
+                return self._prepare_response(request, "timeout", _TIMEOUT)
+            try:
+                code, active = lock.window(echo)
+                claim = None if code is not None else self.launch_claim_record(reservation_id)
+                existing = None if code is not None else self.launch_prepare_record(reservation_id)
+            except (LifecycleError, OSError):
+                return self._prepare_response(request, "timeout", _TIMEOUT)
+            if code is not None:
+                return self._settle_prepare(record, self._prepare_response(request, "refused", code))
+            if claim is not None and claim.get("claimed") is not False:
+                return self._settle_prepare(record, self._prepare_response(request, "refused",
+                                                                           _LAUNCH_CLAIMED))
+            snapshot_root = request.snapshot_root  # type: ignore[attr-defined]
+            if existing is not None:
+                if existing.get("snapshot_root") != snapshot_root:
+                    return self._settle_prepare(record, self._prepare_response(
+                        request, "refused", _LAUNCH_INPUT_MISMATCH))
+                return self._settle_prepare(record, self._prepare_response(
+                    request, "prepared", None, existing))
+            kind = ((active or {}).get("reservation") or {}).get("target", {}).get("kind")  # type: ignore[union-attr]
+            if kind not in ("local", "openshell"):
+                return self._settle_prepare(record, self._prepare_response(
+                    request, "refused", _LAUNCH_REFUSED))
+            try:
+                run_id = record.get("run_id")
+                if not (isinstance(run_id, str) and _RUN_ID.fullmatch(run_id)):
+                    # The run id is journaled in the attempt before anything is allocated,
+                    # so no replay of this attempt ever assigns a second one.
+                    run_id = f"run-{self.new_id()}"
+                    if not _RUN_ID.fullmatch(run_id):
+                        raise LifecycleError("placement_internal")
+                    record["run_id"] = run_id
+                    self._launch_write("prepare-requests", str(record["request_id"]), record)
+                paths = self._prepared_paths(str(kind), run_id, snapshot_root)
+                _private_tree(self.launch_run_dir(run_id))
+                values = {"reservation_id": reservation_id, "request_id": record["request_id"],
+                          "target_kind": kind, "snapshot_root": snapshot_root,
+                          "created_at": self.clock(), **paths}
+                self._launch_write("prepare", reservation_id, values)
+            except OSError:
+                raise LifecycleError("placement_internal") from None
+            return self._settle_prepare(record, self._prepare_response(request, "prepared", None, values))
+
+    def _prepared_paths(self, kind: str, run_id: str, snapshot_root: str) -> dict[str, str]:
+        """``x-prepare.values``: openshell ``/work/<run_id>/scratch`` and ``/work/<run_id>/fs``
+        followed by ``snapshot_root``; local, the run's private scratch directory and
+        ``snapshot_root`` (the local ``tree_dest``)."""
+        if kind == "openshell":
+            base = f"/work/{run_id}"
+            return {"run_id": run_id, "scratch_path": f"{base}/scratch",
+                    "tree_path": f"{base}/fs{snapshot_root}"}
+        return {"run_id": run_id, "scratch_path": str(self.launch_run_dir(run_id) / "scratch"),
+                "tree_path": snapshot_root}
+
+    # -- LaneExec release and reap (``x-release-reap``) -----------------------------------
+    def _launch_terminal_present(self, request_id: object) -> bool:
+        if not isinstance(request_id, str):
+            return False
+        record = self.launch_record(request_id)
+        return record is not None and record.get("terminal") is not None
+
+    def _launch_cancel_owner(self, claim: Mapping[str, object], wait_s: float) -> str | None:
+        """Cancel the claimed attempt through its verified owning launcher only, and
+        journal a zero-signal outcome locally (L-S4)."""
+        from .launch_return import map_cancel
+
+        try:
+            outcome = self.launch_cancel(claim, wait_s)
+        except Exception:
+            outcome = None
+        mapping = map_cancel(outcome if isinstance(outcome, str) else None,
+                             record_present=True, claim_held=True)
+        if mapping.local_outcome is not None and isinstance(claim.get("request_id"), str):
+            try:
+                self.journal_local_cancel(str(claim["request_id"]), mapping.local_outcome)
+            except (OSError, LifecycleError):
+                pass
+        return outcome if isinstance(outcome, str) else None
+
+    def _launch_release_gate(self, reservation_id: str, deadline: "_Deadline",
+                             cancelled: threading.Event | None) -> bool:
+        """Under the reservation lock, before release tears anything down. A held claim
+        whose launch has no terminal record is cancelled first through the verified owner;
+        release then waits for the terminal within its deadline. True when teardown may
+        proceed, after the run's allocations (prepare record, run directory, cleanup
+        entries) are removed; False leaves everything in place (``cleanup_pending``)."""
+        claim = self.launch_claim_record(reservation_id)
+        if claim is not None and claim.get("claimed") is True:
+            request_id = claim.get("request_id")
+            if not self._launch_terminal_present(request_id):
+                self._launch_cancel_owner(claim, max(_POLL_S, min(deadline.left(), CANCEL_WAIT_S)))
+                while not self._launch_terminal_present(request_id):
+                    if _stopped(deadline, cancelled):
+                        return False
+                    _sleep(min(_POLL_S, deadline.left()))
+        self._remove_launch_allocations(reservation_id)
+        return True
+
+    def _launch_reap_gate(self, reservation_id: str, deadline: "_Deadline",
+                          cancelled: threading.Event | None) -> bool:
+        """Under the reservation lock, before reap tears anything down. A held claim with
+        no terminal record is settled only when its owning launcher is verifiably gone:
+        it is cancelled through the verified owner and marked reaped, and reap never
+        writes or replaces a LaunchResponse. A live or unverified owner keeps everything."""
+        claim = self.launch_claim_record(reservation_id)
+        if (claim is not None and claim.get("claimed") is True
+                and not self._launch_terminal_present(claim.get("request_id"))
+                and claim.get("reaped_at") is None):
+            try:
+                owner = self.launch_owner(claim)
+            except Exception:
+                owner = "unverified"
+            if owner != "gone" or _stopped(deadline, cancelled):
+                return False
+            self._launch_cancel_owner(claim, max(_POLL_S, min(deadline.left(), CANCEL_WAIT_S)))
+            claim["reaped_at"] = self.clock()
+            self._launch_write("claims", reservation_id, claim)
+        self._remove_launch_allocations(reservation_id)
+        return True
+
+    def _remove_launch_allocations(self, reservation_id: str) -> None:
+        """``x-prepare.cleanup`` under the reservation lock: the prepare record and the
+        allocations owned by this reservation's run ids (its prepare record's, its claim's
+        and its cleanup entries'). Nothing of another run id is touched."""
+        run_ids: list[str] = []
+        prepare = self.launch_prepare_record(reservation_id)
+        claim = self.launch_claim_record(reservation_id)
+        for source in (prepare, claim):
+            if source is not None and isinstance(source.get("run_id"), str):
+                run_ids.append(str(source["run_id"]))
+        entries = []
+        for key in self._launch_ids("cleanup"):
+            entry = self._launch_read("cleanup", key)
+            if entry is not None and entry.get("reservation_id") == reservation_id:
+                entries.append(key)
+                run_ids.append(str(entry.get("run_id")))
+        for run_id in dict.fromkeys(run_ids):
+            if _RUN_ID.fullmatch(run_id):
+                _remove_tree(self.launch_run_dir(run_id))
+        for key in entries:
+            _remove_journal(self._launch_dir("cleanup") / f"{key}.json")
+        _remove_journal(self._launch_dir("prepare") / f"{reservation_id}.json")
+
+    def _launch_sweep(self, deadline: "_Deadline", cancelled: threading.Event | None) -> None:
+        """Reap, caller-scoped: cleanup entries and prepare records of reservations this
+        inventory no longer holds (no active record) are removed under that reservation's
+        lock. Launch, claim and cancel records stay for status."""
+        reservation_ids = {str((self._launch_read("cleanup", key) or {}).get("reservation_id"))
+                           for key in self._launch_ids("cleanup")}
+        reservation_ids |= set(self._launch_ids("prepare"))
+        for reservation_id in sorted(reservation_ids):
+            if _stopped(deadline, cancelled) or not _ISSUED_RESERVATION.fullmatch(reservation_id):
+                continue
+            if os.path.lexists(self._dir("reservations") / f"{reservation_id}.json"):
+                continue
+            with self._try_lock(self._dir("reservations") / f"{reservation_id}.lock", deadline) as held:
+                if held and not os.path.lexists(self._dir("reservations") / f"{reservation_id}.json"):
+                    self._remove_launch_allocations(reservation_id)
+
 
 class _RequestEcho(NamedTuple):
     """What a response echoes of the request it answers, rebuilt from the journal."""
@@ -4060,6 +4629,96 @@ class _ReserveWalk:
             os.unlink(self.lifecycle._slots_dir() / f"{handle.token}.json")
         except FileNotFoundError:
             pass
+
+
+class ReservationLock:
+    """The reservation's journal lock (``x-prepare.lock``), held by one LaneExec step.
+
+    ``held`` says whether it was obtained. The window check, the exec claim's
+    compare-and-set and its rollback run only while it is held."""
+
+    def __init__(self, lifecycle: PlacementLifecycle, reservation_id: str,
+                 deadline: _Deadline, cancelled: threading.Event | None) -> None:
+        if not _LAUNCH_KEY.fullmatch(reservation_id):
+            raise LifecycleError("placement_internal")
+        lifecycle._prepare()
+        self.lifecycle, self.reservation_id, self.held = lifecycle, reservation_id, False
+        self._lock = _FileLock(lifecycle._dir("reservations") / f"{reservation_id}.lock",
+                               blocking=False, deadline=deadline, cancelled=cancelled)
+
+    def __enter__(self) -> "ReservationLock":
+        self.held = bool(self._lock.__enter__())
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.held = False
+        self._lock.__exit__(*exc)
+
+    def _require(self) -> None:
+        if not self.held:
+            raise LifecycleError("placement_internal")
+
+    def window(self, echo: Mapping[str, object] | None) -> tuple[str | None, dict[str, object] | None]:
+        self._require()
+        return self.lifecycle._launch_window(self.reservation_id, echo)
+
+    def claim(self, request_id: str, run_id: str, *,
+              owner: Mapping[str, object] | None = None) -> str | None:
+        self._require()
+        return self.lifecycle._claim_locked(self.reservation_id, request_id, run_id, owner)
+
+    def rollback(self, request_id: str) -> bool:
+        self._require()
+        return self.lifecycle._rollback_locked(self.reservation_id, request_id)
+
+
+def _own_identity() -> dict[str, object]:
+    """The claiming process: pid and its start identity (``run_status``)."""
+    from . import run_status
+
+    return {"pid": os.getpid(), "start": run_status.process_start_identity(os.getpid())}
+
+
+def _landed_launch_owner(claim: Mapping[str, object]) -> str:
+    """``gone`` when the claim's recorded owner process is verifiably not the same live
+    process, ``live`` when it is, ``unverified`` when the record names no owner."""
+    from . import run_status
+
+    owner = claim.get("owner")
+    if not isinstance(owner, Mapping):
+        return "unverified"
+    pid, start = owner.get("pid"), owner.get("start")
+    if type(pid) is not int or pid < 1 or not isinstance(start, str):
+        return "unverified"
+    return "live" if run_status.process_start_identity(pid) == start else "gone"
+
+
+def _landed_launch_cancel(claim: Mapping[str, object], wait_s: float) -> str:
+    """``cancel_attempt`` on the claimed run, through its verified owning launcher only."""
+    from .convergence.adapters.patch_return import cancel_attempt, default_state_root
+
+    run_id = claim.get("run_id")
+    if not isinstance(run_id, str):
+        return "unknown_attempt"
+    wait = min(CANCEL_WAIT_S, max(0.001, float(wait_s)))
+    return cancel_attempt(state_root=default_state_root(), attempt_id=run_id, wait_seconds=wait)
+
+
+def _remove_tree(path: Path) -> None:
+    """Remove one run directory without following a link planted in its place."""
+    import shutil
+
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return
+    import stat as _stat
+
+    if not _stat.S_ISDIR(info.st_mode):
+        os.unlink(path)
+    else:
+        shutil.rmtree(path)
+    _fsync_directory(path.parent)
 
 
 def _landed_caps_loader() -> object:
