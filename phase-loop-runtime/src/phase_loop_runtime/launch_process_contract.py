@@ -769,8 +769,7 @@ def encode_launch_response(message: LaunchProcessResponse) -> bytes:
 
 
 def _load_response_line(raw: bytes) -> dict[str, Any]:
-    """Parse one response line under ``x-cli.output``: exactly one compact JSON object
-    followed by one LF and nothing else.
+    """Parse one UTF-8 JSON object followed by exactly one LF.
 
     The request bounds of ``x-cli.input`` (65536 bytes, safe integers) are not applied,
     because responses carry members the schema leaves unbounded (``duration_ms``, counts).
@@ -814,8 +813,8 @@ def _load_response_line(raw: bytes) -> dict[str, Any]:
 
 
 def decode_launch_response(verb: str, raw: bytes) -> LaunchProcessResponse:
-    """A client's strict decoder for one response line: it accepts exactly the lines
-    :func:`encode_launch_response` emits for schema-valid records (one object, one LF)."""
+    """Decode one schema-valid response object followed by exactly one LF. Inter-token spaces
+    and tabs are accepted."""
     definition = _RESPONSE_DEFS.get(verb) if isinstance(verb, str) else None
     if definition is None:
         raise ProtocolError("verb_unknown")

@@ -959,15 +959,17 @@ def test_every_schema_valid_response_the_encoder_emits_decodes(member, value):
 
 def test_a_large_schema_valid_response_decodes():
     # Responses have no 64 KiB input bound; that bound is the request rule of x-cli.input.
-    body = status_response("finished", caller_context={f"k{i}": "x" * 512 for i in range(16)})
-    body["launch"]["caller_context"] = {f"k{i}": "y" * 512 for i in range(16)}
+    # NUL serializes as six bytes, so a schema-valid StatusResponse crosses 65536.
+    body = status_response("finished", caller_context={f"k{i}": chr(0) * 512 for i in range(16)})
+    body["launch"]["caller_context"] = {f"k{i}": chr(0) * 512 for i in range(16)}
+    encoded = contract.encode_launch_response(contract.StatusResponse.from_json(body))
+    assert len(encoded) > 65536
+    assert contract.decode_launch_response("status", encoded).to_json() == body
     version = version_response(templates=[
         {"template_id": f"t{i:02d}", "template_sha256": HEX, "workload": "pi-runner"}
         for i in range(64)])
-    for verb, value in (("status", body), ("version", version)):
-        encoded = contract.encode_launch_response(contract.decode_launch_response(verb, line(value)))
-        assert contract.decode_launch_response(verb, encoded).to_json() == value
-    assert len(line(body)) > 16384
+    encoded = contract.encode_launch_response(contract.LaunchVersionResponse.from_json(version))
+    assert contract.decode_launch_response("version", encoded).to_json() == version
 
 
 @pytest.mark.parametrize("framing", [
