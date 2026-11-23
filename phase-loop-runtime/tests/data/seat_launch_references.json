@@ -923,7 +923,7 @@
   {"count": 2, "function": "remove_review_stage", "module": "review_stage", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "revalidate_falsifier_staged_tree", "module": "review_stage", "primitive": "io.read_bytes", "role": "host-io"},
   {"count": 1, "function": "revalidate_falsifier_staged_tree", "module": "review_stage", "primitive": "io.stat", "role": "host-io"},
-  {"count": 1, "function": "review_tree_manifest_sha256", "module": "review_stage", "primitive": "io.read_bytes", "role": "host-io"},
+  {"count": 1, "function": "review_tree_manifest_sha256", "module": "review_stage", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "staged_source_commit", "module": "review_stage", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "trusted_host_executable", "module": "review_stage", "primitive": "subprocess.run", "role": "host-helper"},
   {"count": 1, "function": "_gh_json", "module": "roadmap_assumptions", "primitive": "subprocess.run", "role": "operator-out-of-scope"},
