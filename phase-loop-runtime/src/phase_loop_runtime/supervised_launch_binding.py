@@ -4,7 +4,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import os
-import pwd
+try:
+    import pwd
+except ImportError:  # native Windows has no password database; uses fail closed there
+    pwd = None  # type: ignore[assignment]
 import sys
 from types import ModuleType
 from typing import Callable
@@ -15,6 +18,8 @@ from .supervised_launch import (
 
 
 def _managed_binding():
+    if pwd is None:  # native Windows: no managed binding, so launches refuse
+        return None
     try:
         return Path(pwd.getpwuid(os.getuid()).pw_dir) / ".local/state/phase-loop/supervised-launch-binding.json"
     except (KeyError, OSError, TypeError, ValueError):

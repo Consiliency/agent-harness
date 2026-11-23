@@ -44,7 +44,10 @@ import hashlib
 import json
 import os
 import platform
-import pwd
+try:
+    import pwd
+except ImportError:  # native Windows has no password database; uses fail closed there
+    pwd = None  # type: ignore[assignment]
 import re
 import secrets
 import shutil

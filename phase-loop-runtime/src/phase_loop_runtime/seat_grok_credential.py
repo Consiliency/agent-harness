@@ -44,7 +44,10 @@ import json
 import math
 import os
 from pathlib import Path
-import pwd
+try:
+    import pwd
+except ImportError:  # native Windows has no password database; uses fail closed there
+    pwd = None  # type: ignore[assignment]
 import stat
 import time
 from typing import Iterable, Iterator
@@ -117,8 +120,12 @@ STORE_UNSAFE = "seat_profile_unavailable"
 _REFUSAL_CODES = frozenset({CREDENTIAL_MISSING, CREDENTIAL_REFUSED, TOKEN_EXPIRED,
                             STORE_UNSAFE})
 
-_O_READ = (os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
-           | getattr(os, "O_NOCTTY", 0))
+# Native Windows has none of these flags (nor ``dir_fd``): ``None`` makes every open fail closed.
+if os.name != "nt":
+    _O_READ = (os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+               | getattr(os, "O_NOCTTY", 0))
+else:
+    _O_READ = None
 _O_DIR = seat_jail._O_DIR
 
 

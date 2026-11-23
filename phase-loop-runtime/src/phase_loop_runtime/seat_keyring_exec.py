@@ -20,7 +20,10 @@ from __future__ import annotations
 
 import ctypes
 import errno
-import fcntl
+try:
+    import fcntl
+except ImportError:  # native Windows: POSIX-only; every use here fails closed there
+    fcntl = None  # type: ignore[assignment]
 import os
 import platform
 import sys

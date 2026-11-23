@@ -31,7 +31,10 @@ import json
 import math
 import os
 from pathlib import Path
-import pwd
+try:
+    import pwd
+except ImportError:  # native Windows has no password database; uses fail closed there
+    pwd = None  # type: ignore[assignment]
 import stat
 from typing import Mapping
 

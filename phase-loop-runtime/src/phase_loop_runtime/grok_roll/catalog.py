@@ -185,9 +185,13 @@ def parse_releases(raw: bytes) -> ReleaseCatalog:
     return ReleaseCatalog(platform=document["platform"], releases=tuple(releases))
 
 
-_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-_FILE_FLAGS = (os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
-               | getattr(os, "O_NOCTTY", 0))
+# Native Windows has none of these flags (nor ``dir_fd``): ``None`` makes every open fail closed.
+if os.name != "nt":
+    _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    _FILE_FLAGS = (os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+                   | getattr(os, "O_NOCTTY", 0))
+else:
+    _DIR_FLAGS = _FILE_FLAGS = None
 
 DataPath = str | os.PathLike[str]
 

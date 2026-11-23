@@ -6,7 +6,10 @@ has a separate, single successor key; ordinary publication replay is unchanged.
 from __future__ import annotations
 
 import base64
-import fcntl
+try:
+    import fcntl
+except ImportError:  # native Windows: POSIX-only; every use here fails closed there
+    fcntl = None  # type: ignore[assignment]
 from dataclasses import asdict
 from pathlib import Path
 

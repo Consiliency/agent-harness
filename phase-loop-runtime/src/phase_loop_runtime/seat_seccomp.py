@@ -1,7 +1,10 @@
 """Sealed native-architecture syscall filter for seat-launch final links."""
 
 import errno
-import fcntl
+try:
+    import fcntl
+except ImportError:  # native Windows: POSIX-only; every use here fails closed there
+    fcntl = None  # type: ignore[assignment]
 import os
 import platform
 import struct
