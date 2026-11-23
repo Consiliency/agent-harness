@@ -867,12 +867,21 @@ def _citation_failures(purpose: str, citation: object, record: bytes | None, pr:
         if pr is not None and number == pr:
             problems.append(f"{purpose}: the citation names the PR under check")
         else:
+            # Both an explicit "not merged" and an unverifiable merge state fail closed,
+            # with distinct diagnostics so a failed lookup is not read as an open PR.
             try:
-                merged = bool(pr_merged(number))
-            except Exception:  # an unverifiable merge state is a failure, never a pass
-                merged = False
-            if not merged:
-                problems.append(f"{purpose}: the cited PR is not merged")
+                merged = pr_merged(number)
+            except AuditError as exc:
+                problems.append(f"{purpose}: the cited PR's {exc}")
+            except Exception as exc:  # an unverifiable merge state is a failure, never a pass
+                problems.append(f"{purpose}: the cited PR's merge state unverifiable "
+                                f"({type(exc).__name__})")
+            else:
+                if merged is False:
+                    problems.append(f"{purpose}: the cited PR is not merged")
+                elif merged is not True:
+                    problems.append(f"{purpose}: the cited PR's merge state unverifiable "
+                                    "(the lookup returned no boolean)")
     return problems
 
 
@@ -1514,7 +1523,13 @@ def sdk_proof_failures(repo: Path | str, head: str, *,
 
 
 def github_pr_merged(number: int, *, repository: str | None = None, timeout: float = 20) -> bool:
-    """Read-only GitHub API: is ``number`` a merged PR of the repository?"""
+    """Read-only GitHub API: is ``number`` a merged PR of the repository?
+
+    Returns the response's ``merged`` field only when it is a boolean. Raises
+    ``AuditError("merge state unverifiable ...")`` on an HTTP error status (for example an
+    anonymous 403 or 429 rate limit), a transport failure, an undecodable body or a
+    response without a boolean ``merged`` field, so a failed lookup is never reported as
+    an unmerged PR."""
     slug = repository or os.environ.get("GITHUB_REPOSITORY") or "Consiliency/agent-harness"
     request = urllib.request.Request(
         f"https://api.github.com/repos/{slug}/pulls/{int(number)}",
@@ -1525,10 +1540,19 @@ def github_pr_merged(number: int, *, repository: str | None = None, timeout: flo
         request.add_header("Authorization", f"Bearer {token}")
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
-            payload = json.loads(response.read(1 << 20))
-    except (urllib.error.URLError, OSError, ValueError):
-        return False
-    return isinstance(payload, dict) and payload.get("merged") is True
+            body = response.read(1 << 20)
+    except urllib.error.HTTPError as exc:
+        raise AuditError(f"merge state unverifiable (HTTP {exc.code})") from exc
+    except (urllib.error.URLError, OSError) as exc:
+        raise AuditError("merge state unverifiable (transport error)") from exc
+    try:
+        payload = json.loads(body)
+    except ValueError as exc:
+        raise AuditError("merge state unverifiable (the response is not JSON)") from exc
+    merged = payload.get("merged") if isinstance(payload, dict) else None
+    if not isinstance(merged, bool):
+        raise AuditError("merge state unverifiable (the response has no boolean merged field)")
+    return merged
 
 
 def _event(path: str | None) -> dict:

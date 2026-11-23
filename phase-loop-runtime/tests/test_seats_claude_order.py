@@ -239,14 +239,20 @@ def test_a_digest_that_differs_on_the_base_fails(tree, seam):
     assert audit(tree, seam, head) == 1
 
 
-def test_an_unmerged_cited_pr_fails(tree, seam):
+def test_an_unmerged_cited_pr_fails(tree, seam, capsys):
     head = tree.commit(print=module_source(True, citation(RECORD_HEAD, "4a", 1500)))
     assert audit(tree, seam, head) == 1
+    err = capsys.readouterr().err
+    assert "print: the cited PR is not merged" in err
+    assert "unverifiable" not in err
 
 
-def test_a_citation_of_the_pr_under_check_fails(tree, seam):
+def test_a_citation_of_the_pr_under_check_fails(tree, seam, capsys):
     head = tree.commit(print=module_source(True, citation(RECORD_HEAD, "4a", 1775)))
     assert audit(tree, seam, head, pr=1775) == 1
+    err = capsys.readouterr().err
+    assert "print: the citation names the PR under check" in err
+    assert "not merged" not in err and "unverifiable" not in err
 
 
 def test_one_pr_carrying_the_record_and_the_switch_fails(tree, seam):
@@ -993,7 +999,7 @@ def test_an_appended_section_passes(tree, seam):
     assert audit(tree, base, head) == 0
 
 
-def test_an_unverifiable_merge_state_fails(tree, seam):
+def test_an_unverifiable_merge_state_fails(tree, seam, capsys):
     head = tree.commit(print=module_source(True, citation(RECORD_HEAD, "4a", 1775)))
 
     def offline(_n):
@@ -1001,6 +1007,102 @@ def test_an_unverifiable_merge_state_fails(tree, seam):
 
     assert ct.main(["audit-order", "--repo", str(tree.root), "--base", seam, "--head", head],
                    pr_merged=offline) == 1
+    err = capsys.readouterr().err
+    assert "print: the cited PR's merge state unverifiable (OSError)" in err
+    assert "not merged" not in err
+
+
+# agent-harness#2087: the default lookup reports a failed lookup as unverifiable, never as
+# an unmerged PR, and only an explicit ``merged: true`` passes.
+
+
+class _Response:
+    def __init__(self, body: bytes):
+        self._body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, _limit=-1):
+        return self._body
+
+
+def _http_error(code: int):
+    import urllib.error
+
+    def fail(request, timeout=None):
+        raise urllib.error.HTTPError(request.full_url, code, "error", {}, None)
+    return fail
+
+
+def _transport_error(request, timeout=None):
+    import urllib.error
+
+    raise urllib.error.URLError("connection reset")
+
+
+def _body(data: bytes):
+    return lambda request, timeout=None: _Response(data)
+
+
+_LOOKUPS = {
+    "merged-true": (_body(b'{"merged": true}'), None),
+    "merged-false": (_body(b'{"merged": false}'), "print: the cited PR is not merged"),
+    "http-403": (_http_error(403), "print: the cited PR's merge state unverifiable (HTTP 403)"),
+    "http-429": (_http_error(429), "print: the cited PR's merge state unverifiable (HTTP 429)"),
+    "transport": (_transport_error,
+                  "print: the cited PR's merge state unverifiable (transport error)"),
+    "not-json": (_body(b"<html>rate limited</html>"),
+                 "print: the cited PR's merge state unverifiable (the response is not JSON)"),
+    "no-boolean": (_body(b'{"merged": "true"}'),
+                   "print: the cited PR's merge state unverifiable (the response has no "
+                   "boolean merged field)"),
+    "not-an-object": (_body(b"[true]"),
+                      "print: the cited PR's merge state unverifiable (the response has no "
+                      "boolean merged field)"),
+}
+
+
+@pytest.mark.parametrize("label", sorted(_LOOKUPS))
+def test_the_default_lookup_passes_only_an_explicit_merge(tree, seam, monkeypatch, capsys,
+                                                          label):
+    urlopen, expected = _LOOKUPS[label]
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(ct.urllib.request, "urlopen", urlopen)
+    head = tree.commit(print=module_source(True, citation(RECORD_HEAD, "4a", 1775)))
+    code = ct.main(["audit-order", "--repo", str(tree.root), "--base", seam, "--head", head,
+                    "--pr", "1999"])
+    err = capsys.readouterr().err
+    if expected is None:
+        assert code == 0, err
+        return
+    assert code == 1
+    problems = [line for line in err.splitlines() if "cited PR" in line]
+    assert problems == [f"audit-order: FAIL: {expected}"], err
+
+
+@pytest.mark.parametrize("label", sorted(_LOOKUPS))
+def test_github_pr_merged_returns_only_a_boolean_field(monkeypatch, label):
+    urlopen, expected = _LOOKUPS[label]
+    monkeypatch.setattr(ct.urllib.request, "urlopen", urlopen)
+    if label in ("merged-true", "merged-false"):
+        assert ct.github_pr_merged(1775) is (label == "merged-true")
+        return
+    with pytest.raises(ct.AuditError, match=r"^merge state unverifiable \("):
+        ct.github_pr_merged(1775)
+
+
+def test_a_lookup_returning_no_boolean_is_unverifiable(tree, seam, capsys):
+    head = tree.commit(print=module_source(True, citation(RECORD_HEAD, "4a", 1775)))
+    assert ct.main(["audit-order", "--repo", str(tree.root), "--base", seam, "--head", head],
+                   pr_merged=lambda _n: 1) == 1
+    err = capsys.readouterr().err
+    assert "print: the cited PR's merge state unverifiable (the lookup returned no boolean)" in err
+    assert "not merged" not in err
 
 
 # --------------------------------------------------------------------------------------
