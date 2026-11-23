@@ -21,7 +21,7 @@ window-kit decisions (jail contract §15). The roadmap text is unchanged.
 **Frozen inputs (pinned).**
 
 - `plans/artifacts/grok-jail-tool-surface-contract-v1.md` at sha256
-  `bc8e289c4d94799f6cd5f75de7d3dbd57a97b363d665a476787a41cad46c0ef9` ("the jail contract"). This plan cites its sections.
+  `70685aea59c51e913956c920f5a2fb4364b0f6a55f970d988aa4788316af0ebd` ("the jail contract", r7). This plan cites its sections.
 - `plans/artifacts/grok-tool-surface-contract-v1.md` at sha256
   `5b929cb588e4bb555ce8374311432376fe4c04e8a851fd511e6c44682736b27c` (the **effective
   input**: agent-harness#2033 through erratum 7, erratum 8 r3 as merged with E8-A
@@ -131,7 +131,11 @@ stays ineligible. The jailed measurement measures `staged` only.
   (jail contract §2–§5.1).
 - [ ] IF-0-GROK-4 — Jailed measurement, provided by SL-4: per-label jailed grants, the agreement
   rule, the publication gate on `jail_context_digest`, jailed publication and
-  `--verify-probe final` in the jailed context (jail contract §5.2–§5.4, §7.1).
+  `--verify-probe final` in the jailed context (jail contract §5.2–§5.4, §7.1); the
+  measurement launch order, `probe_sink`, `consume_admission` as the spawn hook, the
+  `unspawned` settlement, the leg's `measurement` and `read_sink` parameters and the
+  `_require_qualified_jail` measurement clause (jail contract §3 "Production writers", §4.5,
+  §5.1 r7).
 
 ## Lane Index & Dependencies
 
@@ -282,17 +286,24 @@ contract §2.4).
 - **Interfaces consumed**: IF-0-GROK-3 (SL-3); the TS contract ledger, rehearsal and aggregation (pre-existing); erratum 8's per-image map, `artifact_refused` and publication gate (pre-existing once E8-B merges)
 - **Parallel-safe**: no
 
-Edit scope: `grok_tool_surface.py`'s measurement region only. No CLI flag; `seat_window.py`
-is not edited.
+Edit scope (jail contract r7): `grok_tool_surface.py`'s measurement region. SL-4 also edits
+three files that SL-3 owns, and it may do so because SL-3 has landed and SL-4 depends on it, so
+no two lanes write them at the same time. In `grok_jail_surface.py`, the measurement region (the non-consuming measurement mode,
+`consume_admission`, `probe_sink` and its `sink-probe` verb, `production_owner` made public);
+in `panel_invoker.py`, the hunks listed in jail contract §10 "SL-4's `panel_invoker.py`
+hunks"; in `test_grok_jail_surface.py`, the BA-J7 cases only. No CLI flag; `seat_window.py`,
+`claude_seat_transport.py` and `tests/test_panel_invoker.py` are not edited. Starts only on a
+base holding jail contract r7 and its pins.
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-4.1 | test | — | `phase-loop-runtime/tests/test_grok_jail_measure.py` | recording runner: BA-J7; `--new-grant` and `--rehearse` refuse unless eligibility conditions 1–4 pass; per-label reservations with interleaved transport failures, crash and restart, newest result per label, successful launches leaving both retries, a sixth counted request refused; context mismatch between grant and stage refuses; a new unjailed grant refuses once a profile is registered; agreement publishes or `surface_unstable`; `context_mismatch` when the runtime or `jail_context_digest` drifts after the last launch; a suffix in the definitions artifact gives `artifact_refused`; BA-1 and BA-2 for jailed grants; `--verify-probe final` passes only with jailed `staged` admitted and other forms refused; the procedure script runs end to end. | `V4` |
-| SL-4.2 | impl | SL-4.1 | `phase-loop-runtime/src/phase_loop_runtime/grok_tool_surface.py`, `docs/ops/grok-jail-measurement.md` | — | — |
-| SL-4.3 | verify | SL-4.2 | SL-4 files | all SL-4 tests; TS contract suites unedited | `V4`, `VU`, `V9` |
+| SL-4.1 | test | — | `phase-loop-runtime/tests/test_grok_jail_measure.py` | recording runner: BA-J7; `--new-grant` and `--rehearse` refuse unless eligibility conditions 1–4 pass; per-label reservations with interleaved transport failures, crash and restart, newest result per label, successful launches leaving both retries, a sixth counted request refused; context mismatch between grant and stage refuses; jail contract §4.5 M1–M5 in order, BA-J7's r7 additions and its two mutants, `probe_sink`'s pass and fail rules, the leg refusing a measurement with a `window_board` or without `read_sink`, the board leg unchanged; §3 "Production writers" test; a new unjailed grant refuses once a profile is registered; agreement publishes or `surface_unstable`; `context_mismatch` when the runtime or `jail_context_digest` drifts after the last launch; a suffix in the definitions artifact gives `artifact_refused`; BA-1 and BA-2 for jailed grants; `--verify-probe final` passes only with jailed `staged` admitted and other forms refused; the procedure script runs end to end. | `V4` |
+| SL-4.2 | impl | SL-4.1 | `phase-loop-runtime/src/phase_loop_runtime/grok_tool_surface.py`, `docs/ops/grok-jail-measurement.md`, and the successor hunks of the edit scope | — | — |
+| SL-4.3 | verify | SL-4.2 | SL-4 files | all SL-4 tests; TS contract suites unedited | `V4`, `V3`, `VU`, `V9`, `VS` |
 
 Stop: the unjailed measurement's behaviour before registration, or a TS contract test, changes;
-the procedure needs a new CLI flag.
+the procedure needs a new CLI flag; an SDK proof region other than `_run_leg_with_liveness`
+moves; the measurement jail needs a second qualification key.
 
 ### SL-5 — CANDIDATE: provider-free qualification evidence (roadmap lane A)
 
@@ -374,6 +385,12 @@ Edit scope: `readiness_rows`'s expiry literal and `renewal_record` only; K-1 als
   amendment lands. **Applied (2026-11-22):** erratum 8 merged (E8-A agent-harness#2061, E8-B
   agent-harness#2064); erratum 9 is in the TS contract and the frozen inputs and manifest row
   pin it; `roadmap_sha256` was checked against the landing base.
+- **SL-4 pre-dispatch erratum (jail contract r7, §20).** It names the production writers,
+  moves admission consumption into the spawn hook, chooses option (b) for the measurement
+  jail's qualification, names `probe_sink`, and gives the leg a measurement mode. The jail
+  contract is re-pinned here and in the manifest row; the TS contract, erratum 9 and the
+  roadmap are unchanged. SL-4 is not dispatched before its base holds r7 and these pins.
+  OWNER-DECISION r7-1 (resuming an `unspawned` label) does not block dispatch.
 - **Installs and pins.** Jail contract §10: only SL-2 moves the qualification validator; Train
   A, the K-1 snapshot rule, Train B and the catalog install; none between Gemini's first-window
   launch and its export; a Gemini window is refreshed per installed digest it relies on.
@@ -388,7 +405,7 @@ Edit scope: `readiness_rows`'s expiry literal and `renewal_record` only; K-1 als
   (jail contract §13); confirmation point: a K-1 provider-free end-to-end assertion before the
   first post-Train-A row-window grant. GROKROLL: no pin moves; later GROKROLL lanes re-take their base after a
   GROK lane lands.
-- **Single writers.** `panel_invoker.py` (TEAMHOST, CODEX, PI, CLAUDENET, K-1, E8-A),
+- **Single writers.** `panel_invoker.py` (TEAMHOST, CODEX, PI, CLAUDENET, K-1, E8-A, GROK SL-3 then SL-4),
   `seat_profiles.py` and `seat_window.py` (K-1), `grok_tool_surface.py` (E8-A, E8-B), `cli.py`:
   the second lander rebases; each lane edits its own hunks only.
 - **Roadmap.** No text change; lanes map onto roadmap lanes A and B as labelled.
