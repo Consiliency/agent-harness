@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import json
 import types
 from pathlib import Path
 
@@ -189,6 +190,13 @@ def test_the_jailed_leg_launches_with_the_name_but_retains_only_a_placeholder(mo
 def test_the_jailed_leg_without_a_name_retains_the_shape_it_always_did(monkeypatch, tmp_path):
     command, evidence = _drive_jailed_leg(monkeypatch, tmp_path, session_name=None)
     assert "--name" not in command and "--name" not in evidence["provider_argv_shape"]
+
+
+def test_the_jailed_tui_supplies_the_claude_startup_acknowledgement(monkeypatch, tmp_path):
+    command, _ = _drive_jailed_leg(monkeypatch, tmp_path, session_name=None)
+    settings = json.loads(command[command.index("--settings") + 1])
+    assert pi._seat_jail.CLAUDE_PRESEED["bypassPermissionsModeAccepted"] is True
+    assert settings.get("skipDangerousModePermissionPrompt") is True
 
 
 # --- through the real spawn -----------------------------------------------------------------

@@ -8,6 +8,27 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
+- JEVHOST SL-8: the JEV Drill adapter half of the host gaps
+  (`plans/amendments/jevhost-JEVHOST-host-gaps.md`, GAPS §3.1–§3.8).
+  - A per-task retry ledger in memory, keyed by project, workspace and task. Budgets come
+    from the trusted request and can only be tightened. Retry context is generated from a
+    recorded acceptance failure, and a supplied context that disagrees or widens the
+    budget is refused before route. Launch admission spends attempts atomically.
+    `JevDrillAdapter.record_acceptance_outcome` implements the IF-0-JEVHOST-5 observer.
+  - Closed `guidance_deactivated` reasons.
+  - Disconnect advice on pre-launch calls and on report delivery, with the queue's backoff
+    preserved.
+  - A readiness recheck after the `started` write, which queues `canceled` on expiry.
+  - A 250 ms spawn reserve (`SPAWN_ALLOWANCE_MS`) subtracted from `--remaining-budget-ms`.
+  - A refusal, before any CLI request, of an identity that a present
+    `.jevdrill/harnesses.yaml` omits. An absent file keeps today's routing.
+  - Run-bound explicit reports for the JEV Drill item-3 request:
+    `run_event_identity`, `enqueue_run_event` and `run_report_counts`. The hook and the
+    host's own events share one ordered `source_sequence` stream.
+  - The ledger and run handles do not survive a restart.
+  - `PromptBundle.routing_provenance`, an optional routing ID that each prepare stamps. It is
+    never rendered or serialized. Launch consumes only the binding with that ID, and a routed
+    ID with no live binding fails closed.
 - JEVHOST SL-7: the runner uses the host integration seam
   (`plans/amendments/jevhost-JEVHOST-host-gaps.md`, GAPS §3.1 and §3.5). The main,
   delegated and lane request sites build through `build_host_request`, so an integration
@@ -152,6 +173,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 - The FIRSTSEAT record-board test stubs the Gemini board preflight, so it no longer runs live
   Agy qualification inside the guard's 30 s authorization window (agent-harness#2142).
+- Suppress the bypass-permissions acknowledgement in jailed Claude TUI seats on Claude
+  Code 2.1.330. The launcher retains the legacy acknowledgement for older versions.
 - A long `TMPDIR` no longer fails a brokered review leg with the opaque "unknown failure;
   CLI output not retained" (agent-harness#2131). The broker's private 0700 socket root is
   now created under the first safe, short base: a private `$XDG_RUNTIME_DIR`, else the temp
