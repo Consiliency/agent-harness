@@ -18,6 +18,62 @@ publication. The qualification host installs the released
 `phase-loop-runtime[agy-watch]`, since the job signs its App token with the extra's
 `cryptography`.
 
+## 0.7.43 release preparation
+
+Expected unpublished artifacts are `phase_loop_runtime-0.7.43-py3-none-any.whl`
+and `phase_loop_runtime-0.7.43.tar.gz`. The runtime requires Python 3.12 or newer.
+
+LaneExec SL-3a leaves fencing to the caller at `h + 2T/3`, where `h` is the last
+confirmed heartbeat and `T` is the lease TTL. A failed renewal can retry within
+that window. WORKER cancellation signals require durable start intent for the
+matching generation (agent-harness#2156). The candidate also includes independent
+return caps, separate static route validation and the generation-aware lifecycle
+precursor (agent-harness#2150, agent-harness#2149, agent-harness#2151). All LaneExec
+routes stay `route_disabled` (`sandbox_launch_route_disabled`) under shipped defaults.
+
+The Claude SDK audit reports an unverifiable merge-state lookup distinctly and
+still fails closed (agent-harness#2146). JEVHOST documents the host integration
+and exposes `JevDrillAdapter.active_execution_run_ids(task_id)`
+(agent-harness#2155). The changelog also records two test-only fixes
+(agent-harness#2144, agent-harness#2145).
+
+Qualification inputs checked against the runtime source diff from `v0.7.42`:
+
+- **Moved.** `seat_window.runtime_digest()` and `seat_window.release_identity()`
+  hash package source. The upgrade invalidates release-bound row-window grants
+  and requires a fresh Grok same-runtime series. Package source pins for new
+  agy qualification evidence also move.
+- **Claude SDK boundary proof.** The whole-file bindings for
+  `claude_seat_transport.py`, `tests/test_seats_claude_order.py` and
+  `uv.lock` move. The whole-file inputs
+  `claude_seat_sdk.py`, `provider_tree_proof.py`, `seat_resource_caps.py`
+  and `seat_route_contract.py` are unchanged, as are the bound source regions.
+  TUI remains the default and SDK stays unadmitted. SDK admission requires a fresh
+  boundary proof.
+- **Unchanged.** The production Claude, Codex, Gemini and Grok jail profile
+  digests on both architectures, egress allowlists and proxy digests, and
+  executable dependency projection declarations, admission inputs and digest
+  computation are unchanged. The packaged agy catalog (Linux x64 agy 1.5.3),
+  profile digest, QCI, validator identity `agy_validator_v1` and installed key
+  fields are unchanged. Existing qualifications for these inputs remain valid
+  with the same installed subject, executable, host identity, variant and policy.
+- **Seat-launch references.** The source audit fixture
+  `tests/data/seat_launch_references.json` adds six placement lifecycle rows.
+  Installed seat keys do not consume this fixture.
+
+The standard install needs no additional steps. Finish work under an existing
+release-bound grant on its pinned install or obtain a grant for 0.7.43. Start a
+fresh same-runtime series for any Grok measurement on the new release.
+
+### Known issues
+
+- Three POSIX-only tests import `fcntl` at module scope and fail collection on
+  native Windows: `test_broker_socket_path_2131.py`, `test_launch_prepare.py`
+  and `test_launch_release_reap.py`. The fixed-list JEV Drill companion excludes
+  these files.
+- The Gemini per-launch proxy credential echo remains an open design issue
+  (agent-harness#2157).
+
 ## 0.7.42 release preparation
 
 Expected unpublished artifacts are `phase_loop_runtime-0.7.42-py3-none-any.whl`

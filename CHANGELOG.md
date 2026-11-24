@@ -6,6 +6,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+## [0.7.43] - Unreleased candidate
+
 ### Added
 
 - JEVHOST SL-9 documents the run-bound report hook and adds
@@ -41,7 +43,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - The placement-lifecycle replay test runs its interrupted setup reserve on a frozen clock with
   inline backend calls, removing a real-time 300 ms deadline race (agent-harness#2117).
 
-## [0.7.42] - Unreleased candidate
+## [0.7.42] - 2026-11-23
 
 ### Added
 
