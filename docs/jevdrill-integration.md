@@ -165,8 +165,11 @@ responsibility.
 
 During a run, call `adapter.active_execution_run_ids(task_id)` with the trusted
 task ID. It returns an immutable tuple of that task's retained active run IDs
-from a snapshot taken under the report lock. An ID leaves the snapshot when
-the run exits or when its handle is evicted.
+from a snapshot taken under the report lock. An ID leaves the snapshot as soon
+as the executor returns, before the terminal, usage and guidance reports are
+enqueued and before `launch` returns, or when its handle is evicted. A host that
+reports after execution should capture the ID during the run or read it from the
+launch result below.
 
 After launch returns, read `LaunchResult.jevdrill_execution_run["execution_run_id"]`
 from the routed launch result. A retained handle can still be used with the report
@@ -183,10 +186,11 @@ uses its original deadline, with bounded cleanup to kill and reap a child. The
 guarantee covers the pre-spawn reserve and parent-side enforcement. If startup
 exceeds 250 ms, the child's relative deadline can extend beyond the parent's.
 
-#### Spawn reserve controls
+#### Spawn reserve tests
 
 - (a) `tests/test_jevdrill_host_gaps.py::test_budget_reserves_spawn_time`
-  checks the exact budget passed in argv.
+  checks the exact budget passed in argv. It discriminates: it fails if the
+  250 ms subtraction is removed.
 - (b) `tests/test_jevdrill_host_gaps.py::test_over_reserve_spawn_is_bounded_by_the_parent_deadline`
   starts a real test child and checks the original parent deadline and reaping
   after an over-reserve spawn.
