@@ -10,6 +10,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 - JEVHOST SL-9 documents the run-bound report hook and adds
   `JevDrillAdapter.active_execution_run_ids(task_id)` for hosts reporting during execution.
+- LANEEXEC SL-2: `ReturnPolicy` supports independent patch and JSON result byte caps,
+  including zero. A return above its cap yields `sandbox_launch_result_invalid` and
+  leaves no retained bytes. A verified absent proposal still returns null without a code.
 - LANEEXEC SL-7 precursor: `static_route_refusal` checks the client, workload and
   writer pairing, and `activation_refusal` checks the captured route settings.
   `route_refusal` preserves its refusal order and codes. All routes refuse under
@@ -20,6 +23,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- The FIRSTSEAT record-board test stubs the Gemini board preflight, so it no longer runs live
+  Agy qualification inside the guard's 30 s authorization window (agent-harness#2142).
 - The placement-lifecycle replay test runs its interrupted setup reserve on a frozen clock with
   inline backend calls, removing a real-time 300 ms deadline race (agent-harness#2117).
 
