@@ -493,7 +493,8 @@ def test_seed_recheck_and_generation_owned_provisioning(tmp_path, monkeypatch, f
     monkeypatch.setattr(routes, "register_templates", register)
     record = local_record(host, fixture_manifest(), image_digest=DIGEST)
     image = rfc8785.dumps(record)
-    link_root = Path(tempfile.mkdtemp()).resolve()
+    # Omit the pytest case name to leave room for the reservation ID in the socket path.
+    link_root = Path(tempfile.mkdtemp(prefix="lx-", dir=tmp_path.parent))
     try:
         env = Env(tmp_path)
         conf = json.loads((env.config / "agent-toolkit.json").read_bytes())

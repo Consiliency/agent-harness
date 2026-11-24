@@ -267,7 +267,8 @@ def test_pi_relay_delivers_exact_bytes_and_reports_loss(tmp_path):
     from pathlib import Path
     import shutil
 
-    root = Path(tempfile.mkdtemp()).resolve()
+    # Use the trusted fixture's parent to keep the Unix socket path short.
+    root = Path(tempfile.mkdtemp(prefix="lx-", dir=tmp_path.parent))
     link = LocalPiLink(root, "rsv-example")
     stopped, cancelled = threading.Event(), threading.Event()
     with link.listening() as listener:
