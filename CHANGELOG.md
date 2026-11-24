@@ -14,6 +14,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Changed
 
+- On 2026-11-24 the owner approved renewing the jailed Claude seat's open-egress
+  exception through 2027-01-03T00:00Z (exclusive), ending sooner when the allowlist
+  is registered. Finishing and qualifying the CLAUDENET allowlist remains the
+  permanent fix (agent-harness#1820, agent-harness#1804).
 - LANEEXEC erratum 7 binds the plan to the landed SL-8 renewal, activation,
   scratch, cancellation and lane admission rulings (agent-harness#2160).
 

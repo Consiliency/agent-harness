@@ -222,10 +222,14 @@ def test_seats_firstseat_w1_receipt_export(tmp_path, value):
     assert any(row["status"] == "done-local" for row in exported["rows"])
 
 
-def test_seats_firstseat_w1_receipt_exception_expiry():
+def test_seats_firstseat_w1_receipt_exception_expiry(monkeypatch):
     from phase_loop_runtime import seat_window as w
+    expiry = dt.datetime(2027, 1, 3, tzinfo=dt.timezone.utc)
+    # Keep this synthetic receipt within the freshness limit on both sides.
+    monkeypatch.setattr(w, "_now", lambda: expiry - dt.timedelta(days=1))
     records = _window_records()
-    assert not w.verify_records(records, now=dt.datetime(2026, 12, 4, tzinfo=dt.timezone.utc))["records_valid"]
+    assert w.verify_records(records, now=expiry - dt.timedelta(seconds=1))["records_valid"]
+    assert not w.verify_records(records, now=expiry)["records_valid"]
 
 
 @pytest.mark.parametrize("field", ["context_id", "account_label", "profile_digest",

@@ -47,7 +47,13 @@ WINDOW_LAUNCH_TIMEOUT_S = 600.0
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
 _LABEL = re.compile(r"[ac][0-9a-f]{31}\Z")
 _ATTEMPT = re.compile(r"[0-9a-f]{32}\Z")
-_EXPIRES = "2026-12-04T00:00:00+00:00"
+# The shipped matrix is the source of truth for named exceptions and their renewals.
+_NAMED_EXCEPTIONS = {
+    "claude": ("open egress", "2027-01-03T00:00:00+00:00",
+               "plans/amendments/seats-claude-open-egress-renewal-20261124.md"),
+    "codex": ("unconfined", "2026-12-04T00:00:00+00:00", None),
+    "grok": ("unconfined", "2026-12-04T00:00:00+00:00", None),
+}
 _COMMON_RECORD_FIELDS = {
     "schema", "window", "context_id", "account_label", "host_class", "host_digest",
     "operator_id", "board_outcome", "admission", "staged_read", "account_isolation",
@@ -82,16 +88,18 @@ def readiness_rows() -> list[dict]:
     }
     vendors = (*VENDORS, *(vendor for vendor in sorted(profiles) if vendor not in VENDORS))
     rows = []
-    exceptions = {"claude": "open egress", "codex": "unconfined", "grok": "unconfined"}
     for kind in ("vendor", "remote"):
         for vendor in vendors:
             profile = profiles.get(vendor)
-            exception = exceptions.get(vendor) if kind == "vendor" else None
+            exception, expiry, renewal_record = (
+                _NAMED_EXCEPTIONS.get(vendor, (None, None, None))
+                if kind == "vendor" else (None, None, None)
+            )
             if profile is not None and (
                 exception == "unconfined"
                 or exception == "open egress" and profile.allowlist_id is not None
             ):
-                exception = None
+                exception = expiry = renewal_record = None
             rows.append({"id": f"{kind}:{vendor}", "kind": kind, "vendor": vendor,
                 "route": "remote" if kind == "remote" else (
                     "jailed" if profile is not None else "local"),
@@ -103,8 +111,8 @@ def readiness_rows() -> list[dict]:
                 "host_classes": ["standard"], "qualification_record": None,
                 "live_evidence_digest": None,
                 "status": "remote-pending" if kind == "remote" else "candidate",
-                "exception": exception, "expiry": _EXPIRES if exception else None,
-                "renewal_record": None, "end_condition": "row window or owning phase exit",
+                "exception": exception, "expiry": expiry, "renewal_record": renewal_record,
+                "end_condition": "row window or owning phase exit",
                 "interim_route": "degraded"})
     for entry in president_adapter.president_rung_inventory():
         vendor = {"fable": "claude", "sol": "codex"}.get(entry["rung"], entry["rung"])

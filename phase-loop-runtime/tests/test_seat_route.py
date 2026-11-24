@@ -932,7 +932,14 @@ def test_unconfined_exception_expiry_is_path_entered_with_an_injected_clock(
     assert tuple(spawned) == ("DEGRADED", "", "seat_route_exception_expired")
 
 
-def test_open_egress_exception_expiry_is_path_entered_with_an_injected_clock(monkeypatch):
+@pytest.mark.parametrize(("offset", "expected_refusal"), [
+    (-1, None),
+    (0, "seat_route_exception_expired"),
+    (1, "seat_route_exception_expired"),
+])
+def test_claude_open_egress_renewal_at_board_admission(
+    monkeypatch, tmp_path, offset, expected_refusal,
+):
     profile = dataclasses.replace(
         seat_profiles.profile_for("claude"), credential_present=lambda: True,
         preconditions=(), variant=lambda _env: ("print", None),
@@ -946,25 +953,39 @@ def test_open_egress_exception_expiry_is_path_entered_with_an_injected_clock(mon
     )
     capacity = Capacity(True)
     monkeypatch.setattr(panel_invoker._seat_uid, "SeatIdCapacity", lambda: capacity)
-    now = dt.datetime(2026, 11, 7, tzinfo=dt.timezone.utc)
-    exception = NamedException(
-        "claude", "open egress", now + dt.timedelta(minutes=1), "fixture",
-    )
-    monkeypatch.setattr(
-        seat_route, "load_route_policy", lambda: policy(exceptions={"claude": exception}),
-    )
-    monkeypatch.setattr(seat_route, "_now", lambda: now)
+    monkeypatch.setattr(seat_route, "_policy_path", lambda: tmp_path / "no-overlay")
+    expiry = dt.datetime(2027, 1, 3, tzinfo=dt.timezone.utc)
+    monkeypatch.setattr(seat_route, "_now", lambda: expiry + dt.timedelta(seconds=offset))
     auth = SimpleNamespace(staged_tree_sha256="a" * 64)
     route, notices, refusal = panel_invoker._seat_route_for_spawn(
         "claude", auth, eligible=True, seat_key="claude:a", env={},
     )
-    assert route.jailed and notices == [] and refusal is None
-    panel_invoker._release_seat_route(route)
-    monkeypatch.setattr(seat_route, "_now", lambda: now + dt.timedelta(minutes=2))
-    route, notices, refusal = panel_invoker._seat_route_for_spawn(
-        "claude", auth, eligible=True, seat_key="claude:a", env={},
+    assert (route.jailed, notices, refusal) == (expected_refusal is None, [], expected_refusal)
+    if route.jailed:
+        panel_invoker._release_seat_route(route)
+
+
+def test_claude_open_egress_renewal_scope(monkeypatch):
+    monkeypatch.delitem(seat_profiles._REGISTRY, "codex", raising=False)
+    monkeypatch.delitem(seat_profiles._REGISTRY, "grok", raising=False)
+    rows = {row["id"]: row for row in seat_window.readiness_rows()}
+    names = ("exception", "expiry", "renewal_record")
+    assert tuple(rows["vendor:claude"][name] for name in names) == (
+        "open egress", "2027-01-03T00:00:00+00:00",
+        "plans/amendments/seats-claude-open-egress-renewal-20261124.md",
     )
-    assert not route.jailed and notices == [] and refusal == "seat_route_exception_expired"
+    assert rows["vendor:claude"]["route"] == "jailed"
+    assert tuple(rows["remote:claude"][name] for name in names) == (None, None, None)
+    for vendor in ("codex", "grok"):
+        assert tuple(rows[f"vendor:{vendor}"][name] for name in names) == (
+            "unconfined", "2026-12-04T00:00:00+00:00", None,
+        )
+
+    profile = dataclasses.replace(seat_profiles.profile_for("claude"), allowlist_id="fixture")
+    monkeypatch.setitem(seat_profiles._REGISTRY, "claude", profile)
+    row = next(row for row in seat_window.readiness_rows() if row["id"] == "vendor:claude")
+    assert tuple(row[name] for name in names) == (None, None, None)
+    assert "claude" not in seat_route._matrix_policy().exceptions
 
 
 @pytest.mark.parametrize("mode,code", [
