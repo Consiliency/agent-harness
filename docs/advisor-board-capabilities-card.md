@@ -537,7 +537,7 @@ provider health. No reviewer is dropped or substituted by policy preflight.
 
 | Route | Bounded | Heartbeat-only |
 | --- | --- | --- |
-| Brokered homebrew/subscription Claude (print or TUI route) | Existing behavior | Supported on Linux with bwrap |
+| Brokered homebrew/subscription Claude (print or TUI route) | Jailed TUI allows up to 20 minutes from submit with a repainting spinner and interrupt footer, within the review deadline | Supported on Linux with bwrap |
 | Brokered homebrew/subscription Codex | Existing behavior | Supported on Linux with bwrap |
 | Brokered homebrew/subscription Grok | Existing behavior | Supported on Linux with bwrap |
 | Brokered subscription Gemini / agy | Existing internal print timer | Qualified image and Linux memfd/pidfd support required |
