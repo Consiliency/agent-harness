@@ -25,7 +25,7 @@
     },
     "agy_source_pins.seat_jail.py": {
       "base": "75d4826c720b53c60270018721f49200475928a09d27fdbc09aa4eb0e41b1a83",
-      "candidate": "1ed0ebcc5db6dfe3749d12f75ebde53b4278882582c96d00258a0b25a9aa5926"
+      "candidate": "1afa6d16dc7b647372ee519b546832302e886fed919d3d4596de160f46d47fce"
     },
     "agy_source_pins.seat_jail_qualification.py": {
       "base": "4bbc622f3ddc6ae8fda21498055fb258bfa62524fcd9d5c61949b96ca7de787b",
@@ -81,11 +81,11 @@
     },
     "window_release_identity": {
       "base": "76a5d6f7dc01520f579a07777a63ea95d57cb5141f24f63950b7eeb7da852876",
-      "candidate": "fe7bd0d099f4245ff1d5d943c8e5bbb1c247eb2a799fab62f9305fcb0fc42c48"
+      "candidate": "c288b651d5d2270b11009048e7bda9fd3d512026893d47d927b0151915f34ec2"
     },
     "window_runtime_digest": {
       "base": "66d1accd4995439950aefc7bccd8fb1ba8147af2348eac3bd9b22764e1136628",
-      "candidate": "81f4ce31382878defaaec75ec8d4bd01fc4f2a4d2511ac6794ec0292d8d3d84f"
+      "candidate": "b6dcab4332eef40b3c531522724f221019463382ae720b8aa35b8ef1bd7c044b"
     }
   },
   "claude_sdk_proof_binding_moves": {

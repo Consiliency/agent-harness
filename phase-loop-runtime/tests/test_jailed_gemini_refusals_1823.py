@@ -754,6 +754,22 @@ def _jailed_seat(*args, **kwargs):
                           expires_at=None)
 
 
+def test_an_exec_time_proxy_refusal_attaches_the_board_notice(monkeypatch, tmp_path):
+    seat = _jailed_seat()
+    seat.private_proxy_token = b""
+    monkeypatch.setattr(pi, "_cleanup_jailed_seat", lambda *a, **k: None)
+    monkeypatch.setattr(pi, "_run_leg_with_liveness",
+                        lambda *a, **k: pytest.fail("the provider ran without a proxy token"))
+
+    spawned, record = _jailed_gemini_spawn(
+        monkeypatch, tmp_path, prepare=lambda *a, **k: seat, execute=_REAL_EXEC)
+
+    code = "seat_sandbox_refused:gemini_proxy_token_missing"
+    assert tuple(spawned)[:2] == ("DEGRADED", "")
+    assert _spawn_detail(spawned) == record["refusal"] == code
+    assert code in spawned.seat_notices
+
+
 def test_the_real_watcher_refusal_records_its_code(monkeypatch, tmp_path):
     """The qualification board's watcher declines to start: the real leg returns the typed
     code without raising, and the record keeps it."""

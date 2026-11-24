@@ -23,7 +23,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   per-launch proxy authentication on its private hop to SRT (agent-harness#2157).
   After release, run integrated W1 under the owner account on the owner's primary board host,
   then record EC-EXECFIND-2 for every Gemini host and account. Requalify affected Codex row
-  windows and reissue grants against the installed runtime.
+  windows and reissue grants against the installed runtime. Restart Grok series that require
+  same-runtime evidence and obtain a fresh Claude SDK boundary proof before SDK admission.
 
 ## [0.7.43] - Unreleased candidate
 

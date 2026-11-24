@@ -632,8 +632,8 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "runs again"),
 }
 
-# These launch-time refusals have board notices. Route resolver mode lines retain
-# their closed OD-10 vocabulary.
+# NOTICES includes the launch-time Gemini board notices. NOTICE_CODES supplies
+# the closed OD-10 vocabulary used by route resolver mode lines.
 _GEMINI_PROXY_REFUSALS = frozenset({
     "seat_sandbox_refused:gemini_proxy_token_missing",
     "seat_sandbox_refused:gemini_proxy_url_invalid",
