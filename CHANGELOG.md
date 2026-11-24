@@ -23,6 +23,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- On Windows, JEV Drill hooks reuse the launch's report queue binding across
+  threads, and long runs can still queue terminal and usage reports (agent-harness#2161).
 - LaneExec repins the agent-toolkit credential proxy for Consiliency/agent-toolkit#103
   and updates the launch protocol digest (LANEEXEC-v1-errata-6).
 - Jailed Claude TUI failures retain screened terminal tails in private advisor-board leg logs.
