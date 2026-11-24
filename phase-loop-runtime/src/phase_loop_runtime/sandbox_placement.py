@@ -3810,9 +3810,9 @@ class PlacementLifecycle:
             generation = claim["generation"]
             key = _identity_fields(reservation_id, claim["request_id"], generation)
             gone = reap and self.launch_owner(claim) == "gone"
-            if reap and not gone and active["state"] != "cleanup_pending" and not self._generation_closed(claim):
+            if reap and not gone and active["state"] != "cleanup_pending":
                 expires = _epoch(active["reservation"]["expires_at"])
-                if expires is None or self.clock() < expires or self._renewal_current(claim):
+                if not self._generation_reap_due(claim, expired=expires is not None and self.clock() >= expires):
                     # A candidate observed during a renewal may be healthy by the
                     # time reap obtains the journal. Leave that owner in place.
                     yield False
@@ -3863,15 +3863,22 @@ class PlacementLifecycle:
                                                            deadline=deadline.end)
                     yield True
 
-    def _renewal_current(self, claim):
+    def _generation_reap_due(self, claim, *, expired: bool) -> bool:
         if not claim or not claim.get("claimed") or not claim.get("generation"):
-            return False
+            return expired
         try:
             key = _identity_fields(claim["reservation_id"], claim["request_id"], claim["generation"])
-            confirmed = self._confirmed_renewal(key, self._disposition(key))
-            return confirmed and _monotonic() < confirmed["heartbeat_at"] + confirmed["ttl_s"] * 2 / 3
+            row = self._disposition(key)
+            if self._disposition_closed(row):
+                return True
+            # Open renewal debt becomes eligible only after the confirmed lease window.
+            return (expired or row["debt"] is not None) and not self._renewal_current(key, row)
         except (ValueError, TypeError, KeyError, LifecycleError, OSError):
-            return False
+            return True
+
+    def _renewal_current(self, key, disposition) -> bool:
+        confirmed = self._confirmed_renewal(key, disposition)
+        return confirmed is not None and _monotonic() < confirmed["heartbeat_at"] + confirmed["ttl_s"] * 2 / 3
 
     def _generation_collectible(self, claim, deadline, *, check_allocations=True) -> bool:
         key = _identity_fields(claim["reservation_id"], claim["request_id"], claim["generation"])
@@ -4141,12 +4148,11 @@ class PlacementLifecycle:
             expires = _epoch(entry.get("reservation", {}).get("expires_at"))  # type: ignore[union-attr]
             try:
                 claim = self.launch_claim_record(reservation_id)
-                discover = (self._generation_closed(claim) or
-                            claim and claim.get("claimed") and claim.get("generation")
-                            and self.launch_owner(claim) == "gone")
-                eligible = (discover or entry.get("state") == "cleanup_pending"
-                            or self._prior_debt(reservation_id)
-                            or expires is not None and now >= expires and not self._renewal_current(claim))
+                generation = claim.get("generation") if claim and claim.get("claimed") else None
+                eligible = (entry.get("state") == "cleanup_pending"
+                            or generation and self.launch_owner(claim) == "gone"
+                            or self._generation_reap_due(claim, expired=expires is not None and now >= expires)
+                            or self._prior_debt(reservation_id, generation))
             except (KeyError, TypeError, ValueError, LifecycleError, OSError):
                 unreadable.add(reservation_id)
                 eligible = True
@@ -4422,7 +4428,7 @@ class PlacementLifecycle:
                 self._fence_locked(key, cause, remote=active["effect"]["kind"] != "local")
                 return not bound.expired()
 
-    def _confirm_slot(self, key: dict, active: dict, count: int, bound: _Deadline) -> bool:
+    def _confirm_slot(self, key: dict, active: dict, count: int, attempt: int, bound: _Deadline) -> bool:
         """Only a timely, joined writer can update the confirmed renewal. A late helper
         can touch only its open slot inode and generation-specific acknowledgement."""
         effect = active["effect"]
@@ -4433,8 +4439,8 @@ class PlacementLifecycle:
         if effect["kind"] != "local" or type(ttl) is not int or ttl <= 0:
             return False
         slot = self._slots_dir() / (effect["slot"] + ".json")
-        # <generation>.<count> candidates use monotonic time for the lease bounds.
-        # Only confirmed_count in the disposition selects a candidate. Store wall
+        # <generation>.<attempt> candidates use monotonic time for the lease bounds.
+        # Only confirmed_attempt in the disposition selects a candidate. Store wall
         # time separately for the legacy launch_heartbeat accessor.
         row = dict(**key, heartbeat_at=_monotonic(), wall_heartbeat_at=self.clock(),
                    confirmation_count=count, ttl_s=ttl)
@@ -4459,7 +4465,7 @@ class PlacementLifecycle:
                     if bound.expired():
                         return False
                     # A timed-out write can publish only an unselected candidate.
-                    self._launch_write("renewals", f"{key['generation']}.{count}", row)
+                    self._launch_write("renewals", f"{key['generation']}.{attempt}", row)
                     return not bound.expired()
             except (OSError, ValueError, LifecycleError):
                 return False
@@ -4474,9 +4480,10 @@ class PlacementLifecycle:
 
     def _confirmed_renewal(self, key, disposition):
         count = disposition.get("confirmed_count")
-        if type(count) is not int or count < 0:
+        attempt = disposition.get("confirmed_attempt", count)
+        if type(count) is not int or count < 0 or type(attempt) is not int or attempt < count:
             return None
-        row = self._launch_read("renewals", f"{key['generation']}.{count}")
+        row = self._launch_read("renewals", f"{key['generation']}.{attempt}")
         return row if _matches(row, key) and row.get("confirmation_count") == count else None
 
     def renew_launch(self, reservation_id: str, request_id: str, generation: str, *,
@@ -4516,44 +4523,75 @@ class PlacementLifecycle:
                     return False
                 bound = _Deadline(min(deadline, _monotonic() + previous["ttl_s"] / 3,
                                       previous["heartbeat_at"] + previous["ttl_s"] * 2 / 3))
-                count = previous["confirmation_count"] + 1
-                # A crash or timeout after either write leaves a closed window until reap.
-                disposition["debt"] = asdict(Debt("renewal_lost", False, False, "inapplicable", False))
-                self._launch_write("dispositions", generation, disposition)
-                if not bound.expired() and self._confirm_slot(key, active, count, bound):
-                    disposition.update(confirmed_count=count, debt=None)
-                    self._launch_write("dispositions", generation, disposition)
-                    if not bound.expired():
-                        return True
-                    disposition.update(confirmed_count=count - 1, fenced=True,
-                                       debt=asdict(Debt("renewal_lost", False, False, "inapplicable", False)))
-                    self._launch_write("dispositions", generation, disposition)
+                previous_count = previous["confirmation_count"]
+                previous_attempt = disposition.get("confirmed_attempt", previous_count)
+                last_attempt = disposition.get("renewal_attempt")
+                if "renewal_attempt" not in disposition:
+                    # Old rows used the confirmation count as the candidate key.
+                    # A failed legacy renewal may already have written the next key.
+                    last_attempt = previous_attempt + int(disposition["debt"] is not None)
+                if type(last_attempt) is not int or last_attempt < previous_attempt:
                     return False
-                self._fence_locked(key, "renewal_lost", remote=False)
+                attempt = last_attempt + 1
+                count = previous_count + 1
+                # Keep cleanup debt if confirmation fails. The supervisor owns the
+                # renewal fence at the lease boundary through fence_launch.
+                debt = asdict(Debt("renewal_lost", False, False, "inapplicable", False))
+                # Reserve a unique candidate before the writer can outlive its deadline.
+                disposition.update(renewal_attempt=attempt, debt=debt)
+                self._launch_write("dispositions", generation, disposition)
+                if bound.expired() or not self._confirm_slot(key, active, count, attempt, bound):
+                    return False
+                disposition.update(confirmed_count=count, confirmed_attempt=attempt, debt=None)
+                self._launch_write("dispositions", generation, disposition)
+                if not bound.expired():
+                    return True
+                disposition.update(confirmed_count=previous_count, confirmed_attempt=previous_attempt, debt=debt)
+                self._launch_write("dispositions", generation, disposition)
                 return False
 
     def cancel_launch_owner(self, reservation_id: str, request_id: str, generation: str, *,
                             deadline: float) -> str:
         key = _identity_fields(reservation_id, request_id, generation)
         bound = _Deadline(deadline)
-        with self.launch_lock(reservation_id, timeout_s=bound.left()) as lock:
-            if not lock.held:
-                return "cancel_pending"
-            claim = self._owned_claim(key)
-            if not claim:
-                return "unknown_attempt"
+        try:
+            with self.launch_lock(reservation_id, timeout_s=bound.left()) as lock:
+                if not lock.held:
+                    return "cancel_pending"
+                claim = self._owned_claim(key)
+                if not claim:
+                    return "unknown_attempt"
+                started = self._disposition(key)["start_intent"]
+        except (OSError, LifecycleError):
+            return "owner_unverified"
         outcome = _supervisor_cancel(self.launch_root / "ctl", key, claim, bound)
         if bound.expired():
             return "cancel_pending"
-        # WORKER independently verifies its registered owning launcher. No registration
-        # leaves the supervisor's pre-registration outcome authoritative.
-        with self.launch_lock(reservation_id, timeout_s=bound.left()) as lock:
-            if not lock.held or self._owned_claim(key) != claim:
-                return "owner_unverified"
+        # The supervisor exchange takes the operation lock on the server side.
+        # Acquire it locally afterward, and drop the journal before calling WORKER.
         try:
-            worker = self.launch_cancel(claim, min(CANCEL_WAIT_S, bound.left()))
-        except Exception:
-            return "cancel_pending"
+            operation = (self.launch_operation_lock(reservation_id, generation, timeout_s=bound.left())
+                         if started else nullcontext(True))
+            with operation as held:
+                if not held:
+                    return "cancel_pending"
+                with self.launch_lock(reservation_id, timeout_s=bound.left()) as lock:
+                    if not lock.held or self._owned_claim(key) != claim:
+                        return "owner_unverified"
+                    # WORKER addresses a reusable attempt ID. Durable start intent
+                    # rules out rollback for the generation authorizing this call.
+                    worker_allowed = started and self._disposition(key)["start_intent"]
+                wait = min(CANCEL_WAIT_S, bound.left())
+                if wait <= 0:
+                    return "cancel_pending"
+                if not worker_allowed:
+                    return outcome
+                try:
+                    worker = self.launch_cancel(claim, wait)
+                except Exception:
+                    return "cancel_pending"
+        except (OSError, LifecycleError):
+            return "owner_unverified"
         if bound.expired():
             return "cancel_pending"
         if outcome in ("cancelled", "already_terminal") and worker == "cancel_pending":
@@ -4794,9 +4832,14 @@ class PlacementLifecycle:
         try:
             row = self._disposition(_identity_fields(claim["reservation_id"], claim["request_id"],
                                                      claim["generation"]))
-            return row["fenced"] or row["release_requested"] or row["debt"] is not None
+            return self._disposition_closed(row)
         except (LifecycleError, OSError, TypeError, ValueError, KeyError):
             return True
+
+    @staticmethod
+    def _disposition_closed(row: dict) -> bool:
+        debt = row["debt"]
+        return row["fenced"] or row["release_requested"] or (debt is not None and debt["cause"] != "renewal_lost")
 
     def _launch_claimed(self, entry: Mapping[str, object]) -> bool:
         """Whether a LaneExec claim is held on the reservation an active entry names."""
@@ -4834,7 +4877,7 @@ class PlacementLifecycle:
                     or _landed_launch_owner({"owner": identity}) != "live"):
                 return _CAPABILITY_UNMET
             if _active["effect"]["kind"] == "local":
-                if not self._confirm_slot(key, _active, 0, deadline or _Deadline.after(ANSWER_BOUND_S)):
+                if not self._confirm_slot(key, _active, 0, 0, deadline or _Deadline.after(ANSWER_BOUND_S)):
                     # No claim selected this candidate. A late writer can touch
                     # only its pinned slot and its unselected renewal record.
                     return _CAPABILITY_UNMET
@@ -4869,7 +4912,8 @@ class PlacementLifecycle:
             if current["owner"] != _own_identity():
                 return False
             row = self._disposition(_identity_fields(reservation_id, request_id, generation))
-            if (current.get("rollback_cause") not in _ROLLBACK_CAUSES or row["start_intent"]
+            # Once start intent is durable, WORKER may be addressing this attempt ID.
+            if (row["start_intent"] or current.get("rollback_cause") not in _ROLLBACK_CAUSES
                     or row["fenced"] or row["debt"] is not None):
                 return False
             current["completed_rollback"] = dict(request_id=request_id, generation=generation,

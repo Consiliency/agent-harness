@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import ast
 import hashlib
+import http.client
 import importlib
 import json
 import os
@@ -867,12 +868,21 @@ def _citation_failures(purpose: str, citation: object, record: bytes | None, pr:
         if pr is not None and number == pr:
             problems.append(f"{purpose}: the citation names the PR under check")
         else:
+            # Both an explicit "not merged" and an unverifiable merge state fail closed,
+            # with distinct diagnostics so a failed lookup is not read as an open PR.
             try:
-                merged = bool(pr_merged(number))
-            except Exception:  # an unverifiable merge state is a failure, never a pass
-                merged = False
-            if not merged:
-                problems.append(f"{purpose}: the cited PR is not merged")
+                merged = pr_merged(number)
+            except AuditError as exc:
+                problems.append(f"{purpose}: the cited PR's {exc}")
+            except Exception as exc:  # an unverifiable merge state is a failure, never a pass
+                problems.append(f"{purpose}: the cited PR's merge state unverifiable "
+                                f"({type(exc).__name__})")
+            else:
+                if merged is False:
+                    problems.append(f"{purpose}: the cited PR is not merged")
+                elif merged is not True:
+                    problems.append(f"{purpose}: the cited PR's merge state unverifiable "
+                                    "(the lookup returned no boolean)")
     return problems
 
 
@@ -1514,7 +1524,13 @@ def sdk_proof_failures(repo: Path | str, head: str, *,
 
 
 def github_pr_merged(number: int, *, repository: str | None = None, timeout: float = 20) -> bool:
-    """Read-only GitHub API: is ``number`` a merged PR of the repository?"""
+    """Read-only GitHub API: is ``number`` a merged PR of the repository?
+
+    Returns the response's ``merged`` field only when it is a boolean. Raises
+    ``AuditError("merge state unverifiable ...")`` on an HTTP error status (for example an
+    anonymous 403 or 429 rate limit), a transport failure, an incomplete or oversized
+    body, an undecodable body or a response without a boolean ``merged`` field, so a failed lookup is never reported as
+    an unmerged PR."""
     slug = repository or os.environ.get("GITHUB_REPOSITORY") or "Consiliency/agent-harness"
     request = urllib.request.Request(
         f"https://api.github.com/repos/{slug}/pulls/{int(number)}",
@@ -1523,12 +1539,36 @@ def github_pr_merged(number: int, *, repository: str | None = None, timeout: flo
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     if token:
         request.add_header("Authorization", f"Bearer {token}")
+    cap = 1 << 20
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
-            payload = json.loads(response.read(1 << 20))
-    except (urllib.error.URLError, OSError, ValueError):
-        return False
-    return isinstance(payload, dict) and payload.get("merged") is True
+            # One byte past the cap tells an oversized body from one that fits.
+            body = response.read(cap + 1)
+            if len(body) > cap:
+                raise AuditError("merge state unverifiable (the response is too large)")
+            # A connection that ends early leaves Content-Length bytes outstanding (a
+            # bounded read returns the short prefix without raising).
+            outstanding = getattr(response, "length", None)
+            headers = getattr(response, "headers", None)
+            declared = headers.get("Content-Length") if headers is not None else None
+            if outstanding or (declared is not None
+                               and (not declared.strip().isdigit()
+                                    or int(declared) != len(body))):
+                raise AuditError("merge state unverifiable (incomplete response)")
+    except urllib.error.HTTPError as exc:
+        raise AuditError(f"merge state unverifiable (HTTP {exc.code})") from exc
+    except http.client.HTTPException as exc:  # IncompleteRead and other framing errors
+        raise AuditError("merge state unverifiable (incomplete response)") from exc
+    except (urllib.error.URLError, OSError) as exc:
+        raise AuditError("merge state unverifiable (transport error)") from exc
+    try:
+        payload = json.loads(body)
+    except ValueError as exc:
+        raise AuditError("merge state unverifiable (the response is not JSON)") from exc
+    merged = payload.get("merged") if isinstance(payload, dict) else None
+    if not isinstance(merged, bool):
+        raise AuditError("merge state unverifiable (the response has no boolean merged field)")
+    return merged
 
 
 def _event(path: str | None) -> dict:
