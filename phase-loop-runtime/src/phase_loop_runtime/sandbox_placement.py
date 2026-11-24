@@ -38,8 +38,12 @@ and released by lease id; ``execute`` is reached from one state and ends the wal
 
 from __future__ import annotations
 
+from contextlib import contextmanager, nullcontext
 import contextvars
-from dataclasses import dataclass, field, replace
+import errno
+import stat
+import struct
+from dataclasses import asdict, dataclass, field, replace
 import hashlib
 import json
 import logging
@@ -52,9 +56,12 @@ import secrets
 import socket
 import threading
 import time
-from typing import Callable, Iterable, Mapping, NamedTuple, Protocol, Sequence, runtime_checkable
+from typing import TYPE_CHECKING, Callable, Iterable, Literal, Mapping, NamedTuple, Protocol, Sequence, runtime_checkable
 
 from . import review_stage, sandbox_policy, sandbox_retention
+
+if TYPE_CHECKING:
+    from .launch_process_contract import LaunchRequest, PreparedPaths
 
 __all__ = [
     "ANSWER_BOUND_S",
@@ -2340,7 +2347,9 @@ _LAUNCH_MISMATCH = "sandbox_launch_reservation_mismatch"
 _LAUNCH_CLAIMED = "sandbox_launch_exec_claimed"
 _LAUNCH_INPUT_MISMATCH = "sandbox_launch_input_mismatch"
 _LAUNCH_DIRS = ("prepare", "prepare-requests", "claims", "launches", "cancels", "heartbeats",
-                "cleanup", "runs", "returns")
+                "cleanup", "runs", "returns", "stages", "ctl", "operations", "leases",
+                "requests", "dispositions", "disposition-index", "stage-intents", "scratch-intents", "implicit",
+                "renewals")
 #: The run ids prepare assigns (they satisfy the envelope and JOURNAL identifier grammars).
 _RUN_ID = re.compile(r"run-[0-9a-f]{32}")
 #: A LaneExec journal key: a reservation id, a request id or a run id.
@@ -2429,6 +2438,54 @@ def _remove_journal(path: Path) -> None:
     _fsync_directory(path.parent)
 
 
+_GENERATION = re.compile("[a-f0-9]{32}")
+_ROLLBACK_CAUSES = frozenset(("snapshot_expired", "upload_refused_empty", "scratch_unprovisioned",
+                              "link_socket_creation_failed", "caps_recheck_refused"))
+_DEBT_CAUSES = frozenset(("release", "cancel", "renewal_lost", "owner_gone", "allocation_unknown",
+                          "rollback_unknown", "start_unknown", "collection_unknown"))
+_EVIDENCE = ("descendants_ended", "parent_collected", "remote_barrier", "allocations_collected")
+
+
+class Owner(NamedTuple):
+    pid: int
+    start: str
+
+
+class FileId(NamedTuple):
+    device: int
+    inode: int
+
+
+AllocationKind = Literal["stage", "scratch"]
+_HELD_LOCKS = contextvars.ContextVar("placement_held_locks", default=frozenset())
+
+
+@dataclass(frozen=True, slots=True)
+class Debt:
+    cause: str
+    descendants_ended: bool | str
+    parent_collected: bool | str
+    remote_barrier: bool | str
+    allocations_collected: bool | str
+
+    def __post_init__(self) -> None:
+        if self.cause not in _DEBT_CAUSES or any(
+            type(getattr(self, k)) is not bool and getattr(self, k) != "inapplicable" for k in _EVIDENCE
+        ):
+            raise ValueError("invalid cleanup debt")
+
+
+def _identity_fields(reservation_id: str, request_id: str, generation: str) -> dict:
+    if not (_ISSUED_RESERVATION.fullmatch(reservation_id) and _LAUNCH_KEY.fullmatch(request_id)
+            and _GENERATION.fullmatch(generation)):
+        raise LifecycleError("placement_internal")
+    return dict(version=1, reservation_id=reservation_id, request_id=request_id, generation=generation)
+
+
+def _matches(row, key) -> bool:
+    return row is not None and all(type(row.get(k)) is type(v) and row[k] == v for k, v in key.items())
+
+
 class _Deadline:
     """One lifecycle operation's monotonic end: every blocking step uses what is left."""
 
@@ -2477,6 +2534,7 @@ class _FileLock:
             try:
                 fcntl.flock(self.fd, fcntl.LOCK_EX | (fcntl.LOCK_NB if nonblocking else 0))
                 self.held = True
+                self._token = _HELD_LOCKS.set(_HELD_LOCKS.get() | {self.path})
                 return True
             except BlockingIOError:
                 if (not self.retry or self.deadline is None or self.deadline.expired()
@@ -2486,6 +2544,9 @@ class _FileLock:
                 _sleep(min(_POLL_S, self.deadline.left()))
 
     def __exit__(self, *_exc: object) -> None:
+        if self.held:
+            _HELD_LOCKS.reset(self._token)
+            self.held = False
         if self.fd is not None:
             os.close(self.fd)
             self.fd = None
@@ -3338,7 +3399,7 @@ class PlacementLifecycle:
             directory = self.bridge.directory_for(reservation)  # type: ignore[attr-defined]
             effect["bridge_directory"] = None if directory is None else str(directory)
         commit: dict[str, object] = {
-            "reservation": reservation.to_json(), "effect": effect, "complete": not bridged,  # type: ignore[attr-defined]
+            "reservation": reservation.to_json(), "effect": effect, "ttl_s": binding["ttl_s"], "complete": not bridged,  # type: ignore[attr-defined]
             "created_at": now, "trail": [entry.to_json() for entry in trail],  # type: ignore[attr-defined]
         }
         self._journal_commit(record, commit)
@@ -3408,6 +3469,8 @@ class PlacementLifecycle:
         reservation = commit["reservation"]  # type: ignore[index]
         entry = {"reservation": reservation, "state": "active", "created_at": commit["created_at"],
                  "effect": commit["effect"], "request_id": request_id}
+        if "ttl_s" in commit:
+            entry["ttl_s"] = commit["ttl_s"]
         _write_journal(self._dir("reservations") / f"{reservation['reservation_id']}.json", entry)  # type: ignore[index]
 
 
@@ -3720,11 +3783,169 @@ class PlacementLifecycle:
             return LeaseFlags(create_settled=True, fenced=True, destruction_observed=True,
                               barrier_confirmed=True, expired=expired)
         claimed = self._launch_claimed(entry)
-        if entry.get("state") == "cleanup_pending":
+        if (entry.get("state") == "cleanup_pending" or self._generation_closed(
+                self.launch_claim_record(entry["reservation"]["reservation_id"]))):
             return LeaseFlags(reserved=True, create_settled=True, fenced=True, exec_claimed=claimed,
                               cleanup_pending=True, expired=expired)
         return LeaseFlags(reserved=True, create_settled=True, ready=True, exec_claimed=claimed,
                           barrier_confirmed=True, expired=expired)
+
+    @contextmanager
+    def _teardown_lock(self, reservation_id, deadline, cancelled, *, echo=None, reap=False):
+        """Snapshot the claim, fence outside the journal, then take lease before journal."""
+        with self._owner_lock(reservation_id, "reservations", deadline, cancelled=cancelled) as held:
+            try:
+                claim = self.launch_claim_record(reservation_id) if held else None
+            except (OSError, LifecycleError):
+                yield False
+                return
+            if not claim or not claim.get("claimed") or claim.get("generation") is None:
+                yield held
+                return
+            active = _read_journal(self._dir("reservations") / (reservation_id + ".json"))
+            if (not active or self._claimed_by_transfer(reservation_id, active)
+                    or echo is not None and active["reservation"] != echo):
+                yield held
+                return
+            generation = claim["generation"]
+            key = _identity_fields(reservation_id, claim["request_id"], generation)
+            gone = reap and self.launch_owner(claim) == "gone"
+            if reap and not gone and active["state"] != "cleanup_pending" and not self._generation_closed(claim):
+                expires = _epoch(active["reservation"]["expires_at"])
+                if expires is None or self.clock() < expires or self._renewal_current(claim):
+                    # A candidate observed during a renewal may be healthy by the
+                    # time reap obtains the journal. Leave that owner in place.
+                    yield False
+                    return
+            cause = "owner_gone" if gone else "release"
+        try:
+            fenced = self.fence_launch(reservation_id, claim["request_id"], generation,
+                                       cause=cause, deadline=deadline.end)
+        except (LifecycleError, OSError):
+            fenced = False
+        if not fenced or _stopped(deadline, cancelled):
+            yield False
+            return
+        try:
+            terminal = self.launch_terminal(claim["request_id"])
+        except (OSError, LifecycleError):
+            yield False
+            return
+        if not terminal and self.launch_owner(claim) != "gone":
+            outcome = self.cancel_launch_owner(reservation_id, claim["request_id"], generation,
+                                               deadline=deadline.end)
+            from .launch_return import map_cancel
+            mapped = map_cancel(outcome, record_present=True, claim_held=True)
+            if mapped.local_outcome is not None:
+                try:
+                    self.journal_local_cancel(claim["request_id"], mapped.local_outcome, deadline=deadline)
+                except (OSError, LifecycleError):
+                    yield False
+                    return
+        with self.launch_lease_lock(reservation_id, timeout_s=deadline.left()) as leased:
+            if not leased or _stopped(deadline, cancelled):
+                yield False
+                return
+            with self.launch_operation_lock(reservation_id, generation, timeout_s=deadline.left()) as op:
+                if not op:
+                    yield False
+                    return
+                with self._owner_lock(reservation_id, "reservations", deadline, cancelled=cancelled) as held:
+                    if not held or not self._owned_claim(key):
+                        yield False
+                        return
+                    if self._generation_collectible(claim, deadline, check_allocations=False):
+                        debt = Debt(**self._disposition(key)["debt"])
+                        if debt.allocations_collected is False and self._recover_allocations(
+                                reservation_id, deadline, except_generation=generation):
+                            self.write_cleanup_debt_locked(reservation_id, claim["request_id"], generation,
+                                                           debt=replace(debt, allocations_collected=True),
+                                                           deadline=deadline.end)
+                    yield True
+
+    def _renewal_current(self, claim):
+        if not claim or not claim.get("claimed") or not claim.get("generation"):
+            return False
+        try:
+            key = _identity_fields(claim["reservation_id"], claim["request_id"], claim["generation"])
+            confirmed = self._confirmed_renewal(key, self._disposition(key))
+            return confirmed and _monotonic() < confirmed["heartbeat_at"] + confirmed["ttl_s"] * 2 / 3
+        except (ValueError, TypeError, KeyError, LifecycleError, OSError):
+            return False
+
+    def _generation_collectible(self, claim, deadline, *, check_allocations=True) -> bool:
+        key = _identity_fields(claim["reservation_id"], claim["request_id"], claim["generation"])
+        try:
+            row = self._disposition(key)
+            debt = row["debt"]
+            required = _EVIDENCE if check_allocations else _EVIDENCE[:-1]
+            if not row["fenced"] or not debt or any(debt[k] is False for k in required):
+                return False
+            launch = self.launch_record(claim["request_id"])
+            if (self.launch_owner(claim) != "gone" and
+                    (not _matches(launch, key) or self.launch_terminal(claim["request_id"]) is None)):
+                return False
+            return not deadline.expired()
+        except (LifecycleError, OSError, ValueError):
+            return False
+
+    def _prior_debt(self, reservation_id, current=None) -> bool:
+        # The claim publishes its reservation-scoped index entry before the claim CAS.
+        # Each immutable entry names one generation, including after rollback/re-claim.
+        directory = f"disposition-index/{reservation_id}"
+        try:
+            for generation in self._launch_ids(directory):
+                if generation == current:
+                    continue
+                index = self._launch_read(directory, generation)
+                key = _identity_fields(reservation_id, index["request_id"], generation)
+                if not _matches(index, key):
+                    return True
+                debt = self._disposition(key)["debt"]
+                if debt and any(debt[k] is False for k in _EVIDENCE):
+                    return True
+        except (KeyError, TypeError, ValueError, LifecycleError, OSError):
+            return True
+        return False
+
+    def _recover_allocations(self, reservation_id, deadline, *, except_generation=None) -> bool:
+        try:
+            return self._recover_allocations_locked(reservation_id, deadline, except_generation)
+        except (LifecycleError, OSError, ValueError, KeyError, TypeError):
+            return False
+
+    def _recover_allocations_locked(self, reservation_id, deadline, except_generation) -> bool:
+        if _stopped(deadline, None) or self._prior_debt(reservation_id, except_generation):
+            return False
+        scratch_slots = set()
+        claim = self.launch_claim_record(reservation_id)
+        if claim and claim.get("generation") and _RUN_ID.fullmatch(claim["run_id"]):
+            scratch_slots.add(self.launch_run_dir(claim["run_id"]) / "scratch")
+        for kind in ("stage", "scratch"):
+            directory = kind + "-intents"
+            for generation in self._launch_ids(directory):
+                row = self._launch_read(directory, generation)
+                if not row or row["reservation_id"] != reservation_id:
+                    continue
+                if kind == "scratch":
+                    run = self.launch_run_dir(row["run_id"])
+                    scratch_slots.update((run / generation, run / "scratch"))
+                if row["phase"] != "collected":
+                    if self.launch_owner(row) != "gone":
+                        return False
+                    if not self.collect_allocation(reservation_id, row["request_id"], generation,
+                                                   kind=kind, deadline=deadline.end):
+                        return False
+        # Removing the run tree would otherwise unlink a replacement at the old
+        # scratch pathname even after the matching inode was positively collected.
+        if any(os.path.lexists(slot) for slot in scratch_slots):
+            return False
+        for req in self._launch_ids("implicit"):
+            row = self._launch_read("implicit", req)
+            if row and row["reservation_id"] == reservation_id and row["state"] == "planned":
+                self._retire_planned(row, (self.launch_prepare_record(reservation_id) or {}).get("run_id"))
+                self._launch_write("implicit", req, dict(row, state="retired"))
+        return True
 
     def release(self, request: object, *, cancelled: threading.Event) -> object:
         """``PlacementLifecycle.release(request, *, cancelled) -> ReleaseResponse``. One
@@ -3758,8 +3979,8 @@ class PlacementLifecycle:
         tomb_path = self._dir("tombstones") / f"{reservation_id}.json"
         if not os.path.lexists(active_path) and self._live_tombstone(tomb_path) is None:
             return response("unknown_reservation", _REFUSED, self._flags(None))
-        with _FileLock(self._dir("reservations") / f"{reservation_id}.lock", blocking=False,
-                       deadline=deadline, cancelled=cancelled) as held:
+        with self._teardown_lock(reservation_id, deadline, cancelled,
+                                 echo=dict(request.reservation_json)) as held:
             if not held:
                 # Another operation holds this reservation: its effect may remain.
                 return response("cleanup_pending", _RELEASE_UNCONFIRMED, pending_flags)
@@ -3915,11 +4136,22 @@ class PlacementLifecycle:
             item[0] = min(item[0], created)  # type: ignore[type-var]
             item[1 if active else 2] = True
 
+        unreadable = set()
         for reservation_id, entry in self._records("reservations"):
             expires = _epoch(entry.get("reservation", {}).get("expires_at"))  # type: ignore[union-attr]
-            if entry.get("state") == "cleanup_pending" or (expires is not None and now >= expires):
-                candidate("reservations", reservation_id, float(entry.get("created_at", 0.0)),  # type: ignore[arg-type]
-                          active=True)
+            try:
+                claim = self.launch_claim_record(reservation_id)
+                discover = (self._generation_closed(claim) or
+                            claim and claim.get("claimed") and claim.get("generation")
+                            and self.launch_owner(claim) == "gone")
+                eligible = (discover or entry.get("state") == "cleanup_pending"
+                            or self._prior_debt(reservation_id)
+                            or expires is not None and now >= expires and not self._renewal_current(claim))
+            except (KeyError, TypeError, ValueError, LifecycleError, OSError):
+                unreadable.add(reservation_id)
+                eligible = True
+            if eligible:
+                candidate("reservations", reservation_id, float(entry.get("created_at", 0.0)), active=True)
         for entry_id, entry in self._records("cleanup"):
             if entry.get("state", "owned") == "owned":
                 lock = "reservations" if entry.get("lock") == "reservations" else "cleanup"
@@ -3931,7 +4163,12 @@ class PlacementLifecycle:
                 pending += 1
                 continue
             examined += 1
-            with self._owner_lock(key, lock, deadline, cancelled=cancelled) as held:
+            if active and key in unreadable:
+                pending += 1
+                continue
+            guard = (self._teardown_lock(key, deadline, cancelled, reap=True) if active
+                     else self._owner_lock(key, lock, deadline, cancelled=cancelled))
+            with guard as held:
                 if not held or _stopped(deadline, cancelled):
                     pending += 1
                     continue
@@ -4024,6 +4261,8 @@ class PlacementLifecycle:
             _private_tree(self.launch_root)
             for name in _LAUNCH_DIRS:
                 _private_tree(self._launch_dir(name))
+                if name in ("stages", "ctl") and stat.S_IMODE(self._launch_dir(name).stat().st_mode) != 0o700:
+                    os.chmod(self._launch_dir(name), 0o700)
         except OSError:
             raise LifecycleError("placement_inventory_unsafe") from None
 
@@ -4045,6 +4284,375 @@ class PlacementLifecycle:
             raise LifecycleError("placement_internal")
         self._launch_prepare()
         _write_journal(self._launch_dir(name) / f"{key}.json", value)
+
+    def _check_launch_lock_order(self, level: int) -> None:
+        ranks = {self._launch_dir("leases"): 0, self._launch_dir("operations"): 1,
+                 self._dir("reservations"): 2, self._launch_dir("requests"): 3}
+        if any(ranks.get(path.parent, -1) > level for path in _HELD_LOCKS.get()):
+            raise LifecycleError("placement_lock_order")
+
+    def _generation_lock(self, directory: str, key: str, timeout_s: float) -> _FileLock:
+        self._check_launch_lock_order({"leases": 0, "operations": 1, "requests": 3}[directory])
+        deadline = _Deadline.after(timeout_s)
+        self._launch_prepare()
+        return _FileLock(self._launch_dir(directory) / (key + ".lock"), blocking=False,
+                         deadline=deadline)
+
+    def launch_request_lock(self, request_id: str, *, timeout_s: float) -> _FileLock:
+        if not _LAUNCH_KEY.fullmatch(request_id):
+            raise LifecycleError("placement_internal")
+        return self._generation_lock("requests", request_id, timeout_s)
+
+    def launch_lease_lock(self, reservation_id: str, *, timeout_s: float) -> _FileLock:
+        if not _ISSUED_RESERVATION.fullmatch(reservation_id):
+            raise LifecycleError("placement_internal")
+        return self._generation_lock("leases", reservation_id, timeout_s)
+
+    def launch_operation_lock(self, reservation_id: str, generation: str, *,
+                              timeout_s: float) -> _FileLock:
+        if not (_ISSUED_RESERVATION.fullmatch(reservation_id) and _GENERATION.fullmatch(generation)):
+            raise LifecycleError("placement_internal")
+        return self._generation_lock("operations", f"{reservation_id}.{generation}", timeout_s)
+
+    def _holds_operation(self, rid, generation):
+        return self._launch_dir("operations") / f"{rid}.{generation}.lock" in _HELD_LOCKS.get()
+
+    def _allocation_guard(self, key, kind, deadline):
+        held = _HELD_LOCKS.get()
+        if (kind == "scratch" and self._dir("reservations") /
+                (key["reservation_id"] + ".lock") not in held):
+            raise LifecycleError("placement_lock_required")
+        if self._launch_dir("requests") / (key["request_id"] + ".lock") in held:
+            return nullcontext(True)
+        return self.launch_request_lock(key["request_id"], timeout_s=_Deadline(deadline).left())
+
+    def _disposition(self, key: dict) -> dict:
+        row = self._launch_read("dispositions", key["generation"])
+        if not _matches(row, key) or not all(type(row.get(k)) is bool for k in
+                                             ("start_intent", "release_requested", "fenced")):
+            raise LifecycleError("placement_journal_corrupt")
+        try:
+            if row["debt"] is not None:
+                Debt(**row["debt"])
+        except (KeyError, TypeError, ValueError):
+            raise LifecycleError("placement_journal_corrupt") from None
+        return row
+
+    def _owned_claim(self, key: dict) -> dict | None:
+        row = self.launch_claim_record(key["reservation_id"])
+        return row if _matches(row, key) and row["claimed"] is True else None
+
+    def mark_start_intent(self, reservation_id: str, request_id: str, generation: str, *,
+                          deadline: float) -> bool:
+        if not self._holds_operation(reservation_id, generation):
+            raise LifecycleError("placement_lock_required")
+        key = _identity_fields(reservation_id, request_id, generation)
+        bound = _Deadline(deadline)
+        with self.launch_lock(reservation_id, timeout_s=bound.left()) as lock:
+            claim = self._owned_claim(key) if lock.held else None
+            if not claim or claim["owner"] != _own_identity() or claim.get("rollback_cause") or lock.window(None)[0]:
+                return False
+            row = self._disposition(key)
+            if row["start_intent"] or bound.expired():
+                return False
+            row["start_intent"] = True
+            self._launch_write("dispositions", generation, row)
+            return not bound.expired()
+
+    def read_cleanup_debt(self, reservation_id: str, request_id: str, generation: str) -> Debt | None:
+        key = _identity_fields(reservation_id, request_id, generation)
+        with (nullcontext(True) if self._holds_operation(reservation_id, generation) else
+              self.launch_operation_lock(reservation_id, generation, timeout_s=ANSWER_BOUND_S)) as held:
+            if not held:
+                raise LifecycleError("placement_operation_timeout")
+            if self._launch_read("dispositions", generation) is None and not self._owned_claim(key):
+                return None
+            row = self._disposition(key)
+        return None if row["debt"] is None else Debt(**row["debt"])
+
+    def write_cleanup_debt(self, reservation_id: str, request_id: str, generation: str, *,
+                           debt: Debt, deadline: float) -> bool:
+        with self.launch_operation_lock(reservation_id, generation,
+                                        timeout_s=_Deadline(deadline).left()) as held:
+            return held and self.write_cleanup_debt_locked(reservation_id, request_id, generation,
+                                                           debt=debt, deadline=deadline)
+
+    def write_cleanup_debt_locked(self, reservation_id: str, request_id: str, generation: str, *,
+                                  debt: Debt, deadline: float) -> bool:
+        row = self._disposition(_identity_fields(reservation_id, request_id, generation))
+        if not self._holds_operation(reservation_id, generation):
+            raise LifecycleError("placement_lock_required")
+        if _monotonic() >= deadline or not isinstance(debt, Debt):
+            return False
+        before = row["debt"]
+        if before is not None and before["cause"] != debt.cause:
+            return False
+        if before is not None and any(
+            before[k] != getattr(debt, k) and (before[k] is not False or getattr(debt, k) is not True)
+            for k in _EVIDENCE
+        ):
+            return False
+        row["debt"] = asdict(debt)
+        self._launch_write("dispositions", generation, row)
+        return _monotonic() < deadline
+
+    def _fence_locked(self, key: dict, cause: str, *, remote: bool) -> None:
+        row = self._disposition(key)
+        row["fenced"] = True
+        row["release_requested"] |= cause == "release"
+        if row["debt"] is None:
+            row["debt"] = asdict(Debt(cause, False, False, False if remote else "inapplicable", False))
+        self._launch_write("dispositions", key["generation"], row)
+
+    def fence_launch(self, reservation_id: str, request_id: str, generation: str, *,
+                     cause: str, deadline: float) -> bool:
+        key = _identity_fields(reservation_id, request_id, generation)
+        if cause not in _DEBT_CAUSES:
+            return False
+        bound = _Deadline(deadline)
+        with self.launch_operation_lock(reservation_id, generation, timeout_s=bound.left()) as held:
+            if not held:
+                return False
+            with self.launch_lock(reservation_id, timeout_s=bound.left()) as lock:
+                if not lock.held or not self._owned_claim(key):
+                    return False
+                active = _read_journal(self._dir("reservations") / (reservation_id + ".json"))
+                if not active:
+                    return False
+                self._fence_locked(key, cause, remote=active["effect"]["kind"] != "local")
+                return not bound.expired()
+
+    def _confirm_slot(self, key: dict, active: dict, count: int, bound: _Deadline) -> bool:
+        """Only a timely, joined writer can update the confirmed renewal. A late helper
+        can touch only its open slot inode and generation-specific acknowledgement."""
+        effect = active["effect"]
+        ttl = active.get("ttl_s")
+        if ttl is None:
+            # Old reserve records store an integral TTL through their truncated UTC expiry.
+            ttl = int(_epoch(active["reservation"]["expires_at"]) - math.floor(active["created_at"]))
+        if effect["kind"] != "local" or type(ttl) is not int or ttl <= 0:
+            return False
+        slot = self._slots_dir() / (effect["slot"] + ".json")
+        # <generation>.<count> candidates use monotonic time for the lease bounds.
+        # Only confirmed_count in the disposition selects a candidate. Store wall
+        # time separately for the legacy launch_heartbeat accessor.
+        row = dict(**key, heartbeat_at=_monotonic(), wall_heartbeat_at=self.clock(),
+                   confirmation_count=count, ttl_s=ttl)
+        def write() -> bool:
+            import fcntl
+
+            try:
+                # Pin the slot before writing. Even a blocked writer cannot mutate a
+                # replacement inode. Concurrent writers to the old inode are excluded.
+                with open(slot, "r+b", opener=lambda path, flags: os.open(path, flags | os.O_NOFOLLOW)) as stream:
+                    fd = stream.fileno()
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    existing = json.loads(os.pread(fd, _JOURNAL_MAX, 0))
+                    if (existing.get("client") != self.client
+                            or existing.get("reservation_id") != key["reservation_id"] or bound.expired()):
+                        return False
+                    data = json.dumps(dict(row, client=self.client)).encode()
+                    if os.pwrite(fd, data, 0) != len(data):
+                        return False
+                    os.ftruncate(fd, len(data))
+                    os.fsync(fd)
+                    if bound.expired():
+                        return False
+                    # A timed-out write can publish only an unselected candidate.
+                    self._launch_write("renewals", f"{key['generation']}.{count}", row)
+                    return not bound.expired()
+            except (OSError, ValueError, LifecycleError):
+                return False
+
+        calls = _Calls()
+        try:
+            return calls.run(write, bound.left()) is True and not bound.expired()
+        except PlacementUnavailable:
+            return False
+        finally:
+            calls.close()
+
+    def _confirmed_renewal(self, key, disposition):
+        count = disposition.get("confirmed_count")
+        if type(count) is not int or count < 0:
+            return None
+        row = self._launch_read("renewals", f"{key['generation']}.{count}")
+        return row if _matches(row, key) and row.get("confirmation_count") == count else None
+
+    def renew_launch(self, reservation_id: str, request_id: str, generation: str, *,
+                     deadline: float) -> bool:
+        self._check_launch_lock_order(1)
+        if self._holds_operation(reservation_id, generation):
+            raise LifecycleError("placement_lock_order")
+        bound = _Deadline(deadline)
+        calls = _Calls()
+        try:
+            # The worker retains its locks until the durable decision is settled.
+            # This also bounds the caller when the disposition journal itself stalls.
+            return calls.run(lambda: self._renew_transaction(reservation_id, request_id, generation,
+                                                           deadline=deadline), bound.left()) is True
+        except (PlacementUnavailable, OSError, LifecycleError):
+            return False
+        finally:
+            calls.close()
+
+    def _renew_transaction(self, reservation_id: str, request_id: str, generation: str, *,
+                           deadline: float) -> bool:
+        key = _identity_fields(reservation_id, request_id, generation)
+        bound = _Deadline(deadline)
+        with self.launch_operation_lock(reservation_id, generation, timeout_s=bound.left()) as held:
+            if not held:
+                return False
+            with self.launch_lock(reservation_id, timeout_s=bound.left()) as lock:
+                if not lock.held or not self._owned_claim(key):
+                    return False
+                active = _read_journal(self._dir("reservations") / (reservation_id + ".json"))
+                if (not active or active["state"] != "active" or active["effect"]["kind"] != "local"
+                        or self._generation_closed(self._owned_claim(key))):
+                    return False
+                disposition = self._disposition(key)
+                previous = self._confirmed_renewal(key, disposition)
+                if not _matches(previous, key):
+                    return False
+                bound = _Deadline(min(deadline, _monotonic() + previous["ttl_s"] / 3,
+                                      previous["heartbeat_at"] + previous["ttl_s"] * 2 / 3))
+                count = previous["confirmation_count"] + 1
+                # A crash or timeout after either write leaves a closed window until reap.
+                disposition["debt"] = asdict(Debt("renewal_lost", False, False, "inapplicable", False))
+                self._launch_write("dispositions", generation, disposition)
+                if not bound.expired() and self._confirm_slot(key, active, count, bound):
+                    disposition.update(confirmed_count=count, debt=None)
+                    self._launch_write("dispositions", generation, disposition)
+                    if not bound.expired():
+                        return True
+                    disposition.update(confirmed_count=count - 1, fenced=True,
+                                       debt=asdict(Debt("renewal_lost", False, False, "inapplicable", False)))
+                    self._launch_write("dispositions", generation, disposition)
+                    return False
+                self._fence_locked(key, "renewal_lost", remote=False)
+                return False
+
+    def cancel_launch_owner(self, reservation_id: str, request_id: str, generation: str, *,
+                            deadline: float) -> str:
+        key = _identity_fields(reservation_id, request_id, generation)
+        bound = _Deadline(deadline)
+        with self.launch_lock(reservation_id, timeout_s=bound.left()) as lock:
+            if not lock.held:
+                return "cancel_pending"
+            claim = self._owned_claim(key)
+            if not claim:
+                return "unknown_attempt"
+        outcome = _supervisor_cancel(self.launch_root / "ctl", key, claim, bound)
+        if bound.expired():
+            return "cancel_pending"
+        # WORKER independently verifies its registered owning launcher. No registration
+        # leaves the supervisor's pre-registration outcome authoritative.
+        with self.launch_lock(reservation_id, timeout_s=bound.left()) as lock:
+            if not lock.held or self._owned_claim(key) != claim:
+                return "owner_unverified"
+        try:
+            worker = self.launch_cancel(claim, min(CANCEL_WAIT_S, bound.left()))
+        except Exception:
+            return "cancel_pending"
+        if bound.expired():
+            return "cancel_pending"
+        if outcome in ("cancelled", "already_terminal") and worker == "cancel_pending":
+            return "cancel_pending"
+        return outcome
+
+    def record_allocation(self, reservation_id: str, request_id: str, generation: str, *,
+                          kind: AllocationKind, run_id: str, owner: Owner | Mapping[str, object], basename: str,
+                          file_id: tuple[int, int] | None, deadline: float) -> bool:
+        key = _identity_fields(reservation_id, request_id, generation)
+        if isinstance(owner, Owner):
+            owner = owner._asdict()
+        if (kind not in ("stage", "scratch") or not _RUN_ID.fullmatch(run_id) or generation != basename
+                or not _valid_owner(owner)):
+            return False
+        directory = kind + "-intents"
+        with self._allocation_guard(key, kind, deadline) as held:
+            if not held:
+                return False
+            if kind == "scratch" and (self.launch_prepare_record(reservation_id) or {}).get("run_id") != run_id:
+                return False
+            row = self._launch_read(directory, generation)
+            values = dict(**key, kind=kind, run_id=run_id, basename=basename)
+            if row is None:
+                if file_id is not None or dict(owner) != _own_identity():
+                    return False
+                row = dict(**values, owner=dict(owner), file_id=None, phase="intent")
+            elif not _matches(row, values) or row["phase"] == "collected":
+                return False
+            else:
+                # The live recorded owner alone may identify or hand off a stage.
+                if row["owner"] != _own_identity() or (kind == "scratch" and owner != row["owner"]):
+                    return False
+                if file_id is None or any(type(x) is not int for x in file_id):
+                    return False
+                root = self._launch_dir("stages") if kind == "stage" else self.launch_run_dir(run_id)
+                try:
+                    info = (root / basename).lstat()
+                except OSError:
+                    return False
+                if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
+                        or stat.S_IMODE(info.st_mode) != 0o700
+                        or (info.st_dev, info.st_ino) != file_id
+                        or row["file_id"] not in (None, list(file_id))
+                        or _landed_launch_owner({"owner": owner}) != "live"):
+                    return False
+                row.update(file_id=list(file_id), phase="identified", owner=dict(owner))
+            self._launch_write(directory, generation, row)
+            return _monotonic() < deadline
+
+    def collect_allocation(self, reservation_id: str, request_id: str, generation: str, *,
+                           kind: AllocationKind, deadline: float) -> bool:
+        key = _identity_fields(reservation_id, request_id, generation)
+        if kind not in ("stage", "scratch"):
+            return False
+        with self._allocation_guard(key, kind, deadline) as held:
+            row = self._launch_read(kind + "-intents", generation) if held else None
+            if not _matches(row, key) or row["basename"] != generation or not _RUN_ID.fullmatch(row["run_id"]):
+                return False
+            if row["phase"] == "collected":
+                return True
+            if row["phase"] not in ("intent", "identified"):
+                return False
+            gone = self.launch_owner(row) == "gone"
+            if row["owner"] != _own_identity() and not gone:
+                return False
+            for adopter in (self._owned_claim(key), self.launch_record(request_id)):
+                if (adopter and adopter.get("generation") == generation and adopter.get("owner") != row["owner"]
+                        and self.launch_owner(adopter) != "gone"):
+                    return False
+            paths = [self._launch_dir("stages") / generation]
+            if kind == "scratch":
+                run = self.launch_run_dir(row["run_id"])
+                paths = [run / generation, run / "scratch"]
+            present = False
+            for path in paths:
+                try:
+                    info = path.lstat()
+                except FileNotFoundError:
+                    continue
+                present = True
+                if (row["phase"] == "identified" and [info.st_dev, info.st_ino] == row["file_id"]
+                        and stat.S_ISDIR(info.st_mode)):
+                    _remove_tree(path)
+                    break
+            else:
+                if present or not gone:
+                    return False
+                # The owner died before mkdir, or after unlink but before recording
+                # collection. Re-establish durability of the observed absence.
+                parent = paths[0].parent
+                try:
+                    _fsync_directory(parent)
+                except FileNotFoundError:
+                    # A removed run parent also proves absence of both scratch aliases.
+                    _fsync_directory(parent.parent)
+            row["phase"] = "collected"
+            self._launch_write(kind + "-intents", generation, row)
+            return _monotonic() < deadline
 
     def launch_return_dir(self, reservation_id: str, run_id: str, *,
                           timeout_s: float = ANSWER_BOUND_S) -> Path:
@@ -4120,17 +4728,24 @@ class PlacementLifecycle:
             response = decode_launch_response("launch", data)
         except Exception:
             raise LifecycleError("placement_journal_corrupt") from None
-        if encode_launch_response(response) != data:
+        if (encode_launch_response(response) != data or response.request_id != request_id
+                or response.reservation_id != record.get("reservation_id")):
             raise LifecycleError("placement_journal_corrupt")
         return response
 
-    def journal_local_cancel(self, request_id: str, outcome: str) -> None:
+    def journal_local_cancel(self, request_id: str, outcome: str, *, deadline: _Deadline | None = None) -> None:
         """Append one zero-signal cancel outcome for a launch (L-S4); never a success."""
+        deadline = deadline or _Deadline.after(ANSWER_BOUND_S)
         self._launch_prepare()
-        with _FileLock(self._launch_dir("cancels") / f"{request_id}.lock", blocking=True):
+        with _FileLock(self._launch_dir("cancels") / f"{request_id}.lock", blocking=False,
+                       deadline=deadline) as held:
+            if not held:
+                raise LifecycleError("placement_operation_timeout")
             current = self._launch_read("cancels", request_id) or {"request_id": request_id,
                                                                    "outcomes": []}
-            outcomes = list(current.get("outcomes") or [])  # type: ignore[arg-type]
+            outcomes = current.get("outcomes")
+            if current.get("request_id") != request_id or not isinstance(outcomes, list):
+                raise LifecycleError("placement_journal_corrupt")
             outcomes.append({"outcome": str(outcome), "at": self.clock()})
             self._launch_write("cancels", request_id, {"request_id": request_id,
                                                        "outcomes": outcomes})
@@ -4167,7 +4782,21 @@ class PlacementLifecycle:
             return _LAUNCH_UNKNOWN, None
         if echo is not None and canonical_bytes(dict(echo)) != canonical_bytes(reservation):
             return _LAUNCH_MISMATCH, active
+        claim = self.launch_claim_record(reservation_id)
+        if (self._generation_closed(claim) or
+                self._prior_debt(reservation_id, (claim or {}).get("generation") if claim and claim.get("claimed") else None)):
+            return _LAUNCH_UNKNOWN, active
         return None, active
+
+    def _generation_closed(self, claim) -> bool:
+        if not claim or not claim.get("claimed") or "generation" not in claim:
+            return False
+        try:
+            row = self._disposition(_identity_fields(claim["reservation_id"], claim["request_id"],
+                                                     claim["generation"]))
+            return row["fenced"] or row["release_requested"] or row["debt"] is not None
+        except (LifecycleError, OSError, TypeError, ValueError, KeyError):
+            return True
 
     def _launch_claimed(self, entry: Mapping[str, object]) -> bool:
         """Whether a LaneExec claim is held on the reservation an active entry names."""
@@ -4179,7 +4808,8 @@ class PlacementLifecycle:
         return bool(claim and claim.get("claimed") is True)
 
     def _claim_locked(self, reservation_id: str, request_id: str, run_id: str,
-                      owner: Mapping[str, object] | None) -> str | None:
+                      owner: Mapping[str, object] | None, generation: str | None = None,
+                      deadline: _Deadline | None = None) -> str | None:
         """The exec claim's compare-and-set; the caller holds the reservation lock. One
         durable write sets the claim (``LeaseFlags.exec_claimed``) and records the launch
         ``request_id``; it never touches the worker JOURNAL (L-S2)."""
@@ -4191,12 +4821,34 @@ class PlacementLifecycle:
         current = self.launch_claim_record(reservation_id)
         if current is not None and current.get("claimed") is not False:
             return _LAUNCH_CLAIMED
-        identity = dict(owner) if owner is not None else _own_identity()
+        identity = (owner._asdict() if isinstance(owner, Owner) else
+                    dict(owner) if owner is not None else _own_identity())
         if not _valid_owner(identity):
             # A claim is committed only with an owner reap can later verify: without a
             # readable start identity nothing is written and the claim is refused.
             return _CAPABILITY_UNMET
+        fields = {}
+        if generation is not None:
+            key = _identity_fields(reservation_id, request_id, generation)
+            if (self._launch_read("dispositions", generation) is not None
+                    or _landed_launch_owner({"owner": identity}) != "live"):
+                return _CAPABILITY_UNMET
+            if _active["effect"]["kind"] == "local":
+                if not self._confirm_slot(key, _active, 0, deadline or _Deadline.after(ANSWER_BOUND_S)):
+                    # No claim selected this candidate. A late writer can touch
+                    # only its pinned slot and its unselected renewal record.
+                    return _CAPABILITY_UNMET
+            self._launch_write("dispositions", generation, {
+                **key, "fenced": False, "start_intent": False, "release_requested": False, "debt": None,
+                "confirmed_count": 0 if _active["effect"]["kind"] == "local" else None})
+            index = self._launch_dir("disposition-index") / reservation_id
+            _private_tree(index)
+            _fsync_directory(index.parent)
+            _write_journal(index / (generation + ".json"), key)
+            fields = {**key, "rollback_cause": None,
+                      "completed_rollback": (current or {}).get("completed_rollback")}
         self._launch_write("claims", reservation_id, {
+            **fields,
             "reservation_id": reservation_id, "request_id": request_id, "run_id": run_id,
             "claimed": True, "claimed_at": self.clock(),
             "owner": identity,
@@ -4204,13 +4856,24 @@ class PlacementLifecycle:
         })
         return None
 
-    def _rollback_locked(self, reservation_id: str, request_id: str) -> bool:
+    def _rollback_locked(self, reservation_id: str, request_id: str, generation: str | None = None) -> bool:
         """``x-exec.claim_rollback``: one durable write that clears the claim and journals
         ``claim_rolled_back`` for that launch ``request_id``. Only the claim that request
         took is cleared."""
         current = self.launch_claim_record(reservation_id)
         if current is None or current.get("claimed") is not True or current.get("request_id") != request_id:
             return False
+        if current.get("generation") != generation:
+            return False
+        if generation is not None:
+            if current["owner"] != _own_identity():
+                return False
+            row = self._disposition(_identity_fields(reservation_id, request_id, generation))
+            if (current.get("rollback_cause") not in _ROLLBACK_CAUSES or row["start_intent"]
+                    or row["fenced"] or row["debt"] is not None):
+                return False
+            current["completed_rollback"] = dict(request_id=request_id, generation=generation,
+                                                 cause=current["rollback_cause"])
         current["claimed"] = False
         current["rolled_back"] = [*list(current.get("rolled_back") or []), request_id]  # type: ignore[arg-type]
         current["rolled_back_at"] = self.clock()
@@ -4239,7 +4902,7 @@ class PlacementLifecycle:
         try:
             claim = self.launch_claim_record(reservation_id)
             if (claim is None or claim.get("claimed") is not True
-                    or claim.get("request_id") != request_id):
+                    or claim.get("request_id") != request_id or claim.get("generation") is not None):
                 return False
             active = _read_journal(self._dir("reservations") / f"{reservation_id}.json")
             effect = (active or {}).get("effect") or {}
@@ -4266,8 +4929,22 @@ class PlacementLifecycle:
         return True
 
     def launch_heartbeat(self, reservation_id: str) -> float | None:
-        record = self._launch_read("heartbeats", reservation_id)
-        value = None if record is None else record.get("heartbeat_at")
+        claim = self.launch_claim_record(reservation_id)
+        if claim and claim.get("generation") is not None and claim.get("claimed"):
+            key = _identity_fields(reservation_id, claim["request_id"], claim["generation"])
+            record = self._confirmed_renewal(key, self._disposition(key))
+            value = (record or {}).get("wall_heartbeat_at")
+            if record and value is None:
+                # Earlier generation rows stored only monotonic time. The claim
+                # provides a durable wall-clock anchor for the initial confirmation.
+                initial = self._confirmed_renewal(key, {"confirmed_count": 0})
+                if (initial and type(initial.get("heartbeat_at")) in (int, float)
+                        and type(record.get("heartbeat_at")) in (int, float)
+                        and type(claim.get("claimed_at")) in (int, float)):
+                    value = claim["claimed_at"] + (record["heartbeat_at"] - initial["heartbeat_at"])
+        else:
+            record = self._launch_read("heartbeats", reservation_id)
+            value = (record or {}).get("heartbeat_at")
         return float(value) if type(value) in (int, float) else None  # type: ignore[arg-type]
 
     # -- LaneExec prepare (``x-prepare``) -------------------------------------------------
@@ -4440,15 +5117,20 @@ class PlacementLifecycle:
                         raise LifecycleError("placement_internal")
                     record["run_id"] = run_id
                     self._launch_write("prepare-requests", str(record["request_id"]), record)
-                paths = self._prepared_paths(str(kind), run_id, snapshot_root)
-                _private_tree(self.launch_run_dir(run_id))
-                values = {"reservation_id": reservation_id, "request_id": record["request_id"],
-                          "target_kind": kind, "snapshot_root": snapshot_root,
-                          "created_at": self.clock(), **paths}
-                self._launch_write("prepare", reservation_id, values)
+                values = self._publish_prepare(reservation_id, record["request_id"], kind, run_id,
+                                               snapshot_root)
             except OSError:
                 raise LifecycleError("placement_internal") from None
             return self._settle_prepare(record, self._prepare_response(request, "prepared", None, values))
+
+    def _publish_prepare(self, reservation_id, request_id, kind, run_id, snapshot_root):
+        paths = self._prepared_paths(kind, run_id, snapshot_root)
+        _private_tree(self.launch_run_dir(run_id))
+        _fsync_directory(self._launch_dir("runs"))
+        values = dict(reservation_id=reservation_id, request_id=request_id, target_kind=kind,
+                      snapshot_root=snapshot_root, created_at=self.clock(), **paths)
+        self._launch_write("prepare", reservation_id, values)
+        return values
 
     def _prepared_paths(self, kind: str, run_id: str, snapshot_root: str) -> dict[str, str]:
         """``x-prepare.values``: openshell ``/work/<run_id>/scratch`` and ``/work/<run_id>/fs``
@@ -4468,20 +5150,20 @@ class PlacementLifecycle:
         record = self.launch_record(request_id)
         return record is not None and record.get("terminal") is not None
 
-    def _launch_cancel_owner(self, claim: Mapping[str, object], wait_s: float) -> str | None:
+    def _launch_cancel_owner(self, claim: Mapping[str, object], deadline: _Deadline) -> str | None:
         """Cancel the claimed attempt through its verified owning launcher only, and
         journal a zero-signal outcome locally (L-S4)."""
         from .launch_return import map_cancel
 
         try:
-            outcome = self.launch_cancel(claim, wait_s)
+            outcome = self.launch_cancel(claim, max(_POLL_S, min(deadline.left(), CANCEL_WAIT_S)))
         except Exception:
             outcome = None
         mapping = map_cancel(outcome if isinstance(outcome, str) else None,
                              record_present=True, claim_held=True)
         if mapping.local_outcome is not None and isinstance(claim.get("request_id"), str):
             try:
-                self.journal_local_cancel(str(claim["request_id"]), mapping.local_outcome)
+                self.journal_local_cancel(str(claim["request_id"]), mapping.local_outcome, deadline=deadline)
             except (OSError, LifecycleError):
                 pass
         return outcome if isinstance(outcome, str) else None
@@ -4494,14 +5176,19 @@ class PlacementLifecycle:
         proceed, after the run's allocations (prepare record, run directory, cleanup
         entries) are removed; False leaves everything in place (``cleanup_pending``)."""
         claim = self.launch_claim_record(reservation_id)
-        if claim is not None and claim.get("claimed") is True:
+        if claim and claim.get("claimed") and claim.get("generation"):
+            if not self._generation_collectible(claim, deadline):
+                return False
+        elif claim is not None and claim.get("claimed") is True:
             request_id = claim.get("request_id")
             if not self._launch_terminal_present(request_id):
-                self._launch_cancel_owner(claim, max(_POLL_S, min(deadline.left(), CANCEL_WAIT_S)))
+                self._launch_cancel_owner(claim, deadline)
                 while not self._launch_terminal_present(request_id):
                     if _stopped(deadline, cancelled):
                         return False
                     _sleep(min(_POLL_S, deadline.left()))
+        if not self._recover_allocations(reservation_id, deadline):
+            return False
         self._remove_launch_allocations(reservation_id)
         return True
 
@@ -4512,7 +5199,10 @@ class PlacementLifecycle:
         it is cancelled through the verified owner and marked reaped, and reap never
         writes or replaces a LaunchResponse. A live or unverified owner keeps everything."""
         claim = self.launch_claim_record(reservation_id)
-        if (claim is not None and claim.get("claimed") is True
+        if claim and claim.get("claimed") and claim.get("generation"):
+            if not self._generation_collectible(claim, deadline):
+                return False
+        elif (claim is not None and claim.get("claimed") is True
                 and not self._launch_terminal_present(claim.get("request_id"))
                 and claim.get("reaped_at") is None):
             try:
@@ -4521,9 +5211,11 @@ class PlacementLifecycle:
                 owner = "unverified"
             if owner != "gone" or _stopped(deadline, cancelled):
                 return False
-            self._launch_cancel_owner(claim, max(_POLL_S, min(deadline.left(), CANCEL_WAIT_S)))
+            self._launch_cancel_owner(claim, deadline)
             claim["reaped_at"] = self.clock()
             self._launch_write("claims", reservation_id, claim)
+        if not self._recover_allocations(reservation_id, deadline):
+            return False
         self._remove_launch_allocations(reservation_id)
         return True
 
@@ -4558,13 +5250,19 @@ class PlacementLifecycle:
         reservation_ids = {str((self._launch_read("cleanup", key) or {}).get("reservation_id"))
                            for key in self._launch_ids("cleanup")}
         reservation_ids |= set(self._launch_ids("prepare"))
+        for name in ("stage-intents", "scratch-intents", "implicit"):
+            for key in self._launch_ids(name):
+                row = self._launch_read(name, key)
+                if row and (row.get("phase") in ("intent", "identified") or row.get("state") == "planned"):
+                    reservation_ids.add(str(row["reservation_id"]))
         for reservation_id in sorted(reservation_ids):
             if _stopped(deadline, cancelled) or not _ISSUED_RESERVATION.fullmatch(reservation_id):
                 continue
             if os.path.lexists(self._dir("reservations") / f"{reservation_id}.json"):
                 continue
             with self._try_lock(self._dir("reservations") / f"{reservation_id}.lock", deadline) as held:
-                if held and not os.path.lexists(self._dir("reservations") / f"{reservation_id}.json"):
+                if (held and not os.path.lexists(self._dir("reservations") / f"{reservation_id}.json")
+                        and self._recover_allocations(reservation_id, deadline)):
                     self._remove_launch_allocations(reservation_id)
         try:
             retained = sorted(os.listdir(self._launch_dir("returns")))
@@ -4710,6 +5408,7 @@ class ReservationLock:
                  deadline: _Deadline, cancelled: threading.Event | None) -> None:
         if not _LAUNCH_KEY.fullmatch(reservation_id):
             raise LifecycleError("placement_internal")
+        lifecycle._check_launch_lock_order(2)
         lifecycle._prepare()
         self.lifecycle, self.reservation_id, self.held = lifecycle, reservation_id, False
         self._lock = _FileLock(lifecycle._dir("reservations") / f"{reservation_id}.lock",
@@ -4732,17 +5431,158 @@ class ReservationLock:
         return self.lifecycle._launch_window(self.reservation_id, echo)
 
     def claim(self, request_id: str, run_id: str, *,
-              owner: Mapping[str, object] | None = None) -> str | None:
+              owner: Mapping[str, object] | None = None, generation: str | None = None) -> str | None:
         self._require()
-        return self.lifecycle._claim_locked(self.reservation_id, request_id, run_id, owner)
+        return self.lifecycle._claim_locked(self.reservation_id, request_id, run_id, owner, generation,
+                                            self._lock.deadline)
 
-    def rollback(self, request_id: str) -> bool:
+    def rollback(self, request_id: str, *, generation: str | None = None) -> bool:
         self._require()
-        return self.lifecycle._rollback_locked(self.reservation_id, request_id)
+        return self.lifecycle._rollback_locked(self.reservation_id, request_id, generation)
+
+    def record_rollback_intent(self, request_id: str, generation: str, *, cause: str) -> bool:
+        self._require()
+        key = _identity_fields(self.reservation_id, request_id, generation)
+        claim = self.lifecycle._owned_claim(key)
+        if (not claim or cause not in _ROLLBACK_CAUSES or claim["rollback_cause"] not in (None, cause)
+                or claim["owner"] != _own_identity()):
+            return False
+        row = self.lifecycle._disposition(key)
+        if row["start_intent"] or row["fenced"] or row["debt"] is not None:
+            return False
+        claim["rollback_cause"] = cause
+        self.lifecycle._launch_write("claims", self.reservation_id, claim)
+        return True
+
+    def ensure_prepare(self, request: LaunchRequest) -> PreparedPaths | str:
+        from .launch_process_contract import PreparedPaths
+
+        self._require()
+        life, rid = self.lifecycle, self.reservation_id
+        if any(path.parent == life._launch_dir("requests") for path in _HELD_LOCKS.get()):
+            raise LifecycleError("placement_lock_order")
+        code, active = self.window(request.reservation_json or request.reservation.to_json())
+        if code:
+            return code
+        if (life.launch_claim_record(rid) or {}).get("claimed"):
+            return _LAUNCH_CLAIMED
+        req, root = request.request_id, request.snapshot.root
+        existing = life.launch_prepare_record(rid)
+        intent = life._launch_read("implicit", req)
+        if intent and (intent["reservation_id"] != rid or intent["snapshot_root"] != root):
+            return _LAUNCH_INPUT_MISMATCH
+        if existing:
+            paths = PreparedPaths.from_json(existing)
+            if intent and intent["state"] == "planned":
+                life._retire_planned(intent, paths.run_id)
+                intent["state"] = "published" if intent["run_id"] == paths.run_id else "retired"
+                life._launch_write("implicit", req, intent)
+            if (existing["snapshot_root"] != root or request.paths not in (None, paths)
+                    or request.workload == "pi-runner" and request.paths != paths):
+                return _LAUNCH_INPUT_MISMATCH
+            return paths
+        if request.workload == "pi-runner" or request.paths is not None:
+            return _LAUNCH_INPUT_MISMATCH
+        kind = active["reservation"]["target"]["kind"]
+        if kind not in ("local", "openshell"):
+            return _LAUNCH_REFUSED
+        election = life.launch_record(req)
+        if not election or election.get("reservation_id") != rid:
+            return _LAUNCH_REFUSED
+        key = _identity_fields(rid, req, election["generation"])
+        if intent is None:
+            intent = dict(**key, snapshot_root=root, state="planned", run_id="run-" + life.new_id())
+            life._launch_write("implicit", req, intent)
+        if not _matches(intent, key) or intent["state"] != "planned":
+            return _LAUNCH_REFUSED
+        values = life._publish_prepare(rid, req, kind, intent["run_id"], root)
+        life._launch_write("implicit", req, dict(intent, state="published"))
+        return PreparedPaths.from_json(values)
 
     def return_dir(self, run_id: str) -> Path:
         self._require()
         return self.lifecycle._return_dir_locked(self.reservation_id, run_id)
+
+
+def _supervisor_cancel(ctl: Path, key: dict, claim: dict, bound: _Deadline) -> str:
+    from . import run_status
+
+    if (not ctl.is_absolute() or ".." in ctl.parts or not hasattr(socket, "SO_PEERCRED")
+            or not hasattr(os, "O_PATH")):
+        return "owner_unverified"
+    flags = os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+    def unique(pairs):
+        result = dict(pairs)
+        if len(result) != len(pairs):
+            raise ValueError("duplicate cancel frame key")
+        return result
+
+    try:
+        fd = os.open("/", flags)
+        try:
+            for part in ctl.parts[1:]:
+                child = os.open(part, flags, dir_fd=fd)
+                os.close(fd)
+                fd = child
+            info = os.fstat(fd)
+            name = key["generation"] + ".sock"
+            node = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            if (info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700
+                    or node.st_uid != os.geteuid() or not stat.S_ISSOCK(node.st_mode)
+                    or stat.S_IMODE(node.st_mode) != 0o600):
+                return "owner_unverified"
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+                conn.settimeout(bound.left())
+                conn.connect(f"/proc/self/fd/{fd}/{name}")
+                peer = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+                pid, uid, _ = struct.unpack("3i", peer)
+                owner = claim["owner"]
+                if (uid != os.geteuid() or pid != owner["pid"] or not _valid_owner(owner)
+                        or run_status.process_start_identity(pid) != owner["start"]):
+                    return "owner_unverified"
+                sender = _own_identity()
+                if not _valid_owner(sender):
+                    return "owner_unverified"
+                body = json.dumps(dict(**key, op="cancel", sender_pid=sender["pid"],
+                                       sender_start=sender["start"]), allow_nan=False).encode("utf-8")
+                if len(body) > 4096:
+                    return "owner_unverified"
+                conn.settimeout(bound.left())
+                conn.sendall(struct.pack(">I", len(body)) + body)
+                conn.shutdown(socket.SHUT_WR)
+
+                def read(size):
+                    data = bytearray()
+                    while len(data) < size:
+                        conn.settimeout(bound.left())
+                        chunk = conn.recv(size - len(data))
+                        if not chunk:
+                            raise ValueError("short cancel frame")
+                        data.extend(chunk)
+                    return bytes(data)
+
+                length, = struct.unpack(">I", read(4))
+                if not 0 < length <= 4096:
+                    return "owner_unverified"
+                reply = json.loads(read(length).decode("utf-8"), object_pairs_hook=unique)
+                conn.settimeout(bound.left())
+                if (conn.recv(1) or bound.expired() or type(reply) is not dict
+                        or reply.keys() != {"version", "generation", "outcome"}
+                        or type(reply["version"]) is not int or reply["version"] != 1
+                        or reply["generation"] != key["generation"]
+                        or reply["outcome"] not in ("cancelled", "already_terminal", "cancel_pending",
+                                                   "unknown_attempt", "owner_unverified", "owner_not_live")):
+                    return "owner_unverified"
+                return reply["outcome"]
+        finally:
+            os.close(fd)
+    except OSError as error:
+        if error.errno == errno.ENAMETOOLONG:
+            raise LifecycleError("placement_control_socket_invariant") from error
+        return "cancel_pending" if isinstance(error, TimeoutError) else "owner_unverified"
+    except (ValueError, TypeError, RecursionError):
+        return "owner_unverified"
 
 
 def _own_identity() -> dict[str, object]:

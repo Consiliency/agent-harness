@@ -21,29 +21,79 @@ imported when it is called (binding §7 E3-3).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
+import re
+import time
 import threading
-from typing import Any, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from . import sandbox_policy
 from .launch_process_contract import (
     CLIENTS,
     TERMINAL_STATUS_STATES,
     CancelResponse,
+    LaunchRequest,
     LaunchResponse,
     StatusResponse,
 )
 from .launch_return import STATUS_UNCERTAIN_CODE, map_cancel, map_status
-from .sandbox_placement import CANCEL_WAIT_S, PlacementLifecycle
+from .sandbox_placement import CANCEL_WAIT_S, LifecycleError, PlacementLifecycle, _Deadline
 
 __all__ = [
     "ADMISSION_BOUND_S",
     "LaunchService",
+    "LaneContext",
+    "LaneUnits",
     "build_launch_service",
 ]
 
 #: Binding §7 E3-1: the launch process kills the admission helper's group after this long.
 ADMISSION_BOUND_S = 300.0
+
+
+if TYPE_CHECKING:
+    from .launch_supervisor import SupervisorHandoff
+
+
+def _digest(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch("[a-f0-9]{64}", value) is not None
+
+
+def _strings(values: object) -> bool:
+    return type(values) is tuple and all(type(s) is str and s for s in values)
+
+
+@dataclass(frozen=True, slots=True)
+class LaneUnits:
+    target_unit_ids: tuple[str, ...]
+    readonly_neighbor_unit_ids: tuple[str, ...]
+    snapshot_ref: str
+    crosswalk_ref: str
+
+    def __post_init__(self) -> None:
+        if not (self.target_unit_ids and _strings(self.target_unit_ids)
+                and _strings(self.readonly_neighbor_unit_ids)
+                and all(len(s) <= 200 for s in self.target_unit_ids + self.readonly_neighbor_unit_ids)
+                and _digest(self.snapshot_ref) and _digest(self.crosswalk_ref)):
+            raise ValueError("invalid lane units")
+
+
+@dataclass(frozen=True, slots=True)
+class LaneContext:
+    assignment_digest: str
+    units: LaneUnits
+    repo_relative_locators: tuple[str, ...]
+    definition_digests: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not (_digest(self.assignment_digest) and type(self.units) is LaneUnits
+                and self.repo_relative_locators and _strings(self.repo_relative_locators)
+                and all(all(part not in ("", ".", "..") for part in path.split("/"))
+                        and not any(ord(c) < 32 or c in ":\\\x7f" for c in path)
+                        for path in self.repo_relative_locators)
+                and _strings(self.definition_digests) and all(map(_digest, self.definition_digests))):
+            raise ValueError("invalid lane context")
 
 
 def _landed_capped_popen() -> Callable[..., Any]:
@@ -99,9 +149,13 @@ class LaunchService:
                  lifecycle: PlacementLifecycle, capped_popen: Callable[..., Any],
                  load_caps: Callable[[], object], readiness_code: Callable[[], str | None],
                  route_state: Callable[[], str], clock: Callable[[], float],
+                 supervisor_runner: Callable[[SupervisorHandoff], None] | None,
                  admission_bound_s: float, worker_state_root: Path,
                  attempt_status: Callable[[Path, str], object],
                  cancel_attempt: Callable[[Path, str, float], str]) -> None:
+        # None selects the SL-8 production detachment path. Only factory injection
+        # may supply a callable for the in-process handoff.
+        self.supervisor_runner = supervisor_runner
         self.client = client
         self.config = config
         self.lifecycle = lifecycle
@@ -138,6 +192,14 @@ class LaunchService:
         return launch_exec.launch_attempt(self, request, cancelled=cancelled,
                                           pre_exec=pre_exec, withhold=withhold)
 
+    def launch_lane(self, request: LaunchRequest, *, lane_context: LaneContext,
+                    cancelled: threading.Event, pre_exec: Any = None,
+                    withhold: Any = None) -> LaunchResponse:
+        from . import launch_exec
+
+        return launch_exec.launch_attempt(self, request, origin="lane", lane_context=lane_context,
+                                          cancelled=cancelled, pre_exec=pre_exec, withhold=withhold)
+
     # -- status and cancel (L-S4) ---------------------------------------------------------
     def _record(self, request: Any) -> dict[str, object] | None:
         """The launch record for ``launch_request_id`` in this client's inventory, when it
@@ -150,7 +212,8 @@ class LaunchService:
     def _claim_held(self, record: Mapping[str, object], launch_request_id: str) -> bool:
         claim = self.lifecycle.launch_claim_record(str(record["reservation_id"]))
         return bool(claim is not None and claim.get("claimed") is True
-                    and claim.get("request_id") == launch_request_id)
+                    and claim.get("request_id") == launch_request_id
+                    and claim.get("generation") == record.get("generation"))
 
     def _journal(self, run_id: object) -> object:
         if not isinstance(run_id, str):
@@ -210,6 +273,7 @@ class LaunchService:
             return CancelResponse(request.request_id, request.reservation_id,
                                   request.launch_request_id, state, request.caller_context)  # type: ignore[arg-type]
 
+        deadline = _Deadline.after(request.deadline_ms / 1000.0)
         record = self._record(request)
         if record is None:
             return response(map_cancel(None, record_present=False, claim_held=False).state)
@@ -218,16 +282,32 @@ class LaunchService:
         claim_held = self._claim_held(record, request.launch_request_id)
         outcome: str | None = None
         run_id = record.get("run_id")
-        if not cancelled.is_set() and isinstance(run_id, str):
-            wait = min(CANCEL_WAIT_S, max(0.001, request.deadline_ms / 1000.0))
+        wait = min(CANCEL_WAIT_S, deadline.left())
+        if not cancelled.is_set() and isinstance(run_id, str) and wait > 0:
             try:
-                result = self._cancel_attempt(self.worker_state_root, run_id, wait)
+                if record.get("generation") is not None:
+                    result = self.lifecycle.cancel_launch_owner(
+                        request.reservation_id, request.launch_request_id, record["generation"],
+                        deadline=min(deadline.end, time.monotonic() + wait))
+                elif (self.lifecycle.launch_claim_record(request.reservation_id) or {}).get("generation"):
+                    result = "owner_unverified"
+                else:
+                    result = self._cancel_attempt(self.worker_state_root, run_id, wait)
                 outcome = result if isinstance(result, str) else None
+            except LifecycleError as error:
+                if error.code == "placement_control_socket_invariant":
+                    raise
+                outcome = None
             except Exception:
                 outcome = None
         mapping = map_cancel(outcome, record_present=True, claim_held=claim_held)
         if mapping.local_outcome is not None:
-            self.lifecycle.journal_local_cancel(request.launch_request_id, mapping.local_outcome)
+            try:
+                self.lifecycle.journal_local_cancel(request.launch_request_id, mapping.local_outcome,
+                                                   deadline=deadline)
+            except (OSError, LifecycleError):
+                # The zero-signal outcome still maps to cancel_pending.
+                pass
         return response(mapping.state)
 
 
@@ -239,6 +319,7 @@ def build_launch_service(
     readiness_code: Callable[[], str | None] | None = None,
     route_state: Callable[[], str] | None = None,
     clock: Callable[[], float] | None = None,
+    supervisor_runner: Callable[[SupervisorHandoff], None] | None = None,
     admission_bound_s: float = ADMISSION_BOUND_S,
     worker_state_root: Path | None = None,
     attempt_status: Callable[[Path, str], object] | None = None,
@@ -258,9 +339,13 @@ def build_launch_service(
         raise ValueError("launch_admission_bound_invalid")
     load_caps = load_caps if load_caps is not None else _landed_load_caps()
     readiness_code = readiness_code if readiness_code is not None else _landed_readiness_code()
+    worker_root = Path(worker_state_root) if worker_state_root is not None else _landed_worker_state_root()
+    cancel_worker = cancel_attempt if cancel_attempt is not None else _landed_cancel_attempt
     if lifecycle is None:
         lifecycle = PlacementLifecycle(client, caps_loader=load_caps, caps_readiness=readiness_code,
-                                       clock=clock, route_state=route_state)
+                                      clock=clock, route_state=route_state,
+                                      launch_cancel=lambda claim, wait: cancel_worker(
+                                          worker_root, str(claim["run_id"]), wait))
     elif lifecycle.client != client:
         raise ValueError("launch_lifecycle_client_mismatch")
     return LaunchService(
@@ -269,9 +354,9 @@ def build_launch_service(
         load_caps=load_caps, readiness_code=readiness_code,
         route_state=route_state if route_state is not None else lifecycle.route_state,
         clock=clock if clock is not None else lifecycle.clock,
+        supervisor_runner=supervisor_runner,
         admission_bound_s=float(admission_bound_s),
-        worker_state_root=Path(worker_state_root) if worker_state_root is not None
-        else _landed_worker_state_root(),
+        worker_state_root=worker_root,
         attempt_status=attempt_status if attempt_status is not None else _landed_attempt_status,
-        cancel_attempt=cancel_attempt if cancel_attempt is not None else _landed_cancel_attempt,
+        cancel_attempt=cancel_worker,
     )
