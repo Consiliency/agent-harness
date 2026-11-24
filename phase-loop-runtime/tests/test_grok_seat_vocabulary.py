@@ -35,7 +35,8 @@ PREFIX = "grok_seat_"
 # or renamed entry fails. agent-harness#2131 adds `seat_broker_socket_path_too_long`
 # (an ordinary refusal) to both. agent-harness#2157 rewords the
 # `gemini_seat_token_in_output` notice (why/fix text only; code and class unchanged).
-BASE_NOTICES = (115, "4b44ba98f4f9826d137f0766af48235cf3091783fca3b9647059d7efb861e131")
+# agent-harness#2175 adds the board-wide `seat_review_bundle_too_large` notice.
+BASE_NOTICES = (116, "4cff6080c07f732ad8eefb109bd8b343152c5c2c4132d434303c600fcf5024e6")
 BASE_OD10_CLASSES = (139, "ebca95f84e246cdccbdbad324cd89194f9967295de2d9f56f3e0816c58a26266")
 
 BASE_DESCEND_CODES = frozenset({
