@@ -116,7 +116,7 @@ def jailed_tui_clock(tmp_path, monkeypatch):
                 "message": {"role": role, "content": content, **fields},
             }) + "\n")
 
-    def run(*, ui="none", answer_at=None, thinking_at=None, clear_at=None,
+    def run(*, ui="none", answer_at=None, thinking_at=None, clear_at=None, freeze_at=None,
             stall_s=187, backstop_s=1500, journal_request=True):
         def select(readable, _write, _error, interval):
             nonlocal frame
@@ -129,12 +129,16 @@ def jailed_tui_clock(tmp_path, monkeypatch):
                 if journal_request:
                     append("request", "user", prompt)
                 if ui != "none":
-                    frame = "✢ \x1b[33mChanneling…\x1b[0m\r\n".encode()
-                    if ui != "spinner_only":
-                        frame += "  bypass permissions on · esc to interrupt\r\n".encode()
-                    else:
-                        frame += b"\r\n"
-            if ui in ("animated", "spinner_only") and now >= 1.5:
+                    spinner = "✢ \x1b[33mChanneling…\x1b[0m"
+                    footer = ""
+                    if ui == "inline_hint":
+                        spinner += " (12s · esc to interrupt)"
+                    elif ui != "spinner_only":
+                        # Reconstruct the footer items from the retained Claude tail.
+                        footer = "  ⏵⏵ bypass permissions on (shift+tab to cycle) · effort: high · esc to interrupt"
+                    frame = f"{spinner}\r\n{footer}\r\n".encode()
+            if (ui in ("animated", "spinner_only", "inline_hint") and now >= 1.5
+                    and (freeze_at is None or now < freeze_at)):
                 # Real draw shape: rewrite only the spinner glyph, leaving the footer
                 # on its own row. Split the cursor command and UTF-8 glyph across reads.
                 tick = int((now - 1.5) * 4)
@@ -180,8 +184,9 @@ def jailed_tui_clock(tmp_path, monkeypatch):
     return run
 
 
-def test_jailed_tui_thinking_survives_silence_until_assistant_answer(jailed_tui_clock):
-    assert jailed_tui_clock(ui="animated", answer_at=800) == (
+@pytest.mark.parametrize("ui", ["animated", "inline_hint"])
+def test_jailed_tui_thinking_survives_silence_until_assistant_answer(jailed_tui_clock, ui):
+    assert jailed_tui_clock(ui=ui, answer_at=800) == (
         "claude_tui_broker_final_assistant", 800,
     )
 
@@ -197,6 +202,14 @@ def test_jailed_tui_stalls_at_silence_threshold_without_active_turn(jailed_tui_c
 
 def test_jailed_tui_stalls_once_thinking_window_expires(jailed_tui_clock):
     assert jailed_tui_clock(ui="animated") == ("claude_tui_stalled", 1201)
+
+
+def test_jailed_tui_stalls_after_spinner_freezes(jailed_tui_clock):
+    assert jailed_tui_clock(ui="animated", freeze_at=300) == ("claude_tui_stalled", 486.75)
+
+
+def test_jailed_tui_thinking_window_expires_without_more_pty_bytes(jailed_tui_clock):
+    assert jailed_tui_clock(ui="animated", freeze_at=1150) == ("claude_tui_stalled", 1201)
 
 
 def test_jailed_tui_stalls_when_interrupt_footer_is_erased(jailed_tui_clock):

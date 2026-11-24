@@ -11110,9 +11110,10 @@ def _tui_screen_text(terminal_bytes: bytes) -> str:
 
 # Claude repaints its spinner independently of the editor footer. Use the leading
 # spinner glyph and the verb's ellipsis, without depending on the chosen verb or on
-# optional timers and token counters. The interrupt hint is a whole footer item.
+# optional timers and token counters. The interrupt hint is a whole footer item
+# or the last item in the spinner's parenthesized status.
 _CLAUDE_TUI_SPINNER_RE = re.compile(r"^\s*[·✢✳✶✻✽*] +\S+?(?:…|\.\.\.)(?:\s|$)")
-_CLAUDE_TUI_INTERRUPT_RE = re.compile(r"(?:^|·| {2,})\s*esc to interrupt(?= *·| {2,}| *$)")
+_CLAUDE_TUI_INTERRUPT_RE = re.compile(r"(?:^|·| {2,})\s*esc to interrupt(?= *·| {2,}| *\)? *$)")
 _CLAUDE_TUI_SCREEN_TOKENS = re.compile(
     rf"{_ANSI_CSI_RE.pattern}|{_ANSI_OSC_RE.pattern}|[\r\n]|[^\x00-\x1f]+"
     r"|(?P<partial>\x1b(?:\[[0-?]*[ -/]*|\][^\x07\x1b]*\x1b?)?)\Z"
