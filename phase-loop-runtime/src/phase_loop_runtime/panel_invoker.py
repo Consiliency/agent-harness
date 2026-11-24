@@ -7573,7 +7573,9 @@ _JAILED_BUNDLE_READ_INSTRUCTIONS = (
     "Account for every changed path and acceptance criterion it names. "
     "Retrieve the relevant diff hunks, source files, and evidence as needed in bounded reads "
     f"from {_seat_jail.SEAT_TREE} and the bundle. "
-    "If there is no index, locate the scope and inventory using bounded reads."
+    "If there is no index, build the inventory yourself with bounded reads "
+    "(for example the `diff --git` headers in the bundle; the staged clone is shallow "
+    "and may lack the base) and account for every changed path in it."
 )
 
 

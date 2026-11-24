@@ -32,6 +32,17 @@ def test_jailed_pointer_review_reads_the_index_first(gemini):
         assert "bundle contents" not in text
 
 
+def test_jailed_review_without_an_index_builds_and_covers_the_path_inventory():
+    prompt = pi._render_broker_pointer_prompt(
+        "diff --git a/example.py b/example.py", "review request",
+        source_commit="a" * 40, staged_tree_sha256="b" * 64,
+    )
+    fallback = prompt.split("If there is no index,", 1)[1].split("\n", 1)[0]
+    assert "build the inventory yourself with bounded reads" in fallback
+    assert "`diff --git` headers in the bundle" in fallback
+    assert "account for every changed path in it" in fallback
+
+
 @pytest.mark.parametrize("mode", ["review", "advisory"])
 def test_no_tree_route_receives_the_complete_bundle(mode):
     bundle = "first line\nlast line"
