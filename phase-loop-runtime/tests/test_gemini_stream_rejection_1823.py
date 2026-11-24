@@ -551,11 +551,12 @@ _PROXY_TOKEN = "b7c0f2e1a9d34e5f8c1b2a3d4e5f6071"
 
 def _seat(tmp_path, token=b"ya29.secret-access-token-value"):
     jail = types.SimpleNamespace(
-        env={"HTTPS_PROXY": f"http://srt:{_PROXY_TOKEN}@127.0.0.1:3128"},
+        env={"HTTPS_PROXY": "http://127.0.0.1:3128"},
         profile_digest="d", profile_id="p", filter_digest="f",
         redacted_owner=lambda: [], pass_fds=())
-    return pi._JailedSeat(jail=jail, probe_jail=jail, holder_pid=1, token=token,
-                          review_dir=tmp_path, seat_dir=tmp_path, expires_at=None)
+    return pi._JailedGeminiSeat(jail=jail, probe_jail=jail, holder_pid=1, token=token,
+                                review_dir=tmp_path, seat_dir=tmp_path,
+                                private_proxy_token=_PROXY_TOKEN.encode())
 
 
 def _run_jailed(monkeypatch, tmp_path, stdout, returncode=0):

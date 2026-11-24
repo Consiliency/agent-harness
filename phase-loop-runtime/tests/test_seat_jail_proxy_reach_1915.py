@@ -143,9 +143,18 @@ def test_live_jail_seat_reaches_its_proxy_and_nothing_else(
     from phase_loop_runtime import sandbox_egress, seat_profiles, seat_uid
 
     monkeypatch.setattr(seat_egress_proxy, "allowlist_ref", _fixture_ref)
+    gemini = seat_profiles.profile_for("gemini")
+    # The synthetic legacy profile still exercises the authenticated bridge.
     profile = dataclasses.replace(
-        seat_profiles.profile_for("gemini"), leg="fixture", vendor="fixture",
-        allowlist_id="fixture-reach", window=None)
+        gemini, leg="fixture", vendor="fixture", allowlist_id="fixture-reach", window=None,
+        env=lambda inputs: {
+            **gemini.env(dataclasses.replace(inputs, egress_proxy=seat_egress_proxy.GEMINI_PROXY_URL)),
+            "HTTPS_PROXY": inputs.egress_proxy,
+        },
+        digest_placeholders=lambda paths: {
+            **gemini.digest_placeholders(paths), paths.egress_proxy: "<egress-proxy>",
+        },
+    )
     monkeypatch.setitem(seat_profiles._REGISTRY, "fixture", profile)
     with socket.socket() as unused:
         unused.bind(("127.0.0.1", 0))

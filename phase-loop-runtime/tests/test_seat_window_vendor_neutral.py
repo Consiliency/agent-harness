@@ -2706,6 +2706,7 @@ def _production_spawn_world(monkeypatch, tmp_path):
     monkeypatch.setattr(pi._seat_uid, "lease_seat_id", lambda count: contextlib.nullcontext(2))
     monkeypatch.setattr(pi._seat_uid, "holder_pid_from_prefix", lambda prefix: 71)
     monkeypatch.setattr(pi._seat_egress_proxy, "start_proxy", start_proxy)
+    monkeypatch.setattr(pi._seat_egress_proxy, "start_private_gemini_proxy", start_proxy)
     monkeypatch.setattr(pi._seat_egress_proxy, "egress_evidence", lambda proxy: {})
     monkeypatch.setattr(pi._sandbox_egress, "isolated_network", isolated_network)
     monkeypatch.setattr(pi._sandbox_egress, "egress_required", lambda: False)

@@ -491,6 +491,7 @@ def _gemini_shape(seat_dir: Path) -> dict[str, object]:
     the production shape: the qualification judges the jail's boundaries, so the files only
     need to be where the seat's are. No credential and no CA key is involved."""
     from .panel_invoker import _write_gemini_config
+    from .seat_egress_proxy import GEMINI_PROXY_URL
 
     config = seat_dir / seat_jail.HOST_GEMINI_CONFIG_DIRNAME
     _write_gemini_config(config, b"")
@@ -498,7 +499,7 @@ def _gemini_shape(seat_dir: Path) -> dict[str, object]:
     certificate.write_text("qualification placeholder certificate\n", encoding="ascii")
     certificate.chmod(0o444)
     return {"gemini_config": config, "egress_ca": certificate,
-            "egress_proxy": "http://srt:qualification@127.0.0.1:3128"}
+            "egress_proxy": GEMINI_PROXY_URL}
 
 
 def _record_pass(evidence: dict[str, object], qualification_key=None) -> Path:

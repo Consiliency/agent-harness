@@ -628,6 +628,13 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
 
 NOTICE_CODES: frozenset[str] = frozenset(NOTICES)
 
+# These launch-time Gemini refusals are leg details. They cannot be emitted by the
+# route resolver, whose mode lines use the closed OD-10 notice vocabulary.
+_GEMINI_PROXY_REFUSALS = frozenset({
+    "seat_sandbox_refused:gemini_proxy_token_missing",
+    "seat_sandbox_refused:gemini_proxy_url_invalid",
+})
+
 #: SEATS CODEX IF-0-CODEX-5: the jailed Codex seat's nine codes, each a row above. The
 #: closed detail vocabulary (`panel_invoker._HARNESS_DETAIL_CODES`) takes them from here.
 CODEX_SEAT_CODES: frozenset[str] = frozenset({
@@ -714,12 +721,13 @@ def render_notice(code: object, seat_key: object) -> Notice | None:
 
 
 class SeatSandboxRefused(RuntimeError):
-    """A pre-launch or runtime refusal. ``code`` is exactly one notice literal; ``also`` are
+    """A pre-launch or runtime refusal. ``code`` is a fixed refusal literal. ``also`` lists
     sibling notices that explain it (never a second refusal code), e.g. an ignored seat-token
     override beside a missing login."""
 
     def __init__(self, code: str, message: str = "", also: tuple[str, ...] = ()) -> None:
-        if code not in NOTICES or any(extra not in NOTICES for extra in also):
+        if ((code not in NOTICES and code not in _GEMINI_PROXY_REFUSALS)
+                or any(extra not in NOTICES for extra in also)):
             raise ValueError(f"unknown seat sandbox code {code!r}")
         super().__init__(message or code)
         self.code = code
@@ -728,7 +736,7 @@ class SeatSandboxRefused(RuntimeError):
 
 def refused(sub: str) -> str:
     code = REFUSED_PREFIX + sub
-    if code not in NOTICES:
+    if code not in NOTICES and code not in _GEMINI_PROXY_REFUSALS:
         raise ValueError(f"unknown refusal {code!r}")
     return code
 
@@ -1638,7 +1646,7 @@ def _without_contiguous(values: list[str], remove: Sequence[str]) -> list[str]:
 def seat_env(leg: str, *, token_fd: int | None, lang: str = "C.UTF-8",
              term: str = "xterm-256color", egress_proxy: str | None = None) -> dict[str, str]:
     """The exact jail environment. Non-secret values only: a token fd's NUMBER, never its
-    bytes. A Gemini seat's ``egress_proxy`` carries only the proxy's session token."""
+    bytes. A Gemini seat's ``egress_proxy`` is its credential-free loopback endpoint."""
     from .seat_profiles import profile_for
     from .seat_route_contract import EnvInputs
 
