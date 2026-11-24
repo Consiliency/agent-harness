@@ -21,6 +21,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- Jailed Claude TUI failures retain screened terminal tails in private advisor-board leg logs.
+  Gemini credential refusals identify the matching field class in the private execution record,
+  and the board notice covers both seat tokens and per-launch proxy credentials.
 - The FIRSTSEAT record-board test stubs the Gemini board preflight, so it no longer runs live
   Agy qualification inside the guard's 30 s authorization window (agent-harness#2142).
 - The placement-lifecycle replay test runs its interrupted setup reserve on a frozen clock with

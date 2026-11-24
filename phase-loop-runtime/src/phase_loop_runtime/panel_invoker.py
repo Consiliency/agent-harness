@@ -3437,6 +3437,12 @@ _HARNESS_DETAIL_CODE_TEMPLATES: tuple[re.Pattern[str], ...] = _OMNIGENT_DETAIL_T
 ))
 _MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 _LEG_LOG_DIRNAME = "leg-logs"
+_LEG_LOG_REF_PATTERN = _LEG_LOG_DIRNAME + r"/(?:" + _H + r"|leg)-[0-9a-f]{24}\.log"
+_CLAUDE_TUI_TAIL_CODES = frozenset({
+    "claude_tui_editor_not_ready", "claude_tui_missing_canonical_output",
+    "claude_tui_pty_eof_no_output", "claude_tui_stalled", "claude_tui_submit_failed",
+    "claude_tui_workspace_trust_blocked",
+})
 _UNKNOWN_DETAIL = "unknown failure; CLI output not retained"
 # Failure templates with NO field: a plain string equal to one of these is our own literal.
 _PARAMETER_FREE_FAILURES: frozenset[str] = frozenset({
@@ -3454,7 +3460,8 @@ _FAILURE_DETAIL_TEMPLATES: tuple[re.Pattern[str], ...] = tuple(re.compile(p, re.
     r"env_failure: temp dir owned by another account \(uid \d{1,10}\)",
     # exactly `_write_private_leg_log`'s name: `<registry harness | leg>-<24 hex>.log`
     r"unknown failure(?: \(exit \d{1,3}\))?; CLI output(?: not retained|: "
-    + _LEG_LOG_DIRNAME + r"/(?:" + _H + r"|leg)-[0-9a-f]{24}\.log)",
+    + _LEG_LOG_REF_PATTERN + r")",
+    _alt(sorted(_CLAUDE_TUI_TAIL_CODES)) + r"; CLI output: " + _LEG_LOG_REF_PATTERN,
 ))
 
 
@@ -3496,8 +3503,8 @@ def _detail_is_valid(value: str) -> bool:
 @dataclass(frozen=True)
 class _LegFailure:
     """A failed leg's detail before it reaches ``PanelLegResult``: ``template`` is already in
-    our vocabulary; ``raw`` is the CLI output destined ONLY for the private per-leg log, and
-    only when the template is the unknown-failure one (``unknown``)."""
+    our vocabulary; ``raw`` goes only to the private per-leg log for unknown failures or
+    a screened jailed Claude TUI tail."""
 
     template: str
     raw: str = field(default="", repr=False)
@@ -3507,6 +3514,8 @@ class _LegFailure:
 
     def rendered(self, log_ref: str | None = None) -> _HarnessCode:
         body = _unknown_detail(self.rc, log_ref) if self.unknown else self.template
+        if log_ref and not self.unknown and self.template in _CLAUDE_TUI_TAIL_CODES:
+            body = f"{body}; CLI output: {log_ref}"
         if type(self.prefix) is _HarnessCode and _is_harness_code(str.__str__(self.prefix)):
             body = f"{str.__str__(self.prefix)}: {body}"
         return _HarnessCode(body)
@@ -3683,10 +3692,8 @@ def _caused_refusal_code(exc: BaseException) -> str | None:
 
 
 def _resolve_leg_detail(value: object, run_dir: Path | str | None, seat_key: str) -> object:
-    """Turn a spawn's failure into its stored detail. An unknown failure's raw output goes to
-    the private per-leg log when the run has a directory; everything else passes through
-    (the descriptor validates it)."""
-    if type(value) is _LegFailure and value.unknown:
+    """Resolve private log references before the result descriptor validates the detail."""
+    if type(value) is _LegFailure and (value.unknown or value.template in _CLAUDE_TUI_TAIL_CODES):
         ref = (
             _write_private_leg_log(run_dir, seat_key, value.raw)
             if run_dir is not None and value.raw.strip() else None
@@ -13784,8 +13791,7 @@ def _exec_jailed_claude_leg(
     if unsafe:
         return _jailed_failure("seat_sandbox_refused:output_unsafe", failure_detail_sink)
     pty_tail = str(pty_tail or "")
-    # The PTY tail labels the failure below, and an unlabelled one goes to the private leg
-    # log, so it is scanned like everything else the parent keeps.
+    # Scan the sanitized PTY tail before using it for classification or private retention.
     if (token_seen or _seat_jail.contains_secret(review_text.encode("utf-8", errors="replace"), seat.token)
             or _seat_jail.contains_secret(kept, seat.token)
             or _seat_jail.contains_secret(pty_tail.encode("utf-8", errors="replace"), seat.token)):
@@ -13840,6 +13846,9 @@ def _exec_jailed_claude_leg(
                 code = "claude_seat_login_rejected" if login else "claude_seat_token_rejected"
                 failure = _LegFailure(template=code)
                 seat.notices.append(code)
+            if (type(log_text) is _HarnessCode and failure.template == log_text
+                    and log_text in _CLAUDE_TUI_TAIL_CODES):
+                failure = replace(failure, raw=pty_tail)
             failure_detail_sink.append(failure)
     return status, text
 
@@ -14662,6 +14671,13 @@ _SECRET_MATCH_PATHS: Mapping[str, Mapping[str, tuple[str, ...]]] = {
                "tool_name": ("step_update", "tool_name")},
     "codex": {"event_type": ("type",), "step_type": ("item", "type")},
 }
+_GEMINI_MATCH_TOOL_FIELDS = {
+    ("parameters", "CommandLine"): "argv",
+    ("argv",): "argv",
+    ("output",): "output",
+    ("error",): "diagnostic",
+}
+_GEMINI_MATCH_FIELD_CLASSES = frozenset(_GEMINI_MATCH_TOOL_FIELDS.values()) | {"unknown"}
 _PREFIX_SCAN_DEPTH = 32  # nesting levels the prefix reader follows before it stops
 _JSON_SCALAR = re.compile(r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null")
 _NOT_A_STRING = object()
@@ -14704,12 +14720,16 @@ def _json_string_end(text: str, start: int) -> int | None:
     return None
 
 
-def _json_prefix_fields(text: str, wanted: frozenset[tuple[str, ...]]) -> dict[tuple[str, ...], object]:
+def _json_prefix_fields(
+    text: str, wanted: frozenset[tuple[str, ...]],
+) -> tuple[dict[tuple[str, ...], object], tuple[str | None, ...]]:
     """The values at the ``wanted`` key paths of the JSON object that ``text`` begins, read
     by STRUCTURE from a possibly truncated prefix. A member counts only at its exact path of
     object keys from the top-level object (never inside an array, never a nested key of the
     same name), and its first occurrence wins. A string value is returned decoded, any other
     value as ``_NOT_A_STRING``; a path whose value the prefix does not complete is absent.
+    Also return the value path at the end of the prefix, with ``None`` for array elements
+    and an empty path if the prefix ends outside a value or could not be parsed that far.
     Bounded: one pass over ``text``, at most :data:`_PREFIX_SCAN_DEPTH` levels."""
     found: dict[tuple[str, ...], object] = {}
     frames: list[list] = []  # [kind ("obj" | "arr"), current key, state]
@@ -14785,6 +14805,7 @@ def _json_prefix_fields(text: str, wanted: frozenset[tuple[str, ...]]) -> dict[t
         if char == '"':
             end = _json_string_end(text, index)
             if end is None:
+                index = size  # the prefix ends inside this value
                 break
             try:
                 value = json.loads(text[index:end])
@@ -14807,22 +14828,31 @@ def _json_prefix_fields(text: str, wanted: frozenset[tuple[str, ...]]) -> dict[t
             break  # not JSON, or a literal the prefix cut short
         if scalar.group() not in ("true", "false", "null") and (
                 scalar.end() == size or text[scalar.end()] not in ",}] \t\r\n"):
+            index = scalar.end()
             break  # a number only a delimiter completes: the prefix may have cut it short
         note(_NOT_A_STRING)
         frames[-1][2] = "comma"
         index = scalar.end()
-    return found
+    at_end = tuple(frame[1] for frame in frames) if (
+        index == size and frames and frames[-1][2] == "value"
+    ) else ()
+    return found, at_end
 
 
-def _secret_match_labels(vendor: str, head: bytes) -> dict[str, str | None]:
+def _secret_match_labels(
+    vendor: str, head: bytes, byte_offset: int | None = None,
+) -> dict[str, str | None]:
     """The event, step and tool of the matched line, read by structure at the vendor's fixed
     paths (:data:`_SECRET_MATCH_PATHS`) from the line's bytes BEFORE the match: an allowlisted
     string is kept; any other parsed value (another string, a number, an object) is
     ``other``; a label those bytes do not establish (the member absent, or not complete
     before the match) is null. A line that does not begin with a JSON object is
-    ``unparsed``."""
+    ``unparsed``. For Gemini, report the enclosing tool field class only when the prefix
+    reaches the match and establishes an allowlisted value path."""
     text = head[:_SECRET_MATCH_HEAD_CAP].decode("utf-8", errors="replace")
     labels: dict[str, str | None] = {"event_type": None, "step_type": None, "tool_name": None}
+    if vendor == "gemini":
+        labels["field_class"] = "unknown"
     if not text.lstrip().startswith("{"):
         return {**labels, "event_type": _SECRET_MATCH_UNPARSED}
     if vendor == "codex":
@@ -14831,11 +14861,18 @@ def _secret_match_labels(vendor: str, head: bytes) -> dict[str, str | None]:
         allowed = {"event_type": _GEMINI_MATCH_EVENTS, "step_type": _GEMINI_MATCH_STEPS,
                    "tool_name": _GEMINI_MATCH_TOOLS}
     paths = _SECRET_MATCH_PATHS["codex" if vendor == "codex" else "gemini"]
-    found = _json_prefix_fields(text, frozenset(paths.values()))
+    found, at_end = _json_prefix_fields(text, frozenset(paths.values()))
     for name, where in paths.items():
         if where in found:
             value = found[where]
             labels[name] = value if type(value) is str and value in allowed[name] else _SECRET_MATCH_OTHER
+    if (vendor == "gemini" and byte_offset == min(len(head), _SECRET_MATCH_HEAD_CAP)
+            and at_end[:2] == ("step_update", "tool_info")):
+        field_path = at_end[2:]
+        for prefix, field_class in _GEMINI_MATCH_TOOL_FIELDS.items():
+            if field_path[:len(prefix)] == prefix:
+                labels["field_class"] = field_class
+                break
     return labels
 
 
@@ -14847,7 +14884,7 @@ def _codex_tool_events() -> frozenset[str]:
 def _secret_match_descriptor(vendor, kind, encoding, stream, phase, line_index, byte_offset,
                              head) -> dict[str, object]:
     return {"secret_kind": kind, "encoding": encoding, "stream": stream, "phase": phase,
-            **_secret_match_labels(vendor, head[:_SECRET_MATCH_HEAD_CAP]),
+            **_secret_match_labels(vendor, head, byte_offset),
             "line_index": line_index, "byte_offset": byte_offset}
 
 
@@ -14949,8 +14986,11 @@ def _note_secret_match(descriptor: dict[str, object] | None) -> None:
         observation["secret_match"] = descriptor
 
 
-def _secret_match_valid(value: object) -> bool:
+def _secret_match_valid(value: object, vendor: str) -> bool:
     """Closed fields only: every string from its fixed set, the positions plain integers."""
+    if type(value) is not dict:
+        return False
+
     def closed(field_value, allowed, nullable=False):
         return (field_value is None and nullable) or (type(field_value) is str and field_value in allowed)
 
@@ -14958,9 +14998,15 @@ def _secret_match_valid(value: object) -> bool:
         return field_value is None or (type(field_value) is int and 0 <= field_value < 2 ** 53)
 
     events = _GEMINI_MATCH_EVENTS | _codex_tool_events() | {_SECRET_MATCH_OTHER, _SECRET_MATCH_UNPARSED}
-    return (type(value) is dict and set(value) == {
+    fields = {
         "secret_kind", "encoding", "stream", "phase", "event_type", "step_type", "tool_name",
-        "line_index", "byte_offset"}
+        "line_index", "byte_offset",
+    }
+    if "field_class" in value:
+        if vendor != "gemini" or not closed(value["field_class"], _GEMINI_MATCH_FIELD_CLASSES):
+            return False
+        fields.add("field_class")
+    return (set(value) == fields
         and closed(value["secret_kind"], _SECRET_MATCH_KINDS)
         and closed(value["encoding"], _SECRET_MATCH_ENCODINGS)
         and closed(value["stream"], _SECRET_MATCH_STREAMS)
@@ -17402,7 +17448,7 @@ def leg_exec_record(leg, rc, argv, *, auth_state="unavailable", model_turn=None,
         # positions only, scanned for the leg's own secrets like every field.
         "secret_match": (_scan_exec_field(secret_match, scan_secrets if scan_secrets is not None else (),
                                           patterns=False)
-                         if _secret_match_valid(secret_match) else None),
+                         if _secret_match_valid(secret_match, leg) else None),
         # What kind of line the tooled stream refused: closed names and counts only
         # (`_stream_rejection_valid`), still scanned for the leg's own secrets. The vocabulary
         # is its pattern assurance: the pattern scan reports snake_case names as high-entropy

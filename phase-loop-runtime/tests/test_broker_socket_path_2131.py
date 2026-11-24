@@ -282,7 +282,7 @@ def _hermetic_board():
     return _BOARDS[0]
 
 
-def _board_run(where: Path, monkeypatch, *, failing: set[str]):
+def _board_run(where: Path, monkeypatch, *, failing: set[str], spawn_claude=None):
     """Run ``advisor-board --advisory`` through the real CLI, board dispatch and report.
     Only the seat spawn boundary is replaced, under the sanctioned factory control (the
     board's own authorization, minted once and returned again by the factory)."""
@@ -290,6 +290,8 @@ def _board_run(where: Path, monkeypatch, *, failing: set[str]):
     from phase_loop_runtime.cli import main as cli_main
 
     def spawn(leg, artifact, **_kw):
+        if leg == "claude" and spawn_claude is not None:
+            return spawn_claude()
         if leg in failing:
             raise OSError("AF_UNIX path too long")
         return ("OK", f"{OTHER_SEAT_TEXT}\nAGREE")
@@ -347,6 +349,77 @@ def test_advisor_board_keeps_only_the_failing_legs_log(tmp_path, monkeypatch):
     _out, err = _board_run(tmp_path / "passing", monkeypatch, failing=set())
     assert "leg failure logs kept" not in err
     assert [p.name for p in leg_log_runs.runs_parent().iterdir() if p.is_dir()] == [run.name]
+
+
+@pytest.fixture
+def stalled_claude(tmp_path, monkeypatch):
+    jail = types.SimpleNamespace(leg="claude", provider_argv0="claude", env={})
+    seat = pi._JailedSeat(jail=jail, probe_jail=jail, holder_pid=1,
+                          token=b"fixture-seat-credential-cY78Nqv51", review_dir=tmp_path,
+                          seat_dir=tmp_path)
+    monkeypatch.setattr(pi._seat_uid, "read_in_h", lambda *args: b"")
+    monkeypatch.setattr(pi, "_cleanup_jailed_seat", lambda seat, *, snapshots, **kw:
+                        shutil.rmtree(snapshots))
+
+    def with_tail(tail):
+        monkeypatch.setattr(pi, "_run_claude_tui_session", lambda **kw:
+                            (1, "", pi._HarnessCode("claude_tui_stalled"), tail))
+
+        def spawn():
+            sink = []
+            status, text = pi._exec_jailed_claude_leg(
+                seat, timeout_s=10, backstop_s=20, model=None, effort=None,
+                prompt="review", broker_evidence=None, failure_detail_sink=sink)
+            return status, text, sink[-1]
+
+        return spawn
+
+    return seat, with_tail
+
+
+def test_advisor_board_retains_the_screen_tail_for_a_typed_stall(
+        tmp_path, monkeypatch, stalled_claude):
+    _seat, with_tail = stalled_claude
+    screen = "Waiting at the editor"
+    private_path = str(tmp_path / "seat-only")
+    tail = pi._sanitized_pty_tail(f"\x1b[31m{screen}\x1b[0m {private_path}".encode(),
+                                  known=(private_path,))
+    out, err = _board_run(tmp_path / "stalled", monkeypatch, failing=set(),
+                          spawn_claude=with_tail(tail))
+    match = re.search(r"\[DEGRADED\] claude:.*claude_tui_stalled; CLI output: "
+                      r"(leg-logs/claude-[0-9a-f]{24}\.log)", err)
+    assert match is not None, err
+    run, = (p for p in leg_log_runs.runs_parent().iterdir() if p.is_dir())
+    log = run / match[1]
+    assert sorted(p for p in run.rglob("*") if p.is_file()) == [run / ".done", log]
+    assert stat.S_IMODE(log.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(log.stat().st_mode) == 0o600
+    assert screen in log.read_text()
+    assert "\x1b" not in log.read_text() and private_path not in log.read_text()
+    assert OTHER_SEAT_TEXT not in log.read_text()
+    assert screen not in out + err
+
+
+def test_advisor_board_refuses_an_unscreened_stall_tail(tmp_path, monkeypatch, stalled_claude):
+    seat, with_tail = stalled_claude
+    monkeypatch.setattr(pi, "_write_private_leg_log",
+                        lambda *args: pytest.fail("refused tail reached the log writer"))
+    out, err = _board_run(tmp_path / "refused", monkeypatch, failing=set(),
+                          spawn_claude=with_tail(f"Editor: {seat.token.decode()}"))
+    assert "claude_seat_token_in_output" in err
+    assert "leg-logs/" not in err
+    assert seat.token.decode() not in out + err
+    assert not any(p.is_dir() for p in leg_log_runs.runs_parent().iterdir())
+
+
+def test_advisor_board_keeps_the_stall_code_when_no_log_can_be_written(
+        tmp_path, monkeypatch, stalled_claude):
+    _seat, with_tail = stalled_claude
+    monkeypatch.setattr(pi, "_write_private_leg_log", lambda *args: None)
+    _out, err = _board_run(tmp_path / "unretained", monkeypatch, failing=set(),
+                           spawn_claude=with_tail("Waiting at the editor"))
+    assert any(line.endswith(" — claude_tui_stalled") for line in err.splitlines())
+    assert "leg-logs/" not in err
 
 
 def test_an_unpublished_log_is_not_kept(tmp_path):
