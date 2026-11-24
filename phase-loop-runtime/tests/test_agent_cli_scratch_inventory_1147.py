@@ -257,7 +257,7 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
     ("seat_egress_proxy.py", "ensure_ca"): (NOT_AGENT, "node: srt's CA generator"),
     ("seat_egress_proxy.py", "install"): (
         NOT_AGENT, "npm ci --ignore-scripts of the shipped srt lockfile"),
-    ("seat_egress_proxy.py", "start_proxy"): (NOT_AGENT, "node: srt's egress proxy, on the host"),
+    ("seat_egress_proxy.py", "_start_proxy"): (NOT_AGENT, "node: srt's egress proxy, on the host"),
     ("tdd_receipts.py", "record_content_tdd_receipt"): (NOT_AGENT, "pytest / git"),
     # agent-harness#1132 seat jail helpers: each runs or execs the argv its caller hands it
     # (the jail chain launched through launch_provider, with that launch's decided env).

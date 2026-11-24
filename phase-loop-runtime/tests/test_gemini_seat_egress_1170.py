@@ -80,7 +80,7 @@ def test_the_new_code_is_a_harness_detail_code():
 # The jail profile.
 # --------------------------------------------------------------------------------------
 
-def _gemini_jail(tmp_path: Path, proxy="http://srt:session-token-1@127.0.0.1:3128"):
+def _gemini_jail(tmp_path: Path, proxy="http://127.0.0.1:3128"):
     review = tmp_path / "seat"
     tree = tmp_path / "review" / seat_jail.HOST_TREE_DIRNAME
     tree.mkdir(parents=True)
@@ -94,6 +94,18 @@ def _gemini_jail(tmp_path: Path, proxy="http://srt:session-token-1@127.0.0.1:312
         bundle_memfd=seat_jail.memfd_with("b", b"B"),
         instructions_memfd=seat_jail.memfd_with("i", b"I"), seat_ids=(3, 3),
         gemini_config=config, egress_ca=ca, egress_proxy=proxy)
+
+
+def _assert_credential_free_gemini_jail(jail, proxy_token: bytes):
+    argv = jail.process_owner
+    # bwrap leaves its setup argv on the PID namespace's reaper. The exact
+    # setup arguments therefore double as the /proc/1/cmdline-equivalent.
+    assert "--unshare-pid" in argv and "--as-pid-1" not in argv
+    reaper_cmdline = b"\0".join(os.fsencode(arg) for arg in argv)
+    environment = b"\0".join(os.fsencode(f"{key}={value}") for key, value in jail.env.items())
+    assert not any(proxy_token in surface for surface in (reaper_cmdline, environment))
+    assert jail.env["HTTPS_PROXY"] == "http://127.0.0.1:3128"
+    assert ("--setenv", "HTTPS_PROXY", jail.env["HTTPS_PROXY"]) in zip(argv, argv[1:], argv[2:])
 
 
 def _binds(owner):
@@ -134,13 +146,13 @@ def test_only_the_ca_certificate_enters_the_jail_never_its_key(tmp_path):
 
 
 def test_per_launch_egress_values_do_not_move_the_qualified_digest(tmp_path):
-    one = _gemini_jail(tmp_path / "a", proxy="http://srt:aaaa@127.0.0.1:3128")
-    two = _gemini_jail(tmp_path / "b", proxy="http://srt:bbbb@127.0.0.1:3128")
+    one = _gemini_jail(tmp_path / "a")
+    two = _gemini_jail(tmp_path / "b")
     try:
         canonical = seat_jail.jail_profile_digest("gemini")
         assert one.profile_digest == two.profile_digest == canonical
         pi._require_canonical_jail(one)
-        assert "http://srt:aaaa@127.0.0.1:3128" not in one.redacted_owner()
+        assert "http://127.0.0.1:3128" not in one.redacted_owner()
         assert "<egress-proxy>" in one.redacted_owner()
     finally:
         seat_jail.close_jail_fds(one)
@@ -415,11 +427,12 @@ _PROXY_TOKEN = "b7c0f2e1a9d34e5f8c1b2a3d4e5f6071"
 
 def _seat(tmp_path, token=b"ya29.secret-access-token-value"):
     jail = types.SimpleNamespace(
-        env={"HTTPS_PROXY": f"http://srt:{_PROXY_TOKEN}@127.0.0.1:3128"},
+        env={"HTTPS_PROXY": "http://127.0.0.1:3128"},
         profile_digest="d", profile_id="p", filter_digest="f",
         redacted_owner=lambda: [], pass_fds=())
-    return pi._JailedSeat(jail=jail, probe_jail=jail, holder_pid=1, token=token,
-                          review_dir=tmp_path, seat_dir=tmp_path, expires_at=None)
+    return pi._JailedGeminiSeat(jail=jail, probe_jail=jail, holder_pid=1, token=token,
+                                review_dir=tmp_path, seat_dir=tmp_path,
+                                private_proxy_token=_PROXY_TOKEN.encode())
 
 
 def _run_with(monkeypatch, chunks, returncode=0):
@@ -455,7 +468,7 @@ def test_a_token_split_across_chunks_is_caught_before_it_is_kept(monkeypatch, tm
 def test_a_tooled_review_is_returned(monkeypatch, tmp_path):
     seat = _seat(tmp_path)
     _run_with(monkeypatch, [_events({"step_type": "tool", "tool_name": "run_command",
-                                     "tool_info": {}}).encode()])
+                                     "tool_info": {"output": "http://127.0.0.1:3128"}}).encode()])
     evidence = {}
     status, text = pi._exec_jailed_gemini_leg(
         seat, deadline_s=60, model="m", prompt="p", broker_evidence=evidence,
@@ -468,8 +481,7 @@ def test_a_tooled_review_is_returned(monkeypatch, tmp_path):
 
 
 def test_the_proxy_session_token_in_the_output_ends_the_leg(monkeypatch, tmp_path):
-    """F008: the proxy's session credential reaches the seat in HTTPS_PROXY; if it appears in
-    the returned review it is a leak, scanned like the model bearer."""
+    """The parent-held proxy token is scanned alongside the model bearer."""
     seat = _seat(tmp_path)
     leak = json.dumps({"event": "init", "note": f"proxy={_PROXY_TOKEN}"}).encode()
     stopped = _run_with(monkeypatch, [leak, b"more\n"])
@@ -770,3 +782,88 @@ def test_the_agy_qualification_worker_keeps_its_gemini_seat_on_the_heartbeat_rou
     # A Claude seat in the same process is unaffected.
     route, _notices, refusal = _capable_spawn_route(monkeypatch, "claude")
     assert route == seat_jail.SeatRoute(True) and refusal is None
+
+
+@pytest.mark.parametrize("credential", ["live", "none", "expired"])
+@pytest.mark.parametrize("proxy_url,proxy_token,code", [
+    ("http://127.0.0.1:3128", b"", "gemini_proxy_token_missing"),
+    ("http://srt:fixture@127.0.0.1:3128", b"fixture", "gemini_proxy_url_invalid"),
+    ("<egress-proxy>", b"fixture", "gemini_proxy_url_invalid"),
+])
+def test_gemini_preparation_refuses_an_incomplete_proxy_binding(
+        tmp_path, monkeypatch, credential, proxy_url, proxy_token, code):
+    subject = types.SimpleNamespace(subject_path=Path("/usr/bin/true"))
+    monkeypatch.setattr(pi, "_resolved_jail_subject", lambda *a: (subject, None))
+    monkeypatch.setattr(pi, "_approved_stage_or_refuse", lambda *a: tmp_path)
+    monkeypatch.setattr(pi.gemini_heartbeat, "admit",
+                        lambda *a, **kw: pytest.fail("incomplete binding reached admission"))
+    proxy = types.SimpleNamespace(proxy_url=proxy_url, private_proxy_token=proxy_token)
+    with pytest.raises(seat_jail.SeatSandboxRefused) as exc:
+        pi._prepare_jailed_gemini(tmp_path, tmp_path / "seat", None, 1, 1, ("", ""), proxy,
+                                  credential=credential)
+    assert exc.value.code == f"seat_sandbox_refused:{code}"
+    assert not (tmp_path / "seat" / seat_jail.HOST_GEMINI_CONFIG_DIRNAME).exists()
+
+
+def test_credential_free_gemini_view_in_provider_free_bwrap(tmp_path, monkeypatch):
+    import shutil
+    from ._seat_prereq import USERNS_UNAVAILABLE, skip_unless_capable, unprivileged_bwrap_ok
+    from .test_gemini_seat_mode_pin import _compose_seat
+    from .test_seat_jail import _test_owner
+
+    skip_unless_capable(None if unprivileged_bwrap_ok() else USERNS_UNAVAILABLE)
+    python = shutil.which("python3", path="/usr/bin:/bin")
+    assert python
+    seat = _compose_seat(tmp_path, monkeypatch)
+    jail = seat.jail
+    token = seat.private_proxy_token
+    assert token == b"fixture-session"
+    child = r"""
+import json, os, stat
+from pathlib import Path
+
+token = b"".join((b"fixture", b"-session"))
+
+def contains_token(path):
+    with path.open("rb") as handle:
+        return token in handle.read()
+
+argv = [Path("/proc/1/cmdline"), Path("/proc/self/cmdline")]
+environ = Path("/proc/self/environ")
+fds = []
+for entry in Path("/proc/self/fd").iterdir():
+    if int(entry.name) < 3:
+        continue
+    try:
+        mode = entry.stat().st_mode
+        fds.append(not stat.S_ISREG(mode) or contains_token(entry))
+    except FileNotFoundError:
+        continue  # the directory enumeration's own fd
+
+files = [file for root in (Path("/seat"), Path("/tmp"))
+         for file in root.rglob("*") if file.is_file() and not file.is_symlink()]
+print(json.dumps({
+    "argv_clean": not any(contains_token(path) for path in argv),
+    "environment_clean": not contains_token(environ),
+    "proxy_is_literal": os.environ["HTTPS_PROXY"] == "http://127.0.0.1:3128",
+    "files_clean": bool(files) and not any(contains_token(file) for file in files),
+    "descriptors_clean": not any(fds),
+}))
+"""
+    try:
+        owner = _test_owner(jail)
+        _assert_credential_free_gemini_jail(jail, token)
+        assert token not in b"\0".join(map(os.fsencode, owner))
+        done = subprocess.run(
+            [*owner, "--unshare-net", python, "-I", "-S", "-c", child],
+            capture_output=True, text=True, timeout=60, pass_fds=jail.pass_fds,
+            env={"PATH": "/usr/bin:/bin"},
+        )
+    finally:
+        seat_jail.close_jail_fds(jail)
+        seat_jail.close_jail_fds(seat.probe_jail)
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == dict.fromkeys(
+        ("argv_clean", "environment_clean", "proxy_is_literal", "files_clean", "descriptors_clean"),
+        True,
+    )

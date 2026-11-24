@@ -86,11 +86,11 @@ def _stream(form: bytes, **tool) -> tuple[bytes, int, int]:
 
 def _gemini_seat(tmp_path, proxy=PROXY, token=BEARER):
     jail = SimpleNamespace(
-        env={"HTTPS_PROXY": f"http://srt:{proxy.decode()}@127.0.0.1:3128"} if proxy else {},
+        env={"HTTPS_PROXY": "http://127.0.0.1:3128"},
         profile_digest="d", profile_id="p", filter_digest="f",
         redacted_owner=lambda: [], pass_fds=())
-    return pi._JailedSeat(jail=jail, probe_jail=jail, holder_pid=1, token=token,
-                          review_dir=tmp_path, seat_dir=tmp_path, expires_at=None)
+    return pi._JailedGeminiSeat(jail=jail, probe_jail=jail, holder_pid=1, token=token,
+                                review_dir=tmp_path, seat_dir=tmp_path, private_proxy_token=proxy)
 
 
 def _gemini_leg(monkeypatch, tmp_path, chunks, *, stderr=b"", live=True, proxy=PROXY,
@@ -408,7 +408,7 @@ def test_a_match_whose_line_began_before_the_retained_tail_keeps_its_offset(
     assert cut > 4 * len(LF_TOKEN)  # the line start predates the retained bytes
     chunks = ([stream[:cut], stream[cut:]] if chunking == "split-at-the-lf"
               else [stream[index:index + 1] for index in range(len(stream))])
-    (status, _text), sink, record = _gemini_leg(monkeypatch, tmp_path, chunks, proxy=None,
+    (status, _text), sink, record = _gemini_leg(monkeypatch, tmp_path, chunks,
                                                 token=LF_TOKEN)
     assert status == "DEGRADED" and sink[-1].template == "gemini_seat_token_in_output"
     match = record["secret_match"]
@@ -589,3 +589,32 @@ def test_a_cross_stream_match_starting_in_the_output_file_uses_its_raw_coordinat
     assert match["stream"] == "output_file+stdout"
     assert (match["line_index"], match["byte_offset"]) == (1, 5)
 
+
+
+def test_gemini_board_and_w1_scan_share_the_parent_tokens(tmp_path):
+    from phase_loop_runtime import seat_window_supply_gemini
+
+    seat = _gemini_seat(tmp_path)
+    assert seat_window_supply_gemini.scan_secrets(seat) == pi._jailed_gemini_secrets(seat) == (
+        BEARER, PROXY)
+    control = _gemini_seat(tmp_path, token=b"")
+    assert seat_window_supply_gemini.scan_secrets(control) == (PROXY,)
+
+
+@pytest.mark.parametrize("credential", [BEARER, b""])
+def test_gemini_board_and_w1_refuse_a_missing_parent_token(monkeypatch, tmp_path, credential):
+    from phase_loop_runtime import seat_window_supply_gemini
+
+    seat = _gemini_seat(tmp_path, proxy=b"", token=credential)
+    monkeypatch.setattr(pi, "_run_leg_with_liveness",
+                        lambda *a, **kw: pytest.fail("provider dispatch with no proxy token"))
+    entry_points = [
+        lambda: seat_window_supply_gemini.scan_secrets(seat),
+        lambda: pi._exec_jailed_gemini_leg(seat, deadline_s=1, model="fixture", prompt="",
+                                         broker_evidence=None),
+        lambda: pi._run_window_process(SimpleNamespace(seat=seat), (), timeout_s=1),
+    ]
+    for enter in entry_points:
+        with pytest.raises(seat_jail.SeatSandboxRefused) as exc:
+            enter()
+        assert exc.value.code == "seat_sandbox_refused:gemini_proxy_token_missing"

@@ -4,7 +4,8 @@
 Branch B (president ruling on agent-harness#2080): the fence is one declaration in Codex's
 own supplier, ``seat_window_supply_codex.EXPIRED_LEG_PROXY``, which both the kit's proxy
 start (``panel_invoker._open_window_launch``) and Codex's own reducer read.
-``seat_jail_qualification.py`` is never edited.
+The shared qualification reducer stays byte-identical outside the Gemini changes
+authorized by agent-harness#2157.
 
 Every test is provider-free: launches are stubbed at the spawn boundary, and the one real
 proxy runs against a loopback fixture upstream.
@@ -12,6 +13,7 @@ proxy runs against a loopback fixture upstream.
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import json
 import subprocess
@@ -317,7 +319,7 @@ def test_t3_a_fenced_expired_leg_is_never_refused_intended_on_a_hard_failure(
 
 
 # --------------------------------------------------------------------------------------
-# T4: the frozen Gemini reducer file is unedited.
+# T4: Codex OI-1 leaves the shared qualification reducer unchanged.
 # --------------------------------------------------------------------------------------
 
 def _base() -> str | None:
@@ -329,12 +331,30 @@ def _base() -> str | None:
     return None
 
 
+def _without_gemini_proxy_regions(source: bytes) -> bytes:
+    lines = source.splitlines(keepends=True)
+    regions = {}
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.FunctionDef) and node.name == "_gemini_shape":
+            regions["_gemini_shape"] = node
+        elif isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "_FAIL_CLOSED_FRONT"
+            for target in node.targets
+        ):
+            regions["_FAIL_CLOSED_FRONT"] = node
+    assert set(regions) == {"_gemini_shape", "_FAIL_CLOSED_FRONT"}
+    for node in sorted(regions.values(), key=lambda node: node.lineno, reverse=True):
+        del lines[node.lineno - 1:node.end_lineno]
+    return b"".join(lines)
+
+
 def test_t4_seat_jail_qualification_is_unedited():
+    """Keep the Codex fence from changing the reducer outside the Gemini amendment."""
     if not (REPO / ".git").exists():
         pytest.skip("not a source checkout")
     base = _base()
     if base is None:
         pytest.skip("no base ref to diff against")
-    done = subprocess.run(["git", "-C", str(REPO), "diff", "--exit-code", base, "--",
-                           FROZEN_REDUCER], capture_output=True, text=True, check=False)
-    assert done.returncode == 0, done.stdout
+    old = subprocess.check_output(["git", "-C", str(REPO), "show", f"{base}:{FROZEN_REDUCER}"])
+    assert _without_gemini_proxy_regions((REPO / FROZEN_REDUCER).read_bytes()) == (
+        _without_gemini_proxy_regions(old))

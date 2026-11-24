@@ -37,6 +37,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Iterator, Literal, Mapping
 
+from .sandbox_egress import _unix_front_identity
 from .seat_route_contract import AllowlistRef
 
 __all__ = [
@@ -86,6 +87,7 @@ SRT_HOST_TOOLS = ("which", "bwrap", "socat", "rg")
 _PROXY_SYSTEM_PATH = "/usr/bin:/bin"
 #: The seat's loopback port; the bridge listens here inside the seat's namespace.
 SEAT_PROXY_PORT = 3128
+GEMINI_PROXY_URL = f"http://127.0.0.1:{SEAT_PROXY_PORT}"
 UNAVAILABLE_CODE = "gemini_seat_egress_unavailable"
 NOT_INSTALLED_CODE = "seat_egress_not_installed"
 INTEGRITY_CODE = "seat_egress_integrity_failed"
@@ -487,9 +489,9 @@ def unavailable_code() -> str | None:
 
 @dataclass
 class SeatEgressProxy:
-    """One running proxy. ``proxy_url`` carries the proxy's per-launch session token (it
-    admits a client to this proxy and grants nothing else); it is placeholdered wherever an
-    argv is recorded."""
+    """One running proxy. ``proxy_url`` carries per-launch userinfo in authenticated
+    mode and is a plain loopback endpoint in private Gemini mode. Recorded argvs
+    use a placeholder. The private mode's scan token stays in the parent."""
 
     socket: str
     proxy_url: str = field(repr=False)
@@ -519,6 +521,8 @@ class SeatEgressProxy:
     #: Grok tool-surface contract v1, erratum 3: the exact ``(method, host, path)``
     #: observations this proxy names verbatim instead of ``<other>``. They decide nothing.
     named: tuple = ()
+    front_identity: tuple[int, int, str] | None = field(default=None, repr=False)
+    private_proxy_token: bytes = field(default=b"", repr=False)
     #: A budgeted proxy's end-of-stream marker, once read; nothing may follow it.
     _end: dict | None = field(default=None, repr=False)
     #: Set at shutdown: the proxy's exit status, and whether the context had to kill it.
@@ -878,11 +882,9 @@ def ca_fingerprint(cert: Path) -> str:
     return hashlib.sha256(ssl.PEM_cert_to_DER_cert(cert.read_text(encoding="ascii"))).hexdigest()
 
 
-@contextlib.contextmanager
-def start_proxy(*, allowlist_id: str,
-                refuse_all: bool = False,
-                request_budget: int | None = None,
-                named: tuple = ()) -> Iterator[SeatEgressProxy]:
+def start_proxy(*, allowlist_id: str, refuse_all: bool = False,
+                request_budget: int | None = None, named: tuple = ()
+                ) -> contextlib.AbstractContextManager[SeatEgressProxy]:
     """Run the seat's proxy for the life of the context. Raises
     :class:`EgressLayerUnavailable` before anything runs when the layer is unavailable.
 
@@ -904,6 +906,27 @@ def start_proxy(*, allowlist_id: str,
     instead of folding into ``<other>``, so a measurement can tell a tolerated refusal from
     any other. It names; it never allows, refuses or counts anything. Without it the
     configuration and the stream are what they were."""
+    return _start_proxy(
+        allowlist_id=allowlist_id, refuse_all=refuse_all, request_budget=request_budget,
+        named=named, front_config={"inner_sni_check": True},
+    )
+
+
+def start_private_gemini_proxy(*, allowlist_id: str, refuse_all: bool = False
+                               ) -> contextlib.AbstractContextManager[SeatEgressProxy]:
+    """Start the credential-free front for a private Gemini namespace."""
+    if allowlist_id != "gemini":
+        raise ValueError("private proxy mode is reserved for jailed Gemini")
+    return _start_proxy(
+        allowlist_id=allowlist_id, refuse_all=refuse_all,
+        front_config={"inner_sni_check": True, "private_gemini": True},
+    )
+
+
+@contextlib.contextmanager
+def _start_proxy(*, allowlist_id: str, refuse_all: bool, front_config: Mapping[str, bool],
+                 request_budget: int | None = None, named: tuple = ()) -> Iterator[SeatEgressProxy]:
+    private_gemini = front_config.get("private_gemini") is True
     named = tuple(tuple(entry) for entry in named)
     if len(named) > 16 or not all(
             len(entry) == 3 and entry[0] in _EVENT_METHODS - {"<other>"}
@@ -933,7 +956,7 @@ def start_proxy(*, allowlist_id: str,
         try:
             config.write_text(json.dumps({
                 "allow": rules, "ca_cert": str(cert), "ca_key": str(key),
-                "inner_sni_check": True,
+                **front_config,
                 **({} if request_budget is None else {"request_budget": request_budget}),
                 **({"named": [list(entry) for entry in named]} if named else {}),
             }), encoding="utf-8")
@@ -961,14 +984,24 @@ def start_proxy(*, allowlist_id: str,
                 raise EgressLayerUnavailable(
                     START_FAILED_CODE, "the proxy did not attest its request budget")
             token = str(ready["token"])
+            socket_path = str(ready["socket"])
+            front_identity = None
+            if private_gemini:
+                front_identity = _unix_front_identity(socket_path, process)
+                if front_identity is None:
+                    raise EgressLayerUnavailable(
+                        START_FAILED_CODE, "the private Gemini front did not bind its socket")
             try:
                 ca_sha256 = ca_fingerprint(cert)
             except (OSError, ValueError) as exc:
                 raise EgressLayerUnavailable(
                     INTEGRITY_CODE, "the seat egress CA certificate is invalid") from exc
             proxy = SeatEgressProxy(
-                socket=str(ready["socket"]),
-                proxy_url=f"http://srt:{token}@127.0.0.1:{SEAT_PROXY_PORT}",
+                socket=socket_path,
+                proxy_url=(GEMINI_PROXY_URL if private_gemini else
+                           f"http://srt:{token}@127.0.0.1:{SEAT_PROXY_PORT}"),
+                front_identity=front_identity,
+                private_proxy_token=token.encode("utf-8") if private_gemini else b"",
                 ca_cert=cert, ca_sha256=ca_sha256,
                 inner_sni_check=True, process=process,
                 allowlist_id=selected.id, allowlist_digest=selected.content_digest,

@@ -614,7 +614,7 @@ def test_gemini_jail_view_contains_no_ca_key_bytes(tmp_path):
         "gemini", review, Path("/usr/bin/true"), tree=tree,
         bundle_memfd=seat_jail.memfd_with("b", b"B"),
         instructions_memfd=seat_jail.memfd_with("i", b"I"), seat_ids=(3, 3),
-        gemini_config=config, egress_ca=cert, egress_proxy="http://srt:t@127.0.0.1:3128")
+        gemini_config=config, egress_ca=cert, egress_proxy="http://127.0.0.1:3128")
     try:
         for kind, source, _target in (
                 (jail.process_owner[index:index + 3])

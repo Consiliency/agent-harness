@@ -93,7 +93,7 @@ def test_jail_floor_precedes_all_preparation_effects(tmp_path, monkeypatch, prov
                 if provider == 'claude':
                     panel._prepare_jailed_claude(*args)
                 else:
-                    panel._prepare_jailed_gemini(*args, SimpleNamespace())
+                    panel._prepare_jailed_gemini(*args, SimpleNamespace(proxy_url="http://127.0.0.1:3128", private_proxy_token=b"fixture"))
             assert not seat_dir.exists()
     finally:
         fixture.close()
@@ -309,7 +309,8 @@ def test_required_gemini_stale_login_refuses_host_refresh(tmp_path, monkeypatch,
                         pytest.fail('profile entered')
                 else:
                     panel._prepare_jailed_gemini(tmp_path / 'review', tmp_path / 'seat', None,
-                                                1, os.getpid(), ('bundle', 'brief'), SimpleNamespace())
+                                                1, os.getpid(), ('bundle', 'brief'),
+                                                SimpleNamespace(proxy_url="http://127.0.0.1:3128", private_proxy_token=b"fixture"))
             assert not (tmp_path / 'seat').exists()
             assert not (tmp_path / 'out').exists()
     finally:
@@ -343,7 +344,7 @@ def _synthetic_credentials(monkeypatch, tmp_path):
     monkeypatch.setattr(seat_jail, 'build_gemini_seat_copy', lambda _: json.dumps(document).encode())
     ca = tmp_path / 'ca.pem'
     ca.write_bytes(b'synthetic CA')
-    return SimpleNamespace(ca_cert=ca, proxy_url='http://127.0.0.1:1')
+    return SimpleNamespace(ca_cert=ca, proxy_url='http://127.0.0.1:3128', private_proxy_token=b'fixture')
 
 
 @pytest.mark.parametrize('provider', ['claude', 'gemini'])
