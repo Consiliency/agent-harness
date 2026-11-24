@@ -4,8 +4,8 @@ When the Gemini or Codex seat's scan finds one of its configured values (the cre
 or the egress-proxy session value) in the output, the leg is still refused with its unchanged
 detail code, and its private ``leg_exec.v1`` record says which configured value matched and
 where: the kind, the encoding, the stream, the phase, the allowlisted event, step and tool,
-the line index and the byte offset. No part of the value, no digest of it and none of the
-surrounding provider text reaches the record. No provider is started.
+the Gemini field class, the line index and the byte offset. The record omits the value,
+its digest and surrounding provider text. No provider is started.
 """
 from __future__ import annotations
 
@@ -153,10 +153,40 @@ def test_a_live_match_names_the_kind_encoding_and_position(monkeypatch, tmp_path
         "secret_kind": kind, "encoding": "hex" if encoding == "HEX" else encoding,
         "stream": "stdout", "phase": "live", "event_type": "step_update", "step_type": "tool",
         "tool_name": "run_command", "line_index": line_index, "byte_offset": offset,
+        "field_class": "output",
     }
     # The launch ended (the guard stopped it) and the parent reached the stream checks.
     assert record["refusal"] == "gemini_seat_token_in_output" and record["stage"] == "stream"
     _assert_nothing_secret_derived(record)
+
+
+@pytest.mark.parametrize("tool_info,expected", [
+    ({"parameters": {"CommandLine": ["fixture", "@@MARK@@"]}, "output": "earlier"}, "argv"),
+    ({"parameters": {"CommandLine": "earlier"}, "output": "@@MARK@@"}, "output"),
+    ({"error": {"message": "@@MARK@@"}}, "diagnostic"),
+    ({"unexpected": {"output": "@@MARK@@"}}, "unknown"),
+    ({"output": "x" * 8192 + "@@MARK@@"}, "unknown"),
+])
+@pytest.mark.parametrize("live", [True, False])
+def test_gemini_records_the_field_class_at_the_match(monkeypatch, tmp_path, tool_info, expected, live):
+    line, = _lines({"event": "step_update", "step_update": {"tool_info": tool_info}})
+    data = line.replace(b"@@MARK@@", PROXY)
+    cut = data.index(PROXY) + 5
+    result, sink, record = _gemini_leg(monkeypatch, tmp_path, [data[:cut], data[cut:]], live=live)
+    assert result == ("DEGRADED", "")
+    assert sink[-1].template == "gemini_seat_token_in_output"
+    assert record["secret_match"]["field_class"] == expected
+    _assert_nothing_secret_derived(record)
+
+
+def test_gemini_board_notice_names_both_credential_kinds():
+    from phase_loop_runtime.cli import _board_notices_json
+
+    leg = pi.PanelLegResult(leg="gemini", status="DEGRADED", text="",
+                            detail="gemini_seat_token_in_output")
+    notice, = _board_notices_json([leg])
+    assert "proxy credential" in notice["why"]
+    assert "seat token" in notice["why"]
 
 
 @pytest.mark.parametrize("encoding,expected", [("raw", "raw"), ("hex", "hex"), ("HEX", "hex"),
@@ -191,7 +221,7 @@ def test_an_unparsed_line_and_an_init_event_carry_no_step_or_tool(monkeypatch, t
     assert record["secret_match"] | {} == {
         "secret_kind": "proxy_credential", "encoding": "raw", "stream": "stdout", "phase": "live",
         "event_type": "unparsed", "step_type": None, "tool_name": None, "line_index": 1,
-        "byte_offset": len(b"plain text "),
+        "byte_offset": len(b"plain text "), "field_class": "unknown",
     }
     data = json.dumps({"event": "init", "note": BEARER.decode()}).encode() + b"\n"
     (tmp_path / "init").mkdir()
@@ -318,6 +348,7 @@ def test_a_codex_item_outside_the_allowlist_is_other(monkeypatch, tmp_path):
     {"line_index": -1}, {"byte_offset": True}, {"line_index": "3"}, {"extra": 1},
     {"stream": "stdout|stderr"}, {"stream": "stderr+stdout"},
     {"stream": "stdin"}, {"phase": "later"}, {"event_type": "free text"},
+    {"field_class": "free text"}, {"field_class": None},
 ])
 def test_the_record_drops_an_open_descriptor(change):
     valid = {"secret_kind": "bearer", "encoding": "raw", "stream": "stdout", "phase": "live",
@@ -477,7 +508,7 @@ def _labels(vendor, line: bytes) -> dict:
     (b"plain text ", {"event_type": "unparsed", "step_type": None, "tool_name": None}),
 ])
 def test_gemini_labels_are_read_by_structure(line, expected):
-    assert _labels("gemini", line) == expected
+    assert _labels("gemini", line) == {**expected, "field_class": "unknown"}
 
 
 @pytest.mark.parametrize("line,expected", [
@@ -494,7 +525,9 @@ def test_codex_labels_are_read_by_structure(line, expected):
 
 
 def test_the_prefix_reader_is_bounded_and_takes_only_complete_values():
-    fields = pi._json_prefix_fields
+    def fields(text, wanted):
+        return pi._json_prefix_fields(text, wanted)[0]
+
     wanted = frozenset({("a",), ("b", "c")})
     assert fields('{"a":"x","b":{"c":"y"}}', wanted) == {("a",): "x", ("b", "c"): "y"}
     assert fields('{"a":12', wanted) == {}            # a number the prefix may have cut short
@@ -512,14 +545,14 @@ def test_the_prefix_reader_is_bounded_and_takes_only_complete_values():
 
 @pytest.mark.parametrize("literal", ["true", "false", "null"])
 def test_a_complete_literal_before_the_match_is_a_parsed_value(literal):
-    fields = pi._json_prefix_fields
     wanted = frozenset({("type",), ("item", "type")})
     # The prefix ends right after the literal (the match begins at the next comma).
-    assert fields('{"type":' + literal, wanted) == {("type",): pi._NOT_A_STRING}
+    found, _path = pi._json_prefix_fields('{"type":' + literal, wanted)
+    assert found == {("type",): pi._NOT_A_STRING}
     assert _labels("codex", ('{"type":' + literal).encode())["event_type"] == "other"
     assert _labels("gemini", ('{"event":' + literal).encode())["event_type"] == "other"
     # A literal the prefix cut short is not established.
-    assert fields('{"type":' + literal[:-1], wanted) == {}
+    assert pi._json_prefix_fields('{"type":' + literal[:-1], wanted) == ({}, ())
 
 
 @pytest.mark.parametrize("prefix,established", [
@@ -529,7 +562,7 @@ def test_a_complete_literal_before_the_match_is_a_parsed_value(literal):
     ('{"type":12 ', True),
 ])
 def test_only_a_number_at_the_end_may_be_cut_short(prefix, established):
-    found = pi._json_prefix_fields(prefix, frozenset({("type",)}))
+    found, _path = pi._json_prefix_fields(prefix, frozenset({("type",)}))
     assert (found == {("type",): pi._NOT_A_STRING}) is established
 
 

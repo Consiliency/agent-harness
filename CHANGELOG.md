@@ -8,11 +8,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
-- JEVHOST SL-9 documents the run-bound report hook and adds
-  `JevDrillAdapter.active_execution_run_ids(task_id)` for hosts reporting during execution.
 - LaneExec checks requests against captured route and resource settings, runs isolated admission,
   and journals supervisor ownership, start intent and terminal responses. Shipped settings keep
   every launch route closed.
+- JEVHOST SL-9 documents the run-bound report hook and adds
+  `JevDrillAdapter.active_execution_run_ids(task_id)` for hosts reporting during execution.
 - LANEEXEC SL-2: `ReturnPolicy` supports independent patch and JSON result byte caps,
   including zero. A return above its cap yields `sandbox_launch_result_invalid` and
   leaves no retained bytes. A verified absent proposal still returns null without a code.
@@ -26,6 +26,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- Jailed Claude TUI failures retain screened terminal tails in private advisor-board leg logs.
+  Gemini credential refusals identify the matching field class in the private execution record,
+  and the board notice covers both seat tokens and per-launch proxy credentials.
 - Unconfirmed local launch renewals retain cleanup debt and can retry until the lease
   fencing boundary. Reap respects that boundary, and late writes cannot overwrite a
   retry's confirmed heartbeat (agent-harness#2151 follow-up).
