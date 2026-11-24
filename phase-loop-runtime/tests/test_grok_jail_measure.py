@@ -39,6 +39,7 @@ from phase_loop_runtime import seat_egress_proxy, seat_jail, seat_window
 from phase_loop_runtime import seat_profile_grok as grok
 
 from test_grok_jail_surface import STAND_IN, _build, _credential, _open_gate, _Proc
+from test_seats_teamhost_subject import _managed_grok, managed_fs  # noqa: F401
 
 pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux seat jail")
 
@@ -186,24 +187,29 @@ class Runner:
 
 
 class Bench:
-    def __init__(self, root: Path, patch):
+    def __init__(self, root: Path, patch, *, managed=None):
         self.root = root
         self.patch = patch
         patch.setenv("XDG_STATE_HOME", str(root / "state"))
-        self.binary_path = STAND_IN
-        self.digest = gjs.root_owned_digest(STAND_IN)
+        if managed is None:
+            env = {"PATH": "/usr/bin:/bin"}
+            self.binary_path = STAND_IN
+            self.digest = gjs.root_owned_digest(STAND_IN)
+        else:
+            env, path, self.digest, _pin = managed
+            self.binary_path = str(path)
         table = dict(grok.JAIL_PROTECTION)
         table[self.digest] = table[grok.GROK_1_0_92_SHA256]
         patch.setattr(grok, "JAIL_PROTECTION", MappingProxyType(table))
         self.output = root / "state" / "out"
         self.runner = Runner(self)
         self.sink_bytes = None
-        identity = (STAND_IN, self.digest, ())
+        identity = (self.binary_path, self.digest, ())
         patch.setattr(gts, "_measure_binary", lambda binary, expected: identity
                       if expected == self.digest else (_ for _ in ()).throw(
                           gts.MeasurementRefused("binary_mismatch")))
         patch.setattr(pi, "_grok_probe_identity", lambda argv, env=None: identity)
-        patch.setattr(pi, "_subscription_env", lambda base_env=None: {"PATH": "/usr/bin:/bin"})
+        patch.setattr(pi, "_subscription_env", lambda base_env=None: dict(env))
         self.metadata_calls: list = []
         patch.setattr(gts, "_help_and_version", lambda binary, env: (
             self.metadata_calls.append(binary), (b"grok help\n", b"grok 1.0.92\n"))[1])
@@ -212,8 +218,9 @@ class Bench:
                       lambda: int(time.time()) + self.credential_remaining)
         patch.setenv("GROK_SLOT_END_EPOCH", str(int(time.time()) + 600))
         patch.setattr(gts, "_prepare_route", lambda route: (None, None, None, None))
-        patch.setattr(gjs, "resolve_subject",
-                      lambda env=None: gjs.JailedSubject(STAND_IN, self.digest))
+        if managed is None:
+            patch.setattr(gjs, "resolve_subject",
+                          lambda env=None: gjs.JailedSubject(self.binary_path, self.digest))
         patch.setattr(gts, "_jail_compose", self.runner.compose)
         patch.setattr(gjs, "launch_digest", self.runner.launch_digest)
         patch.setattr(gjs, "production_launch_digest", lambda arch: LAUNCH)
@@ -1689,3 +1696,64 @@ def test_a_launch_without_a_hook_keeps_its_old_call_shape(tmp_path, monkeypatch)
         seat_jail.close_jail_fds(built.jail)
     assert proc.returncode == 0 and len(seen) == 1
     assert "spawn_hook" not in seen[0]
+
+
+@pytest.mark.parametrize("managed_grok", ["image-pin-only"], indirect=True)
+def test_managed_measurement_stage_and_final_probe_use_the_installed_resolver(
+    managed_grok, tmp_path, monkeypatch,
+):
+    env, _native, _digest, pin = managed_grok
+    monkeypatch.setenv("PATH", env["PATH"])
+    monkeypatch.setattr(pi, "run_provider", lambda *_a, **_k: pytest.fail("started a provider"))
+    bench = Bench(tmp_path, monkeypatch, managed=managed_grok)
+    code, report = _three(bench)
+    assert code == 0, report
+    assert bench.status()["charged"] == 3
+    assert bench.cli("--aggregate")[0] == 0
+    code, report = bench.cli("--verify-probe", "final")
+    assert code == 0 and report["passed"], report
+
+    pin.unlink()
+    code, report = bench.cli("--verify-probe", "final")
+    assert (code, report["code"]) == (1, "probe_binary_mismatch")
+
+
+@pytest.mark.parametrize("managed_grok", ["image-pin-only"], indirect=True)
+def test_managed_stage_refuses_removed_pin_before_reserving(managed_grok, tmp_path, monkeypatch):
+    _env, _native, _digest, pin = managed_grok
+    bench = Bench(tmp_path, monkeypatch, managed=managed_grok)
+    bench.opened()
+    bench.runner.order.clear()
+
+    pin.unlink()
+    code, report = bench.launch(_measured())
+    assert (code, report["routes"][0]["code"]) == (1, "binary_mismatch")
+    assert bench.metadata_calls == [] and bench.runner.order == []
+    assert bench.status()["charged"] == 0
+    assert bench.status()["reservations"] == []
+
+
+@pytest.mark.parametrize("managed_grok", ["image-pin-only"], indirect=True)
+def test_managed_stage_stops_if_pin_is_removed_after_reserving(managed_grok, tmp_path, monkeypatch):
+    _env, _native, _digest, pin = managed_grok
+    bench = Bench(tmp_path, monkeypatch, managed=managed_grok)
+    bench.opened()
+    bench.runner.order.clear()
+
+    @contextlib.contextmanager
+    def compose(stage, label, *, budget):
+        pin.unlink()
+        gjs.resolve_subject(stage.env)
+        with bench.runner.compose(stage, label, budget=budget) as seat:
+            yield seat
+
+    monkeypatch.setattr(gts, "_jail_compose", compose)
+    code, report = bench.launch(_measured(), _measured(), routes=2)
+    assert code == 1
+    first, second = report["routes"]
+    assert (first["status"], first["code"], second["code"]) == (
+        "unspawned", REFUSED, "not_attempted",
+    )
+    assert bench.runner.order == [] and bench.admissions() == []
+    status = bench.status()
+    assert status["charged"] == 0 and status["stopped"] is True

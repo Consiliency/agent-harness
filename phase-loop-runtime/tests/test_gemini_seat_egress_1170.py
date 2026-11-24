@@ -394,7 +394,9 @@ def test_the_sealed_stream_still_rejects_every_tool_step():
 def test_the_tooled_final_turn_asks_for_tools_and_the_sealed_one_forbids_them():
     tooled = pi._broker_gemini_stream_protocol("prompt", tooled=True).transport
     sealed = pi._broker_gemini_stream_protocol("prompt").transport
-    assert "Review with your tools" in tooled and "Do not use or request tools" not in tooled
+    assert "first read the scope/index section of /seat/review/review-bundle.md" in tooled
+    assert "Run commands in /seat/tree to check claims." in tooled
+    assert "Do not use or request tools" not in tooled
     assert "Do not use or request tools" in sealed
 
 

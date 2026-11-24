@@ -356,16 +356,24 @@ def _capacity_grant(
 
 def _projection_for_launch(profile, env: Mapping[str, str]):
     """Resolve TEAMHOST's selected subject and return only its key-bound projection."""
+    from .executable_dependency import ExecutableDependencyError
     from .executable_dependency_startup import current_dependency_for_provider
     from .seat_qualification_key import admit_profile_projection
-    from .seat_subject import open_managed_authority, resolve_seat_subject
+    from .seat_subject import open_managed_authority, resolve_seat_subject, verify_managed_image
 
     subject = resolve_seat_subject(profile.leg, env)
-    current = current_dependency_for_provider(profile.leg)
-    if current is not None:
+    if subject.source == "session_lease":
+        current = current_dependency_for_provider(profile.leg)
+        if current is None:
+            raise ExecutableDependencyError("authority_invalid", "dependency lease")
         return admit_profile_projection(profile, current)
-    if subject.source != "managed_release":
+    if subject.source == "standalone":
         return admit_profile_projection(profile, None)
+    if subject.source == "managed_image":
+        verify_managed_image(subject, profile)
+        return None
+    if subject.source != "managed_release":
+        raise ExecutableDependencyError("subject_mismatch", "seat subject source")
     descriptor, expected = open_managed_authority(subject)
     admitted = None
     try:

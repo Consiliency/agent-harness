@@ -10,6 +10,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 - Grok's jailed measurement records the owner's offline projection confirmation and
   verifies the hosted BA-J1 and BA-J5 results before opening a grant (agent-harness#2101).
+- Jailed Grok accepts the approved 1.0.92 image from a Dotfiles release when the
+  guarded launcher, root-owned release pin and executable fingerprint agree.
+  The image uses the existing read-only bind with no dependency projection.
+
 - Jailed Claude TUI stall details and private leg logs now record whether the submit
   key was written, whether the exact session recorded the request, and whether an
   assistant event or typed API error followed. The diagnostics include timing and
@@ -26,6 +30,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Grok jail grants reopen a counted label once after a sink-probe timeout without
   charging a request or retry. This moves the seat-window runtime and release identity
   digests. Profile and SDK proof pins stay fixed (agent-harness#2101).
+- Jailed repository-review seats read the scope and index first, then retrieve evidence in
+  bounded reads. Staged bundles over 64 KiB warn before launch. Advisor boards can enforce a
+  limit with `--max-staged-bundle-bytes`. Jailed Claude TUI silence timing includes the mounted
+  bundle size and stays within the review deadline.
 - Record the FIRSTSEAT standing Gemini W1 policy and freeze IF-0-FIRSTSEAT-7,
   including the one-attempt debit, unchanged-input skip and agent-harness#2157
   bridge sequencing gate.
