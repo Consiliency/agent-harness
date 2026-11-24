@@ -8,12 +8,22 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
+- Jailed Claude TUI stall details and private leg logs now record whether the submit
+  key was written, whether the exact session recorded the request, and whether an
+  assistant event or typed API error followed. The diagnostics include timing and
+  allowlisted journal metadata without retaining request or response content.
 - LaneExec checks requests against captured route and resource settings, runs isolated admission,
   and journals supervisor ownership, start intent and terminal responses. Shipped settings keep
   every launch route closed.
+- Gemini self-qualification records an allowlisted `provider_error_class` in private
+  failure evidence and in the qualification-unavailable notice when structured signals
+  are available. Unidentified provider failures report `unknown`.
 
 ### Changed
 
+- Record the FIRSTSEAT standing Gemini W1 policy and freeze IF-0-FIRSTSEAT-7,
+  including the one-attempt debit, unchanged-input skip and agent-harness#2157
+  bridge sequencing gate.
 - LANEEXEC erratum 7 binds the plan to the landed SL-8 renewal, activation,
   scratch, cancellation and lane admission rulings (agent-harness#2160).
 
@@ -25,6 +35,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   then record EC-EXECFIND-2 for every Gemini host and account. Requalify affected Codex row
   windows and reissue grants against the installed runtime. Restart Grok series that require
   same-runtime evidence and obtain a fresh Claude SDK boundary proof before SDK admission.
+- Bounded jailed Claude TUI reviews allow up to 20 minutes from submit for an active turn
+  with a repainting spinner and interrupt footer, within the existing review deadline.
+  The watchdog checks the session journal once more before declaring a stall.
 
 ## [0.7.43] - Unreleased candidate
 

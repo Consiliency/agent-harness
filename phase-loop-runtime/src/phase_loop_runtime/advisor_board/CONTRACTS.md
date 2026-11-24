@@ -1408,6 +1408,12 @@ A non-release `agy` image is admitted only by verifying it, never by trusting it
   agy-qualification run` go on to first use. Legs re-admit by lookup rather than
   receiving the preflight's Admission object; any future cross-process hand-off of an
   image memfd must reuse the worker's seal check.
+- **Provider failure diagnostics.** A non-OK qualification provider result can retain
+  `broker.provider_error_class` in private `terminal.json` and project the label into
+  `failure.json`. On a transient refusal, `gemini_heartbeat_self_qualification_unavailable`
+  can include the same label in `notice.detail`. The label comes from structured process,
+  stream and credential facts. Opaque provider failures use `unknown`. The qualification
+  predicates and transient accounting are unchanged.
 - **Provenance** (coordinator process, nothing executes). Host platform from the running
   host (D4: `linux-{x64,arm64}[-musl]`); every listed stable release (no prerelease, no
   draft), hint first, within the per-call budget and the daily cap (PROVFWD below); the exact
