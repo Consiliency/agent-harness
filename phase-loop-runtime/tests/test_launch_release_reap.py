@@ -10,6 +10,7 @@ The local end-to-end supervisor and capped-parent evidence belong to SL-8.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import fcntl
 import json
 import os
@@ -908,15 +909,160 @@ def test_generation_cancel_long_path(env, fault, monkeypatch):
     assert received == [dict(version=1, op="cancel", reservation_id=key[0], request_id=key[1],
                              generation=GEN, sender_pid=os.getpid(), sender_start=sp._own_identity()["start"])]
 
-def test_generation_renewal_late_writer_cannot_move_confirmed_heartbeat(prepared, monkeypatch):
+
+@pytest.mark.parametrize("starts_during_exchange", [False, True])
+def test_generation_cancel_keeps_prestart_request_on_supervisor_path(
+        env, prepared, monkeypatch, starts_during_exchange):
+    life, key = _generation_claim(prepared)
+    deadline = time.monotonic() + 2
+
+    def supervisor_cancel(*args):
+        if starts_during_exchange:
+            with life.launch_operation_lock(key[0], key[2], timeout_s=1) as held:
+                assert held and life.mark_start_intent(*key, deadline=deadline)
+        return "owner_unverified"
+
+    monkeypatch.setattr(sp, "_supervisor_cancel", supervisor_cancel)
+    assert life.cancel_launch_owner(*key, deadline=deadline) == "owner_unverified"
+    assert env.cancels == []
+
+
+def test_generation_cancel_stays_bound_when_prepared_attempt_is_reused(env, prepared, monkeypatch):
+    life, key = _generation_claim(prepared)
+    rid, request_id, generation = key
+    run_id = prepared[3].paths.run_id
+    next_generation = "e" * 32
+    launch_lock = life.launch_lock
+    supervisor_exchanged = False
+
+    def supervisor_cancel(*args):
+        nonlocal supervisor_exchanged
+        supervisor_exchanged = True
+        return "owner_unverified"
+
+    @contextmanager
+    def reuse_after_recheck(reservation_id, *, timeout_s):
+        with launch_lock(reservation_id, timeout_s=timeout_s) as lock:
+            yield lock
+        if supervisor_exchanged:
+            # Settle the rollback as soon as cancellation drops the claim journal.
+            with launch_lock(rid, timeout_s=1) as lock:
+                assert lock.record_rollback_intent(request_id, generation, cause="snapshot_expired")
+                assert lock.rollback(request_id, generation=generation)
+                assert lock.claim("launch-2", run_id, generation=next_generation) is None
+
+    monkeypatch.setattr(sp, "_supervisor_cancel", supervisor_cancel)
+    monkeypatch.setattr(life, "launch_lock", reuse_after_recheck)
+    assert life.cancel_launch_owner(*key, deadline=time.monotonic() + 2) == "owner_unverified"
+    claim = life.launch_claim_record(rid)
+    assert (claim["generation"], claim["run_id"]) == (next_generation, run_id)
+    assert env.cancels == []
+
+
+def test_generation_started_cancel_holds_operation_lock_and_refuses_rollback(env, prepared, monkeypatch):
+    life, key = _generation_claim(prepared)
+    rid, request_id, generation = key
+    deadline = time.monotonic() + 2
+    with life.launch_operation_lock(rid, generation, timeout_s=1) as held:
+        assert held and life.mark_start_intent(*key, deadline=deadline)
+    with life.launch_lock(rid, timeout_s=1) as lock:
+        assert not lock.record_rollback_intent(request_id, generation, cause="snapshot_expired")
+        # Even a stale intent in the journal cannot authorize rollback after start.
+        claim = life.launch_claim_record(rid)
+        claim["rollback_cause"] = "snapshot_expired"
+        life._launch_write("claims", rid, claim)
+        assert not lock.rollback(request_id, generation=generation)
+
+    held_during_cancel = []
+    env.on_cancel = lambda claim: held_during_cancel.append(life._holds_operation(rid, generation))
+    env.cancel_outcome = "cancelled"
+    monkeypatch.setattr(sp, "_supervisor_cancel", lambda *args: "cancelled")
+
+    assert life.cancel_launch_owner(*key, deadline=deadline) == "cancelled"
+    assert env.cancels == [(request_id, prepared[3].paths.run_id)]
+    assert held_during_cancel == [True]
+
+
+def test_generation_renewal_slot_error_requires_explicit_fence(prepared, monkeypatch):
+    life, key = _generation_claim(prepared)
+
+    def fail_slot_write(*args):
+        raise OSError("injected slot write failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "pwrite", fail_slot_write)
+        assert not life.renew_launch(*key, deadline=time.monotonic() + 1)
+
+    assert life.read_cleanup_debt(*key).cause == "renewal_lost"
+    assert life._launch_read("dispositions", GEN)["fenced"] is False
+    assert life.fence_launch(*key, cause="renewal_lost", deadline=time.monotonic() + 1)
+    assert life._launch_read("dispositions", GEN)["fenced"] is True
+
+
+def test_generation_failed_renewal_keeps_flags_ready(prepared, monkeypatch):
+    life, key = _generation_claim(prepared)
+    monkeypatch.setattr(life, "_confirm_slot", lambda *args: False)
+    assert not life.renew_launch(*key, deadline=time.monotonic() + 1)
+
+    with life.launch_lock(key[0], timeout_s=1) as lock:
+        code, active = lock.window(None)
+        flags = life._flags(active)
+    assert not flags.fenced
+    assert flags.ready and flags.exec_claimed and not flags.cleanup_pending
+    assert code is None
+
+
+def test_generation_reap_waits_for_unconfirmed_renewal_boundary(env, prepared, monkeypatch):
+    life, key = _generation_claim(prepared)
+    initial = life._launch_read("renewals", f"{GEN}.0")
+    heartbeat, ttl = initial["heartbeat_at"], initial["ttl_s"]
+    clock = Clock(heartbeat + ttl / 3)
+    monkeypatch.setattr(sp, "_monotonic", clock)
+    monkeypatch.setattr(life, "_confirm_slot", lambda *args: False)
+    assert not life.renew_launch(*key, deadline=clock.now + 1)
+
+    fence_at = heartbeat + ttl * 2 / 3
+    for now in (clock.now, fence_at - 1):
+        clock.now = now
+        result, _ = env.reap()
+        assert life._launch_read("dispositions", GEN)["fenced"] is False
+        assert result.inventory.examined == 0
+
+    clock.now = fence_at
+    result, _ = env.reap()
+    assert life._launch_read("dispositions", GEN)["fenced"] is True
+    assert result.inventory.pending == 1
+
+
+def test_generation_renewal_retries_within_confirmation_window(env, prepared, monkeypatch):
+    life, key = _generation_claim(prepared)
+    initial = life._launch_read("renewals", f"{GEN}.0")
+    heartbeat, ttl = initial["heartbeat_at"], initial["ttl_s"]
+    clock = Clock(heartbeat + .1 * ttl)
+    monkeypatch.setattr(sp, "_monotonic", clock)
+    with monkeypatch.context() as patch:
+        patch.setattr(life, "_confirm_slot", lambda *args: False)
+        assert not life.renew_launch(*key, deadline=clock.now + 1)
+
+    clock.now = heartbeat + .2 * ttl
+    env.clock.now += .2 * ttl
+    assert life.renew_launch(*key, deadline=clock.now + 1)
+    assert life.launch_heartbeat(key[0]) == env.clock.now
+    assert life.read_cleanup_debt(*key) is None
+
+
+def test_generation_renewal_late_writer_cannot_move_confirmed_heartbeat(env, prepared, monkeypatch):
     life, key = _generation_claim(prepared)
     assert life.renew_launch(*key, deadline=time.monotonic() + 1)
     confirmed = life.launch_heartbeat(key[0])
+    env.clock.now += 12
     invoked, resume, finished = threading.Event(), threading.Event(), threading.Event()
     write = life._launch_write
+    orphan = []
 
     def delayed(directory, name, row):
         if directory == "renewals":
+            orphan.append((threading.current_thread(), directory, name, row))
             invoked.set()
             assert resume.wait(3)
             try:
@@ -925,16 +1071,49 @@ def test_generation_renewal_late_writer_cannot_move_confirmed_heartbeat(prepared
                 finished.set()
         return write(directory, name, row)
 
-    monkeypatch.setattr(life, "_launch_write", delayed)
-    try:
-        assert not life.renew_launch(*key, deadline=time.monotonic() + .25)
-        assert invoked.is_set() and not finished.is_set()
-        assert life.read_cleanup_debt(*key).cause == "renewal_lost"
-    finally:
-        resume.set()
-    assert finished.wait(1)
+    with monkeypatch.context() as patch:
+        patch.setattr(life, "_launch_write", delayed)
+        try:
+            assert not life.renew_launch(*key, deadline=time.monotonic() + .25)
+            assert invoked.is_set() and not finished.is_set()
+            assert life.read_cleanup_debt(*key).cause == "renewal_lost"
+            assert life._launch_read("dispositions", GEN)["fenced"] is False
+        finally:
+            resume.set()
+        assert finished.wait(1)
+        writer, *candidate = orphan[0]
+        writer.join(1)
+        assert not writer.is_alive()
     assert life.launch_heartbeat(key[0]) == confirmed
-    assert not life.renew_launch(*key, deadline=time.monotonic() + 1)
+
+    env.clock.now += 12
+    assert life.renew_launch(*key, deadline=time.monotonic() + 1)
+    assert life._launch_read("dispositions", GEN)["confirmed_count"] == 2
+    # Replay the orphaned publication after the retry has selected its candidate.
+    write(*candidate)
+    assert life.launch_heartbeat(key[0]) == env.clock.now
+
+
+def test_generation_renewal_late_confirmation_restores_previous_heartbeat(env, prepared, monkeypatch):
+    life, key = _generation_claim(prepared)
+    confirmed = life.launch_heartbeat(key[0])
+    env.clock.now += 12
+    clock = Clock(time.monotonic())
+    deadline = clock.now + 2
+    write = life._launch_write
+
+    def late_confirmation(directory, name, row):
+        write(directory, name, row)
+        if directory == "dispositions" and row["confirmed_count"] == 1:
+            clock.now = deadline
+
+    monkeypatch.setattr(sp, "_monotonic", clock)
+    monkeypatch.setattr(life, "_launch_write", late_confirmation)
+    assert not life.renew_launch(*key, deadline=deadline)
+    assert clock.now == deadline
+    assert life.launch_heartbeat(key[0]) == confirmed
+    assert life.read_cleanup_debt(*key).cause == "renewal_lost"
+    assert life._launch_read("dispositions", GEN)["fenced"] is False
 
 
 def test_generation_release_drops_journal_before_waiting_for_lease(env, prepared):
