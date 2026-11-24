@@ -79,15 +79,19 @@ PASSED = {"status": "passed"}
 #: Each obligation: the stand-in it runs, and the ``qualify_image`` outcome it must give.
 #: The negative outcomes are the measured ones, pinned (A1, A2). Both stream-surface
 #: negatives classify ``transient`` because the driver files any non-OK completion as a
-#: provider transient (agent-harness#1935); this suite pins today's classification.
+#: provider transient (agent-harness#1935); this suite pins today's classification. Since
+#: agent-harness#2171 a transient completion also names its provider error class; neither
+#: stream-surface negative carries a recognised provider error, so both are ``unknown``.
 EXPECTED = {
     "op_completion": ("conforming", PASSED),
     "op_cancel": ("conforming", PASSED),
     "op_owner_loss": ("conforming", PASSED),
-    "neg_no_terminal_event": ("no_terminal_event", {"status": "transient", "operation": "completion"}),
+    "neg_no_terminal_event": ("no_terminal_event", {"status": "transient", "operation": "completion",
+                                                "provider_error_class": "unknown"}),
     "neg_unregistered_helper": ("unregistered_helper", {"status": "failed", "operation": "completion",
                                                         "reason": "operation_validation_failed"}),
-    "neg_tool_step": ("tool_step", {"status": "transient", "operation": "completion"}),
+    "neg_tool_step": ("tool_step", {"status": "transient", "operation": "completion",
+                                "provider_error_class": "unknown"}),
     "pos_ignores_cancel": ("ignores_cancel", PASSED),
     "pos_orphaned_child": ("orphaned_child", PASSED),
 }

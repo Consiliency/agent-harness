@@ -6,46 +6,57 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+## [0.7.44] - 2026-11-24
+
 ### Added
 
 - Jailed Grok accepts the approved 1.0.92 image from a Dotfiles release when the
   guarded launcher, root-owned release pin and executable fingerprint agree.
-  The image uses the existing read-only bind with no dependency projection.
+  The image uses the existing read-only bind with no dependency projection
+  (agent-harness#2178). The jailed Grok seat still requires deployment and qualification.
 
 - Jailed Claude TUI stall details and private leg logs now record whether the submit
   key was written, whether the exact session recorded the request, and whether an
   assistant event or typed API error followed. The diagnostics include timing and
-  allowlisted journal metadata without retaining request or response content.
+  allowlisted journal metadata without retaining request or response content
+  (agent-harness#2169).
 - LaneExec checks requests against captured route and resource settings, runs isolated admission,
   and journals supervisor ownership, start intent and terminal responses. Shipped settings keep
-  every launch route closed.
+  every launch route closed (agent-harness#2160).
 - Gemini self-qualification records an allowlisted `provider_error_class` in private
   failure evidence and in the qualification-unavailable notice when structured signals
-  are available. Unidentified provider failures report `unknown`.
+  are available. Unidentified provider failures report `unknown` (agent-harness#2171).
 
 ### Changed
 
 - On 2026-11-24 the owner approved renewing the jailed Claude seat's open-egress
   exception through 2027-01-03T00:00Z (exclusive), ending sooner when the allowlist
   is registered. Finishing and qualifying the CLAUDENET allowlist remains the
-  permanent fix (agent-harness#1820, agent-harness#1804).
+  permanent fix (agent-harness#1820, agent-harness#1804). The W1 grant and
+  evidence cutoffs stay at 2026-12-04T00:00Z (agent-harness#2172).
 - Jailed repository-review seats read the scope and index first, then retrieve evidence in
   bounded reads. Staged bundles over 64 KiB warn before launch. Advisor boards can enforce a
   limit with `--max-staged-bundle-bytes`. Jailed Claude TUI silence timing includes the mounted
-  bundle size and stays within the review deadline.
+  bundle size and stays within the review deadline (agent-harness#2175).
 - Record the FIRSTSEAT standing Gemini W1 policy and freeze IF-0-FIRSTSEAT-7,
   including the one-attempt debit, unchanged-input skip and agent-harness#2157
-  bridge sequencing gate.
+  bridge sequencing gate (agent-harness#2173).
+- Document the credential-free Gemini proxy design (agent-harness#2167).
 - LANEEXEC erratum 7 binds the plan to the landed SL-8 renewal, activation,
-  scratch, cancellation and lane admission rulings (agent-harness#2160).
+  scratch, cancellation and lane admission rulings (agent-harness#2160, agent-harness#2165).
 
 ### Fixed
 
+- The strict agy route conformance suite pins the provider error class that
+  agent-harness#2171 added to transient outcomes; both stream-surface negative controls
+  report `unknown`. This restores the publish-time qualified-image verification.
+
 - Bounded jailed Claude TUI reviews allow up to 20 minutes from submit for an active turn
   with a repainting spinner and interrupt footer, within the existing review deadline.
-  The watchdog checks the session journal once more before declaring a stall.
+  The watchdog checks the session journal once more before declaring a stall
+  (agent-harness#2174).
 
-## [0.7.43] - Unreleased candidate
+## [0.7.43] - 2026-11-24
 
 ### Added
 
