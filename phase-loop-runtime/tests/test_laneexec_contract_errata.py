@@ -393,7 +393,7 @@ def test_every_pin_site_holds_the_erratum_digest():
     assert frozen["plans/artifacts/v13-LANEEXEC-contract-v1.schema.json"]["sha256"] == contract
     assert frozen["plans/artifacts/v13-LANEEXEC-landed-binding.md"]["sha256"] == binding
     binding_text = BINDING.read_text(encoding="utf-8")
-    assert f"LaneExec launch protocol v1 with {ERRATUM_ID} and LANEEXEC-v1-errata-6 | " \
+    assert f"LaneExec launch protocol v1 with {ERRATUM_ID} and LANEEXEC-v1-errata-7 | " \
            f"`plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`, sha256 `{contract}`" in binding_text
     remote = REMOTE_PLAN.read_text(encoding="utf-8")
     assert re.search(r"v13-LANEEXEC-contract-v1\.schema\.json`, sha256\s+`" + contract + "`", remote)

@@ -4,7 +4,7 @@ Frozen artifact for `plans/phase-plan-v13-LANEEXEC.md` (re-plan). It has no word
 cap. The wire contract stays `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`,
 vendored by agent-toolkit at its digest (IF-XR-1). The wire incorporates
 LANEEXEC-v1-errata-1 (the `x-errata` local template change) and the reviewed toolkit
-manifest repin in LANEEXEC-v1-errata-6 (§10). Errata 2–5 (§§6–9) bind the plan
+manifest repin in LANEEXEC-v1-errata-7 (§10). Errata 2–5 (§§6–9) bind the plan
 without changing the wire. Nothing here adds, removes or renames a wire member,
 enum value, code, verb or exit class.
 
@@ -18,7 +18,7 @@ outcomes the wire already expresses. A future protocol version folds them in.
 | Input | Identity |
 | --- | --- |
 | Roadmap | `specs/phase-plans-v13.md`, sha256 `a5cd5f2bedbda38c99ad516113fd839dae8af6ea4482760e8efd18a5d413428d` |
-| LaneExec launch protocol v1 with LANEEXEC-v1-errata-1 and LANEEXEC-v1-errata-6 | `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`, sha256 `57bc376cc629e762130a3f43aa5bef8cfaeebb1042a3963fc54a5708d5adba7d` |
+| LaneExec launch protocol v1 with LANEEXEC-v1-errata-1 and LANEEXEC-v1-errata-7 | `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`, sha256 `57bc376cc629e762130a3f43aa5bef8cfaeebb1042a3963fc54a5708d5adba7d` |
 | Placement process protocol v1 (unchanged) | `plans/artifacts/v13-PLACECLI-contract-v1.schema.json`, sha256 `130a894df327ddca2eebf83c8b52e068b25176320af3e0a4e15319a315ba83ea` |
 | Caps contract | `plans/seats-jailcore-caps-contract.md`, sha256 `e614d3855320fe4c8a1d8b9a335181b2c493da45510062d2f8432ee30c362445` |
 | SEATS REMOTE contract | `plans/seats-remote-contract.md`, sha256 `1cea960ddd28ef5e1c4bf79083fa9f9938b2c99c2e29dbd937864944ca76d7e8` |
@@ -232,7 +232,7 @@ there.
 
 - agent-toolkit (IF-XR-1): members, verbs and exit classes are unchanged. The
   artifact digest and the local `template_sha256` change with LANEEXEC-v1-errata-1.
-  LANEEXEC-v1-errata-6 changes the artifact digest again for toolkit re-vendoring.
+  LANEEXEC-v1-errata-7 changes the artifact digest again for toolkit re-vendoring.
   Behavioral narrowing it can observe: zero-signal cancels return
   `cancel_pending` (exit 20) where the old text could not say; non-completed
   `patch` attempts return null (not used by `pi-runner`, which takes `none`).
@@ -1083,12 +1083,13 @@ R1 and R2 remain binding. Shipped routes stay disabled. Only actual producer
 evidence discharges the affected positive acceptance criteria. The wire and
 toolkit pin retain the §0 identity.
 
-## 10. Erratum LANEEXEC-v1-errata-6 — credential-proxy toolkit repin
+## 10. Erratum LANEEXEC-v1-errata-7 — credential-proxy toolkit repin
 
 Consiliency/agent-toolkit#103 keeps host credential-resolver diagnostics out of
 guest responses and host logs. The repin follows
-`x-contract-pins.toolkit_pins.repin_rule`. Erratum 6 supersedes erratum 5’s
-closing statement about the wire and toolkit pin identities.
+`x-contract-pins.toolkit_pins.repin_rule`. Number 6 remains available for the
+planned SL-8 interpretations. Erratum 7 supersedes erratum 5’s closing
+statement about the wire and toolkit pin identities.
 
 | Input | Previous | Repin |
 | --- | --- | --- |

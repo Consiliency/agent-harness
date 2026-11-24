@@ -25,7 +25,7 @@ SL-0, SL-1, SL-2, SL-7 and SL-3a have landed. Binding §9 defines the remaining 
 Frozen inputs, read before building:
 
 - `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json` with erratum
-  LANEEXEC-v1-errata-1 (`x-errata`) and the LANEEXEC-v1-errata-6 toolkit repin.
+  LANEEXEC-v1-errata-1 (`x-errata`) and the LANEEXEC-v1-errata-7 toolkit repin.
   Agent-toolkit vendors it at its digest. It carries IF-0-LANEEXEC-1: messages,
   CLI, routes, templates, snapshot, seed, prepare, envelope derivation, exec,
   caps, lifetime, bridge, status/cancel, return, evidence, activation defaults
@@ -35,7 +35,7 @@ Frozen inputs, read before building:
   decisions with the wire sentences they bind (§3), cross-repo consequences (§4),
   verification groups (§5), and errata LANEEXEC-v1-errata-2 (§6),
   LANEEXEC-v1-errata-3 (§7), LANEEXEC-v1-errata-4 (§8), LANEEXEC-v1-errata-5 (§9)
-  and LANEEXEC-v1-errata-6 (§10).
+  and LANEEXEC-v1-errata-7 (§10).
 - `plans/artifacts/v13-LANEEXEC-errata-5-resolutions.md`: SL-8 producer signatures, lock order, supervisor protocol, evidence gates and test ownership.
 - `plans/artifacts/v13-PLACECLI-contract-v1.schema.json` (unchanged), the
   CLOSEOUT and PLACECLI landed-binding artifacts, and
@@ -100,7 +100,7 @@ STOP. Its items:
 ## Cross-Repo Gates
 
 - [ ] IF-XR-1 (agent-toolkit, consumer) — unchanged members and exit classes; the
-  toolkit re-vendors the digest with the LANEEXEC-v1-errata-6 repin. It keeps
+  toolkit re-vendors the digest with the LANEEXEC-v1-errata-7 repin. It keeps
   its capped bwrap launcher while `local_pi_runner_launcher` is `toolkit_interim`
   and switches only under the ACTIVATE condition. It can
   observe the L-S4 cancel narrowing only.

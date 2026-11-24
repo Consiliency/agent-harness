@@ -24,7 +24,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 ### Fixed
 
 - LaneExec repins the agent-toolkit credential proxy for Consiliency/agent-toolkit#103
-  and updates the launch protocol digest (LANEEXEC-v1-errata-6).
+  and updates the launch protocol digest (LANEEXEC-v1-errata-7).
 - Jailed Claude TUI failures retain screened terminal tails in private advisor-board leg logs.
   Gemini credential refusals identify the matching field class in the private execution record,
   and the board notice covers both seat tokens and per-launch proxy credentials.
