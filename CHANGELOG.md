@@ -6,6 +6,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Added
+
+- LaneExec tracks launch ownership, renewal, cancellation and cleanup by generation. Release
+  and reap retain an allocation while cleanup evidence is unresolved. Trusted scheduler
+  calls can pass an immutable lane context through the launch service.
+
 ### Fixed
 
 - `claude-sdk-audit` / `audit-order` no longer reports a failed merge-state lookup as
