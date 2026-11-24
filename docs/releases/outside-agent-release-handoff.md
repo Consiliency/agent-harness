@@ -28,14 +28,24 @@ confirmed heartbeat and `T` is the lease TTL. A failed renewal can retry within
 that window. WORKER cancellation signals require durable start intent for the
 matching generation (agent-harness#2156). The candidate also includes independent
 return caps, separate static route validation and the generation-aware lifecycle
-precursor (agent-harness#2150, agent-harness#2149, agent-harness#2151). All LaneExec
-routes stay `route_disabled` (`sandbox_launch_route_disabled`) under shipped defaults.
+precursor (agent-harness#2150, agent-harness#2149, agent-harness#2151). Under shipped
+defaults no LaneExec route activates. Local pi-runner refuses with
+`sandbox_launch_local_route_interim`. Other routes refuse with
+`sandbox_launch_route_disabled`.
 
 The Claude SDK audit reports an unverifiable merge-state lookup distinctly and
 still fails closed (agent-harness#2146). JEVHOST documents the host integration
 and exposes `JevDrillAdapter.active_execution_run_ids(task_id)`
 (agent-harness#2155). The changelog also records two test-only fixes
 (agent-harness#2144, agent-harness#2145).
+
+Typed jailed Claude TUI failures such as `claude_tui_stalled` retain a redacted
+screen tail in the private 0600 `leg-logs/<name>.log`. The failure's `detail`
+includes the run-relative log reference (agent-harness#2158).
+The `gemini_seat_token_in_output` notice now reads "Gemini output contained a
+seat token or per-launch proxy credential" and advises "check the private leg
+execution record for the credential kind and match location"
+(agent-harness#2158, agent-harness#2157).
 
 Qualification inputs checked against the runtime source diff from `v0.7.42`:
 
@@ -47,13 +57,17 @@ Qualification inputs checked against the runtime source diff from `v0.7.42`:
   `claude_seat_transport.py`, `tests/test_seats_claude_order.py` and
   `uv.lock` move. The whole-file inputs
   `claude_seat_sdk.py`, `provider_tree_proof.py`, `seat_resource_caps.py`
-  and `seat_route_contract.py` are unchanged, as are the bound source regions.
+  and `seat_route_contract.py` are unchanged. All bound source regions are
+  unchanged. The edits in `panel_invoker.py` and `seat_jail.py` fall outside
+  those regions, and `seat_uid.py` is unchanged.
   TUI remains the default and SDK stays unadmitted. SDK admission requires a fresh
   boundary proof.
 - **Unchanged.** The production Claude, Codex, Gemini and Grok jail profile
-  digests on both architectures, egress allowlists and proxy digests, and
-  executable dependency projection declarations, admission inputs and digest
-  computation are unchanged. The packaged agy catalog (Linux x64 agy 1.5.3),
+  digests are unchanged on both architectures. The jail profiles hash the
+  leg, canonical launch arguments and seccomp filter. The changed notice text
+  is outside those inputs. Egress allowlists and proxy digests, and executable
+  dependency projection declarations, admission inputs and digest computation
+  are unchanged. The packaged agy catalog (Linux x64 agy 1.5.3),
   profile digest, QCI, validator identity `agy_validator_v1` and installed key
   fields are unchanged. Existing qualifications for these inputs remain valid
   with the same installed subject, executable, host identity, variant and policy.
@@ -67,10 +81,10 @@ fresh same-runtime series for any Grok measurement on the new release.
 
 ### Known issues
 
-- Three POSIX-only tests import `fcntl` at module scope and fail collection on
-  native Windows: `test_broker_socket_path_2131.py`, `test_launch_prepare.py`
-  and `test_launch_release_reap.py`. The fixed-list JEV Drill companion excludes
-  these files.
+- The three POSIX-only tests in the JEV Drill companion's fixed list of
+  exclusions import `fcntl` at module scope and fail collection on native Windows
+  (`test_broker_socket_path_2131.py`, `test_launch_prepare.py` and
+  `test_launch_release_reap.py`).
 - The Gemini per-launch proxy credential echo remains an open design issue
   (agent-harness#2157).
 

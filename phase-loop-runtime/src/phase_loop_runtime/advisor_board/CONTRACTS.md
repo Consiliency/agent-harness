@@ -924,17 +924,21 @@ never enters it. It is a harness code (`_HARNESS_DETAIL_CODES`, or a
 (`_FAILURE_DETAIL_TEMPLATES`: `timeout`, `signal <N>`, `auth_failure`,
 `usage_limit[ (resets <HH:MM[, Mon D YYYY]>)]`, the five `env_failure: …` forms,
 `tool_denied: …`, `unknown failure[ (exit <N>)]; CLI output: leg-logs/<name>.log | not
-retained`), or `<harness code>: <failure template>`. Provenance is by type: a parametrized
-harness code is kept only as a `_HarnessCode` built by this runtime; CLI output, exception
-messages and PTY tails are never turned into one, and a plain string survives only by
-equality with a fixed literal. Every template field is enumerated or checked against the
-run's own values. `detail` is a validating data descriptor (write and read), and
+retained`, or an allowlisted jailed Claude TUI failure code followed by
+`; CLI output: leg-logs/<name>.log`), or `<harness code>: <failure template>`. Provenance is
+by type. A parametrized harness code is kept only as a `_HarnessCode` built by this runtime.
+A plain string survives only by equality with a fixed literal. Every template field is
+enumerated or checked against the run's own values. `detail` is a validating data
+descriptor (write and read), and
 `PanelLegResult` may not be subclassed (checked on the exact instance type, not only by
-`__init_subclass__`). An unknown failure's raw output is kept
-only in a private 0600 per-leg file under the run's stream dir (`leg-logs/`, 0700), which
-`detail` names by its run-relative path. That file is never in the verdict JSON, governed
-reasons or the board summary. Its name carries only closed fields:
+`__init_subclass__`). Unknown-failure output and screened jailed Claude TUI tails can be
+kept in a private 0600 per-leg file in the run's `leg-logs/` directory (0700). The `detail`
+names the file by its run-relative path. Verdict JSON, governed reasons and the board summary
+omit the file contents. The file name uses the closed form
 `leg-logs/<registry harness | leg>-<24 hex>.log`.
+Mode-line notice codes keep their bare detail so the board can report the refusal.
+For a TUI stall or missing canonical output, the tail can be kept only when the
+parent-held journal shows no model turn.
 
 **Seat-jail codes (agent-harness#1132, F030).** Every seat-jail notice code is an exact
 literal of `_HARNESS_DETAIL_CODES`: `seat_sandbox_unavailable_{host,seat_uid,tiocsti}`,

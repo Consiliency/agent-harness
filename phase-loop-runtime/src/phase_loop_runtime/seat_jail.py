@@ -438,8 +438,8 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
     "gemini_seat_token_expired": (
         "leg ended", "short-lived seat credential expired", "re-run"),
     "gemini_seat_token_in_output": (
-        "leg rejected", "seat tried to publish its credential",
-        "none; the copy expires on its own"),
+        "leg rejected", "Gemini output contained a seat token or per-launch proxy credential",
+        "check the private leg execution record for the credential kind and match location"),
     "gemini_seat_subagent_or_unknown_event": (
         "leg ended", "subagent or unrecorded agy activity", "none"),
     "native_seat_unavailable_heartbeat_only": (
