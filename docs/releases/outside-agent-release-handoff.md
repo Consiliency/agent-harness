@@ -18,6 +18,84 @@ publication. The qualification host installs the released
 `phase-loop-runtime[agy-watch]`, since the job signs its App token with the extra's
 `cryptography`.
 
+## 0.7.42 release preparation
+
+Expected unpublished artifacts are `phase_loop_runtime-0.7.42-py3-none-any.whl`
+and `phase_loop_runtime-0.7.42.tar.gz`. The runtime requires Python 3.12 or newer.
+
+The candidate includes the broker socket and standalone advisor-board leg-log
+fixes (agent-harness#2136), the jailed-seat auth decision and typed leg detail
+(agent-harness#2140), and the jailed Claude TUI
+`skipDangerousModePermissionPrompt` setting for Claude Code 2.1.330
+(agent-harness#2143). It includes the Windows import and runtime fixes and the
+launcher drain and stdin changes (agent-harness#2123, agent-harness#2127,
+agent-harness#2128). See the 0.7.42 changelog for the JEVHOST, LaneExec,
+review-runner and Grok work. LaneExec SL-3a and SL-7 ship alongside the errata
+in agent-harness#2126, agent-harness#2141 and agent-harness#2147. Under shipped
+defaults every LaneExec route stays `route_disabled`
+(`sandbox_launch_route_disabled`).
+
+Verified against `git diff v0.7.41..origin/main -- phase-loop-runtime/src` and
+the candidate version changes:
+
+- **Moved:** `seat_window.runtime_digest()` and
+  `seat_window.release_identity()` hash package source. An old release-bound
+  row-window grant refuses on 0.7.42. Grok measurement requires a fresh
+  same-runtime series. The package source pins for a fresh agy evidence series
+  also move.
+- **Moved:** the Claude SDK boundary proof's whole-file inputs
+  `claude_seat_sdk.py`, `provider_tree_proof.py`, `seat_resource_caps.py`
+  and `seat_route_contract.py`, plus the `_run_leg_with_liveness` and
+  `_broker_claude_tui_command` regions of `panel_invoker.py`. The
+  `launch_provider` region is byte-identical. Outside the package source,
+  `tests/test_seats_claude_transport.py` changes for the TUI fix and
+  `uv.lock` changes for the version bump. TUI remains the default and SDK
+  stays unadmitted. SDK admission requires a fresh boundary proof.
+- **Unchanged:** production Claude, Codex, Gemini and Grok jail profile
+  digests on both architectures, their canonical owner argv, seat environment
+  and seccomp bytes, and the egress inputs, allowlist digests and proxy bytes.
+  The broker refusal adds a notice to the route contract. Executable
+  dependency projection declarations, admission inputs and digest computation
+  are stable. The Grok measurement sink bind is replaced with the production
+  bind for the qualification comparison. Grok context, production launch and
+  argv digests are stable.
+- **Unchanged:** agy catalog bytes (Linux x64 agy 1.5.3 is the sole packaged
+  member), profile settings and digest, QCI, validator identity
+  `agy_validator_v1` and installed key fields. Existing agy, production jail
+  and projection qualifications stay valid with the same installed subject,
+  executable, host identity, variant and host policy.
+- **Seat-launch references:** `tests/data/seat_launch_references.json` gains 59
+  rows and drops two for the merged source changes. It is a source audit fixture.
+  Installed seat keys do not consume it.
+
+Operator actions after installation:
+
+- If a brokered review reports `seat_broker_socket_path_too_long`, retry
+  with a trusted short `TMPDIR` or a private, owned 0700
+  `XDG_RUNTIME_DIR`. The advertised base limit is 56 filesystem bytes.
+  Standalone `advisor-board` stores the redacted, capped leg logs it names
+  in private run directories under `$XDG_STATE_HOME/agent-harness/board-runs/`
+  (default state directory `~/.local/state`). Pruning keeps up to 20 completed runs and removes
+  those older than 14 days, leaving active runs alone. Parent lock waits are
+  capped at five seconds per acquisition. Retention is best-effort and is
+  unavailable on Windows.
+- Finish active release-bound work on its pinned install or obtain a new
+  grant for 0.7.42. For authorized Grok measurements, start a fresh
+  same-runtime series with the approved image and evidence, publish current
+  credential metadata, and set `GROK_SLOT_END_EPOCH` before opening the
+  grant. Follow `docs/ops/grok-jail-measurement.md`.
+- If an opted-in JEV Drill repository has `.jevdrill/harnesses.yaml`, list the
+  intended harness and execution-target IDs there. Budget an extra 250 ms
+  for child startup. Retry ledgers and run handles reset on adapter restart.
+  LaneExec and review-runner tooling require no general rollout action.
+
+Before publication, the release owner verifies the final changelog, native
+Windows package imports and focused retention and JEV Drill cases on the
+candidate. Required candidate checks, standalone-wheel Gate A and the strict
+hermetic agy release gate must pass before publication. Verify the registry
+artifacts, GitHub Release assets and managed installation separately after
+publication.
+
 ## 0.7.41 release preparation
 
 Expected, unpublished artifacts: `phase_loop_runtime-0.7.41-py3-none-any.whl`
