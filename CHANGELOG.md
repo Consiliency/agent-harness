@@ -8,6 +8,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
+- LANEEXEC SL-7 precursor: `static_route_refusal` checks the client, workload and
+  writer pairing, and `activation_refusal` checks the captured route settings.
+  `route_refusal` preserves its refusal order and codes. All routes refuse under
+  shipped defaults, including the existing interim diagnostic for local Pi.
 - LaneExec tracks launch ownership, renewal, cancellation and cleanup by generation. Release
   and reap retain an allocation while cleanup evidence is unresolved. Trusted scheduler
   calls can pass an immutable lane context through the launch service.
