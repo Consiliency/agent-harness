@@ -152,12 +152,14 @@ queue and sanitizer as the adapter's lifecycle reports.
   identity and sequence, then enqueues under the same lock as host reports.
   The payload must be non-lifecycle. When the queue operation completes, the
   hook returns its disposition. If it fails, the hook raises the underlying
-  storage error. A failed attempt can leave a gap in `source_sequence`.
-  Enqueue order equals sequence order. Delivery order is not guaranteed, so
-  consumers use `source_sequence` to order events within a run.
+  storage error. Enqueue order equals sequence order. Consumers use
+  `source_sequence` to order events within a run because delivery can be out
+  of order. Sequence allocation alone does not prove enqueue, so consumers
+  must tolerate gaps.
 - `run_report_counts(execution_run_id)` gives the run's queue entries and losses
-  at enqueue time. Losses after enqueue are counted queue-wide through
-  `adapter.queue.status()`.
+  at enqueue time. It excludes raised storage failures, which the caller learns
+  about only from the exception. Losses after enqueue are counted queue-wide
+  through `adapter.queue.status()`.
 
 The host hook is available. The downstream coverage proof for
 `EC-HOST-2 / That explicit reports enter the same queue` remains JEV Drill's

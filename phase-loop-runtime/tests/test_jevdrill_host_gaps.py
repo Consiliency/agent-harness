@@ -1300,6 +1300,8 @@ def test_run_bound_storage_error_does_not_reuse_sequence(tmp_path, monkeypatch, 
     run_id = result.jevdrill_execution_run["execution_run_id"]
     enqueue = adapter.queue.enqueue
     failure = OSError("synthetic queue storage error")
+    counts_before = adapter.run_report_counts(run_id)
+    sequence_before = adapter.run_event_identity(run_id)["next_source_sequence"]
 
     def fail(report):
         if committed:
@@ -1312,7 +1314,8 @@ def test_run_bound_storage_error_does_not_reuse_sequence(tmp_path, monkeypatch, 
             adapter.enqueue_run_event(run_id, evaluation_payload(0))
         assert raised.value is failure
 
-    assert adapter.run_event_identity(run_id)["next_source_sequence"] == 4
+    assert adapter.run_event_identity(run_id)["next_source_sequence"] == sequence_before + 1
+    assert adapter.run_report_counts(run_id) == counts_before
     assert adapter.enqueue_run_event(run_id, evaluation_payload(1)) == "queued"
     assert adapter.run_report_counts(run_id) == {"queued": 4, "losses": {}}
     drain(adapter)
