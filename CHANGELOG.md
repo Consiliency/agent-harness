@@ -11,9 +11,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - LANEEXEC SL-2: `ReturnPolicy` supports independent patch and JSON result byte caps,
   including zero. A return above its cap yields `sandbox_launch_result_invalid` and
   leaves no retained bytes. A verified absent proposal still returns null without a code.
+- LANEEXEC SL-7 precursor: `static_route_refusal` checks the client, workload and
+  writer pairing, and `activation_refusal` checks the captured route settings.
+  `route_refusal` preserves its refusal order and codes. All routes refuse under
+  shipped defaults, including the existing interim diagnostic for local Pi.
 - LaneExec tracks launch ownership, renewal, cancellation and cleanup by generation. Release
   and reap retain an allocation while cleanup evidence is unresolved. Trusted scheduler
   calls can pass an immutable lane context through the launch service.
+
+### Fixed
+
+- The placement-lifecycle replay test runs its interrupted setup reserve on a frozen clock with
+  inline backend calls, removing a real-time 300 ms deadline race (agent-harness#2117).
 
 ## [0.7.42] - Unreleased candidate
 
