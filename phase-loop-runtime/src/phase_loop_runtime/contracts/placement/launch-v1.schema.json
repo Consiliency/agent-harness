@@ -86,8 +86,8 @@
     "toolkit_pins": {
       "repository": "Consiliency/agent-toolkit",
       "path": "harnesses/pi/contracts/pins.json",
-      "toolkit_commit": "cd9174e326140dc27471ff3bfc8abdd056f6e7bd",
-      "sha256": "5cb911cb9740c358b823a8020fe204f91399988cb39811662f56094f8cb38c27",
+      "toolkit_commit": "1e721c011a65d0b002eeb3479e4a834892bbeff7",
+      "sha256": "0642c0847701b384a5c9768f9db580e0057588b63638b6ecce2c28632ff89bec",
       "schema": "toolkit_pins.v1",
       "byte_length": 4692,
       "serialization": "RFC 8785 (JCS) of the manifest object, UTF-8, with no trailing newline.",
