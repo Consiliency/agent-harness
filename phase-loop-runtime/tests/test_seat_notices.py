@@ -721,7 +721,9 @@ def test_the_pty_tail_is_scanned_for_the_seat_token(monkeypatch, tmp_path):
 @pytest.mark.skipif(pi.pty is None, reason="needs a POSIX PTY")
 @pytest.mark.parametrize("state, count, last_type", [
     ("not_journaled", 0, "null"),
-    ("journaled", 1, "user"),
+    ("journaled_crlf", 1, "user"),
+    ("journaled_placeholder", 1, "user"),
+    ("journaled_timestamped", 1, "user"),
     ("assistant_started", 2, "assistant"),
 ])
 def test_jailed_claude_stall_reports_only_submit_and_journal_metadata(
@@ -729,7 +731,7 @@ def test_jailed_claude_stall_reports_only_submit_and_journal_metadata(
 ):
     seat = _FakeSeat(tmp_path)
     transcript = tmp_path / "fake-journal.jsonl"
-    prompt = "private submitted material"
+    prompt = "private submitted material\nsecond line"
     script = r"""
 import datetime, json, os, pathlib, sys, time, tty
 
@@ -740,12 +742,20 @@ os.write(1, b"Claude editor is ready for input\n")
 received = b""
 while not received.endswith(b"\x1bOM"):
     received += os.read(0, 8192)
-request = received[:-3].replace(b"\x1b[200~", b"").replace(b"\x1b[201~", b"").decode()
+prefix, pasted = received[:-3].split(b"\x1b[200~", 1)
+request = (prefix + pasted.removesuffix(b"\x1b[201~")).decode()
+if state == "journaled_crlf":
+    request = request.replace("\n", "\r\n")
+elif state == "journaled_placeholder":
+    request = prefix.decode() + "[Pasted text #1 +2 lines]"
 with path.open("a") as journal:
     if state != "not_journaled":
-        journal.write(json.dumps({"type": "user", "message": {
+        user = {"type": "user", "message": {
             "role": "user", "content": [{"type": "text", "text": request}],
-        }}) + "\n")
+        }}
+        if state == "journaled_timestamped":
+            user["timestamp"] = datetime.datetime.now(datetime.UTC).isoformat()
+        journal.write(json.dumps(user) + "\n")
     if state == "assistant_started":
         journal.write(json.dumps({
             "type": "assistant", "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
@@ -798,7 +808,7 @@ time.sleep(30)
     log = (tmp_path / log_ref).read_text()
     assert log.splitlines()[0] == diagnostic
     assert ("Processing..." in log) == (state != "assistant_started")
-    for secret in (prompt, "private partial response", str(tmp_path), seat.token.decode()):
+    for secret in (*prompt.splitlines(), "private partial response", str(tmp_path), seat.token.decode()):
         assert secret not in detail and secret not in log
     assert not pi._detail_is_valid(re.sub(
         r"last_journal_event_type=\w+", "last_journal_event_type=private", detail,
@@ -806,11 +816,13 @@ time.sleep(30)
 
 
 def test_claude_stall_journal_distinguishes_api_errors_from_assistant_events():
+    request = pi._BROKER_CLAUDE_DIRECT_REQUEST + "matched"
+    matching_user = {"type": "user", "message": {"role": "user", "content": request}}
     records = [
         {"type": "user", "timestamp": "1970-01-01T00:00:02Z",
          "message": {"role": "user", "content": "another request"}},
-        {"type": "user", "isMeta": True, "message": {"role": "user", "content": "matched"}},
-        {"type": "user", "message": {"role": "user", "content": "matched"}},
+        {"type": "user", "isMeta": True, "message": {"role": "user", "content": request}},
+        matching_user,
         {"type": "assistant", "isSidechain": True, "message": {"role": "assistant"}},
         {"type": "assistant", "message": {"role": "assistant", "model": "<synthetic>"}},
         {"type": "assistant", "isApiErrorMessage": True,
@@ -818,25 +830,30 @@ def test_claude_stall_journal_distinguishes_api_errors_from_assistant_events():
         {"type": "private event name"},
     ]
     diagnostic = pi._claude_post_submit_diagnostic(
-        [json.dumps(record) for record in records], request="matched",
+        [json.dumps(record) for record in records],
         submit_offset=1.0, start_wall=0, elapsed=10,
     )
     assert "user_request_journaled=true assistant_event_seen=false" in diagnostic
     assert "journal_events_after_submit=6 last_journal_event_type=other api_error_seen=true" in diagnostic
     assert "private" not in diagnostic
     unmatched = pi._claude_post_submit_diagnostic(
-        [json.dumps(record) for record in records], request="missing",
+        [json.dumps(record) for record in records if record is not matching_user],
         submit_offset=1.0, start_wall=0, elapsed=10,
     )
     assert "user_request_journaled=false" in unmatched
     assert "journal_events_after_submit=1" in unmatched
 
-    records.append({
-        "type": "stream_event", "timestamp": "1970-01-01T00:00:03Z",
-        "event": {"type": "message_start", "message": {"role": "assistant", "model": "fake"}},
-    })
+    records.extend([
+        {"type": "assistant", "message": {"role": "assistant", "model": "fake"}},
+        {"type": "assistant", "timestamp": "9999-12-31T00:00:00Z",
+         "message": {"role": "assistant", "model": "fake"}},
+        {"type": "assistant", "timestamp": "1970-01-01T00:00:03Z",
+         "message": {"role": "assistant", "model": "fake"}},
+        {"type": "stream_event", "timestamp": "1970-01-01T00:00:04Z",
+         "event": {"type": "message_start", "message": {"role": "assistant", "model": "fake"}}},
+    ])
     with_stream = pi._claude_post_submit_diagnostic(
-        [json.dumps(record) for record in records], request="matched",
+        [json.dumps(record) for record in records],
         submit_offset=1.0, start_wall=0, elapsed=10,
     )
     assert "assistant_event_seen=true first_assistant_event_age_s=7.000" in with_stream

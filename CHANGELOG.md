@@ -6,13 +6,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Added
+
 - Jailed Claude TUI stall details and private leg logs now record whether the submit
   key was written, whether the exact session recorded the request, and whether an
   assistant event or typed API error followed. The diagnostics include timing and
   allowlisted journal metadata without retaining request or response content.
-
-### Added
-
 - LaneExec checks requests against captured route and resource settings, runs isolated admission,
   and journals supervisor ownership, start intent and terminal responses. Shipped settings keep
   every launch route closed.

@@ -9724,7 +9724,7 @@ def _claude_pending_tool_uses(path: Path | None, *, data: bytes | None = None) -
 def _claude_exact_diagnostic_lines(path: Path | None) -> list[str]:
     try:
         return _read_seat_raw_text(path).splitlines() if path is not None else []
-    except (OSError, AgyCanaryEvidenceError, _sandbox_egress.SeatIdentityUnverified):
+    except OSError:
         return []
 
 
@@ -9763,10 +9763,10 @@ def _claude_exact_tool_diagnostic(path: Path | None, *, lines: Sequence[str] | N
 
 
 def _claude_post_submit_diagnostic(
-    lines: Sequence[str], *, request: str, submit_offset: float | None,
+    lines: Sequence[str], *, submit_offset: float | None,
     start_wall: float, elapsed: float,
 ) -> str:
-    """Summarize the exact session at reclaim. Compare request text only in memory.
+    """Summarize the exact session at reclaim using the fixed request outside the paste.
 
     A journal timestamp places a record after the write. When timestamps are absent, the
     matching request itself anchors its position and subsequent appends in this fresh session.
@@ -9808,8 +9808,10 @@ def _claude_post_submit_diagnostic(
                     and isinstance(block.get("text"), str) for block in content
                 ):
                     content = "".join(block["text"] for block in content)
-                if isinstance(content, str) and content.strip() == request.strip():
-                    journaled = True
+                if isinstance(content, str):
+                    normalized = content.replace("\r\n", "\n").replace("\r", "\n").lstrip()
+                    if normalized.startswith(_BROKER_CLAUDE_DIRECT_REQUEST.rstrip()):
+                        journaled = True
             if event_wall is None and not journaled:
                 continue
             count += 1
@@ -9823,9 +9825,9 @@ def _claude_post_submit_diagnostic(
             if _claude_api_error_record(event, message):
                 api_error_seen = True
                 last_type = "api_error"
-            elif not assistant_seen and _claude_model_record(event, message):
+            elif _claude_model_record(event, message):
                 assistant_seen = True
-                if event_wall is not None and event_wall <= finished_wall:
+                if first_assistant_age == "null" and event_wall is not None and event_wall <= finished_wall:
                     first_assistant_age = f"{finished_wall - event_wall:.3f}"
     offset = "null" if submit_offset is None else f"{submit_offset:.3f}"
     return (
@@ -11507,7 +11509,7 @@ def _run_claude_tui_session(
             )
             if stall_diagnostic_sink is not None:
                 stall_diagnostic_sink.append(_claude_post_submit_diagnostic(
-                    lines, request=_BROKER_CLAUDE_DIRECT_REQUEST + prompt,
+                    lines,
                     submit_offset=submit_key_offset, start_wall=start_wall, elapsed=elapsed,
                 ))
             tail = diagnostic + (f"; {tail}" if tail else "")
