@@ -1,0 +1,83 @@
+name: laneexec-mounts
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'phase-loop-runtime/src/phase_loop_runtime/launch_*.py'
+      - 'phase-loop-runtime/src/phase_loop_runtime/sandbox_policy.py'
+      - 'phase-loop-runtime/src/phase_loop_runtime/sandbox_placement.py'
+      - 'phase-loop-runtime/src/phase_loop_runtime/seat_resource_caps*.py'
+      - 'phase-loop-runtime/tests/test_launch_local_caps.py'
+      - '.github/workflows/laneexec-mounts.yml'
+      - 'ci/seat-caps-host.sh'
+
+permissions:
+  contents: read
+
+jobs:
+  mounts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+      - name: Install the locked runtime
+        run: uv sync --project phase-loop-runtime --python 3.12 --locked --group test
+      - name: Provision fixture filesystems
+        shell: bash
+        run: |
+          set -euo pipefail
+          ci/seat-caps-host.sh provision
+          second="$(ci/seat-caps-host.sh mountpoint)/laneexec"
+          install -d -m 0700 "$second" "$HOME/laneexec-mounts" "$HOME/laneexec-mounts/ram" "$HOME/laneexec-mounts/tmp"
+          ram="$(mktemp -d /dev/shm/laneexec.XXXXXXXX)"
+          echo "LANEEXEC_MOUNT_SOURCE=$ram" >> "$GITHUB_ENV"
+          alias_path="$HOME/laneexec-mounts/ram"
+          sudo mount --bind "$ram" "$alias_path"
+          python - "$HOME/laneexec-mounts/tmp" "$second" "$alias_path" <<'PY'
+          import os, stat, subprocess, sys
+          primary, secondary, ram = sys.argv[1:]
+          a, b = (os.stat(path).st_dev for path in (primary, secondary))
+          assert os.major(a) and os.major(b) and a != b
+          assert subprocess.check_output(["stat", "-f", "-c", "%t", ram]).strip() == b"1021994"
+          assert stat.S_IMODE(os.stat(ram).st_mode) == 0o700 and os.stat(ram).st_uid == os.getuid()
+          PY
+          {
+            echo "PHASE_LOOP_TEST_SECOND_BLOCK_DIR=$second"
+            echo "PHASE_LOOP_TEST_TMPFS_DIR=$alias_path"
+            echo "TMPDIR=$HOME/laneexec-mounts/tmp"
+          } >> "$GITHUB_ENV"
+      - name: Check Python floor
+        run: timeout 600 uv run --project phase-loop-runtime --locked --python 3.12 --group test python -m pytest -q -p no:xdist -p no:cacheprovider phase-loop-runtime/tests/test_python_floor_1546.py
+      - name: Verify M1 through M5
+        env:
+          PHASE_LOOP_TEST_REQUIRE_MOUNTS: '1'
+        run: |
+          set -euo pipefail
+          test "${#TMPDIR}" -le 56
+          export PYTHONPATH="$GITHUB_WORKSPACE/phase-loop-runtime/src:$GITHUB_WORKSPACE/phase-loop-runtime/tests"
+          testfile=phase-loop-runtime/tests/test_launch_local_caps.py
+          timeout 600 uv run --project phase-loop-runtime --locked --python 3.12 --group test python -m pytest \
+            -q -p no:xdist -p no:cacheprovider --junitxml="$RUNNER_TEMP/laneexec-mounts.xml" \
+            "$testfile::test_mount_device[M1]" "$testfile::test_mount_device[M2]" \
+            "$testfile::test_mount_device[M3]" "$testfile::test_mount_device[M4]" "$testfile::test_mount_device[M5]"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: laneexec-mounts-junit
+          path: ${{ runner.temp }}/laneexec-mounts.xml
+          if-no-files-found: error
+      - name: Unmount the tmpfs alias
+        if: always()
+        run: |
+          if mountpoint -q "$HOME/laneexec-mounts/ram"; then sudo umount "$HOME/laneexec-mounts/ram"; fi
+          if test -n "${LANEEXEC_MOUNT_SOURCE:-}"; then rmdir "$LANEEXEC_MOUNT_SOURCE"; fi
+      - name: Tear down the second block device
+        if: always()
+        run: ci/seat-caps-host.sh teardown
