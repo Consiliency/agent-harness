@@ -742,15 +742,21 @@ def resolve_subject(env: Mapping[str, str] | None = None) -> JailedSubject:
     managed), with no dependency projection (the profile declares none), after the
     root-owned chain walk. Raises ``SeatSandboxRefused(grok_tool_surface_unverified)``."""
     from .panel_invoker import _resolved_jail_subject
+    from .seat_subject import _names_managed_root
 
     try:
-        subject, dependency = _resolved_jail_subject(_profile.LEG, dict(env or os.environ))
+        subject, dependency = _resolved_jail_subject(_profile.LEG, dict(os.environ if env is None else env))
         if dependency is not None:
             close = getattr(dependency, "close", None)
             if getattr(dependency, "_jailcore_owned", False) and callable(close):
                 close()
             raise JailRefused("a dependency projection is refused")
         _require(subject.subject_path is not None)
+        if subject.source == "managed_image":
+            _require(subject.binary_sha256 is not None, "managed image digest")
+            return JailedSubject(str(subject.subject_path), subject.binary_sha256)
+        _require(subject.source == "standalone" and not _names_managed_root(subject.subject_path),
+                 "Grok subject source")
         path = os.path.realpath(str(subject.subject_path))
         return JailedSubject(path, root_owned_digest(path))
     except Exception as exc:  # noqa: BLE001
@@ -1027,6 +1033,7 @@ def verify_jail_launch_context(jail, *, mode: str, proxy, holder: int, cwd, comm
 def _verify(jail, *, mode, proxy, holder, cwd, command, credential, measurement):
     from .panel_invoker import _grok_argv_digest
     from .seat_jail import SeatJail
+    from .seat_subject import _names_managed_root, managed_grok_image_digest
 
     _require(mode in MODES and isinstance(jail, SeatJail) and jail.leg == _profile.LEG)
     command = tuple(str(word) for word in command)
@@ -1035,7 +1042,9 @@ def _verify(jail, *, mode, proxy, holder, cwd, command, credential, measurement)
              and not jail.dependency_mount_args, "a dependency projection")
     _require(jail.provider_argv0 == f"/seat/bin/{_profile.LEG}")
     _require(os.path.realpath(jail.provider_path) == jail.provider_path, "symlinked subject")
-    binary = root_owned_digest(jail.provider_path)
+    path = Path(jail.provider_path)
+    binary = (managed_grok_image_digest(path) if _names_managed_root(path)
+              else root_owned_digest(jail.provider_path))
     # 4. Cwd and argv: exactly the production staged form.
     _require(str(cwd) == SEAT_CWD, "cwd")
     _require(command == production_command(jail.provider_argv0), "argv")

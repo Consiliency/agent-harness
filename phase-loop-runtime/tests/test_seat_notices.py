@@ -592,6 +592,33 @@ class _FakeSeat:
         self.expires_at = None
 
 
+def test_jailed_claude_silence_allowance_includes_mounted_bundle(monkeypatch, tmp_path):
+    seat = _FakeSeat(tmp_path)
+    monkeypatch.setattr(pi._seat_uid, "read_in_h", lambda *a, **k: b"")
+    monkeypatch.setattr(pi._seat_uid, "teardown_in_h", lambda *a, **k: [])
+    monkeypatch.setattr(pi._seat_jail, "close_jail_fds", lambda *a, **k: None)
+    monkeypatch.setattr(pi, "_broker_claude_tui_command", lambda **k: ["/seat/bin/claude"])
+    thresholds = []
+
+    def session(**kwargs):
+        thresholds.append(kwargs["stall_threshold_s"])
+        return 0, "AGREE", "", ""
+
+    monkeypatch.setattr(pi, "_run_claude_tui_session", session)
+    backstop = 600
+    for byte_count in (0, 64 * 1024, 1024 * 1024):
+        with (tmp_path / "review-bundle.md").open("wb") as bundle:
+            bundle.truncate(byte_count)
+            seat.jail.bundle_fd = bundle.fileno()
+            pi._exec_jailed_claude_leg(
+                seat, timeout_s=backstop, backstop_s=backstop, model=None, effort=None,
+                prompt="identical framed prompt", broker_evidence=None,
+            )
+    baseline, enlarged, capped = thresholds
+    assert enlarged - baseline == 128
+    assert capped == 600 - pi._BROKER_CLAUDE_STALL_TRANSPORT_RESERVE_S
+
+
 def test_codex_r1_no_parent_snapshot_ever_holds_the_token(monkeypatch, tmp_path):
     seat = _FakeSeat(tmp_path)
     leaked = b'{"type":"assistant","message":{"role":"assistant","content":"' + seat.token + b'"}}\n'
@@ -778,7 +805,7 @@ time.sleep(30)
     ))
     monkeypatch.setattr(pi._seat_uid, "teardown_in_h", lambda *a, **k: [])
     monkeypatch.setattr(pi._seat_jail, "close_jail_fds", lambda jail: None)
-    monkeypatch.setattr(pi, "_broker_claude_stall_threshold", lambda *a: 1.0)
+    monkeypatch.setattr(pi, "_broker_claude_stall_threshold", lambda *a, **k: 1.0)
     monkeypatch.setattr(pi, "_CLAUDE_TUI_SUBMIT_DELAY_S", 0.05)
     monkeypatch.setattr(pi, "_CLAUDE_TUI_READY_QUIESCENCE_S", 0.02)
     monkeypatch.setattr(pi, "_CLAUDE_TUI_TRANSCRIPT_INTERVAL_S", 0.05)
@@ -1095,6 +1122,11 @@ def test_a_short_login_with_no_wait_allowed_is_degraded_and_will_not_run(monkeyp
 def test_a_failed_first_use_qualification_is_degraded_and_will_not_run(monkeypatch):
     # Plan amendments A2 + A3b: degraded and not run (never sealed), naming the reason and fix.
     from phase_loop_runtime import seat_jail_autoqualify as aq
+    from phase_loop_runtime import seat_jail_prerequisites
+
+    # A cached failure can outlive the missing prerequisite. Pin the current scan
+    # so this test exercises the generic fix independently of the test host.
+    monkeypatch.setattr(seat_jail_prerequisites, "check", lambda: [])
 
     claude = next(m for m in _modes(monkeypatch, qualified=False) if m.leg == "claude")
     assert (claude.mode, claude.code) == ("degraded", "seat_jail_qualification_failed")

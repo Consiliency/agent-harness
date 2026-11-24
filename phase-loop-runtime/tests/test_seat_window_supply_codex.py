@@ -1034,7 +1034,7 @@ def test_sl6_f16_control_launches_through_the_real_prepare(
     (delivered,) = seen["inputs"]
     assert delivered == panel._render_broker_pointer_prompt(
         "", expected, source_commit="2" * 40, staged_tree_sha256="d" * 64,
-        model_only_network=True)
+        model_only_network=True, qualification_probe=True)
     assert result.binding.input_sha256 == hashlib.sha256(expected.encode()).hexdigest()
     # The binding names the image the jail actually bound, never "None".
     assert result.binding.image_sha256 == seen["image_sha256"] != "None"
