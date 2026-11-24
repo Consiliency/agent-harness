@@ -118,3 +118,92 @@ The draft's `evidence/HOST-ADAPTER/*` receipts, its two execute-phase handoffs a
 its detailed plan described the October run against a source tree this commit
 does not have. They were not carried forward; jevdrill regenerates its own
 records from the accepted commit.
+
+## Host gaps
+
+- When `.jevdrill/harnesses.yaml` is present, a single row must match both the
+  host's `harness_id` and its `execution_target_id`. The adapter refuses an
+  undeclared pair before any CLI request. If the file is absent, routing is unchanged.
+- The adapter keeps retry ledgers in memory, keyed by project, workspace and task.
+  The trusted request sets the budget. Recorded acceptance failures can supply
+  bounded retry context, and launch admission counts attempts atomically. A
+  supplied context without a ledger entry can reach routing, but prepare refuses
+  it before publishing a launchable binding. The ledgers reset on adapter restart.
+- Each routed prepare stamps an explicit, in-memory routing ID on
+  `PromptBundle.routing_provenance`. It stays with the bundle through copies and
+  field reconstruction and is excluded from rendered prompts and serialized data.
+  Launch consumes the binding with that ID and refuses a routed bundle whose
+  binding is unavailable.
+- The runner preserves operator and policy overrides. The adapter rechecks
+  readiness after the `started` report write and queues `canceled` if readiness
+  has expired. Guidance deactivation carries a reason from
+  `DEACTIVATION_REASONS`. CLI disconnects carry operation-specific advice, and
+  report delivery keeps the queue's retry backoff.
+
+### Item 3 run-bound report hook
+
+Hosts using `JevDrillAdapter` can add explicit reports to the same run stream,
+queue and sanitizer as the adapter's lifecycle reports.
+
+- `run_event_identity(execution_run_id)` returns the run's `task_id`,
+  `routing_decision_id`, `execution_run_id`, `source_id` and
+  `next_source_sequence`.
+- `enqueue_run_event(execution_run_id, payload)` assigns the event envelope,
+  identity and sequence, then enqueues under the same lock as host reports.
+  The payload must be non-lifecycle. The return value is the queue disposition.
+  Enqueue order equals sequence order. Delivery order is not guaranteed, so
+  consumers use `source_sequence` to order events within a run.
+- `run_report_counts(execution_run_id)` gives the run's queue entries and losses
+  at enqueue time. Losses after enqueue are counted queue-wide through
+  `adapter.queue.status()`.
+
+The host hook is available. The downstream coverage proof for
+`EC-HOST-2 / That explicit reports enter the same queue` remains JEV Drill's
+responsibility.
+
+#### Obtaining an execution run ID
+
+During a run, call `adapter.active_execution_run_ids(task_id)` with the trusted
+task ID. It returns an immutable tuple of that task's retained active run IDs
+from a snapshot taken under the report lock. An ID leaves the snapshot as soon
+as the executor returns, before the terminal, usage and guidance reports are
+enqueued and before `launch` returns, or when its handle is evicted. A host that
+reports after execution should capture the ID during the run or read it from the
+launch result below.
+
+After launch returns, read `LaunchResult.jevdrill_execution_run["execution_run_id"]`
+from the routed launch result. A retained handle can still be used with the report
+hook after execution. The adapter retains up to 256 of its most recently launched
+run handles, and they reset on adapter restart. The report hook raises `KeyError`
+for an unknown or evicted run ID.
+
+### Item 7 spawn reserve
+
+The transport subtracts a fixed **250 ms** from the remaining budget immediately
+before spawn for operations that take `--remaining-budget-ms`. If the resulting
+budget is zero or negative, the transport refuses before spawn. The parent still
+uses its original deadline, with bounded cleanup to kill and reap a child. The
+guarantee covers the pre-spawn reserve and parent-side enforcement. If startup
+exceeds 250 ms, the child's relative deadline can extend beyond the parent's.
+
+#### Spawn reserve tests
+
+- (a) `tests/test_jevdrill_host_gaps.py::test_budget_reserves_spawn_time`
+  checks the exact budget passed in argv. It discriminates: it fails if the
+  250 ms subtraction is removed.
+- (b) `tests/test_jevdrill_host_gaps.py::test_over_reserve_spawn_is_bounded_by_the_parent_deadline`
+  starts a real test child and checks the original parent deadline and reaping
+  after an over-reserve spawn.
+
+The frozen
+`tests/test_jevdrill_adapter.py::test_deadline_includes_prior_work_and_reaps_child`
+now takes the no-spawn path because its remaining 200 ms is below the reserve.
+Control (b) carries the reaping check.
+
+#### Measurement basis
+
+[GAPS §5 Q2](../plans/artifacts/jevhost-host-gaps-v1.md#5-rulings) records 30
+CLI-like starts on Linux x86-64 under load using CPython 3.14.4. The measurement
+ran from before `Popen` to the child's first output after imports. The cold
+start took 79.9 ms. The warm starts had a 72.4 ms median, a 94.2 ms p95 and a
+100.9 ms maximum. The 250 ms reserve is about 2.5 times that observed maximum.
