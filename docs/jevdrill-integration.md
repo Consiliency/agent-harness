@@ -156,12 +156,12 @@ queue and sanitizer as the adapter's lifecycle reports.
   loss. A `duplicate` means the queue already has an identical report with
   the same event ID. The hook normally assigns a fresh ID. The hook raises
   `KeyError` for an unknown run and `ValueError` for an invalid payload.
-  A raised storage error leaves the queue outcome unknown. An unconfirmed
-  enqueue may already be stored. The report may still be delivered, and
-  resubmitting it can duplicate its content.
+  The hook propagates storage errors to the caller. After a storage error,
+  an unconfirmed enqueue may already be stored and may still be delivered.
+  Resubmitting it can duplicate its content.
 - `run_report_counts(execution_run_id)` counts each returned `queued` in
-  `queued` and each other returned disposition in `losses`. An exception
-  tells the caller about the failure and leaves these counts unchanged.
+  `queued` and each other returned disposition in `losses`. A raised
+  exception leaves these counts unchanged.
   Later losses are counted queue-wide through `adapter.queue.status()`.
 
 Host and hook reports share enqueue order, which follows `source_sequence`.
