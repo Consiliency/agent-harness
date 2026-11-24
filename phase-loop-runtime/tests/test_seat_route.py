@@ -12,6 +12,8 @@ import weakref
 
 import pytest
 
+from test_seats_teamhost_subject import _managed_grok, managed_fs  # noqa: F401
+
 from phase_loop_runtime import seat_egress_proxy, seat_jail, seat_profiles, seat_route
 from phase_loop_runtime import panel_invoker, seat_jail_autoqualify, seat_uid, seat_window
 from phase_loop_runtime.seat_route_contract import (
@@ -1157,3 +1159,69 @@ def test_matrix_policy_does_not_duplicate_window_exception_filtering(monkeypatch
     monkeypatch.setattr(seat_window, "readiness_rows", lambda: [row])
     assert seat_route._matrix_policy().exceptions["codex"].kind == "unconfined"
     assert "profile_for" not in inspect.getsource(seat_route._matrix_policy)
+
+
+@pytest.fixture
+def ready_managed_grok_route(monkeypatch):
+    from phase_loop_runtime import sandbox_egress
+    profile = dataclasses.replace(
+        seat_profiles.profile_for("grok"), credential_present=lambda: True, preconditions=(),
+    )
+    monkeypatch.setitem(seat_profiles._REGISTRY, "grok", profile)
+    monkeypatch.setattr(seat_jail, "seat_sandbox_capable", lambda: None)
+    monkeypatch.setattr(sandbox_egress, "egress_required", lambda: True)
+    monkeypatch.setattr(seat_egress_proxy, "unavailable_code", lambda: None)
+    monkeypatch.setattr(seat_jail_autoqualify, "ensure_qualified", lambda *_a, **_k:
+                        seat_jail_autoqualify.Outcome(seat_jail_autoqualify.QUALIFIED))
+
+    return profile
+
+
+def test_managed_grok_route_reaches_the_null_projection_key(
+    managed_grok, ready_managed_grok_route, monkeypatch,
+):
+    from phase_loop_runtime import seat_subject
+    from phase_loop_runtime.seat_qualification_key import key_for_launch
+
+    env, _native, _digest, _pin_path = managed_grok
+    profile = ready_managed_grok_route
+    monkeypatch.setattr(seat_subject, "open_managed_authority",
+                        lambda *_: pytest.fail("opened a dependency authority"))
+    decision = seat_route.resolve(
+        request("grok", env=env), policy=policy(), remote=Remote(), native=Native(),
+        capacity=Capacity(),
+    )
+    assert (decision.mode, decision.code) == ("jailed", None), decision.steps
+    assert decision.qualification_key == key_for_launch(
+        profile, variant=None, allowlist_digest=seat_egress_proxy.allowlist_ref(
+            profile.allowlist_id).content_digest, projection=None,
+    )
+
+
+@pytest.mark.parametrize("managed_grok", ["image-pin-only"], indirect=True)
+@pytest.mark.parametrize("source", ["managed_image", "unexpected"])
+def test_grok_route_refuses_unadmitted_source_before_key(
+    managed_grok, ready_managed_grok_route, monkeypatch, source,
+):
+    from phase_loop_runtime import seat_qualification_key, seat_subject
+
+    env, _native, _digest, pin = managed_grok
+    stale = dataclasses.replace(seat_subject.resolve_seat_subject("grok", env), source=source)
+    pin.unlink()
+    monkeypatch.setattr(seat_subject, "resolve_seat_subject", lambda *_: stale)
+    monkeypatch.setattr(seat_subject, "open_managed_authority",
+                        lambda *_: pytest.fail("opened a dependency authority"))
+    calls = []
+    monkeypatch.setattr(seat_qualification_key, "admit_profile_projection",
+                        lambda *args: calls.append(args))
+    monkeypatch.setattr(seat_qualification_key, "key_for_launch",
+                        lambda *_a, **_k: pytest.fail("created a key"))
+
+    decision = seat_route.resolve(
+        request("grok", env=env), policy=policy(), remote=Remote(), native=Native(),
+        capacity=Capacity(),
+    )
+    assert (decision.mode, decision.code, decision.steps[-1].step) == (
+        "degraded", "seat_sandbox_refused:identity", "L6",
+    )
+    assert calls == []

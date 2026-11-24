@@ -1229,10 +1229,8 @@ def test_seats_firstseat_exec_record_window_board_frame_is_opt_in():
     tooled = json.loads(pi._broker_gemini_stream_protocol(
         "frame", tooled=True, qualification_board=False).transport)
     tooled_body = tooled["message"]["content"]
-    assert (
-        f"Review with your tools: read {jail.SEAT_BUNDLE} in full and the code at "
-        f"{jail.SEAT_TREE}, and run commands there to check claims."
-    ) in tooled_body
+    assert f"scope/index section of {jail.SEAT_BUNDLE}" in tooled_body
+    assert f"Run commands in {jail.SEAT_TREE} to check claims." in tooled_body
     assert "window-read.txt" not in tooled_body
     board = json.loads(pi._broker_gemini_stream_protocol(
         "frame", tooled=True, qualification_board=True).transport)

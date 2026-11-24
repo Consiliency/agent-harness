@@ -802,10 +802,12 @@ def test_the_notices_say_what_happens_when_it_ends_and_the_command():
     # main's 75, agent-harness#1492's 21 placement codes, agent-harness#1170's egress and
     # qualification-candidate codes, agent-harness#1791's local-release code, SL-5's
     # resource-cap refusal, SEATS CODEX's nine codex_seat_* codes, SEATS GROK's five
-    # grok_seat_* codes, and agent-harness#2131's broker-socket path refusal
+    # grok_seat_* codes, agent-harness#2131's broker-socket path refusal, and
+    # agent-harness#2175's board bundle size refusal.
     firstseat = {"leg_auth_signed_out", "leg_auth_unavailable", "leg_execution_failed",
                  "leg_exec_record_unavailable", "grok_tool_surface_unverified"}
     assert firstseat <= seat_jail.NOTICES.keys()
+    assert len(seat_jail.NOTICES.keys() - firstseat) == 118
     assert len(seat_jail.NOTICE_CODES - firstseat) == 115
 
 
