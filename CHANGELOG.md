@@ -21,6 +21,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- The FIRSTSEAT record-board test stubs the Gemini board preflight, so it no longer runs live
+  Agy qualification inside the guard's 30 s authorization window (agent-harness#2142).
 - The placement-lifecycle replay test runs its interrupted setup reserve on a frozen clock with
   inline backend calls, removing a real-time 300 ms deadline race (agent-harness#2117).
 
