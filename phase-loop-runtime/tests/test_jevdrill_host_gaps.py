@@ -1144,7 +1144,7 @@ def report_type(event):
     return payload.get("event_type", payload["kind"])
 
 
-def test_run_bound_reports_share_the_run_stream(tmp_path):
+def test_run_bound_reports_share_the_run_stream(tmp_path, monkeypatch):
     adapter, inputs, _, kwargs, calls, _ = adapter_fixture(tmp_path)
     identity, enqueue, counts = require(adapter, "run_event_identity", "enqueue_run_event", "run_report_counts")
     active_ids, = require(adapter, "active_execution_run_ids")
@@ -1177,36 +1177,76 @@ def test_run_bound_reports_share_the_run_stream(tmp_path):
         ready.wait()
         return result_for()
 
+    report = adapter._report
+
+    def report_then_hook(binding, event_type=None, **options):
+        disposition = report(binding, event_type, **options)
+        if event_type == "completed":
+            worker = pool.submit(hook, binding["run_id"], 6)
+            hooks.append(worker)
+            assert worker.result(timeout=5) == "queued"
+        return disposition
+
+    monkeypatch.setattr(adapter, "_report", report_then_hook)
+    final_slot = threading.Barrier(2, timeout=5)
+
+    def compete_for_slot(run_id, index):
+        final_slot.wait()
+        return hook(run_id, index)
+
     with ThreadPoolExecutor(max_workers=2) as pool:
         result = adapter.launch(execute, spec_for(prepared))
-        assert [future.result(timeout=5) for future in hooks] == ["queued"] * 6
-    run_id = result.jevdrill_execution_run["execution_run_id"]
+        run_id = result.jevdrill_execution_run["execution_run_id"]
+        assert [future.result(timeout=5) for future in hooks] == ["queued"] * 7
+        adapter.queue.MAX_RECORDS = 11
+        after_launch = {i: pool.submit(compete_for_slot, run_id, i) for i in (7, 8)}
+        dispositions = {i: future.result(timeout=5) for i, future in after_launch.items()}
+    assert sorted(dispositions.values()) == ["overflow", "queued"]
+    queued_after_launch, = [i for i, disposition in dispositions.items() if disposition == "queued"]
     assert observed[0] == {"task_id": task_id, "routing_decision_id": decision_id,
                            "execution_run_id": run_id, "source_id": "agent-harness", "next_source_sequence": 1}
     # Enqueue order, before any sorting, is sequence order, with host and hook interleaved.
-    assert [sequence for sequence, _ in entered] == list(range(9))
-    assert identity(run_id)["next_source_sequence"] == 9
-    assert counts(run_id) == {"queued": 9, "losses": {}}
-    assert adapter.queue.status() == {"records": 9, "dispositions": {}}
+    assert [sequence for sequence, _ in entered] == list(range(12))
+    assert identity(run_id)["next_source_sequence"] == 12
+    assert counts(run_id) == {"queued": 11, "losses": {"overflow": 1}}
+    assert adapter.queue.status() == {"records": 11, "dispositions": {"overflow": 1}}
     adapter.flush = flush
     drain(adapter)
     events = delivered(calls, run_id)
-    assert [(event["source_sequence"], report_type(event)) for event in events] == entered
+    assert [(event["source_sequence"], report_type(event)) for event in events] == entered[:-1]
     assert [report_type(event) for event in events if report_type(event) != "evaluation"] == [
         "started", "completed", "usage",
     ]
     evaluations = [e["payload"]["check_results"] for e in events if report_type(e) == "evaluation"]
     assert {tuple(checks.items()) for checks in evaluations} == {
-        ((hashlib.sha256(f"check-{i}".encode()).hexdigest(), True),) for i in range(6)
+        ((hashlib.sha256(f"check-{i}".encode()).hexdigest(), True),) for i in (*range(7), queued_after_launch)
     }
+    assert report_type(events[-1]) == "evaluation"
+    terminal_evaluation, = [e for e in events if e["payload"].get("check_results") == {
+        hashlib.sha256(b"check-6").hexdigest(): True,
+    }]
+    completed, = [e for e in events if report_type(e) == "completed"]
+    usage, = [e for e in events if report_type(e) == "usage"]
+    assert completed["source_sequence"] < terminal_evaluation["source_sequence"] < usage["source_sequence"]
     assert len({e["source_id"] for e in events}) == 1
     assert {(e["task_id"], e["routing_decision_id"]) for e in events} == {(observed[0]["task_id"], decision_id)}
-    assert adapter.queue.status() == {"records": 0, "dispositions": {}}
+    assert adapter.queue.status() == {"records": 0, "dispositions": {"overflow": 1}}
 
+
+def test_run_bound_report_refusals_leave_counts_unchanged(tmp_path):
+    adapter, _, _, kwargs, _, _ = adapter_fixture(tmp_path)
+    prepared = adapter.prepare(mode="main", dry_run=False, **kwargs)
+    result = adapter.launch(lambda spec, **_k: result_for(), spec_for(prepared))
+    run_id = result.jevdrill_execution_run["execution_run_id"]
+    counts_before = adapter.run_report_counts(run_id)
+    queue_before = adapter.queue.status()
     with pytest.raises(ValueError, match="non-lifecycle"):
-        enqueue(run_id, {"kind": "lifecycle", "event_type": "completed", "applied_plan_id": None, "reason": None})
+        adapter.enqueue_run_event(run_id, {"kind": "lifecycle", "event_type": "completed"})
+    assert adapter.run_report_counts(run_id) == counts_before
     with pytest.raises(KeyError):
-        identity(str(uuid4()))
+        adapter.enqueue_run_event(str(uuid4()), evaluation_payload(0))
+    assert adapter.run_report_counts(run_id) == counts_before
+    assert adapter.queue.status() == queue_before
 
 
 @pytest.mark.parametrize("storage", [
@@ -1365,3 +1405,54 @@ def test_run_report_counts_track_entries_and_losses(tmp_path):
     assert counts(run_id) == {"queued": 4, "losses": {"overflow": 1, "deleted": 1}}
     assert adapter.queue.status() == {"records": 0, "dispositions": {"overflow": 1, "deleted": 5}}
     assert [n["status"] for n in notices if n.get("kind") == "transport_disposition"] == ["overflow", "deleted"]
+
+
+@pytest.mark.parametrize("expected", ["queued", "deleted", "duplicate", "conflict", "overflow"])
+def test_run_bound_report_disposition_matches_durable_queue_and_counts(tmp_path, monkeypatch, expected):
+    adapter, inputs, _, kwargs, _, _ = adapter_fixture(tmp_path)
+    prepared = adapter.prepare(mode="main", dry_run=False, **kwargs)
+    adapter.flush = lambda: "empty"
+    result = adapter.launch(lambda spec, **_k: result_for(), spec_for(prepared))
+    run_id = result.jevdrill_execution_run["execution_run_id"]
+    queue = adapter.queue
+    enqueue = queue.enqueue
+
+    def durable_reports():
+        with queue._transaction() as db:
+            return {row["event"]: json.loads(row["payload"]) for row in db.execute("SELECT event, payload FROM reports")}
+
+    if expected == "deleted":
+        request = inputs["request"]
+        queue.delete_task(request["envelope"]["project_id"], request["envelope"]["workspace_id"], request["task_id"])
+    if expected == "overflow":
+        queue.MAX_RECORDS = 3
+
+    # A hook normally generates a fresh event ID. Seed the real queue with that
+    # ID just before enqueue to exercise its duplicate and conflict paths.
+    before = None
+    event_id = None
+
+    def enqueue_with_setup(report):
+        nonlocal before, event_id
+        event_id = report["event"]["event_id"]
+        if expected in ("duplicate", "conflict"):
+            seed = deepcopy(report)
+            if expected == "conflict":
+                seed["event"]["payload"] = evaluation_payload(99)
+            assert enqueue(seed) == "queued"
+        before = durable_reports()
+        return enqueue(report)
+
+    monkeypatch.setattr(queue, "enqueue", enqueue_with_setup)
+    assert adapter.enqueue_run_event(run_id, evaluation_payload(0)) == expected
+    after = durable_reports()
+    if expected == "queued":
+        assert after.keys() - before.keys() == {event_id}
+        entry = after.pop(event_id)
+        assert entry["event"]["execution_run_id"] == run_id
+        assert entry["event"]["source_sequence"] == 3
+        assert entry["event"]["payload"]["kind"] == "evaluation"
+        assert adapter.run_report_counts(run_id) == {"queued": 4, "losses": {}}
+    else:
+        assert adapter.run_report_counts(run_id) == {"queued": 3, "losses": {expected: 1}}
+    assert after == before

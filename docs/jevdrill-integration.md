@@ -150,16 +150,20 @@ queue and sanitizer as the adapter's lifecycle reports.
   `next_source_sequence`.
 - `enqueue_run_event(execution_run_id, payload)` assigns the event envelope,
   identity and sequence, then enqueues under the same lock as host reports.
-  The payload must be non-lifecycle. When the queue operation completes, the
-  hook returns its disposition. If it fails, the hook raises the underlying
-  storage error. Enqueue order equals sequence order. Consumers use
-  `source_sequence` to order events within a run because delivery can be out
-  of order. Sequence allocation alone does not prove enqueue, so consumers
-  must tolerate gaps.
-- `run_report_counts(execution_run_id)` gives the run's queue entries and losses
-  at enqueue time. It excludes raised storage failures, which the caller learns
-  about only from the exception. Losses after enqueue are counted queue-wide
-  through `adapter.queue.status()`.
+  The payload must be non-lifecycle. A returned `queued` means the report
+  entered the same durable queue as host reports. Other returned dispositions
+  (`deleted`, `duplicate`, `conflict`, `overflow`) record an enqueue-time
+  loss. The hook tells the caller about refused reports by raising `KeyError`,
+  `ValueError` or the underlying storage error.
+- `run_report_counts(execution_run_id)` counts each returned `queued` in
+  `queued` and each other returned disposition in `losses`. An exception
+  leaves these counts unchanged. The exception is how the caller learns of
+  the failure. Later losses are counted queue-wide through
+  `adapter.queue.status()`.
+
+Host and hook reports share enqueue order, which follows `source_sequence`.
+Delivery can be out of order. A sequence number alone does not prove enqueue,
+and consumers must tolerate gaps.
 
 The host hook is available. The downstream coverage proof for
 `EC-HOST-2 / That explicit reports enter the same queue` remains JEV Drill's
