@@ -1,7 +1,7 @@
 """v13 LANEEXEC erratum LANEEXEC-v1-errata-1 (agent-harness#1988), checked on the frozen bytes.
 
-LaneExec has no implementation yet, so these tests hold the planning artifact to its
-erratum: the local ``pi-runner`` template form (E1), what that form means for
+These tests hold the planning artifact to its wire erratum: the local
+``pi-runner`` template form (E1), what that form means for
 registration and for a stale ``template_sha256`` (E2(i), E2(ii)), the wire identity
 against the previous bytes (E3), and the citations that the landed binding and the
 phase plan make into the artifact. The production LaneExec tests that discharge
@@ -9,8 +9,8 @@ E1-E3 are owned by the LANEEXEC SL-3.1 and SL-5.1 rows.
 
 Every expectation here is an input: the previous artifact digest, the previous
 operator record's ``template_sha256``, and two digests read from the previous bytes
-(the cited sentences, and everything outside the members the erratum declares). The erratum digest itself is read from ``plans/manifest.json`` and
-compared with the other pin sites, never restated.
+(the cited sentences, and everything outside the members the erratum declares).
+Erratum 7 also holds the wire to the exact bytes repinned by erratum 6.
 """
 
 from __future__ import annotations
@@ -26,6 +26,9 @@ import rfc8785
 
 REPO = Path(__file__).resolve().parents[2]
 ARTIFACT = REPO / "plans/artifacts/v13-LANEEXEC-contract-v1.schema.json"
+PACKAGED_WIRE = (
+    REPO / "phase-loop-runtime/src/phase_loop_runtime/contracts/placement/launch-v1.schema.json"
+)
 BINDING = REPO / "plans/artifacts/v13-LANEEXEC-landed-binding.md"
 PLAN = REPO / "plans/phase-plan-v13-LANEEXEC.md"
 REMOTE_PLAN = REPO / "plans/phase-plan-v1-seats-REMOTE.md"
@@ -386,6 +389,8 @@ def test_the_cited_digest_detects_a_changed_sentence():
 @pytest.mark.skipif(not (MANIFEST.is_file() and REMOTE_PLAN.is_file()), reason="plans absent")
 def test_every_pin_site_holds_the_erratum_digest():
     contract = sha256(ARTIFACT.read_bytes()).hexdigest()
+    assert contract == "57bc376cc629e762130a3f43aa5bef8cfaeebb1042a3963fc54a5708d5adba7d"
+    assert PACKAGED_WIRE.read_bytes() == ARTIFACT.read_bytes()
     binding = sha256(BINDING.read_bytes()).hexdigest()
     rows = [r for r in json.loads(MANIFEST.read_bytes())["plans"] if r.get("slug") == "v13-LANEEXEC"]
     assert len(rows) == 1
