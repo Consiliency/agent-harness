@@ -124,7 +124,7 @@ def _open_gate(binary: str, launch: str, *, skip=(), tools=None) -> None:
             "approved_on": "2026-11-22"})
     if "boundary" not in skip:
         gjs.write_private(gjs.boundary_name(launch), {
-            "schema": gjs.BOUNDARY_SCHEMA, "hosted_run": "ci/fixture/1", "head": "a" * 40,
+            "schema": gjs.BOUNDARY_SCHEMA, "hosted_run": "1", "head": "a" * 40,
             "launch_digest": launch, "jail_context_digest": gjs.jail_context_digest(binary),
             "ba_j5": "passed", "skipped": 0})
     if "record" not in skip:
@@ -321,7 +321,8 @@ def test_ba_j2a_the_launch_digest_is_shared_across_launches(tmp_path, monkeypatc
         assert first.jail.bundle_fd != second.jail.bundle_fd
         assert first.credential.digest != second.credential.digest
         assert (gjs.launch_digest(first.jail, first.command)
-                == gjs.launch_digest(second.jail, second.command))
+                == gjs.launch_digest(second.jail, second.command)
+                == gjs.production_launch_digest(seat_jail.host_arch()))
         assert gjs.launch_digest(first.jail, first.command, arch="aarch64") != \
             gjs.launch_digest(first.jail, first.command, arch="x86_64")
         # A different mount policy is a different launch.

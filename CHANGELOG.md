@@ -15,6 +15,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   windows and reissue grants against the installed runtime. Restart Grok series that require
   same-runtime evidence and obtain a fresh Claude SDK boundary proof before SDK admission.
 
+### Added
+
+- Grok's jailed measurement records the owner's offline projection confirmation and
+  verifies the hosted BA-J1 and BA-J5 results before opening a grant (agent-harness#2101).
+
+### Changed
+
+- Grok jail grants reopen a counted label once after a sink-probe timeout without
+  charging a request or retry. This moves the seat-window runtime and release identity
+  digests. Profile and SDK proof pins stay fixed (agent-harness#2101).
+
 ## [0.7.44] - 2026-11-24
 
 ### Added

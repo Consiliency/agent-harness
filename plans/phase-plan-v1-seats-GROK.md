@@ -22,6 +22,9 @@ window-kit decisions (jail contract §15). The roadmap text is unchanged.
 
 - `plans/artifacts/grok-jail-tool-surface-contract-v1.md` at sha256
   `f2fc6c88471dd88f52168136cec0f770fa7c286cd1ce71a1fd8b341878ea8b66` ("the jail contract", r7). This plan cites its sections.
+- `plans/artifacts/grok-jail-tool-surface-contract-v1-erratum-r8.md` at sha256
+  `6fbad698480d1ba3391888bd2a31350a954051c684b5489047f488a7c8468490` (jail contract revision r8). Items r8-4 and r8-5 block the §7 grant run until
+  the managed-subject plan's `GROK-R8-FOLLOWUP` lane delivers them.
 - `plans/artifacts/grok-tool-surface-contract-v1.md` at sha256
   `5b929cb588e4bb555ce8374311432376fe4c04e8a851fd511e6c44682736b27c` (the **effective
   input**: agent-harness#2033 through erratum 7, erratum 8 r3 as merged with E8-A
@@ -466,6 +469,8 @@ gates beside `suite_command`.
 - `VU`: `P test_grok_tool_surface.py test_grok_tool_surface_measure.py test_grok_board_leg_frozen_basis.py test_grok_measure_egress.py`, unedited
 - `VL2`: `PHASE_LOOP_REQUIRE_LIVE_JAIL=1 P test_grok_seat_profile.py -k live_jail --junitxml=<private-receipt>`, stand-in only; a skip or zero collection fails
 - `VL`: `PHASE_LOOP_REQUIRE_LIVE_JAIL=1 P test_grok_seat_jail.py -k live_jail --junitxml=<private-receipt>`, stand-in only; a skip or zero collection fails
-- `VJ`: `PHASE_LOOP_REQUIRE_GROK_JAIL_NS=1 P test_grok_seat_jail.py -k jail_ns`, mandatory hosted check (BA-J1, BA-J5)
+- `VJ`: the hosted BA-J1 and BA-J5 selectors and JUnit receipt in the
+  [Grok measurement procedure](../docs/ops/grok-jail-measurement.md), required by
+  [jail contract revision r8](artifacts/grok-jail-tool-surface-contract-v1-erratum-r8.md).
 - `VK`: on the designated seat host's installed runtime: `timeout 300 phase-loop seat-sandbox qualify --leg grok`, `timeout 300 phase-loop seat-egress status`; after SL-6, `measure-tools --verify-probe final` (jail contract §7.1)
 - Full suite: hosted CI and Gate A only.

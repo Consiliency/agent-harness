@@ -7,8 +7,8 @@ launch, as `plans/artifacts/grok-jail-tool-surface-contract-v1.md` §7.1 require
 SL-4, IF-0-GROK-4; Consiliency/agent-harness#1820).
 
 It is run only under the owner's grant in jail contract §7, on the designated seat host, on
-one installed release that carries erratum 8's lanes and GROK SL-0 to SL-4. Nothing in it is
-run by an agent or in CI.
+one installed release that carries TS contract erratum 8's lanes and GROK SL-0 to SL-4. The
+confirmation and hosted boundary check are prerequisites for that grant.
 
 ## What the grant allows
 
@@ -31,10 +31,12 @@ image on the installed release.
 
 - **`unspawned`.** A launch refused before its spawn hook ran (the qualification check, the
   identity probe, the capped preflight, the sink probe or an earlier step) leaves no
-  admission file. The reservation is settled `unspawned` and nothing is charged. How a label
-  resumes after that is OWNER-DECISION r7-1 (jail contract §20), which is not ruled: until
-  it is, an `unspawned` settlement **stops the procedure** and later stages refuse
-  `grant_stopped_unspawned`.
+  admission file. The reservation is settled `unspawned` and nothing is charged.
+  Under r8-3 of the [jail contract revision r8](../../plans/artifacts/grok-jail-tool-surface-contract-v1-erratum-r8.md),
+  a first `grok_sink_probe_timeout` on that label permits a later attended invocation
+  of `--route staged` without spending a retry. The current invocation exits and leaves
+  any following routes unattempted. A second `unspawned` on that label or any refusal
+  outside the allowlist stops the grant with `grant_stopped_unspawned`.
 - **Unresolved.** A reservation whose admission was consumed and that has no settlement (a
   crash, a kill, a spawn that failed after its hook, or a launch whose admission file the
   leg could not confirm after it ran) is charged in full, is never settled or resumed,
@@ -44,22 +46,91 @@ image on the installed release.
   only when this grant owns the latest attempt. A new reservation of any grant still
   withdraws the image's jailed publication before it exists (BA-2).
 
+## Record the projection confirmation and hosted boundary
+
+The owner runs or attends the separately approved offline confirmation (§2.4) using the
+installed Grok image, the exact §2.3 projection and a local inference fixture. Use a
+credential-free fixture with egress disabled. Capture the launch digest from the composed
+jail with `grok_jail_surface.launch_digest(jail, command)` and verify that the fixture saw
+the inference request, saw no settings or models requests, and that the staged files and
+masks are unchanged. A failed observation stops the procedure.
+
+The owner prepares a metadata-only JSON observation in an operator-owned 0700 directory
+with file mode 0600. Use the actual values for the image, architecture, digests and approval
+of that offline launch.
+
+```json
+{
+  "schema": "grok_jail_confirmation.v1",
+  "image_sha256": "<observed image sha256>",
+  "launch_digest": {"x86_64": "<observed launch digest on this architecture>"},
+  "jail_context_digest": "<observed jail context digest>",
+  "outcome": {
+    "inference_request_reached": true,
+    "settings_requested": false,
+    "models_requested": false,
+    "staged_unchanged": true
+  },
+  "approval_id": "<owner's offline approval id>",
+  "approved_on": "<YYYY-MM-DD>",
+  "credential_free": true,
+  "no_egress": true,
+  "masks_unchanged": true
+}
+```
+
+Run the attended import with `GROK_CONFIRMATION` set to that file and `GROK_BIN` and
+`GROK_SHA` set to the installed executable and approved sha256.
+
+```sh
+timeout 600 phase-loop seat-window measure-tools --vendor grok --binary "$GROK_BIN" \
+  --expect-binary-sha256 "$GROK_SHA" --attended --reviewed --record "$GROK_CONFIRMATION"
+```
+
+For condition 4, the GitHub-hosted `test.yml` job on the merged head needs the real
+jail prerequisites and both provider-free tests below. Run from the runtime project
+directory and upload the XML as the sole member of an Actions artifact named
+`grok-jail-boundary`. Use the same architecture and system mount layout as the target seat.
+Both cases must pass, with zero skips. The tests record the runtime and run-attempt bindings
+and BA-J5 records the actual launcher binding. The existing BA-3 workflow step needs a
+separate CI change to publish this receipt.
+
+```sh
+PHASE_LOOP_REQUIRE_GROK_JAIL_NS=1 PHASE_LOOP_REQUIRE_LIVE_JAIL=1 PYTHONPATH=src:tests \
+  timeout 600 python -m pytest -p no:xdist -p no:cacheprovider -o junit_family=xunit1 \
+  --junitxml=grok-jail-boundary.xml tests/test_grok_seat_jail.py \
+  -k 'jail_ns_ba_j1 or live_jail_b_ba_j4_ba_j5'
+```
+
+SL-4 runs the standalone boundary stage using the GitHub CLI and the full installed
+release commit from the release manifest, exported as `GROK_INSTALLED_HEAD`. Set
+`GROK_HOSTED_CHECK_RUN` to the upstream workflow run ID or URL. This step checks
+GitHub Actions and writes the boundary record before the grant can open.
+
+```sh
+timeout 600 phase-loop seat-window measure-tools --vendor grok --binary "$GROK_BIN" \
+  --expect-binary-sha256 "$GROK_SHA" --hosted-check "$GROK_HOSTED_CHECK_RUN"
+```
+
 ## Before the slot (no request is spent; stop if any item fails)
 
 Jail contract §7 lists these preconditions. Each is confirmed before the grant is opened, and
 the script below stops before any reservation unless the credential check passes.
+Items r8-4 and r8-5 of the [jail contract revision r8](../../plans/artifacts/grok-jail-tool-surface-contract-v1-erratum-r8.md)
+both block the §7 grant run until `GROK-R8-FOLLOWUP` delivers them.
 
-1. The owner signs in afresh with `grok login` on the seat host immediately before the slot.
-2. `VL` and `VL2` have passed on the seat host, and hosted BA-J1 has run with no skips on the
-   installed head (`PHASE_LOOP_REQUIRE_GROK_JAIL_NS=1`); its run is `GROK_HOSTED_CHECK_RUN`.
+1. The owner signs in afresh through the attended managed Grok sign-in on the seat host
+   immediately before the slot.
+2. `VL` and `VL2` have passed on the seat host. The owner confirmation and the hosted
+   boundary for `GROK_HOSTED_CHECK_RUN` have been recorded on the installed release.
 3. Where a Gemini window refresh is required, it is separately authorised and completed
    first, on the same installed release.
-4. The erratum 8 item 4 staging check passes: `--verify-probe initial` (step 1 below) checks
+4. The TS contract erratum 8 item 4 staging check passes: `--verify-probe initial` (step 1 below) checks
    the managed policy read-only, before anything is projected.
 5. Shared compute: a quiet slot, both shared-compute locks held, the memory-PSI gate, and
    `MemorySwapMax=0` scopes, as for D4.
-6. The credential metadata record is published. At the attended sign-in boundary, the
-   trusted store writer or an owner-run exporter writes `credential-metadata.json` into the
+6. The credential-store writer publishes the credential metadata after successful attended
+   managed sign-in (r8-5). It writes `credential-metadata.json` into the
    operator's `.grok` store, mode 0600, with exactly three keys: `subscription` (`true`),
    `expires_at` (integer Unix seconds) and `auth_state` (the signed-in `auth.json`'s
    `device`, `inode`, `size`, `mtime_ns` and `ctime_ns`). It holds no token material. The
@@ -95,7 +166,7 @@ set -euo pipefail
 : "${GROK_SHA:?export GROK_SHA=<the image sha256 the grant names>}"
 : "${GRANT:?export GRANT=<the grant id>}"
 : "${GROK_SLOT_END_EPOCH:?export GROK_SLOT_END_EPOCH=<the slot hard end, UTC epoch seconds>}"
-# The hosted CI run of the boundary check on the installed head (BA-J1, condition 4).
+# The verified hosted CI run of BA-J1 and BA-J5 on the installed head (condition 4).
 : "${GROK_HOSTED_CHECK_RUN:?export GROK_HOSTED_CHECK_RUN=<hosted run id or URL>}"
 : "${PHASE_LOOP_PYTHON:?export PHASE_LOOP_PYTHON=<Python from the installed phase-loop runtime>}"
 OUT="$HOME/.local/state/phase-loop/grok-jail-surface/$GRANT"
