@@ -11,6 +11,7 @@ qualification and attended probes are separate from mocked test execution.
 
 from __future__ import annotations
 
+import codecs
 import contextvars
 import logging
 import inspect
@@ -88,6 +89,7 @@ from .agy_canary_evidence import (
     write_seat_path,
     seal_provider_launches,
 )
+from .agy_qualification import ProviderErrorClass
 from .claude_agent_view import ClaudeAgentViewAdapter
 from . import gemini_heartbeat
 from . import credential_redaction as _credential_redaction
@@ -1825,6 +1827,9 @@ _CLAUDE_STOP_TIMEOUT_S = 15
 _CLAUDE_TUI_SUBMIT_DELAY_S = 8.0
 _CLAUDE_TUI_READ_INTERVAL_S = 0.25
 _CLAUDE_TUI_TRANSCRIPT_INTERVAL_S = 2.0
+# Leave margin over a 13-minute successful high-effort review. Measured from submit;
+# UI activity can neither renew this window nor extend the review's hard deadline.
+_CLAUDE_TUI_THINKING_WINDOW_S = 20 * 60
 # The most an owned seat's own startup (the owner's links inside the seat, before the
 # collector hands the journal over and executes the provider) may take before its silence
 # counts against the stall window (agent-harness#1282).
@@ -11199,6 +11204,110 @@ def _tui_screen_text(terminal_bytes: bytes) -> str:
     return text.lower()
 
 
+# Claude repaints its spinner independently of the editor footer. Use the leading
+# spinner glyph and the verb's ellipsis, without depending on the chosen verb or on
+# optional timers and token counters. The interrupt hint is a whole footer item
+# or the last item in the spinner's parenthesized status.
+_CLAUDE_TUI_SPINNER_RE = re.compile(r"^\s*[·✢✳✶✻✽*] +\S+?(?:…|\.\.\.)(?:\s|$)")
+_CLAUDE_TUI_INTERRUPT_RE = re.compile(r"(?:^|·| {2,})\s*esc to interrupt(?= *·| {2,}| *\)? *$)")
+_CLAUDE_TUI_SCREEN_TOKENS = re.compile(
+    rf"{_ANSI_CSI_RE.pattern}|{_ANSI_OSC_RE.pattern}|[\r\n]|[^\x00-\x1f]+"
+    r"|(?P<partial>\x1b(?:\[[0-?]*[ -/]*|\][^\x07\x1b]*\x1b?)?)\Z"
+)
+_CLAUDE_TUI_SCREEN_CURSOR = re.compile(r"\x1b\[([0-9;]*)([A-HJKf])")
+
+
+class _ClaudeTuiThinkingScreen:
+    """Track the visible rows Claude's incremental redraws use for turn status."""
+
+    def __init__(self) -> None:
+        self.rows = [""] * _CLAUDE_TUI_PTY_ROWS
+        self.row = self.column = 0
+        self.decode = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        self.partial = ""
+        self.last_paint: float | None = None
+        self.previous_paint: float | None = None
+
+    def feed(self, chunk: bytes, paint_time: float | None) -> None:
+        stream = self.partial + self.decode.decode(chunk)
+        self.partial = ""
+        written: dict[int, int] = {}
+        for match in _CLAUDE_TUI_SCREEN_TOKENS.finditer(stream):
+            token = match[0]
+            if match["partial"]:
+                if len(token) < _TUI_CARRY_MAX_BYTES:
+                    self.partial = token
+            elif token == "\r":
+                self.column = 0
+            elif token == "\n":
+                if self.row < len(self.rows) - 1:
+                    self.row += 1
+                else:
+                    self.rows.pop(0)
+                    self.rows.append("")
+                    written = {row - 1: col for row, col in written.items() if row > 0}
+            elif token.startswith("\x1b"):
+                self._control(token, written)
+            else:
+                line = self.rows[self.row].ljust(self.column)
+                written[self.row] = min(self.column, written.get(self.row, self.column))
+                end = self.column + len(token)
+                self.rows[self.row] = (line[:self.column] + token + line[end:])[:_CLAUDE_TUI_PTY_COLS]
+                self.column = min(end, _CLAUDE_TUI_PTY_COLS)
+        if paint_time is not None:
+            for row, col in written.items():
+                spinner = _CLAUDE_TUI_SPINNER_RE.match(self.rows[row])
+                if spinner and col < spinner.end():
+                    self.previous_paint, self.last_paint = self.last_paint, paint_time
+                    break
+
+    def _control(self, token: str, written: dict[int, int]) -> None:
+        match = _CLAUDE_TUI_SCREEN_CURSOR.fullmatch(token)
+        if not match:
+            return
+        params, command = match.groups()
+        # Cursor and erase commands use short numeric operands. Ignore other CSI.
+        parts = params.split(";")
+        if len(parts) > 2 or any(len(part) > 4 for part in parts):
+            return
+        value = int(parts[0] or 0)
+        step = value or 1
+        if command in "ABEF":
+            self.row += step if command in "BE" else -step
+            if command in "EF":
+                self.column = 0
+        elif command in "CD":
+            self.column += step if command == "C" else -step
+        elif command == "G":
+            self.column = step - 1
+        elif command in "Hf":
+            self.row = step - 1
+            self.column = (int(parts[1] or 0) or 1) - 1 if len(parts) == 2 else 0
+        elif command == "J" and value == 2:
+            self.rows[:] = [""] * len(self.rows)
+            written.clear()
+        elif (command == "J" and value == 0) or (command == "K" and value in (0, 2)):
+            self.rows[self.row] = self.rows[self.row][:self.column] if value == 0 else ""
+            if value == 2:
+                written.pop(self.row, None)
+            if command == "J":
+                for row in range(self.row + 1, len(self.rows)):
+                    self.rows[row] = ""
+                    written.pop(row, None)
+        self.row = min(max(self.row, 0), len(self.rows) - 1)
+        self.column = min(max(self.column, 0), _CLAUDE_TUI_PTY_COLS)
+
+    def active(self, now: float, stall_threshold_s: float) -> bool:
+        return (
+            self.previous_paint is not None
+            and self.last_paint is not None
+            and self.last_paint - self.previous_paint < stall_threshold_s
+            and now - self.last_paint < stall_threshold_s
+            and any(_CLAUDE_TUI_SPINNER_RE.match(line) for line in self.rows)
+            and any(_CLAUDE_TUI_INTERRUPT_RE.search(line) for line in self.rows)
+        )
+
+
 def _cwd_trust_tokens(cwd: Path) -> tuple[str, ...]:
     """Run-unique token(s) that MUST appear in the trust modal before we answer it —
     the FULL absolute cwd path (lowercased), plus its realpath so a symlinked temp root
@@ -11318,6 +11427,10 @@ def _run_claude_tui_session(
     launched_at: float | None = None
     launch_errors = None
     prompt_sent = False
+    thinking_screen = (
+        _ClaudeTuiThinkingScreen() if seat_jail is not None and review_monitor is None else None
+    )
+    thinking_until: float | None = None
     submit_key_offset = None
     next_transcript_check = start_monotonic + _CLAUDE_TUI_TRANSCRIPT_INTERVAL_S
     transcript_salvage = ""
@@ -11640,6 +11753,14 @@ def _run_claude_tui_session(
                         chunk = b""
                     if chunk:
                         terminal_bytes.extend(chunk)
+                        if thinking_screen is not None:
+                            received_at = time.monotonic()
+                            if thinking_until is None:
+                                thinking_screen.feed(chunk, None)
+                            elif received_at < thinking_until:
+                                thinking_screen.feed(chunk, received_at)
+                            else:
+                                thinking_screen = None
                         # #188: a raw PTY chunk is a heartbeat ONLY if it carries
                         # SUBSTANTIVE novel text. The TUI's animated "thinking"
                         # status line (rotating verb + per-second timer) repaints
@@ -11799,6 +11920,8 @@ def _run_claude_tui_session(
                         if os.write(master_fd, b"\x1bOM") == 3:
                             submit_key_offset = submit_at - start_monotonic
                         prompt_sent = True
+                        if thinking_screen is not None:
+                            thinking_until = time.monotonic() + _CLAUDE_TUI_THINKING_WINDOW_S
                     except OSError:
                         return _finish(1, "", "claude_tui_submit_failed")
             review_text = _current_output()
@@ -11811,7 +11934,17 @@ def _run_claude_tui_session(
                 note_attempt_output()
             if _canonical_complete(review_text):
                 return _finish(0, review_text, "claude_tui_file_output")
-            if now >= next_transcript_check:
+            watchdog_due = (
+                review_monitor is None
+                and now - last_heartbeat >= stall_threshold_s
+                and not (
+                    thinking_screen is not None and thinking_until is not None and now < thinking_until
+                    and thinking_screen.active(now, stall_threshold_s)
+                )
+            )
+            # A record can land between the periodic poll and the watchdog cutoff.
+            # Check its version and any typed terminal outcome before killing the seat.
+            if now >= next_transcript_check or watchdog_due:
                 next_transcript_check = now + _CLAUDE_TUI_TRANSCRIPT_INTERVAL_S
                 transcript_text = _transcript_text()
                 # agent-harness#1176 r1: on the exact brokered transcript, progress is a NEW
@@ -11914,9 +12047,9 @@ def _run_claude_tui_session(
                 )
             # #188: NO CPU heartbeat on the TUI path. Unlike the print-mode legs, a
             # Node CLI blocked in ep_poll still trickles libuv/GC CPU, so a CPU-advance
-            # reset would keep a genuinely-wedged TUI alive forever (the ~2s-CPU/17-min
-            # hang). Liveness here is reviewer progress ONLY (novel PTY text / output /
-            # transcript growth above) — "process-alive" is deliberately NOT "leg-alive".
+            # reset would keep a genuinely-wedged TUI alive forever. The jailed
+            # active-turn UI only defers this test inside the submit-based window
+            # above. It never refreshes the actual progress clock.
             #
             # stall: no GENUINE progress for the threshold while still running. The
             # canonical verdict is the review FILE (checked above); nothing to nudge for a
@@ -11932,7 +12065,7 @@ def _run_claude_tui_session(
                 except AgyCanaryEvidenceError:
                     journal_error = True
                 last_heartbeat = now
-            if review_monitor is None and now - last_heartbeat >= stall_threshold_s:
+            if watchdog_due and now - last_heartbeat >= stall_threshold_s:
                 review_text = _current_output()
                 if _canonical_complete(review_text):
                     return _finish(0, review_text, "claude_tui_file_output")
@@ -18136,6 +18269,40 @@ def probe_grok_tools(command, *, allowed_tools, runner=None):
     return receipt
 
 
+def _agy_provider_error_class(
+    *, native_rc: int | None = None, stream: Mapping[str, object] | None = None,
+    response_present: bool | None = None, timed_out: bool = False,
+    failure: BaseException | None = None, login_wait_state: object = None,
+) -> ProviderErrorClass:
+    """Classify only parent-observed facts from a failed qualification turn."""
+    refusal = _typed_refusal_code(failure) if failure is not None else None
+    if refusal == "gemini_seat_credential_missing":
+        return ProviderErrorClass.AUTH_MISSING
+    if type(failure) is ValueError and failure.args == (
+        "brokered Gemini subscription credential reference is unavailable",
+    ):
+        # owned_profile wraps stat failures in this fixed code. The original errno's
+        # exception type distinguishes a missing path from denied local access.
+        if type(failure.__cause__) is FileNotFoundError:
+            return ProviderErrorClass.AUTH_MISSING
+        if type(failure.__cause__) is PermissionError:
+            return ProviderErrorClass.PERMISSION_DENIED
+    if refusal == "gemini_seat_token_expired" or (
+        refusal == "gemini_credential_near_expiry" and login_wait_state == "expired"
+    ):
+        return ProviderErrorClass.AUTH_EXPIRED
+    if timed_out or (type(native_rc) is int and native_rc == 124) or refusal == "gemini_credential_refresh_timeout":
+        return ProviderErrorClass.TIMEOUT
+    if type(native_rc) is int and native_rc == 0 and stream is not None:
+        output_bytes = stream.get("provider_stream_output_bytes")
+        if (type(output_bytes) is int and output_bytes == 0) or (
+            stream.get("provider_stream_outcome") == "accepted" and response_present is False
+        ):
+            return ProviderErrorClass.EMPTY_RESPONSE
+    # The current agy stream has no verified quota, model-failure or network error code.
+    return ProviderErrorClass.UNKNOWN
+
+
 @_retained_leg_exec
 def _exec_leg(
     leg: str,
@@ -18526,6 +18693,9 @@ def _exec_leg(
         # burned most of its budget (a slow leg, not a transient stall; re-running it
         # would ~double wall-clock — the full-concurrent-path hang).
         rc, review_text, log_text = 1, "", ""
+        qualification_evidence = (
+            broker_evidence if review_monitor is not None and _measuring_qualification_candidate() else None
+        )
         for _attempt in range(1 if review_monitor is not None else 2):
             if quiescence_latch is not None:
                 quiescence_latch.raise_if_set()
@@ -18629,6 +18799,8 @@ def _exec_leg(
                             stderr=str(timeout_stderr or ""), staged=capture_staged,
                         ),
                     )
+                if qualification_evidence is not None:
+                    qualification_evidence["provider_error_class"] = _agy_provider_error_class(timed_out=True).value
                 return 124, "", _HarnessCode("Gemini broker deadline exceeded" if brokered else f"timeout after {deadline_s}s")
             if quiescence_latch is not None:
                 quiescence_latch.raise_if_set()
@@ -18639,6 +18811,7 @@ def _exec_leg(
             log_text = proc.stderr or ""
             native_rc = rc
             original_log = log_text
+            stream_metadata = None
             if brokered and rc == 0:
                 rc, review_text, stream_detail, stream_metadata = _broker_gemini_stream_result(
                     raw_stream, broker_stream,
@@ -18655,6 +18828,10 @@ def _exec_leg(
             if brokered:
                 if review_monitor is not None and review_monitor.cancel.is_set():
                     return 1, "", _HarnessCode("review_operation_cancelled")
+                if qualification_evidence is not None:
+                    qualification_evidence["provider_error_class"] = _agy_provider_error_class(
+                        native_rc=native_rc, stream=stream_metadata, response_present=bool(review_text.strip()),
+                    ).value
                 native_timeout = "timeout waiting for response" in original_log.lower() or (
                     len(raw_stream.strip()) < 200 and "timeout waiting for response" in raw_stream.lower()
                 )
@@ -20017,6 +20194,7 @@ def _default_spawn(
                         if claude_status != "OK" and claude_sink:
                             leg_detail = claude_sink[-1]
                         return claude_status, claude_text
+                    qualify_agy = leg == "gemini" and review_monitor is not None and _measuring_qualification_candidate()
                     try:
                         rc, text, log = _exec_leg(
                             leg, review_dir, out_dir, leg_timeout, artifact, provider_mode, broker_model,
@@ -20035,6 +20213,11 @@ def _default_spawn(
                         typed = isinstance(failure, str) and failure in _seat_jail.NOTICE_CODES
                         if typed:
                             seat_notices.append(failure)
+                        if qualify_agy:
+                            login_wait = review_monitor.record.get("login_wait", {})
+                            broker.evidence["provider_error_class"] = _agy_provider_error_class(
+                                failure=exc, login_wait_state=login_wait.get("state"),
+                            ).value
                         gemini_detail = (
                             "review_monitoring_write_failed" if review_monitor is not None and review_monitor.write_failed
                             else failure if typed
@@ -20051,6 +20234,10 @@ def _default_spawn(
                         leg_detail = _leg_failure_detail(
                             status, rc, text, log, _seat_paths(base, review_dir, out_dir, resolved_repo_dir),
                         )
+                    if qualify_agy and (status == "OK" or review_monitor.cancel.is_set()):
+                        broker.evidence.pop("provider_error_class", None)
+                    elif qualify_agy:
+                        broker.evidence.setdefault("provider_error_class", ProviderErrorClass.UNKNOWN.value)
                     return status, text
                 def _cancel_parent_infer() -> None:
                     # Expiry requests cancellation; only failed cleanup is fatal.
@@ -20084,6 +20271,11 @@ def _default_spawn(
                 "provider_response_sha256": sha256(response_text.encode()).hexdigest(),
                 "provider_response_bytes": len(response_text.encode()),
             })
+            if "provider_error_class" in broker.evidence:
+                error_class = ProviderErrorClass.read(broker.evidence.pop("provider_error_class"))
+                secrets = (_EXEC_OBSERVATION.get() or {}).get("scan_secrets", ())
+                if error_class is not None and _scan_exec_field(error_class.value, secrets, patterns=False) is not None:
+                    broker.evidence["provider_error_class"] = error_class.value
             if leg_detail is not None and response["status"] == "OK":
                 leg_detail = None  # a detail only ever describes a failed leg
             placement_evidence = _sandbox_evidence()
