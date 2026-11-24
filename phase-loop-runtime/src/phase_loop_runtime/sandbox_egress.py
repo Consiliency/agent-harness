@@ -809,6 +809,8 @@ def _proxy_bridge_confines(prefix, python3: str, port: int, *, private: bool = F
             r"Host: phase-loop-bridge-check.invalid:443\r\n"
             r"Proxy-Authorization: Basic c3J0Og==\r\n\r\n",
         )
+        if probe == _PROXY_BRIDGE_CHECK:
+            raise EgressUnavailable("the private Gemini readiness header was not installed")
     try:
         done = subprocess.run([*prefix, python3, "-I", "-S", "-c", probe, str(port)],
                               capture_output=True, text=True, timeout=60)

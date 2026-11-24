@@ -184,6 +184,12 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "leg refused", "seat-home not writable", "check disk"),
     "seat_sandbox_refused:token_file_unsafe": (
         "leg refused", "seat-token file not owner-only", "chmod 600, dir 700, own it"),
+    "seat_sandbox_refused:gemini_proxy_token_missing": (
+        "leg refused", "the parent did not receive the Gemini proxy scan token",
+        "retry the review and report a runtime defect if the refusal recurs"),
+    "seat_sandbox_refused:gemini_proxy_url_invalid": (
+        "leg refused", "the Gemini proxy URL differs from the seat's loopback endpoint",
+        "check that the launcher and runtime are from the same release"),
     "seat_sandbox_refused:gemini_credential_unsafe": (
         "leg refused", "operator agy credential file unsafe or unreadable",
         "fix owner, mode, or re-login agy"),
@@ -626,14 +632,13 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "runs again"),
 }
 
-NOTICE_CODES: frozenset[str] = frozenset(NOTICES)
-
-# These launch-time Gemini refusals are leg details. They cannot be emitted by the
-# route resolver, whose mode lines use the closed OD-10 notice vocabulary.
+# These launch-time refusals have board notices. Route resolver mode lines retain
+# their closed OD-10 vocabulary.
 _GEMINI_PROXY_REFUSALS = frozenset({
     "seat_sandbox_refused:gemini_proxy_token_missing",
     "seat_sandbox_refused:gemini_proxy_url_invalid",
 })
+NOTICE_CODES: frozenset[str] = frozenset(NOTICES) - _GEMINI_PROXY_REFUSALS
 
 #: SEATS CODEX IF-0-CODEX-5: the jailed Codex seat's nine codes, each a row above. The
 #: closed detail vocabulary (`panel_invoker._HARNESS_DETAIL_CODES`) takes them from here.
@@ -721,13 +726,14 @@ def render_notice(code: object, seat_key: object) -> Notice | None:
 
 
 class SeatSandboxRefused(RuntimeError):
-    """A pre-launch or runtime refusal. ``code`` is a fixed refusal literal. ``also`` lists
+    """A refusal from the notice vocabulary, including ``_GEMINI_PROXY_REFUSALS``.
+
+    ``also`` lists
     sibling notices that explain it (never a second refusal code), e.g. an ignored seat-token
     override beside a missing login."""
 
     def __init__(self, code: str, message: str = "", also: tuple[str, ...] = ()) -> None:
-        if ((code not in NOTICES and code not in _GEMINI_PROXY_REFUSALS)
-                or any(extra not in NOTICES for extra in also)):
+        if code not in NOTICES or any(extra not in NOTICES for extra in also):
             raise ValueError(f"unknown seat sandbox code {code!r}")
         super().__init__(message or code)
         self.code = code
@@ -736,7 +742,7 @@ class SeatSandboxRefused(RuntimeError):
 
 def refused(sub: str) -> str:
     code = REFUSED_PREFIX + sub
-    if code not in NOTICES and code not in _GEMINI_PROXY_REFUSALS:
+    if code not in NOTICES:
         raise ValueError(f"unknown refusal {code!r}")
     return code
 

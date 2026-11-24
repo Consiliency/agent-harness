@@ -1489,3 +1489,11 @@ def test_seats_firstseat_jailed_tail_needs_turnless_journal(monkeypatch, tmp_pat
                                           prompt="p", broker_evidence={}, failure_detail_sink=[])
     assert run("claude")[0] == "DEGRADED"
     assert seat.notices == notices
+
+
+@pytest.mark.parametrize("subcode", ["gemini_proxy_token_missing", "gemini_proxy_url_invalid"])
+def test_gemini_proxy_launch_refusals_render_board_notices(subcode):
+    code = seat_jail.refused(subcode)
+    leg = pi.attach_seat_notices(pi.PanelLegResult("gemini", "DEGRADED", "", detail=code), [code])
+    notice, = pi.refused_seat_notices([leg])
+    assert notice.code == code and notice.why and notice.fix

@@ -140,7 +140,7 @@ def test_descend_and_capacity_sets_keep_their_literal_values():
 
 def test_existing_notice_rows_are_byte_identical():
     base = {code: list(row) for code, row in seat_jail.NOTICES.items()
-            if not code.startswith(PREFIX)}
+            if not code.startswith(PREFIX) and code in seat_jail.NOTICE_CODES}
     assert (len(base), _digest(base)) == BASE_NOTICES
 
 

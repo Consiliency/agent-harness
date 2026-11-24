@@ -1,7 +1,7 @@
 {
   "issue": "Consiliency/agent-harness#2157",
   "comparison_base": "57ffbc3e6f56269a72642880dcaf65a5ab9c02dd",
-  "evidence_scope": "Static and unit verification of candidate source; release and owner qualification pending.",
+  "evidence_scope": "Static and unit verification plus a provider-free Bubblewrap child. Release and owner qualification pending.",
   "profile_fixture": "Fixed system mounts from test_seat_profiles.py on both architectures.",
   "l8_fixture": "The fixed profile above with a synthetic host and, for dependency rows, a synthetic projection.",
   "grok_jail_context_fixture": "Synthetic image digest consisting of 64 lowercase f characters.",
@@ -13,11 +13,11 @@
   "pin_moves": {
     "agy_source_pins.panel_invoker.py": {
       "base": "ed80aedc45a91405cac938828300d8f5ac802ecc6ebbe3dca12640ceff5e60b7",
-      "candidate": "33d597f2665c5364074dc978e5eb9f7760bec8cd58cdf9c2125df8f64947a1c6"
+      "candidate": "155e1f78858ac9f9094439742b26d8a01521bf6125476bc53357c3955f2e45d0"
     },
     "agy_source_pins.sandbox_egress.py": {
       "base": "6ab7b23320e960052932bb0a570202f4525534c384f12b660113886ff4f387a3",
-      "candidate": "2b5f87e19e753f21025d50001811a3da7c6344d1515b92f10985181a48eabfcb"
+      "candidate": "3a712be787888b93369c0907410585ef997723bb8ef97e0a3946109b3a0f578d"
     },
     "agy_source_pins.seat_egress_proxy.py": {
       "base": "1902c0aff133dcd89451501a3c183ca0037dc952b8caeae58a8579ce4560ac9b",
@@ -25,7 +25,7 @@
     },
     "agy_source_pins.seat_jail.py": {
       "base": "75d4826c720b53c60270018721f49200475928a09d27fdbc09aa4eb0e41b1a83",
-      "candidate": "83779236700d32b99263f5d97d025362bf6d6b577f90d09f576f30bf25f4f538"
+      "candidate": "1ed0ebcc5db6dfe3749d12f75ebde53b4278882582c96d00258a0b25a9aa5926"
     },
     "agy_source_pins.seat_jail_qualification.py": {
       "base": "4bbc622f3ddc6ae8fda21498055fb258bfa62524fcd9d5c61949b96ca7de787b",
@@ -81,11 +81,11 @@
     },
     "window_release_identity": {
       "base": "76a5d6f7dc01520f579a07777a63ea95d57cb5141f24f63950b7eeb7da852876",
-      "candidate": "67ac203ab0c42266ebd1e1e130dfca954c32b32c87c68a662568a2731af7d4f1"
+      "candidate": "fe7bd0d099f4245ff1d5d943c8e5bbb1c247eb2a799fab62f9305fcb0fc42c48"
     },
     "window_runtime_digest": {
       "base": "66d1accd4995439950aefc7bccd8fb1ba8147af2348eac3bd9b22764e1136628",
-      "candidate": "924484163adb17b580e0114fefb2595e18dcc9b5422ddd9de3ee257d0a52bbae"
+      "candidate": "81f4ce31382878defaaec75ec8d4bd01fc4f2a4d2511ac6794ec0292d8d3d84f"
     }
   },
   "claude_sdk_proof_binding_moves": {
@@ -131,5 +131,16 @@
     "Run integrated Gemini W1 with the admitted image and delivered credential under the owner account on the owner's primary board host.",
     "Record EC-EXECFIND-2 on each Gemini host and account pair.",
     "Qualify affected Codex row windows and restart Grok series that require same-runtime evidence."
-  ]
+  ],
+  "provider_free_bwrap": {
+    "checks": [
+      "visible argv",
+      "process environment",
+      "literal proxy endpoint",
+      "readable launch files",
+      "inherited descriptors"
+    ],
+    "passed": true,
+    "network_namespace": "private, no proxy or provider started"
+  }
 }

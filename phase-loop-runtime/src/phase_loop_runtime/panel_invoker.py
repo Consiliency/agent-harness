@@ -2437,7 +2437,7 @@ def attach_seat_notices(leg: PanelLegResult, codes: Sequence[str]) -> PanelLegRe
     """Attach typed notice codes outside the dataclass fields (agent-harness#1132). Only
     exact vocabulary codes are kept; anything else is dropped, never rendered."""
     kept = tuple(code for code in codes
-                 if type(code) is str and code in _seat_jail.NOTICE_CODES)
+                 if type(code) is str and code in _seat_jail.NOTICES)
     object.__setattr__(leg, "_seat_notice_codes", kept)
     return leg
 
@@ -16858,77 +16858,79 @@ def _exec_jailed_gemini_leg(
     review working, and a subagent or any event P3 did not record ends the leg typed. Every
     byte the parent keeps is scanned for the access token first. The seat directories are
     torn down in H before H exits."""
-    if review_monitor is not None and review_monitor.cancel.is_set():
-        _note_exec_refusal_code("review_operation_cancelled")
-        return "UNAVAILABLE", "review_operation_cancelled"
-    # Scan the model bearer and the parent-held proxy token before keeping output.
-    # A match for either value ends the leg with the same typed refusal.
-    secrets = _jailed_gemini_secrets(seat)
-    jail = seat.jail
-    command = _jailed_gemini_command(model)
-    protocol = _broker_gemini_stream_protocol(
-        prompt, tooled=True, qualification_board=window_board is not None,
-    )
-    observation = _EXEC_OBSERVATION.get()
-    if observation is not None:
-        observation["scan_secrets"] = secrets
-    longest = max((len(s) for s in secrets), default=1)
-    seen: list[bytes] = [b""]
-    token_seen: list[bool] = []
-    kinds = tuple("bearer" if secret == seat.token else "proxy_credential" for secret in secrets)
-    stdout_cursor = _StreamCursor(keep=4 * longest)
-
-    def _guard(chunk: bytes) -> bool:
-        # A secret can straddle two chunks: keep a tail as long as its longest encoding.
-        window = seen[0] + chunk
-        if any(_seat_jail.contains_secret(window, secret) for secret in secrets):
-            token_seen.append(True)
-            _note_secret_match(_live_secret_match(
-                "gemini", window, len(seen[0]), stdout_cursor, secrets, kinds, "stdout"))
-            return True
-        seen[0] = window[-4 * longest:]
-        stdout_cursor.advance(chunk)
-        return False
-
-    _record_broker_provider_evidence(
-        broker_evidence, harness="gemini", model=model, command=command, prompt=prompt,
-        cwd=Path(_seat_jail.SEAT_GEMINI_WORKSPACE),
-        env={key: ("<egress-proxy>" if key == "HTTPS_PROXY" else value)
-             for key, value in jail.env.items()},
-        prompt_transport="stream_json_same_session_ingestion",
-        no_tool_controls=_JAILED_GEMINI_TOOL_CONTROLS, stdin_prompt=True,
-        transport_payload=protocol.transport,
-        transport_metadata={
-            "provider_stream_protocol": protocol.protocol,
-            "provider_stream_chunk_count": len(protocol.chunk_sha256),
-            "provider_stream_chunk_sha256": protocol.chunk_sha256,
-            "provider_stream_chunk_bytes": protocol.chunk_bytes,
-            "provider_stream_final_event_sha256": protocol.final_event_sha256,
-        },
-    )
-    if broker_evidence is not None:
-        broker_evidence.update({
-            "provider_input_mode": "pointer",
-            "provider_input_inline": False,
-            "provider_cwd_class": "seat_jail_empty_workspace",
-            "provider_cwd_sha256": sha256(
-                f"{_seat_jail.SEAT_GEMINI_WORKSPACE}\0{jail.profile_digest}".encode()).hexdigest(),
-            "sandbox_filesystem_confined": True,
-            "seat_jail_profile_id": jail.profile_id,
-            "seat_jail_profile_digest": jail.profile_digest,
-            "seat_jail_filter_sha256": jail.filter_digest,
-            "seat_jail_owner_argv_shape": tuple(jail.redacted_owner()),
-            "provider_image_sha256": seat.image_sha256,
-            "provider_admission_class": seat.admission_class,
-            "provider_agy_subscription_reference": "access_token_only_copy",
-            **({"egress": dict(egress_evidence)} if egress_evidence is not None else {}),
-        })
     proc = None
-    _note_exec_stage("launch")
+    window_started = False
     try:
+        if review_monitor is not None and review_monitor.cancel.is_set():
+            _note_exec_refusal_code("review_operation_cancelled")
+            return "UNAVAILABLE", "review_operation_cancelled"
+        # Scan the model bearer and the parent-held proxy token before keeping output.
+        # A match for either value ends the leg with the same typed refusal.
+        secrets = _jailed_gemini_secrets(seat)
+        jail = seat.jail
+        command = _jailed_gemini_command(model)
+        protocol = _broker_gemini_stream_protocol(
+            prompt, tooled=True, qualification_board=window_board is not None,
+        )
+        observation = _EXEC_OBSERVATION.get()
+        if observation is not None:
+            observation["scan_secrets"] = secrets
+        longest = max((len(s) for s in secrets), default=1)
+        seen: list[bytes] = [b""]
+        token_seen: list[bool] = []
+        kinds = tuple("bearer" if secret == seat.token else "proxy_credential" for secret in secrets)
+        stdout_cursor = _StreamCursor(keep=4 * longest)
+
+        def _guard(chunk: bytes) -> bool:
+            # A secret can straddle two chunks: keep a tail as long as its longest encoding.
+            window = seen[0] + chunk
+            if any(_seat_jail.contains_secret(window, secret) for secret in secrets):
+                token_seen.append(True)
+                _note_secret_match(_live_secret_match(
+                    "gemini", window, len(seen[0]), stdout_cursor, secrets, kinds, "stdout"))
+                return True
+            seen[0] = window[-4 * longest:]
+            stdout_cursor.advance(chunk)
+            return False
+
+        _record_broker_provider_evidence(
+            broker_evidence, harness="gemini", model=model, command=command, prompt=prompt,
+            cwd=Path(_seat_jail.SEAT_GEMINI_WORKSPACE),
+            env={key: ("<egress-proxy>" if key == "HTTPS_PROXY" else value)
+                 for key, value in jail.env.items()},
+            prompt_transport="stream_json_same_session_ingestion",
+            no_tool_controls=_JAILED_GEMINI_TOOL_CONTROLS, stdin_prompt=True,
+            transport_payload=protocol.transport,
+            transport_metadata={
+                "provider_stream_protocol": protocol.protocol,
+                "provider_stream_chunk_count": len(protocol.chunk_sha256),
+                "provider_stream_chunk_sha256": protocol.chunk_sha256,
+                "provider_stream_chunk_bytes": protocol.chunk_bytes,
+                "provider_stream_final_event_sha256": protocol.final_event_sha256,
+            },
+        )
+        if broker_evidence is not None:
+            broker_evidence.update({
+                "provider_input_mode": "pointer",
+                "provider_input_inline": False,
+                "provider_cwd_class": "seat_jail_empty_workspace",
+                "provider_cwd_sha256": sha256(
+                    f"{_seat_jail.SEAT_GEMINI_WORKSPACE}\0{jail.profile_digest}".encode()).hexdigest(),
+                "sandbox_filesystem_confined": True,
+                "seat_jail_profile_id": jail.profile_id,
+                "seat_jail_profile_digest": jail.profile_digest,
+                "seat_jail_filter_sha256": jail.filter_digest,
+                "seat_jail_owner_argv_shape": tuple(jail.redacted_owner()),
+                "provider_image_sha256": seat.image_sha256,
+                "provider_admission_class": seat.admission_class,
+                "provider_agy_subscription_reference": "access_token_only_copy",
+                **({"egress": dict(egress_evidence)} if egress_evidence is not None else {}),
+            })
+        _note_exec_stage("launch")
         if window_board is not None:
             if quiescence_latch is None or review_authorization is None:
                 raise ValueError("qualification board launch is missing its binding")
+            window_started = True
             if not window_board.start(
                 seat, window_board.proxy, quiescence_latch, command, prompt,
                 review_authorization,
@@ -16948,7 +16950,7 @@ def _exec_jailed_gemini_leg(
         if proc is not None and sys.exception() is None:
             _note_exec_stage("cleanup")  # a launch that ended; its cleanup is what remains
         try:
-            if window_board is not None and quiescence_latch is not None:
+            if window_started:
                 window_board.finish(
                     seat, _EGRESS_LAUNCH_PREFIX.get(), quiescence_latch,
                 )
@@ -19903,7 +19905,7 @@ def _default_spawn(
                         seat_notices.extend(seat.notices)
                         if gemini_status != "OK" and gemini_sink:
                             leg_detail = gemini_sink[-1]
-                            if gemini_sink[-1].template in _seat_jail.NOTICE_CODES:
+                            if gemini_sink[-1].template in _seat_jail.NOTICES:
                                 seat_notices.append(gemini_sink[-1].template)
                         return gemini_status, gemini_text
                     if leg == "claude":

@@ -120,13 +120,14 @@ def _window_session(events, *, delivered=b'{"token":{"access_token":"fixture","e
                 self.cleaned = True
 
     jail = SimpleNamespace(
-        env={"HOME": "/seat/home", "HTTPS_PROXY": "http://u:p@127.0.0.1:3128",
+        env={"HOME": "/seat/home", "HTTPS_PROXY": "http://127.0.0.1:3128",
              "SSL_CERT_FILE": "/seat/ca.pem", "DBUS_SESSION_BUS_ADDRESS": "drop"},
         profile_digest="f" * 64,
     )
     seat = SimpleNamespace(
         jail=jail, probe_jail=jail, holder_pid=71, seat_dir=Path("/host/seat"),
         review_dir=Path("/host/review"), token=b"fixture", delivered_copy=delivered,
+        private_proxy_token=b"fixture-proxy",
         image_sha256="a" * 64, admission_class="fixture",
         expires_at=None,
     )
@@ -351,8 +352,10 @@ def test_seats_firstseat_exec_record_jailed_adapters(tmp_path, monkeypatch, vend
     jail = SimpleNamespace(env={}, leg=vendor, provider_argv0="/seat/bin/" + vendor,
         profile_digest="d", profile_id="p", filter_digest="f",
         redacted_owner=lambda: [], pass_fds=())
-    seat = pi._JailedSeat(jail=jail, probe_jail=jail, holder_pid=1, token=b"fixture-token",
-        review_dir=tmp_path, seat_dir=tmp_path, expires_at=None)
+    seat_type = pi._JailedGeminiSeat if vendor == "gemini" else pi._JailedSeat
+    proxy = {"private_proxy_token": b"fixture-proxy"} if vendor == "gemini" else {}
+    seat = seat_type(jail=jail, probe_jail=jail, holder_pid=1, token=b"fixture-token",
+                     review_dir=tmp_path, seat_dir=tmp_path, **proxy)
     monkeypatch.setattr(pi, "_run_leg_with_liveness", lambda *a, **k:
         SimpleNamespace(returncode=exit_code, stdout="", stderr=""))
     monkeypatch.setattr(pi, "_run_claude_tui_session", lambda **k:
@@ -482,7 +485,7 @@ def test_seats_firstseat_exec_record_window_jailed_run_exact_env(monkeypatch):
         key, value = item.split(b"=", 1)
         got[key.decode()] = value.decode()
     assert got == {
-        "HTTPS_PROXY": "http://u:p@127.0.0.1:3128",
+        "HTTPS_PROXY": "http://127.0.0.1:3128",
         "MARK": "ok",
         "PATH": "/usr/bin",
         "SSL_CERT_FILE": "/seat/ca.pem",

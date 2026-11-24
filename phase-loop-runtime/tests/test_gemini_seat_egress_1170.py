@@ -801,3 +801,67 @@ def test_gemini_preparation_refuses_an_incomplete_proxy_binding(
                                   credential=credential)
     assert exc.value.code == f"seat_sandbox_refused:{code}"
     assert not (tmp_path / "seat" / seat_jail.HOST_GEMINI_CONFIG_DIRNAME).exists()
+
+
+def test_credential_free_gemini_view_in_provider_free_bwrap(tmp_path, monkeypatch):
+    import shutil
+    from ._seat_prereq import USERNS_UNAVAILABLE, skip_unless_capable, unprivileged_bwrap_ok
+    from .test_gemini_seat_mode_pin import _compose_seat
+    from .test_seat_jail import _test_owner
+
+    skip_unless_capable(None if unprivileged_bwrap_ok() else USERNS_UNAVAILABLE)
+    python = shutil.which("python3", path="/usr/bin:/bin")
+    assert python
+    seat = _compose_seat(tmp_path, monkeypatch)
+    jail = seat.jail
+    token = seat.private_proxy_token
+    assert token == b"fixture-session"
+    child = r"""
+import json, os, stat
+from pathlib import Path
+
+token = b"".join((b"fixture", b"-session"))
+
+def contains_token(path):
+    with path.open("rb") as handle:
+        return token in handle.read()
+
+argv = [Path("/proc/1/cmdline"), Path("/proc/self/cmdline")]
+environ = Path("/proc/self/environ")
+fds = []
+for entry in Path("/proc/self/fd").iterdir():
+    if int(entry.name) < 3:
+        continue
+    try:
+        mode = entry.stat().st_mode
+        fds.append(not stat.S_ISREG(mode) or contains_token(entry))
+    except FileNotFoundError:
+        continue  # the directory enumeration's own fd
+
+files = [file for root in (Path("/seat"), Path("/tmp"))
+         for file in root.rglob("*") if file.is_file() and not file.is_symlink()]
+print(json.dumps({
+    "argv_clean": not any(contains_token(path) for path in argv),
+    "environment_clean": not contains_token(environ),
+    "proxy_is_literal": os.environ["HTTPS_PROXY"] == "http://127.0.0.1:3128",
+    "files_clean": bool(files) and not any(contains_token(file) for file in files),
+    "descriptors_clean": not any(fds),
+}))
+"""
+    try:
+        owner = _test_owner(jail)
+        _assert_credential_free_gemini_jail(jail, token)
+        assert token not in b"\0".join(map(os.fsencode, owner))
+        done = subprocess.run(
+            [*owner, "--unshare-net", python, "-I", "-S", "-c", child],
+            capture_output=True, text=True, timeout=60, pass_fds=jail.pass_fds,
+            env={"PATH": "/usr/bin:/bin"},
+        )
+    finally:
+        seat_jail.close_jail_fds(jail)
+        seat_jail.close_jail_fds(seat.probe_jail)
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == dict.fromkeys(
+        ("argv_clean", "environment_clean", "proxy_is_literal", "files_clean", "descriptors_clean"),
+        True,
+    )

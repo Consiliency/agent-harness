@@ -1594,8 +1594,11 @@ are recorded on agent-harness#1132.
   upstream bytes. The parent scans output for the proxy token and the model bearer.
   Preparation refuses with `seat_sandbox_refused:gemini_proxy_token_missing` if the parent
   scan token is absent and `seat_sandbox_refused:gemini_proxy_url_invalid` if the URL differs
-  from the literal endpoint. The leg's evidence
-  records `egress` (with `tls_inspection: true`). Without the layer the seat is DEGRADED and not
+  from the literal endpoint. The Gemini jail profile digest changes.
+  After release, run integrated W1 under the owner account on the owner's primary board host,
+  then record EC-EXECFIND-2 for every Gemini host and account. Requalify affected Codex row
+  windows and reissue grants against the installed runtime.
+  The leg's evidence records `egress` (with `tls_inspection: true`). Without the layer the seat is DEGRADED and not
   run with `gemini_seat_egress_unavailable`; its fix is `phase-loop seat-egress install`.
 - **EC-EXECFIND-2 gate.** A jailed route whose jail profile digest has no EC-EXECFIND-2
   falsifier pass recorded on THIS host is REFUSED before any effect with

@@ -21,6 +21,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 - Jailed Gemini seats use a credential-free loopback proxy URL. The host front keeps
   per-launch proxy authentication on its private hop to SRT (agent-harness#2157).
+  After release, run integrated W1 under the owner account on the owner's primary board host,
+  then record EC-EXECFIND-2 for every Gemini host and account. Requalify affected Codex row
+  windows and reissue grants against the installed runtime.
 
 ## [0.7.43] - Unreleased candidate
 

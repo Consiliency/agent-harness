@@ -899,7 +899,9 @@ def test_private_front_requires_the_launchs_owned_socket(tmp_path, monkeypatch, 
     from unittest.mock import patch
 
     directory = tmp_path / "front"
-    directory.mkdir(mode=0o755 if problem == "mode" else 0o700)
+    directory.mkdir(mode=0o700)
+    if problem == "mode":
+        directory.chmod(0o755)
     alias = tmp_path / "alias"
     alias.symlink_to(directory, target_is_directory=True)
     path = (alias if problem == "symlink" else directory) / "front.sock"
@@ -935,3 +937,97 @@ def test_private_readiness_requires_407_and_sends_an_invalid_header(monkeypatch)
 
     monkeypatch.setattr(sandbox_egress.subprocess, "run", run)
     assert not sandbox_egress._proxy_bridge_confines((), "python3", 3128, private=True)
+
+
+@pytest.mark.parametrize("case,expected_events", [
+    ("valid", ["front", "bridge", "bound", "front", "probe", "bound", "front"]),
+    ("mismatched-front", ["front"]),
+    ("unbound-bridge", ["front", "bridge", "bound"]),
+    ("changed-front", ["front", "bridge", "bound", "front", "probe", "bound", "front"]),
+    ("unattested-front", []),
+    ("both-arguments", []),
+])
+def test_private_proxy_readiness_is_required_by_namespace_launch(tmp_path, monkeypatch, request, case,
+                                                                expected_events):
+    from types import SimpleNamespace
+
+    from phase_loop_runtime import panel_invoker, seat_uid
+
+    identity = (1, 2, "fixture")
+    proxy = SimpleNamespace(socket=str(tmp_path / "front.sock"), process=object(),
+                            front_identity=None if case == "unattested-front" else identity)
+    holder = SimpleNamespace(pid=12345, terminate=lambda: None, poll=lambda: None)
+    bridge = SimpleNamespace(pid=23456, terminate=lambda: None, wait=lambda **kw: None,
+                             poll=lambda: None)
+    events = []
+    workdirs = []
+    write_resolver = sandbox_egress._write_namespace_resolver
+
+    def resolver(work):
+        workdirs.append(work)
+        return write_resolver(work)
+
+    def launch(argv, **kwargs):
+        if argv[0].endswith("/unshare"):
+            gate = os.dup(kwargs["pass_fds"][0])
+            request.addfinalizer(lambda: os.close(gate))
+            work, = workdirs
+            (work / "pid").write_text(str(holder.pid))
+            (work / "ready").touch()
+            return holder
+        events.append("bridge")
+        assert argv[-1] == f"UNIX-CONNECT:{proxy.socket}"
+        return bridge
+
+    def front(path, process):
+        assert (path, process) == (proxy.socket, proxy.process)
+        events.append("front")
+        if case == "mismatched-front" or (case == "changed-front" and "probe" in events):
+            return (1, 3, "other")
+        return identity
+
+    def bound(process, pid, listener, argv, port):
+        assert (process, pid, listener, port) == (holder, str(holder.pid), bridge, 3128)
+        assert argv[-1] == f"UNIX-CONNECT:{proxy.socket}"
+        events.append("bound")
+        return case != "unbound-bridge"
+
+    def probe(prefix, python, port, *, private=False):
+        assert private and port == 3128 and str(holder.pid) in prefix
+        events.append("probe")
+        return True
+
+    monkeypatch.setattr(sandbox_egress, "egress_isolation_available", lambda: True)
+    monkeypatch.setattr(sandbox_egress, "host_addresses", lambda: ())
+    monkeypatch.setattr(sandbox_egress, "trusted_host_executable", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(sandbox_egress, "_wait_for_new_user_namespace", lambda *a: None)
+    monkeypatch.setattr(sandbox_egress, "_write_namespace_resolver", resolver)
+    monkeypatch.setattr(sandbox_egress, "_unix_front_identity", front)
+    monkeypatch.setattr(sandbox_egress, "_private_bridge_bound", bound)
+    monkeypatch.setattr(sandbox_egress, "_proxy_bridge_confines", probe)
+    monkeypatch.setattr(sandbox_egress, "time", SimpleNamespace(
+        monotonic=iter(range(0, 200, 10)).__next__, sleep=lambda _: None))
+    monkeypatch.setattr(seat_uid, "map_holder", lambda _: None)
+    monkeypatch.setattr(panel_invoker, "launch_provider", launch)
+    monkeypatch.setattr(panel_invoker, "run_provider", lambda *a, **kw: None)
+    monkeypatch.setattr(sandbox_egress.subprocess, "run", lambda *a, **kw: SimpleNamespace(returncode=0))
+    options = {"proxy_socket": proxy.socket} if case == "both-arguments" else {}
+    network = sandbox_egress.isolated_network(
+        private_proxy=proxy, required=True, seat_uid_map=True, **options)
+    if case == "valid":
+        with network as prefix:
+            assert str(holder.pid) in prefix and sandbox_egress._BRIDGES[str(holder.pid)] is bridge
+    else:
+        with pytest.raises(sandbox_egress.EgressUnavailable, match=r"private Gemini (front|bridge)"):
+            with network:
+                pytest.fail("refused proxy yielded a usable namespace")
+    assert events == expected_events
+    assert str(holder.pid) not in sandbox_egress._BRIDGES
+
+
+def test_private_readiness_refuses_a_missing_header_anchor(monkeypatch):
+    monkeypatch.setattr(sandbox_egress, "_PROXY_BRIDGE_CHECK", "changed probe")
+    monkeypatch.setattr(sandbox_egress.subprocess, "run",
+                        lambda *a, **kw: pytest.fail("probe ran without the dummy header"))
+    with pytest.raises(sandbox_egress.EgressUnavailable, match="readiness header"):
+        sandbox_egress._proxy_bridge_confines((), "python3", 3128, private=True)

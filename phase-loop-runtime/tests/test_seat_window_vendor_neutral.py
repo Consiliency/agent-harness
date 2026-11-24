@@ -1942,7 +1942,8 @@ def _codex_leg_world(monkeypatch, tmp_path, events, *, provider="ok"):
 
 def _gemini_leg_world(monkeypatch, tmp_path, events, *, provider="ok"):
     from phase_loop_runtime import panel_invoker as panel
-    seat = SimpleNamespace(token=b"tok", expires_at=None, notices=[], probe_jail=None,
+    seat = SimpleNamespace(token=b"tok", private_proxy_token=b"fixture",
+                           expires_at=None, notices=[], probe_jail=None,
                            image_sha256="b" * 64, admission_class="release_qualified",
                            jail=SimpleNamespace(env={}, profile_digest="7" * 64,
                                                 filter_digest="8" * 64, profile_id="gemini",
@@ -3032,3 +3033,29 @@ def test_k1_bot_the_verifier_checks_prepaid_starts(row_world):
                 + "\n").encode()
     _forge_consistently(row_world, name, append_expired_start)
     assert row_world.verify()["code"] == "window_exception_expired"
+
+
+def test_gemini_missing_proxy_token_refuses_and_cleans_up(tmp_path, monkeypatch):
+    from phase_loop_runtime import panel_invoker as panel, seat_jail
+
+    events = []
+    seat = _gemini_leg_world(monkeypatch, tmp_path, events)
+    del seat.private_proxy_token
+    board = SimpleNamespace(
+        start=lambda *a: pytest.fail("watch started without the proxy token"),
+        finish=lambda *a: pytest.fail("an unstarted watch was finalized"),
+    )
+
+    def cleanup(refused_seat, *, primary):
+        assert refused_seat is seat
+        assert primary.code == "seat_sandbox_refused:gemini_proxy_token_missing"
+        events.append("cleanup")
+
+    monkeypatch.setattr(panel, "_cleanup_jailed_seat", cleanup)
+    with pytest.raises(seat_jail.SeatSandboxRefused) as exc:
+        panel._exec_jailed_gemini_leg(
+            seat, deadline_s=1, model="fixture", prompt="fixture", broker_evidence=None,
+            window_board=board, quiescence_latch=object(), review_authorization=object(),
+        )
+    assert exc.value.code == "seat_sandbox_refused:gemini_proxy_token_missing"
+    assert events == ["cleanup"]

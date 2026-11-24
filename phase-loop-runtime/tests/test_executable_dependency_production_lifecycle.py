@@ -99,7 +99,9 @@ def test_jailed_leg_dependency_refusal_runs_real_descriptor_cleanup_before_bound
     )
     probe = _dummy_pipe_jail(None, "")
     descriptors = (*production.pass_fds, *probe.pass_fds)
-    seat = panel_invoker._JailedSeat(
+    seat_type = panel_invoker._JailedGeminiSeat if leg == "gemini" else panel_invoker._JailedSeat
+    proxy = {"private_proxy_token": b"fixture-proxy"} if leg == "gemini" else {}
+    seat = seat_type(
         jail=production,
         probe_jail=probe,
         holder_pid=123,
@@ -108,6 +110,7 @@ def test_jailed_leg_dependency_refusal_runs_real_descriptor_cleanup_before_bound
         seat_dir=tmp_path / "seat",
         image_sha256="1" * 64,
         admission_class="synthetic",
+        **proxy,
     )
     teardown: list[tuple[int, str]] = []
     retained: list[Path] = []
