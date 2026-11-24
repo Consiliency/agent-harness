@@ -11,6 +11,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - LANEEXEC SL-2: `ReturnPolicy` supports independent patch and JSON result byte caps,
   including zero. A return above its cap yields `sandbox_launch_result_invalid` and
   leaves no retained bytes. A verified absent proposal still returns null without a code.
+- LaneExec tracks launch ownership, renewal, cancellation and cleanup by generation. Release
+  and reap retain an allocation while cleanup evidence is unresolved. Trusted scheduler
+  calls can pass an immutable lane context through the launch service.
 
 ## [0.7.42] - Unreleased candidate
 
