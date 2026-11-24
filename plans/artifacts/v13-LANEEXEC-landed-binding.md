@@ -4,7 +4,7 @@ Frozen artifact for `plans/phase-plan-v13-LANEEXEC.md` (re-plan). It has no word
 cap. The wire contract stays `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`,
 vendored by agent-toolkit at its digest (IF-XR-1). The wire incorporates
 LANEEXEC-v1-errata-1 (the `x-errata` local template change) and the reviewed toolkit
-manifest repin in LANEEXEC-v1-errata-6 (§10). Errata 2–5 (§§6–9) bind the plan
+manifest repin in LANEEXEC-v1-errata-6 (§10). Errata 2–5 (§§6–9) and 7 (§11) bind the plan
 without changing the wire. Nothing here adds, removes or renames a wire member,
 enum value, code, verb or exit class.
 
@@ -358,8 +358,7 @@ claim, before snapshot.
 - An admitted openshell `pi-runner` launch carries a grant with no rule. Its envelope
   binds that grant's digest, so model traffic can only use the credential-proxy link,
   through the bridge (IF-XR-3).
-- L-S7 is unchanged. Under shipped defaults every openshell launch is still
-  `sandbox_launch_route_disabled`, now by this check.
+- L-S7 is unchanged. See §11 E7-2 for refusal precedence under shipped defaults.
 - The dormant reserve-time gate of agent-harness#2003 stays defence in depth. It is not
   this boundary.
 
@@ -1058,9 +1057,9 @@ supply those values in that form:
 - This is an open input for SL-9 and ACTIVATE. It does not change E2-6, which stays SL-9's
   review-runner image record.
 
-**Effect.** Under shipped defaults every openshell route is `route_disabled` before the
-template step, so no runtime behavior changes. SL-7 owns the tests: the fixture positive
-case, the production `runtime_unavailable` refusal, and the rejection of a `runtime` member.
+**Effect.** The OpenShell activation check precedes the template step (see §11 E7-2).
+SL-7 owns the tests: the fixture positive case, the production `runtime_unavailable`
+refusal, and the rejection of a `runtime` member.
 
 ## 9. Erratum LANEEXEC-v1-errata-5 — SL-8 on the integrated interfaces
 
@@ -1115,3 +1114,17 @@ The PLACECLI `process-v1.schema.json` and the EC-PLACECLI/EC-LANEEXEC text in
 `specs/phase-plans-v13.md` retain `9304a5b9` as the design reference for the
 requester-owned credential boundary. The manifest supplies the executable byte
 pin. The offline PLACECLI fake follows the repinned proxy's response behaviour.
+
+## 11. Erratum LANEEXEC-v1-errata-7 — landed SL-8 interpretations
+
+These rulings bind §§6–7 and §9 to the SL-8 implementation in agent-harness#2160.
+The frozen wire takes precedence and retains its §0 digest.
+Paths in the table are relative to `phase-loop-runtime/`.
+
+| Item | Binding and wire basis | Landed implementation and tests |
+| --- | --- | --- |
+| E7-1 | Local renewal starts at `h + T/3`, with `h` the last confirmed heartbeat and `T` the stored TTL. Only a literal `True` from `renew_launch` can confirm renewal. Without confirmation before `h + 2T/3`, retries stop and fencing begins exactly at that cutoff. The supervisor persists the fence only through `fence_launch`, which may wait for an in-flight verified WORKER cancel to release the operation lock. Wire basis is `x-lifetime.liveness` and `x-lifetime.fail_closed`. | `src/phase_loop_runtime/launch_lifetime.py` (`LaunchLifetime.renew`) and `src/phase_loop_runtime/sandbox_placement.py` (`renew_launch` and `fence_launch`). `tests/test_launch_lifetime.py::test_unconfirmed_renewals_retry_until_absolute_fence`. |
+| E7-2 | An absent `launch` object leaves the image allowlist empty and yields `sandbox_launch_image_refused`. With a matching allowlisted image and default activation values, OpenShell yields `sandbox_launch_route_disabled` and local Pi yields `sandbox_launch_local_route_interim`. `x-launch-inputs.binding` and `x-launch-inputs.order` put image binding before `x-activation`. | `src/phase_loop_runtime/launch_exec.py` (`_gate`, `_validate`). `tests/test_launch_service.py::test_image_binding_precedes_default_activation`. |
+| E7-3 | Apply the §6 E2-4 device rule for local scratch at three points. Require a non-anonymous device (excluding RAM-backed devices) and `st_dev` equal to `staging_root()` on the existing scratch, or its trusted parent while absent, at prepared-path verification. Apply the same rule to the new scratch inode under the reservation journal lock before claiming, then to the published scratch at chain start. This applies `x-local-cgroup.automatic_paths` and `x-local-cgroup.refusal` at the steps ordered by `x-launch-inputs.order` and `x-seed.provisioning`. | `src/phase_loop_runtime/launch_exec.py` (`_capture_attempt`) and `src/phase_loop_runtime/launch_supervisor.py` (`_provision`, `_local_chain`, `local_devices`). `tests/test_launch_local_caps.py::test_mount_device`, `tests/test_launch_local_caps.py::test_new_scratch_device_mismatch_refuses_before_claim` and `tests/test_launch_local_caps.py::test_witness_replaced_after_claim_rolls_back` cover the three checks. `tests/test_launch_service.py::test_seed_recheck_and_generation_owned_provisioning[foreign_scratch-None]` covers exclusive creation. |
+| E7-4 | Cancel targets the verified owner for the current claim and generation. Before durable start intent only the verified supervisor socket may act. WORKER cancel requires matching start intent under the operation lock. The chain-start caps recheck (including E7-3) and link socket creation are SL-8’s rollback-eligible steps and precede start intent. Write start intent before entering `capped_popen` and keep the claim for reconciliation on every subsequent failure, including a spawn exception (§3 L-S3). Under the operation lock, check the renewal cutoff before and after writing intent and authorize entry to bounded spawn only within the confirmed window. A spawn already authorized may produce its first process slightly later. Wire basis is `x-status-cancel.cancel`, `x-exec.claim_rollback`, `x-exec.after_start` and `x-lifetime.liveness`. | `src/phase_loop_runtime/launch_supervisor.py` (`_local_chain`) and `src/phase_loop_runtime/sandbox_placement.py` (`cancel_launch_owner`). `tests/test_launch_lifetime.py::test_local_chain_requires_current_renewal_through_start_intent` and `tests/test_launch_lifetime.py::test_generation_before_start_intent_requires_lifecycle_fix`. |
+| E7-5 | Until SL-4 supplies an independent lane-assignment producer, production lane-origin launches that reach envelope admission refuse with `sandbox_launch_admission_refused` and diagnostic `launch_input_unbound` at that step in `x-launch-inputs.order`, under `x-envelope-construction.rule`. The envelope fields `x-envelope-construction.fields.assignment_digest`, `x-envelope-construction.fields.units` and `x-envelope-construction.fields["obligations.definition_digests"]` retain the lane caller's values. SL-4 may only add an equality check against independently derived values. | `src/phase_loop_runtime/launch_exec.py` (`_bound_material` and `_capture_attempt`). `tests/test_launch_admission.py::test_original_commitments_reach_real_capture_through_managed_projection[lane]` and `tests/test_launch_service.py::test_lane_authority_checked_after_independent_decode`. |

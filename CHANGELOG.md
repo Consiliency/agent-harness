@@ -12,6 +12,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   and journals supervisor ownership, start intent and terminal responses. Shipped settings keep
   every launch route closed.
 
+### Changed
+
+- LANEEXEC erratum 7 binds the plan to the landed SL-8 renewal, activation,
+  scratch, cancellation and lane admission rulings (agent-harness#2160).
+
 ## [0.7.43] - Unreleased candidate
 
 ### Added
