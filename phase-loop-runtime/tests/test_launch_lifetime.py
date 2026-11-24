@@ -50,6 +50,27 @@ def test_unconfirmed_renewals_retry_until_absolute_fence(confirm):
         assert loss == [True] and lifetime.fenced.is_set()
 
 
+@pytest.mark.parametrize("failure", ["fence", "lock"])
+def test_unstarted_cleanup_logs_only_the_allowlisted_code(monkeypatch, failure):
+    import syslog
+    import threading
+    from contextlib import nullcontext
+    from phase_loop_runtime.launch_supervisor import _settle_unstarted
+
+    warnings = []
+    monkeypatch.setattr(syslog, "syslog", lambda priority, message: warnings.append((priority, message)))
+    h = SimpleNamespace(
+        ids=("reservation", "request", "generation"), reservation_id="reservation", generation="generation"
+    )
+    life = SimpleNamespace(
+        fence_launch=lambda *args, **kwargs: failure != "fence",
+        launch_operation_lock=lambda *args, **kwargs: nullcontext(False),
+    )
+    lifetime = SimpleNamespace(clock=lambda: 0, renewal_cutoff=1, fenced=threading.Event())
+    _settle_unstarted(h, life, lifetime, threading.Event())
+    assert warnings == [(syslog.LOG_WARNING, "sandbox_placement_release_unconfirmed")]
+
+
 @pytest.mark.parametrize("operation", ["renew", "cancel"])
 def test_generation_before_start_intent_requires_lifecycle_fix(tmp_path, monkeypatch, operation):
     """Requires agent-harness#2156. Both calls use the real SL-3a lifecycle."""

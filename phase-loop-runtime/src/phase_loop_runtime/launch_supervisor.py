@@ -28,7 +28,7 @@ from .launch_process_contract import (
 )
 from .placement_process_contract import canonical_bytes
 from .run_status import process_start_identity
-from .sandbox_placement import ANSWER_BOUND_S, Debt, PlacementLifecycle
+from .sandbox_placement import ANSWER_BOUND_S, Debt, LifecycleError, PlacementLifecycle
 from .supervised_envelope_v2 import canonicalize_v2, parse_v2
 from .supervised_worker_cli import ControllerSnapshot, read_controller_snapshot
 
@@ -884,6 +884,35 @@ def _publish_admitted_controller(h, blobs):
     return published
 
 
+def _settle_unstarted(h, life, lifetime, cancelled):
+    """Fence first, then credit only the cleanup proven by never entering spawn."""
+    import syslog
+
+    cause = "collection_unknown"
+    if lifetime.fenced.is_set() or lifetime.clock() >= lifetime.renewal_cutoff:
+        cause = "renewal_lost"
+    elif cancelled.is_set():
+        cause = "cancel"
+    deadline = time.monotonic() + ANSWER_BOUND_S
+    # The lease remains held. fence_launch takes the operation lock internally.
+    try:
+        if life.fence_launch(*h.ids, cause=cause, deadline=deadline):
+            with life.launch_operation_lock(
+                h.reservation_id, h.generation, timeout_s=max(0, deadline - time.monotonic())
+            ) as held:
+                if held:
+                    debt = life.read_cleanup_debt(*h.ids)
+                    if debt is not None and life.write_cleanup_debt_locked(
+                        *h.ids, debt=replace(debt, descendants_ended=True, parent_collected=True),
+                        deadline=deadline,
+                    ):
+                        return
+    except (OSError, LifecycleError):
+        pass
+    # The detached supervisor has no stderr. Keep paths and exception text out of syslog.
+    syslog.syslog(syslog.LOG_WARNING, "sandbox_placement_release_unconfirmed")
+
+
 def _local(h, effects, stage, blobs, recipe, req, paths, directory, lifetime, cancelled):
     with contextlib.ExitStack() as link_stack:
         return _local_chain(
@@ -930,6 +959,7 @@ def _local_chain(h, effects, stage, blobs, recipe, req, paths, directory, lifeti
     if not caps_ok:
         if _rollback(h, effects, "caps_recheck_refused"):
             return _refusal(req, "sandbox_placement_capability_unmet")
+        _settle_unstarted(h, life, lifetime, cancelled)
         return uncertain
 
     link = None
@@ -940,6 +970,7 @@ def _local_chain(h, effects, stage, blobs, recipe, req, paths, directory, lifeti
         except (OSError, ValueError, KeyError):
             if _rollback(h, effects, "link_socket_creation_failed"):
                 return _refusal(req, "sandbox_launch_bridge_lost")
+            _settle_unstarted(h, life, lifetime, cancelled)
             return uncertain
     command = trusted_module_argv(
         "phase_loop_runtime.supervised_worker_cli",
@@ -949,35 +980,13 @@ def _local_chain(h, effects, stage, blobs, recipe, req, paths, directory, lifeti
         "--result",
         str(stage / "worker-result"),
     )
-    def settle_unstarted():
-        # fence_launch acquires the operation lock itself. The outer lease still
-        # owns this attempt, and this callback runs only before entry to spawn.
-        cause = "collection_unknown"
-        if lifetime.fenced.is_set() or effects.clock() >= lifetime.renewal_cutoff:
-            cause = "renewal_lost"
-        elif cancelled.is_set():
-            cause = "cancel"
-        deadline = time.monotonic() + ANSWER_BOUND_S
-        if not life.fence_launch(*h.ids, cause=cause, deadline=deadline):
-            return
-        with life.launch_operation_lock(
-            h.reservation_id, h.generation, timeout_s=max(0, deadline - time.monotonic())
-        ) as held:
-            if held:
-                debt = life.read_cleanup_debt(*h.ids)
-                if debt is not None:
-                    life.write_cleanup_debt_locked(
-                        *h.ids, debt=replace(debt, descendants_ended=True, parent_collected=True),
-                        deadline=deadline,
-                    )
-
     with (
         contextlib.ExitStack() as before_start,
         life.launch_operation_lock(
             h.reservation_id, h.generation, timeout_s=max(0, end - time.monotonic())
         ) as held,
     ):
-        before_start.callback(settle_unstarted)
+        before_start.callback(_settle_unstarted, h, life, lifetime, cancelled)
         if not held or cancelled.is_set() or lifetime.fenced.is_set():
             return uncertain
         before_spawn = set(threading.enumerate())

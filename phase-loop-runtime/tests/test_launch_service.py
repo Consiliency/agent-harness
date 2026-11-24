@@ -391,9 +391,22 @@ def test_concurrent_request_ids_take_one_claim(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "fault", ["digest", "changed_source", "source_gone_after_recheck", "foreign_scratch", "link_failure"]
+    ("fault", "cleanup"),
+    [
+        ("digest", None),
+        ("changed_source", None),
+        ("source_gone_after_recheck", None),
+        ("foreign_scratch", None),
+        ("link_failure", None),
+        ("digest_and_egress", None),
+        ("egress", None),
+        ("caps_rollback", "release"),
+        ("caps_rollback", "reap"),
+        ("link_rollback", "release"),
+        ("link_rollback", "reap"),
+    ],
 )
-def test_seed_recheck_and_generation_owned_provisioning(tmp_path, monkeypatch, fault):
+def test_seed_recheck_and_generation_owned_provisioning(tmp_path, monkeypatch, fault, cleanup):
     from dataclasses import replace
     from pathlib import Path
     import shutil
@@ -417,7 +430,7 @@ def test_seed_recheck_and_generation_owned_provisioning(tmp_path, monkeypatch, f
                 svc.lifecycle,
                 svc.capped_popen,
                 svc.load_caps,
-                svc.readiness_code,
+                (lambda: "unavailable") if fault == "caps_rollback" else svc.readiness_code,
                 time.monotonic,
                 containment_ready=lambda: True,
                 child_stream=lambda *args: pytest.fail("no child started"),
@@ -476,15 +489,27 @@ def test_seed_recheck_and_generation_owned_provisioning(tmp_path, monkeypatch, f
             command=dict(
                 template_id=record["template_id"], template_sha256=hashlib.sha256(image).hexdigest()
             ),
-            seed=(replace(decl, manifest_sha256="0" * 64) if fault == "digest" else decl).to_json(),
+            seed=(replace(decl, manifest_sha256="0" * 64) if fault in ("digest", "digest_and_egress") else decl).to_json(),
             timeout_seconds=30,
         )
         req = wire.decode_launch_request("launch", json.dumps(body).encode())
-        if fault == "link_failure":
+        if fault in ("digest_and_egress", "egress"):
+            monkeypatch.setattr(launch_exec.placement, "effective_egress", lambda *args: ({}, "0" * 64))
+        rollback_causes = []
+        if cleanup:
+            def failed_rollback(h, effects, cause):
+                rollback_causes.append(cause)
+                return False
+
+            monkeypatch.setattr(sup, "_rollback", failed_rollback)
+        if fault in ("link_failure", "link_rollback"):
             (link_root / reservation["reservation_id"]).mkdir(mode=0o700)
         calls = []
 
+        frames = []
+
         def admit(*a, **kw):
+            frames.append(a)
             if fault == "changed_source":
                 (root / req.request_id / name).write_bytes(b"changed")
 
@@ -499,7 +524,26 @@ def test_seed_recheck_and_generation_owned_provisioning(tmp_path, monkeypatch, f
 
         monkeypatch.setattr(launch_exec, "isolated_admission", admit)
         out = svc.launch(req, cancelled=threading.Event(), pre_exec=pre_exec)
-        if fault == "source_gone_after_recheck":
+        if cleanup:
+            expected_cause = "caps_recheck_refused" if fault == "caps_rollback" else "link_socket_creation_failed"
+            assert rollback_causes == [expected_cause] and not calls
+            assert out.state == "uncertain" and out.worker_invocations == 0
+            rid = reservation["reservation_id"]
+            claim = svc.lifecycle.launch_claim_record(rid)
+            assert claim["claimed"]
+            if cleanup == "release":
+                result, code = env.release(reservation)
+                assert (code, result.state) == (0, "released")
+            else:
+                result, code = env.reap()
+                assert (code, result.state, result.inventory.destroyed) == (0, "complete", 1)
+            assert not svc.lifecycle.launch_run_dir(claim["run_id"]).exists()
+            assert not (svc.lifecycle.launch_root / "stages" / claim["generation"]).exists()
+        elif fault == "egress":
+            assert frames == [(b"", b"")] and not calls
+            assert (out.code, out.admission_diagnostic) == ("sandbox_launch_admission_refused", "launch_input_unbound")
+            assert not svc.lifecycle.launch_claim_record(reservation["reservation_id"])
+        elif fault == "source_gone_after_recheck":
             assert out.state == "finished" and calls == [True]
         elif fault == "link_failure":
             assert out.code == "sandbox_launch_bridge_lost" and not calls
@@ -514,6 +558,7 @@ def test_seed_recheck_and_generation_owned_provisioning(tmp_path, monkeypatch, f
                 out.seed_reason
                 == {
                     "digest": "digest_mismatch",
+                    "digest_and_egress": "digest_mismatch",
                     "changed_source": "source_changed",
                     "foreign_scratch": "scratch_unprovisioned",
                 }[fault]

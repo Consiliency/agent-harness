@@ -172,17 +172,6 @@ def _validate(service, req, cancelled):
                 return _refusal(req, "sandbox_placement_capability_unmet")
         except Exception:
             return _refusal(req, "sandbox_placement_capability_unmet")
-    if (req.reservation.target.kind, req.workload) != ("openshell", "pi-runner"):
-        from . import sandbox_policy
-
-        baseline = sandbox_policy.placement_policy_baseline(req.policy_vector)
-        endpoints = {name: provider.endpoints for name, provider in service.config.providers.items()}
-        try:
-            _, egress = placement.effective_egress(req.providers, baseline, endpoints)
-        except placement.LifecycleError:
-            return _refusal(req, "sandbox_launch_input_mismatch")
-        if egress != req.reservation.egress_sha256:
-            return _refusal(req, "sandbox_launch_admission_refused", "launch_input_unbound")
     return paths, settings, registry, template, ttl
 
 
@@ -347,8 +336,8 @@ def _cgroup_entry():
     return Path(seat_resource_caps.__file__).with_name("seat_resource_caps_enter.py")
 
 
-class _LaneAuthorityUnavailable(ValueError):
-    """SL-4 has not supplied independent lane assignment material."""
+class _LaunchInputUnbound(ValueError):
+    """A required envelope input has no matching independent binding."""
 
 
 def _bound_material(req, paths, settings, template, tree, seed, stage, slots, argv, origin):
@@ -359,7 +348,8 @@ def _bound_material(req, paths, settings, template, tree, seed, stage, slots, ar
     from .supervised_launch import Refused, trusted_bytes
 
     if origin == "lane":
-        raise _LaneAuthorityUnavailable
+        # SL-4 owns the independent lane assignment producer.
+        raise _LaunchInputUnbound
     locator = binding.read_binding_locator(binding.MANAGED_BINDING)
     if isinstance(locator, Refused):
         raise ValueError("unavailable managed binding")
@@ -737,10 +727,21 @@ def _capture_attempt(
             refs.mkdir(mode=0o700)
             supervisor.write_blob(refs, req.request_id + ".seed.json", seed.manifest)
         try:
+            if (kind, req.workload) != ("openshell", "pi-runner"):
+                from . import sandbox_policy
+
+                baseline = sandbox_policy.placement_policy_baseline(req.policy_vector)
+                endpoints = {name: provider.endpoints for name, provider in service.config.providers.items()}
+                try:
+                    _, egress = placement.effective_egress(req.providers, baseline, endpoints)
+                except placement.LifecycleError:
+                    return _refusal(req, "sandbox_launch_input_mismatch")
+                if egress != req.reservation.egress_sha256:
+                    raise _LaunchInputUnbound
             envelope, controller = _bound_material(
                 req, paths, settings, template, tree, seed, stage, slots, argv, origin
             )
-        except _LaneAuthorityUnavailable:
+        except _LaunchInputUnbound:
             isolated_admission(b"", b"", cancelled=cancelled, bound_s=service.admission_bound_s)
             return _refusal(req, "sandbox_launch_admission_refused", "launch_input_unbound")
         except Exception:
