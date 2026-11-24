@@ -1645,6 +1645,71 @@ def test_repeated_transients_become_a_failed_entry(world):
     assert world.counter.qualify == q.MAX_TRANSIENT_ATTEMPTS
 
 
+@pytest.mark.parametrize("error_class", [
+    "auth_missing", "auth_expired", "quota_exhausted", "permission_denied", "model_error",
+    "empty_response", "network", "timeout", "unknown", "private fixture text", None,
+])
+def test_provider_error_class_projection_is_allowlisted(tmp_path, error_class):
+    q.write_json(tmp_path / "terminal.json", {
+        "result": {"status": "ERROR", "detail": "PRIVATE_FIXTURE_SENTINEL"},
+        "broker": {"provider_error_class": error_class},
+    })
+    exc = q.QualificationFailure(q.ENDED_BEFORE_ADMISSION)
+    q.write_failure(tmp_path, exc, "terminal_observation", q.HelperObserver("0" * 64, {}), {})
+    failure = json.loads((tmp_path / "failure.json").read_text())
+    if error_class is None or error_class == "private fixture text":
+        assert "provider_error_class" not in failure
+    else:
+        assert failure["provider_error_class"] == error_class
+    assert "PRIVATE_FIXTURE_SENTINEL" not in json.dumps(failure)
+
+
+def test_provider_error_class_survives_the_first_use_refusal(world, monkeypatch):
+    monkeypatch.setattr(q, "qualify_image", _REAL_QUALIFY)
+
+    def run_operation(operation, root, *args, **kwargs):
+        assert operation == "completion"
+        root.mkdir()
+        q.write_json(root / "terminal.json", {
+            "result": {"status": "ERROR"},
+            "broker": {"provider_error_class": "unknown"},
+        })
+        exc = q.QualificationFailure("gemini qualification record rejected")
+        q.write_failure(root, exc, "validation", q.HelperObserver(world.digest, {}), {})
+        raise exc
+
+    monkeypatch.setattr(q, "run_operation", run_operation)
+    with pytest.raises(ValueError, match=f"^{q.SELF_QUALIFICATION_UNAVAILABLE}$") as exc:
+        _ensure(world)
+    assert q.qualification_notice(exc.value) == {"code": q.SELF_QUALIFICATION_UNAVAILABLE,
+                                                  "detail": {"provider_error_class": "unknown"}}
+    assert "failed" not in _entries(world)
+
+
+def test_provider_error_class_is_rendered_by_qualification_and_advisor_board(
+    world, monkeypatch, capsys,
+):
+    from phase_loop_runtime import cli
+    from phase_loop_runtime import seat_subject
+
+    def refuse(*args, **kwargs):
+        raise q.QualificationUnavailable(q.ProviderErrorClass.EMPTY_RESPONSE)
+
+    monkeypatch.setattr(q, "requalify_once", refuse)
+    monkeypatch.setattr(seat_subject, "resolve_seat_subject", lambda *args: SimpleNamespace(subject_path=None))
+    monkeypatch.setattr(q.panel, "integrated_seat_subject", lambda *args: SimpleNamespace(subject_path=None))
+    assert q.cli_main(SimpleNamespace(action="run")) == 1
+    stderr = capsys.readouterr().err.splitlines()
+    assert stderr[0] == f"phase-loop agy-qualification run: {q.SELF_QUALIFICATION_UNAVAILABLE}"
+    notice = {"code": q.SELF_QUALIFICATION_UNAVAILABLE, "detail": {"provider_error_class": "empty_response"}}
+    assert json.loads(stderr[1]) == notice
+
+    assert cli._advisor_board_command(args=SimpleNamespace(monitoring_policy="heartbeat_only", json=True)) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["monitoring"]["diagnostic"] == q.SELF_QUALIFICATION_UNAVAILABLE
+    assert payload["notice"] == notice
+
+
 def test_local_path_validates_with_the_release_paths_own_validator(world, monkeypatch, tmp_path):
     """I2 validation parity. Mutation: a local-only validator that skips validate_records."""
     calls = []

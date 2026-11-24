@@ -15,6 +15,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - LaneExec checks requests against captured route and resource settings, runs isolated admission,
   and journals supervisor ownership, start intent and terminal responses. Shipped settings keep
   every launch route closed.
+- Gemini self-qualification records an allowlisted `provider_error_class` in private
+  failure evidence and in the qualification-unavailable notice when structured signals
+  are available. Unidentified provider failures report `unknown`.
 
 ### Changed
 
