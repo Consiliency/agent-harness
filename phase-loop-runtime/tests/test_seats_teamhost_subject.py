@@ -565,6 +565,16 @@ def test_managed_grok_fingerprints_are_exactly_the_ts_erratum_8_pin():
 
 
 @pytest.mark.parametrize("managed_grok", ["also-v2-authority"], indirect=True)
+def test_managed_grok_accepts_a_retained_approved_release_at_the_id_limit(managed_grok):
+    env, native, digest, pin = managed_grok
+    doc = json.loads(pin.read_bytes())
+    entry = doc["releases"][native.parents[1].name]
+    doc["releases"]["a" * 255] = dict(entry)
+    pin.write_bytes(rfc8785.dumps(doc))
+    assert seat_subject.resolve_seat_subject("grok", env).binary_sha256 == digest
+
+
+@pytest.mark.parametrize("managed_grok", ["also-v2-authority"], indirect=True)
 @pytest.mark.parametrize(("change", "code"), [
     ("missing", "authority_missing"),
     ("other-release", "authority_missing"),
@@ -572,6 +582,12 @@ def test_managed_grok_fingerprints_are_exactly_the_ts_erratum_8_pin():
     ("duplicate", "authority_invalid"),
     ("extra-field", "authority_invalid"),
     ("unsafe-release", "authority_invalid"),
+    ("plus-release", "authority_invalid"),
+    ("at-release", "authority_invalid"),
+    ("dash-leading-release", "authority_invalid"),
+    ("dot-leading-release", "authority_invalid"),
+    ("long-release", "authority_invalid"),
+    ("unselected-unapproved", "authority_invalid"),
     ("wrong-version", "authority_invalid"),
     ("wrong-platform", "authority_invalid"),
     ("wrong-host", "authority_invalid"),
@@ -609,6 +625,18 @@ def test_managed_grok_requires_pin_and_exact_trusted_native_path(
         entry["extra"] = True
     elif change == "unsafe-release":
         doc["releases"]["../other"] = entry
+    elif change == "plus-release":
+        doc["releases"]["other+1"] = entry
+    elif change == "at-release":
+        doc["releases"]["other@1"] = entry
+    elif change == "dash-leading-release":
+        doc["releases"]["-other"] = entry
+    elif change == "dot-leading-release":
+        doc["releases"][".other"] = entry
+    elif change == "long-release":
+        doc["releases"]["a" * 256] = entry
+    elif change == "unselected-unapproved":
+        doc["releases"]["other"] = {**entry, "binary_sha256": "f" * 64}
     elif change == "wrong-version":
         entry["version"] = "1.0.93"
     elif change == "wrong-platform":

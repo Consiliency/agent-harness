@@ -35,7 +35,8 @@ SubjectSource = Literal["session_lease", "managed_release", "managed_image", "st
 
 _PIN_SCHEMA = "seat_authority_pin.v2"
 _GROK_PIN_SCHEMA = "grok_subject_pin.v1"
-_RELEASE_ID = re.compile(r"[A-Za-z0-9._@+-]+")
+#: Exactly the Dotfiles producer's release-ID grammar (one safe path component).
+_RELEASE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,254}")
 _PIN_MAX_BYTES = 131_072
 _MANAGED_ADAPTER_ID = "phase-loop-seat"
 _MANAGED_ADAPTER_VERSION = "1"
@@ -210,6 +211,8 @@ def managed_grok_image_digest(path: Path) -> str:
             or not _SHA256.fullmatch(entry["binary_sha256"])
             or entry["platform"] != "linux-x64"
             or entry["version"] != "1.0.92"
+            # No legitimate producer writes an unapproved fingerprint, even unselected.
+            or entry["binary_sha256"] not in JAIL_PROTECTION
         ):
             raise ExecutableDependencyError("authority_invalid", "Grok pin entry")
     if release_id not in releases:
