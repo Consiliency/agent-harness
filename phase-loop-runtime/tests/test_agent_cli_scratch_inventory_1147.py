@@ -301,6 +301,10 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
     # v13 PLACECLI: the reservation-scoped bridge helper, this package's own
     # `placement_bridge` module through seat_uid.trusted_module_argv; it binds one Unix
     # socket and pipes bytes, and starts nothing else.
+    ("launch_exec.py", "isolated_admission"): (
+        NOT_AGENT, "isolated trusted-package pre-claim admission helper"),
+    ("launch_supervisor.py", "detached"): (
+        NOT_AGENT, "trusted-package supervisor in its own session"),
     ("placement_bridge.py", "_spawn_helper"): (
         NOT_AGENT, "this package's placement_bridge helper via seat_uid.trusted_module_argv"),
 }

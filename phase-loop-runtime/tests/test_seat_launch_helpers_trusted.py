@@ -30,14 +30,18 @@ def _package_named_like_ours(directory: Path, module: str, body: str) -> None:
     (package / f"{module}.py").write_text(body)
 
 
-@pytest.mark.parametrize("module", ["seat_keyring_exec", "seat_uid"])
+@pytest.mark.parametrize("module", ["seat_keyring_exec", "seat_uid", "launch_admission", "launch_supervisor"])
 def test_a_helper_resolves_from_the_trusted_installation_in_any_cwd(tmp_path, module):
     cwd = tmp_path / "cwd"
     marker = tmp_path / "ran-from-cwd"
     _package_named_like_ours(cwd, module, f"open({str(marker)!r}, 'w').write('x')\n")
     argv = seat_uid.trusted_module_argv(f"phase_loop_runtime.{module}", "--help")
-    subprocess.run(argv, cwd=cwd, capture_output=True, timeout=60,
-                   env={"PATH": "/usr/bin:/bin", "PYTHONPATH": str(cwd)})
+    result = subprocess.run(argv, cwd=cwd, capture_output=True, timeout=60,
+                            stdin=subprocess.DEVNULL, env={"PATH": "/usr/bin:/bin", "PYTHONPATH": str(cwd)})
+    if module == "launch_admission":
+        assert result.returncode == 0 and b'"codec_unavailable"' in result.stdout
+    if module == "launch_supervisor":
+        assert result.returncode == 70
     assert not marker.exists()
 
 
