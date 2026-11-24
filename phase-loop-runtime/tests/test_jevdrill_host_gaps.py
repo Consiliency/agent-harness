@@ -1248,10 +1248,7 @@ def test_run_bound_report_refusals_leave_counts_unchanged(tmp_path):
     assert adapter.queue.status() == queue_before
 
 
-@pytest.mark.parametrize("storage", [
-    pytest.param("modeled", marks=pytest.mark.skipif(os.name == "nt", reason="Use native storage on Windows")),
-    pytest.param("native", marks=pytest.mark.skipif(os.name != "nt", reason="Requires native Windows")),
-])
+@pytest.mark.parametrize("storage", ("native" if os.name == "nt" else "modeled",))
 @pytest.mark.parametrize(("stage", "kinds"), [
     ("executor", ["started", "evaluation", "completed", "usage"]),
     ("after_terminal", ["started", "completed", "evaluation", "usage"]),
