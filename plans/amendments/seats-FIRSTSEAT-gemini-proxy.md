@@ -1,6 +1,6 @@
 # FIRSTSEAT amendment for Gemini credential-free proxy admission
 
-**[Owner approval recorded on 2026-11-24](t3-thread://v2/d6efe8c4-5eea-4867-a513-0369a754ef65/d8238af5-72f9-42f1-9c57-40dbd12e63ee)** for [Consiliency/agent-harness#2157](https://github.com/Consiliency/agent-harness/issues/2157).
+**Owner approval recorded on 2026-11-24** in the agent-harness coordination record, for [Consiliency/agent-harness#2157](https://github.com/Consiliency/agent-harness/issues/2157): a standalone amendment (no frozen-contract edit), with qualification under the owner account on the owner's primary board host.
 This record amends the [FIRSTSEAT phase plan](../phase-plan-v1-seats-FIRSTSEAT.md)
 ownership rule and the application of FIRSTSEAT §§11 and 14 to the opt-in mode.
 The [implementation plan](../detailed-2157-gemini-proxy-20261124.md) owns the work.
