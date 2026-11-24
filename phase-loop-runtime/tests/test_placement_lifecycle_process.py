@@ -1090,7 +1090,13 @@ def _replay_request(cancelled=None, deadline_ms=300):
 
 @pytest.mark.parametrize("case", ["lock-held", "slow-reconciliation", "cancelled", "bound-reached"])
 def test_a_replay_that_runs_out_of_time_or_is_cancelled_publishes_nothing(env, monkeypatch, case):
-    commit = _interrupt_reserve(env, monkeypatch, "before-publish", deadline_ms=300)
+    # The setup reserve must reach publication, so it runs on a frozen clock with the
+    # backend calls inline: a real-time 300 ms deadline could expire before the injected
+    # interruption (agent-harness#2117). The helper undoes its own patch context.
+    with monkeypatch.context() as setup:
+        setup.setattr(sp, "_monotonic", lambda: 0.0)
+        setup.setattr(sp._Calls, "run", lambda self, call, timeout_s, cancelled=None: call())
+        commit = _interrupt_reserve(env, setup, "before-publish", deadline_ms=300)
     rid = commit["reservation"]["reservation_id"]
     env.clock.now += 5
     request, cancelled = _replay_request()
@@ -1106,10 +1112,16 @@ def test_a_replay_that_runs_out_of_time_or_is_cancelled_publishes_nothing(env, m
         return "held_ready"
     if case == "lock-held":
         fd = _hold(env.state / "agent-toolkit" / "reservations" / f"{rid}.lock")
+    if case == "cancelled":
+        # Reconciliation must run with time left, so the cancellation is what ends the replay.
+        monkeypatch.setattr(sp, "_monotonic", lambda: 0.0)
     try:
         started = time.monotonic()
         response = env.lifecycle(reconcile=reconcile).reserve(request, cancelled=cancelled)
-        assert time.monotonic() - started < 0.3 + 0.4
+        if case == "cancelled":
+            assert cancelled.is_set()
+        else:
+            assert time.monotonic() - started < 0.3 + 0.4
     finally:
         if fd is not None:
             os.close(fd)

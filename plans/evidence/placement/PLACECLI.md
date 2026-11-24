@@ -936,7 +936,7 @@ every PR.
     "phase-loop-runtime/src/phase_loop_runtime/placement_bridge.py": "6b66851a63c4aba65e9fce15c8157ed8ec49519ee2b6835181b77f75faae5d9e",
     "phase-loop-runtime/src/phase_loop_runtime/placement_cli.py": "1fe8a719e3b384bd73d630346a1d92e51826abe33749469aae7f5e1f132eb9ed",
     "phase-loop-runtime/tests/test_placement_process_contract.py": "f17ff6d1c9d1b7bd78aac1f63577f876caf7ea17e242c9a9eb0581d63e405fb6",
-    "phase-loop-runtime/tests/test_placement_lifecycle_process.py": "a44d4400665ebfb597738cf4d4eaf7fdc23525f1fa9ac3c4190626568509e806",
+    "phase-loop-runtime/tests/test_placement_lifecycle_process.py": "2c128704b2436b6aad670abd72d132b8977dc639ae1e4c6458494ed617f99a0e",
     "phase-loop-runtime/tests/test_placement_bridge.py": "9a298919b0fe1ca83c92be9ceb694ef397833cb5be9159313d8c7f8cc8a2ac58",
     "phase-loop-runtime/tests/test_placement_cli.py": "85f4520fc4c2e55b4604c48cbea45d84f0d64c17c8aff0ffa9917ce7a83ca9c0",
     "phase-loop-runtime/tests/fixtures/placement-cli/cases.json": "6df4c1db8ac4a9c94ba676ce60f78684969531769764e960502e320eb5320bec",
@@ -949,7 +949,7 @@ every PR.
   "runner_stamp": {
     "host": "ai",
     "observed_commit": "5342c03019f58bc9b18ebdefb7482a28165754f3",
-    "source_tree_digest": "b20f848b587847ad5f2c5c1ffdceb80e961e3b0adbd6c2912206d2c49e9c5164",
+    "source_tree_digest": "1d0fac946b0a6396da760b7a377bb59df9a40daf266d688793fe8eb618c5200d",
     "lock": "github.com-consiliency-agent-harness admission lock held for the run",
     "interpreter": "phase-loop-runtime/.venv/bin/python (uv sync --locked --group test, /usr/bin/python3 3.12.3), -I precheck passed",
     "gates": "PSI memory full avg10 <= 1 and io full avg10 < 5 before each group; serial; timeout 900; no xdist; -p no:cacheprovider",

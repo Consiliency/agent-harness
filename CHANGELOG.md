@@ -8,6 +8,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
+- LANEEXEC SL-7 precursor: `static_route_refusal` checks the client, workload and
+  writer pairing, and `activation_refusal` checks the captured route settings.
+  `route_refusal` preserves its refusal order and codes. All routes refuse under
+  shipped defaults, including the existing interim diagnostic for local Pi.
 - LaneExec tracks launch ownership, renewal, cancellation and cleanup by generation. Release
   and reap retain an allocation while cleanup evidence is unresolved. Trusted scheduler
   calls can pass an immutable lane context through the launch service.
@@ -22,6 +26,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   HTTP framing error such as `IncompleteRead`), a body over 1 MiB, a non-JSON body or a
   response without a boolean `merged` field. The audit reports that diagnostic and keeps "the cited PR is not merged" for an
   explicit `false`; both still fail closed.
+- The placement-lifecycle replay test runs its interrupted setup reserve on a frozen clock with
+  inline backend calls, removing a real-time 300 ms deadline race (agent-harness#2117).
 
 ## [0.7.42] - Unreleased candidate
 
