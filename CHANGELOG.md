@@ -8,6 +8,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
+- JEVHOST SL-9 documents the run-bound report hook and adds
+  `JevDrillAdapter.active_execution_run_ids(task_id)` for hosts reporting during execution.
 - LANEEXEC SL-2: `ReturnPolicy` supports independent patch and JSON result byte caps,
   including zero. A return above its cap yields `sandbox_launch_result_invalid` and
   leaves no retained bytes. A verified absent proposal still returns null without a code.
