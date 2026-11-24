@@ -21,8 +21,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
-- Unconfirmed local launch renewals retain cleanup debt and leave durable fencing to the
-  caller's explicit fence operation (agent-harness#2151 follow-up).
+- Unconfirmed local launch renewals retain cleanup debt and can retry until the lease
+  fencing boundary. Reap respects that boundary, and late writes cannot overwrite a
+  retry's confirmed heartbeat (agent-harness#2151 follow-up).
 - Launch cancellation uses the generation's supervisor socket before start intent. WORKER
   cancellation requires a matching generation with durable start intent.
 - The FIRSTSEAT record-board test stubs the Gemini board preflight, so it no longer runs live

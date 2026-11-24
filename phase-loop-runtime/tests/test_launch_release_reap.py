@@ -999,6 +999,58 @@ def test_generation_renewal_slot_error_requires_explicit_fence(prepared, monkeyp
     assert life._launch_read("dispositions", GEN)["fenced"] is True
 
 
+def test_generation_failed_renewal_keeps_flags_ready(prepared, monkeypatch):
+    life, key = _generation_claim(prepared)
+    monkeypatch.setattr(life, "_confirm_slot", lambda *args: False)
+    assert not life.renew_launch(*key, deadline=time.monotonic() + 1)
+
+    with life.launch_lock(key[0], timeout_s=1) as lock:
+        code, active = lock.window(None)
+        flags = life._flags(active)
+    assert not flags.fenced
+    assert flags.ready and flags.exec_claimed and not flags.cleanup_pending
+    assert code is None
+
+
+def test_generation_reap_waits_for_unconfirmed_renewal_boundary(env, prepared, monkeypatch):
+    life, key = _generation_claim(prepared)
+    initial = life._launch_read("renewals", f"{GEN}.0")
+    heartbeat, ttl = initial["heartbeat_at"], initial["ttl_s"]
+    clock = Clock(heartbeat + ttl / 3)
+    monkeypatch.setattr(sp, "_monotonic", clock)
+    monkeypatch.setattr(life, "_confirm_slot", lambda *args: False)
+    assert not life.renew_launch(*key, deadline=clock.now + 1)
+
+    fence_at = heartbeat + ttl * 2 / 3
+    for now in (clock.now, fence_at - 1):
+        clock.now = now
+        result, _ = env.reap()
+        assert life._launch_read("dispositions", GEN)["fenced"] is False
+        assert result.inventory.examined == 0
+
+    clock.now = fence_at
+    result, _ = env.reap()
+    assert life._launch_read("dispositions", GEN)["fenced"] is True
+    assert result.inventory.pending == 1
+
+
+def test_generation_renewal_retries_within_confirmation_window(env, prepared, monkeypatch):
+    life, key = _generation_claim(prepared)
+    initial = life._launch_read("renewals", f"{GEN}.0")
+    heartbeat, ttl = initial["heartbeat_at"], initial["ttl_s"]
+    clock = Clock(heartbeat + .1 * ttl)
+    monkeypatch.setattr(sp, "_monotonic", clock)
+    with monkeypatch.context() as patch:
+        patch.setattr(life, "_confirm_slot", lambda *args: False)
+        assert not life.renew_launch(*key, deadline=clock.now + 1)
+
+    clock.now = heartbeat + .2 * ttl
+    env.clock.now += .2 * ttl
+    assert life.renew_launch(*key, deadline=clock.now + 1)
+    assert life.launch_heartbeat(key[0]) == env.clock.now
+    assert life.read_cleanup_debt(*key) is None
+
+
 def test_generation_renewal_late_writer_cannot_move_confirmed_heartbeat(env, prepared, monkeypatch):
     life, key = _generation_claim(prepared)
     assert life.renew_launch(*key, deadline=time.monotonic() + 1)
@@ -1006,9 +1058,11 @@ def test_generation_renewal_late_writer_cannot_move_confirmed_heartbeat(env, pre
     env.clock.now += 12
     invoked, resume, finished = threading.Event(), threading.Event(), threading.Event()
     write = life._launch_write
+    orphan = []
 
     def delayed(directory, name, row):
         if directory == "renewals":
+            orphan.append((threading.current_thread(), directory, name, row))
             invoked.set()
             assert resume.wait(3)
             try:
@@ -1017,17 +1071,27 @@ def test_generation_renewal_late_writer_cannot_move_confirmed_heartbeat(env, pre
                 finished.set()
         return write(directory, name, row)
 
-    monkeypatch.setattr(life, "_launch_write", delayed)
-    try:
-        assert not life.renew_launch(*key, deadline=time.monotonic() + .25)
-        assert invoked.is_set() and not finished.is_set()
-        assert life.read_cleanup_debt(*key).cause == "renewal_lost"
-        assert life._launch_read("dispositions", GEN)["fenced"] is False
-    finally:
-        resume.set()
-    assert finished.wait(1)
+    with monkeypatch.context() as patch:
+        patch.setattr(life, "_launch_write", delayed)
+        try:
+            assert not life.renew_launch(*key, deadline=time.monotonic() + .25)
+            assert invoked.is_set() and not finished.is_set()
+            assert life.read_cleanup_debt(*key).cause == "renewal_lost"
+            assert life._launch_read("dispositions", GEN)["fenced"] is False
+        finally:
+            resume.set()
+        assert finished.wait(1)
+        writer, *candidate = orphan[0]
+        writer.join(1)
+        assert not writer.is_alive()
     assert life.launch_heartbeat(key[0]) == confirmed
-    assert not life.renew_launch(*key, deadline=time.monotonic() + 1)
+
+    env.clock.now += 12
+    assert life.renew_launch(*key, deadline=time.monotonic() + 1)
+    assert life._launch_read("dispositions", GEN)["confirmed_count"] == 2
+    # Replay the orphaned publication after the retry has selected its candidate.
+    write(*candidate)
+    assert life.launch_heartbeat(key[0]) == env.clock.now
 
 
 def test_generation_renewal_late_confirmation_restores_previous_heartbeat(env, prepared, monkeypatch):
