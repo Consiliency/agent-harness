@@ -23,6 +23,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- On Windows, JEV Drill hooks reuse the launch's report queue binding across
+  threads, and long runs can still queue terminal and usage reports (agent-harness#2161).
 - `claude-sdk-audit` / `audit-order` no longer reports a failed merge-state lookup as
   "the cited PR is not merged" (agent-harness#2087). `github_pr_merged` returns GitHub's
   `merged` field only when it is a boolean and raises `AuditError("merge state

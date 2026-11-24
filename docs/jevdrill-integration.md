@@ -150,7 +150,9 @@ queue and sanitizer as the adapter's lifecycle reports.
   `next_source_sequence`.
 - `enqueue_run_event(execution_run_id, payload)` assigns the event envelope,
   identity and sequence, then enqueues under the same lock as host reports.
-  The payload must be non-lifecycle. The return value is the queue disposition.
+  The payload must be non-lifecycle. When the queue operation completes, the
+  hook returns its disposition. If it fails, the hook raises the underlying
+  storage error. A failed attempt can leave a gap in `source_sequence`.
   Enqueue order equals sequence order. Delivery order is not guaranteed, so
   consumers use `source_sequence` to order events within a run.
 - `run_report_counts(execution_run_id)` gives the run's queue entries and losses
