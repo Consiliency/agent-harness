@@ -9,8 +9,11 @@ import time
 
 import pytest
 
+from test_launch_service import launch_tmp_path as _launch_tmp_path
 from test_launch_service import local_case
 from test_launch_admission import admitted_fixture
+
+launch_tmp_path = _launch_tmp_path
 
 
 def mount_or_skip(path, unavailable, required):

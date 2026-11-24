@@ -4,6 +4,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from test_launch_service import launch_tmp_path as _launch_tmp_path
+
+launch_tmp_path = _launch_tmp_path
+
 
 @pytest.mark.parametrize("confirm", [False, True])
 def test_unconfirmed_renewals_retry_until_absolute_fence(confirm):

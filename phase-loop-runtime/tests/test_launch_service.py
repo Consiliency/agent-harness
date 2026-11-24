@@ -10,6 +10,36 @@ from test_launch_prepare import DIGEST, Env, prepare
 from test_launch_process_contract import implementation_request, local_pi_request
 
 
+@pytest.fixture(name="tmp_path")
+def launch_tmp_path(tmp_path):
+    """Keep LaneExec fixtures on a block device beneath trusted ancestors."""
+    import os
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
+
+    from phase_loop_runtime.launch_supervisor import trusted_directory
+
+    def trusted_block(path):
+        try:
+            with trusted_directory(path) as fd:
+                return os.major(os.fstat(fd).st_dev) != 0
+        except (OSError, ValueError):
+            return False
+
+    base = tmp_path.resolve()
+    if trusted_block(base):
+        yield base
+        return
+
+    # A private pytest directory can still have a writable ancestor such as /tmp.
+    # Use the same fallback for a trusted path on an anonymous filesystem.
+    home = Path.home().resolve()
+    if not trusted_block(home):
+        pytest.fail("LaneExec fixtures require a trusted block-backed temporary directory")
+    with TemporaryDirectory(prefix="laneexec-", dir=home) as directory:
+        yield Path(directory)
+
+
 @pytest.mark.parametrize(
     ("client", "allow_image", "expected", "host_calls"),
     [

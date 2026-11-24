@@ -9,7 +9,10 @@ import threading
 import pytest
 import rfc8785
 
+from test_launch_service import launch_tmp_path as _launch_tmp_path
 from test_launch_service import local_case
+
+launch_tmp_path = _launch_tmp_path
 
 
 def admitted_fixture(monkeypatch, root):
