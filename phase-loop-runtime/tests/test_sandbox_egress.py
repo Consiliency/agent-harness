@@ -20,6 +20,7 @@ rather than a wall.
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 
@@ -847,3 +848,90 @@ def test_default_prefix_refuses_nested_sandbox_and_firewall_changes():
     assert int(rows[0], 16) == 0, rows
     assert rows[1] == "REFUSED", rows
     assert "NESTED-OK" not in rows[2], rows
+
+
+@pytest.mark.parametrize("problem", [
+    None, "dead-holder", "dead-bridge", "other-holder", "other-namespace", "host-namespace",
+    "other-front", "other-listener", "no-listener",
+])
+def test_private_bridge_binds_its_listener_holder_and_front(tmp_path, monkeypatch, problem):
+    from types import SimpleNamespace
+
+    holder = SimpleNamespace(pid=100, poll=lambda: 1 if problem == "dead-holder" else None)
+    bridge = SimpleNamespace(pid=200, poll=lambda: 1 if problem == "dead-bridge" else None)
+    command = ("/usr/bin/socat", "TCP4-LISTEN:3128,bind=127.0.0.1,fork,reuseaddr",
+               "UNIX-CONNECT:/private/front.sock")
+    bridge_dir = tmp_path / str(bridge.pid)
+    (bridge_dir / "fd").mkdir(parents=True)
+    (bridge_dir / "fd" / "5").symlink_to(
+        "socket:[10]" if problem == "other-listener" else "socket:[9]")
+    actual_command = (*command[:-1], "UNIX-CONNECT:/other/front.sock") if problem == "other-front" else command
+    (bridge_dir / "cmdline").write_bytes(b"\0".join(arg.encode() for arg in actual_command) + b"\0")
+    holder_dir = tmp_path / str(holder.pid)
+    (holder_dir / "net").mkdir(parents=True)
+    address = int.from_bytes(b"\x7f\0\0\x01", sandbox_egress.sys.byteorder)
+    state = "01" if problem == "no-listener" else "0A"
+    (holder_dir / "net" / "tcp").write_text(
+        f"header\n 0: {address:08X}:0C38 00000000:0000 {state} 0 0 0 0 0 9\n")
+    for pid, namespace in [
+        ("self", "net:[1]"),
+        (str(holder.pid), "net:[1]" if problem == "host-namespace" else "net:[2]"),
+        (str(bridge.pid), "net:[3]" if problem == "other-namespace" else "net:[2]"),
+    ]:
+        ns = tmp_path / pid / "ns"
+        ns.mkdir(parents=True)
+        (ns / "net").symlink_to(namespace)
+    monkeypatch.setattr(sandbox_egress, "Path", lambda root, pid: tmp_path / pid)
+    readlink = sandbox_egress.os.readlink
+    monkeypatch.setattr(sandbox_egress.os, "readlink",
+                        lambda path: "net:[1]" if path == "/proc/self/ns/net" else readlink(path))
+
+    assert sandbox_egress._private_bridge_bound(
+        holder, "99" if problem == "other-holder" else str(holder.pid), bridge, command, 3128,
+    ) is (problem is None)
+
+
+@pytest.mark.parametrize("problem", [None, "mode", "symlink", "stale", "not-owned", "dead"])
+def test_private_front_requires_the_launchs_owned_socket(tmp_path, monkeypatch, problem):
+    import stat
+    from pathlib import Path
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    directory = tmp_path / "front"
+    directory.mkdir(mode=0o755 if problem == "mode" else 0o700)
+    alias = tmp_path / "alias"
+    alias.symlink_to(directory, target_is_directory=True)
+    path = (alias if problem == "symlink" else directory) / "front.sock"
+    proc = tmp_path / "proc"
+    (proc / "net").mkdir(parents=True)
+    (proc / "fd").mkdir()
+    (proc / "fd" / "5").symlink_to("socket:[8]" if problem == "not-owned" else "socket:[7]")
+    recorded_path = path.with_name("old.sock") if problem == "stale" else path
+    (proc / "net" / "unix").write_text(f"header\n 0: 0 0 00010000 0001 01 7 {recorded_path}\n")
+    process = SimpleNamespace(pid=100, poll=lambda: 1 if problem == "dead" else None)
+    monkeypatch.setattr(sandbox_egress, "Path", lambda *parts: proc if len(parts) == 2 else Path(*parts))
+    lstat = Path.lstat
+
+    def socket_stat(entry):
+        if entry == path:
+            return SimpleNamespace(st_uid=os.getuid(), st_mode=stat.S_IFSOCK | 0o700,
+                                   st_dev=5, st_ino=6)
+        return lstat(entry)
+
+    with patch.object(Path, "lstat", socket_stat):
+        assert sandbox_egress._unix_front_identity(str(path), process) == (
+            (5, 6, "7") if problem is None else None)
+
+
+def test_private_readiness_requires_407_and_sends_an_invalid_header(monkeypatch):
+    import subprocess
+
+    def run(argv, **kwargs):
+        script = argv[-2]
+        assert r"Proxy-Authorization: Basic c3J0Og==\r\n\r\n" in script
+        assert "HTTP/1.1 407" in script
+        return subprocess.CompletedProcess(argv, 4, "", "")
+
+    monkeypatch.setattr(sandbox_egress.subprocess, "run", run)
+    assert not sandbox_egress._proxy_bridge_confines((), "python3", 3128, private=True)

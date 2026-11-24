@@ -24,13 +24,19 @@ import json
 
 import os
 from pathlib import Path
+import stat
 import subprocess
+import sys
 import tempfile
 import warnings
 import time
+from typing import TYPE_CHECKING
 
 from .sandbox_policy import EgressPolicy, egress_allowlist
 from .review_stage import trusted_host_executable
+
+if TYPE_CHECKING:
+    from .seat_egress_proxy import SeatEgressProxy
 
 __all__ = [
     "EgressUnavailable",
@@ -374,6 +380,64 @@ def _write_namespace_resolver(work: Path) -> Path:
     return path
 
 
+def _owns_socket(process_dir: Path, inode: str) -> bool:
+    target = f"socket:[{inode}]"
+    for fd in (process_dir / "fd").iterdir():
+        try:
+            if os.readlink(fd) == target:
+                return True
+        except FileNotFoundError:
+            continue
+    return False
+
+
+def _unix_front_identity(path: str, process) -> tuple[int, int, str] | None:
+    """Identify both the private path and the launched process's listening socket."""
+    try:
+        parent = Path(path).parent.lstat()
+        endpoint = Path(path).lstat()
+        if (process.poll() is not None or parent.st_uid != os.getuid()
+                or parent.st_mode != stat.S_IFDIR | 0o700
+                or endpoint.st_uid != os.getuid() or not stat.S_ISSOCK(endpoint.st_mode)):
+            return None
+        process_dir = Path("/proc", str(process.pid))
+        rows = (process_dir / "net/unix").read_text().splitlines()
+        for row in rows[1:]:
+            fields = row.split(maxsplit=7)
+            if (len(fields) == 8 and fields[7] == path
+                    and fields[3:6] == ["00010000", "0001", "01"]
+                    and _owns_socket(process_dir, fields[6])):
+                return endpoint.st_dev, endpoint.st_ino, fields[6]
+    except (OSError, UnicodeError):
+        pass
+    return None
+
+
+def _private_bridge_bound(holder, holder_pid: str, bridge, bridge_command, port: int) -> bool:
+    """Require the TCP listener to be the bridge we launched in this holder's netns."""
+    if holder_pid != str(holder.pid) or holder.poll() is not None or bridge.poll() is not None:
+        return False
+    holder_dir = Path("/proc", holder_pid)
+    bridge_dir = Path("/proc", str(bridge.pid))
+    try:
+        namespace = os.readlink(holder_dir / "ns/net")
+        if namespace == os.readlink("/proc/self/ns/net") or namespace != os.readlink(bridge_dir / "ns/net"):
+            return False
+        command = (bridge_dir / "cmdline").read_bytes().rstrip(b"\0").split(b"\0")
+        if command != [os.fsencode(arg) for arg in bridge_command]:
+            return False
+        address = int.from_bytes(b"\x7f\x00\x00\x01", sys.byteorder)
+        endpoint = f"{address:08X}:{port:04X}"
+        for row in (holder_dir / "net/tcp").read_text().splitlines()[1:]:
+            fields = row.split()
+            if (len(fields) >= 10 and fields[1] == endpoint and fields[3] == "0A"
+                    and _owns_socket(bridge_dir, fields[9])):
+                return True
+    except (OSError, UnicodeError):
+        pass
+    return False
+
+
 @contextlib.contextmanager
 def isolated_network(
     policy: EgressPolicy | None = None,
@@ -383,6 +447,7 @@ def isolated_network(
     seat_uid_map: bool = False,
     proxy_socket: str | None = None,
     proxy_port: int = 3128,
+    private_proxy: SeatEgressProxy | None = None,
 ):
     """Hold a filtered network namespace open and yield an argv PREFIX for it.
 
@@ -416,9 +481,15 @@ def isolated_network(
     namespace with NO uplink: no slirp4netns, :func:`proxy_only_rules`, and one bridge from
     ``127.0.0.1:proxy_port`` inside the namespace to the proxy's unix socket on the host.
     Its capability check is the bridge answering and a public address having no route.
+    ``private_proxy`` binds the Gemini bridge to its launch's front and tests it with
+    a deliberately invalid authorization header.
     """
     if required is None:
         required = egress_required()
+    if private_proxy is not None:
+        if proxy_socket is not None or private_proxy.front_identity is None:
+            raise EgressUnavailable("the private Gemini front is not bound to this launch")
+        proxy_socket = private_proxy.socket
     if proxy_socket is not None and not seat_uid_map:
         raise ValueError("a proxy-only namespace is a jailed-seat namespace")
 
@@ -613,15 +684,38 @@ def isolated_network(
             # leg -- a slow resolver escaped the channel built to report exactly this.
             # One name and one attempt also made a transient blip take down a whole round.
             if proxy_socket is not None:
+                bridge_command = (
+                    helpers["socat"], f"TCP4-LISTEN:{int(proxy_port)},bind=127.0.0.1,fork,reuseaddr",
+                    f"UNIX-CONNECT:{proxy_socket}",
+                )
+                if private_proxy is not None and (
+                    _unix_front_identity(proxy_socket, private_proxy.process)
+                    != private_proxy.front_identity
+                ):
+                    raise EgressUnavailable("the private Gemini front is not bound to this launch")
                 with _infrastructure_launch():
                     bridge = launch_provider(
                         [helpers["nsenter"], "--net", "-t", nspid, "-U", "--preserve-credentials",
-                         helpers["socat"], f"TCP4-LISTEN:{int(proxy_port)},bind=127.0.0.1,fork,reuseaddr",
-                         f"UNIX-CONNECT:{proxy_socket}"],
+                         *bridge_command],
                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL, close_fds=True,
                     )
-                if not _proxy_bridge_confines(prefix, helpers["python3"], proxy_port):
+                if private_proxy is not None:
+                    deadline = time.monotonic() + 5
+                    while not _private_bridge_bound(holder, nspid, bridge, bridge_command, proxy_port):
+                        if (bridge.poll() is not None or holder.poll() is not None
+                                or time.monotonic() >= deadline):
+                            raise EgressUnavailable("the private Gemini bridge is not bound to this launch")
+                        time.sleep(0.05)
+                    if (_unix_front_identity(proxy_socket, private_proxy.process)
+                            != private_proxy.front_identity
+                            or not _proxy_bridge_confines(prefix, helpers["python3"], proxy_port,
+                                                          private=True)
+                            or not _private_bridge_bound(holder, nspid, bridge, bridge_command, proxy_port)
+                            or _unix_front_identity(proxy_socket, private_proxy.process)
+                            != private_proxy.front_identity):
+                        raise EgressUnavailable("the private Gemini bridge failed its readiness check")
+                elif not _proxy_bridge_confines(prefix, helpers["python3"], proxy_port):
                     yield _degrade(
                         "the proxy-only namespace came up but its bridge does not answer, or a "
                         "public address is reachable without it"
@@ -707,9 +801,16 @@ _PROXY_BRIDGE_CHECK = (
 )
 
 
-def _proxy_bridge_confines(prefix, python3: str, port: int) -> bool:
+def _proxy_bridge_confines(prefix, python3: str, port: int, *, private: bool = False) -> bool:
+    probe = _PROXY_BRIDGE_CHECK
+    if private:
+        probe = probe.replace(
+            r"Host: phase-loop-bridge-check.invalid:443\r\n\r\n",
+            r"Host: phase-loop-bridge-check.invalid:443\r\n"
+            r"Proxy-Authorization: Basic c3J0Og==\r\n\r\n",
+        )
     try:
-        done = subprocess.run([*prefix, python3, "-I", "-S", "-c", _PROXY_BRIDGE_CHECK, str(port)],
+        done = subprocess.run([*prefix, python3, "-I", "-S", "-c", probe, str(port)],
                               capture_output=True, text=True, timeout=60)
     except subprocess.TimeoutExpired:
         return False

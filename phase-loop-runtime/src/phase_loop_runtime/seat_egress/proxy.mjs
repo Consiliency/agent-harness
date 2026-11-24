@@ -411,8 +411,13 @@ const front = createServer(client => {
       const header = buf.slice(0, idx).toString('latin1');
       buf = buf.slice(idx + 4);
       const line = header.split('\r\n')[0];
-      const auth = /\r\nproxy-authorization:[ \t]*([^\r\n]+)/i.exec('\r\n' + header);
-      if (!auth || auth[1].trim() !== expectedAuth) {
+      const auth = config.private_gemini === true
+        ? [...header.matchAll(/\r\nproxy-authorization[ \t]*:([^\r\n]*)/gi)]
+        : /\r\nproxy-authorization:[ \t]*([^\r\n]+)/i.exec('\r\n' + header);
+      const admitted = config.private_gemini === true
+        ? auth.length === 0 || (auth.length === 1 && auth[0][1].trim() === expectedAuth)
+        : auth && auth[1].trim() === expectedAuth;
+      if (!admitted) {
         return refuse(client, '407 Proxy Authentication Required');
       }
       const m = /^CONNECT[ \t]+([^\s:]+):(\d+)[ \t]/i.exec(line);

@@ -223,3 +223,149 @@ def test_live_jail_seat_reaches_its_proxy_and_nothing_else(
     assert results["loopback_other_port"] == "ECONNREFUSED", results
     # A host without IPv6 in the seat's namespace has no such family at all.
     assert results["inet6_loopback"] in NETWORK_ERRORS | {"EAFNOSUPPORT"}, results
+
+
+@pytest.mark.parametrize("provider", ["codex", "grok", "claude"])
+def test_private_front_mode_is_gemini_only(provider, monkeypatch):
+    monkeypatch.setattr(seat_egress_proxy, "_node",
+                        lambda: pytest.fail("unsupported mode reached dispatch"))
+    with pytest.raises(ValueError, match="reserved for jailed Gemini"):
+        with seat_egress_proxy.start_private_gemini_proxy(allowlist_id=provider):
+            pytest.fail("unsupported mode started")
+
+
+def test_private_front_request_matrix_without_sockets(tmp_path):
+    """Run the actual front and request filter against an in-memory SRT transport."""
+    from test_gemini_seat_egress_1170 import _client_hello
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required to run the front")
+    config = tmp_path / "proxy.json"
+    config.write_text(json.dumps({"allow": list(_fixture_ref("gemini").request_set),
+                                  "inner_sni_check": True, "private_gemini": True}))
+    srt = tmp_path / "srt.mjs"
+    srt.write_text("""
+export const SandboxManager = {
+  initialize: options => { globalThis.filter = options.network.filterRequest; },
+  getMitmCA: () => ({secureContexts: {
+    get: name => { if (name !== 'fixture-reach.invalid') throw new Error(); },
+  }}),
+  getLinuxHttpSocketPath: () => '/mock-srt.sock',
+  getProxyAuthToken: () => 'fixture-session',
+  reset: () => {},
+};
+""")
+    run = tmp_path / "front-test.mjs"
+    run.write_text(r"""
+import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+import net from 'node:net';
+import { pathToFileURL } from 'node:url';
+
+const [frontPath, srtPath, configPath, helloHex, wrongHex] = process.argv.slice(2);
+process.argv = [process.argv[0], frontPath, pathToFileURL(srtPath).href, configPath];
+fs.mkdtempSync = () => '/mock-private-front';
+
+class Socket extends EventEmitter {
+  writes = [];
+  write(data) { this.writes.push(data); }
+  end(data) { this.write(data); this.destroy(); }
+  destroy() { this.emit('close'); }
+  pipe() {}
+}
+
+let accept;
+const upstream = [];
+net.createServer = handler => {
+  accept = handler;
+  return { on() {}, listen(path, ready) { ready(); }, unref() {}, close() {} };
+};
+net.connect = ({path}) => {
+  assert.equal(path, '/mock-srt.sock');
+  const socket = new Socket();
+  upstream.push(socket);
+  return socket;
+};
+syncBuiltinESMExports();
+const events = [];
+process.stdout.write = line => {
+  events.push(JSON.parse(line));
+  return true;
+};
+
+await import(pathToFileURL(frontPath));
+assert.deepEqual(events.shift(), {
+  socket: '/mock-private-front/front.sock', token: 'fixture-session',
+  tls_inspection: true, inner_sni_check: true, fail_closed_front: true,
+});
+
+function request(host, headers = '') {
+  const client = new Socket();
+  accept(client);
+  client.emit('data', Buffer.from('CONNECT ' + host + ':443 HTTP/1.1\r\n' + headers + '\r\n'));
+  return client;
+}
+const host = 'fixture-reach.invalid';
+const auth = 'Basic ' + Buffer.from('srt:fixture-session').toString('base64');
+for (const header of ['Proxy-Authorization: Basic c3J0Og==\r\n',
+                      'Proxy-Authorization:\r\n',
+                      'Proxy-Authorization: ' + auth + '\r\nProxy-Authorization: wrong\r\n']) {
+  assert.match(request(host, header).writes[0], /^HTTP\/1.1 407/);
+}
+assert.equal(upstream.length, 0);
+assert.deepEqual(events, []);
+
+for (const header of ['', 'Proxy-Authorization: ' + auth + '\r\n']) {
+  const client = request(host, header);
+  assert.match(client.writes[0], /^HTTP\/1.1 200/);
+  client.emit('data', Buffer.from(helloHex, 'hex'));
+  const socket = upstream.pop();
+  assert.ok(socket);
+  socket.emit('connect');
+  assert.equal(socket.writes[0], 'CONNECT ' + host + ':443 HTTP/1.1\r\nHost: ' + host
+               + ':443\r\nProxy-Authorization: ' + auth + '\r\n\r\n');
+  socket.emit('data', Buffer.from('HTTP/1.1 200 Connection Established\r\n\r\n'));
+  assert.deepEqual(socket.writes[1], Buffer.from(helloHex, 'hex'));
+}
+
+assert.match(request('not-listed.invalid').writes[0], /^HTTP\/1.1 403/);
+for (const hello of [wrongHex, '150303000401000000']) {
+  const client = request(host);
+  assert.match(client.writes[0], /^HTTP\/1.1 200/);
+  client.emit('data', Buffer.from(hello, 'hex'));
+  assert.equal(upstream.length, 0);
+}
+assert.deepEqual(events.map(event => event.decision), ['deny', 'deny', 'deny']);
+
+for (const [method, path, innerHost, decision] of [
+  ['GET', '/', host, 'allow'],
+  ['GET', '/forbidden', host, 'deny'],
+  ['POST', '/', host, 'deny'],
+  ['GET', '/', 'not-listed.invalid', 'deny'],
+]) {
+  const result = await globalThis.filter(new Request('https://' + host + path,
+    {method, headers: {'Host': innerHost}}));
+  assert.equal(result.action, decision);
+}
+assert.deepEqual(events.slice(3).map(event => event.decision), ['allow', 'deny', 'deny', 'deny']);
+
+fs.writeFileSync(configPath, JSON.stringify({allow: [], private_gemini: true}));
+await import(pathToFileURL(frontPath).href + '?refuse-all');
+assert.match(request(host).writes[0], /^HTTP\/1.1 403/);
+assert.equal(upstream.length, 0);
+
+fs.writeFileSync(configPath, JSON.stringify({allow: [{host, port: 443, method: 'GET', path: '/'}]}));
+await import(pathToFileURL(frontPath).href + '?default');
+assert.match(request(host).writes[0], /^HTTP\/1.1 407/);
+assert.match(request(host, 'Proxy-Authorization: ' + auth + '\r\n').writes[0], /^HTTP\/1.1 200/);
+process.exit(0);
+""")
+    done = subprocess.run(
+        [node, str(run), str(seat_egress_proxy._data_path("proxy.mjs")), str(srt), str(config),
+         _client_hello(LISTED.encode(), 3).hex(), _client_hello(UNLISTED.encode(), 3).hex()],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15,
+    )
+    assert done.returncode == 0, done.stderr
