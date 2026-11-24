@@ -937,11 +937,11 @@ every PR.
     "phase-loop-runtime/src/phase_loop_runtime/placement_cli.py": "1fe8a719e3b384bd73d630346a1d92e51826abe33749469aae7f5e1f132eb9ed",
     "phase-loop-runtime/tests/test_placement_process_contract.py": "f17ff6d1c9d1b7bd78aac1f63577f876caf7ea17e242c9a9eb0581d63e405fb6",
     "phase-loop-runtime/tests/test_placement_lifecycle_process.py": "2c128704b2436b6aad670abd72d132b8977dc639ae1e4c6458494ed617f99a0e",
-    "phase-loop-runtime/tests/test_placement_bridge.py": "9a298919b0fe1ca83c92be9ceb694ef397833cb5be9159313d8c7f8cc8a2ac58",
+    "phase-loop-runtime/tests/test_placement_bridge.py": "45c57c069d1344f2a13b1f8c9bca928c928c6e934f56164bda7ba5fc64ece6e1",
     "phase-loop-runtime/tests/test_placement_cli.py": "85f4520fc4c2e55b4604c48cbea45d84f0d64c17c8aff0ffa9917ce7a83ca9c0",
     "phase-loop-runtime/tests/fixtures/placement-cli/cases.json": "6df4c1db8ac4a9c94ba676ce60f78684969531769764e960502e320eb5320bec",
     "phase-loop-runtime/tests/fixtures/placement-cli/fake_coordinator.py": "87a2f2af5bc80ce6ebae38c73de2140f70d0e929fafd07684af1f5609ed0d3f4",
-    "phase-loop-runtime/tests/fixtures/placement-cli/fake_cred_proxy.py": "ef99bb813640c311fa507109aa9be4286f9db6282c76ca582b1022840c84242a",
+    "phase-loop-runtime/tests/fixtures/placement-cli/fake_cred_proxy.py": "b9f4084a30b469f93d93d5b41b87178eab0197b4a93bf9a48990f4ac46ff4eb7",
     "phase-loop-runtime/tests/fixtures/placement-cli/run_cli.py": "9f908f42dcaf1b2a796890fefe5e9a8ea994882e071802ebd99c94f9202fdeab",
     "plans/artifacts/v13-PLACECLI-contract-v1.schema.json": "130a894df327ddca2eebf83c8b52e068b25176320af3e0a4e15319a315ba83ea",
     "plans/artifacts/v13-PLACECLI-landed-binding.md": "64cd6c576530ac9af0fe72fa521286e0643425beb0d11045257b0b1fac45da51"
@@ -949,7 +949,7 @@ every PR.
   "runner_stamp": {
     "host": "ai",
     "observed_commit": "5342c03019f58bc9b18ebdefb7482a28165754f3",
-    "source_tree_digest": "1d0fac946b0a6396da760b7a377bb59df9a40daf266d688793fe8eb618c5200d",
+    "source_tree_digest": "cf53369f33b9566982de8f0e0907325633cf0c0e55bb8e5cf6c0006dc614b497",
     "lock": "github.com-consiliency-agent-harness admission lock held for the run",
     "interpreter": "phase-loop-runtime/.venv/bin/python (uv sync --locked --group test, /usr/bin/python3 3.12.3), -I precheck passed",
     "gates": "PSI memory full avg10 <= 1 and io full avg10 < 5 before each group; serial; timeout 900; no xdist; -p no:cacheprovider",

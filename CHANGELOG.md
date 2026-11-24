@@ -11,43 +11,70 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - LaneExec checks requests against captured route and resource settings, runs isolated admission,
   and journals supervisor ownership, start intent and terminal responses. Shipped settings keep
   every launch route closed.
+
+## [0.7.43] - Unreleased candidate
+
+### Added
+
 - JEVHOST SL-9 documents the run-bound report hook and adds
-  `JevDrillAdapter.active_execution_run_ids(task_id)` for hosts reporting during execution.
+  `JevDrillAdapter.active_execution_run_ids(task_id)` for hosts reporting during execution
+  (agent-harness#2155).
 - LANEEXEC SL-2: `ReturnPolicy` supports independent patch and JSON result byte caps,
   including zero. A return above its cap yields `sandbox_launch_result_invalid` and
-  leaves no retained bytes. A verified absent proposal still returns null without a code.
+  leaves no retained bytes. A verified absent proposal still returns null without a code
+  (agent-harness#2150).
 - LANEEXEC SL-7 precursor: `static_route_refusal` checks the client, workload and
   writer pairing, and `activation_refusal` checks the captured route settings.
   `route_refusal` preserves its refusal order and codes. All routes refuse under
-  shipped defaults, including the existing interim diagnostic for local Pi.
+  shipped defaults, including the existing interim diagnostic for local Pi
+  (agent-harness#2149).
 - LaneExec tracks launch ownership, renewal, cancellation and cleanup by generation. Release
   and reap retain an allocation while cleanup evidence is unresolved. Trusted scheduler
-  calls can pass an immutable lane context through the launch service.
+  calls can pass an immutable lane context through the launch service (agent-harness#2151).
 
 ### Fixed
 
-- Jailed Claude TUI failures retain screened terminal tails in private advisor-board leg logs.
-  Gemini credential refusals identify the matching field class in the private execution record,
-  and the board notice covers both seat tokens and per-launch proxy credentials.
+- On native Windows, JEV Drill run-bound hook reports reuse the launch's queue binding.
+  The admission deadline ends when the hook acquires the objective guard. Storage errors
+  reach the caller, and an unconfirmed enqueue may already have been stored
+  (agent-harness#2162, agent-harness#2161).
+- LaneExec repins the agent-toolkit credential proxy for Consiliency/agent-toolkit#103
+  and updates the launch protocol digest (LANEEXEC-v1-errata-6, agent-harness#2164).
+- Jailed Claude TUI failures retain screened terminal tails in private advisor-board leg
+  logs. Gemini credential refusals identify the matching field class in the private
+  execution record, and the board notice covers both seat tokens and per-launch proxy
+  credentials (agent-harness#2158, agent-harness#2157).
 - Unconfirmed local launch renewals retain cleanup debt and can retry until the lease
   fencing boundary. Reap respects that boundary, and late writes cannot overwrite a
-  retry's confirmed heartbeat (agent-harness#2151 follow-up).
+  retry's confirmed heartbeat (agent-harness#2156, agent-harness#2151 follow-up).
 - Launch cancellation uses the generation's supervisor socket before start intent. WORKER
-  cancellation requires a matching generation with durable start intent.
+  cancellation requires a matching generation with durable start intent (agent-harness#2156).
 - `claude-sdk-audit` / `audit-order` no longer reports a failed merge-state lookup as
-  "the cited PR is not merged" (agent-harness#2087). `github_pr_merged` returns GitHub's
-  `merged` field only when it is a boolean and raises `AuditError("merge state
+  "the cited PR is not merged" (agent-harness#2087, agent-harness#2146).
+  `github_pr_merged` returns GitHub's `merged` field only when it is a boolean
+  and raises `AuditError("merge state
   unverifiable (...)")` on an HTTP error status (such as an anonymous 403 or 429 rate
   limit), a transport failure, an incomplete body (Content-Length bytes outstanding or an
   HTTP framing error such as `IncompleteRead`), a body over 1 MiB, a non-JSON body or a
-  response without a boolean `merged` field. The audit reports that diagnostic and keeps "the cited PR is not merged" for an
-  explicit `false`; both still fail closed.
+  response without a boolean `merged` field. The audit reports that diagnostic and
+  keeps "the cited PR is not merged" for an explicit `false`; both still fail closed.
 - The FIRSTSEAT record-board test stubs the Gemini board preflight, so it no longer runs live
-  Agy qualification inside the guard's 30 s authorization window (agent-harness#2142).
+  Agy qualification inside the guard's 30 s authorization window
+  (agent-harness#2142, agent-harness#2144).
 - The placement-lifecycle replay test runs its interrupted setup reserve on a frozen clock with
-  inline backend calls, removing a real-time 300 ms deadline race (agent-harness#2117).
+  inline backend calls, removing a real-time 300 ms deadline race
+  (agent-harness#2117, agent-harness#2145).
 
-## [0.7.42] - Unreleased candidate
+### Known issues
+
+- The three POSIX-only tests in the JEV Drill companion's fixed list of exclusions import
+  `fcntl` at module scope and fail collection on native Windows
+  (`test_broker_socket_path_2131.py`, `test_launch_prepare.py` and
+  `test_launch_release_reap.py`).
+- The Gemini per-launch proxy credential echo remains an open design issue
+  (agent-harness#2157).
+
+## [0.7.42] - 2026-11-23
 
 ### Added
 

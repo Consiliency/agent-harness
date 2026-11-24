@@ -115,13 +115,17 @@ def requester_proxy(socket_path: str, seen: dict) -> None:
 
         def provider(origin, path, headers, body):
             seen["provider"] = (origin, path, dict(headers))
-            return b'{"content":"model bytes"}'
+            response = b'{"content":"model bytes"}'
+            return fake_cred_proxy.UpstreamResponse(
+                200, (("content-length", str(len(response))), ("connection", "close")),
+                lambda: response,
+            )
 
-        answer = fake_cred_proxy.handle(request, {"anthropic": "https://api.anthropic.com"},
-                                        lambda name: SECRET, provider)
-        client.sendall(answer)
-        client.shutdown(socket.SHUT_WR)
-        time.sleep(0.2)
+        fake_cred_proxy.handle(request, {"anthropic": "https://api.anthropic.com"},
+                               lambda name: SECRET, provider, send=client.sendall, destroy=client.close)
+        if client.fileno() != -1:
+            client.shutdown(socket.SHUT_WR)
+            time.sleep(0.2)
 
 
 def _helper_sockets(pid: int) -> set[int]:

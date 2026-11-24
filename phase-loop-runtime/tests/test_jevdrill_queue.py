@@ -180,10 +180,10 @@ def test_objective_guard_reuses_anchored_transaction_and_bounds_admission(tmp_pa
     from phase_loop_runtime import file_lock
     q = queue(tmp_path)
     with q.objective_guard():
-        binding = getattr(q._objective_storage, "directory", None)
+        binding = q._objective_directory
         if os.name == "nt":
             from phase_loop_runtime import windows_storage
-            assert binding is not None and 0 < binding.deadline - time.monotonic() <= 5
+            assert binding is not None and binding.deadline is None
             def forbidden(*_args, **_kwargs):
                 pytest.fail("Nested transaction reopened its anchored directory")
             with monkeypatch.context() as local:
@@ -192,7 +192,7 @@ def test_objective_guard_reuses_anchored_transaction_and_bounds_admission(tmp_pa
                 assert q.status()["records"] == 1
         else:
             assert q.enqueue(report()) == "queued"
-    assert getattr(q._objective_storage, "directory", None) is None
+    assert q._objective_directory is None
     clock = [100.0]
     monkeypatch.setattr(time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(time, "sleep", lambda elapsed: clock.__setitem__(0, clock[0] + elapsed))

@@ -58,15 +58,16 @@ from phase_loop_runtime.sandbox_policy import PlacementClientConfig, PlacementCo
 # -- inputs ---------------------------------------------------------------------------------
 
 #: ``x-contract-pins.toolkit_pins``: the manifest bytes an agent-toolkit operator
-#: configuration carries (agent-toolkit ``harnesses/pi/contracts/pins.json`` at the pinned
-#: ``toolkit_commit``). Their digest is checked against the packaged pin below.
+#: configuration carries (agent-toolkit ``harnesses/pi/contracts/pins.json`` at manifest commit
+#: ``0540e09dbc3ad1d4d40e0be6ed9bf3d2ec20d1a9``). The embedded ``toolkit_commit``
+#: identifies the source file bytes. The manifest digest is checked against the packaged pin.
 PINNED_MANIFEST = (
     '{"files":[{"path":"docs/remote-placement.md","role":"remote_placement_reference","sha256'
     '":"8a9ec51604ea64609d88567b7e0ab6c12e3b5b4b2a53f8970ce4452cbde7a2cd"},{"path":"harnesses'
     '/pi/sandbox/bwrap.mjs","role":"remote_inner_closure:harnesses/pi/sandbox/bwrap.mjs","sha'
     '256":"de5ae6dc1da9ebad9565cebb5a32a2cbd3ccb2521b42cfbec720f52824690568"},{"path":"harnes'
-    'ses/pi/sandbox/cred-proxy.mjs","role":"cred_proxy_reference","sha256":"dc84548328c38345f'
-    '0d190e89fa1bb5c2ac1d438273c49408b172796d6844c30"},{"path":"harnesses/pi/sandbox/engines/'
+    'ses/pi/sandbox/cred-proxy.mjs","role":"cred_proxy_reference","sha256":"43ee5e6172a250062'
+    '65cbeeafef08a9ad2dee07e9a7d743a18ba9fc23d7a9987"},{"path":"harnesses/pi/sandbox/engines/'
     'loopback.mjs","role":"toolkit_loopback_engine","sha256":"3ce769c1d3a89190b667d1055e88112'
     'e46dfc8c26fc1a3721b1e3ed8ce335829"},{"path":"harnesses/pi/sandbox/engines/openshell-cli.'
     'mjs","role":"toolkit_openshell_cli","sha256":"42f5e18d7cc403f02abcd47f695e7a8a2fb123e130'
@@ -113,8 +114,8 @@ PINNED_MANIFEST = (
     'shot_reference","sha256":"d4d9f1b23fd359b83457adfe1c0df1b451f115a5435dcda79573492e25fe51'
     'ab"},{"path":"harnesses/pi/sandbox/writer-transfer.mjs","role":"remote_inner_closure:har'
     'nesses/pi/sandbox/writer-transfer.mjs","sha256":"129ea5e55e879aa3a376a6212d1fb44edd53f8b'
-    'b44d9adf034efd289e73127be"}],"schema":"toolkit_pins.v1","toolkit_commit":"cd9174e326140d'
-    'c27471ff3bfc8abdd056f6e7bd"}'
+    'b44d9adf034efd289e73127be"}],"schema":"toolkit_pins.v1","toolkit_commit":"1e721c011a65d0'
+    'b002eeb3479e4a834892bbeff7"}'
 )
 #: LANEEXEC-v1-errata-1 E2(ii): the pre-erratum local ``template_sha256`` (an input).
 PRE_ERRATUM_TEMPLATE_SHA256 = "0905bff04c6976d8eaf096579e2398ada265fcc2980c024919b2527c20257449"
@@ -152,6 +153,7 @@ IMAGE_TOOLKIT = "/opt/agent-toolkit"
 IMAGE_LINK = "/opt/agent-toolkit/pi-agent/npm"
 FIXTURE_COMMIT = "f" * 40
 REMOTE_INNER = "harnesses/pi/sandbox/remote-inner.mjs"
+CRED_PROXY = "harnesses/pi/sandbox/cred-proxy.mjs"
 
 CONTRACT = json.loads(schema_bytes())
 CONTRACT_PIN = ToolkitPin.from_contract()
@@ -172,6 +174,8 @@ def sha(data: bytes) -> str:
 
 
 def fixture_bytes(path: str) -> bytes:
+    if path == CRED_PROXY:
+        return (Path(__file__).parent / "fixtures/launch-routes/cred-proxy.mjs").read_bytes()
     return b"fixture toolkit file " + path.encode()
 
 
@@ -710,6 +714,9 @@ def test_the_pinned_manifest_itself_matches_the_contract_pin():
     accepted = check_toolkit_manifest(raw)
     assert accepted.closure == frozenset(CLOSURE_PATHS)
     assert len(REQUIRED_ROLES) == 17 and set(accepted.roles) >= set(REQUIRED_ROLES)
+    assert sha(fixture_bytes(CRED_PROXY)) == next(
+        entry["sha256"] for entry in PINNED_DOC["files"] if entry["path"] == CRED_PROXY
+    )
 
 
 def test_the_pinned_manifest_registers_the_openshell_template_on_its_recorded_closure(host):
@@ -918,8 +925,7 @@ def test_an_openshell_recorded_closure_omitting_each_file_refuses(host, fixture_
 
 def test_a_local_bound_closure_adding_a_file_refuses(host, fixture_raw):
     manifest = json.loads(fixture_raw)
-    host.write("opt/toolkit/harnesses/pi/sandbox/cred-proxy.mjs",
-               fixture_bytes("harnesses/pi/sandbox/cred-proxy.mjs"))
+    host.write(f"opt/toolkit/{CRED_PROXY}", fixture_bytes(CRED_PROXY))
     registry, _ = register([local_record(host, manifest)], fixture_raw, host)
     assert registry.refused == {0: "closure_mismatch"}
 
@@ -934,8 +940,7 @@ def test_a_local_bound_closure_adding_an_unlisted_file_refuses(host, fixture_raw
 def test_an_openshell_recorded_closure_adding_a_file_refuses(host, fixture_raw):
     manifest = json.loads(fixture_raw)
     listed = runtime_record(manifest)
-    listed["launcher"]["files"]["harnesses/pi/sandbox/cred-proxy.mjs"] = sha(
-        fixture_bytes("harnesses/pi/sandbox/cred-proxy.mjs"))
+    listed["launcher"]["files"][CRED_PROXY] = sha(fixture_bytes(CRED_PROXY))
     registry, _ = register([openshell_record(manifest)], fixture_raw, host, runtime=listed)
     assert registry.refused == {0: "closure_mismatch"}
     unlisted = runtime_record(manifest)

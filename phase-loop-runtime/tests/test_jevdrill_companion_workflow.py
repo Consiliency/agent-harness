@@ -59,6 +59,7 @@ REQUIRED_PATHS = {
         "file_lock", "windows_process", "windows_storage",
     )),
     *(f"phase-loop-runtime/tests/{name}" for name in R.TWELVE_FILES),
+    "phase-loop-runtime/tests/test_jevdrill_host_gaps.py",
     "phase-loop-runtime/tests/jevdrill_fixture_values.py",
     "phase-loop-runtime/tests/phase_loop_test_utils.py",
     "phase-loop-runtime/tests/fixtures/jevdrill/**",
@@ -142,7 +143,8 @@ def test_jevdrill_ref_input_defaults_to_the_synced_sha_and_is_checked_first(wf):
     assert set(inputs) == {"jevdrill_ref"}
     assert inputs["jevdrill_ref"]["default"] == R.JEVDRILL_REF_DEFAULT
     assert wf["env"]["JEVDRILL_REF"] == f"${{{{ inputs.jevdrill_ref || '{R.JEVDRILL_REF_DEFAULT}' }}}}"
-    for name, job in wf["jobs"].items():
+    for name in ("receipt", "installed"):
+        job = wf["jobs"][name]
         first = job["steps"][0]
         assert first["name"] == "Validate jevdrill_ref", name
         assert '[[ ! "$JEVDRILL_REF" =~ ^[0-9a-f]{40}$ ]]' in first["run"]
@@ -171,9 +173,10 @@ def test_the_ref_check_accepts_only_a_full_sha(wf, tmp_path, ref, ok):
 
 
 def test_the_push_and_pull_request_legs_and_their_names(wf):
-    assert set(wf["jobs"]) == {"receipt", "installed"}
+    assert set(wf["jobs"]) == {"receipt", "installed", "host-gaps"}
     for name, job in wf["jobs"].items():
-        assert job["name"] == "${{ matrix.job_name }}"
+        if name != "host-gaps":
+            assert job["name"] == "${{ matrix.job_name }}"
         assert job["runs-on"] == "${{ matrix.runner }}"
         assert isinstance(job["timeout-minutes"], int) and 0 < job["timeout-minutes"] <= 120
         assert job["strategy"]["fail-fast"] is False
@@ -212,7 +215,8 @@ def test_the_dispatched_matrix_and_the_informational_leg(wf):
 def test_one_harness_sync_template(wf):
     for name, job in wf["jobs"].items():
         syncs = [s["run"] for s in job["steps"] if "uv sync --project" in (s.get("run") or "")]
-        assert syncs == [SYNC_TEMPLATE], name
+        template = SYNC_TEMPLATE.replace("${{ matrix.harness_python }}", "3.12") if name == "host-gaps" else SYNC_TEMPLATE
+        assert syncs == [template], name
 
 
 def test_jev_drill_runs_on_cpython_314_and_records_its_interpreter(wf):
@@ -299,7 +303,7 @@ def test_pythonpath_is_computed_in_bash_from_runner_os(wf, job):
     ],
 )
 def test_the_pythonpath_separator_rule(wf, tmp_path, host_os, workspace, expected):
-    for job in ("receipt", "installed"):
+    for job in ("receipt", "installed", "host-gaps"):
         script = _step(wf["jobs"][job], "Compute PYTHONPATH")["run"]
         env_file = tmp_path / f"{job}.env"
         subprocess.run(
@@ -352,6 +356,30 @@ def test_the_installed_invocation(wf):
     ]]
     lines = [line.strip() for line in run["run"].splitlines()]
     assert lines[-1].startswith("uv run --no-sync python scripts/jevdrill_receipt.py classify")
+
+
+def test_host_gaps_run_and_upload_are_independent_of_receipts(wf):
+    job = wf["jobs"]["host-gaps"]
+    dispatch, default = _matrices(job)
+    assert dispatch == [{"runner": runner, "os_label": os} for os, runner in DISPATCH_RUNNERS.items()]
+    assert default == [{"runner": "ubuntu-24.04", "os_label": "linux"}]
+    assert "needs" not in job
+    step = _step(job, "Run host-gaps tests")
+    assert step["working-directory"] == "phase-loop-runtime"
+    assert _pytest_runs(step["run"]) == [[
+        "uv", "run", "--no-sync", "python", "-m", "pytest", "-q", "-rA", "-p", "no:cacheprovider",
+        "-m", "not dotfiles_integration", "--junitxml=$junit", "tests/test_jevdrill_host_gaps.py",
+    ]]
+    job_yaml = yaml.safe_dump(job)
+    assert "jevdrill_receipt.py" not in job_yaml
+    assert "continue-on-error" not in job
+    for leg in ("receipt", "installed"):
+        assert "host-gaps" not in yaml.safe_dump(wf["jobs"][leg])
+    upload = _step(job, "Upload the host-gaps junit")
+    assert upload["if"] == "always()"
+    assert upload["uses"] == "actions/upload-artifact@v4"
+    assert upload["with"]["name"] == "jevdrill-host-gaps-${{ matrix.os_label }}-py3.12"
+    assert upload["with"]["path"] == "${{ runner.temp }}/jevdrill-host-gaps.xml"
 
 
 def test_the_suite_shell_is_bash_with_errexit(wf):
