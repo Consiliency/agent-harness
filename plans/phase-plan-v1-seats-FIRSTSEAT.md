@@ -166,6 +166,10 @@ No future commit identity, count or topology is prescribed.
   `phase_loop_runtime.verification_evidence.validate_verification_commands`.
   Run again after implementation for the new CLI forms; an unresolved executable,
   import error, empty test selection or timed-out check is not success.
+- [x] IF-0-FIRSTSEAT-7 — The [standing Gemini W1 amendment](amendments/seats-FIRSTSEAT-w1-standing-policy.md)
+  records owner authority, its scoped overrides and the bridge sequencing gate.
+  Its [frozen interface](artifacts/seats-w1-standing-policy-contract.md) gates the
+  runtime and installer lanes in the [detailed plan](detailed-w1-standing-policy-20261124.md).
 
 Publish the first three interface agreements on day one, before implementation,
 using these roadmap contracts as pre-existing inputs. This does not mark lanes

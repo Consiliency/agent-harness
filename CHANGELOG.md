@@ -15,6 +15,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - LaneExec checks requests against captured route and resource settings, runs isolated admission,
   and journals supervisor ownership, start intent and terminal responses. Shipped settings keep
   every launch route closed.
+- Gemini self-qualification records an allowlisted `provider_error_class` in private
+  failure evidence and in the qualification-unavailable notice when structured signals
+  are available. Unidentified provider failures report `unknown`.
 
 ### Changed
 
@@ -22,8 +25,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   bounded reads. Staged bundles over 64 KiB warn before launch. Advisor boards can enforce a
   limit with `--max-staged-bundle-bytes`. Jailed Claude TUI silence timing includes the mounted
   bundle size and stays within the review deadline.
+- Record the FIRSTSEAT standing Gemini W1 policy and freeze IF-0-FIRSTSEAT-7,
+  including the one-attempt debit, unchanged-input skip and agent-harness#2157
+  bridge sequencing gate.
 - LANEEXEC erratum 7 binds the plan to the landed SL-8 renewal, activation,
   scratch, cancellation and lane admission rulings (agent-harness#2160).
+
+### Fixed
+
+- Bounded jailed Claude TUI reviews allow up to 20 minutes from submit for an active turn
+  with a repainting spinner and interrupt footer, within the existing review deadline.
+  The watchdog checks the session journal once more before declaring a stall.
 
 ## [0.7.43] - Unreleased candidate
 

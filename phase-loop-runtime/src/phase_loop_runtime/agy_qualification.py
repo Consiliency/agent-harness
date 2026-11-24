@@ -14,6 +14,7 @@ import argparse
 import contextlib
 import ctypes
 from dataclasses import replace
+from enum import StrEnum
 from hashlib import sha256
 import hmac
 import json
@@ -32,7 +33,7 @@ import tempfile
 import threading
 import time
 import zlib
-from typing import Callable, Literal, NamedTuple
+from typing import Callable, Literal, NamedTuple, Self
 
 from . import __version__
 from . import agy_provenance
@@ -133,6 +134,43 @@ LOCAL_FAILURE = "qualification local failure"
 
 class QualificationFailure(ValueError):
     """A diagnostic raised with a fixed, content-free message by this driver."""
+
+
+class ProviderErrorClass(StrEnum):
+    AUTH_MISSING = "auth_missing"
+    AUTH_EXPIRED = "auth_expired"
+    QUOTA_EXHAUSTED = "quota_exhausted"
+    PERMISSION_DENIED = "permission_denied"
+    MODEL_ERROR = "model_error"
+    EMPTY_RESPONSE = "empty_response"
+    NETWORK = "network"
+    TIMEOUT = "timeout"
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def read(cls, value: object) -> Self | None:
+        """Accept only exact wire labels from retained evidence."""
+        if type(value) is str:
+            try:
+                return cls(value)
+            except ValueError:
+                pass
+        return None
+
+
+class QualificationUnavailable(ValueError):
+    """An availability refusal with optional provider diagnostics for notice consumers."""
+
+    def __init__(self, error_class: ProviderErrorClass):
+        super().__init__(SELF_QUALIFICATION_UNAVAILABLE)
+        self.error_class = error_class
+
+
+def qualification_notice(exc: BaseException) -> dict | None:
+    if type(exc) is QualificationUnavailable:
+        return {"code": SELF_QUALIFICATION_UNAVAILABLE,
+                "detail": {"provider_error_class": exc.error_class.value}}
+    return None
 
 
 def digest(value):
@@ -412,12 +450,27 @@ def write_failure(root, exc, stage, helpers, observed_processes, worker_terminal
              "qualification_passed": False, "same_candidate_retry_authorized": False}
     if worker_terminal is not None:
         value["worker_terminal"] = worker_terminal
+    error_class = _terminal_provider_error(root)
+    if error_class is not None:
+        value["provider_error_class"] = error_class.value
     path = root / "failure.json"
     if stage == "observer_cleanup" and path.exists():
         original = json.loads(path.read_text())
         original["cleanup_failure"] = value
         value = original
     write_json(path, value)
+
+
+def _terminal_provider_error(root: Path) -> ProviderErrorClass | None:
+    # The worker may finish before the observer can verify admission. Its diagnostic can
+    # still be retained, independently of the observation and validation decisions.
+    try:
+        terminal = json.loads((root / "terminal.json").read_text())
+        if terminal["result"]["status"] != "OK":
+            return ProviderErrorClass.read(terminal["broker"]["provider_error_class"])
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return None
 
 
 def process_table():
@@ -2409,6 +2462,9 @@ def _first_use_subject(env, image, path, *, cancel_event=None, heartbeat=None, s
                         store.put_failed(image.sha256, help_sha256, host, profile_digest,
                                          outcome.get("operation"), "repeated_transient")
                         raise ValueError(SELF_QUALIFICATION_FAILED)
+                    error_class = ProviderErrorClass.read(outcome.get("provider_error_class"))
+                    if error_class is not None:
+                        raise QualificationUnavailable(error_class)
                     raise ValueError(SELF_QUALIFICATION_UNAVAILABLE)
             if store.get_qualified(image.sha256, help_sha256, host, profile_digest) is None:
                 raise ValueError(STORE_UNSAFE)
@@ -2477,7 +2533,11 @@ def qualify_image(image, help_bytes, *, cancel_event=None, heartbeat=None, store
                 return {"status": "cancelled"}
             if _classify_failure(series / operation, operation) == "failed":
                 return {"status": "failed", "operation": operation, "reason": "operation_validation_failed"}
-            return {"status": "transient", "operation": operation}
+            outcome = {"status": "transient", "operation": operation}
+            error_class = _terminal_provider_error(series / operation)
+            if error_class is not None:
+                outcome["provider_error_class"] = error_class.value
+            return outcome
     try:
         result = validate_directory(series, expected_source_sha256=source_pins(), expected_image_sha256=image.sha256,
                                     expected_help_sha256=help_sha256,
@@ -2853,6 +2913,9 @@ def cli_main(args):
         )
     except (ValueError, ExecutableDependencyError) as exc:
         print(f"phase-loop agy-qualification run: {exc}", file=sys.stderr)
+        notice = qualification_notice(exc)
+        if notice is not None:
+            print(json.dumps(notice, sort_keys=True), file=sys.stderr)
         return 1
     try:
         output = {"admission_class": admission.admission_class, "image_sha256": admission.image.sha256,
