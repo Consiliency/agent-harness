@@ -14,6 +14,7 @@ import jsonschema
 import pytest
 
 from executable_dependency_test_support import build_fixture
+from test_seats_teamhost_subject import _managed_grok, managed_fs  # noqa: F401
 from phase_loop_runtime import agy_integrity
 from phase_loop_runtime import agy_qualification
 from phase_loop_runtime import claude_seat_transport
@@ -387,7 +388,8 @@ def _real_seat_preparation(row, tmp_path):
                 1,
                 1,
                 ("artifact", "instructions"),
-                SimpleNamespace(ca_cert=tmp_path / "ca.crt", proxy_url="http://fixture"),
+                SimpleNamespace(ca_cert=tmp_path / "ca.crt", proxy_url="http://127.0.0.1:3128",
+                                private_proxy_token=b"fixture"),
                 env=env,
                 credential="none",
             )
@@ -751,3 +753,67 @@ def test_admin_json_prints_only_reported_missing_items(tmp_path, capsys):
     output = capsys.readouterr().out
     assert "LA1-PACKAGES" in output and "LA1-AUTHORITY-PIN" in output
     assert "LA1-MACHINE-ID" not in output
+
+
+@pytest.fixture
+def ready_managed_grok_doctor(monkeypatch):
+    profile = replace(seat_profiles.profile_for("grok"),
+                      credential_present=lambda: True, preconditions=())
+    monkeypatch.setattr(seat_admission, "_profile_for", lambda _leg: profile)
+    monkeypatch.setattr(seat_jail, "seat_sandbox_capable", lambda: None)
+    allowlist = seat_egress_proxy.allowlist_ref(profile.allowlist_id).content_digest
+    monkeypatch.setattr(seat_admission, "_profile_egress", lambda *_args: (None, allowlist))
+    monkeypatch.setattr(panel_invoker, "require_grok_admission", lambda *_args: None)
+    return profile, allowlist
+
+
+def test_doctor_gate_admits_managed_grok_with_the_null_projection_key(
+    managed_grok, ready_managed_grok_doctor, monkeypatch,
+):
+    from phase_loop_runtime.seat_qualification_key import key_for_launch
+
+    env, _native, _digest, _pin_path = managed_grok
+    profile, allowlist = ready_managed_grok_doctor
+    monkeypatch.setattr(seat_subject, "open_managed_authority",
+                        lambda *_: pytest.fail("opened a dependency authority"))
+    keys = []
+    monkeypatch.setattr(seat_admission, "_pass_record", lambda _leg, key: keys.append(key))
+
+    result = seat_admission.verdict("grok", env, execute=True)
+    assert (result.status, result.code) == ("admits", None)
+    assert keys == [key_for_launch(profile, variant=None, allowlist_digest=allowlist, projection=None)]
+
+
+@pytest.mark.parametrize("managed_grok", ["image-pin-only"], indirect=True)
+@pytest.mark.parametrize("source", ["managed_image", "unexpected"])
+@pytest.mark.parametrize("has_profile", [True, False])
+def test_doctor_gate_refuses_unadmitted_source(
+    managed_grok, ready_managed_grok_doctor, monkeypatch, source, has_profile,
+):
+    from phase_loop_runtime import seat_qualification_key
+
+    env, _native, _digest, pin = managed_grok
+    stale = replace(seat_subject.resolve_seat_subject("grok", env), source=source)
+    pin.unlink()
+    if not has_profile:
+        monkeypatch.setattr(seat_admission, "_profile_for", lambda *_: None)
+        monkeypatch.setattr(seat_admission, "registered_legs", lambda: ("grok",))
+    monkeypatch.setattr(seat_subject, "resolve_seat_subject", lambda *_: stale)
+    monkeypatch.setattr(seat_subject, "open_managed_authority",
+                        lambda *_: pytest.fail("opened a dependency authority"))
+    monkeypatch.setattr(seat_admission, "_pass_record", lambda *_: pytest.fail("created a key"))
+    calls = []
+    monkeypatch.setattr(seat_qualification_key, "admit_profile_projection",
+                        lambda *args: calls.append(args))
+
+    result = seat_admission.verdict("grok", env, execute=True)
+    expected = "authority_missing" if has_profile and source == "managed_image" else "subject_mismatch"
+    assert (result.status, result.code) == ("refuses", expected)
+    assert calls == []
+
+
+def test_plain_seat_window_matrix_still_lists_grok_as_jailed():
+    from phase_loop_runtime import seat_window
+
+    row = next(row for row in seat_window.readiness_rows() if row["id"] == "vendor:grok")
+    assert (row["route"], row["projection"]) == ("jailed", None)

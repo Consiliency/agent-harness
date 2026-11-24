@@ -18,6 +18,72 @@ publication. The qualification host installs the released
 `phase-loop-runtime[agy-watch]`, since the job signs its App token with the extra's
 `cryptography`.
 
+## 0.7.44 release preparation
+
+Expected unpublished artifacts are `phase_loop_runtime-0.7.44-py3-none-any.whl`
+and `phase_loop_runtime-0.7.44.tar.gz`. The runtime requires Python 3.12 or newer.
+The lock retains `baml-bridge` 0.23.0 and `protobuf` 7.36.2.
+
+LaneExec adds isolated admission and generation-owned supervision. Shipped
+settings keep all launch routes closed (agent-harness#2160). LANEEXEC erratum 7
+records the landed SL-8 rulings (agent-harness#2165).
+
+Jailed Claude TUI stall diagnostics capture submit and exact-session progress
+using content-free metadata (agent-harness#2169). For bounded reviews, an
+active thinking turn with a repainting spinner and interrupt footer counts as
+liveness for up to 20 minutes after submit, within the review deadline. The
+watchdog checks the journal once more before declaring a stall
+(agent-harness#2174). Jailed review seats read the scope and index first, then
+fetch evidence in bounded reads. Bundles over 64 KiB warn before launch.
+Advisor boards can enforce a cap with `--max-staged-bundle-bytes`. Claude TUI
+silence timing accounts for bundle size within the review deadline
+(agent-harness#2175).
+
+The jailed Claude open-egress exception was renewed to 2027-01-03T00:00Z
+(exclusive) and ends sooner if the allowlist is registered. The W1 grant and
+conservative evidence cutoffs both remain 2026-12-04T00:00Z (agent-harness#2172).
+
+agy qualification includes a typed `provider_error_class` in private failure
+evidence and the qualification-unavailable notice when structured signals are
+available (agent-harness#2171). The release records the credential-free Gemini
+proxy design and the standing Gemini W1 policy and interface freeze
+(agent-harness#2167, agent-harness#2173).
+
+Grok's `managed_image` runtime admission can verify an approved Linux x64
+1.0.92 image using the guarded launcher, root-owned release pin and executable
+fingerprint. It uses the existing read-only bind with no dependency projection
+(agent-harness#2178). Grok remains disabled. Enablement requires
+agent-harness#2176, agent-harness#2177, agent-harness#2179, the Dotfiles pin,
+installation and qualification.
+
+Qualification inputs compared with the `v0.7.43` tag using the runtime digest
+functions, agy validator closure tooling and SDK proof bindings:
+
+| Seat | Inputs that moved | Stable inputs |
+| --- | --- | --- |
+| Claude | The shared seat-window runtime digest and release identity move. SDK proof bindings change for `seat_route.py`, `seat_subject.py`, `uv.lock` and the `panel_invoker.py::_resolved_jail_subject` source region. | Production jail profile on x86_64 and aarch64. All other SDK proof bindings. TUI remains the default and SDK admission requires a fresh boundary proof. |
+| Codex | The shared seat-window runtime digest and release identity move. | Production jail profile on x86_64 and aarch64. |
+| Gemini / agy | The shared seat-window runtime digest and release identity move. Package source pins for newly captured agy evidence move. The agy validator source-closure digest moves from `4a2c65ba116c608a7484cbc205c8f511ab2812e75e10ea6f10776f37c58b4a63` to `dbf41baab6b0d75ee57d512328ac8c8d473787156e19c9d16231b502afcc40c0`. | Production Gemini jail profile on x86_64 and aarch64. All four agy qualification inputs are unchanged. Linux x64 agy 1.5.3 image SHA-256 is `7ca212748ca0dfda718efbc39a776a104472e7e9344d4b6ea147c543684f96a3`, the validator is `agy_validator_v1`, and QCI and agy profile digest both equal `9124a4d288e04a365f8fa76d4669464bcaa2fc86ad208df9eb7fea80fa10469c`. |
+| Grok | The shared seat-window runtime digest and release identity move. Managed admission adds the Dotfiles release pin and binary fingerprint check. | Production jail profile on x86_64 and aarch64. Approved binary fingerprints are unchanged. |
+
+The shared seat-window runtime digest moves from
+`bc273f4f053c911b83b786c4f6e6a493003cc0926fac2e75bba521c6ced869c5` to
+`0a9d28ce9cb0468abe9f7dcc915b1df0410ddb29924ce129e05d4e6d2b95a665`.
+The release identity moves from
+`8aed256893ea5a6a769e16e632a35cbd694b9dbc6441dd2e149b4c242a5a8574` to
+`75ca562ad5ce652372c0cb4afad4f4b831e53b3a745019f03e90651b55c820a1`.
+Finish work under an existing release-bound grant on its pinned install or
+obtain a grant for 0.7.44. Grok measurements require a fresh same-runtime series.
+Existing agy qualifications can carry over with the same installed subject,
+executable, host identity, variant and policy. The release alone does not
+trigger a Dotfiles standing auto-qualification for an unchanged Gemini key
+and image.
+
+### Known issues
+
+- The Gemini per-launch proxy credential echo remains open (agent-harness#2157).
+  The Gemini proxy credential change (agent-harness#2168) is outside this release.
+
 ## 0.7.43 release preparation
 
 Expected unpublished artifacts are `phase_loop_runtime-0.7.43-py3-none-any.whl`

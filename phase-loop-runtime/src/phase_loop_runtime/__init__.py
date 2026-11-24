@@ -19,4 +19,4 @@ __all__ = [
     "state_ops",
 ]
 
-__version__ = "0.7.43"
+__version__ = "0.7.44"

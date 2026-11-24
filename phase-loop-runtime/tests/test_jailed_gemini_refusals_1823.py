@@ -580,11 +580,12 @@ def _jailed_gemini_spawn(monkeypatch, tmp_path, *, prepare, execute=None, chaine
 
     @contextmanager
     def start_proxy(*, allowlist_id, refuse_all=False):
-        yield SimpleNamespace(socket="proxy.sock", allowlist_sha256="b" * 64)
+        yield SimpleNamespace(socket="proxy.sock", allowlist_sha256="b" * 64,
+                              proxy_url="http://127.0.0.1:3128", private_proxy_token=b"fixture")
 
     @contextmanager
     def isolated_network(*, timeout_s, seat_uid_map=False, required=False,
-                         proxy_socket=None, proxy_port=None):
+                         proxy_socket=None, proxy_port=None, private_proxy=None):
         yield ("namespace",)
 
     def unreached(*a, **k):
@@ -616,7 +617,7 @@ def _jailed_gemini_spawn(monkeypatch, tmp_path, *, prepare, execute=None, chaine
     monkeypatch.setattr(pi._seat_uid, "seat_id_count", lambda uids, gids: 1)
     monkeypatch.setattr(pi._seat_uid, "lease_seat_id", lease_seat_id)
     monkeypatch.setattr(pi._seat_uid, "holder_pid_from_prefix", lambda prefix: 71)
-    monkeypatch.setattr(pi._seat_egress_proxy, "start_proxy", start_proxy)
+    monkeypatch.setattr(pi._seat_egress_proxy, "start_private_gemini_proxy", start_proxy)
     monkeypatch.setattr(pi._seat_egress_proxy, "egress_evidence", lambda proxy: {})
     monkeypatch.setattr(pi._sandbox_egress, "isolated_network", isolated_network)
     monkeypatch.setattr(pi._sandbox_egress, "egress_required", lambda: False)
@@ -743,13 +744,30 @@ _PROXY_VALUE = "b7c0f2e1a9d34e5f8c1b2a3d4e5f6071"
 
 def _jailed_seat(*args, **kwargs):
     jail = SimpleNamespace(
-        env={"HTTPS_PROXY": f"http://srt:{_PROXY_VALUE}@127.0.0.1:3128"},
+        env={"HTTPS_PROXY": "http://127.0.0.1:3128"},
         profile_digest="d", profile_id="p", filter_digest="f",
         redacted_owner=lambda: [], pass_fds=(), dependency=None)
-    return pi._JailedSeat(jail=jail, probe_jail=jail, holder_pid=1,
+    return pi._JailedGeminiSeat(jail=jail, probe_jail=jail, holder_pid=1,
+                          private_proxy_token=_PROXY_VALUE.encode(),
                           token=b"ya29.fixture-access-token-value",
                           review_dir=Path("/nonexistent"), seat_dir=Path("/nonexistent"),
                           expires_at=None)
+
+
+def test_an_exec_time_proxy_refusal_attaches_the_board_notice(monkeypatch, tmp_path):
+    seat = _jailed_seat()
+    seat.private_proxy_token = b""
+    monkeypatch.setattr(pi, "_cleanup_jailed_seat", lambda *a, **k: None)
+    monkeypatch.setattr(pi, "_run_leg_with_liveness",
+                        lambda *a, **k: pytest.fail("the provider ran without a proxy token"))
+
+    spawned, record = _jailed_gemini_spawn(
+        monkeypatch, tmp_path, prepare=lambda *a, **k: seat, execute=_REAL_EXEC)
+
+    code = "seat_sandbox_refused:gemini_proxy_token_missing"
+    assert tuple(spawned)[:2] == ("DEGRADED", "")
+    assert _spawn_detail(spawned) == record["refusal"] == code
+    assert code in spawned.seat_notices
 
 
 def test_the_real_watcher_refusal_records_its_code(monkeypatch, tmp_path):
@@ -877,7 +895,8 @@ def test_the_reproduced_refusal_is_the_gate_s_exact_exception(monkeypatch, tmp_p
     monkeypatch.setattr(pi, "_validate_jail_dependency", lambda leg, dep: None)
     with pytest.raises(ExecutableDependencyError) as raised:
         pi._prepare_jailed_gemini(tmp_path / "review", tmp_path / "seat", None, 0, 0, ("", ""),
-                                  None, env={"HOME": str(home)})
+                                  SimpleNamespace(proxy_url="http://127.0.0.1:3128", private_proxy_token=b"fixture"),
+                                  env={"HOME": str(home)})
     assert (raised.value.code, raised.value.detail) == GATE
     assert not (tmp_path / "seat").exists()
     # Before this change the board rendered it as the unknown template, as it still does for

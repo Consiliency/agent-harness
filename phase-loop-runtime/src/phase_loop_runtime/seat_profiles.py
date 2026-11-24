@@ -226,11 +226,14 @@ def _claude_env(inputs: EnvInputs) -> Mapping[str, str]:
 
 def _gemini_env(inputs: EnvInputs) -> Mapping[str, str]:
     from . import seat_jail
+    from .seat_egress_proxy import GEMINI_PROXY_URL
 
     if inputs.egress_proxy is None:
         return MappingProxyType({})
+    if inputs.egress_proxy not in (GEMINI_PROXY_URL, "<egress-proxy>"):
+        raise seat_jail.SeatSandboxRefused(seat_jail.refused("gemini_proxy_url_invalid"))
     return MappingProxyType({
-        "HTTPS_PROXY": inputs.egress_proxy,
+        "HTTPS_PROXY": GEMINI_PROXY_URL,
         "SSL_CERT_FILE": seat_jail.SEAT_EGRESS_CA,
         "DBUS_SESSION_BUS_ADDRESS": "unix:path=/dev/null",
     })
@@ -248,8 +251,6 @@ def _gemini_placeholders(paths: OwnerPaths) -> Mapping[str, str]:
         values[paths.provider_config] = "<gemini-config>"
     if paths.egress_ca is not None:
         values[paths.egress_ca] = "<egress-ca>"
-    if paths.egress_proxy is not None:
-        values[paths.egress_proxy] = "<egress-proxy>"
     for name in (*seat_jail.GEMINI_WRITABLE_CONFIG_DIRS,
                  *seat_jail.GEMINI_WRITABLE_DOTDIR_DIRS):
         values[seat_jail._gemini_writable_source(paths.home, name)] = (

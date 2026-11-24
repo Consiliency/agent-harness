@@ -12,6 +12,8 @@ import weakref
 
 import pytest
 
+from test_seats_teamhost_subject import _managed_grok, managed_fs  # noqa: F401
+
 from phase_loop_runtime import seat_egress_proxy, seat_jail, seat_profiles, seat_route
 from phase_loop_runtime import panel_invoker, seat_jail_autoqualify, seat_uid, seat_window
 from phase_loop_runtime.seat_route_contract import (
@@ -932,7 +934,14 @@ def test_unconfined_exception_expiry_is_path_entered_with_an_injected_clock(
     assert tuple(spawned) == ("DEGRADED", "", "seat_route_exception_expired")
 
 
-def test_open_egress_exception_expiry_is_path_entered_with_an_injected_clock(monkeypatch):
+@pytest.mark.parametrize(("offset", "expected_refusal"), [
+    (-1, None),
+    (0, "seat_route_exception_expired"),
+    (1, "seat_route_exception_expired"),
+])
+def test_claude_open_egress_renewal_at_board_admission(
+    monkeypatch, tmp_path, offset, expected_refusal,
+):
     profile = dataclasses.replace(
         seat_profiles.profile_for("claude"), credential_present=lambda: True,
         preconditions=(), variant=lambda _env: ("print", None),
@@ -946,25 +955,39 @@ def test_open_egress_exception_expiry_is_path_entered_with_an_injected_clock(mon
     )
     capacity = Capacity(True)
     monkeypatch.setattr(panel_invoker._seat_uid, "SeatIdCapacity", lambda: capacity)
-    now = dt.datetime(2026, 11, 7, tzinfo=dt.timezone.utc)
-    exception = NamedException(
-        "claude", "open egress", now + dt.timedelta(minutes=1), "fixture",
-    )
-    monkeypatch.setattr(
-        seat_route, "load_route_policy", lambda: policy(exceptions={"claude": exception}),
-    )
-    monkeypatch.setattr(seat_route, "_now", lambda: now)
+    monkeypatch.setattr(seat_route, "_policy_path", lambda: tmp_path / "no-overlay")
+    expiry = dt.datetime(2027, 1, 3, tzinfo=dt.timezone.utc)
+    monkeypatch.setattr(seat_route, "_now", lambda: expiry + dt.timedelta(seconds=offset))
     auth = SimpleNamespace(staged_tree_sha256="a" * 64)
     route, notices, refusal = panel_invoker._seat_route_for_spawn(
         "claude", auth, eligible=True, seat_key="claude:a", env={},
     )
-    assert route.jailed and notices == [] and refusal is None
-    panel_invoker._release_seat_route(route)
-    monkeypatch.setattr(seat_route, "_now", lambda: now + dt.timedelta(minutes=2))
-    route, notices, refusal = panel_invoker._seat_route_for_spawn(
-        "claude", auth, eligible=True, seat_key="claude:a", env={},
+    assert (route.jailed, notices, refusal) == (expected_refusal is None, [], expected_refusal)
+    if route.jailed:
+        panel_invoker._release_seat_route(route)
+
+
+def test_claude_open_egress_renewal_scope(monkeypatch):
+    monkeypatch.delitem(seat_profiles._REGISTRY, "codex", raising=False)
+    monkeypatch.delitem(seat_profiles._REGISTRY, "grok", raising=False)
+    rows = {row["id"]: row for row in seat_window.readiness_rows()}
+    names = ("exception", "expiry", "renewal_record")
+    assert tuple(rows["vendor:claude"][name] for name in names) == (
+        "open egress", "2027-01-03T00:00:00+00:00",
+        "plans/amendments/seats-claude-open-egress-renewal-20261124.md",
     )
-    assert not route.jailed and notices == [] and refusal == "seat_route_exception_expired"
+    assert rows["vendor:claude"]["route"] == "jailed"
+    assert tuple(rows["remote:claude"][name] for name in names) == (None, None, None)
+    for vendor in ("codex", "grok"):
+        assert tuple(rows[f"vendor:{vendor}"][name] for name in names) == (
+            "unconfined", "2026-12-04T00:00:00+00:00", None,
+        )
+
+    profile = dataclasses.replace(seat_profiles.profile_for("claude"), allowlist_id="fixture")
+    monkeypatch.setitem(seat_profiles._REGISTRY, "claude", profile)
+    row = next(row for row in seat_window.readiness_rows() if row["id"] == "vendor:claude")
+    assert tuple(row[name] for name in names) == (None, None, None)
+    assert "claude" not in seat_route._matrix_policy().exceptions
 
 
 @pytest.mark.parametrize("mode,code", [
@@ -1157,3 +1180,69 @@ def test_matrix_policy_does_not_duplicate_window_exception_filtering(monkeypatch
     monkeypatch.setattr(seat_window, "readiness_rows", lambda: [row])
     assert seat_route._matrix_policy().exceptions["codex"].kind == "unconfined"
     assert "profile_for" not in inspect.getsource(seat_route._matrix_policy)
+
+
+@pytest.fixture
+def ready_managed_grok_route(monkeypatch):
+    from phase_loop_runtime import sandbox_egress
+    profile = dataclasses.replace(
+        seat_profiles.profile_for("grok"), credential_present=lambda: True, preconditions=(),
+    )
+    monkeypatch.setitem(seat_profiles._REGISTRY, "grok", profile)
+    monkeypatch.setattr(seat_jail, "seat_sandbox_capable", lambda: None)
+    monkeypatch.setattr(sandbox_egress, "egress_required", lambda: True)
+    monkeypatch.setattr(seat_egress_proxy, "unavailable_code", lambda: None)
+    monkeypatch.setattr(seat_jail_autoqualify, "ensure_qualified", lambda *_a, **_k:
+                        seat_jail_autoqualify.Outcome(seat_jail_autoqualify.QUALIFIED))
+
+    return profile
+
+
+def test_managed_grok_route_reaches_the_null_projection_key(
+    managed_grok, ready_managed_grok_route, monkeypatch,
+):
+    from phase_loop_runtime import seat_subject
+    from phase_loop_runtime.seat_qualification_key import key_for_launch
+
+    env, _native, _digest, _pin_path = managed_grok
+    profile = ready_managed_grok_route
+    monkeypatch.setattr(seat_subject, "open_managed_authority",
+                        lambda *_: pytest.fail("opened a dependency authority"))
+    decision = seat_route.resolve(
+        request("grok", env=env), policy=policy(), remote=Remote(), native=Native(),
+        capacity=Capacity(),
+    )
+    assert (decision.mode, decision.code) == ("jailed", None), decision.steps
+    assert decision.qualification_key == key_for_launch(
+        profile, variant=None, allowlist_digest=seat_egress_proxy.allowlist_ref(
+            profile.allowlist_id).content_digest, projection=None,
+    )
+
+
+@pytest.mark.parametrize("managed_grok", ["image-pin-only"], indirect=True)
+@pytest.mark.parametrize("source", ["managed_image", "unexpected"])
+def test_grok_route_refuses_unadmitted_source_before_key(
+    managed_grok, ready_managed_grok_route, monkeypatch, source,
+):
+    from phase_loop_runtime import seat_qualification_key, seat_subject
+
+    env, _native, _digest, pin = managed_grok
+    stale = dataclasses.replace(seat_subject.resolve_seat_subject("grok", env), source=source)
+    pin.unlink()
+    monkeypatch.setattr(seat_subject, "resolve_seat_subject", lambda *_: stale)
+    monkeypatch.setattr(seat_subject, "open_managed_authority",
+                        lambda *_: pytest.fail("opened a dependency authority"))
+    calls = []
+    monkeypatch.setattr(seat_qualification_key, "admit_profile_projection",
+                        lambda *args: calls.append(args))
+    monkeypatch.setattr(seat_qualification_key, "key_for_launch",
+                        lambda *_a, **_k: pytest.fail("created a key"))
+
+    decision = seat_route.resolve(
+        request("grok", env=env), policy=policy(), remote=Remote(), native=Native(),
+        capacity=Capacity(),
+    )
+    assert (decision.mode, decision.code, decision.steps[-1].step) == (
+        "degraded", "seat_sandbox_refused:identity", "L6",
+    )
+    assert calls == []

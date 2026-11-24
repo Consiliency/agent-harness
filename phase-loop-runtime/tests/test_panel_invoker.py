@@ -120,13 +120,14 @@ def _window_session(events, *, delivered=b'{"token":{"access_token":"fixture","e
                 self.cleaned = True
 
     jail = SimpleNamespace(
-        env={"HOME": "/seat/home", "HTTPS_PROXY": "http://u:p@127.0.0.1:3128",
+        env={"HOME": "/seat/home", "HTTPS_PROXY": "http://127.0.0.1:3128",
              "SSL_CERT_FILE": "/seat/ca.pem", "DBUS_SESSION_BUS_ADDRESS": "drop"},
         profile_digest="f" * 64,
     )
     seat = SimpleNamespace(
         jail=jail, probe_jail=jail, holder_pid=71, seat_dir=Path("/host/seat"),
         review_dir=Path("/host/review"), token=b"fixture", delivered_copy=delivered,
+        private_proxy_token=b"fixture-proxy",
         image_sha256="a" * 64, admission_class="fixture",
         expires_at=None,
     )
@@ -351,8 +352,10 @@ def test_seats_firstseat_exec_record_jailed_adapters(tmp_path, monkeypatch, vend
     jail = SimpleNamespace(env={}, leg=vendor, provider_argv0="/seat/bin/" + vendor,
         profile_digest="d", profile_id="p", filter_digest="f",
         redacted_owner=lambda: [], pass_fds=())
-    seat = pi._JailedSeat(jail=jail, probe_jail=jail, holder_pid=1, token=b"fixture-token",
-        review_dir=tmp_path, seat_dir=tmp_path, expires_at=None)
+    seat_type = pi._JailedGeminiSeat if vendor == "gemini" else pi._JailedSeat
+    proxy = {"private_proxy_token": b"fixture-proxy"} if vendor == "gemini" else {}
+    seat = seat_type(jail=jail, probe_jail=jail, holder_pid=1, token=b"fixture-token",
+                     review_dir=tmp_path, seat_dir=tmp_path, **proxy)
     monkeypatch.setattr(pi, "_run_leg_with_liveness", lambda *a, **k:
         SimpleNamespace(returncode=exit_code, stdout="", stderr=""))
     monkeypatch.setattr(pi, "_run_claude_tui_session", lambda **k:
@@ -482,7 +485,7 @@ def test_seats_firstseat_exec_record_window_jailed_run_exact_env(monkeypatch):
         key, value = item.split(b"=", 1)
         got[key.decode()] = value.decode()
     assert got == {
-        "HTTPS_PROXY": "http://u:p@127.0.0.1:3128",
+        "HTTPS_PROXY": "http://127.0.0.1:3128",
         "MARK": "ok",
         "PATH": "/usr/bin",
         "SSL_CERT_FILE": "/seat/ca.pem",
@@ -605,8 +608,9 @@ def test_seats_firstseat_exec_record_window_tracer_is_path_only(tmp_path, monkey
     assert pi._read_window_trace(session, qualification)[2] is False
 
 
+@pytest.mark.parametrize("kind,refuse", [("runtime_control", True), ("measured", False)])
 def test_seats_firstseat_exec_record_window_launch_uses_fresh_seat_directory(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, kind, refuse,
 ):
     from phase_loop_runtime import panel_invoker as pi
 
@@ -672,13 +676,14 @@ def test_seats_firstseat_exec_record_window_launch_uses_fresh_seat_directory(
 
     @contextmanager
     def start_proxy(*, allowlist_id, refuse_all=False):
-        assert allowlist_id == "gemini"
+        assert allowlist_id == "gemini" and refuse_all is refuse
         yield Proxy(socket="proxy.sock", allowlist_sha256="b" * 64)
 
     @contextmanager
     def isolated_network(
-        *, timeout_s, required, seat_uid_map, proxy_socket, proxy_port,
+        *, timeout_s, required, seat_uid_map, private_proxy, proxy_port,
     ):
+        assert isinstance(private_proxy, Proxy)
         yield ("namespace",)
 
     def prepare_gemini(
@@ -701,13 +706,13 @@ def test_seats_firstseat_exec_record_window_launch_uses_fresh_seat_directory(
     monkeypatch.setattr(pi._seat_uid, "seat_id_count", lambda uids, gids: 1)
     monkeypatch.setattr(pi._seat_uid, "lease_seat_id", lease_seat_id)
     monkeypatch.setattr(pi._seat_uid, "holder_pid_from_prefix", lambda prefix: 71)
-    monkeypatch.setattr(pi._seat_egress_proxy, "start_proxy", start_proxy)
+    monkeypatch.setattr(pi._seat_egress_proxy, "start_private_gemini_proxy", start_proxy)
     monkeypatch.setattr(pi._sandbox_egress, "isolated_network", isolated_network)
     monkeypatch.setattr(pi, "_prepare_jailed_gemini", prepare_gemini)
     monkeypatch.setattr(pi, "_cleanup_jailed_seat", lambda seat: None)
 
     spec = pi.WindowLaunchSpec(
-        kind="runtime_control",
+        kind=kind,
         qualification_input=SimpleNamespace(
             repo=tmp_path, commit=commit, layout=SimpleNamespace(rows=()),
         ),
@@ -726,6 +731,7 @@ def test_seats_firstseat_exec_record_window_board_uses_fresh_gemini_seat(
     tmp_path, monkeypatch,
 ):
     from phase_loop_runtime import panel_invoker as pi
+    from test_gemini_seat_egress_1170 import _assert_credential_free_gemini_jail, _gemini_jail
     from phase_loop_runtime import sandbox_policy
     from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
 
@@ -749,6 +755,7 @@ def test_seats_firstseat_exec_record_window_board_uses_fresh_gemini_seat(
     class Proxy:
         socket: str
         allowlist_sha256: str
+        proxy_url: str
 
     @dataclass(frozen=True, slots=True)
     class Prepared:
@@ -825,15 +832,19 @@ def test_seats_firstseat_exec_record_window_board_uses_fresh_gemini_seat(
     def lease_seat_id(count):
         yield 2
 
+    proxy_token = b"fixture-session-token"
+
     @contextmanager
-    def start_proxy(*, allowlist_id, refuse_all=False):
+    def start_proxy(*, allowlist_id, refuse_all=False, private=False):
         assert allowlist_id == "gemini"
-        yield Proxy(socket="proxy.sock", allowlist_sha256="b" * 64)
+        url = ("http://127.0.0.1:3128" if private else
+               f"http://srt:{proxy_token.decode()}@127.0.0.1:3128")
+        yield Proxy(socket="proxy.sock", allowlist_sha256="b" * 64, proxy_url=url)
 
     @contextmanager
     def isolated_network(
         *, timeout_s, seat_uid_map=False, required=False,
-        proxy_socket=None, proxy_port=None,
+        proxy_socket=None, proxy_port=None, private_proxy=None,
     ):
         yield ("namespace",)
 
@@ -842,6 +853,11 @@ def test_seats_firstseat_exec_record_window_board_uses_fresh_gemini_seat(
         prompt_parts, egress, *, env=None, review_monitor=None,
         quiescence_latch=None, credential="live",
     ):
+        jail = _gemini_jail(seat_dir.parent / "argv-projection", proxy=egress.proxy_url)
+        try:
+            _assert_credential_free_gemini_jail(jail, proxy_token)
+        finally:
+            pi._seat_jail.close_jail_fds(jail)
         prepared_seats.append(Path(seat_dir))
         return Seat(review_dir=Path(review_dir), seat_dir=Path(seat_dir))
 
@@ -897,6 +913,8 @@ def test_seats_firstseat_exec_record_window_board_uses_fresh_gemini_seat(
     monkeypatch.setattr(pi._seat_uid, "lease_seat_id", lease_seat_id)
     monkeypatch.setattr(pi._seat_uid, "holder_pid_from_prefix", lambda prefix: 71)
     monkeypatch.setattr(pi._seat_egress_proxy, "start_proxy", start_proxy)
+    monkeypatch.setattr(pi._seat_egress_proxy, "start_private_gemini_proxy",
+                        lambda **kw: start_proxy(private=True, **kw), raising=False)
     monkeypatch.setattr(pi._seat_egress_proxy, "egress_evidence", lambda proxy: {})
     monkeypatch.setattr(pi._sandbox_egress, "isolated_network", isolated_network)
     monkeypatch.setattr(pi._sandbox_egress, "egress_required", lambda: False)
@@ -1211,10 +1229,8 @@ def test_seats_firstseat_exec_record_window_board_frame_is_opt_in():
     tooled = json.loads(pi._broker_gemini_stream_protocol(
         "frame", tooled=True, qualification_board=False).transport)
     tooled_body = tooled["message"]["content"]
-    assert (
-        f"Review with your tools: read {jail.SEAT_BUNDLE} in full and the code at "
-        f"{jail.SEAT_TREE}, and run commands there to check claims."
-    ) in tooled_body
+    assert f"scope/index section of {jail.SEAT_BUNDLE}" in tooled_body
+    assert f"Run commands in {jail.SEAT_TREE} to check claims." in tooled_body
     assert "window-read.txt" not in tooled_body
     board = json.loads(pi._broker_gemini_stream_protocol(
         "frame", tooled=True, qualification_board=True).transport)

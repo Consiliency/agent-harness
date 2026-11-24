@@ -27,6 +27,8 @@ from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime import seat_grok_credential as cred
 from phase_loop_runtime import seat_jail, seat_profile_grok as grok
 
+from test_seats_teamhost_subject import _managed_grok, managed_fs  # noqa: F401
+
 pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux seat jail")
 
 REFUSED = "grok_tool_surface_unverified"
@@ -58,7 +60,7 @@ class _Proc:
 
 
 def _build(base: Path, *, ca: bytes = b"fixture certificate\n", port: int = 3128,
-           secret: str | None = None, stub: bool = True):
+           secret: str | None = None, stub: bool = True, provider: str = STAND_IN):
     """A production-shaped jailed Grok seat: the real builder over a staged ``.grok``, the
     mask sources, the CA and the stubs; nothing is spawned."""
     review = base / "seat"
@@ -73,7 +75,7 @@ def _build(base: Path, *, ca: bytes = b"fixture certificate\n", port: int = 3128
     certificate.chmod(0o444)
     proxy_url = f"http://srt:{secrets.token_hex(8)}@127.0.0.1:{port}"
     jail = seat_jail.build_seat_jail(
-        "grok", review, Path(STAND_IN), tree=tree,
+        "grok", review, Path(provider), tree=tree,
         bundle_memfd=seat_jail.memfd_with("b", b"B"),
         instructions_memfd=seat_jail.memfd_with("i", b"I"), seat_ids=(7, 7),
         gemini_config=review / grok.HOST_GROK_CONFIG_DIRNAME, egress_ca=certificate,
@@ -122,7 +124,7 @@ def _open_gate(binary: str, launch: str, *, skip=(), tools=None) -> None:
             "approved_on": "2026-11-22"})
     if "boundary" not in skip:
         gjs.write_private(gjs.boundary_name(launch), {
-            "schema": gjs.BOUNDARY_SCHEMA, "hosted_run": "ci/fixture/1", "head": "a" * 40,
+            "schema": gjs.BOUNDARY_SCHEMA, "hosted_run": "1", "head": "a" * 40,
             "launch_digest": launch, "jail_context_digest": gjs.jail_context_digest(binary),
             "ba_j5": "passed", "skipped": 0})
     if "record" not in skip:
@@ -145,11 +147,11 @@ def _open_gate(binary: str, launch: str, *, skip=(), tools=None) -> None:
             assert gjs.write_jail_receipt(binary)["passed"] is True
 
 
-@pytest.fixture
-def world(tmp_path, monkeypatch):
+def _world(tmp_path, monkeypatch, *, provider=STAND_IN, binary=None):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    built = _build(tmp_path / "a")
-    binary = gjs.root_owned_digest(built.jail.provider_path)
+    built = _build(tmp_path / "a", provider=provider)
+    if binary is None:
+        binary = gjs.root_owned_digest(built.jail.provider_path)
     table = dict(grok.JAIL_PROTECTION)
     table[binary] = table[grok.GROK_1_0_92_SHA256]
     monkeypatch.setattr(grok, "JAIL_PROTECTION", MappingProxyType(table))
@@ -159,10 +161,25 @@ def world(tmp_path, monkeypatch):
     token = pi._EGRESS_LAUNCH_PREFIX.set(prefix)
     monkeypatch.setattr(gts, "bridged_to",
                         lambda p, proxy: tuple(p) == prefix and proxy is built.proxy)
-    yield SimpleNamespace(**vars(built), binary=binary, launch=launch, holder=holder,
-                          prefix=prefix, tmp=tmp_path)
-    pi._EGRESS_LAUNCH_PREFIX.reset(token)
-    seat_jail.close_jail_fds(built.jail)
+    try:
+        yield SimpleNamespace(**vars(built), binary=binary, launch=launch, holder=holder,
+                              prefix=prefix, tmp=tmp_path)
+    finally:
+        pi._EGRESS_LAUNCH_PREFIX.reset(token)
+        seat_jail.close_jail_fds(built.jail)
+
+
+@pytest.fixture
+def world(tmp_path, monkeypatch):
+    yield from _world(tmp_path, monkeypatch)
+
+
+@pytest.fixture
+def managed_world(managed_grok, tmp_path, monkeypatch):
+    env, native, digest, _pin = managed_grok
+    subject = gjs.resolve_subject(env)
+    assert (subject.path, subject.sha256) == (str(native), digest)
+    yield from _world(tmp_path, monkeypatch, provider=subject.path, binary=subject.sha256)
 
 
 def _verify(world, **override):
@@ -304,7 +321,8 @@ def test_ba_j2a_the_launch_digest_is_shared_across_launches(tmp_path, monkeypatc
         assert first.jail.bundle_fd != second.jail.bundle_fd
         assert first.credential.digest != second.credential.digest
         assert (gjs.launch_digest(first.jail, first.command)
-                == gjs.launch_digest(second.jail, second.command))
+                == gjs.launch_digest(second.jail, second.command)
+                == gjs.production_launch_digest(seat_jail.host_arch()))
         assert gjs.launch_digest(first.jail, first.command, arch="aarch64") != \
             gjs.launch_digest(first.jail, first.command, arch="x86_64")
         # A different mount policy is a different launch.
@@ -950,3 +968,48 @@ def test_probe_admission_is_read_for_the_resolved_subject_only(probing, monkeypa
     with monkeypatch.context() as patch:
         _unjailed_only(patch)
         assert keyed == _every_form(probing.seat)
+
+
+@pytest.mark.parametrize("managed_grok", ["image-pin-only"], indirect=True)
+@pytest.mark.parametrize("mode", ["board", "measurement"])
+def test_managed_binding_rechecks_the_release_pin_before_admission(
+    managed_grok, managed_world, monkeypatch, tmp_path, mode,
+):
+    _env, native, digest, pin = managed_grok
+    world = managed_world
+    assert world.jail.provider_path == str(native)
+    standalone = _build(tmp_path / "standalone")
+    try:
+        for arch in ("x86_64", "aarch64"):
+            assert gjs.launch_digest(world.jail, world.command, arch=arch) == (
+                gjs.launch_digest(standalone.jail, standalone.command, arch=arch)
+            )
+    finally:
+        seat_jail.close_jail_fds(standalone.jail)
+
+    verify = {}
+    if mode == "board":
+        _open_gate(digest, world.launch)
+    else:
+        _open_gate(digest, world.launch, skip=("record",))
+        monkeypatch.setattr(gts, "bridged_to", lambda prefix, proxy: (
+            tuple(prefix) == world.prefix and proxy.socket == world.proxy.socket
+        ))
+        measurement = _measurement(world)
+        verify = dict(jail=measurement.jail, mode="measurement", proxy=measurement.proxy,
+                      measurement=measurement.launch)
+    assert _verify(world, **verify).binary_sha256 == digest
+    pin.unlink()
+    _refuses(world, **verify)
+    if mode == "measurement":
+        assert not gjs.admission_consumed(measurement.reservation)
+
+
+def test_grok_wrapper_refuses_unknown_source_before_hashing(monkeypatch):
+    monkeypatch.setattr(pi, "_resolved_jail_subject", lambda *_: (
+        SimpleNamespace(source="unexpected", subject_path=Path(STAND_IN)), None,
+    ))
+    monkeypatch.setattr(gjs, "root_owned_digest", lambda *_: pytest.fail("hashed unknown source"))
+    with pytest.raises(seat_jail.SeatSandboxRefused) as refused:
+        gjs.resolve_subject({})
+    assert refused.value.code == REFUSED

@@ -387,6 +387,16 @@ phase-loop advisor-board bundle.md --pointer-brief --json
 
 `--pointer-brief` declares that the brief tells reviewers to open files in the staged tree instead of carrying their content inline.
 
+Jailed repository reviews start with the bundle's scope and index. List every changed path
+and acceptance criterion there, with pointers to relevant diff hunks, source files and
+verification evidence. Seats retrieve those details in bounded reads. Standalone documents
+and sealed reviews still receive full-material review instructions.
+
+The runtime warns before launch if the resolved UTF-8 bundle exceeds 64 KiB, including
+bundles supplied by file. This catches bulk evidence while leaving room for a review index
+and supporting context. Set `--max-staged-bundle-bytes BYTES` to refuse an oversized board
+with `seat_review_bundle_too_large`. Bundles are never truncated.
+
 **Before launch.** Before any seat launches, the board checks each seat's route. A seat that cannot open files gets `seat_pointer_brief_unreadable`, printed on stderr. For Claude and Gemini (agy), that is a brokered seat that does not take the jailed route on this host. A Claude or Gemini seat that is jailed (agent-harness#1132, agent-harness#1170) has file access, and so does a Claude seat filled natively.
 
 **What happens to that seat.** It still runs, but its verdict is **not source-grounded**:
@@ -537,7 +547,7 @@ provider health. No reviewer is dropped or substituted by policy preflight.
 
 | Route | Bounded | Heartbeat-only |
 | --- | --- | --- |
-| Brokered homebrew/subscription Claude (print or TUI route) | Existing behavior | Supported on Linux with bwrap |
+| Brokered homebrew/subscription Claude (print or TUI route) | Jailed TUI allows up to 20 minutes from submit with a repainting spinner and interrupt footer, within the review deadline | Supported on Linux with bwrap |
 | Brokered homebrew/subscription Codex | Existing behavior | Supported on Linux with bwrap |
 | Brokered homebrew/subscription Grok | Existing behavior | Supported on Linux with bwrap |
 | Brokered subscription Gemini / agy | Existing internal print timer | Qualified image and Linux memfd/pidfd support required |

@@ -35,6 +35,7 @@ PREFIX = "grok_seat_"
 # or renamed entry fails. agent-harness#2131 adds `seat_broker_socket_path_too_long`
 # (an ordinary refusal) to both. agent-harness#2157 rewords the
 # `gemini_seat_token_in_output` notice (why/fix text only; code and class unchanged).
+# agent-harness#2175 adds the board-wide `seat_review_bundle_too_large` notice.
 BASE_NOTICES = (115, "4b44ba98f4f9826d137f0766af48235cf3091783fca3b9647059d7efb861e131")
 BASE_OD10_CLASSES = (139, "ebca95f84e246cdccbdbad324cd89194f9967295de2d9f56f3e0816c58a26266")
 
@@ -140,7 +141,7 @@ def test_descend_and_capacity_sets_keep_their_literal_values():
 
 def test_existing_notice_rows_are_byte_identical():
     base = {code: list(row) for code, row in seat_jail.NOTICES.items()
-            if not code.startswith(PREFIX)}
+            if not code.startswith(PREFIX) and code in seat_jail.NOTICE_CODES}
     assert (len(base), _digest(base)) == BASE_NOTICES
 
 

@@ -253,6 +253,13 @@ def _positive_lane_count(value: str) -> int:
     return count
 
 
+def _positive_bundle_byte_limit(value: str) -> int:
+    limit = int(value)
+    if limit < 1:
+        raise argparse.ArgumentTypeError("staged bundle byte limit must be positive")
+    return limit
+
+
 def _resolve_lane_options(args, environ):
     mode = args.lane_scheduler_mode if args.lane_scheduler_mode is not None else environ.get("PHASE_LOOP_LANE_SCHEDULER", "concurrent")
     if mode not in LANE_SCHEDULER_MODES:
@@ -1273,6 +1280,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicit heartbeat-only monitoring; refuses unsupported requested boards before auth.",
     )
     advisor_board_sub.add_argument(
+        "--max-staged-bundle-bytes", type=_positive_bundle_byte_limit, metavar="BYTES",
+        help="Refuse before seat launch if the staged UTF-8 bundle exceeds BYTES. "
+             "By default, bundles over 64 KiB only trigger a warning.",
+    )
+    advisor_board_sub.add_argument(
         "--agy-canary-private-board-name",
         help="Capture-only basename for the full board JSON inside the private evidence root.",
     )
@@ -2269,15 +2281,23 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
         )
         _preflight_gemini_heartbeat(DEFAULT_BOARD, monitoring_policy)
     except ValueError as exc:
+        from .agy_qualification import qualification_notice
+
         record = {
             "schema": "review_monitoring.v1", "requested_policy": monitoring_policy,
             "effective_policy": None, "terminal_reason": "policy_refusal",
             "diagnostic": str(exc), "model_deadline_s": None,
         }
+        notice = qualification_notice(exc)
         if bool(getattr(args, "json", False)):
-            print(json.dumps({"usable": False, "status": "UNAVAILABLE", "monitoring": record}))
+            payload = {"usable": False, "status": "UNAVAILABLE", "monitoring": record}
+            if notice is not None:
+                payload["notice"] = notice
+            print(json.dumps(payload))
         else:
             print(f"advisor-board: {exc}", file=sys.stderr)
+            if notice is not None:
+                print(json.dumps(notice, sort_keys=True), file=sys.stderr)
         return 2
     # PRESROUTE: a usage error is refused before any availability/auth probe.
     if getattr(args, "native_president", None) is not None and getattr(args, "landing_tier", None) is None:
@@ -2563,6 +2583,8 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
                 # agent-harness#1204: the preflight's notices are printed BEFORE any launch.
                 invoke_kwargs["pointer_brief"] = True
                 invoke_kwargs["on_seat_preflight"] = _print_seat_preflight
+            if (bundle_limit := getattr(args, "max_staged_bundle_bytes", None)) is not None:
+                invoke_kwargs["max_staged_bundle_bytes"] = bundle_limit
             if review_authorization is not None:
                 invoke_kwargs["review_authorization"] = review_authorization
                 invoke_kwargs["canonical_repo_authority"] = canonical_repo_authority

@@ -190,6 +190,26 @@ def test_advisory_flag_parses_and_defaults_off():
     assert (args.advisory, args.json, args.monitoring_policy) == (True, True, "heartbeat_only")
 
 
+@_linux_only
+def test_cli_reports_the_staged_bundle_refusal(monkeypatch, bundle, outside_git):
+    run = _Run(monkeypatch, real_authorization=True)
+    monkeypatch.setattr(pi, "invoke_board", _REAL_INVOKE_BOARD)
+
+    def unexpected_route(*args, **kwargs):
+        pytest.fail("an oversized bundle reached seat routing")
+
+    monkeypatch.setattr(pi, "_seat_route_for_spawn", unexpected_route)
+    rc, out, _err = run([
+        "advisor-board", str(bundle), "--advisory", "--json",
+        "--max-staged-bundle-bytes", "1",
+    ])
+    assert rc == 1
+    result = json.loads(out)
+    assert result["delivered_seats"] == 0
+    assert len(result["refused_seats"]) == result["requested_seats"]
+    assert {row["code"] for row in result["refused_seats"]} == {"seat_review_bundle_too_large"}
+
+
 # --- default path unchanged ----------------------------------------------------------------
 
 

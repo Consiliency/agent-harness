@@ -4,9 +4,9 @@ Frozen contract: ``plans/artifacts/grok-jail-tool-surface-contract-v1.md`` ("the
 contract"), §2 to §5.1; plan ``plans/phase-plan-v1-seats-GROK.md``, IF-0-GROK-3.
 
 Installing this module opens SL-2's closed gate only in name: :func:`precondition_code`
-passes only when all five eligibility conditions of the jail contract §2.4 hold, and three
-of them are records no lane can write (the owner's masked-projection confirmation, the
-hosted boundary check, an admitted jailed measurement). Until they exist every Grok
+passes only when all five eligibility conditions of the jail contract §2.4 hold, including
+the owner's masked-projection confirmation, the hosted boundary check and an admitted
+jailed measurement. Until they exist every Grok
 launch still stops at L6 with ``grok_tool_surface_unverified``.
 
 The final verifier, :func:`verify_jail_launch_context`, runs at the spawn boundary of the
@@ -255,18 +255,33 @@ def launch_digest(jail, command, *, arch: str | None = None,
     CA sources and the proxy), the environment names, the argv digest and the pinned config
     digest. In a measurement the declared sink bind is substituted back first. Credential,
     ``agent_id`` and CA bytes are excluded: check 3 verifies them per launch."""
-    from .panel_invoker import _grok_argv_digest
     from .seat_jail import actual_profile_digest, host_arch
 
     arch = arch or host_arch()
     normalised = dataclasses.replace(jail, process_owner=production_owner(
         jail, measurement=measurement))
+    return _launch_digest(arch, actual_profile_digest(normalised, arch), jail.filter_digest,
+                          sorted(jail.env), command)
+
+
+def production_launch_digest(arch: str) -> str:
+    """Expected production binding on this host, with no jail or provider started."""
+    from .seat_jail import jail_profile_digest, production_filter_digest
+
+    return _launch_digest(arch, jail_profile_digest(_profile.LEG, arch),
+                          production_filter_digest(arch), _environment_names(),
+                          production_command())
+
+
+def _launch_digest(arch, owner, seccomp, environment, command) -> str:
+    from .panel_invoker import _grok_argv_digest
+
     return sha256(_canonical({
         "schema": LAUNCH_DIGEST_SCHEMA,
         "arch": arch,
-        "owner": actual_profile_digest(normalised, arch),
-        "filter": jail.filter_digest,
-        "environment": sorted(jail.env),
+        "owner": owner,
+        "filter": seccomp,
+        "environment": environment,
         "argv_digest": _grok_argv_digest(list(command)),
         "seat_config_sha256": _gts.SEAT_CONFIG_SHA256,
     })).hexdigest()
@@ -560,7 +575,7 @@ def _expected_launch(binary_sha256: str, arch: str | None = None) -> str | None:
     return None
 
 
-def _boundary_passed(binary_sha256: str, launch: str) -> bool:
+def _boundary_passed(binary_sha256: str, launch: str, *, hosted_run: str | None = None) -> bool:
     catalog = load_catalog() or {"surfaces": {}}
     sources = [read_private(boundary_name(launch))]
     entry = catalog["surfaces"].get(binary_sha256)  # type: ignore[union-attr]
@@ -569,7 +584,8 @@ def _boundary_passed(binary_sha256: str, launch: str) -> bool:
     for document in sources:
         try:
             check_boundary(document, launch, binary_sha256)
-            return True
+            if hosted_run is None or document["hosted_run"] == hosted_run:
+                return True
         except (JailRefused, TypeError, KeyError):
             continue
     return False
@@ -742,15 +758,21 @@ def resolve_subject(env: Mapping[str, str] | None = None) -> JailedSubject:
     managed), with no dependency projection (the profile declares none), after the
     root-owned chain walk. Raises ``SeatSandboxRefused(grok_tool_surface_unverified)``."""
     from .panel_invoker import _resolved_jail_subject
+    from .seat_subject import _names_managed_root
 
     try:
-        subject, dependency = _resolved_jail_subject(_profile.LEG, dict(env or os.environ))
+        subject, dependency = _resolved_jail_subject(_profile.LEG, dict(os.environ if env is None else env))
         if dependency is not None:
             close = getattr(dependency, "close", None)
             if getattr(dependency, "_jailcore_owned", False) and callable(close):
                 close()
             raise JailRefused("a dependency projection is refused")
         _require(subject.subject_path is not None)
+        if subject.source == "managed_image":
+            _require(subject.binary_sha256 is not None, "managed image digest")
+            return JailedSubject(str(subject.subject_path), subject.binary_sha256)
+        _require(subject.source == "standalone" and not _names_managed_root(subject.subject_path),
+                 "Grok subject source")
         path = os.path.realpath(str(subject.subject_path))
         return JailedSubject(path, root_owned_digest(path))
     except Exception as exc:  # noqa: BLE001
@@ -1027,6 +1049,7 @@ def verify_jail_launch_context(jail, *, mode: str, proxy, holder: int, cwd, comm
 def _verify(jail, *, mode, proxy, holder, cwd, command, credential, measurement):
     from .panel_invoker import _grok_argv_digest
     from .seat_jail import SeatJail
+    from .seat_subject import _names_managed_root, managed_grok_image_digest
 
     _require(mode in MODES and isinstance(jail, SeatJail) and jail.leg == _profile.LEG)
     command = tuple(str(word) for word in command)
@@ -1035,7 +1058,9 @@ def _verify(jail, *, mode, proxy, holder, cwd, command, credential, measurement)
              and not jail.dependency_mount_args, "a dependency projection")
     _require(jail.provider_argv0 == f"/seat/bin/{_profile.LEG}")
     _require(os.path.realpath(jail.provider_path) == jail.provider_path, "symlinked subject")
-    binary = root_owned_digest(jail.provider_path)
+    path = Path(jail.provider_path)
+    binary = (managed_grok_image_digest(path) if _names_managed_root(path)
+              else root_owned_digest(jail.provider_path))
     # 4. Cwd and argv: exactly the production staged form.
     _require(str(cwd) == SEAT_CWD, "cwd")
     _require(command == production_command(jail.provider_argv0), "argv")
@@ -1323,8 +1348,9 @@ def probe_sink(holder_pid: int, seat_id: int, sink: str, *,
     ``.sink-probe-<16 hex>`` exclusively, writes 32 random bytes, fsyncs, reads them back and
     unlinks the file. Passes only on exit 0 within 60 s; the parent then finds, by path and
     through the descriptor it opened at M1, the admitted inode, seat-owned and 0700, and
-    empty. Returns ``(device, inode)``; anything else is ``grok_tool_surface_unverified``
-    with nothing spawned and nothing consumed."""
+    empty. Returns ``(device, inode)``. A helper timeout is the measurement-only
+    ``grok_sink_probe_timeout`` refusal. Other failures are ``grok_tool_surface_unverified``.
+    Neither case spawns the provider or consumes the admission."""
     import subprocess
 
     from . import seat_uid
@@ -1349,6 +1375,8 @@ def probe_sink(holder_pid: int, seat_id: int, sink: str, *,
         _sink_view(measurement.sink_fd, admitted)
         _require(not os.listdir(measurement.sink_fd), "the sink is not empty")
         return info.st_dev, info.st_ino
+    except subprocess.TimeoutExpired as exc:
+        raise _gts.MeasurementRefused(_gts.SINK_PROBE_TIMEOUT) from exc
     except Exception as exc:  # noqa: BLE001 - a helper that cannot run is a failure
         raise _refused() from exc
 

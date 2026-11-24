@@ -242,7 +242,8 @@ def managed(tmp_path, monkeypatch):
         native=native, held=held, env={"HOME": str(tmp_path), "PATH": str(bin_dir)},
         review=review, seat=tmp_path / "seat",
         authorization=SimpleNamespace(staged_tree_sha256=staged),
-        egress=SimpleNamespace(ca_cert=cert, proxy_url="http://srt:t@127.0.0.1:3128"),
+        egress=SimpleNamespace(ca_cert=cert, proxy_url="http://127.0.0.1:3128",
+                               private_proxy_token=b"fixture"),
     )
 
 
@@ -325,6 +326,8 @@ def test_route_projection_acquisition_binds_the_pinned_subject(managed):
 
 
 def test_control_the_pinned_subject_passes_real_jail_admission(managed, monkeypatch):
+    from test_gemini_seat_egress_1170 import _assert_credential_free_gemini_jail
+
     built = _spy_jail_builds(monkeypatch)
     issued = _admission_result(monkeypatch, PINNED, managed.native, "release_qualified", "subject")
     seat = _prepare(managed)
@@ -335,6 +338,8 @@ def test_control_the_pinned_subject_passes_real_jail_admission(managed, monkeypa
         for jail in (seat.jail, seat.probe_jail):
             assert jail.provider_argv0 == GEMINI_DESTINATION
             assert jail.dependency_projection_digest
+            assert seat_jail.actual_profile_digest(jail) == seat_jail.jail_profile_digest("gemini")
+            _assert_credential_free_gemini_jail(jail, seat.private_proxy_token)
             assert _projected_bytes(jail) == {GEMINI_DESTINATION: PINNED}
     finally:
         seat_jail.close_jail_fds(seat.jail)

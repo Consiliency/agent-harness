@@ -224,7 +224,7 @@ def test_jailed_gemini_admits_each_resolved_subject(tmp_path, monkeypatch, sourc
             1,
             os.getpid(),
             ("artifact", "instructions"),
-            SimpleNamespace(),
+            SimpleNamespace(proxy_url="http://127.0.0.1:3128", private_proxy_token=b"fixture"),
             env={"HOME": str(tmp_path), "PATH": str(tmp_path)},
             credential="none",
         )
@@ -254,7 +254,7 @@ def test_jailed_gemini_admits_a_session_lease_subject(tmp_path, monkeypatch):
                 1,
                 os.getpid(),
                 ("artifact", "instructions"),
-                SimpleNamespace(),
+                SimpleNamespace(proxy_url="http://127.0.0.1:3128", private_proxy_token=b"fixture"),
                 env={"HOME": str(tmp_path), "PATH": str(tmp_path)},
                 credential="none",
             )
@@ -366,7 +366,7 @@ def test_jailed_gemini_refuses_an_admission_without_a_path(tmp_path, monkeypatch
             1,
             os.getpid(),
             ("artifact", "instructions"),
-            SimpleNamespace(),
+            SimpleNamespace(proxy_url="http://127.0.0.1:3128", private_proxy_token=b"fixture"),
             env={"HOME": str(tmp_path), "PATH": str(tmp_path)},
             credential="none",
         )
@@ -393,7 +393,7 @@ def test_jailed_gemini_lease_requires_the_admitted_subject_digest(tmp_path, monk
                 1,
                 os.getpid(),
                 ("artifact", "instructions"),
-                SimpleNamespace(),
+                SimpleNamespace(proxy_url="http://127.0.0.1:3128", private_proxy_token=b"fixture"),
                 env={"HOME": str(tmp_path), "PATH": str(tmp_path)},
                 credential="none",
             )

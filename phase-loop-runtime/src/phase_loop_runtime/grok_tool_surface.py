@@ -1150,6 +1150,8 @@ JAIL_RESULT_SCHEMA = "grok_jail_tool_surface_result.v1"
 JAIL_REHEARSAL_SCHEMA = "grok_jail_tool_surface_rehearsal.v1"
 JAIL_EVIDENCE_SCHEMA = "grok_jail_tool_surface_evidence.v1"
 UNSPAWNED_SCHEMA = "grok_jail_tool_surface_unspawned.v1"
+SINK_PROBE_TIMEOUT = "grok_sink_probe_timeout"
+_TRANSIENT_UNSPAWNED_CODES = frozenset({SINK_PROBE_TIMEOUT})
 #: The keys a jailed result and rehearsal carry beyond the unjailed ones.
 _JAIL_EXTRA_KEYS = frozenset({"launch_digest"})
 #: Erratum 4: why a rehearsal did not pass, in a closed vocabulary.
@@ -1424,6 +1426,22 @@ _GRANT_KEYS = frozenset({"schema", "grant", "host_digest", "binary_sha256", "pla
                          "cap", "budget", "created_at", "hosted_check"})
 #: A hosted run id or URL, as GROK_HOSTED_CHECK_RUN carries it.
 _HOSTED_CHECK = re.compile(r"[A-Za-z0-9][A-Za-z0-9:/._?=&%#@+-]{0,255}")
+_HOSTED_REPO = "Consiliency/agent-harness"
+_HOSTED_RUN = re.compile(rf"(?:https://github\.com/{_HOSTED_REPO}/actions/runs/)?([1-9][0-9]{{0,19}})")
+_BOUNDARY_ARTIFACT = "grok-jail-boundary"
+_BA_J5 = "test_live_jail_b_ba_j4_ba_j5_masks_write_confinement_and_retention"
+_BOUNDARY_CASES = frozenset({
+    "test_jail_ns_ba_j1_one_child_allowed_through_the_proxy_and_refused_direct",
+    _BA_J5,
+})
+_BOUNDARY_LIMIT = 128 * 1024
+
+
+def _hosted_run_id(value: str) -> str:
+    match = _HOSTED_RUN.fullmatch(value)
+    if match is None:
+        raise _refuse("hosted_check_invalid")
+    return match[1]
 
 
 def _check_grant_id(grant_id: object) -> str:
@@ -1505,6 +1523,10 @@ def _new_jail_grant(grant_id: str, *, binary_sha256: str, retries: int,
         raise _refuse("hosted_check_required")
     if jail.eligibility(binary_sha256, through=4) is not None:
         raise _refuse("jail_ineligible")
+    hosted_run = _hosted_run_id(hosted_check)
+    launch = jail._expected_launch(binary_sha256)
+    if launch is None or not jail._boundary_passed(binary_sha256, launch, hosted_run=hosted_run):
+        raise _refuse("hosted_check_mismatch")
     # §7, before the grant is written: the metadata expiry outlasts the slot end plus five
     # minutes and the launch margin.
     slot_end = _slot_end()
@@ -1513,7 +1535,7 @@ def _new_jail_grant(grant_id: str, *, binary_sha256: str, retries: int,
         raise _refuse("grok_seat_token_expired")
     grant = Grant(id=grant_id, host_digest=_host_digest(), binary_sha256=binary_sha256,
                   planned=JAIL_LABELS, retries=retries, cap=JAIL_GRANT_CAP,
-                  budget=PER_LAUNCH_BUDGET, created_at=_utc_now(), hosted_check=hosted_check,
+                  budget=PER_LAUNCH_BUDGET, created_at=_utc_now(), hosted_check=hosted_run,
                   context=JAIL_CONTEXT)
     _create_grant(grant)
     return grant
@@ -1667,7 +1689,8 @@ class Ledger:
         return len(self.reservations) + self.unreadable
 
     def retries_used(self) -> int:
-        return self.launches() - len({item.route for item in self.reservations})
+        counted = [item for item in self.reservations if item.id not in self.unspawned]
+        return len(counted) + self.unreadable - len({item.route for item in counted})
 
     def latest(self, route: str) -> Reservation | None:
         mine = [item for item in self.reservations if item.route == route]
@@ -3795,12 +3818,16 @@ def _grant_path(grant: Grant) -> str:
     return str(Path(private_record_root()) / GRANTS_DIRNAME / grant.id)
 
 
-def unspawned_resumes(ledger: Ledger, label: str) -> bool:
-    """OWNER-DECISION r7-1 (grok jail contract §20): how a label resumes after one of the
-    grant's reservations was settled ``unspawned``. The owner has not ruled. The interim
-    rule (§4.5) is that an ``unspawned`` settlement stops the procedure and nothing more is
-    launched under the grant, so this one decision point refuses every resumption. The
-    owner's answer (A, A', B or C) replaces this body and nothing else."""
+def unspawned_stops_grant(ledger: Ledger) -> bool:
+    """OWNER-DECISION r7-1 (A′): one allowlisted unspawned settlement per label."""
+    seen = set()
+    for reservation in ledger.reservations:
+        if reservation.id not in ledger.unspawned:
+            continue
+        if (ledger.unspawned[reservation.id] not in _TRANSIENT_UNSPAWNED_CODES
+                or reservation.route in seen):
+            return True
+        seen.add(reservation.route)
     return False
 
 
@@ -4068,7 +4095,7 @@ def _check_jail_reservation(ledger: Ledger, label: str, *, context: str, runtime
     policy, an unresolved reservation, the grant's passing rehearsal, the format stop and
     the retry and request allowances."""
     grant = ledger.grant
-    if ledger.unspawned and not unspawned_resumes(ledger, label):
+    if unspawned_stops_grant(ledger):
         raise _refuse("grant_stopped_unspawned")
     if ledger.unresolved():
         raise _refuse("reservation_unresolved")
@@ -4076,8 +4103,9 @@ def _check_jail_reservation(ledger: Ledger, label: str, *, context: str, runtime
         raise _refuse("rehearsal_required")
     if ledger.format_stop():
         raise _refuse("format_unrecognised_unresolved")
-    retries = ledger.retries_used() + (label in {item.route for item in ledger.reservations})
-    if retries > grant.retries or ledger.launches() + 1 > len(grant.planned) + grant.retries:
+    is_retry = any(item.route == label and item.id not in ledger.unspawned
+                   for item in ledger.reservations)
+    if ledger.retries_used() + is_retry > grant.retries:
         raise _refuse("grant_retries_exhausted")
     if ledger.charged() + grant.budget > grant.cap:
         raise _refuse("grant_cap_reached")
@@ -4725,7 +4753,160 @@ def _stage_flags(args) -> list[str]:
     for name in ("require_measured", "require_rehearsed", "verify_probe", "reprocess"):
         if getattr(args, name, None):
             flags.append(name)
+    if getattr(args, "record", None):
+        flags.append("confirmation")
+    if getattr(args, "hosted_check", None) is not None and not getattr(args, "new_grant", False):
+        flags.append("hosted_check")
     return flags
+
+
+def _write_eligibility_record(name: str, document: Mapping[str, Any]) -> None:
+    directory = _record_root()
+    try:
+        _replace_file(directory, name, document)
+    except OSError:
+        raise _refuse("private_storage_unavailable") from None
+    finally:
+        os.close(directory)
+
+
+def _record_confirmation(args, binary_sha256: str) -> dict[str, Any]:
+    """Import the owner's observation from the separately approved offline launch."""
+    from . import grok_jail_surface as jail
+    from .seat_jail import host_arch
+
+    if not (args.attended and args.reviewed and len(args.record) == 1):
+        raise _refuse("owner_confirmation_required")
+    source = Path(args.record[0])
+    try:
+        directory = _open_tree(source.parent, create=False)
+        try:
+            document = _read_doc(directory, source.name, jail.RECORD_MAX_BYTES)
+        finally:
+            os.close(directory)
+        for key in ("credential_free", "no_egress", "masks_unchanged"):
+            _require(document.pop(key) is True)
+        jail.check_confirmation(document, binary_sha256)
+        _require(all(document["outcome"][key] is expected
+                     for key, expected in jail._CONFIRMATION_OUTCOME.items()))
+        _dt.date.fromisoformat(document["approved_on"])
+        arch = host_arch()
+        _require(document["launch_digest"] == {arch: jail.production_launch_digest(arch)})
+    except (OSError, ValueError, KeyError, TypeError, RecursionError, MeasurementRefused):
+        raise _refuse("owner_confirmation_invalid") from None
+    _write_eligibility_record(jail.confirmation_name(binary_sha256), document)
+    return document
+
+
+def _github_actions(endpoint: str) -> bytes:
+    """Read from the fixed upstream repository, using the operator's GitHub CLI."""
+    return subprocess.run(
+        ["gh", "api", "--hostname", "github.com", f"repos/{_HOSTED_REPO}/actions/{endpoint}"],
+        stdin=subprocess.DEVNULL, capture_output=True, check=True, timeout=30,
+    ).stdout
+
+
+def _check_boundary_junit(archive: bytes, *, head: str, attempt: int, arch: str,
+                          launch: str, context: str) -> None:
+    import io
+    import xml.etree.ElementTree as etree
+    import zipfile
+
+    from .seat_window import runtime_digest
+
+    with zipfile.ZipFile(io.BytesIO(archive)) as zipped:
+        members = zipped.infolist()
+        _require(len(members) == 1 and members[0].filename == "grok-jail-boundary.xml"
+                 and members[0].file_size <= _BOUNDARY_LIMIT)
+        xml = zipped.read(members[0]).decode("utf-8")
+    _require("<!DOCTYPE" not in xml and "<!ENTITY" not in xml)
+    root = etree.fromstring(xml)
+    _require(root.tag == "testsuites" and len(root) == 1 and root[0].tag == "testsuite")
+    suite = root[0]
+    _require(suite.get("tests") == str(len(_BOUNDARY_CASES))
+             and all(suite.get(attr) == "0" for attr in ("errors", "failures", "skipped")))
+    cases = suite.findall("testcase")
+    _require(len(cases) == len(_BOUNDARY_CASES)
+             and {case.get("name") for case in cases} == _BOUNDARY_CASES)
+    props = {"grok_boundary_head": head, "grok_boundary_attempt": str(attempt),
+             "grok_boundary_arch": arch, "grok_boundary_runtime": runtime_digest()}
+    for case in cases:
+        _require(case.get("classname") in ("test_grok_seat_jail", "tests.test_grok_seat_jail")
+                 and all(child.tag in ("properties", "system-out", "system-err") for child in case))
+        actual = [(item.get("name"), item.get("value"))
+                  for item in case.findall("properties/property")]
+        expected = props
+        if case.get("name") == _BA_J5:
+            expected = {**props, "grok_boundary_launch": launch, "grok_boundary_context": context}
+        _require(len(actual) == len(expected) and dict(actual) == expected)
+
+
+def _record_hosted_boundary(run_id: str, binary_sha256: str) -> dict[str, Any]:
+    """Bind the official merged-head BA-J1 and BA-J5 results to the local production jail."""
+    import xml.etree.ElementTree as etree
+    import zipfile
+
+    from . import grok_jail_surface as jail
+    from .seat_jail import host_arch
+
+    arch = host_arch()
+    launch = jail._expected_launch(binary_sha256, arch)
+    if launch is None or launch != jail.production_launch_digest(arch):
+        raise _refuse("owner_confirmation_required")
+    head = os.environ.get("GROK_INSTALLED_HEAD", "")
+    if re.fullmatch(r"[0-9a-f]{40}", head) is None:
+        raise _refuse("installed_head_required")
+    try:
+        run = _loads(_github_actions(f"runs/{run_id}"))
+        _require(run["id"] == int(run_id) and run["head_sha"] == head
+                 and run["head_branch"] == "main" and run["event"] in ("push", "workflow_dispatch")
+                 and run["head_repository"]["full_name"].lower() == _HOSTED_REPO.lower()
+                 and run["path"] == ".github/workflows/test.yml"
+                 and run["status"] == "completed" and run["conclusion"] == "success")
+        attempt = run["run_attempt"]
+        _require(type(attempt) is int and attempt >= 1)
+        listing = _loads(_github_actions(f"runs/{run_id}/artifacts?name={_BOUNDARY_ARTIFACT}"))
+        _require(listing["total_count"] == 1)
+        artifact, = listing["artifacts"]
+        _require(artifact["name"] == _BOUNDARY_ARTIFACT and artifact["expired"] is False
+                 and type(artifact["id"]) is int and artifact["id"] > 0
+                 and type(artifact["size_in_bytes"]) is int
+                 and 0 < artifact["size_in_bytes"] <= _BOUNDARY_LIMIT)
+        archive = _github_actions(f"artifacts/{artifact['id']}/zip")
+        _require(len(archive) <= _BOUNDARY_LIMIT
+                 and artifact["digest"] == f"sha256:{sha256(archive).hexdigest()}")
+        context = jail.jail_context_digest(binary_sha256)
+        _check_boundary_junit(archive, head=head, attempt=attempt, arch=arch, launch=launch,
+                              context=context)
+        document = {"schema": jail.BOUNDARY_SCHEMA, "hosted_run": run_id, "head": head,
+                    "launch_digest": launch, "jail_context_digest": context, "ba_j5": "passed",
+                    "skipped": 0}
+        jail.check_boundary(document, launch, binary_sha256)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError,
+            subprocess.SubprocessError, zipfile.BadZipFile, etree.ParseError):
+        raise _refuse("hosted_boundary_unverified") from None
+    _write_eligibility_record(jail.boundary_name(launch), document)
+    return document
+
+
+def _record_jail_eligibility(args, stage: str) -> dict[str, Any]:
+    from . import grok_jail_surface as jail
+    from .panel_invoker import _subscription_env
+    from .seat_jail import SeatSandboxRefused
+
+    path, binary_sha256, _state = _measure_binary(args.binary, args.expect_binary_sha256)
+    try:
+        subject = jail.resolve_subject(_subscription_env())
+        jail.staged_config_bytes()
+    except SeatSandboxRefused:
+        raise _refuse("jail_ineligible") from None
+    if (subject.path, subject.sha256) != (path, binary_sha256):
+        raise _refuse("binary_mismatch")
+    if jail.protection_drift(binary_sha256) is not None:
+        raise _refuse("jail_ineligible")
+    if stage == "confirmation":
+        return _record_confirmation(args, binary_sha256)
+    return _record_hosted_boundary(_hosted_run_id(args.hosted_check), binary_sha256)
 
 
 def measure_tools_cli(args) -> tuple[int, dict[str, Any]]:
@@ -4736,6 +4917,12 @@ def measure_tools_cli(args) -> tuple[int, dict[str, Any]]:
     if len(flags) != 1:
         return 2, {"status": "refused", "code": "one_stage_required"}
     stage_name = flags[0]
+    if stage_name in ("confirmation", "hosted_check"):
+        try:
+            record = _record_jail_eligibility(args, stage_name)
+            return 0, {"status": "recorded", "record": record}
+        except MeasurementRefused as refusal:
+            return 1, {"status": "refused", "code": refusal.code}
     try:
         _check_grant_id(args.grant)
         identity = _measure_binary(args.binary, args.expect_binary_sha256)
@@ -4830,7 +5017,7 @@ def _run_stage(stage: _Stage, stage_name: str, args, report: dict[str, Any]
         if stage.grant.jailed:
             report.update(unspawned=dict(ledger.unspawned),
                           unresolved=list(ledger.unresolved()),
-                          stopped=bool(ledger.unspawned) or bool(ledger.unresolved()))
+                          stopped=unspawned_stops_grant(ledger) or bool(ledger.unresolved()))
         return 0, report
     if stage_name == "require_measured":
         # "no reservation" is reported apart from "not measured" (§5.10), and both from an
@@ -5022,7 +5209,7 @@ def _run_jail_stage(stage: _Stage, stage_name: str, args, report: dict[str, Any]
         row = {"route": JAIL_ROUTE, "reserved": True, "label": result["route"],
                "reservation": result["reservation"], "status": result["status"]}
         if result["status"] == "unspawned":
-            # §4.5 and OWNER-DECISION r7-1: the procedure stops; nothing more is launched.
+            # Stop this invocation. A later invocation checks the durable ledger for A′.
             row["code"] = result.get("code")
             rows.append(row)
             rows.extend({"route": JAIL_ROUTE, "reserved": False, "code": "not_attempted"}
