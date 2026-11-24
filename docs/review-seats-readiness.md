@@ -35,7 +35,7 @@ designated seat host; source-checkout tests do not establish host readiness.
 
 | Row | Route | Status | Named exception | Expiry / end condition |
 | --- | --- | --- | --- | --- |
-| Claude | jailed | candidate | open egress | 2026-12-04 UTC or CLAUDENET exit, whichever is first |
+| Claude | jailed | candidate | open egress | 2027-01-03T00:00Z or CLAUDENET exit, whichever is first |
 | Gemini | jailed | candidate | none | First post-TEAMHOST row window (agent-harness#1903) |
 | Codex | jailed | candidate | none | Row window or owning phase exit |
 | Grok | local | candidate | unconfined | 2026-12-04 UTC or GROK exit, whichever is first |
@@ -45,6 +45,11 @@ designated seat host; source-checkout tests do not establish host readiness.
 | Codex remote | remote | remote-pending | none | REMOTE activation |
 | Grok remote | remote | remote-pending | none | REMOTE activation |
 | Pi remote | remote | remote-pending | none | REMOTE activation |
+
+The Claude row's `renewal_record` names the
+[2026-11-24 owner approval](../plans/amendments/seats-claude-open-egress-renewal-20261124.md).
+Registering the Claude allowlist removes the exception from the matrix. The separate W1
+grant and conservative evidence cutoffs both remain 2026-12-04T00:00Z.
 
 Grok's tool probe (`phase-loop seat-window probe-tools --vendor grok`) has two bases,
 and each row reports its `basis`. A build whose `--help` advertises `--list-tools` is
