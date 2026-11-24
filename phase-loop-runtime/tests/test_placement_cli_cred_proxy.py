@@ -27,6 +27,8 @@ def assert_bad_gateway(reply, expected):
     headers, body = wire.split(b"\r\n\r\n", 1)
     assert headers.split(b"\r\n")[0] == b"HTTP/1.1 502 Bad Gateway"
     assert b"content-type: text/plain" in headers.split(b"\r\n")
+    assert b"connection: close" not in headers.lower().split(b"\r\n")
+    assert f"content-length: {len(body)}".encode() in headers.split(b"\r\n")
     assert body == b"sandbox credential proxy: " + expected + b" for anthropic\n"
     assert not closed
 
@@ -89,7 +91,8 @@ def test_valid_chunked_reply_with_trailer_is_relayed():
 
 def test_route_denial_preserves_the_403():
     wire, closed = exchange(request=REQUEST.replace(b"/anthropic/", b"/other/"))
-    assert wire == b"HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+    assert wire == (b"HTTP/1.1 403 Forbidden\r\ncontent-type: text/plain\r\ncontent-length: 40\r\n\r\n"
+                    b"route not allowed by the sandbox policy\n")
     assert not closed
 
 
