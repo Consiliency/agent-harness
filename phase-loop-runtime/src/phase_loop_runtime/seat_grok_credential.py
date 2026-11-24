@@ -544,6 +544,10 @@ def _stat_private_metadata_entry(directory: int, name: str, *,
     return info
 
 
+#: Upper bound on an operator-typed sign-in expiry (400 days from now).
+_MAX_ATTENDED_EXPIRY_S = 400 * 86400
+
+
 def _publish_credential_metadata(expires_at: int) -> None:
     from .grok_tool_surface import CREDENTIAL_METADATA_NAME
 
@@ -602,7 +606,13 @@ def main(argv: list[str] | None = None) -> int:
         print("credential_metadata_arguments_invalid", file=sys.stderr)
         return 2
     expires_at = int(values[0])
-    if expires_at <= time.time():
+    now = time.time()
+    if expires_at > now + _MAX_ATTENDED_EXPIRY_S:
+        # A mistyped value (for example milliseconds) would pass here and then fail at
+        # staging, which ends the whole grant under r8-3; refuse it up front instead.
+        print("credential_metadata_arguments_invalid", file=sys.stderr)
+        return 2
+    if expires_at <= now:
         print(TOKEN_EXPIRED, file=sys.stderr)
         return 1
     try:

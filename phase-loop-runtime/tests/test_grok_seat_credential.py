@@ -832,6 +832,8 @@ def test_auth_change_before_publication_leaves_no_record(operator, monkeypatch, 
     ["--subscription-confirmed", "--expires-at"],
     ["--subscription-confirmed", "--expires-at", "123", "--expires-at", "456"],
     ["--subscription-confirmed", "--expires-at", "123", "--unknown"],
+    ["--subscription-confirmed", "--expires-at", str(int(time.time() * 1000) + 3_600_000)],
+    ["--subscription-confirmed", "--expires-at", str(int(time.time()) + 401 * 86400)],
 ])
 def test_metadata_publisher_refuses_ambiguous_arguments_without_echo(
     operator, monkeypatch, capsys, argv

@@ -121,7 +121,12 @@ def pytest_unconfigure(config):
 
 @pytest.fixture(autouse=True)
 def _legacy_grok_grant_fixture(request, monkeypatch):
-    """Provision grants for the frozen TS suites through the pre-registration path."""
+    """Provision grants for the frozen TS suites through the pre-registration path.
+
+    Jail contract revision r8 item r8-4 refuses new unjailed Grok grants once the Grok
+    profile is registered, and explicitly allows the frozen suites to create theirs with
+    the profile removed. Keep this fixture while those suites exist.
+    """
     if request.node.path.name not in {
         "test_grok_tool_surface_measure.py", "test_grok_seat_log_retention.py",
     }:
