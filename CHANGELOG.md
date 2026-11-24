@@ -47,6 +47,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- The strict agy route conformance suite pins the provider error class that
+  agent-harness#2171 added to transient outcomes; both stream-surface negative controls
+  report `unknown`. This restores the publish-time qualified-image verification.
+
 - Bounded jailed Claude TUI reviews allow up to 20 minutes from submit for an active turn
   with a repainting spinner and interrupt footer, within the existing review deadline.
   The watchdog checks the session journal once more before declaring a stall
