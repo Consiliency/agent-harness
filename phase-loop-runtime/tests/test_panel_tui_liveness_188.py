@@ -610,6 +610,22 @@ def test_exact_tool_diagnostic_ignores_malformed_events(tmp_path):
     )
 
 
+@pytest.mark.parametrize("error", [
+    OSError, pi.AgyCanaryEvidenceError, pi._sandbox_egress.SeatIdentityUnverified,
+])
+def test_exact_tool_diagnostic_only_suppresses_os_errors(tmp_path, monkeypatch, error):
+    def broken_read(path):
+        raise error("journal read failed")
+
+    monkeypatch.setattr(pi, "_read_seat_raw_text", broken_read)
+    transcript = tmp_path / "exact.jsonl"
+    if error is OSError:
+        assert pi._claude_exact_tool_diagnostic(transcript) == "tool_progress=unknown"
+    else:
+        with pytest.raises(error, match="journal read failed"):
+            pi._claude_exact_tool_diagnostic(transcript)
+
+
 def test_completed_exact_tools_do_not_extend_stall_or_authorize_verdict(tmp_path, monkeypatch):
     transcript = tmp_path / "exact.jsonl"
     events = [
