@@ -6,6 +6,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Added
+
+- LaneExec tracks launch ownership, renewal, cancellation and cleanup by generation. Release
+  and reap retain an allocation while cleanup evidence is unresolved. Trusted scheduler
+  calls can pass an immutable lane context through the launch service.
+
 ### Fixed
 
 - The placement-lifecycle replay test runs its interrupted setup reserve on a frozen clock with

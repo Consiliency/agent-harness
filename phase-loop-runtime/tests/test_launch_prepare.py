@@ -821,3 +821,36 @@ def test_cancel_through_the_landed_cancel_attempt_with_no_journal(env, launched)
     # The landed cancel_attempt finds no JOURNAL attempt; LaneExec holds the claim.
     assert cancel(service, reservation, "launch-1").state == "cancel_pending"
     assert lifecycle.launch_local_cancels("launch-1") == ["unknown_attempt"]
+
+
+def test_cancel_contended_journal_uses_remaining_request_deadline(launched, monkeypatch):
+    lifecycle, service, reservation, paths = launched
+    journal_launch(lifecycle, reservation, "launch-1", paths)
+    # Drive the lock retry clock deterministically while a real flock is held.
+    now = 100.0
+    def advance(seconds):
+        nonlocal now
+        now += seconds
+
+    def owner_cancel(root, run_id, wait):
+        advance(.75)
+        return "owner_unverified"
+
+    monkeypatch.setattr(sp, "_monotonic", lambda: now)
+    monkeypatch.setattr(sp, "_sleep", advance)
+    monkeypatch.setattr(service, "_cancel_attempt", owner_cancel)
+    with sp._FileLock(lifecycle.launch_root / "cancels" / "launch-1.lock", blocking=True):
+        response = cancel(service, reservation, "launch-1", deadline_ms=2000)
+    assert now <= 102.0
+    assert response.state == "cancel_pending"
+    assert lifecycle.launch_local_cancels("launch-1") == []
+
+
+def test_cancel_malformed_cancel_journal_returns_pending(env, launched):
+    lifecycle, service, reservation, paths = launched
+    journal_launch(lifecycle, reservation, "launch-1", paths)
+    env.cancel_outcome = "owner_unverified"
+    malformed = {"request_id": "launch-1", "outcomes": "invalid"}
+    lifecycle._launch_write("cancels", "launch-1", malformed)
+    assert cancel(service, reservation, "launch-1").state == "cancel_pending"
+    assert lifecycle._launch_read("cancels", "launch-1") == malformed
