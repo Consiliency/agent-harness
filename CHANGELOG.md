@@ -8,6 +8,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
+- LANEEXEC SL-2: `ReturnPolicy` supports independent patch and JSON result byte caps,
+  including zero. A return above its cap yields `sandbox_launch_result_invalid` and
+  leaves no retained bytes. A verified absent proposal still returns null without a code.
 - LANEEXEC SL-7 precursor: `static_route_refusal` checks the client, workload and
   writer pairing, and `activation_refusal` checks the captured route settings.
   `route_refusal` preserves its refusal order and codes. All routes refuse under

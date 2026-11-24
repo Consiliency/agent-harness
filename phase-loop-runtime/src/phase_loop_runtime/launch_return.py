@@ -110,16 +110,22 @@ _UNKNOWN_PROPOSAL_CODE = _AUDIT_FAILED
 
 @dataclass(frozen=True)
 class ReturnPolicy:
-    """Operator return bounds: ``patch_cap`` at most :data:`PATCH_CAP_MAX` (``x-return.patch``)
-    and the binary-literal limits applied to returned patch bytes."""
+    """Per-kind byte caps clamped to the LaneExec ceilings, with zero allowed.
+
+    ``binary_limits`` also bounds the binary literals in returned patch bytes.
+    """
 
     binary_limits: openshell_artifacts.Limits
     patch_cap: int = PATCH_CAP_MAX
+    result_cap: int = RESULT_CAP
 
     def __post_init__(self) -> None:
-        if (type(self.patch_cap) is not int or not 0 < self.patch_cap <= PATCH_CAP_MAX
+        if (type(self.patch_cap) is not int or self.patch_cap < 0
+                or type(self.result_cap) is not int or self.result_cap < 0
                 or not isinstance(self.binary_limits, openshell_artifacts.Limits)):
             raise LaunchReturnError("return_policy_invalid")
+        object.__setattr__(self, "patch_cap", min(self.patch_cap, PATCH_CAP_MAX))
+        object.__setattr__(self, "result_cap", min(self.result_cap, RESULT_CAP))
 
 
 @dataclass(frozen=True)
@@ -455,13 +461,14 @@ def _strict_object(data: bytes) -> bool:
     return "truncated" not in value or value["truncated"] is False
 
 
-def _collect_result(attempt: ReturnAttempt, withhold: Callable[[bytes], bool] | None,
+def _collect_result(attempt: ReturnAttempt, policy: ReturnPolicy,
+                    withhold: Callable[[bytes], bool] | None,
                     bound: openshell_artifacts.Bound) -> ReturnOutcome:
     if attempt.out_dir is None:
         return _null("result", "out_unreachable", None)
     try:
         bound.check()
-        data = _read_capped(attempt.out_dir, (_RESULT_FILE,), RESULT_CAP)
+        data = _read_capped(attempt.out_dir, (_RESULT_FILE,), policy.result_cap)
     except (openshell_artifacts.Refused, OSError, ValueError):
         return _null("result", "invalid", _RESULT_INVALID)
     if data is None or not _strict_object(data):
@@ -486,7 +493,7 @@ def collect_return(attempt: ReturnAttempt, kind: str, *, policy: ReturnPolicy,
         if kind == "patch":
             return _collect_patch(attempt, policy, withhold, bound)
         if kind == "result":
-            return _collect_result(attempt, withhold, bound)
+            return _collect_result(attempt, policy, withhold, bound)
     except openshell_artifacts.Refused:
         return _null(kind, "invalid", _RESULT_INVALID)
     except (OSError, ValueError, TypeError, AttributeError, RecursionError):
