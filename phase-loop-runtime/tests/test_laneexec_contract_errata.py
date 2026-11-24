@@ -83,9 +83,9 @@ CITED = (
 #: sha256 of the RFC 8785 bytes of [[path, value], ...] over CITED, read from the
 #: previous artifact bytes.
 CITED_SENTENCES_SHA256 = "d1ca7cb54bdaa8e576857e5795e8603c2c1e62817ca31546df89d4bad92518df"
-#: sha256 of the RFC 8785 bytes of the previous artifact without the two members that
-#: x-errata declares (local argv and argv_rule).
-UNCHANGED_SHA256 = "7d28f8efb0df29b0ac7ed491d069fee508b09600f4711857461927546c02f8af"
+#: SHA-256 of the RFC 8785 bytes of the previous artifact after excluding the local
+#: template changes declared by x-errata and the fields authorized by repin_rule.
+UNCHANGED_SHA256 = "dc6c07a7dcbd70f332a210413f8e24f7766ad70d347d673aab71710e484d6a52"
 #: Fragments the binding quotes from a cited sentence, matched without regard to case.
 QUOTED = {
     ("x-envelope-construction", "rule"): "admits it through the v12 admission seam",
@@ -291,9 +291,11 @@ def test_the_erratum_entry_is_class_c_with_its_obligations_and_approval():
 
 
 def outside_the_erratum(doc):
-    """The document without x-errata and the two members the erratum declares."""
+    """Keep the wire members outside the template erratum and toolkit repin."""
     doc = copy.deepcopy(doc)
     doc.pop("x-errata", None)
+    toolkit_pin = doc["x-contract-pins"]["toolkit_pins"]
+    del toolkit_pin["toolkit_commit"], toolkit_pin["sha256"], toolkit_pin["byte_length"]
     local = local_template(doc)
     del local["argv"], local["argv_rule"]
     return doc
@@ -391,7 +393,7 @@ def test_every_pin_site_holds_the_erratum_digest():
     assert frozen["plans/artifacts/v13-LANEEXEC-contract-v1.schema.json"]["sha256"] == contract
     assert frozen["plans/artifacts/v13-LANEEXEC-landed-binding.md"]["sha256"] == binding
     binding_text = BINDING.read_text(encoding="utf-8")
-    assert f"LaneExec launch protocol v1 with erratum {ERRATUM_ID} | " \
+    assert f"LaneExec launch protocol v1 with {ERRATUM_ID} and LANEEXEC-v1-errata-7 | " \
            f"`plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`, sha256 `{contract}`" in binding_text
     remote = REMOTE_PLAN.read_text(encoding="utf-8")
     assert re.search(r"v13-LANEEXEC-contract-v1\.schema\.json`, sha256\s+`" + contract + "`", remote)

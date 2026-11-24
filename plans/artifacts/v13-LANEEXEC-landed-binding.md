@@ -2,14 +2,10 @@
 
 Frozen artifact for `plans/phase-plan-v13-LANEEXEC.md` (re-plan). It has no word
 cap. The wire contract stays `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`,
-byte-identical at its pin except for erratum LANEEXEC-v1-errata-1 (`x-errata`: one
-template literal and the rule sentence that prescribes it), which agent-toolkit
-vendors by digest (IF-XR-1). That erratum is the one toolkit repin. Nothing here
-adds, removes or renames a wire member, enum value, code, verb or exit class, and
-this artifact makes no wire change of its own. Erratum LANEEXEC-v1-errata-2 (§6) is a
-plan and binding erratum only: it changes this artifact and the phase plan, never the
-wire bytes, so the toolkit does not repin. Errata LANEEXEC-v1-errata-3 (§7) and
-LANEEXEC-v1-errata-4 (§8) are likewise plan and binding errata only. LANEEXEC-v1-errata-5 (§9) incorporates a frozen SL-8 resolutions artifact.
+vendored by agent-toolkit at its digest (IF-XR-1). The wire incorporates
+LANEEXEC-v1-errata-1 (the `x-errata` local template change) and the reviewed toolkit
+manifest repin in LANEEXEC-v1-errata-7 (§10). Errata 2–5 (§§6–9) bind the plan
+without changing the wire.
 
 Where this artifact binds an `x-*` semantic sentence of the wire artifact to the
 landed code, it says so with the sentence's member path, and this artifact governs that
@@ -21,7 +17,7 @@ outcomes the wire already expresses. A future protocol version folds them in.
 | Input | Identity |
 | --- | --- |
 | Roadmap | `specs/phase-plans-v13.md`, sha256 `a5cd5f2bedbda38c99ad516113fd839dae8af6ea4482760e8efd18a5d413428d` |
-| LaneExec launch protocol v1 with erratum LANEEXEC-v1-errata-1 | `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`, sha256 `da311638f2c5b92df5b1f2a917665b62c06aa10f80040bfa2504dcd78f42442a` |
+| LaneExec launch protocol v1 with LANEEXEC-v1-errata-1 and LANEEXEC-v1-errata-7 | `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`, sha256 `57bc376cc629e762130a3f43aa5bef8cfaeebb1042a3963fc54a5708d5adba7d` |
 | Placement process protocol v1 (unchanged) | `plans/artifacts/v13-PLACECLI-contract-v1.schema.json`, sha256 `130a894df327ddca2eebf83c8b52e068b25176320af3e0a4e15319a315ba83ea` |
 | Caps contract | `plans/seats-jailcore-caps-contract.md`, sha256 `e614d3855320fe4c8a1d8b9a335181b2c493da45510062d2f8432ee30c362445` |
 | SEATS REMOTE contract | `plans/seats-remote-contract.md`, sha256 `1cea960ddd28ef5e1c4bf79083fa9f9938b2c99c2e29dbd937864944ca76d7e8` |
@@ -33,11 +29,6 @@ outcomes the wire already expresses. A future protocol version folds them in.
 | Pre-build sweep | Consiliency/agent-harness#1963 head `cdecd32cf9b9e33cbcf7ddf07c44b4556c6ad074`, `plans/artifacts/v13-LANEEXEC-landed-sweep.md` |
 | Upstream re-plans consumed | `plans/artifacts/v12-CLOSEOUT-landed-binding.md` (§3 C-S1, §4.1–§4.3) and `plans/artifacts/v13-PLACECLI-landed-binding.md` (§3, §4) |
 | Cross-phase ownership | `plans/artifacts/v12-v13-replan-ownership.md` |
-
-The agent-toolkit pins manifest and its 27 file hashes inside the wire artifact
-were re-verified by the sweep (the manifest is delivered at
-`8b9c0697733b3815baa556b1823a653d497ffa04`, naming source
-`cd9174e326140dc27471ff3bfc8abdd056f6e7bd`).
 
 ## 1. What LANEEXEC must still deliver
 
@@ -228,8 +219,8 @@ local seat route; LaneExec never calls `seat_jail` or the jailed Codex route.
 ### L-S8 — the PLACECLI byte pin (same item as PLACECLI P-S2)
 
 **Chosen: no repin for the grant spelling.** The PLACECLI bytes are unchanged;
-the LANEEXEC bytes change only by erratum LANEEXEC-v1-errata-1, which does not
-touch the grant rule. The envelope grant is derived by the field rule
+the LANEEXEC template erratum and toolkit manifest repin leave the grant rule intact.
+The envelope grant is derived by the field rule
 `x-envelope-construction.fields["launch.grants.egress_policy_sha256"]` (bare 64 hex after the
 `sha256:` prefix), which already governs; the PLACECLI `launch_binding` sentence
 is non-normative on that spelling (PLACECLI binding §3 P-S2). This deviates from
@@ -239,8 +230,8 @@ there.
 ## 4. Cross-repo consequences
 
 - agent-toolkit (IF-XR-1): members, verbs and exit classes are unchanged. The
-  artifact digest and the local `template_sha256` change by erratum
-  LANEEXEC-v1-errata-1, and the toolkit re-vendors once.
+  artifact digest and the local `template_sha256` change with LANEEXEC-v1-errata-1.
+  LANEEXEC-v1-errata-7 changes the artifact digest again for toolkit re-vendoring.
   Behavioral narrowing it can observe: zero-signal cancels return
   `cancel_pending` (exit 20) where the old text could not say; non-completed
   `patch` attempts return null (not used by `pi-runner`, which takes `none`).
@@ -1088,5 +1079,38 @@ and the corresponding SL-8 tasks on the integrated input in §0.
 | 13 | Local Pi stays interim pending an admitted-child duplex handoff. Exercise the socket lifecycle with an offline stream. |
 
 R1 and R2 remain binding. Shipped routes stay disabled. Only actual producer
-evidence discharges the affected positive acceptance criteria. The wire and
-toolkit pin retain the §0 identity.
+evidence discharges the affected positive acceptance criteria. Erratum 5 applies
+only to the plan and binding.
+
+## 10. Erratum LANEEXEC-v1-errata-7 — credential-proxy toolkit repin
+
+Consiliency/agent-toolkit#103 keeps host credential-resolver diagnostics out of
+guest responses and host logs. The repin follows
+`x-contract-pins.toolkit_pins.repin_rule`. Number 6 remains available for the
+planned SL-8 interpretations.
+
+| Input | Previous | Repin |
+| --- | --- | --- |
+| `toolkit_commit` (source bytes, embedded in the manifest) | `cd9174e326140dc27471ff3bfc8abdd056f6e7bd` | `1e721c011a65d0b002eeb3479e4a834892bbeff7` |
+| `harnesses/pi/contracts/pins.json` SHA-256 and length | `5cb911cb9740c358b823a8020fe204f91399988cb39811662f56094f8cb38c27`, 4692 bytes | `0642c0847701b384a5c9768f9db580e0057588b63638b6ecce2c28632ff89bec`, 4692 bytes |
+| `harnesses/pi/sandbox/cred-proxy.mjs` SHA-256 and length | `dc84548328c38345f0d190e89fa1bb5c2ac1d438273c49408b172796d6844c30`, 7408 bytes | `43ee5e6172a25006265cbeeafef08a9ad2dee07e9a7d743a18ba9fc23d7a9987`, 8931 bytes |
+
+The original sweep verified the 27 file hashes in the manifest delivered at
+`8b9c0697733b3815baa556b1823a653d497ffa04`. The new manifest is delivered at
+`0540e09dbc3ad1d4d40e0be6ed9bf3d2ec20d1a9`, whose parent is the new source
+commit. Only the `cred_proxy_reference` SHA-256 and the embedded `toolkit_commit`
+changed in the manifest. All 26 other files are byte-identical. The
+`cred_proxy_reference` role and path are stable. The proxy sits outside the 16-file remote-inner
+closure, so the OpenShell image and runtime manifest are unaffected. Every route
+stays disabled under shipped defaults.
+
+The wire keeps its erratum-1 record. This repin uses the separate authorization in
+`x-contract-pins.toolkit_pins.repin_rule` and updates the wire bytes and their
+`LaunchVersionResponse.protocol_schema_sha256` together. See §0 for the new
+digest. The prior wire SHA-256 was
+`da311638f2c5b92df5b1f2a917665b62c06aa10f80040bfa2504dcd78f42442a`.
+
+The PLACECLI `process-v1.schema.json` and the EC-PLACECLI/EC-LANEEXEC text in
+`specs/phase-plans-v13.md` retain `9304a5b9` as the design reference for the
+requester-owned credential boundary. The manifest supplies the executable byte
+pin. The offline PLACECLI fake follows the repinned proxy's response behaviour.

@@ -25,7 +25,8 @@ SL-0, SL-1, SL-2, SL-7 and SL-3a have landed. Binding §9 defines the remaining 
 Frozen inputs, read before building:
 
 - `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json` with erratum
-  LANEEXEC-v1-errata-1 (`x-errata`), vendored by agent-toolkit at its digest. It carries IF-0-LANEEXEC-1: messages,
+  LANEEXEC-v1-errata-1 (`x-errata`) and the LANEEXEC-v1-errata-7 toolkit repin.
+  Agent-toolkit vendors it at its digest. It carries IF-0-LANEEXEC-1: messages,
   CLI, routes, templates, snapshot, seed, prepare, envelope derivation, exec,
   caps, lifetime, bridge, status/cancel, return, evidence, activation defaults
   and obligations C1–C11.
@@ -33,7 +34,8 @@ Frozen inputs, read before building:
   dropped (§1), the landed-interface table at `file:line` (§2), the STOP
   decisions with the wire sentences they bind (§3), cross-repo consequences (§4),
   verification groups (§5), and errata LANEEXEC-v1-errata-2 (§6),
-  LANEEXEC-v1-errata-3 (§7), LANEEXEC-v1-errata-4 (§8) and LANEEXEC-v1-errata-5 (§9).
+  LANEEXEC-v1-errata-3 (§7), LANEEXEC-v1-errata-4 (§8), LANEEXEC-v1-errata-5 (§9)
+  and LANEEXEC-v1-errata-7 (§10).
 - `plans/artifacts/v13-LANEEXEC-errata-5-resolutions.md`: SL-8 producer signatures, lock order, supervisor protocol, evidence gates and test ownership.
 - `plans/artifacts/v13-PLACECLI-contract-v1.schema.json` (unchanged), the
   CLOSEOUT and PLACECLI landed-binding artifacts, and
@@ -55,7 +57,7 @@ and EXT-OPENSH remain activation prerequisites whose offline controls run here.
 | L-S5 | `patch` reuses WORKER's fail-closed withholding; `result` and `none` are specified separately; no private WORKER helper is used. Adopted. |
 | L-S6 | Zero-effect assertions scoped by stage. Adopted. |
 | L-S7 | Per-action route mapping defined; no qualification record shipped; local review seats never launch through LaneExec. Adopted. |
-| L-S8 | No grant-rule repin: the PLACECLI bytes are unchanged and the LANEEXEC bytes change only by erratum LANEEXEC-v1-errata-1; this artifact's existing bare-hex grant rule governs. Deviates from the sweep (hold) as in PLACECLI P-S2. |
+| L-S8 | No grant-rule repin: the PLACECLI bytes are unchanged and the LANEEXEC template erratum and toolkit repin leave the existing bare-hex grant rule intact. Deviates from the sweep (hold) as in PLACECLI P-S2. |
 
 **Erratum LANEEXEC-v1-errata-2** (binding §6, 2026-11-23; plan and binding only, the
 wire bytes and the toolkit pin are unchanged) re-anchors binding §2 to the v0.7.40 main
@@ -98,9 +100,9 @@ STOP. Its items:
 ## Cross-Repo Gates
 
 - [ ] IF-XR-1 (agent-toolkit, consumer) — unchanged members and exit classes; the
-  digest moves once, by erratum LANEEXEC-v1-errata-1, and the toolkit re-vendors
-  it. The toolkit keeps its capped bwrap launcher while `local_pi_runner_launcher` is
-  `toolkit_interim` and switches only under the ACTIVATE condition. It can
+  toolkit re-vendors the digest with the LANEEXEC-v1-errata-7 repin. It keeps
+  its capped bwrap launcher while `local_pi_runner_launcher` is `toolkit_interim`
+  and switches only under the ACTIVATE condition. It can
   observe the L-S4 cancel narrowing only.
 - [ ] IF-XR-2 (SEATS REMOTE, consumer) — `leg` and `qualification` routes,
   templates, `full` snapshots, `result` return and the `pre_exec`/`withhold`
