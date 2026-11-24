@@ -26,6 +26,9 @@ def test_mount_device(tmp_path, monkeypatch, record_testsuite_property, case):
     from phase_loop_runtime import launch_supervisor as sup, sandbox_policy
     from phase_loop_runtime import launch_exec
 
+    # conftest hides the host mount table for ordinary unit tests. These five
+    # cases deliberately verify the real resolver on the actual fixture mounts.
+    monkeypatch.setattr(sandbox_policy, "_MOUNTINFO", Path("/proc/self/mountinfo"))
     required = os.environ.get("PHASE_LOOP_TEST_REQUIRE_MOUNTS", "0")
     record_testsuite_property("PHASE_LOOP_TEST_REQUIRE_MOUNTS", required)
     tmp_path = tmp_path.resolve()
@@ -65,9 +68,19 @@ def test_mount_device(tmp_path, monkeypatch, record_testsuite_property, case):
         outcomes = []
         original = sup.local_devices
 
+        witnesses = []
+        staging_root = sandbox_policy.staging_root
+
         def devices(directories):
+            def observe_witness():
+                found = staging_root()
+                witnesses.append(found)
+                return found
+
             try:
-                result = original(directories)
+                with monkeypatch.context() as patch:
+                    patch.setattr(sandbox_policy, "staging_root", observe_witness)
+                    result = original(directories)
             except (ValueError, sandbox_policy.SandboxRamBackedError) as error:
                 outcomes.append((type(error), str(error)))
                 raise
@@ -81,6 +94,7 @@ def test_mount_device(tmp_path, monkeypatch, record_testsuite_property, case):
         assert result.worker_invocations == 0 and not svc.lifecycle.launch_claim_record(
             req.reservation.reservation_id
         )
+        assert witnesses == ([] if case == "M5" else [witness])
         if case == "M1":
             assert outcomes == [("admitted", (primary.stat().st_dev, primary.stat().st_ino))]
             assert result.admission_diagnostic == "launch_input_unbound"
