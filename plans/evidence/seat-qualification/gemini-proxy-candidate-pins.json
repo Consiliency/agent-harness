@@ -1,0 +1,135 @@
+{
+  "issue": "Consiliency/agent-harness#2157",
+  "comparison_base": "57ffbc3e6f56269a72642880dcaf65a5ab9c02dd",
+  "evidence_scope": "Static and unit verification of candidate source; release and owner qualification pending.",
+  "profile_fixture": "Fixed system mounts from test_seat_profiles.py on both architectures.",
+  "l8_fixture": "The fixed profile above with a synthetic host and, for dependency rows, a synthetic projection.",
+  "grok_jail_context_fixture": "Synthetic image digest consisting of 64 lowercase f characters.",
+  "base_red": {
+    "test": "test_panel_invoker.py::test_seats_firstseat_exec_record_window_board_uses_fresh_gemini_seat",
+    "base_credential_absent_from_constructed_argv_and_env": false,
+    "candidate_credential_absent_from_constructed_argv_and_env": true
+  },
+  "pin_moves": {
+    "agy_source_pins.panel_invoker.py": {
+      "base": "ed80aedc45a91405cac938828300d8f5ac802ecc6ebbe3dca12640ceff5e60b7",
+      "candidate": "33d597f2665c5364074dc978e5eb9f7760bec8cd58cdf9c2125df8f64947a1c6"
+    },
+    "agy_source_pins.sandbox_egress.py": {
+      "base": "6ab7b23320e960052932bb0a570202f4525534c384f12b660113886ff4f387a3",
+      "candidate": "2b5f87e19e753f21025d50001811a3da7c6344d1515b92f10985181a48eabfcb"
+    },
+    "agy_source_pins.seat_egress_proxy.py": {
+      "base": "1902c0aff133dcd89451501a3c183ca0037dc952b8caeae58a8579ce4560ac9b",
+      "candidate": "a2394a8c6cb6ab484542b70de4ea4ec9a287fd45a936ea59ddd96e5eb8531d82"
+    },
+    "agy_source_pins.seat_jail.py": {
+      "base": "75d4826c720b53c60270018721f49200475928a09d27fdbc09aa4eb0e41b1a83",
+      "candidate": "83779236700d32b99263f5d97d025362bf6d6b577f90d09f576f30bf25f4f538"
+    },
+    "agy_source_pins.seat_jail_qualification.py": {
+      "base": "4bbc622f3ddc6ae8fda21498055fb258bfa62524fcd9d5c61949b96ca7de787b",
+      "candidate": "c8f9274c41457b0ad43c40e18ec52e3877d17ce34c30955a7cbce0c805c7189e"
+    },
+    "agy_source_pins.seat_profiles.py": {
+      "base": "04e97588c798b18dba172c86a6623c9a266d994ebd4e76396e0dc10fe36a602b",
+      "candidate": "3146104d9fb73b16ac10c61172215589ec04f45cb21ee5b988bf3332fc6b5608"
+    },
+    "codex_window.proxy_sha256": {
+      "base": "3db9ad5fde93e29efebd5e143599191aacffd276769697d17362195b3197e6cd",
+      "candidate": "15929a1ace693d71c2a5cf87bf05c55477c6f870906bcfd1f39e6764e9b8f935"
+    },
+    "codex_window.watch_sha256": {
+      "base": "3516cb7467dbea4286a9743e69bf5800fbc5ee7de2bb694bcbc9e0c54c6e9341",
+      "candidate": "59e7354a5f47509da7c29f85b7d10e42e4848d80fd704a032eeafa2cb0f597cd"
+    },
+    "gemini_window.proxy_sha256": {
+      "base": "3db9ad5fde93e29efebd5e143599191aacffd276769697d17362195b3197e6cd",
+      "candidate": "15929a1ace693d71c2a5cf87bf05c55477c6f870906bcfd1f39e6764e9b8f935"
+    },
+    "gemini_window.validator_sha256": {
+      "base": "fcdb61736685a70564a3cf6e1fbdad11d39e867ad9b778b64bee287454e1581d",
+      "candidate": "dd6acf3b7f1dee866667d923d937fa094693aaca557f428074db0b02fdce3daf"
+    },
+    "gemini_window.watch_sha256": {
+      "base": "26dd29bf3c0eab7bb430f45ff42b687d6b0534579c4170301c1644c9ff17b4d2",
+      "candidate": "5ccc02667cf789e80e933800e00dfd6198c535c598c92e568716aaa38376c252"
+    },
+    "profile_digests.aarch64.gemini": {
+      "base": "317e6e6419b857a8d5d0caa542338cd5a959c3e8d8855d74e158f465f571495a",
+      "candidate": "262aacde561264ceb8690673e14722163a624cb736bd5261f2cf4d8d5454e63f"
+    },
+    "profile_digests.x86_64.gemini": {
+      "base": "62fc4258995145850bd2bab41642093b2c3dffd647063d7d660587ea74ab33b2",
+      "candidate": "af2d9d58bc0e63f1b15c183301e40e106f4d5b7bab710245d1f5a1c318b91d5f"
+    },
+    "synthetic_l8_keys.aarch64.gemini": {
+      "base": "39a92c03911657f5df19bbcdfbf593392960b4007c60a6e0fcbba02f14c1006b",
+      "candidate": "98b81f3bc24784b53a8ddfdca66c00476d3c46b211574f45260d56499b81b322"
+    },
+    "synthetic_l8_keys.aarch64.gemini_with_dependency": {
+      "base": "4b0ac945b1ab3622c03a09b2b66ce73f6172aa66a891168b6d0bb878f6f1d826",
+      "candidate": "bfe8bcb065c495613b691eda6e247eadbcbd84b6a20cc724f6aa3aab25f8c9da"
+    },
+    "synthetic_l8_keys.x86_64.gemini": {
+      "base": "6d8af436053829ca67f3f819d04248538da455d4ba9322929046c6a0292dfc2b",
+      "candidate": "6754dae63be20afc68ea744e1049075fdf1af08eab2e1472d3fbc52530ff9ae0"
+    },
+    "synthetic_l8_keys.x86_64.gemini_with_dependency": {
+      "base": "cfd4b0fc88baa2f17347765b71cc8dd8bcac4ad778c10121fb4e64abd19889ff",
+      "candidate": "cb54fd8e60775ad1043c1fd5f35cf21e136982e82b9fe16dce16b8523cce6061"
+    },
+    "window_release_identity": {
+      "base": "76a5d6f7dc01520f579a07777a63ea95d57cb5141f24f63950b7eeb7da852876",
+      "candidate": "67ac203ab0c42266ebd1e1e130dfca954c32b32c87c68a662568a2731af7d4f1"
+    },
+    "window_runtime_digest": {
+      "base": "66d1accd4995439950aefc7bccd8fb1ba8147af2348eac3bd9b22764e1136628",
+      "candidate": "924484163adb17b580e0114fefb2595e18dcc9b5422ddd9de3ee257d0a52bbae"
+    }
+  },
+  "claude_sdk_proof_binding_moves": {
+    "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py::seat_env": {
+      "base": "b5a9bc74f952c6ce81b7abd457a07e3037fa2666f2cb653cb64fa553c332f8ec",
+      "candidate": "b195b19e2d5fb85b7e2faa97990583dfe2e1cc9e6be8970d0065b2e10b094e02"
+    },
+    "phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py": {
+      "base": "04e97588c798b18dba172c86a6623c9a266d994ebd4e76396e0dc10fe36a602b",
+      "candidate": "3146104d9fb73b16ac10c61172215589ec04f45cb21ee5b988bf3332fc6b5608"
+    }
+  },
+  "stable": {
+    "other_profiles": {
+      "aarch64": {
+        "claude": "7b6b8613ffb5d9475d72b69adc98338da9d164f14e2d1d5d8ccb061cd6dbf5e6",
+        "codex": "de148170ec3cc855ea8fd6f4c5e9349aef9ef7fcd5d691d47b64d323eda640e7",
+        "grok": "558b6e0d73347f4a0b850bba4dd6afbbc13690a9599aeb4c561e035e1b1c503f"
+      },
+      "x86_64": {
+        "claude": "91ce53149412560377a29c01d9ef74af09d00769982cee7240f36e50caa3d543",
+        "codex": "2baabd1cfafc3654ac4f86e0c74d36086e783ca8f08a94abde59944ff17521a6",
+        "grok": "ddd919a167539fb6ec0890b4695656ad0342e085906e563adbec391ada5ee96f"
+      }
+    },
+    "codex_validator_sha256": "10fa5ff21bf39c2b42c4383f6ba2601e5049fe928213e180e1765eff4f217e3d",
+    "gemini_contract_sha256": "a57d46f722e22973f0522a8bc254856e6224d50b1b67893cab2b80522c4942a6",
+    "gemini_allowlist": {
+      "allowlist_content_sha256": "e29dc83b60705beed3d87c600b023dc959a51c76c5e1ab8df9001b1d7daaa296",
+      "allowlist_request_set_sha256": "032f65e6161b11f5cf1715f6ef4ad0f782c99868c1027d498c0f74f004b9626a",
+      "refuse_all_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "falsifier_layout_identity": "execfind-falsifier-layout.v1:7d9103e917279b7686fa0ead3358b978dc721f4d0ab3ff2214680c1743b3ec22",
+    "grok_jail_context_digest": "46ecd633375316c23cbf97b8d0813ab361257967edfa55ca8fc82c5c4dbfe493",
+    "agy_profile_digest": "9124a4d288e04a365f8fa76d4669464bcaa2fc86ad208df9eb7fea80fa10469c",
+    "agy_seat_qci": "9124a4d288e04a365f8fa76d4669464bcaa2fc86ad208df9eb7fea80fa10469c",
+    "agy_validator_version": "agy_validator_v1",
+    "interfaces_sha256": "b50a3a85e2f89d47b0d83f7a7cea117fc52ad04616e6616a7c4064816654ec79",
+    "k1_contract_sha256": "aa30ce0a2f947fd004476ac62f1c964c57a1e6554cc273e16366c92a2088e967"
+  },
+  "pending_after_release": [
+    "Record observed runtime and reissue eligible grants for affected deployment contexts.",
+    "Run integrated Gemini W1 with the admitted image and delivered credential under the owner account on the owner's primary board host.",
+    "Record EC-EXECFIND-2 on each Gemini host and account pair.",
+    "Qualify affected Codex row windows and restart Grok series that require same-runtime evidence."
+  ]
+}

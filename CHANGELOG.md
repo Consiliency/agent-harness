@@ -17,6 +17,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - LANEEXEC erratum 7 binds the plan to the landed SL-8 renewal, activation,
   scratch, cancellation and lane admission rulings (agent-harness#2160).
 
+### Fixed
+
+- Jailed Gemini seats use a credential-free loopback proxy URL. The host front keeps
+  per-launch proxy authentication on its private hop to SRT (agent-harness#2157).
+
 ## [0.7.43] - Unreleased candidate
 
 ### Added

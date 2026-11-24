@@ -1585,8 +1585,16 @@ are recorded on agent-harness#1132.
   admitted provider stream is spliced, so provider silence never closes an established stream.
   The interception CA is the host's own
   (`$XDG_STATE_HOME/phase-loop/seat-egress-ca`, 0700, key 0600); only its certificate enters the
-  seat, as its whole trust bundle. Both credentials the leg hands the seat -- the model bearer and
-  the proxy's session credential -- are scanned out of the returned review. The leg's evidence
+  seat, as its whole trust bundle. Jailed Gemini receives the credential-free proxy endpoint
+  `http://127.0.0.1:3128`. The host front injects the per-launch proxy credential on its
+  private hop to SRT. The launcher verifies the holder namespace, its bridge listener and
+  the owner-only Unix front, then requires 407 for a dummy authorization header before
+  the start fence. In the measured §11 bracket, both header-free CONNECT attempts must
+  succeed before their mismatched ClientHellos produce the expected refusal with zero
+  upstream bytes. The parent scans output for the proxy token and the model bearer.
+  Preparation refuses with `seat_sandbox_refused:gemini_proxy_token_missing` if the parent
+  scan token is absent and `seat_sandbox_refused:gemini_proxy_url_invalid` if the URL differs
+  from the literal endpoint. The leg's evidence
   records `egress` (with `tls_inspection: true`). Without the layer the seat is DEGRADED and not
   run with `gemini_seat_egress_unavailable`; its fix is `phase-loop seat-egress install`.
 - **EC-EXECFIND-2 gate.** A jailed route whose jail profile digest has no EC-EXECFIND-2

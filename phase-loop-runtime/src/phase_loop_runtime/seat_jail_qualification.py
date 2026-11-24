@@ -1412,15 +1412,10 @@ def _tunnel_inner_sni_only(run: JailedRun) -> str | None:
 
 
 _FAIL_CLOSED_FRONT = r'''
-import base64, os, socket, urllib.parse
+import os, socket
 
-proxy = urllib.parse.urlsplit(os.environ.get("HTTPS_PROXY", ""))
-if (proxy.scheme != "http" or proxy.hostname != "127.0.0.1" or proxy.port is None
-        or proxy.username is None or proxy.password is None):
+if os.environ.get("HTTPS_PROXY") != "http://127.0.0.1:3128":
     raise SystemExit(2)
-username = urllib.parse.unquote(proxy.username)
-password = urllib.parse.unquote(proxy.password)
-auth = base64.b64encode(f"{username}:{password}".encode()).decode()
 allowed = b"daily-cloudcode-pa.googleapis.com"
 sni = b"storage.googleapis.com"
 
@@ -1433,27 +1428,25 @@ def attempt(record_version):
     handshake = b"\x01" + len(body).to_bytes(3, "big") + body
     record = (b"\x16\x03" + bytes([record_version])
               + len(handshake).to_bytes(2, "big") + handshake)
-    sock = socket.create_connection((proxy.hostname, proxy.port), 5)
-    sock.settimeout(8)
-    request = (b"CONNECT " + allowed + b":443 HTTP/1.1\r\nHost: " + allowed
-               + b":443\r\nProxy-Authorization: Basic " + auth.encode() + b"\r\n\r\n")
-    sock.sendall(request)
-    response = b""
-    while b"\r\n\r\n" not in response and len(response) < 4096:
-        chunk = sock.recv(4096 - len(response))
-        if not chunk:
-            break
-        response += chunk
-    if not (response.startswith(b"HTTP/1.1 200 ") or response.startswith(b"HTTP/1.0 200 ")):
-        raise SystemExit(3)
-    sock.sendall(record)
-    try:
-        reply = sock.recv(4096)
-    except OSError:
-        reply = b""
-    finally:
-        sock.close()
-    return len(reply)
+    with socket.create_connection(("127.0.0.1", 3128), 5) as sock:
+        sock.settimeout(8)
+        sock.sendall(b"CONNECT " + allowed + b":443 HTTP/1.1\r\nHost: " + allowed
+                     + b":443\r\n\r\n")
+        response = b""
+        while b"\r\n\r\n" not in response and len(response) < 4096:
+            chunk = sock.recv(4096 - len(response))
+            if not chunk:
+                break
+            response += chunk
+        head, separator, extra = response.partition(b"\r\n\r\n")
+        if not separator or not head.startswith((b"HTTP/1.1 200 ", b"HTTP/1.0 200 ")):
+            raise SystemExit(3)
+        sock.sendall(record)
+        try:
+            reply = sock.recv(4096)
+        except ConnectionResetError:
+            reply = b""
+        return len(extra) + len(reply)
 
 print("UPSTREAM_BYTES", attempt(4), attempt(3))
 '''
