@@ -80,6 +80,8 @@ def build_fixture(
     provider: str = "synthetic",
     provider_destination: Path | None = None,
     subject_mode: int = 0o755,
+    subject_relative: str = "bin/tool",
+    subject_bytes: bytes = b"tool-v1",
     helper_mode: int = 0o644,
     directory_mode: int = 0o755,
     include_entries: bool = True,
@@ -87,7 +89,7 @@ def build_fixture(
 ) -> BuiltFixture:
     release = root / ("release-a" if layout == "layout-a" else "versions/v2")
     activation = root / ("admin/a1" if layout == "layout-a" else "alternate-admin/b7")
-    subject = release / "bin/tool"
+    subject = release / subject_relative
     helper = release / "lib/helper"
     destination_root = Path("/fixture") / sha256(str(root).encode("utf-8"))[:12] / "runtime"
     subject_destination = provider_destination or destination_root / "bin/tool"
@@ -98,7 +100,7 @@ def build_fixture(
     for directory in (release, subject.parent, helper.parent):
         directory.chmod(directory_mode)
     activation.chmod(0o755)
-    subject.write_bytes(b"tool-v1")
+    subject.write_bytes(subject_bytes)
     subject.chmod(subject_mode)
     helper.write_bytes(b"helper-v1")
     helper.chmod(helper_mode)

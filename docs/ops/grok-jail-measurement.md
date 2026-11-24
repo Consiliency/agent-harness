@@ -72,6 +72,14 @@ the script below stops before any reservation unless the credential check passes
    record's expiry exceeds both the slot end plus five minutes and the launch margin.
    `--rehearse` and every `--route staged` stage refuse the same way before reserving when
    the lifetime would not outlast the launch.
+8. Suspend Dotfiles auto-sync and release promotion for the full slot. Use the Python
+   interpreter from the same installed runtime that provides `phase-loop`. Before opening
+   the grant, resolve the subject in the measurement environment and match its exact
+   canonical path and SHA-256 to the grant inputs. Record the selector target, the release
+   device and inode, and the exact entry in the host's Grok pin. Recheck that snapshot before
+   rehearsal and aggregation. Stop on any drift. Keep the freeze in place through the final
+   probe. The executable is bound read-only by path after verification, so the procedure
+   relies on trusted root keeping the selected release immutable through the bind.
 
 ## The script
 
@@ -89,10 +97,50 @@ set -euo pipefail
 : "${GROK_SLOT_END_EPOCH:?export GROK_SLOT_END_EPOCH=<the slot hard end, UTC epoch seconds>}"
 # The hosted CI run of the boundary check on the installed head (BA-J1, condition 4).
 : "${GROK_HOSTED_CHECK_RUN:?export GROK_HOSTED_CHECK_RUN=<hosted run id or URL>}"
+: "${PHASE_LOOP_PYTHON:?export PHASE_LOOP_PYTHON=<Python from the installed phase-loop runtime>}"
 OUT="$HOME/.local/state/phase-loop/grok-jail-surface/$GRANT"
 MT=(timeout 600 phase-loop seat-window measure-tools --vendor grok --host-class team
     --grant "$GRANT"
     --binary "$GROK_BIN" --expect-binary-sha256 "$GROK_SHA" --output "$OUT")
+
+managed_grok_identity() {
+    timeout 30 "$PHASE_LOOP_PYTHON" -I - "$GROK_BIN" "$GROK_SHA" <<'PYTHON'
+import json
+from pathlib import Path
+import sys
+
+from phase_loop_runtime.grok_jail_surface import resolve_subject
+from phase_loop_runtime.panel_invoker import _subscription_env
+from phase_loop_runtime.seat_subject import GROK_SUBJECT_PIN, MANAGED_RELEASES_ROOT, _read_pin
+
+subject = resolve_subject(_subscription_env())
+if (subject.path, subject.sha256) != tuple(sys.argv[1:]):
+    raise SystemExit("Installed Grok subject differs from the grant inputs")
+selector = MANAGED_RELEASES_ROOT.parent / "current"
+release = selector.resolve(strict=True)
+if release.parent != MANAGED_RELEASES_ROOT or Path(subject.path) != release / "native/grok":
+    raise SystemExit("The active Dotfiles selector differs from the resolved Grok release")
+entry = _read_pin(GROK_SUBJECT_PIN, "grok_subject_pin.v1").get(release.name)
+if entry is None or entry["binary_sha256"] != subject.sha256:
+    raise SystemExit("The active Grok pin changed during the resolver check")
+info = release.stat()
+print(json.dumps({
+    "selector_target": str(release),
+    "release_device": info.st_dev,
+    "release_inode": info.st_ino,
+    "pin_entry": {release.name: entry},
+}, sort_keys=True))
+PYTHON
+}
+
+check_grok_slot_release() {
+    local observed
+    observed=$(managed_grok_identity)
+    if [[ "$observed" != "$grok_slot_release" ]]; then
+        echo "Dotfiles release or Grok pin changed during the slot" >&2
+        return 1
+    fi
+}
 
 # 0. 0 calls. The installed runtime shows the Grok row jailed, and the provider-free
 #    qualification is current for the production key.
@@ -108,10 +156,13 @@ echo "$GROK_SHA  $GROK_BIN" | sha256sum --check --strict
 #    credential metadata record and refuses, writing no grant, unless the expiry outlasts
 #    GROK_SLOT_END_EPOCH plus 5 minutes (prerequisites 6 and 7).
 export GROK_SLOT_END_EPOCH
+grok_slot_release=$(managed_grok_identity)
+printf '%s\n' "$grok_slot_release"
 "${MT[@]}" --new-grant --planned pilot,planted,confirm --retries 2 \
   --hosted-check "$GROK_HOSTED_CHECK_RUN"
 
 # 3. The rehearsal of the pilot under a budget-0 proxy. 0 calls.
+check_grok_slot_release
 "${MT[@]}" --attended --rehearse --route staged
 
 # 4. Gate on THIS grant's rehearsal record.
@@ -129,6 +180,7 @@ export GROK_SLOT_END_EPOCH
 
 # 8. Aggregate: the agreement rule and the publication gate, then the jailed host-local
 #    record. 0 calls.
+check_grok_slot_release
 "${MT[@]}" --aggregate
 
 # 9. The grant-backed check. 0 calls. Passes only if this grant owns the live jailed
