@@ -39,28 +39,28 @@ read-only config. Output that contains it can still end the leg with
 
 The amendment freezes admission, readiness and §11's credential-free bracket
 step. Use the existing IF-0-FIRSTSEAT-2 and IF-0-FIRSTSEAT-5 contracts with the
-amendment. Preserve the readiness-line and request/fence record shapes.
+amendment. Preserve readiness-line keys and values, plus request/fence record shapes.
 
 ## Lane Index & Dependencies
 
-SL-0 — Host front and private bridge
+SL-10 — Host front and private bridge
   Depends on: (none)
-  Blocks: SL-1, SL-2
+  Blocks: SL-11, SL-12
   Parallel-safe: no
 
-SL-1 — Gemini launch and output guard
-  Depends on: SL-0
-  Blocks: SL-2
+SL-11 — Gemini launch and output guard
+  Depends on: SL-10
+  Blocks: SL-12
   Parallel-safe: no
 
-SL-2 — Qualification and documentation
-  Depends on: SL-0, SL-1
+SL-12 — Qualification and documentation
+  Depends on: SL-10, SL-11
   Blocks: (none)
   Parallel-safe: no
 
 ## Lanes
 
-### SL-0 — Host front and private bridge
+### SL-10 — Host front and private bridge
 
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_egress_proxy.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_egress/proxy.mjs`, `phase-loop-runtime/src/phase_loop_runtime/sandbox_egress.py`, `phase-loop-runtime/tests/test_seat_jail_proxy_reach_1915.py`, `phase-loop-runtime/tests/test_sandbox_egress.py`
 - **Tasks**
@@ -84,9 +84,12 @@ SL-2 — Qualification and documentation
     bounded ClientHello/SNI, TLS termination, inner host/SNI and method/path
     rules, CA projection, SRT pins, observations and teardown.
 
-### SL-1 — Gemini launch and output guard
+### SL-11 — Gemini launch and output guard
 
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail.py`, `phase-loop-runtime/tests/test_gemini_seat_egress_1170.py`, `phase-loop-runtime/tests/test_seat_secret_match_1823.py`, `phase-loop-runtime/tests/test_panel_invoker.py`, `phase-loop-runtime/tests/test_seat_profiles.py`, `phase-loop-runtime/tests/test_seat_jail.py`, `phase-loop-runtime/tests/data/seat_profile_digests_jailcore.json`
+- SL-11 also owns only `_gemini_shape` in
+  `phase-loop-runtime/src/phase_loop_runtime/seat_jail_qualification.py`.
+  SL-12 owns the remaining qualification edits and starts after SL-11 verifies.
 - **Tasks**
   - test: Run a provider-free command child with a synthetic token through the
     real jail. Assert no userinfo at `/proc/1/cmdline` and `/proc/self/environ`.
@@ -96,41 +99,50 @@ SL-2 — Qualification and documentation
     `test_gemini_seat_egress_1170.py` and keep its existing §14 live 407 test
     unmodified.
   - test: Cover board, W1 control and measurement, and real and probe profiles.
-    Require typed refusal for missing parent token or a noncanonical URL.
+    Require `seat_sandbox_refused:gemini_proxy_token_missing` for missing
+    parent token and `seat_sandbox_refused:gemini_proxy_url_invalid` for a
+    noncanonical URL. Compare real/probe and standalone/dependency profile
+    digests through the qualification entry in `test_seat_jail.py` and reject
+    the old qualified Gemini digest.
     Exercise split-chunk and combined post-exit scans with synthetic proxy
     and bearer values, including existing encodings and match-position fields.
     Accept harmless mentions of the loopback URL. Compare both architectures'
     non-Gemini jail profile pins and the Claude SDK inventory against base.
-  - impl: Select the mode in board and every Gemini W1 launch, including
-    refuse-all controls. With egress present, `_gemini_env` emits the literal
-    endpoint and rejects any other non-placeholder input. Accept the existing
+  - impl: Opt in at the jailed Gemini branch of `_default_spawn` and the
+    Gemini branch of `_open_window_launch`, including refuse-all controls.
+    Enforce the launch contract in `_prepare_jailed_gemini`. With egress
+    present, `_gemini_env` emits the literal endpoint and rejects any other
+    non-placeholder input. Accept the existing
     placeholder only for canonical profile construction and emit the literal
-    there too. Remove the proxy entry from `_gemini_placeholders`. Leave
+    there too. Remove the proxy entry from `_gemini_placeholders` and update
+    `_gemini_shape` to pass the literal in the same lane. Leave
     `_owner_argv`, `actual_profile_digest` and shared `_PLACEHOLDERS` byte-identical.
     Keep redacted owner and broker evidence on `<egress-proxy>` and verify no
     validator treats that diagnostic shape as canonical argv. Correct the
     `seat_env` URL docstring.
-  - impl: Use a Gemini specialization of parent-side `_JailedSeat` to hold
-    non-repr proxy scan bytes. Reuse `_jailed_gemini_secrets` as the single
+  - impl: Use a Gemini subclass of parent-side `_JailedSeat` to hold
+    non-repr proxy scan bytes. Keep the SDK-bound `_JailedSeat`,
+    `launch_provider`, `_run_leg_with_liveness`, `_cleanup_jailed_seat`
+    and `build_seat_jail` byte-identical. Reuse `_jailed_gemini_secrets` as the single
     source for streaming, post-exit and W1 supplier `scan_secrets`. Refuse
-    with a typed code before spawn when the token is absent, including on
+    with the named typed code before spawn when the token is absent, including on
     controls. Scan token bytes and their existing encodings. Never use the URL
     as a search value. Preserve `proxy_credential`, the 0.7.43 diagnostics,
     typed output refusals and board notice.
 
-### SL-2 — Qualification and documentation
+### SL-12 — Qualification and documentation
 
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_jail_qualification.py`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md`, `phase-loop-runtime/tests/test_seat_jail_qualification_entry.py`, `phase-loop-runtime/tests/test_seat_jail_qualification_bracket_steps.py`, `phase-loop-runtime/tests/test_seat_qualification_host_context.py`, `CHANGELOG.md`
 - **Tasks**
   - test: Enter the qualification and bracket paths with the literal URL.
     Require §11's completed zero-upstream-byte result. Prove that a 407 in
     the bracket, unexpected upstream data, missing attempts or incomplete
-    observations cannot qualify. Compare real/probe and standalone/dependency
-    profile digests and reject the old qualified Gemini digest.
-  - impl: Update `_gemini_shape` and `_FAIL_CLOSED_FRONT` per the amendment.
+    observations cannot qualify. Supply a synthetic URL with userinfo
+    and assert a nonqualifying exit before the first socket dial.
+  - impl: Update `_FAIL_CLOSED_FRONT` per the amendment.
     Preserve refuse-all, fences, bracket oracles and historical P3/P4 receipts.
-    Update the credential delivery contract and add the Unreleased changelog
-    entry. Record the candidate pin comparison and reconcile release evidence
+    Document credential delivery and both typed refusals in the contract. Add
+    the Unreleased changelog entry. Record the candidate pin comparison and reconcile release evidence
     after the rollout window using the installed runtime's observed identity.
 
 ## Execution Notes
@@ -148,7 +160,7 @@ no-spawn controls. This plan adds no runtime fallback.
 | Proxy and watch | Gemini and Codex `proxy_sha256` move because both bind the Python wrapper and Node front. Gemini `watch_sha256` and `validator_sha256` move with the qualification runner. Codex `watch_sha256` moves through its mechanics dependency. Codex validator stays stable. |
 | Window runtime | `runtime_digest` and release identity move for all rows. Reissue authorized grants and qualify affected deployed contexts, including fresh Codex windows wherever its row windows are deployed. Any Grok series requiring same-runtime evidence restarts on the new runtime. |
 | Stable inputs | FIRSTSEAT `contract_sha256`, interfaces, K1, production and refuse-all rules, SRT, agy image/help, heartbeat profile, QCI, validator version, non-Gemini jail profile digests, Grok `jail_context_digest`, `falsifier_layout_identity` and catalogued context inputs. |
-| Claude SDK and agy package evidence | Keep the SDK input inventory and shared executable regions byte-identical. The SDK proof hashes of the whole `seat_profiles.py` file and the `seat_env` region (docstring-only edit) move. Check those are the only changes in the SDK proof map and run `audit-order`. Record new package source pins in agy qualification evidence while retaining the admitted image. |
+| Claude SDK and agy package evidence | Keep the SDK input inventory and shared executable regions byte-identical. The SDK proof hashes of the whole `seat_profiles.py` file and the `seat_env` region (docstring-only edit) move. The whole-file change already requires a single fresh SDK proof. The docstring correction adds no proof run. Check those are the only changes in the SDK proof map and run `audit-order`. Record new package source pins in agy qualification evidence while retaining the admitted image. |
 
 ### Rollback
 
@@ -176,7 +188,8 @@ Node tool clients may use an explicit proxy agent. The gate must show a usable
 W1 review and a real command child reporting only credential absence/presence
 flags. Preserve grant and bracket requirements. The integrated run stays
 outside CI and collaborator accounts. Then collect each host/account pair's
-own provider-free EC-EXECFIND-2 pass, including collaborators on that host.
+own provider-free EC-EXECFIND-2 pass, including collaborator accounts on every
+host that launches jailed Gemini.
 
 ## Acceptance Criteria
 

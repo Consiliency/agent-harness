@@ -16487,22 +16487,32 @@
       "updated_at": "2026-11-24T11:39:23Z"
     },
     {
-      "acceptance_criteria_count": 7,
+      "acceptance_criteria_count": null,
       "created_at": "2026-11-24T11:39:23Z",
       "file": "plans/detailed-2157-gemini-proxy-20261124.md",
       "handoff_ref": null,
       "if_gates_produced": [],
-      "lanes": [],
+      "lanes": [
+        "SL-10",
+        "SL-11",
+        "SL-12"
+      ],
       "lifecycle": [],
-      "owner_skill": "codex-plan-detailed",
-      "phase_alias": null,
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "FIRSTSEAT",
       "reflection_ref": null,
-      "roadmap_ref": null,
+      "roadmap_ref": {
+        "file": "specs/phase-plans-seats-v1.md",
+        "slug": "phase-plans-seats-v1",
+        "status": "committed",
+        "type": "phase"
+      },
       "slug": "2157-gemini-proxy",
       "status": "committed",
-      "task_summary": "Implement the owner-approved jailed Gemini proxy mode (agent-harness#2157).",
-      "type": "detailed",
-      "updated_at": "2026-11-24T11:39:23Z"
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-11-24T11:49:09Z",
+      "amends": "plans/phase-plan-v1-seats-FIRSTSEAT.md"
     }
   ],
   "schema_version": 1
