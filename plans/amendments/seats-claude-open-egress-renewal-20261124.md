@@ -12,9 +12,12 @@ Claude date of 2026-12-04T00:00Z cited in the roadmap and the
 
 The exclusive expiry is **2027-01-03T00:00Z**. Registration of the Claude
 allowlist removes the exception sooner. The renewal covers the same jailed
-Claude route under the existing admission rules and destination scope. Remote
-Claude and the networkless SDK worker remain outside the exception. The
-separate Gemini W1 owner-grant cutoff remains 2026-12-04T00:00Z. CLAUDENET
+Claude route under the existing admission rules and destination scope. The
+matrix rows `president:fable:native_fill_deferred`,
+`president:fable:_launch_claude:print` and `president:fable:_launch_claude:tui`
+continue to inherit the Claude row's exception. Remote Claude and the
+networkless SDK worker remain outside the exception. The Gemini W1 owner-grant
+and conservative evidence cutoffs both remain 2026-12-04T00:00Z. CLAUDENET
 continues under EC-CLAUDENET-1 through EC-CLAUDENET-4
 (agent-harness#1820 and agent-harness#1804).
 

@@ -49,7 +49,7 @@ designated seat host; source-checkout tests do not establish host readiness.
 The Claude row's `renewal_record` names the
 [2026-11-24 owner approval](../plans/amendments/seats-claude-open-egress-renewal-20261124.md).
 Registering the Claude allowlist removes the exception from the matrix. The separate W1
-grant cutoff above still applies.
+grant and conservative evidence cutoffs both remain 2026-12-04T00:00Z.
 
 Grok's tool probe (`phase-loop seat-window probe-tools --vendor grok`) has two bases,
 and each row reports its `basis`. A build whose `--help` advertises `--list-tools` is

@@ -47,12 +47,15 @@ WINDOW_LAUNCH_TIMEOUT_S = 600.0
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
 _LABEL = re.compile(r"[ac][0-9a-f]{31}\Z")
 _ATTEMPT = re.compile(r"[0-9a-f]{32}\Z")
+#: The live W1 and conservative W1 evidence cutoff is independent of route renewals.
+OWNER_W1_APPROVED_UNTIL = "2026-12-04T00:00:00+00:00"
+_EXPIRES = OWNER_W1_APPROVED_UNTIL
 # The shipped matrix is the source of truth for named exceptions and their renewals.
 _NAMED_EXCEPTIONS = {
     "claude": ("open egress", "2027-01-03T00:00:00+00:00",
                "plans/amendments/seats-claude-open-egress-renewal-20261124.md"),
-    "codex": ("unconfined", "2026-12-04T00:00:00+00:00", None),
-    "grok": ("unconfined", "2026-12-04T00:00:00+00:00", None),
+    "codex": ("unconfined", _EXPIRES, None),
+    "grok": ("unconfined", _EXPIRES, None),
 }
 _COMMON_RECORD_FIELDS = {
     "schema", "window", "context_id", "account_label", "host_class", "host_digest",
@@ -216,10 +219,6 @@ def preflight(*, is_available=None, auth_ok=None, composed_out=None):
 #: context, exactly one attempt, the packet digest and a nonce. ``None`` keeps live W1 closed.
 OWNER_W1_GRANT_SHA256: str | None = None
 OWNER_W1_PACKET_SHA256: str | None = None
-#: No live W1 starts at or after this instant (UTC), whatever the grant says. It is its own
-#: literal, never derived from a named exception's expiry, so renewing an exception never
-#: reopens W1.
-OWNER_W1_APPROVED_UNTIL = "2026-12-04T00:00:00+00:00"
 #: The window vendor a grant can admit, and the only context `done-local` reads.
 OWNER_W1_VENDOR = "gemini"
 OWNER_W1_HOST_CLASS = "standard"
@@ -2012,6 +2011,8 @@ def _w1_expired(record, data, now, source_root) -> bool:
     rows = readiness_rows()
     if _w1_legacy_relaxed(record, source_root):
         rows = [row for row in rows if row["id"] == f"vendor:{data.vendor}"]
+    elif now >= dt.datetime.fromisoformat(_EXPIRES):
+        return True
     return any(row["expiry"] and now >= dt.datetime.fromisoformat(row["expiry"])
                for row in rows)
 
