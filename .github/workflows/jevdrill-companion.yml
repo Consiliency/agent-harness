@@ -119,6 +119,22 @@ jobs:
           uv run --no-sync python -m pytest -q -rA -p no:cacheprovider --junitxml="$junit" tests/test_jevdrill_windows_review_refusal.py
           uv run --no-sync python -c "import sys, xml.etree.ElementTree as E; s = E.parse(sys.argv[1]).getroot(); s = s if s.tag == 'testsuite' else s[0]; c = {k: int(s.get(k, 0)) for k in ('tests', 'failures', 'errors', 'skipped')}; print(c); sys.exit(0 if c == {'tests': 1, 'failures': 0, 'errors': 0, 'skipped': 0} else 1)" "$junit"
 
+      - name: "Evidence only: host-gaps file on this platform (not R3/R6 receipt)"
+        continue-on-error: true
+        timeout-minutes: 15
+        working-directory: phase-loop-runtime
+        run: |
+          junit="$RUNNER_TEMP/jevdrill-host-gaps.xml"
+          uv run --no-sync python -m pytest -q -rA -p no:cacheprovider -m "not dotfiles_integration" --junitxml="$junit" tests/test_jevdrill_host_gaps.py
+
+      - name: Upload the host-gaps junit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jevdrill-host-gaps-${{ matrix.os_label }}-py${{ matrix.harness_python }}
+          path: ${{ runner.temp }}/jevdrill-host-gaps.xml
+          if-no-files-found: warn
+
       - name: Run the twelve files and classify the receipt
         # Step-level bound on a hung pytest. The step timeout leaves time for the always()
         # upload if pytest has already written the junit and the job still has time remaining.
