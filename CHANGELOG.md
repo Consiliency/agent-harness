@@ -14,6 +14,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Changed
 
+- Jailed repository-review seats read the scope and index first, then retrieve evidence in
+  bounded reads. Staged bundles over 64 KiB warn before launch. Advisor boards can enforce a
+  limit with `--max-staged-bundle-bytes`. Jailed Claude TUI silence timing includes the mounted
+  bundle size and stays within the review deadline.
 - LANEEXEC erratum 7 binds the plan to the landed SL-8 renewal, activation,
   scratch, cancellation and lane admission rulings (agent-harness#2160).
 
