@@ -27,7 +27,6 @@ from phase_loop_runtime.jevdrill_adapter import JevDrillTransport, JevDrillUnava
 from phase_loop_runtime.launcher import LaunchResult
 from jevdrill_fixture_values import load_rows
 from test_jevdrill_adapter import FIXTURES, adapter_fixture, fixture
-from test_jevdrill_queue import model_windows_queue_storage
 
 
 def seam(*names):
@@ -1305,6 +1304,125 @@ def test_windows_run_bound_report_at_launch_stage(tmp_path, monkeypatch, storage
     drain(adapter)
     assert [(event["source_sequence"], report_type(event)) for event in delivered(calls, run_id)] == list(enumerate(kinds))
     assert adapter.queue.status() == {"records": 0, "dispositions": {}}
+
+
+def model_windows_queue_storage(monkeypatch):
+    """Exercise the Windows queue path with POSIX files and exclusive directory bindings."""
+    opened = {}
+
+    class BoundDirectory:
+        _check_deadline = windows_storage.BoundDirectory._check_deadline
+
+        def __init__(self, path, *, create_private, deadline=None):
+            assert create_private
+            if path in opened:
+                raise PermissionError("Modeled Windows directory sharing violation")
+            self.path, self.deadline = path, deadline
+            path.mkdir(parents=True, exist_ok=True)
+            opened[path] = self
+            self.flush()
+
+        def open_record(self, name, *, create):
+            assert opened[self.path] is self
+            flags = os.O_RDWR | os.O_CREAT if create else os.O_RDONLY
+            return os.open(self.path / name, flags, 0o600)
+
+        def flush(self):
+            assert opened[self.path] is self
+            self._check_deadline()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            assert opened.pop(self.path) is self
+
+    monkeypatch.setattr(jevdrill_queue, "os", SimpleNamespace(name="nt", close=os.close, fsync=os.fsync))
+    monkeypatch.setattr(windows_storage, "BoundDirectory", BoundDirectory)
+    return opened
+
+
+def test_windows_objective_binding_outlives_borrowed_transaction(tmp_path, monkeypatch):
+    opened = model_windows_queue_storage(monkeypatch)
+    q = jevdrill_queue.ReportQueue(tmp_path / "private" / "queue.sqlite", sanitize=deepcopy)
+    published, exit_guard, teardown, borrowing, finish = (threading.Event() for _ in range(5))
+    storage_lock = q._storage_lock
+    guard_thread = None
+
+    class ObserveTeardown:
+        acquire = storage_lock.acquire
+        release = storage_lock.release
+
+        def __enter__(self):
+            if threading.get_ident() == guard_thread:
+                if storage_lock.acquire(blocking=False):
+                    storage_lock.release()
+                    pytest.fail("The borrower did not hold the storage lock until transaction exit")
+                teardown.set()
+            return storage_lock.__enter__()
+
+        def __exit__(self, *exc):
+            return storage_lock.__exit__(*exc)
+
+    monkeypatch.setattr(q, "_storage_lock", ObserveTeardown())
+
+    def guard():
+        nonlocal guard_thread
+        guard_thread = threading.get_ident()
+        with q.objective_guard():
+            published.set()
+            assert exit_guard.wait(10)
+
+    def borrow():
+        with q._transaction():
+            borrowing.set()
+            assert finish.wait(10)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        holder = pool.submit(guard)
+        assert published.wait(5)
+        binding = opened[q.path.parent]
+        borrower = pool.submit(borrow)
+        try:
+            assert borrowing.wait(5)
+            exit_guard.set()
+            assert teardown.wait(5)
+            assert opened[q.path.parent] is binding
+        finally:
+            finish.set()
+            exit_guard.set()
+            borrower.result(timeout=5)
+            holder.result(timeout=5)
+        assert opened == {}
+        assert pool.submit(q.status).result(timeout=5)["records"] == 0
+    assert opened == {}
+
+
+def test_nested_windows_objective_guard_preserves_outer_binding(tmp_path, monkeypatch):
+    opened = model_windows_queue_storage(monkeypatch)
+    q = jevdrill_queue.ReportQueue(tmp_path / "private" / "queue.sqlite", sanitize=deepcopy)
+    with q.objective_guard():
+        binding = opened[q.path.parent]
+        with pytest.raises(RuntimeError, match="Nested Windows objective guard"):
+            with q.objective_guard():
+                pytest.fail("Nested guard admitted work")
+        assert q._objective_directory is binding
+        assert q.status()["records"] == 0
+    assert opened == {}
+
+
+def test_windows_queue_transaction_bounds_storage_lock_wait(tmp_path, monkeypatch):
+    opened = model_windows_queue_storage(monkeypatch)
+    q = jevdrill_queue.ReportQueue(tmp_path / "private" / "queue.sqlite", sanitize=deepcopy)
+
+    def busy(*, timeout):
+        assert timeout == 30
+        return False
+
+    monkeypatch.setattr(q, "_storage_lock", SimpleNamespace(acquire=busy))
+    with pytest.raises(TimeoutError, match="Report queue storage lock deadline expired"):
+        q.status()
+    assert opened == {}
 
 
 def test_run_reports_outlive_storage_admission_deadline(tmp_path, monkeypatch):

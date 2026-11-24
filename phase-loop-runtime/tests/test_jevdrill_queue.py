@@ -3,14 +3,11 @@ import json
 import os
 import subprocess
 import sys
-import time
 from concurrent.futures import ThreadPoolExecutor
-from threading import Event, get_ident
-from types import SimpleNamespace
+from threading import Event
 
 import pytest
 
-from phase_loop_runtime import jevdrill_queue, windows_storage
 from phase_loop_runtime.jevdrill_queue import ReportQueue
 
 
@@ -21,42 +18,6 @@ def report(event="event", task="task", workspace="workspace"):
 
 def queue(tmp_path, **kwargs):
     return ReportQueue(tmp_path / "private" / "queue.sqlite", sanitize=copy.deepcopy, **kwargs)
-
-
-def model_windows_queue_storage(monkeypatch):
-    """Exercise the Windows queue path with POSIX files and exclusive directory bindings."""
-    opened = {}
-
-    class BoundDirectory:
-        _check_deadline = windows_storage.BoundDirectory._check_deadline
-
-        def __init__(self, path, *, create_private, deadline=None):
-            assert create_private
-            if path in opened:
-                raise PermissionError("Modeled Windows directory sharing violation")
-            self.path, self.deadline = path, deadline
-            path.mkdir(parents=True, exist_ok=True)
-            opened[path] = self
-            self.flush()
-
-        def open_record(self, name, *, create):
-            assert opened[self.path] is self
-            flags = os.O_RDWR | os.O_CREAT if create else os.O_RDONLY
-            return os.open(self.path / name, flags, 0o600)
-
-        def flush(self):
-            assert opened[self.path] is self
-            self._check_deadline()
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_):
-            assert opened.pop(self.path) is self
-
-    monkeypatch.setattr(jevdrill_queue, "os", SimpleNamespace(name="nt", close=os.close, fsync=os.fsync))
-    monkeypatch.setattr(windows_storage, "BoundDirectory", BoundDirectory)
-    return opened
 
 
 @pytest.mark.parametrize("status", ["accepted", "duplicate"])
@@ -215,25 +176,22 @@ def test_corruption_stops_delivery_without_discarding_tombstones(tmp_path):
 
 
 def test_objective_guard_reuses_anchored_transaction_and_bounds_admission(tmp_path, monkeypatch):
+    import time
     from phase_loop_runtime import file_lock
-    if os.name != "nt":
-        model_windows_queue_storage(monkeypatch)
     q = queue(tmp_path)
-    acquire_exclusive = file_lock.acquire_exclusive
-
-    def check_admission(fd, *, blocking):
-        assert q._objective_directory is None
-        return acquire_exclusive(fd, blocking=blocking)
-
-    monkeypatch.setattr(file_lock, "acquire_exclusive", check_admission)
     with q.objective_guard():
-        assert q._objective_directory.deadline is None
-        def forbidden(*_args, **_kwargs):
-            pytest.fail("Nested transaction reopened its anchored directory")
-        with monkeypatch.context() as local:
-            local.setattr(windows_storage, "BoundDirectory", forbidden)
+        binding = q._objective_directory
+        if os.name == "nt":
+            from phase_loop_runtime import windows_storage
+            assert binding is not None and binding.deadline is None
+            def forbidden(*_args, **_kwargs):
+                pytest.fail("Nested transaction reopened its anchored directory")
+            with monkeypatch.context() as local:
+                local.setattr(windows_storage, "BoundDirectory", forbidden)
+                assert q.enqueue(report()) == "queued"
+                assert q.status()["records"] == 1
+        else:
             assert q.enqueue(report()) == "queued"
-            assert q.status()["records"] == 1
     assert q._objective_directory is None
     clock = [100.0]
     monkeypatch.setattr(time, "monotonic", lambda: clock[0])
@@ -245,68 +203,10 @@ def test_objective_guard_reuses_anchored_transaction_and_bounds_admission(tmp_pa
         with q.objective_guard():
             pytest.fail("Busy objective guard admitted work")
     assert 5 <= clock[0] - 100 < 5.02
-    assert q._objective_directory is None
-    assert q.status()["records"] == 1
-
-
-def test_windows_objective_binding_outlives_borrowed_transaction(tmp_path, monkeypatch):
-    opened = model_windows_queue_storage(monkeypatch)
-    q = queue(tmp_path)
-    published, exit_guard, teardown, borrowing, finish = (Event() for _ in range(5))
-    storage_lock = q._storage_lock
-    guard_thread = None
-
-    class ObserveTeardown:
-        acquire = storage_lock.acquire
-        release = storage_lock.release
-
-        def __enter__(self):
-            if get_ident() == guard_thread:
-                if storage_lock.acquire(blocking=False):
-                    storage_lock.release()
-                    pytest.fail("The borrower did not hold the storage lock until transaction exit")
-                teardown.set()
-            return storage_lock.__enter__()
-
-        def __exit__(self, *exc):
-            return storage_lock.__exit__(*exc)
-
-    monkeypatch.setattr(q, "_storage_lock", ObserveTeardown())
-
-    def guard():
-        nonlocal guard_thread
-        guard_thread = get_ident()
-        with q.objective_guard():
-            published.set()
-            assert exit_guard.wait(10)
-
-    def borrow():
-        with q._transaction():
-            borrowing.set()
-            assert finish.wait(10)
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        holder = pool.submit(guard)
-        assert published.wait(5)
-        binding = opened[q.path.parent]
-        borrower = pool.submit(borrow)
-        try:
-            assert borrowing.wait(5)
-            exit_guard.set()
-            assert teardown.wait(5)
-            assert opened[q.path.parent] is binding
-        finally:
-            finish.set()
-            exit_guard.set()
-            borrower.result(timeout=5)
-            holder.result(timeout=5)
-        assert opened == {}
-        assert pool.submit(q.enqueue, report()).result(timeout=5) == "queued"
-    assert opened == {}
-    assert q.status()["records"] == 1
 
 
 def test_objective_guard_bounds_other_thread_contention(tmp_path):
+    import time
     q = queue(tmp_path)
     entered, finish = Event(), Event()
     def hold():

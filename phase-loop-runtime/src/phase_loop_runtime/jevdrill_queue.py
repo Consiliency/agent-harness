@@ -18,6 +18,8 @@ class QueueCorruption(RuntimeError):
 
 
 class ReportQueue:
+    """Store durable reports. The Windows binding is shared within one instance and process."""
+
     MAX_BYTES = 16 * 1024 * 1024
     MAX_RECORDS = 10_000
     MAX_RECORD_BYTES = 1024 * 1024
@@ -113,28 +115,34 @@ class ReportQueue:
         storage = ExitStack()
         if not self._storage_lock.acquire(timeout=max(0, until - time.monotonic())):
             raise TimeoutError("Objective lifecycle lock deadline expired")
+        admitted = False
         try:
-            directory = storage.enter_context(BoundDirectory(self.path.parent, create_private=True, deadline=until))
-            fd = directory.open_record(lock_path.name, create=True)
-            storage.callback(os.close, fd)
-            self._acquire_objective_file_lock(fd, until)
-            storage.callback(release_exclusive, fd)
-            if time.monotonic() >= until:
-                raise TimeoutError("Objective lifecycle lock deadline expired")
-            directory.deadline = None
-            self._objective_directory = directory
-        except BaseException:
-            storage.close()
-            raise
-        finally:
-            self._storage_lock.release()
-        # Transactions borrow the binding under the storage lock. Leave the
-        # lock free during the guard body so the executor can wait for a hook.
-        try:
+            try:
+                if self._objective_directory is not None:
+                    raise RuntimeError("Nested Windows objective guard is unsupported")
+                directory = storage.enter_context(BoundDirectory(self.path.parent, create_private=True, deadline=until))
+                fd = directory.open_record(lock_path.name, create=True)
+                storage.callback(os.close, fd)
+                self._acquire_objective_file_lock(fd, until)
+                storage.callback(release_exclusive, fd)
+                if time.monotonic() >= until:
+                    raise TimeoutError("Objective lifecycle lock deadline expired")
+                directory.deadline = None
+                admitted = True
+                self._objective_directory = directory
+            except BaseException:
+                if not admitted:
+                    storage.close()
+                raise
+            finally:
+                self._storage_lock.release()
+            # The executor can wait for hooks because the guard body leaves
+            # the storage lock free for queue transactions.
             yield
         finally:
-            with self._storage_lock, storage:
-                self._objective_directory = None
+            if admitted:
+                with self._storage_lock, storage:
+                    self._objective_directory = None
 
     def bind_objective(self, envelope, ref):
         key = (envelope["project_id"], envelope["workspace_id"], envelope["harness_id"])
@@ -199,7 +207,9 @@ class ReportQueue:
         with ExitStack() as storage:
             bound = None
             if os.name == "nt":
-                storage.enter_context(self._storage_lock)
+                if not self._storage_lock.acquire(timeout=30):
+                    raise TimeoutError("Report queue storage lock deadline expired")
+                storage.callback(self._storage_lock.release)
             if self.corruption_marker.exists():
                 raise QueueCorruption("Report queue is blocked by recorded corruption")
             if os.name == "nt":
