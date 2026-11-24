@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
+import json
 import os
 from pathlib import Path
 import subprocess
 import tempfile
+from types import SimpleNamespace
 
 import pytest
 import rfc8785
@@ -69,15 +72,17 @@ def _release(releases: Path, release_id: str = "2026.11.06-teamhost.1") -> tuple
     return release, native
 
 
-def _frontdoor(bin_dir: Path, release: Path, native: Path, *, extra: str = "") -> Path:
+def _frontdoor(
+    bin_dir: Path, release: Path, native: Path, *, extra: str = "", leg: str = "claude",
+) -> Path:
     return _exe(
-        bin_dir / "claude",
+        bin_dir / leg,
         (
             "#!/bin/sh\n"
             f'export PATH={release}/node/bin:"$PATH"\n'
             "export DISABLE_AUTOUPDATER=1\n"
             f"exec /usr/bin/python3 -I {release}/source/lib/user_agent_tools.py launch"
-            f" --provider claude --shared {native}{extra}"
+            f" --provider {leg} --shared {native}{extra}"
             f' --node-bin {release}/node/bin -- "$@"\n'
         ).encode(),
     )
@@ -462,3 +467,239 @@ def test_search_only_ancestor_reaches_the_real_auth_probe(tmp_path, monkeypatch)
     finally:
         gate.chmod(0o755)
         executor_availability.clear_auth_cache()
+
+
+@pytest.fixture(name="managed_grok", params=["image-pin-only", "also-v2-authority"])
+def _managed_grok(request, managed_fs, monkeypatch):
+    from executable_dependency_test_support import build_fixture
+    from phase_loop_runtime import seat_profile_grok
+
+    root, releases, authority_pin = managed_fs
+    dependency = build_fixture(
+        releases, provider="grok", subject_relative="native/grok",
+        subject_bytes=b"\x7fELFmanaged-grok",
+    )
+    dependency.close()
+    release, native = dependency.release, dependency.subject
+    _exe(release / "source/lib/user_agent_tools.py", b"# launcher\n", 0o644)
+    (release / "node/bin").mkdir(parents=True)
+    door = _frontdoor(release / "bin", release, native, leg="grok")
+    (root / "current").symlink_to(release, target_is_directory=True)
+    assert (root / "current/bin/grok").resolve(strict=True) == door
+    env = {"PATH": str(root / "current/bin")}
+    digest = hashlib.sha256(native.read_bytes()).hexdigest()
+    monkeypatch.setattr(seat_subject, "platform", SimpleNamespace(machine=lambda: "x86_64"))
+    monkeypatch.setattr(seat_profile_grok, "JAIL_PROTECTION", {
+        **seat_profile_grok.JAIL_PROTECTION,
+        digest: seat_profile_grok.JAIL_PROTECTION[seat_profile_grok.GROK_1_0_92_SHA256],
+    })
+    pin = authority_pin.with_name("grok-subject-pin.json")
+    monkeypatch.setattr(seat_subject, "GROK_SUBJECT_PIN", pin)
+    entry = {"binary_sha256": digest, "platform": "linux-x64", "version": "1.0.92"}
+    pin.write_bytes(rfc8785.dumps({
+        "schema": "grok_subject_pin.v1", "releases": {release.name: entry},
+    }))
+    legs = {"claude": {
+        "authority_sha256": AUTHORITY_SHA256,
+        "authority_id": AUTHORITY_ID,
+        "base_profile_sha256": BASE_PROFILE,
+    }}
+    if request.param == "also-v2-authority":
+        requirement = dependency.requirement
+        legs["grok"] = {
+            "authority_sha256": requirement.expected_authority_sha256,
+            "authority_id": requirement.authority_id,
+            "base_profile_sha256": requirement.base_profile_sha256,
+        }
+        _exe(release / "share/phase-loop/seat-dependencies/grok/authority.json",
+             dependency.authority_path.read_bytes(), 0o644)
+    authority_pin.write_bytes(rfc8785.dumps({
+        "schema": "seat_authority_pin.v2", "releases": {release.name: legs},
+    }))
+    return env, native, digest, pin
+
+
+def test_managed_grok_subject_uses_exact_release_pin(managed_grok):
+    env, native, digest, _pin_path = managed_grok
+    try:
+        subject = seat_subject.resolve_seat_subject("grok", env)
+    except ExecutableDependencyError as exc:
+        pytest.fail(f"managed Grok lookup refused: {exc.code}")
+    assert (subject.source, subject.subject_path, subject.release_id, subject.requirement) == (
+        "managed_image", native, native.parents[1].name, None,
+    )
+    assert subject.binary_sha256 == digest
+
+
+def test_resolved_jail_subject_admits_managed_grok_without_projection(managed_grok, monkeypatch):
+    monkeypatch.setattr(seat_subject, "open_managed_authority",
+                        lambda *_: pytest.fail("opened a dependency authority"))
+    env, native, digest, _pin_path = managed_grok
+    try:
+        subject, dependency = panel_invoker._resolved_jail_subject("grok", env)
+    except ExecutableDependencyError as exc:
+        pytest.fail(f"jailed subject refused: {exc.code}")
+    assert dependency is None
+    assert (subject.source, subject.subject_path, subject.binary_sha256) == (
+        "managed_image", native, digest,
+    )
+
+
+def test_wrapped_grok_subject_admits_managed_image(managed_grok):
+    from phase_loop_runtime import grok_jail_surface, seat_jail
+
+    env, native, digest, _pin_path = managed_grok
+    try:
+        subject = grok_jail_surface.resolve_subject(env)
+    except seat_jail.SeatSandboxRefused as exc:
+        pytest.fail(f"wrapped Grok subject refused: {exc.code}")
+    assert (subject.path, subject.sha256) == (str(native), digest)
+
+
+def test_managed_grok_fingerprints_are_exactly_the_ts_erratum_8_pin():
+    from phase_loop_runtime.seat_profile_grok import JAIL_PROTECTION
+
+    assert set(JAIL_PROTECTION) == {
+        "add4d201dbf2c0bd6077a36feb55a76939de30bae48dbb06f16b2307d38ceacb",
+    }
+
+
+@pytest.mark.parametrize("managed_grok", ["also-v2-authority"], indirect=True)
+@pytest.mark.parametrize(("change", "code"), [
+    ("missing", "authority_missing"),
+    ("other-release", "authority_missing"),
+    ("noncanonical", "authority_invalid"),
+    ("duplicate", "authority_invalid"),
+    ("extra-field", "authority_invalid"),
+    ("unsafe-release", "authority_invalid"),
+    ("wrong-version", "authority_invalid"),
+    ("wrong-platform", "authority_invalid"),
+    ("wrong-host", "authority_invalid"),
+    ("unprotected", "authority_invalid"),
+    ("symlink-pin", "authority_invalid"),
+    ("writable-pin", "authority_invalid"),
+    ("different-bytes", "subject_mismatch"),
+    ("non-executable", "subject_mismatch"),
+    ("unsafe-ancestor", "subject_mismatch"),
+    ("symlink-image", "subject_mismatch"),
+    ("symlink-release", "subject_mismatch"),
+    ("wrong-image-path", "subject_mismatch"),
+    ("direct-image", "subject_mismatch"),
+    ("direct-managed-link", "subject_mismatch"),
+])
+def test_managed_grok_requires_pin_and_exact_trusted_native_path(
+    managed_grok, monkeypatch, tmp_path, change, code,
+):
+    from phase_loop_runtime import seat_profile_grok
+
+    env, native, digest, pin = managed_grok
+    release = native.parents[1]
+    original = pin.read_bytes()
+    doc = json.loads(original)
+    entry = doc["releases"][release.name]
+    if change == "missing":
+        pin.unlink()
+    elif change == "other-release":
+        doc["releases"] = {"other-release": entry}
+    elif change == "noncanonical":
+        pin.write_bytes(original + b"\n")
+    elif change == "duplicate":
+        pin.write_bytes(original.replace(b'"version":', b'"version":"1.0.92","version":'))
+    elif change == "extra-field":
+        entry["extra"] = True
+    elif change == "unsafe-release":
+        doc["releases"]["../other"] = entry
+    elif change == "wrong-version":
+        entry["version"] = "1.0.93"
+    elif change == "wrong-platform":
+        entry["platform"] = "linux-arm64"
+    elif change == "wrong-host":
+        monkeypatch.setattr(seat_subject, "platform", SimpleNamespace(machine=lambda: "aarch64"))
+    elif change == "unprotected":
+        monkeypatch.delitem(seat_profile_grok.JAIL_PROTECTION, digest)
+    elif change == "symlink-pin":
+        real = pin.rename(pin.with_suffix(".real"))
+        pin.symlink_to(real)
+    elif change == "writable-pin":
+        pin.chmod(0o666)
+    elif change == "different-bytes":
+        native.write_bytes(b"\x7fELFchanged")
+    elif change == "non-executable":
+        native.chmod(0o644)
+    elif change == "unsafe-ancestor":
+        release.parent.parent.chmod(0o777)
+    elif change == "symlink-image":
+        archive = native.rename(release / "bin/grok-native")
+        native.symlink_to(archive)
+    elif change == "symlink-release":
+        archive = tmp_path / "archive"
+        release.rename(archive)
+        release.symlink_to(archive, target_is_directory=True)
+    elif change == "wrong-image-path":
+        wrong = _exe(release / "other/grok", native.read_bytes())
+        _frontdoor(release / "bin", release, wrong, leg="grok")
+    elif change == "direct-image":
+        env = {"PATH": str(native.parent)}
+    elif change == "direct-managed-link":
+        door = release / "bin/grok"
+        door.unlink()
+        door.symlink_to(_exe(tmp_path / "standalone/grok", native.read_bytes()))
+    canonical = rfc8785.dumps(doc)
+    if canonical != original:
+        pin.write_bytes(canonical)
+
+    with pytest.raises(ExecutableDependencyError) as refused:
+        seat_subject.resolve_seat_subject("grok", env)
+    assert refused.value.code == code
+
+
+def test_grok_dependency_lease_refuses_before_path_lookup(monkeypatch):
+    monkeypatch.setattr(seat_subject, "_current_dependency", lambda _leg: object())
+    monkeypatch.setattr(seat_subject.shutil, "which", lambda *_a, **_k: pytest.fail("PATH lookup"))
+
+    with pytest.raises(ExecutableDependencyError) as refused:
+        seat_subject.resolve_seat_subject("grok", {"PATH": ""})
+    assert refused.value.code == "authority_invalid"
+
+
+@pytest.mark.parametrize("managed_grok", ["image-pin-only"], indirect=True)
+@pytest.mark.parametrize("source", ["managed_image", "unexpected"])
+def test_jailed_subject_refuses_unadmitted_source(managed_grok, monkeypatch, source):
+    from phase_loop_runtime import seat_qualification_key
+
+    env, _native, _sha256, pin = managed_grok
+    resolved = seat_subject.resolve_seat_subject("grok", env)
+    pin.unlink()
+    stale = replace(resolved, source=source)
+    monkeypatch.setattr(seat_subject, "resolve_seat_subject", lambda *_: stale)
+    monkeypatch.setattr(seat_subject, "open_managed_authority",
+                        lambda *_: pytest.fail("opened a dependency authority"))
+    calls = []
+    monkeypatch.setattr(seat_qualification_key, "admit_profile_projection",
+                        lambda *args: calls.append(args))
+    with pytest.raises(ExecutableDependencyError) as refused:
+        panel_invoker._resolved_jail_subject("grok", env)
+    assert refused.value.code == ("authority_missing" if source == "managed_image"
+                                  else "subject_mismatch")
+    assert calls == []
+
+
+def test_managed_image_requires_grok_no_projection_profile(managed_grok):
+    from phase_loop_runtime import seat_profiles
+
+    env, _native, _sha256, _pin = managed_grok
+    subject = seat_subject.resolve_seat_subject("grok", env)
+    profile = seat_profiles.profile_for("grok")
+    for invalid_subject, invalid_profile in (
+        (subject, None),
+        (subject, seat_profiles.profile_for("claude")),
+        (subject, replace(profile, projection="optional")),
+        (replace(subject, requirement=object()), profile),
+        (replace(subject, leg="claude"), profile),
+    ):
+        with pytest.raises(ExecutableDependencyError) as refused:
+            seat_subject.verify_managed_image(invalid_subject, invalid_profile)
+        assert refused.value.code == "authority_invalid"
+    with pytest.raises(ExecutableDependencyError) as refused:
+        seat_subject.open_managed_authority(subject)
+    assert refused.value.code == "authority_missing"

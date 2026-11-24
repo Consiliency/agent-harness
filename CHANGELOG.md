@@ -8,6 +8,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
+- Jailed Grok accepts the approved 1.0.92 image from a Dotfiles release when the
+  guarded launcher, root-owned release pin and executable fingerprint agree.
+  The image uses the existing read-only bind with no dependency projection.
+
 - Jailed Claude TUI stall details and private leg logs now record whether the submit
   key was written, whether the exact session recorded the request, and whether an
   assistant event or typed API error followed. The diagnostics include timing and

@@ -257,15 +257,23 @@ def _base_verdict(leg: str, env: Mapping[str, str], execute: bool) -> Verdict | 
             return _refuses(leg, exc.code)
         except Exception:  # noqa: BLE001 - doctor inventory degrades rather than raising
             return Verdict(leg, "unknown", reason="inventory_failed")
-        if subject.source == "managed_release" and profile is None:
-            return Verdict(leg, "unknown", reason="inventory_failed")
-
         projection = None
-        if profile is not None and subject.source == "managed_release":
+        if subject.source == "managed_release":
+            if profile is None:
+                return Verdict(leg, "unknown", reason="inventory_failed")
             managed = _managed_authority(leg, subject, profile)
             if isinstance(managed, Verdict):
                 return managed
             projection = managed
+        elif subject.source == "managed_image":
+            try:
+                seat_subject.verify_managed_image(subject, profile)
+            except ExecutableDependencyError as exc:
+                return _refuses(leg, exc.code)
+        elif subject.source not in {"standalone", "session_lease"}:
+            return _refuses(leg, "subject_mismatch")
+        elif subject.source == "session_lease" and leg == "grok":
+            return _refuses(leg, "authority_invalid")
 
         qualification_key = None
         if profile is not None:
@@ -297,6 +305,8 @@ def _base_verdict(leg: str, env: Mapping[str, str], execute: bool) -> Verdict | 
             return _refuses(leg, exc.code)
         except Exception:  # noqa: BLE001 - doctor inventory degrades rather than raising
             return Verdict(leg, "unknown", reason="inventory_failed")
+        if subject.source not in {"standalone", "session_lease"}:
+            return _refuses(leg, "subject_mismatch")
 
     if leg == "claude":
         from . import claude_seat_transport

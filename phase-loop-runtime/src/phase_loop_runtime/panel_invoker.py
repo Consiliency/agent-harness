@@ -5210,7 +5210,9 @@ def _frontdoor_trusted(path: Path) -> bool:
             and (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)))
 
 
-def _frontdoor_target(line: str, provider: str | None) -> Path | None:
+def _frontdoor_target(
+    line: str, provider: str | None, *, exact_shared: bool = False,
+) -> Path | None:
     """The final native image a Consiliency guarded frontdoor's ``exec`` line selects, else
     ``None`` (agent-harness#1798).
 
@@ -5248,7 +5250,7 @@ def _frontdoor_target(line: str, provider: str | None) -> Path | None:
         image = image.resolve(strict=True)
     except OSError:
         return None
-    if not image.is_relative_to(root):
+    if not image.is_relative_to(root) or (exact_shared and image != shared):
         return None
     chain = [image, *image.parents[:len(image.parts) - len(root.parts)]]
     if not all(_frontdoor_trusted(part) for part in chain):
@@ -13496,17 +13498,24 @@ def _resolved_jail_subject(leg: str, env: Mapping[str, str]):
     """Resolve TEAMHOST's subject and admit its declared profile projection."""
     from .executable_dependency_startup import current_dependency_for_provider
     from .seat_qualification_key import admit_profile_projection
-    from .seat_subject import open_managed_authority, resolve_seat_subject
+    from .seat_subject import open_managed_authority, resolve_seat_subject, verify_managed_image
 
     profile = _seat_profiles.profile_for(leg)
     if profile is None:
         raise FileNotFoundError("seat_profile_unregistered")
     subject = resolve_seat_subject(leg, env)
-    dependency = current_dependency_for_provider(leg)
-    if dependency is not None:
+    if subject.source == "session_lease":
+        dependency = current_dependency_for_provider(leg)
+        if dependency is None:
+            raise ExecutableDependencyError("authority_invalid", "dependency lease")
         return subject, admit_profile_projection(profile, dependency)
-    if subject.source != "managed_release":
+    if subject.source == "standalone":
         return subject, admit_profile_projection(profile, None)
+    if subject.source == "managed_image":
+        verify_managed_image(subject, profile)
+        return subject, None
+    if subject.source != "managed_release":
+        raise ExecutableDependencyError("subject_mismatch", "seat subject source")
     descriptor, expected = open_managed_authority(subject)
     try:
         dependency = admit_profile_projection(profile, SimpleNamespace(

@@ -13,9 +13,11 @@ from importlib import metadata
 import json
 import os
 from pathlib import Path
+import platform
 import re
 import shutil
 import stat
+import sys
 import threading
 from typing import Literal, Mapping
 
@@ -27,10 +29,13 @@ from .executable_dependency_startup import DependencyRequirement
 
 MANAGED_RELEASES_ROOT = Path("/opt/consiliency/tooling/releases")
 MANAGED_AUTHORITY_PIN = Path("/etc/consiliency/tooling/seat-authority.json")
+GROK_SUBJECT_PIN = Path("/etc/consiliency/tooling/grok-subject-pin.json")
 
-SubjectSource = Literal["session_lease", "managed_release", "standalone"]
+SubjectSource = Literal["session_lease", "managed_release", "managed_image", "standalone"]
 
 _PIN_SCHEMA = "seat_authority_pin.v2"
+_GROK_PIN_SCHEMA = "grok_subject_pin.v1"
+_RELEASE_ID = re.compile(r"[A-Za-z0-9._@+-]+")
 _PIN_MAX_BYTES = 131_072
 _MANAGED_ADAPTER_ID = "phase-loop-seat"
 _MANAGED_ADAPTER_VERSION = "1"
@@ -66,6 +71,7 @@ class SeatSubject:
     subject_path: Path | None
     release_id: str | None
     requirement: DependencyRequirement | None
+    binary_sha256: str | None = None
 
 
 def register_provider_executable(leg: str, executable: str) -> None:
@@ -101,6 +107,8 @@ def resolve_seat_subject(leg: str, env: Mapping[str, str]) -> SeatSubject:
 
     dependency = _current_dependency(leg)
     if dependency is not None:
+        if leg == "grok":
+            raise ExecutableDependencyError("authority_invalid", "Grok dependency lease")
         return SeatSubject(leg, "session_lease", None, None, None)
 
     with _PROVIDER_LOCK:
@@ -126,6 +134,7 @@ def resolve_seat_subject(leg: str, env: Mapping[str, str]) -> SeatSubject:
     except OSError as exc:
         raise ExecutableDependencyError("subject_mismatch", "provider") from exc
 
+    named_target = Path(found)
     candidate = source
     for _hop in range(4):
         lines, trusted = _wrapper_lines(candidate)
@@ -135,11 +144,14 @@ def resolve_seat_subject(leg: str, env: Mapping[str, str]) -> SeatSubject:
             # Imported here by contract so panel_invoker may import seat_subject later.
             from . import panel_invoker
 
-            target = panel_invoker._frontdoor_target(last, leg)
+            target = panel_invoker._frontdoor_target(last, leg, exact_shared=leg == "grok")
             if target is None or not shaped:
                 raise ExecutableDependencyError("subject_mismatch", "guarded frontdoor")
+            if leg == "grok":
+                digest = managed_grok_image_digest(target)
+                return SeatSubject(leg, "managed_image", target, target.parents[1].name, None, digest)
             return _managed_subject(leg, target)
-        if _names_managed_root(candidate):
+        if _names_managed_root(candidate) or (leg == "grok" and _names_managed_root(named_target)):
             raise ExecutableDependencyError("subject_mismatch", "guarded frontdoor")
         match = _SHELL_WRAPPER_EXEC.fullmatch(last)
         if match is None:
@@ -175,6 +187,69 @@ def resolve_seat_subject(leg: str, env: Mapping[str, str]) -> SeatSubject:
     if harness != leg or _names_managed_root(path):
         raise ExecutableDependencyError("subject_mismatch", "provider")
     return SeatSubject(leg, "standalone", path, None, None)
+
+
+def managed_grok_image_digest(path: Path) -> str:
+    """Verify the exact managed release pin and hash its native executable."""
+    from .seat_profile_grok import JAIL_PROTECTION
+
+    try:
+        release_id, native, executable = path.relative_to(MANAGED_RELEASES_ROOT).parts
+    except ValueError as exc:
+        raise ExecutableDependencyError("subject_mismatch", "Grok release path") from exc
+    if not _safe_release_id(release_id) or (native, executable) != ("native", "grok"):
+        raise ExecutableDependencyError("subject_mismatch", "Grok release path")
+
+    releases = _read_pin(GROK_SUBJECT_PIN, _GROK_PIN_SCHEMA)
+    for name, entry in releases.items():
+        if (
+            not _safe_release_id(name)
+            or type(entry) is not dict
+            or set(entry) != {"binary_sha256", "platform", "version"}
+            or type(entry["binary_sha256"]) is not str
+            or not _SHA256.fullmatch(entry["binary_sha256"])
+            or entry["platform"] != "linux-x64"
+            or entry["version"] != "1.0.92"
+        ):
+            raise ExecutableDependencyError("authority_invalid", "Grok pin entry")
+    if release_id not in releases:
+        raise ExecutableDependencyError("authority_missing")
+    expected = releases[release_id]["binary_sha256"]
+    if sys.platform != "linux" or platform.machine() != "x86_64" or expected not in JAIL_PROTECTION:
+        raise ExecutableDependencyError("authority_invalid", "Grok platform or fingerprint")
+
+    try:
+        descriptor = _open_root_owned_file(path)
+        try:
+            identity = _selected_identity_fd(descriptor, path, executable=True)
+        finally:
+            os.close(descriptor)
+    except OSError as exc:
+        raise ExecutableDependencyError("subject_mismatch", "Grok executable path") from exc
+    if identity.sha256 != expected:
+        raise ExecutableDependencyError("subject_mismatch", "Grok executable digest")
+    return identity.sha256
+
+
+def verify_managed_image(subject: SeatSubject, profile) -> None:
+    """Admit a verified Grok image only with the no-projection Grok profile."""
+    if (
+        not isinstance(subject, SeatSubject)
+        or subject.source != "managed_image" or subject.leg != "grok"
+        or profile is None or profile.leg != "grok" or profile.projection != "none"
+        or subject.requirement is not None
+    ):
+        raise ExecutableDependencyError("authority_invalid", "managed image profile")
+    path = subject.subject_path
+    if path is None or subject.binary_sha256 is None:
+        raise ExecutableDependencyError("subject_mismatch", "managed image identity")
+    digest = managed_grok_image_digest(path)
+    if subject.release_id != path.parents[1].name or subject.binary_sha256 != digest:
+        raise ExecutableDependencyError("subject_mismatch", "managed image identity")
+
+
+def _safe_release_id(name: str) -> bool:
+    return name not in {".", ".."} and _RELEASE_ID.fullmatch(name) is not None
 
 
 def open_managed_authority(subject: SeatSubject) -> tuple[int, str]:
@@ -281,7 +356,8 @@ def _names_managed_root(path: Path) -> bool:
     candidates = [Path(os.path.abspath(path))]
     try:
         roots.append(MANAGED_RELEASES_ROOT.resolve(strict=True))
-        candidates.append(Path(path).resolve(strict=True))
+        candidates.append(path.parent.resolve(strict=True) / path.name)
+        candidates.append(path.resolve(strict=True))
     except OSError:
         pass
     return any(item.is_relative_to(root) for item in candidates for root in roots)
@@ -319,29 +395,10 @@ def _wrapper_lines(path: Path) -> tuple[list[str], bool]:
 
 
 def _pin_entry(release_id: str, leg: str) -> dict[str, str]:
-    try:
-        descriptor = _open_pin()
-    except FileNotFoundError as exc:
-        raise ExecutableDependencyError("authority_missing") from exc
-    except OSError as exc:
-        raise ExecutableDependencyError("authority_invalid", "pin path") from exc
-    try:
-        raw = _read_stable(descriptor, _PIN_MAX_BYTES, code="authority_invalid")
-    finally:
-        os.close(descriptor)
-    try:
-        value = json.loads(raw, object_pairs_hook=_unique_object)
-        if rfc8785.dumps(value) != raw:
-            raise ValueError("noncanonical pin")
-        if type(value) is not dict or set(value) != {"schema", "releases"}:
-            raise ValueError("pin object")
-        if value["schema"] != _PIN_SCHEMA or type(value["releases"]) is not dict:
-            raise ValueError("pin schema")
-    except (TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise ExecutableDependencyError("authority_invalid", "pin") from exc
-    if release_id not in value["releases"]:
+    releases = _read_pin(MANAGED_AUTHORITY_PIN, _PIN_SCHEMA)
+    if release_id not in releases:
         raise ExecutableDependencyError("authority_missing")
-    release = value["releases"][release_id]
+    release = releases[release_id]
     if type(release) is not dict:
         raise ExecutableDependencyError("authority_invalid", "pin entry")
     if leg not in release:
@@ -358,6 +415,33 @@ def _pin_entry(release_id: str, leg: str) -> dict[str, str]:
     return entry
 
 
+
+def _read_pin(path: Path, schema: str) -> dict:
+    try:
+        descriptor = _open_root_owned_file(path)
+    except FileNotFoundError as exc:
+        raise ExecutableDependencyError("authority_missing") from exc
+    except OSError as exc:
+        raise ExecutableDependencyError("authority_invalid", "pin path") from exc
+    try:
+        raw = _read_stable(descriptor, _PIN_MAX_BYTES, code="authority_invalid")
+    except OSError as exc:
+        raise ExecutableDependencyError("authority_invalid", "pin read") from exc
+    finally:
+        os.close(descriptor)
+    try:
+        value = json.loads(raw, object_pairs_hook=_unique_object)
+        if rfc8785.dumps(value) != raw:
+            raise ValueError("noncanonical pin")
+        if type(value) is not dict or set(value) != {"schema", "releases"}:
+            raise ValueError("pin object")
+        if value["schema"] != schema or type(value["releases"]) is not dict:
+            raise ValueError("pin schema")
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise ExecutableDependencyError("authority_invalid", "pin") from exc
+    return value["releases"]
+
+
 def _unique_object(pairs):
     value = {}
     for key, item in pairs:
@@ -367,18 +451,17 @@ def _unique_object(pairs):
     return value
 
 
-def _open_pin() -> int:
-    pin = MANAGED_AUTHORITY_PIN
+def _open_root_owned_file(path: Path) -> int:
     root = _PIN_WALK_ROOT
-    if not pin.is_absolute() or not root.is_absolute():
-        raise OSError("pin path is not absolute")
+    if not path.is_absolute() or not root.is_absolute():
+        raise OSError("path is not absolute")
     try:
-        relative = pin.relative_to(root)
+        relative = path.relative_to(root)
     except ValueError as exc:
-        raise OSError("pin path is outside trust root") from exc
+        raise OSError("path is outside trust root") from exc
     parts = relative.parts
     if not parts or any(part in {"", ".", ".."} for part in parts):
-        raise OSError("invalid pin path")
+        raise OSError("invalid path")
     walk = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
     directory = os.open(root, walk)
     try:
@@ -400,7 +483,7 @@ def _open_pin() -> int:
                 or info.st_uid not in _PIN_OWNERS
                 or info.st_mode & 0o022
             ):
-                raise OSError("unsafe pin file")
+                raise OSError("unsafe file")
             return descriptor
         except BaseException:
             os.close(descriptor)
@@ -454,24 +537,35 @@ def _selected_identity(path: Path) -> ExecutableRequirementIdentity:
         os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC | getattr(os, "O_NOCTTY", 0),
     )
     try:
-        before = os.fstat(descriptor)
-        if not stat.S_ISREG(before.st_mode) or before.st_size <= 0:
-            raise ExecutableDependencyError("subject_mismatch", "selected executable")
-        digest = hashlib.sha256()
-        while chunk := os.read(descriptor, 1024 * 1024):
-            digest.update(chunk)
-        after = os.fstat(descriptor)
-        if _stat_identity(before) != _stat_identity(after):
-            raise ExecutableDependencyError("subject_mismatch", "selected executable changed")
-        return ExecutableRequirementIdentity(
-            path=str(path),
-            kind="file",
-            mode=f"0{stat.S_IMODE(before.st_mode):03o}",
-            size=before.st_size,
-            sha256=digest.hexdigest(),
-        )
+        return _selected_identity_fd(descriptor, path)
     finally:
         os.close(descriptor)
+
+
+def _selected_identity_fd(
+    descriptor: int, path: Path, *, executable: bool = False,
+) -> ExecutableRequirementIdentity:
+    before = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(before.st_mode) or before.st_size <= 0
+        or (executable and not before.st_mode & 0o111)
+    ):
+        raise ExecutableDependencyError("subject_mismatch", "selected executable")
+    digest = hashlib.sha256()
+    size = 0
+    while chunk := os.read(descriptor, 1024 * 1024):
+        digest.update(chunk)
+        size += len(chunk)
+    after = os.fstat(descriptor)
+    if size != before.st_size or _stat_identity(before) != _stat_identity(after):
+        raise ExecutableDependencyError("subject_mismatch", "selected executable changed")
+    return ExecutableRequirementIdentity(
+        path=str(path),
+        kind="file",
+        mode=f"0{stat.S_IMODE(before.st_mode):03o}",
+        size=before.st_size,
+        sha256=digest.hexdigest(),
+    )
 
 
 def _read_stable(descriptor: int, limit: int, *, code: str) -> bytes:
@@ -490,7 +584,7 @@ def _sha256_fd(descriptor: int, limit: int, *, code: str) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
+def _stat_identity(value: os.stat_result) -> tuple[int, ...]:
     return (
         value.st_dev,
         value.st_ino,
@@ -499,6 +593,8 @@ def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int, int, int,
         value.st_mode,
         value.st_nlink,
         value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
     )
 
 
