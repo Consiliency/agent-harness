@@ -23,6 +23,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- `claude-sdk-audit` / `audit-order` no longer reports a failed merge-state lookup as
+  "the cited PR is not merged" (agent-harness#2087). `github_pr_merged` returns GitHub's
+  `merged` field only when it is a boolean and raises `AuditError("merge state
+  unverifiable (...)")` on an HTTP error status (such as an anonymous 403 or 429 rate
+  limit), a transport failure, an incomplete body (Content-Length bytes outstanding or an
+  HTTP framing error such as `IncompleteRead`), a body over 1 MiB, a non-JSON body or a
+  response without a boolean `merged` field. The audit reports that diagnostic and keeps "the cited PR is not merged" for an
+  explicit `false`; both still fail closed.
 - The FIRSTSEAT record-board test stubs the Gemini board preflight, so it no longer runs live
   Agy qualification inside the guard's 30 s authorization window (agent-harness#2142).
 - The placement-lifecycle replay test runs its interrupted setup reserve on a frozen clock with
