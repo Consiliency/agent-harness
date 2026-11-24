@@ -10,6 +10,7 @@ The local end-to-end supervisor and capped-parent evidence belong to SL-8.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import fcntl
 import json
 import os
@@ -907,6 +908,80 @@ def test_generation_cancel_long_path(env, fault, monkeypatch):
         return
     assert received == [dict(version=1, op="cancel", reservation_id=key[0], request_id=key[1],
                              generation=GEN, sender_pid=os.getpid(), sender_start=sp._own_identity()["start"])]
+
+
+@pytest.mark.parametrize("starts_during_exchange", [False, True])
+def test_generation_cancel_keeps_prestart_request_on_supervisor_path(
+        env, prepared, monkeypatch, starts_during_exchange):
+    life, key = _generation_claim(prepared)
+    deadline = time.monotonic() + 2
+
+    def supervisor_cancel(*args):
+        if starts_during_exchange:
+            with life.launch_operation_lock(key[0], key[2], timeout_s=1) as held:
+                assert held and life.mark_start_intent(*key, deadline=deadline)
+        return "owner_unverified"
+
+    monkeypatch.setattr(sp, "_supervisor_cancel", supervisor_cancel)
+    assert life.cancel_launch_owner(*key, deadline=deadline) == "owner_unverified"
+    assert env.cancels == []
+
+
+def test_generation_cancel_stays_bound_when_prepared_attempt_is_reused(env, prepared, monkeypatch):
+    life, key = _generation_claim(prepared)
+    rid, request_id, generation = key
+    run_id = prepared[3].paths.run_id
+    next_generation = "e" * 32
+    launch_lock = life.launch_lock
+    supervisor_exchanged = False
+
+    def supervisor_cancel(*args):
+        nonlocal supervisor_exchanged
+        supervisor_exchanged = True
+        return "owner_unverified"
+
+    @contextmanager
+    def reuse_after_recheck(reservation_id, *, timeout_s):
+        with launch_lock(reservation_id, timeout_s=timeout_s) as lock:
+            yield lock
+        if supervisor_exchanged:
+            # Settle the rollback as soon as cancellation drops the claim journal.
+            with launch_lock(rid, timeout_s=1) as lock:
+                assert lock.record_rollback_intent(request_id, generation, cause="snapshot_expired")
+                assert lock.rollback(request_id, generation=generation)
+                assert lock.claim("launch-2", run_id, generation=next_generation) is None
+
+    monkeypatch.setattr(sp, "_supervisor_cancel", supervisor_cancel)
+    monkeypatch.setattr(life, "launch_lock", reuse_after_recheck)
+    assert life.cancel_launch_owner(*key, deadline=time.monotonic() + 2) == "owner_unverified"
+    claim = life.launch_claim_record(rid)
+    assert (claim["generation"], claim["run_id"]) == (next_generation, run_id)
+    assert env.cancels == []
+
+
+def test_generation_started_cancel_holds_operation_lock_and_refuses_rollback(env, prepared, monkeypatch):
+    life, key = _generation_claim(prepared)
+    rid, request_id, generation = key
+    deadline = time.monotonic() + 2
+    with life.launch_operation_lock(rid, generation, timeout_s=1) as held:
+        assert held and life.mark_start_intent(*key, deadline=deadline)
+    with life.launch_lock(rid, timeout_s=1) as lock:
+        assert not lock.record_rollback_intent(request_id, generation, cause="snapshot_expired")
+        # Even a stale intent in the journal cannot authorize rollback after start.
+        claim = life.launch_claim_record(rid)
+        claim["rollback_cause"] = "snapshot_expired"
+        life._launch_write("claims", rid, claim)
+        assert not lock.rollback(request_id, generation=generation)
+
+    held_during_cancel = []
+    env.on_cancel = lambda claim: held_during_cancel.append(life._holds_operation(rid, generation))
+    env.cancel_outcome = "cancelled"
+    monkeypatch.setattr(sp, "_supervisor_cancel", lambda *args: "cancelled")
+
+    assert life.cancel_launch_owner(*key, deadline=deadline) == "cancelled"
+    assert env.cancels == [(request_id, prepared[3].paths.run_id)]
+    assert held_during_cancel == [True]
+
 
 def test_generation_renewal_slot_error_requires_explicit_fence(prepared, monkeypatch):
     life, key = _generation_claim(prepared)

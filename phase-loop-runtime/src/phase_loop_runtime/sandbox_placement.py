@@ -4536,24 +4536,44 @@ class PlacementLifecycle:
                             deadline: float) -> str:
         key = _identity_fields(reservation_id, request_id, generation)
         bound = _Deadline(deadline)
-        with self.launch_lock(reservation_id, timeout_s=bound.left()) as lock:
-            if not lock.held:
-                return "cancel_pending"
-            claim = self._owned_claim(key)
-            if not claim:
-                return "unknown_attempt"
+        try:
+            with self.launch_lock(reservation_id, timeout_s=bound.left()) as lock:
+                if not lock.held:
+                    return "cancel_pending"
+                claim = self._owned_claim(key)
+                if not claim:
+                    return "unknown_attempt"
+                started = self._disposition(key)["start_intent"]
+        except (OSError, LifecycleError):
+            return "owner_unverified"
         outcome = _supervisor_cancel(self.launch_root / "ctl", key, claim, bound)
         if bound.expired():
             return "cancel_pending"
-        # WORKER independently verifies its registered owning launcher. No registration
-        # leaves the supervisor's pre-registration outcome authoritative.
-        with self.launch_lock(reservation_id, timeout_s=bound.left()) as lock:
-            if not lock.held or self._owned_claim(key) != claim:
-                return "owner_unverified"
+        # The supervisor exchange takes the operation lock on the server side.
+        # Acquire it locally afterward, and drop the journal before calling WORKER.
         try:
-            worker = self.launch_cancel(claim, min(CANCEL_WAIT_S, bound.left()))
-        except Exception:
-            return "cancel_pending"
+            operation = (self.launch_operation_lock(reservation_id, generation, timeout_s=bound.left())
+                         if started else nullcontext(True))
+            with operation as held:
+                if not held:
+                    return "cancel_pending"
+                with self.launch_lock(reservation_id, timeout_s=bound.left()) as lock:
+                    if not lock.held or self._owned_claim(key) != claim:
+                        return "owner_unverified"
+                    # WORKER addresses a reusable attempt ID. Durable start intent
+                    # rules out rollback for the generation authorizing this call.
+                    worker_allowed = started and self._disposition(key)["start_intent"]
+                wait = min(CANCEL_WAIT_S, bound.left())
+                if wait <= 0:
+                    return "cancel_pending"
+                if not worker_allowed:
+                    return outcome
+                try:
+                    worker = self.launch_cancel(claim, wait)
+                except Exception:
+                    return "cancel_pending"
+        except (OSError, LifecycleError):
+            return "owner_unverified"
         if bound.expired():
             return "cancel_pending"
         if outcome in ("cancelled", "already_terminal") and worker == "cancel_pending":
@@ -4869,7 +4889,8 @@ class PlacementLifecycle:
             if current["owner"] != _own_identity():
                 return False
             row = self._disposition(_identity_fields(reservation_id, request_id, generation))
-            if (current.get("rollback_cause") not in _ROLLBACK_CAUSES or row["start_intent"]
+            # Once start intent is durable, WORKER may be addressing this attempt ID.
+            if (row["start_intent"] or current.get("rollback_cause") not in _ROLLBACK_CAUSES
                     or row["fenced"] or row["debt"] is not None):
                 return False
             current["completed_rollback"] = dict(request_id=request_id, generation=generation,
