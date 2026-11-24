@@ -1742,3 +1742,54 @@ def test_seats_firstseat_teamhost_containment_mutants(mutant, tmp_path):
         assert row.row_id in result.private["rows"]["board_opened"]
     else:  # pragma: no cover - the closed parameter table is exhaustive
         raise AssertionError(mutant)
+
+
+def test_gemini_qualification_entry_uses_the_new_profile(tmp_path, monkeypatch):
+    import contextlib
+    from types import SimpleNamespace
+
+    from phase_loop_runtime import panel_invoker as pi
+    from phase_loop_runtime import seat_jail_qualification as qualification
+
+    monkeypatch.setattr(qualification.seat_uid, "subordinate_range", lambda _path: (1, 2))
+    monkeypatch.setattr(qualification.seat_uid, "seat_id_count", lambda *_: 2)
+    monkeypatch.setattr(qualification.seat_uid, "lease_seat_id",
+                        lambda _count: contextlib.nullcontext(1))
+    monkeypatch.setattr(qualification.seat_uid, "holder_pid_from_prefix", lambda _prefix: 1)
+    monkeypatch.setattr(qualification.seat_uid, "teardown_in_h", lambda *_: None)
+    monkeypatch.setattr(qualification.sandbox_egress, "isolated_network",
+                        lambda **kw: contextlib.nullcontext(("fixture-namespace",)))
+
+    old_url = "http://srt:fixture@127.0.0.1:3128"
+    profiles = []
+
+    def compose(jail):
+        profiles.append(jail.profile_digest)
+        assert jail.env["HTTPS_PROXY"] == "http://127.0.0.1:3128"
+        assert "<egress-proxy>" in jail.redacted_owner()
+        pi._require_qualified_jail(jail, pass_recorded=lambda digest: digest == jail.profile_digest)
+        old = dataclasses.replace(
+            jail, egress_proxy=old_url,
+            process_owner=tuple(old_url if arg == jail.egress_proxy else arg
+                                for arg in jail.process_owner),
+        )
+        previous_digest = seat_jail.actual_profile_digest(dataclasses.replace(
+            old, process_owner=tuple("<egress-proxy>" if arg == old_url else arg
+                                     for arg in old.process_owner),
+        ))
+        with pytest.raises(seat_jail.SeatSandboxRefused) as exc:
+            pi._require_qualified_jail(jail, pass_recorded=lambda digest: digest == previous_digest)
+        assert exc.value.code == "seat_sandbox_refused:jail_unqualified"
+        with pytest.raises(seat_jail.SeatSandboxRefused):
+            pi._require_canonical_jail(old)
+        return ["fixture-owner"]
+
+    def observe(argv, **kwargs):
+        assert argv[:2] == ["fixture-owner", "/usr/bin/python3"]
+        return SimpleNamespace(returncode=0, stdout='{"synthetic": true}', stderr="")
+
+    monkeypatch.setattr(pi, "_compose_seat_jail_prefix", compose)
+    monkeypatch.setattr(qualification.subprocess, "run", observe)
+    assert qualification._run_probe_in_jail(
+        "gemini", tmp_path, {}, Path("/usr/bin/true"), None) == {"synthetic": True}
+    assert profiles == [seat_jail.jail_profile_digest("gemini")]

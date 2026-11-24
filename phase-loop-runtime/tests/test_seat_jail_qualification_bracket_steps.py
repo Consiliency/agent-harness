@@ -201,7 +201,8 @@ def test_bracket_step_table_and_specialized_argv_are_frozen():
     assert "HTTPS_PROXY" in front_argv[3]
     assert "daily-cloudcode-pa.googleapis.com" in front_argv[3]
     assert "storage.googleapis.com" in front_argv[3]
-    assert all("http://" not in arg for arg in front_argv)
+    assert "http://127.0.0.1:3128" in front_argv[3]
+    assert "Proxy-Authorization" not in front_argv[3]
     compile(front_argv[3], "<bracket-front>", "exec")
 
     config_argv = runs["f006_config_ancestor"][0].argv
@@ -257,3 +258,114 @@ def test_non_curl_steps_require_successful_client_exit():
 
     config_run = FakeJailedRun((_step(1, CONFIG_REFUSED.stdout),))
     assert qualification.BRACKET_STEPS["f006_config_ancestor"](config_run) is None
+
+
+@pytest.mark.parametrize("case", [
+    "refused", "reset", "userinfo", "wrong-port", "407", "bytes", "extra",
+    "missing-attempt", "partial-reply", "timeout", "io-error",
+])
+def test_fail_closed_front_requires_two_completed_header_free_attempts(case, monkeypatch, capsys):
+    import socket
+
+    canonical = "http://127.0.0.1:3128"
+    proxy = {
+        "userinfo": "http://srt:fixture-token@127.0.0.1:3128",
+        "wrong-port": "http://127.0.0.1:8080",
+    }.get(case, canonical)
+    monkeypatch.setenv("HTTPS_PROXY", proxy)
+    dials = []
+    records = []
+
+    class Socket:
+        def __init__(self):
+            self.sent = []
+            self.replied = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+        def settimeout(self, seconds):
+            assert seconds == 8
+
+        def sendall(self, data):
+            self.sent.append(data)
+            if len(self.sent) == 1:
+                assert data.startswith(b"CONNECT daily-cloudcode-pa.googleapis.com:443 ")
+                assert b"proxy-authorization" not in data.lower()
+            else:
+                assert b"storage.googleapis.com" in data
+                records.append(data[2])
+
+        def recv(self, _count):
+            if len(self.sent) == 1:
+                if case == "407":
+                    return b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n"
+                if case == "partial-reply":
+                    if self.replied:
+                        return b""
+                    self.replied = True
+                    return b"HTTP/1.1 200 Connection Established"
+                return b"HTTP/1.1 200 Connection Established\r\n\r\n" + (
+                    b"x" if case == "extra" else b"")
+            if case == "timeout":
+                raise TimeoutError
+            if case == "io-error":
+                raise OSError
+            if case == "reset":
+                raise ConnectionResetError
+            return b"x" if case == "bytes" else b""
+
+    def dial(address, timeout):
+        assert proxy == canonical, "a noncanonical endpoint reached the first dial"
+        assert address == ("127.0.0.1", 3128) and timeout == 5
+        dials.append(address)
+        if case == "missing-attempt" and len(dials) == 2:
+            raise OSError
+        return Socket()
+
+    monkeypatch.setattr(socket, "create_connection", dial)
+
+    def run(argv, **kwargs):
+        assert kwargs["use_proxy"]
+        try:
+            exec(compile(argv[-1], "<bracket-front>", "exec"), {})
+        except SystemExit as exc:
+            return _step(exc.code)
+        except OSError:
+            return _step(1)
+        return _step(0, capsys.readouterr().out.encode())
+
+    positive = case in {"refused", "reset"}
+    assert qualification.BRACKET_STEPS["b_fail_closed_front"](run) == (
+        "no_upstream_bytes" if positive else None)
+    if positive:
+        assert len(dials) == 2
+        assert records == [4, 3]
+    elif case in {"userinfo", "wrong-port"}:
+        assert not dials
+
+
+@pytest.mark.parametrize("mutation", ["missing-attempt", "incomplete-stream"])
+def test_w1_reducer_requires_the_complete_front_bracket(mutation):
+    from dataclasses import replace
+    from .test_seat_jail import _firstseat_reducer_input
+
+    inputs = _firstseat_reducer_input()
+    assert qualification.reduce_containment(inputs).admitted
+    measured = inputs.measured
+    if mutation == "missing-attempt":
+        bracket = measured.bracket
+        rows = tuple(
+            replace(row, outcome="unavailable", signature=None)
+            if row.row == "b_fail_closed_front" else row
+            for row in bracket.rows
+        )
+        measured = replace(measured, bracket=replace(bracket, rows=rows))
+    else:
+        measured = replace(measured, stream=replace(measured.stream, final=False))
+    result = qualification.reduce_containment(replace(inputs, measured=measured))
+    assert result.containment["credential_scope"] == "unavailable"
+    assert not result.checks["credential_scope"]

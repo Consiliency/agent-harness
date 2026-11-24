@@ -807,7 +807,8 @@ def test_the_notices_say_what_happens_when_it_ends_and_the_command():
     firstseat = {"leg_auth_signed_out", "leg_auth_unavailable", "leg_execution_failed",
                  "leg_exec_record_unavailable", "grok_tool_surface_unverified"}
     assert firstseat <= seat_jail.NOTICES.keys()
-    assert len(seat_jail.NOTICES.keys() - firstseat) == 116
+    assert len(seat_jail.NOTICES.keys() - firstseat) == 118
+    assert len(seat_jail.NOTICE_CODES - firstseat) == 115
 
 
 def test_the_suite_never_sleeps_through_a_real_long_gemini_login_sleep(host):

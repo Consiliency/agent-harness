@@ -55,7 +55,8 @@ def _compose_seat(tmp_path: Path, monkeypatch) -> pi._JailedSeat:
         path="/usr/bin/true", close=lambda: None))
     ca = tmp_path / "egress-ca.pem"
     ca.write_text("certificate\n")
-    egress = SimpleNamespace(ca_cert=ca, proxy_url="http://srt:session-token@127.0.0.1:3128")
+    egress = SimpleNamespace(ca_cert=ca, proxy_url="http://127.0.0.1:3128",
+                            private_proxy_token=b"fixture-session")
     return pi._prepare_jailed_gemini(
         tmp_path / "review", tmp_path / "seat", SimpleNamespace(staged_tree_sha256="0" * 64),
         3, os.getpid(), ("artifact", "instructions"), egress,
@@ -78,6 +79,8 @@ def test_the_pin_is_agys_saved_default():
 
 
 def test_the_composed_seat_and_probe_homes_pin_the_agent_mode(tmp_path, monkeypatch):
+    from test_gemini_seat_egress_1170 import _assert_credential_free_gemini_jail
+
     seat = _compose_seat(tmp_path, monkeypatch)
     try:
         for jail in (seat.jail, seat.probe_jail):
@@ -88,6 +91,7 @@ def test_the_composed_seat_and_probe_homes_pin_the_agent_mode(tmp_path, monkeypa
             # The pinned settings leave the jail the qualified profile.
             assert jail.profile_digest == seat_jail.jail_profile_digest("gemini")
             pi._require_canonical_jail(jail)
+            _assert_credential_free_gemini_jail(jail, seat.private_proxy_token)
         assert Path(seat.jail.gemini_config_dir) == (
             seat.seat_dir / seat_jail.HOST_GEMINI_CONFIG_DIRNAME)
     finally:

@@ -301,7 +301,7 @@ def test_other_profiles_do_not_gain_the_claude_or_opencode_flags(operator_home, 
 
 # JAILCORE SL-3: the provider registry is a policy input to generic jail builders.
 
-def test_jailcore_profile_digests_are_byte_identical_to_the_unmodified_base(monkeypatch):
+def test_jailcore_profile_digests_match_the_architecture_pins(monkeypatch):
     from phase_loop_runtime import seat_profiles
 
     golden = json.loads(

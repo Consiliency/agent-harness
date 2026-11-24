@@ -388,7 +388,8 @@ def _real_seat_preparation(row, tmp_path):
                 1,
                 1,
                 ("artifact", "instructions"),
-                SimpleNamespace(ca_cert=tmp_path / "ca.crt", proxy_url="http://fixture"),
+                SimpleNamespace(ca_cert=tmp_path / "ca.crt", proxy_url="http://127.0.0.1:3128",
+                                private_proxy_token=b"fixture"),
                 env=env,
                 credential="none",
             )
