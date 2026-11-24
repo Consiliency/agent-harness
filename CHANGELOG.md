@@ -26,6 +26,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Jailed Claude TUI failures retain screened terminal tails in private advisor-board leg logs.
   Gemini credential refusals identify the matching field class in the private execution record,
   and the board notice covers both seat tokens and per-launch proxy credentials.
+- Unconfirmed local launch renewals retain cleanup debt and can retry until the lease
+  fencing boundary. Reap respects that boundary, and late writes cannot overwrite a
+  retry's confirmed heartbeat (agent-harness#2151 follow-up).
+- Launch cancellation uses the generation's supervisor socket before start intent. WORKER
+  cancellation requires a matching generation with durable start intent.
 - `claude-sdk-audit` / `audit-order` no longer reports a failed merge-state lookup as
   "the cited PR is not merged" (agent-harness#2087). `github_pr_merged` returns GitHub's
   `merged` field only when it is a boolean and raises `AuditError("merge state
