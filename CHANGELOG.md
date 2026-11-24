@@ -17,6 +17,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - LANEEXEC erratum 7 binds the plan to the landed SL-8 renewal, activation,
   scratch, cancellation and lane admission rulings (agent-harness#2160).
 
+### Fixed
+
+- Bounded jailed Claude TUI reviews allow up to 20 minutes from submit for an active turn
+  with a repainting spinner and interrupt footer, within the existing review deadline.
+  The watchdog checks the session journal once more before declaring a stall.
+
 ## [0.7.43] - Unreleased candidate
 
 ### Added

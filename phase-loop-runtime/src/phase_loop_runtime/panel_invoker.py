@@ -11,6 +11,7 @@ qualification and attended probes are separate from mocked test execution.
 
 from __future__ import annotations
 
+import codecs
 import contextvars
 import logging
 import inspect
@@ -1825,6 +1826,9 @@ _CLAUDE_STOP_TIMEOUT_S = 15
 _CLAUDE_TUI_SUBMIT_DELAY_S = 8.0
 _CLAUDE_TUI_READ_INTERVAL_S = 0.25
 _CLAUDE_TUI_TRANSCRIPT_INTERVAL_S = 2.0
+# Leave margin over a 13-minute successful high-effort review. Measured from submit;
+# UI activity can neither renew this window nor extend the review's hard deadline.
+_CLAUDE_TUI_THINKING_WINDOW_S = 20 * 60
 # The most an owned seat's own startup (the owner's links inside the seat, before the
 # collector hands the journal over and executes the provider) may take before its silence
 # counts against the stall window (agent-harness#1282).
@@ -11104,6 +11108,109 @@ def _tui_screen_text(terminal_bytes: bytes) -> str:
     return text.lower()
 
 
+# Claude repaints its spinner independently of the editor footer. Use the leading
+# spinner glyph and the verb's ellipsis, without depending on the chosen verb or on
+# optional timers and token counters. The interrupt hint is a whole footer item.
+_CLAUDE_TUI_SPINNER_RE = re.compile(r"^\s*[·✢✳✶✻✽*] +\S+?(?:…|\.\.\.)(?:\s|$)")
+_CLAUDE_TUI_INTERRUPT_RE = re.compile(r"(?:^|·| {2,})\s*esc to interrupt(?= *·| {2,}| *$)")
+_CLAUDE_TUI_SCREEN_TOKENS = re.compile(
+    rf"{_ANSI_CSI_RE.pattern}|{_ANSI_OSC_RE.pattern}|[\r\n]|[^\x00-\x1f]+"
+    r"|(?P<partial>\x1b(?:\[[0-?]*[ -/]*|\][^\x07\x1b]*\x1b?)?)\Z"
+)
+_CLAUDE_TUI_SCREEN_CURSOR = re.compile(r"\x1b\[([0-9;]*)([A-HJKf])")
+
+
+class _ClaudeTuiThinkingScreen:
+    """Track the visible rows Claude's incremental redraws use for turn status."""
+
+    def __init__(self) -> None:
+        self.rows = [""] * _CLAUDE_TUI_PTY_ROWS
+        self.row = self.column = 0
+        self.decode = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        self.partial = ""
+        self.last_paint: float | None = None
+        self.previous_paint: float | None = None
+
+    def feed(self, chunk: bytes, paint_time: float | None) -> None:
+        stream = self.partial + self.decode.decode(chunk)
+        self.partial = ""
+        written: dict[int, int] = {}
+        for match in _CLAUDE_TUI_SCREEN_TOKENS.finditer(stream):
+            token = match[0]
+            if match["partial"]:
+                if len(token) < _TUI_CARRY_MAX_BYTES:
+                    self.partial = token
+            elif token == "\r":
+                self.column = 0
+            elif token == "\n":
+                if self.row < len(self.rows) - 1:
+                    self.row += 1
+                else:
+                    self.rows.pop(0)
+                    self.rows.append("")
+                    written = {row - 1: col for row, col in written.items() if row > 0}
+            elif token.startswith("\x1b"):
+                self._control(token, written)
+            else:
+                line = self.rows[self.row].ljust(self.column)
+                written[self.row] = min(self.column, written.get(self.row, self.column))
+                end = self.column + len(token)
+                self.rows[self.row] = (line[:self.column] + token + line[end:])[:_CLAUDE_TUI_PTY_COLS]
+                self.column = min(end, _CLAUDE_TUI_PTY_COLS)
+        if paint_time is not None:
+            for row, col in written.items():
+                spinner = _CLAUDE_TUI_SPINNER_RE.match(self.rows[row])
+                if spinner and col < spinner.end():
+                    self.previous_paint, self.last_paint = self.last_paint, paint_time
+                    break
+
+    def _control(self, token: str, written: dict[int, int]) -> None:
+        match = _CLAUDE_TUI_SCREEN_CURSOR.fullmatch(token)
+        if not match:
+            return
+        params, command = match.groups()
+        # Cursor and erase commands use short numeric operands. Ignore other CSI.
+        parts = params.split(";")
+        if len(parts) > 2 or any(len(part) > 4 for part in parts):
+            return
+        value = int(parts[0] or 0)
+        step = value or 1
+        if command in "ABEF":
+            self.row += step if command in "BE" else -step
+            if command in "EF":
+                self.column = 0
+        elif command in "CD":
+            self.column += step if command == "C" else -step
+        elif command == "G":
+            self.column = step - 1
+        elif command in "Hf":
+            self.row = step - 1
+            self.column = (int(parts[1] or 0) or 1) - 1 if len(parts) == 2 else 0
+        elif command == "J" and value == 2:
+            self.rows[:] = [""] * len(self.rows)
+            written.clear()
+        elif (command == "J" and value == 0) or (command == "K" and value in (0, 2)):
+            self.rows[self.row] = self.rows[self.row][:self.column] if value == 0 else ""
+            if value == 2:
+                written.pop(self.row, None)
+            if command == "J":
+                for row in range(self.row + 1, len(self.rows)):
+                    self.rows[row] = ""
+                    written.pop(row, None)
+        self.row = min(max(self.row, 0), len(self.rows) - 1)
+        self.column = min(max(self.column, 0), _CLAUDE_TUI_PTY_COLS)
+
+    def active(self, now: float, stall_threshold_s: float) -> bool:
+        return (
+            self.previous_paint is not None
+            and self.last_paint is not None
+            and self.last_paint - self.previous_paint < stall_threshold_s
+            and now - self.last_paint < stall_threshold_s
+            and any(_CLAUDE_TUI_SPINNER_RE.match(line) for line in self.rows)
+            and any(_CLAUDE_TUI_INTERRUPT_RE.search(line) for line in self.rows)
+        )
+
+
 def _cwd_trust_tokens(cwd: Path) -> tuple[str, ...]:
     """Run-unique token(s) that MUST appear in the trust modal before we answer it —
     the FULL absolute cwd path (lowercased), plus its realpath so a symlinked temp root
@@ -11222,6 +11329,10 @@ def _run_claude_tui_session(
     launched_at: float | None = None
     launch_errors = None
     prompt_sent = False
+    thinking_screen = (
+        _ClaudeTuiThinkingScreen() if seat_jail is not None and review_monitor is None else None
+    )
+    thinking_until: float | None = None
     next_transcript_check = start_monotonic + _CLAUDE_TUI_TRANSCRIPT_INTERVAL_S
     transcript_salvage = ""
     last_heartbeat = start_monotonic
@@ -11536,6 +11647,14 @@ def _run_claude_tui_session(
                         chunk = b""
                     if chunk:
                         terminal_bytes.extend(chunk)
+                        if thinking_screen is not None:
+                            received_at = time.monotonic()
+                            if thinking_until is None:
+                                thinking_screen.feed(chunk, None)
+                            elif received_at < thinking_until:
+                                thinking_screen.feed(chunk, received_at)
+                            else:
+                                thinking_screen = None
                         # #188: a raw PTY chunk is a heartbeat ONLY if it carries
                         # SUBSTANTIVE novel text. The TUI's animated "thinking"
                         # status line (rotating verb + per-second timer) repaints
@@ -11693,6 +11812,8 @@ def _run_claude_tui_session(
                         time.sleep(0.5)
                         os.write(master_fd, b"\x1bOM")
                         prompt_sent = True
+                        if thinking_screen is not None:
+                            thinking_until = time.monotonic() + _CLAUDE_TUI_THINKING_WINDOW_S
                     except OSError:
                         return _finish(1, "", "claude_tui_submit_failed")
             review_text = _current_output()
@@ -11705,7 +11826,17 @@ def _run_claude_tui_session(
                 note_attempt_output()
             if _canonical_complete(review_text):
                 return _finish(0, review_text, "claude_tui_file_output")
-            if now >= next_transcript_check:
+            watchdog_due = (
+                review_monitor is None
+                and now - last_heartbeat >= stall_threshold_s
+                and not (
+                    thinking_screen is not None and thinking_until is not None and now < thinking_until
+                    and thinking_screen.active(now, stall_threshold_s)
+                )
+            )
+            # A record can land between the periodic poll and the watchdog cutoff.
+            # Check its version and any typed terminal outcome before killing the seat.
+            if now >= next_transcript_check or watchdog_due:
                 next_transcript_check = now + _CLAUDE_TUI_TRANSCRIPT_INTERVAL_S
                 transcript_text = _transcript_text()
                 # agent-harness#1176 r1: on the exact brokered transcript, progress is a NEW
@@ -11808,9 +11939,9 @@ def _run_claude_tui_session(
                 )
             # #188: NO CPU heartbeat on the TUI path. Unlike the print-mode legs, a
             # Node CLI blocked in ep_poll still trickles libuv/GC CPU, so a CPU-advance
-            # reset would keep a genuinely-wedged TUI alive forever (the ~2s-CPU/17-min
-            # hang). Liveness here is reviewer progress ONLY (novel PTY text / output /
-            # transcript growth above) — "process-alive" is deliberately NOT "leg-alive".
+            # reset would keep a genuinely-wedged TUI alive forever. The jailed
+            # active-turn UI only defers this test inside the submit-based window
+            # above. It never refreshes the actual progress clock.
             #
             # stall: no GENUINE progress for the threshold while still running. The
             # canonical verdict is the review FILE (checked above); nothing to nudge for a
@@ -11826,7 +11957,7 @@ def _run_claude_tui_session(
                 except AgyCanaryEvidenceError:
                     journal_error = True
                 last_heartbeat = now
-            if review_monitor is None and now - last_heartbeat >= stall_threshold_s:
+            if watchdog_due and now - last_heartbeat >= stall_threshold_s:
                 review_text = _current_output()
                 if _canonical_complete(review_text):
                     return _finish(0, review_text, "claude_tui_file_output")
