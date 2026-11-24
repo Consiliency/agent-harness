@@ -760,6 +760,14 @@ class JevDrillAdapter:
 
     # --- Run event streams (EC-HOST-2 item 3 hook) -----------------------------------------
 
+    def active_execution_run_ids(self, task_id: str) -> tuple[str, ...]:
+        """Return a snapshot of retained active run IDs for a trusted task ID."""
+        with self._report_lock:
+            return tuple(
+                run_id for run_id, binding in self._runs.items()
+                if binding["active"] and binding["request"]["task_id"] == task_id
+            )
+
     def _run_binding(self, execution_run_id):
         binding = self._runs.get(execution_run_id)
         if binding is None:
@@ -795,6 +803,7 @@ class JevDrillAdapter:
     def _register_run(self, binding):
         # The caller already holds ``_report_lock``.
         with self._report_lock:
+            binding["active"] = True
             self._runs[binding["run_id"]] = binding
             while len(self._runs) > RUN_HANDLE_LIMIT:
                 self._runs.popitem(last=False)
@@ -911,6 +920,8 @@ class JevDrillAdapter:
                              "prior_execution_run_id": (request["retry_context"] or {}).get("prior_execution_run_id")}
             self.transport.validators["ExecutionRun"].validate(execution_run)
         finally:
+            with self._report_lock:
+                binding["active"] = False
             reporting_started = time.monotonic_ns()
             try:
                 self._report(binding, terminal)

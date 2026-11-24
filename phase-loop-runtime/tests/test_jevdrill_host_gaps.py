@@ -1138,8 +1138,10 @@ def evaluation_payload(index):
 
 
 def test_run_bound_reports_share_the_run_stream(tmp_path):
-    adapter, _, _, kwargs, calls, _ = adapter_fixture(tmp_path)
+    adapter, inputs, _, kwargs, calls, _ = adapter_fixture(tmp_path)
     identity, enqueue, counts = require(adapter, "run_event_identity", "enqueue_run_event", "run_report_counts")
+    active_ids, = require(adapter, "active_execution_run_ids")
+    task_id = inputs["request"]["task_id"]
     prepared = adapter.prepare(mode="main", dry_run=False, **kwargs)
     decision_id = adapter.last_decision["details"]["routing_decision_id"]
     entered = []  # (sequence, kind) in the order reports reach the queue
@@ -1154,7 +1156,7 @@ def test_run_bound_reports_share_the_run_stream(tmp_path):
     observed, hooks = [], []
 
     def execute(spec, **_k):
-        run_id = next(reversed(adapter._runs))
+        run_id, = active_ids(task_id)
         observed.append(identity(run_id))
         # Hooks race the host's own terminal and usage reports after the executor returns.
         hooks.extend(threading.Thread(target=enqueue, args=(run_id, evaluation_payload(i))) for i in range(6))
@@ -1166,7 +1168,7 @@ def test_run_bound_reports_share_the_run_stream(tmp_path):
     for hook in hooks:
         hook.join()
     run_id = result.jevdrill_execution_run["execution_run_id"]
-    assert observed[0] == {"task_id": kwargs_task(adapter, run_id), "routing_decision_id": decision_id,
+    assert observed[0] == {"task_id": task_id, "routing_decision_id": decision_id,
                            "execution_run_id": run_id, "source_id": "agent-harness", "next_source_sequence": 1}
     # Enqueue order, before any sorting, is sequence order, with host and hook interleaved.
     assert [sequence for sequence, _ in entered] == list(range(9))
@@ -1185,8 +1187,26 @@ def test_run_bound_reports_share_the_run_stream(tmp_path):
         identity(str(uuid4()))
 
 
-def kwargs_task(adapter, run_id):
-    return adapter._runs[run_id]["request"]["task_id"]
+def test_active_execution_run_ids_are_scoped_to_the_task(tmp_path):
+    env = routed_fixture(tmp_path)
+    adapter = env.adapter
+    active_ids, = require(adapter, "active_execution_run_ids")
+    task_id = env.task("a")["request"]["task_id"]
+    other_task_id = env.task("b")["request"]["task_id"]
+    prepared = adapter.prepare(mode="main", dry_run=False, **env.kwargs)
+    assert active_ids(task_id) == ()
+    observed = []
+
+    def execute(spec, **_k):
+        observed.append(active_ids(task_id))
+        assert active_ids(other_task_id) == ()
+        return result_for()
+
+    result = adapter.launch(execute, spec_for(prepared))
+    run_id = result.jevdrill_execution_run["execution_run_id"]
+    assert observed == [(run_id,)]
+    assert active_ids(task_id) == ()
+    assert adapter.run_event_identity(run_id)["task_id"] == task_id
 
 
 def test_run_report_counts_track_entries_and_losses(tmp_path):

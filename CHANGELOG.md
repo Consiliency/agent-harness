@@ -8,6 +8,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
+- JEVHOST SL-9 documents the run-bound report hook and adds
+  `JevDrillAdapter.active_execution_run_ids(task_id)` for hosts reporting during execution.
+
 - LaneExec tracks launch ownership, renewal, cancellation and cleanup by generation. Release
   and reap retain an allocation while cleanup evidence is unresolved. Trusted scheduler
   calls can pass an immutable lane context through the launch service.
