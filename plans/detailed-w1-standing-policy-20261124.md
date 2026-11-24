@@ -53,7 +53,7 @@ SL-2 — Dotfiles integration
 
 ### SL-1 — FIRSTSEAT runtime
 
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_window.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_window_w1_policy.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/tests/test_seat_window_w1_policy.py`, `phase-loop-runtime/tests/test_seat_window_grants.py`, `phase-loop-runtime/tests/test_seat_window_vendor_neutral.py`, `phase-loop-runtime/tests/test_seat_qualification_host_context.py`
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_window.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_window_w1_policy.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/tests/test_seat_window_w1_policy.py`, `phase-loop-runtime/tests/test_seat_window_grants.py`, `phase-loop-runtime/tests/test_seat_window_vendor_neutral.py`, `phase-loop-runtime/tests/test_seat_qualification_host_context.py`, `phase-loop-runtime/tests/test_panel_invoker.py` and its `phase-loop-runtime/tests/test_panel_invoker_*.py` siblings (companion tests for `panel_invoker.py`; select node IDs when running them)
 - **Interfaces consumed**: IF-0-FIRSTSEAT-7
 - **Tasks**
   - test: Exercise the production entrypoints with the provider-free controls
