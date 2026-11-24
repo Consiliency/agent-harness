@@ -5,12 +5,15 @@ Tests that need an adapter interface absent from the base fail at an explicit av
 assertion naming it, so the base outcome is recorded separately from semantic failures.
 """
 
+import hashlib
 import json
+import os
 import sqlite3
 import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -19,7 +22,7 @@ from uuid import uuid4
 
 import pytest
 
-from phase_loop_runtime import jevdrill_adapter
+from phase_loop_runtime import jevdrill_adapter, jevdrill_queue, windows_storage
 from phase_loop_runtime.jevdrill_adapter import JevDrillTransport, JevDrillUnavailable
 from phase_loop_runtime.launcher import LaunchResult
 from jevdrill_fixture_values import load_rows
@@ -691,21 +694,19 @@ def test_competing_launches_enter_the_executor_once(tmp_path):
     adapter, _, _, kwargs, _, _ = adapter_fixture(tmp_path)  # max_attempts=1
     specs = [spec_for(adapter.prepare(mode="main", dry_run=False, **kwargs)) for _ in range(2)]
     barrier = threading.Barrier(2)
-    entries, outcomes = [], []
+    entries = []
 
     def compete(spec):
         barrier.wait(timeout=5)
         try:
             adapter.launch(counting_executor(entries), spec)
-            outcomes.append("launched")
         except JevDrillUnavailable as exc:
-            outcomes.append(str(exc))
+            return str(exc)
+        return "launched"
 
-    threads = [threading.Thread(target=compete, args=(spec,)) for spec in specs]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=30)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        launches = [pool.submit(compete, spec) for spec in specs]
+        outcomes = [launch.result(timeout=30) for launch in launches]
     assert len(entries) == 1, "two competing launches both reached the executor"
     assert sorted(outcomes) == ["Retry budget is exhausted", "launched"]
 
@@ -1137,7 +1138,12 @@ def evaluation_payload(index):
             "rubric_revision": "1", "measurements": []}
 
 
-def test_run_bound_reports_share_the_run_stream(tmp_path):
+def report_type(event):
+    payload = event["payload"]
+    return payload.get("event_type", payload["kind"])
+
+
+def test_run_bound_reports_share_the_run_stream(tmp_path, monkeypatch):
     adapter, inputs, _, kwargs, calls, _ = adapter_fixture(tmp_path)
     identity, enqueue, counts = require(adapter, "run_event_identity", "enqueue_run_event", "run_report_counts")
     active_ids, = require(adapter, "active_execution_run_ids")
@@ -1146,45 +1152,331 @@ def test_run_bound_reports_share_the_run_stream(tmp_path):
     decision_id = adapter.last_decision["details"]["routing_decision_id"]
     entered = []  # (sequence, kind) in the order reports reach the queue
     enqueue_queue = adapter.queue.enqueue
+    flush = adapter.flush
+    adapter.flush = lambda: "empty"  # inspect durable reports before delivery
 
     def ordered_enqueue(report):
-        entered.append((report["event"]["source_sequence"], report["event"]["payload"]["kind"]))
-        time.sleep(0.002)  # widen the window for a racing producer
+        entered.append((report["event"]["source_sequence"], report_type(report["event"])))
         return enqueue_queue(report)
 
     adapter.queue.enqueue = ordered_enqueue
     observed, hooks = [], []
+    ready = threading.Barrier(2, timeout=5)
+
+    def hook(run_id, index):
+        if index == 0:
+            ready.wait()
+        return enqueue(run_id, evaluation_payload(index))
 
     def execute(spec, **_k):
         run_id, = active_ids(task_id)
         observed.append(identity(run_id))
         # Hooks race the host's own terminal and usage reports after the executor returns.
-        hooks.extend(threading.Thread(target=enqueue, args=(run_id, evaluation_payload(i))) for i in range(6))
-        for hook in hooks:
-            hook.start()
+        hooks.extend(pool.submit(hook, run_id, i) for i in range(6))
+        ready.wait()
         return result_for()
 
-    result = adapter.launch(execute, spec_for(prepared))
-    for hook in hooks:
-        hook.join()
-    run_id = result.jevdrill_execution_run["execution_run_id"]
+    report = adapter._report
+
+    def report_then_hook(binding, event_type=None, **options):
+        disposition = report(binding, event_type, **options)
+        if event_type == "completed":
+            worker = pool.submit(hook, binding["run_id"], 6)
+            hooks.append(worker)
+            assert worker.result(timeout=5) == "queued"
+        return disposition
+
+    monkeypatch.setattr(adapter, "_report", report_then_hook)
+    final_slot = threading.Barrier(2, timeout=5)
+
+    def compete_for_slot(run_id, index):
+        final_slot.wait()
+        return hook(run_id, index)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        result = adapter.launch(execute, spec_for(prepared))
+        run_id = result.jevdrill_execution_run["execution_run_id"]
+        assert [future.result(timeout=5) for future in hooks] == ["queued"] * 7
+        adapter.queue.MAX_RECORDS = 11
+        after_launch = {i: pool.submit(compete_for_slot, run_id, i) for i in (7, 8)}
+        dispositions = {i: future.result(timeout=5) for i, future in after_launch.items()}
+    assert sorted(dispositions.values()) == ["overflow", "queued"]
+    queued_after_launch, = [i for i, disposition in dispositions.items() if disposition == "queued"]
     assert observed[0] == {"task_id": task_id, "routing_decision_id": decision_id,
                            "execution_run_id": run_id, "source_id": "agent-harness", "next_source_sequence": 1}
     # Enqueue order, before any sorting, is sequence order, with host and hook interleaved.
-    assert [sequence for sequence, _ in entered] == list(range(9))
-    assert {kind for _, kind in entered} == {"lifecycle", "usage", "evaluation"}
-    assert identity(run_id)["next_source_sequence"] == 9
+    assert [sequence for sequence, _ in entered] == list(range(12))
+    assert identity(run_id)["next_source_sequence"] == 12
+    assert counts(run_id) == {"queued": 11, "losses": {"overflow": 1}}
+    assert adapter.queue.status() == {"records": 11, "dispositions": {"overflow": 1}}
+    adapter.flush = flush
     drain(adapter)
     events = delivered(calls, run_id)
-    assert sorted(e["source_sequence"] for e in events) == list(range(9))
+    assert [(event["source_sequence"], report_type(event)) for event in events] == entered[:-1]
+    assert [report_type(event) for event in events if report_type(event) != "evaluation"] == [
+        "started", "completed", "usage",
+    ]
+    evaluations = [e["payload"]["check_results"] for e in events if report_type(e) == "evaluation"]
+    assert {tuple(checks.items()) for checks in evaluations} == {
+        ((hashlib.sha256(f"check-{i}".encode()).hexdigest(), True),) for i in (*range(7), queued_after_launch)
+    }
+    assert report_type(events[-1]) == "evaluation"
+    terminal_evaluation, = [e for e in events if e["payload"].get("check_results") == {
+        hashlib.sha256(b"check-6").hexdigest(): True,
+    }]
+    completed, = [e for e in events if report_type(e) == "completed"]
+    usage, = [e for e in events if report_type(e) == "usage"]
+    assert completed["source_sequence"] < terminal_evaluation["source_sequence"] < usage["source_sequence"]
     assert len({e["source_id"] for e in events}) == 1
     assert {(e["task_id"], e["routing_decision_id"]) for e in events} == {(observed[0]["task_id"], decision_id)}
-    assert counts(run_id) == {"queued": 9, "losses": {}}
+    assert adapter.queue.status() == {"records": 0, "dispositions": {"overflow": 1}}
 
+
+def test_run_bound_report_refusals_leave_counts_unchanged(tmp_path):
+    adapter, _, _, kwargs, _, _ = adapter_fixture(tmp_path)
+    prepared = adapter.prepare(mode="main", dry_run=False, **kwargs)
+    result = adapter.launch(lambda spec, **_k: result_for(), spec_for(prepared))
+    run_id = result.jevdrill_execution_run["execution_run_id"]
+    counts_before = adapter.run_report_counts(run_id)
+    queue_before = adapter.queue.status()
     with pytest.raises(ValueError, match="non-lifecycle"):
-        enqueue(run_id, {"kind": "lifecycle", "event_type": "completed", "applied_plan_id": None, "reason": None})
+        adapter.enqueue_run_event(run_id, {"kind": "lifecycle", "event_type": "completed"})
+    assert adapter.run_report_counts(run_id) == counts_before
     with pytest.raises(KeyError):
-        identity(str(uuid4()))
+        adapter.enqueue_run_event(str(uuid4()), evaluation_payload(0))
+    assert adapter.run_report_counts(run_id) == counts_before
+    assert adapter.queue.status() == queue_before
+
+
+@pytest.mark.parametrize("storage", ("native" if os.name == "nt" else "modeled",))
+@pytest.mark.parametrize(("stage", "kinds"), [
+    ("executor", ["started", "evaluation", "completed", "usage"]),
+    ("after_terminal", ["started", "completed", "evaluation", "usage"]),
+    ("after_launch", ["started", "completed", "usage", "evaluation"]),
+])
+def test_windows_run_bound_report_at_launch_stage(tmp_path, monkeypatch, storage, stage, kinds):
+    if storage == "modeled":
+        model_windows_queue_storage(monkeypatch)
+    adapter, inputs, _, kwargs, calls, _ = adapter_fixture(tmp_path)
+    prepared = adapter.prepare(mode="main", dry_run=False, **kwargs)
+    task_id = inputs["request"]["task_id"]
+    flush = adapter.flush
+    adapter.flush = lambda: "empty"
+    hooks = []
+
+    def queue_hook(run_id, *, active):
+        assert adapter.active_execution_run_ids(task_id) == ((run_id,) if active else ())
+        worker = pool.submit(adapter.enqueue_run_event, run_id, evaluation_payload(0))
+        hooks.append(worker)
+        assert worker.result(timeout=5) == "queued"
+
+    def execute(spec, **_k):
+        if stage == "executor":
+            run_id, = adapter.active_execution_run_ids(task_id)
+            queue_hook(run_id, active=True)
+        return result_for()
+
+    # Run the post-terminal hook after the real report call returns and releases
+    # the report lock, with the objective guard still held.
+    report = adapter._report
+
+    def report_then_hook(binding, event_type=None, **options):
+        disposition = report(binding, event_type, **options)
+        if stage == "after_terminal" and event_type == "completed":
+            assert disposition == "queued"
+            queue_hook(binding["run_id"], active=False)
+        return disposition
+
+    monkeypatch.setattr(adapter, "_report", report_then_hook)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        result = adapter.launch(execute, spec_for(prepared))
+        run_id = result.jevdrill_execution_run["execution_run_id"]
+        if stage == "after_launch":
+            queue_hook(run_id, active=False)
+        assert [worker.result(timeout=5) for worker in hooks] == ["queued"]
+    assert adapter.delivery_warnings == []
+    assert adapter.run_report_counts(run_id) == {"queued": 4, "losses": {}}
+    assert adapter.queue.status() == {"records": 4, "dispositions": {}}
+    adapter.flush = flush
+    drain(adapter)
+    assert [(event["source_sequence"], report_type(event)) for event in delivered(calls, run_id)] == list(enumerate(kinds))
+    assert adapter.queue.status() == {"records": 0, "dispositions": {}}
+
+
+def model_windows_queue_storage(monkeypatch):
+    """Exercise the Windows queue path with POSIX files and exclusive directory bindings."""
+    opened = {}
+
+    class BoundDirectory:
+        _check_deadline = windows_storage.BoundDirectory._check_deadline
+
+        def __init__(self, path, *, create_private, deadline=None):
+            assert create_private
+            if path in opened:
+                raise PermissionError("Modeled Windows directory sharing violation")
+            self.path, self.deadline = path, deadline
+            path.mkdir(parents=True, exist_ok=True)
+            opened[path] = self
+            self.flush()
+
+        def open_record(self, name, *, create):
+            assert opened[self.path] is self
+            flags = os.O_RDWR | os.O_CREAT if create else os.O_RDONLY
+            return os.open(self.path / name, flags, 0o600)
+
+        def flush(self):
+            assert opened[self.path] is self
+            self._check_deadline()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            assert opened.pop(self.path) is self
+
+    monkeypatch.setattr(jevdrill_queue, "os", SimpleNamespace(name="nt", close=os.close, fsync=os.fsync))
+    monkeypatch.setattr(windows_storage, "BoundDirectory", BoundDirectory)
+    return opened
+
+
+def test_windows_objective_binding_outlives_borrowed_transaction(tmp_path, monkeypatch):
+    opened = model_windows_queue_storage(monkeypatch)
+    q = jevdrill_queue.ReportQueue(tmp_path / "private" / "queue.sqlite", sanitize=deepcopy)
+    published, exit_guard, teardown, borrowing, finish = (threading.Event() for _ in range(5))
+    storage_lock = q._storage_lock
+    guard_thread = None
+
+    class ObserveTeardown:
+        acquire = storage_lock.acquire
+        release = storage_lock.release
+
+        def __enter__(self):
+            if threading.get_ident() == guard_thread:
+                if storage_lock.acquire(blocking=False):
+                    storage_lock.release()
+                    pytest.fail("The borrower did not hold the storage lock until transaction exit")
+                teardown.set()
+            return storage_lock.__enter__()
+
+        def __exit__(self, *exc):
+            return storage_lock.__exit__(*exc)
+
+    monkeypatch.setattr(q, "_storage_lock", ObserveTeardown())
+
+    def guard():
+        nonlocal guard_thread
+        guard_thread = threading.get_ident()
+        with q.objective_guard():
+            published.set()
+            assert exit_guard.wait(10)
+
+    def borrow():
+        with q._transaction():
+            borrowing.set()
+            assert finish.wait(10)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        holder = pool.submit(guard)
+        assert published.wait(5)
+        binding = opened[q.path.parent]
+        borrower = pool.submit(borrow)
+        try:
+            assert borrowing.wait(5)
+            exit_guard.set()
+            assert teardown.wait(5)
+            assert opened[q.path.parent] is binding
+        finally:
+            finish.set()
+            exit_guard.set()
+            borrower.result(timeout=5)
+            holder.result(timeout=5)
+        assert opened == {}
+        assert pool.submit(q.status).result(timeout=5)["records"] == 0
+    assert opened == {}
+
+
+def test_nested_windows_objective_guard_preserves_outer_binding(tmp_path, monkeypatch):
+    opened = model_windows_queue_storage(monkeypatch)
+    q = jevdrill_queue.ReportQueue(tmp_path / "private" / "queue.sqlite", sanitize=deepcopy)
+    with q.objective_guard():
+        binding = opened[q.path.parent]
+        with pytest.raises(RuntimeError, match="Nested Windows objective guard"):
+            with q.objective_guard():
+                pytest.fail("Nested guard admitted work")
+        assert q._objective_directory is binding
+        assert q.status()["records"] == 0
+    assert opened == {}
+
+
+def test_windows_queue_transaction_bounds_storage_lock_wait(tmp_path, monkeypatch):
+    opened = model_windows_queue_storage(monkeypatch)
+    q = jevdrill_queue.ReportQueue(tmp_path / "private" / "queue.sqlite", sanitize=deepcopy)
+
+    def busy(*, timeout):
+        assert timeout == 30
+        return False
+
+    monkeypatch.setattr(q, "_storage_lock", SimpleNamespace(acquire=busy))
+    with pytest.raises(TimeoutError, match="Report queue storage lock deadline expired"):
+        q.status()
+    assert opened == {}
+
+
+def test_run_reports_outlive_storage_admission_deadline(tmp_path, monkeypatch):
+    if os.name != "nt":
+        model_windows_queue_storage(monkeypatch)
+    clock = MonotonicClock()
+    monkeypatch.setattr(jevdrill_queue, "time", clock)
+    monkeypatch.setattr(windows_storage, "time", clock)
+    adapter, _, _, kwargs, calls, _ = adapter_fixture(tmp_path)
+    prepared = adapter.prepare(mode="main", dry_run=False, **kwargs)
+
+    def execute(spec, **_k):
+        clock.advance_ms(6000)
+        return result_for()
+
+    result = adapter.launch(execute, spec_for(prepared))
+    run_id = result.jevdrill_execution_run["execution_run_id"]
+    assert adapter.delivery_warnings == []
+    assert adapter.run_report_counts(run_id) == {"queued": 3, "losses": {}}
+    assert delivered(calls, run_id), "launch should automatically flush"
+    drain(adapter)
+    assert [(event["source_sequence"], report_type(event)) for event in delivered(calls, run_id)] == [
+        (0, "started"), (1, "completed"), (2, "usage"),
+    ]
+    assert adapter.queue.status() == {"records": 0, "dispositions": {}}
+
+
+@pytest.mark.parametrize("committed", [False, True])
+def test_run_bound_storage_error_does_not_reuse_sequence(tmp_path, monkeypatch, committed):
+    adapter, _, _, kwargs, calls, _ = adapter_fixture(tmp_path)
+    prepared = adapter.prepare(mode="main", dry_run=False, **kwargs)
+    result = adapter.launch(lambda spec, **_k: result_for(), spec_for(prepared))
+    run_id = result.jevdrill_execution_run["execution_run_id"]
+    enqueue = adapter.queue.enqueue
+    failure = OSError("synthetic queue storage error")
+    counts_before = adapter.run_report_counts(run_id)
+    sequence_before = adapter.run_event_identity(run_id)["next_source_sequence"]
+
+    def fail(report):
+        if committed:
+            assert enqueue(report) == "queued"
+        raise failure
+
+    with monkeypatch.context() as local:
+        local.setattr(adapter.queue, "enqueue", fail)
+        with pytest.raises(OSError) as raised:
+            adapter.enqueue_run_event(run_id, evaluation_payload(0))
+        assert raised.value is failure
+
+    assert adapter.run_event_identity(run_id)["next_source_sequence"] == sequence_before + 1
+    assert adapter.run_report_counts(run_id) == counts_before
+    assert adapter.enqueue_run_event(run_id, evaluation_payload(1)) == "queued"
+    assert adapter.run_report_counts(run_id) == {"queued": 4, "losses": {}}
+    drain(adapter)
+    assert [event["source_sequence"] for event in delivered(calls, run_id)] == (
+        [0, 1, 2, 3, 4] if committed else [0, 1, 2, 4]
+    )
 
 
 def test_active_execution_run_ids_are_scoped_to_the_task(tmp_path):
@@ -1228,3 +1520,54 @@ def test_run_report_counts_track_entries_and_losses(tmp_path):
     assert counts(run_id) == {"queued": 4, "losses": {"overflow": 1, "deleted": 1}}
     assert adapter.queue.status() == {"records": 0, "dispositions": {"overflow": 1, "deleted": 5}}
     assert [n["status"] for n in notices if n.get("kind") == "transport_disposition"] == ["overflow", "deleted"]
+
+
+@pytest.mark.parametrize("expected", ["queued", "deleted", "duplicate", "conflict", "overflow"])
+def test_run_bound_report_disposition_matches_durable_queue_and_counts(tmp_path, monkeypatch, expected):
+    adapter, inputs, _, kwargs, _, _ = adapter_fixture(tmp_path)
+    prepared = adapter.prepare(mode="main", dry_run=False, **kwargs)
+    adapter.flush = lambda: "empty"
+    result = adapter.launch(lambda spec, **_k: result_for(), spec_for(prepared))
+    run_id = result.jevdrill_execution_run["execution_run_id"]
+    queue = adapter.queue
+    enqueue = queue.enqueue
+
+    def durable_reports():
+        with queue._transaction() as db:
+            return {row["event"]: json.loads(row["payload"]) for row in db.execute("SELECT event, payload FROM reports")}
+
+    if expected == "deleted":
+        request = inputs["request"]
+        queue.delete_task(request["envelope"]["project_id"], request["envelope"]["workspace_id"], request["task_id"])
+    if expected == "overflow":
+        queue.MAX_RECORDS = 3
+
+    # A hook normally generates a fresh event ID. Seed the real queue with that
+    # ID just before enqueue to exercise its duplicate and conflict paths.
+    before = None
+    event_id = None
+
+    def enqueue_with_setup(report):
+        nonlocal before, event_id
+        event_id = report["event"]["event_id"]
+        if expected in ("duplicate", "conflict"):
+            seed = deepcopy(report)
+            if expected == "conflict":
+                seed["event"]["payload"] = evaluation_payload(99)
+            assert enqueue(seed) == "queued"
+        before = durable_reports()
+        return enqueue(report)
+
+    monkeypatch.setattr(queue, "enqueue", enqueue_with_setup)
+    assert adapter.enqueue_run_event(run_id, evaluation_payload(0)) == expected
+    after = durable_reports()
+    if expected == "queued":
+        assert after.keys() - before.keys() == {event_id}
+        entry = after.pop(event_id)
+        assert entry["event"]["execution_run_id"] == run_id
+        assert entry["event"]["source_sequence"] == 3
+        assert entry["event"]["payload"]["kind"] == "evaluation"
+        assert adapter.run_report_counts(run_id) == {"queued": 4, "losses": {}}
+    else:
+        assert adapter.run_report_counts(run_id) == {"queued": 3, "losses": {expected: 1}}
+    assert after == before

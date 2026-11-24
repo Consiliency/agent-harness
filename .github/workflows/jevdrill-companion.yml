@@ -12,6 +12,7 @@ name: jevdrill-companion
 #     pass by node ID.
 # A dispatch adds the same two legs on macos-15 and windows-2025, and an informational
 # harness-3.14 leg that is never R3 or R6 evidence (JEVHOST §1.1 item 4).
+# A separate host-gaps job runs on the same platforms as the Python 3.12 legs.
 
 on:
   push:
@@ -29,6 +30,7 @@ on:
       - phase-loop-runtime/tests/test_jevdrill_adapter.py
       - phase-loop-runtime/tests/test_jevdrill_diagnostics.py
       - phase-loop-runtime/tests/test_jevdrill_discovery.py
+      - phase-loop-runtime/tests/test_jevdrill_host_gaps.py
       - phase-loop-runtime/tests/test_jevdrill_input.py
       - phase-loop-runtime/tests/test_jevdrill_queue.py
       - phase-loop-runtime/tests/test_jevdrill_usage.py
@@ -72,6 +74,53 @@ defaults:
     shell: bash
 
 jobs:
+  host-gaps:
+    name: host gaps (${{ matrix.os_label }}, py3.12)
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: >-
+        ${{ fromJSON(github.event_name == 'workflow_dispatch' && '{"include":[{"runner":"ubuntu-24.04","os_label":"linux"},{"runner":"macos-15","os_label":"macos"},{"runner":"windows-2025","os_label":"windows"}]}' || '{"include":[{"runner":"ubuntu-24.04","os_label":"linux"}]}') }}
+    steps:
+      - name: Keep checked-out bytes unconverted
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Sync the harness
+        run: uv sync --project phase-loop-runtime --group test --extra visual --locked --python 3.12
+
+      - name: Compute PYTHONPATH
+        shell: bash
+        env:
+          HOST_OS: ${{ runner.os }}
+          WORKSPACE: ${{ github.workspace }}
+        run: |
+          if [ "$HOST_OS" = "Windows" ]; then sep=';'; slash="\\"; else sep=':'; slash='/'; fi
+          root="${WORKSPACE}${slash}phase-loop-runtime"
+          echo "PYTHONPATH=${root}${slash}src${sep}${root}${slash}tests" >> "$GITHUB_ENV"
+
+      - name: Run host-gaps tests
+        timeout-minutes: 15
+        working-directory: phase-loop-runtime
+        run: |
+          junit="$RUNNER_TEMP/jevdrill-host-gaps.xml"
+          uv run --no-sync python -m pytest -q -rA -p no:cacheprovider -m "not dotfiles_integration" --junitxml="$junit" tests/test_jevdrill_host_gaps.py
+
+      - name: Upload the host-gaps junit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jevdrill-host-gaps-${{ matrix.os_label }}-py3.12
+          path: ${{ runner.temp }}/jevdrill-host-gaps.xml
+          if-no-files-found: warn
+
   receipt:
     name: ${{ matrix.job_name }}
     runs-on: ${{ matrix.runner }}

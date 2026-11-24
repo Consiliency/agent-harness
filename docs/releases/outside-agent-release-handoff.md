@@ -39,6 +39,12 @@ and exposes `JevDrillAdapter.active_execution_run_ids(task_id)`
 (agent-harness#2155). The changelog also records two test-only fixes
 (agent-harness#2144, agent-harness#2145).
 
+On native Windows, JEV Drill run-bound hook reports reuse the launch's queue
+binding. The admission deadline ends when the hook acquires the objective guard.
+Storage errors reach the caller, and an unconfirmed enqueue may already have been
+stored. A new companion host-gaps CI job covers the hook, and a JEVHOST amendment
+records one frozen-test body edit (agent-harness#2162, agent-harness#2161).
+
 Typed jailed Claude TUI failures such as `claude_tui_stalled` retain a redacted
 screen tail in the private 0600 `leg-logs/<name>.log`. The failure's `detail`
 includes the run-relative log reference (agent-harness#2158).

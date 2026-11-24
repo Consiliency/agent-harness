@@ -18,6 +18,8 @@ class QueueCorruption(RuntimeError):
 
 
 class ReportQueue:
+    """Store durable reports. The Windows binding is shared within one instance and process."""
+
     MAX_BYTES = 16 * 1024 * 1024
     MAX_RECORDS = 10_000
     MAX_RECORD_BYTES = 1024 * 1024
@@ -28,7 +30,8 @@ class ReportQueue:
         self.sanitize = sanitize
         self.clock = clock
         self._objective_lock = threading.RLock()
-        self._objective_storage = threading.local()
+        self._storage_lock = threading.RLock()
+        self._objective_directory = None
         self.corruption_marker = path.with_suffix(path.suffix + ".corrupt")
         if self.corruption_marker.exists():
             raise QueueCorruption("Report queue is blocked by recorded corruption")
@@ -75,7 +78,7 @@ class ReportQueue:
 
     @contextmanager
     def objective_guard(self):
-        from .file_lock import acquire_exclusive, release_exclusive
+        from .file_lock import release_exclusive
         lock_path = self.path.with_suffix(self.path.suffix + ".objective-lock")
         until = time.monotonic() + 5
         if not self._objective_lock.acquire(timeout=max(0, until - time.monotonic())):
@@ -83,26 +86,63 @@ class ReportQueue:
         with ExitStack() as stack:
             stack.callback(self._objective_lock.release)
             if os.name == "nt":
-                from .windows_storage import BoundDirectory
-                directory = stack.enter_context(BoundDirectory(self.path.parent, create_private=True, deadline=until))
-                self._objective_storage.directory = directory
-                stack.callback(delattr, self._objective_storage, "directory")
-                fd = directory.open_record(lock_path.name, create=True)
+                stack.enter_context(self._windows_objective_guard(lock_path, until))
             else:
                 fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
-            stack.callback(os.close, fd)
-            while True:
-                try:
-                    acquire_exclusive(fd, blocking=False)
-                    break
-                except BlockingIOError:
-                    if time.monotonic() >= until:
-                        raise TimeoutError("Objective lifecycle lock deadline expired")
-                    time.sleep(0.01)
+                stack.callback(os.close, fd)
+                self._acquire_objective_file_lock(fd, until)
+                stack.callback(release_exclusive, fd)
+            yield
+
+    @staticmethod
+    def _acquire_objective_file_lock(fd, until):
+        from .file_lock import acquire_exclusive
+
+        while True:
             try:
-                yield
+                acquire_exclusive(fd, blocking=False)
+                return
+            except BlockingIOError:
+                if time.monotonic() >= until:
+                    raise TimeoutError("Objective lifecycle lock deadline expired")
+                time.sleep(0.01)
+
+    @contextmanager
+    def _windows_objective_guard(self, lock_path, until):
+        from .file_lock import release_exclusive
+        from .windows_storage import BoundDirectory
+
+        storage = ExitStack()
+        if not self._storage_lock.acquire(timeout=max(0, until - time.monotonic())):
+            raise TimeoutError("Objective lifecycle lock deadline expired")
+        admitted = False
+        try:
+            try:
+                if self._objective_directory is not None:
+                    raise RuntimeError("Nested Windows objective guard is unsupported")
+                directory = storage.enter_context(BoundDirectory(self.path.parent, create_private=True, deadline=until))
+                fd = directory.open_record(lock_path.name, create=True)
+                storage.callback(os.close, fd)
+                self._acquire_objective_file_lock(fd, until)
+                storage.callback(release_exclusive, fd)
+                if time.monotonic() >= until:
+                    raise TimeoutError("Objective lifecycle lock deadline expired")
+                directory.deadline = None
+                admitted = True
+                self._objective_directory = directory
+            except BaseException:
+                if not admitted:
+                    storage.close()
+                raise
             finally:
-                release_exclusive(fd)
+                self._storage_lock.release()
+            # The executor can wait for hooks because the guard body leaves
+            # the storage lock free for queue transactions.
+            yield
+        finally:
+            if admitted:
+                with self._storage_lock, storage:
+                    self._objective_directory = None
 
     def bind_objective(self, envelope, ref):
         key = (envelope["project_id"], envelope["workspace_id"], envelope["harness_id"])
@@ -146,12 +186,8 @@ class ReportQueue:
             db.execute("DELETE FROM objective_bindings WHERE project=? AND workspace=? AND objective=?",
                        (project, workspace, objective))
 
-    def _mark_corrupt(self, bound=None):
+    def _mark_corrupt(self, bound):
         if os.name == "nt":
-            from .windows_storage import BoundDirectory
-            if bound is None:
-                with BoundDirectory(self.path.parent, create_private=True) as binding:
-                    return self._mark_corrupt(binding)
             try:
                 bound.create_record(self.corruption_marker.name, b'{"status":"corrupt","automatic_action":"none"}\n')
             except FileExistsError:
@@ -168,57 +204,51 @@ class ReportQueue:
 
     @contextmanager
     def _transaction(self):
-        if self.corruption_marker.exists():
-            raise QueueCorruption("Report queue is blocked by recorded corruption")
-        storage = ExitStack()
-        bound = None
-        if os.name == "nt":
-            from .windows_storage import BoundDirectory
-            try:
-                bound = getattr(self._objective_storage, "directory", None)
+        with ExitStack() as storage:
+            bound = None
+            if os.name == "nt":
+                if not self._storage_lock.acquire(timeout=30):
+                    raise TimeoutError("Report queue storage lock deadline expired")
+                storage.callback(self._storage_lock.release)
+            if self.corruption_marker.exists():
+                raise QueueCorruption("Report queue is blocked by recorded corruption")
+            if os.name == "nt":
+                from .windows_storage import BoundDirectory
+                bound = self._objective_directory
                 if bound is None:
                     bound = storage.enter_context(BoundDirectory(self.path.parent, create_private=True))
                 for name in (self.path.name, self.path.name + "-journal"):
                     storage.callback(os.close, bound.open_record(name, create=False))
-            except BaseException:
-                storage.close()
-                raise
-        try:
             db = sqlite3.connect(self.path, timeout=5)
-        except BaseException:
-            storage.close()
-            raise
-        db.row_factory = sqlite3.Row
-        try:
-            if bound is not None:
-                if db.execute("PRAGMA journal_mode=PERSIST").fetchone()[0] != "persist":
-                    raise QueueCorruption("Private persistent journal is unavailable")
-                db.execute("PRAGMA synchronous=EXTRA")
-                db.execute("PRAGMA temp_store=MEMORY")
-            db.execute("PRAGMA secure_delete=ON")
-            db.execute("BEGIN IMMEDIATE")
-            yield db
-            db.commit()
-            if bound is not None:
-                bound.flush()
-        except sqlite3.DatabaseError as error:
-            db.rollback()
-            code = getattr(error, "sqlite_errorcode", 0) & 0xFF
-            if code in (sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB):
-                if not self.corruption_marker.exists():
-                    self._mark_corrupt(bound)
-                raise QueueCorruption("Report queue is corrupt; delivery stopped") from None
-            raise
-        except QueueCorruption:
-            db.rollback()
-            self._mark_corrupt(bound)
-            raise
-        except BaseException:
-            db.rollback()
-            raise
-        finally:
-            db.close()
-            storage.close()
+            storage.callback(db.close)
+            db.row_factory = sqlite3.Row
+            try:
+                if bound is not None:
+                    if db.execute("PRAGMA journal_mode=PERSIST").fetchone()[0] != "persist":
+                        raise QueueCorruption("Private persistent journal is unavailable")
+                    db.execute("PRAGMA synchronous=EXTRA")
+                    db.execute("PRAGMA temp_store=MEMORY")
+                db.execute("PRAGMA secure_delete=ON")
+                db.execute("BEGIN IMMEDIATE")
+                yield db
+                db.commit()
+                if bound is not None:
+                    bound.flush()
+            except sqlite3.DatabaseError as error:
+                db.rollback()
+                code = getattr(error, "sqlite_errorcode", 0) & 0xFF
+                if code in (sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB):
+                    if not self.corruption_marker.exists():
+                        self._mark_corrupt(bound)
+                    raise QueueCorruption("Report queue is corrupt; delivery stopped") from None
+                raise
+            except QueueCorruption:
+                db.rollback()
+                self._mark_corrupt(bound)
+                raise
+            except BaseException:
+                db.rollback()
+                raise
 
     @staticmethod
     def _count(db, reason, count=1):

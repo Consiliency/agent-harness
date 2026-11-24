@@ -28,6 +28,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- On native Windows, JEV Drill run-bound hook reports reuse the launch's queue binding.
+  The admission deadline ends when the hook acquires the objective guard. Storage errors
+  reach the caller, and an unconfirmed enqueue may already have been stored
+  (agent-harness#2162, agent-harness#2161).
 - LaneExec repins the agent-toolkit credential proxy for Consiliency/agent-toolkit#103
   and updates the launch protocol digest (LANEEXEC-v1-errata-6, agent-harness#2164).
 - Jailed Claude TUI failures retain screened terminal tails in private advisor-board leg
