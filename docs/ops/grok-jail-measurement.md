@@ -7,7 +7,7 @@ launch, as `plans/artifacts/grok-jail-tool-surface-contract-v1.md` §7.1 require
 SL-4, IF-0-GROK-4; Consiliency/agent-harness#1820).
 
 It is run only under the owner's grant in jail contract §7, on the designated seat host, on
-one installed release that carries erratum 8's lanes and GROK SL-0 to SL-4. The
+one installed release that carries TS contract erratum 8's lanes and GROK SL-0 to SL-4. The
 confirmation and hosted boundary check are prerequisites for that grant.
 
 ## What the grant allows
@@ -32,7 +32,7 @@ image on the installed release.
 - **`unspawned`.** A launch refused before its spawn hook ran (the qualification check, the
   identity probe, the capped preflight, the sink probe or an earlier step) leaves no
   admission file. The reservation is settled `unspawned` and nothing is charged.
-  Under [OWNER-DECISION r7-1 (A′)](../../plans/artifacts/grok-jail-tool-surface-contract-v1-erratum-r8.md),
+  Under r8-3 of the [jail contract revision r8](../../plans/artifacts/grok-jail-tool-surface-contract-v1-erratum-r8.md),
   a first `grok_sink_probe_timeout` on that label permits a later attended invocation
   of `--route staged` without spending a retry. The current invocation exits and leaves
   any following routes unattempted. A second `unspawned` on that label or any refusal
@@ -116,18 +116,21 @@ timeout 600 phase-loop seat-window measure-tools --vendor grok --binary "$GROK_B
 
 Jail contract §7 lists these preconditions. Each is confirmed before the grant is opened, and
 the script below stops before any reservation unless the credential check passes.
+Items r8-4 and r8-5 of the [jail contract revision r8](../../plans/artifacts/grok-jail-tool-surface-contract-v1-erratum-r8.md)
+both block the §7 grant run until `GROK-R8-FOLLOWUP` delivers them.
 
-1. The owner signs in afresh with `grok login` on the seat host immediately before the slot.
+1. The owner signs in afresh through the attended managed Grok sign-in on the seat host
+   immediately before the slot.
 2. `VL` and `VL2` have passed on the seat host. The owner confirmation and the hosted
    boundary for `GROK_HOSTED_CHECK_RUN` have been recorded on the installed release.
 3. Where a Gemini window refresh is required, it is separately authorised and completed
    first, on the same installed release.
-4. The erratum 8 item 4 staging check passes: `--verify-probe initial` (step 1 below) checks
+4. The TS contract erratum 8 item 4 staging check passes: `--verify-probe initial` (step 1 below) checks
    the managed policy read-only, before anything is projected.
 5. Shared compute: a quiet slot, both shared-compute locks held, the memory-PSI gate, and
    `MemorySwapMax=0` scopes, as for D4.
-6. The credential metadata record is published. At the attended sign-in boundary, the
-   trusted store writer or an owner-run exporter writes `credential-metadata.json` into the
+6. The credential-store writer publishes the credential metadata after successful attended
+   managed sign-in (r8-5). It writes `credential-metadata.json` into the
    operator's `.grok` store, mode 0600, with exactly three keys: `subscription` (`true`),
    `expires_at` (integer Unix seconds) and `auth_state` (the signed-in `auth.json`'s
    `device`, `inode`, `size`, `mtime_ns` and `ctime_ns`). It holds no token material. The
