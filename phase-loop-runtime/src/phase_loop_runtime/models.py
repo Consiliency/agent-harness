@@ -550,6 +550,9 @@ class PromptBundle:
     bridge_skill_inventory: tuple[dict[str, Any], ...] = ()
     # Internal launch payload; excluded from serialized prompt metadata.
     skill_reference_files: tuple[tuple[str, bytes], ...] = ()
+    # Opaque routing id stamped by a host integration's prepare (JEVHOST SL-8). It is never
+    # rendered or serialized, and it survives ``dataclasses.replace`` and field copies.
+    routing_provenance: str | None = None
 
     def __post_init__(self) -> None:
         require_literal(self.injection_mode, INJECTION_MODES, "injection mode")
