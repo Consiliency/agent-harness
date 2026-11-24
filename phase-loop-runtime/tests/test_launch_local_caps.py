@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from stat import ST_DEV
 import subprocess
 import tempfile
 import threading
@@ -110,6 +111,68 @@ def test_mount_device(tmp_path, monkeypatch, record_testsuite_property, case):
                     ValueError,
                     "anonymous attempt device" if case == "M3" else "different staging device",
                 )
+
+
+def test_new_scratch_device_mismatch_refuses_before_claim(tmp_path, monkeypatch):
+    from phase_loop_runtime import launch_exec, launch_supervisor as sup
+
+    admitted_fixture(monkeypatch, tmp_path)
+    monkeypatch.setattr(launch_exec, "isolated_admission", lambda *a, **k: None)
+    local_devices = sup.local_devices
+    fstat = os.fstat
+    generation_scratch = None
+
+    def check_devices(directories):
+        if directories[-1] != generation_scratch:
+            return local_devices(directories)
+
+        scratch = generation_scratch.stat()
+
+        def other_device(fd):
+            info = fstat(fd)
+            if (info.st_dev, info.st_ino) == (scratch.st_dev, scratch.st_ino):
+                fields = list(info)
+                fields[ST_DEV] = os.makedev(os.major(info.st_dev), os.minor(info.st_dev) ^ 1)
+                return os.stat_result(fields)
+            return info
+
+        with monkeypatch.context() as patch:
+            patch.setattr(os, "fstat", other_device)
+            return local_devices(directories)
+
+    def runner(h):
+        nonlocal generation_scratch
+        prepared = svc.lifecycle.launch_prepare_record(h.reservation_id)
+        generation_scratch = svc.lifecycle.launch_run_dir(prepared["run_id"]) / h.generation
+        sup.run_supervisor(
+            h,
+            effects=sup.SupervisorEffects(
+                svc.lifecycle,
+                svc.capped_popen,
+                svc.load_caps,
+                svc.readiness_code,
+                time.monotonic,
+                containment_ready=lambda: True,
+            ),
+        )
+
+    def popen(*args, **kwargs):
+        pytest.fail("device mismatch must refuse before spawn")
+
+    monkeypatch.setattr(sup, "local_devices", check_devices)
+    _, svc, req = local_case(tmp_path, capped_popen=popen, supervisor_runner=runner)
+    result = svc.launch(req, cancelled=threading.Event())
+
+    assert (result.state, result.code, result.worker_invocations) == (
+        "refused", "sandbox_placement_capability_unmet", 0,
+    )
+    life = svc.lifecycle
+    assert life.launch_claim_record(req.reservation.reservation_id) is None
+    assert generation_scratch is not None
+    for kind in ("scratch", "stage"):
+        assert life._launch_read(f"{kind}-intents", generation_scratch.name)["phase"] == "collected"
+    assert not any(generation_scratch.parent.iterdir())
+    assert not (life.launch_root / "stages" / generation_scratch.name).exists()
 
 
 @pytest.mark.parametrize("fault", ["publication", "caps", "spawn"])

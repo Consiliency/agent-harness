@@ -68,7 +68,7 @@ tree that binding §0 pins. Its items:
 | E2-1 | `capped_popen` takes `before_spawn` (agent-harness#2033); LaneExec never passes it. Collection is the landed reap thread, and the supervisor outlives it or reports `cleanup_pending`. |
 | E2-2 | SL-3 zero-egress amendment (owned by SL-8 since errata-3): every openshell launch goes through `sandbox_placement.openshell_launch_refusal` at the activation step, the host activation and egress check alongside the client opt-in (agent-harness#2003; owner egress ruling of 2026-11-19, quoted in binding §6). The ACTIVATE roadmap goal is agent-harness#2104. |
 | E2-3 | `execute_lane_waves` (agent-harness#1978) launches writable lanes. SL-4 guards the runner's concurrent branch: placement enabled never enters it. |
-| E2-4 | A RAM-backed `staging_root()`, or an override onto another device, refuses `capability_unmet` under the device rule (binding §11 E7-3). An exception from it, or from `readiness_code()`, is `capability_unmet`. |
+| E2-4 | A RAM-backed `staging_root()`, or an override onto another device, refuses `capability_unmet` under the two-check device rule (binding §6 E2-4) at the points in binding §11 E7-3. An exception from it, or from `readiness_code()`, is `capability_unmet`. |
 | E2-5 | Panel verdict and gates recorded; manifest `review_status` updated. |
 | E2-6 | The review-runner image pin is scoped. RR-1 is decided: a new parallel phase builds the pin record (binding §6 E2-6). |
 
@@ -83,8 +83,9 @@ STOP. Its items:
 | E3-3 | SL-3 is split: SL-3 (coordinator label SL-3a), SL-7 (SL-3b), SL-8 (SL-3c) and SL-9 (SL-3d), with numeric IDs because the validator requires them. Each former SL-3.1 obligation and SL-3.3 mutation has one owner in binding §7 E3-3, which also fixes the SL-8/SL-9 staging seam and the reduced dependency graph. |
 | E3-4 | The E2-4 mount cases skip with a named reason without fixture mounts, and run in the new `laneexec-mounts` workflow on a loop-backed second device and the runner's tmpfs. The SL-6 receipt needs a same-head run whose JUnit artifact shows all five cases (M1–M5) passed. No required check runs them; the gap is stated in binding §7 E3-4. |
 
-**Erratum LANEEXEC-v1-errata-7** (binding §11, 2026-11-24) records the five
-binding SL-8 interpretations from agent-harness#2160 under the frozen wire.
+**Erratum LANEEXEC-v1-errata-7** (binding §11, 2026-11-24, plan and binding
+only, wire unchanged) records the five binding SL-8 interpretations from
+agent-harness#2160.
 
 ## Interface Freeze Gates
 
