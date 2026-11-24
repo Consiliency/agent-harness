@@ -25,6 +25,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 - On Windows, JEV Drill hooks reuse the launch's report queue binding across
   threads, and long runs can still queue terminal and usage reports (agent-harness#2161).
+- Jailed Claude TUI failures retain screened terminal tails in private advisor-board leg logs.
+  Gemini credential refusals identify the matching field class in the private execution record,
+  and the board notice covers both seat tokens and per-launch proxy credentials.
 - Unconfirmed local launch renewals retain cleanup debt and can retry until the lease
   fencing boundary. Reap respects that boundary, and late writes cannot overwrite a
   retry's confirmed heartbeat (agent-harness#2151 follow-up).

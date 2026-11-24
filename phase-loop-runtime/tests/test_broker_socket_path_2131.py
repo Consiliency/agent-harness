@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import io
+import json
 import os
 import re
 import shutil
@@ -282,7 +283,7 @@ def _hermetic_board():
     return _BOARDS[0]
 
 
-def _board_run(where: Path, monkeypatch, *, failing: set[str]):
+def _board_run(where: Path, monkeypatch, *, failing: set[str], spawn_claude=None, json_output=False):
     """Run ``advisor-board --advisory`` through the real CLI, board dispatch and report.
     Only the seat spawn boundary is replaced, under the sanctioned factory control (the
     board's own authorization, minted once and returned again by the factory)."""
@@ -290,6 +291,8 @@ def _board_run(where: Path, monkeypatch, *, failing: set[str]):
     from phase_loop_runtime.cli import main as cli_main
 
     def spawn(leg, artifact, **_kw):
+        if leg == "claude" and spawn_claude is not None:
+            return spawn_claude()
         if leg in failing:
             raise OSError("AF_UNIX path too long")
         return ("OK", f"{OTHER_SEAT_TEXT}\nAGREE")
@@ -316,7 +319,7 @@ def _board_run(where: Path, monkeypatch, *, failing: set[str]):
     artifact.write_text("review me\n")
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        cli_main(["advisor-board", str(artifact), "--advisory"])
+        cli_main(["advisor-board", str(artifact), "--advisory", *(["--json"] if json_output else [])])
     return out.getvalue(), err.getvalue()
 
 
@@ -347,6 +350,134 @@ def test_advisor_board_keeps_only_the_failing_legs_log(tmp_path, monkeypatch):
     _out, err = _board_run(tmp_path / "passing", monkeypatch, failing=set())
     assert "leg failure logs kept" not in err
     assert [p.name for p in leg_log_runs.runs_parent().iterdir() if p.is_dir()] == [run.name]
+
+
+@pytest.fixture
+def jailed_claude_tui(tmp_path, monkeypatch):
+    jail = types.SimpleNamespace(leg="claude", provider_argv0="claude", env={})
+    seat = pi._JailedSeat(jail=jail, probe_jail=jail, holder_pid=1,
+                          token=b"fixture-seat-credential-cY78Nqv51", review_dir=tmp_path,
+                          seat_dir=tmp_path)
+    monkeypatch.setattr(pi, "_cleanup_jailed_seat", lambda seat, *, snapshots, **kw:
+                        shutil.rmtree(snapshots))
+
+    def with_tail(tail, *, code="claude_tui_stalled", model_turn=False):
+        journal = b'{"message":{"role":"assistant","model":"fixture"}}\n' if model_turn else b""
+        monkeypatch.setattr(pi._seat_uid, "read_in_h", lambda *args: journal)
+        monkeypatch.setattr(pi, "_run_claude_tui_session", lambda **kw:
+                            (1, "", pi._HarnessCode(code), tail))
+
+        def spawn():
+            sink = []
+            status, text = pi._exec_jailed_claude_leg(
+                seat, timeout_s=10, backstop_s=20, model=None, effort=None,
+                prompt="review", broker_evidence=None, failure_detail_sink=sink)
+            return status, text, sink[-1]
+
+        return spawn
+
+    return seat, with_tail
+
+
+def test_advisor_board_retains_the_screen_tail_for_a_typed_stall(
+        tmp_path, monkeypatch, jailed_claude_tui):
+    _seat, with_tail = jailed_claude_tui
+    screen = "Waiting at the editor"
+    private_path = str(tmp_path / "seat-only")
+    tail = pi._sanitized_pty_tail(f"\x1b[31m{screen}\x1b[0m {private_path}".encode(),
+                                  known=(private_path,))
+    out, err = _board_run(tmp_path / "stalled", monkeypatch, failing=set(),
+                          spawn_claude=with_tail(tail))
+    match = re.search(r"\[DEGRADED\] claude:.*claude_tui_stalled; CLI output: "
+                      r"(leg-logs/claude-[0-9a-f]{24}\.log)", err)
+    assert match is not None, err
+    run, = (p for p in leg_log_runs.runs_parent().iterdir() if p.is_dir())
+    log = run / match[1]
+    assert sorted(p for p in run.rglob("*") if p.is_file()) == [run / ".done", log]
+    assert stat.S_IMODE(log.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(log.stat().st_mode) == 0o600
+    assert screen in log.read_text()
+    assert "\x1b" not in log.read_text() and private_path not in log.read_text()
+    assert OTHER_SEAT_TEXT not in log.read_text()
+    assert screen not in out + err
+
+
+def test_advisor_board_refuses_an_unscreened_stall_tail(tmp_path, monkeypatch, jailed_claude_tui):
+    seat, with_tail = jailed_claude_tui
+    monkeypatch.setattr(pi, "_write_private_leg_log",
+                        lambda *args: pytest.fail("refused tail reached the log writer"))
+    out, err = _board_run(tmp_path / "refused", monkeypatch, failing=set(),
+                          spawn_claude=with_tail(f"Editor: {seat.token.decode()}"))
+    assert "claude_seat_token_in_output" in err
+    assert "leg-logs/" not in err
+    assert seat.token.decode() not in out + err
+    assert not any(p.is_dir() for p in leg_log_runs.runs_parent().iterdir())
+
+
+def test_advisor_board_keeps_the_stall_code_when_no_log_can_be_written(
+        tmp_path, monkeypatch, jailed_claude_tui):
+    _seat, with_tail = jailed_claude_tui
+    monkeypatch.setattr(pi, "_write_private_leg_log", lambda *args: None)
+    _out, err = _board_run(tmp_path / "unretained", monkeypatch, failing=set(),
+                           spawn_claude=with_tail("Waiting at the editor"))
+    assert any(line.endswith(" — claude_tui_stalled") for line in err.splitlines())
+    assert "leg-logs/" not in err
+
+
+def test_workspace_trust_block_preserves_the_board_notice(tmp_path, monkeypatch, jailed_claude_tui):
+    _seat, with_tail = jailed_claude_tui
+    code = "claude_tui_workspace_trust_blocked"
+    out, _err = _board_run(tmp_path / "trust", monkeypatch, failing=set(), json_output=True,
+                           spawn_claude=with_tail("Do you trust this folder?", code=code))
+    board = json.loads(out)
+    claude, = (leg for leg in board["legs"] if leg["leg"] == "claude")
+    assert any(n["code"] == code and n["seat_key"] == claude["seat_key"] for n in board["notices"])
+    assert any(n["code"] == code and n["seat_key"] == claude["seat_key"] for n in board["refused_seats"])
+    assert claude["detail"] == code
+
+
+def test_typed_log_reference_cannot_suffix_a_mode_line_code(monkeypatch):
+    code = "claude_tui_stalled"
+    mode_codes = pi._claude_seat_transport.mode_line_codes() | {code}
+    monkeypatch.setattr(pi._claude_seat_transport, "mode_line_codes", lambda: mode_codes)
+    assert pi._LegFailure(code).rendered(f"leg-logs/claude-{'a' * 24}.log") == code
+
+
+@pytest.mark.parametrize("code", ["claude_tui_stalled", "claude_tui_missing_canonical_output"])
+@pytest.mark.parametrize("model_turn", [False, True], ids=["before-turn", "after-turn"])
+def test_jailed_claude_retains_selected_tails_only_before_a_model_turn(
+        tmp_path, jailed_claude_tui, code, model_turn):
+    _seat, with_tail = jailed_claude_tui
+    screen = "Review screen excerpt"
+    status, text, failure = with_tail(screen, code=code, model_turn=model_turn)()
+    assert (status, text) == ("DEGRADED", "")
+    detail = pi._resolve_leg_detail(failure, tmp_path, "claude")
+    if model_turn:
+        assert detail == code
+        assert not (tmp_path / "leg-logs").exists()
+    else:
+        marker, ref = detail.split("; CLI output: ")
+        assert marker == code
+        assert (tmp_path / ref).read_text() == screen
+
+
+def test_prefixed_typed_tail_is_redacted_capped_and_retained(jailed_claude_tui):
+    _seat, with_tail = jailed_claude_tui
+    credential_shape = "sk-ant-api03-" + "abcdefghij0123456789"
+    tail = "discarded start\n" + "ordinary status\n" * 5000 + f"credential: {credential_shape}"
+    status, text, failure = with_tail(tail)()
+    run = leg_log_runs.LegLogRun.start()
+    assert run is not None
+    failure = replace(failure, prefix=pi._HarnessCode("leg_execution_failed"))
+    leg = pi.PanelLegResult(leg="claude", status=status, text=text,
+                            detail=pi._resolve_leg_detail(failure, run.path, "claude"))
+    assert leg.detail.startswith("leg_execution_failed: claude_tui_stalled; CLI output: ")
+    ref = leg.detail.split("; CLI output: ")[1]
+    assert run.finish([leg.detail]) == run.path
+    payload = (run.path / ref).read_bytes()
+    assert len(payload) == 64 * 1024
+    assert payload.endswith(b"credential: <redacted>")
+    assert credential_shape.encode() not in payload and b"discarded start" not in payload
 
 
 def test_an_unpublished_log_is_not_kept(tmp_path):
