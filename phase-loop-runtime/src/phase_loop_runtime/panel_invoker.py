@@ -88,6 +88,7 @@ from .agy_canary_evidence import (
     write_seat_path,
     seal_provider_launches,
 )
+from .agy_qualification import ProviderErrorClass
 from .claude_agent_view import ClaudeAgentViewAdapter
 from . import gemini_heartbeat
 from . import credential_redaction as _credential_redaction
@@ -18020,6 +18021,40 @@ def probe_grok_tools(command, *, allowed_tools, runner=None):
     return receipt
 
 
+def _agy_provider_error_class(
+    *, native_rc: int | None = None, stream: Mapping[str, object] | None = None,
+    response_present: bool | None = None, timed_out: bool = False,
+    failure: BaseException | None = None, login_wait_state: object = None,
+) -> ProviderErrorClass:
+    """Classify only parent-observed facts from a failed qualification turn."""
+    refusal = _typed_refusal_code(failure) if failure is not None else None
+    if refusal == "gemini_seat_credential_missing":
+        return ProviderErrorClass.AUTH_MISSING
+    if type(failure) is ValueError and failure.args == (
+        "brokered Gemini subscription credential reference is unavailable",
+    ):
+        # owned_profile wraps stat failures in this fixed code. The original errno's
+        # exception type distinguishes a missing path from denied local access.
+        if type(failure.__cause__) is FileNotFoundError:
+            return ProviderErrorClass.AUTH_MISSING
+        if type(failure.__cause__) is PermissionError:
+            return ProviderErrorClass.PERMISSION_DENIED
+    if refusal == "gemini_seat_token_expired" or (
+        refusal == "gemini_credential_near_expiry" and login_wait_state == "expired"
+    ):
+        return ProviderErrorClass.AUTH_EXPIRED
+    if timed_out or (type(native_rc) is int and native_rc == 124) or refusal == "gemini_credential_refresh_timeout":
+        return ProviderErrorClass.TIMEOUT
+    if type(native_rc) is int and native_rc == 0 and stream is not None:
+        output_bytes = stream.get("provider_stream_output_bytes")
+        if (type(output_bytes) is int and output_bytes == 0) or (
+            stream.get("provider_stream_outcome") == "accepted" and response_present is False
+        ):
+            return ProviderErrorClass.EMPTY_RESPONSE
+    # The current agy stream has no verified quota, model-failure or network error code.
+    return ProviderErrorClass.UNKNOWN
+
+
 @_retained_leg_exec
 def _exec_leg(
     leg: str,
@@ -18410,6 +18445,9 @@ def _exec_leg(
         # burned most of its budget (a slow leg, not a transient stall; re-running it
         # would ~double wall-clock — the full-concurrent-path hang).
         rc, review_text, log_text = 1, "", ""
+        qualification_evidence = (
+            broker_evidence if review_monitor is not None and _measuring_qualification_candidate() else None
+        )
         for _attempt in range(1 if review_monitor is not None else 2):
             if quiescence_latch is not None:
                 quiescence_latch.raise_if_set()
@@ -18513,6 +18551,8 @@ def _exec_leg(
                             stderr=str(timeout_stderr or ""), staged=capture_staged,
                         ),
                     )
+                if qualification_evidence is not None:
+                    qualification_evidence["provider_error_class"] = _agy_provider_error_class(timed_out=True).value
                 return 124, "", _HarnessCode("Gemini broker deadline exceeded" if brokered else f"timeout after {deadline_s}s")
             if quiescence_latch is not None:
                 quiescence_latch.raise_if_set()
@@ -18523,6 +18563,7 @@ def _exec_leg(
             log_text = proc.stderr or ""
             native_rc = rc
             original_log = log_text
+            stream_metadata = None
             if brokered and rc == 0:
                 rc, review_text, stream_detail, stream_metadata = _broker_gemini_stream_result(
                     raw_stream, broker_stream,
@@ -18539,6 +18580,10 @@ def _exec_leg(
             if brokered:
                 if review_monitor is not None and review_monitor.cancel.is_set():
                     return 1, "", _HarnessCode("review_operation_cancelled")
+                if qualification_evidence is not None:
+                    qualification_evidence["provider_error_class"] = _agy_provider_error_class(
+                        native_rc=native_rc, stream=stream_metadata, response_present=bool(review_text.strip()),
+                    ).value
                 native_timeout = "timeout waiting for response" in original_log.lower() or (
                     len(raw_stream.strip()) < 200 and "timeout waiting for response" in raw_stream.lower()
                 )
@@ -19901,6 +19946,7 @@ def _default_spawn(
                         if claude_status != "OK" and claude_sink:
                             leg_detail = claude_sink[-1]
                         return claude_status, claude_text
+                    qualify_agy = leg == "gemini" and review_monitor is not None and _measuring_qualification_candidate()
                     try:
                         rc, text, log = _exec_leg(
                             leg, review_dir, out_dir, leg_timeout, artifact, provider_mode, broker_model,
@@ -19919,6 +19965,11 @@ def _default_spawn(
                         typed = isinstance(failure, str) and failure in _seat_jail.NOTICE_CODES
                         if typed:
                             seat_notices.append(failure)
+                        if qualify_agy:
+                            login_wait = review_monitor.record.get("login_wait", {})
+                            broker.evidence["provider_error_class"] = _agy_provider_error_class(
+                                failure=exc, login_wait_state=login_wait.get("state"),
+                            ).value
                         gemini_detail = (
                             "review_monitoring_write_failed" if review_monitor is not None and review_monitor.write_failed
                             else failure if typed
@@ -19935,6 +19986,10 @@ def _default_spawn(
                         leg_detail = _leg_failure_detail(
                             status, rc, text, log, _seat_paths(base, review_dir, out_dir, resolved_repo_dir),
                         )
+                    if qualify_agy and (status == "OK" or review_monitor.cancel.is_set()):
+                        broker.evidence.pop("provider_error_class", None)
+                    elif qualify_agy:
+                        broker.evidence.setdefault("provider_error_class", ProviderErrorClass.UNKNOWN.value)
                     return status, text
                 def _cancel_parent_infer() -> None:
                     # Expiry requests cancellation; only failed cleanup is fatal.
@@ -19968,6 +20023,11 @@ def _default_spawn(
                 "provider_response_sha256": sha256(response_text.encode()).hexdigest(),
                 "provider_response_bytes": len(response_text.encode()),
             })
+            if "provider_error_class" in broker.evidence:
+                error_class = ProviderErrorClass.read(broker.evidence.pop("provider_error_class"))
+                secrets = (_EXEC_OBSERVATION.get() or {}).get("scan_secrets", ())
+                if error_class is not None and _scan_exec_field(error_class.value, secrets, patterns=False) is not None:
+                    broker.evidence["provider_error_class"] = error_class.value
             if leg_detail is not None and response["status"] == "OK":
                 leg_detail = None  # a detail only ever describes a failed leg
             placement_evidence = _sandbox_evidence()
