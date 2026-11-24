@@ -29,7 +29,7 @@ def admitted_fixture(monkeypatch, root):
     locator.chmod(0o600)
     monkeypatch.setattr(binding, "MANAGED_BINDING", locator)
 
-    def material(req, paths, settings, template, tree, seed, stage, slots, argv, origin, lane):
+    def material(req, paths, settings, template, tree, seed, stage, slots, argv, origin, *_unused_context):
         assignment = vector["assignment_digest"]
         controller = dict(
             h=hashlib.sha256(envelope).hexdigest(),
@@ -291,8 +291,9 @@ def test_controller_exclusive_publication_preserves_existing_identity(tmp_path, 
     assert svc.lifecycle.launch_claim_record(req.reservation.reservation_id)["claimed"]
 
 
+@pytest.mark.parametrize("origin", ["process", "lane"])
 def test_original_commitments_reach_real_capture_through_managed_projection(
-    tmp_path, monkeypatch, v2_operator
+    tmp_path, monkeypatch, v2_operator, origin
 ):
     """The managed fixture qualifies the real projection while retaining both original byte commitments."""
     import time
@@ -369,6 +370,9 @@ def test_original_commitments_reach_real_capture_through_managed_projection(
         stage = args[6]
         launch["references"][0]["path"] = str(stage / "baseline")
         v2_operator.spec_path.write_text(json.dumps(spec))
+        if origin == "lane":
+            observed.append("attempted real lane projection")
+            return project(*args)
         env, controller = project(*args)
         decoded = decode_v2(env, bundle=load_contract_bundle(version="v2")).value
         trusted = decoded["launch"]["trusted_policy"]
@@ -382,8 +386,16 @@ def test_original_commitments_reach_real_capture_through_managed_projection(
         return env, controller
 
     monkeypatch.setattr(launch_exec, "_bound_material", managed)
-    result = svc.launch(req, cancelled=threading.Event())
-    assert observed == [True] and v2_operator.marker.exists()
+    if origin == "lane":
+        from phase_loop_runtime.launch_service import LaneContext, LaneUnits
+
+        context = LaneContext("a" * 64, LaneUnits(("wrong",), (), "b" * 64, "c" * 64), ("src",), ())
+        result = svc.launch_lane(req, lane_context=context, cancelled=threading.Event())
+        assert observed == ["attempted real lane projection"]
+        assert not v2_operator.marker.exists()
+    else:
+        result = svc.launch(req, cancelled=threading.Event())
+        assert observed == [True] and v2_operator.marker.exists()
     assert (
         result.code == "sandbox_launch_admission_refused"
         and result.admission_diagnostic == "launch_input_unbound"

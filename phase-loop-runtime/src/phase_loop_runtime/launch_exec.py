@@ -10,7 +10,7 @@ import os
 import re
 import secrets
 import time
-from dataclasses import asdict, replace
+from dataclasses import replace
 from pathlib import Path
 
 from . import launch_routes as routes
@@ -59,18 +59,20 @@ def _gate(service, req, settings):
         req.workload, kind, req.image_digest
     ):
         return "sandbox_launch_image_refused"
+    # Recheck the config even if the caps loader is down. Unreadable caps
+    # have their own wire refusal after the lifetime check.
+    readable, digest = service.lifecycle.caps_state()
+    live_config = service.lifecycle.config(digest if readable else service.config.seat_caps_sha256)
     if (
         set(req.providers) != set(reservation.providers)
         or req.policy_vector != reservation.policy_vector
         or routes.pi_policy_refusal(req.workload, kind, req.policy_vector)
         or hashlib.sha256(service.config.canonical).hexdigest() != reservation.config_sha256
-        or service.lifecycle.config().canonical != service.config.canonical
+        or live_config.canonical != service.config.canonical
     ):
         return "sandbox_launch_input_mismatch"
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", reservation.transport_id):
         return "sandbox_launch_input_mismatch"
-    from . import sandbox_policy
-
     if kind == "openshell":
         code = placement.openshell_launch_refusal(
             service.config,
@@ -83,12 +85,6 @@ def _gate(service, req, settings):
         )
         if code:
             return code
-    if (kind, req.workload) != ("openshell", "pi-runner"):
-        baseline = sandbox_policy.placement_policy_baseline(req.policy_vector)
-        endpoints = {name: provider.endpoints for name, provider in service.config.providers.items()}
-        _, egress = placement.effective_egress(req.providers, baseline, endpoints)
-        if egress != reservation.egress_sha256:
-            return "launch_input_unbound"
     return routes.activation_refusal(settings, workload=req.workload, target_kind=kind)
 
 
@@ -105,8 +101,6 @@ def _validate(service, req, cancelled):
     )
     if code:
         return _refusal(req, code)
-    if not service.caps_readable():
-        return _refusal(req, "sandbox_placement_capability_unmet")
     rid = req.reservation.reservation_id
     with service.lifecycle.launch_lock(
         rid, timeout_s=placement.ANSWER_BOUND_S, cancelled=cancelled
@@ -123,8 +117,6 @@ def _validate(service, req, cancelled):
         code = _gate(service, req, settings)
     except placement.LifecycleError:
         return _refusal(req, "sandbox_launch_input_mismatch")
-    if code == "launch_input_unbound":
-        return _refusal(req, "sandbox_launch_admission_refused", code)
     if code:
         return _refusal(req, code)
     registry = routes.register_templates(settings)
@@ -168,12 +160,29 @@ def _validate(service, req, cancelled):
         template_timeout=template.record["max_timeout_seconds"],
     ):
         return _refusal(req, "sandbox_launch_lifetime_unbounded")
+    try:
+        digest = seat_resource_caps.caps_sha256(service.load_caps())
+    except Exception:
+        return _refusal(req, "sandbox_placement_capability_unmet")
+    if digest != service.config.seat_caps_sha256:
+        return _refusal(req, "sandbox_launch_input_mismatch")
     if req.reservation.target.kind == "local":
         try:
             if service.readiness_code():
                 return _refusal(req, "sandbox_placement_capability_unmet")
         except Exception:
             return _refusal(req, "sandbox_placement_capability_unmet")
+    if (req.reservation.target.kind, req.workload) != ("openshell", "pi-runner"):
+        from . import sandbox_policy
+
+        baseline = sandbox_policy.placement_policy_baseline(req.policy_vector)
+        endpoints = {name: provider.endpoints for name, provider in service.config.providers.items()}
+        try:
+            _, egress = placement.effective_egress(req.providers, baseline, endpoints)
+        except placement.LifecycleError:
+            return _refusal(req, "sandbox_launch_input_mismatch")
+        if egress != req.reservation.egress_sha256:
+            return _refusal(req, "sandbox_launch_admission_refused", "launch_input_unbound")
     return paths, settings, registry, template, ttl
 
 
@@ -338,13 +347,19 @@ def _cgroup_entry():
     return Path(seat_resource_caps.__file__).with_name("seat_resource_caps_enter.py")
 
 
-def _bound_material(req, paths, settings, template, tree, seed, stage, slots, argv, origin, lane):
+class _LaneAuthorityUnavailable(ValueError):
+    """SL-4 has not supplied independent lane assignment material."""
+
+
+def _bound_material(req, paths, settings, template, tree, seed, stage, slots, argv, origin):
     """Project the captured inputs and passive managed declarations into the two v2 documents."""
     from . import supervised_launch_binding as binding
     from .convergence.broker.live import repository_snapshot
     from .supervised_envelope_v2 import canonicalize_v2, parse_v2
     from .supervised_launch import Refused, trusted_bytes
 
+    if origin == "lane":
+        raise _LaneAuthorityUnavailable
     locator = binding.read_binding_locator(binding.MANAGED_BINDING)
     if isinstance(locator, Refused):
         raise ValueError("unavailable managed binding")
@@ -381,37 +396,29 @@ def _bound_material(req, paths, settings, template, tree, seed, stage, slots, ar
     ctx = binding.load_v2_context(Path(declarations["context"]), **excluded)
     if isinstance(ctx, Refused):
         raise ValueError("unavailable managed context")
-    if origin == "lane":
-        if lane is None:
-            raise ValueError("missing lane authority")
-        units = asdict(lane.units)
-        assignment = lane.assignment_digest
-        locators = lane.repo_relative_locators
-        definitions = lane.definition_digests
-    else:
-        body = req.to_json()
-        body.pop("caller_context")
-        if req.reservation_json:
-            body["reservation"] = dict(req.reservation_json)
-        assignment = _hash(canonicalize_v2(body))
-        repo = repository_snapshot(target)
-        identity = _hash(
-            canonicalize_v2(
-                dict(
-                    schema="CanonicalRepositoryIdentity.v1",
-                    git_common_dir=str(repo.common_dir),
-                    git_object_format=repo.object_format,
-                )
+    body = req.to_json()
+    body.pop("caller_context")
+    if req.reservation_json:
+        body["reservation"] = dict(req.reservation_json)
+    assignment = _hash(canonicalize_v2(body))
+    repo = repository_snapshot(target)
+    identity = _hash(
+        canonicalize_v2(
+            dict(
+                schema="CanonicalRepositoryIdentity.v1",
+                git_common_dir=str(repo.common_dir),
+                git_object_format=repo.object_format,
             )
         )
-        units = dict(
-            target_unit_ids=["launch:" + req.request_id],
-            readonly_neighbor_unit_ids=[],
-            snapshot_ref=tree.inventory_sha256,
-            crosswalk_ref=identity,
-        )
-        locators = tree.top_level_entries
-        definitions = ()
+    )
+    units = dict(
+        target_unit_ids=["launch:" + req.request_id],
+        readonly_neighbor_unit_ids=[],
+        snapshot_ref=tree.inventory_sha256,
+        crosswalk_ref=identity,
+    )
+    locators = tree.top_level_entries
+    definitions = ()
     values = dict(workspace=str(tree.tree), target=str(target), reference_roots=roots, **stage_slots)
     for name, kind in spec["slots"].items():
         if name in values:
@@ -631,8 +638,7 @@ def _binds_tree(argv, tree, destination):
 def _capture_attempt(
     service, req, generation, owner, validated, origin, lane, cancelled, pre_exec, withhold
 ):
-    from .supervised_contracts import load_contract_bundle
-    from .supervised_envelope_v2 import decode_v2
+    from .supervised_envelope_v2 import parse_v2
 
     life = service.lifecycle
     paths, settings, registry, template, ttl = validated
@@ -732,8 +738,11 @@ def _capture_attempt(
             supervisor.write_blob(refs, req.request_id + ".seed.json", seed.manifest)
         try:
             envelope, controller = _bound_material(
-                req, paths, settings, template, tree, seed, stage, slots, argv, origin, lane
+                req, paths, settings, template, tree, seed, stage, slots, argv, origin
             )
+        except _LaneAuthorityUnavailable:
+            isolated_admission(b"", b"", cancelled=cancelled, bound_s=service.admission_bound_s)
+            return _refusal(req, "sandbox_launch_admission_refused", "launch_input_unbound")
         except Exception:
             # No positive receipt can authorize a missing independent declaration.
             # Still enter the isolated helper once at the admission stage.
@@ -744,7 +753,8 @@ def _capture_attempt(
         )
         if diagnostic:
             return _refusal(req, "sandbox_launch_admission_refused", diagnostic)
-        decoded = decode_v2(envelope, bundle=load_contract_bundle(version="v2")).value
+        # The isolated helper decoded and admitted these exact immutable bytes.
+        decoded = parse_v2(envelope).value if origin == "lane" else None
         if origin == "lane" and (
             lane is None
             or lane.assignment_digest != decoded["assignment_digest"]

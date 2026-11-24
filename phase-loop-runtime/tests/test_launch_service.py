@@ -121,6 +121,15 @@ def local_case(root, *, state=None, ttl=600, settings=None, **service_args):
     return env, env.service("agent-harness", **service_args), req
 
 
+def test_default_activation_precedes_mismatched_egress(tmp_path, monkeypatch):
+    from phase_loop_runtime import sandbox_placement as placement
+
+    _, svc, req = local_case(tmp_path, settings={"lane_placement": "disabled"})
+    monkeypatch.setattr(placement, "effective_egress", lambda *args: ({}, "sha256:" + "0" * 64))
+    result = svc.launch(req, cancelled=threading.Event())
+    assert result.code == "sandbox_launch_route_disabled" and result.worker_invocations == 0
+
+
 def test_ttl_floor_precedes_readiness_and_snapshot(tmp_path):
     def readiness():
         pytest.fail("readiness ran before TTL check")
@@ -228,6 +237,7 @@ def test_lane_authority_checked_after_independent_decode(tmp_path, monkeypatch, 
         ("writer", "sandbox_launch_writer_route_refused"),
         ("paths", "sandbox_launch_input_mismatch"),
         ("echo", "sandbox_launch_reservation_mismatch"),
+        ("echo_and_caps", "sandbox_launch_reservation_mismatch"),
         ("expired", "sandbox_launch_reservation_unknown"),
     ],
 )
@@ -254,7 +264,8 @@ def test_closed_checks_precede_capture(tmp_path, monkeypatch, fault, expected):
     elif fault == "paths":
         saved, _, _ = prepare(svc, req.reservation.to_json(), snapshot_root=req.snapshot.root)
         req = replace(req, paths=replace(saved.paths, tree_path=req.snapshot.root + "/wrong"))
-    elif fault == "echo":
+    elif fault in ("echo", "echo_and_caps"):
+        env.caps_error = fault == "echo_and_caps"
         req = replace(req, reservation_json=dict(req.reservation_json, policy_vector="minimal-without-app"))
     elif fault == "expired":
         env.clock.now += 601
@@ -265,17 +276,8 @@ def test_closed_checks_precede_capture(tmp_path, monkeypatch, fault, expected):
     assert not svc.lifecycle.launch_claim_record(req.reservation.reservation_id)
 
 
-@pytest.mark.parametrize("target", ["local", "openshell"])
-def test_unreadable_seat_caps_refuse_before_capture(tmp_path, target):
-    if target == "local":
-        env, svc, req = local_case(tmp_path)
-    else:
-        env = Env(tmp_path)
-        reservation = env.reserve("agent-harness")
-        req = wire.decode_launch_request(
-            "launch", json.dumps(implementation_request(reservation=reservation)).encode()
-        )
-        svc = env.service("agent-harness")
+def test_unreadable_seat_caps_refuse_before_capture(tmp_path):
+    env, svc, req = local_case(tmp_path)
     env.caps_error = True
     out = svc.launch(req, cancelled=threading.Event())
     assert out.code == "sandbox_placement_capability_unmet" and out.worker_invocations == 0
@@ -528,7 +530,7 @@ def test_seed_recheck_and_generation_owned_provisioning(tmp_path, monkeypatch, f
         shutil.rmtree(link_root)
 
 
-@pytest.mark.parametrize("fault", ["unknown", "closed_image", "ttl", "budget", "staged"])
+@pytest.mark.parametrize("fault", ["unknown", "closed_image", "ttl", "budget", "unreadable_caps", "staged"])
 def test_remote_launch_uses_captured_host_gate_and_passes_fds_only_after_claim(
     tmp_path, monkeypatch, fault
 ):
@@ -646,6 +648,7 @@ def test_remote_launch_uses_captured_host_gate_and_passes_fds_only_after_claim(
         route_state=lambda: "unknown" if fault == "unknown" else "enabled",
         supervisor_runner=run,
     )
+    env.caps_error = fault == "unreadable_caps"
     repo = make_repo(tmp_path.resolve() / "source-repo", {"source": "fixture"})
     body = review_request(
         "qualification",
@@ -667,6 +670,7 @@ def test_remote_launch_uses_captured_host_gate_and_passes_fds_only_after_claim(
         assert (
             out.code
             == {
+                "unreadable_caps": "sandbox_placement_capability_unmet",
                 "ttl": "sandbox_launch_lifetime_unbounded",
                 "budget": "sandbox_launch_lifetime_unbounded",
                 "unknown": "sandbox_launch_route_disabled",

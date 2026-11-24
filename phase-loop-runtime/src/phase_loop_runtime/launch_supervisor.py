@@ -949,9 +949,35 @@ def _local_chain(h, effects, stage, blobs, recipe, req, paths, directory, lifeti
         "--result",
         str(stage / "worker-result"),
     )
-    with life.launch_operation_lock(
-        h.reservation_id, h.generation, timeout_s=max(0, end - time.monotonic())
-    ) as held:
+    def settle_unstarted():
+        # fence_launch acquires the operation lock itself. The outer lease still
+        # owns this attempt, and this callback runs only before entry to spawn.
+        cause = "collection_unknown"
+        if lifetime.fenced.is_set() or effects.clock() >= lifetime.renewal_cutoff:
+            cause = "renewal_lost"
+        elif cancelled.is_set():
+            cause = "cancel"
+        deadline = time.monotonic() + ANSWER_BOUND_S
+        if not life.fence_launch(*h.ids, cause=cause, deadline=deadline):
+            return
+        with life.launch_operation_lock(
+            h.reservation_id, h.generation, timeout_s=max(0, deadline - time.monotonic())
+        ) as held:
+            if held:
+                debt = life.read_cleanup_debt(*h.ids)
+                if debt is not None:
+                    life.write_cleanup_debt_locked(
+                        *h.ids, debt=replace(debt, descendants_ended=True, parent_collected=True),
+                        deadline=deadline,
+                    )
+
+    with (
+        contextlib.ExitStack() as before_start,
+        life.launch_operation_lock(
+            h.reservation_id, h.generation, timeout_s=max(0, end - time.monotonic())
+        ) as held,
+    ):
+        before_start.callback(settle_unstarted)
         if not held or cancelled.is_set() or lifetime.fenced.is_set():
             return uncertain
         before_spawn = set(threading.enumerate())
@@ -964,6 +990,9 @@ def _local_chain(h, effects, stage, blobs, recipe, req, paths, directory, lifeti
         if start >= lifetime.renewal_cutoff or lifetime.fenced.is_set() or cancelled.is_set():
             return uncertain
         lifetime.started(at=start)
+        # Start is authorized under the operation lock. A slow bounded spawn
+        # can create its first process slightly after the renewal cutoff.
+        before_start.pop_all()
         try:
             proc = effects.capped_popen(
                 command,
@@ -1274,16 +1303,13 @@ def run_supervisor(handoff: SupervisorHandoff, *, effects: SupervisorEffects) ->
             response = _local(h, effects, stage, blobs, recipe, req, paths, directory, lifetime, cancelled)
             finish(response)
             debt = life.read_cleanup_debt(*h.ids)
-            if response.state == "refused" or (
-                debt and debt.descendants_ended is True and debt.parent_collected is True
-            ):
+            if debt and debt.descendants_ended is True and debt.parent_collected is True:
+                with life.launch_lock(h.reservation_id, timeout_s=ANSWER_BOUND_S) as lock:
+                    if lock.held:
+                        for kind in ("stage", "scratch"):
+                            life.collect_allocation(*h.ids, kind=kind, deadline=time.monotonic() + ANSWER_BOUND_S)
+            elif response.state == "refused":
                 life.collect_allocation(*h.ids, kind="stage", deadline=time.monotonic() + ANSWER_BOUND_S)
-                if debt:
-                    with life.launch_lock(h.reservation_id, timeout_s=ANSWER_BOUND_S) as lock:
-                        if lock.held:
-                            life.collect_allocation(
-                                *h.ids, kind="scratch", deadline=time.monotonic() + ANSWER_BOUND_S
-                            )
 
 
 def _send_start(conn, h):

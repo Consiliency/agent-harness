@@ -18,6 +18,7 @@ def test_unconfirmed_renewals_retry_until_absolute_fence(confirm):
             return len(transactions) >= 2 and confirm
 
         def wait(self, seconds):
+            assert len(transactions) < 20, "renewal retried beyond its original cutoff"
             now[0] += seconds
             return self.is_set()
 
@@ -102,17 +103,16 @@ def test_generation_before_start_intent_requires_lifecycle_fix(tmp_path, monkeyp
 
 
 @pytest.mark.parametrize(
-    ("entry_offset", "expires_during_intent", "expected_calls"),
-    [
-        pytest.param(-0.5, False, ["intent", "spawn"], id="before"),
-        pytest.param(0, False, [], id="at"),
-        pytest.param(0.5, False, [], id="after"),
-        pytest.param(-0.5, True, ["intent"], id="expires_during_intent"),
+    ("timing", "cleanup"),
+    [("before", None)] + [
+        (timing, cleanup)
+        for timing in (
+            "at", "after", "expires_during_intent", "cancel_before_intent", "intent_unconfirmed", "lock_timeout"
+        )
+        for cleanup in ("release", "reap")
     ],
 )
-def test_local_chain_requires_current_renewal_through_start_intent(
-    tmp_path, monkeypatch, entry_offset, expires_during_intent, expected_calls
-):
+def test_local_chain_requires_current_renewal_through_start_intent(tmp_path, monkeypatch, timing, cleanup):
     import threading
     import time
     from phase_loop_runtime import launch_exec, launch_supervisor as sup
@@ -143,7 +143,7 @@ def test_local_chain_requires_current_renewal_through_start_intent(
             ),
         )
 
-    _, svc, req = local_case(tmp_path, ttl=60, supervisor_runner=runner)
+    env, svc, req = local_case(tmp_path, ttl=60, supervisor_runner=runner)
     publish = sup._publish_admitted_controller
     mark = svc.lifecycle.mark_start_intent
     renew = sup.LaunchLifetime.renew
@@ -156,7 +156,20 @@ def test_local_chain_requires_current_renewal_through_start_intent(
         )
         heartbeat = svc.lifecycle._confirmed_renewal(key, svc.lifecycle._disposition(key))
         cutoff = heartbeat["heartbeat_at"] + 2 * (heartbeat["ttl_s"] / 3)
-        now = cutoff + entry_offset
+        now = cutoff + {"at": 0, "after": 0.5}.get(timing, -0.5)
+        if timing == "lock_timeout":
+            from contextlib import nullcontext
+
+            original_lock = svc.lifecycle.launch_operation_lock
+
+            def first_lock_times_out(*args, **kwargs):
+                monkeypatch.setattr(svc.lifecycle, "launch_operation_lock", original_lock)
+                return nullcontext(False)
+
+            monkeypatch.setattr(svc.lifecycle, "launch_operation_lock", first_lock_times_out)
+        if timing == "cancel_before_intent":
+            outcome = svc.lifecycle.cancel_launch_owner(*h.ids, deadline=time.monotonic() + 2)
+            assert outcome == "cancel_pending"
         return published
 
     def mark_intent(*ids, deadline):
@@ -164,15 +177,20 @@ def test_local_chain_requires_current_renewal_through_start_intent(
         calls.append("intent")
         intent_deadlines.append(deadline - time.monotonic())
         marked = mark(*ids, deadline=deadline)
-        if expires_during_intent:
+        if timing == "expires_during_intent":
             now = cutoff
-        return marked
+        return marked and timing != "intent_unconfirmed"
 
     def delayed_heartbeat(lifetime, lifecycle, reservation_id, request_id, stop, on_loss):
         # Make the start decision before the heartbeat thread observes the cutoff.
         stop.wait(10)
         renew(lifetime, lifecycle, reservation_id, request_id, stop, on_loss)
 
+    def forbidden_rollback(*args, **kwargs):
+        calls.append("rollback")
+        return False
+
+    monkeypatch.setattr(sup, "_rollback", forbidden_rollback)
     monkeypatch.setattr(sup, "_publish_admitted_controller", after_claim)
     monkeypatch.setattr(svc.lifecycle, "mark_start_intent", mark_intent)
     monkeypatch.setattr(sup.LaunchLifetime, "renew", delayed_heartbeat)
@@ -180,11 +198,39 @@ def test_local_chain_requires_current_renewal_through_start_intent(
     claim = svc.lifecycle.launch_claim_record(req.reservation.reservation_id)
     assert claim["claimed"] is True
     disposition = svc.lifecycle._launch_read("dispositions", claim["generation"])
+    expected_calls = {"before": ["intent", "spawn"], "expires_during_intent": ["intent"], "intent_unconfirmed": ["intent"]}.get(timing, [])
     assert calls == expected_calls
     assert all(remaining <= 0.5 for remaining in intent_deadlines)
     assert disposition["start_intent"] is ("intent" in expected_calls)
     assert disposition["fenced"] is ("spawn" not in expected_calls)
     assert result.state == ("finished" if "spawn" in expected_calls else "uncertain")
+
+    if cleanup is None:
+        assert disposition["debt"]["cause"] == "start_unknown"
+        assert disposition["debt"]["descendants_ended"] is False
+        assert disposition["debt"]["parent_collected"] is False
+        assert claim["rollback_cause"] is None
+        return
+    stage = svc.lifecycle.launch_root / "stages" / claim["generation"]
+    scratch = svc.lifecycle.launch_run_dir(claim["run_id"]) / "scratch"
+    collected_before_teardown = not stage.exists() and not scratch.exists()
+    if cleanup == "release":
+        response, code = env.release(req.reservation.to_json(), "agent-harness")
+        assert (code, response.state) == (0, "released")
+    else:
+        response, code = env.reap("agent-harness")
+        assert (code, response.state, response.inventory.destroyed) == (0, "complete", 1)
+    assert collected_before_teardown
+    expected_cause = {
+        "cancel_before_intent": "cancel",
+        "intent_unconfirmed": "collection_unknown",
+        "lock_timeout": "collection_unknown",
+    }.get(timing, "renewal_lost")
+    assert disposition["debt"]["cause"] == expected_cause
+    assert disposition["debt"]["descendants_ended"] is True
+    assert disposition["debt"]["parent_collected"] is True
+    assert not (svc.lifecycle.launch_root / "stages" / claim["generation"]).exists()
+    assert not svc.lifecycle.launch_run_dir(claim["run_id"]).exists()
 
 
 def test_pi_relay_delivers_exact_bytes_and_reports_loss(tmp_path):
