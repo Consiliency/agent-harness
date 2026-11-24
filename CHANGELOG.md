@@ -12,7 +12,36 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   writer pairing, and `activation_refusal` checks the captured route settings.
   `route_refusal` preserves its refusal order and codes. All routes refuse under
   shipped defaults, including the existing interim diagnostic for local Pi.
-- JEVHOST SL-7: the runner uses the host integration seam
+
+## [0.7.42] - Unreleased candidate
+
+### Added
+
+- JEVHOST SL-8 (agent-harness#2133): the JEV Drill adapter implements the host
+  integration seam
+  (`plans/amendments/jevhost-JEVHOST-host-gaps.md`, GAPS §3.1–§3.8).
+  - A per-task retry ledger in memory, keyed by project, workspace and task. Budgets come
+    from the trusted request and can only be tightened. Retry context is generated from a
+    recorded acceptance failure. With a host ledger entry, supplied context that disagrees
+    or widens the budget is refused before routing. Without a host ledger entry, supplied
+    context may reach routing but prepare refuses it before admitting a launch
+    (erratum 1, agent-harness#2137). Launch admission spends attempts atomically.
+    `JevDrillAdapter.record_acceptance_outcome` implements the IF-0-JEVHOST-5 observer.
+  - Closed `guidance_deactivated` reasons.
+  - Disconnect advice on pre-launch calls and on report delivery, with the queue's backoff
+    preserved.
+  - A readiness recheck after the `started` write, which queues `canceled` on expiry.
+  - A 250 ms spawn reserve (`SPAWN_ALLOWANCE_MS`) subtracted from `--remaining-budget-ms`.
+  - A refusal, before any CLI request, of an identity that a present
+    `.jevdrill/harnesses.yaml` omits. An absent file keeps today's routing.
+  - Run-bound explicit reports for the JEV Drill item-3 request:
+    `run_event_identity`, `enqueue_run_event` and `run_report_counts`. The hook and the
+    host's own events share one ordered `source_sequence` stream.
+  - The ledger and run handles do not survive a restart.
+  - `PromptBundle.routing_provenance`, an optional routing ID that each prepare stamps. It is
+    never rendered or serialized. Launch consumes only the binding with that ID, and a routed
+    ID with no live binding fails closed.
+- JEVHOST SL-7 (agent-harness#2132): the runner uses the host integration seam
   (`plans/amendments/jevhost-JEVHOST-host-gaps.md`, GAPS §3.1 and §3.5). The main,
   delegated and lane request sites build through `build_host_request`, so an integration
   that replaces an operator or policy override is refused before the builder or launcher
@@ -25,17 +54,19 @@ versioning; the release tag, the package `version`, and this file are kept in lo
     missing or unparseable closeout, or an empty host log;
   - success is `passed`;
   - reduction blockers, child-reported blockers and host-side failures (a malformed audit
-    config, an unavailable BAML evaluator, an interrupt, a missing host log) report nothing.
-- LANEEXEC SL-3: `phase_loop_runtime.launch_service` adds `build_launch_service` and
-  `LaunchService.prepare`, `status` and `cancel` (`plans/phase-plan-v13-LANEEXEC.md`,
+    config, an unavailable BAML evaluator, a missing host log) report nothing. Interrupts
+    also report nothing, including when the launcher exits 130.
+- LANEEXEC SL-3a (agent-harness#2138): `phase_loop_runtime.launch_service` adds
+  `build_launch_service` and `LaunchService.prepare`, `status` and `cancel` (`plans/phase-plan-v13-LANEEXEC.md`,
   binding §7 E3-3). The function stores the captured client configuration and the seams the
   later launch lanes inject: `capped_popen`, `load_caps`, `readiness_code`, `route_state`,
   the clock, the admission bound and the placement lifecycle. `prepare` assigns `run_id`,
   `scratch_path` and `tree_path` once per reservation, under the reservation lock, and
-  replays through the `x-prepare.replay` steps. `status` and `cancel` map journaled records
-  through the L-S4 tables. Cancel goes through the verified owning launcher only, and a
-  zero-signal outcome is never reported as a success. `launch` is one call to the later
-  launch-order lane, imported at call time. `PlacementLifecycle` gains the LaneExec hooks:
+  replays through the `x-prepare.replay` steps. `status` and `cancel` call
+  `launch_return.map_status` and `launch_return.map_cancel` for the L-S4 mappings.
+  Cancel goes through the verified owning launcher only, and a zero-signal outcome is
+  never reported as a success. `LaunchService.launch` imports the future SL-8
+  `launch_exec` module at call time. `PlacementLifecycle` gains the LaneExec hooks:
   the prepare record, the exec claim's compare-and-set and rollback, and the local
   heartbeat. Release cancels a live attempt before teardown and answers `cleanup_pending`
   while it is not terminal. Reap settles an attempt only when its owner has verifiably
@@ -43,7 +74,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   an interrupted prepare left unused. Retained returns live outside them and outlive
   release until the reservation's tombstone expires. Nothing calls the service yet, and
   every route stays disabled under shipped defaults.
-- LANEEXEC SL-7: `phase_loop_runtime.launch_settings` and `phase_loop_runtime.launch_routes`
+- LANEEXEC SL-7 (agent-harness#2134): `phase_loop_runtime.launch_settings` and `phase_loop_runtime.launch_routes`
   (`plans/phase-plan-v13-LANEEXEC.md`, binding §7 E3-2 and E3-3). `decode_launch_settings`
   is the one strict, closed decoder of the `launch` object of the captured
   `PlacementClientConfig`. It covers the template registry, toolkit pins manifest, image
@@ -58,7 +89,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   leaves the whole agent-toolkit registry unregistered. Production openshell registration
   stays closed until image-bound runtime evidence exists. Every route stays disabled under
   shipped defaults. Nothing calls these modules yet; the launch entry point follows in SL-8.
-- JEVHOST SL-6: `phase_loop_runtime.host_integration`, the host-neutral integration seam
+- JEVHOST SL-6 (agent-harness#2130): `phase_loop_runtime.host_integration`, the
+  host-neutral integration seam
   (`plans/amendments/jevhost-JEVHOST-host-gaps.md`, IF-0-JEVHOST-5, GAPS §2). It provides
   `RetryBudget` (remaining attempts and floor-millisecond time, exhaustion, tighten-only),
   `ACCEPTANCE_FAILURE_CLASSES`, the `AcceptanceObserver` protocol and `notify_acceptance`,
@@ -66,8 +98,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `disconnect_advice` and `annotate_disconnect`, and `build_host_request` with
   `HostOverrideViolation`, which refuses an integration that changes the model, effort or
   source of an operator or policy override, comparing values captured before `prepare`.
-  The module does no IO, spawn or ctypes and imports no JEV Drill code. Nothing calls it
-  yet; the runner and adapter wiring follow in later lanes.
+  The module does no IO, spawn or ctypes and imports no JEV Drill code. The runner and
+  adapter call the seam in SL-7 and SL-8.
 - RRIMAGE SL-3: the review-runner image operator guide, `docs/review-runner-image.md`, and
   the ai-stack handoff template, `plans/evidence/review-runner/HANDOFF-ai-stack.template.md`
   (`plans/phase-plan-v1-rrimage-RRIMAGE.md`, contract §5.1 and §6). The guide covers the
@@ -133,8 +165,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   A true or failing `withhold` predicate deletes the bytes. `map_status`, `map_cancel`
   and `map_worker_terminal` are the L-S4 tables, closed and total. A zero-signal cancel
   maps to `cancel_pending`, never to `cancelled` or `already_terminal`.
-  `build_launch_evidence` builds the metadata-only `LaunchEvidence`. Nothing calls the
-  module yet, and no route is activated.
+  `build_launch_evidence` builds the metadata-only `LaunchEvidence`. SL-3a calls the
+  status and cancel mappings. All routes stay disabled under shipped defaults.
 - The review-runner image pin record contract and validator (RRIMAGE SL-0;
   `plans/phase-plan-v1-rrimage-RRIMAGE.md`, Consiliency/agent-harness#2106). The frozen
   `review_runner_pin.v1` schema ships as
@@ -154,8 +186,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- Pass `skipDangerousModePermissionPrompt` to jailed Claude TUI seats to suppress the
+  bypass-permissions acknowledgement on Claude Code 2.1.330 (agent-harness#2143).
+  The launcher retains the legacy acknowledgement for older versions.
 - A long `TMPDIR` no longer fails a brokered review leg with the opaque "unknown failure;
-  CLI output not retained" (agent-harness#2131). The broker's private 0700 socket root is
+  CLI output not retained" (agent-harness#2131, agent-harness#2136). The broker's private 0700 socket root is
   now created under the first safe, short base: a private `$XDG_RUNTIME_DIR`, else the temp
   dir, else a root-owned sticky `/tmp`. A base qualifies only when its path has no link, no
   `..` step and no part another account can replace, and when the socket pathname, measured exactly as
@@ -166,11 +201,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `leg_log_dir`, which writes no verdict, seat-mode or monitoring file). It keeps only the
   redacted, capped leg logs the board output names, in a private 0700 run under the
   operator's state dir, reached without following links, and removes a run with none.
-  At most 20 runs, none older than 14 days, are kept, ranked by completion under one lock
-  on their parent, and a run still in progress is never removed. When that directory or
-  its lock is unavailable, the board runs without retention. The president tier keeps
-  its own stream directory unchanged.
-- Seat legs (agent-harness#2139): when a leg fails before any model turn, the host auth probe
+  Pruning keeps up to 20 completed runs, including the just-finished run, and removes
+  runs older than 14 days. It leaves active runs alone. The parent lock wait is bounded
+  to five seconds per acquisition. When the directory or lock is unavailable, the
+  board falls back to running without retention. Retention is unavailable on Windows.
+  The president tier continues to use its own stream directory.
+- Seat legs (agent-harness#2139, agent-harness#2140): when a leg fails before any model
+  turn, the host auth probe
   now runs with the caller's host environment, not the environment recorded for a jailed
   launch, whose paths exist only inside the jail. A jailed Claude leg whose in-jail login
   check passed keeps that auth state, and no host probe runs for it. A host sign-out alone no
@@ -183,9 +220,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   leg with no typed detail still maps to it.
 
 - The last eleven JEV Drill companion failures on the Windows legs (second follow-up to
-  agent-harness#2092; POSIX behaviour is unchanged):
+  agent-harness#2092, delivered in agent-harness#2128; POSIX behaviour is unchanged):
   - The Windows admitted child (`windows_process._admitted_child`) now writes the
-    executor's stdin as UTF-8 bytes. Its text-mode pipe turned each `\n` into `\r\n`, so
+    executor's stdin as UTF-8 bytes regardless of the host code page. Its text-mode
+    pipe turned each `\n` into `\r\n`, so
     the executor did not receive the resolved prompt byte for byte. This fixes the five
     `test_jevdrill_input.py` failures.
     `tests/test_windows_runtime_guards.py` simulates the Windows newline translation on
@@ -223,7 +261,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   is unchanged. `tests/test_launcher_reader_drain.py` reproduces both bugs
   deterministically.
 - The JEV Drill companion workflow's Windows legs (follow-up to
-  Consiliency/agent-harness#2092; POSIX behaviour is unchanged):
+  Consiliency/agent-harness#2092, delivered in agent-harness#2127; POSIX behaviour is unchanged):
   - `windows_storage.PrivateSecurity.verify` no longer compares rendered SDDL text, which
     refused the private directories it had just created. Possible explanations, pending
     inspection of the returned descriptor, are `D:PAI` rendering and SID alias rendering.
@@ -249,7 +287,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
   The contract record is `plans/amendments/jevhost-S5-windows-runtime.md`.
 - `phase_loop_runtime` now imports on native Windows, and POSIX behaviour is unchanged
-  (Consiliency/agent-harness#2092). Before, `closeout`, `runner` and the JEV Drill test
+  (Consiliency/agent-harness#2092, agent-harness#2123). Before, `closeout`, `runner` and the JEV Drill test
   files that import them failed at import on Windows. `provider_tree_proof` computed its
   pidfd mask from `select.POLL*` at import (this absorbs Consiliency/agent-harness#2091).
   Fifteen other modules imported `fcntl` or `pwd`, or computed
@@ -263,13 +301,19 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   - the `pwd`/`fcntl` uses raise, and the managed supervised-launch binding is absent, so
     that launch refuses.
 
-  The Windows admitted child now writes the executor's stdin as UTF-8, whatever the
-  host's code page is. A new test imports every module of the package on a simulated
-  Windows. Pins: the whole-file SDK proof bindings of `provider_tree_proof.py` and
-  `claude_seat_sdk.py` move. No SDK proof region, admission, default or jail profile
-  digest moves.
+  A new test imports every module of the package on a simulated Windows. The Windows
+  guards change the whole-file SDK proof bindings for `provider_tree_proof.py`,
+  `claude_seat_sdk.py` and `seat_resource_caps.py`. The broker refusal vocabulary also
+  changes the whole-file binding for `seat_route_contract.py`. TUI remains the default,
+  SDK stays unadmitted, and production jail profile digests remain stable.
 
-## [0.7.41] - Unreleased candidate
+### Known issues
+
+- Three POSIX-only tests import `fcntl` at module scope and fail collection on native
+  Windows (`test_broker_socket_path_2131.py`, `test_launch_prepare.py` and
+  `test_launch_release_reap.py`). The fixed-list JEV Drill companion excludes these files.
+
+## [0.7.41] - 2026-11-23
 
 ### Changed
 
