@@ -18,6 +18,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Changed
 
+- Record the FIRSTSEAT standing Gemini W1 policy and freeze IF-0-FIRSTSEAT-7,
+  including the one-attempt debit, unchanged-input skip and agent-harness#2157
+  bridge sequencing gate.
 - LANEEXEC erratum 7 binds the plan to the landed SL-8 renewal, activation,
   scratch, cancellation and lane admission rulings (agent-harness#2160).
 
