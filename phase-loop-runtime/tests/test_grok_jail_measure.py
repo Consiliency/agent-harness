@@ -18,11 +18,14 @@ import argparse
 import ast
 import contextlib
 import dataclasses
+import hashlib
+import io
 import json
 import os
 import subprocess
 import sys
 import time
+import zipfile
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 
@@ -40,7 +43,12 @@ from test_grok_jail_surface import STAND_IN, _build, _credential, _open_gate, _P
 pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux seat jail")
 
 GRANT = "grok-jail-fixture"
-HOSTED = "https://github.com/example/agent-harness/actions/runs/1"
+HOSTED = "https://github.com/Consiliency/agent-harness/actions/runs/1"
+HOSTED_HEAD = "a" * 40
+BA_CASES = (
+    "test_jail_ns_ba_j1_one_child_allowed_through_the_proxy_and_refused_direct",
+    "test_live_jail_b_ba_j4_ba_j5_masks_write_confinement_and_retention",
+)
 LAUNCH = "a" * 64
 REFUSED = "grok_tool_surface_unverified"
 INFERENCE_PATH = "/v1/chat/completions"
@@ -69,6 +77,7 @@ class Launch:
 
     #: Where the launch refuses, in the §4.5 order; ``None`` spawns.
     refuse_at: str | None = None
+    refusal_code: str = REFUSED
     exit: int = 0
     text: str = "OK"
     artifact: bytes | None = None
@@ -133,7 +142,9 @@ class Runner:
     def probe_sink(self, holder, seat_id, sink, *, measurement):
         self.order.append("probe_sink")
         if self.current.refuse_at == "probe_sink":
-            raise seat_jail.SeatSandboxRefused(REFUSED)
+            if self.current.refusal_code == "grok_sink_probe_timeout":
+                raise gts.MeasurementRefused(self.current.refusal_code)
+            raise seat_jail.SeatSandboxRefused(self.current.refusal_code)
         return (1, 2)
 
     def leg(self, grok_seat, *, measurement, read_sink, failure_detail_sink, prompt, **kwargs):
@@ -205,6 +216,7 @@ class Bench:
                       lambda env=None: gjs.JailedSubject(STAND_IN, self.digest))
         patch.setattr(gts, "_jail_compose", self.runner.compose)
         patch.setattr(gjs, "launch_digest", self.runner.launch_digest)
+        patch.setattr(gjs, "production_launch_digest", lambda arch: LAUNCH)
         patch.setattr(gjs, "prepare_measurement", self.runner.prepare)
         patch.setattr(gjs, "probe_sink", self.runner.probe_sink)
         patch.setattr(gjs, "read_sink_in_h", self.runner.read_sink_in_h)
@@ -280,6 +292,132 @@ def _measured(tools=None, extra=""):
 
 
 # --- §5.2: jailed grants, eligibility and the context -------------------------------------
+
+
+def _confirmation_observation(bench, tmp_path, **changes):
+    folder = tmp_path / "observation"
+    folder.mkdir(mode=0o700, exist_ok=True)
+    path = folder / "confirmation.json"
+    document = {
+        "schema": "grok_jail_confirmation.v1",
+        "image_sha256": bench.digest, "launch_digest": {seat_jail.host_arch(): LAUNCH},
+        "jail_context_digest": gjs.jail_context_digest(bench.digest),
+        "approval_id": "owner-fixture-1", "approved_on": "2026-11-22",
+        "credential_free": True, "no_egress": True, "masks_unchanged": True,
+        "outcome": dict(gjs._CONFIRMATION_OUTCOME),
+    }
+    path.write_text(json.dumps({**document, **changes}), encoding="utf-8")
+    path.chmod(0o600)
+    return path
+
+
+def _hosted_api(bench, monkeypatch, *, defect=None):
+    monkeypatch.setenv("GROK_INSTALLED_HEAD", HOSTED_HEAD)
+    runtime = seat_window.runtime_digest()
+    properties = {"grok_boundary_runtime": runtime, "grok_boundary_arch": seat_jail.host_arch(),
+                  "grok_boundary_attempt": "1", "grok_boundary_head": HOSTED_HEAD}
+    if defect == "runtime":
+        properties["grok_boundary_runtime"] = "f" * 64
+    if defect == "attempt":
+        properties["grok_boundary_attempt"] = "2"
+    props = "".join(f'<property name="{name}" value="{value}"/>'
+                    for name, value in properties.items())
+    launch = "f" * 64 if defect == "launch" else LAUNCH
+    context = "f" * 64 if defect == "context" else gjs.jail_context_digest(bench.digest)
+    ba_j5 = (f'<property name="grok_boundary_launch" value="{launch}"/>'
+             f'<property name="grok_boundary_context" value="{context}"/>')
+    cases = "".join(
+        f'<testcase classname="tests.test_grok_seat_jail" name="{case}">'
+        f'<properties>{props}{ba_j5 if case == BA_CASES[1] else ""}</properties>'
+        f'{"<skipped/>" if defect == "skipped" else ""}</testcase>'
+        for case in (BA_CASES[:1] if defect == "missing" else BA_CASES))
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as zipped:
+        zipped.writestr("grok-jail-boundary.xml", f'<testsuites><testsuite tests="2" '
+                       f'errors="0" failures="0" skipped="0">{cases}</testsuite></testsuites>')
+    payload = archive.getvalue()
+    run = {"id": 1, "run_attempt": 1, "status": "completed", "conclusion": "success",
+           "event": "push", "head_branch": "main", "head_sha": HOSTED_HEAD,
+           "path": ".github/workflows/test.yml",
+           "head_repository": {"full_name": "Consiliency/agent-harness"}}
+    if defect == "head":
+        run["head_sha"] = "b" * 40
+    if defect == "branch":
+        run["head_branch"] = "pr"
+    if defect == "run_failed":
+        run["conclusion"] = "failure"
+    artifact = {"name": "grok-jail-boundary", "id": 42, "expired": False,
+                "size_in_bytes": len(payload), "digest": "sha256:" +
+                hashlib.sha256(payload).hexdigest()}
+    root = "repos/Consiliency/agent-harness/actions"
+    replies = {f"{root}/runs/1": json.dumps(run).encode(),
+               f"{root}/runs/1/artifacts?name=grok-jail-boundary": json.dumps(
+                   {"total_count": 1, "artifacts": [artifact]}).encode(),
+               f"{root}/artifacts/42/zip": b"swapped" if defect == "artifact" else payload}
+
+    def api(argv, **kwargs):
+        assert argv[:4] == ["gh", "api", "--hostname", "github.com"]
+        return subprocess.CompletedProcess(argv, 0, stdout=replies[argv[4]])
+
+    monkeypatch.setattr(subprocess, "run", api)
+
+
+def test_real_writers_open_conditions_three_and_four_and_enable_the_grant(
+        bench, tmp_path, monkeypatch):
+    root = Path(pa.private_record_root())
+    confirmation = gjs.confirmation_name(bench.digest)
+    boundary = gjs.boundary_name(LAUNCH)
+    (root / confirmation).unlink()
+    (root / boundary).unlink()
+    assert gjs.eligibility(bench.digest, through=4) == "confirmation"
+    assert bench.new_grant() == (1, {"status": "refused", "code": "jail_ineligible"})
+    source = _confirmation_observation(bench, tmp_path)
+    assert bench.cli("--record", str(source), "--attended", "--reviewed")[0] == 0
+    assert gjs.eligibility(bench.digest, through=4) == "boundary"
+    assert bench.new_grant() == (1, {"status": "refused", "code": "jail_ineligible"})
+    with monkeypatch.context() as patch:
+        _hosted_api(bench, patch)
+        assert bench.cli("--hosted-check", HOSTED)[0] == 0
+    assert gjs.eligibility(bench.digest, through=4) is None
+    assert gjs.eligibility(bench.digest) == "record"
+    assert gjs.read_private(boundary)["head"] == HOSTED_HEAD
+    assert all((root / name).stat().st_mode & 0o777 == 0o600 for name in (confirmation, boundary))
+    code, report = bench.cli("--new-grant", "--planned", "pilot,planted,confirm", "--retries",
+                             "2", "--hosted-check", "2")
+    assert (code, report["code"]) == (1, "hosted_check_mismatch")
+    assert bench.new_grant()[0] == 0
+    saved = (root / boundary).read_bytes()
+    (root / boundary).unlink()
+    assert bench.cli("--attended", "--rehearse", "--route", "staged") == (
+        1, {"status": "refused", "code": "jail_ineligible"})
+    (root / boundary).write_bytes(saved)
+    (root / boundary).chmod(0o600)
+    assert bench.rehearse()[0] == 0
+
+
+@pytest.mark.parametrize("change", [
+    {"credential_free": False}, {"no_egress": False}, {"masks_unchanged": 1},
+    {"image_sha256": "0" * 64}, {"jail_context_digest": "0" * 64},
+    {"launch_digest": {"other": LAUNCH}}, {"launch_digest": {seat_jail.host_arch(): "0" * 64}},
+    {"approved_on": "2026-02-31"},
+    {"outcome": dict(gjs._CONFIRMATION_OUTCOME, models_requested=True)},
+])
+def test_confirmation_writer_refuses_an_invalid_observation(bench, tmp_path, change):
+    name = gjs.confirmation_name(bench.digest)
+    (Path(pa.private_record_root()) / name).unlink()
+    source = _confirmation_observation(bench, tmp_path, **change)
+    assert bench.cli("--record", str(source), "--attended", "--reviewed")[0] == 1
+    assert gjs.read_private(name) is None
+
+
+@pytest.mark.parametrize("defect", ["head", "branch", "run_failed", "missing", "skipped",
+                                    "runtime", "attempt", "artifact", "launch", "context"])
+def test_hosted_check_refuses_unproven_boundary(bench, monkeypatch, defect):
+    name = gjs.boundary_name(LAUNCH)
+    (Path(pa.private_record_root()) / name).unlink()
+    _hosted_api(bench, monkeypatch, defect=defect)
+    assert bench.cli("--hosted-check", HOSTED)[0] == 1
+    assert gjs.read_private(name) is None
 
 
 def test_a_jailed_grant_records_its_context_cap_and_labels(bench):
@@ -366,8 +504,7 @@ def test_the_launch_runs_m1_to_m5_in_order_and_consumes_last(bench):
 def test_ba_j7_a_refusal_before_the_hook_settles_unspawned_with_no_charge(bench, step):
     """r7: a refused qualification check, identity probe, capped preflight or sink probe
     (or any earlier step) leaves no admission file, spawns nothing and settles the
-    reservation ``unspawned`` with no charge; OWNER-DECISION r7-1's interim rule stops the
-    procedure."""
+    reservation ``unspawned`` with no charge. A deterministic refusal stops the grant."""
     bench.opened()
     bench.runner.order.clear()
     code, report = bench.launch(Launch(refuse_at=step), _measured(), routes=2)
@@ -383,16 +520,32 @@ def test_ba_j7_a_refusal_before_the_hook_settles_unspawned_with_no_charge(bench,
     assert (code, report["routes"][0]["code"]) == (1, "grant_stopped_unspawned")
 
 
-def test_the_resume_policy_is_one_isolated_decision_point_that_refuses(bench, monkeypatch):
-    """OWNER-DECISION r7-1 is not ruled: ``unspawned_resumes`` is the one place the ruling
-    lands. Replaced (as the owner's answer would), the label resumes; as shipped it refuses."""
-    bench.opened()
-    bench.launch(Launch(refuse_at="probe_sink"))
-    ledger = SimpleNamespace(unspawned={"x": "y"})
-    assert gts.unspawned_resumes(ledger, "pilot") is False
-    monkeypatch.setattr(gts, "unspawned_resumes", lambda ledger, label: True)
-    code, report = bench.launch(_measured())
-    assert code == 0 and report["routes"][0]["label"] == "pilot", report
+@pytest.mark.parametrize("repeat", [False, True])
+def test_one_transient_unspawned_reopens_the_label_without_spending_a_retry(bench, repeat):
+    bench.opened(retries=0)
+    timed_out = Launch(refuse_at="probe_sink", refusal_code="grok_sink_probe_timeout")
+    code, report = bench.launch(timed_out, routes=2)
+    first, second = report["routes"]
+    assert code == 1 and first["status"] == "unspawned" and second["code"] == "not_attempted"
+    assert bench.admissions() == []
+    status = bench.status()
+    assert (status["charged"], status["retries_used"], status["stopped"]) == (0, 0, False)
+    code, report = bench.launch(timed_out if repeat else _measured())
+    assert report["routes"][0]["label"] == "pilot"
+    if repeat:
+        assert code == 1 and report["routes"][0]["status"] == "unspawned"
+        assert bench.status()["stopped"] is True
+        code, report = bench.launch(_measured())
+        assert (code, report["routes"][0]["code"]) == (1, "grant_stopped_unspawned")
+        assert bench.status()["charged"] == 0
+    else:
+        assert code == 0
+        bench.launch(timed_out)
+        code, report = bench.launch(_measured(), _measured(), routes=2)
+        assert code == 0
+        assert [row["label"] for row in report["routes"]] == ["planted", "confirm"]
+        status = bench.status()
+        assert (status["charged"], status["retries_used"], status["stopped"]) == (3, 0, False)
 
 
 def test_a_spawn_that_fails_after_the_hook_is_charged_in_full_and_unresolved(bench):
@@ -1068,7 +1221,7 @@ def test_probe_sink_runs_the_verbs_in_h_bound_to_the_admitted_inode(tmp_path, mo
     assert "phase_loop_runtime.grok_jail_surface" in argv
 
 
-@pytest.mark.parametrize("fail", ["exit", "swapped", "non_empty", "garbled", "helper",
+@pytest.mark.parametrize("fail", ["exit", "swapped", "non_empty", "garbled", "helper", "timeout",
                                   "operator_owned", "group_mode", "path_swapped", "no_fd"])
 def test_probe_sink_fails_closed(tmp_path, monkeypatch, fail):
     sink = tmp_path / "sink"
@@ -1095,17 +1248,20 @@ def test_probe_sink_fails_closed(tmp_path, monkeypatch, fail):
     def run(argv, **kwargs):
         if fail == "helper":
             raise OSError("nsenter missing")
+        if fail == "timeout":
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
         return _Done(rc, payload)
 
     monkeypatch.setattr(subprocess, "run", run)
     if fail != "operator_owned":
         monkeypatch.setattr(os, "getuid", lambda: info.st_uid + 1)
+    refusal = gts.MeasurementRefused if fail == "timeout" else seat_jail.SeatSandboxRefused
     try:
-        with pytest.raises(seat_jail.SeatSandboxRefused) as caught:
+        with pytest.raises(refusal) as caught:
             gjs.probe_sink(4242, 7, str(sink), measurement=measurement)
     finally:
         gjs.close_measurement(measurement)
-    assert caught.value.code == REFUSED
+    assert caught.value.code == ("grok_sink_probe_timeout" if fail == "timeout" else REFUSED)
 
 
 def test_the_handoff_refuses_a_substituted_sink_before_changing_anything(tmp_path):

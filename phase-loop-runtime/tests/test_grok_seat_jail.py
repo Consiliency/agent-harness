@@ -510,7 +510,20 @@ def stage_copy(tmp_path):
     return tmp_path
 
 
-def test_live_jail_b_ba_j4_ba_j5_masks_write_confinement_and_retention(tmp_path, monkeypatch):
+def _hosted_boundary_properties(record_property, **bindings):
+    if (os.environ.get("PHASE_LOOP_REQUIRE_GROK_JAIL_NS") != "1"
+            or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted"):
+        return
+    from phase_loop_runtime.seat_window import runtime_digest
+
+    for name, value in {"head": os.environ["GITHUB_SHA"], "arch": seat_jail.host_arch(),
+                        "attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+                        "runtime": runtime_digest(), **bindings}.items():
+        record_property(f"grok_boundary_{name}", value)
+
+
+def test_live_jail_b_ba_j4_ba_j5_masks_write_confinement_and_retention(
+        tmp_path, monkeypatch, record_property):
     """(b) EC-GROK-1, BA-J5 and BA-J4 (SL-3 part) in the jail the leg composes, as the
     actual seat UID: every §2.4 row has its treatment on the actual mount view; creating
     any fixed input or discovery path fails; renaming ``.grok``, ``.config`` or a tree
@@ -559,6 +572,8 @@ def test_live_jail_b_ba_j4_ba_j5_masks_write_confinement_and_retention(tmp_path,
             review, base / "seat", SimpleNamespace(staged_tree_sha256=staged), n, holder,
             ("bundle", "instructions"), proxy, deadline_s=60)
         try:
+            launch_digest = gjs.launch_digest(
+                seat.jail, gjs.production_command(seat.jail.provider_argv0))
             staged_before = {name: (Path(seat.jail.gemini_config_dir) / name).read_bytes()
                              for name in ("config.toml", "auth.json", "agent_id")}
             done = _in_jail(seat, _LIVE_PROBE, {"rows": rows, "create": create, "write": write,
@@ -598,6 +613,8 @@ def test_live_jail_b_ba_j4_ba_j5_masks_write_confinement_and_retention(tmp_path,
     assert _tree_manifest(sibling / seat_jail.HOST_TREE_DIRNAME) == sibling_digest
     needles = (token[-12:].encode(), token.encode())
     assert _contains(tmp_path, needles) == []
+    _hosted_boundary_properties(record_property, launch=launch_digest,
+                                context=gjs.jail_context_digest(grok.GROK_1_0_92_SHA256))
 
 
 # --- (f) live_jail and (g) BA-J1 jail_ns: egress from inside the real jail ----------------
@@ -718,7 +735,7 @@ def test_live_jail_f_a_jailed_tool_command_reaches_no_unlisted_or_other_vendor_h
 
 
 def test_jail_ns_ba_j1_one_child_allowed_through_the_proxy_and_refused_direct(
-        tmp_path, monkeypatch, real_proxy_upstream):
+        tmp_path, monkeypatch, real_proxy_upstream, record_property):
     """BA-J1 (VJ): one child of the real Grok jail shows an allowed request through the
     proxy reaching the fixture upstream and a refused direct connection to a listener the
     host reaches. Mandatory hosted check: a missing prerequisite fails."""
@@ -732,6 +749,7 @@ def test_jail_ns_ba_j1_one_child_allowed_through_the_proxy_and_refused_direct(
     assert result["allowed"].startswith("HTTP/1.1 200"), result
     assert (INFERENCE_HOST, "POST", INFERENCE_PATH, INFERENCE_HOST) in upstream.requests
     assert result["direct"] != "connected"
+    _hosted_boundary_properties(record_property)
 
 
 # --- Evidence: plans/evidence/seat-grok/write-confinement.json ------------------------------

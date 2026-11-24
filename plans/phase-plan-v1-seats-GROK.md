@@ -466,6 +466,8 @@ gates beside `suite_command`.
 - `VU`: `P test_grok_tool_surface.py test_grok_tool_surface_measure.py test_grok_board_leg_frozen_basis.py test_grok_measure_egress.py`, unedited
 - `VL2`: `PHASE_LOOP_REQUIRE_LIVE_JAIL=1 P test_grok_seat_profile.py -k live_jail --junitxml=<private-receipt>`, stand-in only; a skip or zero collection fails
 - `VL`: `PHASE_LOOP_REQUIRE_LIVE_JAIL=1 P test_grok_seat_jail.py -k live_jail --junitxml=<private-receipt>`, stand-in only; a skip or zero collection fails
-- `VJ`: `PHASE_LOOP_REQUIRE_GROK_JAIL_NS=1 P test_grok_seat_jail.py -k jail_ns`, mandatory hosted check (BA-J1, BA-J5)
+- `VJ`: the hosted BA-J1 and BA-J5 selectors and JUnit receipt in the
+  [Grok measurement procedure](../docs/ops/grok-jail-measurement.md), required by
+  [jail contract erratum r8](artifacts/grok-jail-tool-surface-contract-v1-erratum-r8.md).
 - `VK`: on the designated seat host's installed runtime: `timeout 300 phase-loop seat-sandbox qualify --leg grok`, `timeout 300 phase-loop seat-egress status`; after SL-6, `measure-tools --verify-probe final` (jail contract §7.1)
 - Full suite: hosted CI and Gate A only.

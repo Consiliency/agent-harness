@@ -12,12 +12,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   key was written, whether the exact session recorded the request, and whether an
   assistant event or typed API error followed. The diagnostics include timing and
   allowlisted journal metadata without retaining request or response content.
+- Grok's jailed measurement records the owner's offline projection confirmation and
+  verifies the hosted BA-J1 and BA-J5 results before opening a grant (agent-harness#2101).
 - LaneExec checks requests against captured route and resource settings, runs isolated admission,
   and journals supervisor ownership, start intent and terminal responses. Shipped settings keep
   every launch route closed.
 
 ### Changed
 
+- Grok jail grants reopen a counted label once after a sink-probe timeout without
+  charging a request or retry. This moves the seat-window runtime and release identity
+  digests. Profile and SDK proof pins stay fixed (agent-harness#2101).
 - LANEEXEC erratum 7 binds the plan to the landed SL-8 renewal, activation,
   scratch, cancellation and lane admission rulings (agent-harness#2160).
 
