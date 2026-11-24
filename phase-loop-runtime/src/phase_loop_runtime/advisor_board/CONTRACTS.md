@@ -936,6 +936,9 @@ kept in a private 0600 per-leg file in the run's `leg-logs/` directory (0700). T
 names the file by its run-relative path. Verdict JSON, governed reasons and the board summary
 omit the file contents. The file name uses the closed form
 `leg-logs/<registry harness | leg>-<24 hex>.log`.
+Mode-line notice codes keep their bare detail so the board can report the refusal.
+For a TUI stall or missing canonical output, the tail can be kept only when the
+parent-held journal shows no model turn.
 
 **Seat-jail codes (agent-harness#1132, F030).** Every seat-jail notice code is an exact
 literal of `_HARNESS_DETAIL_CODES`: `seat_sandbox_unavailable_{host,seat_uid,tiocsti}`,

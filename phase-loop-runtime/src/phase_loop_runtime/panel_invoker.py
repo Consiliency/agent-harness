@@ -3438,10 +3438,11 @@ _HARNESS_DETAIL_CODE_TEMPLATES: tuple[re.Pattern[str], ...] = _OMNIGENT_DETAIL_T
 _MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 _LEG_LOG_DIRNAME = "leg-logs"
 _LEG_LOG_REF_PATTERN = _LEG_LOG_DIRNAME + r"/(?:" + _H + r"|leg)-[0-9a-f]{24}\.log"
-_CLAUDE_TUI_TAIL_CODES = frozenset({
-    "claude_tui_editor_not_ready", "claude_tui_missing_canonical_output",
-    "claude_tui_pty_eof_no_output", "claude_tui_stalled", "claude_tui_submit_failed",
-    "claude_tui_workspace_trust_blocked",
+_CLAUDE_TUI_PRE_TURN_TAIL_CODES = frozenset({
+    "claude_tui_missing_canonical_output", "claude_tui_stalled",
+})
+_CLAUDE_TUI_TAIL_CODES = _CLAUDE_TUI_PRE_TURN_TAIL_CODES | frozenset({
+    "claude_tui_editor_not_ready", "claude_tui_pty_eof_no_output", "claude_tui_submit_failed",
 })
 _UNKNOWN_DETAIL = "unknown failure; CLI output not retained"
 # Failure templates with NO field: a plain string equal to one of these is our own literal.
@@ -3512,9 +3513,14 @@ class _LegFailure:
     rc: int | None = None
     prefix: str | None = None  # a _HarnessCode naming the route, e.g. a claude_tui_* marker
 
+    def _retains_tui_tail(self) -> bool:
+        # Notice consumers match the bare detail code.
+        return (self.template in _CLAUDE_TUI_TAIL_CODES
+                and self.template not in _claude_seat_transport.mode_line_codes())
+
     def rendered(self, log_ref: str | None = None) -> _HarnessCode:
         body = _unknown_detail(self.rc, log_ref) if self.unknown else self.template
-        if log_ref and not self.unknown and self.template in _CLAUDE_TUI_TAIL_CODES:
+        if log_ref and not self.unknown and self._retains_tui_tail():
             body = f"{body}; CLI output: {log_ref}"
         if type(self.prefix) is _HarnessCode and _is_harness_code(str.__str__(self.prefix)):
             body = f"{str.__str__(self.prefix)}: {body}"
@@ -3693,7 +3699,7 @@ def _caused_refusal_code(exc: BaseException) -> str | None:
 
 def _resolve_leg_detail(value: object, run_dir: Path | str | None, seat_key: str) -> object:
     """Resolve private log references before the result descriptor validates the detail."""
-    if type(value) is _LegFailure and (value.unknown or value.template in _CLAUDE_TUI_TAIL_CODES):
+    if type(value) is _LegFailure and (value.unknown or value._retains_tui_tail()):
         ref = (
             _write_private_leg_log(run_dir, seat_key, value.raw)
             if run_dir is not None and value.raw.strip() else None
@@ -13846,8 +13852,10 @@ def _exec_jailed_claude_leg(
                 code = "claude_seat_login_rejected" if login else "claude_seat_token_rejected"
                 failure = _LegFailure(template=code)
                 seat.notices.append(code)
+            # After a turn, these failures can show excerpts from the reviewed tree.
             if (type(log_text) is _HarnessCode and failure.template == log_text
-                    and log_text in _CLAUDE_TUI_TAIL_CODES):
+                    and failure._retains_tui_tail()
+                    and (model_turn is False or log_text not in _CLAUDE_TUI_PRE_TURN_TAIL_CODES)):
                 failure = replace(failure, raw=pty_tail)
             failure_detail_sink.append(failure)
     return status, text
