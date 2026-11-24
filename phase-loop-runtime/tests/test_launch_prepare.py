@@ -13,6 +13,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import threading
 
@@ -242,7 +243,7 @@ def short_waits(monkeypatch):
 
 # -- construction -------------------------------------------------------------------------
 
-def test_construction_stores_the_config_and_seams_and_binds_no_launch(env):
+def _check_lazy_construction(env):
     lifecycle = env.lifecycle()
     popen, readiness, route = object(), (lambda: "x"), (lambda: "disabled")
     service = launch_service.build_launch_service(
@@ -257,6 +258,26 @@ def test_construction_stores_the_config_and_seams_and_binds_no_launch(env):
     reservation = env.reserve()
     prepare(service, reservation)
     assert "phase_loop_runtime.launch_exec" not in sys.modules
+
+
+def test_construction_stores_the_config_and_seams_and_binds_no_launch(tmp_path):
+    # Other launch tests can load launch_exec before this test runs.
+    runtime_root = Path(launch_service.__file__).resolve().parents[1]
+    tests_root = Path(__file__).resolve().parent
+    script = """
+import sys
+from pathlib import Path
+
+sys.path[:0] = sys.argv[1:3]
+from test_launch_prepare import Env, _check_lazy_construction
+
+_check_lazy_construction(Env(Path(sys.argv[3])))
+"""
+    subprocess.run(
+        [sys.executable, "-I", "-c", script, str(runtime_root), str(tests_root), str(tmp_path)],
+        check=True,
+        timeout=20,
+    )
 
 
 def test_the_default_admission_bound_and_landed_seams(env):
