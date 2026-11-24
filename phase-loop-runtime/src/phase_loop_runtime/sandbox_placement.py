@@ -4517,19 +4517,19 @@ class PlacementLifecycle:
                 bound = _Deadline(min(deadline, _monotonic() + previous["ttl_s"] / 3,
                                       previous["heartbeat_at"] + previous["ttl_s"] * 2 / 3))
                 count = previous["confirmation_count"] + 1
-                # A crash or timeout after either write leaves a closed window until reap.
-                disposition["debt"] = asdict(Debt("renewal_lost", False, False, "inapplicable", False))
+                # Keep cleanup debt if confirmation fails. The supervisor owns the
+                # renewal fence at the lease boundary through fence_launch.
+                debt = asdict(Debt("renewal_lost", False, False, "inapplicable", False))
+                disposition["debt"] = debt
                 self._launch_write("dispositions", generation, disposition)
-                if not bound.expired() and self._confirm_slot(key, active, count, bound):
-                    disposition.update(confirmed_count=count, debt=None)
-                    self._launch_write("dispositions", generation, disposition)
-                    if not bound.expired():
-                        return True
-                    disposition.update(confirmed_count=count - 1, fenced=True,
-                                       debt=asdict(Debt("renewal_lost", False, False, "inapplicable", False)))
-                    self._launch_write("dispositions", generation, disposition)
+                if bound.expired() or not self._confirm_slot(key, active, count, bound):
                     return False
-                self._fence_locked(key, "renewal_lost", remote=False)
+                disposition.update(confirmed_count=count, debt=None)
+                self._launch_write("dispositions", generation, disposition)
+                if not bound.expired():
+                    return True
+                disposition.update(confirmed_count=count - 1, debt=debt)
+                self._launch_write("dispositions", generation, disposition)
                 return False
 
     def cancel_launch_owner(self, reservation_id: str, request_id: str, generation: str, *,

@@ -908,10 +908,27 @@ def test_generation_cancel_long_path(env, fault, monkeypatch):
     assert received == [dict(version=1, op="cancel", reservation_id=key[0], request_id=key[1],
                              generation=GEN, sender_pid=os.getpid(), sender_start=sp._own_identity()["start"])]
 
-def test_generation_renewal_late_writer_cannot_move_confirmed_heartbeat(prepared, monkeypatch):
+def test_generation_renewal_slot_error_requires_explicit_fence(prepared, monkeypatch):
+    life, key = _generation_claim(prepared)
+
+    def fail_slot_write(*args):
+        raise OSError("injected slot write failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "pwrite", fail_slot_write)
+        assert not life.renew_launch(*key, deadline=time.monotonic() + 1)
+
+    assert life.read_cleanup_debt(*key).cause == "renewal_lost"
+    assert life._launch_read("dispositions", GEN)["fenced"] is False
+    assert life.fence_launch(*key, cause="renewal_lost", deadline=time.monotonic() + 1)
+    assert life._launch_read("dispositions", GEN)["fenced"] is True
+
+
+def test_generation_renewal_late_writer_cannot_move_confirmed_heartbeat(env, prepared, monkeypatch):
     life, key = _generation_claim(prepared)
     assert life.renew_launch(*key, deadline=time.monotonic() + 1)
     confirmed = life.launch_heartbeat(key[0])
+    env.clock.now += 12
     invoked, resume, finished = threading.Event(), threading.Event(), threading.Event()
     write = life._launch_write
 
@@ -930,11 +947,34 @@ def test_generation_renewal_late_writer_cannot_move_confirmed_heartbeat(prepared
         assert not life.renew_launch(*key, deadline=time.monotonic() + .25)
         assert invoked.is_set() and not finished.is_set()
         assert life.read_cleanup_debt(*key).cause == "renewal_lost"
+        assert life._launch_read("dispositions", GEN)["fenced"] is False
     finally:
         resume.set()
     assert finished.wait(1)
     assert life.launch_heartbeat(key[0]) == confirmed
     assert not life.renew_launch(*key, deadline=time.monotonic() + 1)
+
+
+def test_generation_renewal_late_confirmation_restores_previous_heartbeat(env, prepared, monkeypatch):
+    life, key = _generation_claim(prepared)
+    confirmed = life.launch_heartbeat(key[0])
+    env.clock.now += 12
+    clock = Clock(time.monotonic())
+    deadline = clock.now + 2
+    write = life._launch_write
+
+    def late_confirmation(directory, name, row):
+        write(directory, name, row)
+        if directory == "dispositions" and row["confirmed_count"] == 1:
+            clock.now = deadline
+
+    monkeypatch.setattr(sp, "_monotonic", clock)
+    monkeypatch.setattr(life, "_launch_write", late_confirmation)
+    assert not life.renew_launch(*key, deadline=deadline)
+    assert clock.now == deadline
+    assert life.launch_heartbeat(key[0]) == confirmed
+    assert life.read_cleanup_debt(*key).cause == "renewal_lost"
+    assert life._launch_read("dispositions", GEN)["fenced"] is False
 
 
 def test_generation_release_drops_journal_before_waiting_for_lease(env, prepared):
