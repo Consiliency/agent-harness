@@ -23,7 +23,7 @@ from phase_loop_runtime import placement_process_contract as placement
 REPO = Path(__file__).resolve().parents[2]
 ARTIFACT = REPO / "plans/artifacts/v13-LANEEXEC-contract-v1.schema.json"
 #: The roadmap and binding pin of the wire artifact (an input, never an output).
-PINNED_SHA256 = "da311638f2c5b92df5b1f2a917665b62c06aa10f80040bfa2504dcd78f42442a"
+PINNED_SHA256 = "57bc376cc629e762130a3f43aa5bef8cfaeebb1042a3963fc54a5708d5adba7d"
 #: The bytes before erratum LANEEXEC-v1-errata-1 (``x-errata.entries[0].previous_sha256``).
 PREVIOUS_SHA256 = "bd0e6694e6df9e4ae0bc640c138645adf6b49e8f56aa3f5af7488107062676f3"
 PLACECLI_ID = "https://github.com/Consiliency/agent-harness/plans/artifacts/v13-PLACECLI-contract-v1.schema.json"
@@ -328,7 +328,7 @@ def test_the_packaged_bytes_are_the_frozen_artifact_at_its_pin():
     assert contract.protocol_schema_sha256() == PINNED_SHA256
 
 
-def test_the_wire_identity_is_the_erratum_one_bytes():
+def test_the_wire_identity_includes_the_toolkit_repin():
     assert contract.protocol_schema_sha256() == PINNED_SHA256
     assert contract.protocol_schema_sha256() != PREVIOUS_SHA256
     document = json.loads(contract.schema_bytes())

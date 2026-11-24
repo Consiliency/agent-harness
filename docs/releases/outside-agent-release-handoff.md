@@ -53,6 +53,13 @@ Qualification inputs checked against the runtime source diff from `v0.7.42`:
   hash package source. The upgrade invalidates release-bound row-window grants
   and requires a fresh Grok same-runtime series. Package source pins for new
   agy qualification evidence also move.
+- **LaneExec wire schema.** LANEEXEC-v1-errata-6 updates
+  `x-contract-pins.toolkit_pins` in the packaged `launch-v1.schema.json` to
+  toolkit commit `1e721c01…` and manifest SHA-256 `0642c084…`. The schema
+  SHA-256 is `57bc376cc629e762130a3f43aa5bef8cfaeebb1042a3963fc54a5708d5adba7d`.
+  The credential proxy is outside the remote-inner closure, so the OpenShell
+  image and runtime manifest are unchanged. Agent-toolkit has already
+  re-vendored the schema (agent-harness#2164, Consiliency/agent-toolkit#103).
 - **Claude SDK boundary proof.** The whole-file bindings for
   `claude_seat_transport.py`, `tests/test_seats_claude_order.py` and
   `uv.lock` move. The whole-file inputs
