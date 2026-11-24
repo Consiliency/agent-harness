@@ -2269,15 +2269,23 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
         )
         _preflight_gemini_heartbeat(DEFAULT_BOARD, monitoring_policy)
     except ValueError as exc:
+        from .agy_qualification import qualification_notice
+
         record = {
             "schema": "review_monitoring.v1", "requested_policy": monitoring_policy,
             "effective_policy": None, "terminal_reason": "policy_refusal",
             "diagnostic": str(exc), "model_deadline_s": None,
         }
+        notice = qualification_notice(exc)
         if bool(getattr(args, "json", False)):
-            print(json.dumps({"usable": False, "status": "UNAVAILABLE", "monitoring": record}))
+            payload = {"usable": False, "status": "UNAVAILABLE", "monitoring": record}
+            if notice is not None:
+                payload["notice"] = notice
+            print(json.dumps(payload))
         else:
             print(f"advisor-board: {exc}", file=sys.stderr)
+            if notice is not None:
+                print(json.dumps(notice, sort_keys=True), file=sys.stderr)
         return 2
     # PRESROUTE: a usage error is refused before any availability/auth probe.
     if getattr(args, "native_president", None) is not None and getattr(args, "landing_tier", None) is None:

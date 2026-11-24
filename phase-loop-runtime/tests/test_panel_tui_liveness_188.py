@@ -10,9 +10,8 @@ while blocked — so a genuinely-wedged leg (no output, ~2s CPU) hung ~17 min an
 timeout fired. #188 makes liveness reviewer-progress-based: cosmetic repaints and
 incidental CPU no longer count; genuine novel output / file / transcript growth do.
 
-These are real-subprocess PTY tests (like ``test_panel_tui_eof_48``): no mocking of
-the read loop, only a monkeypatched-short stall window so the wedge is caught in
-seconds instead of the production 180s.
+The original regression tests use a real subprocess and short stall windows.
+The jailed watchdog tests use synthetic PTY redraws and a virtual clock.
 """
 
 from __future__ import annotations
@@ -66,6 +65,169 @@ _FINITE_ANIMATION_SCRIPT = (
     "  sleep 0.1; "
     "done"
 )
+
+
+@pytest.fixture
+def jailed_tui_clock(tmp_path, monkeypatch):
+    """Drive the jailed PTY loop with a virtual clock and an exact journal."""
+    now = 0.0
+    submitted_at = None
+    writes = []
+    frame = b""
+    journal = tmp_path / "session.jsonl"
+    snapshot = tmp_path / "snapshot.jsonl"
+    journal.touch()
+
+    def refresh():
+        snapshot.write_bytes(journal.read_bytes())
+
+    review = "The review is complete.\n\nVERDICT: AGREE"
+    prompt = "review this"
+    master = None
+    original_openpty = pi.pty.openpty
+    original_read = pi.os.read
+    original_write = pi.os.write
+
+    def openpty():
+        nonlocal master
+        master, slave = original_openpty()
+        return master, slave
+
+    def read(fd, size):
+        return frame if fd == master else original_read(fd, size)
+
+    def write(fd, data):
+        nonlocal submitted_at
+        if fd != master:
+            return original_write(fd, data)
+        writes.append(data)
+        if data == b"\x1bOM":
+            submitted_at = now
+        return len(data)
+
+    def sleep(seconds):
+        nonlocal now
+        now += seconds
+
+    def append(uuid, role, content, **fields):
+        with journal.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "type": role, "uuid": uuid,
+                "message": {"role": role, "content": content, **fields},
+            }) + "\n")
+
+    def run(*, ui="none", answer_at=None, thinking_at=None, clear_at=None, freeze_at=None,
+            stall_s=187, backstop_s=1500, journal_request=True):
+        def select(readable, _write, _error, interval):
+            nonlocal frame
+            sleep(interval)
+            frame = b""
+            if now == 0.25:
+                frame = b"Claude editor ready\r\n"
+            if now == 1.25:
+                assert submitted_at == 1.0
+                if journal_request:
+                    append("request", "user", prompt)
+                if ui != "none":
+                    spinner = "✢ \x1b[33mChanneling…\x1b[0m"
+                    footer = ""
+                    if ui == "inline_hint":
+                        spinner += " (12s · esc to interrupt)"
+                    elif ui != "spinner_only":
+                        # Reconstruct the footer items from the retained Claude tail.
+                        footer = "  ⏵⏵ bypass permissions on (shift+tab to cycle) · effort: high · esc to interrupt"
+                    frame = f"{spinner}\r\n{footer}\r\n".encode()
+            if (ui in ("animated", "spinner_only", "inline_hint") and now >= 1.5
+                    and (freeze_at is None or now < freeze_at)):
+                # Real draw shape: rewrite only the spinner glyph, leaving the footer
+                # on its own row. Split the cursor command and UTF-8 glyph across reads.
+                tick = int((now - 1.5) * 4)
+                glyph = ("✶" if tick // 3 % 2 else "✢").encode()
+                frame = (b"\x1b[2", b"A" + glyph[:1], glyph[1:] + b"\r\x1b[2B")[tick % 3]
+            if now == clear_at:
+                frame = b"\x1b[1A\x1b[2K\x1b[1B"
+            if now == thinking_at:
+                append("thinking", "assistant", [{"type": "thinking", "thinking": "Inspecting."}],
+                       id="assistant", stop_reason=None)
+            if now == answer_at:
+                append("answer", "assistant", [{"type": "text", "text": review}],
+                       id="assistant", stop_reason="end_turn")
+            return (readable if frame else [], [], [])
+
+        monkeypatch.setattr(pi, "select", SimpleNamespace(select=select))
+        rc, text, detail, _tail = _run_claude_tui_session(
+            command=["fake-claude"], cwd=tmp_path, prompt=prompt,
+            output_file=tmp_path / "review.txt", timeout_s=backstop_s, env={},
+            backstop_s=backstop_s, stall_threshold_s=stall_s, seat_jail=object(),
+            broker_transcript_path=snapshot, transcript_refresh=refresh, allow_transcript_final=True,
+        )
+        assert writes == [
+            pi._BROKER_CLAUDE_DIRECT_REQUEST.encode() + b"\x1b[200~review this\x1b[201~",
+            b"\x1bOM",
+        ]
+        if rc == 0:
+            assert text == review
+        return detail, now
+
+    monkeypatch.setattr(pi, "time", SimpleNamespace(monotonic=lambda: now, time=time.time, sleep=sleep))
+    monkeypatch.setattr(pi.pty, "openpty", openpty)
+    monkeypatch.setattr(pi.os, "read", read)
+    monkeypatch.setattr(pi.os, "write", write)
+    monkeypatch.setattr(pi, "_CLAUDE_TUI_SUBMIT_DELAY_S", 0)
+    monkeypatch.setattr(pi, "_CLAUDE_TUI_READY_QUIESCENCE_S", 0.25)
+    monkeypatch.setattr(pi, "_CLAUDE_TUI_TRANSCRIPT_INTERVAL_S", 2)
+    process = SimpleNamespace(poll=lambda: None, returncode=None)
+    monkeypatch.setattr(pi, "launch_provider", lambda *a, **k: process)
+    monkeypatch.setattr(pi, "_anchor_process_group", lambda _proc: None)
+    monkeypatch.setattr(pi, "_terminate_process_group", lambda _proc: None)
+    monkeypatch.setattr(pi, "_note_exec_result", lambda *a, **k: None)
+    return run
+
+
+@pytest.mark.parametrize("ui", ["animated", "inline_hint"])
+def test_jailed_tui_thinking_survives_silence_until_assistant_answer(jailed_tui_clock, ui):
+    assert jailed_tui_clock(ui=ui, answer_at=800) == (
+        "claude_tui_broker_final_assistant", 800,
+    )
+
+
+def test_jailed_tui_stalls_on_static_screen_with_no_journal(jailed_tui_clock):
+    assert jailed_tui_clock(journal_request=False) == ("claude_tui_stalled", 187.25)
+
+
+@pytest.mark.parametrize("ui", ["static", "spinner_only"])
+def test_jailed_tui_stalls_at_silence_threshold_without_active_turn(jailed_tui_clock, ui):
+    assert jailed_tui_clock(ui=ui) == ("claude_tui_stalled", 189)
+
+
+def test_jailed_tui_stalls_once_thinking_window_expires(jailed_tui_clock):
+    assert jailed_tui_clock(ui="animated") == ("claude_tui_stalled", 1201)
+
+
+def test_jailed_tui_stalls_after_spinner_freezes(jailed_tui_clock):
+    assert jailed_tui_clock(ui="animated", freeze_at=300) == ("claude_tui_stalled", 486.75)
+
+
+def test_jailed_tui_thinking_window_expires_without_more_pty_bytes(jailed_tui_clock):
+    assert jailed_tui_clock(ui="animated", freeze_at=1150) == ("claude_tui_stalled", 1201)
+
+
+def test_jailed_tui_stalls_when_interrupt_footer_is_erased(jailed_tui_clock):
+    assert jailed_tui_clock(ui="animated", clear_at=205.5) == ("claude_tui_stalled", 205.5)
+
+
+def test_jailed_tui_thinking_still_honors_wall_deadline(jailed_tui_clock):
+    detail, finished_at = jailed_tui_clock(ui="animated", backstop_s=205)
+    assert detail == "timeout after 205s"
+    assert finished_at == 205
+
+
+def test_jailed_tui_checks_for_journal_progress_before_stalling(jailed_tui_clock):
+    # The user request is first seen at t=2. The thinking-only record is
+    # invisible to text salvage and lands after the t=4 poll, before t=5 cutoff.
+    assert jailed_tui_clock(stall_s=3, thinking_at=4.75, answer_at=6.25) == (
+        "claude_tui_broker_final_assistant", 7,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -608,6 +770,22 @@ def test_exact_tool_diagnostic_ignores_malformed_events(tmp_path):
     assert pi._claude_exact_tool_diagnostic(transcript) == (
         "completed_tools=0 pending_tools=0 assistant_after_tools=false"
     )
+
+
+@pytest.mark.parametrize("error", [
+    OSError, pi.AgyCanaryEvidenceError, pi._sandbox_egress.SeatIdentityUnverified,
+])
+def test_exact_tool_diagnostic_only_suppresses_os_errors(tmp_path, monkeypatch, error):
+    def broken_read(path):
+        raise error("journal read failed")
+
+    monkeypatch.setattr(pi, "_read_seat_raw_text", broken_read)
+    transcript = tmp_path / "exact.jsonl"
+    if error is OSError:
+        assert pi._claude_exact_tool_diagnostic(transcript) == "tool_progress=unknown"
+    else:
+        with pytest.raises(error, match="journal read failed"):
+            pi._claude_exact_tool_diagnostic(transcript)
 
 
 def test_completed_exact_tools_do_not_extend_stall_or_authorize_verdict(tmp_path, monkeypatch):

@@ -101,6 +101,65 @@ def test_stream_rejections_are_fixed_and_never_review_prose(mutation, reason):
     assert metadata["provider_stream_outcome"] != "accepted"
 
 
+@pytest.mark.parametrize(("facts", "expected"), [
+    ({"native_rc": 0, "stream": {"provider_stream_outcome": "session_reset",
+                                 "provider_stream_output_bytes": 0}}, "empty_response"),
+    ({"native_rc": 0, "stream": {"provider_stream_outcome": "accepted"},
+      "response_present": False}, "empty_response"),
+    ({"native_rc": 0, "stream": {"provider_stream_outcome": "accepted"},
+      "response_present": True}, "unknown"),
+    ({"native_rc": 0, "stream": {"provider_stream_outcome": "session_reset",
+                                 "provider_stream_output_bytes": False}}, "unknown"),
+    ({"native_rc": 0, "stream": {"provider_stream_outcome": "final_result_invalid",
+                                 "provider_stream_output_bytes": 80}}, "unknown"),
+    ({"native_rc": 124}, "timeout"),
+    ({"timed_out": True}, "timeout"),
+    ({"native_rc": 1}, "unknown"),
+    ({"login_wait_state": "expired", "native_rc": 1}, "unknown"),
+])
+def test_qualification_provider_error_from_stream_and_process_facts(facts, expected):
+    assert panel._agy_provider_error_class(**facts) == expected
+
+
+@pytest.mark.parametrize(("code", "login_wait_state", "expected"), [
+    ("gemini_seat_credential_missing", None, "auth_missing"),
+    ("gemini_seat_token_expired", None, "auth_expired"),
+    ("gemini_credential_near_expiry", "expired", "auth_expired"),
+    ("gemini_credential_near_expiry", "refreshed", "unknown"),
+    ("gemini_credential_refresh_timeout", "expired", "timeout"),
+    ("gemini_seat_egress_unavailable", None, "unknown"),
+])
+def test_qualification_provider_error_from_typed_refusals(code, login_wait_state, expected):
+    refusal = panel._seat_jail.SeatSandboxRefused(code)
+    assert panel._agy_provider_error_class(failure=refusal, login_wait_state=login_wait_state) == expected
+
+
+@pytest.mark.parametrize(("cause", "expected"), [
+    (FileNotFoundError, "auth_missing"), (PermissionError, "permission_denied"), (OSError, "unknown"),
+])
+def test_qualification_provider_error_from_credential_stat(cause, expected):
+    refusal = ValueError("brokered Gemini subscription credential reference is unavailable")
+    refusal.__cause__ = cause("private fixture")
+    assert panel._agy_provider_error_class(failure=refusal) == expected
+
+
+@pytest.mark.parametrize("provider_text", [
+    "auth_missing auth_expired",
+    "STOP_REASON_QUOTA_EXHAUSTED out of credits",
+    "PERMISSION_DENIED model_error",
+    "network error timeout waiting for response",
+])
+def test_qualification_provider_error_ignores_raw_text_and_unverified_codes(provider_text):
+    protocol = panel._broker_gemini_stream_protocol("synthetic input")
+    rows = _stream(protocol, final=provider_text)
+    rows[-1]["result"].update(status="ERROR", code=provider_text)
+    raw = "\n".join(json.dumps(row) for row in rows)
+    rc, body, _, metadata = panel._broker_gemini_stream_result(raw, protocol)
+    assert rc == 1 and body == ""
+    assert metadata["provider_stream_outcome"] == "final_result_invalid"
+    assert panel._agy_provider_error_class(native_rc=0, stream=metadata) == "unknown"
+
+
 def _fixture_repo(tmp_path):
     """A private one-commit repository for the board to digest and stage.
 
@@ -450,9 +509,29 @@ def test_the_qualification_worker_spawns_agy_from_a_non_git_cwd(fixture_cli, tmp
     run()
     terminal = json.loads((root / "terminal.json").read_text())
     assert terminal["result"]["status"] == "OK", terminal["result"]
+    assert "provider_error_class" not in terminal["broker"]
     assert fixture_cli.attempts.read_text().splitlines() == ["attempt"]
     probe = sha256(str(authority / "QUALIFICATION").encode()).hexdigest()
     assert terminal["broker"]["canonical_repo_probe_file_sha256"] == probe
+
+
+@pytest.mark.parametrize(("mode", "status", "error_class"), [
+    ("empty", "EMPTY", "empty_response"),
+    ("denied-empty", "ERROR", "empty_response"),
+    ("empty-timeout", "ERROR", "empty_response"),
+    ("native-timeout", "ERROR", "unknown"),
+    ("final", "ERROR", "unknown"),
+])
+def test_qualification_worker_retains_only_structured_error_class(
+    fixture_cli, tmp_path, monkeypatch, mode, status, error_class,
+):
+    fixture_cli.mode.write_text(mode)
+    _, root, _, run = _qualification_worker(fixture_cli, tmp_path, monkeypatch)
+    run()
+    terminal = json.loads((root / "terminal.json").read_text())
+    assert terminal["result"]["status"] == status
+    assert terminal["broker"]["provider_response_status"] == status
+    assert terminal["broker"]["provider_error_class"] == error_class
 
 
 def test_a_change_after_verification_cannot_reach_a_qualification_record(fixture_cli, tmp_path, monkeypatch):
