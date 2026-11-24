@@ -952,17 +952,18 @@ def _local_chain(h, effects, stage, blobs, recipe, req, paths, directory, lifeti
     with life.launch_operation_lock(
         h.reservation_id, h.generation, timeout_s=max(0, end - time.monotonic())
     ) as held:
-        if (
-            not held
-            or cancelled.is_set()
-            or lifetime.fenced.is_set()
-            or effects.clock() >= lifetime.last_confirmed + 2 * lifetime.ttl_s / 3
-        ):
+        if not held or cancelled.is_set() or lifetime.fenced.is_set():
             return uncertain
-        if not life.mark_start_intent(*h.ids, deadline=end):
-            return uncertain
-        lifetime.started()
         before_spawn = set(threading.enumerate())
+        checked_at = time.monotonic()
+        remaining = lifetime.renewal_cutoff - effects.clock()
+        if remaining <= 0 or not life.mark_start_intent(*h.ids, deadline=min(end, checked_at + remaining)):
+            return uncertain
+        # Persisting start intent may consume the remaining window.
+        start = effects.clock()
+        if start >= lifetime.renewal_cutoff or lifetime.fenced.is_set() or cancelled.is_set():
+            return uncertain
+        lifetime.started(at=start)
         try:
             proc = effects.capped_popen(
                 command,

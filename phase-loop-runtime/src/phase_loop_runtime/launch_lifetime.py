@@ -26,9 +26,13 @@ class LaunchLifetime:
     release_deadline: float | None = None
     fenced: threading.Event = field(default_factory=threading.Event)
 
-    def started(self):
+    @property
+    def renewal_cutoff(self) -> float:
+        return self.last_confirmed + 2 * (self.ttl_s / 3)
+
+    def started(self, at: float | None = None):
         if self.first_start is None:
-            self.first_start = self.clock()
+            self.first_start = self.clock() if at is None else at
             self.execution_deadline = self.first_start + self.timeout_s
 
     def terminated(self):
@@ -46,11 +50,10 @@ class LaunchLifetime:
     ):
         ids = reservation_id, request_id, self.generation
         third = self.ttl_s / 3
-        while not stop.is_set() and not self.fenced.is_set():
-            cutoff = self.last_confirmed + 2 * third
-            if stop.wait(max(0, self.last_confirmed + third - self.clock())):
-                break
-            while not stop.is_set() and not self.fenced.is_set():
+        while not self.fenced.is_set():
+            cutoff = self.renewal_cutoff
+            stop.wait(max(0, self.last_confirmed + third - self.clock()))
+            while not self.fenced.is_set():
                 now = self.clock()
                 if now >= cutoff:
                     self.fenced.set()
@@ -58,6 +61,10 @@ class LaunchLifetime:
                     lifecycle.fence_launch(
                         *ids, cause="renewal_lost", deadline=self.last_confirmed + self.ttl_s
                     )
+                    return
+                # Shutdown can wake this thread after a start was refused at
+                # the cutoff. Finish the due fence before giving up the lease.
+                if stop.is_set():
                     return
                 try:
                     ok = lifecycle.renew_launch(*ids, deadline=min(now + third, cutoff)) is True

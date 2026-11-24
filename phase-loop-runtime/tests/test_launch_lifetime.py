@@ -101,6 +101,92 @@ def test_generation_before_start_intent_requires_lifecycle_fix(tmp_path, monkeyp
     assert observations == ([("cancel_pending", [])] if operation == "cancel" else [(False, False, True)])
 
 
+@pytest.mark.parametrize(
+    ("entry_offset", "expires_during_intent", "expected_calls"),
+    [
+        pytest.param(-0.5, False, ["intent", "spawn"], id="before"),
+        pytest.param(0, False, [], id="at"),
+        pytest.param(0.5, False, [], id="after"),
+        pytest.param(-0.5, True, ["intent"], id="expires_during_intent"),
+    ],
+)
+def test_local_chain_requires_current_renewal_through_start_intent(
+    tmp_path, monkeypatch, entry_offset, expires_during_intent, expected_calls
+):
+    import threading
+    import time
+    from phase_loop_runtime import launch_exec, launch_supervisor as sup
+    from test_launch_admission import admitted_fixture
+    from test_launch_service import local_case
+
+    admitted_fixture(monkeypatch, tmp_path)
+    monkeypatch.setattr(launch_exec, "isolated_admission", lambda *args, **kwargs: None)
+    calls = []
+    intent_deadlines = []
+    now = None
+    cutoff = None
+
+    def spawn(*args, **kwargs):
+        calls.append("spawn")
+        raise OSError("fixture ends the bounded spawn")
+
+    def runner(h):
+        sup.run_supervisor(
+            h,
+            effects=sup.SupervisorEffects(
+                svc.lifecycle,
+                spawn,
+                svc.load_caps,
+                svc.readiness_code,
+                lambda: time.monotonic() if now is None else now,
+                containment_ready=lambda: True,
+            ),
+        )
+
+    _, svc, req = local_case(tmp_path, ttl=60, supervisor_runner=runner)
+    publish = sup._publish_admitted_controller
+    mark = svc.lifecycle.mark_start_intent
+    renew = sup.LaunchLifetime.renew
+
+    def after_claim(h, blobs):
+        nonlocal cutoff, now
+        published = publish(h, blobs)
+        key = dict(
+            version=1, reservation_id=h.reservation_id, request_id=h.request_id, generation=h.generation
+        )
+        heartbeat = svc.lifecycle._confirmed_renewal(key, svc.lifecycle._disposition(key))
+        cutoff = heartbeat["heartbeat_at"] + 2 * (heartbeat["ttl_s"] / 3)
+        now = cutoff + entry_offset
+        return published
+
+    def mark_intent(*ids, deadline):
+        nonlocal now
+        calls.append("intent")
+        intent_deadlines.append(deadline - time.monotonic())
+        marked = mark(*ids, deadline=deadline)
+        if expires_during_intent:
+            now = cutoff
+        return marked
+
+    def delayed_heartbeat(lifetime, lifecycle, reservation_id, request_id, stop, on_loss):
+        # Make the start decision before the heartbeat thread observes the cutoff.
+        stop.wait(10)
+        renew(lifetime, lifecycle, reservation_id, request_id, stop, on_loss)
+
+    monkeypatch.setattr(sup, "_publish_admitted_controller", after_claim)
+    monkeypatch.setattr(svc.lifecycle, "mark_start_intent", mark_intent)
+    monkeypatch.setattr(sup.LaunchLifetime, "renew", delayed_heartbeat)
+    result = svc.launch(req, cancelled=threading.Event())
+    claim = svc.lifecycle.launch_claim_record(req.reservation.reservation_id)
+    assert claim["claimed"] is True
+    disposition = svc.lifecycle._launch_read("dispositions", claim["generation"])
+    assert calls == expected_calls
+    assert all(remaining <= 0.5 for remaining in intent_deadlines)
+    assert disposition["start_intent"] is ("intent" in expected_calls)
+    assert disposition["fenced"] is ("spawn" not in expected_calls)
+    assert result.state == ("finished" if "spawn" in expected_calls else "uncertain")
+
+
 def test_pi_relay_delivers_exact_bytes_and_reports_loss(tmp_path):
     import socket
     import threading
