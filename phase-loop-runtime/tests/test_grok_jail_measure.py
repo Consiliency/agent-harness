@@ -338,11 +338,10 @@ def test_a_stage_of_another_context_refuses(bench, argv):
     assert (code, report["code"]) == (1, "context_mismatch")
 
 
-def test_an_unjailed_grant_is_unchanged_by_the_jailed_context(bench):
-    """A grant whose ``--planned`` is not the three labels keeps the unjailed shape."""
+def test_new_unjailed_grants_refuse_with_the_jailed_profile(bench):
     code, report = bench.new_grant(planned="review", retries=0)
-    assert code == 0 and "context" not in report["grant"]
-    assert report["grant"]["cap"] == gts.GRANT_CAP
+    assert (code, report["code"]) == (1, "unjailed_grant_refused")
+    assert not bench.grant_dir().exists()
     code, report = bench.new_grant(planned="pilot,review")
     assert (code, report["code"]) == (1, "planned_routes_invalid")
 

@@ -17,6 +17,8 @@ import os
 from pathlib import Path
 import pickle
 import stat
+import subprocess
+import sys
 import time
 
 import pytest
@@ -690,3 +692,151 @@ def test_a_file_that_grew_past_the_bound_after_its_stat_fails_the_after_check(op
     monkeypatch.setattr(os, "stat", stat_before_growth)
     assert cred.grok_seat_credential_after(seat_home, staged) == \
         "grok_seat_token_refreshed_in_jail"
+
+
+
+def test_metadata_publisher_requires_an_attended_terminal(operator):
+    result = subprocess.run(
+        [sys.executable, "-m", "phase_loop_runtime.seat_grok_credential",
+         "--subscription-confirmed", "--expires-at", str(int(time.time()) + 3600)],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15,
+    )
+    assert (result.returncode, result.stdout, result.stderr) == (
+        1, "", "credential_metadata_attendance_required\n")
+    assert not (operator.grok / "credential-metadata.json").exists()
+
+
+
+def test_attended_metadata_publisher_writes_a_record_the_preflight_accepts(operator):
+    expires = int(time.time()) + 3600
+    master, terminal = pytest.importorskip("pty").openpty()
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "phase_loop_runtime.seat_grok_credential",
+             "--subscription-confirmed", "--expires-at", str(expires)],
+            stdin=terminal, capture_output=True, text=True, timeout=15,
+        )
+    finally:
+        os.close(terminal)
+        os.close(master)
+    meta = operator.grok / "credential-metadata.json"
+    assert (result.returncode, result.stdout, result.stderr, meta.exists()) == (
+        0, "credential_metadata_published\n", "", True)
+    assert stat.S_IMODE(meta.stat().st_mode) == 0o600
+    assert grok_tool_surface.jail_credential_expiry() == expires
+
+
+
+def _metadata_args():
+    return ["--subscription-confirmed", "--expires-at", str(int(time.time()) + 3600)]
+
+
+def test_metadata_is_content_free_and_bound_to_current_auth(operator, monkeypatch, capsys):
+    auth = operator.grok / "auth.json"
+    previous = auth.stat()
+    real_open = os.open
+
+    def guarded_open(path, *args, **kwargs):
+        assert Path(path).name not in ("auth.json", "agent_id")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", guarded_open)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    args = _metadata_args()
+    assert cred.main(args) == 0
+    assert capsys.readouterr() == ("credential_metadata_published\n", "")
+    meta = operator.grok / "credential-metadata.json"
+    assert json.loads(meta.read_bytes()) == {
+        "subscription": True, "expires_at": int(args[-1]),
+        "auth_state": {"device": previous.st_dev, "inode": previous.st_ino,
+                       "size": previous.st_size, "mtime_ns": previous.st_mtime_ns,
+                       "ctime_ns": previous.st_ctime_ns},
+    }
+    assert sorted(item.name for item in operator.grok.iterdir()) == [
+        "agent_id", "auth.json", "credential-metadata.json"]
+    assert auth.stat() == previous
+    assert grok_tool_surface.jail_credential_expiry() == int(args[-1])
+
+    replacement = operator.grok / "replacement.json"
+    replacement.write_bytes(b"fixture")
+    replacement.chmod(0o600)
+    replacement.replace(auth)
+    assert auth.stat().st_ino != previous.st_ino
+    with pytest.raises(grok_tool_surface.MeasurementRefused) as refused:
+        grok_tool_surface.jail_credential_expiry()
+    assert refused.value.code == "credential_metadata_unavailable"
+    assert cred.main(args) == 0
+    assert grok_tool_surface.jail_credential_expiry() == int(args[-1])
+
+
+@pytest.mark.parametrize("entry", ["store", "auth", "metadata"])
+@pytest.mark.parametrize("problem", ["mode", "owner", "symlink"])
+def test_metadata_publication_refuses_unsafe_entries(operator, monkeypatch, capsys, entry, problem):
+    store = operator.grok
+    auth = store / "auth.json"
+    meta = store / "credential-metadata.json"
+    if entry == "metadata":
+        meta.write_bytes(b"fixture")
+        meta.chmod(0o600)
+    target = {"store": store, "auth": auth, "metadata": meta}[entry]
+    original = target.stat()
+    if problem == "mode":
+        target.chmod(stat.S_IMODE(original.st_mode) | 0o020)
+    elif problem == "owner":
+        real_stat, real_fstat = os.stat, os.fstat
+
+        def unowned(info):
+            if (info.st_dev, info.st_ino) != (original.st_dev, original.st_ino):
+                return info
+            return type("ForeignStat", (), {key: (original.st_uid + 1 if key == "st_uid"
+                                                  else getattr(info, key))
+                                           for key in ("st_mode", "st_uid")})()
+
+        monkeypatch.setattr(os, "fstat", lambda *a, **kw: unowned(real_fstat(*a, **kw)))
+        monkeypatch.setattr(os, "stat", lambda *a, **kw: unowned(real_stat(*a, **kw)))
+    else:
+        moved = target.with_name(target.name + ".original")
+        target.rename(moved)
+        target.symlink_to(moved, target_is_directory=entry == "store")
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    assert cred.main(_metadata_args()) == 1
+    assert capsys.readouterr() == ("", "credential_metadata_unavailable\n")
+    if entry == "metadata":
+        assert meta.read_bytes() == b"fixture"
+    else:
+        assert not os.path.lexists(meta)
+    assert not list(store.glob(".credential-metadata.*.tmp"))
+
+
+def test_auth_change_before_publication_leaves_no_record(operator, monkeypatch, capsys):
+    real_fsync = os.fsync
+    auth = operator.grok / "auth.json"
+    replacement = operator.grok / "replacement.json"
+    replacement.write_bytes(b"fixture")
+    replacement.chmod(0o600)
+
+    def replace_before_commit(fd):
+        real_fsync(fd)
+        replacement.replace(auth)
+
+    monkeypatch.setattr(os, "fsync", replace_before_commit)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    assert cred.main(_metadata_args()) == 1
+    assert capsys.readouterr() == ("", "credential_metadata_unavailable\n")
+    assert sorted(item.name for item in operator.grok.iterdir()) == ["agent_id", "auth.json"]
+
+
+@pytest.mark.parametrize("argv", [
+    ["--expires-at", "bad-expiry"],
+    ["--subscription-confirmed", "--expires-at", "bad-expiry"],
+    ["--subscription-confirmed", "--expires-at"],
+    ["--subscription-confirmed", "--expires-at", "123", "--expires-at", "456"],
+    ["--subscription-confirmed", "--expires-at", "123", "--unknown"],
+])
+def test_metadata_publisher_refuses_ambiguous_arguments_without_echo(
+    operator, monkeypatch, capsys, argv
+):
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    assert cred.main(argv) == 2
+    assert capsys.readouterr() == ("", "credential_metadata_arguments_invalid\n")
+    assert not (operator.grok / "credential-metadata.json").exists()

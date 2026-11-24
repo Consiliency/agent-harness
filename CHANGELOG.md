@@ -8,6 +8,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
+- The Grok seat credential module can publish the subscription and expiry confirmed
+  by an attended operator after sign-in. The private metadata record is bound to
+  the current auth file by filesystem metadata (agent-harness#2101).
 - Jailed Claude TUI stall details and private leg logs now record whether the submit
   key was written, whether the exact session recorded the request, and whether an
   assistant event or typed API error followed. The diagnostics include timing and
@@ -21,6 +24,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Record the FIRSTSEAT standing Gemini W1 policy and freeze IF-0-FIRSTSEAT-7,
   including the one-attempt debit, unchanged-input skip and agent-harness#2157
   bridge sequencing gate.
+- Grok measurement refuses new unjailed grants once the Grok jail profile is
+  registered (agent-harness#2101).
 - LANEEXEC erratum 7 binds the plan to the landed SL-8 renewal, activation,
   scratch, cancellation and lane admission rulings (agent-harness#2160).
 
