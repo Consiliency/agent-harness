@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import ctypes
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import hashlib
 import json
 import logging
@@ -15,6 +15,7 @@ import select
 import stat
 import subprocess
 import threading
+import time
 from typing import TYPE_CHECKING, Literal, Sequence
 
 if TYPE_CHECKING:
@@ -450,6 +451,9 @@ class _Parent:
     digest: str
     refs: int = 0
     children: int = 0
+    owner: object | None = None
+    fresh: bool = False
+    shared: threading.Event = field(default_factory=threading.Event)
 
 
 _PARENTS: dict[str, _Parent] = {}
@@ -458,6 +462,347 @@ _PARENT_LOCK = threading.RLock()
 
 def _unit_key(seat_key: str) -> str:
     return hashlib.sha256(seat_key.encode()).hexdigest()[:24]
+
+
+_MEMORY_READ_CAP = 4096
+_MEMORY_COUNTER_MAX = (1 << 64) - 1
+_MEMORY_SAMPLE_S = 1.0
+_MEMORY_SAMPLER_JOIN_S = 1.0
+SEAT_MEMORY_NOTICE_FULL_STALL_US = 1_000_000
+SEAT_MEMORY_NOTICE = "seat_memory_max_reached"
+_MEMORY_EVENTS = {"max": "max", "high": "high", "oom": "oom", "oom_kill": "oom_kill"}
+_MEMORY_FILES = {
+    "memory.events": _MEMORY_EVENTS,
+    "memory.events.local": {"max": "local_max"},
+    "memory.pressure": {"some": "some_stall_us", "full": "full_stall_us"},
+}
+_MEMORY_COLUMNS = tuple(field for fields in _MEMORY_FILES.values() for field in fields.values())
+_DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
+
+
+def _open_memory_parent(path: Path) -> int:
+    """Pin the exact cgroup, rejecting symlinks anywhere in the absolute chain."""
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise OSError("no no-follow support")
+    flags = _DIRECTORY_FLAGS | os.O_NOFOLLOW
+    directory = os.open(path.anchor, flags)
+    try:
+        for part in path.parts[1:]:
+            child = os.open(part, flags, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        return directory
+    except OSError:
+        os.close(directory)
+        raise
+
+
+def _memory_parent_absent(unit: str) -> bool:
+    try:
+        os.close(_open_memory_parent(_seat_slice_chain(unit)[-1]))
+    except FileNotFoundError:
+        return True
+    except OSError:
+        pass
+    return False
+
+
+def _memory_file(directory: int, name: str) -> str:
+    descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+                         dir_fd=directory)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ValueError("unexpected cgroup file type")
+        body = os.read(descriptor, _MEMORY_READ_CAP + 1)
+        if len(body) > _MEMORY_READ_CAP or not body.endswith(b"\n"):
+            raise ValueError("invalid cgroup file length")
+        return body.decode("ascii")
+    finally:
+        os.close(descriptor)
+
+
+def _memory_integer(value: str) -> int:
+    if not value.isdecimal() or len(value) > 20:
+        raise ValueError("invalid cgroup number")
+    number = int(value)
+    if number > _MEMORY_COUNTER_MAX:
+        raise ValueError("cgroup counter overflow")
+    return number
+
+
+def _memory_rows(body: str, *, pressure: bool = False) -> dict[str, int]:
+    rows: dict[str, int] = {}
+    for line in body.splitlines():
+        key, *values = line.split()
+        if key in rows:
+            raise ValueError("duplicate cgroup row")
+        if pressure:
+            assignments = _pairs(value.split("=") for value in values)
+            if assignments.keys() != {"avg10", "avg60", "avg300", "total"}:
+                raise ValueError("invalid pressure row")
+            for name in ("avg10", "avg60", "avg300"):
+                whole, dot, fraction = assignments[name].partition(".")
+                if not dot or len(fraction) != 2 or _memory_integer(whole) > 100:
+                    raise ValueError("invalid pressure average")
+                _memory_integer(fraction)
+            value = assignments["total"]
+        else:
+            value, = values
+        rows[key] = _memory_integer(value)
+    return rows
+
+
+def _unavailable_memory() -> dict[str, object]:
+    return {
+        "max_bytes": None, "peak_bytes": None, "peak_source": None,
+        **dict.fromkeys(_MEMORY_COLUMNS), "state": "unavailable",
+    }
+
+
+class _SeatMemoryObserver:
+    def __init__(self, path: Path, *, fresh: bool, maximum: int, shared: threading.Event):
+        self.path = path
+        self.maximum = maximum
+        self.max_bytes = None
+        self.shared = shared
+        self.directory = _open_memory_parent(path)
+        self.baseline = self._counters()
+        self.counters: dict[str, int] = {}
+        self.regressed: set[str] = set()
+        self.sampled_peak = self._number("memory.current")
+        self.kernel_peak = self._number("memory.peak")
+        self.attributable = fresh and self._empty() and self._owns_parent(())
+        self._read_max()
+        self.kernel = self.attributable and self.kernel_peak == 0
+
+    def _number(self, name: str) -> int | None:
+        try:
+            return _memory_integer(_memory_file(self.directory, name).strip())
+        except (OSError, ValueError):
+            return None
+
+    def _read_max(self) -> bool:
+        if self._number("memory.max") != self.maximum:
+            return False
+        self.max_bytes = self.maximum
+        return True
+
+    def _rows(self, name: str) -> dict[str, int]:
+        try:
+            return _memory_rows(_memory_file(self.directory, name), pressure=name == "memory.pressure")
+        except (OSError, ValueError):
+            return {}
+
+    def _empty(self) -> bool:
+        return self._rows("cgroup.events").get("populated") == 0
+
+    def _owns_parent(self, children) -> bool:
+        if self.shared.is_set():
+            return False
+        try:
+            live = _open_memory_parent(self.path)
+            try:
+                if not os.path.samestat(os.fstat(live), os.fstat(self.directory)):
+                    return False
+            finally:
+                os.close(live)
+            # Only the tracked scopes may be under the attempt's parent. The scan has
+            # a hard bound even if a misconfigured or shared parent contains junk.
+            with os.scandir(self.directory) as entries:
+                return all(index < 256 and (not entry.is_dir(follow_symlinks=False)
+                                             or entry.name in children)
+                           for index, entry in enumerate(entries))
+        except OSError:
+            return False
+
+    def _counters(self) -> dict[str, int]:
+        counters = {}
+        for file, fields in _MEMORY_FILES.items():
+            rows = self._rows(file)
+            counters.update({output: rows[key] for key, output in fields.items() if key in rows})
+        return counters
+
+    def sample(self, children, *, drained: bool = False) -> dict[str, object]:
+        current = self._number("memory.current")
+        if current is not None:
+            self.sampled_peak = max(current, self.sampled_peak or 0)
+        peak = self._number("memory.peak")
+        if peak is None or peak < max(self.kernel_peak or 0, self.sampled_peak or 0):
+            self.kernel = False
+        self.kernel_peak = peak
+        latest = self._counters()
+        valid = 0
+        for key, value in latest.items():
+            if key not in self.baseline or key in self.regressed:
+                continue
+            if value < self.counters.get(key, self.baseline[key]):
+                self.regressed.add(key)
+                continue
+            self.counters[key] = value
+            valid += 1
+
+        # Check after reading: a replaced parent or foreign scope cannot lend
+        # attribution to the readings taken above.
+        self.attributable = self.attributable and self._owns_parent(children)
+        use_kernel = self.attributable and self.kernel and peak is not None
+        peak_bytes = peak if use_kernel else self.sampled_peak
+        deltas = {key: self.counters[key] - self.baseline[key] if key in self.counters else None
+                  for key in _MEMORY_COLUMNS}
+        valid_max = self._read_max()
+        complete = (drained and self.attributable and self._empty() and
+                    (use_kernel or current is not None) and valid == len(deltas)
+                    and valid_max)
+        usable = peak_bytes is not None or bool(self.counters)
+        return {
+            "max_bytes": self.max_bytes,
+            "peak_bytes": peak_bytes,
+            "peak_source": ("kernel" if use_kernel else "sampled") if peak_bytes is not None else None,
+            **deltas,
+            "state": "final" if complete else "partial" if usable else "unavailable",
+        }
+
+    def reached_memory_max(self, snapshot) -> bool:
+        if not self.attributable or self.shared.is_set():
+            return False
+        # Use the last good cumulative readings. A bad or regressed input cannot
+        # increase a delta, and a good OOM reading does not depend on PSI support.
+        def delta(field: str) -> int:
+            return 0 if field in self.regressed else snapshot[field] or 0
+
+        return (delta("oom") > 0 or delta("oom_kill") > 0
+                or (delta("local_max") > 0 and
+                    delta("full_stall_us") > SEAT_MEMORY_NOTICE_FULL_STALL_US))
+
+
+class _SeatMemoryAttempt:
+    """Serialize the start boundary with sealing, and retain every launched witness."""
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.identity = object()
+        self.stop = threading.Event()
+        self.finished = False
+        self.sampler_done = False
+        self.closing = False
+        self.parent = None
+        self.seat_key = ""
+        self.carved = ()
+        self.observer = None
+        self.sampler = None
+        self.children: dict[str, subprocess.Popen[bytes]] = {}
+        self.expected_scopes: set[str] = set()
+        self.result = (_unavailable_memory(), False)
+        self.drained = False
+        self.sealed = False
+
+    def retain(self, seat_key: str, parent: _Parent, carved: Sequence[Path], maximum: int):
+        with self.lock:
+            if self.sealed:
+                _refuse("the seat attempt has already ended")
+            if self.parent is parent:
+                return
+            if self.parent is not None:
+                # An unexpected second parent cannot be attributed to the first.
+                self.parent.shared.set()
+                return
+            with _PARENT_LOCK:
+                parent.refs += 1
+            self.parent, self.seat_key, self.carved = parent, seat_key, tuple(carved)
+            try:
+                self.observer = _SeatMemoryObserver(
+                    _seat_slice_chain(parent.unit)[-1],
+                    fresh=parent.fresh, maximum=maximum, shared=parent.shared,
+                )
+            except (OSError, ValueError):
+                pass
+
+    def reserve_scope(self, child_unit: str) -> None:
+        with self.lock:
+            if self.sealed:
+                _refuse("the seat attempt has already ended")
+            self.expected_scopes.add(child_unit)
+
+    def started(self, child_unit: str, process: subprocess.Popen[bytes]) -> None:
+        with self.lock:
+            self.children[child_unit] = process
+            if not self.sealed and self.observer is not None and self.sampler is None:
+                sampler = threading.Thread(target=self._sample_live, daemon=True, name="seat-memory")
+                try:
+                    sampler.start()
+                except RuntimeError:
+                    return  # A terminal read still works.
+                self.sampler = sampler
+
+    def _sample(self, *, terminal: bool = False) -> None:
+        snapshot = self.observer.sample(self.expected_scopes, drained=terminal and self.drained)
+        with self.lock:
+            if self.finished:
+                return
+            already_noticed = self.result[1]
+            notice = not already_noticed and self.observer.reached_memory_max(snapshot)
+            self.result = (snapshot, already_noticed or notice)
+        if notice:
+            logging.getLogger(__name__).warning("%s for seat %s", SEAT_MEMORY_NOTICE, _unit_key(self.seat_key))
+
+    def _sample_live(self) -> None:
+        try:
+            while not self.stop.wait(_MEMORY_SAMPLE_S):
+                self._sample()
+        finally:
+            with self.lock:
+                self.sampler_done = True
+                if self.closing:
+                    os.close(self.observer.directory)
+
+    def finish(self) -> tuple[dict[str, object] | None, bool]:
+        from . import provider_tree_proof
+        with self.lock:
+            self.sealed = True
+            pending = self.expected_scopes - self.children.keys()
+            children = tuple(self.children.values())
+        self.stop.set()
+        if not children:
+            return None, False
+        deadline = time.monotonic() + provider_tree_proof.TEARDOWN_BUDGET_S
+        proofs = [provider_tree_proof.proof_of(process) for process in children]
+        drained = all([
+            proof is not None and proof.kind == provider_tree_proof.CGROUP and proof.observe(deadline)
+            for proof in proofs
+        ])
+        self.drained = drained and not pending
+        if self.sampler is not None:
+            self.sampler.join(min(_MEMORY_SAMPLER_JOIN_S, max(0.0, deadline - time.monotonic())))
+        # A live sampler may still own the observer's mutable counters. Otherwise the
+        # finalizing thread can read directly, independent of sampler scheduling.
+        if self.observer is not None and (self.sampler is None or self.sampler_done):
+            self._sample(terminal=True)
+        with self.lock:
+            self.finished = True
+            return self.result
+
+    def close(self) -> None:
+        self.stop.set()
+        with self.lock:
+            self.closing = True
+            if self.observer is not None and (self.sampler is None or self.sampler_done):
+                os.close(self.observer.directory)
+        if self.parent is not None:
+            _release_parent(self.seat_key, self.parent, self.carved)
+
+
+_CURRENT_MEMORY_ATTEMPT: ContextVar[_SeatMemoryAttempt | None] = ContextVar(
+    "seat_resource_caps_memory_attempt", default=None,
+)
+
+
+@contextmanager
+def _seat_memory_attempt():
+    attempt = _SeatMemoryAttempt()
+    token = _CURRENT_MEMORY_ATTEMPT.set(attempt)
+    try:
+        yield attempt
+    finally:
+        _CURRENT_MEMORY_ATTEMPT.reset(token)
+        attempt.close()
 
 
 def _systemctl(*args: str, timeout: float = 15.0) -> None:
@@ -514,10 +859,13 @@ def _helper_failure(process: "subprocess.Popen[bytes]", diagnostic_bytes: bytes)
 def _acquire_parent(seat_key: str, caps: SeatResourceCaps, devices: Sequence[str],
                     carved: Sequence[Path], *, child: bool) -> tuple[_Parent, str | None]:
     digest = caps_sha256(caps)
+    attempt = _CURRENT_MEMORY_ATTEMPT.get()
+    owner = None if attempt is None else attempt.identity
     with _PARENT_LOCK:
         parent = _PARENTS.get(seat_key)
         if parent is None:
             unit = f"phase-loop-seat-{_unit_key(seat_key)}.slice"
+            fresh = attempt is not None and _memory_parent_absent(unit)
             _systemctl("set-property", "--runtime", unit,
                        *_parent_properties(caps, devices, carved))
             _systemctl("start", unit)
@@ -529,7 +877,7 @@ def _acquire_parent(seat_key: str, caps: SeatResourceCaps, devices: Sequence[str
                         "unready seat resource-cap parent collection failed for %s", unit,
                     )
                 _refuse("the host does not provide delegated seat controllers")
-            parent = _Parent(unit=unit, digest=digest)
+            parent = _Parent(unit=unit, digest=digest, owner=owner, fresh=fresh)
             _PARENTS[seat_key] = parent
         elif parent.digest != digest:
             _refuse("a second independent capped parent was requested")
@@ -538,8 +886,10 @@ def _acquire_parent(seat_key: str, caps: SeatResourceCaps, devices: Sequence[str
         parent.refs += 1
         if not child:
             return parent, None
+        if parent.owner is not owner:
+            parent.shared.set()
         parent.children += 1
-        return parent, f"phase-loop-seat-{_unit_key(seat_key)}-{parent.children}.scope"
+        return parent, f"{parent.unit.removesuffix('.slice')}-{parent.children}.scope"
 
 
 def _release_parent(seat_key: str, parent: _Parent, _carved: Sequence[Path]) -> None:
@@ -659,6 +1009,7 @@ def capped_popen(command, *, seat_key: str, before_spawn=None,
     after every preflight check here and immediately before the child is created; a refusal
     before it creates no child and never calls it."""
     scope = _CURRENT_SEAT_SCOPE.get()
+    attempt = _CURRENT_MEMORY_ATTEMPT.get()
     if not isinstance(seat_key, str) or not seat_key:
         _refused("a live seat key is required")
     if scope is not None and scope.seat_key != seat_key:
@@ -683,6 +1034,8 @@ def capped_popen(command, *, seat_key: str, before_spawn=None,
             seat_key, caps, devices, carved, child=True,
         )
         assert child_unit is not None
+        if attempt is not None:
+            attempt.retain(seat_key, parent, carved, caps.memory_max_bytes)
         # systemd-run must reach the user manager, so it runs with the bus address; the
         # helper hands the target the exact caller-selected environment, read from a pipe
         # (never argv), so the target environment equals an uncapped launch's.
@@ -727,9 +1080,19 @@ def capped_popen(command, *, seat_key: str, before_spawn=None,
         popen_kwargs.setdefault("close_fds", True)
         try:
             try:
-                if before_spawn is not None:
-                    before_spawn()
-                process = subprocess.Popen(argv, **popen_kwargs)
+                if attempt is not None:
+                    attempt.reserve_scope(child_unit)
+                try:
+                    if before_spawn is not None:
+                        before_spawn()
+                    process = subprocess.Popen(argv, **popen_kwargs)
+                except BaseException:
+                    if attempt is not None:
+                        with attempt.lock:
+                            attempt.expected_scopes.discard(child_unit)
+                    raise
+                if attempt is not None:
+                    attempt.started(child_unit, process)
             except BaseException:
                 os.close(read_fd)
                 os.close(diagnostic_read)
@@ -769,7 +1132,10 @@ def capped_popen(command, *, seat_key: str, before_spawn=None,
             proof = _witness_scope(process.pid, parent.unit, child_unit)
             _tree_proof.attach(process, proof)
             try:
-                os.write(gate_write, b"1")
+                with attempt.lock if attempt is not None else nullcontext():
+                    if attempt is not None and attempt.sealed:
+                        _refuse("the seat attempt has already ended")
+                    os.write(gate_write, b"1")
             except BrokenPipeError:
                 _refuse("the capped child exited before its gate opened")
         except (CapsUnavailable, OSError, ValueError) as exc:

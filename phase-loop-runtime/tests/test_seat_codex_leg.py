@@ -16,6 +16,7 @@ from phase_loop_runtime import panel_invoker as pi, seat_codex_credential as cre
 from phase_loop_runtime.seat_subject import SeatSubject
 from test_seat_codex_credential import _login, _claims
 from test_seat_codex_evidence import stream
+from test_seat_resource_caps import isolated as isolated, memory_host as memory_host, _memory_readings
 from test_seat_profile_codex import codex_profile as _codex_profile
 
 codex_profile = _codex_profile
@@ -307,9 +308,10 @@ def test_jailed_codex_keeps_real_placement_and_retention_notices(tmp_path, monke
         root_applied=False, retained=True)
 
 
+@pytest.mark.real_seat_caps
 @pytest.mark.parametrize("terminal", ["refused", "cancelled", "monitor_failed", "monitor_oserror"])
 def test_jailed_codex_board_streams_diagnostics_without_reusing_replaced_identity(
-    tmp_path, monkeypatch, codex_profile, terminal,
+    tmp_path, monkeypatch, codex_profile, terminal, memory_host,
 ):
     from hashlib import sha256
     from threading import Event
@@ -327,10 +329,14 @@ def test_jailed_codex_board_streams_diagnostics_without_reusing_replaced_identit
     child = f"import sys; sys.stdin.read(); sys.stdout.buffer.write({stdout!r})"
 
     def launch(argv, **kwargs):
-        return subprocess.Popen(
-            [sys.executable, "-c", child], stdin=kwargs["stdin"], stdout=kwargs["stdout"],
+        assert argv
+        process = memory_host.launch(
+            "codex", child, stdin=kwargs["stdin"], stdout=kwargs["stdout"],
             stderr=kwargs["stderr"], start_new_session=True,
         )
+        _memory_readings(memory_host.scope(process).parent, current=321, peak=789)
+        memory_host.drain(process)
+        return process
 
     monkeypatch.setattr(pi, "launch_provider", launch)
     cancel = Event()
@@ -390,6 +396,9 @@ def test_jailed_codex_board_streams_diagnostics_without_reusing_replaced_identit
     assert pi.integrated_board_outcome(replace(result, president=object())) == "terminated"
 
     verdict = json.loads(next(stream_dir.glob("*.verdict.json")).read_bytes())
+    snapshot = verdict["seat_memory"]
+    assert snapshot == json.loads(leg_record)["seat_memory"]
+    assert (snapshot["peak_bytes"], snapshot["state"]) == (789, "final")
     assert verdict["native_exit_code"] == 0
     assert verdict["native_stdout_bytes"] == len(stdout)
     assert verdict["provider_stage_reached"] == "terminal_event"

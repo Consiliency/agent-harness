@@ -972,3 +972,10 @@ def test_a_bounded_leg_is_launched_with_a_private_tmp(tmp_path, monkeypatch):
     finally:
         panel_invoker._EGRESS_LAUNCH_PREFIX.reset(token)
     assert seen["decision"] == sandbox_policy.CHILD_SCRATCH_PRIVATE_TMP
+
+
+def test_seat_memory_observation_adds_no_launch_boundary():
+    sites, _ = _launch_sites()
+    assert {name for module, name in sites if module == "seat_resource_caps.py"} == {
+        "capped_popen", "_systemctl",
+    }

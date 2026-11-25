@@ -10,6 +10,8 @@ import hashlib
 import json
 import pytest
 
+from test_seat_resource_caps import isolated as isolated, memory_host as memory_host
+
 from harden_tdd_guard import invoke_sanctioned_review_transport
 from president_fakes import deferring_president
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
@@ -1657,3 +1659,174 @@ def test_seats_firstseat_exec_record_tui_prelaunch(tmp_path, monkeypatch, failur
     assert run("claude")[0] != "OK"
     record = json.loads(next((tmp_path / "state").rglob("leg-*.json")).read_text())
     assert record["exit_code"] is None
+
+
+@pytest.mark.real_seat_caps
+@pytest.mark.parametrize("vendor", ["claude", "codex", "gemini", "grok"])
+@pytest.mark.parametrize("outcome", ["success", "raised", "cancelled", "monitor_failed", "no_launch", "body_oserror"])
+def test_seat_memory_survives_board_verdict_paths(
+    memory_host, tmp_path, monkeypatch, vendor, outcome,
+):
+    from dataclasses import replace
+    from threading import Event
+    from phase_loop_runtime import panel_invoker as pi, seat_resource_caps as caps
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+    from harden_tdd_guard import invoke_sanctioned_board_control
+    from test_seat_resource_caps import _memory_readings
+
+    cancel = Event()
+    state = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    monkeypatch.setattr(caps, "_MEMORY_SAMPLE_S", 60.0, raising=False)
+    monkeypatch.setattr(pi, "_publish_seat_modes", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pi, "_claude_code_support_status", lambda **_kwargs: (True, "supported"))
+    monkeypatch.setattr(pi, "_claude_subscription_auth_ok", lambda *_args: (True, ""))
+    monkeypatch.setattr(pi, "board_preflight_requalify", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pi, "_preflight_gemini_heartbeat", lambda *args, **kwargs: None)
+    body_done = Event()
+    observe = pi._ReviewMonitor.observe
+
+    def observe_monitor(monitor, *args, **kwargs):
+        if kwargs.get("terminal") and body_done.is_set() and outcome == "monitor_failed":
+            raise OSError("fixture monitor write failed")
+        return observe(monitor, *args, **kwargs)
+
+    monkeypatch.setattr(pi._ReviewMonitor, "observe", observe_monitor)
+
+    @pi._retained_leg_exec
+    def spawn(leg, _prompt):
+        if outcome == "no_launch":
+            return "UNAVAILABLE", "", "review_operation_cancelled"
+        child = memory_host.launch(leg)
+        assert child.wait(timeout=5) == 0
+        memory_host.drain(child)
+        parent = memory_host.scope(child).parent
+        _memory_readings(parent, current=123, peak=456, maximum=12, oom=2)
+        (parent / "memory.events.local").write_text("max PRIVATE_FIXTURE_SENTINEL\n")
+        body_done.set()
+        if outcome == "cancelled":
+            cancel.set()
+        if outcome == "raised":
+            raise OSError("PRIVATE_FIXTURE_SENTINEL")
+        return "OK", "Fixture review.\n\nAGREE"
+
+    if outcome == "body_oserror":
+        retain_spawn = spawn
+
+        def spawn(leg, prompt):
+            result = retain_spawn(leg, prompt)
+
+            def fail_body(*_args, **_kwargs):
+                error = OSError("PRIVATE_FIXTURE_SENTINEL")
+                error._leg_exec_metadata = result.leg_exec_metadata
+                raise error
+
+            monkeypatch.setattr(pi, "_resolve_leg_detail", fail_body)
+            return result
+
+    board = replace(DEFAULT_BOARD, seats=tuple(s for s in DEFAULT_BOARD.seats if s.harness == vendor))
+    board = replace(board, seats=(board.seats[0],))
+    records = tmp_path / "records"
+    monitored = outcome in {"cancelled", "monitor_failed", "body_oserror"}
+    result = invoke_sanctioned_board_control(
+        board, "fixture prompt", spawn=spawn, stream_dir=records,
+        cancel_event=cancel, max_concurrency=1, **({"monitoring_policy": "heartbeat_only"}
+                                                 if monitored else {}),
+    )
+    leg, = result.legs
+    assert leg.status == {
+        "success": "OK", "raised": "DEGRADED", "cancelled": "UNAVAILABLE",
+        "monitor_failed": "UNAVAILABLE", "no_launch": "UNAVAILABLE", "body_oserror": "UNAVAILABLE",
+    }[outcome]
+    verdict = json.loads(next(records.glob("*.verdict.json")).read_text())
+    retained = [json.loads(path.read_text()) for path in state.rglob("leg-*.json")]
+    if outcome == "no_launch":
+        assert "seat_memory" not in verdict and "seat_memory_notice" not in verdict
+        assert all("seat_memory" not in record for record in retained)
+    else:
+        assert verdict["seat_memory"] == {
+            "max_bytes": 4294967296, "peak_bytes": 456, "peak_source": "kernel",
+            "max": 2, "high": 0, "local_max": None, "oom": 1, "oom_kill": 0,
+            "some_stall_us": 0, "full_stall_us": 0, "state": "partial",
+        }
+        assert retained and all(record["seat_memory"] == verdict["seat_memory"] for record in retained)
+        assert verdict["seat_memory_notice"] == "seat_memory_max_reached"
+        assert sum(notice.code == "seat_memory_max_reached" for notice in leg.seat_notices) == 1
+        assert "PRIVATE_FIXTURE_SENTINEL" not in json.dumps(verdict) + json.dumps(retained)
+
+
+@pytest.mark.real_seat_caps
+def test_seat_memory_spans_the_sdk_worker_and_cli(memory_host, tmp_path, monkeypatch):
+    import sys
+    from phase_loop_runtime import claude_seat_sdk, panel_invoker as pi, seat_resource_caps as caps
+    from test_seat_resource_caps import _memory_readings
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(pi.os, "access", lambda *_args: True)
+    monkeypatch.setattr(pi, "_claude_sdk_worker_argv",
+                        lambda *_args, **_kwargs: [sys.executable, "-c", "pass"])
+    prepared = SimpleNamespace(payload_bytes={name: b"fixture" for name in claude_seat_sdk.WORKER_PAYLOAD})
+
+    @pi._retained_leg_exec
+    def run(leg):
+        first = pi._launch_claude_sdk_worker(object(), worker_id=1, prepared=prepared, seat_key=leg)
+        try:
+            first.process.wait(timeout=5)
+            memory_host.drain(first.process)
+            parent = memory_host.scope(first.process).parent
+            _memory_readings(parent, current=300, peak=300, maximum=20)
+            cli = memory_host.launch(leg)
+            cli.wait(timeout=5)
+            memory_host.drain(cli)
+            assert memory_host.scope(cli).parent == parent
+            _memory_readings(parent, current=900, peak=900, maximum=30)
+        finally:
+            first.terminate()
+        return "OK", "Fixture review.\n\nAGREE"
+
+    token = pi._EGRESS_LAUNCH_PREFIX.set(("nsenter", "setpriv"))
+    try:
+        with caps._seat_scope("claude"):
+            result = run("claude")
+    finally:
+        pi._EGRESS_LAUNCH_PREFIX.reset(token)
+    snapshot = result.leg_exec_metadata["seat_memory"]
+    assert snapshot["peak_bytes"] == 900 and snapshot["state"] == "final"
+    assert snapshot["max"] == 20
+    assert len(memory_host.configured) == 1
+
+
+@pytest.mark.real_seat_caps
+def test_seat_memory_through_jailed_grok_runner(memory_host, tmp_path, monkeypatch):
+    from phase_loop_runtime import grok_jail_surface, panel_invoker as pi, seat_resource_caps as caps
+    from test_seat_resource_caps import _memory_readings
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(pi, "_cleanup_jailed_seat", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pi, "_remove_grok_staged", lambda _path: None)
+    monkeypatch.setattr(pi, "_grok_gate_with_basis", lambda *_: (True, "list_tools"))
+    monkeypatch.setattr(grok_jail_surface, "after_check_in_h", lambda *_: None)
+    jail = SimpleNamespace(env={}, provider_argv0="/seat/bin/grok")
+    seat = SimpleNamespace(seat_dir=tmp_path, holder_pid=1, probe_jail=jail, expires_at=None)
+    grok_seat = SimpleNamespace(seat=seat, jail=jail, credential=SimpleNamespace(scan_values=()))
+
+    def fake_launch(_argv, *, seat_caps, stdin, stdout, stderr, start_new_session, **_kwargs):
+        script = "import sys; sys.stdin.read(); print('Fixture review.\\n\\nAGREE')"
+        process = memory_host.launch(seat_caps, script, stdin=stdin, stdout=stdout, stderr=stderr,
+                                     start_new_session=start_new_session)
+        _memory_readings(memory_host.scope(process).parent, current=123, peak=456, maximum=11)
+        memory_host.drain(process)
+        return process
+
+    monkeypatch.setattr(pi, "launch_provider", fake_launch)
+
+    @pi._retained_leg_exec
+    def run(leg):
+        return pi._exec_jailed_grok_leg(grok_seat, deadline_s=5, model="fixture",
+                                      prompt="fixture", broker_evidence=None)
+
+    with caps._seat_scope("grok"):
+        result = run("grok")
+    assert result[0] == "OK"
+    snapshot = result.leg_exec_metadata["seat_memory"]
+    assert (snapshot["peak_bytes"], snapshot["max"], snapshot["state"]) == (456, 1, "final")

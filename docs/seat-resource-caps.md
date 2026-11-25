@@ -49,6 +49,33 @@ the staging lifecycle does not yet remove launch-created content before parent c
 An operator `io_paths` entry is never eligible for a carve-out. Until the cleanup wiring lands,
 every automatic tmpfs path fails closed with `seat_resource_caps_unavailable`.
 
+## Memory telemetry
+
+The runtime baselines the capped parent before starting a local child, samples once
+per second, and samples again at leg finalization. The private `leg_exec.v1` record and
+each streamed verdict include an optional `seat_memory` object. It reports the
+parent's effective cap and peak in bytes, deltas for the hierarchical `max`, `high`,
+`oom`, and `oom_kill` counters, the parent's `local_max` delta, and cumulative
+`some_stall_us` and `full_stall_us` deltas from Linux memory pressure totals.
+
+`peak_source` is `kernel` for a fresh, empty, exclusively attributable parent with
+a zero peak at baseline and a continuous cgroup identity. An existing parent or
+inaccessible kernel peak falls back to the largest observed `memory.current`
+(`sampled`, a lower bound). Missing values are null.
+The state is `final` when every launched scope has a positive drain witness and the
+terminal sample is complete and attributable. `partial` retains usable readings
+when any part of the observation is incomplete or attribution is uncertain.
+`unavailable` means there were no usable measurements. Unlaunched and nonlocal
+legs omit the object.
+
+The runtime logs `seat_memory_max_reached` at most once during an attempt. The
+board carries it as a typed seat notice, and the streamed verdict includes it as
+`seat_memory_notice`. The condition is
+a positive parent-local `max` delta with more than 1,000,000 microseconds of full
+memory stall, or any attributable `oom` or `oom_kill` delta. A hierarchical `max`
+delta alone remains a metric. The telemetry does not change the launch decision
+or its cleanup outcome.
+
 ## Host prerequisite
 
 The operator's systemd user manager must delegate `cpu`, `cpuset`, `io`, `memory` and `pids`.
