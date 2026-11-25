@@ -18,6 +18,101 @@ publication. The qualification host installs the released
 `phase-loop-runtime[agy-watch]`, since the job signs its App token with the extra's
 `cryptography`.
 
+## 0.7.45 release preparation
+
+Expected unpublished artifacts are `phase_loop_runtime-0.7.45-py3-none-any.whl`
+and `phase_loop_runtime-0.7.45.tar.gz`. The runtime requires Python 3.12 or newer.
+The lock retains `baml-bridge` 0.23.0 and `protobuf` 7.36.2.
+
+The Gemini proxy change for agent-harness#2157 is included
+(agent-harness#2168). Jailed Gemini uses a credential-free loopback proxy URL,
+with per-launch authentication confined to the private host hop. Once installed,
+0.7.45 supplies the runtime needed for the W1 Option A bridge. Run integrated W1
+under the owner account on the primary board host and record EC-EXECFIND-2 for
+each Gemini host and account.
+
+Explicit Claude and Gemini jail qualification now writes the exact
+`QualificationKey` pass that production reads. Seat-window W1/R8 readiness and
+record verification use that same key (agent-harness#2182, agent-harness#2181).
+Run each leg on its intended host and account in the board's environment,
+including its `PATH`, resolved subject or dependency lease, and Claude transport:
+
+```bash
+phase-loop seat-sandbox qualify --leg claude
+phase-loop seat-sandbox qualify --leg gemini
+```
+
+The release includes all four agent-harness pieces for jailed Grok. The jail
+revision r8 writers record the owner's offline projection confirmation and
+verify hosted BA-J1 and BA-J5 against the installed runtime. The A′ rule lets a
+counted label resume once after `grok_sink_probe_timeout` without charging a
+request or retry (agent-harness#2176). New unjailed grants are refused and
+attended sign-in can publish credential metadata bound to the current auth file
+(agent-harness#2177). Managed admission for the pinned 1.0.92 executable carries
+forward from 0.7.44, with the managed-subject erratum and npm provenance receipt
+included here (agent-harness#2178, agent-harness#2179).
+
+In private leg records and streamed verdicts, Gemini heartbeat and jailed agy
+now retain the observed native exit code or signal, wall duration, stdout and
+stderr byte counts, and stream stage, event and result counts, output size and
+parser outcome (agent-harness#2184, agent-harness#2183). When a wrapper returns
+`128 + signal`, agy retains the observed code because the signal is ambiguous.
+Jailed Codex retains the exit code or signal, duration, pipe
+byte counts, stage, allowlisted event counts, and attempted, completed and failed
+tool-call counts with structured error labels, including on refused legs
+(agent-harness#2187, agent-harness#2185). Both sets of diagnostics omit provider
+text and raw pipe contents.
+
+Qualification inputs compared with the `v0.7.44` tag using the runtime digest
+functions, the production jail profile receipt, agy validator closure tooling
+and SDK proof bindings:
+
+| Seat | Inputs that moved | Stable inputs |
+| --- | --- | --- |
+| Claude | The shared seat-window runtime digest and release identity move. SDK proof bindings change for `claude_seat_transport.py`, `executable_dependency_startup.py`, `seat_profiles.py`, `seat_route.py`, `uv.lock`, `panel_invoker.py::_run_leg_with_liveness`, and `seat_jail.py::build_seat_jail` and `::seat_env`. The proof also binds the new `seat_jail.py::_QUALIFICATION_PROBE_SUBJECT` region. SDK admission requires a fresh boundary proof. | Production jail profile on x86_64 and aarch64, all six `QualificationKey` fields for the same launch inputs, and all other SDK proof bindings. TUI remains the default. |
+| Codex | The shared seat-window runtime digest and release identity move. Requalify affected row windows and reissue release-bound grants. | Production jail profile on x86_64 and aarch64 and all six `QualificationKey` fields for the same launch inputs. |
+| Gemini / agy | The shared seat-window runtime digest and release identity move. The production Gemini jail profile changes on both architectures, so `profile_digest` changes in the Gemini `QualificationKey`. Package source pins for newly captured agy evidence move. | The other five `QualificationKey` fields, all four agy qualification inputs, and the agy validator source closure. |
+| Grok | The shared seat-window runtime digest and release identity move. Measurements that require same-runtime evidence need a fresh series. | Production jail profile on x86_64 and aarch64 and approved binary fingerprints. |
+
+The shared seat-window runtime digest moves from
+`0a9d28ce9cb0468abe9f7dcc915b1df0410ddb29924ce129e05d4e6d2b95a665` to
+`00fb27d9e70c7525a9227c9689614b1cb5be8c33c4b74bd2edf52502fbb8051f`.
+The release identity moves from
+`75ca562ad5ce652372c0cb4afad4f4b831e53b3a745019f03e90651b55c820a1` to
+`89a2f6d787c62b8bc4894487aa3a78f28f7a210436597bc3fe13d7983060b370`.
+Finish work under an existing release-bound grant on its pinned install or
+obtain a grant for 0.7.45.
+
+Gemini's production `profile_digest` moves on x86_64 from
+`09827a0ed4f51ac2bfac6510e9d0f5b111abcf33a66638046e67ebdca2d097c2` to
+`4c337c96aa4ff75610c41afdca42abe4136493fa5c364166348b3f47cb72951b`, and on
+aarch64 from `a2e011d46ba4b8d15a48a5c310faba14dedcd98a326eacb47481761ff2ca65e9`
+to `7fc3413084e486925c55287389dcc8f73027d498331881a046a84d37d8d49c1b`.
+For Codex, Claude and Gemini alike, `allowlist_digest`, `falsifier_layout`,
+`projection_digest`, `variant` and `host_identity` are stable given the same
+installed subject and projection, selected transport and host. The explicit
+writer change makes passes match the production key.
+
+**The agy qualification inputs are unchanged.** Linux x64 agy 1.5.3 image
+SHA-256 remains `7ca212748ca0dfda718efbc39a776a104472e7e9344d4b6ea147c543684f96a3`,
+the validator remains `agy_validator_v1`, and QCI and the agy profile digest
+remain `9124a4d288e04a365f8fa76d4669464bcaa2fc86ad208df9eb7fea80fa10469c`.
+The validator source-closure digest remains
+`dbf41baab6b0d75ee57d512328ac8c8d473787156e19c9d16231b502afcc40c0`.
+An existing agy image qualification can carry forward for the same installed
+subject and policy. **The changed Gemini seat key requires a new jail pass** and
+satisfies the changed-key condition for Dotfiles standing auto-qualification
+even when the agy image is unchanged. The standing W1 bridge sequencing and
+attempt policy still apply.
+
+### Known issues
+
+- Grok remains disabled until Dotfiles publishes the root-owned
+  `grok_subject_pin.v1`, the pinned runtime and subject are installed and
+  qualified, and the §7 managed jail grant run completes with the owner's fresh
+  sign-in. Follow the [Grok measurement procedure](../ops/grok-jail-measurement.md)
+  for the attended run.
+
 ## 0.7.44 release preparation
 
 Expected unpublished artifacts are `phase_loop_runtime-0.7.44-py3-none-any.whl`

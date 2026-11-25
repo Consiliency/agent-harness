@@ -6,6 +6,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+## [0.7.45] - 2026-11-25
+
 ### Fixed
 
 - `phase-loop seat-sandbox qualify` records Claude and Gemini passes for the same
