@@ -23,6 +23,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   flags local cap hits with sustained full memory stall or attributable OOM
   events (agent-harness#2186).
 
+### Changed
+
+- Live Gemini W1 is now pinned to one owner-approved packet and its minted grant
+  (`seat_window.OWNER_W1_GRANT_SHA256` and `OWNER_W1_PACKET_SHA256`). The grant allows
+  exactly one attempt on the designated host inside its start window, and never at or after
+  the unchanged 2026-12-04T00:00Z cutoff. `seat-window qualify` claims that attempt before
+  its preflight and attendance checks, so a refused preflight or a missing `--attended`
+  still spends it; run it once, attended (agent-harness#2157).
+- Tests can no longer read or spend a real W1 owner grant: the test suite redirects the
+  passwd-home W1 admission directory to a per-test temporary directory.
+
 ## [0.7.45] - 2026-11-25
 
 ### Fixed

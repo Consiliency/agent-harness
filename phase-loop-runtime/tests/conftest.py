@@ -119,6 +119,28 @@ def pytest_unconfigure(config):
     _cleanup_scratch_audit()
 
 
+#: Tests that must exercise the real passwd-home W1 admission directory lookup.
+_REAL_W1_GRANT_DIR_TESTS = frozenset({
+    "test_seats_firstseat_window_owner_grant_dir_ignores_the_state_root",
+})
+
+
+@pytest.fixture(autouse=True)
+def _isolate_w1_owner_grant(request, tmp_path_factory, monkeypatch):
+    """Never let a test read or spend a real W1 owner grant.
+
+    The W1 admission directory is the passwd home's, deliberately independent of HOME and
+    XDG_STATE_HOME, and the grant pins are set. A test that runs real W1 qualification under
+    the grant account on the designated host could otherwise claim the one live attempt.
+    """
+    if request.node.originalname in _REAL_W1_GRANT_DIR_TESTS:
+        return
+    from phase_loop_runtime import seat_window
+
+    isolated = tmp_path_factory.mktemp("w1-owner-grant") / "w1-admission"
+    monkeypatch.setattr(seat_window, "_w1_grant_dir", lambda: isolated)
+
+
 @pytest.fixture(autouse=True)
 def _legacy_grok_grant_fixture(request, monkeypatch):
     """Provision grants for the frozen TS suites through the pre-registration path.
