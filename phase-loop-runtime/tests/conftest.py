@@ -120,6 +120,30 @@ def pytest_unconfigure(config):
 
 
 @pytest.fixture(autouse=True)
+def _legacy_grok_grant_fixture(request, monkeypatch):
+    """Provision grants for the frozen TS suites through the pre-registration path.
+
+    Jail contract revision r8 item r8-4 refuses new unjailed Grok grants once the Grok
+    profile is registered, and explicitly allows the frozen suites to create theirs with
+    the profile removed. Keep this fixture while those suites exist.
+    """
+    if request.node.path.name not in {
+        "test_grok_tool_surface_measure.py", "test_grok_seat_log_retention.py",
+    }:
+        return
+    from phase_loop_runtime import grok_tool_surface, seat_profiles
+
+    new_grant = grok_tool_surface.new_grant
+
+    def create_legacy_grant(*args, **kwargs):
+        with monkeypatch.context() as legacy:
+            legacy.delitem(seat_profiles._REGISTRY, "grok", raising=False)
+            return new_grant(*args, **kwargs)
+
+    monkeypatch.setattr(grok_tool_surface, "new_grant", create_legacy_grant)
+
+
+@pytest.fixture(autouse=True)
 def _every_agent_spawn_has_a_scratch_decision():
     if _scratch_audit_hook is None:
         yield

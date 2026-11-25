@@ -1483,8 +1483,9 @@ def _grants_dir(*, create: bool) -> int:
 def new_grant(grant_id: str, *, binary_sha256: str, planned, retries: int,
               hosted_check: str | None) -> Grant:
     """Open a grant (``--new-grant``): ``grant.json`` is written once, exclusively, and
-    every later stage must match it. Opening one spends nothing. Erratum 4: it records the
-    hosted CI run of the BA-3 egress check (``--hosted-check``), which it requires."""
+    every later stage must match it. Opening one spends nothing. The jail contract §5.2
+    refuses new unjailed grants once the Grok profile is registered."""
+    from . import seat_profiles
     from .seat_window import _host_digest
 
     _check_grant_id(grant_id)
@@ -1499,6 +1500,8 @@ def new_grant(grant_id: str, *, binary_sha256: str, planned, retries: int,
         raise _refuse("retries_invalid")
     if type(hosted_check) is not str or _HOSTED_CHECK.fullmatch(hosted_check) is None:
         raise _refuse("hosted_check_required")
+    if seat_profiles.profile_for("grok") is not None:
+        raise _refuse("unjailed_grant_refused")
     grant = Grant(id=grant_id, host_digest=_host_digest(), binary_sha256=binary_sha256,
                   planned=planned, retries=retries, cap=GRANT_CAP, budget=PER_LAUNCH_BUDGET,
                   created_at=_utc_now(), hosted_check=hosted_check)
@@ -4192,7 +4195,6 @@ JAIL_CREDENTIAL_MARGIN_S = LAUNCH_TIMEOUT_S + 300.0
 #: at the attended sign-in boundary by the trusted store writer or an owner-run exporter.
 CREDENTIAL_METADATA_NAME = "credential-metadata.json"
 CREDENTIAL_METADATA_MAX_BYTES = 4096
-_AUTH_STATE_KEYS = ("device", "inode", "size", "mtime_ns", "ctime_ns")
 
 
 def jail_credential_expiry() -> int:
@@ -4242,16 +4244,16 @@ def jail_credential_expiry() -> int:
     except (ValueError, UnicodeDecodeError, RecursionError):
         raise unavailable() from None
     state = document.get("auth_state") if type(document) is dict else None
+    current = cred._credential_auth_state(auth)
     if (type(document) is not dict
             or set(document) != {"subscription", "expires_at", "auth_state"}
             or document["subscription"] is not True or type(document["expires_at"]) is not int
-            or type(state) is not dict or set(state) != set(_AUTH_STATE_KEYS)
-            or not all(type(state[key]) is int for key in _AUTH_STATE_KEYS)):
+            or type(state) is not dict or state.keys() != current.keys()
+            or not all(type(state[key]) is int for key in current)):
         raise unavailable()
     if (not stat.S_ISREG(auth.st_mode) or auth.st_uid != os.geteuid()
             or stat.S_IMODE(auth.st_mode) & 0o077
-            or [state[key] for key in _AUTH_STATE_KEYS]
-            != [auth.st_dev, auth.st_ino, auth.st_size, auth.st_mtime_ns, auth.st_ctime_ns]):
+            or state != current):
         raise unavailable()  # stale: the store changed after the metadata was written
     return document["expires_at"]
 
