@@ -159,7 +159,9 @@ def test_every_gate_bound_fits_inside_the_job_so_cleanup_and_evidence_still_run(
                                  limit)
             assert match, limit
             pull_request, other = int(match.group(1)), int(match.group(2))
-            assert other == 140  # the measured tag/dispatch allowance is unchanged
+            # The tag/dispatch allowance covers the full clean-room suite on a slow hosted
+            # runner (agent-harness#2191: v0.7.45 needed over 150 min and was cancelled at 140).
+            assert other == 210
             assert pull_request >= budget and other >= budget
         else:
             assert limit >= budget, path

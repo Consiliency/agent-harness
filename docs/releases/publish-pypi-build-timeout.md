@@ -1,8 +1,8 @@
 # The publish-pypi build timeout is per path, and each number is measured
 
 `publish-pypi.yml`'s `build + verify wheel + sdist` job runs with
-`timeout-minutes: 55` on a pull request and `140` on a tag push or a manual
-dispatch. The pull-request bound was 25 until agent-harness#1993; see
+`timeout-minutes: 55` on a pull request and `210` on a tag push or a manual
+dispatch (it was `140` until agent-harness#2191). The pull-request bound was 25 until agent-harness#1993; see
 "The pull-request bound must outlast the gate's own bounds" below. The two paths run different work (see below). On pull requests, over
 the 18 completed runs sampled on 2026-09-04 the job
 averaged **7.7 minutes** and peaked at **12**, so 25 is roughly twice the worst
@@ -54,10 +54,16 @@ against pull-request timings only, and the first tag after it hit the cap:
   **cancelled at 25 min 15 s** by the timeout, at 50% of the Gate A suite; the
   publish job was skipped and nothing reached PyPI.
 
-The tag/dispatch bound is `140`: twice the one measured run, which is the
+The tag/dispatch bound was `140`: twice the one measured run, which is the
 headroom agent-harness#757 applied on the pull-request path (25 is about twice its 12-minute
-maximum). It is expressed as
-`${{ github.event_name == 'pull_request' && 25 || 140 }}` — an Actions
+maximum). The full suite then grew. Tag runs `v0.7.38` through `v0.7.44` took
+**97–110 min** each (`v0.7.43` about 108, `v0.7.44` 107), and the `v0.7.45` tag run
+(workflow `45566194929`) was **cancelled at 140 min** with the Gate A suite 88% done
+after 137.8 min, which projects to about 157 min for the suite and 160 for the job; no
+test had failed and nothing reached PyPI. The bound is now **210**
+(agent-harness#2191): about twice a typical run and about 1.3x that projection, and well
+under GitHub's 360-minute job maximum. It is expressed as
+`${{ github.event_name == 'pull_request' && 55 || 210 }}` — an Actions
 value-select, safe because the pull-request operand is non-zero — so the
 pull-request bound stays where the measurement put it. Tighten the tag bound only
 against a sample of tag runs, and record the sample here.
@@ -86,4 +92,4 @@ measured 104-141 s). With five minutes for checkout, Python and the sandbox prer
 these numbers consistent. The five setup minutes are an allowance, not an enforced
 bound: a wedged setup step can still exhaust the job. Measured pull-request runs are unchanged by this: the bound only
 decides when a wedged gate is reported, now with its evidence. The tag and dispatch bound
-stays 140, which already covers the same steps plus the full Gate A suite.
+(210 since agent-harness#2191) covers the same steps plus the full Gate A suite.

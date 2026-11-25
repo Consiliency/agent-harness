@@ -6,6 +6,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Fixed
+
+- The `publish-pypi` tag and dispatch build job now allows 210 minutes instead of 140.
+  The full clean-room suite took 97-110 minutes for recent tags, and the v0.7.45 tag run
+  was cancelled at 140 with the suite 88% done, before anything was published
+  (agent-harness#2191).
+
 ## [0.7.45] - 2026-11-25
 
 ### Fixed
