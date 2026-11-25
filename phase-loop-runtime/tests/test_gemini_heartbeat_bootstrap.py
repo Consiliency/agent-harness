@@ -206,7 +206,7 @@ def fixture_cli(tmp_path, monkeypatch):
     mode_file.write_text("ok")
     # Values are fixture-owned paths, never prompt or credential contents.
     cli.write_text("#!/usr/bin/python3\n" + f'''
-import json,os,re,sys,time
+import json,os,re,signal,sys,time
 from pathlib import Path
 mode=Path({str(mode_file)!r}).read_text()
 with Path({str(attempts)!r}).open('a') as f: f.write('attempt\\n')
@@ -259,6 +259,13 @@ if mode=='native':
     emit('PRIVATE_FIXTURE_SENTINEL')
     print('connection reset PRIVATE_FIXTURE_SENTINEL',file=sys.stderr)
     raise SystemExit(7)
+if mode in ('signal', 'empty-stream'):
+    sys.stderr.buffer.write(bytes((255,)) + b'PRIVATE_NATIVE_STDERR_SENTINEL')
+    sys.stderr.buffer.flush()
+    if mode=='signal':
+        print(json.dumps({{'event':'init','conversation_id':'fixture-session'}}), flush=True)
+        os.kill(os.getpid(), signal.SIGKILL)
+    raise SystemExit(0)
 if mode=='native-stdout':
     observed=json.loads(Path({str(observation)!r}).read_text())
     observed['native_failure_mode_entered']=True
@@ -532,6 +539,92 @@ def test_qualification_worker_retains_only_structured_error_class(
     assert terminal["result"]["status"] == status
     assert terminal["broker"]["provider_response_status"] == status
     assert terminal["broker"]["provider_error_class"] == error_class
+
+
+@pytest.mark.parametrize(("mode", "code", "events", "results", "stage", "outcome"), [
+    ("native", 7, 1, 1, "terminal_event", "accepted"),
+    # Bubblewrap reports a signalled payload as 128 + signal, which is also a valid exit code.
+    ("signal", 128 + signal.SIGKILL, 1, 0, "first_incoming_event", "result_count_mismatch"),
+    ("empty-stream", 0, 0, 0, "launch", "session_reset"),
+])
+def test_qualification_retains_native_run_facts(
+    fixture_cli, tmp_path, monkeypatch, mode, code, events, results, stage, outcome,
+):
+    fixture_cli.mode.write_text(mode)
+    _, root, _, run = _qualification_worker(fixture_cli, tmp_path, monkeypatch)
+    run()
+    raw_terminal = (root / "terminal.json").read_text()
+    raw_verdict = next((root / "stream").glob("leg-*.verdict.json")).read_text()
+    terminal, verdict = json.loads(raw_terminal), json.loads(raw_verdict)
+    detail = ("Gemini broker stream changed or omitted its conversation" if code == 0
+              else "Gemini broker native exit without an accepted review")
+    stderr = (b"connection reset PRIVATE_FIXTURE_SENTINEL\n" if mode == "native"
+              else b"\xffPRIVATE_NATIVE_STDERR_SENTINEL")
+    if mode == "native":
+        protocol = panel._broker_gemini_stream_protocol("fixture")
+        stdout = json.dumps(_stream(protocol, final="PRIVATE_FIXTURE_SENTINEL")[0]) + "\n"
+    elif mode == "signal":
+        stdout = json.dumps({"event": "init", "conversation_id": "fixture-session"}) + "\n"
+    else:
+        stdout = ""
+    expected = {
+        "native_exit_code": code,
+        "native_signal": None,
+        "native_stdout_bytes": len(stdout.encode()),
+        "native_stderr_bytes": len(stderr),
+        "provider_stage_reached": stage,
+        "provider_stream_incoming_event_count": events,
+        "provider_stream_result_count": results,
+        "provider_stream_output_bytes": len(stdout.encode()),
+        "provider_stream_outcome": outcome,
+    }
+    for record in (terminal["broker"], verdict):
+        assert {key: record[key] for key in expected} == expected
+        assert type(record["native_duration_ms"]) is int and record["native_duration_ms"] >= 0
+    assert verdict["native_duration_ms"] == terminal["broker"]["native_duration_ms"]
+    assert terminal["result"]["detail"] == verdict["detail"] == detail
+    assert terminal["broker"]["child_returncode"] == 0
+    assert terminal["broker"]["provider_error_class"] == ("empty_response" if code == 0 else "unknown")
+    assert {key for key in terminal["broker"] if "stderr" in key} == {
+        "child_stderr_sha256", "native_stderr_bytes",
+    }
+    assert {key for key in verdict if "stderr" in key} == {"native_stderr_bytes"}
+    for raw in (raw_terminal, raw_verdict):
+        assert "PRIVATE_FIXTURE_SENTINEL" not in raw
+        assert "PRIVATE_NATIVE_STDERR_SENTINEL" not in raw
+        assert "\\ufffd" not in raw
+
+
+def test_jailed_board_leg_retains_a_signal_reported_by_wait_status(monkeypatch, tmp_path):
+    # Use a real child with the launch owner stubbed so its wait status reaches the
+    # board runner without Bubblewrap's translation.
+    def launch(command, **kwargs):
+        return subprocess.Popen(
+            command, cwd=tmp_path, stdout=kwargs["stdout"], stderr=kwargs["stderr"],
+            stdin=kwargs["stdin"], start_new_session=kwargs["start_new_session"],
+        )
+
+    monkeypatch.setattr(panel, "launch_provider", launch)
+    monkeypatch.setattr(panel, "_cleanup_jailed_seat", lambda *a, **kw: None)
+    command = [sys.executable, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"]
+    monkeypatch.setattr(panel, "_jailed_gemini_command", lambda model: command)
+    jail = SimpleNamespace(env={}, profile_digest="d", profile_id="p", filter_digest="f",
+                           redacted_owner=lambda: ())
+    seat = SimpleNamespace(token=b"synthetic-token", private_proxy_token=b"synthetic-proxy",
+                           jail=jail, probe_jail=None, image_sha256="a" * 64, notices=[],
+                           admission_class="release_qualified", expires_at=None)
+    evidence, failures = {}, []
+    status, text = panel._exec_jailed_gemini_leg(
+        seat, deadline_s=5, model="fixture", prompt="fixture", broker_evidence=evidence,
+        failure_detail_sink=failures,
+    )
+    assert (status, text) == ("DEGRADED", "")
+    assert failures[-1].template == "Gemini broker native exit without an accepted review"
+    assert evidence["native_exit_code"] is None
+    assert evidence["native_signal"] == signal.SIGKILL
+    assert evidence["native_stdout_bytes"] == evidence["native_stderr_bytes"] == 0
+    assert evidence["provider_stage_reached"] == "launch"
+    assert evidence["provider_stream_outcome"] == "session_reset"
 
 
 def test_a_change_after_verification_cannot_reach_a_qualification_record(fixture_cli, tmp_path, monkeypatch):

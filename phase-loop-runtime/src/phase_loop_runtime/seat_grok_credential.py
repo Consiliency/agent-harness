@@ -17,7 +17,11 @@ inference proxy), whose ``key`` is a text bearer of at least 8 characters that i
 the API-key form (:data:`API_KEY_PREFIX`), and no API-key field anywhere in the store.
 Anything else, including a second scope or a malformed entry, is ambiguous and refuses
 ``grok_seat_credential_refused``. The marker is decided from the store shape offline; the
-pre-grant reader of the jail contract section 7.2 refines it on the owner's fresh sign-in.
+pre-grant reader of the jail contract section 7 takes metadata published separately by the
+operator after a fresh sign-in. Invoke ``python -m phase_loop_runtime.seat_grok_credential
+--subscription-confirmed --expires-at EPOCH_SECONDS`` from an attended terminal with the
+verified subscription status and expiry of that sign-in. The publisher stats the auth
+file and writes metadata only.
 
 **Expiry.** The entry's ``expires_at`` must parse (an aware ISO 8601 time, or epoch
 seconds or milliseconds) and the remaining lifetime must exceed ``margin_s`` (the leg
@@ -37,6 +41,8 @@ must hash to :data:`SEAT_CONFIG_SHA256` or staging refuses before anything is wr
 
 from __future__ import annotations
 
+import argparse
+import contextlib
 from dataclasses import dataclass, field
 import datetime as _dt
 import hashlib
@@ -48,7 +54,9 @@ try:
     import pwd
 except ImportError:  # native Windows has no password database; uses fail closed there
     pwd = None  # type: ignore[assignment]
+import secrets
 import stat
+import sys
 import time
 from typing import Iterable, Iterator
 
@@ -518,6 +526,105 @@ def stage_grok_seat_credential(config_dir: str | os.PathLike[str], *,
 
 
 # --------------------------------------------------------------------------------------
+# The attended §7 metadata publisher.
+# --------------------------------------------------------------------------------------
+
+def _credential_auth_state(info: os.stat_result) -> dict[str, int]:
+    return {"device": info.st_dev, "inode": info.st_ino, "size": info.st_size,
+            "mtime_ns": info.st_mtime_ns, "ctime_ns": info.st_ctime_ns}
+
+
+def _stat_private_metadata_entry(directory: int, name: str, *,
+                                 exact_mode: int | None = None) -> os.stat_result:
+    info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+    mode = stat.S_IMODE(info.st_mode)
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != _owner_uid() or mode & 0o077
+            or (exact_mode is not None and mode != exact_mode)):
+        raise GrokCredentialRefused(STORE_UNSAFE)
+    return info
+
+
+#: Upper bound on an operator-typed sign-in expiry (400 days from now).
+_MAX_ATTENDED_EXPIRY_S = 400 * 86400
+
+
+def _publish_credential_metadata(expires_at: int) -> None:
+    from .grok_tool_surface import CREDENTIAL_METADATA_NAME
+
+    if _O_DIR is None:
+        raise GrokCredentialRefused(STORE_UNSAFE)
+    directory = os.open(_operator_home() / STORE_DIRNAME, _O_DIR)
+    try:
+        store = os.fstat(directory)
+        if store.st_uid != _owner_uid() or stat.S_IMODE(store.st_mode) & 0o022:
+            raise GrokCredentialRefused(STORE_UNSAFE)
+        state = _credential_auth_state(_stat_private_metadata_entry(directory, AUTH_FILE_NAME))
+        name = CREDENTIAL_METADATA_NAME
+        with contextlib.suppress(FileNotFoundError):
+            _stat_private_metadata_entry(directory, name, exact_mode=0o600)
+        payload = json.dumps({"subscription": True, "expires_at": expires_at, "auth_state": state},
+                             sort_keys=True).encode("ascii") + b"\n"
+        temporary = f".{name}.{secrets.token_hex(16)}.tmp"
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                     0o600, dir_fd=directory)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                os.fchmod(handle.fileno(), 0o600)
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if _credential_auth_state(_stat_private_metadata_entry(directory, AUTH_FILE_NAME)) != state:
+                raise GrokCredentialRefused(STORE_UNSAFE)
+            os.replace(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+            os.fsync(directory)
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(temporary, dir_fd=directory)
+    finally:
+        os.close(directory)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m phase_loop_runtime.seat_grok_credential",
+        description="Publish the owner-confirmed subscription status and expiry of a fresh sign-in.",
+        allow_abbrev=False, exit_on_error=False,
+    )
+    parser.add_argument("--subscription-confirmed", action="store_true")
+    parser.add_argument("--expires-at", metavar="EPOCH_SECONDS", action="append", default=[])
+    try:
+        args, unknown = parser.parse_known_args(argv)
+    except argparse.ArgumentError:
+        print("credential_metadata_arguments_invalid", file=sys.stderr)
+        return 2
+    if not sys.stdin.isatty():
+        print("credential_metadata_attendance_required", file=sys.stderr)
+        return 1
+    values = args.expires_at
+    if (unknown or not args.subscription_confirmed or len(values) != 1
+            or len(values[0]) > 19 or not values[0].isascii() or not values[0].isdecimal()):
+        print("credential_metadata_arguments_invalid", file=sys.stderr)
+        return 2
+    expires_at = int(values[0])
+    now = time.time()
+    if expires_at > now + _MAX_ATTENDED_EXPIRY_S:
+        # A mistyped value (for example milliseconds) would pass here and then fail at
+        # staging, which ends the whole grant under r8-3; refuse it up front instead.
+        print("credential_metadata_arguments_invalid", file=sys.stderr)
+        return 2
+    if expires_at <= now:
+        print(TOKEN_EXPIRED, file=sys.stderr)
+        return 1
+    try:
+        _publish_credential_metadata(expires_at)
+    except (GrokCredentialRefused, OSError):
+        print("credential_metadata_unavailable", file=sys.stderr)
+        return 1
+    print("credential_metadata_published")
+    return 0
+
+
+# --------------------------------------------------------------------------------------
 # The refresh after-check (president note B5).
 # --------------------------------------------------------------------------------------
 
@@ -637,3 +744,7 @@ __all__ = [
     "STAGED_ENTRIES", "ScanValues", "credential_digest", "grok_seat_credential_after",
     "grok_seat_credential_present", "seat_config_bytes", "stage_grok_seat_credential",
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

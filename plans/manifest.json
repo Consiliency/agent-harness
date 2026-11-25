@@ -14932,11 +14932,17 @@
         "plans/artifacts/grok-jail-tool-surface-contract-v1-erratum-r8.md": {
           "sha256": "6fbad698480d1ba3391888bd2a31350a954051c684b5489047f488a7c8468490"
         },
+        "plans/artifacts/grok-jail-tool-surface-contract-v1-managed-subject-erratum.md": {
+          "sha256": "70d43a826ff11fe6ce9cd14b0b87f5a90aa3007e65f624c4e50b3231c2c4eaa2"
+        },
         "plans/artifacts/grok-jail-tool-surface-contract-v1.md": {
           "sha256": "f2fc6c88471dd88f52168136cec0f770fa7c286cd1ce71a1fd8b341878ea8b66"
         },
         "plans/artifacts/grok-tool-surface-contract-v1.md": {
           "sha256": "5b929cb588e4bb555ce8374311432376fe4c04e8a851fd511e6c44682736b27c"
+        },
+        "plans/evidence/seat-grok/image-provenance-1.0.92.json": {
+          "sha256": "398f019cc3709a745bb6d8173e0b7d78ae0441f999ac19bb513f22e779f43c36"
         },
         "plans/seats-jailcore-route-contract.md": {
           "sha256": "235f1faded1d7f15d0ff69668b6a451cee7167e6438d258da57257faf7bdae81"

@@ -11,7 +11,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - `phase-loop seat-sandbox qualify` records Claude and Gemini passes for the same
   qualification keys their jailed routes check. Seat-window readiness and record
   verification use those same passes (agent-harness#2181).
-
+- Gemini heartbeat and jailed review records retain native status, duration, pipe byte
+  counts and stream progress for diagnosing failed runs (agent-harness#2183).
+  The diagnostics carry no provider stderr content.
 - Jailed Gemini seats use a credential-free loopback proxy URL. The host front keeps
   per-launch proxy authentication on its private hop to SRT (agent-harness#2157).
   After release, run integrated W1 under the owner account on the owner's primary board host,
@@ -21,11 +23,19 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
+- The Grok seat credential module can publish the subscription and expiry confirmed
+  by an attended operator after sign-in. The private metadata record is bound to
+  the current auth file by filesystem metadata (agent-harness#2101).
 - Grok's jailed measurement records the owner's offline projection confirmation and
   verifies the hosted BA-J1 and BA-J5 results before opening a grant (agent-harness#2101).
 
 ### Changed
 
+- The Grok jail contract's managed-subject erratum requires a pinned root-owned
+  Dotfiles release and reviewed npm provenance for the Grok 1.0.92 grant
+  (agent-harness#2178, agent-harness#2179).
+- Grok measurement refuses new unjailed grants once the Grok jail profile is
+  registered (agent-harness#2101).
 - Grok jail grants reopen a counted label once after a sink-probe timeout without
   charging a request or retry. This moves the seat-window runtime and release identity
   digests. Profile and SDK proof pins stay fixed (agent-harness#2101).

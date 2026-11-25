@@ -1414,6 +1414,19 @@ A non-release `agy` image is admitted only by verifying it, never by trusting it
   can include the same label in `notice.detail`. The label comes from structured process,
   stream and credential facts. Opaque provider failures use `unknown`. The qualification
   predicates and transient accounting are unchanged.
+  The private terminal's broker evidence and the streamed leg verdict also retain
+  native-run diagnostics for the heartbeat and jailed Gemini routes (agent-harness#2183).
+  The provider launch status is separate from the credentialless client's
+  `child_returncode`. A negative process wait status gives `native_signal` and a
+  null `native_exit_code`. Bubblewrap can encode a signalled payload as `128 + signal`.
+  The record keeps that observed code with a null signal because the code is ambiguous.
+  `native_duration_ms` measures elapsed wall time in the provider runner.
+  `native_stdout_bytes` and `native_stderr_bytes` count bytes drained from the native
+  pipes before decoding or redaction. The new fields carry no pipe content.
+  `provider_stage_reached` progresses through `launch`, `first_incoming_event` and
+  `terminal_event`. The last stage means that the stream emitted a result beyond any
+  expected acknowledgements. The stream outcome describes parsing independently of
+  native exit status and the overall verdict.
 - **Provenance** (coordinator process, nothing executes). Host platform from the running
   host (D4: `linux-{x64,arm64}[-musl]`); every listed stable release (no prerelease, no
   draft), hint first, within the per-call budget and the daily cap (PROVFWD below); the exact
